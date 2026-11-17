@@ -49,6 +49,11 @@
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/Ray.h"
 #include "../src/Library/Utilities/Color/Color.h"
+#include "../src/Library/Utilities/Color/RGBSpectra.h"
+#include "../src/Library/Materials/HomogeneousMedium.h"
+#include "../src/Library/Materials/HeterogeneousMedium.h"
+#include "../src/Library/Interfaces/IPainter.h"
+#include <algorithm>
 
 using namespace RISE;
 
@@ -347,6 +352,204 @@ static void TestGoldRubyColorant()
 	safe_release( absCurve );
 }
 
+//----------------------------------------------------------------------
+// G: Volume EMISSION carries the reference illuminant (Stage C slice 2)
+//
+// Emission is a SOURCE term, not a coefficient.  It used to be projected
+// with ColorMath::Luminance -- ONE flat Rec.709 luma scalar reused at
+// every wavelength -- while every other source in the engine (lights,
+// emitters, radiance maps, radiance-uplifting shader ops) had moved to
+// the D65-shaped reference illuminant.  A flat spectrum resolves to
+// (1.205, 0.948, 0.909) on this film, and a RED emissive medium came out
+// GREY.  GetCoefficientsNM now evaluates an RGBIlluminantSpectrum cached
+// on the medium.
+//
+// Mutation guard: restore the luminance projection and the ratio below
+// becomes exactly 1.0, failing every check in this function.
+//----------------------------------------------------------------------
+static void TestEmissionIlluminantShape()
+{
+	std::cout << "G: volumetric emission is illuminant-shaped, not luma-flat" << std::endl;
+
+	IPhaseFunction* phase = 0;
+	RISE_API_CreateIsotropicPhaseFunction( &phase );
+
+	const Point3 p( 0, 0, 0 );
+
+	// A strongly RED emission.  Under the old luma projection e(450) and
+	// e(650) were the same number; under the illuminant uplift the red
+	// sigmoid puts far more energy at 650 than at 450.
+	IMedium* redMedium = 0;
+	RISE_API_CreateHomogeneousMediumWithEmission( &redMedium,
+		RISEPel( 0.1, 0.1, 0.1 ),		// sigma_a
+		RISEPel( 0.0, 0.0, 0.0 ),		// sigma_s
+		RISEPel( 1.0, 0.2, 0.2 ),		// emission -- RED
+		*phase );
+
+	const double eRedBlue  = redMedium->GetCoefficientsNM( p, 450.0 ).emission;
+	const double eRedRed   = redMedium->GetCoefficientsNM( p, 650.0 ).emission;
+	std::cout << "    red emission: e(450) = " << eRedBlue
+	          << ", e(650) = " << eRedRed
+	          << ", ratio = " << ( eRedBlue > 0 ? eRedRed / eRedBlue : 0.0 ) << std::endl;
+
+	Check( eRedRed > 0.0 && eRedBlue > 0.0, "  emission is non-zero at both wavelengths" );
+	Check( eRedRed > eRedBlue * 2.0,
+		"  RED emission puts >2x more energy at 650nm than at 450nm (was 1.0x)" );
+
+	// A WHITE emission is the reference-illuminant shape itself: the
+	// sigmoid is ~1 everywhere, so e(nm) tracks D65norm(nm).  Assert
+	// against the SAME table the runtime uses, so this cannot drift.
+	IMedium* whiteMedium = 0;
+	RISE_API_CreateHomogeneousMediumWithEmission( &whiteMedium,
+		RISEPel( 0.1, 0.1, 0.1 ),
+		RISEPel( 0.0, 0.0, 0.0 ),
+		RISEPel( 1.0, 1.0, 1.0 ),		// emission -- WHITE
+		*phase );
+
+	bool whiteTracksD65 = true;
+	const double nms[] = { 420, 450, 500, 550, 600, 650, 700 };
+	for( int i = 0; i < 7; ++i ) {
+		const double got = whiteMedium->GetCoefficientsNM( p, nms[i] ).emission;
+		const double want =
+			double( RGBIlluminantSpectrum::ReferenceIlluminant( Scalar( nms[i] ) ) );
+		if( std::fabs( got - want ) > 1e-3 * std::max( 1.0, want ) ) {
+			whiteTracksD65 = false;
+			std::cout << "    white emission at " << nms[i]
+			          << ": got " << got << ", D65norm " << want << std::endl;
+		}
+	}
+	Check( whiteTracksD65,
+		"  WHITE emission == the Y-normalised reference illuminant at every nm" );
+
+	// And it is NOT flat -- the luma projection would have been.
+	const double w450 = whiteMedium->GetCoefficientsNM( p, 450.0 ).emission;
+	const double w650 = whiteMedium->GetCoefficientsNM( p, 650.0 ).emission;
+	Check( std::fabs( w450 - w650 ) > 1e-3,
+		"  WHITE emission is NOT wavelength-flat (the luma projection was)" );
+
+	// SetEmission must rebuild the cached spectrum, else a scene edit
+	// keeps radiating the constructed colour on the spectral path.
+	{
+		HomogeneousMedium* hm = dynamic_cast<HomogeneousMedium*>( redMedium );
+		Check( hm != 0, "  medium is a HomogeneousMedium (SetEmission reachable)" );
+		if( hm ) {
+			hm->SetEmission( RISEPel( 0.2, 0.2, 1.0 ) );	// now BLUE
+			const double b450 = hm->GetCoefficientsNM( p, 450.0 ).emission;
+			const double b650 = hm->GetCoefficientsNM( p, 650.0 ).emission;
+			Check( b450 > b650,
+				"  SetEmission rebuilds the cached spectrum (blue now peaks at 450nm)" );
+		}
+	}
+
+	safe_release( whiteMedium );
+	safe_release( redMedium );
+	safe_release( phase );
+}
+
+//----------------------------------------------------------------------
+// G-het: same illuminant-shape contract as case G above, but for
+// HeterogeneousMedium::GetCoefficientsNM.  Stage C slice 2 follow-up
+// (474b3ef4) cached an RGBIlluminantSpectrum (`m_emissionSpectrum`) on
+// this class too, built at construction from the same `emission` RGB
+// triple HomogeneousMedium takes.  Unlike HomogeneousMedium, emission
+// here is "constant, not density-modulated" (HeterogeneousMedium.h) --
+// GetCoefficientsNM's `c.emission = m_emissionSpectrum.Eval(nm)` does
+// not consult LookupDensity at all -- so there is no SetEmission
+// mutator to re-check (HeterogeneousMedium has none; emission is
+// construction-only).
+//
+// Built via RISE_API_CreatePainterHeterogeneousMediumWithEmission with
+// a UniformColorPainter density field, so this needs no volume file on
+// disk.
+//
+// Mutation guard: restore the luminance projection here too and both
+// checks below go flat -- the RED case's own e(650)/e(450) ratio drops
+// from >2x to 1.0x, and the WHITE case stops tracking the reference
+// illuminant table (it collapses to a single luma scalar repeated at
+// every wavelength instead).
+//----------------------------------------------------------------------
+static void TestHeterogeneousEmissionIlluminantShape()
+{
+	std::cout << "G-het: HeterogeneousMedium emission is illuminant-shaped, not luma-flat" << std::endl;
+
+	IPhaseFunction* phase = 0;
+	RISE_API_CreateIsotropicPhaseFunction( &phase );
+
+	const Point3 bboxMin( -1, -1, -1 );
+	const Point3 bboxMax(  1,  1,  1 );
+	const Point3 p( 0, 0, 0 );
+
+	// A strongly RED emission, mirroring case G exactly.
+	IPainter* redDensity = 0;
+	RISE_API_CreateUniformColorPainter( &redDensity, RISEPel( 1, 1, 1 ) );
+	IMedium* redMedium = 0;
+	RISE_API_CreatePainterHeterogeneousMediumWithEmission( &redMedium,
+		RISEPel( 0.1, 0.1, 0.1 ),		// max_sigma_a
+		RISEPel( 0.0, 0.0, 0.0 ),		// max_sigma_s
+		RISEPel( 1.0, 0.2, 0.2 ),		// emission -- RED
+		*phase, *redDensity,
+		/*virtualResolution*/ 4, /*colorToScalar*/ 'l',
+		bboxMin, bboxMax );
+
+	const double eRedBlue = redMedium->GetCoefficientsNM( p, 450.0 ).emission;
+	const double eRedRed  = redMedium->GetCoefficientsNM( p, 650.0 ).emission;
+	std::cout << "    red emission: e(450) = " << eRedBlue
+	          << ", e(650) = " << eRedRed
+	          << ", ratio = " << ( eRedBlue > 0 ? eRedRed / eRedBlue : 0.0 ) << std::endl;
+
+	Check( eRedRed > 0.0 && eRedBlue > 0.0, "  het emission is non-zero at both wavelengths" );
+	Check( eRedRed > eRedBlue * 2.0,
+		"  het RED emission puts >2x more energy at 650nm than at 450nm (was 1.0x)" );
+
+	// A WHITE emission must track the SAME Y-normalised reference
+	// illuminant table HomogeneousMedium's case G checks against.
+	IPainter* whiteDensity = 0;
+	RISE_API_CreateUniformColorPainter( &whiteDensity, RISEPel( 1, 1, 1 ) );
+	IMedium* whiteMedium = 0;
+	RISE_API_CreatePainterHeterogeneousMediumWithEmission( &whiteMedium,
+		RISEPel( 0.1, 0.1, 0.1 ),
+		RISEPel( 0.0, 0.0, 0.0 ),
+		RISEPel( 1.0, 1.0, 1.0 ),		// emission -- WHITE
+		*phase, *whiteDensity,
+		/*virtualResolution*/ 4, /*colorToScalar*/ 'l',
+		bboxMin, bboxMax );
+
+	bool whiteTracksD65 = true;
+	const double nms[] = { 420, 450, 500, 550, 600, 650, 700 };
+	for( int i = 0; i < 7; ++i ) {
+		const double got = whiteMedium->GetCoefficientsNM( p, nms[i] ).emission;
+		const double want =
+			double( RGBIlluminantSpectrum::ReferenceIlluminant( Scalar( nms[i] ) ) );
+		if( std::fabs( got - want ) > 1e-3 * std::max( 1.0, want ) ) {
+			whiteTracksD65 = false;
+			std::cout << "    het white emission at " << nms[i]
+			          << ": got " << got << ", D65norm " << want << std::endl;
+		}
+	}
+	Check( whiteTracksD65,
+		"  het WHITE emission == the Y-normalised reference illuminant at every nm" );
+
+	// And it is NOT flat -- the luma projection would have been.
+	const double w450 = whiteMedium->GetCoefficientsNM( p, 450.0 ).emission;
+	const double w650 = whiteMedium->GetCoefficientsNM( p, 650.0 ).emission;
+	Check( std::fabs( w450 - w650 ) > 1e-3,
+		"  het WHITE emission is NOT wavelength-flat (the luma projection was)" );
+
+	// Emission is NOT density-modulated (HeterogeneousMedium.h) -- a
+	// point well outside the bbox (LookupDensity == 0) must still read
+	// the same emission spectrum as a point at the centre.
+	const Point3 pOutside( 100, 100, 100 );
+	const double eOutside650 = redMedium->GetCoefficientsNM( pOutside, 650.0 ).emission;
+	Check( Close( eOutside650, eRedRed, 1e-12 ),
+		"  het emission is constant, not density-modulated (matches outside the bbox)" );
+
+	safe_release( whiteMedium );
+	safe_release( whiteDensity );
+	safe_release( redMedium );
+	safe_release( redDensity );
+	safe_release( phase );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeSpectralCoefficientsTest — G1 per-wavelength "
@@ -358,6 +561,8 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestSamplingConsistency();
 	TestNegativeClamp();
 	TestGoldRubyColorant();
+	TestEmissionIlluminantShape();
+	TestHeterogeneousEmissionIlluminantShape();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

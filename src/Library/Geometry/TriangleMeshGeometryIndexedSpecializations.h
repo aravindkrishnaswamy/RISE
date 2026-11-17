@@ -299,6 +299,19 @@ namespace RISE
 					ri.bHasTangent = false;
 				}
 
+                ri.bHasShaderDirection = false;
+                ri.bHasNormalMapFrame = false;
+                if (!pShaderDirections.empty() && !pPoints.empty()) {
+                    const Vertex* base = &pPoints[0];
+                    const size_t i0 = size_t(thisTri.pVertices[0]-base);
+                    const size_t i1 = size_t(thisTri.pVertices[1]-base);
+                    const size_t i2 = size_t(thisTri.pVertices[2]-base);
+                    if (i0<pShaderDirections.size() && i1<pShaderDirections.size() && i2<pShaderDirections.size()) {
+                        const Vector3& t0 = pShaderDirections[i0];
+                        ri.vShaderDirection = t0+(pShaderDirections[i1]-t0)*a+(pShaderDirections[i2]-t0)*b;
+                        ri.bHasShaderDirection = true;
+                    }
+                }
 				// Populate surface derivatives for SMS consumers.
 				//
 				// Strategy: use the per-vertex (u, v) texture coordinates
@@ -449,23 +462,113 @@ namespace RISE
 						(dNraw_dv.y - shadingNormal.y * dv_dot_n) * invLen,
 						(dNraw_dv.z - shadingNormal.z * dv_dot_n) * invLen );
 				}
+				// THE CHART MAP (docs/GEOMETRY_DERIVATIVES.md "The texcoord
+				// chart map").  On the useUVJacobian path dpdu/dpdv ARE the
+				// derivatives with respect to the stored per-vertex texture
+				// coordinate that ri.ptCoord interpolates, so the map is the
+				// identity -- this is the one geometry family for which the
+				// two charts coincide, and why the mesh path was correct
+				// before the map existed.  On the barycentric-edge FALLBACK
+				// (degenerate or absent UV triangle) dpdu/dpdv are edge
+				// vectors with no relation to ptCoord at all, so the map is
+				// left INVALID and SolveFootprintUV declines rather than
+				// publishing an edge-chart Jacobian as a texcoord one.
+				ri.derivatives.dsdu = 1.0; ri.derivatives.dsdv = 0.0;
+				ri.derivatives.dtdu = 0.0; ri.derivatives.dtdv = 1.0;
+				ri.derivatives.texChartValid = useUVJacobian;
+
 				// Enforce right-handedness against shading normal.
 				const Vector3 cross = Vector3Ops::Cross( dpdu, dpdv );
-				if( Vector3Ops::Dot( cross, shadingNormal ) < 0.0 ) {
+				const bool bMirroredUV = ( Vector3Ops::Dot( cross, shadingNormal ) < 0.0 );
+				if( bMirroredUV ) {
 					dpdv = Vector3( -dpdv.x, -dpdv.y, -dpdv.z );
 					dndv = Vector3( -dndv.x, -dndv.y, -dndv.z );
+					// dpdv now points down -d/dv, so the chart map must say so:
+					// t decreases as the derivative parameter increases.  Mip
+					// LOD squares and would not notice; the finite-difference
+					// oracle in tests/TextureFootprintTest.cpp does.
+					ri.derivatives.dtdv = -1.0;
 				}
 				ri.derivatives.dpdu = dpdu;
 				ri.derivatives.dpdv = dpdv;
 				ri.derivatives.dndu = dndu;
 				ri.derivatives.dndv = dndv;
 				ri.derivatives.valid = true;
+				// docs/CLOTH_FABRIC_DESIGN.md 9.1: hand the shading ONB a
+				// COHERENT, geometry-defined tangent instead of the
+				// arbitrary per-triangle-discontinuous axis CreateFromW
+				// would pick.  Priority: an authored glTF TANGENT (already
+				// interpolated into ri.vTangent / ri.bHasTangent above)
+				// wins outright -- it is the higher-authority signal and is
+				// also how a re-exported mirrored-UV asset (9.1 "Mirrored
+				// UV seams") recovers chirality.  Falling back to dpdu is
+				// second choice, ONLY when the UV Jacobian is
+				// non-degenerate.  When neither holds (no TANGENT array
+				// AND useUVJacobian false -- untextured mesh or a
+				// degenerate UV triangle), dpdu here is the discontinuous
+				// edge-frame fallback and writing it would be worse than
+				// doing nothing: leave the flags alone so
+				// Object::IntersectRay falls through to CreateFromW,
+				// byte-identical to before this fix existed.
+				if( ri.bHasTangent ) {
+					ri.bShadingTangentFromGeometry = true;
+					ri.vShadingTangent             = ri.vTangent;	// object space
+					ri.shadingBitangentSign        = ri.bitangentSign;
+					ri.bHasShadingTangent          = true;
+				} else if( useUVJacobian ) {
+					ri.bShadingTangentFromGeometry = true;
+					ri.vShadingTangent             = dpdu;	// object space
+					const Scalar sign              = bMirroredUV ? -1.0 : 1.0;
+					ri.shadingBitangentSign        = sign;
+					ri.bitangentSign               = sign;
+					ri.bHasShadingTangent          = true;
+				}
+				// Phase-1 geometry-derived shading signals
+				// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.2): the
+				// characteristic length that makes the expression VM's
+				// dimensionless `curv` scale-free -- this mesh's own BVH root
+				// box, read through the shared bbox-diagonal convention.  GATED:
+				// nothing but `curv` reads scaleHint, and this is a (cheap, but
+				// not free) sqrt on the per-hit path.  Object::IntersectRay folds
+				// the object's world scale in afterward, which is what makes
+				// `curv` per-INSTANCE correct across two instances of this one
+				// shared geometry placed at different world scales.
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
 
-				// Landing 2: project ray differentials onto the surface
-				// UV plane and store the texture-space footprint.  Costs
-				// nothing when ray.hasDifferentials = false (early-out
-				// inside the helper).
-				ComputeTextureFootprint( ri, ri.ray );
+				// PHASE-3 GEOMETRY-DERIVED SHADING SIGNALS: publish the
+				// query channel (design doc §7).  In THIS geometry's own
+				// object space, and deliberately NOT transformed by
+				// Object::IntersectRay -- both signals are dimensionless and
+				// the provider expects its own frame.
+				//
+				// WHAT IS STAMPED, and why it is not the interpolated value
+				// §7.1 originally described: the bake is LAZY (§7.3), so on
+				// the first-ever query it does not exist yet, and
+				// intersection strictly precedes shading -- there is nothing
+				// here to interpolate.  So we stamp WHERE on the mesh the hit
+				// is (triangle + the two barycentric weights the block above
+				// already computed for normals, UVs and vertex colours) and
+				// let the provider interpolate after its find-or-build.
+				// Strictly CHEAPER than interpolating here: an int and two
+				// scalars, no table lookup, and nothing at all on a hit whose
+				// material never calls the builtins.
+				//
+				// UNGATED, matching the SDF family's stamp and for the same
+				// reason: the expensive half is the bake, which runs only if
+				// an expression actually calls occlusion()/thickness().  A
+				// gate here would buy a few stores and add a real failure
+				// mode (a gate read stale across a mid-session 0->1 demand
+				// transition silently degrades a live call to its fallback).
+				// `shadingNormal` is already computed and normalized above,
+				// so nothing extra is spent on it.
+				ri.signals.pProvider = this;
+				ri.signals.ptObject  = ri.ray.PointAtLength( h.dRange );
+				ri.signals.nObject   = shadingNormal;
+				ri.signals.primId    = (int)( elem - &ptr_polygons[0] );
+				ri.signals.baryA     = a;
+				ri.signals.baryB     = b;
 			}
 		}
 	}

@@ -134,7 +134,10 @@ enum NUpLayout {
 /// hand-drawn glyph avoids that risk entirely for all four icons
 /// uniformly.
 struct ViewportLayoutPicker: View {
-    let bridge: RISEViewportBridge
+    /// Weak: RenderViewModel owns the live bridge for the whole scene
+    /// lifetime.  A nil read means the scene was torn down and this
+    /// control is leaving the tree, so the layout change is a no-op.
+    weak var bridge: RISEViewportBridge?
     @Binding var layout: ViewportLayoutOption
 
     var body: some View {
@@ -147,6 +150,7 @@ struct ViewportLayoutPicker: View {
                     // accepts the mutation, otherwise ContentView would
                     // construct panes the core never made visible and its
                     // onChange handler would clear region state spuriously.
+                    guard let bridge else { return }
                     if bridge.setViewportLayout(option.bridgeValue) {
                         layout = option
                     }
@@ -205,7 +209,11 @@ private struct LayoutGlyph: View {
 struct MultiPaneViewportView: View {
     @EnvironmentObject var viewModel: RenderViewModel
 
-    let bridge: RISEViewportBridge
+    /// Weak: RenderViewModel owns the live bridge for the whole scene
+    /// lifetime.  A nil read means the scene was torn down and these
+    /// panes are leaving the tree — routing input or re-reading pane
+    /// state is then correctly a no-op.
+    weak var bridge: RISEViewportBridge?
     let layout: ViewportLayoutOption
     /// Same meaning as `ViewportView`'s own property of the same name.
     var interactionEnabled: Bool = true
@@ -257,7 +265,8 @@ struct MultiPaneViewportView: View {
                 }
             }
         }
-        .task(id: ObjectIdentifier(bridge)) {
+        .task(id: bridge.map(ObjectIdentifier.init)) {
+            guard let bridge else { return }
             primaryPane = Int(bridge.primaryPane)
             applyMultiViewModePreset()
             // BUGFIX (2026-07-21): sync the CURRENT tool to the core on
@@ -277,6 +286,7 @@ struct MultiPaneViewportView: View {
             // change to the core while multi-view is on screen.  Without
             // this, the single global tool the whole app shares (SetTool
             // has no pane index) only tracked in single view.
+            guard let bridge else { return }
             bridge.currentTool = newValue.bridgeValue
             gizmoRefreshTrigger &+= 1
         }
@@ -285,6 +295,7 @@ struct MultiPaneViewportView: View {
             // pane is primary if the previous primary just got hidden
             // (the core falls back to pane 0 per §7.2); re-read rather
             // than assume.
+            guard let bridge else { return }
             primaryPane = Int(bridge.primaryPane)
             applyMultiViewModePreset()
         }
@@ -303,7 +314,7 @@ struct MultiPaneViewportView: View {
                 // The matching pointer-up will be gated below once interaction
                 // is disabled.  Persist/close the core gesture first so an
                 // agent or production render cannot inherit an open composite.
-                _ = bridge.finalizeOpenInteractions()
+                bridge?.finalizeOpenInteractions()
             }
         }
         // A hosted/direct AgentSession render can own core admission without
@@ -339,6 +350,7 @@ struct MultiPaneViewportView: View {
     private static let presetModeBySlot = ["preview", "wireframe", "normals", "depth"]
 
     private func applyMultiViewModePreset() {
+        guard let bridge else { return }
         var changed = false
         for pane in layout.paneIndices where pane != 0 && pane < Self.presetModeBySlot.count {
             // user-review P2#2: apply the slot preset EXACTLY ONCE per pane
@@ -371,6 +383,7 @@ struct MultiPaneViewportView: View {
     }
 
     private func applySurfaceSize(pane: Int, size: CGSize) {
+        guard let bridge else { return }
         guard lastSurfacePixelSize[pane] != size else { return }
         // Cache only an accepted size. A render can acquire admission after
         // PaneCanvas measured the view; keeping the desired value separate
@@ -401,7 +414,7 @@ struct MultiPaneViewportView: View {
     @ViewBuilder
     private func paneCell(pane: Int, rect: CGRect) -> some View {
         let isPrimary = pane == primaryPane
-        let isLastRender = bridge.paneContentSource(UInt(pane)).rawValue == 1
+        let isLastRender = bridge?.paneContentSource(UInt(pane)).rawValue == 1
         let image: NSImage? = pane == 0 ? viewModel.renderedImage : viewModel.panePreviewImages[pane]
 
         ZStack(alignment: .top) {
@@ -411,7 +424,8 @@ struct MultiPaneViewportView: View {
                 surfaceDimensionsProvider: { [weak bridge] in
                     bridge?.cameraSurfaceDimensions ?? .zero
                 },
-                onPointerDown: { p in
+                onPointerDown: { [weak bridge] p in
+                    guard let bridge else { return false }
                     guard interactionEnabled && !isLastRender else { return false }
                     let accepted = bridge.onPanePointerDown(UInt(pane), x: Double(p.x), y: Double(p.y))
                     // §7.8 decision 1 / the core's own promotion rule:
@@ -428,18 +442,19 @@ struct MultiPaneViewportView: View {
                     onSelectionMayHaveChanged()
                     return accepted
                 },
-                onPointerMove: { p in
-                    guard interactionEnabled else { return }
+                onPointerMove: { [weak bridge] p in
+                    guard let bridge, interactionEnabled else { return }
                     bridge.onPanePointerMove(UInt(pane), x: Double(p.x), y: Double(p.y))
                     if bridge.gizmoDragActive { gizmoRefreshTrigger &+= 1 }
                 },
-                onPointerUp: { p in
-                    guard interactionEnabled else { return }
+                onPointerUp: { [weak bridge] p in
+                    guard let bridge, interactionEnabled else { return }
                     bridge.onPanePointerUp(UInt(pane), x: Double(p.x), y: Double(p.y))
                     gizmoRefreshTrigger &+= 1
                     onSelectionMayHaveChanged()   // user-review P2#4
                 },
-                onSurfacePixelSizeChanged: { pixelSize in
+                onSurfacePixelSizeChanged: { [weak bridge] pixelSize in
+                    guard let bridge else { return }
                     guard pixelSize.width > 0, pixelSize.height > 0 else { return }
                     // Render the pane at the FILM's aspect ratio, letterboxed
                     // within the cell -- NOT the raw cell aspect.  The gizmo
@@ -538,7 +553,11 @@ struct MultiPaneViewportView: View {
 /// deliberately NOT offered here — §7.2 keeps it a single GLOBAL
 /// toggle in v1, unchanged by N-up.
 private struct PaneChromeStrip: View {
-    let bridge: RISEViewportBridge
+    /// Weak: RenderViewModel owns the live bridge for the whole scene
+    /// lifetime.  A nil read means the scene was torn down and this
+    /// strip is leaving the tree, so it keeps its last-read labels and
+    /// routes nothing.
+    weak var bridge: RISEViewportBridge?
     let pane: Int
     let isPrimary: Bool
     let modes: [ViewportRenderModeInfo]
@@ -574,6 +593,7 @@ private struct PaneChromeStrip: View {
     }
 
     private func refresh() {
+        guard let bridge else { return }
         modeName = bridge.paneRenderMode(UInt(pane))
         contentSource = bridge.paneContentSource(UInt(pane))
         var kind: RISEViewportVantageKind = .sceneCamera
@@ -592,6 +612,7 @@ private struct PaneChromeStrip: View {
     private var modeMenu: some View {
         Menu {
             Button {
+                guard let bridge else { return }
                 let lastRender = RISEViewportPaneContentSource(rawValue: 1)!
                 if bridge.setPaneContentSource(UInt(pane), source: lastRender) {
                     onModeAccepted()
@@ -608,6 +629,7 @@ private struct PaneChromeStrip: View {
             Divider()
             ForEach(modes) { mode in
                 Button {
+                    guard let bridge else { return }
                     if bridge.setPaneRenderMode(UInt(pane), name: mode.name) {
                         onModeAccepted()
                     }
@@ -645,6 +667,7 @@ private struct PaneChromeStrip: View {
     private var vantageMenu: some View {
         Menu {
             Button {
+                guard let bridge else { return }
                 _ = bridge.setPaneVantageSceneCamera(UInt(pane))
                 onChanged()
             } label: {
@@ -654,12 +677,13 @@ private struct PaneChromeStrip: View {
                     Text("Scene Camera")
                 }
             }
-            let sceneCameras = bridge.categoryEntities(.camera)
+            let sceneCameras = bridge?.categoryEntities(.camera) ?? []
             if pane != 0 && !sceneCameras.isEmpty {
                 Divider()
                 Section("Scene Cameras") {
                     ForEach(sceneCameras, id: \.self) { name in
                         Button {
+                            guard let bridge else { return }
                             _ = bridge.setPaneVantageSceneCameraNamed(UInt(pane), name: name)
                             onChanged()
                         } label: {
@@ -672,11 +696,12 @@ private struct PaneChromeStrip: View {
                     }
                 }
             }
-            let names = bridge.namedViewNames
+            let names = bridge?.namedViewNames ?? []
             if !names.isEmpty {
                 Divider()
                 ForEach(names, id: \.self) { name in
                     Button {
+                        guard let bridge else { return }
                         _ = bridge.setPaneVantageNamedView(UInt(pane), name: name)
                         onChanged()
                     } label: {
@@ -691,11 +716,13 @@ private struct PaneChromeStrip: View {
             Divider()
             if vantageKind == .freeFly {
                 Button("Exit Free-Fly") {
+                    guard let bridge else { return }
                     _ = bridge.paneExitFreeFly(UInt(pane))
                     onChanged()
                 }
             } else {
                 Button("Enter Free-Fly") {
+                    guard let bridge else { return }
                     _ = bridge.paneEnterFreeFly(UInt(pane))
                     onChanged()
                 }
@@ -725,7 +752,9 @@ private struct PaneChromeStrip: View {
 /// that text per pane would be redundant chrome for no new
 /// information.
 private struct PaneRefinementPill: View {
-    let bridge: RISEViewportBridge
+    /// Weak — see `PaneChromeStrip.bridge`.  Phase 0 is the pill's
+    /// idle reading, which is what a torn-down scene should show.
+    weak var bridge: RISEViewportBridge?
     let pane: Int
     let modes: [ViewportRenderModeInfo]
 
@@ -754,8 +783,8 @@ private struct PaneRefinementPill: View {
 
     private func currentStatus() -> RefinementStatusFormatter.Status {
         var divisor: UInt32 = 1
-        let phase = bridge.paneRefinementPhase(UInt(pane), scaleDivisor: &divisor)
-        let modeName = bridge.paneRenderMode(UInt(pane))
+        let phase = bridge?.paneRefinementPhase(UInt(pane), scaleDivisor: &divisor) ?? 0
+        let modeName = bridge?.paneRenderMode(UInt(pane)) ?? ""
         let wantsDenoise = modes.first { $0.name == modeName }?.wantsDenoise ?? true
         return RefinementStatusFormatter.status(
             phase: Int(phase),
@@ -809,6 +838,18 @@ private struct PaneCanvas: NSViewRepresentable {
         v.onSurfacePixelSizeChanged = onSurfacePixelSizeChanged
         v.toolCursor = cursor
         v.surfaceDimensionsProvider = surfaceDimensionsProvider
+    }
+
+    static func dismantleNSView(_ nsView: PaneCanvasNSView, coordinator: ()) {
+        // An NSView can outlive this call (AppKit autorelease, a pending
+        // cursor/geometry callback), and every closure below transitively
+        // captures pane state.  Nothing may route an event into a scene
+        // that is going away.
+        nsView.onPointerDown = nil
+        nsView.onPointerMove = nil
+        nsView.onPointerUp = nil
+        nsView.onSurfacePixelSizeChanged = nil
+        nsView.surfaceDimensionsProvider = nil
     }
 }
 

@@ -13,21 +13,16 @@ RISE ASCII SCENE 7
 # Setup a renderer
 ##################################################
 
-advanced_shader
+standard_shader
 {
 	name				global
-	shaderop			DefaultDirectLighting		1		100			+
-	shaderop			DefaultRefraction			1		100			+
-	shaderop			DefaultReflection			1		2			+
-	shaderop			DefaultCausticPelPhotonMap  1		100			+
-	shaderop			DefaultEmission				1		100			+
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator vcm, legacy-deprecation Phase 2).
+vcm_pel_rasterizer
 {
-	samples					1
-	lum_samples				16
-	max_recursion			10
+	samples				64
 }
 
 file_rasterizeroutput
@@ -298,21 +293,6 @@ standard_object
 	geometry			spheregeom
 	position			0.273 0.23	0.2
 	material			glass
-}
-
-caustic_pel_photonmap
-{
-	num					500000
-	max_recursion		5
-	min_importance		0.001
-	branch				TRUE
-	reflect				FALSE
-	refract				TRUE
-}
-
-caustic_pel_gather
-{
-	max_photons			300
 }
 
 

@@ -32,18 +32,12 @@ namespace RISE
 			std::vector<unsigned long>	objptrs;		///< Offsets to specific objects
 			IReadBuffer*				pBuffer;		///< buffer that contains the file
 
-			int ReadName( );
-
 			// Helpful parsing functions
 			bool GetVertices( VerticesListType& vec, unsigned int n );
 			bool GetCoords( TexCoordsListType& vec, unsigned int n );
 			bool GetFaces( IndexTriangleListType& vec, unsigned int n );
 
-			unsigned int ReadVertices( VerticesListType& vec );
-			unsigned int ReadCoords( TexCoordsListType& vec );
-			unsigned int ReadFaces( IndexTriangleListType& vec );
-
-			bool LoadTriangleMesh_GoodObjNum( ITriangleMeshGeometryIndexed* pGeom, int obj, bool bRecenter );
+			bool FindMeshChunk( unsigned int object, unsigned short wanted, unsigned int& payloadSize );
 
 		public:
 			TriangleMeshLoader3DS( IReadBuffer* pBuffer_ );

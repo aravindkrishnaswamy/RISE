@@ -24,7 +24,7 @@
 #include "pch.h"
 #include "ReactionDiffusion.h"
 #include <math.h>
-#include <string.h>
+#include <memory>
 #include <stdlib.h>
 
 using namespace RISE;
@@ -63,10 +63,10 @@ void ReactionDiffusion3D::Simulate()
 	const int n = (int)nGridSize;
 	const int n3 = n * n * n;
 
-	Scalar* U = new Scalar[n3];
-	Scalar* V = new Scalar[n3];
-	Scalar* Unew = new Scalar[n3];
-	Scalar* Vnew = new Scalar[n3];
+	std::unique_ptr<Scalar[]> U( new Scalar[n3] );
+	std::unique_ptr<Scalar[]> V( new Scalar[n3] );
+	std::unique_ptr<Scalar[]> Unew( new Scalar[n3] );
+	std::unique_ptr<Scalar[]> Vnew( new Scalar[n3] );
 
 	// Initialize: U=1 everywhere, V=0 except a seed region
 	for( int i = 0; i < n3; i++ ) {
@@ -138,24 +138,13 @@ void ReactionDiffusion3D::Simulate()
 			}
 		}
 
-		// Swap buffers
-		Scalar* tmpU = U;
-		U = Unew;
-		Unew = tmpU;
-		Scalar* tmpV = V;
-		V = Vnew;
-		Vnew = tmpV;
+		U.swap( Unew );
+		V.swap( Vnew );
 	}
 
-	// Store V as the output grid (V has the patterns)
-	pGrid = new Scalar[n3];
+	// Transfer the final concentration grid to the noise object.
+	pGrid = V.release();
 	GlobalLog()->PrintNew( pGrid, __FILE__, __LINE__, "reaction-diffusion grid" );
-	memcpy( pGrid, V, n3 * sizeof(Scalar) );
-
-	delete [] U;
-	delete [] V;
-	delete [] Unew;
-	delete [] Vnew;
 }
 
 Scalar ReactionDiffusion3D::Evaluate( const Scalar x, const Scalar y, const Scalar z ) const

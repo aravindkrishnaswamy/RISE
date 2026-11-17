@@ -3,10 +3,23 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
-_EXPECTED_API_VERSION = 8
+_EXPECTED_API_VERSION = 18
+
+# Hair colour tiers -- must match `enum rise_blender_hair_tier` in
+# rise_blender_bridge.h.  The exporter's HairMaterialData.tier is the
+# string form; this maps it onto the ABI's int.
+HAIR_TIER_MELANIN = 0
+HAIR_TIER_SIGMA_A = 1
+HAIR_TIER_COLOR = 2
+
+_HAIR_TIER_BY_NAME = {
+    "melanin": HAIR_TIER_MELANIN,
+    "sigma_a": HAIR_TIER_SIGMA_A,
+    "color": HAIR_TIER_COLOR,
+}
 
 
 class BridgeError(RuntimeError):
@@ -32,6 +45,10 @@ class RenderImage:
     is_auto: bool = False
     resolved_integrator: str = ""
     resolve_reason: str = ""
+    # ABI v9: non-fatal diagnostics from a render that still produced an
+    # image (e.g. one groom whose .hair file went missing).  engine.py
+    # reports these as Blender WARNINGs, alongside the exporter's own.
+    warnings: list[str] = field(default_factory=list)
 
 
 class _Camera(ctypes.Structure):
@@ -93,6 +110,8 @@ class _Modifier(ctypes.Structure):
         ("source_painter_name", ctypes.c_char_p),
         ("scale", ctypes.c_float),
         ("window", ctypes.c_float),
+        # ABI v11 -- MODIFIER_BUMP only; see bridge .h.
+        ("normalize", ctypes.c_int),
     ]
 
 
@@ -119,6 +138,39 @@ class _Material(ctypes.Structure):
         ("anisotropy_factor_painter_name", ctypes.c_char_p),
         ("anisotropy_rotation_painter_name", ctypes.c_char_p),
         ("emissive_scale", ctypes.c_double),
+        # ABI v12 (DL-18, docs/DEBT_LEDGER.md; source heading
+        # CLOTH_FABRIC_DESIGN.md §15 item 13) -- see rise_blender_bridge.h.
+        ("sheen_color_painter_name", ctypes.c_char_p),
+        ("sheen_roughness", ctypes.c_double),
+        ("sheen_roughness_texture_painter_name", ctypes.c_char_p),
+        # ABI v13 (DL-186, docs/DEBT_LEDGER.md) -- see rise_blender_bridge.h.
+        ("coat_weight_texture_painter_name", ctypes.c_char_p),
+        ("coat_weight", ctypes.c_double),
+        ("coat_tint_painter_name", ctypes.c_char_p),
+        ("coat_roughness_texture_painter_name", ctypes.c_char_p),
+        ("coat_roughness", ctypes.c_double),
+        ("coat_ior", ctypes.c_double),
+        ("subsurface_absorption", ctypes.c_char_p),
+        ("subsurface_scattering", ctypes.c_char_p),
+        ("subsurface_ior", ctypes.c_double),
+        ("subsurface_g", ctypes.c_double),
+        ("subsurface_roughness", ctypes.c_double),
+        # ABI v14 (DL-192, docs/DEBT_LEDGER.md) -- see rise_blender_bridge.h.
+        ("coat_normal_painter_name", ctypes.c_char_p),
+        ("coat_normal_scale", ctypes.c_double),
+        # ABI v14 (DL-193, docs/DEBT_LEDGER.md) -- see rise_blender_bridge.h.
+        ("alpha", ctypes.c_double),
+        ("alpha_texture_painter_name", ctypes.c_char_p),
+        ("alpha_mode", ctypes.c_int),
+        ("alpha_threshold", ctypes.c_double),
+        # ABI v18: Principled thin film + transmission dispersion.
+        ("thin_film_thickness", ctypes.c_double),
+        ("thin_film_ior", ctypes.c_double),
+        ("thin_film_conductor", ctypes.c_int),
+        ("thin_film_dielectric_ior", ctypes.c_double),
+        ("thin_film_metal_f0", ctypes.c_double * 3),
+        ("thin_film_metal_tint", ctypes.c_double * 3),
+        ("dispersion_abbe", ctypes.c_double),
     ]
 
 
@@ -137,6 +189,9 @@ class _Mesh(ctypes.Structure):
         ("num_triangles", ctypes.c_uint32),
         ("double_sided", ctypes.c_int),
         ("use_face_normals", ctypes.c_int),
+        ("tangent_attribute", ctypes.POINTER(ctypes.c_float)),
+        ("num_tangents", ctypes.c_uint32),
+        ("tangent_is_shader_direction", ctypes.c_uint32),
     ]
 
 
@@ -151,6 +206,8 @@ class _Object(ctypes.Structure):
         ("visible", ctypes.c_int),
         ("modifier_name", ctypes.c_char_p),
         ("interior_medium_name", ctypes.c_char_p),
+        # ABI v14 (DL-193, docs/DEBT_LEDGER.md) -- see rise_blender_bridge.h.
+        ("shader_name", ctypes.c_char_p),
     ]
 
 
@@ -183,6 +240,55 @@ class _Medium(ctypes.Structure):
     ]
 
 
+class _HairMaterial(ctypes.Structure):
+    # Must match `rise_blender_hair_material` in rise_blender_bridge.h,
+    # field for field and in order.  Note the deliberate asymmetry with
+    # _Material: only the `color` tier is a painter NAME (it is a real
+    # IPainter slot on the RISE side); every other hair parameter is an
+    # IScalarPainter slot, so the numbers travel directly and the native
+    # side formats them as inline literals.
+    #
+    # ABI v10 carves out three exceptions, appended at the end: a
+    # Roughness / Radial Roughness / IOR map CAN be sent, as the name of
+    # an ordinary colour painter, and the native side wraps it into an
+    # IScalarPainter (PainterChannelScalarPainter, channel R) registered
+    # under a derived name before calling AddHairMaterial.  Empty / None
+    # means "use the numeric field", which is the common case.
+    # `sigma_a` / `eumelanin` / `pheomelanin` / `alpha_degrees` stay
+    # numeric-only -- see the header's comment for why.
+    _fields_ = [
+        ("name", ctypes.c_char_p),
+        ("tier", ctypes.c_int),
+        ("color_painter_name", ctypes.c_char_p),
+        ("sigma_a", ctypes.c_float * 3),
+        ("eumelanin", ctypes.c_float),
+        ("pheomelanin", ctypes.c_float),
+        ("apply_melanin_parity_rescale", ctypes.c_int),
+        ("beta_m", ctypes.c_float),
+        ("beta_n", ctypes.c_float),
+        ("alpha_degrees", ctypes.c_float),
+        ("ior", ctypes.c_float),
+        ("beta_m_texture_painter_name", ctypes.c_char_p),
+        ("beta_n_texture_painter_name", ctypes.c_char_p),
+        ("ior_texture_painter_name", ctypes.c_char_p),
+    ]
+
+
+class _HairObject(ctypes.Structure):
+    # Must match `rise_blender_hair_object` in rise_blender_bridge.h.
+    _fields_ = [
+        ("name", ctypes.c_char_p),
+        ("file_path", ctypes.c_char_p),
+        ("material_name", ctypes.c_char_p),
+        ("transform", ctypes.c_float * 16),
+        ("width_root_scale", ctypes.c_float),
+        ("width_tip_scale", ctypes.c_float),
+        ("casts_shadows", ctypes.c_int),
+        ("receives_shadows", ctypes.c_int),
+        ("visible", ctypes.c_int),
+    ]
+
+
 class _RenderSettings(ctypes.Structure):
     _fields_ = [
         ("width", ctypes.c_uint32),
@@ -206,6 +312,7 @@ class _RenderSettings(ctypes.Structure):
         ("sms_use_levenberg_marquardt", ctypes.c_int),
         ("sms_seeding_mode", ctypes.c_uint32),
         ("sms_target_bounces", ctypes.c_uint32),
+        ("sms_extended", ctypes.c_int),  # ABI v17
         ("adaptive_max_samples", ctypes.c_uint32),
         ("adaptive_threshold", ctypes.c_float),
         ("adaptive_show_map", ctypes.c_int),
@@ -286,6 +393,12 @@ class _Scene(ctypes.Structure):
         ("world_radiance_scale", ctypes.c_float),
         ("world_radiance_orientation", ctypes.c_float * 3),
         ("world_radiance_is_background", ctypes.c_int),
+        # ABI v9 — hair/fur grooms, appended at the end of the struct
+        # so every field above keeps its v8 offset.
+        ("hair_materials", ctypes.POINTER(_HairMaterial)),
+        ("hair_objects", ctypes.POINTER(_HairObject)),
+        ("num_hair_materials", ctypes.c_uint32),
+        ("num_hair_objects", ctypes.c_uint32),
     ]
 
 
@@ -307,6 +420,9 @@ class _RenderResult(ctypes.Structure):
         ("is_auto", ctypes.c_int),
         ("resolved_integrator", ctypes.c_char * 16),
         ("resolve_reason", ctypes.c_char * 256),
+        # ABI v9 — newline-separated non-fatal warnings from a render
+        # that still succeeded.
+        ("warnings", ctypes.c_char * 2048),
     ]
 
 
@@ -326,6 +442,30 @@ _IMAGE_CALLBACK = ctypes.CFUNCTYPE(
 _LOADED_LIBRARY = None
 _LOADED_PATH = None
 _LOADED_CAPABILITIES = None
+
+
+RASTERIZER_KIND_PIXELPEL = 0   # RISE_BLENDER_RASTERIZER_PIXELPEL
+RASTERIZER_KIND_PT_PEL = 1     # RISE_BLENDER_RASTERIZER_PT_PEL
+
+
+def resolve_rasterizer_selection(rasterizer_type, use_path_tracing) -> tuple[int, bool]:
+    """Map the add-on's `rasterizer_type` enum + the back-compat
+    `use_path_tracing` box to the ABI's (rasterizer_kind, use_path_tracing).
+
+    The native bridge reads kind 0 (PIXELPEL) as the ABI-v4 "pick by the
+    use_path_tracing boolean" value (rise_blender_bridge.cpp: kind 0 +
+    use_path_tracing -> PT_PEL).  That boolean defaults to True and the
+    panel does not draw it, so an EXPLICIT "Pixel Rasterizer [legacy]"
+    choice used to render with the path tracer.  An explicit choice of
+    kind 0 therefore sends use_path_tracing False, which makes the native
+    side honour it.  Every other kind ignores the boolean natively, so it
+    is passed through unchanged (and a .blend that never chose kind 0
+    exports exactly as before).  ABI unchanged.
+    """
+    kind = int(rasterizer_type if rasterizer_type not in (None, "") else RASTERIZER_KIND_PT_PEL)
+    if kind == RASTERIZER_KIND_PIXELPEL:
+        return kind, False
+    return kind, bool(use_path_tracing)
 
 
 def _bridge_filenames():
@@ -455,6 +595,14 @@ class _SceneHandle:
         self.objects = self._marshal_array(scene.objects, _Object, self._marshal_object)
         self.lights = self._marshal_array(scene.lights, _Light, self._marshal_light)
         self.mediums = self._marshal_array(scene.mediums, _Medium, self._marshal_medium)
+        # ABI v9 — hair/fur.  `getattr` with an empty default keeps this
+        # tolerant of a SceneData built by an older exporter module
+        # during a live add-on reload, matching the pattern the v5/v6/v7
+        # field additions above use.
+        hair_materials = list(getattr(scene, "hair_materials", ()) or ())
+        hair_objects = list(getattr(scene, "hair_objects", ()) or ())
+        self.hair_materials = self._marshal_array(hair_materials, _HairMaterial, self._marshal_hair_material)
+        self.hair_objects = self._marshal_array(hair_objects, _HairObject, self._marshal_hair_object)
         self.settings = self._marshal_settings(settings)
 
         self.scene = _Scene()
@@ -482,6 +630,10 @@ class _SceneHandle:
         radiance_orientation = getattr(scene, "world_radiance_orientation", (0.0, 0.0, 0.0))
         self.scene.world_radiance_orientation = (ctypes.c_float * 3)(*radiance_orientation)
         self.scene.world_radiance_is_background = int(getattr(scene, "world_radiance_is_background", 1))
+        self.scene.hair_materials = self.hair_materials
+        self.scene.hair_objects = self.hair_objects
+        self.scene.num_hair_materials = len(hair_materials)
+        self.scene.num_hair_objects = len(hair_objects)
 
     def _cstring(self, value: str | None):
         if value is None:
@@ -574,6 +726,10 @@ class _SceneHandle:
         payload.source_painter_name = self._cstring(modifier.source_painter_name)
         payload.scale = float(modifier.scale)
         payload.window = float(modifier.window)
+        # ABI v11 -- `getattr` with a False default keeps this tolerant of a
+        # ModifierData built by an older exporter module during a live
+        # add-on reload, matching the v6/v9 field-addition pattern above.
+        payload.normalize = int(bool(getattr(modifier, "normalize", False)))
         return payload
 
     def _marshal_material(self, material):
@@ -598,6 +754,49 @@ class _SceneHandle:
         payload.anisotropy_factor_painter_name = self._cstring(getattr(material, "anisotropy_factor_painter_name", None))
         payload.anisotropy_rotation_painter_name = self._cstring(getattr(material, "anisotropy_rotation_painter_name", None))
         payload.emissive_scale = float(getattr(material, "emissive_scale", 0.0))
+        # ABI v12 -- `getattr` with a None/0.0 default keeps this tolerant
+        # of a MaterialData built by an older exporter module during a
+        # live add-on reload, matching the v10/v11 field-addition pattern
+        # above (DL-18, docs/DEBT_LEDGER.md).
+        payload.sheen_color_painter_name = self._cstring(getattr(material, "sheen_color_painter_name", None))
+        payload.sheen_roughness = float(getattr(material, "sheen_roughness", 0.0))
+        payload.sheen_roughness_texture_painter_name = self._cstring(
+            getattr(material, "sheen_roughness_texture_painter_name", None)
+        )
+        # ABI v13 -- same `getattr` tolerance pattern as v10/v11/v12
+        # above (DL-186, docs/DEBT_LEDGER.md).
+        payload.coat_weight_texture_painter_name = self._cstring(
+            getattr(material, "coat_weight_texture_painter_name", None)
+        )
+        payload.coat_weight = float(getattr(material, "coat_weight", 0.0))
+        payload.coat_tint_painter_name = self._cstring(getattr(material, "coat_tint_painter_name", None))
+        payload.coat_roughness_texture_painter_name = self._cstring(
+            getattr(material, "coat_roughness_texture_painter_name", None)
+        )
+        payload.coat_roughness = float(getattr(material, "coat_roughness", 0.03))
+        payload.coat_ior = float(getattr(material, "coat_ior", 1.5))
+        payload.subsurface_absorption = self._cstring(getattr(material, "subsurface_absorption", None))
+        payload.subsurface_scattering = self._cstring(getattr(material, "subsurface_scattering", None))
+        payload.subsurface_ior = float(getattr(material, "subsurface_ior", 1.4))
+        payload.subsurface_g = float(getattr(material, "subsurface_g", 0.0))
+        payload.subsurface_roughness = float(getattr(material, "subsurface_roughness", 0.0))
+        # ABI v14 -- same `getattr` tolerance pattern as v10-v13 above
+        # (DL-192/DL-193, docs/DEBT_LEDGER.md).
+        payload.coat_normal_painter_name = self._cstring(getattr(material, "coat_normal_painter_name", None))
+        payload.coat_normal_scale = float(getattr(material, "coat_normal_scale", 1.0))
+        payload.alpha = float(getattr(material, "alpha", 1.0))
+        payload.alpha_texture_painter_name = self._cstring(getattr(material, "alpha_texture_painter_name", None))
+        payload.alpha_mode = int(getattr(material, "alpha_mode", 0))
+        payload.alpha_threshold = float(getattr(material, "alpha_threshold", 0.5))
+        # ABI v18 -- same `getattr` tolerance pattern as v10-v14 above.
+        payload.thin_film_thickness = float(getattr(material, "thin_film_thickness", 0.0))
+        payload.thin_film_ior = float(getattr(material, "thin_film_ior", 1.33))
+        payload.thin_film_conductor = int(bool(getattr(material, "thin_film_conductor", False)))
+        payload.thin_film_dielectric_ior = float(getattr(material, "thin_film_dielectric_ior", 1.5))
+        for attribute in ("thin_film_metal_f0", "thin_film_metal_tint"):
+            values = tuple(getattr(material, attribute, (1.0, 1.0, 1.0)))
+            setattr(payload, attribute, (ctypes.c_double * 3)(*(float(v) for v in values[:3])))
+        payload.dispersion_abbe = float(getattr(material, "dispersion_abbe", 0.0))
         return payload
 
     def _marshal_mesh(self, mesh):
@@ -615,6 +814,10 @@ class _SceneHandle:
         payload.num_triangles = int(mesh.num_triangles)
         payload.double_sided = int(mesh.double_sided)
         payload.use_face_normals = int(mesh.use_face_normals)
+        tangents = getattr(mesh, "tangent_attribute", [])
+        payload.tangent_attribute = self._float_pointer(tangents)
+        payload.num_tangents = len(tangents) // 4
+        payload.tangent_is_shader_direction = int(getattr(mesh, "tangent_is_shader_direction", False))
         return payload
 
     def _marshal_object(self, obj):
@@ -628,6 +831,8 @@ class _SceneHandle:
         payload.visible = int(obj.visible)
         payload.modifier_name = self._cstring(obj.modifier_name)
         payload.interior_medium_name = self._cstring(obj.interior_medium_name)
+        # ABI v14 -- same `getattr` tolerance pattern as above (DL-193).
+        payload.shader_name = self._cstring(getattr(obj, "shader_name", None))
         return payload
 
     def _marshal_light(self, light):
@@ -657,6 +862,63 @@ class _SceneHandle:
         payload.bbox_max = (ctypes.c_float * 3)(*medium.bbox_max)
         return payload
 
+    def _marshal_hair_material(self, material):
+        payload = _HairMaterial()
+        payload.name = self._cstring(material.name)
+        tier_name = str(getattr(material, "tier", "melanin")).lower()
+        if tier_name not in _HAIR_TIER_BY_NAME:
+            # An unknown tier string can only come from an exporter /
+            # bridge version skew.  Send it through as an out-of-range
+            # int rather than guessing a tier: the native side then
+            # skips that one material with a named warning instead of
+            # silently rendering the wrong colour model.
+            payload.tier = -1
+        else:
+            payload.tier = _HAIR_TIER_BY_NAME[tier_name]
+        payload.color_painter_name = self._cstring(getattr(material, "color_painter_name", None))
+        payload.sigma_a = (ctypes.c_float * 3)(*getattr(material, "sigma_a", (0.0, 0.0, 0.0)))
+        payload.eumelanin = float(getattr(material, "eumelanin", 0.0))
+        payload.pheomelanin = float(getattr(material, "pheomelanin", 0.0))
+        # Blender-visual-parity rescale of the two melanin
+        # concentrations, applied natively.  ON unless the material
+        # explicitly opts out -- see the constant block in
+        # rise_blender_bridge.cpp and the hair section of
+        # docs/BLENDER_MATERIAL_TRANSLATION.md.
+        payload.apply_melanin_parity_rescale = int(
+            bool(getattr(material, "apply_melanin_parity_rescale", True))
+        )
+        payload.beta_m = float(getattr(material, "beta_m", 0.3))
+        payload.beta_n = float(getattr(material, "beta_n", 0.3))
+        payload.alpha_degrees = float(getattr(material, "alpha_degrees", 2.0))
+        payload.ior = float(getattr(material, "ior", 1.55))
+        # ABI v10 -- optional texture drivers for three of the scalar
+        # slots.  `_cstring(None)` is a NULL pointer, which the native
+        # side reads as "no texture bound, use the number above"; the
+        # exporter only sets these when a real texture chain resolved.
+        payload.beta_m_texture_painter_name = self._cstring(
+            getattr(material, "beta_m_texture_painter_name", None)
+        )
+        payload.beta_n_texture_painter_name = self._cstring(
+            getattr(material, "beta_n_texture_painter_name", None)
+        )
+        payload.ior_texture_painter_name = self._cstring(
+            getattr(material, "ior_texture_painter_name", None)
+        )
+        return payload
+
+    def _marshal_hair_object(self, obj):
+        payload = _HairObject()
+        payload.name = self._cstring(obj.name)
+        payload.file_path = self._cstring(obj.file_path)
+        payload.material_name = self._cstring(obj.material_name)
+        payload.transform = (ctypes.c_float * 16)(*obj.transform)
+        payload.width_root_scale = float(getattr(obj, "width_root_scale", 1.0))
+        payload.width_tip_scale = float(getattr(obj, "width_tip_scale", 1.0))
+        payload.casts_shadows = int(getattr(obj, "casts_shadows", True))
+        payload.receives_shadows = int(getattr(obj, "receives_shadows", True))
+        payload.visible = int(getattr(obj, "visible", True))
+        return payload
+
     def _marshal_settings(self, settings):
         payload = _RenderSettings()
         payload.width = int(settings.width)
@@ -680,6 +942,7 @@ class _SceneHandle:
         payload.sms_use_levenberg_marquardt = int(settings.sms_use_levenberg_marquardt)
         payload.sms_seeding_mode = int(settings.sms_seeding_mode)
         payload.sms_target_bounces = int(settings.sms_target_bounces)
+        payload.sms_extended = int(settings.sms_extended)
         payload.adaptive_max_samples = int(settings.adaptive_max_samples)
         payload.adaptive_threshold = float(settings.adaptive_threshold)
         payload.adaptive_show_map = int(settings.adaptive_show_map)
@@ -735,6 +998,21 @@ class _SceneHandle:
         return payload
 
 
+def _decode_bridge_warnings(result) -> list[str]:
+    """Split the ABI v9 `warnings` buffer into individual messages.
+
+    The native side packs non-fatal diagnostics newline-separated into a
+    fixed buffer (empty when there's nothing to report).  Kept a
+    module-level function, not a closure, so the marshalling tests can
+    exercise it against a hand-built `_RenderResult`."""
+
+    raw = getattr(result, "warnings", b"")
+    if not raw:
+        return []
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+    return [line for line in (part.strip() for part in text.split("\n")) if line]
+
+
 def render_scene(scene, settings, bridge_path: str | None = None, progress=None, image_update=None) -> RenderImage:
     library = _load_library(bridge_path)
     handle = _SceneHandle(scene, settings)
@@ -786,9 +1064,11 @@ def render_scene(scene, settings, bridge_path: str | None = None, progress=None,
         raise BridgeError(message)
 
     try:
+        warnings = _decode_bridge_warnings(result)
+
         value_count = int(result.width) * int(result.height) * 4
         if value_count == 0:
-            return RenderImage(width=0, height=0, rgba=[])
+            return RenderImage(width=0, height=0, rgba=[], warnings=warnings)
 
         array_type = ctypes.c_float * value_count
         rgba = list(ctypes.cast(result.rgba, ctypes.POINTER(array_type)).contents)
@@ -797,6 +1077,7 @@ def render_scene(scene, settings, bridge_path: str | None = None, progress=None,
             is_auto=bool(result.is_auto),
             resolved_integrator=result.resolved_integrator.decode("utf-8", "replace"),
             resolve_reason=result.resolve_reason.decode("utf-8", "replace"),
+            warnings=warnings,
         )
     finally:
         library.rise_blender_free_render_result(ctypes.byref(result))

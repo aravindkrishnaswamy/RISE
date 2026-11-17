@@ -262,7 +262,9 @@ which sidesteps the wall. This makes the **SDF benchmark potentially load-bearin
 
 **P0-C — SDF cost-profile probe (measured) + a blocker for the swept-V benchmark.** Two findings:
 1. **No periodic/swept SDF primitive exists today.** `SDFGeometry::ParsePartLines`
-   (`SDFGeometry.cpp:1262`) implements only `sphere|box|roundbox|cylinder|torus|capsule|roundcone`;
+   implements only `sphere|box|roundbox|cylinder|torus|capsule|roundcone|superellipsoid`
+   (the last added 2026-08-18 by arc-85 candidate C6 — a Barr superquadric, still a closed
+   convex blob, so it does not change this finding);
    (`gyroid`/`menger` were never wired anywhere — they appeared only in the unrelated
    `sdf3d_painter` `type` enum, whose backing `SDFPrimitiveType` has just
    sphere/box/torus/cylinder; that stale advertisement was removed 2026-07-29.) A faithful
@@ -345,7 +347,8 @@ authentic fine pitch, the SDF is the production path. The output is a **table of
 ## 10. The SDF realization (ground truth — ELEVATED, built now)
 
 We already ship `sdf_geometry` (sphere-tracer), but **Phase-0 P0-C found it has no periodic/swept
-primitive** — `ParsePartLines` implements only sphere/box/roundbox/cylinder/torus/capsule/roundcone, so
+primitive** — `ParsePartLines` implements only sphere/box/roundbox/cylinder/torus/capsule/roundcone/
+superellipsoid (the last added 2026-08-18, arc-85 C6; a closed convex blob, so the gap stands), so
 **Phase-3c's first task is a new swept-V / periodic SDF part**: the dial as **flat base − swept-V cutter
 volume** along the kinematic loci (exact sharp V, arbitrary fine pitch, no tessellation limit). It wires
 through `SDFGeometry` + `ParsePartLines` + the 5 build projects, and reuses the analytic-distance

@@ -111,7 +111,8 @@ namespace RISE
 		//! Tier 1 §3 animation refit support.  Replace vertex / normal
 		//! arrays in place (count must match the existing arrays —
 		//! topology preserved) and refit the BVH bottom-up.  Returns
-		//! the BVH refit duration in ms; 0 on size mismatch.
+		//! the BVH refit duration in ms (never less than 1 on success); 0 on
+		//! size mismatch / no BVH.
 		//!
 		//! Caller must ensure this is invoked between frames, never
 		//! concurrent with intersection.  See
@@ -203,6 +204,16 @@ namespace RISE
 		/// \return The secondary-UV array; may be empty.
 		virtual TexCoordsListType const& getTexCoords1() const = 0;
 	};
+    //! Independent shader direction: drives anisotropy, never UV normal decode.
+    //! Store full object-local socket vectors, including their normal component.
+    //! Object/CSG promote; modifiers reproject RAW vectors against current N.
+    //! Separate sub-interface preserves every v1/v2/v3 virtual layout.
+    class ITriangleMeshGeometryIndexed4 : public virtual ITriangleMeshGeometryIndexed3
+    {
+    public:
+        virtual void AddShaderDirection(const Vector3& direction) = 0;
+    };
+
 }
 
 #endif

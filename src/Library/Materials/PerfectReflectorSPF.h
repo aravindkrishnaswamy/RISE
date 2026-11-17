@@ -45,7 +45,7 @@ namespace RISE
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack
-				) const
+				) const override
 			{
 				SpecularInfo info;
 				info.isSpecular = true;
@@ -55,7 +55,19 @@ namespace RISE
 				// applies the mirror's actual colour.  Without this, the SMS
 				// reflective-caustic path multiplied by the default white
 				// (1,1,1) and lost the orange tint of e.g. a metallic ring.
-				info.attenuation = pReflectivity->GetColor( ri );
+				info.attenuation = ReflectanceColor( *pReflectivity, ri );
+				info.valid = true;
+				return info;
+			}
+
+			SpecularInfo GetSpecularInfoNM(
+				const RayIntersectionGeometric& ri, const IORStack& ior_stack,
+				const Scalar nm ) const override
+			{
+				SpecularInfo info;
+				info.isSpecular = true;
+				info.canRefract = false;
+				info.attenuationNM = ReflectanceColorNM( *pReflectivity, ri, nm );
 				info.valid = true;
 				return info;
 			}
@@ -66,8 +78,8 @@ namespace RISE
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
-				) const;
+				const IORStack& ior_stack								///< [in] Index of refraction stack
+				) const override;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors which taking into
@@ -77,14 +89,18 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
-				) const;
+				const IORStack& ior_stack								///< [in] Index of refraction stack
+				) const override;
 
 			//! Returns the PDF for sampling the given outgoing direction (always 0 for delta distributions)
-			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack& ior_stack ) const;
+			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack& ior_stack ) const override;
+			//! DL-24 review P1-1: the reflect/refract lobe weights are a deterministic
+			//! function of the query (warps keep each lobe on its side; wrong-side
+			//! lobes are re-derived, never dropped at random).
+			bool SelectionMassIsDeterministic( const RayIntersectionGeometric&, const Scalar ) const override { return true; }
 
 			//! Returns the spectral PDF for sampling the given outgoing direction (always 0 for delta distributions)
-			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const;
+			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const override;
 		};
 	}
 }

@@ -51,6 +51,28 @@ namespace RISE
 	// transfers to the caller; when the returned vector goes out of
 	// scope all parsers are destroyed.
 	[[nodiscard]] std::vector<ChunkParserEntry> CreateAllChunkParsers();
+
+	// Legacy-deprecation Phase 1 (2026-10-09): a deprecated keyword ALIAS that
+	// shares its descriptor with a SUPPORTED canonical keyword (today only
+	// `mis_pathtracing_shaderop` -> `pathtracing_shaderop`) cannot carry the
+	// descriptor flag, so DeriveToJob asks here by DISPATCH keyword.  Returns the
+	// replacement hint, or nullptr for every other keyword.
+	[[nodiscard]] const char* DeprecatedChunkAliasReplacement( const std::string& keyword );
+
+	namespace Implementation
+	{
+		namespace ChunkParsers
+		{
+			// The `hair_geometry` grow-mode-only parameter list -- the
+			// production source of truth `HairGeometryAsciiChunkParser::
+			// Finalize` (ChunkParserRegistry.cpp) refuses in `file` mode.
+			// Declared here (residual wave 2 item C, 2026-08-27) so a test
+			// can assert against the REAL list instead of maintaining its
+			// own byte-copied mirror that could silently drift from it --
+			// see HairFileImportTest.cpp's drift guard.
+			const char* const* HairGeometryGrowOnlyParameters( unsigned int& n );
+		}
+	}
 }
 
 #endif

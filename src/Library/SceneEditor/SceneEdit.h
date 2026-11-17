@@ -19,6 +19,7 @@
 
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/RString.h"
+#include <string>
 #include "../Interfaces/ITransformable.h"
 
 namespace RISE
@@ -148,6 +149,24 @@ namespace RISE
 			//! run — interior_medium swap is a pointer change that
 			//! doesn't invalidate spatial structure.
 			SetObjectInteriorMedium,
+			//! doc 89 slice C: set (or clear) the object's LOCAL mirror
+			//! axis.  `propertyValue` is "x" / "y" / "z", or "none" (or
+			//! empty) to clear it; anything else is refused by
+			//! `Job::SetObjectMirror` with a diagnostic naming the
+			//! accepted set.  `prevPropertyValue` captures the axis the
+			//! object currently carries, in the SAME spelling, so undo
+			//! round-trips through the identical path -- there is no
+			//! reverse-lookup to fail, unlike the binding ops.
+			//!
+			//! A TRANSFORM in effect (it changes the object's world
+			//! matrix and bounding box, hence OpNeedsSpatialRebuild
+			//! below) but NOT an IsObjectTransformOp: those commit to
+			//! the `matrix` param at the composite boundary, whereas
+			//! `mirror` is its own standard_object param and routes
+			//! per-op like a binding.  Legal on a CONTAINER, which is
+			//! why it is not one of the binding ops the container gate
+			//! refuses.
+			SetObjectMirror,
 
 			// Camera (objectName ignored)
 			SetCameraTransform,     ///< v3a = pos, v3b = look-at
@@ -299,6 +318,128 @@ namespace RISE
 			//! active rasterizer restored over it).
 			AgentRemoveChunk,
 
+			//! R1a (2026-08-09, batched remove_chunks): an AGENT-originated BATCH chunk REMOVE
+			//! (SceneEditController::ApplyAgentRemoveChunks), pushed AFTER the mutation has already landed via
+			//! Job::ApplyCstRemoveChunks -- the SAME "forward already happened outside SceneEditor::Apply"
+			//! shape AgentRemoveChunk uses.  ONE of these records the WHOLE batch, so a single Cmd-Z restores
+			//! every removed chunk (the point of the verb: one head bump, one undo step).
+			//!
+			//! FIELD USE (deliberately reuses AgentRemoveChunk's own carriers rather than adding batch-only
+			//! members to every SceneEdit ever pushed):
+			//!   * `propertyValue`     = the BYTE-EXACT serialization (Cst::SerializeCst) of the retained
+			//!                           Document as it stood immediately BEFORE the batch erase.  Undo =
+			//!                           Job::ApplyCstReplaceDocumentText on exactly these bytes.  See that
+			//!                           virtual's doc for WHY the batch restores the whole document instead
+			//!                           of replaying N ApplyCstRestoreChunkAt splices: for ADJACENT targets
+			//!                           the per-chunk (bytes, index) record is not even well defined, since
+			//!                           Cst::DocEraseChunkTidy's trailing-separator collapse for chunk i
+			//!                           depends on whether chunk i+1 is still present -- which in a batch it
+			//!                           may not be.  Wholesale restore is byte-exact by construction for ANY
+			//!                           target set, and undo is LIFO so these bytes ARE the state the
+			//!                           immediately-preceding operation started from.
+			//!   * `prevPropertyValue` = the REDO descriptor: one line per removed target, `kind\tname`
+			//!                           ('\t' separator, '\n' between lines; an empty `kind` field means "no
+			//!                           kind narrowing", exactly as a null `kind` does at the Job call).
+			//!                           Redo re-runs Job::ApplyCstRemoveChunks over these -- deterministic
+			//!                           for the same reason AgentRemoveChunk's redo-by-name is: Undo restored
+			//!                           the pre-batch Document byte-identically first.
+			//!   * `objectName`        = a DISPLAY-ONLY comma-joined target list (logs); NOT an addressable
+			//!                           entity name, which is why `cstEntityKind` is left EMPTY -- that
+			//!                           routes MarkCstHeadDirty to its boolean CST-head channel rather than
+			//!                           inventing a per-entity dirty mark for a name that resolves to nothing.
+			//!   * `agentChunkWasRasterizer` = true iff ANY removed chunk was a `*_rasterizer` -- Undo passes
+			//!                           the inverse as ApplyCstReplaceDocumentText's `restoreActiveRasterizer`,
+			//!                           the SAME P1-B rasterizer-activation rule AgentRemoveChunk applies.
+			//!   * `agentChunkIndex`   = UNUSED (a batch has no single index); left at its default.
+			AgentRemoveChunks,
+
+			//! R2 (2026-08-10, replace_geometry_scaffold): an AGENT-originated COMPOSITE geometry
+			//! replacement (SceneEditController::ApplyAgentReplaceGeometry), pushed AFTER the mutation has
+			//! already landed via Job::ApplyCstReplaceDocumentText -- the SAME "forward already happened
+			//! outside SceneEditor::Apply" shape AgentRemoveChunk / AgentRemoveChunks use.  ONE of these
+			//! records the WHOLE composite (new scaffold chunks spliced in + the target object's `geometry`
+			//! slot rebound + the orphaned old geometry chunk erased), so a single Cmd-Z restores the
+			//! byte-exact pre-call document -- the point of the verb.
+			//!
+			//! FIELD USE (deliberately reuses AgentRemoveChunks' own carriers -- see that op's doc for the
+			//! no-batch-only-members rationale; the ONE difference is that BOTH directions are a whole-
+			//! document text swap, because the forward mutation is itself a whole-document swap and there is
+			//! no by-name verb to replay):
+			//!   * `propertyValue`     = the BYTE-EXACT serialization (Cst::SerializeCst) of the retained
+			//!                           Document as it stood immediately BEFORE the composite.  Undo =
+			//!                           Job::ApplyCstReplaceDocumentText on exactly these bytes.
+			//!   * `prevPropertyValue` = the BYTE-EXACT candidate document the forward commit installed.
+			//!                           Redo = Job::ApplyCstReplaceDocumentText on exactly these bytes.
+			//!                           Recording the POST text (rather than replaying the verb by name)
+			//!                           is what makes Redo byte-exact AND independent of the scaffold
+			//!                           generator: a Redo can never re-jitter, re-resolve, or re-collide.
+			//!   * `objectName`        = the rebound `standard_object`'s name; `cstEntityKind` =
+			//!                           "standard_object", so MarkCstHeadDirty routes it to that entity's
+			//!                           own channel exactly as the forward commit does.
+			//!   * `agentChunkWasRasterizer` = ALWAYS false: this verb never creates or erases a
+			//!                           `*_rasterizer` chunk (its candidate differs from the head only by
+			//!                           geometry/painter/function chunks and one `geometry` param value),
+			//!                           so the document's last-wins rasterizer activation is invariant
+			//!                           across the composite and the pre-swap active rasterizer is
+			//!                           correctly restored in BOTH directions.
+			//!   * `agentChunkIndex`   = UNUSED (a whole-document swap has no single index).
+			AgentReplaceGeometry,
+
+			//! doc-88 Phase 3 S20 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): the node-graph canvas's
+			//! POSITIONED Duplicate-node fork (SceneEditController::DuplicateGraphNode), pushed AFTER the
+			//! mutation has already landed via Job::ApplyCstReplaceDocumentText -- the SAME "forward already
+			//! happened outside SceneEditor::Apply" shape AgentRemoveChunks / AgentReplaceGeometry use, and
+			//! routed through the SAME whole-document prior/post text swap
+			//! (SceneEditor::RouteAgentDocumentSwap_).
+			//!
+			//! WHY NOT AgentInsertChunk, which is also "a chunk appeared".  That op's REDO replays through
+			//! Job::ApplyCstInsertChunk, whose TIER heuristic picks the position itself -- so a redo of a
+			//! POSITIONED insert would put the copy somewhere other than the forward commit did, and its
+			//! Undo (ApplyCstRemoveItemsAt at a recorded index) would then be removing the wrong items.  A
+			//! byte-exact prior/post document pair is position-agnostic in BOTH directions, which is the
+			//! only inverse a positioned splice actually has.
+			//!
+			//! FIELD USE -- identical to AgentReplaceGeometry's (see that op's doc for the
+			//! no-op-specific-members rationale):
+			//!   * `propertyValue`     = the BYTE-EXACT pre-duplicate document (Undo's payload).
+			//!   * `prevPropertyValue` = the BYTE-EXACT post-duplicate document (Redo's payload).
+			//!   * `objectName`        = the COPY's name; `cstEntityKind` = the copy's chunk keyword, so
+			//!                           MarkCstHeadDirty routes to that entity's own channel.
+			//!   * `agentChunkWasRasterizer` = ALWAYS false: this verb duplicates a Painter/Material-class
+			//!                           graph node, never a `*_rasterizer`, so the document's last-wins
+			//!                           rasterizer activation is invariant across the swap.
+			//!   * `agentChunkIndex`   = UNUSED (a whole-document swap has no single index).
+			AgentDuplicateNode,
+
+			//! Batched agent edits (2026-10-16): ONE record for a whole agent edit BATCH -- several chunk
+			//! inserts and/or param edits realized together by SceneEditController::ApplyAgentEditBatch
+			//! (Job::ApplyCstEditBatch, one full re-derive), pushed AFTER the mutation landed, like every
+			//! other agent op.  One record so a single Cmd-Z undoes the whole batch, the way
+			//! AgentRemoveChunks undoes a whole batch remove.
+			//!
+			//! The record is OPERATION-LEVEL (review round 3): the landed elements' inverses
+			//! (RISE::CstBatchUndoOp) in landing order -- remove an inserted chunk, restore a touched param slot.
+			//! Undo applies them in reverse to the CURRENT document and Redo forward, each direction realized by
+			//! ONE dry-run-gated derive; nothing the batch did not touch is rewritten, so edits made outside the
+			//! history (film / environment inspector edits) survive.  A refused Undo/Redo keeps the record in
+			//! place, like every refused record, and sets SceneEditor::ConsumeHistoryNotice.
+			//!
+			//! WHY NOT N AgentInsertChunk / SetAgentCstParam records bracketed by CompositeBegin/End: each of
+			//! those inverses re-derives the document it lands on and refuses one that does not derive, but a
+			//! batch validates only its END state -- an element listed before what it references lands (see
+			//! Job::ApplyCstEditBatch) -- so replaying them one derive at a time can stop half-way.
+			//!
+			//! FIELD USE:
+			//!   * `propertyValue`     = the encoded operation list (SceneEditor.cpp's EncodeBatchOps_).
+			//!   * `prevPropertyValue` = UNUSED.
+			//!   * `objectName`        = a DISPLAY-ONLY label (logs); `cstEntityKind` left EMPTY so
+			//!                           MarkCstHeadDirty routes to the boolean CST-head channel.
+			//!   * `agentChunkWasRasterizer` = true iff the batch LANDED a `*_rasterizer` insert: Redo then
+			//!                           lets the document's last-wins activation stand (the inserted one),
+			//!                           exactly as the forward commit did (the P1-B rule); Undo restores.
+			//!   * `agentChunkIndex`   = UNUSED.
+			AgentEditBatch,
+
 			// Composite markers — bracket a user drag so undo
 			// collapses one drag into one history entry.
 			CompositeBegin,         ///< objectName = label for UI
@@ -327,6 +468,32 @@ namespace RISE
 		//! name since cameras don't need an entity-name disambiguator
 		//! (the active camera is implicit).
 		String   propertyName;
+
+		//! Light-colour CST composite (2026-09-02 round 2), `SetLightProperty` on `color` ONLY.
+		//! TRUE when this edit's forward half wrote `colorspace Rec709RGB_Linear` ALONGSIDE the
+		//! colour digits, converting a chunk that spelled some OTHER colour space (in practice
+		//! `sRGB`, what `tools/migrate_scenes_light_colorspace.py` wrote onto every pre-2026-09-02
+		//! light) to the linear convention the properties panel speaks.  Set at CAPTURE time by
+		//! SceneEditor::LightColorCompositeState_; see that function's doc for WHY the conversion is
+		//! part of the edit rather than a re-encode of the value.
+		//!
+		//! When it is set, the two carriers below hold the chunk's ORIGINAL `color` and `colorspace`
+		//! VALUE TEXT -- raw, straight out of the Document, NOT the `%g`-formatted live RISEPel
+		//! `prevPropertyValue` carries -- and Undo writes BOTH back verbatim in one atomic edit
+		//! (SceneEditor::RouteCstLightColorComposite_), so the chunk returns byte-identical and the
+		//! light to its original decoded colour.  Redo re-applies the forward pair.
+		//!
+		//! Restoring the SPELLING, not just the value, is what makes shared undo (agent + user) sound:
+		//! an agent history entry captures RAW CHUNK TEXT (SceneEditController::
+		//! CaptureAgentPriorParamValue_), so an Undo that left the chunk linear would have an older
+		//! agent entry replay sRGB digits under a linear chunk -- landing the light ~6x too bright.
+		//!
+		//! FALSE (and both carriers empty) for every other op, for a `color` edit on an
+		//! already-linear chunk, for a light with no chunk, and on a legacy (no-Document) scene --
+		//! all of which take the unchanged single-param route.
+		bool     lightCstColorSpaceComposite;
+		String   prevCstColorText;
+		String   prevCstColorSpaceText;
 
 		//! Final matrix captured BEFORE mutation.  This is the fallback undo
 		//! representation for non-Transformable targets; Transformable objects
@@ -370,6 +537,47 @@ namespace RISE
 		//! Job::ApplyCstParamRemoveChecked), not a re-SET of a (nonexistent)
 		//! prior value; `prevPropertyValue` is meaningless when this is true.
 		bool           prevValueWasAbsent;
+
+		//! doc 88 S4b (SetAgentCstParam only): WHICH occurrence of
+		//! `propertyName` this edit wrote, counted from the front (0 = first) --
+		//! the convention Cst::WithParamValue / WithParamRemovedOcc write with
+		//! and Cst::ParamValueAtOccurrence reads with.  DEFAULTS TO 0, which is
+		//! exactly what every pre-S4b push site meant, so those sites are
+		//! unchanged in source AND in behaviour.  Non-zero only for an edit that
+		//! came in through an occurrence-addressed row (`stop[2]`, `param[1]`).
+		int            cstParamOcc;
+
+		//! doc 88 S4b (SetAgentCstParam only): this edit was addressed BY
+		//! OCCURRENCE (a repeatable param's `<role>[<index>]` row), as opposed to
+		//! naming a param that occurs once.  It is NOT `cstParamOcc != 0` --
+		//! `stop[0]` is occurrence-addressed and still has occ 0.
+		//!
+		//! What it gates is the UNDO/REDO DRIFT GUARD.  A repeatable param's
+		//! occurrence LAYOUT is not stable across time: an agent chunk-CRUD verb
+		//! or another occurrence edit can add, remove or rewrite lines between
+		//! this edit and its Undo, and none of that invalidates the history
+		//! entry (chunk CRUD does not touch mHistory at all -- see
+		//! SceneEditor::RouteCstParamEditChecked_'s doc).  Blindly writing
+		//! "occurrence N" at Undo time would then clobber a DIFFERENT line --
+		//! the U2 lesson (blind index trust) applied to a param line rather than
+		//! a document index.  When this flag is set, SceneEditor::
+		//! OccurrenceEditStillAddressable_ re-checks that occurrence N still
+		//! exists AND still holds the value this direction expects to overwrite,
+		//! and refuses the Undo/Redo honestly if not (history entry stays put).
+		//!
+		//! A non-occurrence-addressed edit (every pre-S4b caller) leaves this
+		//! false and keeps the historical unguarded behaviour.
+		bool           cstParamOccAddressed;
+
+		//! Undo fidelity (2026-10-17, SetAgentCstParam only): the EXACT text of the chunk the edit landed on
+		//! (Job::CstParamEditOwnerChunkText -- the write's own owner resolution) before and after the write.
+		//! Undo swaps `agentOwnerPostText` back to `agentOwnerPreText` byte for byte, and Redo the reverse,
+		//! whenever the owner still holds the expected text (Job::ApplyCstParamEditOwnerRestore).  Replaying
+		//! `prevPropertyValue` instead re-spells the restored line and cannot bring back a param the write
+		//! stripped (a `position` patch strips `matrix`) where it was -- and either one makes an OLDER insert
+		//! record's exact-bytes inverse refuse.  Empty = not captured: the value replay below is the route.
+		std::string    agentOwnerPreText;
+		std::string    agentOwnerPostText;
 
 		//! Shared-undo U2 (AgentRemoveChunk only): the top-level document index the removed chunk (and, if
 		//! tidied away with it, its own trailing separator) occupied at capture time -- the EXACT position
@@ -432,6 +640,9 @@ namespace RISE
 		, v3a()
 		, v3b()
 		, s( 0 )
+		, lightCstColorSpaceComposite( false )
+		, prevCstColorText()
+		, prevCstColorSpaceText()
 		, prevTransform( Matrix4Ops::Identity() )
 		, hasTransformState( false )
 		, prevBindingWasNull( false )
@@ -439,6 +650,8 @@ namespace RISE
 		, allowONBPoseEdit( false )
 		, cstEntityKind()
 		, prevValueWasAbsent( false )
+		, cstParamOcc( 0 )
+		, cstParamOccAddressed( false )
 		, agentChunkIndex( 0 )
 		, agentChunkWasRasterizer( false )
 		, historySeq( 0 )
@@ -471,15 +684,19 @@ namespace RISE
 			    || op == SetObjectShader
 			    || op == SetObjectShadowFlags
 			    || op == SetObjectGeometry
-			    || op == SetObjectInteriorMedium;
+			    || op == SetObjectInteriorMedium
+			    || op == SetObjectMirror;
 		}
 
 		//! Returns true if this edit op changes the object's bounding
 		//! box and therefore needs a top-level-acceleration (TLAS)
 		//! rebuild on the next render.  All transform ops qualify; so
 		//! does SetObjectGeometry (a runtime geometry swap changes the
-		//! object's extents).  Property-only ops (material / shader /
-		//! shadow flags / interior medium) leave the bbox unchanged.
+		//! object's extents); so does SetObjectMirror (doc 89 slice C --
+		//! a reflection about a plane through the node's own origin moves
+		//! every world vertex of an off-centre shape).  Property-only ops
+		//! (material / shader / shadow flags / interior medium) leave the
+		//! bbox unchanged.
 		static bool OpNeedsSpatialRebuild( Op op )
 		{
 			return op == TranslateObject
@@ -489,7 +706,8 @@ namespace RISE
 			    || op == SetObjectScale
 			    || op == SetObjectStretch
 			    || op == ScaleObjectFromAnchor
-			    || op == SetObjectGeometry;
+			    || op == SetObjectGeometry
+			    || op == SetObjectMirror;
 		}
 
 		//! Returns true if this edit op mutates the camera.

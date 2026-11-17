@@ -18,7 +18,9 @@
 //       duplicate fails to load (return false); the same scene with a unique
 //       name loads (true).
 //    C. CST derive (DeriveToJob direct) -- a duplicate-name document is refused
-//       (diagnostics emitted; exactly the first chunk applied).
+//       overall (diagnostics emitted, first-wins preserved), but PASS-2 keeps
+//       applying past the duplicate rather than stopping there (bug-fix wave,
+//       2026-08-28) -- a later, unrelated chunk still applies.
 //
 //  (Slice 6c-3b: layer B was the legacy parser + a legacy-vs-CST DumpJob tail;
 //  both were retired with the legacy reader.  The load is now the CST path and
@@ -27,6 +29,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "CstRenderEquivalence.h"
+#include "../src/Library/Managers/GenericManager.h"
 #include "../src/Library/Cst/Cst.h"
 
 using namespace RISE;
@@ -64,6 +67,55 @@ static void ParserRejectsDup( const std::string& dupBody, const std::string& uni
 int main()
 {
 	std::printf( "DuplicateNameRejectionTest -- Job::Add* honors AddItem's bool (no silent first-win)\n" );
+
+	{
+		struct Item final : Implementation::Reference {};
+		struct Names final : IEnumCallback<const char*> {
+			std::vector<std::string> names;
+			bool operator()( const char* const& name ) override { names.emplace_back( name ); return true; }
+		} actual;
+		auto* manager = new GenericManager<Item>();
+		auto* item = new Item();
+		const std::vector<std::string> authored = { "", "a", "ab", "a\xc3\xa9", "\xc3\xa9" };
+		std::vector<String> legacy;
+		for( const auto& name : authored ) {
+			legacy.emplace_back( name.c_str() );
+			Check( manager->AddItem( item, name.c_str() ) && manager->GetItem( name.c_str() ) == item,
+				"manager matches empty, prefix-related and non-ASCII names" );
+		}
+		std::sort( legacy.begin(), legacy.end() );
+		std::vector<std::string> expected;
+		for( const auto& name : legacy ) expected.emplace_back( name.c_str() );
+		manager->EnumerateItemNames( actual );
+		Check( actual.names == expected, "manager retains vector<char> name ordering" );
+		String concatenated( "a" );
+		concatenated.concatenate( "b" );
+		Check( manager->GetItem( concatenated.c_str() ) == item, "manager keys use the C-string boundary" );
+		const auto serial = manager->GetItemSerial( "ab" );
+		Check( serial != 0 && manager->RemoveItem( "ab" ) && manager->GetItemSerial( "ab" ) == 0 &&
+			manager->AddItem( item, "ab" ) && manager->GetItemSerial( "ab" ) > serial,
+			"removing and restoring a name changes its registration serial" );
+		struct Callback final : IDeletedCallback<Item> {
+			int calls = 0;
+			bool operator()( const Item& ) override { ++calls; return true; }
+			bool operator==( const IDeletedCallback<Item>& other ) override { return this == &other; }
+		} first, second;
+		auto* firstUser = new Item();
+		auto* secondUser = new Item();
+		firstUser->addref();
+		manager->RequestItemUse( "", first, *firstUser );
+		manager->RequestItemUse( "", second, *secondUser );
+		const bool unsubscribed = manager->NoLongerUsingItem( *item, first );
+		const bool removed = manager->RemoveItem( "" );
+		Check( unsubscribed && removed && first.calls == 0 && second.calls == 1 && firstUser->refcount() == 2 &&
+			secondUser->refcount() == 1, "removing one subscriber leaves the next callback and its owner intact" );
+		if( firstUser->refcount() > 1 ) firstUser->release();
+		firstUser->release();
+		if( secondUser->refcount() > 1 ) secondUser->release();
+		secondUser->release();
+		manager->release();
+		item->release();
+	}
 
 	//----------------------------------------------------------------------
 	std::printf( "[A] Job API: a second Add* under an existing name returns false; first wins\n" );
@@ -140,21 +192,35 @@ int main()
 	std::printf( "[C] CST derive: duplicate-name document refused (diagnosed, first-wins)\n" );
 	//----------------------------------------------------------------------
 	{
+		// A THIRD, independent chunk after the duplicate pair -- DeriveToJob's
+		// PASS-2 keeps applying past a failed chunk instead of stopping there
+		// (bug-fix wave, 2026-08-28), so `applied == 2` (the first `g` PLUS
+		// this one) is what actually pins that: with the pre-fix stop-at-
+		// first-failure behaviour this chunk would never have been attempted
+		// and `applied` would have stayed at 1.  Without this third chunk the
+		// assertion below would be identical either way (nothing after the
+		// duplicate to observe), which is not a meaningful regression guard
+		// for THIS test file's own subject.
 		const std::string dup = HDR +
-			"sphere_geometry\n{\nname g\nradius 1\n}\n" "sphere_geometry\n{\nname g\nradius 2\n}\n";
+			"sphere_geometry\n{\nname g\nradius 1\n}\n" "sphere_geometry\n{\nname g\nradius 2\n}\n"
+			"sphere_geometry\n{\nname unrelated\nradius 3\n}\n";
 
-		// CST derive refuses the second chunk and diagnoses it.
+		// CST derive refuses the second (duplicate) chunk and diagnoses it,
+		// but keeps going: the first `g` and the unrelated third chunk both apply.
 		Job* jc = new Job();
 		Document d = ParseToCst( dup );
 		std::vector<std::string> diags;
 		const int applied = DeriveToJob( d, *jc, &diags );
 		Check( !diags.empty(), "CST derive: duplicate diagnosed (not silently applied)" );
-		Check( applied == 1, "CST derive: exactly the first chunk applied (count not inflated)" );
-		Check( jc->GetGeometries()->getItemCount() == 1, "CST derive: only the first geometry registered" );
+		Check( applied == 2, "CST derive: the first `g` AND the unrelated third chunk applied "
+			"(count not inflated by the duplicate, and not truncated by it either -- the loop kept going)" );
+		Check( jc->GetGeometries()->getItemCount() == 2, "CST derive: only the first `g` geometry registered (not the duplicate), plus the unrelated one" );
 		// first-wins: the surviving geometry is the FIRST definition (radius 1, not 2).
 		IGeometry* g = jc->GetGeometries()->GetItem( "g" );
 		Point3 c; Scalar r = 0; if( g ) g->GenerateBoundingSphere( c, r );
 		Check( g && r == (Scalar)1.0, "CST derive: the FIRST 'g' survives (radius 1, not 2)" );
+		Check( jc->GetGeometries()->GetItem( "unrelated" ) != 0,
+			"CST derive: the chunk AFTER the duplicate applied anyway (continuation, not silent drop)" );
 		jc->release();
 	}
 

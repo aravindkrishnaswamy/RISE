@@ -107,6 +107,9 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -219,6 +222,7 @@ static RenderResult RenderScene( const std::string& sceneText, const char* tag )
 				LumaCapture* pCap = new LumaCapture();
 				GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "bdpt phantom-strategy luma capture" );
 				pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+				std::srand( g_renderSeed++ );
 				result.rendered = pJob->Rasterize();
 				result.meanLum  = pCap->meanLum;
 				result.maxLum   = pCap->maxLum;

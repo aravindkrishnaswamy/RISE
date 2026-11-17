@@ -76,6 +76,249 @@ enum SkillsRootBootstrap {
     }
 }
 
+/// Headless regression probe for the viewport-controller re-registration
+/// race (GUI bug 2026-08-20: "second scene loaded in a session fails
+/// Render" -- `RISEBridge: -rasterizeAtSceneTime: refused -- no viewport
+/// controller registered...").  RenderViewModel.loadScene's real teardown
+/// sequence is: `viewportBridge?.shutdown(); viewportBridge = nil`, THEN
+/// (for a reopen over an already-loaded Job) `bridge.clearAll()`, THEN
+/// construct a fresh `RISEViewportBridge` for the new scene (its
+/// designated initializer self-registers with the host via
+/// `-attachSceneEditController:`).  `RISEViewportBridge.shutdown()`
+/// unconditionally called `[_host attachSceneEditController:nullptr]` as
+/// its FIRST line, with no guard -- so if anything else in the app holds
+/// a transient extra strong reference to an outgoing `RISEViewportBridge`
+/// past the point `viewportBridge = nil` runs, that instance's EVENTUAL
+/// `-dealloc` calls `-shutdown` a SECOND time and re-detaches the host
+/// -- silently clobbering whatever NEWER `RISEViewportBridge` had since registered
+/// for the next scene.  A synchronous, single-threaded harness with no
+/// stray retainer can't see this; this probe manufactures the stray
+/// retain explicitly (`strayA`) to drive the exact mechanism.
+///
+/// The original real-app suspect was a SwiftUI view struct's stored `let
+/// bridge: RISEViewportBridge` property held by a not-yet-discarded body
+/// evaluation.  Every such holder is `weak var bridge:
+/// RISEViewportBridge?` now, but a future one could reintroduce the
+/// pattern -- which is why both the guard and this probe stay.
+///
+/// Enable with `RISE_GUI_HEADLESS_PROBE=viewport_reattach` plus
+/// `RISE_GUI_HEADLESS_PROBE_SCENE_A` / `_SCENE_B` pointing at two loadable
+/// scenes -- `scenes/Tests/GUI/viewport_reattach_probe_a.RISEscene` /
+/// `_b.RISEscene` are the checked-in fixtures made for this (tiny, fast,
+/// deliberately different geometry so a stale frame from the wrong scene
+/// would be obvious). `RISE_MEDIA_PATH` must also be set to the repo root
+/// (same as any RISE render). Exits the process with 0 (pass) or 1 (fail)
+/// -- never reaches the normal SwiftUI app body. Zero cost when the env
+/// var is unset. Example (from the repo root):
+///
+///   export RISE_MEDIA_PATH="$(pwd)/"
+///   export RISE_GUI_HEADLESS_PROBE=viewport_reattach
+///   export RISE_GUI_HEADLESS_PROBE_SCENE_A=scenes/Tests/GUI/viewport_reattach_probe_a.RISEscene
+///   export RISE_GUI_HEADLESS_PROBE_SCENE_B=scenes/Tests/GUI/viewport_reattach_probe_b.RISEscene
+///   <path-to>/RISE-GUI.app/Contents/MacOS/RISE-GUI
+enum ViewportReattachProbe {
+    static func runIfRequested() {
+        guard ProcessInfo.processInfo.environment["RISE_GUI_HEADLESS_PROBE"]
+                == "viewport_reattach" else { return }
+        guard let pathA = ProcessInfo.processInfo.environment["RISE_GUI_HEADLESS_PROBE_SCENE_A"],
+              let pathB = ProcessInfo.processInfo.environment["RISE_GUI_HEADLESS_PROBE_SCENE_B"]
+        else {
+            FileHandle.standardError.write("ViewportReattachProbe: missing SCENE_A/SCENE_B env vars\n".data(using: .utf8)!)
+            exit(2)
+        }
+
+        func step(_ label: String, _ ok: Bool) -> Bool {
+            print("ViewportReattachProbe: \(ok ? "PASS" : "FAIL") -- \(label)")
+            return ok
+        }
+
+        var allOK = true
+        let bridge = RISEBridge()
+
+        // Scene A: load, stand up its viewport bridge (mirrors
+        // RenderViewModel.loadScene's success branch), render once.
+        allOK = step("load scene A", bridge.loadAsciiScene(pathA)) && allOK
+        var vbA: RISEViewportBridge? = RISEViewportBridge(hostBridge: bridge)
+        allOK = step("scene A viewport bridge constructed", vbA != nil) && allOK
+        // The stray extra strong reference a SwiftUI view struct's stored
+        // `let bridge:` property used to be able to hold past the official
+        // swap below (those holders are weak now -- see the type doc).
+        var strayA = vbA
+        allOK = step("render scene A", bridge.rasterize(atSceneTime: 0)) && allOK
+
+        // RenderViewModel.loadScene's teardown, verbatim ordering:
+        // shutdown + nil the OFFICIAL reference (strayA is untouched).
+        vbA?.shutdown()
+        vbA = nil
+
+        // Reopen path (RenderViewModel.continueClearAndLoad /
+        // finishSaveAndReload): clearAll() so the load-once guard permits
+        // a second LoadAsciiSceneAuto on the SAME Job, then load scene B
+        // and stand up its viewport bridge exactly like scene A's.
+        allOK = step("clearAll", bridge.clearAll()) && allOK
+        allOK = step("load scene B", bridge.loadAsciiScene(pathB)) && allOK
+        var vbB: RISEViewportBridge? = RISEViewportBridge(hostBridge: bridge)
+        allOK = step("scene B viewport bridge constructed", vbB != nil) && allOK
+
+        // The bug's own symptom: render scene B BEFORE anything releases
+        // strayA. This must pass on both the buggy and fixed code --
+        // scene B's own registration is what CanProceed() sees right now.
+        allOK = step("render scene B (before stray A deallocs)",
+                      bridge.rasterize(atSceneTime: 0)) && allOK
+
+        // Now let the LAST strong reference to scene A's viewport bridge
+        // go -- exactly what happens whenever ARC finally catches up to
+        // a stray SwiftUI-held reference. Pre-fix: strayA's deinit runs
+        // -shutdown again, which unconditionally re-detaches the host,
+        // clobbering scene B's live registration with NULL. Post-fix:
+        // -shutdown is idempotent (guarded on `_controller`), so the
+        // second call from strayA's dealloc is a no-op and scene B stays
+        // attached.
+        strayA = nil
+        allOK = step("stray A reference dropped", strayA == nil) && allOK
+
+        allOK = step("render scene B (after stray A finally deallocs -- THE RED LINE)",
+                      bridge.rasterize(atSceneTime: 0)) && allOK
+
+        _ = vbB // keep scene B's viewport bridge alive through the final render
+        vbB = nil
+
+        print(allOK ? "ViewportReattachProbe: ALL PASS" : "ViewportReattachProbe: FAILURE (see above)")
+        exit(allOK ? 0 : 1)
+    }
+}
+
+/// Headless regression probe for doc-88 Phase 3 S15's Mac node canvas
+/// (`NodeGraphCanvas.swift`), EXTENDED (S2) to also cover the sibling
+/// Object Graph canvas (`ObjectGraphCanvas.swift`). Pixels are
+/// manual-checklist only (a real node-box layout needs eyes), but the
+/// DATA path underneath every pixel -- one transactional
+/// `-[RISEViewportBridge painterMaterialGraph]` / `-objectGraph` call,
+/// exactly what each canvas's own `performReload` calls -- is fully
+/// exercisable headless, so this pins both end-to-end: load a real
+/// scene, fetch each laid-out graph, and assert the shape a canvas
+/// render depends on (non-empty nodes/edges, non-origin laid-out
+/// positions, a known material node with out-edges, a known
+/// expression-family node with `def` stages, and -- Object Graph -- at
+/// least one Object-category and one Geometry-category node present).
+///
+/// Enable with `RISE_GUI_HEADLESS_PROBE=graph_canvas_smoke`.  Defaults to
+/// `scenes/FeatureBased/Textures/weathered_workbench.RISEscene` (the
+/// scene this slice's manual checklist also uses -- "expect ~a dozen
+/// typed nodes, wires L->R, thumbnails"); override with
+/// `RISE_GUI_HEADLESS_PROBE_SCENE` for a different fixture.
+/// `RISE_MEDIA_PATH` must be set to the repo root, same as any RISE
+/// render (see ViewportReattachProbe's own doc for the exact env-var
+/// recipe). Exits the process with 0 (pass) or 1 (fail) -- never reaches
+/// the normal SwiftUI app body. Zero cost when the env var is unset.
+///
+///   export RISE_MEDIA_PATH="$(pwd)/"
+///   export RISE_GUI_HEADLESS_PROBE=graph_canvas_smoke
+///   <path-to>/RISE-GUI.app/Contents/MacOS/RISE-GUI
+enum GraphCanvasSmokeProbe {
+    static func runIfRequested() {
+        guard ProcessInfo.processInfo.environment["RISE_GUI_HEADLESS_PROBE"]
+                == "graph_canvas_smoke" else { return }
+        let scenePath = ProcessInfo.processInfo.environment["RISE_GUI_HEADLESS_PROBE_SCENE"]
+            ?? "scenes/FeatureBased/Textures/weathered_workbench.RISEscene"
+
+        func step(_ label: String, _ ok: Bool) -> Bool {
+            print("GraphCanvasSmokeProbe: \(ok ? "PASS" : "FAIL") -- \(label)")
+            return ok
+        }
+
+        var allOK = true
+        let bridge = RISEBridge()
+        allOK = step("load scene (\(scenePath))", bridge.loadAsciiScene(scenePath)) && allOK
+
+        guard let vb = RISEViewportBridge(hostBridge: bridge) else {
+            _ = step("viewport bridge constructed", false)
+            print("GraphCanvasSmokeProbe: FAILURE (see above)")
+            exit(1)
+        }
+        _ = step("viewport bridge constructed", true)
+
+        // The SAME single bulk transactional read NodeGraphCanvas.
+        // performReload itself calls -- see that method for the canvas's
+        // own consumption of this exact data.
+        let graph = vb.painterMaterialGraph()
+        allOK = step("nodes non-empty (\(graph.nodes.count))", !graph.nodes.isEmpty) && allOK
+        allOK = step("generation non-zero (\(graph.generation))", graph.generation != 0) && allOK
+
+        let edgeCount = graph.nodes.reduce(0) { $0 + $1.outEdges.filter { $0.otherNodeIndex >= 0 }.count }
+        allOK = step("edges non-empty (\(edgeCount))", edgeCount > 0) && allOK
+
+        let hasLaidOutPosition = graph.nodes.contains { $0.x > 0 || $0.y > 0 }
+        allOK = step("at least one node has a non-origin laid-out position", hasLaidOutPosition) && allOK
+
+        if let material = graph.nodes.first(where: { $0.name == "mat_wood_top" }) {
+            allOK = step("mat_wood_top category is Material(2), got \(material.category)",
+                         material.category == 2) && allOK
+            allOK = step("mat_wood_top has out-edges", !material.outEdges.isEmpty) && allOK
+        } else {
+            allOK = step("known material node 'mat_wood_top' present", false) && allOK
+        }
+
+        if let expr = graph.nodes.first(where: { $0.name == "sp_pit_rough" }) {
+            allOK = step("sp_pit_rough is expression-family (defCount=\(expr.defCount) > 0)",
+                         expr.defCount > 0) && allOK
+        } else {
+            allOK = step("known expression node 'sp_pit_rough' present", false) && allOK
+        }
+
+        // Object Graph slice (S2): the SAME bulk transactional read
+        // ObjectGraphCanvas.performReload itself calls -- cheap coverage
+        // of the new canvas's data path without a real SwiftUI window
+        // (this probe never constructs one).
+        let objGraph = vb.objectGraph()
+        allOK = step("object graph: nodes non-empty (\(objGraph.nodes.count))", !objGraph.nodes.isEmpty) && allOK
+        allOK = step("object graph: generation non-zero (\(objGraph.generation))", objGraph.generation != 0) && allOK
+        // RISE::ChunkCategory ordinals: Geometry=5, Object=8 (ChunkDescriptor.h)
+        // -- the SAME "cast the parser's enum" convention every other
+        // category check in this probe/canvas already uses.
+        let hasObjectNode = objGraph.nodes.contains { $0.category == 8 }
+        let hasGeometryNode = objGraph.nodes.contains { $0.category == 5 }
+        allOK = step("object graph: at least one Object-category node present", hasObjectNode) && allOK
+        allOK = step("object graph: at least one Geometry-category node present", hasGeometryNode) && allOK
+        let objHasLaidOutPosition = objGraph.nodes.contains { $0.x > 0 || $0.y > 0 }
+        allOK = step("object graph: at least one node has a non-origin laid-out position", objHasLaidOutPosition) && allOK
+
+        vb.shutdown()
+        print(allOK ? "GraphCanvasSmokeProbe: ALL PASS" : "GraphCanvasSmokeProbe: FAILURE (see above)")
+        exit(allOK ? 0 : 1)
+    }
+}
+
+/// Quit-time unsaved-work prompt (84-trajectory-document-snapshots'
+/// backstop is a safety net, not the fix — this is the fix): SwiftUI's
+/// `App` protocol installs an implicit delegate that always answers
+/// `applicationShouldTerminate` with `.terminateNow`, so intercepting Cmd-Q
+/// / the app-menu Quit item requires an explicit `NSApplicationDelegate`
+/// via `NSApplicationDelegateAdaptor`.  Kept a thin NSObject rather than
+/// an ObservableObject — it renders nothing and has no SwiftUI observers,
+/// it only needs a reference to the already-existing RenderViewModel.
+///
+/// Reuses `RenderViewModel.promptToSaveUnsavedWork` verbatim — the SAME
+/// Save/Discard/Cancel gate Close Scene and load-over already run (covers
+/// untitled scenes via Save-As panel, save failures, and the both-dirty
+/// scene+editor case).  A render in flight at quit time is handled
+/// separately by RenderViewModel's existing `willTerminateNotification`
+/// observer (cancels it, then flushes the trajectory) which fires AFTER
+/// `applicationShouldTerminate` returns — so this delegate never needs to
+/// wait on a render itself.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var viewModel: RenderViewModel?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let vm = viewModel else { return .terminateNow }
+        // promptToSaveUnsavedWork runs NSAlert.runModal() synchronously on
+        // the main thread — applicationShouldTerminate is itself called on
+        // main, so this blocks termination exactly as long as the user
+        // takes to answer, same as the Close Scene prompt blocks a close.
+        return vm.promptToSaveUnsavedWork(before: "quitting") ? .terminateNow : .terminateCancel
+    }
+}
+
 @main
 struct RISEApp: App {
     /// Menu-flyout fix (2026-07-16): the model is held through a plain
@@ -90,6 +333,15 @@ struct RISEApp: App {
     /// publishes only when menu-rendered state actually changes.
     @State private var app = AppModel()
 
+    /// Installs AppDelegate as the app's NSApplicationDelegate so
+    /// `applicationShouldTerminate` runs on quit.  The adaptor creates
+    /// `appDelegate` before this struct's `init()` body runs (same
+    /// compiler-synthesized default-value timing as `app` above), so
+    /// wiring `appDelegate.viewModel = app.viewModel` in `init()` below
+    /// is safe — it happens well before any window can appear, let alone
+    /// before the user could quit.
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     /// Mirrors ThemeState's persisted mode so the File > Theme menu
     /// checkmarks stay live (ThemeState.setMode writes this same
     /// UserDefaults key, which also drives ContentView's root .id()
@@ -98,6 +350,18 @@ struct RISEApp: App {
     private var themeModeRaw: String = ThemeMode.dark.rawValue
 
     init() {
+        // Headless regression probe (see ViewportReattachProbe's header
+        // doc): must run before ANYTHING else touches AppKit/theme state
+        // and must never fall through to the normal app body -- it exits
+        // the process itself.
+        ViewportReattachProbe.runIfRequested()
+        // Same "must run before anything else, exits the process itself"
+        // contract -- see GraphCanvasSmokeProbe's own header doc.
+        GraphCanvasSmokeProbe.runIfRequested()
+        // Quit-time save prompt: hand the delegate the SAME RenderViewModel
+        // instance ContentView/the menus use (not a second one) so its
+        // dirty check reflects the actual open scene.
+        appDelegate.viewModel = app.viewModel
         // Anchor the agent's skills to the INSTALLATION before anything
         // can read the index (see SkillsRootBootstrap for why binding
         // them to RISE_MEDIA_PATH, which follows the open scene, was the

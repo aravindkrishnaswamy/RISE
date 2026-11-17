@@ -27,18 +27,6 @@ bdpt_pel_rasterizer
 	samples				64
 }
 
-/*
-mlt_rasterizer
-{
-	max_eye_depth		16
-	max_light_depth		16
-	bootstrap_samples	10000
-	chains				32
-	mutations_per_pixel	5000
-	large_step_prob		0.3
-}
-*/
-
 file_rasterizeroutput
 {
 	pattern				rendered/rwsss_bdpt

@@ -62,6 +62,8 @@ namespace RISE
 		struct SMSPhotonChainVertex
 		{
 			Point3				position;
+			Point3				objectPosition;	///< Exact photon hit, including CSG child frame
+			Point2				uv;
 			Vector3				normal;			///< Shading normal at hit (post-modifier; BSDF-frame).
 												///< Drives Newton's half-vector constraint and chain-throughput
 												///< Fresnel cosine at the receiver-side reconstruction.
@@ -70,22 +72,45 @@ namespace RISE
 												///< and any "which side of the actual surface is this ray
 												///< on" decision at receiver-side photon reconstruction.
 												///< On analytical primitives equals `normal` by construction.
+												///<
+												///< INVARIANT (DL-70): this is the TRUE, RAY-INDEPENDENT
+												///< outward normal -- the same invariant
+												///< `ManifoldVertex::geomNormal` carries (see
+												///< ManifoldSolver.h ~:69-91 for the full rationale).  The
+												///< sole writer, `SMSPhotonMap.cpp` ~:379, stores
+												///< `ri.geometric.UnflippedGeomNormal()`, never the reported
+												///< `vGeomNormal`, which a double-sided mesh (and
+												///< ClippedPlane / BezierPatch on a back-face hit) flips to
+												///< oppose the incoming ray -- because this record is later
+												///< copied straight into a synthetic
+												///< `RayIntersectionGeometric` rig whose
+												///< `bGeomNormalOrientedToRay` defaults FALSE
+												///< (`ManifoldSolver.cpp`'s photon-chain reconstruction), so a
+												///< flipped value stored here would be republished as an
+												///< unflipped one and lie to any consumer that performs the
+												///< recovery.  EXCEPTION: a LEGACY photon serialized before
+												///< this field existed carries the zero sentinel, and the
+												///< three reconstruction sites fall back to `normal` above --
+												///< which is NOT this invariant, it is the ray-facing shading
+												///< normal -- so a legacy-sentinel photon's `geomNormal` can
+												///< disagree in sign with `normal` (see
+												///< `ManifoldSolver.h`'s own note on this exception).
+			Scalar				etaI, etaT;	///< Forward native interface; zero denotes an older record.
 			Scalar				eta;			///< Material IOR at this vertex.
 			const IObject*		pObject;
 			const IMaterial*	pMaterial;
 			unsigned char		flags;			///< bit 0: isExiting (photon-direction, refractions only); bit 1: isReflection (scatter chose reflection, not refraction).
 
 			SMSPhotonChainVertex() :
-				position( 0, 0, 0 ), normal( 0, 0, 0 ), geomNormal( 0, 0, 0 ),
-				eta( 1.0 ), pObject( 0 ), pMaterial( 0 ), flags( 0 ) {}
+				position( 0, 0, 0 ), objectPosition( 0, 0, 0 ), uv( 0, 0 ), normal( 0, 0, 0 ), geomNormal( 0, 0, 0 ),
+				etaI( 0 ), etaT( 0 ), eta( 1.0 ), pObject( 0 ), pMaterial( 0 ), flags( 0 ) {}
 		};
 
 		/// Fixed upper bound on the number of specular vertices we store
 		/// per photon.  Photons with longer chains are dropped at
 		/// trace time rather than spilling into a dynamic allocation.
 		/// Empirically k=7 covers 99.9% of paths on test scenes and
-		/// keeps sizeof(SMSPhoton) at ~560 bytes — ~5.4 MB for a 10k
-		/// photon pass, which is negligible.
+		/// bounds per-photon chain storage independently of scene size.
 		enum { kSMSMaxPhotonChain = 7 };
 
 		struct SMSPhoton

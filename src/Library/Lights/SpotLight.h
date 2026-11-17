@@ -19,7 +19,9 @@
 
 #include "../Interfaces/ILightPriv.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/Reference.h"
+#include "../Animation/TimeIndexedView.h"
 #include "../Utilities/Transformable.h"
 #include "../Utilities/GeometricUtilities.h"
 
@@ -38,29 +40,53 @@ namespace RISE
 			RISEPel		cColor;
 			bool		bShootPhotons;		///< Should this light shoot photons for photon mapping?
 
+			//! DL-465: time-indexed slot for a motion-blur pass (see
+			//! Animation/TimeIndexedView.h); -1 outside one.
+			TimeIndexed::TimeSlot	m_timeSlot;
+
 			Vector3		vDirection;
+
+			//! `cColor` uplifted as a RADIANCE SOURCE (Stage C slice 2).
+			//! See PointLight::cSpectrum for the convention and for the
+			//! staleness argument (colour is writable only through
+			//! `SetIntermediateValue( COLOR_ID )`, which both keyframes and
+			//! the SceneEditor / agent light-edit tools funnel through).
+			RGBIlluminantSpectrum	cSpectrum;
+
+			//! Rebuild `cSpectrum` from `cColor`.  Call after ANY write to
+			//! `cColor`.
+			void RefreshSpectrum();
 
 			virtual ~SpotLight( );
 
 		public:
 
-			inline bool CanGeneratePhotons() const
+			//! DL-465: set / clear the time-indexed slot (calling thread only,
+			//! before the workers start and after they join).
+			inline void SetTimeSlot( const int slot ) { m_timeSlot.value = slot; }
+			inline int GetTimeSlot() const { return m_timeSlot.value; }
+
+			//! DL-465: a per-thread clone, exact copy of this light's state
+			//! (never itself slotted).
+			SpotLight* CloneForTimeView() const { SpotLight* c = new SpotLight( *this ); CopyTransformMetadataTo( *c ); return c; }
+
+			inline bool CanGeneratePhotons() const override
 			{
 				return bShootPhotons;
 			}
 
-			inline void SetCanGeneratePhotons( bool b ) {
+			inline void SetCanGeneratePhotons( bool b ) override {
 				Transformable::PreparedExternalMutationScope mutation;
 				if( mutation.IsValid() ) bShootPhotons = b;
 			}
 
-			inline bool IsPositionalLight() const { return true; }
+			inline bool IsPositionalLight() const override { return true; }
 
-			inline Vector3 emissionDirection() const { return vDirection; }
-			inline Scalar emissionConeHalfAngle() const { return dOuterAngle / 2.0; }
+			inline Vector3 emissionDirection() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionDirection() ); return vDirection; }
+			inline Scalar emissionConeHalfAngle() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionConeHalfAngle() ); return dOuterAngle / 2.0; }
 
-			inline RISEPel radiantExitance() const
-			{
+			inline RISEPel radiantExitance() const override
+			{ RISE_TIME_INDEXED_FORWARD( SpotLight, radiantExitance() );
 				// Integrate emittedRadiance over the emission solid angle.
 				// dInnerAngle/dOuterAngle are full cone angles; half-angles
 				// are used for the actual cone geometry.
@@ -86,20 +112,20 @@ namespace RISE
 				return cColor * radiantEnergy * TWO_PI * solidAngle;
 			}
 
-			inline Point3 position() const
-			{
+			inline Point3 position() const override
+			{ RISE_TIME_INDEXED_FORWARD( SpotLight, position() );
 				return ptPosition;
 			}
 
-			inline RISEPel   emissionColor() const  { return cColor; }
-			inline Scalar    emissionEnergy() const { return radiantEnergy; }
-			inline LightType lightType() const      { return LightType::Spot; }
-			inline Point3    emissionTarget() const { return ptTarget; }
-			inline Scalar    emissionInnerAngle() const { return dInnerAngle; }
-			inline Scalar    emissionOuterAngle() const { return dOuterAngle; }
+			inline RISEPel   emissionColor() const override  { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionColor() ); return cColor; }
+			inline Scalar    emissionEnergy() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionEnergy() ); return radiantEnergy; }
+			inline LightType lightType() const override      { return LightType::Spot; }
+			inline Point3    emissionTarget() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionTarget() ); return ptTarget; }
+			inline Scalar    emissionInnerAngle() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionInnerAngle() ); return dInnerAngle; }
+			inline Scalar    emissionOuterAngle() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionOuterAngle() ); return dOuterAngle; }
 
-			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const
-			{
+			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
+			{ RISE_TIME_INDEXED_FORWARD( SpotLight, emittedRadiance( vLightOut ) );
 				// Find the angle between the light out and vDirection.
 				// dInnerAngle/dOuterAngle are full cone angles, so we
 				// compare against half of each (matching ComputeDirectLighting).
@@ -125,8 +151,33 @@ namespace RISE
 				return RISEPel(0,0,0);
 			}
 
-			inline Ray generateRandomPhoton( const Point3& ptrand ) const
-			{
+			//! Spectral twin of `emittedRadiance` (Stage C slice 2).  The
+			//! cone geometry below MUST stay identical to the RGB version
+			//! above; only the colour term differs (cached illuminant
+			//! spectrum at `nm` instead of the RGB triple).
+			inline Scalar emittedRadianceNM( const Vector3& vLightOut, const Scalar nm ) const override
+			{ RISE_TIME_INDEXED_FORWARD( SpotLight, emittedRadianceNM( vLightOut, nm ) );
+				const Scalar cost = Vector3Ops::Dot( vLightOut, vDirection );
+				if( cost < 0 ) {
+					return Scalar(0);
+				}
+
+				const Scalar halfInner = dInnerAngle / 2.0;
+				const Scalar halfOuter = dOuterAngle / 2.0;
+
+				const Scalar acost = acos(cost);
+				if( acost <= halfInner ) {
+					return cSpectrum.Eval( nm ) * radiantEnergy;
+				} else if( acost <= halfOuter ) {
+					const Scalar t = (halfOuter - acost) / (halfOuter - halfInner);
+					return cSpectrum.Eval( nm ) * radiantEnergy * (t * t);
+				}
+
+				return Scalar(0);
+			}
+
+			inline Ray generateRandomPhoton( const Point3& ptrand ) const override
+			{ RISE_TIME_INDEXED_FORWARD( SpotLight, generateRandomPhoton( ptrand ) );
 				// Uniform solid angle sampling within the outer half-cone
 				const Scalar halfOuter = dOuterAngle / 2.0;
 				const Scalar cosAlpha = cos( halfOuter );
@@ -146,8 +197,8 @@ namespace RISE
 					onb.u().z*localDir.x + onb.v().z*localDir.y + onb.w().z*localDir.z ) );
 			}
 
-			inline Scalar pdfDirection( const Vector3& dir ) const
-			{
+			inline Scalar pdfDirection( const Vector3& dir ) const override
+			{ RISE_TIME_INDEXED_FORWARD( SpotLight, pdfDirection( dir ) );
 				const Scalar halfOuter = dOuterAngle / 2.0;
 				const Scalar cost = Vector3Ops::Dot( dir, vDirection );
 				if( cost <= 0 ) return 0;
@@ -164,25 +215,53 @@ namespace RISE
 				const bool shootPhotons
 				);
 
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;
+			//! `bFullSphereReceiver` (residual wave 2 item D): no-op, for
+			//! the identical reason PointLight's own override is a
+			//! no-op -- see PointLight.h's doc.
+			//!
+			//! `bVolumeReceiver` (residual-ledger item 10 of
+			//! docs/PT_ENV_MIS_DOUBLECOUNT.md, 2026-08-27) IS implemented,
+			//! again exactly as PointLight's is and for the same
+			//! sibling-site reason (docs/skills/audit-by-bug-pattern.md).
+			//! When true the receiver cosine and its hemisphere gate are
+			//! dropped; `invDistSq` AND the spot CONE FALLOFF are both
+			//! KEPT, since each is a property of the EMITTER (its
+			//! inverse-square geometry and its angular emission profile),
+			//! not of the receiver's orientation.  A volume element inside
+			//! the cone is lit by exactly the cone-shaped emission a
+			//! surface patch there would see.
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false, const IORStack* pIORStack = 0 /* DL-157 P1: live stack for a stateful BSDF */ ) const override;
 
 			//! Per-wavelength direct lighting (cone falloff + wavelength-
 			//! specific transparent-shadow Fresnel).  See PointLight /
 			//! DirectionalLight; overrides the ILight RGB-projection default.
-			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm ) const;
+			//! `bFullSphereReceiver`: no-op, see the RGB override above.
+			//! `bVolumeReceiver`: implemented, see the RGB override above.
+			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false, const IORStack* pIORStack = 0 /* DL-157 P1: live stack for a stateful BSDF */ ) const override;
 
-			void	FinalizeTransformations();
+			// Overrides the PARENT-COMPOSED overload only -- Transformable's
+			// no-argument form delegates here, so ptPosition / vDirection are
+			// refreshed on every finalize, hierarchy-composed or not.
+			void	FinalizeTransformations( const Matrix4& parentWorld ) override;
+			using Transformable::FinalizeTransformations;
 
 			// For keyframamble interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
-			void RegenerateData()
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
+			void RegenerateData() override
 			{
 				Transformable::PreparedExternalMutationScope preparedMutation;
 				if( !preparedMutation.IsValid() ) return;
 				Transformable::RegenerateData();
 				vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
 			}
+            void ComputeDirectLightingSampled(const RayIntersectionGeometric& ri,
+                const IRayCaster& caster, const IBSDF& bsdf, bool shadows, RISEPel& amount,
+                bool fullSphere, bool volume, const IORStack* stack, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr) const override;
+            Scalar ComputeDirectLightingSampledNM(const RayIntersectionGeometric& ri,
+                const IRayCaster& caster, const IBSDF& bsdf, bool shadows, Scalar nm,
+                bool fullSphere, bool volume, const IORStack* stack, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr) const override;
+
 		};
 	}
 }

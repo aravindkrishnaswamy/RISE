@@ -126,6 +126,14 @@ struct ContentView: View {
                 viewModel.activeRegion = nil
             }
         }
+        // A refused undo/redo explains itself (RenderViewModel.historyNotice).
+        .alert("Undo/Redo refused",
+               isPresented: Binding(get: { viewModel.historyNotice != nil },
+                                    set: { if !$0 { viewModel.historyNotice = nil } })) {
+            Button("OK", role: .cancel) { viewModel.historyNotice = nil }
+        } message: {
+            Text(viewModel.historyNotice ?? "")
+        }
         // Theme mode re-render hook — see `themeModeRaw` doc above.
         .id(themeModeRaw)
     }
@@ -173,6 +181,17 @@ struct ContentView: View {
                 agentTabBody
             case .sceneFile:
                 SceneEditorPanel()
+            case .graph:
+                // doc-88 Phase 3 S15: the read-only Painter/Material node
+                // canvas ("Material Graph" in the tab strip).
+                // `viewModel.viewportBridge` is guaranteed non-nil here —
+                // `leftPanel` itself is only rendered from `mainArea` when
+                // `viewModel.viewportBridge != nil`.
+                NodeGraphCanvas(bridge: viewModel.viewportBridge, refreshTrigger: $propertyRefresh)
+            case .objects:
+                // Object Graph slice (S2): a fourth tab, sibling of
+                // `.graph`, same non-nil guarantee.
+                ObjectGraphCanvas(bridge: viewModel.viewportBridge, refreshTrigger: $propertyRefresh)
             }
         }
         .frame(width: CGFloat(leftPanelWidth))
@@ -215,6 +234,19 @@ struct ContentView: View {
             }
             leftPanelTabButton(title: "Scene file", isActive: viewModel.leftTab == .sceneFile, showDot: false) {
                 viewModel.leftTab = .sceneFile
+            }
+            // doc-88 Phase 3 S15: third tab for the read-only Painter/
+            // Material node canvas — same tab-strip idiom, zero new chrome.
+            // Label RENAMED to "Material Graph" (was the generic "Graph")
+            // once the Object Graph tab shipped as a sibling -- display
+            // string only, the `.graph` case name is unchanged.
+            leftPanelTabButton(title: "Material Graph", isActive: viewModel.leftTab == .graph, showDot: false) {
+                viewModel.leftTab = .graph
+            }
+            // Object Graph slice (S2): fourth tab, sibling of the above --
+            // the object hierarchy down to geometry (`ObjectGraphCanvas.swift`).
+            leftPanelTabButton(title: "Object Graph", isActive: viewModel.leftTab == .objects, showDot: false) {
+                viewModel.leftTab = .objects
             }
             Spacer(minLength: 0)
         }
@@ -297,7 +329,7 @@ struct ContentView: View {
                     // so the user couldn't clear it, and there's no RegionOverlay
                     // in the N-up panes to even show it.  Clear it on the way out,
                     // mirroring the chip's own clear path.
-                    .onChange(of: viewportLayout) { _, newLayout in
+                    .onChange(of: viewportLayout) { [weak vb] _, newLayout in
                         viewModel.regionDrawLayoutAvailable = (newLayout == .single)
                         if newLayout != .single {
                             // ViewportView owns the sole sceneTime ->
@@ -306,7 +338,11 @@ struct ContentView: View {
                             // the native scrub composite before N-up appears.
                             viewModel.stopPreviewPlay()
                             if viewModel.activeRegion != nil {
-                                vb.clearInteractiveRegion()
+                                // Weak: SwiftUI retains this onChange handler
+                                // across body passes; a torn-down bridge from
+                                // an in-flight scene switch must not be kept
+                                // alive by it.
+                                if let vb { vb.clearInteractiveRegion() }
                                 viewModel.activeRegion = nil
                             }
                             regionArmed = false
@@ -561,10 +597,14 @@ struct ContentView: View {
         let active = viewModel.activeRegion != nil
         let text = regionArmed ? "▧ Cancel Draw" : (active ? "▧ Region active ×" : "▧ Draw Region")
         let color: Color = regionArmed ? Theme.accent : (active ? Theme.warn : Theme.textFaint)
-        return Button {
+        return Button { [weak vb] in
                 if regionArmed {
                     regionArmed = false
                 } else if active {
+                    // Weak: Button retains this action closure past this
+                    // body pass; a torn-down bridge must not be kept alive
+                    // by it.
+                    guard let vb else { return }
                     vb.clearInteractiveRegion()
                     viewModel.activeRegion = nil
                 } else {

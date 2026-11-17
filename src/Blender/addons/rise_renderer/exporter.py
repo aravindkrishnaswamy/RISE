@@ -11,8 +11,35 @@ import bpy
 from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
 from mathutils import Vector
 
+from . import hair_file_writer
+from .bridge import resolve_rasterizer_selection
+from .hair_material_math import (
+    anisotropic_rotation_turns_to_radians,
+    melanin_to_eumelanin_pheomelanin,
+    offset_radians_to_alpha_degrees,
+)
+from .blender_compat import uses_nodes
+from .light_math import (
+    AREA_LIGHT_DISK_SEGMENTS,
+    area_light_exitance,
+    area_light_polygon_area,
+    unnormalized_power_scale,
+)
+from .principled_math import (
+    THIN_FILM_THICKNESS_CUTOFF_NM,
+    dielectric_film_substrate,
+    dispersion_keeps_positive_ior,
+    effective_abbe_number,
+)
+
 
 GEOMETRY_TYPES = {"MESH", "CURVE", "SURFACE", "FONT", "META"}
+# NOTE: Blender's modern hair/fur system uses object type "CURVES"
+# (bpy.types.Curves data), distinct from the legacy NURBS/Bezier
+# "CURVE" type already in GEOMETRY_TYPES above.  CURVES objects are
+# NOT added to GEOMETRY_TYPES -- `to_mesh()` (the whole GEOMETRY_TYPES
+# path) doesn't apply to a strand groom, so they're handled by their
+# own branch in export_scene() / _export_hair_object() below.
 
 PAINTER_UNIFORM = 0
 PAINTER_TEXTURE_PNG = 1
@@ -31,6 +58,9 @@ FILTER_BILINEAR = 1
 MODIFIER_BUMP = 0
 MODIFIER_NORMAL_MAP = 1
 
+# Deprecated Stage-A alias retained only for ABI v4 enum completeness;
+# post-Stage-B (`RISEPel = Rec709RGBPel`) all non-colour and normal-map
+# painters use `COLOR_SPACE_LINEAR` (`0` = `Rec709RGB_Linear`).
 COLOR_SPACE_ROMM_LINEAR = 2
 
 MATERIAL_LAMBERT = 0
@@ -44,6 +74,19 @@ MEDIUM_HOMOGENEOUS = 0
 MEDIUM_HETEROGENEOUS_VDB = 1
 
 MATERIAL_PBR_METALLIC_ROUGHNESS = 3
+# ABI v13 (DL-186, docs/DEBT_LEDGER.md).  A SEPARATE model from
+# MATERIAL_PBR_METALLIC_ROUGHNESS, mirroring MATERIAL_DIELECTRIC's own
+# mutual exclusivity with it below (transmission_heavy) -- Blender's
+# Principled BSDF blends diffuse/SSS by weight rather than layering
+# SSS under a specular stack, so RISE models it the same way: one
+# surface material, not a wrap.  See rise_blender_bridge.h's own
+# comment on the enumerator.
+MATERIAL_RANDOMWALK_SSS = 4
+
+# ABI v14 (DL-193, docs/DEBT_LEDGER.md) -- rise_blender_alpha_mode.
+ALPHA_MODE_OPAQUE = 0
+ALPHA_MODE_CLIP = 1
+ALPHA_MODE_BLEND = 2
 
 SUPPORTED_IMAGE_KINDS = {
     ".png": PAINTER_TEXTURE_PNG,
@@ -81,6 +124,7 @@ class RenderSettingsData:
     sms_use_levenberg_marquardt: bool
     sms_seeding_mode: int
     sms_target_bounces: int
+    sms_extended: bool
     adaptive_max_samples: int
     adaptive_threshold: float
     adaptive_show_map: bool
@@ -199,6 +243,12 @@ class ModifierData:
     source_painter_name: str
     scale: float
     window: float
+    # ABI v11.  MODIFIER_BUMP only: True selects the bridge's
+    # window-INDEPENDENT amplitude fold (RISE_API_CreateBumpMapModifierEx's
+    # normalizeGradient=true, `scale' = -scale`) instead of the legacy
+    # window-COUPLED one (`scale' = -scale*2*window`) that `IJob::
+    # AddBumpMapModifier` is ABI-frozen to.  Ignored by MODIFIER_NORMAL_MAP.
+    normalize: bool = False
 
 
 @dataclass
@@ -224,6 +274,85 @@ class MaterialData:
     anisotropy_factor_painter_name: str | None = None
     anisotropy_rotation_painter_name: str | None = None
     emissive_scale: float = 1.0
+    # ABI v12 (DL-18, docs/DEBT_LEDGER.md; source heading
+    # CLOTH_FABRIC_DESIGN.md §15 item 13).  PBR_METALLIC_ROUGHNESS only:
+    # `sheen_color_painter_name` set (non-None) means the bridge wraps
+    # this PBR material in a `fabric_material` sheen layer -- None (the
+    # default) means no sheen, bit-identical to a pre-v12 payload.
+    # `sheen_roughness` is the numeric Charlie-alpha fallback;
+    # `sheen_roughness_texture_painter_name` is set ONLY when Sheen
+    # Roughness is texture-driven (the one v12 texture exception,
+    # mirroring HairMaterialData's v10 beta_m/beta_n/ior fields above).
+    sheen_color_painter_name: str | None = None
+    sheen_roughness: float = 0.5
+    sheen_roughness_texture_painter_name: str | None = None
+    # ABI v13 (DL-186, docs/DEBT_LEDGER.md; source heading DL-151's own
+    # sibling audit).  PBR_METALLIC_ROUGHNESS only.  `coat_weight_-
+    # painter_name` set (non-None) means the bridge wraps this PBR
+    # material in a `coated_material` layer -- None (the default)
+    # means no coat, bit-identical to a pre-v13 payload.  Mirrors the
+    # sheen fields immediately above: `coat_weight`/`coat_roughness`
+    # are numeric fallbacks, the `*_texture_painter_name` fields are
+    # set ONLY when the corresponding Blender socket is texture-driven.
+    # `coat_tint_painter_name` is a colour painter name (None = no
+    # tint).  `coat_ior` is a plain numeric IOR, socket-default only.
+    coat_weight_texture_painter_name: str | None = None
+    coat_weight: float = 0.0
+    coat_tint_painter_name: str | None = None
+    coat_roughness_texture_painter_name: str | None = None
+    coat_roughness: float = 0.03
+    coat_ior: float = 1.5
+    # ABI v13 (DL-186).  Set together with `model=MATERIAL_RANDOMWALK_-
+    # SSS` (a SEPARATE model -- see that constant's own comment above).
+    # `subsurface_absorption`/`subsurface_scattering` are ALREADY-
+    # CONVERTED inline "r g b" numeric literal strings (the Radius/
+    # Scale/base-colour -> sigma_a/sigma_s conversion happens in
+    # `_material_payload` below, in Python, because that is where the
+    # raw untextured base-colour triple this conversion needs is
+    # already in hand -- see docs/BLENDER_MATERIAL_TRANSLATION.md
+    # "Subsurface").
+    subsurface_absorption: str | None = None
+    subsurface_scattering: str | None = None
+    subsurface_ior: float = 1.4
+    subsurface_g: float = 0.0
+    subsurface_roughness: float = 0.0
+    # ABI v14 (DL-192, docs/DEBT_LEDGER.md).  PBR_METALLIC_ROUGHNESS
+    # ONLY, and only meaningful when `coat_weight_texture_painter_name`/
+    # `coat_weight` above actually contribute a coat layer: Principled
+    # BSDF's Coat Normal socket (a Normal Map node, textured) ->
+    # `coated_material`'s coat-lobe-only tangent-space normal map.
+    # None (default) = no perturbation, bit-identical to a pre-v14
+    # payload.  `coat_normal_scale` is the Normal Map node's own
+    # "Strength" slider.
+    coat_normal_painter_name: str | None = None
+    coat_normal_scale: float = 1.0
+    # ABI v14 (DL-193, docs/DEBT_LEDGER.md).  Principled BSDF's Alpha
+    # socket.  `alpha_mode` (RISE_BLENDER_ALPHA_*, bridge.py) selects
+    # OPAQUE (default -- the other three fields are ignored, bit-
+    # identical to a pre-v14 payload) / CLIP / BLEND; see
+    # docs/BLENDER_MATERIAL_TRANSLATION.md "Alpha".
+    alpha: float = 1.0
+    alpha_texture_painter_name: str | None = None
+    alpha_mode: int = 0
+    alpha_threshold: float = 0.5
+    # ABI v18.  Principled "Thin Film Thickness" (nm) / "Thin Film IOR"
+    # (Blender 4.2+).  thickness <= 0 = no film (bit-identical to v17).
+    # PBR path: the base becomes a `ggx_material` in `thinfilm` Fresnel
+    # mode over a dielectric (Specular-IOR-Level-adjusted index) or a
+    # metal (F0 + F82 tint, turned
+    # into n(lambda), k(lambda) by the native bridge); DIELECTRIC path: a
+    # one-layer AR coating.  See rise_blender_bridge.h.
+    thin_film_thickness: float = 0.0
+    thin_film_ior: float = 1.33
+    thin_film_conductor: bool = False
+    thin_film_dielectric_ior: float = 1.5
+    thin_film_metal_f0: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    thin_film_metal_tint: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    # ABI v18.  Principled "Transmission Dispersion Abbe Number" /
+    # "Transmission Dispersion Scale" (Blender 5.3, OpenPBR 1.1.1),
+    # folded to the effective V_d = abbe / scale.  DIELECTRIC only;
+    # <= 0 = no dispersion.
+    dispersion_abbe: float = 0.0
 
 
 @dataclass
@@ -237,6 +366,8 @@ class MeshData:
     uv_indices: list[int]
     double_sided: bool
     use_face_normals: bool
+    tangent_attribute: list[float] = field(default_factory=list)
+    tangent_is_shader_direction: bool = False
 
     @property
     def num_vertices(self) -> int:
@@ -266,6 +397,12 @@ class ObjectData:
     visible: bool
     modifier_name: str | None = None
     interior_medium_name: str | None = None
+    # ABI v14 (DL-193, docs/DEBT_LEDGER.md): the alpha-aware
+    # `advanced_shader` name `_material_payload` registered for the
+    # bound material (via `_MaterialBinding.shader_name`), or None for
+    # an opaque material -- see `rise_blender_object.shader_name`'s own
+    # comment in rise_blender_bridge.h for the full contract.
+    shader_name: str | None = None
 
 
 @dataclass
@@ -296,6 +433,95 @@ class MediumData:
 
 
 @dataclass
+class HairMaterialData:
+    """Mirrors the `hair_material` scene chunk (Chiang et al. 2016)
+    parameter set -- see ChunkParserRegistry.cpp's
+    HairMaterialAsciiChunkParser -- one-to-one, in terms of the
+    exporter's own painter-reference model.  `tier` names which ONE of
+    the three colour tiers is bound (`hair_material` itself enforces
+    "exactly one"): "melanin" (eumelanin/pheomelanin painters set),
+    "sigma_a" (sigma_a painter set), or "color" (color painter set).
+
+    TWO REPRESENTATIONS, AND WHY.  Most parameters appear twice: as a
+    painter NAME (the `*_painter_name` fields, registered in
+    `state.painters`) and, for everything except `color`, as a plain
+    NUMBER.  The live-render bridge consumes the NUMBERS.  That is not
+    redundancy for its own sake -- `hair_material`'s `sigma_a` /
+    `eumelanin` / `pheomelanin` / `beta_m` / `beta_n` / `alpha` / `ior`
+    are `IScalarPainter` slots (docs/ISCALARPAINTER_REFACTOR.md), and
+    `Job::AddHairMaterial` rejects a plain `IPainter` name bound to one
+    of them outright.  Inline numeric literals ARE accepted there, so
+    numbers are what the bridge carries by default.  `color` is a
+    genuine `IPainter` slot and keeps full texture support.
+
+    THE THREE EXCEPTIONS (ABI v10).  `beta_m_texture_painter_name` /
+    `beta_n_texture_painter_name` / `ior_texture_painter_name` are set
+    ONLY when a real texture chain resolved on the corresponding
+    Blender socket, and the native bridge wraps the named colour painter
+    into an `IScalarPainter` (`PainterChannelScalarPainter`, channel R)
+    before handing its name to `AddHairMaterial`.  So a texture-driven
+    Roughness / Radial Roughness / IOR now reaches the renderer as a
+    real spatially-varying value.  When no texture is bound the field
+    stays `None` and the numeric field is used verbatim, unchanged from
+    before -- no extra painter, no extra indirection.
+
+    What still flattens to a constant: `eumelanin` / `pheomelanin` /
+    `sigma_a` (a melanin or absorption image has no defined
+    concentration-per-texel convention in RISE, unlike a roughness or
+    IOR map which is read as a literal physical value) and `alpha`
+    (Blender's `Offset` socket is never texture-sampled here -- a linked
+    Offset is read at its default and warned about).  See
+    docs/BLENDER_MATERIAL_TRANSLATION.md's hair section.
+    """
+
+    name: str
+    tier: str
+    eumelanin_painter_name: str | None = None
+    pheomelanin_painter_name: str | None = None
+    sigma_a_painter_name: str | None = None
+    color_painter_name: str | None = None
+    alpha_painter_name: str | None = None
+    # ABI v10 -- set ONLY when the socket is genuinely texture-driven.
+    beta_m_texture_painter_name: str | None = None
+    beta_n_texture_painter_name: str | None = None
+    ior_texture_painter_name: str | None = None
+    # Numeric form -- what `bridge.py` marshals into the native ABI.
+    eumelanin: float = 0.0
+    pheomelanin: float = 0.0
+    sigma_a: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    beta_m: float = 0.3
+    beta_n: float = 0.3
+    alpha_degrees: float = 2.0
+    ior: float = 1.55
+    # Melanin tier only.  When true (the default) the native bridge
+    # rescales the two concentrations for Blender visual parity; clear
+    # it to get RISE's own OMLC-anchored absorption instead.
+    apply_melanin_parity_rescale: bool = True
+
+
+@dataclass
+class HairObjectData:
+    """One hair/fur groom exported from a Blender Curves object: a
+    binary `.hair` file (Cem Yuksel format, written by
+    `hair_file_writer.write_hair_file`) staged to disk, plus the
+    object/transform/material binding the bridge turns into an
+    `AddHairGeometryFromFile` + `AddObject` pair on the RISE side (ABI
+    v9 -- `rise_blender_hair_object`).  The geometry itself is
+    registered natively under `<name>::hairgeom`; nothing here names it,
+    because a `.hair` file is written per Curves object and so there is
+    no groom to share.
+    """
+
+    name: str
+    file_path: str
+    material_name: str
+    transform: list[float]
+    width_root_scale: float = 1.0
+    width_tip_scale: float = 1.0
+    source_object_name: str = ""
+
+
+@dataclass
 class SceneData:
     camera: CameraData
     painters: list[PainterData]
@@ -314,6 +540,9 @@ class SceneData:
     world_radiance_orientation: tuple[float, float, float] = (0.0, 0.0, 0.0)
     world_radiance_is_background: bool = True
     warnings: list[str] = field(default_factory=list)
+    # Hair/fur grooms -- see HairObjectData / HairMaterialData above.
+    hair_objects: list[HairObjectData] = field(default_factory=list)
+    hair_materials: list[HairMaterialData] = field(default_factory=list)
 
 
 @dataclass
@@ -322,6 +551,13 @@ class _MaterialBinding:
     modifier_name: str | None
     interior_medium_name: str | None
     double_sided: bool
+    # ABI v14 (DL-193, docs/DEBT_LEDGER.md): the `<name>.shader`
+    # advanced_shader `_material_payload` registered when Alpha is
+    # active, or None for an opaque material -- computed once per
+    # material (mirrors `modifier_name`'s own per-material-computed,
+    # per-object-applied shape) and threaded into every `ObjectData`
+    # bound to this material.
+    shader_name: str | None = None
 
 
 @dataclass
@@ -356,6 +592,12 @@ class _ExportState:
         # round-trip them through a temp file because RISE's painter
         # loaders only accept filepaths.
         self.image_path_cache: dict[int, str] = {}
+        self.hair_objects: list[HairObjectData] = []
+        self.hair_materials: list[HairMaterialData] = []
+        # Keyed by `_pointer_key(material)` (int | None) for real
+        # materials, plus the string sentinel `"__default_hair__"` that
+        # `_default_hair_material` caches its shared fallback under.
+        self.hair_material_map: dict[int | str | None, str] = {}
 
 
 def _warn_once(state: _ExportState, message: str):
@@ -573,7 +815,8 @@ def _extract_mapping_transform(image_node, state: _ExportState | None, context_n
 
     # Each transform socket must be unlinked so we can read its
     # constant default_value.  Linked sockets imply per-point /
-    # procedural transforms RISE can't bake.
+    # procedural transforms this direct painter cannot translate. This
+    # restriction is separate from manual channel and Tangent child baking.
     def _socket_vec3(name: str, fallback: tuple[float, float, float]):
         sock = mapping.inputs.get(name)
         if sock is None or sock.is_linked:
@@ -897,11 +1140,196 @@ def _check_principled_feature(state: _ExportState, node, material_name: str, soc
 def _warn_unsupported_principled_features(state: _ExportState, material, wrapper: PrincipledBSDFWrapper):
     node = wrapper.node_principled_bsdf
     material_name = material.name_full
-    # Anisotropy + specular tint now flow through
-    # AddPBRMetallicRoughnessMaterial so they're not warned anymore.
-    _check_principled_feature(state, node, material_name, "Coat Weight", 0.0, "clearcoat")
-    _check_principled_feature(state, node, material_name, "Sheen Weight", 0.0, "sheen")
-    _check_principled_feature(state, node, material_name, "Subsurface Weight", 0.0, "subsurface")
+    # Anisotropy ("Anisotropic"/"Anisotropic Rotation"), Specular IOR
+    # Level, and Specular Tint (DL-151, docs/DEBT_LEDGER.md) now flow
+    # through AddPBRMetallicRoughnessMaterial, and Sheen now flows
+    # through fabric_material (DL-18, docs/DEBT_LEDGER.md), so none of
+    # these are warned about anymore.  (This comment previously claimed
+    # "specular tint" was already wired here -- it was not: nothing in
+    # this function read the "Specular Tint" socket until DL-151.)
+    # Coat ("Coat Weight"/"Coat Tint"/"Coat Roughness"/"Coat IOR") and
+    # Subsurface ("Subsurface Weight"/"Radius"/"Scale"/"IOR") now flow
+    # through coated_material / randomwalk_sss_material respectively
+    # (DL-186, docs/DEBT_LEDGER.md) -- removed from this generic
+    # warn-only sweep since both are read (and warned about
+    # PER-SOCKET, where relevant) below in `_material_payload`.
+    # "Coat Normal" is translated too (coat_normal_painter_name, ABI v14,
+    # DL-192), and "Tangent" is read by the independent DL-213 shader-
+    # direction producer (which is why the procedural-texture warning
+    # below skips that socket).
+    #
+    # Sockets newer than the PBR model RISE translates onto (Blender
+    # 4.3 Diffuse Roughness, 5.3 Thin Wall).  Thin Film (4.2) and
+    # Transmission Dispersion (5.3) ARE translated (ABI v18) and are
+    # not listed here.
+    if node is None:
+        return
+
+    def _matters(socket_name: str, default: float) -> bool:
+        socket = _node_input(node, socket_name)
+        return socket is not None and (socket.is_linked or float(socket.default_value) > default)
+
+    # Diffuse Roughness only shapes the PBR diffuse lobe.  The branches
+    # without one: fully metallic, the dielectric branch (Transmission
+    # >= 0.05, `transmission_heavy`) and the random-walk SSS branch.
+    def _constant_at_least(socket_name: str, threshold: float) -> bool:
+        socket = _node_input(node, socket_name)
+        return socket is not None and not socket.is_linked and float(socket.default_value) >= threshold
+
+    has_diffuse = not (
+        _constant_at_least("Metallic", 1.0 - 1.0e-4)
+        or _constant_at_least("Transmission Weight", 0.05)
+        or _constant_at_least("Subsurface Weight", 1.0e-4)
+    )
+    if has_diffuse and _matters("Diffuse Roughness", 1.0e-4):
+        _warn_once(
+            state,
+            f"RISE ignores Principled Diffuse Roughness on '{material_name}'; "
+            f"the base diffuse lobe stays Lambertian.",
+        )
+    thin_wall = _node_input(node, "Thin Wall")
+    if (thin_wall is not None and (thin_wall.is_linked or bool(thin_wall.default_value))
+            and _matters("Transmission Weight", 0.0)):
+        _warn_once(
+            state,
+            f"RISE ignores Principled Thin Wall on '{material_name}'; "
+            f"transmission is rendered as a solid (refracting) interface.",
+        )
+    # A single "Dispersion" socket is not part of the 5.2/5.3 Principled
+    # node; if a Blender version exposes one, say so rather than drop it.
+    if _matters("Dispersion", 0.0):
+        _warn_once(
+            state,
+            f"RISE does not translate the Principled 'Dispersion' socket on '{material_name}'; "
+            f"use Blender 5.3's Transmission Dispersion Scale / Abbe Number.",
+        )
+
+    # Procedural textures with no direct translation.  They classify as
+    # "simple" so the material keeps its direct path (routing them to the
+    # manual bake would replace metals / glass / coats with the bake's
+    # synthetic metallic-0 PBR), which means the input they feed loses
+    # their contribution -- say so, per input.
+    def _live_links(socket):
+        return [link for link in socket.links if not getattr(link, "is_muted", False)]
+
+    for socket in node.inputs:
+        if socket.name == "Tangent":
+            continue        # the Tangent producer bakes its whole linked graph (DL-213)
+        links = _live_links(socket) if socket.is_linked else []
+        if not links:
+            continue
+        stack = [links[0].from_node]
+        seen: set[int] = set()
+        while stack:
+            upstream = stack.pop()
+            if upstream is None or id(upstream) in seen or len(seen) > 64:
+                continue
+            seen.add(id(upstream))
+            if getattr(upstream, "mute", False):
+                continue
+            label = _UNTRANSLATED_PROCEDURAL_TEXTURES.get(upstream.bl_idname)
+            if label is not None:
+                _warn_once(
+                    state,
+                    f"RISE does not translate the procedural {label} texture feeding '{socket.name}' "
+                    f"on '{material_name}'; that input loses the texture's contribution (bake the "
+                    f"texture to an image in Blender to keep it).",
+                )
+                continue
+            for upstream_input in upstream.inputs:
+                upstream_links = _live_links(upstream_input) if upstream_input.is_linked else []
+                if upstream_links:
+                    stack.append(upstream_links[0].from_node)
+
+
+# Procedural texture nodes the classifier admits as "simple" but the
+# exporter does not translate (RISE has perlin3d / voronoi3d / checker
+# painters; the bridge does not emit them yet).
+_UNTRANSLATED_PROCEDURAL_TEXTURES = {
+    "ShaderNodeTexNoise": "Noise",
+    "ShaderNodeTexVoronoi": "Voronoi",
+    "ShaderNodeTexChecker": "Checker",
+}
+
+
+@dataclass
+class _ThinFilmSubstrate:
+    conductor: bool
+    dielectric_ior: float
+    metal_f0: tuple[float, float, float]
+    metal_tint: tuple[float, float, float]
+    film_tint: tuple[float, float, float] | None
+
+
+def _thin_film_substrate(state: _ExportState, material, node, base_color,
+                         metallic: float, specular_ior_level: float, anisotropy: float):
+    """Substrate of the `ggx_material` `thinfilm` base that replaces the
+    PBR base when a Principled Thin Film is present (ABI v18).
+
+    Both cases follow what Cycles renders once a film is present
+    (``intern/cycles/kernel/closure/bsdf_microfacet.h``):
+
+    - Dielectric (Metallic < 0.5): the Specular-IOR-Level-adjusted index
+      (k = 0) and Specular Tint as the film-reflectance tint, clamped to
+      [0, 1] (``principled_math.dielectric_film_substrate``).
+    - Conductor (Metallic >= 0.5): F0 = Base Color and the F82 tint =
+      Specular Tint, numerically; the native bridge applies Cycles'
+      Gulbrandsen estimate at every wavelength of their uplifted spectra
+      (``register_thin_film_metal_substrate``).
+
+    The film needs ONE substrate, so a partial or textured Metallic is
+    resolved to the nearer end with a warning, and every input it reads
+    numerically is read at its socket default.
+    """
+
+    name = material.name_full
+    metallic_socket = _node_input(node, "Metallic")
+    if metallic_socket is not None and metallic_socket.is_linked:
+        _warn_once(state, f"RISE resolves textured Metallic on thin-film '{name}' to its socket default "
+                          f"({metallic:.2f}); the film needs a single substrate.")
+    elif 1.0e-3 < metallic < 1.0 - 1.0e-3:
+        _warn_once(state, f"RISE resolves partial Metallic {metallic:.2f} on thin-film '{name}' to a "
+                          f"{'conductor' if metallic >= 0.5 else 'dielectric'} substrate.")
+    if anisotropy > 1.0e-4:
+        _warn_once(state, f"RISE renders the thin film on '{name}' over an isotropic GGX base; "
+                          f"Anisotropic is ignored there.")
+
+    if metallic >= 0.5:
+        for socket_name in ("Base Color", "Specular Tint"):
+            socket = _node_input(node, socket_name)
+            if socket is not None and socket.is_linked:
+                _warn_once(state, f"RISE derives the thin-film metal substrate on '{name}' from the "
+                                  f"{socket_name} socket default; a linked value is not sampled.")
+        tint_socket = _node_input(node, "Specular Tint")
+        if tint_socket is not None and tint_socket.type != "VALUE":
+            tint = _socket_default_color(node, "Specular Tint", (1.0, 1.0, 1.0))
+        else:
+            tint = (1.0, 1.0, 1.0)      # pre-4.0 float tint has no F82 meaning
+        return _ThinFilmSubstrate(conductor=True, dielectric_ior=1.5,
+                                  metal_f0=tuple(float(c) for c in base_color),
+                                  metal_tint=tuple(float(c) for c in tint), film_tint=None)
+
+    for socket_name in ("IOR", "Specular IOR Level", "Specular Tint"):
+        socket = _node_input(node, socket_name)
+        if socket is not None and socket.is_linked:
+            _warn_once(state, f"RISE derives the thin-film dielectric on '{name}' from the "
+                              f"{socket_name} socket default; a linked value is not sampled.")
+    # As in Cycles: Specular IOR Level adjusts the index the film sits on,
+    # and Specular Tint (clamped to [0, 1], see dielectric_film_substrate)
+    # scales the film reflectance.
+    tint_socket = _node_input(node, "Specular Tint")
+    if tint_socket is not None and tint_socket.type != "VALUE":
+        tint = _socket_default_color(node, "Specular Tint", (1.0, 1.0, 1.0))
+    else:
+        tint = (1.0, 1.0, 1.0)
+    if any(c > 1.0 + 1.0e-6 for c in tint):
+        _warn_once(state, f"RISE caps the Specular Tint on thin-film '{name}' at 1 per channel; "
+                          f"a brighter tint would push the film reflectance past 1.")
+    eta, film_tint = dielectric_film_substrate(
+        _socket_default_float(node, "IOR", 1.5), specular_ior_level, tint)
+    return _ThinFilmSubstrate(conductor=False, dielectric_ior=eta,
+                              metal_f0=(1.0, 1.0, 1.0), metal_tint=(1.0, 1.0, 1.0),
+                              film_tint=film_tint)
 
 
 class _ImageSocketWrapper:
@@ -936,7 +1364,7 @@ class _ImageSocketWrapper:
 
 
 # Shader nodes that pass colour / scalar through a Principled BSDF input
-# without enough information for RISE to bake them.  We treat them as
+# without direct translation of their filtering effect. We treat them as
 # transparent for texture-discovery purposes: artists routinely drop an
 # RGB Curves / Hue/Saturation / Bright-Contrast on a base-colour texture
 # to mildly tweak it.  We can't reproduce the curve in RISE, so the
@@ -1135,7 +1563,7 @@ def _find_any_principled_bsdf(material):
     Shader chains hide the connection).  Returns the node, or None
     if the material has no Principled BSDF at all."""
 
-    if not material.use_nodes or material.node_tree is None:
+    if not uses_nodes(material):
         return None
     for node in material.node_tree.nodes:
         if node.bl_idname == "ShaderNodeBsdfPrincipled":
@@ -1225,6 +1653,39 @@ def _direct_normal_modifier(material, wrapper: PrincipledBSDFWrapper, state: _Ex
     return None
 
 
+def _bump_modifier_scale(strength: float, distance: float, invert: bool) -> float:
+    """The signed amplitude a Blender Bump node exports to a RISE bump
+    modifier.  Pure: no bpy, so `test_hair_export.py` can pin it.
+
+    SIGN, which is the whole reason this is a named function
+    (docs/RELIEF_MODIFIER_DESIGN.md 12, "Fix round 2"):
+
+    Blender's Bump node with Invert OFF tilts the shading normal AWAY
+    from the up-slope -- `N - Strength*Distance*grad(h)`, the ordinary
+    Blinn/PBRT convention in which the height field is an ELEVATION.
+    RISE agrees at the `ReliefModifier` layer: `Modify` computes
+    `N - (T*h_T + B*h_B)*scale`, so a POSITIVE `scale` is the
+    Invert-OFF look.
+
+    But this exporter does not reach `ReliefModifier` directly.  It
+    goes through the ABI-frozen bump shim, whose `normalize=True` fold
+    is `scale' = -scale` (RISE_API_CreateBumpMapModifierEx), because
+    the removed `bumpmap_modifier` used the OPPOSITE, "the field is
+    depth" convention.  One negation in the chain, so this function
+    supplies the matching one:
+
+        Invert OFF   ->  -Strength*Distance   -> shim -> +S -> N - S*grad
+        Invert ON    ->  +Strength*Distance   -> shim -> -S -> N + S*grad
+
+    A negative `Strength` or `Distance` (Blender allows both) flows
+    through as-is and composes with `invert` exactly as it does in
+    Cycles -- two negations cancel.
+    """
+
+    magnitude = float(strength) * float(distance)
+    return magnitude if invert else -magnitude
+
+
 def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | None:
     nested_normal = _node_input(normal_node, "Normal")
     if nested_normal is not None and nested_normal.is_linked:
@@ -1258,7 +1719,8 @@ def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | No
         state, f"{material.name_full}_bump_height", painter_name, texture_wrapper)
     strength = _socket_default_float(normal_node, "Strength", 1.0)
     distance = _socket_default_float(normal_node, "Distance", 1.0)
-    modifier_key = ("bump", painter_name, round(strength * distance, 6))
+    scale = _bump_modifier_scale(strength, distance, bool(getattr(normal_node, "invert", False)))
+    modifier_key = ("bump", painter_name, round(scale, 6))
     if modifier_key in state.modifier_cache:
         return state.modifier_cache[modifier_key]
 
@@ -1268,20 +1730,98 @@ def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | No
             name=modifier_name,
             kind=MODIFIER_BUMP,
             source_painter_name=painter_name,
-            scale=float(strength * distance),
-            window=1.0,
+            scale=scale,
+            # Texture-space HALF-STEP for the central difference, in UV units.
+            #
+            # This was 1.0, which is not a small step -- it is the whole UV
+            # range.  RISE's bridge samples the height painter through
+            # `Painter::Evaluate`, which CLAMPS (u, v) to [0, 1], so a
+            # half-step of 1.0 made every central difference f(1, v) - f(0, v):
+            # the same two texels everywhere on the surface, i.e. a constant
+            # tilt of the shading normal rather than a bump.  0.005 is roughly a
+            # texel on a 200px map and a fraction of one on anything larger,
+            # which is what a finite-difference derivative estimate wants.
+            # (Fixed 2026-09-06 alongside the `bumpmap_modifier` removal; the
+            # bridge entry point is now a shim over `relief_modifier`, and the
+            # amplitude fold means the perturbation scales with this value --
+            # see docs/RELIEF_MODIFIER_DESIGN.md 7.2/7.5.)
+            window=0.005,
+            # normalize=True: without it, the shim's legacy fold COUPLES the
+            # delivered tilt to `window` (tilt ~ scale*2*window*grad), so
+            # shrinking `window` from 1.0 to 0.005 above -- correct on its own
+            # terms -- would ALSO have silently divided the tilt by ~200
+            # (2*0.005 / 2*1.0). normalize=True selects the bridge's
+            # window-independent fold instead (tilt ~ scale*grad, so the
+            # magnitude matches Blender's Bump node: Strength*Distance*
+            # gradient), so this window shrink is a pure step-size
+            # refinement, not an amplitude change.  See
+            # docs/RELIEF_MODIFIER_DESIGN.md 7.5 "Phase B review" for the
+            # fold, and 12 "Fix round 2" for the SIGN, which
+            # `_bump_modifier_scale` above carries and which the fold
+            # deliberately does not touch.
+            normalize=True,
         )
     )
     state.modifier_cache[modifier_key] = modifier_name
     return modifier_name
 
 
+def _build_coat_normal_painter(material, normal_map_node, state: _ExportState) -> tuple[str | None, float]:
+    """Translate a Principled BSDF Coat Normal's ShaderNodeNormalMap
+    into a registered COLOUR painter (NOT a modifier -- DL-192's
+    `coat_normal_painter_name` is a MATERIAL parameter, consumed only
+    by `coated_material`'s own coat lobe, unlike the surface's Normal
+    input which perturbs the whole shading point via an object-level
+    modifier).  Mirrors `_build_normal_map_modifier`'s own validation
+    and painter-registration steps exactly, stopping short of
+    registering a modifier.  Returns (painter_name, strength); either
+    element is (None, 1.0) if the node can't be resolved (already
+    warned by the caller or below).
+    """
+    if getattr(normal_map_node, "space", "TANGENT") != "TANGENT":
+        _warn_once(state, f"RISE only supports tangent-space Normal Map nodes on '{material.name_full}' (Coat Normal).")
+        return None, 1.0
+
+    color_input = _node_input(normal_map_node, "Color")
+    if color_input is None or not color_input.is_linked:
+        _warn_once(state, f"RISE only supports image-driven Normal Map nodes on '{material.name_full}' (Coat Normal).")
+        return None, 1.0
+
+    image_node = _walk_socket_for_image_node(color_input)
+    if image_node is None or image_node.bl_idname != "ShaderNodeTexImage":
+        _warn_once(state, f"RISE only supports direct image textures as Coat Normal sources on '{material.name_full}'.")
+        return None, 1.0
+
+    texture_wrapper = _ImageSocketWrapper(image_node, colorspace_is_data=True, colorspace_name="Non-Color")
+    validated = _validate_texture_wrapper(texture_wrapper, state, f"the Coat Normal on '{material.name_full}'")
+    if not validated:
+        return None, 1.0
+
+    filepath, _color_space_ignored = validated
+    kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
+    # Same Rec709RGB_Linear (`COLOR_SPACE_LINEAR = 0`) verbatim-passthrough
+    # convention `_build_normal_map_modifier` uses for the object-level
+    # normal map -- see that function's own comment.
+    painter_name = _add_texture_painter(
+        state,
+        f"{material.name_full}_coat_normal",
+        filepath,
+        kind,
+        COLOR_SPACE_LINEAR,
+    )
+    painter_name = _maybe_wrap_with_uv_transform(
+        state, f"{material.name_full}_coat_normal", painter_name, texture_wrapper)
+    strength = float(_socket_default_float(normal_map_node, "Strength", 1.0))
+    return painter_name, strength
+
+
 def _build_normal_map_modifier(material, normal_map_node, state: _ExportState) -> str | None:
     """Translate a ShaderNodeNormalMap into a RISE NormalMap modifier.
 
     Mirrors glTF KHR normalTexture semantics: the painter must be
-    loaded as ROMMRGB_Linear so the RGB-encoded tangent stays
-    bit-exact, and the strength scalar maps to normalTexture.scale.
+    loaded as Rec709RGB_Linear (`COLOR_SPACE_LINEAR = 0`) so the
+    RGB-encoded tangent stays bit-exact, and the strength scalar maps
+    to normalTexture.scale.
     """
 
     if getattr(normal_map_node, "space", "TANGENT") != "TANGENT":
@@ -1305,16 +1845,16 @@ def _build_normal_map_modifier(material, normal_map_node, state: _ExportState) -
 
     filepath, _color_space_ignored = validated
     kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
-    # Normal-map painters MUST be loaded as ROMM-Linear to bypass
-    # both gamma decoding AND the Rec709->ROMM matrix that would
-    # otherwise warp the encoded tangent (see RISE comments on
-    # AddNormalMapModifier).
+    # Normal-map painters MUST be loaded as Rec709RGB_Linear
+    # (`COLOR_SPACE_LINEAR = 0`) -- RISE's native working space -- to
+    # bypass both gamma decoding AND any colour-space primary matrix
+    # that would warp the encoded tangent (matching GLTFSceneImporter).
     painter_name = _add_texture_painter(
         state,
         f"{material.name_full}_normal",
         filepath,
         kind,
-        COLOR_SPACE_ROMM_LINEAR,
+        COLOR_SPACE_LINEAR,
     )
     painter_name = _maybe_wrap_with_uv_transform(
         state, f"{material.name_full}_normal", painter_name, texture_wrapper)
@@ -1542,19 +2082,12 @@ def _export_heterogeneous_medium(
 
 
 def _find_material_output(material):
-    if not material.use_nodes or material.node_tree is None:
-        return None
-    for node in material.node_tree.nodes:
-        if node.bl_idname == "ShaderNodeOutputMaterial" and getattr(node, "is_active_output", False):
-            return node
-    for node in material.node_tree.nodes:
-        if node.bl_idname == "ShaderNodeOutputMaterial":
-            return node
-    return None
+    from .tangent_bake import find_material_output
+    return find_material_output(material)
 
 
 def _find_world_output(world):
-    if not world.use_nodes or world.node_tree is None:
+    if not uses_nodes(world):
         return None
     for node in world.node_tree.nodes:
         if node.bl_idname == "ShaderNodeOutputWorld" and getattr(node, "is_active_output", False):
@@ -1573,7 +2106,7 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     if material is None:
         return _default_surface_binding(state)
 
-    if not material.use_nodes or material.node_tree is None:
+    if not uses_nodes(material):
         base = _add_uniform_painter(state, f"{material.name_full}_base", _float_color3(material.diffuse_color))
         payload = MaterialData(
             name=_unique_name(state, "mat", material.name_full),
@@ -1591,19 +2124,13 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         state.material_map[key] = binding
         return binding
 
-    # Bake-on-export consumer.  When the user has run "Bake
-    # Procedural Materials for RISE" (or the equivalent operator),
-    # complex materials carry ID properties pointing at PNG bakes of
-    # their Diffuse / Roughness / Normal channels.  See
-    # ``material_bake.py`` and docs/BLENDER_MATERIAL_TRANSLATION.md.
-    #
-    # When those PNGs exist, we skip the node-graph walker entirely
-    # and build a synthetic Principled-like material from the bakes.
-    # The bake captures the FULL graph output (Mix Shaders, AO,
-    # procedural noise, everything) — recombining via the wrapper
-    # would double-apply effects.  Other Principled features
-    # (metallic, transmission, sheen) are intentionally dropped:
-    # they're already folded into the baked diffuse / roughness.
+    # Consumer of the explicit manual channel-image cache; no automatic bake.
+    # Only an existing diffuse PNG selects this synthetic dielectric branch;
+    # roughness and normal are optional. Any-channel cache can affect the
+    # operator skip without satisfying this branch. No freshness hash is checked.
+    # DIFFUSE COLOR is not complete shader response or conductor F0. Metallic0
+    # and the three-channel approximation drop metallic/transmission/sheen/
+    # coat/emission/subsurface/alpha lobes instead of reconstructing them.
     try:
         from . import material_bake as _material_bake
         baked = _material_bake.baked_paths(material)
@@ -1639,7 +2166,7 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 f"{material.name_full}_baked_normal",
                 baked["normal"],
                 PAINTER_TEXTURE_PNG,
-                COLOR_SPACE_ROMM_LINEAR,
+                COLOR_SPACE_LINEAR,
             )
             modifier_name = _unique_name(state, "mod", f"{material.name_full}_normalmap")
             state.modifiers.append(
@@ -1652,16 +2179,10 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 )
             )
 
-        # Metallic — the C++ bridge's `add_pbr_metallic_roughness_material`
-        # rejects a payload with `metallic_painter_name == NULL`.  Baked
-        # diffuse already absorbs whatever conductor F0 the original
-        # shader had (the bake captures the visual result), so treat
-        # the baked material as a pure dielectric (metallic=0) and let
-        # the diffuse PNG carry the colour.  Authoring a metallic
-        # version would need a separate `EMIT` bake of the metallic
-        # channel via Emit-from-metallic-input — out of scope for the
-        # first pass, see docs/BLENDER_MATERIAL_TRANSLATION.md
-        # "Capabilities to extend later".
+        # Supply the required bridge slot as metallic0. DIFFUSE COLOR does
+        # not absorb conductor F0; a fully metallic shader can bake black.
+        # This synthetic dielectric is a lossy approximation, not the original
+        # material's full response. No metallic-channel bake is implemented.
         metallic_painter = _add_uniform_painter(
             state, f"{material.name_full}_baked_metallic_const", (0.0, 0.0, 0.0))
 
@@ -1690,6 +2211,13 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         return binding
 
     wrapper = PrincipledBSDFWrapper(material, is_readonly=True)
+    # Official wrapper scans node order without renderer-target semantics.
+    # Bind its read-only accessors to the SAME selected Surface/socket as the
+    # classifier and direction producer, retaining supported texture access.
+    from .material_bake import _find_principled_through_surface
+    selected_output = _find_material_output(material)
+    wrapper.node_out = selected_output
+    wrapper.node_principled_bsdf = _find_principled_through_surface(selected_output)
     if wrapper.node_principled_bsdf is None:
         # PrincipledBSDFWrapper couldn't trace from Material Output
         # Surface back to a single Principled BSDF — usually because
@@ -1698,7 +2226,8 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         # BSDF anywhere in the graph; lossy (we drop the mix factor)
         # but produces sensible per-material results, vs. the prior
         # behaviour of using the viewport-grey `material.diffuse_color`.
-        any_principled = _find_any_principled_bsdf(material)
+        has_outputs = any(n.bl_idname == 'ShaderNodeOutputMaterial' for n in material.node_tree.nodes)
+        any_principled = _find_any_principled_bsdf(material) if selected_output is not None or not has_outputs else None
         if any_principled is not None:
             _warn_once(
                 state,
@@ -1708,7 +2237,7 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         else:
             _warn_once(
                 state,
-                f"RISE falls back to viewport material values when '{material.name_full}' does not use a Principled BSDF output chain.",
+                f"RISE falls back to viewport material values when '{material.name_full}' has no supported Principled BSDF chain on the selected Cycles/ALL output.",
             )
             base = _add_uniform_painter(state, f"{material.name_full}_base", _float_color3(material.diffuse_color))
             payload = MaterialData(
@@ -1740,15 +2269,16 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     principled_node = wrapper.node_principled_bsdf
 
     base_color = _float_color3(wrapper.base_color)
+    base_color_texture = _maybe_resolve_socket_texture(
+        principled_node, "Base Color",
+        wrapper.base_color_texture,
+        colorspace_is_data=False,
+    )
     base_painter = _color_or_texture_painter(
         state,
         f"{material.name_full}_base",
         base_color,
-        texture_wrapper=_maybe_resolve_socket_texture(
-            principled_node, "Base Color",
-            wrapper.base_color_texture,
-            colorspace_is_data=False,
-        ),
+        texture_wrapper=base_color_texture,
     )
 
     metallic = _clamp01(wrapper.metallic)
@@ -1797,20 +2327,401 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         scale=2.0,
     )
 
+    # Specular Tint slot -- KHR_materials_specular `specularColorFactor`
+    # (DL-151, docs/DEBT_LEDGER.md; no source-doc heading, opened by the
+    # debt-dl18 slice's sibling audit while confirming DL-18's own
+    # closure).  `specular_color_painter_name` has been in the ABI since
+    # Landing 7 and `add_pbr_metallic_roughness_material` already
+    # forwards it straight through to `Job::AddPBRMetallicRoughnessMaterial`'s
+    # `specular_color` argument -- see that function's KHR_materials_specular
+    # blend chain (`F0_dielectric = 0.04 * specular_color * specular_factor`)
+    # and `GLTFSceneImporter.cpp`'s identical `KHR_materials_specular`
+    # handling, which this mapping mirrors.  The gap was exporter-side
+    # only: nothing here ever read Blender's "Specular Tint" socket.
+    #
+    # Blender 4.x's Principled BSDF exposes "Specular Tint" as an RGB
+    # colour socket, authored directly (default white = no tint).
+    # Blender 3.x's Principled BSDF used the SAME socket NAME for a
+    # float 0..1 slider that blends white -> base colour instead --
+    # matching Blender's own Cycles shader (`node_principled_bsdf.osl`
+    # / `svm_node_principled` pre-4.0): `spec_tint = mix(white,
+    # base_color, specular_tint)`.  This add-on's `bl_info` (`__init__.py`)
+    # declares Blender 4.0 as the minimum supported version, so the
+    # float branch is not reachable through this add-on today -- kept
+    # for robustness (dispatched on the socket's own `.type`, not a
+    # `bpy.app.version` check, matching this file's existing
+    # `inp.type == "RGBA"` convention elsewhere) since a live Blender
+    # 3.x Principled node has not been independently re-verified from
+    # this sandbox (no `bpy` available here -- same hedge as the
+    # "Velvet (legacy `Velvet BSDF` node)" section of
+    # docs/BLENDER_MATERIAL_TRANSLATION.md).
+    specular_tint_socket = _node_input(principled_node, "Specular Tint")
+    specular_color_painter = None
+    if specular_tint_socket is not None and specular_tint_socket.type == "VALUE":
+        if specular_tint_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled Specular Tint on '{material.name_full}' at its socket default; "
+                f"a linked/textured pre-4.0 float tint is not sampled.",
+            )
+        specular_tint_amount = _clamp01(_socket_default_float(principled_node, "Specular Tint", 0.0))
+        if specular_tint_amount > 1e-4:
+            tinted_color = tuple(
+                1.0 + specular_tint_amount * (base_color[index] - 1.0) for index in range(3)
+            )
+            specular_color_painter = _add_uniform_painter(
+                state, f"{material.name_full}_specular_tint", tinted_color,
+            )
+    elif specular_tint_socket is not None:
+        specular_tint_default = _socket_default_color(principled_node, "Specular Tint", (1.0, 1.0, 1.0))
+        specular_tint_texture = _maybe_resolve_socket_texture(
+            principled_node, "Specular Tint", None, colorspace_is_data=False,
+        )
+        is_default_white = (
+            specular_tint_texture is None
+            and abs(specular_tint_default[0] - 1.0) < 1e-4
+            and abs(specular_tint_default[1] - 1.0) < 1e-4
+            and abs(specular_tint_default[2] - 1.0) < 1e-4
+        )
+        if not is_default_white:
+            specular_color_painter = _color_or_texture_painter(
+                state,
+                f"{material.name_full}_specular_tint",
+                specular_tint_default,
+                texture_wrapper=specular_tint_texture,
+            )
+
     # Anisotropy and rotation — read sockets directly because the
     # PrincipledBSDFWrapper doesn't surface them.
     anisotropy_value = _clamp01(_socket_default_float(principled_node, "Anisotropic", 0.0))
-    anisotropy_rotation_value = float(_socket_default_float(principled_node, "Anisotropic Rotation", 0.0))
+    # DL-208 (docs/DEBT_LEDGER.md): Blender's "Anisotropic Rotation"
+    # socket is a [0,1] FRACTION OF A FULL TURN (Cycles applies
+    # `2*pi*value` internally) -- NOT radians, unlike every other
+    # angle-typed socket this file reads (e.g. Principled Hair BSDF's
+    # "Offset" a few hundred lines below, already radians; a
+    # ShaderNodeVectorRotate "Angle" socket below, also radians).
+    # RISE's `tangent_rotation`/`tangent_rotation_scalar` are radians
+    # (`MicrofacetUtils::RotateTangent` calls raw cos/sin on the value;
+    # `weave_rotation`'s own descriptor says radians), so the turn
+    # fraction is converted here, at the read, before anything composes
+    # with it.
+    anisotropy_rotation_value = anisotropic_rotation_turns_to_radians(
+        _socket_default_float(principled_node, "Anisotropic Rotation", 0.0)
+    )
     anisotropy_factor_painter = _add_uniform_painter(
         state,
         f"{material.name_full}_anisotropy",
         (anisotropy_value, anisotropy_value, anisotropy_value),
     ) if anisotropy_value > 1e-4 else None
+    # DL-213: the mesh producer handles every linked Tangent graph. Vector
+    # Rotate belongs to that graph (world coordinates), not to this material's
+    # rotation slot; adding its angle here would rotate the baked basis twice.
+    # Principled's Anisotropic Rotation above remains a separate frame rotation.
+
     anisotropy_rotation_painter = _add_uniform_painter(
         state,
         f"{material.name_full}_anisotropy_rotation",
         (anisotropy_rotation_value, anisotropy_rotation_value, anisotropy_rotation_value),
     ) if abs(anisotropy_rotation_value) > 1e-4 else None
+
+    # Sheen (DL-18, docs/DEBT_LEDGER.md; source heading
+    # CLOTH_FABRIC_DESIGN.md §15 item 13) — Blender 4.x Principled
+    # sockets "Sheen Weight" / "Sheen Tint" (colour) / "Sheen Roughness".
+    # Mirrors GLTFSceneImporter.cpp's KHR_materials_sheen handling:
+    # `sheen_weight * sheen_tint` becomes `fabric_material`'s
+    # `sheen_color` in one slot — the max channel there IS the
+    # energy-split weight (see fabric_material's own descriptor), the
+    # same single-slot contract glTF's `sheenColorFactor` already uses,
+    # so folding Blender's separate Weight into the colour reproduces it
+    # exactly.  "Sheen Weight" is read at its socket default only (like
+    # "Coat Weight"/"Absorption Coefficient" elsewhere in this file) —
+    # RISE has no multiply-painter primitive to combine an independently
+    # textured weight with an independently textured tint, and Blender
+    # artists overwhelmingly paint the TINT, not the weight.
+    sheen_weight = _clamp01(_socket_default_float(principled_node, "Sheen Weight", 0.0))
+    sheen_weight_socket = _node_input(principled_node, "Sheen Weight")
+    if sheen_weight_socket is not None and sheen_weight_socket.is_linked:
+        _warn_once(
+            state,
+            f"RISE reads Principled Sheen Weight on '{material.name_full}' at its socket default; "
+            f"a linked/textured weight is not sampled.",
+        )
+
+    sheen_color_painter = None
+    sheen_roughness_value = 0.5
+    sheen_roughness_texture_painter = None
+    if sheen_weight > 1e-4:
+        sheen_tint = _socket_default_color(principled_node, "Sheen Tint", (1.0, 1.0, 1.0))
+        sheen_tint_texture = _maybe_resolve_socket_texture(
+            principled_node, "Sheen Tint", None, colorspace_is_data=False,
+        )
+        sheen_color_painter = _color_or_texture_painter(
+            state,
+            f"{material.name_full}_sheen_color",
+            sheen_tint,
+            texture_wrapper=sheen_tint_texture,
+            scale=(sheen_weight, sheen_weight, sheen_weight),
+        )
+
+        sheen_roughness_value = _clamp01(_socket_default_float(principled_node, "Sheen Roughness", 0.5))
+        sheen_roughness_texture = _maybe_resolve_socket_texture(
+            principled_node, "Sheen Roughness", None, colorspace_is_data=True,
+        )
+        if sheen_roughness_texture is not None:
+            sheen_roughness_texture_painter = _scalar_or_texture_painter(
+                state,
+                f"{material.name_full}_sheen_roughness",
+                sheen_roughness_value,
+                texture_wrapper=sheen_roughness_texture,
+            )
+
+    # Coat (DL-186, docs/DEBT_LEDGER.md; source heading DL-151's own
+    # sibling audit) -- Blender's Principled "Coat Weight" / "Coat
+    # Tint" (colour) / "Coat Roughness" / "Coat IOR" ->
+    # `coated_material`.  Mirrors GLTFSceneImporter.cpp's own
+    # KHR_materials_clearcoat handling: coat_weight <->
+    # clearcoat_factor, coat_roughness is Blender's PERCEPTUAL
+    # roughness [0,1] (the native bridge SQUARES it into a GGX alpha
+    # before calling AddCoatedMaterial -- see rise_blender_bridge.cpp's
+    # own comment on `coat_roughness`, matching
+    # `clearcoat_roughness_factor^2`).  Unlike glTF clearcoat (which
+    # has no IOR concept of its own and hardcodes 1.5), Blender's
+    # Principled DOES expose a real "Coat IOR" socket, read here.
+    coat_weight_value = _clamp01(_socket_default_float(principled_node, "Coat Weight", 0.0))
+    coat_weight_socket = _node_input(principled_node, "Coat Weight")
+    coat_weight_texture_painter = None
+    if coat_weight_socket is not None and coat_weight_socket.is_linked:
+        coat_weight_texture = _maybe_resolve_socket_texture(
+            principled_node, "Coat Weight", None, colorspace_is_data=True,
+        )
+        if coat_weight_texture is not None:
+            coat_weight_texture_painter = _scalar_or_texture_painter(
+                state,
+                f"{material.name_full}_coat_weight",
+                coat_weight_value,
+                texture_wrapper=coat_weight_texture,
+            )
+        if coat_weight_texture_painter is None:
+            _warn_once(
+                state,
+                f"RISE reads Principled Coat Weight on '{material.name_full}' at its socket default; "
+                f"a linked/textured weight not resolvable to an image texture is not sampled.",
+            )
+
+    coat_tint_painter = None
+    coat_roughness_value = 0.03
+    coat_roughness_texture_painter = None
+    coat_ior_value = 1.5
+    coat_normal_painter = None
+    coat_normal_scale = 1.0
+    coat_contributes = coat_weight_value > 1e-4 or coat_weight_texture_painter is not None
+    if coat_contributes:
+        coat_tint_default = _socket_default_color(principled_node, "Coat Tint", (1.0, 1.0, 1.0))
+        coat_tint_texture = _maybe_resolve_socket_texture(
+            principled_node, "Coat Tint", None, colorspace_is_data=False,
+        )
+        is_default_white = (
+            coat_tint_texture is None
+            and abs(coat_tint_default[0] - 1.0) < 1e-4
+            and abs(coat_tint_default[1] - 1.0) < 1e-4
+            and abs(coat_tint_default[2] - 1.0) < 1e-4
+        )
+        if not is_default_white:
+            coat_tint_painter = _color_or_texture_painter(
+                state,
+                f"{material.name_full}_coat_tint",
+                coat_tint_default,
+                texture_wrapper=coat_tint_texture,
+            )
+
+        coat_roughness_value = _clamp01(_socket_default_float(principled_node, "Coat Roughness", 0.03))
+        coat_roughness_texture = _maybe_resolve_socket_texture(
+            principled_node, "Coat Roughness", None, colorspace_is_data=True,
+        )
+        if coat_roughness_texture is not None:
+            coat_roughness_texture_painter = _scalar_or_texture_painter(
+                state,
+                f"{material.name_full}_coat_roughness",
+                coat_roughness_value,
+                texture_wrapper=coat_roughness_texture,
+            )
+
+        coat_ior_socket = _node_input(principled_node, "Coat IOR")
+        if coat_ior_socket is not None and coat_ior_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled Coat IOR on '{material.name_full}' at its socket default; "
+                f"a linked/textured IOR is not sampled.",
+            )
+        coat_ior_value = max(1.0, float(_socket_default_float(principled_node, "Coat IOR", 1.5)))
+
+        # Coat Normal (DL-192, docs/DEBT_LEDGER.md): a Normal Map node,
+        # textured -> `coated_material`'s coat-lobe-only tangent-space
+        # normal map.  Registered as a PAINTER (not a modifier -- unlike
+        # the surface's own Normal input, this one is a material
+        # PARAMETER, `coat_normal_painter_name`, consumed only by the
+        # coat's own GGX lobe).  Mirrors `_direct_normal_modifier`'s own
+        # "direct Normal Map node, or warn" gate.
+        coat_normal_input = _node_input(principled_node, "Coat Normal")
+        if coat_normal_input is not None and coat_normal_input.is_linked:
+            coat_normal_source = _skip_reroutes(coat_normal_input.links[0].from_node)
+            if coat_normal_source is not None and coat_normal_source.bl_idname == "ShaderNodeNormalMap":
+                coat_normal_painter, coat_normal_scale = _build_coat_normal_painter(
+                    material, coat_normal_source, state)
+            else:
+                _warn_once(
+                    state,
+                    f"RISE only supports a direct Normal Map node on Coat Normal for '{material.name_full}'.",
+                )
+
+        # LAYERING DECISION (docs/BLENDER_MATERIAL_TRANSLATION.md "Coat
+        # and Subsurface"), UPDATED 2026-09-27: this USED TO warn and
+        # drop the coat when Sheen also contributed, mirroring
+        # GLTFSceneImporter.cpp's own (also since-updated)
+        # KHR_materials_clearcoat + KHR_materials_sheen handling --
+        # `coated_material`'s substrate allowlist did not accept a
+        # `fabric_material` (the sheen result).  DL-23
+        # (docs/DEBT_LEDGER.md, closed 2026-09-14) lifted that
+        # allowlist refusal, and the native bridge
+        # (rise_blender_bridge.cpp's `add_pbr_metallic_roughness_material`)
+        # now composes a `coated_material` wrapping the sheen's
+        # `fabric_material` result instead of skipping it -- so no
+        # warning belongs here any more; both fields simply combine.
+        # (No `_material_payload` code change was otherwise needed:
+        # `coat_*` and `sheen_*` fields are forwarded independently and
+        # the native bridge alone decides how to compose them.)
+
+    # Subsurface (DL-186, docs/DEBT_LEDGER.md) -- Blender's Principled
+    # "Subsurface Weight" / "Subsurface Radius" (RGB vector, scene
+    # units) / "Subsurface Scale" / "Subsurface IOR" / "Subsurface
+    # Anisotropy" -> `randomwalk_sss_material`.  A SEPARATE model from
+    # PBR_METALLIC_ROUGHNESS (see MATERIAL_RANDOMWALK_SSS's own
+    # comment above) -- Blender's own Principled blends diffuse/SSS by
+    # weight rather than layering SSS under a specular stack.
+    #
+    # THE CONVERSION.  RandomWalkSSS wants sigma_a/sigma_s (absorption/
+    # scattering coefficients, 1/length), while Blender authors Radius
+    # (a mean-free-path-like distance per channel) + Scale + a base
+    # colour (the single-scattering albedo).  This uses the classic
+    # single-scattering-albedo relation -- NOT PBRT's/Blender's own
+    # photon-beam-diffusion inversion (Christensen-Burley), which needs
+    # a lookup-table fit this bridge does not carry.  Per channel:
+    #   mfp   = max(radius * scale, epsilon)
+    #   sigma_t = 1 / mfp
+    #   albedo  = clamp(base_color, 0, 0.999)      # avoid the albedo=1 singularity
+    #   sigma_s = albedo * sigma_t
+    #   sigma_a = (1 - albedo) * sigma_t
+    # This is a documented APPROXIMATION (docs/BLENDER_MATERIAL_-
+    # TRANSLATION.md "Subsurface") -- it reproduces the right ORDER of
+    # magnitude and the right per-channel colour bias (redder radius ->
+    # more red scattering) but will not photometrically match Cycles'
+    # own diffusion-profile fit.
+    subsurface_weight_value = _clamp01(_socket_default_float(principled_node, "Subsurface Weight", 0.0))
+    subsurface_weight_socket = _node_input(principled_node, "Subsurface Weight")
+    if subsurface_weight_socket is not None and subsurface_weight_socket.is_linked:
+        _warn_once(
+            state,
+            f"RISE reads Principled Subsurface Weight on '{material.name_full}' at its socket default; "
+            f"a linked/textured weight is not sampled.",
+        )
+
+    subsurface_contributes = subsurface_weight_value > 1e-4
+    subsurface_absorption_literal = None
+    subsurface_scattering_literal = None
+    subsurface_ior_value = 1.4
+    subsurface_g_value = 0.0
+    if subsurface_contributes:
+        radius_socket = _node_input(principled_node, "Subsurface Radius")
+        radius_default = (1.0, 0.2, 0.1)
+        if radius_socket is not None:
+            if radius_socket.is_linked:
+                _warn_once(
+                    state,
+                    f"RISE reads Principled Subsurface Radius on '{material.name_full}' at its socket "
+                    f"default; a linked/textured radius is not sampled.",
+                )
+            radius_default = tuple(float(radius_socket.default_value[index]) for index in range(3))
+
+        subsurface_scale_value = max(
+            0.0, float(_socket_default_float(principled_node, "Subsurface Scale", 0.05)))
+        subsurface_scale_socket = _node_input(principled_node, "Subsurface Scale")
+        if subsurface_scale_socket is not None and subsurface_scale_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled Subsurface Scale on '{material.name_full}' at its socket "
+                f"default; a linked/textured scale is not sampled.",
+            )
+
+        subsurface_ior_socket = _node_input(principled_node, "Subsurface IOR")
+        if subsurface_ior_socket is not None and subsurface_ior_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled Subsurface IOR on '{material.name_full}' at its socket "
+                f"default; a linked/textured IOR is not sampled.",
+            )
+        # DL-291: exported verbatim as the material's ABSOLUTE index (Blender
+        # authors it against air).  RISE prices the SSS boundary at the
+        # RELATIVE index against the live exterior (`ambientIOR`), so this is
+        # deliberately NOT divided by any enclosing medium here -- the export
+        # assumes air by construction, and RISE does the rest at render time.
+        subsurface_ior_value = max(1.0, float(_socket_default_float(principled_node, "Subsurface IOR", 1.4)))
+
+        subsurface_anisotropy_socket = _node_input(principled_node, "Subsurface Anisotropy")
+        if subsurface_anisotropy_socket is not None and subsurface_anisotropy_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled Subsurface Anisotropy on '{material.name_full}' at its socket "
+                f"default; a linked/textured anisotropy is not sampled.",
+            )
+        subsurface_g_value = max(-1.0, min(1.0, float(
+            _socket_default_float(principled_node, "Subsurface Anisotropy", 0.0))))
+
+        albedo_source = base_color
+        if base_color_texture is not None:
+            _warn_once(
+                state,
+                f"RISE approximates Subsurface on '{material.name_full}' using Base Color's socket "
+                f"default (not its texture) as the single-scattering albedo; a textured base colour "
+                f"with Subsurface Weight > 0 does not vary the SSS colour across the surface.",
+            )
+            albedo_source = _socket_default_color(principled_node, "Base Color", (0.8, 0.8, 0.8))
+
+        _SSS_EPS = 1.0e-6
+        sigma_a_channels = []
+        sigma_s_channels = []
+        for channel_index in range(3):
+            mfp = max(radius_default[channel_index] * subsurface_scale_value, _SSS_EPS)
+            sigma_t = 1.0 / mfp
+            albedo = max(0.0, min(0.999, float(albedo_source[channel_index])))
+            sigma_s_channels.append(albedo * sigma_t)
+            sigma_a_channels.append((1.0 - albedo) * sigma_t)
+        subsurface_absorption_literal = "{:.9g} {:.9g} {:.9g}".format(*sigma_a_channels)
+        subsurface_scattering_literal = "{:.9g} {:.9g} {:.9g}".format(*sigma_s_channels)
+
+    # ----- Thin film (Blender 4.2+) and transmission dispersion (5.3) -----
+    # ABI v18.  Both are read at their socket defaults; a linked input is
+    # diagnosed rather than silently sampled at one value.  The film's
+    # placement depends on the branch chosen below (GGX `thinfilm`
+    # Fresnel over the opaque base; a one-layer AR coating on the
+    # dielectric); dispersion only exists on the dielectric branch, as
+    # in Cycles/OpenPBR where it modulates transmission only.
+    for linked_name in ("Thin Film Thickness", "Thin Film IOR",
+                        "Transmission Dispersion Scale", "Transmission Dispersion Abbe Number"):
+        linked_socket = _node_input(principled_node, linked_name)
+        if linked_socket is not None and linked_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled {linked_name} on '{material.name_full}' at its socket default; "
+                f"a linked/textured value is not sampled.",
+            )
+    thin_film_thickness_value = max(0.0, _socket_default_float(principled_node, "Thin Film Thickness", 0.0))
+    if thin_film_thickness_value <= THIN_FILM_THICKNESS_CUTOFF_NM:
+        thin_film_thickness_value = 0.0     # Cycles ignores films this thin
+    thin_film_ior_value = max(1.0e-3, _socket_default_float(principled_node, "Thin Film IOR", 1.33))
+    dispersion_abbe_value = effective_abbe_number(
+        _socket_default_float(principled_node, "Transmission Dispersion Abbe Number", 20.0),
+        _socket_default_float(principled_node, "Transmission Dispersion Scale", 0.0),
+    )
 
     transmission_texture = _maybe_resolve_socket_texture(
         principled_node, "Transmission Weight",
@@ -1870,14 +2781,75 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             )
 
     modifier_name = _direct_normal_modifier(material, wrapper, state)
-    alpha_socket = _node_input(wrapper.node_principled_bsdf, "Alpha")
-    if alpha_socket is not None:
-        alpha_value_socket = float(alpha_socket.default_value)
-        if alpha_socket.is_linked or alpha_value_socket < 0.999:
-            _warn_once(
-                state,
-                f"RISE currently ignores Principled alpha and alpha textures on '{material.name_full}'.",
-            )
+
+    # Alpha (ABI v14, DL-214): the bridge binds material intersection
+    # coverage. OPAQUE ignores the socket, CLIP applies alpha_threshold,
+    # and BLEND/HASHED use stochastic coverage across transport paths.
+    # A linked Alpha texture replaces the unlinked numeric socket value.
+    #
+    # Blender 4.2's EEVEE-Next replaced `blend_method` with
+    # `surface_render_method` ('BLENDED'/'DITHERED') for the raster
+    # pipeline; `getattr` falls back to that when `blend_method` itself
+    # is absent, matching this file's existing defensive-getattr
+    # convention (`use_backface_culling` above).  Neither is guaranteed
+    # to exist depending on Blender version/render engine, so a
+    # material with NEITHER attribute is treated as OPAQUE (bit-
+    # identical to a pre-v14 payload) rather than guessing.
+    blend_method = getattr(material, "blend_method", None)
+    if blend_method is None:
+        render_method = getattr(material, "surface_render_method", None)
+        blend_method = {
+            "BLENDED": "BLEND",
+            "DITHERED": "HASHED",
+        }.get(render_method, "OPAQUE")
+
+    alpha_value = 1.0
+    alpha_texture_painter = None
+    alpha_mode_value = ALPHA_MODE_OPAQUE
+    alpha_threshold_value = 0.5
+
+    if blend_method != "OPAQUE":
+        alpha_socket = _node_input(principled_node, "Alpha")
+        if alpha_socket is not None:
+            alpha_value = _clamp01(float(alpha_socket.default_value))
+            if alpha_socket.is_linked:
+                alpha_texture = _maybe_resolve_socket_texture(
+                    principled_node, "Alpha", None, colorspace_is_data=True,
+                )
+                if alpha_texture is not None:
+                    # Read CHAN_A from the raw texture (matching
+                    # GLTFSceneImporter.cpp's own `BuildAlphaPainter`
+                    # comment): the native bridge extracts the ALPHA
+                    # channel via AddChannelPainter, so this registers
+                    # the whole (typically RGBA) image, not a
+                    # scalar-flattened view of it.
+                    validated = _validate_texture_wrapper(
+                        alpha_texture, state, f"the Alpha texture on '{material.name_full}'")
+                    if validated:
+                        filepath, color_space = validated
+                        kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
+                        alpha_texture_painter = _add_texture_painter(
+                            state, f"{material.name_full}_alpha", filepath, kind, color_space,
+                        )
+                        alpha_texture_painter = _maybe_wrap_with_uv_transform(
+                            state, f"{material.name_full}_alpha", alpha_texture_painter, alpha_texture)
+                if alpha_texture_painter is None:
+                    _warn_once(
+                        state,
+                        f"RISE reads Principled Alpha on '{material.name_full}' at its socket default; "
+                        f"a linked/textured alpha not resolvable to an image texture is not sampled.",
+                    )
+
+        if blend_method == "CLIP":
+            alpha_mode_value = ALPHA_MODE_CLIP
+            alpha_threshold_value = float(getattr(material, "alpha_threshold", 0.5))
+        else:
+            # BLEND or HASHED -> RISE's single stochastic-transparency path.
+            alpha_mode_value = ALPHA_MODE_BLEND
+
+        # DL-214: the native bridge installs scalar material coverage for
+        # every integrator. No incompatible-rasterizer warning is needed.
+
 
     output_node = _find_material_output(material)
     interior_medium_name = None
@@ -1887,6 +2859,20 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             interior_medium_name = _export_homogeneous_medium(state, f"{material.name_full}_volume", volume_spec)
 
     double_sided = not getattr(material, "use_backface_culling", False)
+
+    # Subsurface is mutually exclusive with Transmission (matching this
+    # function's own pre-existing PBR-vs-DIELECTRIC exclusivity for
+    # transmission_heavy above) -- glass and skin are not the same
+    # Principled configuration, and RISE has no combined model.
+    # Transmission wins the conflict (it already owned the "replace the
+    # whole surface" precedent before this debt existed).
+    subsurface_heavy = subsurface_contributes and not transmission_heavy
+    if subsurface_contributes and transmission_heavy:
+        _warn_once(
+            state,
+            f"RISE: '{material.name_full}' declares both Subsurface Weight and a heavy Transmission; "
+            f"the dielectric transmission model wins and Subsurface is skipped (no combined model).",
+        )
 
     if transmission_heavy:
         metallic_for_warn = _maybe_resolve_socket_texture(
@@ -1928,6 +2914,13 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             _warn_once(state, f"RISE currently ignores textured IOR on '{material.name_full}'; using the uniform value.")
         ior_value = max(1.0, float(wrapper.ior))
         ior_inline = f"{ior_value:.6f}"
+        if dispersion_abbe_value > 0.0 and not dispersion_keeps_positive_ior(ior_value, dispersion_abbe_value):
+            _warn_once(
+                state,
+                f"RISE drops the transmission dispersion on '{material.name_full}': an effective Abbe "
+                f"number of {dispersion_abbe_value:.3g} makes the IOR curve non-positive in 300-900 nm.",
+            )
+            dispersion_abbe_value = 0.0
 
         # Convert Blender's Principled BSDF Roughness (0 = sharp, 1 =
         # diffuse) to RISE's dielectric `scattering` parameter, which
@@ -1960,8 +2953,72 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             scatter_painter_name=scatter_inline,
             emission_painter_name=emission_painter,
             double_sided=double_sided,
+            # ABI v18: the film is a one-layer AR coating on the
+            # dielectric interface; dispersion turns `ior` into a
+            # Cauchy curve pinned at n(587.6 nm) = IOR.
+            thin_film_thickness=thin_film_thickness_value,
+            thin_film_ior=thin_film_ior_value,
+            dispersion_abbe=dispersion_abbe_value,
+            alpha=alpha_value,
+            alpha_texture_painter_name=alpha_texture_painter,
+            alpha_mode=alpha_mode_value,
+            alpha_threshold=alpha_threshold_value,
+        )
+    elif subsurface_heavy:
+        # Subsurface -> randomwalk_sss_material, a SEPARATE model (see
+        # MATERIAL_RANDOMWALK_SSS's own comment above) -- replaces the
+        # opaque PBR branch entirely rather than layering under it.
+        # Coat/Sheen do not apply here (neither has a PBR base to wrap
+        # when this branch fires); warn if either was also authored.
+        if coat_contributes:
+            _warn_once(
+                state,
+                f"RISE: '{material.name_full}' declares both Subsurface Weight and Coat Weight; "
+                f"randomwalk_sss_material has no coat layer, so Coat is skipped.",
+            )
+        if sheen_weight > 1e-4:
+            _warn_once(
+                state,
+                f"RISE: '{material.name_full}' declares both Subsurface Weight and Sheen; "
+                f"randomwalk_sss_material has no sheen layer, so Sheen is skipped.",
+            )
+        if thin_film_thickness_value > 0.0:
+            _warn_once(
+                state,
+                f"RISE: '{material.name_full}' declares a Thin Film on a Subsurface material; "
+                f"randomwalk_sss_material has no thin-film interface, so the film is skipped.",
+            )
+        payload = MaterialData(
+            name=_unique_name(state, "mat", material.name_full),
+            model=MATERIAL_RANDOMWALK_SSS,
+            emissive_scale=1.0,
+            emission_painter_name=emission_painter,
+            double_sided=double_sided,
+            subsurface_absorption=subsurface_absorption_literal,
+            subsurface_scattering=subsurface_scattering_literal,
+            subsurface_ior=subsurface_ior_value,
+            subsurface_g=subsurface_g_value,
+            subsurface_roughness=roughness,
+            alpha=alpha_value,
+            alpha_texture_painter_name=alpha_texture_painter,
+            alpha_mode=alpha_mode_value,
+            alpha_threshold=alpha_threshold_value,
         )
     else:
+        film = None
+        if thin_film_thickness_value > 0.0:
+            film = _thin_film_substrate(
+                state, material, principled_node, base_color, metallic,
+                specular, anisotropy_value,
+            )
+            # The film base reads `specular_color_painter_name` as the tint
+            # on the film reflectance (unused by the conductor base).
+            if film.film_tint is not None:
+                specular_color_painter = (
+                    None if all(abs(v - 1.0) < 1e-6 for v in film.film_tint)
+                    else _add_uniform_painter(state, f"{material.name_full}_film_tint", film.film_tint)
+                )
+
         # Opaque Principled BSDF — route through
         # RISE_API_CreatePBRMetallicRoughnessMaterial, which handles
         # the metallic/dielectric blend, F0=0.04 dielectric Fresnel,
@@ -1974,22 +3031,612 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             metallic_painter_name=metallic_painter,
             roughness_painter_name=roughness_painter,
             specular_factor_painter_name=specular_factor_painter,
+            specular_color_painter_name=specular_color_painter,
             anisotropy_factor_painter_name=anisotropy_factor_painter,
             anisotropy_rotation_painter_name=anisotropy_rotation_painter,
             emissive_scale=1.0,
             emission_painter_name=emission_painter,
             double_sided=double_sided,
+            sheen_color_painter_name=sheen_color_painter,
+            sheen_roughness=sheen_roughness_value,
+            sheen_roughness_texture_painter_name=sheen_roughness_texture_painter,
+            coat_weight_texture_painter_name=coat_weight_texture_painter,
+            coat_weight=coat_weight_value,
+            coat_tint_painter_name=coat_tint_painter,
+            coat_roughness_texture_painter_name=coat_roughness_texture_painter,
+            coat_roughness=coat_roughness_value,
+            coat_ior=coat_ior_value,
+            coat_normal_painter_name=coat_normal_painter,
+            coat_normal_scale=coat_normal_scale,
+            thin_film_thickness=thin_film_thickness_value if film is not None else 0.0,
+            thin_film_ior=thin_film_ior_value,
+            thin_film_conductor=film.conductor if film is not None else False,
+            thin_film_dielectric_ior=film.dielectric_ior if film is not None else 1.5,
+            thin_film_metal_f0=film.metal_f0 if film is not None else (1.0, 1.0, 1.0),
+            thin_film_metal_tint=film.metal_tint if film is not None else (1.0, 1.0, 1.0),
+            alpha=alpha_value,
+            alpha_texture_painter_name=alpha_texture_painter,
+            alpha_mode=alpha_mode_value,
+            alpha_threshold=alpha_threshold_value,
         )
 
     state.materials.append(payload)
+    # Preserve ABI v14's deterministic shader binding name. The bridge
+    # installs ordinary emission/direct ops here; alpha itself belongs to
+    # material intersection coverage and is not applied by this chain.
+    shader_name = f"{payload.name}.shader" if alpha_mode_value != ALPHA_MODE_OPAQUE else None
     binding = _MaterialBinding(
         surface_material_name=payload.name,
         modifier_name=modifier_name,
         interior_medium_name=interior_medium_name,
         double_sided=double_sided,
+        shader_name=shader_name,
     )
     state.material_map[key] = binding
     return binding
+
+
+# ---------------------------------------------------------------------------
+# Hair / fur export (Blender Curves objects -> Cem Yuksel .hair files +
+# hair_material translation).  See docs/BLENDER_MATERIAL_TRANSLATION.md's
+# hair section for the full design writeup; this block is deliberately
+# self-contained (its own painter-resolution + classification logic)
+# rather than woven into `_material_payload` above, because a hair
+# material's inputs (Melanin / Absorption Coefficient / Offset / ...)
+# have nothing in common with a Principled BSDF's, and hair has NO bake
+# fallback at all (baking is meaningless for curve geometry) -- so the
+# "force complex -> bake" escape hatch the mesh path relies on doesn't
+# exist here; an unsupported hair graph is refused outright, with a
+# warning, in favour of a physically-reasonable default groom colour.
+# ---------------------------------------------------------------------------
+
+_HAIR_BSDF_BLIDNAME = "ShaderNodeBsdfHairPrincipled"
+
+# ShaderNodeBsdfHairPrincipled.parametrization enum identifiers.
+# These are Blender's RNA enum IDENTIFIERS, not the UI labels shown in
+# the dropdown ("Absorption Coefficient", "Melanin Concentration",
+# "Direct Coloring") -- the identifiers are the short forms "COLOR" /
+# "MELANIN" / "ABSORPTION".
+_HAIR_PARAM_COLOR = "COLOR"
+_HAIR_PARAM_MELANIN = "MELANIN"
+_HAIR_PARAM_ABSORPTION = "ABSORPTION"
+
+# Inputs that encode PER-STRAND random variation.  RISE's hair_material
+# is one BCSDF instance for the whole groom (no per-strand attribute
+# plumbing), so these have no representation at all -- warn once and
+# ignore, rather than silently dropping the variation with no trace.
+_HAIR_UNSUPPORTED_RANDOM_SOCKETS = ("Random Color", "Random Roughness", "Random")
+
+_HAIR_EXPORT_DIR_NAME = "rise_blender_hair"
+
+
+def _hair_staging_dir() -> str | None:
+    """Directory `.hair` files are written into -- same convention as
+    `_unpack_image_to_disk`'s `_PACKED_UNPACK_DIR_NAME` (a named
+    subdirectory of Blender's own temp dir, created on demand).
+
+    Mirrors `_unpack_image_to_disk`'s contract: returns `None` on an
+    `OSError` (read-only temp dir, permissions, out of space, ...)
+    rather than letting the exception propagate, so a filesystem
+    hiccup skips the affected groom instead of aborting the whole
+    export.  Callers must check for `None`.
+    """
+    out_dir = os.path.join(bpy.app.tempdir or tempfile.gettempdir(), _HAIR_EXPORT_DIR_NAME)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError:
+        return None
+    return out_dir
+
+
+def _warn_legacy_particle_hair(original_object, state: _ExportState):
+    """Legacy (pre-Curves) particle-hair systems -- `ParticleSettings.
+    type == 'HAIR'` -- are NOT exported.  Getting their rendered strand
+    geometry requires either the deprecated per-particle `co_hair()`
+    API (removed from newer Blender versions' render-time access) or
+    driving `bpy.ops.object.modifier_convert` / the "Convert Hair to
+    New System" operator to materialise a real Curves object first --
+    an `bpy.ops` call, which `material_bake.py`'s own docstring
+    documents as hazardous to invoke from inside a render callback
+    (context-override requirements, hidden-object refusals, teardown
+    crashes -- see that module's "Workflow" section).  Converting mid-
+    export would import that same risk into every render.  The
+    supported path is therefore: the ARTIST converts once, up front,
+    via Blender's own UI (Particle properties > Convert, or Object >
+    Convert > Curves) -- after which the result is a normal Curves
+    object and exports through `_export_hair_object` like any other
+    groom.  This function only makes sure the artist isn't left
+    guessing why their particle hair didn't render: one warning per
+    object, via the same `_warn_once` idiom every other unsupported-
+    feature notice in this module uses."""
+
+    for psys in getattr(original_object, "particle_systems", []) or []:
+        settings = getattr(psys, "settings", None)
+        if settings is not None and getattr(settings, "type", None) == "HAIR":
+            _warn_once(
+                state,
+                f"RISE does not export legacy particle-hair systems ('{psys.name}' on "
+                f"'{original_object.name_full}'). Convert it to a Curves object first "
+                "(Particle properties → Convert, or Object → Convert → Curves) "
+                "and RISE will export the resulting groom like any other Curves object.",
+            )
+
+
+def _extract_curves_arrays(curves_data):
+    """BPY-GLUE, MANUALLY VALIDATED ONLY -- no bpy in this repo's test
+    environment, so this function (and it alone, of the hair-export
+    pipeline) has no unit-test coverage; see
+    docs/BLENDER_MATERIAL_TRANSLATION.md's hair section for the
+    honesty note on this.  Pulls raw per-point arrays out of a
+    ``bpy.types.Curves`` datablock via ``foreach_get``, matching the
+    mesh export's bulk-read convention (`_mesh_buckets` above), then
+    hands them to the bpy-free `hair_file_writer.
+    build_hair_strands_from_curve_arrays` for the actual translation
+    logic (which IS unit-tested).
+
+    Returns ``(positions_flat, curve_offsets, radii_flat_or_None)`` --
+    see that function's docstring for the exact shapes.
+    """
+    num_points = len(curves_data.points)
+    num_curves = len(curves_data.curves)
+    if num_points == 0 or num_curves == 0:
+        return [], [0], None
+
+    positions = array.array("f", [0.0]) * (num_points * 3)
+    curves_data.points.foreach_get("position", positions)
+
+    first_point = array.array("i", [0]) * num_curves
+    curves_data.curves.foreach_get("first_point_index", first_point)
+    offsets = list(first_point) + [num_points]
+
+    # `radius` is a first-class per-point attribute on every Curves
+    # datablock (used by Blender's own hair rendering for fibre
+    # thickness) -- present iff the artist (or a "Set Curve Radius"
+    # geometry-nodes setup) ever touched it.  Absent radius data is
+    # normal (e.g. curves authored purely by a hand-drawn Curves
+    # sketch) -- fall back to None -> no thickness array in the .hair
+    # file -> RISE's own human-hair default at import.
+    radii = None
+    radius_attr = curves_data.attributes.get("radius") if hasattr(curves_data, "attributes") else None
+    if radius_attr is not None:
+        raw = array.array("f", [0.0]) * num_points
+        curves_data.points.foreach_get("radius", raw)
+        radii = raw.tolist()
+
+    return positions.tolist(), offsets, radii
+
+
+def _export_hair_object(object_instance, original_object, state: _ExportState):
+    """Export one Blender Curves object as a RISE hair groom: write its
+    strands to a Cem Yuksel `.hair` file in the add-on's staging
+    directory, resolve its material into a HairMaterialData, and
+    record the binding in `state.hair_objects`.  Warns (via
+    `_warn_once`) and returns without adding anything on any failure
+    -- a groom that can't be exported is a skipped object, not an
+    aborted render."""
+
+    eval_object = object_instance.object
+    curves_data = getattr(eval_object, "data", None) if eval_object is not None else None
+    if curves_data is None:
+        return
+
+    try:
+        positions, offsets, radii = _extract_curves_arrays(curves_data)
+    except Exception as exc:  # pragma: no cover -- bpy glue, defensive
+        _warn_once(state, f"RISE could not read hair curves data from '{original_object.name_full}': {exc}.")
+        return
+
+    strands = hair_file_writer.build_hair_strands_from_curve_arrays(positions, offsets, radii)
+    if not strands:
+        _warn_once(
+            state,
+            f"RISE skipped '{original_object.name_full}': its hair curves have no strand with >= 2 points.",
+        )
+        return
+
+    out_dir = _hair_staging_dir()
+    if out_dir is None:
+        _warn_once(
+            state,
+            "RISE could not create its hair staging directory; skipping hair object "
+            f"'{original_object.name_full}'.",
+        )
+        return
+    safe_stem = _safe_name(original_object.name_full)
+    file_path = os.path.join(out_dir, f"{safe_stem}_{id(original_object):x}.hair")
+    try:
+        hair_file_writer.write_hair_file(
+            file_path,
+            strands,
+            info=f"RISE Blender export: {original_object.name_full}"[:88],
+        )
+    except (OSError, hair_file_writer.HairFileError) as exc:
+        _warn_once(state, f"RISE could not write the .hair file for '{original_object.name_full}': {exc}.")
+        return
+
+    material = eval_object.active_material
+    hair_material_name = _hair_material_payload(material, state)
+
+    state.hair_objects.append(
+        HairObjectData(
+            name=_unique_name(state, "hairobj", original_object.name_full),
+            file_path=file_path,
+            material_name=hair_material_name,
+            transform=_flatten_matrix(object_instance.matrix_world.copy()),
+            source_object_name=original_object.name_full,
+        )
+    )
+
+
+def _find_hair_bsdf_through_surface(output_node):
+    """Sibling of `material_bake._find_principled_through_surface`,
+    looking for `ShaderNodeBsdfHairPrincipled` instead of the regular
+    Principled BSDF.  Traverses `NodeReroute` only -- any other node
+    between the hair BSDF and Material Output.Surface (a Mix Shader
+    blending hair with something else, an Add Shader, a second BSDF)
+    is unsupported: hair has no bake fallback to fall back to, so the
+    caller refuses the whole material rather than guessing which
+    shader "is" the hair."""
+
+    if output_node is None:
+        return None
+    surface_socket = output_node.inputs.get("Surface")
+    if surface_socket is None or not surface_socket.is_linked:
+        return None
+
+    visited: set[int] = set()
+    cursor = surface_socket.links[0].from_node
+    depth = 0
+    while depth < 16:
+        depth += 1
+        node_id = id(cursor)
+        if node_id in visited:
+            return None
+        visited.add(node_id)
+        if cursor.bl_idname == _HAIR_BSDF_BLIDNAME:
+            return cursor
+        if cursor.bl_idname == "NodeReroute":
+            inp = cursor.inputs[0] if cursor.inputs else None
+            if inp is None or not inp.is_linked:
+                return None
+            cursor = inp.links[0].from_node
+            continue
+        return None
+    return None
+
+
+def _hair_graph_supported(node, material_name: str, state: _ExportState) -> bool:
+    """Walk every node feeding the hair BSDF's inputs; refuse (return
+    False, with one warning naming the offending node) if any of them
+    falls outside `material_bake.SUPPORTED_UPSTREAM_NODES` -- the SAME
+    set the regular mesh-material classifier uses to decide "simple".
+    There is no hair-specific node support beyond what that set
+    already covers (a Value node, an Image Texture, a Color Ramp, ...
+    all translate the same way regardless of which slot they land in);
+    the only difference from the mesh path is that failing here has no
+    bake escape hatch, so it is a hard refusal instead of a fallback
+    to the explicit manual channel approximation or existing fallback.
+    That mesh approximation does not reconstruct arbitrary BSDF lobes.
+
+    Socket-scoped exemption: the three `_HAIR_UNSUPPORTED_RANDOM_
+    SOCKETS` inputs are never read into the translated payload at all
+    -- `_hair_material_payload` only checks whether they're linked (to
+    emit its own "ignored" warning below), it never walks their
+    upstream graph.  Whatever feeds them is therefore irrelevant to
+    correctness, so this walk doesn't enter those sockets in the first
+    place.  This is what makes the standard Cycles wiring (Hair Info ->
+    "Random Color" / "Random Roughness") -- `ShaderNodeHairInfo` isn't
+    in `SUPPORTED_UPSTREAM_NODES` -- degrade to the doc-promised warn-
+    and-ignore instead of refusing the whole material: without this
+    exemption the walk would reach `ShaderNodeHairInfo` from a socket
+    whose value is discarded anyway and refuse a material that
+    translates just fine.  A node that ALSO feeds a real (non-ignored)
+    socket is still fully validated via that other socket's entry in
+    the loop below -- this only exempts subgraphs that terminate
+    exclusively inside the three ignored sockets.
+    """
+
+    from . import material_bake as _material_bake
+
+    supported = _material_bake.SUPPORTED_UPSTREAM_NODES
+
+    stack = []
+    for socket in node.inputs:
+        if socket.name in _HAIR_UNSUPPORTED_RANDOM_SOCKETS:
+            continue
+        if socket.is_linked:
+            stack.append((socket.links[0].from_node, 0))
+
+    visited: set[int] = set()
+    while stack:
+        current, depth = stack.pop()
+        if depth > 16:
+            _warn_once(
+                state,
+                f"RISE refuses hair material '{material_name}': an input chain exceeds 16 nodes. "
+                "Using the default hair material.",
+            )
+            return False
+        node_id = id(current)
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+
+        bl = current.bl_idname
+        if bl not in supported:
+            _warn_once(
+                state,
+                f"RISE refuses hair material '{material_name}': unsupported node '{bl}' feeds the "
+                "Principled Hair BSDF (hair has no bake fallback). Using the default hair material.",
+            )
+            return False
+
+        for socket in current.inputs:
+            if socket.is_linked:
+                stack.append((socket.links[0].from_node, depth + 1))
+
+    return True
+
+
+def _default_hair_material(state: _ExportState) -> str:
+    """A plausible brown-black groom (melanin tier, eumelanin ~= 1.3
+    per the `hair_material` chunk's own description of that value) --
+    used whenever a hair-curves object's material can't be translated:
+    no material assigned, no node graph, no Principled Hair BSDF
+    reaching the surface, or an unsupported upstream graph."""
+
+    cache = state.hair_material_map
+    sentinel = "__default_hair__"
+    cached = cache.get(sentinel)
+    if cached is not None:
+        return cached
+
+    eumelanin = _add_uniform_painter(state, "hair_default_eumelanin", (1.3, 1.3, 1.3))
+    pheomelanin = _add_uniform_painter(state, "hair_default_pheomelanin", (0.0, 0.0, 0.0))
+    alpha = _add_uniform_painter(state, "hair_default_alpha", (2.0, 2.0, 2.0))
+
+    # No `*_texture_painter_name` here: this material is RISE's own
+    # default, so beta_m / beta_n / ior are constants by construction and
+    # travel as the numbers below.
+    payload = HairMaterialData(
+        name=_unique_name(state, "hairmat", "default"),
+        tier="melanin",
+        eumelanin_painter_name=eumelanin,
+        pheomelanin_painter_name=pheomelanin,
+        alpha_painter_name=alpha,
+        eumelanin=1.3,
+        pheomelanin=0.0,
+        beta_m=0.3,
+        beta_n=0.3,
+        alpha_degrees=2.0,
+        ior=1.55,
+        # This groom is RISE's own default, not a translation of an
+        # artist's Cycles material -- there is no Blender appearance to
+        # match, so the parity rescale would only darken a value the
+        # `hair_material` chunk itself documents as brown-black.
+        apply_melanin_parity_rescale=False,
+    )
+    state.hair_materials.append(payload)
+    cache[sentinel] = payload.name
+    return payload.name
+
+
+def _hair_material_payload(material, state: _ExportState) -> str:
+    """Resolve the material bound to a hair-curves object into a
+    HairMaterialData, returning its name.  Mirrors `_material_payload`
+    structurally (pointer-keyed cache, one entry per distinct
+    material) but is otherwise independent -- see this section's
+    banner comment for why."""
+
+    cache = state.hair_material_map
+    key = _pointer_key(material)
+    if key in cache:
+        return cache[key]
+
+    def _fallback() -> str:
+        name = _default_hair_material(state)
+        cache[key] = name
+        return name
+
+    if material is None:
+        return _fallback()
+
+    if not uses_nodes(material):
+        _warn_once(
+            state,
+            f"RISE hair export needs a node-based Principled Hair BSDF material; "
+            f"'{material.name_full}' has no node tree. Using the default hair material.",
+        )
+        return _fallback()
+
+    output_node = _find_material_output(material)
+    node = _find_hair_bsdf_through_surface(output_node)
+    if node is None:
+        _warn_once(
+            state,
+            f"RISE hair export needs a Principled Hair BSDF reaching Material Output.Surface on "
+            f"'{material.name_full}' (Mix Shader / other BSDF chains ahead of it are not supported "
+            "for hair -- there is no bake fallback). Using the default hair material.",
+        )
+        return _fallback()
+
+    material_name = material.name_full
+
+    if not _hair_graph_supported(node, material_name, state):
+        return _fallback()
+
+    for socket_name in _HAIR_UNSUPPORTED_RANDOM_SOCKETS:
+        socket = _node_input(node, socket_name)
+        if socket is not None and (socket.is_linked or abs(float(socket.default_value)) > 1e-6):
+            _warn_once(
+                state,
+                f"RISE ignores Principled Hair BSDF '{socket_name}' on '{material_name}' -- "
+                "per-strand randomisation is not representable by RISE's hair_material (one "
+                "BCSDF instance shades the whole groom).",
+            )
+
+    # Shared across all three parametrizations.  Each is captured as its
+    # constant socket value AND, when the socket is genuinely
+    # texture-driven, as a registered painter name the bridge turns into
+    # an IScalarPainter (ABI v10 -- see HairMaterialData's docstring).
+    #
+    # The painter is registered ONLY in the textured case.  With no
+    # texture bound, `_scalar_or_texture_painter` would synthesize a
+    # uniform painter carrying the same constant the numeric field
+    # already carries, and sending its name would buy an extra painter
+    # plus a scalar wrapper per material to say exactly what the float
+    # says -- so `None` is passed instead and the number is used.
+    #
+    # The gate is the RESOLVED texture, not a validated one: if a chain
+    # resolves to an image `_validate_texture_wrapper` then rejects
+    # (non-UV coords, a projection/extension RISE has no form for, an
+    # unsupported file type -- each already warned about there),
+    # `_scalar_or_texture_painter` degrades to a uniform painter carrying
+    # this same constant.  That is numerically identical to the numeric
+    # field (uniform painters are registered Rec709-linear, i.e.
+    # verbatim), just one painter more expensive -- correct, and not
+    # worth a second validation pass here to avoid.
+    beta_m_value = _socket_default_float(node, "Roughness", 0.3)
+    beta_m_texture = _maybe_resolve_socket_texture(node, "Roughness", None, colorspace_is_data=True)
+    beta_m = (
+        _scalar_or_texture_painter(state, f"{material_name}_beta_m", beta_m_value, beta_m_texture)
+        if beta_m_texture
+        else None
+    )
+
+    beta_n_value = _socket_default_float(node, "Radial Roughness", 0.3)
+    beta_n_texture = _maybe_resolve_socket_texture(node, "Radial Roughness", None, colorspace_is_data=True)
+    beta_n = (
+        _scalar_or_texture_painter(state, f"{material_name}_beta_n", beta_n_value, beta_n_texture)
+        if beta_n_texture
+        else None
+    )
+
+    ior_value = _socket_default_float(node, "IOR", 1.55)
+    ior_texture = _maybe_resolve_socket_texture(node, "IOR", None, colorspace_is_data=True)
+    ior = (
+        _scalar_or_texture_painter(state, f"{material_name}_ior", ior_value, ior_texture)
+        if ior_texture
+        else None
+    )
+
+    offset_socket = _node_input(node, "Offset")
+    if offset_socket is not None and offset_socket.is_linked:
+        _warn_once(
+            state,
+            f"RISE reads Principled Hair BSDF 'Offset' on '{material_name}' as a constant; "
+            "a linked Offset is not supported.",
+        )
+    offset_radians = _socket_default_float(node, "Offset", 0.034906585)  # Blender default: 2 degrees
+    alpha_degrees = offset_radians_to_alpha_degrees(offset_radians)
+    alpha = _add_uniform_painter(state, f"{material_name}_alpha", (alpha_degrees, alpha_degrees, alpha_degrees))
+
+    parametrization = getattr(node, "parametrization", _HAIR_PARAM_MELANIN)
+
+    if parametrization == _HAIR_PARAM_COLOR:
+        color_texture = _maybe_resolve_socket_texture(node, "Color", None, colorspace_is_data=False)
+        color_default = _socket_default_color(node, "Color", (0.03, 0.02, 0.015))
+        color_painter = _color_or_texture_painter(state, f"{material_name}_hair_color", color_default, color_texture)
+        payload = HairMaterialData(
+            name=_unique_name(state, "hairmat", material_name),
+            tier="color",
+            color_painter_name=color_painter,
+            alpha_painter_name=alpha,
+            beta_m_texture_painter_name=beta_m,
+            beta_n_texture_painter_name=beta_n,
+            ior_texture_painter_name=ior,
+            beta_m=beta_m_value,
+            beta_n=beta_n_value,
+            alpha_degrees=alpha_degrees,
+            ior=ior_value,
+        )
+
+    elif parametrization == _HAIR_PARAM_ABSORPTION:
+        sigma_socket = _node_input(node, "Absorption Coefficient")
+        if sigma_socket is not None and sigma_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled Hair BSDF 'Absorption Coefficient' on '{material_name}' as a "
+                "constant colour; a texture-driven input is read at its socket default only.",
+            )
+        sigma_default = _socket_default_color(node, "Absorption Coefficient", (0.245, 0.46, 1.6))
+        sigma_painter = _add_uniform_painter(state, f"{material_name}_sigma_a", sigma_default)
+        payload = HairMaterialData(
+            name=_unique_name(state, "hairmat", material_name),
+            tier="sigma_a",
+            sigma_a_painter_name=sigma_painter,
+            alpha_painter_name=alpha,
+            beta_m_texture_painter_name=beta_m,
+            beta_n_texture_painter_name=beta_n,
+            ior_texture_painter_name=ior,
+            sigma_a=tuple(float(channel) for channel in sigma_default),
+            beta_m=beta_m_value,
+            beta_n=beta_n_value,
+            alpha_degrees=alpha_degrees,
+            ior=ior_value,
+        )
+
+    elif parametrization == _HAIR_PARAM_MELANIN:
+        # The default parametrization, and Blender's own default.
+        melanin_socket = _node_input(node, "Melanin")
+        redness_socket = _node_input(node, "Melanin Redness")
+        if (melanin_socket is not None and melanin_socket.is_linked) or (
+            redness_socket is not None and redness_socket.is_linked
+        ):
+            _warn_once(
+                state,
+                f"RISE reads Principled Hair BSDF 'Melanin'/'Melanin Redness' on '{material_name}' as "
+                "constants; linked inputs are read at their socket defaults only.",
+            )
+        melanin = _socket_default_float(node, "Melanin", 0.8)
+        redness = _socket_default_float(node, "Melanin Redness", 0.0)
+        eumelanin_value, pheomelanin_value = melanin_to_eumelanin_pheomelanin(melanin, redness)
+        eumelanin_painter = _add_uniform_painter(
+            state, f"{material_name}_eumelanin", (eumelanin_value, eumelanin_value, eumelanin_value)
+        )
+        pheomelanin_painter = _add_uniform_painter(
+            state, f"{material_name}_pheomelanin", (pheomelanin_value, pheomelanin_value, pheomelanin_value)
+        )
+        payload = HairMaterialData(
+            name=_unique_name(state, "hairmat", material_name),
+            tier="melanin",
+            eumelanin_painter_name=eumelanin_painter,
+            pheomelanin_painter_name=pheomelanin_painter,
+            alpha_painter_name=alpha,
+            beta_m_texture_painter_name=beta_m,
+            beta_n_texture_painter_name=beta_n,
+            ior_texture_painter_name=ior,
+            eumelanin=eumelanin_value,
+            pheomelanin=pheomelanin_value,
+            beta_m=beta_m_value,
+            beta_n=beta_n_value,
+            alpha_degrees=alpha_degrees,
+            ior=ior_value,
+            # A real translation of an artist's Cycles material: match
+            # what they dialled in.  The native bridge applies the
+            # per-pigment rescale (see rise_blender_bridge.cpp).
+            apply_melanin_parity_rescale=True,
+        )
+
+    else:
+        # A parametrization value we don't recognise -- e.g. a future
+        # Blender version adds a fourth option.  The old `else: #
+        # MELANIN` catch-all silently mis-bound anything unrecognised
+        # to the melanin tier at whatever stale melanin/redness
+        # defaults happened to be read; that's a silent mistranslation
+        # of a real artist-authored value.  Degrade loudly instead:
+        # warn once, fall back to the default groom, exactly like every
+        # other "can't translate this" branch in this function.
+        _warn_once(
+            state,
+            f"RISE does not recognise Principled Hair BSDF parametrization "
+            f"'{parametrization}' on '{material_name}'. Using the default hair material.",
+        )
+        return _fallback()
+
+    state.hair_materials.append(payload)
+    cache[key] = payload.name
+    return payload.name
 
 
 def _flatten_matrix(matrix_world) -> list[float]:
@@ -2248,6 +3895,7 @@ def _light_payload(light_object, matrix_world, state: _ExportState) -> LightData
 
     # Blender energy + Cycles exposure (stops) → physical light units.
     raw_energy = float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0)))
+    raw_energy *= unnormalized_power_scale(light)
     if light.type in ("POINT", "SPOT"):
         # Cycles total-flux (W) → RISE radiant intensity (W/sr).
         # 1/(4π) ≈ 0.0795775.
@@ -2268,7 +3916,7 @@ def _light_payload(light_object, matrix_world, state: _ExportState) -> LightData
     )
 
 
-def _area_light_geometry(shape: str, size_x: float, size_y: float, segments: int = 32):
+def _area_light_geometry(shape: str, size_x: float, size_y: float, segments: int = AREA_LIGHT_DISK_SEGMENTS):
     """Build a planar mesh (vertices, normals, uvs, indices) for an area
     light in the light's LOCAL space.  The mesh faces -Z (Blender's
     convention for area-light shine direction)."""
@@ -2343,9 +3991,26 @@ def _register_area_light_mesh(light_object, matrix_world, state: _ExportState) -
     if size_x <= 0.0 or size_y <= 0.0:
         return None
 
-    area = (size_x * size_y) if shape in ("SQUARE", "RECTANGLE") else math.pi * (size_x * 0.5) * (size_y * 0.5)
-    if area <= 0.0:
+    # Emitted flux must equal Cycles'.  The mesh RISE emits from is the
+    # inscribed polygon for DISK/ELLIPSE, and it is placed with the full
+    # object matrix, so its WORLD area is the local polygon area times
+    # the in-plane area scale |X x Y| of that matrix.
+    #   Normalize ON  : flux = power                 -> M = power / world polygon area
+    #   Normalize OFF : flux = power * world true area -> M = power * true / polygon
+    # Measured against Cycles 5.3: the old `power / local true area`
+    # rendered an object-scaled (x2) panel 4.0x too bright and disk /
+    # ellipse lights 0.56% dark.
+    plane_scale = matrix_world.col[0].to_3d().cross(matrix_world.col[1].to_3d()).length
+    if area_light_polygon_area(shape, size_x, size_y) <= 0.0 or plane_scale <= 0.0:
         return None
+
+    spread = float(getattr(light, "spread", math.pi))
+    if spread < math.pi - 1.0e-3:
+        _warn_once(
+            state,
+            f"RISE ignores the Spread ({math.degrees(spread):.0f} deg) of area light '{light_object.name_full}'; "
+            f"it emits as a full Lambertian (180 deg) panel.",
+        )
 
     # Cycles area-light energy is total radiant flux (W).  We encode
     # the painter as per-area radiant exitance M = energy / area
@@ -2361,7 +4026,9 @@ def _register_area_light_mesh(light_object, matrix_world, state: _ExportState) -
         color[0] *= temperature_color[0]
         color[1] *= temperature_color[1]
         color[2] *= temperature_color[2]
-    intensity = (float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0)))) / area
+    power = float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0)))
+    intensity = area_light_exitance(power, shape, size_x, size_y, plane_scale,
+                                    bool(getattr(light, "normalize", True)))
     emission_color = (color[0] * intensity, color[1] * intensity, color[2] * intensity)
 
     base_name = _safe_name(light_object.name_full)
@@ -2411,6 +4078,8 @@ def _register_area_light_mesh(light_object, matrix_world, state: _ExportState) -
 
 def _validate_mesh_payload(mesh: MeshData):
     expected_index_count = len(mesh.vertex_indices)
+    if mesh.tangent_attribute and len(mesh.tangent_attribute) != expected_index_count * 4:
+        raise RuntimeError(f"RISE mesh export produced an invalid tangent buffer for '{mesh.name}'.")
 
     if len(mesh.vertices) != mesh.num_vertices * 3:
         raise RuntimeError(f"RISE mesh export produced an invalid vertex buffer for '{mesh.name}'.")
@@ -2440,7 +4109,7 @@ def _validate_mesh_payload(mesh: MeshData):
         raise RuntimeError(f"RISE mesh export produced an out-of-range UV index for '{mesh.name}'.")
 
 
-def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _MaterialBinding]]:
+def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_info=None) -> list[tuple[int, str, _MaterialBinding]]:
     # GeometryNodes-instanced geometry reuses a small pool of
     # eval_object prototypes across many instances and rebinds their
     # materials in-place during depsgraph iteration.  Caching by
@@ -2452,9 +4121,17 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
         s.material.name if s.material else None
         for s in eval_object.material_slots
     )
+    from . import tangent_bake
+    materials = [slot.material for slot in eval_object.material_slots]
+    materials.extend(getattr(getattr(eval_object, "data", None), "materials", []))
+    linked_tangent = any((socket := tangent_bake.find_tangent_socket(mat)) is not None
+                         and socket.is_linked for mat in materials)
+    matrix_world = matrix_world if matrix_world is not None else eval_object.matrix_world
+    # Object/world-dependent graph bakes are instance-local, including identical
+    # transforms. Generated mesh materials also participate in this decision.
     cache_key = (eval_object.as_pointer(), mat_signature)
     cached = state.geometry_cache.get(cache_key)
-    if cached is not None:
+    if cached is not None and not linked_tangent:
         return cached
 
     mesh = eval_object.to_mesh()
@@ -2520,6 +4197,7 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
                     material = slot_material
 
             binding = _material_payload(material, state)
+            directions = tangent_bake.corner_tangents(mesh, material, matrix_world, eval_object, instance_info, bucket["normal_indices"], allow_parallel=bool(binding.modifier_name))
             mesh_name = _unique_name(state, "mesh", f"{eval_object.name_full}_m{material_index}")
             mesh_payload = MeshData(
                 name=mesh_name,
@@ -2531,6 +4209,9 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
                 uv_indices=bucket["uv_indices"],
                 double_sided=binding.double_sided,
                 use_face_normals=False,
+                tangent_is_shader_direction=bool(directions),
+                tangent_attribute=([component for corner in bucket["normal_indices"]
+                                    for component in directions[corner]] if directions else []),
             )
             _validate_mesh_payload(mesh_payload)
             state.meshes.append(mesh_payload)
@@ -2538,7 +4219,8 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
     finally:
         eval_object.to_mesh_clear()
 
-    state.geometry_cache[cache_key] = results
+    if not linked_tangent:
+        state.geometry_cache[cache_key] = results
     return results
 
 
@@ -2551,6 +4233,9 @@ def build_render_settings(scene) -> RenderSettingsData:
     rise = scene.rise
     temporary_directory = bpy.app.tempdir or tempfile.gettempdir()
 
+    rasterizer_kind, use_path_tracing = resolve_rasterizer_selection(
+        getattr(rise, "rasterizer_type", "1"), rise.use_path_tracing)
+
     return RenderSettingsData(
         width=width,
         height=height,
@@ -2558,7 +4243,7 @@ def build_render_settings(scene) -> RenderSettingsData:
         pixel_samples=int(rise.pixel_samples),
         light_samples=int(rise.light_samples),
         max_recursion=int(rise.max_recursion),
-        use_path_tracing=bool(rise.use_path_tracing),
+        use_path_tracing=use_path_tracing,
         choose_one_light=bool(rise.choose_one_light),
         show_lights=bool(rise.show_lights),
         use_world_ambient=bool(rise.use_world_ambient),
@@ -2575,6 +4260,7 @@ def build_render_settings(scene) -> RenderSettingsData:
         sms_use_levenberg_marquardt=bool(rise.sms_use_levenberg_marquardt),
         sms_seeding_mode=int(rise.sms_seeding_mode),
         sms_target_bounces=int(rise.sms_target_bounces),
+        sms_extended=bool(rise.sms_extended),
         adaptive_max_samples=int(rise.adaptive_max_samples),
         adaptive_threshold=float(rise.adaptive_threshold),
         adaptive_show_map=bool(rise.adaptive_show_map),
@@ -2616,9 +4302,10 @@ def build_render_settings(scene) -> RenderSettingsData:
         pixel_filter_param_a=float(rise.pixel_filter_param_a),
         pixel_filter_param_b=float(rise.pixel_filter_param_b),
         temporary_directory=str(temporary_directory),
-        # Rasterizer EnumProperty stores the int as a string — convert
-        # back here.  Default "1" = PT_PEL.
-        rasterizer_kind=int(getattr(rise, "rasterizer_type", "1") or "1"),
+        # Rasterizer EnumProperty stores the int as a string; resolved
+        # above (an explicit "0" also clears use_path_tracing so the
+        # native bridge renders the legacy pixel rasterizer it names).
+        rasterizer_kind=rasterizer_kind,
         bidir_max_eye_depth=int(getattr(rise, "bidir_max_eye_depth", 0)),
         bidir_max_light_depth=int(getattr(rise, "bidir_max_light_depth", 0)),
         vcm_merge_radius=float(getattr(rise, "vcm_merge_radius", 0.0)),
@@ -2974,7 +4661,7 @@ def _synthesise_world_lights(scene, state: _ExportState) -> list[LightData]:
     contribution; the caller still gets the IBL via `_world_radiance_map`.
     """
 
-    if scene.world is None or not scene.world.use_nodes or scene.world.node_tree is None:
+    if not uses_nodes(scene.world):
         return []
 
     output_node = _find_world_output(scene.world)
@@ -3018,15 +4705,17 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
 
     Returns ``(painter_name, strength, orientation_xyz_radians,
     is_background)``.  ``painter_name`` is None when no Environment
-    Texture is reachable from the world's surface output, in which
-    case the legacy ambient-colour fallback applies.
+    Texture, uniform Background or procedural sky is reachable from the
+    world's surface output; `export_scene` then exports a non-node world's
+    colour as a uniform environment, and the deprecated `use_world_ambient`
+    ambient approximation applies only when the user enabled it.
 
     Supports the trivial ``Background → Environment Texture`` chain
     and the standard Cycles ``Mix Shader gated by Light Path.Is
     Camera Ray`` pattern (HDRI for indirect, separate colour for the
     camera-visible background).
     """
-    if scene.world is None or not scene.world.use_nodes or scene.world.node_tree is None:
+    if not uses_nodes(scene.world):
         return None, 1.0, (0.0, 0.0, 0.0), True
 
     output_node = _find_world_output(scene.world)
@@ -3082,7 +4771,14 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
                 (rgb[0], rgb[1], rgb[2]),
             )
             return painter_name, float(strength), (0.0, 0.0, 0.0), bool(camera_visible)
-        _warn_once(state, "RISE could not find a usable World shader graph; falling back to ambient approximation.")
+        _warn_once(
+            state,
+            "RISE could not find a usable World shader graph, so no environment light is exported "
+            "(the world renders black; Film > Transparent only hides the background, it never "
+            "supplies light).  Connect a Background (colour or Environment Texture) to the World "
+            "Output; the deprecated 'Approximate World' option still substitutes an unshadowed "
+            "ambient light from the world viewport colour.",
+        )
         return None, 1.0, (0.0, 0.0, 0.0), True
 
     # Background strength scales the HDRI.  When the HDRI sits in the
@@ -3148,7 +4844,7 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
 
 def _world_volume_medium(scene, state: _ExportState) -> str | None:
     world = scene.world
-    if world is None or not world.use_nodes or world.node_tree is None:
+    if not uses_nodes(world):
         return None
     output_node = _find_world_output(world)
     if output_node is None:
@@ -3279,7 +4975,12 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
             if eval_object is None:
                 continue
 
-            mesh_buckets = _mesh_buckets(eval_object, state)
+            _warn_legacy_particle_hair(original_object, state)
+
+            mesh_buckets = _mesh_buckets(eval_object, state, object_instance.matrix_world.copy(), {"is_instance": object_instance.is_instance, "random_id": object_instance.random_id,
+                "orco": tuple(object_instance.orco), "uv": tuple(object_instance.uv), "parent": object_instance.parent,
+                "particle_settings": object_instance.particle_system.settings if object_instance.particle_system else None,
+                "private_instance_attributes": bool(object_instance.is_instance and object_instance.parent and any(m.type == 'NODES' for m in object_instance.parent.modifiers))})
             if not mesh_buckets:
                 continue
 
@@ -3290,6 +4991,8 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
                     "transform": _flatten_matrix(object_instance.matrix_world.copy()),
                 }
             )
+        elif original_object.type == "CURVES":
+            _export_hair_object(object_instance, original_object, state)
         elif original_object.type == "LIGHT":
             light_data = _light_payload(object_instance.object, object_instance.matrix_world.copy(), state)
             if light_data is not None:
@@ -3323,6 +5026,7 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
                     visible=True,
                     modifier_name=binding.modifier_name,
                     interior_medium_name=binding.interior_medium_name,
+                    shader_name=binding.shader_name,
                 )
             )
 
@@ -3340,10 +5044,28 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
     # for any sky type we can read parameters from.
     lights.extend(_synthesise_world_lights(scene, state))
 
+    # A world that does not use nodes renders its viewport colour as a
+    # uniform background in Cycles.  `_world_radiance_map` returns None for
+    # it, so without this the world was simply dropped unless the deprecated
+    # `use_world_ambient` approximation was on.  With that toggle OFF (the
+    # default; legacy-deprecation Phase 2 slice C, owner ruling #5) the world
+    # colour becomes a uniform environment light -- the same
+    # `world_radiance_uniform` painter a node-based uniform Background gets.
+    # A .blend that explicitly enabled `use_world_ambient` keeps the ambient
+    # approximation below, unchanged.
+    if (world_radiance_painter is None and not render_settings.use_world_ambient
+            and scene.world is not None and not uses_nodes(scene.world)):
+        world_rgb = _float_color3(scene.world.color)
+        if any(c > 0.0 for c in world_rgb):
+            world_radiance_painter = _add_uniform_painter(state, "world_radiance_uniform", world_rgb)
+            world_radiance_scale = 1.0
+            world_radiance_orientation = (0.0, 0.0, 0.0)
+            world_radiance_is_background = True
+
     world_color = (0.0, 0.0, 0.0)
     world_strength = 0.0
     if world_radiance_painter is None and render_settings.use_world_ambient and scene.world is not None:
-        if scene.world.use_nodes:
+        if uses_nodes(scene.world):
             _warn_once(
                 state,
                 "RISE reduces non-image-based world shaders to the world viewport colour for ambient approximation; plug an Environment Texture into Background.Color for proper IBL.",
@@ -3369,6 +5091,8 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
         world_radiance_orientation=world_radiance_orientation,
         world_radiance_is_background=world_radiance_is_background,
         warnings=state.warnings,
+        hair_objects=state.hair_objects,
+        hair_materials=state.hair_materials,
     )
 
     return scene_data, render_settings

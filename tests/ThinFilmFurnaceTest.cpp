@@ -93,7 +93,11 @@ namespace
 	Scalar MultiscatterAlbedoErrorBound(
 		Scalar Favg_substrate, Scalar Favg_thinfilm, Scalar alpha )
 	{
-		const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
+		// DL-63: GGXBRDF/GGXSPF's thin-film/conductor multiscatter tail is
+		// calibrated to the height-correlated-G2 LUT (LookupEavgG2), not
+		// the separable-model LookupEavg -- use the same Eavg production
+		// actually applies so this error bound reflects real behaviour.
+		const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2( alpha );
 		const Scalar Fms_sub  = MicrofacetEnergyLUT::ComputeFms<Scalar>( Favg_substrate, Eavg );
 		const Scalar Fms_film = MicrofacetEnergyLUT::ComputeFms<Scalar>( Favg_thinfilm,  Eavg );
 		return std::fabs( Fms_sub - Fms_film ) * ( 1.0 - Eavg );

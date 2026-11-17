@@ -24,7 +24,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct EnvironmentPanel: View {
-    let bridge: RISEViewportBridge
+    /// Weak: RenderViewModel owns the live bridge for the whole scene
+    /// lifetime.  A nil read means the scene was torn down and this
+    /// panel is leaving the tree, so every edit below is a no-op.
+    weak var bridge: RISEViewportBridge?
     @Binding var refreshTrigger: Int
     @EnvironmentObject var viewModel: RenderViewModel
 
@@ -133,6 +136,7 @@ struct EnvironmentPanel: View {
             if canEdit {
                 actionButton(title: "Add HDRI…", systemImage: "photo.on.rectangle") {
                     pickFile { path in
+                        guard let bridge else { return }
                         var outName: NSString?
                         var outMsg: NSString?
                         let ok = bridge.addEnvironment(path, outName: &outName, outMessage: &outMsg)
@@ -161,6 +165,7 @@ struct EnvironmentPanel: View {
                 if canEdit {
                     smallButton("Swap…") {
                         pickFile { path in
+                            guard let bridge else { return }
                             finishEdit(ok: bridge.setEnvironmentFile(path), failureMessage: nil)
                         }
                     }
@@ -172,6 +177,7 @@ struct EnvironmentPanel: View {
             // as radiance_* params.
             fieldLabel("Intensity")
             numericField(text: $scaleText, field: .scale, modelValue: e.scale, enabled: canEdit) { v in
+                guard let bridge else { return }
                 finishEdit(ok: bridge.setEnvironmentScale(v), failureMessage: nil)
             }
             .contextMenu { revealButton("Reveal “radiance_scale” in Scene File", .rasterizer, "", "radiance_scale") }
@@ -187,7 +193,10 @@ struct EnvironmentPanel: View {
             // Background toggle
             Toggle(isOn: Binding(
                 get: { env?.background ?? true },
-                set: { newVal in finishEdit(ok: bridge.setEnvironmentBackground(newVal), failureMessage: nil) }
+                set: { newVal in
+                    guard let bridge else { return }
+                    finishEdit(ok: bridge.setEnvironmentBackground(newVal), failureMessage: nil)
+                }
             )) {
                 Text("Show in background")
                     .font(Theme.sans(11))
@@ -202,6 +211,7 @@ struct EnvironmentPanel: View {
                 Spacer(minLength: 0)
                 if canEdit {
                     smallButton("Remove", destructive: true) {
+                        guard let bridge else { return }
                         finishEdit(ok: bridge.removeEnvironment(), failureMessage: nil)
                     }
                 }
@@ -304,6 +314,7 @@ struct EnvironmentPanel: View {
     /// Only reached from commitOrRevert, i.e. when canEdit and the edited axis
     /// parsed; the other two fall back to their reverted buffer / the model.
     private func commitRotation() {
+        guard let bridge else { return }
         let x = Double(orientXText) ?? env?.orientX ?? 0
         let y = Double(orientYText) ?? env?.orientY ?? 0
         let z = Double(orientZText) ?? env?.orientZ ?? 0
@@ -352,7 +363,7 @@ struct EnvironmentPanel: View {
         // CST-sync polls.  The environment can't change during a render, so the
         // last value stays valid; the isSceneEditableForAgents re-sync trigger
         // refreshes once the render releases the scene.
-        guard viewModel.isSceneEditableForAgents else { return }
+        guard let bridge, viewModel.isSceneEditableForAgents else { return }
         let e = bridge.environmentInfo()
         env = e
         if let e = e, !focusedFieldIsActive {
@@ -401,6 +412,16 @@ struct EnvironmentPanel: View {
         // ±inf or |v| > Int64.max (a scene could carry a huge/degenerate value).
         guard v.isFinite else { return "0" }
         if v == v.rounded() && abs(v) < 1e15 { return String(Int(v)) }
-        return String(format: "%g", v)
+        // (S5) locale-fixed, same as PropertiesPanel's formatValue/kPosixLocale
+        // sibling: this string is written straight into scene text (a CST scale/
+        // orientation param), and `String(format:)` with no explicit locale
+        // follows the CURRENT system locale on Apple platforms -- a comma-decimal
+        // locale (e.g. fr_FR) would format `4.0` as `4,000000`, which
+        // `Double(_:)`'s strict parse on the CST write-back path cannot read,
+        // making the field silently uncommittable.  kPosixLocale is declared
+        // module-visible in PropertiesPanel.swift precisely so this call site
+        // (and any other) shares ONE Locale("en_US_POSIX") rather than each
+        // panel constructing its own.
+        return String(format: "%g", locale: kPosixLocale, v)
     }
 }

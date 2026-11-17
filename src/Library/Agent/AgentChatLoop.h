@@ -54,13 +54,46 @@
 //        of a session carries a BYTE-IDENTICAL system block.  This is
 //        load-bearing, not incidental: tools render before system in
 //        every provider's cached prefix, so one changed system byte
-//        invalidates tools + system + the whole history.  Anything
-//        transient the model needs to see rides the CONVERSATION
-//        instead, appended after the tool-results entry so no tool
-//        result is orphaned -- see AppendPendingBuildNudge, the one
-//        such message the loop synthesizes today.  It goes on the wire
-//        as ordinary user content but is tagged Role::DriverNote in the
-//        transcript so a GUI does not attribute it to the human.
+//        invalidates tools + system + the whole history.
+//      * SEQUENCING GATE (E4, replaces the earlier blind-edit NUDGE):
+//        AddToolResult tracks a run of DOCUMENT-MUTATING tool calls (see
+//        the isMutation family) with no VISUAL observation (render /
+//        read_image / read_viewport / query_object_at / compare_to_reference)
+//        between them -- mBlindEditStreak.  Once the streak reaches
+//        BlindEditGateThreshold(), GateRefusalResponse REFUSES every
+//        further mutating call (a normal JSON-RPC SUCCESS envelope,
+//        applied:false/status:"rejected"/retriable:true, i.e. the SAME
+//        shape a real scene-state rejection already uses) until a look
+//        happens.  A host's tool-dispatch loop MUST call
+//        GateRefusalResponse BEFORE dispatching a call and pass its
+//        non-empty result straight to AddToolResult instead of reaching
+//        the RPC dispatcher, so a gated call's document mutation never
+//        happens.  Each host wires this in per its OWN dispatch-loop
+//        shape, not through one shared call site -- name what each
+//        actually does, since the three differ: the eval runner
+//        (AgentEvalRunner.cpp) and the macOS driver (ChatViewModel.swift's
+//        driveTurn) both ALSO intercept ask_user before dispatch (a
+//        chat-loop-only tool with no AgentRpc verb) and now check the
+//        gate at the SAME pre-dispatch site, immediately alongside it;
+//        the Windows/Qt driver (ChatPanel.cpp's processNextToolCall) has
+//        NO ask_user interception at all (that clarifying-questions stage
+//        is not implemented there) but gained its OWN gate check at its
+//        own dispatch site in the same E4 change.  MCP/loopback callers
+//        (AgentLoopbackHttpServer / AgentMcpAdapter) are OUT OF SCOPE
+//        entirely: an external MCP client dispatches ONE verb per
+//        request with no AgentChatLoop instance backing it at all, so
+//        there is no conversation, no streak, and no "look" for it to
+//        observe -- the gate is deliberately a property of a CONVERSATION
+//        LOOP, not of the RPC dispatcher every surface shares.  This
+//        GATES SEQUENCING ONLY, never content: the refusal never touches
+//        WHAT the model is building, only WHETHER it may keep building
+//        blind.  A prior nudge design (advisory text injected as a
+//        synthetic user message) was found to be UNSAFE -- see
+//        AppendPendingBuildNudge's removal in the E4 commit -- a model
+//        echoed the reminder back as its own final text and the loop
+//        accepted it as genuine progress.  A refusal cannot be echoed
+//        past like advisory text: the caller cannot proceed without
+//        either looking or abandoning the edit.
 //      * HONEST POISON SCOPING: a user interrupt, tool crash, or
 //        hostile response body cannot create RECORDED-BUT-
 //        UNANSWERABLE tool calls -- the parse gates plus the flush
@@ -133,6 +166,33 @@
 //        ChatToolDisplaySummary::resultJson: unlike an image blob that
 //        one is capped at 8 KB, never rides the wire, and is the GUI's
 //        record of what the agent actually saw at that step.
+//      * CONTEXT LIFETIMES (docs/agentic-redesign/91-context-lifetimes-
+//        and-visible-detail.md): a result whose SUBJECT is settled is
+//        retired to a one-line stub saying how to get it back -- by what
+//        it describes, never by age.  L2: a successful finish_element for
+//        element E retires E's earlier build_element / insert_chunks
+//        results ("element_finished_retirement"); the stub states only
+//        immutable facts -- retired when E was finished, where the
+//        current state is read (read_document for the document,
+//        finish_element / reopen_element results for E's chunks), the
+//        bounding box when built, the head version after that call, the
+//        per-chunk outcomes that call reported -- never an edit rule or a
+//        claim about current state; a successful reopen_element E cancels a
+//        retirement not yet applied.  L3: a named read_skill
+//        is superseded by a later read of the SAME skill (an argument-
+//        normalized supersession key), and the successful finish_element
+//        that reports the COMPOSE phase (every element of the filed plan
+//        finished) retires every live named read_skill from EARLIER turns
+//        once per plan ("compose_skill_retirement"); a skill read in that
+//        turn or after it stays live
+//        until the next file_build_plan re-arms the rule.  A retirement is
+//        never applied to the entry being flushed, so every result reaches
+//        the model at least once.  Same boundary, same wire
+//        guarantee and same converge-once rule as the two rules above:
+//        RetireToolResultsByLifetime shares RewriteToolResultSlots with
+//        SUPERSEDED-READ RETENTION, so every rewrite goes through the
+//        codec's RewriteElidedToolResults and costs one bounded cache
+//        miss.  Unconditional, like supersession.
 //      * USER IMAGE RETENTION (Model-B F5 chat image attachments): a
 //        SEPARATE, INDEPENDENT policy from the tool-result IMAGE
 //        RETENTION rule above -- user reference images are the
@@ -267,9 +327,54 @@ namespace RISE
 			//! and every error envelope).
 			std::string supersessionKey;
 
+			//! CONTEXT LIFETIMES (doc 91): the verb this result answers --
+			//! the lifetime stubs name it.
+			std::string verb;
+
+			//! Doc 91 slice L2: the build-plan element this result DESCRIBES,
+			//! or "" -- set for build_element (the result's `element`, else
+			//! the call's `element` argument) and insert_chunks (the
+			//! per-chunk `element` attribution of its APPLIED or DIAGNOSED
+			//! chunks only -- a refused chunk's attribution is looked up by
+			//! name and may be another element's -- when all of those agree;
+			//! see LifetimeElementOf).  A later successful finish_element for that element
+			//! retires the slot.
+			std::string lifetimeElement;
+
+			//! Doc 91 slice L2 (review round 2): the compact record of what
+			//! a build_element / insert_chunks result describes that is NOT
+			//! in the document -- each rejected chunk with its reason, and each
+			//! landed chunk that carried a notice, with that notice -- or "".
+			//! The element-finished stub carries it, so retiring the result
+			//! never deletes the only copy of a rejection.
+			std::string lifetimeCarry;
+
+			//! Doc 91 L2 review round 4: the other facts the element-finished
+			//! stub keeps -- build_element's realised world bounding box,
+			//! insert_chunks' last head version -- or "".
+			std::string lifetimeFacts;
+
+			//! Doc 91 slice L3b: the skill name of a successful NAMED
+			//! read_skill result, or "" (every other result, the index form
+			//! included).  The finish_element that reports the build plan's
+			//! compose phase retires every live slot carrying one that was
+			//! flushed BEFORE it (once per plan).
+			std::string lifetimeSkill;
+
+			//! Doc 91 L2/L3b: set when a lifetime event (an element
+			//! finished; the build plan reached its compose phase) has
+			//! DECIDED to retire this slot -- the stub text and the
+			//! history_edit reason.  The rewrite itself is applied by the
+			//! next flush whose new entry is LATER than this slot's entry,
+			//! and retried on every flush until it lands, so a codec no-op
+			//! can never strand a decided retirement, and a result is always
+			//! delivered at least once before it is retired.
+			std::string pendingRetireNote;
+			std::string pendingRetireReason;
+
 			//! False once this result's payload has been rewritten to the
-			//! superseded-result placeholder, so the pass is idempotent
-			//! and a second sweep re-elides nothing.
+			//! superseded-result placeholder (or a lifetime stub), so the
+			//! pass is idempotent and a second sweep re-elides nothing.
 			bool        live = true;
 		};
 
@@ -284,9 +389,32 @@ namespace RISE
 				Assistant,    //!< a model turn (text and/or tool calls)
 				ToolResults,  //!< the packed tool results of one model turn
 
-				//! A note the LOOP ITSELF injected into the conversation --
-				//! today only the blind-edit nudge (AppendPendingBuildNudge);
-				//! the human never typed it.
+				//! A note the LOOP ITSELF injects into the conversation as
+				//! ordinary user content -- the human never typed it.
+				//!
+				//! ONE PRODUCER: the MALFORMED-TOOL-CALL corrective (BuildRequest
+				//! appends it after a ChatErrorKind::MalformedToolCall; it is
+				//! recorded in the trajectory as a history_edit, never as a
+				//! "user" record).  HISTORY: the message this enumerator
+				//! originally existed for (E4, 2026-08) -- the blind-edit NUDGE
+				//! (AppendPendingBuildNudge) -- was REMOVED: a live GUI run
+				//! showed the nudge's advisory text, injected adjacent to the
+				//! generation point, gets ECHOED BACK by the model as its own
+				//! final text, and the loop had no way to tell an echo from
+				//! genuine progress.  It was replaced by the SEQUENCING GATE
+				//! (see the file header) -- a REFUSAL, which rides back as an
+				//! ordinary ToolResults entry (a ToolResults role's normal
+				//! shape already carries a rejection message; no new
+				//! transcript role is needed for it).  Role::DriverNote is
+				//! kept as a NAME, not dead-coded away, because the shape it
+				//! names -- "loop-injected conversation content the human
+				//! did not type, rendered as a dim system-notice row instead
+				//! of a chat bubble" -- is still the RIGHT mechanism for some
+				//! FUTURE advisory the loop might need to inject; only the
+				//! one thing that used to produce it is gone.  A driver
+				//! (Windows' ChatPanel, macOS' ChatViewModel via
+				//! DriverNoteCount()/LastDriverNoteText()) that still checks
+				//! for it is not stale -- it is simply never triggered today.
 				//!
 				//! ON THE WIRE IT IS INDISTINGUISHABLE FROM Role::User, AND
 				//! THAT IS THE POINT.  rawJson is built by the SAME
@@ -295,7 +423,7 @@ namespace RISE
 				//! role it does not model.  BuildRequest never reads `role` at
 				//! all -- it assembles `rawEntries` from rawJson alone -- so
 				//! adding this enumerator cannot change one byte of any
-				//! request (T44 asserts exactly that, per provider).
+				//! request.
 				//!
 				//! WHAT IT IS FOR: the two GUIs.  A driver that renders
 				//! straight out of this transcript (the Windows ChatPanel)
@@ -303,15 +431,11 @@ namespace RISE
 				//! USER's own chat bubble, which is a lie about who said it.
 				//! Both drivers render this role as a system-notice row (dim,
 				//! centered) -- the affordance they already use for the
-				//! compaction notice.  Do NOT silently drop it: the model DID
-				//! receive it, and a reminder that visibly steered the agent
-				//! must be visible to the person watching.
+				//! compaction notice.
 				//!
 				//! COMPACTION: deliberately NOT a span boundary (spans start
-				//! at Role::User).  A driver note is not a user turn -- the
-				//! trajectory already records it as a `history_edit` rather
-				//! than a `user` record for the same reason -- so it stays
-				//! attached to the span it was injected into instead of
+				//! at Role::User).  A driver note is not a user turn, so it
+				//! stays attached to the span it was injected into instead of
 				//! splitting it.
 				DriverNote
 			};
@@ -476,33 +600,39 @@ namespace RISE
 			//! rather than re-deriving it from the provider.
 			int MaxToolRoundsPerTurn() const { return mMaxToolRoundsPerTurn; }
 
-			//! Default "blind-edit" nudge threshold: after this many
-			//! consecutive calls to one of the 5 DOCUMENT-MUTATING tools
-			//! (insert_chunk / insert_chunks / propose_patch /
-			//! propose_patches / remove_chunk) with NO intervening VISUAL
-			//! observation (render / read_image / read_viewport /
-			//! query_object_at), the loop appends a reminder MESSAGE to the
-			//! conversation telling the model to render and look at its work.
-			//! Delivered as conversation content, NOT in the system prompt --
-			//! the system prompt must stay byte-identical across a session or
-			//! every provider's prompt cache is invalidated (see
-			//! AppendPendingBuildNudge).  Chosen from a measured failure: a local
-			//! model asked to build a furnished scene inserted 70-100+ chunks
-			//! and NEVER rendered once, building entirely blind until it
-			//! exhausted its budget.  This is a general drive-loop nudge (like
-			//! an editor reminding you to save), NOT an eval-specific hack and
-			//! NOT a budget -- it never blocks, it only reminds.
-			static const int kDefaultBlindEditNudgeThreshold = 10;
+			//! Default SEQUENCING GATE threshold (see the file header): after
+			//! this many CONSECUTIVE calls to one of the DOCUMENT-MUTATING
+			//! tools (insert_chunk / insert_chunks / insert_material_scaffold
+			//! / insert_geometry_scaffold / replace_geometry_scaffold /
+			//! propose_patch / propose_patches /
+			//! remove_chunk) with NO intervening VISUAL observation (render /
+			//! read_image / read_viewport / query_object_at /
+			//! compare_to_reference), GateRefusalResponse starts REFUSING
+			//! every further mutating call -- an actionable rejection, not a
+			//! reminder -- until a look happens.  Chosen from the same
+			//! measured failure that motivated the ORIGINAL blind-edit nudge
+			//! this gate replaced: a local model asked to build a furnished
+			//! scene inserted 70-100+ chunks and NEVER rendered once,
+			//! building entirely blind until it exhausted its budget.  The
+			//! nudge (advisory text) turned out to be UNSAFE in production --
+			//! a model echoed it back as its own final text and the loop
+			//! accepted the echo as genuine progress (see the file header) --
+			//! so this gate BLOCKS instead of asking: it is not a budget (it
+			//! never limits total edits, only UNOBSERVED consecutive ones),
+			//! but unlike the nudge it cannot be silently talked past.
+			static const int kDefaultBlindEditGateThreshold = 10;
 
-			//! Configure the blind-edit nudge (see kDefaultBlindEditNudgeThreshold).
-			//! `threshold <= 0` disables it entirely.  Default is enabled at
-			//! the default threshold.  A host that wants a different cadence
-			//! (or none -- e.g. a purely non-visual editing session) sets it here.
-			void SetBlindEditNudgeThreshold( int threshold ) { mBlindEditNudgeThreshold = threshold; }
+			//! Configure the SEQUENCING GATE threshold (see
+			//! kDefaultBlindEditGateThreshold).  `threshold <= 0` disables it
+			//! entirely (every mutating call always passes).  Default is
+			//! enabled at the default threshold.  A host that wants a
+			//! different cadence (or none -- e.g. a purely non-visual editing
+			//! session) sets it here.
+			void SetBlindEditGateThreshold( int threshold ) { mBlindEditGateThreshold = threshold; }
 
-			//! The active blind-edit nudge threshold (0 = disabled).  Exposed
+			//! The active SEQUENCING GATE threshold (0 = disabled).  Exposed
 			//! for hosts/tests to report or assert the posture.
-			int BlindEditNudgeThreshold() const { return mBlindEditNudgeThreshold; }
+			int BlindEditGateThreshold() const { return mBlindEditGateThreshold; }
 
 			//! Maximum user-attached reference images kept LIVE (un-
 			//! elided) across the WHOLE conversation -- see USER IMAGE
@@ -520,6 +650,17 @@ namespace RISE
 			//! conversation turn stay verbatim so a single over-budget turn
 			//! is accepted rather than mangled.
 			static const int kMinRetainedSpans = 2;
+
+			//! Durable document snapshots (see SetDocumentSnapshotProvider):
+			//! once a WRITTEN head_bump snapshot's document meets or exceeds
+			//! this size, later head-advancing tool calls only trigger a fresh
+			//! snapshot every kDocumentSnapshotDecimationStride-th advance
+			//! instead of every one -- a multi-MB scene should not pay a full
+			//! SerializeCst + JSONL-line write on every single edit.
+			static const long long kDocumentSnapshotDecimationBytes = 1024 * 1024;   // 1 MB
+
+			//! See kDocumentSnapshotDecimationBytes.
+			static const int kDocumentSnapshotDecimationStride = 10;
 
 			//! The compaction budget BOTH GUI drivers install at startup
 			//! (Mac: RISEAgentChatBridge's init; Windows: ChatPanel's
@@ -674,6 +815,48 @@ namespace RISE
 			//! skipped) -- behaviour is byte-identical to the pre-E1 const
 			//! version.
 			std::string ToolCallToJsonRpcLine( const ChatToolCall& call, int rpcId );
+
+			//! SEQUENCING GATE (see the file header): call this BEFORE
+			//! handing a line to the RPC dispatcher, for the same reason
+			//! two of the three hosts already intercept ask_user before
+			//! dispatch (the eval runner and the macOS driver -- see the
+			//! file header's SEQUENCING GATE block for exactly which host
+			//! does what; the Windows/Qt driver has no ask_user handling
+			//! at all but gets this check regardless): some calls must
+			//! never reach the dispatcher.  ToolCallToJsonRpcLine itself
+			//! may still be called either way (the eval runner's and macOS
+			//! driver's ask_user interception both do, purely to keep the
+			//! dispatch-latency stamp honest) -- what this method's
+			//! contract binds is DISPATCH, not translation.
+			//!
+			//! Returns the ready-to-feed JSON-RPC SUCCESS envelope
+			//! ({"jsonrpc":"2.0","id":<rpcId>,"result":{"applied":false,
+			//! "status":"rejected","retriable":true,"message":"..."}}) when
+			//! `call.name` is one of the DOCUMENT-MUTATING verbs (the
+			//! isMutation family AddToolResult's streak tracks) AND the
+			//! blind-edit streak has already reached BlindEditGateThreshold()
+			//! -- i.e. dispatching this call would be the (threshold+1)-th
+			//! (or later) consecutive mutation with no VISUAL observation
+			//! between.  THE CALLER MUST NOT DISPATCH `call` IN THAT CASE --
+			//! pass the returned string straight to AddToolResult instead, so
+			//! the underlying document is never touched.  The message names
+			//! the fact and both cheap exits (render, read_viewport).
+			//!
+			//! Returns "" (empty) for every other call -- a non-mutating
+			//! verb, or a mutating verb while the streak is still under
+			//! threshold -- and the caller's normal ToolCallToJsonRpcLine ->
+			//! dispatch -> AddToolResult path is completely unchanged.  An
+			//! empty string is never a valid envelope, so "empty means not
+			//! gated" is an unambiguous sentinel.
+			//!
+			//! `rpcId` should be the SAME id the caller would otherwise pass
+			//! to ToolCallToJsonRpcLine, so the refusal's wire "id" matches
+			//! what the model expects answered.  NON-const: marks `call.id`
+			//! so the FOLLOWING AddToolResult knows this particular result is
+			//! a synthesized refusal (nothing was dispatched) and must not
+			//! advance the blind-edit streak -- a refused call is not itself
+			//! a blind edit.
+			std::string GateRefusalResponse( const ChatToolCall& call, int rpcId );
 
 			//! Record the raw JSON-RPC response ENVELOPE line for one of
 			//! the pending calls.  Results are buffered and packed into
@@ -878,6 +1061,46 @@ namespace RISE
 			void SetTrajectorySink( std::function<void(const std::string&)> sink,
 			                        const ChatTrajectoryConfig& config = ChatTrajectoryConfig() );
 
+			//! Durable document snapshots: a scene built entirely inside a live
+			//! GUI agent session (never Save As'd) is otherwise unrecoverable
+			//! if the app quits or crashes -- the trajectory records tool
+			//! calls/results but never the document TEXT.  `provider` fills
+			//! outText with the full serialized CST document and
+			//! outUuid/outRevision with the retained head's identity AT THE
+			//! MOMENT OF THAT READ, returning false when there is no document
+			//! to save (never CST-loaded, or after ClearAll).  Plain uint64_t
+			//! (not RISE::Cst::CstHeadVersion) so this header does not need a
+			//! Cst.h include.  The INTENDED implementation is a thin wrapper
+			//! around AgentSession::ReadDocumentSnapshot -- see that method's
+			//! doc for the coherent-read / threading discipline this loop
+			//! relies on (agent-RPC-thread only; controller-mediated when a
+			//! controller is attached, so a close-time call can BLOCK while a
+			//! render owns the scene -- accepted, not a bug).
+			//!
+			//! WRITE POLICY (both hooks below are no-ops when no provider is
+			//! set -- headless/eval paths are unaffected byte-for-byte):
+			//!   - AddToolResult: after a tool result reports an ADVANCING
+			//!     (uuid,revision) versus the last WRITTEN snapshot, emit a
+			//!     "head_bump" document_snapshot -- except once a written
+			//!     snapshot's document exceeded
+			//!     kDocumentSnapshotDecimationBytes, after which only every
+			//!     kDocumentSnapshotDecimationStride-th advance snapshots (a
+			//!     huge scene should not pay a full SerializeCst + JSONL-line
+			//!     cost on every single edit).  The FIRST advance of a trace
+			//!     always snapshots (there is no prior size to decimate by).
+			//!   - CloseTrajectorySession: BEFORE the summary, for ANY close
+			//!     status (including "app_quit"), emit a "session_end"
+			//!     snapshot UNLESS the head has not moved since the last
+			//!     snapshot already written this trace (dedupe -- the
+			//!     head_bump policy usually already covers it).
+			//! The write-policy bookkeeping (last snapshotted version, advance
+			//! counter) resets whenever the trace rolls to a new one (every
+			//! CloseTrajectorySession) and whenever the sink itself is
+			//! replaced/detached (SetTrajectorySink) -- a fresh trace has no
+			//! prior snapshot to compare against or decimate by.
+			void SetDocumentSnapshotProvider(
+				std::function<bool( std::string& outText, uint64_t& outUuid, uint64_t& outRevision )> provider );
+
 			//! Record one LLM HTTP round into the `llm` trajectory record.
 			//! Called by the DRIVER just before HandleResponse (the driver
 			//! owns the HTTP round-trip, so it alone knows the status/body/
@@ -961,10 +1184,16 @@ namespace RISE
 			//! `reason` is a short machine tag (e.g. "scenario_intervention");
 			//! `beforeBytes`/`afterBytes` record the affected document's byte
 			//! size before/after the edit; `entryIndex` is advisory (-1 = not
-			//! tied to a transcript entry, the intervention case).  No-op when
-			//! no trajectory sink is attached.
+			//! tied to a transcript entry, the intervention case).  Byte-field
+			//! meaning per reason (see TrajectoryHistoryEditRecord): image
+			//! elisions = entry rawJson size before/after; context_compaction
+			//! = token estimates; scenario_intervention = document bytes;
+			//! malformed_tool_call_corrective = an insertion (before 0, after
+			//! = the new entry's size).  `text` is an optional payload (the
+			//! corrective message).  No-op when no trajectory sink is attached.
 			void RecordHistoryEdit( const std::string& reason, long long beforeBytes = 0,
-			                        long long afterBytes = 0, int entryIndex = -1 );
+			                        long long afterBytes = 0, int entryIndex = -1,
+			                        const std::string& text = std::string() );
 
 		private:
 			AgentChatLoop( const AgentChatLoop& );             // deleted
@@ -976,16 +1205,6 @@ namespace RISE
 			//! wire never carries an unanswered tool call).  No-op when
 			//! there is no pending turn.
 			void FlushPendingToolResults();
-
-			//! BLIND-EDIT NUDGE delivery: when AddToolResult armed one,
-			//! append it to the transcript as a User entry and clear the
-			//! stash.  No-op when nothing is armed.  Called from
-			//! FlushPendingToolResults (both paths) so the nudge lands
-			//! immediately AFTER the tool-results entry -- keeping every
-			//! tool_use answered by the message that directly follows it --
-			//! and so it can never be stranded.  Deliberately NOT folded into
-			//! the system prompt: see the rationale block on the definition.
-			void AppendPendingBuildNudge();
 
 			//! Compose the full system prompt (base + skills section when a
 			//! skill index is set) -- shared by BuildRequest and the session
@@ -1022,7 +1241,7 @@ namespace RISE
 			//! WHOLE transcript and, for every supersession key present in
 			//! more than one still-live tool-result slot, rewrite all but
 			//! the LAST occurrence's payload to
-			//! ChatSupersededResultNote(verb) via the codec's
+			//! ChatSupersededResultNoteForKey(key) via the codec's
 			//! RewriteElidedToolResults.  Handles the cross-entry case (six
 			//! read_documents across six turns) and the entry-internal one
 			//! (two read_documents packed by ONE flush) with the same pass,
@@ -1036,6 +1255,50 @@ namespace RISE
 			//! FlushPendingToolResults -- the only place ToolResults entries
 			//! are created.
 			void ElideSupersededToolResults();
+
+			//! One placeholder rewrite target for RewriteToolResultSlots.
+			struct ToolResultSlotRewrite
+			{
+				std::size_t entry = 0;   //!< mTranscript index (a ToolResults entry)
+				std::size_t slot = 0;    //!< index into that entry's toolResultSlots
+				std::string note;        //!< the placeholder text
+			};
+
+			//! The SHARED rewrite step of every tool-result elision rule
+			//! (superseded reads, doc 91's lifetime retirements): for each
+			//! entry named in `targets`, rewrite the listed slots through the
+			//! codec's RewriteElidedToolResults -- one call per distinct note
+			//! -- mark them dead ONLY when the rewrite landed, and record ONE
+			//! history_edit tagged `reason` per rewritten entry.  Targets on
+			//! already-dead slots are skipped, so every rule built on it
+			//! converges (a slot is rewritten at most once).
+			//! `noteKey` is the JSON key the placeholder rides under on the
+			//! object-payload wires (kChatSupersededNoteKey for supersession,
+			//! kChatRetiredNoteKey for the lifetime rules).
+			void RewriteToolResultSlots( const std::vector<ToolResultSlotRewrite>& targets,
+			                             const char* reason, const char* noteKey );
+
+			//! CONTEXT LIFETIMES (doc 91 slices L2 + L3b): run after the
+			//! newly flushed ToolResults entry `newEntry` is in the
+			//! transcript.  (1) DECIDE: walks the new entry's results in wire
+			//! order; a successful finish_element (element E) marks every
+			//! earlier live slot whose lifetimeElement is E ("earlier"
+			//! includes the new entry's own earlier results), a successful
+			//! reopen_element E CANCELS any such mark not yet applied (E is no
+			//! longer settled), and -- once per build plan -- a successful
+			//! finish_element whose result reports the COMPOSE phase (every
+			//! element finished) marks every live slot carrying a
+			//! lifetimeSkill in an entry BEFORE the new one (a skill read in
+			//! the same turn counts as post-compose, whatever its position in
+			//! the turn); a successful file_build_plan re-arms that.
+			//! (2) APPLY: rewrites every marked, still-live slot in
+			//! an entry BEFORE `newEntry` -- never the entry being flushed, so
+			//! every result reaches the model at least once -- retrying each
+			//! flush until the codec rewrite lands.  Keyed only on data in the
+			//! results/arguments the loop already holds; deterministic for a
+			//! given sequence of flushes.
+			void RetireToolResultsByLifetime( std::size_t newEntry,
+			                                  const std::vector<std::pair<ChatToolCall, std::string>>& ordered );
 
 			//! Context-compaction slice S2: the structural span-dropper
 			//! (Option C core; design doc 71 §7).  When a valid budget
@@ -1068,6 +1331,24 @@ namespace RISE
 			//! action starts a new session.  Shared by Reset / SetProvider /
 			//! FinishTrajectory.
 			void CloseTrajectorySession( const std::string& status );
+
+			//! Durable document snapshots, head_bump path (see
+			//! SetDocumentSnapshotProvider): called from AddToolResult with the
+			//! (uuid,revision) the JUST-COMPLETED tool result reported.  Gates
+			//! on that version having ADVANCED past the last WRITTEN snapshot,
+			//! applies the decimation policy, then -- only if still due --
+			//! calls the provider and writes the record.  No-op when no
+			//! recorder or no provider is attached.
+			void MaybeEmitHeadBumpSnapshot( uint64_t uuid, uint64_t revision );
+
+			//! Durable document snapshots: build + emit ONE document_snapshot
+			//! record from an already-read (text,uuid,revision) and update the
+			//! last-written bookkeeping those two callers gate on.  Shared by
+			//! MaybeEmitHeadBumpSnapshot and CloseTrajectorySession's
+			//! session_end write so the "build the record + update
+			//! mLastSnapshot*" logic exists in exactly one place.
+			void WriteDocumentSnapshotRecord( const std::string& reason,
+				const std::string& text, uint64_t uuid, uint64_t revision );
 
 			//! One in-flight tool dispatch: the JSON-RPC line + start time
 			//! stamped by ToolCallToJsonRpcLine, completed at AddToolResult.
@@ -1120,19 +1401,29 @@ namespace RISE
 			//! NOT reset by Reset()/SetProvider -- the host set it for the
 			//! lifetime of this loop, same posture as the model selection.
 			bool mToolRoundsCapExplicit = false;
-			//! Blind-edit nudge state (see kDefaultBlindEditNudgeThreshold).
-			//! `mBlindEditStreak` counts consecutive document-mutating tool
-			//! calls with no intervening visual observe; it resets to 0 on any
-			//! observe verb and on a new user turn.  When it reaches a positive
-			//! multiple of the threshold, `mPendingBuildNudge` is armed with a
-			//! reminder that the flush at the end of the round appends to the
-			//! transcript as a Role::DriverNote entry and clears
-			//! (AppendPendingBuildNudge).
-			//! The stash exists because arming happens per-call while delivery
-			//! must wait for the whole parallel round to be answered.
-			int         mBlindEditStreak = 0;
-			int         mBlindEditNudgeThreshold = kDefaultBlindEditNudgeThreshold;
-			std::string mPendingBuildNudge;
+			//! SEQUENCING GATE state (see kDefaultBlindEditGateThreshold and
+			//! the file header).  `mBlindEditStreak` counts consecutive
+			//! document-mutating tool calls with no intervening visual
+			//! observe; it resets to 0 on any observe verb and on a new user
+			//! turn (AddUserMessage -- see that method's doc for why a fresh
+			//! user instruction must not inherit a stale gate).  Once it
+			//! reaches the threshold, GateRefusalResponse refuses every
+			//! further mutating call -- it does NOT keep incrementing past
+			//! the threshold (a refused call never mutated anything, so it is
+			//! not itself a blind edit) -- until a look resets it to 0.
+			int mBlindEditStreak = 0;
+			int mBlindEditGateThreshold = kDefaultBlindEditGateThreshold;
+
+			//! Call ids GateRefusalResponse most recently built a refusal
+			//! for.  AddToolResult consults this (and erases the match) to
+			//! recognize a result as a SYNTHESIZED refusal rather than a real
+			//! dispatch, so it skips the mutation-streak accounting for it
+			//! (see GateRefusalResponse's doc).  Cannot grow unbounded: every
+			//! entry here is consumed by the very next AddToolResult for that
+			//! call id (the same call the host's dispatch-loop just built the
+			//! refusal for), and provider tool-call ids are unique within a
+			//! session (the codecs refuse duplicates -- see the file header).
+			std::vector<std::string> mGateRefusedCallIds;
 
 			//! Driver-note delivery bookkeeping -- see DriverNoteCount() /
 			//! LastDriverNoteText().  Describes the CURRENT transcript, so
@@ -1159,9 +1450,44 @@ namespace RISE
 			ChatHttpRequest                          mLastRequest;
 			std::vector<ToolLinePending>             mToolLineStash;
 
+			//! Durable document snapshots (see SetDocumentSnapshotProvider).
+			//! mDocumentSnapshotProvider empty => every hook below is a no-op,
+			//! byte-identical to the pre-snapshot behaviour (headless/eval
+			//! paths, and any GUI session before the driver wires one up).
+			std::function<bool( std::string&, uint64_t&, uint64_t& )> mDocumentSnapshotProvider;
+			//! Identity of the last snapshot actually WRITTEN this trace (not
+			//! merely observed) -- both hooks gate against this, and it is
+			//! what CloseTrajectorySession's session_end dedupe compares
+			//! against.  mHasLastSnapshotVersion false => no snapshot written
+			//! yet this trace, so the first advancing call always fires.
+			bool     mHasLastSnapshotVersion = false;
+			uint64_t mLastSnapshotUuid = 0;
+			uint64_t mLastSnapshotRevision = 0;
+			//! documentBytes of the last WRITTEN snapshot -- decimation compares
+			//! THIS (not the current document's size, which head_bump does not
+			//! know without calling the provider) against
+			//! kDocumentSnapshotDecimationBytes.
+			long long mLastSnapshotDocumentBytes = 0;
+			//! Head-advancing calls seen since the last WRITTEN snapshot, while
+			//! decimating.  Reset to 0 every time a snapshot is actually
+			//! written (see WriteDocumentSnapshotRecord).
+			int mSnapshotAdvanceCount = 0;
+
 			//! See the "TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY" note above
 			//! mToolRounds.
 			bool                                     mElideAllImages;
+
+			//! Doc 91 slice L3b: set when a successful finish_element reports
+			//! the compose phase -- the moment every live named read_skill
+			//! result is MARKED for retirement (the rewrite itself is
+			//! retried until it lands; see ChatToolResultSlot's
+			//! pendingRetireNote, so setting this on the decision rather than
+			//! on the landing strands nothing).  While set, later read_skill
+			//! results stay live (until a same-name re-read supersedes one).
+			//! A successful file_build_plan re-arms it (a new plan has its
+			//! own planning phase); it describes the transcript, so Reset()
+			//! clears it too.
+			bool mComposeSkillRetirementDone = false;
 
 			//! REASONING-MODEL TOOLS-VS-EFFORT 400 RECOVERY: sticky once an
 			//! OpenAI-family reasoning model (observed: gpt-5.6-terra) 400-
@@ -1180,6 +1506,29 @@ namespace RISE
 			//! Doubles as the once-per-round retry guard, mirroring
 			//! mElideAllImages exactly.  Cleared by Reset().
 			bool                                     mForceReasoningEffortNone;
+
+			//! MALFORMED-TOOL-CALL RECOVERY: corrective retries already
+			//! spent in the current user turn (reset by a user
+			//! AddUserMessage and by Reset()).  Bounded by
+			//! kMaxMalformedToolCallRetries; the next failure is surfaced.
+			int                                      mMalformedRetries = 0;
+
+			//! Corrective user text queued by HandleResponse on a
+			//! MalformedToolCall and appended to the transcript by the NEXT
+			//! BuildRequest (so the trajectory reads llm(error) -> user ->
+			//! llm).  The malformed model turn itself is never recorded:
+			//! for Gemini it is an empty text part, which is invalid to
+			//! echo back.  Empty when nothing is queued.
+			std::string                              mPendingCorrective;
+
+			//! True only while BuildRequest is appending mPendingCorrective
+			//! through AddUserMessage, so that call neither resets the
+			//! tool-round counter nor the retry budget.
+			bool                                     mAppendingCorrective = false;
+		public:
+			//! Corrective retries allowed per user turn after a
+			//! ChatErrorKind::MalformedToolCall.
+			static const int kMaxMalformedToolCallRetries = 2;
 		};
 	}
 }

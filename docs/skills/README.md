@@ -34,10 +34,12 @@ Standard body layout:
 
 ## Claude Code Integration
 
-Each skill has a companion shim at
-`.claude/skills/<name>/SKILL.md` whose only job is to register the
-trigger with the Claude Code harness and point at the full content
-here.  The source of truth is this directory; the shim stays thin.
+`.claude/` is gitignored local harness state, not tracked in git.  When
+using Claude Code locally, you may optionally place a thin companion shim
+at `.claude/skills/<name>/SKILL.md` whose only job is to register the
+trigger with the Claude Code harness and point back at the full content
+here.  The source of truth is always `docs/skills/`; any local shim stays
+thin and optional.
 
 Other LLM tools (Cursor, Aider, Codex CLI, etc.) should be configured
 to read `docs/skills/` at session start via their own equivalent
@@ -60,7 +62,7 @@ point back here when a tool requires a shim.
 | [write-highly-effective-tests](write-highly-effective-tests.md) | Add or strengthen tests; convert smoke tests into real regression guards; decide whether coverage belongs in `tests/`, `scenes/Tests`, or `tools/`. |
 | [effective-rise-scene-authoring](effective-rise-scene-authoring.md) | Authoring a new `.RISEscene` from scratch, porting from another tool (glTF / Blender / Unity / Unreal), or diagnosing a scene that renders unexpectedly dark / wrong-coloured / oriented backwards.  Walks the [SCENE_CONVENTIONS.md](../SCENE_CONVENTIONS.md) checklist + the Lambertian-control-sphere diagnostic. |
 | [bdpt-vcm-mis-balance](bdpt-vcm-mis-balance.md) | BDPT or VCM render disagrees with PT (mean off, max blown out, splotches not fading with sample count); user reports "fireflies even at high spp"; you've just changed MIS code (`MISWeight`, `EvaluateNEE`, `EvaluateMerges`, `Convert*Subpath`, the auto-radius pre-pass). |
-| [audit-by-bug-pattern](audit-by-bug-pattern.md) | You just fixed a non-trivial bug.  Before declaring done, sweep the codebase for sibling sites carrying the same pattern — RGB / NM twins, snell / uniform variants, biased / unbiased branches, fallback / photon-aided paths.  The fix isn't done when the user-reported site is fixed; it's done when no sibling carries the same pattern. |
+| [audit-by-bug-pattern](audit-by-bug-pattern.md) | You just fixed a non-trivial bug.  Before declaring done, sweep the codebase for sibling sites carrying the same pattern — Pel / NM / HWSS triplets, snell / uniform variants, biased / unbiased branches, fallback / photon-aided paths.  The fix isn't done when the user-reported site is fixed; it's done when no sibling carries the same pattern. |
 | [rise-animation-render](rise-animation-render.md) | Render a RISE animation to an HDR movie, encode EXR frames as ProRes/HDR10, or diagnose a `.mov` that plays back as SDR. |
 
 ## Authoring New Skills
@@ -75,6 +77,7 @@ A new skill is worth writing when:
    rework.
 
 Copy the structure of an existing skill, keep the body under ~300
-lines, and add the trigger row to the table above.  Add the
-companion `.claude/skills/<name>/SKILL.md` shim so Claude Code can
-auto-discover the new skill.
+lines, and add the trigger row to the table above.  Because `.claude/`
+is gitignored local state, `.claude/skills/<name>/SKILL.md` shims are
+optional local shims for Claude Code auto-discovery rather than tracked
+files in git.

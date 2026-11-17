@@ -35,12 +35,15 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <filesystem>
+#include <stdexcept>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -55,11 +58,14 @@
 #include "../src/Library/Rendering/FrameEncoders.h"
 #include "../src/Library/Rendering/FileEncoderObserver.h"
 #include "../src/Library/RasterImages/RasterImage.h"
+#include "../src/Library/RasterImages/WriteOnlyRasterImage.h"
+#include <limits>
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "../src/Library/Utilities/RISECBOR64.h"
 #include "FireOutputMetadataTestFixture.h"
 #include "../src/Library/Interfaces/IFrameEncoder.h"
+#include "TestTempDir.h"
 #include "../src/Library/Interfaces/IRenderObserver.h"
 
 #ifndef NO_EXR_SUPPORT
@@ -106,6 +112,7 @@ namespace
 	{
 		if ( cond ) {
 			++gPassCount;
+			if( std::getenv("RISE_RED_PROVE_MARKER") ) std::cout << "PASS: " << label << "\n";
 		} else {
 			++gFailCount;
 			std::cerr << "FAIL: " << label << "\n";
@@ -304,8 +311,8 @@ namespace
 	std::string MakeTempPath()
 	{
 		std::ostringstream os;
-		os << "rise_l4_vfs_" << ::getpid();
-		return (std::filesystem::temp_directory_path()/os.str()).string();
+		os << RISE::TestSupport::ScratchBaseDir() << "/rise_l4_vfs_" << ::getpid();
+		return os.str();
 	}
 
 	bool ReadFileAllBytes( const std::string& path, std::vector<unsigned char>& out )
@@ -546,6 +553,112 @@ namespace
 		Check( tileFires.load() == tileFiresBeforeBoundary + 1,
 			"intermediate single-pixel region on tile boundary fires exactly 1 tile callback (L4 round-3 P2 boundary)" );
 
+		// Region-only copy: the source is valid ONLY inside the region
+		// (the rasterizer composes previews per tile into a shared
+		// scratch, and neighbouring regions may be mid-composition).
+		// A non-tile-aligned region spanning four FrameStore tiles must
+		// copy exactly its own pixels; the rest of those tiles keep
+		// their previous content and the sentinel outside the region is
+		// never read into the store.
+		{
+			const Rect region( 5, 7, 40, 45 );	// top, left, bottom, right
+			for ( unsigned y = 0; y < 64; ++y )
+				for ( unsigned x = 0; x < 64; ++x ) {
+					const bool in = x >= region.left && x <= region.right && y >= region.top && y <= region.bottom;
+					img->SetPEL( x, y, in ? RISEColor( RISEPel( 0.25, 0.125, 0.75 ), 1.0 )
+					                      : RISEColor( RISEPel( 9.0, -3.0, 7.0 ), 0.5 ) );
+				}
+			const int fires = tileFires.load();
+			vfs->OutputIntermediateImage( *img, &region );
+			Check( tileFires.load() == fires + 4,
+				"non-aligned region spanning 2x2 FrameStore tiles fires 4 tile callbacks" );
+			const IRasterImage& store = vfs->GetFrameStore()->AsBeautyRasterImage();
+			unsigned insideBad = 0, sentinelCopied = 0, previousLost = 0;
+			for ( unsigned y = 0; y < 64; ++y )
+				for ( unsigned x = 0; x < 64; ++x ) {
+					const RISEColor c = store.GetPEL( x, y );
+					const bool in = x >= region.left && x <= region.right && y >= region.top && y <= region.bottom;
+					if ( in ) {
+						if ( c.base.r != 0.25 || c.base.g != 0.125 || c.base.b != 0.75 ) ++insideBad;
+					} else {
+						if ( c.base.r == 9.0 ) ++sentinelCopied;
+						else if ( c.base.r != 0.5 || c.base.g != 0.5 || c.base.b != 0.5 ) ++previousLost;
+					}
+				}
+			Check( insideBad == 0, "region-only intermediate: pixels inside the region are copied" );
+			Check( sentinelCopied == 0,
+				"region-only intermediate: no source pixel outside the region is read into the store (" +
+				std::to_string( sentinelCopied ) + " copied)" );
+			Check( previousLost == 0, "region-only intermediate: pixels outside the region keep their previous content" );
+		}
+
+		// Inclusive endpoint UINT_MAX means "to the image edge".  The
+		// endpoint must be clamped before the inclusive->exclusive +1,
+		// which used to wrap it to 0 and drop a valid, intersecting
+		// region (no pixels copied, no tile notification).
+		{
+			const unsigned int kMax = std::numeric_limits<unsigned int>::max();
+			const Rect toEdge( 40, 48, kMax, kMax );	// top, left, bottom, right
+			std::vector<RISEColor> before( 64*64 );
+			{
+				const IRasterImage& store = vfs->GetFrameStore()->AsBeautyRasterImage();
+				for ( unsigned y = 0; y < 64; ++y )
+					for ( unsigned x = 0; x < 64; ++x ) before[y*64+x] = store.GetPEL( x, y );
+			}
+			for ( unsigned y = 0; y < 64; ++y )
+				for ( unsigned x = 0; x < 64; ++x ) {
+					const bool in = x >= 48 && y >= 40;
+					img->SetPEL( x, y, in ? RISEColor( RISEPel( 0.0625, 0.5, 0.875 ), 1.0 )
+					                      : RISEColor( RISEPel( 9.0, -3.0, 7.0 ), 0.5 ) );
+				}
+			const int fires = tileFires.load();
+			vfs->OutputIntermediateImage( *img, &toEdge );
+			Check( tileFires.load() == fires + 1,
+				"UINT_MAX-endpoint region [40..edge]x[48..edge] fires exactly its one overlapping tile callback (got " +
+				std::to_string( tileFires.load() - fires ) + ")" );
+			const IRasterImage& store = vfs->GetFrameStore()->AsBeautyRasterImage();
+			unsigned insideBad = 0, outsideChanged = 0;
+			for ( unsigned y = 0; y < 64; ++y )
+				for ( unsigned x = 0; x < 64; ++x ) {
+					const RISEColor c = store.GetPEL( x, y );
+					if ( x >= 48 && y >= 40 ) {
+						if ( c.base.r != 0.0625 || c.base.g != 0.5 || c.base.b != 0.875 ) ++insideBad;
+					} else {
+						const RISEColor& b = before[y*64+x];
+						if ( c.base.r != b.base.r || c.base.g != b.base.g || c.base.b != b.base.b || c.a != b.a ) ++outsideChanged;
+					}
+				}
+			Check( insideBad == 0, "UINT_MAX-endpoint region: every pixel to the edge is copied (" +
+				std::to_string( insideBad ) + " missing)" );
+			Check( outsideChanged == 0, "UINT_MAX-endpoint region: sentinel outside the region untouched (" +
+				std::to_string( outsideChanged ) + " changed)" );
+
+			for ( unsigned y = 0; y < 64; ++y )
+				for ( unsigned x = 0; x < 64; ++x )
+					img->SetPEL( x, y, RISEColor( RISEPel( 0.375, 0.25, 0.125 ), 1.0 ) );
+			const Rect whole( 0, 0, kMax, kMax );
+			const int firesWhole = tileFires.load();
+			vfs->OutputIntermediateImage( *img, &whole );
+			Check( tileFires.load() == firesWhole + 4,
+				"UINT_MAX-endpoint whole-frame region fires all 4 tile callbacks (got " +
+				std::to_string( tileFires.load() - firesWhole ) + ")" );
+			unsigned wholeBad = 0;
+			for ( unsigned y = 0; y < 64; ++y )
+				for ( unsigned x = 0; x < 64; ++x ) {
+					const RISEColor c = store.GetPEL( x, y );
+					if ( c.base.r != 0.375 || c.base.g != 0.25 || c.base.b != 0.125 ) ++wholeBad;
+				}
+			Check( wholeBad == 0, "UINT_MAX-endpoint whole-frame region copies every pixel" );
+
+			// Fully outside and inverted regions stay empty.
+			const int firesEmpty = tileFires.load();
+			const Rect outside( 64, 64, kMax, kMax );
+			const Rect inverted( 10, 30, 5, kMax );
+			vfs->OutputIntermediateImage( *img, &outside );
+			vfs->OutputIntermediateImage( *img, &inverted );
+			Check( tileFires.load() == firesEmpty, "outside / inverted UINT_MAX regions fire nothing" );
+		}
+
 		safe_release( img );
 		vfs->release();
 	}
@@ -658,6 +771,15 @@ namespace
 #ifndef NO_PNG_SUPPORT
 	void TestSaveAsByteIdenticalToL2()
 	{
+		struct EmptyEncoder final : IFrameEncoder, Reference
+		{
+			std::string FormatName() const override { return "empty"; }
+			std::vector<std::string> Extensions() const override { return { "empty" }; }
+			bool SupportsHDR() const override { return false; }
+			bool SupportsAOVs() const override { return false; }
+			void Encode( const FrameStore&, IWriteBuffer&, const EncodeOpts& ) override {}
+		};
+
 		auto* vfs = new ViewportFrameStore();
 		auto* img = MakeTestImage();
 		vfs->OutputImage( *img, nullptr, 0 );
@@ -720,6 +842,77 @@ namespace
 		const bool emptyOk = vfsEmpty->SaveAs( vfsPath, enc, opts );
 		Check( !emptyOk, "SaveAs returns false when FrameStore not allocated" );
 		vfsEmpty->release();
+
+		EmptyEncoder emptyEncoder;
+		Check( !vfs->SaveAs( vfsPath, &emptyEncoder, opts ),
+			"SaveAs returns false when the encoder writes no bytes" );
+		std::vector<unsigned char> preserved;
+		Check( ReadFileAllBytes( vfsPath, preserved ) && preserved == vfsBytes,
+			"failed SaveAs preserves the existing image" );
+		char byte = 0;
+		auto* rejected = new MemoryBuffer( &byte, 0, false );
+		Check( !vfs->SaveTo( *rejected, &emptyEncoder, opts ) &&
+			!vfs->SaveTo( *rejected, enc, opts ), "SaveTo refuses empty and rejected output" );
+		rejected->release();
+
+		struct ThrowingEncoder final : IFrameEncoder, Reference
+		{
+			const FrameStore* observed = nullptr;
+			unsigned int references = 0;
+			std::string FormatName() const override { return "throwing"; }
+			std::vector<std::string> Extensions() const override { return { "throwing" }; }
+			bool SupportsHDR() const override { return false; }
+			bool SupportsAOVs() const override { return false; }
+			void Encode( const FrameStore& store, IWriteBuffer&, const EncodeOpts& ) override
+			{
+				observed = &store;
+				references = store.refcount();
+				throw std::runtime_error( "injected encoding failure" );
+			}
+		} throwing;
+		auto* destination = new MemoryBuffer();
+		bool threw = false;
+		bool saved = true;
+		try { saved = vfs->SaveTo( *destination, &throwing, opts ); }
+		catch( const std::exception& ) { threw = true; }
+		Check( !threw && !saved && throwing.observed &&
+			throwing.observed->refcount() + 1 == throwing.references,
+			"SaveTo encoding failure returns false and releases its snapshot" );
+		Check( destination->refcount() == 1, "SaveTo encoding failure releases destination references" );
+		destination->release();
+		Check( !vfs->SaveAs( vfsPath, &throwing, opts ) &&
+			ReadFileAllBytes( vfsPath, preserved ) && preserved == vfsBytes &&
+			throwing.observed->refcount() + 1 == throwing.references,
+			"SaveAs encoding failure preserves the image and releases its snapshot" );
+
+#ifndef _WIN32
+		namespace fs = std::filesystem;
+		const fs::path scratch = MakeTempPath() + "_save_compatibility";
+		fs::create_directory( scratch );
+		const fs::path target = scratch / "image.png";
+		fs::copy_file( vfsPath, target, fs::copy_options::overwrite_existing );
+		const auto originalPermissions = fs::status( scratch ).permissions();
+		fs::permissions( scratch, fs::perms::owner_read | fs::perms::owner_exec );
+		std::error_code permissionError;
+		const fs::path probe = scratch / "permission_probe";
+		const bool createdProbe = fs::create_directory( probe, permissionError );
+		if( permissionError == std::errc::permission_denied ) {
+			Check( vfs->SaveAs( target.string(), enc, opts ) &&
+				ReadFileAllBytes( target.string(), preserved ) && preserved == vfsBytes,
+				"SaveAs compatibility: writable image in a read-only directory" );
+		} else {
+			std::cout << "SaveAs read-only directory fixture skipped: permissions are not enforced\n";
+		}
+		fs::permissions( scratch, originalPermissions );
+		if( createdProbe ) fs::remove( probe );
+		const fs::path link = scratch / "dangling.png";
+		const fs::path linkTarget = scratch / "created.png";
+		fs::create_symlink( linkTarget.filename(), link );
+		Check( vfs->SaveAs( link.string(), enc, opts ) && fs::is_symlink( link ) &&
+			ReadFileAllBytes( linkTarget.string(), preserved ) && preserved == vfsBytes,
+			"SaveAs compatibility: dangling symlink remains and receives the image" );
+		fs::remove_all( scratch );
+#endif
 
 		std::remove( vfsPath.c_str() );
 		std::remove( l2Path.c_str() );
@@ -1138,6 +1331,283 @@ namespace
 		std::remove((path+".provenance.cbor").c_str());
 		encoder->release();
 		vfs->release();
+	}
+
+	void TestEmptyBoundFrameSavePreflight()
+	{
+		struct CountingEncoder final : IFrameEncoder, Reference
+		{
+			unsigned int calls = 0;
+			std::string FormatName() const override { return "counting"; }
+			std::vector<std::string> Extensions() const override { return { "counting" }; }
+			bool SupportsHDR() const override { return false; }
+			bool SupportsAOVs() const override { return false; }
+			void Encode( const FrameStore&, IWriteBuffer& dst, const EncodeOpts& ) override
+			{
+				++calls;
+				if( !dst.setBytes("encoded", 7) ) throw std::runtime_error("counting encoder write failed");
+			}
+		} encoder;
+		auto* viewport = new ViewportFrameStore();
+		const std::string path = MakeTempPath() + "_empty_bound.counting";
+		const std::string fileSentinel = "file sentinel";
+		const std::vector<unsigned char> expectedFile(fileSentinel.begin(), fileSentinel.end());
+		const char bufferSentinel[] = "buffer sentinel";
+		EncodeOpts opts;
+		for( const auto& dimensions : { std::pair<size_t, size_t>{0, 0}, {0, 2}, {2, 0} } ) {
+			FrameStore::Spec spec;
+			spec.width = dimensions.first;
+			spec.height = dimensions.second;
+			auto* empty = new FrameStore(spec);
+			viewport->BindFrameStore(empty);
+			empty->release();
+			std::ofstream(path, std::ios::binary | std::ios::trunc) << fileSentinel;
+			std::vector<unsigned char> preserved;
+			Check(!viewport->SaveAs(path, &encoder, opts) && encoder.calls == 0 &&
+				ReadFileAllBytes(path, preserved) && preserved == expectedFile,
+				"empty-bound preflight: SaveAs rejects either zero dimension before encoding or changing the existing file");
+			char storage[sizeof(bufferSentinel)];
+			std::memcpy(storage, bufferSentinel, sizeof(storage));
+			auto* destination = new MemoryBuffer(storage, static_cast<unsigned int>(sizeof(storage)), false);
+			Check(destination->seek(IBuffer::START, 4), "empty-bound preflight: prefill destination and advance its cursor");
+			const auto previousSize = destination->Size();
+			const auto previousPosition = destination->getCurPos();
+			Check(!viewport->SaveTo(*destination, &encoder, opts) && encoder.calls == 0 &&
+				destination->Size() == previousSize && destination->getCurPos() == previousPosition &&
+				std::memcmp(storage, bufferSentinel, sizeof(storage)) == 0,
+				"empty-bound preflight: SaveTo rejects either zero dimension without encoding or changing destination bytes size or cursor");
+			destination->release();
+		}
+		FrameStore::Spec healthySpec;
+		healthySpec.width = healthySpec.height = 1;
+		auto* healthy = new FrameStore(healthySpec);
+		viewport->BindFrameStore(healthy);
+		healthy->release();
+		encoder.calls = 0;
+		std::vector<unsigned char> encodedFile;
+		const std::vector<unsigned char> expectedEncoded = { 'e', 'n', 'c', 'o', 'd', 'e', 'd' };
+		Check(viewport->SaveAs(path, &encoder, opts) && encoder.calls == 1 &&
+			ReadFileAllBytes(path, encodedFile) && encodedFile == expectedEncoded,
+			"empty-bound preflight: positive-dimension rebind permits SaveAs and invokes encoder once");
+		auto* destination = new MemoryBuffer();
+		Check(viewport->SaveTo(*destination, &encoder, opts) && encoder.calls == 2 && destination->getCurPos() == 7 &&
+			std::memcmp(destination->Pointer(), "encoded", 7) == 0,
+			"empty-bound preflight: positive-dimension rebind permits SaveTo and emits complete bytes");
+		destination->release();
+		viewport->release();
+		std::remove(path.c_str());
+	}
+
+	void TestSaveToLargeBufferExtension()
+	{
+		// Model large logical positions while storing only a single byte.
+		// No multi-GiB file or allocation is needed to test wrapper dispatch.
+		struct WideSink final : MemoryBuffer, IBuffer64
+		{
+			std::uint64_t position = (std::uint64_t{1} << 32) + 1024;
+			std::uint64_t length = (std::uint64_t{1} << 32) + 8192;
+			bool rejectSeek = false;
+			std::uint64_t Size64() const override { return length; }
+			std::uint64_t getCurPos64() const override { return position; }
+			bool seek64( IBuffer::eSeek origin, std::int64_t amount ) override
+			{
+				if( rejectSeek || origin != IBuffer::START || amount < 0 ) return false;
+				position = static_cast<std::uint64_t>( amount );
+				return true;
+			}
+			bool setBytes( const void* bytes, unsigned int count ) override
+			{
+				if( !MemoryBuffer::setBytes( bytes, count ) ) return false;
+				position += count;
+				if( position > length ) length = position;
+				return true;
+			}
+		};
+		struct ProbeEncoder final : IFrameEncoder, Reference
+		{
+			explicit ProbeEncoder( bool wide ) : expectWide( wide ) {}
+			bool expectWide;
+			bool sawWide = false;
+			bool queriesMatch = false;
+			bool seekAccepted = false;
+			bool positionMatches = false;
+			bool wrote = false;
+			std::string FormatName() const override { return "buffer_probe"; }
+			std::vector<std::string> Extensions() const override { return { "probe" }; }
+			bool SupportsHDR() const override { return false; }
+			bool SupportsAOVs() const override { return false; }
+			void Encode( const FrameStore&, IWriteBuffer& dst, const EncodeOpts& ) override
+			{
+				sawWide = dynamic_cast<IBuffer64*>( &dst ) != nullptr;
+				if( expectWide ) {
+					queriesMatch = BufferSize( dst ) == (std::uint64_t{1} << 32) + 8192 &&
+						BufferPosition( dst ) == (std::uint64_t{1} << 32) + 1024;
+					constexpr std::int64_t offset = (std::int64_t{1} << 32) + 4096;
+					seekAccepted = BufferSeek( dst, IBuffer::START, offset );
+					positionMatches = BufferPosition( dst ) == static_cast<std::uint64_t>( offset );
+				} else {
+					queriesMatch = BufferSize( dst ) == 0 && BufferPosition( dst ) == 0;
+					seekAccepted = BufferSeek( dst, IBuffer::START, 0 );
+					positionMatches = BufferPosition( dst ) == 0;
+				}
+				// Deliberately proceed after a rejected seek. SaveTo must latch
+				// the failure even when this later write succeeds.
+				const char byte = 'x';
+				wrote = dst.setBytes( &byte, 1 );
+			}
+		};
+		auto* viewport = new ViewportFrameStore();
+		auto* image = MakeTestImage();
+		viewport->OutputImage( *image, nullptr, 0 );
+		image->release();
+		EncodeOpts opts;
+		WideSink wide;
+		ProbeEncoder encoder( true );
+		const bool saved = viewport->SaveTo( wide, &encoder, opts );
+		Check( saved && encoder.sawWide && encoder.queriesMatch && encoder.seekAccepted &&
+			encoder.positionMatches && encoder.wrote &&
+			wide.getCurPos64() == (std::uint64_t{1} << 32) + 4097 && wide.Size() == 1,
+			"SaveTo64: preserves large size, position and seeks while writing one byte" );
+		WideSink rejected;
+		rejected.rejectSeek = true;
+		ProbeEncoder ignoringFailure( true );
+		Check( !viewport->SaveTo( rejected, &ignoringFailure, opts ) &&
+			ignoringFailure.sawWide && !ignoringFailure.seekAccepted && ignoringFailure.wrote,
+			"SaveTo64: rejected wide seek remains a failure after a successful write" );
+		auto* legacy = new MemoryBuffer();
+		ProbeEncoder legacyEncoder( false );
+		Check( viewport->SaveTo( *legacy, &legacyEncoder, opts ) && !legacyEncoder.sawWide &&
+			legacyEncoder.queriesMatch && legacyEncoder.seekAccepted && legacyEncoder.positionMatches &&
+			legacy->Size() == 1 && legacy->Pointer()[0] == 'x',
+			"SaveTo64: legacy destinations retain their narrow interface and behavior" );
+		legacy->release();
+		struct HintEncoder final : IFrameEncoder, Reference {
+			bool declined = false;
+			std::string FormatName() const override { return "hints"; }
+			std::vector<std::string> Extensions() const override { return {}; }
+			bool SupportsHDR() const override { return false; }
+			bool SupportsAOVs() const override { return false; }
+			void Encode(const FrameStore&, IWriteBuffer& output, const EncodeOpts&) override {
+				declined = !output.Resize(1, false) && !output.ResizeForMore(1);
+				output.setChar('r');
+			}
+		} hints;
+		char byte = 0;
+		auto* borrowed = new MemoryBuffer(&byte, 1, false);
+		Check( viewport->SaveTo(*borrowed, &hints, opts) && hints.declined && byte == 'r',
+			"SaveTo64: advisory resize refusal does not fail a complete streaming write" );
+		borrowed->release();
+		viewport->release();
+	}
+
+	void TestWriteOnlyFinalizationFailure()
+	{
+		struct ThrowingWriter final : IRasterImageWriter, Reference
+		{
+			unsigned int finalizations = 0;
+			bool reject = true;
+			bool rejectBegin = false;
+			void BeginWrite( unsigned int, unsigned int ) override
+			{
+				if( rejectBegin ) throw std::runtime_error( "injected begin failure" );
+			}
+			void WriteColor( const RISEColor&, unsigned int, unsigned int ) override {}
+			void EndWrite() override
+			{
+				++finalizations;
+				if( reject ) throw std::runtime_error( "injected finalization failure" );
+			}
+		} writer;
+		auto* image = new RISEWriteOnlyRasterImage( 1, 1 );
+		image->DumpImage( &writer );
+		bool failed = false;
+		try { image->DumpImage( nullptr ); }
+		catch( const std::exception& ) { failed = true; }
+		Check( failed && writer.refcount() == 1,
+			"write-only explicit finalization propagates failure and releases the writer" );
+		writer.reject = false;
+		image->release();
+		Check( writer.finalizations == 1,
+			"write-only failed explicit finalization is not retried by destruction" );
+		// Keep the unfixed RED path a normal assertion failure: the old
+		// destructor would terminate if we exercised it after EndWrite throws.
+		if( writer.finalizations == 1 ) {
+			writer.reject = true;
+			image = new RISEWriteOnlyRasterImage( 1, 1 );
+			image->DumpImage( &writer );
+			image->release();
+			Check( writer.refcount() == 1 && writer.finalizations == 2,
+				"write-only destructor handles finalization failure and releases the writer" );
+		}
+		writer.reject = false;
+		writer.rejectBegin = true;
+		image = new RISEWriteOnlyRasterImage( 1, 1 );
+		failed = false;
+		try { image->DumpImage( &writer ); }
+		catch( const std::exception& ) { failed = true; }
+		Check( failed && writer.refcount() == 1,
+			"write-only failed BeginWrite releases its incoming writer" );
+		image->release();
+
+		struct LifetimeWriter final : IRasterImageWriter, Reference
+		{
+			bool& destroyed;
+			explicit LifetimeWriter( bool& flag ) : destroyed( flag ) {}
+			~LifetimeWriter() override { destroyed = true; }
+			void BeginWrite( unsigned int, unsigned int ) override {}
+			void WriteColor( const RISEColor&, unsigned int, unsigned int ) override {}
+			void EndWrite() override {}
+		};
+		if( writer.finalizations == 2 ) {
+			bool destroyed = false;
+			auto* borrowed = new LifetimeWriter( destroyed );
+			image = new RISEWriteOnlyRasterImage( 1, 1 );
+			image->DumpImage( borrowed );
+			borrowed->release();
+			image->DumpImage( borrowed );
+			Check( !destroyed && borrowed->refcount() == 1,
+				"write-only rebind retains a writer owned solely by the image" );
+			image->release();
+			Check( destroyed, "write-only rebind releases the retained writer at destruction" );
+		}
+
+		// Clear's inclusive region is clamped to the image like
+		// RISERasterImage::Clear: UINT_MAX means "to the edge" (it used to
+		// loop forever, writing coordinates outside the image).
+		struct CountingWriter final : IRasterImageWriter, Reference
+		{
+			unsigned int writes = 0, outOfRange = 0;
+			void BeginWrite( unsigned int, unsigned int ) override {}
+			void WriteColor( const RISEColor&, unsigned int x, unsigned int y ) override
+			{
+				++writes;
+				if( x >= 3 || y >= 2 ) ++outOfRange;
+				if( writes > 1000 ) throw std::runtime_error( "runaway Clear" );
+			}
+			void EndWrite() override {}
+		};
+		{
+			auto* counter = new CountingWriter();
+			auto* clearImage = new RISEWriteOnlyRasterImage( 3, 2 );
+			clearImage->DumpImage( counter );
+			counter->writes = 0;
+			const unsigned int kMax = std::numeric_limits<unsigned int>::max();
+			const Rect toEdge( 0, 1, kMax, kMax );
+			bool threw = false;
+			try { clearImage->Clear( RISEColor( RISEPel( 1, 1, 1 ), 1 ), &toEdge ); }
+			catch( const std::exception& ) { threw = true; }
+			Check( !threw && counter->writes == 4 && counter->outOfRange == 0,
+				"write-only Clear with a UINT_MAX endpoint clears exactly to the edge (writes=" +
+				std::to_string( counter->writes ) + ", out of range=" + std::to_string( counter->outOfRange ) + ")" );
+			counter->writes = 0;
+			const Rect outside( 5, 0, kMax, kMax );
+			threw = false;
+			try { clearImage->Clear( RISEColor( RISEPel( 1, 1, 1 ), 1 ), &outside ); }
+			catch( const std::exception& ) { threw = true; }
+			Check( !threw && counter->writes == 0, "write-only Clear with a wholly outside region writes nothing" );
+			clearImage->release();
+			counter->release();
+		}
 	}
 
 	// ─── Section 5: rasterizer-swap simulation ────────────────────
@@ -2308,6 +2778,9 @@ int main()
 	#endif
 	TestSaveAsUsesOneMetadataSnapshot();
 	TestNonFireSavesLeaseOutputClassification();
+	TestEmptyBoundFrameSavePreflight();
+	TestWriteOnlyFinalizationFailure();
+	TestSaveToLargeBufferExtension();
 	TestRasterizerSwap();
 	TestResolutionChange();
 	TestBindDormantStoreAsExternal();

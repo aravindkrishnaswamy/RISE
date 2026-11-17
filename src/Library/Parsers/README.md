@@ -10,7 +10,7 @@ This directory defines the chunk-parser registry, script, command, and options p
 - Derive-time scene loading (the ONLY scene-load path): `../Cst/Cst.cpp` (`ParseToCst` + `DeriveToJob`)
 - Command parser: `AsciiCommandParser.*` (the console `load`/`run`/`modify` commands — `ICommandParser`)
 - Script parser: `AsciiScriptParser.*`
-- Math expression evaluator: `MathExpressionEvaluator.*`
+- Legacy expression evaluation for the v6 migration tool: [LegacyMathExpression.h](../../../tools/LegacyMathExpression.h)
 - Options parser: [../Options.h](../Options.h) (constructed via `RISE_API_CreateOptionsParser`)
 
 ## Scene File Basics
@@ -31,6 +31,42 @@ Chunk syntax rules:
 - The opening `{` must be on its own line.
 - The closing `}` must be on its own line.
 - Comments are stripped before the chunk-specific parser sees the chunk body.
+- This is enforced, not just documented (since task_7f42984d): a `{`/`}` sharing a line with the
+  keyword or a parameter is a hard PASS-1 derive error ("chunk braces must be on their own lines",
+  naming the source line) via `ChunkBraceViolations` in `Cst.cpp`'s `ResolveChunkParams` -- not a
+  silently-accepted second syntax. `ParseToCst` itself stays lossless/permissive about the bytes
+  (an editor must still be able to open a file that violates this), so the rejection happens at
+  derive time, the same PASS-1 layer that rejects an unknown chunk type or a value-less parameter.
+
+Numeric descriptor fields use checked conversion. Missing fields retain their
+specified defaults. Non-numeric `Int` and `Double` values, non-finite doubles,
+and integers outside the destination range fail derivation. `UInt .5` fails
+because it has no decimal integer prefix. Explicit signs and historical
+integer-prefix conversion remain supported where the descriptor's numeric
+syntax accepts them. Values above `UINT_MAX` fail instead of wrapping or
+reading an uninitialized value.
+
+`spectral_painter` and `piecewise_linear_function` use the same table rule.
+Inline `cp` entries require two finite, whitespace-separated values and can
+include additional columns. File-backed tables consume the leading required
+values, ignore additional columns, and warn and skip headers or malformed
+rows. `nmfile` and `ampfile` consume the first finite value on each physical
+row. Empty results, embedded NUL bytes, file I/O failures, and mismatched
+wavelength/amplitude counts are errors.
+
+Console commands and ASCII scripts recognize a standalone unquoted `#`
+token as a trailing comment and any leading `#` token as a full-line comment.
+Quoted hashes, embedded hashes, and value tokens such as `#3` and `#Dir`
+remain literal. Options and the public tokenizer APIs do not strip comments. Malformed numeric command arguments,
+incomplete render rectangles, and unknown `mediapath` subcommands are hard
+errors. A plain `render # comment` renders the current frame.
+
+Note on light colour (2026-09-02): `omni_light`, `spot_light`,
+`directional_light` and `ambient_light` each take a `colorspace`
+parameter, defaulting to `Rec709RGB_Linear` — their `color` is a LINEAR
+triple, matching `uniformcolor_painter`.  They used to gamma-decode it as
+sRGB with nothing in the descriptor saying so; pre-existing scenes are
+carried across by `tools/migrate_scenes_light_colorspace.py`.
 
 For semantic conventions (light direction sign, colour space defaults,
 transform precedence on `standard_object`, V-axis flip, alpha-mask
@@ -96,6 +132,7 @@ No chunk parser overrides `ParseChunk` directly. The default `ParseChunk` impl (
 - the syntax highlighters (Qt + AppKit, via `SceneGrammar` in [SceneEditorSuggestions/](../SceneEditorSuggestions/))
 - the scene-editor suggestion engine (right-click context menu and inline autocomplete in both GUI apps)
 - any future grammar consumer (linters, doc generators, …)
+- the deprecation surface (`ChunkDescriptor::deprecated` + `replacement`, set via `MarkDeprecated()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp)): `DeriveToJob` logs one warning per deprecated chunk type per load, the agent `read_schema` JSON carries `"deprecated":true` + `"replacement"`, and the description is prefixed `DEPRECATED (...)` so completion popups and the property panel show it. A deprecated chunk still parses and renders exactly as before (docs/SCENE_CONVENTIONS.md "Deprecated materials"). Since legacy-deprecation Phase 1 (2026-10-09) there is a stronger tier, FROZEN (`ChunkDescriptor::frozen`, set by `MarkFrozen()`; implies `deprecated`): the warning says "LEGACY and UNSUPPORTED", `read_schema` adds `"frozen":true`, the agent refuses to insert one, and the palettes sort it last.  Every non-supported chunk except the seven legacy BRDF materials is listed in ONE table, `kLegacyTierTable`, applied by a descriptor-copying wrapper in `CreateAllChunkParsers()` (Finalize forwards unchanged, so rendering is bit-identical); a deprecated keyword ALIAS that shares a supported descriptor (`mis_pathtracing_shaderop`) is deprecated by dispatch keyword via `DeprecatedChunkAliasReplacement()`.  Tiers: docs/SCENE_CONVENTIONS.md §11.4.
 
 `Describe()` and `Finalize()` are both `[[nodiscard]] = 0` pure virtual on `IAsciiChunkParser`, so a chunk parser cannot ship without both — the build fails until they're implemented.
 
@@ -110,12 +147,57 @@ Defined in [ChunkDescriptor.h](ChunkDescriptor.h). Read parameter values inside 
 | `GetUInt(key, def)` | `unsigned int` |
 | `GetInt(key, def)` | `int` |
 | `GetBool(key, def)` | `bool` |
+| `GetVec2(key, double[2])` | `bool` (true if present, fills the array) |
 | `GetVec3(key, double[3])` | `bool` (true if present, fills the array) |
+| `GetVec4(key, double[4])` | `bool` (true if present, fills the array) |
+| `GetMat4(key, double[16])` | `bool` (true if present, fills the array) |
 | `Has(key)` | `bool` (was the param explicitly set?) |
 | `GetRepeatable(key)` | `const std::vector<std::string>&` (for `p.repeatable = true` params) |
 | `Singles()` | `const std::map<std::string,std::string>&` (raw access; useful for composite tokens) |
 
 The default in each `GetX` accessor matches the legacy local-variable initial value used by the pre-migration parser. Use `bag.Has(key)` when you need to distinguish "parameter was explicitly set" from "parameter is absent" (e.g. for unit conversions like `DEG_TO_RAD` that should only apply on explicit input).
+
+**`GetVec2`/`GetVec3`/`GetVec4`/`GetMat4` hard-error on wrong arity (DL-32
+round 2, round 3, [docs/DEBT_LEDGER.md](../../../docs/DEBT_LEDGER.md)).**
+Each accessor requires EXACTLY 2 / 3 / 4 / 16 space-separated finite
+numbers; a value with fewer or more tokens logs `kVectorArityFmt` (names
+the chunk, the parameter, and expected-vs-actual) and latches
+`ParseStateBag::HadHardError()` instead of silently zero-filling the
+missing components or dropping the extras. `IAsciiChunkParser::ParseChunk`'s
+default implementation and Cst.cpp's `Finalize()` call sites AND
+`!bag.HadHardError()` into their success check, so a chunk that trips this
+fails the derive even though `Finalize()` may have already run to
+completion (most `Finalize()`s call `bag.GetVec3(...)` unconditionally and
+never checked its return value, even before this existed — see
+`Finalize()`'s own contract note above and `Cst.h`'s "KEPT LIVE BUT LOUD"
+canonical statement for what that means for a Job the chunk partially
+mutated before the failure was noticed). If a new field genuinely needs a
+shorthand this strict arity would refuse (the way
+`standard_object`/`override_object`'s `scale` and `orthographic_camera`'s
+`viewport_scale` each accept a single number as a uniform broadcast), do
+NOT loosen the shared accessor — write a dedicated resolver that
+pre-validates the shorthand's own arity and only calls
+`GetVec2`/`GetVec3`/`GetVec4`/`GetMat4` once the full arity is already
+confirmed (`ResolveScaleVec3` / `ResolveVec2UniformBroadcast` in
+[ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) are the templates), and
+mark the parameter's descriptor entry with `allowsUniformScalarBroadcast =
+true` so the editor's suggestion engine can advertise it.
+
+**This protection covers only a `Finalize()` that actually calls one of
+these accessors** (DL-32 round 3, 2026-09-17) — a `Finalize()` that
+hand-rolls its own `sscanf` on `bag.GetString(key).c_str()` instead of
+calling `GetVec2`/`GetVec3`/`GetVec4`/`GetMat4` bypasses this arity check
+entirely, and `DispatchChunkParameters` does not catch it either (it
+finite-checks a numeric-kind parameter's tokens but never counts them
+against the declared `ValueKind`). Round 3 found and fixed 15 such
+sites — every one of them a genuinely 2-component field (a UV pair, a
+`(theta, phi)` pair) that had been declared `DoubleVec3` (and so read only
+2 of its "3" components) or, for `orthographic_camera`'s `viewport_scale`,
+declared plain `Double` while being read as 2 components. **When you add a
+new fixed-arity numeric parameter, always read it through the matching
+`GetVecN`/`GetMat4` accessor — never a bare `sscanf` on the bag's raw
+string** — that is what makes this section's guarantee true for your new
+parameter too.
 
 ## Registered Chunk Families
 
@@ -123,26 +205,58 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 
 | Family | Count | Examples |
 |--------|-------|----------|
-| Painters | 35 | `uniformcolor_painter`, `png_painter`, `voronoi3d_painter`, `iridescent_painter`, `channel_painter`, `function2d_painter` (the `*_function2d_painter` painters live here, not under Functions) |
+| Painters | 40 | `uniformcolor_painter`, `png_painter`, `voronoi3d_painter`, `iridescent_painter`, `channel_painter`, `function2d_painter` (the `*_function2d_painter` painters live here, not under Functions), `expression_painter` (the doc-88 texture-expression VM colour pipe; `scalar_painter`'s sibling `expression` and `painter` FORMs are not separate keywords), `ramp_painter` (doc-88 S3 P2.2, the universal scalar->colour remap), `mapping_painter` (doc-88 S7 P2.3, the domain scale/rotate/translate/reproject wrapper -- uv/world/object/triplanar), `stochastic_tile_painter` (doc-88 P3.1 S8, hex-tiling with histogram-preserving blending), `scatter_painter` (doc-88 P3.2 S8, texture-bombing / FX-map-lite) |
 | Functions | 3 | `piecewise_linear_function`, `piecewise_linear_function2d`, `expression_function2d` |
-| Materials | 25 | `lambertian_material`, `dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material` |
+| Materials | 29 | `lambertian_material`, `dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material`, `coated_material`, `fabric_material`, `weave_material` |
 | Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
-| Geometry | 22 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `path_instances_geometry` |
-| Modifiers | 3 | `bumpmap_modifier`, `normal_map_modifier`, `glint_modifier` |
+| Geometry | 27 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `skin_geometry`, `path_instances_geometry`, `hair_geometry` |
+| Hair guides | 1 | `hair_guides` |
+| Modifiers | 4 | `relief_modifier`, `modifier_stack`, `normal_map_modifier`, `glint_modifier` (`bumpmap_modifier` was REMOVED 2026-09-06 -- a scene still carrying one is refused with a diagnostic naming `relief_modifier` and `tools/migrate_scenes_relief.py`; see `docs/RELIEF_MODIFIER_DESIGN.md` §7) |
 | Media | 5 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `multichannel_heterogeneous_medium`, `global_medium` |
 | Objects | 3 | `standard_object`, `csg_object`, `override_object` |
 | Shader ops | 13 | `pathtracing_shaderop`, `mis_pathtracing_shaderop` (legacy alias), `finalgather_shaderop`, `directlighting_shaderop`, `arealight_shaderop`, `alpha_test_shaderop` |
 | Shaders | 4 | `standard_shader`, `advanced_shader`, `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` |
 | Rasterizers | 12 | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `vcm_pel_rasterizer`, `mlt_spectral_rasterizer`, `auto_rasterizer`, `auto_spectral_rasterizer` |
-| Rasterizer outputs | 1 | `file_rasterizeroutput` (attaches to the active rasterizer — its rasterizer chunk must be declared before it, else the load fails with a "no rasterizer is set" diagnostic) |
-| Lights | 5 | `ambient_light`, `omni_light`, `spot_light`, `directional_light`, `hosek_wilkie_skylight` |
+| Rasterizer outputs | 1 | `file_rasterizeroutput` (attaches to the active rasterizer — its rasterizer chunk must be declared before it, else the load fails with a "no rasterizer is set" diagnostic; a LATER rasterizer chunk replaces the active one and drops its outputs with a load warning) |
+
+| Lights | 7 | `rect_light`, `shape_light`, `ambient_light`, `omni_light`, `spot_light`, `directional_light`, `hosek_wilkie_skylight` |
 | Photon maps | 12 | 6 generate + 6 gather (caustic / global / shadow / translucent — Pel and spectral) |
 | Irradiance cache | 1 | `irradiance_cache` |
 | Animation | 4 | `keyframe`, `timeline`, `animation_options`, `animation` |
 | Scene variants | 2 | `scene_variant`, `active_scene_variant` (the CST named-overlay feature) |
 | Global config | 1 | `light_rr_threshold` (standalone RR-threshold chunk, mirrors `global_medium`) |
 
-**Total: 158 unique chunk keywords** (the per-family counts above sum to 158; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list — this table is a summary, not the source of truth.
+**Total: 176 unique chunk keywords** -- counted directly from the 176 `add(...)` registrations in `CreateAllChunkParsers()`. Note that `expression_function2d` is registered adjacent to the painter chunks in code and counted under `Functions` above (`40 + 3 = 43`), and `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` while remaining its own keyword. Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list.
+
+### Composite chunks (parse-time sugar)
+
+Almost every chunk's `Finalize` makes ONE `pJob.AddX(...)` call. The **area
+lights** (2026-08-12) are the exceptions worth knowing about — `rect_light` (a
+rectangular panel) and `shape_light` (a sphere / ellipsoid / box / cylinder that
+emits). Each is written as one chunk and each `Finalize` makes the FOUR calls the
+hand-authored area-light chain makes — `AddUniformColorPainter`,
+`AddLambertianLuminaireMaterial`, the shape's own geometry call
+(`AddClippedPlaneGeometry` / `AddSphereGeometry` / `AddEllipsoidGeometry` /
+`AddBoxGeometry` / `AddCylinderGeometry`), `AddObject` (see
+[docs/SCENE_CONVENTIONS.md](../../../docs/SCENE_CONVENTIONS.md) §3.5 for the
+chain, and the two parsers' header comments in
+[ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for `rect_light`'s corner math
+and sidedness contract, and for why `shape_light` needs no `facing` at all). The
+renderer core learns nothing new; the CST keeps the compact text, so save
+round-trips it verbatim and every derive expands it identically.
+
+Two consequences for anyone adding another composite chunk:
+
+- The three helper entities get **derived names** (`<name>__pnt`, `<name>__mat`,
+  `<name>__geo`) — the same three for both chunks, deliberately — documented in
+  the descriptor's `description` so a collision is diagnosable. Any of the four
+  failing returns `false` from `Finalize`, which fails the derive with the
+  manager's ordinary duplicate-name error.
+- **The incremental derive must refuse it.** `Cst::DeriveToJobIncremental` drops
+  and re-applies an edited chunk by category (`DropChunkByCategory`), which
+  cannot undo a chunk that produced entities in four managers. `rect_light` and
+  `shape_light` are both named in that function's refusal list alongside
+  `gltf_import`, so editing one falls back to a full derive.
 
 `realistic_camera` is intentionally **not** registered — the keyword is reserved for the future multi-element lens-system camera (see [docs/CAMERAS_ROADMAP.md](../../../docs/CAMERAS_ROADMAP.md) Phase 4). Until that lands, scenes that want photographic depth-of-field use `thinlens_camera`.
 
@@ -339,20 +453,26 @@ Parameter sets shared across many chunks live in [ChunkParserRegistry.cpp](Chunk
 | Helper | Used by | Adds |
 |--------|---------|------|
 | `AddCameraCommonParams` | All 5 cameras | `location`, `lookat`, `up`, `exposure`, `pitch`, `yaw`, `roll`, `target_orientation`, … (raster dims — `width`, `height`, `pixelAR` — moved to the top-level `film` chunk in scene format v6 / Phase B2) |
-| `AddPixelFilterParams` | All 10 rasterizers | `pixel_filter`, `pixel_filter_width`, `pixel_filter_height`, `pixel_filter_paramA/B` |
-| `AddSpectralCoreParams` | All 5 spectral rasterizers | `spectral_samples`, `nmbegin`, `nmend`, `num_wavelengths`, `hwss` |
-| `AddSpectralRGBSpdParams` | `pixelintegratingspectral_rasterizer` only (soft-deprecated, see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.1–§2.5) | `integrate_rgb`, `rgb_spd`, `rgb_spd_wavelengths`, `rgb_spd_r/g/b` |
-| `AddStabilityConfigParams` | All non-MLT rasterizers | `direct_clamp`, `indirect_clamp`, `rr_min_depth`, `rr_threshold`, `max_*_bounce`, `light_bvh` |
-| `AddPathGuidingParams` | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer` (full set; BDPT-spectral switched from a hand-rolled subset to the helper 2026-05-07, see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.7).  Path guiding is **not** wired on `pathtracing_spectral_rasterizer`, VCM (pel + spectral), MLT, or `pixelintegratingspectral_rasterizer` — `pathguiding_*` lines authored against those chunks hard-fail at parse time. | `pathguiding`, `pathguiding_iterations`, `pathguiding_spp`, `pathguiding_alpha`, `pathguiding_max_depth`, … |
-| `AddAdaptiveSamplingParams` | `pixelpel_rasterizer`, `pathtracing_{pel,spectral}_rasterizer`, `bdpt_pel_rasterizer`, `vcm_{pel,spectral}_rasterizer` (BDPT-spectral not yet wired — see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.8) | `adaptive_max_samples`, `adaptive_threshold`, `show_adaptive_map` |
-| `AddRadianceMapParams` | All non-MLT rasterizers | `radiance_map`, `radiance_scale`, `radiance_orient` |
+| `AddPixelFilterParams` | All 12 rasterizers | `pixel_sampler`, `pixel_sampler_param`, `pixel_filter`, `pixel_filter_width`, `pixel_filter_height`, `pixel_filter_paramA`, `pixel_filter_paramB`, `blue_noise_sampler` |
+| `AddSpectralCoreParams` | All 6 spectral rasterizers (`pixelintegratingspectral` [FROZEN], `bdpt_spectral`, `vcm_spectral`, `pathtracing_spectral`, `auto_spectral`, `mlt_spectral` [FROZEN]) | `spectral_samples`, `nmbegin`, `nmend`, `num_wavelengths`, `hwss` |
+| `AddSpectralRGBSpdParams` | `pixelintegratingspectral_rasterizer` only (FROZEN since 2026-10-09; see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.1–§2.5 and [docs/SCENE_CONVENTIONS.md](../../../docs/SCENE_CONVENTIONS.md) §11.4) | `integrate_rgb`, `rgb_spd`, `rgb_spd_wavelengths`, `rgb_spd_r/g/b` |
+| `AddStabilityConfigParams` | All 10 non-MLT rasterizers | `direct_clamp`, `indirect_clamp`, `rr_min_depth`, `rr_threshold`, `max_*_bounce`, `light_bvh`, `branching_threshold`, … |
+| `AddPathGuidingParams` | 5 rasterizers: `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, `auto_rasterizer`.  Path guiding is **not** wired on `pathtracing_spectral_rasterizer`, `auto_spectral_rasterizer`, VCM (pel + spectral), MLT, or `pixelintegratingspectral_rasterizer` — `pathguiding_*` lines authored against those chunks hard-fail at parse time. | `pathguiding`, `pathguiding_iterations`, `pathguiding_spp`, `pathguiding_alpha`, `pathguiding_max_depth`, … |
+| `AddAdaptiveSamplingParams` | 9 rasterizers: `pixelpel_rasterizer` [FROZEN], `pathtracing_{pel,spectral}_rasterizer`, `bdpt_{pel,spectral}_rasterizer`, `vcm_{pel,spectral}_rasterizer`, `auto_rasterizer`, `auto_spectral_rasterizer` | `adaptive_max_samples`, `adaptive_threshold`, `show_adaptive_map` |
+| `AddRadianceMapParams` | All 10 non-MLT rasterizers | `radiance_map`, `radiance_scale`, `radiance_orient`, `radiance_background` |
 | `AddProgressiveParams` | All progressive rasterizers | `progressive_rendering`, `progressive_samples_per_pass` |
-| `AddSMSConfigParams` | PT pel + PT spectral only | `sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count`, `sms_two_stage`, `sms_seeding`, `sms_target_bounces` (BDPT lost SMS support 2026-05-07; see [CLAUDE.md](../../../CLAUDE.md) High-Value Facts) |
-| `AddOptimalMISParams` | `pixelpel_rasterizer` + `pathtracing_pel_rasterizer` only.  BDPT pel/spectral and PT spectral previously called this helper but the underlying integrators do not consume `rc.pOptimalMIS` (research not extended to BDPT's per-strategy-pair MIS; spectral parent never allocates the accumulator).  Wiring removed 2026-05-07 so the parser hard-fails on `optimal_mis*` lines authored against those chunks rather than silently dropping them; see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.4, §2.10. | `optimal_mis`, `optimal_mis_training_iterations`, `optimal_mis_tile_size` |
+| `AddSMSConfigParams` | `pathtracing_pel_rasterizer` + `pathtracing_spectral_rasterizer` only | `sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count`, `sms_two_stage`, `sms_seeding`, `sms_target_bounces`, `sms_extended` (BDPT lost SMS support 2026-05-07; see [CLAUDE.md](../../../CLAUDE.md) High-Value Facts) |
+| `AddOptimalMISParams` | 3 rasterizers: `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `auto_rasterizer`.  BDPT pel/spectral and PT spectral do not consume `rc.pOptimalMIS` (research not extended to BDPT's per-strategy-pair MIS; spectral parent never allocates the accumulator), so `optimal_mis*` lines authored against those chunks hard-fail at parse time; see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.4, §2.10. | `optimal_mis`, `optimal_mis_training_iterations`, `optimal_mis_tile_size` |
 | `AddBaseRasterizerParams` | All rasterizers | `defaultshader`, `oidn_denoise`, `show_luminaires`, … |
-| `AddNoisePainterCommonParams` | All Perlin/Worley/Simplex/Gabor 3D painters | `frequency`, `octaves`, `persistence`, `lacunarity`, `seed`, … |
+| `AddNoisePainterCommonParams` | Perlin / Turbulence / Wavelet / Worley / Simplex / Gabor 3D noise painters | `name`, `colora`, `colorb`, `persistence`, `octaves`, `scale`, `shift` |
+| `AddVariantTagParam` | All 29 material chunks (plus variant-participating chunks) | `variant` (CST `scene_variant` named-overlay tag; `none` = base) |
 | `AddPhotonMapGenerateCommonParams` | All 6 photon-map generate parsers | `num`, `power_scale`, `max_recursion`, `min_importance`, `branch`, `reflect`, `refract`, … |
 | `AddPhotonMapGatherCommonParams` | All 6 photon-map gather parsers | `radius`, `ellipse_ratio`, `min_photons`, `max_photons` |
+
+Registry-level parser wrappers in `CreateAllChunkParsers()` also decorate descriptors uniformly:
+
+- **`AlphaMaterialParser`**: wraps every `ChunkCategory::Material` parser (all 29 material chunks) to add `alpha_mode` (`opaque|mask|blend`), `alpha_coverage` (`IScalarPainter` reference or inline scalar), and `alpha_cutoff` without duplicating them per material class (see `docs/ALPHA_COVERAGE.md`).
+- **`LegacyTierParser`** (`MarkFrozen` / `MarkDeprecated`): wraps chunks listed in `kLegacyTierTable` with a descriptor copy carrying their legacy tier and replacement guidance so the CST validator and editor surface frozen/deprecated diagnostics while keeping `Finalize` bit-identical.
 
 ## Where Agent Authors Usually Get Tripped Up
 
@@ -362,13 +482,13 @@ Parameter sets shared across many chunks live in [ChunkParserRegistry.cpp](Chunk
 
 ## MIS Weight Parameters (Rasterizer Blocks)
 
-The following parameters control advanced MIS weight computation. They are **only accepted on `pixelpel_rasterizer` and `pathtracing_pel_rasterizer`** — the parser hard-fails on `optimal_mis*` lines authored against any other chunk. Both default-off and fall back to the standard power heuristic. See [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.4 / §2.10 for why BDPT, VCM, MLT, and the spectral PT/BDPT chunks reject these params (Kondapaneni 2019's single-step BSDF-vs-NEE formulation has not been extended to per-strategy-pair MIS or to the dVCM/dVC/dVM recurrence; spectral parents do not allocate the accumulator).
+The following parameters control advanced MIS weight computation. They are **only accepted on `pixelpel_rasterizer` (FROZEN), `pathtracing_pel_rasterizer`, and `auto_rasterizer`** — the parser hard-fails on `optimal_mis*` lines authored against any other chunk. All default-off and fall back to the standard power heuristic. See [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.4 / §2.10 for why BDPT, VCM, MLT, and the spectral PT/BDPT/auto chunks reject these params (Kondapaneni 2019's single-step BSDF-vs-NEE formulation has not been extended to per-strategy-pair MIS or to the dVCM/dVC/dVM recurrence; spectral parents do not allocate the accumulator).
 
 | Parameter | Rasterizers | Type | Default | Description |
 |-----------|-------------|------|---------|-------------|
-| `optimal_mis` | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer` | bool | FALSE | Run training passes to compute variance-minimizing MIS weights for direct illumination (Kondapaneni et al. 2019) |
-| `optimal_mis_training_iterations` | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer` | uint | 4 | Number of 1-SPP training passes |
-| `optimal_mis_tile_size` | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer` | uint | 16 | Spatial tile size for second-moment binning |
+| `optimal_mis` | `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `auto_rasterizer` | bool | FALSE | Run training passes to compute variance-minimizing MIS weights for direct illumination (Kondapaneni et al. 2019) |
+| `optimal_mis_training_iterations` | `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `auto_rasterizer` | uint | 4 | Number of 1-SPP training passes |
+| `optimal_mis_tile_size` | `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `auto_rasterizer` | uint | 16 | Spatial tile size for second-moment binning |
 
 ## Pure PT Rasterizer Chunks
 
@@ -379,7 +499,7 @@ Two rasterizer chunks bypass the shader-op dispatch chain and call `PathTracingI
 | `pathtracing_pel_rasterizer` | Iterative PT, RGB output, per-sample OIDN AOVs |
 | `pathtracing_spectral_rasterizer` | Iterative PT, spectral output, NM or HWSS modes |
 
-These accept all the same parameters as their shader-dispatch counterparts (`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer`) plus SMS controls (`sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`). The pure PT rasterizers do not use or require a `defaultshader` because they bypass the shader pipeline entirely.
+These accept all the same parameters as their frozen shader-dispatch counterparts (`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer`) plus the full `AddSMSConfigParams` suite (`sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count`, `sms_two_stage`, `sms_seeding`, `sms_target_bounces`, `sms_extended`). The pure PT rasterizers do not use or require a `defaultshader` because they bypass the shader pipeline entirely.
 
 When `oidn_denoise TRUE` is set on `pathtracing_pel_rasterizer`, the filtered film resolve is automatically skipped to preserve raw MC noise for OIDN. See `docs/ARCHITECTURE.md` for details.
 
@@ -392,3 +512,38 @@ See `docs/IMPROVEMENTS.md` item 8 for algorithmic details.
 - Scene taxonomy: [../../../scenes/README.md](../../../scenes/README.md)
 - Showcase scenes: [../../../scenes/FeatureBased/README.md](../../../scenes/FeatureBased/README.md)
 - Regression scenes: [../../../scenes/Tests/README.md](../../../scenes/Tests/README.md)
+
+### Rough dielectric interface (Tier 1.1)
+
+`rough_dielectric_material` is an additive native-v7 material chunk:
+
+```text
+rough_dielectric_material
+{
+name frosted_glass
+ior 1.5
+alphax 0.2
+alphay 0.4
+}
+```
+
+All three slots accept single-scalar literals or scalar painters. Spectral
+curves resolve to single-scalar slot views: RGB uses the representative green
+sample, while NM/HWSS preserve the full curve. Authored RGB triples are refused.
+`alphax`/`alphay` are GGX widths, not perceptual roughness; both must be in
+(0,1]. The defaults are IOR 1.5 and widths 0.2. Invalid per-hit widths/indices
+produce null scattering. Use `dielectric_material` for a smooth interface.
+The model includes single-scattering reflection and refraction, anisotropy,
+aggregate solid-angle PDFs, nested-media IOR tracking, and hero-density spectral
+companion evaluation. Current PT/BDPT/VCM/MLT HWSS transport conservatively
+terminates companions at every rough interface, even without dispersion: these
+walkers share one hero medium stack and radiance eta factor. This reduces four
+active wavelengths to one until wavelength-specific medium tracking is added.
+The local spectral evaluator remains available with caller-supplied wavelength
+stacks and hero density. Index-matched interfaces report their exact transparent
+delta behavior to shadow queries. SMS caustic construction for the new material
+is not supported in this increment. Micronormal and geometric-horizon rejection remain null
+events, so rough interfaces lose energy until multiscatter compensation lands.
+Bulk absorption requires a separately assigned medium. World-position IOR
+fields are unsupported and refused. Importers still use their existing glass
+mappings. See `scenes/Tests/Materials/rough_dielectric.RISEscene`.

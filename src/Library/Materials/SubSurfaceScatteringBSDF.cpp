@@ -6,7 +6,7 @@
 //  With the BSSRDF approach, only surface reflection is evaluated:
 //
 //  Both outside (front/front): GGX microfacet BRDF for rough
-//    surfaces, diffuse Fresnel approximation for smooth surfaces.
+//    surfaces; smooth reflection is delta, with zero finite value.
 //  All other cases: return 0.  Subsurface transport is handled
 //    by the diffusion profile, not the BSDF connection.
 //
@@ -19,6 +19,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Optics.h"
 #include "SubSurfaceScatteringBSDF.h"
 #include "../Utilities/MicrofacetUtils.h"
 
@@ -54,14 +55,7 @@ void SubSurfaceScatteringBSDF::SetIOR( const IScalarPainter& v )
 /// Matches Optics::CalculateDielectricReflectance used in the SPF.
 static Scalar DielectricFresnel( const Scalar cosI, const Scalar eta_i, const Scalar eta_t )
 {
-	const Scalar sinI2 = 1.0 - cosI * cosI;
-	const Scalar sinT2 = (eta_i * eta_i) / (eta_t * eta_t) * sinI2;
-	if( sinT2 >= 1.0 ) return 1.0;  // total internal reflection
-	const Scalar cosT = sqrt(1.0 - sinT2);
-
-	const Scalar rs = (eta_i * cosI - eta_t * cosT) / (eta_i * cosI + eta_t * cosT);
-	const Scalar rp = (eta_t * cosI - eta_i * cosT) / (eta_t * cosI + eta_i * cosT);
-	return (rs * rs + rp * rp) * 0.5;
+	return Optics::CalculateDielectricReflectanceCosine( cosI, eta_i, eta_t );
 }
 
 RISEPel SubSurfaceScatteringBSDF::value(
@@ -96,7 +90,13 @@ RISEPel SubSurfaceScatteringBSDF::value(
 
 		const Scalar D = MicrofacetUtils::GGX_D<Scalar>( alpha, NdotH );
 		const Scalar G = MicrofacetUtils::GGX_G( alpha, NdotO, NdotI );
-		const Scalar F = DielectricFresnel( OdotH, 1.0, n_ior );
+		// DL-49: Fresnel against the exterior the ray arrived through
+		// (`ri.ambientIOR`, stamped from the IOR stack; 1.0 = air), the
+		// same index SubSurfaceScatteringSPF's VNDF reflection reads from
+		// `ior_stack.top()` -- was hardcoded air, so NEE through this BSDF
+		// and the SPF's sampled reflection priced two different interfaces
+		// whenever the SSS body sat in a non-air medium.
+		const Scalar F = DielectricFresnel( OdotH, ri.ambientIOR, n_ior );
 
 		const Scalar val = D * F * G / (4.0 * NdotO * NdotI);
 		return RISEPel( val, val, val );
@@ -136,7 +136,8 @@ Scalar SubSurfaceScatteringBSDF::valueNM(
 
 		const Scalar D = MicrofacetUtils::GGX_D<Scalar>( alpha, NdotH );
 		const Scalar G = MicrofacetUtils::GGX_G( alpha, NdotO, NdotI );
-		const Scalar F = DielectricFresnel( OdotH, 1.0, n_ior );
+		// DL-49: see value() -- exterior index, not hardcoded air.
+		const Scalar F = DielectricFresnel( OdotH, ri.ambientIOR, n_ior );
 		return D * F * G / (4.0 * NdotO * NdotI);
 	}
 

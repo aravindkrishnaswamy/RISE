@@ -31,6 +31,7 @@ DataDrivenBSDF::DataDrivenBSDF(
 	// First check for the signature
 	if( pBuffer->getInt() != 0xBDF ) {
 		GlobalLog()->PrintEasyError( "DataDrivenBSDF:: Signature not found in file!" );
+		safe_release( pBuffer );
 		return;
 	}
 
@@ -39,6 +40,7 @@ DataDrivenBSDF::DataDrivenBSDF(
 
 	if( pBuffer->getUInt() != our_version ) {
 		GlobalLog()->PrintEasyError( "DataDrivenBSDF:: File contains bad version info!" );
+		safe_release( pBuffer );
 		return;
 	}
 
@@ -99,6 +101,12 @@ DataDrivenBSDF::DataDrivenBSDF(
 
 	pInterpolator = new CatmullRomCubicInterpolator<RISEPel>();
 	GlobalLog()->PrintNew( pInterpolator, __FILE__, __LINE__, "uniform b-spline interpolator" );
+
+	// Release the read buffer (DiskFileReadBuffer holds its FILE* open until
+	// destruction).  Leaking it kept the .bdf open for the process lifetime,
+	// which on Windows blocks any later remove/replace of the file -- POSIX
+	// unlink succeeds on an open file, so the leak was invisible on macOS.
+	safe_release( pBuffer );
 }
 
 DataDrivenBSDF::~DataDrivenBSDF( )
@@ -143,6 +151,22 @@ RISEPel DataDrivenBSDF::value( const Vector3& vLightIn, const RayIntersectionGeo
 
 	if( nr < 0 || nv < 0 ) {
 		return RISEPel(0,0,0);
+	}
+
+	// Geometric-horizon gate (DL-325 review P1), the SAME one LambertianBRDF's
+	// ShouldReflect and DataDrivenSPF apply: a tilted shading normal (bump /
+	// normal map / glint) can put a direction above the shading plane and below
+	// the true surface.  BSDF and SPF must share ONE support or the sampled
+	// continuation loses that energy while NEE / connections still see it.
+	// Ray-anchored (geomN opposes ri.ray.Dir()); a degenerate vGeomNormal falls
+	// back to the shading normal, making the gate a no-op.
+	{
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : ri.vNormal;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+			return RISEPel(0,0,0);
+		}
 	}
 
 	const Scalar nv_theta = acos( nv );

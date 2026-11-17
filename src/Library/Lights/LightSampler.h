@@ -81,6 +81,7 @@
 #include "../Interfaces/ILight.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IBSDF.h"
+#include "../Intersection/RayIntersectionGeometric.h"	// SurfaceDerivativesInfo / SurfaceSignalInfo / TextureFootprint, by value on EmitterSurfacePayload
 #include "../Interfaces/IMedium.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/RandomNumbers.h"
@@ -104,6 +105,63 @@ namespace RISE
 	struct MediumContinuationAvailability;
 
 	namespace Implementation { class OptimalMISAccumulator; }
+
+	class IORStack;
+
+	/// Optional per-call hook (DL-74, docs/DL74_ENV_NEE_GUIDING_PARTITION.md)
+	/// letting a caller replace the density `EvaluateDirectLighting{,NM}`'s
+	/// NEE arms use as the BSDF-SAMPLING technique's MIS-PARTNER for a given
+	/// shadow-ray direction.
+	///
+	/// Why this exists.  A guided path tracer's continuation is drawn from a
+	/// mixture of the material and a learned guide, so the density it divides
+	/// its throughput by (`alpha*guide + (1-alpha)*material`, or the RIS
+	/// equivalent) is NOT the material's own pdf.  MIS only partitions to one
+	/// when BOTH sides evaluate the SAME function of direction, so the NEE
+	/// side has to see the same mixture.  Note the partner density need not be
+	/// the density either side actually SAMPLED from: MIS is unbiased for any
+	/// weights with `sum_s w_s(w) == 1`, so a shared NOMINAL density is both
+	/// legal and sufficient -- which is what lets one hook serve every lobe,
+	/// every guiding mode, and both MIS arms below.
+	///
+	/// Deliberately NOT specific to OpenPGL types (no dependency on
+	/// PathGuidingField here) so this header stays buildable without
+	/// RISE_ENABLE_OPENPGL; the concrete implementation lives behind that
+	/// guard in PathTracingIntegrator.cpp.  Passing null (the default at every
+	/// call site that does not guide) reproduces the raw-material-pdf
+	/// behaviour exactly.
+	class IGuidedNEEPdfBlend
+	{
+	public:
+		virtual ~IGuidedNEEPdfBlend() {}
+
+		/// \param wo      The NEE-sampled direction being weighted.
+		/// \param rawPdf  The material's own AGGREGATE pdf for `wo`, which
+		///                the caller has already computed.  MAY BE ZERO,
+		///                and the implementation -- not the caller --
+		///                decides what that means (DL-74 P2-2, round-4
+		///                review; the earlier contract wrongly declared
+		///                a `> 0` precondition and the four NEE arms
+		///                enforced it).  A zero aggregate pdf does NOT
+		///                imply "the BSDF-sampling technique never
+		///                generates `wo`" while guiding is active: the
+		///                continuation is drawn from a MIXTURE, and the
+		///                guide term reaches directions the material's
+		///                own sampling support does not.  Skipping the
+		///                hook there gave weight 1 to this arm AND to the
+		///                escape/emitter-hit arm for the same direction,
+		///                so its energy was counted twice.
+		/// \return The nominal density to use in place of `rawPdf` as the
+		///         BSDF-sampling technique's MIS partner for `wo`.  An
+		///         implementation that is not guiding this vertex returns
+		///         `rawPdf` unchanged, zero included -- which is then the
+		///         true "no partner exists" statement, since the material
+		///         is the only sampler.
+		virtual Scalar Blend(
+			const Vector3& wo,
+			Scalar rawPdf
+			) const = 0;
+	};
 
 	namespace Implementation
 	{
@@ -136,6 +194,202 @@ namespace RISE
 			const IORStack* pOriginStack = 0
 			);
 
+		//! THE EMITTER PROBE'S SCALE-RELATIVE CONSTANTS, expressed as a
+		//! fraction of the luminary's WORLD bounding-box diagonal `D` --
+		//! the same "no absolute length may appear in a geometric gate"
+		//! convention `IGeometry::SelfHitRootFloor` and `scaleHint` follow,
+		//! and for the same reason: a constant that is right for a 1-unit
+		//! lamp is wrong for a 1000-unit sky panel.
+		//!
+		//! ACCEPT: 1 % of D.  UPPER bound: a hit on a genuinely DIFFERENT
+		//! part of a non-convex luminary is O(D) away, so 1 % rejects it
+		//! with two orders of margin.  LOWER bound: what the tolerance has
+		//! to absorb, now that there is ONE probe and it is NORMAL-ALIGNED
+		//! (round-2 transport review, H2 P1-1), is only
+		//!
+		//!   (a) the PROJECTION RESIDUAL -- `UniformRandomPoint` returns a
+		//!       point that is on the true surface only to its own
+		//!       accuracy.  `SDFGeometry`'s Newton-projects onto the
+		//!       ray-marched zero set; the residual measured during S3 is
+		//!       ~3e-5 of the diagonal (LightSampler.cpp quotes the same
+		//!       number at the acceptance test, and that is the only place
+		//!       it is stated).  An earlier draft of this comment gave 5e-5
+		//!       here and 3e-5 there, which is the default `m_epsFrac`
+		//!       confused with a measurement.
+		//!   (b) the intersector's own perpendicular surface band AT NORMAL
+		//!       INCIDENCE -- for an SDF, its hit epsilon over the field's
+		//!       Lipschitz shrink; for every analytic primitive, ulp-scale.
+		//!
+		//! THERE IS NO `delta / cos(theta)` TERM ANY MORE, and that is the
+		//! whole point of the unification: the probe stands off along the
+		//! sampled point's OWN normal and fires back along it, so the probe
+		//! line passes through the sampled point exactly and meets the
+		//! surface at incidence 1 by construction.  On a mesh luminary
+		//! `UniformRandomPoint`'s normal is the INTERPOLATED vertex normal,
+		//! which is not the face normal -- but the probe line still passes
+		//! through the sampled point, and a triangle sample has no
+		//! projection residual at all, so the two effects multiply to zero
+		//! there rather than adding a lateral offset.
+		//!
+		//! (The pre-unification NEE probe fired along `vToLight`, whose only
+		//! guarantee is `cosLight > 0`, and DID carry a `delta / cos(theta)`
+		//! term.  Measured on tests/SignalEmitterRecordTest's SDF sphere it
+		//! never came close to this tolerance -- family E is green at
+		//! `epsilon 0.002`, and an exploratory sweep to `epsilon 0.05` left
+		//! it green as well, so that term was far smaller in practice than
+		//! the review's arithmetic suggested.  What the along-`vToLight`
+		//! probe DID fail at is the wrong-surface window, which is what
+		//! family F now witnesses.)
+		static const Scalar kEmitterProbeAcceptFraction = Scalar( 0.01 );
+
+		//! STANDOFF FLOOR: 0.1 % of D.  The formula the probe actually uses
+		//! is
+		//!
+		//!   standoff = max( kEmitterProbeStandoffFraction * D,
+		//!                   kEmitterProbeStandoffMargin * floorWorld
+		//!                     + kEmitterProbeStandoffCushionFraction * D )
+		//!
+		//! and THIS constant is the first argument: the standoff when the
+		//! luminary's own `SelfHitRootFloor` is unavailable (a degenerate
+		//! transform, the one branch that cannot ask for it), and the
+		//! guarantee that a geometry which UNDER-states its floor -- the
+		//! contract permits an ulp-scale answer -- never gets a
+		//! zero-length probe ray.
+		//!
+		//! It has to be a floor rather than the whole standoff because
+		//! `IGeometry::SelfHitRootFloor` is virtual with eleven in-tree
+		//! overrides and several are far above any fixed fraction of D.
+		//! `SDFGeometry`'s, the worst, is
+		//! `min( 2 * m_eps / shrink / cosI, 0.5 * diagonal )` with
+		//! `m_eps = max( D * m_epsFrac, 1e-6 )`: 1e-4 * D at the 5e-5 scene
+		//! default with a uniform field, but 4e-3 * D at `epsilon 0.002`,
+		//! 1e-3 * D -- exactly this constant's own fraction, not "far
+		//! above" it -- for a part authored `scale 0.1 1 1` (shrink 0.1) at
+		//! the default epsilon, and up to 0.5 * D at its documented
+		//! grazing/shrink worst case.  Below those the geometry marches the
+		//! probe straight past the face it was aimed at and the probe
+		//! REFUSES.
+		static const Scalar kEmitterProbeStandoffFraction = Scalar( 0.001 );
+
+		//! THE CUSHION ADDED ON TOP OF THE GEOMETRY'S OWN FLOOR, and the
+		//! reason it exists: the floor is a bound measured from the TRUE
+		//! surface, while what the caller holds is a SAMPLED point that may
+		//! sit slightly to either side of it.  `SDFGeometry::March` steps
+		//! off when `|Map(o)| <= surfBand`, and `Map` is positive OUTSIDE:
+		//! with `o = ptOnLum + s * n` and the sample's true displacement a
+		//! signed `delta` (positive = outside), `Map(o) = s + delta`, so a
+		//! sample whose projection landed INSIDE (`delta < 0`) LOWERS the
+		//! clearance to `s - |delta|` and is the half `kEmitterProbeStandoffMargin
+		//! * floor` alone under-shoots on -- a sample that landed OUTSIDE
+		//! raises it instead and is the safe half -- and the probe refuses
+		//! on those (measured: SignalEmitterRecordTest's family E sat 37 % /
+		//! 35 % off its baked control on the BDPT and VCM rows at
+		//! `1.01 * floor` with no cushion at all).
+		//!
+		//! 0.1 % of D -- the smaller of the two values TRIED (0 fails; see
+		//! the cushion-0 measurement above).  The first
+		//! implementation used `kEmitterProbeAcceptFraction * D` here -- 1 %
+		//! -- which is ten times larger than it needs to be and, being
+		//! unconditionally above `kEmitterProbeStandoffFraction * D`, made
+		//! that constant dead code outside the degenerate-transform branch
+		//! (round-2 transport review, H2 P2-3).
+		//!
+		//! WHAT THE CUSHION COSTS, stated rather than hidden: the probe
+		//! takes the CLOSEST hit from `ptOnLum + standoff * n` back along
+		//! `-n`, so a SECOND surface of the same luminary lying in the
+		//! `(0, standoff]` band directly above the sampled point is
+		//! intercepted instead -- and since `standoff` is normally well
+		//! under `kEmitterProbeAcceptFraction * D`, that interception is
+		//! ACCEPTED rather than refused.  A louvred or stacked
+		//! single-object fixture whose blades are within
+		//! `max( 0.001 * D, 1.01 * floor + 0.001 * D )` of each other along
+		//! the blade normal therefore reads its neighbour's signals.  The
+		//! band is a tenth of what it was before this constant was split
+		//! out, and no smaller band is available: below the geometry's own
+		//! floor the probe cannot be fired at all.
+		static const Scalar kEmitterProbeStandoffCushionFraction = Scalar( 0.001 );
+
+		//! How far PAST `SelfHitRootFloor` the standoff stands.  The
+		//! published contract (IGeometry.h, "Contract for overriders") is
+		//! "the return must be an UPPER bound on the geometry's own gate
+		//! along `localDir` -- a caller standing off by more than this and
+		//! firing back must get the hit", so ANY strictly-greater
+		//! multiplier satisfies it and 1 % is simply a small one.  (An
+		//! earlier draft called it "the smallest that also clears the
+		//! rounding of the two frame transforms" the floor is carried
+		//! through.  Nothing measures that rounding, and nothing here
+		//! bounds it; the cushion above, not this multiplier, is what was
+		//! actually measured.)
+		static const Scalar kEmitterProbeStandoffMargin = Scalar( 1.01 );
+
+		//! THE SHADING PAYLOAD A SAMPLED EMISSION POINT CANNOT CARRY BY
+		//! ITSELF (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5, slice S3).
+		//!
+		//! `IObject::UniformRandomPoint` returns a position, a normal and a UV
+		//! -- and nothing else.  Every emitter record built from one of those
+		//! samples (the two NEE sites in LightSampler.cpp, `SampleLight`'s
+		//! own emission record, and the four records BDPT / VCM rebuild
+		//! beside it -- the NM hero `Le`, its HWSS companion, the BDPT
+		//! `type == LIGHT` root vertex, and VCM's light-vertex NEE record;
+		//! seven record sites in all) therefore left `derivatives`,
+		//! `signals` and `txFootprint`
+		//! DEFAULT, so an emissive material whose radiance keys on `curv`,
+		//! `occlusion(r)`, `proximity(r)` -- any of the six geometry signals --
+		//! read the documented neutral there while the SAME material read the
+		//! live value when a camera ray hit the emitter directly.  That is a
+		//! within-scene inconsistency, and it reaches plain PT (NEE), not just
+		//! the bidirectional families.
+		//!
+		//! These three fields are recovered from a REAL intersection --
+		//! `LightSampler::ProbeEmitterSurface` fires one object-level
+		//! closest-hit at the luminary and keeps the record only if it lands
+		//! on the sampled point -- never fabricated.  `valid` false means the
+		//! probe was gated off or refused and every consumer must leave its
+		//! hand-built record exactly as it was.
+		//!
+		//! WHY ONLY THESE THREE.  They are precisely the fields the hand-built
+		//! records leave DEFAULT *and* that only a signal consumer reads.
+		//! Everything the sampled point already determines --
+		//! `ptIntersection`, `vNormal`, `vGeomNormal`, `onb`, `ptCoord` -- is
+		//! deliberately NOT carried on this payload, so the emission geometry
+		//! and every pdf derived from it (`cosLight`, `pdfPosition`,
+		//! `pdfDirection`) cannot be moved by the PROBE -- the only thing it
+		//! can move is a signal read.  Those fields are filled, at every
+		//! record, by `LightSampler::FillEmitterRecord` (DL-298), which is
+		//! ungated and ray-free and carries the physical world position too.
+		//!
+		//! SIZE: 416 bytes (168 + 136 + 104 + a bool, measured at this
+		//! tree's HEAD; an earlier comment said 440).  That is why the call
+		//! sites construct one only INSIDE the probe gate rather than once
+		//! per light sample unconditionally.
+		//!
+		//! `ptObjIntersec` DELIBERATELY DOES NOT RIDE HERE, and that is a
+		//! correction to this slice's first draft (transport review, P1-1).
+		//! `Po` is not signal state: `expression_painter`'s `Po`,
+		//! `voronoi3d_painter` and `mapping_painter` all read it, none of
+		//! them registers a signal demand, and the probe's gate is
+		//! PROCESS-WIDE -- so an emissive material keyed on `Po` would have
+		//! rendered 2.94x differently depending on whether some UNRELATED
+		//! painter elsewhere in the process happened to keep a signal demand
+		//! alive.  It is instead computed UNGATED and WITHOUT a ray at every
+		//! emitter-record site by `LightSampler::EmitterObjectPoint`, and
+		//! carried on `LightSample::ptObjIntersec` for the consumers
+		//! that rebuild their own record.
+		//!
+		//! `pmxWorldToObject` is likewise not carried: its only consumer is an
+		//! `IRayIntersectionModifier`, and no modifier runs on an emitter
+		//! record (`Modify` would perturb `vNormal`, which the paragraph above
+		//! forbids).
+		struct EmitterSurfacePayload
+		{
+			SurfaceDerivativesInfo	derivatives;	///< dpdu/dpdv/dndu/dndv + scaleHint + the direct SDF curvature -- drives `curv` / `curvR`
+			SurfaceSignalInfo		channel;		///< the geometry-signal channel: own-surface half from the geometry, cross-object triple stamped exactly as ObjectManager::IntersectRay does
+			TextureFootprint		txFootprint;	///< pixel footprint; all-zero for a probe ray (no differentials) but carried so a future landing cannot silently reopen the gap
+			bool					valid;			///< false = probe gated off or refused; consumers must not apply this
+
+			EmitterSurfacePayload() : valid( false ) {}
+		};
+
 		/// Describes a sampled emission event from a light or mesh luminary
 		struct LightSample
 		{
@@ -158,6 +412,55 @@ namespace RISE
 			/// and mesh luminaries — they use their own pLight /
 			/// pLuminary emitter for NM.
 			const IRadianceMap*	pEnvLight;
+			/// The shading payload `SampleLight` recovered for `position` by
+			/// probing the luminary (see EmitterSurfacePayload above).  Rides
+			/// on the sample because consumers rebuild their own record
+			/// from this one point and must all see the same channel:
+			/// `SampleLight`'s own `Le` record, `GenerateLightSubpathImpl`'s
+			/// NM hero `Le` rebuild AND its HWSS companion-wavelength twin,
+			/// the BDPT `type == LIGHT` root vertex (a direct field copy,
+			/// not through `ApplyEmitterSurface`), `VCMIntegrator`'s
+			/// light-vertex NEE record, and SMS's solved-chain emission queries
+			/// (DL-347). Apply it with
+			/// `LightSampler::ApplyEmitterSurface`.  `valid` false on every
+			/// delta light and every env sample (no surface exists) and
+			/// whenever the probe was gated off or refused.
+			EmitterSurfacePayload	surface;
+			/// `position` mapped into the luminary's own object frame -- the
+			/// expression VM's `Po`.  UNGATED and ray-free (one matrix
+			/// multiply through `IObject::GetFinalInverseTransformMatrix`),
+			/// unlike everything on `surface`: `Po` is read by painters that
+			/// register no signal demand, so it must not depend on the
+			/// process-wide probe gate.  See `EmitterSurfacePayload`'s note.
+			/// `(0,0,0)` -- the value every hand-built record used to carry
+			/// unconditionally -- for a delta light, an env sample, and a
+			/// luminary with no single object frame (a CSG composite).
+			Point3					ptObjIntersec;
+			/// The surface (u,v) `IObject::UniformRandomPoint` returned for
+			/// `position` on a mesh luminary (DL-44).  UNGATED -- unlike
+			/// `surface` it costs no probe ray, it is simply the coordinate
+			/// the sampler already computed to place `position` -- and, like
+			/// `ptObjIntersec`, not part of the signal-demand contract, so a
+			/// UV-keyed emission painter (`checker_painter`, an image-based
+			/// exitance map, `expression_painter`'s `u`/`v`) must not depend
+			/// on the probe gate.  Before this field existed, every
+			/// consumer that rebuilds an `EmitterSurfacePayload`-style
+			/// record from a `LightSample` rather than from `SampleLight`'s
+			/// own local `coord` variable left `RayIntersectionGeometric`'s
+			/// default-constructed `ptCoord` (0,0) in place: BDPT's light-
+			/// subpath NM hero and HWSS companion rebuilds, the BDPT
+			/// `type == LIGHT` root vertex (and therefore every
+			/// `PathVertexEval::PopulateRIGFromVertex` consumer of it --
+			/// `LuminaryRadiance`'s s=0/t=1 splat and s=1 connections; VCM
+			/// never rebuilds from the LIGHT root), and VCM's
+			/// `EvaluateNEEImpl` light-vertex record (VCM's only affected site).
+			/// `SampleLight`'s own RGB emission evaluation and the two
+			/// direct-lighting NEE sites in `EvaluateDirectLighting{,NM}`
+			/// (PT's and BDPT's shared NEE strategy) already sampled their
+			/// own local UV and were never affected.  `(0,0)` -- the value
+			/// every one of those rebuilds carried before -- for a delta
+			/// light and an env sample, neither of which has a surface UV.
+			Point2					ptCoord;
 		};
 
 		/// Unified light sampling utility shared by PT and BDPT.
@@ -176,6 +479,16 @@ namespace RISE
 			unsigned int		lumIndex;	///< Index into luminaries list (valid when pLight==0)
 			Scalar				exitance;	///< MaxValue of radiant exitance
 			Point3				position;	///< Representative position for distance estimates
+			bool				twoSided;	///< DL-320: mesh luminary on double-sided geometry (emits from both faces); false for delta lights
+
+			/// DL-463: under motion blur the light BVH bounds this entry over
+			/// the whole shutter, not at the frame time alone (see
+			/// LightSampler::AccumulateMotionSample).  False: the BVH reads
+			/// the light's current bounds and cone.
+			bool				hasMotionBounds = false;
+			BoundingBox			motionBounds;			///< Union of the entry's bounds over the shutter samples
+			Vector3				motionConeAxis;			///< Orientation cone bounding every sample's emission cone
+			Scalar				motionConeHalfAngle = 0;
 		};
 
 		/// One wavelength-independent endpoint draw from a labeled emissive
@@ -230,6 +543,28 @@ namespace RISE
 
 		class LightSampler : public virtual Reference
 		{
+		public:
+			/// DL-463: per-light state accumulated over a motion-blur sweep,
+			/// indexed by the light manager's order (lights) and the
+			/// luminary list's order (luminaries).
+			struct MotionSweepRecord
+			{
+				Scalar			exitanceSum = 0;	///< Sum over samples of the selection weight
+				unsigned int	samples = 0;
+				bool			anyPositive = false;
+				BoundingBox		bounds;
+				bool			boundsValid = false;
+				Vector3			coneAxis;
+				Scalar			coneHalfAngle = 0;
+				bool			coneValid = false;
+				// Padding for motion between samples, the ObjectManager
+				// rule: half the largest change between consecutive samples
+				// (box corners per axis; the cone axis's angle).
+				BoundingBox		lastBox;
+				Vector3			lastAxis;
+				Scalar			boxPad[3] = { 0, 0, 0 };
+				Scalar			anglePad = 0;
+			};
 		protected:
 			virtual ~LightSampler();
 
@@ -244,7 +579,8 @@ namespace RISE
 			AliasTable					aliasTable;		///< O(1) selection table
 			unsigned int				risCandidates;	///< Number of RIS candidates (0=disabled)
 			Scalar						lightSampleRRThreshold;	///< Light-sample RR threshold (0=disabled)
-			bool						bSceneHasObjectMedia;	///< True if any object has an interior medium (cached during Prepare)
+			bool bSceneHasAlphaCoverage = false;
+            bool						bSceneHasObjectMedia;	///< True if any object has an interior medium (cached during Prepare)
 			bool						bSceneHasObjectFireMedia;	///< True if any object has a fire interior medium (cached during Prepare)
 			bool						bSceneHasNullBoundaries;	///< True if any object uses the exact null-boundary material
 			std::vector<const IMedium*>	volumeEmissionMedia;	///< Deduplicated labeled thermal emitters
@@ -254,6 +590,12 @@ namespace RISE
 			std::vector<Scalar>		volumeEmissionPowerProxies;
 			AliasTable					equiangularPivotAlias;	///< a_r over positional lights plus emissive media
 			bool						equiangularPivotDistributionValid;
+
+			BoundingBox						sweptSceneBox;		///< Union of world-visible objects' boxes over the sweep (env emission disc)
+			bool							sweptSceneBoxValid = false;
+			std::vector<MotionSweepRecord>	sweptLights;
+			std::vector<MotionSweepRecord>	sweptLuminaries;
+			bool							bMotionSweep = false;
 
 			/// Light BVH for importance-weighted selection (null when disabled)
 			LightBVH*					pLightBVH;
@@ -311,6 +653,276 @@ namespace RISE
 
 		public:
 			LightSampler();
+
+			//
+			// THE EMITTER-RECORD PROBE (slice S3 of
+			// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
+			//
+			// Recovers the shading payload (`derivatives` / the signal
+			// channel / `txFootprint` / `ptObjIntersec`) for a point that was
+			// SAMPLED on a luminary rather than HIT, by firing one
+			// object-level closest-hit at that luminary and keeping the
+			// resulting record only if it landed on the sampled point.
+			//
+			// STATIC, and public, for two reasons: the same payload has to
+			// reach five hand-built records that live in three different
+			// translation units (LightSampler.cpp's two NEE sites,
+			// BDPTIntegrator.cpp's NM hero + HWSS companion rebuilds,
+			// VCMIntegrator.cpp's light-vertex NEE record), and RGB and NM
+			// must share ONE implementation so they cannot drift -- the
+			// spectral form of the defect this slice closes.
+			//
+
+			//! IS THE PROBE WANTED AT ALL?  `SurfaceCurvatureDemand::Any()
+			//! || SurfaceSignalDemand::Any()` -- two relaxed atomic loads.
+			//!
+			//! `ProbeEmitterSurface` asks this ITSELF and returns false
+			//! immediately when it is false, so a call site can never
+			//! forget the gate.  It is public only so a site on a hot loop
+			//! can ALSO skip the 416-byte `EmitterSurfacePayload` it would
+			//! otherwise default-construct per light sample, and skip
+			//! fetching the scene's object manager, with the gate closed
+			//! (round-2 transport review, H2 P2-6).  Skipping the payload
+			//! is the only thing this may be used for; it is not a licence
+			//! to build a record from anything but an accepted probe.
+			static bool EmitterProbeWanted();
+
+			//! PROBE `pLum` FOR THE SHADING PAYLOAD AT `ptOnLum` -- the ONE
+			//! probe, shared by all seven emitter-record sites so that PT,
+			//! BDPT and VCM refuse in exactly the same places.
+			//!
+			//! Stands off from `ptOnLum` along `+normal` and fires back
+			//! along `-normal`.  Until the round-2 transport review (H2
+			//! P1-1) the two NEE sites instead fired along `vToLight` --
+			//! from the shading point toward the sampled point -- through a
+			//! SECOND public entry point with its own acceptance behaviour,
+			//! so PT and the bidirectional families could and did disagree
+			//! about whether a given emitter read its signals live.  That
+			//! entry point is gone; `tests/SignalEmitterRecordTest`'s
+			//! family F is the witness (PT 23 % off its baked control while
+			//! BDPT and VCM were within 0.1 % of theirs, on one scene in one
+			//! frame).
+			//!
+			//! GATED: returns false immediately unless
+			//! `EmitterProbeWanted()`.  With the gate closed the rendered
+			//! output is unchanged, no ray is cast and no bounding box is
+			//! read -- which is the claim that matters and is checkable; an
+			//! earlier draft said "byte-for-byte", which overclaims (the
+			//! sites still fill `ptObjIntersec`, which is ungated by
+			//! design).  The gate lives HERE rather than at the call sites
+			//! so a future site cannot forget it.
+			//!
+			//! THE STANDOFF IS DERIVED FROM THE GEOMETRY, not from a fixed
+			//! fraction of the luminary's diagonal `D`:
+			//!
+			//!   standoff = max( kEmitterProbeStandoffFraction * D,
+			//!                   kEmitterProbeStandoffMargin * floorWorld
+			//!                     + kEmitterProbeStandoffCushionFraction * D )
+			//!
+			//! where `floorWorld` is `IObject::SelfHitRootFloor` asked in
+			//! the luminary's own local frame and mapped back to world units
+			//! by dividing by the direction stretch `|M_inv * dir|` --
+			//! exactly the conversion `CSGObject::SelfHitRootFloor` performs
+			//! on each operand.  The published contract (IGeometry.h,
+			//! "Contract for overriders") is that a caller standing off by
+			//! MORE than the returned floor and firing back must get the
+			//! hit, so this standoff is the smallest one the engine
+			//! guarantees works.  See the three constants above for what
+			//! each term is for and what the cushion costs.
+			//!
+			//! ACCEPTANCE RULE, in full: accepted iff (a) the gate is open,
+			//! (b) `pLum` is non-null and its world bounding box has a
+			//! finite, strictly-positive diagonal `D`, (c) `normal` is
+			//! usable, (d) the derived standoff is finite and no wider than
+			//! `D`, (e) the probe ray hits `pLum`, and (f) the hit is within
+			//! `kEmitterProbeAcceptFraction * D` of `ptOnLum`.
+			//!
+			//! THE REFUSAL MODES THAT SURVIVE, and they are now the SAME
+			//! THREE for PT, BDPT, VCM and MLT:
+			//!
+			//!   (a) a non-finite `SelfHitRootFloor`, or one so wide that
+			//!       the standoff would exceed `D` -- a geometry whose
+			//!       self-hit gate is wider than the whole luminary cannot
+			//!       be probed from outside it, and "change nothing" is the
+			//!       honest answer.  See the note at that check for which
+			//!       geometry can actually reach it.
+			//!   (b) a SECOND SURFACE OF THE SAME LUMINARY within the
+			//!       standoff band along `+normal` and further than the
+			//!       acceptance tolerance from `ptOnLum` -- a louvred or
+			//!       stacked single-object fixture.  (Inside the tolerance
+			//!       it is accepted instead, which the cushion constant's
+			//!       note states.)
+			//!   (c) a BSSRDF entry vertex, which is not an emitter record
+			//!       at all but is listed with these because it is the
+			//!       other place `SurfaceSignalInfo` reads neutral under
+			//!       every integrator.
+			//!
+			//! WHY A DISTANCE TEST AND NOT "any hit on the right object":
+			//! for a CONVEX luminary the near-side hit along the normal IS
+			//! the sampled point, so the test passes by construction; for a
+			//! concave one (a torus, a mesh shell, a two-lobe SDF) some
+			//! other part of the same surface can intercept, and its
+			//! curvature / occlusion / proximity are a different material
+			//! state entirely.  Reading THAT would be a fabrication with
+			//! extra steps.
+			//!
+			//! \return TRUE and fills @a outPayload (with `valid` true);
+			//!         FALSE leaves @a outPayload untouched.
+			static bool ProbeEmitterSurface(
+				const IObject*			pLum,			///< [in] the luminary the point was sampled on
+				const IObjectManager*	pObjects,		///< [in] the scene's object manager -- becomes `signals.pScene`, exactly as ObjectManager::IntersectRay stamps it
+				const Point3&			ptOnLum,		///< [in] the sampled point, in world space
+				const Vector3&			normal,			///< [in] unit outward normal at @a ptOnLum, as `UniformRandomPoint` returned it
+				EmitterSurfacePayload&	outPayload		///< [out] written only on acceptance
+				);
+
+			//! Copy an accepted payload onto a hand-built emitter record.  A
+			//! no-op when `payload.valid` is false, which is what makes every
+			//! call site's fallback "do nothing" rather than "build a second
+			//! record".
+			//!
+			//! Deliberately OUT OF LINE (not an inline in this header): the
+			//! `signals` assignment it performs is the one SourceHygieneTest
+			//! pins at file granularity, and keeping it in LightSampler.cpp
+			//! keeps the sanctioned writer set at ONE new file for this slice
+			//! instead of four.
+			static void ApplyEmitterSurface(
+				RayIntersectionGeometric&		rig,
+				const EmitterSurfacePayload&	payload
+				);
+
+			//! THE ONE EMITTER-EVALUATION RECORD FILL (DL-298).  Every site that
+			//! evaluates an emitter at a SAMPLED point -- `SampleLight`'s own
+			//! `Le`, PT's RGB/NM mesh NEE, BDPT's NM hero / HWSS companion
+			//! rebuilds, VCM's light-vertex NEE, and the legacy / spectral /
+			//! SMS photon-direction samplers -- builds a hand-made
+			//! `RayIntersectionGeometric` because no ray was traced to that
+			//! point.  Each used to fill its own subset, and the subsets
+			//! drifted: the BDPT/VCM rebuilds supplied the physical world
+			//! position `ptIntersection` (the expression VM's `P`) while
+			//! `SampleLight`'s RGB record, both NEE arms and the three photon
+			//! tracers left it at the default `(0,0,0)`, so an emission or
+			//! Phong-exponent painter keyed on `P` read the origin at a
+			//! nonzero sampled point under exactly those paths.  This helper
+			//! is the single place that knows what the sampled point
+			//! determines -- world position, normals, shading basis, UV and
+			//! the object-space point -- so the paths cannot drift again.
+			//! The probed signal payload is deliberately NOT part of it (it
+			//! is gated and carried separately; see `ApplyEmitterSurface`).
+			static void FillEmitterRecord(
+				RayIntersectionGeometric&	rig,
+				const Point3&				position,		///< [in] the sampled point, world space
+				const Vector3&				normal,			///< [in] unit emitting-face normal (mirrored into `vGeomNormal`)
+				const Point2&				coord,			///< [in] sampled surface UV
+				const Point3&				ptObjIntersec	///< [in] object-space point (`EmitterObjectPoint`)
+				);
+
+            //! Coverage-only context for sampled emitter endpoints. Known scene,
+            //! self and world position never depend on optional signal probes.
+            //! NEE can supply its receiver raster; emission has no camera pixel.
+            //! Leaves the existing emitted-radiance record unchanged.
+            static bool AcceptEmitterAlpha(
+                const IObject* luminary, const IObjectManager* objects,
+                const Point3& position, const RayIntersectionGeometric& context,
+                ISampler& sampler, const RasterizerState* raster = nullptr );
+
+			//! THE OBJECT-SPACE EMISSION POINT -- `Po` to the expression VM.
+			//!
+			//! UNGATED, RAY-FREE, and deliberately NOT part of the probe
+			//! payload (transport review P1-1).  `Po` is read by painters
+			//! that register no signal demand at all -- `expression_painter`
+			//! exposes it directly, `voronoi3d_painter` and
+			//! `mapping_painter` key on it -- so carrying it on the
+			//! PROCESS-WIDE-gated `EmitterSurfacePayload` made an emissive
+			//! material keyed on `Po` render differently depending on
+			//! whether some unrelated painter elsewhere in the process
+			//! happened to keep a signal demand alive (measured at 2.94x on
+			//! the S3 review's repro).
+			//!
+			//! It also closes a PRE-EXISTING inconsistency that predates
+			//! this slice entirely and reaches plain PT: a camera ray that
+			//! HIT the emitter got a live `Po` from `Object::IntersectRay`,
+			//! while every NEE / light-root record built from the same
+			//! sampled point carried `(0,0,0)`.  CLOSED FOR AN `Object`,
+			//! NOT FOR A CSG COMPOSITE: a composite returns @a fallback
+			//! here (see below), so its NEE `Po` is still `(0,0,0)` while a
+			//! direct hit on it gets the WINNING OPERAND's object point
+			//! through `CSGObject::AdoptCsgSurfacePayload`.  That gap is
+			//! unchanged by this slice and is stated wherever the closure
+			//! is claimed (round-2 transport review, H2 P2-7).
+			//!
+			//! HOW: one multiply through the luminary's own
+			//! `GetFinalInverseTransformMatrix()` -- the very matrix
+			//! `Object::IntersectRay` transforms its ray with.  No
+			//! intersection is performed and nothing is estimated.
+			//!
+			//! IT IS NOT THE SAME NUMBER A DIRECT HIT PRODUCES, quite:
+			//! `Object::IntersectRay` writes
+			//! `localRay.PointAtLength( range - SURFACE_INTERSEC_ERROR )`,
+			//! i.e. it backs the object-space point off along the LOCAL ray
+			//! by the object's own self-hit epsilon, while this is the
+			//! EXACT inverse image of the world point.  The two therefore
+			//! agree to `SURFACE_INTERSEC_ERROR` (1e-12 by default,
+			//! author-settable per object), not bit-for-bit.
+			//!
+			//! \return the object-space point, or @a fallback when the
+			//!         luminary has no single object frame.  A CSG COMPOSITE
+			//!         is that case: `CSGObject::IntersectRay` leaves
+			//!         `ptObjIntersec` in the WINNING CHILD OPERAND's frame
+			//!         (see `AdoptCsgSurfacePayload`) and clears
+			//!         `pmxWorldToObject` for exactly this reason -- the map
+			//!         into that frame is the child's inverse composed with
+			//!         every enclosing composite's, and which child wins is
+			//!         a property of the hit, not of the point.  Detected as
+			//!         `GetGeometry() == 0`, which is true of `CSGObject`
+			//!         and of a container node and false of every concrete
+			//!         `Object`.  Passing the record's existing value as
+			//!         @a fallback makes the CSG case "change nothing".
+			static Point3 EmitterObjectPoint(
+				const IObject*	pLum,			///< [in] the luminary the point was sampled on; null yields @a fallback
+				const Point3&	ptWorld,		///< [in] the sampled point, in world space
+				const Point3&	fallback		///< [in] what to return when there is no single object frame
+				);
+
+			//! DL-320: does this luminary emit from BOTH faces?  True when
+			//! its geometry reports back-face hits with a ray-facing normal
+			//! (`IGeometry::IsDoubleSided()`), which is exactly when every
+			//! strategy that HITS it sees a two-sided emitter.  False for a
+			//! null luminary and for a luminary with no directly-owned
+			//! geometry (a CSG composite: `GetGeometry() == 0`, and it is
+			//! never NEE-sampled anyway).  See `EmitterSides` in IEmitter.h
+			//! and docs/DL320_DOUBLE_SIDED_EMITTER.md.
+			static bool LuminaryIsTwoSided( const IObject* pLum );
+
+			//! DL-431: the surface-mean radiant exitance of ONE luminary.
+			//!
+			//! `IEmitter::averageRadiantExitance()` is estimated at emitter
+			//! CONSTRUCTION over a default-constructed record, i.e. at
+			//! `P = Po = (0,0,0)` with a 10x10 UV grid, because an emitter does
+			//! not know its geometry.  That is wrong for any emission keyed on
+			//! world / object position, and the average is the light-selection
+			//! importance weight (`Prepare`) and the photon power / budget
+			//! (PhotonTracer, SpectralPhotonTracer, SMSPhotonMap).  This
+			//! helper evaluates the emitter's LOCAL exitance
+			//! (`IEmitter::radiantExitanceAt`) at a deterministic 10x10
+			//! stratified set of `UniformRandomPoint` draws on the luminary
+			//! itself, each through `FillEmitterRecord` so the record carries
+			//! the physical `P` / `Po` / UV / normals.
+			//!
+			//! `uniform` is true when every sample read the identical value
+			//! (a constant, spectral or blackbody exitance -- every shipped
+			//! emitter): `average` is then the emitter's OWN cached average,
+			//! returned verbatim, so a P-independent emitter weights and
+			//! shoots bit for bit as before.  On a clipped plane the sample
+			//! points are exactly the old UV grid's cell centres, so a
+			//! UV-keyed painter averages to the same value as well.
+			//! \sa docs/DL431_EMITTER_AVERAGE_EXITANCE.md
+			struct LuminaryExitance
+			{
+				RISEPel	average;		///< surface-mean exitance (before area / face count)
+				bool	uniform;		///< true: constant over the surface, `average` is the emitter's cached one
+			};
+			static LuminaryExitance AverageLuminaryExitance( const IObject* pLum );
 
 			//
 			// LIGHT SOLO — render with exactly one light enabled.
@@ -426,6 +1038,34 @@ namespace RISE
 				const LuminaryManager::LuminariesList& luminaries	///< [in] List of mesh luminaries
 				);
 
+			/// DL-463: motion-blur sweep.  A motion-blurred frame moves the
+			/// scene to its own time at every pixel sample, but the selection
+			/// tables are built once per frame.  Any table both sides read is
+			/// an unbiased pmf, EXCEPT where it is zero for a light that emits
+			/// at some sample time: a light dark (or excluded) at the frame
+			/// time, or a light BVH cone / box that culls a light which has
+			/// since turned or moved.  The rasterizer moves the scene through
+			/// the shutter and calls AccumulateMotionSample at each time; the
+			/// next Prepare then weights each light by its mean power over the
+			/// samples (keeping it whenever any sample emits) and gives the
+			/// BVH the union of its boxes and cones.  Prepare consumes the
+			/// sweep (a later Prepare without a new sweep is a plain one).
+			/// Single-threaded, like Prepare.
+			void ClearMotionSweep();
+			void AccumulateMotionSample(
+				const IScene& scene,
+				const LuminaryManager::LuminariesList& luminaries
+				);
+
+			/// DL-463: a luminary's selection weight as Prepare computes it
+			/// (total emitted power: DL-320 face count, DL-431 surface mean).
+			static Scalar LuminarySelectionWeight( const IObject* pLum );
+			/// DL-463: the weight Prepare gives a swept light (the shutter
+			/// mean; `nominal` when no sample emitted).
+			static Scalar SweptSelectionWeight( const MotionSweepRecord& rec, const Scalar nominal );
+			/// DL-463: hands the swept box / cone to the light BVH.
+			static void ApplySweptBounds( LightEntry& entry, const MotionSweepRecord& rec );
+
 			/// Selects a light proportional to exitance, samples an emission
 			/// position and direction, and fills the LightSample struct.
 			/// \return True if a valid sample was generated, false if no lights exist
@@ -436,24 +1076,30 @@ namespace RISE
 				LightSample& sample									///< [out] The generated light sample
 				) const;
 
-			/// Returns the probability of selecting a given non-mesh light
+			/// Returns the probability that SampleLight() selects a given
+			/// non-mesh light: (1 - envSelectProb) * alias pmf.  Never the
+			/// light BVH's pmf -- SampleLight() does not use it (DL-348).
 			/// \return Selection probability proportional to exitance
 			Scalar PdfSelectLight(
 				const IScene& scene,								///< [in] The scene containing lights
 				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
 				const ILight& light,								///< [in] The light to query
-				const Point3& shadingPoint,							///< [in] Shading point (used for BVH PDF; ignored when BVH inactive)
-				const Vector3& shadingNormal						///< [in] Shading normal (used for BVH PDF; ignored when BVH inactive)
+				const Point3& shadingPoint,							///< [in] Unused (SampleLight's pmf is shading-point independent)
+				const Vector3& shadingNormal						///< [in] Unused
 				) const;
 
-			/// Returns the probability of selecting a given mesh luminary
+			/// Returns the probability that SampleLight() selects a given
+			/// mesh luminary: (1 - envSelectProb) * alias pmf.  The MIS
+			/// partner of BDPT/VCM/MLT's light-rooted strategies; never the
+			/// light BVH's pmf (DL-348).  PT's own NEE partner is
+			/// CachedPdfSelectLuminary.
 			/// \return Selection probability proportional to exitance
 			Scalar PdfSelectLuminary(
 				const IScene& scene,								///< [in] The scene containing lights
 				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
 				const IObject& luminary,							///< [in] The luminary to query
-				const Point3& shadingPoint,							///< [in] Shading point (used for BVH PDF; ignored when BVH inactive)
-				const Vector3& shadingNormal						///< [in] Shading normal (used for BVH PDF; ignored when BVH inactive)
+				const Point3& shadingPoint,							///< [in] Unused (SampleLight's pmf is shading-point independent)
+				const Vector3& shadingNormal						///< [in] Unused
 				) const;
 
 			//
@@ -468,6 +1114,20 @@ namespace RISE
 			/// evaluated deterministically outside the stochastic
 			/// selection to preserve backward compatibility.
 			///
+			/// `neeTrainingScale` (DL-72 P2-3) multiplies the integrand
+			/// this call feeds to `OptimalMISAccumulator` -- and NOTHING
+			/// else; the returned radiance is unaffected at any value.
+			/// It exists because a caller may apply a further factor to
+			/// the returned contribution before it reaches the image, and
+			/// the accumulator's moment is of the INTEGRAND (see
+			/// OptimalMISAccumulator.h): the ONE caller that needs it is
+			/// PathTracingIntegrator's BSSRDF/random-walk entry NEE, whose
+			/// result is scaled by the area-measure `weightSpatial` on
+			/// return, so without it that arm would train `f/weightSpatial`
+			/// while its own MIS partner -- the BSSRDF exit continuation --
+			/// trains the full `f`.  Default 1 = every other call site,
+			/// where the returned value IS the contribution.
+			///
 			/// \return Direct lighting contribution (RGB)
 			RISEPel EvaluateDirectLighting(
 				const RayIntersectionGeometric& ri,					///< [in] Geometric intersection at shading point
@@ -479,6 +1139,46 @@ namespace RISE
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
 				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IGuidedNEEPdfBlend* pGuidedBlend = 0,			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
+				const IORStack* pMisIorStack = 0,					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
+				const Scalar neeTrainingScale = 1,					///< [in] DL-72 P2-3: scales the OPTIMAL-MIS TRAINING integrand only (see the RGB overload's note); never the returned radiance
+				//! DL-171/DL-209: does a competing BSDF-SAMPLED strategy
+				//! actually exist in the caller's shader (a chain-aware
+				//! fact only the OWNING StandardShader/AdvancedShader can
+				//! resolve -- see RAY_STATE::chainHasBsdfContinuationOp)?
+				//! Default TRUE preserves every pre-existing caller's
+				//! behaviour (PT/BDPT/volume NEE always pair with a real
+				//! BSDF-sampling strategy).  FALSE suppresses ONLY the
+				//! weight computation below (this NEE sample takes the
+				//! full, unweighted contribution) while `pMaterial` is
+				//! still used for `bFullSphere`/the BRDF value -- there is
+				//! no BSDF-sampled sibling to partition against.
+				const bool bBsdfSamplingPartnerExists = true,
+				//! DL-09: the IOR stack of a caller whose walk ADVANCES
+				//! through graded-index media (GradedIndexMedium::Advance at
+				//! every vertex), so that its top is the index the caller's
+				//! throughput was priced to.  Only then is the NEE
+				//! connection segment priced `(top/n(light point))^2`
+				//! (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)).
+				//! Default NULL: a walk that does not advance (the legacy
+				//! shader-op chain, RayCaster's own volume walk) keeps its
+				//! pre-DL-09 accounting on BOTH its NEE and its
+				//! BSDF-sampled side, which is what keeps its own MIS
+				//! partition consistent.  Kept separate from
+				//! `pMisIorStack` on purpose: a volume vertex prices its
+				//! partner pdf stacklessly yet still sits in a graded
+				//! medium.  Exactly no effect unless the stack's innermost
+				//! medium is graded.
+				const IORStack* pGradedIndexStack = 0,
+				//! DL-344: SMS IS evaluated at THIS point (PT's PART-2
+				//! surface NEE with a manifold solver).  Only then is a
+				//! delta light's light through a specular caster SMS's to
+				//! estimate, so the delta arm keeps a binary shadow there
+				//! instead of the `transparent_shadows` walk.  Default
+				//! false: every other caller (volume in-scattering, the
+				//! BSSRDF entry NEE, the legacy chain, BDPT) has no SMS at
+				//! its point, and the walk is the light's only estimator.
+				const bool bSMSCoversDeltaLights = false,
 				const IORStack* pMediumStack = 0					///< [in] Full outer-to-inner medium state when available
 				) const;
 
@@ -495,6 +1195,15 @@ namespace RISE
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
 				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IGuidedNEEPdfBlend* pGuidedBlend = 0,			///< [in] DL-74: optional MIS-partner pdf override for the NEE arms (see IGuidedNEEPdfBlend)
+				const IORStack* pMisIorStack = 0,					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
+				const Scalar neeTrainingScale = 1,					///< [in] DL-72 P2-3: scales the OPTIMAL-MIS TRAINING integrand only (see the RGB overload's note); never the returned radiance
+				//! DL-171/DL-209 -- see the RGB overload's doc.
+				const bool bBsdfSamplingPartnerExists = true,
+				//! DL-09 -- see the RGB overload's doc.
+				const IORStack* pGradedIndexStack = 0,
+				//! DL-344 -- see the RGB overload's doc.
+				const bool bSMSCoversDeltaLights = false,
 				const IORStack* pMediumStack = 0					///< [in] Full outer-to-inner medium state when available
 				) const;
 
@@ -696,7 +1405,12 @@ namespace RISE
 			/// (per-object or global).  Used to gate shadow transmittance
 			/// evaluation — when false, all shadow transmittance calls
 			/// are skipped.
-			bool SceneHasMedia() const { return bSceneHasObjectMedia || (pPreparedScene && pPreparedScene->GetGlobalMedium()); }
+			bool SceneHasAlphaCoverage() const { return bSceneHasAlphaCoverage; }
+            bool SceneHasMedia() const { return bSceneHasObjectMedia || (pPreparedScene && pPreparedScene->GetGlobalMedium()); }
+            /// True if any object carries an interior medium (cached during
+            /// Prepare).  DL-419: SMS's chain transmittance walks segment
+            /// boundaries only when this is set.
+            bool SceneHasObjectMedia() const { return bSceneHasObjectMedia; }
 
 			/// Root transport stacks need containment seeding only when an exact
 			/// null boundary exists. Keeping this cached preserves legacy camera

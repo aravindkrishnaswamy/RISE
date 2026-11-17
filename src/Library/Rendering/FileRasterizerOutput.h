@@ -73,7 +73,7 @@ namespace RISE
 			}
 
 		protected:
-			std::string		pattern;
+			std::string			outputPattern;
 			bool				bMultiple;
 			FRO_TYPE			type;
 			unsigned char		bpp;

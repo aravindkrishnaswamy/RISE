@@ -160,7 +160,7 @@ Costs owned honestly (not hidden):
   surface at grazing.  Bounded by single-digit-degree tilts, a tilt clamp,
   and a geometric-side guard (`vGeomNormal`-based rejection to the
   unperturbed normal).  Same accepted physics as the in-tree
-  BumpMap/NormalMap; the delta-dielectric hero path has no such issue.
+  `ReliefModifier`/`NormalMap` (formerly `BumpMap`); the delta-dielectric hero path has no such issue.
   **2026-07-12 correction — the modifier-side guard was NOT sufficient.**
   `GLINT_MIN_GEOM_COS` only keeps the shading normal on the outward side;
   it does nothing about *sampled directions* below the geometric horizon,
@@ -177,9 +177,11 @@ Costs owned honestly (not hidden):
   library-wide (GGX first, then the 22-file sweep + review fixes);
   rejected samples are an unbiased, Veach-convention energy loss confined
   to the tilt-vs-horizon sliver.
-- **One modifier per object** (`Object::AssignModifier` REPLACES).  The
-  enamel glaze and silver objects carry no modifier today; a compound
-  modifier is the named upgrade path if a scene ever needs bump+glint.
+- **Modifier composition** (`Object::AssignModifier` REPLACES a single slot,
+  and `modifier_stack` now chains an ordered list of modifiers — e.g.
+  `relief_modifier` + `glint_modifier` — on one object).  The enamel glaze and
+  silver objects needed no stack at the time (`modifier_stack` landed later as
+  the compound-modifier upgrade path).
 - **Denoiser interaction**: the OIDN GUIDE buffers are safe by default —
   in the DEFAULT `OidnPrefilter::Fast` mode both the normal and albedo AOVs
   are captured from the camera-ray first hit BEFORE the modifier hook runs
@@ -197,12 +199,11 @@ Costs owned honestly (not hidden):
 
 ## The `GlintModifier` (parameters)
 
-The Slice-1 constructor takes all seven parameters explicitly (no defaults
-exist yet).  Slice 2 WILL choose parser-level defaults so an unconfigured
-`glint_modifier` chunk is a no-op-adjacent gentle sparkle, and MUST validate
-inputs string-level at parse time (loud rejection of non-finite/garbage
-tokens).  The ctor additionally forces the modifier INERT on any non-finite
-parameter as a silent backstop.  **Superseded 2026-07-29 — this no longer
+The Slice-1 constructor takes all seven parameters explicitly, while Slice 2
+provides parser-level defaults so an unconfigured `glint_modifier` chunk is a
+no-op-adjacent gentle sparkle, and validates inputs string-level at parse time
+(loud rejection of non-finite/garbage tokens).  The ctor additionally forces
+the modifier INERT on any non-finite parameter as a silent backstop.  **Superseded 2026-07-29 — this no longer
 dictates the formulation:** macOS now pairs `-fno-finite-math-only`, clang does
 not emit `nofpclass(nan inf)`, and a plain `std::isfinite` works.  Use the
 laundered form for uniformity with the rest of the tree if you like, but it is
@@ -247,8 +248,8 @@ stay coherent across facets.
 ## Files to touch
 
 - `src/Library/Modifiers/GlintModifier.{h,cpp}` (NEW ⇒ update ALL FIVE build
-  projects — CLAUDE.md "Change Checklist").
-- `Parsers/AsciiSceneParser.cpp` — `glint_modifier` descriptor + Finalize;
+  projects — AGENTS.md "Change Checklist").
+- `src/Library/Parsers/ChunkParserRegistry.cpp` — `glint_modifier` descriptor + Finalize;
   `RISE_API.{h,cpp}`, `IJob.h`, `Job.{h,cpp}` — factory + adder (Slice 2).
 - Tests: `tests/GlintModifierTest.cpp` (class),
   `tests/GlintModifierSceneParseTest.cpp` (chunk plumb-through).
@@ -370,7 +371,7 @@ PT, dial-region luminance on the sRGB PNGs:
 - Supervisor cross-checks: MIS bias direction corrected (glint **deficit**
   `1−w_NEE`, not over-weight); `transparent_shadows FALSE` ⇒ NEE-occlusion
   at buried surfaces makes BSDF-sampled delivery mandatory; DielectricSPF
-  consumes `ri.onb.w()` and BumpMap's Modify contract (perturb `vNormal`,
+  consumes `ri.onb.w()` and `ReliefModifier`'s (historically `BumpMap`'s) `Modify` contract (perturb `vNormal`,
   rebuild `onb`) verified as the integration seam.
 
 ### Implementation review, round 1 (2026-07-03, Slice 1)

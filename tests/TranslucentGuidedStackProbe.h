@@ -1,0 +1,554 @@
+// DL-03: exercise the production PT guiding substitution with real OpenPGL
+// training and real TranslucentSPF. Only the next intersection is controlled:
+// it presents the same object again so its input stack and actual entry/exit
+// classification can be observed without requiring a rare scene trajectory.
+#ifndef TRANSLUCENT_GUIDED_STACK_PROBE_H
+#define TRANSLUCENT_GUIDED_STACK_PROBE_H
+
+#include "../src/Library/Materials/TranslucentMaterial.h"
+#include "../src/Library/Shaders/PathTracingIntegrator.h"
+#include "../src/Library/Shaders/StandardShader.h"
+#include "../src/Library/Rendering/RayCaster.h"
+#include "../src/Library/Managers/ObjectManager.h"
+#include "../src/Library/Scene.h"
+#include "../src/Library/Shaders/BDPTIntegrator.h"
+#include "../src/Library/Managers/LightManager.h"
+#include "../src/Library/Lights/PointLight.h"
+#include "../src/Library/Lights/LightSampler.h"
+#include "../src/Library/Utilities/RuntimeContext.h"
+#include "../src/Library/Utilities/PathGuidingField.h"
+
+#ifdef RISE_ENABLE_OPENPGL
+namespace GuidedStackProbe {
+struct Observation {
+	unsigned int scatters = 0, pdfQueries = 0, exitPdfQueries = 0;
+	bool initialExit = false, poppedSPFStack = false, arrived = false;
+	bool containsOnArrival = false, entryLobeOnArrival = false;
+	Scalar mediumOnArrival = 0;
+	bool hasEntryPrefix = false, forceEntryChoice = false, transportStarted = false;
+	// DL-67 round 2: BDPT now decides whether a vertex is guided from the
+	// VERTEX, not from the selected lobe, so the forced ENTRY vertex (whose
+	// selected lobe is the entering transmission, which the old per-lobe
+	// rule never guided) is now guided too.  This sub-test observes the
+	// EXIT, so after forcing the entry lobe it also forces the entry
+	// vertex's guided technique choice onto the kept lobe: -1 = pass the
+	// draw through, anything else = return it.  One-sample: skip the
+	// region draw, then force the coin to "keep".  RIS: skip the region
+	// draw and the guide candidate's two draws, then force the
+	// resampling draw onto candidate 0.
+	int guidedMode = 0;
+	std::vector<Scalar> forcedAfterEntry;
+	Vector3 spfDirection, tracedDirection, exitNormal;
+	// DL-43: the last guiding-candidate density query's (wo, return value)
+	// during the exit vertex's guiding phase.  TranslucentSPF's diffuse
+	// exit lobe is cosine-weighted (DL-02): Pdf(wo) == fabs(Dot(wo,n))/pi,
+	// independent of which physical ray produced the evaluation context.
+	// A caller that passes the candidate direction as `wo` (correct) gets
+	// that candidate's own cosine; a caller that swaps wi/wo (DL-43's bug)
+	// gets some OTHER fixed direction's cosine instead, uncorrelated with
+	// whichever candidate the guide actually proposed.
+	Vector3 lastQueriedPdfWo;
+	Scalar lastQueriedPdfReturn = -1;
+	// Guards lastQueriedPdfWo/lastQueriedPdfReturn to the FIRST exit-window
+	// Pdf() query per trial -- the guiding candidate's own density check.
+	// A SECOND, unrelated Pdf() query hits the same exit vertex later in
+	// the same integrator step for MIS reverse-density bookkeeping
+	// (BDPTIntegrator.cpp's "Update the previous vertex's pdfRev", which
+	// deliberately queries wo=-currentRay.Dir() regardless of guiding);
+	// capturing that one instead would silently test the wrong call.
+	bool capturedExitQuery = false;
+	// DL-67: EVERY exit-window density query, in order.  Since DL-67 the
+	// BDPT RIS branch evaluates candidate 0's AGGREGATE density before the
+	// guide candidate's, so "the first query" is no longer the guide
+	// candidate's; the value check below finds the query whose `wo` IS the
+	// substituted (traced) direction instead.
+	std::vector<Vector3> exitQueryWo;
+	std::vector<Scalar> exitQueryRet;
+	std::vector<Scalar> liveIncomingDistances;
+};
+
+class ObservedSPF : public virtual ISPF, public virtual Reference {
+	const ISPF& real;
+	Observation& observed;
+	void Record( const RayIntersectionGeometric& ri, const IORStack& stack,
+		const ScatteredRayContainer& rays ) const
+	{
+		const unsigned int index = observed.scatters++;
+		observed.liveIncomingDistances.push_back( Vector3Ops::Magnitude(
+			Vector3Ops::mkVector3( ri.ray.origin, ri.ptIntersection ) ) );
+		if( observed.hasEntryPrefix && index == 0 ) {
+			observed.forceEntryChoice = true;
+			observed.forcedAfterEntry.clear();
+			if( observed.guidedMode == 1 ) {
+				observed.forcedAfterEntry = { Scalar( -1 ), Scalar( .999 ) };
+			} else if( observed.guidedMode == 2 ) {
+				observed.forcedAfterEntry = { Scalar( -1 ), Scalar( -1 ), Scalar( -1 ), Scalar( 0 ) };
+			}
+			return;
+		}
+		if( index == (observed.hasEntryPrefix ? 1u : 0u) ) {
+			observed.exitNormal = ri.vGeomNormal;
+			observed.initialExit = stack.containsCurrent();
+			for( unsigned int i = 0; i < rays.Count(); ++i ) {
+				if( rays[i].type == ScatteredRay::eRayDiffuse && rays[i].ior_stack ) {
+					observed.poppedSPFStack = !rays[i].ior_stack->containsCurrent();
+					observed.spfDirection = rays[i].ray.Dir();
+				}
+			}
+		} else {
+			observed.arrived = true;
+			observed.tracedDirection = ri.ray.Dir();
+			observed.containsOnArrival = stack.containsCurrent();
+			observed.mediumOnArrival = stack.top();
+			for( unsigned int i = 0; i < rays.Count(); ++i ) {
+				if( rays[i].type == ScatteredRay::eRayTranslucent && rays[i].ior_stack )
+					observed.entryLobeOnArrival = true;
+			}
+		}
+	}
+public:
+	ObservedSPF( const ISPF& delegate, Observation& state ) : real(delegate), observed(state) {}
+	void Scatter( const RayIntersectionGeometric& ri, ISampler& sampler,
+		ScatteredRayContainer& rays, const IORStack& stack ) const override {
+		real.Scatter(ri, sampler, rays, stack); Record(ri, stack, rays);
+	}
+	void ScatterNM( const RayIntersectionGeometric& ri, ISampler& sampler, Scalar nm,
+		ScatteredRayContainer& rays, const IORStack& stack ) const override {
+		real.ScatterNM(ri, sampler, nm, rays, stack); Record(ri, stack, rays);
+	}
+	Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo,
+		const IORStack& stack ) const override {
+		++observed.pdfQueries;
+		const Scalar ret = real.Pdf(ri, wo, stack);
+		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) {
+			++observed.exitPdfQueries;
+			observed.exitQueryWo.push_back( wo );
+			observed.exitQueryRet.push_back( ret );
+			if(!observed.capturedExitQuery) {
+				observed.capturedExitQuery = true;
+				observed.lastQueriedPdfWo = wo;
+				observed.lastQueriedPdfReturn = ret;
+			}
+		}
+		return ret;
+	}
+	Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, Scalar nm,
+		const IORStack& stack ) const override {
+		++observed.pdfQueries;
+		const Scalar ret = real.PdfNM(ri, wo, nm, stack);
+		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) {
+			++observed.exitPdfQueries;
+			observed.exitQueryWo.push_back( wo );
+			observed.exitQueryRet.push_back( ret );
+			if(!observed.capturedExitQuery) {
+				observed.capturedExitQuery = true;
+				observed.lastQueriedPdfWo = wo;
+				observed.lastQueriedPdfReturn = ret;
+			}
+		}
+		return ret;
+	}
+};
+
+class ObservedMaterial : public TranslucentMaterial {
+	ObservedSPF* observer;
+public:
+	ObservedMaterial( const IPainter& front, const IPainter& trans,
+		const IScalarPainter& extinction, const IScalarPainter& exponent,
+		const IScalarPainter& scattering, Observation& observation ) :
+		TranslucentMaterial(front, trans, extinction, exponent, scattering),
+		observer(new ObservedSPF(*pSPF, observation)) {}
+	~ObservedMaterial() override { observer->release(); }
+	ISPF* GetSPF() const override { return observer; }
+};
+
+class NextHitManager : public ObjectManager {
+	const IObject& object;
+	const IMaterial& material;
+public:
+	NextHitManager( const IObject& obj, const IMaterial& mat ) :
+		ObjectManager(false, false, 4, 8), object(obj), material(mat) {}
+	void IntersectRay( RayIntersection& ri, bool, bool, bool ) const override {
+		ri.geometric.bHit = true;
+		ri.geometric.ptIntersection = ri.geometric.ray.PointAtLength(1);
+		ri.geometric.range = Vector3Ops::Magnitude(Vector3Ops::mkVector3(ri.geometric.ray.origin, ri.geometric.ptIntersection));
+		ri.geometric.vNormal = -ri.geometric.ray.Dir();
+		ri.geometric.vGeomNormal = ri.geometric.vNormal;
+		ri.geometric.onb.CreateFromW(ri.geometric.vNormal);
+		ri.pObject = &object;
+		ri.pMaterial = &material;
+	}
+};
+
+// The BDPT generators accept camera/light roots rather than a pre-seeded
+// surface. Start outside, select the real translucent entry, then inspect
+// the exit and subsequent hit. This sampler fixes only that entry-lobe
+// choice; all guide sampling uses the seeded independent stream.
+class EntrySampler : public IndependentSampler {
+	Observation& observed;
+public:
+	EntrySampler(const RandomNumberGenerator& rng, Observation& state) : IndependentSampler(rng), observed(state) {}
+	void StartStream(int stream) override { observed.transportStarted = stream != 0; }
+	Scalar Get1D() override {
+		if(observed.forceEntryChoice) { observed.forceEntryChoice = false; return .999; }
+		if(!observed.forcedAfterEntry.empty()) {
+			const Scalar v = observed.forcedAfterEntry.front();
+			observed.forcedAfterEntry.erase(observed.forcedAfterEntry.begin());
+			if( v >= 0 ) return v;
+		}
+		return IndependentSampler::Get1D();
+	}
+};
+class ThreeHitManager : public ObjectManager {
+	const IObject& object;
+	const IMaterial& material;
+	const Observation& observed;
+public:
+	ThreeHitManager(const IObject& obj, const IMaterial& mat, const Observation& state) :
+		ObjectManager(false,false,4,8),object(obj),material(mat),observed(state) {}
+	void IntersectRay(RayIntersection& ri, bool, bool, bool) const override {
+		if(!observed.transportStarted || observed.scatters >= 3) return;
+		ri.geometric.bHit = true;
+		ri.geometric.ptIntersection = observed.scatters == 1 ? Point3(0,0,0) : ri.geometric.ray.PointAtLength(1);
+		ri.geometric.range = Vector3Ops::Magnitude(Vector3Ops::mkVector3(ri.geometric.ray.origin, ri.geometric.ptIntersection));
+		ri.geometric.vNormal = observed.scatters == 1 ? ri.geometric.ray.Dir() : -ri.geometric.ray.Dir();
+		ri.geometric.vGeomNormal = ri.geometric.vNormal;
+		ri.geometric.onb.CreateFromW(ri.geometric.vNormal);
+		ri.pObject = &object;
+		ri.pMaterial = &material;
+	}
+};
+static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPainter& trans,
+	const IScalarPainter& extinction, const IScalarPainter& exponent,
+	const IScalarPainter& scattering, const IObject& object, const IRayCaster& caster)
+{
+	std::cout << "Sub-test 6: DL-03 trained BDPT real entry/exit/next-hit stack" << std::endl;
+	StabilityConfig stability;
+	stability.rrMinDepth = 10;
+	stability.maxVolumeBounce = 0;
+	BDPTIntegrator* integrator = new BDPTIntegrator(3,3,stability);
+	LightManager* lights = new LightManager();
+	PointLight* point = new PointLight(1,RISEPel(1,1,1),true);
+	lights->AddItem(point,"probe_light");
+	point->release();
+	for(unsigned int side=0; side<2; ++side) {
+		for(unsigned int spectral=0; spectral<2; ++spectral) {
+			unsigned int baselineExitQueries = 0;
+			for(unsigned int mode=0; mode<3; ++mode) {
+				unsigned int reached=0,outwardSub=0,inwardSub=0,retained=0,badOut=0,badIn=0,badInitial=0,badMedium=0,exitQueries=0,badPdfValue=0;
+				unsigned int distanceChecks=0, badDistance=0;
+				for(unsigned int trial=0; trial<512; ++trial) {
+					Observation observation;
+					observation.hasEntryPrefix = true;
+					observation.guidedMode = (int)mode;
+					ObservedMaterial* material = new ObservedMaterial(front,trans,extinction,exponent,scattering,observation);
+					ThreeHitManager* manager = new ThreeHitManager(object,*material,observation);
+					Scene* scene = new Scene();
+					scene->SetObjectManager(manager);
+					scene->SetLightManager(lights);
+					LightSampler* lightSampler = new LightSampler();
+					lightSampler->Prepare(*scene,LuminaryManager::LuminariesList());
+					integrator->SetLightSampler(lightSampler);
+					integrator->SetGuidingField(mode ? &guide : 0,mode ? &guide : 0,.8,2,2,
+						mode==2 ? eGuidingRIS : eGuidingOneSampleMIS,2);
+					RandomNumberGenerator rng(12601+trial);
+					EntrySampler sampler(rng,observation);
+					RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+					std::vector<BDPTVertex> vertices;
+					std::vector<uint32_t> starts;
+					if(side) {
+						if(spectral) integrator->GenerateLightSubpathNM(*scene,caster,sampler,vertices,starts,550,rng,0);
+						else integrator->GenerateLightSubpath(*scene,caster,sampler,vertices,starts,rng);
+					} else {
+						const Ray cameraRay(Point3(0,0,-2),Vector3(0,0,1));
+						if(spectral) integrator->GenerateEyeSubpathNM(rc,cameraRay,Point2(.5,.5),*scene,caster,sampler,vertices,starts,550,0);
+						else integrator->GenerateEyeSubpath(rc,cameraRay,Point2(.5,.5),*scene,caster,sampler,vertices,starts);
+					}
+					// Match generator stamps to the actual sampler inputs, not
+					// predecessor positions (the live ray has been advanced).
+					size_t hitIndex = 0;
+					for( const BDPTVertex& vertex : vertices ) {
+						if( vertex.type != BDPTVertex::SURFACE || vertex.pMaterial != material ) continue;
+						if( hitIndex >= observation.liveIncomingDistances.size() ) break;
+						++distanceChecks;
+						if( std::fabs( vertex.scatterIncomingDistance - observation.liveIncomingDistances[hitIndex] ) > 1e-12 ) ++badDistance;
+						++hitIndex;
+					}
+					exitQueries += observation.exitPdfQueries;
+					if(!observation.initialExit || !observation.poppedSPFStack) ++badInitial;
+					if(observation.arrived) {
+						++reached;
+						const bool outward=Vector3Ops::Dot(observation.tracedDirection,observation.exitNormal)>0;
+						const bool substituted=Vector3Ops::Magnitude(observation.tracedDirection-observation.spfDirection)>1e-8;
+						if(observation.pdfQueries>0) {
+							if(!substituted) ++retained;
+							else if(outward) ++outwardSub;
+							else ++inwardSub;
+						}
+						if(outward && (observation.containsOnArrival || !observation.entryLobeOnArrival)) ++badOut;
+						if(!outward && (!observation.containsOnArrival || observation.entryLobeOnArrival)) ++badIn;
+						if(!std::isfinite(observation.mediumOnArrival) || std::fabs(observation.mediumOnArrival-1)>1e-12) ++badMedium;
+						// DL-43: when the guide's own queried candidate was the
+						// one substituted in (this trial's Pdf() query and its
+						// eventual continuation direction are the same
+						// candidate -- see the Observation comment), the
+						// density that was evaluated for it must equal ITS OWN
+						// outgoing cosine/pi, not some other fixed direction's.
+						// Restricted to OUTWARD substitutions: TranslucentSPF's
+						// diffuse-exit Pdf is the positive-hemisphere lobe
+						// (DL-02) and is not claimed to follow this closed form
+						// for an inward candidate (a distinct lobe/gate), so
+						// inward substitutions are out of scope for this check.
+						//
+						// DL-67 SCOPE NOTE: `expected` here depends only on
+						// `tracedDirection` (the outgoing/wo side) -- the
+						// diffuse-exit lobe's cosine-hemisphere Pdf is
+						// mathematically wi-independent, so this check (like
+						// PathValueOpsTest.cpp's Test G, same reason) cannot
+						// by itself catch a regression that gets wo right but
+						// threads wi to some OTHER wrong direction internally.
+						// See PathValueOpsTest.cpp's Test H for a wi-DEPENDENT
+						// SPF (SchlickSPF's specular half-vector lobe)
+						// discriminator that closes that gap.
+						//
+						// DL-41 (2026-09-18): `Pdf` is no longer ONE lobe's
+						// density -- it is the density of what `Scatter` +
+						// `RandomlySelect` actually return, so the exit lobe's
+						// own `cos/pi` is scaled by its SELECTION SHARE.  This
+						// rig has extinction 0 (Beer factor exactly 1) and
+						// scattering 0.3, so the exit branch emits two rays
+						// weighing 0.7 (exit) and 0.3 (backscatter) and that
+						// share is exactly 0.7.  The check is still the DL-43
+						// one -- the density evaluated for the substituted
+						// candidate must be ITS OWN, not some other
+						// direction's -- only the constant in front changed.
+						//
+						// DL-67 (2026-09-27): the density is looked up by
+						// DIRECTION, not by position in the query sequence --
+						// the RIS branch now queries candidate 0's aggregate
+						// first.  A substituted outward candidate with NO query
+						// at its own direction counts as bad too: that is the
+						// guide candidate never having been priced at all, a
+						// stronger liveness proof than the query COUNT below.
+						const Scalar kExitSelectShare = Scalar(0.7);
+						if(substituted && outward && observation.pdfQueries>0) {
+							const Scalar expected = kExitSelectShare * std::fabs(Vector3Ops::Dot(
+								observation.tracedDirection, observation.exitNormal)) * INV_PI;
+							bool found = false;
+							for( size_t q = 0; q < observation.exitQueryWo.size(); ++q ) {
+								if( Vector3Ops::Magnitude( observation.exitQueryWo[q] - observation.tracedDirection ) < 1e-9 ) {
+									found = true;
+									if(std::fabs(observation.exitQueryRet[q] - expected) > 1e-9) ++badPdfValue;
+									break;
+								}
+							}
+							if( !found ) ++badPdfValue;
+						}
+					}
+					integrator->SetLightSampler(0);
+					lightSampler->release(); scene->release(); manager->release(); material->release();
+				}
+				EXPECT( distanceChecks > 0 && badDistance == 0,
+					"DL-222: eye/light RGB/NM generator records the sampler's actual incoming distance" );
+				std::cout << "  BDPT " << (side ? "light" : "eye") << " " << (spectral ? "NM" : "RGB")
+					<< " mode=" << mode << " reached=" << reached << " substituted_out=" << outwardSub
+					<< " substituted_in=" << inwardSub << " retained_spf=" << retained
+					<< " exit_pdf_queries=" << exitQueries << " bad_initial=" << badInitial << " bad_out=" << badOut << " bad_in=" << badIn
+					<< " bad_medium=" << badMedium << " bad_pdf_value=" << badPdfValue
+					<< " distance_checks=" << distanceChecks << " bad_distance=" << badDistance << std::endl;
+				EXPECT(badInitial==0,"DL-03 BDPT real entry leads to real exit with a popped SPF stack");
+				EXPECT(reached>0,"DL-03 BDPT continuation reached same-object observer");
+				EXPECT(badOut==0,"DL-03 BDPT outward exit carries popped stack and next same-object Scatter enters");
+				EXPECT(badIn==0,"DL-03 BDPT inward substitution preserves inside stack");
+				EXPECT(badMedium==0,"DL-03 BDPT surrounding air IOR remains unchanged");
+				// DL-67: `>=`, not `>`.  The guided branch now hands the
+				// aggregate density it already evaluated at the traced
+				// direction to `pdfFwd` instead of querying it a second
+				// time, so one-sample mode issues exactly the unguided
+				// count.  Liveness of the guide candidate is proven by the
+				// per-direction value check (`badPdfValue`) below, which
+				// fails if the substituted candidate was never priced.
+				if(mode == 0) baselineExitQueries = exitQueries;
+				else EXPECT(exitQueries >= baselineExitQueries,"DL-03 BDPT exit PDF query count is at least the unguided baseline");
+				// DL-43: eye-subpath guide candidates (side==0) used to have their
+				// Pdf arguments reversed (BDPTIntegrator.cpp GenerateEyeSubpathImpl's
+				// RIS candidate-1 and one-sample branches), so eye+RIS in particular
+				// rejected every guide candidate outright (a swapped-argument density
+				// landed on the wrong side of the geometric-horizon gate and read
+				// zero). Fixed, both subpath sides and both sampling modes must show
+				// actual outward substitutions and a correctly-valued density for
+				// whichever candidate got substituted in.
+				if(mode) EXPECT(outwardSub>0,"DL-43/DL-03 BDPT actual outward guided exit substitution count is positive");
+				if(mode) EXPECT(badPdfValue==0,"DL-43 BDPT substituted candidate's evaluated PDF equals ITS OWN outgoing cosine/pi");
+				if(mode==1) EXPECT(inwardSub>0,"DL-03 BDPT inward guided substitution control is positive");
+				if(mode==2) EXPECT(retained>0,"DL-03 BDPT RIS retained SPF candidate control is positive");
+			}
+		}
+	}
+	integrator->release(); lights->release();
+}
+
+static void Run()
+{
+	std::cout << "Sub-test 5: DL-03 trained PT guided exit stack / later same-object hit" << std::endl;
+	PathGuidingConfig config;
+	config.enabled = true;
+	PathGuidingField* guide = new PathGuidingField(config, Point3(-2,-2,-2), Point3(2,2,2));
+	guide->BeginTrainingIteration();
+	// Broad angular support straddling the geometric horizon is deliberate:
+	// outward substitutions must pop; inward substitutions must stay inside.
+	for( unsigned int i = 0; i < 4096; ++i ) {
+		const Scalar z = -1 + 2 * (i + 0.5) / 4096;
+		const Scalar phi = i * 2.399963229728653;
+		const Scalar r = std::sqrt(1-z*z);
+		guide->AddSample(Point3(0,0,0), Vector3(r*std::cos(phi),r*std::sin(phi),z),
+			1, 1/(4*PI), 1, false);
+	}
+	guide->EndTrainingIteration();
+	EXPECT(guide->IsTrained(), "DL-03 OpenPGL field is actually trained");
+
+	UniformColorPainter* front = new UniformColorPainter(RISEPel(.5,.5,.5));
+	UniformColorPainter* trans = new UniformColorPainter(RISEPel(.5,.5,.5));
+	UniformScalarPainter* extinction = new UniformScalarPainter(0);
+	UniformScalarPainter* exponent = new UniformScalarPainter(1);
+	// DL-157 (2026-09-18): `scattering` was 0, which means the SPF's exit
+	// branch emits ONLY the outward diffuse exit lobe -- there is no
+	// interior backscatter lobe at all.  Pre-DL-157 `TranslucentBSDF::value`
+	// nonetheless returned `pRefFront * INV_PI` for an INWARD direction
+	// there (its `GetReflectedSide` case 1, a lobe that does not exist),
+	// which is what let the guided one-sample branch accept 371 of 512
+	// inward candidates on the strength of a phantom BSDF value -- the
+	// `substitutedIn > 0` controls below were pinning that.  With `value`
+	// describing the lobes the sampler actually has, an inward candidate at
+	// a `scattering 0` exit vertex correctly reads `f == 0` and is
+	// rejected.  Give the rig a real backscatter lobe instead, so the
+	// controls keep exercising DL-03's inward-substitution path against a
+	// direction the material genuinely scatters into.
+	UniformScalarPainter* scattering = new UniformScalarPainter(0.3);
+	StubObject* water = new StubObject();
+	StubObject* object = new StubObject();
+	StandardShader* shader = new StandardShader(std::vector<IShaderOp*>());
+	RayCaster* caster = new RayCaster(false, 8, *shader, false);
+	StabilityConfig stability;
+	stability.rrMinDepth = 10;
+	PathTracingIntegrator* integrator = new PathTracingIntegrator(ManifoldSolverConfig(), stability);
+	integrator->SetMaxPathDepth(2);
+	const RasterizerState rast{};
+
+	for( unsigned int tilted = 0; tilted < 2; ++tilted ) {
+		for( unsigned int spectral = 0; spectral < 2; ++spectral ) {
+			for( unsigned int mode = 0; mode < 3; ++mode ) {
+				unsigned int intercepted = 0, substitutedOut = 0, substitutedIn = 0, retainedSPF = 0;
+				unsigned int badOut = 0, badIn = 0, badMedium = 0, badInitial = 0;
+				unsigned int oldInNewOut = 0, oldInNewIn = 0, unchangedIn = 0;
+				for( unsigned int trial = 0; trial < (tilted ? 4096u : 512u); ++trial ) {
+					Observation observation;
+					ObservedMaterial* material = new ObservedMaterial(*front,*trans,*extinction,*exponent,*scattering,observation);
+					NextHitManager* manager = new NextHitManager(*object,*material);
+					Scene* scene = new Scene();
+					scene->SetObjectManager(manager);
+					RandomNumberGenerator rng(8191 + trial);
+					IndependentSampler sampler(rng);
+					RuntimeContext rc(rng, RuntimeContext::PASS_NORMAL, false);
+					rc.pGuidingField = mode == 0 ? 0 : guide;
+					rc.guidingAlpha = .8;
+					rc.guidingLearnedAlpha = false;
+					rc.maxGuidingDepth = 0;
+					rc.guidingSamplingType = mode == 2 ? eGuidingRIS : eGuidingOneSampleMIS;
+					RayIntersection hit(Ray(Point3(0,0,-1),Vector3(0,0,1)),rast);
+					hit.geometric.bHit = true;
+					hit.geometric.range = 1; // fake hit
+					hit.geometric.ptIntersection = Point3(0,0,0);
+					hit.geometric.vNormal = tilted ? Vector3(std::sqrt(3.0)/2,0,.5) : Vector3(0,0,1);
+					hit.geometric.vGeomNormal = Vector3(0,0,1);
+					hit.geometric.onb.CreateFromW(hit.geometric.vNormal);
+					hit.pObject = object;
+					hit.pMaterial = material;
+					IORStack stack = MakeEnteringStack(water,object,kWaterIOR);
+					stack.push(stack.top());
+					// Seed a diffuse arrival explicitly. Ordinary translucent PT entry
+					// arrives specular and therefore cannot prove this guiding branch.
+					if( spectral ) {
+						integrator->IntegrateFromHitNM(rc,rast,hit,550,*scene,*caster,sampler,0,
+							0,stack,0,1,true,1,IRayCaster::RAY_STATE::eRayDiffuse,
+							0,0,0,0,0,0,false,false);
+					} else {
+						integrator->IntegrateFromHit(rc,rast,hit,*scene,*caster,sampler,0,
+							0,stack,0,RISEPel(1,1,1),true,1,IRayCaster::RAY_STATE::eRayDiffuse,
+							0,0,0,0,0,0,false,false);
+					}
+					if( !observation.initialExit || !observation.poppedSPFStack ) ++badInitial;
+					if( observation.arrived ) {
+						++intercepted;
+						const bool outward = Vector3Ops::Dot(observation.tracedDirection,observation.exitNormal) > 0;
+						const bool substituted = Vector3Ops::Magnitude(observation.tracedDirection-observation.spfDirection) > 1e-8;
+						const bool oldInward = Vector3Ops::Dot(observation.spfDirection,observation.exitNormal) < 0;
+						if( !substituted && oldInward ) ++unchangedIn;
+						if( !substituted && observation.pdfQueries > 0 ) ++retainedSPF;
+						if( substituted && observation.pdfQueries > 0 ) {
+							if( outward ) ++substitutedOut; else ++substitutedIn;
+							if( oldInward ) {
+								if( outward ) ++oldInNewOut; else ++oldInNewIn;
+							}
+						}
+						// DL-45 (was: "tilted shading can make the original SPF exit
+						// geometrically inward; preserve that legacy unchanged-SPF
+						// behavior, judge only actual guide replacements there").
+						// TranslucentSPF's own exit sampler now resamples until
+						// geometrically valid (TranslucentSPF.cpp's
+						// SampleValidDiffuseExit), so an UNCHANGED (unguided) SPF
+						// exit direction must ALSO be held to this check now, tilted
+						// or not -- the old `(substituted || !tilted)` exemption
+						// would silently mask a regression of that fix.
+						if( outward && (observation.containsOnArrival || !observation.entryLobeOnArrival) ) ++badOut;
+						if( !outward && (!observation.containsOnArrival || observation.entryLobeOnArrival) ) ++badIn;
+						if( !std::isfinite(observation.mediumOnArrival) || std::fabs(observation.mediumOnArrival-kWaterIOR) > 1e-12 ) ++badMedium;
+					}
+					scene->release(); manager->release(); material->release();
+				}
+				std::cout << "  " << (spectral ? "NM" : "RGB") << " mode=" << mode << " tilted=" << tilted
+					<< " intercepted=" << intercepted << " substituted_out=" << substitutedOut
+					<< " substituted_in=" << substitutedIn << " retained_spf=" << retainedSPF << " bad_out=" << badOut
+					<< " bad_in=" << badIn << " bad_medium=" << badMedium
+					<< " old_in_new_out=" << oldInNewOut << " old_in_new_in=" << oldInNewIn
+					<< " unchanged_in=" << unchangedIn << std::endl;
+				EXPECT(badInitial == 0, "DL-03 real SPF produced an exit with a popped stack on every trial");
+				EXPECT(intercepted > 0, "DL-03 continuation reached the same-object stack observer");
+				EXPECT(badOut == 0, "DL-03 outward exit carries popped stack and next same-object Scatter enters");
+				EXPECT(badIn == 0, "DL-03 inward substituted direction preserves inside stack and does not re-enter");
+				EXPECT(badMedium == 0, "DL-03 surrounding water IOR remains unchanged");
+				if( mode ) EXPECT(substitutedOut > 0, "DL-03 non-vacuous outward guided exit substitution count is positive");
+				if( mode == 2 ) EXPECT(retainedSPF > 0, "DL-03 RIS retained SPF candidate control is positive");
+				if( mode == 1 ) EXPECT(substitutedIn > 0, "DL-03 one-sample inward substitution control is positive");
+				// DL-45 money assertion: the real SPF's OWN (unguided) exit
+				// sample is never geometrically inward any more -- this is the
+				// fixture that originally measured 1021/4096 inward exits per
+				// run at 60-degree tilt (pre-fix).  Distinct from badOut/badIn
+				// above: `unchangedIn` isolates unsubstituted SPF samples
+				// specifically, so a regression here can't hide behind a guided
+				// replacement masking it.
+				EXPECT(unchangedIn == 0, "DL-45 unsubstituted TranslucentSPF exit direction is never geometrically inward");
+				// oldInNewOut/oldInNewIn counted guided replacements whose
+				// baseline (unguided) SPF direction was inward -- DL-45
+				// eliminates that baseline entirely (see unchangedIn==0 above),
+				// so this scenario can no longer occur, tilted or not.  Kept as
+				// an explicit non-regression pin rather than deleted outright,
+				// so a future regression of DL-45 that reintroduces inward SPF
+				// exits is caught here too.
+				EXPECT(oldInNewOut == 0, "DL-45 no guided replacement starts from an inward SPF baseline (outward side)");
+				EXPECT(oldInNewIn == 0, "DL-45 no guided replacement starts from an inward SPF baseline (inward side)");
+			}
+		}
+	}
+	RunBDPT(*guide,*front,*trans,*extinction,*exponent,*scattering,*object,*caster);
+	integrator->release(); caster->release(); shader->release();
+	object->release(); water->release(); scattering->release(); exponent->release();
+	extinction->release(); trans->release(); front->release(); guide->release();
+}
+}
+#else
+namespace GuidedStackProbe {
+static void Run() { std::cout << "DL-03 guiding coverage unavailable: build without OpenPGL" << std::endl; }
+}
+#endif
+#endif

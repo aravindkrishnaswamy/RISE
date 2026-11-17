@@ -61,6 +61,7 @@
 #include "../src/Library/Utilities/Ray.h"
 #include "../src/Library/Utilities/OrthonormalBasis3D.h"
 #include "../src/Library/Utilities/Color/Color.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -83,8 +84,7 @@ namespace
 
 	std::string TempDir()
 	{
-		const char* t = getenv( "TMPDIR" );
-		std::string dir = ( t && t[0] ) ? t : "/tmp/";
+		std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 		if( dir.back() != '/' ) dir += '/';
 		return dir;
 	}

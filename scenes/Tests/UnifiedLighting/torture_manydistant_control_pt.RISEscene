@@ -217,6 +217,7 @@ omni_light
 	name				nearby_light
 	power				100000.0
 	color				1.0 0.95 0.8
+	colorspace			sRGB
 	position			278 50 280
 }
 

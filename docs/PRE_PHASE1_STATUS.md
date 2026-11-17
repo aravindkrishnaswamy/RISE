@@ -11,6 +11,16 @@
 > not evidence of MLT coverage. The three live baseline harnesses now use the
 > real `FeatureBased/MLT/mlt_veach_egg.RISEscene` for Gate F.
 
+> **2026-08-27 recalibration:** [PT_ENV_MIS_DOUBLECOUNT.md](PT_ENV_MIS_DOUBLECOUNT.md)
+> found and fixed a PT env-MIS double-count (BSDF-sampled env escapes added
+> at full weight on top of an already-weighted env-NEE sample, `+17.7%` on
+> env-only Lambertian). Every PT-relative env percentage in the Session
+> reports below (e.g. "VCM env+mesh = 122% of PT") was measured against
+> that inflated PT reference; the truth-referenced figure for VCM env+mesh
+> is `+50.0%` over closed-form, not `+22%` over PT. The sessions' bisects
+> and architectural diagnosis are unaffected — only absolute percentages
+> quoted against PT need this lens.
+
 ---
 
 ## TL;DR
@@ -982,7 +992,7 @@ What happens at the env vertex in the env+omni / env+mesh (envSelectProb = 0) ca
 
 The sentinel was load-bearing precisely because it sidestepped `remap0`, not because of any property of the MIS weighting itself.
 
-PBRT-v4 has the **identical** `auto remap0 = [](float f) -> Float { return f != 0 ? f : 1; };` line (chip spec §2.7), so the difference is NOT in remap0 semantics — it's that PBRT-v4 also ships a coordinated set of overrides at D2 (light-init `pdfFwd[0]`), D3 (`path[1]` projected-disc-area), and a `Vertex::PDF` dispatch via `ConvertDensity` (D6) that together make `pdfFwd_env / pdfRev_env` stay dimensionally and numerically balanced.  RISE has migrated only D4 in this session, so the balance is broken.
+PBRT-v4 has the **identical** `auto remap0 = [] (float f) -> Float { return f != 0 ? f : 1; };` line (chip spec §2.7), so the difference is NOT in remap0 semantics — it's that PBRT-v4 also ships a coordinated set of overrides at D2 (light-init `pdfFwd[0]`), D3 (`path[1]` projected-disc-area), and a `Vertex::PDF` dispatch via `ConvertDensity` (D6) that together make `pdfFwd_env / pdfRev_env` stay dimensionally and numerically balanced.  RISE has migrated only D4 in this session, so the balance is broken.
 
 ### Why env-only Lambertian (RGB) also worsens (Gate 4 wrong-way)
 
@@ -2503,13 +2513,13 @@ The eye subpath drives both NM modes — single-wavelength (`pSwlHWSS=NULL`, the
 ### Preserved Pel/NM asymmetries (reproduced via `if constexpr`, NOT fixed — flagged for a separate audit chip)
 Per the audit-before-fix rule, every genuine behavioural asymmetry found while reading the two methods was **preserved exactly** and is flagged here:
 1. **Surface-vertex vertex-colour (NEW finding) — ✅ FIXED 2026-06-01** (own outcome block below). The **Pel** eye subpath copied `ri.geometric.vColor` / `bHasVertexColor` onto the `SURFACE` `BDPTVertex`; the **NM** eye subpath did **not** (gated by `if constexpr(is_pel)`), and `GenerateLightSubpathNM` omitted the writes entirely. This was a genuine latent bug, **not** an intended asymmetry: at connection time `ConnectAndEvaluateNM` → `EvalBSDFAtVertexNM` → `PopulateRIGFromVertex` → `pBSDF->valueNM` → `pReflectance->GetColorNM` reads `ri.bHasVertexColor`/`ri.vColor`, so spectral/HWSS BDPT (and VCM-spectral, which reuses these NM generators) silently shaded vertex-coloured surfaces with the painter's *fallback* colour. Fixed by making the eye-gen writes unconditional and adding them to `GenerateLightSubpathNM`. Did not surface earlier because no test scene rendered vertex-coloured geometry under spectral BDPT — now covered by `vertex_colors_quad_bdpt_spectral.RISEscene`.
-2. **NM surface-bounce cap** — NM caps `SURFACE` vertices at `maxEyeDepth` (`eyeSurfaceBounces` counter + early break before the modifier); Pel relies on the loop bound (`maxEyeDepth + maxVolumeBounce`) only. `if constexpr(is_nm)`.
+2. **NM surface-bounce cap — ✅ FIXED 2026-09-22 (DL-210)** — NM capped `SURFACE` vertices at `maxEyeDepth` (`eyeSurfaceBounces` counter + early break before the modifier); Pel previously relied on the loop bound (`maxEyeDepth + maxVolumeBounce`) only (`if constexpr(is_nm)`). Resolved under DL-210: `eyeSurfaceBounces >= maxEyeDepth` now applies unconditionally to both Pel and NM walks.
 3. **NM env-escape RGB-broadcast** — the NM synthetic env vertex sets BOTH `throughputNM` and a broadcast `throughput = RISEPel(betaEsc,…)`; Pel sets only `throughput`. `if constexpr(is_nm)`.
 4. **Guiding architecture** — Pel writes on-vertex guiding data (`guidingHasSegment`/`guidingDirectionIn`/`guidingScatteringWeight`/… on medium, surface, and BSSRDF/RW-SSS entry vertices); NM records training inline via `RecordGuidingTrainingSampleNM` and writes **no** on-vertex guiding data. Reproduced via `if constexpr(is_pel)` (vertex stores) + `if constexpr(is_nm)` (inline training). This is a known, intended split (Pel trains from connection results in a post-pass), not a bug.
 5. **RW-SSS front-face cosine** — Pel uses a geometric front-face gate + clamped shading Fresnel cosine `max(fabs(cosInShade),NEARZERO)`; NM uses the raw shading cosine and a static-or-spectral param resolution (`GetRandomWalkSSSParamsNM`). `if constexpr` split. (Pre-existing; both branches reproduced verbatim.)
 6. **BSSRDF Fresnel division** — Pel `* (1.0/Ft)`, NM `/ Ft` (a ULP-level difference, preserved exactly via `if constexpr`).
 
-Asymmetry **#1 (vColor)** was the one worth a follow-up — it has since been **fixed** (see the dedicated outcome block below); #2–#6 are intended/structural and remain preserved.
+Asymmetries **#1 (vColor)** and **#2 (surface-bounce cap, DL-210)** have since been **fixed**; #3–#6 are intended/structural and remain preserved.
 
 ### Adversarial review ledger (Gate 7 — 3 reviewers, orthogonal axes)
 | Reviewer | Axis | Result |

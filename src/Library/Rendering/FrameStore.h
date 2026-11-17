@@ -239,10 +239,14 @@ namespace RISE
 			//! IRasterizerOutput push API.  Asserts srcRect aligns
 			//! with the FrameStore's tile grid; the tile lock is
 			//! managed internally (BeginTile/EndTile bracketing
-			//! happen inside).
+			//! happen inside).  @a dstClip, when non-null, limits the
+			//! copy to destination pixels inside that INCLUSIVE rect;
+			//! the tile's other pixels keep their previous content
+			//! (the source is not read there).
 			void CopyTileFromRasterImage( size_t tileX, size_t tileY,
 			                              const IRasterImage& src,
-			                              const Rect& srcRect );
+			                              const Rect& srcRect,
+			                              const Rect* dstClip = nullptr );
 
 			//! Mark the current frame complete.  Bumps the global
 			//! generation counter and fires observers'
@@ -657,6 +661,8 @@ namespace RISE
 			void DispatchObservers( Fn&& fn );
 			bool RemoveObserverImpl( IRenderObserver* observer );
 			void NotifyTileComplete( size_t tileX, size_t tileY, uint64_t generation );
+			void PublishTile( size_t tileX, size_t tileY );
+			friend class FrameStoreTileBracket;
 
 			// FrameStore is non-copyable (Reference rules).
 			FrameStore( const FrameStore& )            = delete;
@@ -725,8 +731,9 @@ namespace RISE
 		// After every tile lock has been released, the guard bumps the
 		// global generation counter and emits one `OnTileComplete` per
 		// FrameStore tile (same fan-out as a fully-rendered per-block
-		// frame). Observer failures are contained so a noexcept scope guard
-		// cannot terminate an otherwise recoverable render unwind.
+		// frame). Observers should not throw; cleanup contains (and logs)
+		// notification failures so a noexcept scope guard cannot terminate
+		// an otherwise recoverable render unwind.
 		//
 		// IMPORTANT: do NOT construct nested inside an active per-tile
 		// bracket window — `std::shared_mutex` is non-recursive, so a
@@ -760,6 +767,27 @@ namespace RISE
 		//! optionally unioned with the albedo+normal pair required by OIDN.
 		AOVBuffers::Plan MakeAOVPlan( const FrameStore* fs, bool denoiserAux );
 
+		// Owns a half-open tile rectangle. Release unlocks every owned tile
+		// before notifying observers, so they can read the whole store. It
+		// propagates the first notification failure after publication. Unwinding
+		// contains notification failures and preserves the active exception.
+		// A failed Acquire unlocks the acquired prefix without publishing
+		// tile completions, since no write was ever exposed.
+		class FrameStoreTileBracket
+		{
+		public:
+			FrameStoreTileBracket( FrameStore* fs, size_t tx0, size_t ty0,
+			                       size_t tx1, size_t ty1 );
+			~FrameStoreTileBracket() noexcept;
+			void Acquire();
+			void Release();
+			FrameStoreTileBracket( const FrameStoreTileBracket& ) = delete;
+			FrameStoreTileBracket& operator=( const FrameStoreTileBracket& ) = delete;
+		private:
+			FrameStore* fs_;
+			size_t tx0_, ty0_, columns_, count_, first_ = 0, end_ = 0;
+		};
+
 		class FrameStoreBulkBracket
 		{
 		public:
@@ -776,7 +804,7 @@ namespace RISE
 			FrameStoreBulkBracket& operator=( FrameStoreBulkBracket&& )      = delete;
 
 		private:
-			FrameStore* mFs;  ///< null when guard is a no-op
+			FrameStoreTileBracket tiles_;
 		};
 
 	} // namespace Implementation

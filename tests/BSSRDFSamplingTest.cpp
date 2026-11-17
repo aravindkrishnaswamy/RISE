@@ -58,14 +58,55 @@ static bool IsClose( double a, double b, double relTol = 0.02, double absTol = 1
 	return diff < absTol || diff < relTol * ref;
 }
 
-/// Local Schlick Fresnel reflectance (mirrors the protected static
-/// in BurleyNormalizedDiffusionProfile but accessible from tests)
-static Scalar SchlickFresnel( Scalar cosTheta, Scalar eta )
+/// Local EXACT dielectric Fresnel reflectance from air into a medium of
+/// relative index eta -- an independent transcription of the textbook
+/// formula.  DL-306: the SSS boundary transmits with this law (the one
+/// SubSurfaceScatteringSPF reflects with); it was Schlick's approximation
+/// until then.
+static Scalar ExactFresnel( Scalar cosTheta, Scalar eta )
 {
-	const Scalar R0 = ((1.0 - eta) / (1.0 + eta)) * ((1.0 - eta) / (1.0 + eta));
-	const Scalar c = 1.0 - cosTheta;
-	const Scalar c2 = c * c;
-	return R0 + (1.0 - R0) * c2 * c2 * c;
+	const Scalar sin2T = (1.0 - cosTheta * cosTheta) / (eta * eta);
+	if( sin2T >= 1.0 ) {
+		return 1.0;
+	}
+	const Scalar cosT = sqrt( 1.0 - sin2T );
+	const Scalar rs = (cosTheta - eta * cosT) / (cosTheta + eta * cosT);
+	const Scalar rp = (eta * cosTheta - cosT) / (eta * cosTheta + cosT);
+	return 0.5 * (rs * rs + rp * rp);
+}
+
+/// c = 2 * integral_0^1 (1 - F(mu)) mu dmu by a 64-panel 4-point Gauss-Legendre
+/// quadrature with the u = cos(theta_t) critical-angle substitution when eta < 1.
+static Scalar ExactNormalization( Scalar eta )
+{
+	static const double kGL4X[4] = {
+		-0.86113631159405257522, -0.33998104358485626480,
+		 0.33998104358485626480,  0.86113631159405257522
+	};
+	static const double kGL4W[4] = {
+		 0.34785484513745385737,  0.65214515486254614263,
+		 0.65214515486254614263,  0.34785484513745385737
+	};
+	const int nPanels = 64;
+	Scalar sum = 0;
+	for( int i = 0; i < nPanels; ++i ) {
+		const Scalar a = Scalar( i ) / nPanels;
+		const Scalar b = Scalar( i + 1 ) / nPanels;
+		const Scalar mid = 0.5 * ( a + b );
+		const Scalar half = 0.5 * ( b - a );
+		for( int g = 0; g < 4; ++g ) {
+			const Scalar u = mid + half * kGL4X[g];
+			const Scalar w = half * kGL4W[g];
+			if( eta < 1.0 ) {
+				const Scalar arg = 1.0 - eta * eta * ( 1.0 - u * u );
+				const Scalar mu = sqrt( arg > 0.0 ? arg : 0.0 );
+				sum += w * 2.0 * eta * eta * u * ( 1.0 - ExactFresnel( mu, eta ) );
+			} else {
+				sum += w * 2.0 * u * ( 1.0 - ExactFresnel( u, eta ) );
+			}
+		}
+	}
+	return sum;
 }
 
 /// Helper to create a heap-allocated BurleyNormalizedDiffusionProfile
@@ -266,7 +307,9 @@ void TestSamplingPDFConsistency()
 // Test C: Fresnel energy conservation
 // ================================================================
 //
-// For any angle, R + Ft = 1 (Schlick approximation).
+// For any angle, Ft is the exact dielectric transmission: Ft + F = 1 with
+// F an independent exact Fresnel reflectance (DL-306: the law the SSS SPF's
+// surface reflection uses, so the two halves of the boundary partition).
 // Test at several angles and IOR values.
 // ================================================================
 
@@ -291,7 +334,7 @@ void TestFresnelConservation()
 		for( Scalar cosT : cosThetas )
 		{
 			const Scalar Ft = pProfile->FresnelTransmission( cosT, ri );
-			const Scalar R = 1.0 - Ft;
+			const Scalar R = ExactFresnel( cosT, eta );
 			const Scalar sum = R + Ft;
 
 			if( !IsClose( sum, 1.0, 1e-10 ) ) {
@@ -343,13 +386,10 @@ void TestSwNormalization()
 {
 	std::cout << "Test D: Sw normalization (integral Sw*cos dw = 1)" << std::endl;
 
-	// The Christensen & Burley normalization c = (41-20*F0)/42 is an
-	// empirical fit.  The integral of Sw*cos over the hemisphere is
-	// approximately 1.0 but not exact — errors up to ~3% are expected
-	// for low IOR values.  We use a 5% tolerance to avoid false
-	// failures while still catching catastrophic normalization bugs.
-	// Test IOR values typical of translucent materials (wax, skin, marble).
-	// The c normalization becomes increasingly inaccurate above eta ~1.5.
+	// This is a normalization contract, not an empirical approximation.
+	// Keep the existing helper coverage strict: production Sw must integrate
+	// to one for ordinary material IORs.  The DL-48 companion test derives
+	// the independent directional law and also covers adapters and samples.
 	const Scalar iors[] = { 1.1, 1.3, 1.5 };
 
 	RandomNumberGenerator rng( 54321 );
@@ -371,7 +411,7 @@ void TestSwNormalization()
 			const Scalar cosTheta = sqrt( u1 );
 
 			// Evaluate Sw at this angle using the shared function
-			const Scalar Ft = 1.0 - SchlickFresnel( cosTheta, eta );
+			const Scalar Ft = 1.0 - ExactFresnel( cosTheta, eta );
 			const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( Ft, eta );
 
 			// Cosine-weighted estimator: f / pdf = Sw*cos / (cos/pi) = Sw*pi
@@ -379,7 +419,7 @@ void TestSwNormalization()
 		}
 		estimate /= N;
 
-		const bool ok = IsClose( estimate, 1.0, 0.05 );
+		const bool ok = std::isfinite( estimate ) && IsClose( estimate, 1.0, 0.001 );
 		std::cout << "  eta=" << eta << ": integral=" << std::setprecision(6) << estimate
 			<< " expected=1.0"
 			<< " err=" << std::fabs(estimate - 1.0) * 100 << "%"
@@ -410,8 +450,9 @@ void TestWeightConsistency()
 	std::cout << "Test E: Weight formula consistency" << std::endl;
 
 	const Scalar eta = 1.3;
-	const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
-	const Scalar c = (41.0 - 20.0 * F0) / 42.0;
+	// 2 integral_0^1 mu*(1-F(mu)) dmu for the exact law (DL-306), by an
+	// independent quadrature; the helper's closed form agrees to ~1e-12.
+	const Scalar c = ExactNormalization( eta );
 
 	// Test that Sw = Ft / (c*pi) for various angles
 	bool allPass = true;
@@ -419,7 +460,7 @@ void TestWeightConsistency()
 	const Scalar angles[] = { 0.1, 0.3, 0.5, 0.7, 0.9, 1.0 };
 	for( Scalar cosTheta : angles )
 	{
-		const Scalar R = SchlickFresnel( cosTheta, eta );
+		const Scalar R = ExactFresnel( cosTheta, eta );
 		const Scalar Ft = 1.0 - R;
 
 		// Compute Sw via shared function
@@ -455,9 +496,9 @@ void TestWeightConsistency()
 	for( int trial = 0; trial < 100; trial++ )
 	{
 		const Scalar cosEntry = 0.1 + 0.9 * rng.CanonicalRandom();
-		const Scalar FtEntry = 1.0 - SchlickFresnel( cosEntry, eta );
+		const Scalar FtEntry = 1.0 - ExactFresnel( cosEntry, eta );
 		const Scalar SwFactor = FtEntry / c;
-		const Scalar FtExit = 1.0 - SchlickFresnel(
+		const Scalar FtExit = 1.0 - ExactFresnel(
 			0.1 + 0.9 * rng.CanonicalRandom(), eta );
 
 		// Simulate Rd and pdfSurface as arbitrary positive values

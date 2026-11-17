@@ -1,0 +1,268 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           arealight_shaderop.RISEscene                                                            #
+#   Description:    Demonstrates using the area light shaderop                                              #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      February 28, 2005                                                                       #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+uniformcolor_painter
+{
+	name			color_emm
+	color			1 1 1
+}
+
+arealight_shaderop
+{
+	name			arealight
+	emission		color_emm
+	location		-5 5 2
+	make_dir		0 0 0
+	samples			64
+	width			3.0
+	height			3.0
+	power			50
+	cache			false
+}
+
+standard_shader
+{
+	name			global
+	shaderop		arealight
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/legacy_arealight_shaderop
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			400
+	height			300
+}
+
+pinhole_camera
+{
+	location			0.25 0 3.5
+	lookat				0.25 0 0
+	up					0 1 0
+	fov					20.0
+	theta				30
+}
+
+##################################################
+# Painters
+##################################################
+
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+##################################################
+# Objects - plane
+##################################################
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				0.5
+	ytile				0.5
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0.0 -0.3 0.0
+	orientation			-90.0 0.0 0.0
+	material			white
+}
+
+##################################################
+# Objects - boxes
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.3
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			0 0.0 0.0
+	material			white
+}
+
+

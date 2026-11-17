@@ -7,8 +7,12 @@
 //  text is its serialization and the rendered scene is a separate derivation.
 //  Built across the transfer-gate items (docs/agentic-redesign/
 //  IMPLEMENTATION_SLICES.md) -- the foundation validated by the four
-//  `tests/Cst*SliceTest` prototypes, promoted into the real library and gated by
-//  the render-equivalence harness (DumpJob(cstJob) == DumpJob(legacyJob)).
+//  `tests/Cst*SliceTest` prototypes, promoted into the real library and, while
+//  the legacy parser still existed, gated by a render-equivalence harness
+//  (DumpJob(cstJob) == DumpJob(legacyJob)).  That harness is a RETIRED ORACLE
+//  now: the legacy parser was deleted in the Model-B P5 retirement, so there
+//  is no second `Job` left to dump and compare against (see the item 5 bullet
+//  below, which records the same retirement from the derive side).
 //
 //  Scope landed so far:
 //    * item 2 -- bytes <-> CST (lossless, multi-chunk, brace-nested) + derive
@@ -18,19 +22,28 @@
 //    * item 4 -- NodeId lineage + name-path / reverse / param identity.
 //    * item 5 -- the derive binds through the LIVE chunk-parser descriptor
 //      registry (CreateAllChunkParsers): EVERY registry chunk type is validated
-//      via the same DispatchChunkParameters and applied via the same Finalize as
-//      the legacy parser (with the same param-line whitespace normalisation), so
-//      the two paths build an identical Job for the canonical scenes the CST is
-//      fed. See DeriveToJob for the exact equivalence scope + the two-tier
-//      (validation refuse-all / apply abort-on-first) failure boundary.
+//      via DispatchChunkParameters and applied via Finalize.  (Landed as
+//      equivalence with the then-still-live legacy parser -- same Finalize,
+//      same param-line whitespace normalisation, an identical Job for the
+//      canonical scenes the CST is fed; the legacy parser was deleted in the
+//      Model-B P5 retirement, so the CST derive is now the sole scene-load
+//      path and there is no second path left to be equivalent TO -- this
+//      bullet records what item 5 achieved, not a live two-path claim.)
+//      See DeriveToJob for the exact scope + the two-tier
+//      (validation refuse-all / apply continue-past-failure -- was
+//      abort-on-first-failure before the 2026-08-28 bug-fix wave) failure
+//      boundary.
 //
 //  Derive domain: the CST is the v7 runtime format -- macro-free and
 //  expression-free. v6 `$( )` / DEFINE / FOR (and `>` run/load/set/clearall
 //  directives, and non-canonical whitespace/comment forms) are the one-shot
 //  v6->v7 MIGRATOR's job (D8), never the CST runtime's; descriptor-driven
-//  validation of params (rejecting unknown/ill-typed values, which the legacy
-//  parser does) landed in item 5. So the equivalence gate is exact for the
-//  canonical scenes the CST is fed -- see DeriveToJob for the precise scope.
+//  validation of params (rejecting unknown/ill-typed values, which the
+//  since-deleted legacy parser also did) landed in item 5.  That equivalence
+//  gate was exact for the canonical scenes the CST is fed while the legacy
+//  parser still existed to compare against -- see DeriveToJob for the
+//  precise scope (and the "item 5" bullet above for why this is now history,
+//  not a live two-path claim).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -181,7 +194,15 @@ namespace RISE
 			IdMapRef    byId;      //!< NodeId -> current green node, O(log N) reverse lookup (item 4)
 			ParamMapRef paramIds;  //!< (chunkId, role, occurrence) -> param NodeId (item 4)
 			NodeId      nextId = 1;
-			int         instanceArrayCount = 0;  //!< # of instance_array generators -- the O(1) signal DeriveToJobIncremental uses to refuse globally (their input edges are not yet traced; P1-A). Maintained on parse/replace/insert/erase/reparse (replace adjusts +new-old on a role flip, nets 0 for a same-role value/name edit; insert +1; erase -1; reparse = fresh's); carried by the O(1) Document copy on a label-only ReflowWindow.
+			//! How many top-level chunks INSTANCE another node -- `standard_object`
+			//! carrying a live `source` (87 step 3a-3c).  The O(1) signal
+			//! DeriveToJobIncremental's DOCUMENT-WIDE refusal reads; see the refusal
+			//! itself for why a `source` document cannot take the incremental path at
+			//! all.  Maintained at parse / replace / insert / erase (a reparse copies
+			//! it from the fresh parse) -- NOT recomputed by a per-edit O(N) doc scan,
+			//! which would make every incremental apply O(N) and fail CstEditCostTest's
+			//! ~flat-in-N gate exactly as the animation guard warns.
+			int         sourceInstanceCount = 0;
 		};
 
 		//! Optimistic-concurrency identity of a Job's RETAINED CST head (Facet 5,
@@ -250,9 +271,9 @@ namespace RISE
 		//! spaces, like AsciiCommandParser::TokenizeString + rejoin), validated +
 		//! bagged by the SAME DispatchChunkParameters the legacy parser runs, and
 		//! applied via the SAME IAsciiChunkParser::Finalize. So ANY registry chunk
-		//! type derives, and the CST path and the legacy path build an IDENTICAL
-		//! Job for the CANONICAL scenes the CST is actually fed -- the v6->v7
-		//! serializer's output:
+		//! type derives, and -- while the legacy parser still existed -- the CST
+		//! path and the legacy path built an IDENTICAL Job for the CANONICAL
+		//! scenes the CST is actually fed: the v6->v7 serializer's output:
 		//!   * macro-free ($()/DEFINE/FOR),
 		//!   * directive-free (no `>` run/load/set/clearall command lines),
 		//!   * comments either `#` line-comments or MULTI-line `/* */` blocks
@@ -261,33 +282,37 @@ namespace RISE
 		//!   * single-space-separated values.
 		//! These exclusions are all the v6->v7 MIGRATOR's domain (D8), not the CST
 		//! runtime: a legacy scene that uses them is migrated to canonical form
-		//! before it reaches the CST. On a NON-canonical legacy input the two paths
-		//! may diverge, each by its own rules:
+		//! before it reaches the CST. This is a HISTORICAL record of why: on a
+		//! NON-canonical legacy input, the CST path and the (now-deleted) legacy
+		//! parser used to diverge, each by its own rules -- kept here because it
+		//! explains the migrator's exclusion list, not because a live second path
+		//! still exists to diverge from:
 		//!   - the CST skips a `>` line as a stray (it does not run directives --
 		//!     a `> run`-included reference then goes unresolved and is reported by
-		//!     the apply-time boundary below);
+		//!     the apply-time boundary below) -- this part is still CST's live
+		//!     behavior today;
 		//!   - the CST strips a MID-LINE `#`/`/* */` comment as trivia, whereas the
-		//!     legacy tokenizer keeps it as VALUE tokens (it never strips a comment
-		//!     after the first token of a line). The legacy outcomes, all DIVERGING
-		//!     from the CST's clean strip:
-		//!       * `#`/`/* */` after a STRING-valued param -- legacy SILENTLY MIS-
-		//!         CAPTURES (the comment bytes become part of the value: `name s # x`
-		//!         binds the name `s # x`, not `s`; parse SUCCEEDS, value corrupted),
+		//!     legacy tokenizer USED TO keep it as VALUE tokens (it never stripped a
+		//!     comment after the first token of a line). The legacy outcomes, all
+		//!     DIVERGING from the CST's clean strip, as legacy USED TO work:
+		//!       * `#`/`/* */` after a STRING-valued param -- legacy used to SILENTLY
+		//!         MIS-CAPTURE (the comment bytes became part of the value: `name s # x`
+		//!         bound the name `s # x`, not `s`; parse SUCCEEDED, value corrupted),
 		//!         where the CST yields `s`;
-		//!       * a trailing `#` on a NUMERIC value -- legacy TOLERATES it (the
-		//!         numeric validator stops at the `#`: `radius 1 # cm` reads 1), and
-		//!         here the CST AGREES (also reads 1), so this case alone does not
+		//!       * a trailing `#` on a NUMERIC value -- legacy used to TOLERATE it (the
+		//!         numeric validator stopped at the `#`: `radius 1 # cm` read 1), and
+		//!         here the CST AGREES (also reads 1), so this case alone did not
 		//!         diverge the Job;
-		//!       * `/* */` on a NUMERIC value -- legacy REJECTS it (the validator
-		//!         sees a non-numeric token and fails the chunk), where the CST reads
+		//!       * `/* */` on a NUMERIC value -- legacy used to REJECT it (the validator
+		//!         saw a non-numeric token and failed the chunk), where the CST reads
 		//!         the clean number;
-		//!   - a SINGLE-LINE `/* ... */` block comment on its own line also
-		//!     diverges: the CST strips it as one trivia run, but the legacy
-		//!     top-level comment-block state machine only inspects each line's
-		//!     FIRST token, so it enters comment mode on `/*` and never sees the
+		//!   - a SINGLE-LINE `/* ... */` block comment on its own line also used to
+		//!     diverge: the CST strips it as one trivia run (still true today), but the
+		//!     legacy top-level comment-block state machine only inspected each line's
+		//!     FIRST token, so it entered comment mode on `/*` and never saw the
 		//!     same-line `*/` -- swallowing the rest of the file (or, in a chunk
 		//!     body, rejecting the chunk). Only a MULTI-line block (`*/` opening a
-		//!     later line) round-trips through legacy.
+		//!     later line) used to round-trip through legacy.
 		//! The serializer emits none of these, so they are out of the equivalence
 		//! scope. Returns the number of chunks applied.
 		//!
@@ -297,17 +322,109 @@ namespace RISE
 		//!     finite-or-non-numeric numeric value) is REFUSE-ALL -- if any chunk
 		//!     fails validation, NOTHING is applied.
 		//!   * APPLY-time (PASS 2, a Finalize failure that only surfaces on apply,
-		//!     e.g. an unresolved reference) matches the legacy parser's
-		//!     ABORT-ON-FIRST-FAILURE: it stops at the first failing chunk, leaving
-		//!     chunks BEFORE it applied (as legacy does) -- not silently swallowed,
-		//!     not continued past. Full apply-atomicity (rollback) is later work.
+		//!     e.g. an unresolved reference) CONTINUES PAST a failing chunk (bug-fix
+		//!     wave, 2026-08-28 -- was previously abort-on-first-failure, matching the
+		//!     since-deleted legacy parser): every pending chunk still gets its own
+		//!     attempt and its own named diagnostic on failure, so one run surfaces
+		//!     every independent problem instead of hiding everything after the
+		//!     first. A chunk that legitimately depends on a failed one's would-be
+		//!     entity fails too, with its own unresolved-reference diagnostic -- that
+		//!     is expected, not a bug. Chunks that DID apply stay applied (as before);
+		//!     full apply-atomicity (rollback of the whole derive) is later work.
+		//!     `DeriveToJobIncremental` below is DIFFERENT: it mutates an
+		//!     already-derived LIVE Job in place and keeps strict
+		//!     abort-on-first-failure + rollback, because "keep going" is not
+		//!     compatible with restoring a live Job to its exact pre-edit state.
 		//! Both tiers report the failures in `diagnostics` (when non-null); neither
-		//! silently half-derives. (Top-level non-chunk items -- the scene header
+		//! silently half-derives.  THIS IS THE CANONICAL STATEMENT of which
+		//! `DeriveToJob` callers gate on `diagnostics` and which do not -- other
+		//! comments in Cst.cpp / Job.cpp / AgentSession.cpp reference this one
+		//! rather than restate it, so a future edit here does not have to be
+		//! chased down across copies (a prior draft of this note existed in four
+		//! places and drifted in one of them; see the bug-fix wave's own review
+		//! history if that recurs).
+		//!
+		//! Every caller that reads `diagnostics` treats a non-empty one as "the
+		//! derive failed" (the one exception -- a caller that derives but never
+		//! reads its own `diagnostics` at all -- is called out by name below, and
+		//! it is harmless for a different reason, not because it treats a failure
+		//! as success). NOT every caller discards the resulting/live Job outright
+		//! on failure -- this split predates the PASS-2 continuation change above
+		//! (it is about which callers CONSULT a possibly-partial Job, not about
+		//! break-vs-continue) and is unchanged in KIND by it, only in how complete
+		//! the partial Job those callers see can now be.
+		//!   * DISCARD ON FAILURE (the common case): `Job::LoadAsciiSceneViaCst`
+		//!     itself discards its OWN retained-Document/head-version state and
+		//!     returns false without committing them (though the Job it derived
+		//!     INTO -- `*this` -- keeps whatever chunks PASS-2 already applied;
+		//!     see the KEPT LIVE BUT LOUD bucket below for what its own callers
+		//!     then choose to do with that); every DRY-RUN derive into a
+		//!     throwaway/staging `Job` gated before a commit (`Job::
+		//!     DeriveEditedCstDocument_`'s P1-A root gate, `Job::
+		//!     RederiveCstDocumentFull_`'s own dry-run, `Job::
+		//!     RederiveCstWithVariant`'s own dry-run) discards that throwaway
+		//!     Job outright.
+		//!   * DOES NOT DISCARD -- keeps mutating/consulting a Job whose SAME
+		//!     derive diagnosed:
+		//!       - `AgentSession::FindUnacknowledgedNullGeometryEmitters_` derives
+		//!         into a throwaway `Job` and then scans its realized objects as a
+		//!         best-effort lint REGARDLESS of `diagnostics` (by design -- its
+		//!         own header says "an inconclusive derive fails OPEN") -- and it
+		//!         is the one caller that reads NEITHER: its local `diagnostics`
+		//!         out-param is never even inspected, let alone surfaced.  Harmless
+		//!         anyway, because the throwaway `Job` is released before the
+		//!         function returns -- only the finding list crosses back out, not
+		//!         `diagnostics` or the Job.  `AgentSession::ValidateText`'s (b2)
+		//!         null-geometry-emitter walk does the same throwaway-derive-and-
+		//!         scan, but IT does read `diagnostics` afterward and separately
+		//!         surfaces it as Error `AgentDiagnostic`s -- that surfacing claim
+		//!         is ValidateText's alone, not FindUnacknowledgedNullGeometryEmitters_'s.
+		//!       - `Job::RederiveCstDocumentFull_`'s COMMITTING derive (the one
+		//!         AFTER `ClearAll()`, into the live `*this`) and
+		//!         `Job::RederiveCstWithVariant`'s COMMITTING derive (same shape)
+		//!         can each, in the rare case their OWN preceding dry-run passed
+		//!         but this second derive still fails, leave that partial result
+		//!         LIVE with no rollback -- `RederiveCstDocumentFull_`'s own doc
+		//!         comment says so explicitly (its return-code contract: "3 = ...
+		//!         the edit FAILED... managers still replaced -> caller MUST
+		//!         rebind"); `RederiveCstWithVariant`'s comments do not carry the
+		//!         equivalent statement, though its code takes the same shape.
+		//!         `RederiveCstDocumentFull_` additionally still pushes that
+		//!         partial Job's framestore to the rasterizers on this path;
+		//!         `RederiveCstWithVariant` does not (it returns before reaching
+		//!         its own framestore-push call).
+		//!   * KEPT LIVE BUT LOUD -- a caller ONE LEVEL ABOVE `Job::
+		//!     LoadAsciiSceneViaCst` that chooses, on its `false` return, to keep
+		//!     consuming the SAME (already-partially-applied) `Job` rather than
+		//!     discarding or re-creating it (bug-fix wave, 2026-08-28, fix 4):
+		//!     `commandconsole.cpp`'s two `sceneArg` load sites print a prominent
+		//!     "PARTIAL SCENE" console banner and then fall through to the
+		//!     interactive console loop anyway -- rendering a partial scene is
+		//!     legitimate author debugging, and continuing makes the partial Job
+		//!     MORE useful, but it must not be mistaken for a clean load.  Contrast
+		//!     `DoPerformanceRating` (same file), which instead ABORTS the process
+		//!     on the same `false` -- a performance number computed by rasterizing
+		//!     a partial scene would look like a valid rating and is not one.
+		//!     `risempi.cpp`'s load site carries the same banner (rank 0).  The
+		//!     interactive console's `load <file>` command is in this bucket too
+		//!     but with only the generic per-command "command failure" message --
+		//!     accepted: it does say failure, just not the full banner (round-4
+		//!     review, P3).
+		//! Continuing past a PASS-2 failure means every one of the "does not
+		//! discard" Jobs above (and now the "kept live but loud" one) can now be
+		//! MORE complete than before (more chunks got a chance to apply) -- never
+		//! less honest, since every chunk that failed is still diagnosed exactly
+		//! as it was; a NEW caller that would keep and use a diagnosed Job should
+		//! read this list first. (Top-level non-chunk items -- the scene header
 		//! strays / trivia -- are skipped; they carry no Job state.)
 		//!
 		//! D35 record-during-derive (slice 1, §8): when `outRecorded` is non-null, the derive
-		//! RESETS it at entry (it reflects THIS derive only -- empty on a refused/failed derive --
-		//! so a reused or caller-supplied graph is never mixed with stale state), then RECORDS the
+		//! RESETS it at entry (it reflects THIS derive only, never a reused or caller-supplied
+		//! graph's stale state) -- empty on a PASS-1 REFUSE-ALL (nothing was ever applied to
+		//! record), but NOT necessarily empty on a PASS-2 failure: every chunk that DID apply
+		//! before, between, or after a failing one (PASS-2 keeps going -- see above) still
+		//! records its productions/resolutions, so a failed derive's graph can cover most of
+		//! the document.  Then RECORDS the
 		//! reference graph from the engine's ACTUAL resolution -- it brackets each chunk's Finalize
 		//! and captures every entity the chunk PRODUCES (manager AddItem) and RESOLVES (manager
 		//! GetItem), then writes `(producer -> consumer)` reverse-adjacency into
@@ -321,7 +438,13 @@ namespace RISE
 		//! Covers `GenericManager`-backed entities AND participating media (slice 2 hooks the
 		//! Job's separate `mediaMap` -- `Add*Medium` + `SetObjectInteriorMedium`/`SetGlobalMedium`
 		//! -- since media bypass the GenericManager chokepoint).
-		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr, ReferenceGraph* outRecorded = nullptr, const char* activeVariantOverride = nullptr );
+		//!
+		//! `warnDeprecated` (DL-323 follow-through): when true, log ONE eLog_Warning per DEPRECATED chunk type
+		//! applied (see ChunkDescriptor::deprecated).  Default FALSE, and only `Job::LoadAsciiSceneViaCst` -- the
+		//! real scene load -- passes true: every other caller (agent dry-run / staging / gate derives on a throwaway
+		//! Job, `Job::DeriveEditedCstDocument_`, the full re-derives after an edit or a variant switch) re-derives
+		//! a scene the author was already told about, so warning there would repeat the notice on every edit.
+		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr, ReferenceGraph* outRecorded = nullptr, const char* activeVariantOverride = nullptr, bool warnDeprecated = false );
 
 		//! Incrementally re-apply ONLY a closure (DocEditClosure) into an
 		//! already-derived Job after an edit, instead of a full DeriveToJob: it recreates
@@ -470,6 +593,103 @@ namespace RISE
 		bool DocByteRangeOfParam( const Document& doc, NodeId chunkId, const std::string& role,
 		                          int occ, size_t* outOffset, size_t* outLength );
 
+		//! Value of param `role` on `chunk` AS THE PARSER WILL READ IT -- on a
+		//! REPEATED param the LAST occurrence wins.  That is not a preference: the
+		//! descriptor-driven parser's non-repeatable branch is
+		//! `ParseStateBag::SetSingle`, an unconditional `mSingles[key] = value`
+		//! (ChunkParserRegistry.cpp), and the file-local `ParamValue` every derive
+		//! reads through implements the same rule -- so `geometry none` followed by
+		//! `geometry gv` derives an object bound to `gv`.  Nothing in the stack
+		//! refuses such a duplicate, so any reader that has to agree with the LIVE
+		//! scene (the editor's properties panel, an agent predicate about what the
+		//! text means) must ask THIS question.
+		//!
+		//! Multi-token values (`color 1 0 0`) are joined exactly as ParamNodeValue
+		//! joins them -- every kid from the first `pvalue` Token to the end of the
+		//! Param, Trivia included -- so a tuple reads back as "1 0 0", never "1" or
+		//! "100".  Separating / trailing trivia rides along; compare on a trimmed
+		//! copy when matching a bare word.
+		//!
+		//! `*outPresent` (if non-null) reports whether the param appears AT ALL,
+		//! distinct from "present but empty".  DELIBERATELY NOT the same question as
+		//! "which occurrence does an occ=N edit address" -- that one is answered by
+		//! ParamValueAtOccurrence below, whose call sites implement the editor's
+		//! capture/restore convention.  Do not substitute one for the other.
+		//! O(chunk kids).
+		std::string ParamValueAsParsed( const NodeRef& chunk, const std::string& role,
+		                                bool* outPresent = nullptr );
+
+		//! Canonical value join for an already-selected Param node. Use this
+		//! inside a chunk's child walk instead of rescanning by occurrence.
+		//! Empty for null/non-Param nodes. O(param children + value bytes);
+		//! childVisits, if supplied, accumulates the actual child visits.
+		std::string ParamValueOfNode( const NodeRef& param, size_t* childVisits = nullptr );
+
+		//! Object Graph slice (SceneEditController.cpp): evaluate a
+		//! `standard_object`'s `count_u`/`count_v` EXACTLY the way the
+		//! derive-time source-instancing expander does (Cst.cpp's own
+		//! `EvalInstanceCount`/`EvalInstanceValue` -- private to that
+		//! translation unit; this is the sanctioned public seam onto them,
+		//! not a re-implementation of their arithmetic). Both are evaluated
+		//! with `i`/`j`/`u`/`v` fixed at 0 (a count cannot itself vary
+		//! per-repetition -- it DEFINES the repetition), against `doc`'s OWN
+		//! `let` bindings (re-collected here -- cheap, one document-wide
+		//! `let` scan, the SAME one `DeriveToJob` itself pays once per
+		//! derive).
+		//!
+		//! Returns FALSE -- leaving `outCountU`/`outCountV` at 1 -- when
+		//! `chunk` carries no `count_u` at all (not a repeat chunk: PRESENCE
+		//! selects the repeated form, per that param's own descriptor
+		//! comment), OR when evaluation fails (a malformed `expr(...)`, an
+		//! out-of-range/fractional count). Both of THOSE failures are
+		//! already refused at scene-LOAD time by `DeriveToJob`'s own
+		//! validation pass, so a caller querying an already-loaded document
+		//! should never observe the second reason in practice -- the FALSE
+		//! return exists mainly for a hostile/synthetic document handed to
+		//! this directly, the same posture every other PURE Cst query in
+		//! this header takes. A caller that needs to tell the two refusal
+		//! reasons apart should read `count_u`'s own presence via
+		//! `ParamValueAsParsed` first.
+		//!
+		//! `count_v`'s ABSENCE (with `count_u` present) is NOT a failure --
+		//! `count_v` defaults to 1 (that param's own descriptor comment), so
+		//! `outCountV` is 1 whenever `count_v` is not authored, exactly
+		//! matching what the real expansion derives.
+		bool EvaluateObjectRepeatCounts( const Document& doc, const NodeRef& chunk,
+		                                  int& outCountU, int& outCountV );
+
+		//! Value of the `occ`-th Param named `role` on `chunk`, counted from the
+		//! FRONT (0 = first) -- the SAME counting convention every occurrence-
+		//! addressed WRITE uses (WithParamValue / WithParamRemovedOcc, hence
+		//! DocSetOrAddParamValue / DocRemoveParamOcc).  Multi-token values are
+		//! joined exactly as ParamValueAsParsed joins them (ParamNodeValue: every
+		//! kid from the first `pvalue` Token to the end of the Param, Trivia
+		//! included), so `stop 0 0.1 0.2 0.3` reads back whole rather than as its
+		//! first token -- the historical truncation bug on the capture side of an
+		//! undo pair.
+		//!
+		//! This is the READ half of an occurrence-addressed edit: a caller that
+		//! captures a prior value for an `occ`-th write MUST read through here, or
+		//! capture and write address different lines and Undo restores the wrong
+		//! one.  Do NOT reach for ParamValueAsParsed there -- it answers "what does
+		//! the PARSE see" (last occurrence wins), a different question that only
+		//! coincides when the param appears once.
+		//!
+		//! `*outPresent` (if non-null) reports whether an `occ`-th occurrence
+		//! exists at all, distinct from "exists but empty".  Returns the empty
+		//! string (and present = false) for a null chunk, a negative `occ`, or an
+		//! `occ` past the occurrence count.  O(chunk kids).
+		std::string ParamValueAtOccurrence( const NodeRef& chunk, const std::string& role,
+		                                    int occ, bool* outPresent = nullptr );
+
+		//! How many Params named `role` the chunk carries.  `> 1` on a param the
+		//! chunk's descriptor declares NON-repeatable is a malformed-but-accepted
+		//! document: every occurrence except the last is dead text, and the
+		//! occurrence a reader sees depends on which end it counts from -- the
+		//! condition ParamValueAsParsed exists to read correctly and that the edit
+		//! path refuses to write into.  0 when absent (or `chunk` is null).
+		int ParamOccurrenceCount( const NodeRef& chunk, const std::string& role );
+
 		//! Replace top-level item `index` with `newItem` (path-copy: O(log N) new
 		//! sequence nodes, the rest shared by pointer; aggregates recomputed along
 		//! the spine). `*visits` (if non-null) receives the rebuilt-node count.
@@ -566,6 +786,21 @@ namespace RISE
 		//! uses the one canonical construction instead of re-deriving it.
 		std::string ChunkNamePath( const NodeRef& item );
 
+		//! The directed advice for a chunk keyword a PAST RELEASE of RISE
+		//! accepted and that has since been REMOVED (the `kRetiredChunks`
+		//! table in Cst.cpp), or null when `kw` names no chunk RISE ever
+		//! had.  ResolveChunkParams (this file) is the CST derive's own
+		//! consumer, appending it to "chunk type 'X' has been removed -- "
+		//! to build the diagnostic; exposed here so the two OTHER surfaces
+		//! that resolve a chunk keyword against the registry -- SchemaGen's
+		//! describe_chunk/read_schema and AgentSession's insert_chunk
+		//! near-miss analyser -- can surface the SAME directed message
+		//! instead of leaving a removed keyword to their generic "unknown
+		//! chunk type" / near-miss-by-edit-distance path (which a keyword
+		//! like `bumpmap_modifier` -> `relief_modifier` is far too different
+		//! from its replacement's name to ever rank).
+		const char* RetiredChunkAdvice( const std::string& kw );
+
 		//! Resolve a name-path (e.g. "sphere_geometry/s") to its NodeId, REQUIRING a
 		//! unique occurrence: returns the id iff exactly one chunk has that name-path,
 		//! else 0. `*occurrences` (if non-null) receives the count (0 = absent,
@@ -594,6 +829,24 @@ namespace RISE
 		//! kind constraint is supplied (so "1 chunk named x exists but it is the wrong kind" reports 0 =
 		//! not-found, never "ambiguous"), and the raw bare-name count when the suffix is empty.
 		NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences = nullptr, const std::string& roleKindSuffix = std::string(), bool uniqueFallback = false );
+
+		//! Which chunk actually DECIDES `role` for the object `chunkId` names -- `chunkId` itself, or the LAST
+		//! same-named `override_object` when one exists.  An `override_object` is applied AFTER the chunk that
+		//! created the object and REPLACES the transform fields it names, so a transform written to the base
+		//! chunk is overwritten by the very next derive: the edit lands in the Document, the call reports
+		//! SUCCESS, and the object does not move.  Every site that reads or writes an object transform through
+		//! the Document has to ask this question, and they must all get the SAME answer -- a writer that walks
+		//! while its prior-value capture or its Undo does not is the same silent defect one layer up.
+		//!
+		//! Answers `chunkId` unchanged (never 0) for everything else: a non-transform `role`, a chunk that is
+		//! not ChunkCategory::Object (a light also has a `position`, and nothing in a light chunk outranks it),
+		//! an UNNAMED chunk (an override targets its object BY NAME), a chunk that IS an `override_object`
+		//! (a caller that named one directly must not be redirected to a different one), and the ordinary case
+		//! of no override at all.  `*outIsObjectTransform` (optional) reports whether this was an
+		//! object-transform edit at all -- true even when no override exists -- which is what a caller needs to
+		//! decide whether the chunk's matrix > quaternion > per-field precedence applies to its write.
+		//! O(N) scan of the top-level items, taken only on the transform roles; discrete edits, not per-frame.
+		NodeId DocTransformOwnerId( const Document& doc, NodeId chunkId, const std::string& role, bool* outIsObjectTransform = nullptr );
 
 		//! True iff chunk keyword `role` satisfies the kind constraint `roleKindSuffix` -- the ONE narrowing
 		//! predicate DocFindByNameAnyRole enforces, exposed so defensive re-verification sites (e.g. the
@@ -895,6 +1148,16 @@ namespace RISE
 		//! insert -- the Undo was only ever asked to revert its own occurrence.  No-op (returns `doc` unchanged)
 		//! if the chunk or the `occ`-th occurrence is absent.
 		Document DocRemoveParamOcc( const Document& doc, NodeId chunkId, const std::string& role, int occ, int* visits = nullptr );
+
+		//! Undo fidelity (2026-10-17): replace top-level chunk `chunkId` with the chunk `newText` spells -- BYTE FOR
+		//! BYTE, every line keeping its own spacing and position -- but ONLY when the chunk currently serializes to
+		//! exactly `expectText`.  A param write re-spells the line it touches (single-spaced values) and re-adds a
+		//! stripped param at the END of the chunk, so an undo that replays values cannot give an earlier record its
+		//! exact bytes back; an undo that swaps the whole chunk can, whenever nothing else touched the chunk since.
+		//! `newText` must parse to exactly one chunk that serializes back to itself.  The chunk NodeId is preserved
+		//! (DocReplaceItem).  `*replaced` (if non-null) reports whether the swap happened; when it did not, `doc` is
+		//! returned unchanged.
+		Document DocReplaceChunkIfText( const Document& doc, NodeId chunkId, const std::string& expectText, const std::string& newText, bool* replaced = nullptr );
 
 		//! RENAME a chunk (item 7, the D14 driver): set the chunk's `name` to
 		//! `newName` AND rewrite every referrer's value to `newName`, found from the

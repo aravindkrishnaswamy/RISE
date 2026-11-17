@@ -218,6 +218,7 @@ omni_light
 	name				l001
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 50
 }
 
@@ -226,6 +227,7 @@ omni_light
 	name				l002
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 150
 }
 
@@ -234,6 +236,7 @@ omni_light
 	name				l003
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 250
 }
 
@@ -242,6 +245,7 @@ omni_light
 	name				l004
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 350
 }
 
@@ -250,6 +254,7 @@ omni_light
 	name				l005
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 450
 }
 
@@ -258,6 +263,7 @@ omni_light
 	name				l006
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 550
 }
 
@@ -266,6 +272,7 @@ omni_light
 	name				l007
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 650
 }
 
@@ -274,6 +281,7 @@ omni_light
 	name				l008
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 750
 }
 
@@ -282,6 +290,7 @@ omni_light
 	name				l009
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 850
 }
 
@@ -290,6 +299,7 @@ omni_light
 	name				l010
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 950
 }
 
@@ -298,6 +308,7 @@ omni_light
 	name				l011
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 1050
 }
 
@@ -306,6 +317,7 @@ omni_light
 	name				l012
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 1150
 }
 
@@ -314,6 +326,7 @@ omni_light
 	name				l013
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 1250
 }
 
@@ -322,6 +335,7 @@ omni_light
 	name				l014
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 1350
 }
 
@@ -330,6 +344,7 @@ omni_light
 	name				l015
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 1450
 }
 
@@ -338,6 +353,7 @@ omni_light
 	name				l016
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 1550
 }
 
@@ -346,6 +362,7 @@ omni_light
 	name				l017
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 1650
 }
 
@@ -354,6 +371,7 @@ omni_light
 	name				l018
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 1750
 }
 
@@ -362,6 +380,7 @@ omni_light
 	name				l019
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 1850
 }
 
@@ -370,6 +389,7 @@ omni_light
 	name				l020
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 1950
 }
 
@@ -378,6 +398,7 @@ omni_light
 	name				l021
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 2050
 }
 
@@ -386,6 +407,7 @@ omni_light
 	name				l022
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 2150
 }
 
@@ -394,6 +416,7 @@ omni_light
 	name				l023
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 2250
 }
 
@@ -402,6 +425,7 @@ omni_light
 	name				l024
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 2350
 }
 
@@ -410,6 +434,7 @@ omni_light
 	name				l025
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 2450
 }
 
@@ -418,6 +443,7 @@ omni_light
 	name				l026
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 2550
 }
 
@@ -426,6 +452,7 @@ omni_light
 	name				l027
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 2650
 }
 
@@ -434,6 +461,7 @@ omni_light
 	name				l028
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 2750
 }
 
@@ -442,6 +470,7 @@ omni_light
 	name				l029
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 2850
 }
 
@@ -450,6 +479,7 @@ omni_light
 	name				l030
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 2950
 }
 
@@ -458,6 +488,7 @@ omni_light
 	name				l031
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 3050
 }
 
@@ -466,6 +497,7 @@ omni_light
 	name				l032
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 3150
 }
 
@@ -474,6 +506,7 @@ omni_light
 	name				l033
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 3250
 }
 
@@ -482,6 +515,7 @@ omni_light
 	name				l034
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 3350
 }
 
@@ -490,6 +524,7 @@ omni_light
 	name				l035
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 3450
 }
 
@@ -498,6 +533,7 @@ omni_light
 	name				l036
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 3550
 }
 
@@ -506,6 +542,7 @@ omni_light
 	name				l037
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 3650
 }
 
@@ -514,6 +551,7 @@ omni_light
 	name				l038
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 3750
 }
 
@@ -522,6 +560,7 @@ omni_light
 	name				l039
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 3850
 }
 
@@ -530,6 +569,7 @@ omni_light
 	name				l040
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 3950
 }
 
@@ -538,6 +578,7 @@ omni_light
 	name				l041
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 4050
 }
 
@@ -546,6 +587,7 @@ omni_light
 	name				l042
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 4150
 }
 
@@ -554,6 +596,7 @@ omni_light
 	name				l043
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 4250
 }
 
@@ -562,6 +605,7 @@ omni_light
 	name				l044
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 4350
 }
 
@@ -570,6 +614,7 @@ omni_light
 	name				l045
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 4450
 }
 
@@ -578,6 +623,7 @@ omni_light
 	name				l046
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 4550
 }
 
@@ -586,6 +632,7 @@ omni_light
 	name				l047
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 4650
 }
 
@@ -594,6 +641,7 @@ omni_light
 	name				l048
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 4750
 }
 
@@ -602,6 +650,7 @@ omni_light
 	name				l049
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 4850
 }
 
@@ -610,6 +659,7 @@ omni_light
 	name				l050
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 4950
 }
 
@@ -618,6 +668,7 @@ omni_light
 	name				l051
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 5050
 }
 
@@ -626,6 +677,7 @@ omni_light
 	name				l052
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 5150
 }
 
@@ -634,6 +686,7 @@ omni_light
 	name				l053
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 5250
 }
 
@@ -642,6 +695,7 @@ omni_light
 	name				l054
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 5350
 }
 
@@ -650,6 +704,7 @@ omni_light
 	name				l055
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 5450
 }
 
@@ -658,6 +713,7 @@ omni_light
 	name				l056
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 5550
 }
 
@@ -666,6 +722,7 @@ omni_light
 	name				l057
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 5650
 }
 
@@ -674,6 +731,7 @@ omni_light
 	name				l058
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 5750
 }
 
@@ -682,6 +740,7 @@ omni_light
 	name				l059
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 5850
 }
 
@@ -690,6 +749,7 @@ omni_light
 	name				l060
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 5950
 }
 
@@ -698,6 +758,7 @@ omni_light
 	name				l061
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 6050
 }
 
@@ -706,6 +767,7 @@ omni_light
 	name				l062
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 6150
 }
 
@@ -714,6 +776,7 @@ omni_light
 	name				l063
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 6250
 }
 
@@ -722,6 +785,7 @@ omni_light
 	name				l064
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 6350
 }
 
@@ -730,6 +794,7 @@ omni_light
 	name				l065
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 6450
 }
 
@@ -738,6 +803,7 @@ omni_light
 	name				l066
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 6550
 }
 
@@ -746,6 +812,7 @@ omni_light
 	name				l067
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 6650
 }
 
@@ -754,6 +821,7 @@ omni_light
 	name				l068
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 6750
 }
 
@@ -762,6 +830,7 @@ omni_light
 	name				l069
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 6850
 }
 
@@ -770,6 +839,7 @@ omni_light
 	name				l070
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 6950
 }
 
@@ -778,6 +848,7 @@ omni_light
 	name				l071
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 7050
 }
 
@@ -786,6 +857,7 @@ omni_light
 	name				l072
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 7150
 }
 
@@ -794,6 +866,7 @@ omni_light
 	name				l073
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 7250
 }
 
@@ -802,6 +875,7 @@ omni_light
 	name				l074
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 7350
 }
 
@@ -810,6 +884,7 @@ omni_light
 	name				l075
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 7450
 }
 
@@ -818,6 +893,7 @@ omni_light
 	name				l076
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 7550
 }
 
@@ -826,6 +902,7 @@ omni_light
 	name				l077
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 7650
 }
 
@@ -834,6 +911,7 @@ omni_light
 	name				l078
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 7750
 }
 
@@ -842,6 +920,7 @@ omni_light
 	name				l079
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 7850
 }
 
@@ -850,6 +929,7 @@ omni_light
 	name				l080
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 7950
 }
 
@@ -858,6 +938,7 @@ omni_light
 	name				l081
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 8050
 }
 
@@ -866,6 +947,7 @@ omni_light
 	name				l082
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 8150
 }
 
@@ -874,6 +956,7 @@ omni_light
 	name				l083
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 8250
 }
 
@@ -882,6 +965,7 @@ omni_light
 	name				l084
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 8350
 }
 
@@ -890,6 +974,7 @@ omni_light
 	name				l085
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 8450
 }
 
@@ -898,6 +983,7 @@ omni_light
 	name				l086
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 8550
 }
 
@@ -906,6 +992,7 @@ omni_light
 	name				l087
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 8650
 }
 
@@ -914,6 +1001,7 @@ omni_light
 	name				l088
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 8750
 }
 
@@ -922,6 +1010,7 @@ omni_light
 	name				l089
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 8850
 }
 
@@ -930,6 +1019,7 @@ omni_light
 	name				l090
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 8950
 }
 
@@ -938,6 +1028,7 @@ omni_light
 	name				l091
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 9050
 }
 
@@ -946,6 +1037,7 @@ omni_light
 	name				l092
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 9150
 }
 
@@ -954,6 +1046,7 @@ omni_light
 	name				l093
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 9250
 }
 
@@ -962,6 +1055,7 @@ omni_light
 	name				l094
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 9350
 }
 
@@ -970,6 +1064,7 @@ omni_light
 	name				l095
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 9450
 }
 
@@ -978,6 +1073,7 @@ omni_light
 	name				l096
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 9550
 }
 
@@ -986,6 +1082,7 @@ omni_light
 	name				l097
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 9650
 }
 
@@ -994,6 +1091,7 @@ omni_light
 	name				l098
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 9750
 }
 
@@ -1002,6 +1100,7 @@ omni_light
 	name				l099
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 9850
 }
 
@@ -1010,6 +1109,7 @@ omni_light
 	name				l100
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 9950
 }
 

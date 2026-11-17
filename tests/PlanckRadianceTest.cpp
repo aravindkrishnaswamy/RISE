@@ -143,6 +143,17 @@ static RayIntersectionGeometric MakeDummyIntersection()
 	return RayIntersectionGeometric( Ray(), nullRasterizerState );
 }
 
+// The painter follows master's legacy constants and per-metre exitance
+// convention (SpectralPainterScaleTest pins it); the fire medium instead
+// calls the shared PlanckSpectralRadianceNM kernel directly.
+static Scalar LegacyPainterExitancePerMetre( const Scalar T, const Scalar lambdaMetres )
+{
+	const Scalar c = 2.99792458e8, h = 6.6260755e-34, k = 1.380658e-23;
+	const Scalar C1 = TWO_PI * h * c * c;
+	const Scalar C2 = ( h * c ) / k;
+	return C1 / std::pow( lambdaMetres, 5.0 ) / ( std::exp( C2 / ( lambdaMetres * T ) ) - 1.0 );
+}
+
 static void TestBlackBodyPainterBoundaryAndNormalization()
 {
 	const RayIntersectionGeometric ri = MakeDummyIntersection();
@@ -152,18 +163,18 @@ static void TestBlackBodyPainterBoundaryAndNormalization()
 		&absolutePainter, 1800.0, 400.0, 700.0, 3, false, 2.0 ) && absolutePainter,
 		"absolute blackbody painter is created" );
 	if( absolutePainter ) {
-		const Scalar expected = 2.0 * PI * 1e9 *
-			PlanckSpectralRadianceNM( 500.0, 1800.0 );
+		const Scalar expected = 2.0 * LegacyPainterExitancePerMetre( 1800.0, 500.0e-9 );
 		Check( IsRelativeClose( absolutePainter->GetColorNM( ri, 500.0 ), expected, 1e-12 ),
-			"blackbody painter converts shared per-nm radiance to per-metre exitance" );
+			"blackbody painter uses master's legacy-constant per-metre exitance" );
 		const SpectralPacket spectrum = absolutePainter->GetSpectrum( ri );
 		Check( IsRelativeClose( spectrum.ValueAtNM( 500.0 ), expected, 1e-12 ),
-			"blackbody packet uses the same shared-kernel boundary conversion" );
+			"blackbody packet uses the same legacy-constant exitance convention" );
 		absolutePainter->release();
 	}
 
-	static const Scalar wienDisplacementNMKelvin = 2.897771955e6;
-	const Scalar temperature = wienDisplacementNMKelvin / 500.0;
+	// Master's painter normalises at the Wien peak 0.0029 / T metres.
+	static const Scalar legacyWienNMKelvin = 2.9e6;
+	const Scalar temperature = legacyWienNMKelvin / 500.0;
 	IPainter* normalizedPainter = 0;
 	Check( RISE_API_CreateBlackBodyPainter(
 		&normalizedPainter, temperature, 400.0, 700.0, 3, true, 2.0 ) && normalizedPainter,
@@ -187,8 +198,9 @@ static void TestBlackBodyPainterBoundaryAndNormalization()
 	}
 
 	const GuardedSpectralPacket guardedSpectrum( 400.0, 700.0, 3 );
-	Check( guardedSpectrum.ValueAtNM( 700.0 ) == 0.0,
-		"spectral packet upper endpoint is outside its stored bins" );
+	// Master's convention (pinned by SpectralPainterScaleTest): the upper endpoint is included in the last bin.
+	Check( guardedSpectrum.ValueAtNM( 700.0 ) == 3.0,
+		"spectral packet upper endpoint is inside its last stored bin" );
 
 	const GuardedSpectralPacket roundoffSpectrum( 0.0, 0.1, 3 );
 	const Scalar lastInteriorWavelength = std::nextafter( 0.1, 0.0 );
@@ -228,8 +240,10 @@ static void TestSpectralPacketAssignmentUpdatesRange()
 		"fixed spectral packet self-assignment returns the original packet" );
 	Check( fixedPacket.ValueAtNM( 380 ) == 7.0,
 		"fixed spectral packet self-assignment preserves amplitudes" );
-	Check( fixedPacket.ValueAtNM( 780 ) == 0.0,
-		"fixed spectral packet upper endpoint is outside its stored bins" );
+	// Master's convention (pinned by SpectralPainterScaleTest): 780 nm belongs to the last bin.
+	fixedPacket.SetIndex( 39, 5.0 );
+	Check( fixedPacket.ValueAtNM( 780 ) == 5.0,
+		"fixed spectral packet upper endpoint is inside its last stored bin" );
 }
 
 int main()

@@ -30,6 +30,31 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		// Borrowed per-hit interface inputs shared by GGX evaluation and sampling.
+		// This is macro-interface Fresnel, not integrated rough-GGX reflectance.
+		struct GGXInterfaceFresnel
+		{
+			const RayIntersectionGeometric& ri;
+			FresnelMode mode;
+			const IPainter& specular;
+			const IScalarPainter& ior;
+			const IScalarPainter& extinction;
+			const IScalarPainter* filmIOR;
+			const IScalarPainter* filmExtinction;
+			const IScalarPainter* filmThickness;
+
+			RISEPel Directional( Scalar cosine ) const;
+			Scalar DirectionalNM( Scalar cosine, Scalar nm ) const;
+			RISEPel Mean() const;
+			Scalar MeanNM( Scalar nm ) const;
+
+			template<class T> static T Transmission( const T& incoming, const T& outgoing )
+			{
+				// Single entry and exit; deliberately no diffuse recycling.
+				return (T(1.0) - incoming) * (T(1.0) - outgoing);
+			}
+		};
+
 		class GGXBRDF :
 			public virtual IBSDF,
 			public virtual Reference
@@ -57,6 +82,15 @@ namespace RISE
 			//! the painter is sampled per-shading-point so a
 			//! texture or procedural can drive the rotation.
 			const IPainter* pTangentRotation;
+			//! DL-16: optional Scalar-pipe alias for the same angle.
+			//! Preferred over `pTangentRotation` when both are non-null
+			//! (see `ResolveTangentONB`) -- `tangent_rotation` is a
+			//! physical scalar by MEANING and the Color-pipe binding
+			//! above is the documented pre-DL-16 oddball, kept working
+			//! but deprecated.  nullptr = not bound via the Scalar pipe
+			//! (every pre-DL-16 site falls back to `pTangentRotation`,
+			//! matching prior behaviour bit-identically).
+			const IScalarPainter* pTangentRotationScalar;
 			//! Thin-film (eFresnelThinFilmConductor) FILM slots — the
 			//! oxide layer of the air/oxide/metal stack.  Physical
 			//! scalars (no JH uplift): film n, film k, film thickness
@@ -68,6 +102,10 @@ namespace RISE
 			const IScalarPainter*	pFilmIOR;
 			const IScalarPainter*	pFilmExtinction;
 			const IScalarPainter*	pFilmThickness;
+
+		private:
+			bool SingleScatterRGB( const Vector3& vLightIn, const RayIntersectionGeometric& ri, RISEPel& singleOut ) const;
+			bool SingleScatterNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, Scalar& singleOut ) const;
 
 		public:
 			GGXBRDF(
@@ -81,12 +119,18 @@ namespace RISE
 				const IPainter* tangent_rotation = nullptr,
 				const IScalarPainter* film_ior = nullptr,
 				const IScalarPainter* film_extinction = nullptr,
-				const IScalarPainter* film_thickness = nullptr
+				const IScalarPainter* film_thickness = nullptr,
+				const IScalarPainter* tangent_rotation_scalar = nullptr	///< DL-16: Scalar-pipe alias, preferred over `tangent_rotation` when both bound.
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			//! DL-481 (IBSDF::valueByScatterType): reflection = single-scatter specular, diffuse = diffuse + multiscatter.
+			virtual bool valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* pIORStack, RISEPel out[5] ) const;
+			virtual bool valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* pIORStack, Scalar out[5] ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+			virtual bool hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const;
+			virtual bool hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const;
 
 			//! Read-back + rebind for the interactive editor.  Material
 			//! forwards to BOTH the BRDF and SPF in lockstep so they
@@ -113,6 +157,9 @@ namespace RISE
 			//! anisotropy); nullable.  Read-back for the snapshot clone so a
 			//! GGX clone keeps the same anisotropic tangent orientation.
 			inline const IPainter*       GetTangentRotation() const { return pTangentRotation; }
+			//! DL-16: Scalar-pipe alias read-back (nullable); see
+			//! `pTangentRotationScalar` above.
+			inline const IScalarPainter* GetTangentRotationScalar() const { return pTangentRotationScalar; }
 			void SetDiffuse( const IPainter& v );
 			void SetSpecular( const IPainter& v );
 			void SetAlphaX( const IScalarPainter& v );

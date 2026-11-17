@@ -17,6 +17,7 @@
 #include "../Library/RISE_API.h"
 #include "../Library/DetectorSpheres/IsotropicRGBDetectorSphere.h"
 #include "../Library/Parsers/StdOutProgress.h"
+#include "../Library/Utilities/DiskFileWriteBuffer.h"
 #include <string.h>
 
 using namespace RISE;
@@ -107,8 +108,13 @@ int main( int argc, char** argv )
 	}
 
 	// Now we run the virtual goniophotometer measurements for each emitter position
-	IWriteBuffer* pBuffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &pBuffer, outfile );
+	auto* pBuffer = new Implementation::DiskFileWriteBuffer( outfile );
+	if( !pBuffer->ReadyToWrite() ) {
+		safe_release( pBuffer );
+		delete pDetector;
+		safe_release( pMaterial );
+		return 1;
+	}
 
 	// Marker for a data driven BSDF file
 	pBuffer->setInt( 0xBDF );
@@ -163,5 +169,9 @@ int main( int argc, char** argv )
 		}
 	}
 
+	const bool saved = pBuffer->Finish( true );
 	pBuffer->release();
+	delete pDetector;
+	safe_release( pMaterial );
+	return saved ? 0 : 1;
 }

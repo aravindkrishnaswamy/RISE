@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the SIXTEEN provider-neutral tool definitions -- fifteen are
+//    (1) the THIRTY-SIX provider-neutral tool definitions -- thirty-five are
 //        1:1 with the AgentRpc verbs (parameter names/shapes mirror
 //        AgentRpc.cpp); `ask_user` is the one CHAT-LOOP-ONLY exception
 //        -- it has no AgentRpc verb and no AgentMcpAdapter tool, it is
@@ -25,8 +25,11 @@
 #include "pch.h"
 #include "AgentChatCodecs.h"
 
+#include "Base64.h"   // Arc 77 Phase 2: decode a provider's base64 image payload
+#include "ChatHttpTransport.h"   // GUI wiring (2026-08-11): IChatHttpTransport -- MakeChatImageGenerator's transport seam
 #include "Json.h"
 
+#include <cstdlib>   // getenv -- ONLY for the RISE_IMAGE_* endpoint/model/size overrides (config, not credentials; see ImageEnvOr_)
 #include <cstring>
 #include <map>
 #include <string>
@@ -165,7 +168,12 @@ namespace RISE
 					"propose_patch",
 					"Set one parameter of one named scene entity (the ONLY way to change "
 					"a PARAMETER; insert_chunk/remove_chunk add and delete whole "
-					"entities). Always pass the headVersion you last read as "
+					"entities). To edit ONE line of a REPEATABLE param (skeleton_geometry's "
+					"`joint`, sdf_geometry's `part` -- a chunk with many `joint`/`part` "
+					"lines), pass `occurrence` (0-based, document order) naming which one; "
+					"without it every patch targets occurrence 0 regardless of intent, "
+					"which is why rewriting joint #12 of a 23-joint skeleton by `param` "
+					"alone either silently edits joint #1 or fails to derive. Always pass the headVersion you last read as "
 					"baseHeadVersion. If the result has status=conflict, re-call "
 					"read_document and re-propose against the new headVersion. If "
 					"retriable=true the refusal is transient -- retry the SAME patch "
@@ -185,7 +193,13 @@ namespace RISE
 					"the parameter -- for an Enum, message lists the allowed values). An "
 					"EMPTY or missing issues list on a rejection does not mean the patch "
 					"was fine, only that this could not be statically pinned; message "
-					"still carries the engine's own diagnostic.",
+					"still carries the engine's own diagnostic. "
+					"A rasterizer chunk's own parameters are freely editable through this "
+					"verb -- including on a bdpt/mlt/auto rasterizer the USER authored -- "
+					"with exactly one exception: pinning an auto_rasterizer's or "
+					"auto_spectral_rasterizer's `integrator` to `bdpt` is refused, because "
+					"that IS selecting BDPT (`pt`, `vcm` and `auto` are all fine). See "
+					"insert_chunk for the rasterizer allowlist this belongs to.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"target\":{\"type\":\"string\",\"description\":"
 						"\"The entity NAME to edit (a chunk name from the document). For a chunk that has NO name -- the sole camera, the film, the rasterizer -- leave this EMPTY and pass `kind` instead; that is the kind-addressed singleton form. Do NOT pass the chunk keyword here as if it were a name: `target:\\\"pinhole_camera\\\"` does not resolve and is rejected.\"},"
@@ -195,6 +209,8 @@ namespace RISE
 						"\"The parameter to set (e.g. radius, color, location).\"},"
 						"\"value\":{\"type\":\"string\",\"description\":"
 						"\"The new value as scene-language text (e.g. 0.9 0.1 0.1).\"},"
+						"\"occurrence\":{\"type\":\"number\",\"description\":"
+						"\"OPTIONAL 0-based index of WHICH occurrence to edit when `param` is a REPEATABLE line on the target chunk (e.g. skeleton_geometry's `joint`, sdf_geometry's `part` -- read_document lists them in document order, so the 5th joint line is occurrence 4). Omit for a param that occurs at most once on its chunk. Out-of-range is refused, not clamped.\"},"
 						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
 						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
 						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
@@ -221,9 +237,10 @@ namespace RISE
 							"\"target\":{\"type\":\"string\",\"description\":\"The entity NAME to edit.\"},"
 							"\"kind\":{\"type\":\"string\",\"description\":\"Optional entity KIND keyword to disambiguate a name clash.\"},"
 							"\"param\":{\"type\":\"string\",\"description\":\"The parameter to set.\"},"
-							"\"value\":{\"type\":\"string\",\"description\":\"The new value as scene-language text.\"}"
+							"\"value\":{\"type\":\"string\",\"description\":\"The new value as scene-language text.\"},"
+							"\"occurrence\":{\"type\":\"number\",\"description\":\"OPTIONAL 0-based occurrence index for a REPEATABLE param -- same meaning as propose_patch's own occurrence.\"}"
 						"},\"required\":[\"target\",\"param\",\"value\"]},\"description\":"
-						"\"An array of patch objects ({target,param,value,kind?}), applied in order.\"},"
+						"\"An array of patch objects ({target,param,value,kind?,occurrence?}), applied in order.\"},"
 						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
 						"\"The headVersion from your last read_document -- checked against the FIRST element only.\","
 						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
@@ -240,7 +257,20 @@ namespace RISE
 					"positions declaration chunks (painters, materials, geometry, "
 					"shaders, media) before the objects that consume them automatically "
 					"and appends everything else at the end; a rasterizer inserted this "
-					"way becomes the ACTIVE integrator (matching save+reload). An insert "
+					"way becomes the ACTIVE integrator (matching save+reload). "
+					"RASTERIZER SELECTION IS ALLOWLISTED on this surface: you may insert "
+					"pathtracing_pel_rasterizer, pathtracing_spectral_rasterizer, "
+					"vcm_pel_rasterizer or vcm_spectral_rasterizer -- PT for general "
+					"scenes, VCM for caustic/refractive/dispersive transport. "
+					"bdpt_pel_rasterizer, bdpt_spectral_rasterizer, mlt_rasterizer, "
+					"mlt_spectral_rasterizer, auto_rasterizer and auto_spectral_rasterizer "
+					"are SPECIALIZED and are refused, with no override parameter -- only "
+					"the user selects those (in the GUI, or by authoring the chunk into "
+					"the scene file). The frozen legacy rasterizers pixelpel_rasterizer and "
+					"pixelintegratingspectral_rasterizer are refused too (material alpha "
+					"works under PT and VCM). A scene that "
+					"ALREADY contains a blocked rasterizer stays fully editable, including "
+					"that chunk's own parameters. An insert "
 					"that would leave the document unable to derive is refused cleanly. "
 					"Unnamed film and rasterizer chunks can NEVER be removed through "
 					"this surface once inserted -- insert them deliberately. The SOLE "
@@ -304,13 +334,21 @@ namespace RISE
 					"baseHeadVersion -- it is checked against the FIRST element only, since "
 					"the whole batch is one logical operation. Returns "
 					"{applied,total,results:[...]}: total is chunks.length, applied is how "
-					"many results have applied=true, and each results[i] is the EXACT same "
-					"shape insert_chunk returns for chunks[i] (applied, rawCode, status, "
+					"many results have applied=true, and each results[i] is the shape "
+					"insert_chunk returns for chunks[i] (applied, rawCode, status, "
 					"retriable, headVersion, message, name, kind, and optional issues with "
-					"the same reasons insert_chunk documents). Check every element's own "
+					"the same reasons insert_chunk documents) -- except that a clean "
+					"success (status applied, no issues, nothing to report beyond the "
+					"standard insert) carries only applied, status, headVersion, name, kind "
+					"and (inside an element window) element; any element with something to report keeps every field. Check "
+					"every element's own "
 					"status -- do not assume the whole batch succeeded just because the "
 					"call returned. Each array element must be EXACTLY ONE `keyword "
-					"{ ... }` block, same grammar as insert_chunk's chunkText.",
+					"{ ... }` block, same grammar as insert_chunk's chunkText. "
+					"The rasterizer allowlist insert_chunk documents applies here too, and "
+					"it is the ONE refusal that is NOT best-effort: a blocked rasterizer "
+					"anywhere in the array refuses the WHOLE batch atomically -- nothing "
+					"is inserted and the head version does not move.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"chunks\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
 						"\"An array of complete chunks, one keyword { ... } block per element (same grammar as insert_chunk's chunkText), applied in order. A chunk referenced by a later element must appear before it in this array -- e.g. a uniformcolor_painter chunk at index 0 followed by a lambertian_material chunk at index 1 that names it in its reflectance parameter.\"},"
@@ -327,11 +365,11 @@ namespace RISE
 					"material costs one tool call instead of hand-typing a scalar/painter graph and "
 					"choosing which slot takes a painter yourself. Families: \"weathered_wood\" "
 					"(pbr_metallic_roughness, base_color AND roughness both bound to a domainwarp3d wood-"
-					"grain painter), \"rough_stone\" (cooktorrance, rd bound to a worley3d pebble field, "
-					"facets bound to a spatially-varying scalar field), \"brushed_metal\" "
-					"(ward_anisotropic, alphax/alphay both bound to a spatially-varying scalar field at "
-					"different scale for the anisotropic groove), \"aged_bronze\" (cooktorrance, rd bound "
-					"to a reactiondiffusion3d oxidation-patina field, facets bound to a spatially-varying "
+					"grain painter), \"rough_stone\" (ggx with fresnel_mode schlick_f0 and a 0.04 dielectric F0 tint, rd bound to a worley3d pebble field, "
+					"alphax/alphay both bound to a spatially-varying scalar field), \"brushed_metal\" "
+					"(ggx with fresnel_mode schlick_f0, alphax/alphay both bound to a spatially-varying scalar field at "
+					"different scale for the anisotropic groove), \"aged_bronze\" (ggx conductor, rd bound "
+					"to a reactiondiffusion3d oxidation-patina field, alphax/alphay both bound to a spatially-varying "
 					"scalar field), \"glazed_ceramic\" (ggx with fresnel_mode schlick_f0, alphax/alphay "
 					"both bound to a LOW-amplitude spatially-varying scalar field). Every family binds AT "
 					"LEAST ONE microsurface parameter to a real painter chunk -- that is the whole point "
@@ -375,55 +413,146 @@ namespace RISE
 				},
 				{
 					"insert_geometry_scaffold",
-					"Expand ONE of four geometry-family templates into a small GEOMETRY-ONLY chunk graph "
-					"(1-3 chunks) added to the scene in one call -- so an advanced geometric form costs one "
-					"tool call instead of hand-composing a displaced_geometry/sweep_geometry/sdf_geometry "
-					"chunk yourself. Families: \"displaced_slab\" (a box tessellated + bumped by a perlin2d "
-					"noise source via displaced_geometry), \"sweep_rail\" (a compact closed polygon profile "
-					"swept along a short bowed path with a taper, via sweep_geometry), \"blended_vessel\" "
-					"(a base/belly/rim roundcone chain smoothly blended into a vessel or bowl silhouette, via "
-					"sdf_geometry), \"sdf_column\" (a base/shaft/capital roundcone chain into a turned-column "
-					"silhouette, via sdf_geometry). Unlike insert_material_scaffold, this tool NEVER emits a "
-					"material or a standard_object -- YOU wire the standard_object (and any material) "
-					"yourself, referencing the returned `geometry.name`. Families cover common forms; "
-					"anything else (an unusual silhouette, a shape none of the four fit) is hand-authored "
+					"Expand ONE of SEVEN geometry-family templates into a small chunk graph added to the scene "
+					"in one call -- so an advanced geometric form costs one tool call instead of hand-composing "
+					"the underlying chunk(s) yourself. Families: \"displaced_slab\" (a box tessellated + "
+					"bumped by a perlin2d noise source via displaced_geometry), \"sweep_rail\" (a compact "
+					"closed polygon profile swept along a short bowed path with a taper, via sweep_geometry), "
+					"\"blended_vessel\" (a base/belly/rim roundcone chain smoothly blended into a vessel or "
+					"bowl silhouette, via sdf_geometry), \"sdf_column\" (a base/shaft/capital roundcone chain "
+					"into a turned-column silhouette, via sdf_geometry), \"blended_chain\" (a smin-blended "
+					"chain of spheres swept along a path YOU author with `points` -- a continuous, tapered "
+					"limb/branch/tendril; the path is this family's creative essence), \"volume_bank\" (an "
+					"elongated atmospheric volume -- container + near-invisible dielectric shell + a "
+					"swirling painter-driven heterogeneous medium, fully wired), \"quadruped\" (alias "
+					"\"creature\": a generic four-legged animal SKELETON via skeleton_geometry -- spine, neck, "
+					"head, muzzle, two proportioned ears, a tapering tail, four upper/lower/paw legs, ~18-24 "
+					"joints, ready to rename/reposition/re-radius. THE START-FROM-RIGHT MOVE for a creature "
+					"body: call this FIRST rather than hand-authoring a joint graph -- skeleton_geometry's "
+					"blend radius is per-bone and self-scaling, so it structurally cannot fall into the "
+					"fixed-k trap the DESIGN_SDF_BLEND_SCALE advisory catches on hand-authored sdf_geometry). "
+					"The FIRST SIX families emit GEOMETRY ONLY -- YOU wire the standard_object (and any "
+					"material) yourself, referencing the returned `geometry.name`. volume_bank is "
+					"the SOLE exception -- it also emits a dielectric material, a medium, and a standard_object "
+					"(a bare volume graph does nothing until an object binds it, and the medium's density-field "
+					"bbox must match that object's placement -- see the returned `message` on success for the "
+					"one wiring caveat this implies if you reposition it). Families cover common forms; "
+					"anything else (an unusual silhouette, a shape none of the seven fit) is hand-authored "
 					"alongside using the ordinary geometry chunks -- this tool composes with hand authoring, "
-					"it does not replace it. ALL THREE params are REQUIRED, no defaults: `family` (exactly "
-					"one of the four names above), `name` (a fresh, unique prefix -- every generated chunk is "
-					"named tmpl_<name>_<role>, e.g. tmpl_rail1_rail; a name whose derived chunks collide with "
-					"existing ones is refused, document unchanged), `size` (>0 -- overall scale), `detail` "
-					"(0..1 -- displacement amplitude / profile complexity / smin blend tightness / "
-					"tessellation, whichever is honest for that family), `aspect` (>0 -- elongation; 1.0 is "
-					"roughly proportionate, higher values stretch the form). Internal graph constants (noise "
-					"phase/frequency, profile-point phase, path bow, smin blend radii, segment counts) are "
-					"jittered deterministically from `name` -- the SAME name reproduces byte-identical "
-					"chunks, a DIFFERENT name visibly differs. Every generated chunk is an ORDINARY, EDITABLE "
-					"document chunk -- read_document shows them at the exact site of any future edit, and "
-					"propose_patch/remove_chunk work on them exactly like any hand-authored chunk. Applied IN "
-					"ORDER through the same batch machinery insert_chunks uses (SEQUENTIAL, BEST-EFFORT; see "
-					"that tool's description) -- returns {applied,total,results:[...]} (the EXACT insert_chunk "
-					"per-element shape) plus `geometry` ({name,kind} of the one geometry chunk to bind into a "
-					"standard_object.geometry slot). Check every element's own status; do not assume the "
-					"whole expansion landed just because the call returned. A missing/invalid param, an "
-					"unrecognized family, or a name collision refuses the WHOLE call before any chunk is "
-					"generated (document unchanged) -- these come back as a tool error, not a partial "
-					"result. Always pass the headVersion you last read as baseHeadVersion.",
+					"it does not replace it. REQUIRED params DIFFER BY FAMILY, no defaults -- a missing one for "
+					"the resolved family is a blocking error naming it: `family` and `name` (a fresh, unique "
+					"prefix -- every generated chunk is named tmpl_<name>_<role>, e.g. tmpl_rail1_rail; a name "
+					"whose derived chunks collide with existing ones is refused, document unchanged) are always "
+					"required. displaced_slab/sweep_rail/blended_vessel/sdf_column additionally require `size` "
+					"(>0 -- overall scale), `detail` (0..1 -- displacement amplitude / profile complexity / "
+					"smin blend tightness / tessellation, whichever is honest for that family), `aspect` (>0 -- "
+					"elongation; 1.0 is roughly proportionate). blended_chain additionally requires `points` "
+					"(2-6 semicolon-separated \"x y z\" triplets, e.g. \"0 0 0; 0.5 1.2 -0.3; 1 3 0\" -- the "
+					"chain's first/last node lands EXACTLY on the first/last point, so an endpoint can be aimed "
+					"precisely at another part's surface), `size` (>0 -- base radius at the FIRST point), "
+					"`taper` (0..1 -- end-to-end radius falloff toward the LAST point), `detail` (0..1 -- node "
+					"density along the path, more nodes = smoother) -- NO `aspect`. volume_bank additionally "
+					"requires `size` (>0), `aspect` (>0 -- elongation), `detail` (0..1 -- density-field "
+					"wispiness/swirl), `tone` (\"r g b\" each 0..1 -- the medium's scatter tint) -- NO "
+					"`points`/`taper`. quadruped additionally requires ONLY `size` (>0) -- NEITHER `detail` NOR "
+					"`aspect` (omit both; there is no honest use for either on a joint graph), and takes an "
+					"OPTIONAL `build` (\"lean\"/\"average\"/\"stocky\", default \"average\" -- a stance preset "
+					"rescaling leg length/girth and body girth together). Internal graph constants (noise "
+					"phase/frequency, profile-point phase, path bow, smin blend radii, segment counts, per-node "
+					"path/radius jitter, stance jitter) are jittered deterministically from `name` -- the SAME "
+					"name (and other params) reproduces byte-identical chunks, a DIFFERENT name visibly "
+					"differs. Every generated chunk is an ORDINARY, EDITABLE document chunk -- read_document "
+					"shows them at the exact site of any future edit, and propose_patch/remove_chunk work on "
+					"them exactly like any hand-authored chunk. Applied IN ORDER through the same batch "
+					"machinery insert_chunks uses (SEQUENTIAL, BEST-EFFORT; see that tool's description) -- "
+					"returns {applied,total,results:[...]} (the EXACT insert_chunk per-element shape) plus "
+					"`geometry` ({name,kind} of the one geometry chunk to bind into a standard_object.geometry "
+					"slot) and, for volume_bank only, `material`/`medium`/`object` ({name,kind} each) plus a "
+					"factual `message`. Check every element's own status; do not assume the whole expansion "
+					"landed just because the call returned. A missing/invalid param, an unrecognized family, "
+					"or a name collision refuses the WHOLE call before any chunk is generated (document "
+					"unchanged) -- these come back as a tool error, not a partial result. Always pass the "
+					"headVersion you last read as baseHeadVersion.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"family\":{\"type\":\"string\",\"description\":"
-						"\"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column.\"},"
+						"\"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, volume_bank, quadruped (alias: creature).\"},"
 						"\"name\":{\"type\":\"string\",\"description\":"
 						"\"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated chunk is named tmpl_<name>_<role>.\"},"
 						"\"size\":{\"type\":\"number\",\"description\":"
-						"\"Overall scale, > 0.\"},"
+						"\"Overall scale, > 0 (for blended_chain: base radius at the FIRST point).\"},"
 						"\"detail\":{\"type\":\"number\",\"description\":"
-						"\"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation, per family.\"},"
+						"\"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation / node density / density-field swirl, per family. NOT used by quadruped.\"},"
 						"\"aspect\":{\"type\":\"number\",\"description\":"
-						"\"Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form).\"},"
+						"\"Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form). Required for every family EXCEPT blended_chain and quadruped.\"},"
+						"\"points\":{\"type\":\"string\",\"description\":"
+						"\"blended_chain ONLY, REQUIRED: 2-6 semicolon-separated \\\"x y z\\\" triplets, e.g. \\\"0 0 0; 0.5 1.2 -0.3; 1 3 0\\\" -- the spine path; the first/last node lands exactly on the first/last triplet.\"},"
+						"\"taper\":{\"type\":\"number\",\"description\":"
+						"\"blended_chain ONLY, REQUIRED: 0..1, end-to-end radius falloff from the first point to the last.\"},"
+						"\"tone\":{\"type\":\"string\",\"description\":"
+						"\"volume_bank ONLY, REQUIRED: \\\"r g b\\\", each 0..1 -- the medium's scatter tint.\"},"
+						"\"build\":{\"type\":\"string\",\"description\":"
+						"\"quadruped ONLY, optional (default \\\"average\\\"): lean / average / stocky.\"},"
 						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
 						"\"The headVersion from your last read_document -- pass it EVERY time so a stale call is rejected as a conflict instead of clobbering.\","
 						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
 						"\"required\":[\"uuid\",\"revision\"]}"
-					"},\"required\":[\"family\",\"name\",\"size\",\"detail\",\"aspect\"]}"
+					"},\"required\":[\"family\",\"name\",\"size\"]}"
+				},
+				{
+					"replace_geometry_scaffold",
+					"REPLACE THE FORM of a part you already placed: expand a geometry family template "
+					"exactly as insert_geometry_scaffold does, and rebind an EXISTING object's geometry to "
+					"it, in ONE call. Use this whenever you look at a render and think \"that shape is too "
+					"plain / the wrong form\" -- it costs the same one call a colour tweak costs, so revise "
+					"form as freely as you revise a parameter. `target` is the standard_object's name (NOT "
+					"the geometry chunk's -- passing a geometry name is refused with the object names that "
+					"use it). The object's position, orientation, scale, material and every other parameter "
+					"are PRESERVED byte-for-byte -- only its `geometry` changes, so placement you tuned by "
+					"looking survives the new form. The families and their per-family required params are "
+					"IDENTICAL to insert_geometry_scaffold's (see that tool, including \"quadruped\"/"
+					"\"creature\", the self-scaling skeleton_geometry family) with one exception: "
+					"\"volume_bank\" is NOT available here, because that family emits its own "
+					"standard_object -- use insert_geometry_scaffold for it. The old geometry chunk is "
+					"REMOVED automatically when nothing else references it; if something else still uses it "
+					"the tool keeps it and tells you which chunks; chunks left unreferenced one hop deeper "
+					"(e.g. the noise source that only fed the old displaced geometry) are REPORTED in "
+					"`orphans` for you to clear with remove_chunks if you want -- they are never deleted "
+					"silently. The whole thing is ONE atomic edit: one head version, one undo step, and on "
+					"ANY refusal (unknown/ambiguous target, name collision, a stale baseHeadVersion "
+					"conflict, a candidate that would not derive, or a transient busy/in-progress reject) "
+					"NOTHING changes -- check `status`: \"applied\" is the only outcome where anything "
+					"landed. The ONE exception is \"diagnosed\": the Document WAS mutated (the new geometry "
+					"landed and the object's slot was rebound) but the re-derive still emitted diagnostics, "
+					"so `previousGeometry`/`orphans` describe something real, not a discarded plan -- look at "
+					"the log before touching this part again. Returns {applied,total,results:[...],status,"
+					"retriable,headVersion,target,geometry:{name,kind},previousGeometry:{name,kind,removed,"
+					"referrers},orphans,message} -- every `results` element carries the SAME verdict, because "
+					"the call is one mutation, not a batch. Always pass the headVersion you last read as "
+					"baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"The name of the standard_object whose geometry to replace -- the OBJECT, not the geometry chunk.\"},"
+						"\"family\":{\"type\":\"string\",\"description\":"
+						"\"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, quadruped (alias: creature). (volume_bank is not available here -- it emits its own object.)\"},"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated chunk is named tmpl_<name>_<role>.\"},"
+						"\"size\":{\"type\":\"number\",\"description\":"
+						"\"Overall scale, > 0 (for blended_chain: base radius at the FIRST point).\"},"
+						"\"detail\":{\"type\":\"number\",\"description\":"
+						"\"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation / node density, per family. NOT used by quadruped.\"},"
+						"\"aspect\":{\"type\":\"number\",\"description\":"
+						"\"Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form). Required for every family EXCEPT blended_chain and quadruped.\"},"
+						"\"points\":{\"type\":\"string\",\"description\":"
+						"\"blended_chain ONLY, REQUIRED: 2-6 semicolon-separated \\\"x y z\\\" triplets, e.g. \\\"0 0 0; 0.5 1.2 -0.3; 1 3 0\\\" -- the spine path; the first/last node lands exactly on the first/last triplet.\"},"
+						"\"taper\":{\"type\":\"number\",\"description\":"
+						"\"blended_chain ONLY, REQUIRED: 0..1, end-to-end radius falloff from the first point to the last.\"},"
+						"\"build\":{\"type\":\"string\",\"description\":"
+						"\"quadruped ONLY, optional (default \\\"average\\\"): lean / average / stocky.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale call is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"target\",\"family\",\"name\",\"size\"]}"
 				},
 				{
 					"remove_chunk",
@@ -473,6 +602,354 @@ namespace RISE
 					"},\"required\":[\"target\"]}"
 				},
 				{
+					"collapse_to_instances",
+					"REWRITE a run of hand-authored copies as ONE instancing chunk. Call this the moment you "
+					"notice (or are told) that several standard_objects share one geometry and differ only in "
+					"where they sit -- five bottles along a shelf, a grid of books, a row of fence posts. It "
+					"keeps the FIRST copy, replaces the others with a `source` + `count_u` chunk whose "
+					"`position expr(...)` reproduces exactly the positions they already had, and does the whole "
+					"thing in ONE call, ONE headVersion bump and ONE undo step. The RENDERED SCENE IS "
+					"UNCHANGED -- this is a re-expression, not a redesign: nothing moves, nothing disappears "
+					"(`source` COPIES, so the kept copy keeps rendering and `count_u` is one less than the "
+					"number of copies). Pass NO ARGUMENTS to collapse the largest such run in the document -- "
+					"that is the normal way to call it, and it is what a DESIGN NOTE naming repeated copies is "
+					"asking for. Pass `target` (the name of any ONE copy) to choose a different run, and `name` "
+					"to name the new chunk. It REFUSES, changing nothing and costing only this call, whenever "
+					"it cannot prove the rewrite is exact: copies that are not on a regular line or grid, "
+					"copies that differ in orientation/quaternion/scale as well as position, any copy carrying "
+					"a `matrix`, or any copy named by another chunk (a parent link, an override_object, a CSG "
+					"operand). A refusal is a real answer -- read it and leave the objects alone; do NOT retry "
+					"with hand-written chunks. A GRID takes two instancing chunks rather than one, because the "
+					"kept copy occupies the first cell. Always pass the headVersion you last read as "
+					"baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The name of ANY ONE standard_object in the run to collapse. Omit it to take the largest run of hand-authored copies in the document -- which is what a DESIGN NOTE about repeated copies is pointing at, so the no-argument call is the usual one.\"},"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The name for the instancing chunk. Omit for <source>_array. A grid also mints <name>_row0 for the remainder of the first row.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"vary_material",
+					"MAKE ONE MATERIAL'S ROUGHNESS VARY ACROSS THE SURFACE, in one call. Call this the moment "
+					"you notice (or are told) that a scene's materials all carry a bare number in their "
+					"microsurface slot -- `roughness 0.3`, `alphax 0.1`, `facets 0.05`. Real surfaces are not "
+					"uniformly polished, and a scene where every roughness is one constant reads as untextured "
+					"geometry no matter how good the lighting is. It adds ONE `scalar_painter { expression ... }` "
+					"chunk holding an fbm wear field BANDED AROUND THE NUMBER THAT IS ALREADY THERE (roughly "
+					"0.7x .. 1.4x of it, or 0.7x .. 1.15x once that number is already above 1, so the band "
+					"always keeps headroom) and rebinds the material's roughness slot(s) to it -- ONE headVersion "
+					"bump, ONE undo step. The material stays the material you authored: only the microsurface "
+					"stops being flat. Pass NO ARGUMENTS to take the most prominent qualifying material -- that "
+					"is the normal way to call it, and it is what a DESIGN NOTE about constant microsurface is "
+					"asking for. Pass `material` to name a different one, or `all:true` to fix EVERY currently-"
+					"flagged material in ONE call instead of one call per material (capped at 24; the response "
+					"names how many remain -- call again with `all:true` to continue). A DESIGN NOTE reporting "
+					"\\\"N of M materials vary\\\" is exactly when `all:true` is the right call. Every knob it "
+					"writes is a named "
+					"`param` carrying min/max/step/label (rough_lo, rough_hi, field_scale, field_contrast) plus "
+					"a `seed`, so retuning it afterwards is one propose_patch on a named line rather than an "
+					"edit to expression text -- and that is the idiom to COPY when you author varying scalars "
+					"by hand. It REFUSES, changing nothing and costing only this call, when no material's "
+					"microsurface is a readable constant (already varying, absent, a per-channel triple, or a "
+					"deliberate mirror-specular zero). Roughness only -- it never repaints colour. A refusal is "
+					"a real answer: read it rather than retrying. Always pass the headVersion you last read as "
+					"baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"material\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of the material to vary. Omit it to take the most prominent material whose microsurface is still a bare number -- which is what a DESIGN NOTE about constant microsurface is pointing at, so the no-argument call is the usual one. Mutually exclusive with all.\"},"
+						"\"all\":{\"type\":\"boolean\",\"description\":"
+						"\"Optional, default false. Fix EVERY currently-flagged material in this one call, most-referenced-first, capped at 24 -- the coverage-per-call fix when a DESIGN NOTE reports many materials still flat. Mutually exclusive with material.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"fix_blend_scale",
+					"CLAMP AN SDF `smin` BLEND THAT IS TOO WIDE, in one call. Call this the moment you notice "
+					"(or are told) that an sdf_geometry joint's blend radius (k) is comparable to the size of "
+					"the part it joins -- a wide k dissolves a small feature (a limb, an ear, a fin) into its "
+					"neighbour instead of blending it. It finds EVERY offending smin joint in scope and rewrites "
+					"just its `k` value down to the safe bound for that joint, leaving position/orientation/"
+					"scale/shape untouched -- ONE headVersion bump, ONE undo step, no matter how many joints it "
+					"fixes. Pass NO ARGUMENTS to fix every offending joint in the WHOLE document -- that is the "
+					"normal way to call it, and it is what a DESIGN NOTE naming a blend-scale joint is asking "
+					"for. Pass `target` (the name of one sdf_geometry chunk) to scope the fix to just that "
+					"chunk. It REFUSES, changing nothing and costing only this call, when no joint in scope is "
+					"currently offending (a clean, honest \\\"nothing to fix\\\"). NOTE: if the response names a "
+					"proportion problem on a joint (the part is much smaller than what it joins), narrowing k "
+					"alone will not make that part readable -- the part itself needs enlarging toward "
+					"proportion, or the body needs rebuilding with skeleton_geometry; this verb still clamps "
+					"that joint's k (it is not wrong to do), it just cannot fix size on its own. Always pass "
+					"the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of one sdf_geometry chunk to scope the fix to. Omit it to fix every offending joint in the whole document -- which is what a DESIGN NOTE about a blend-scale joint is pointing at, so the no-argument call is the usual one.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"add_wear",
+					"WEAR ONE MATERIAL ALONG ITS OWN FORM -- edges rubbed, crevices grimed -- in one call. "
+					"Call this the moment a surface is meant to read as USED: weathered, tarnished, aged, "
+					"dusty, chipped, mossy, salt-crusted, or simply not factory-new. The failure it exists to "
+					"prevent is a mask built from a WORLD AXIS: a `P.z` threshold paints a band of dirt at a "
+					"fixed altitude no matter what the object's shape is, and reads as a stripe. Real wear "
+					"follows CURVATURE -- `curv` is positive on a convex edge, negative in a concave crease, 0 "
+					"on a flat -- and that is what this writes. It adds ONE `expression_painter` whose edge "
+					"mask is `clamp(curv*k + noise, 0, 1)` and whose crevice mask is "
+					"`clamp(-curv*k + noise, 0, 1)` deepened by `occlusion()` (inert on legacy "
+					"`rawmesh_geometry`, whose non-indexed loader publishes no occlusion signal -- the curv "
+					"half still works there), mixes a lightened edge tint and "
+					"a darkened patina tint BANDED AROUND THE COLOUR THAT IS ALREADY THERE (both tints derived "
+					"from that colour, so this suits wood, stone and painted steel as much as bronze), and "
+					"rebinds the material's colour slot to it. Where the material also carries a constant "
+					"roughness it adds a SECOND chunk reading the SAME masks -- polished on the rubbed edges, "
+					"rougher in the crevices -- so the two agree. ONE headVersion bump, ONE undo step. Pass NO "
+					"ARGUMENTS to take the most prominent qualifying material -- that is the normal way to "
+					"call it, and it is what a DESIGN NOTE about unworn materials is asking for. Pass "
+					"`material` to name a different one. Every knob it writes is a named `param` carrying "
+					"min/max/step/label (edge_wear, crevice_grime, cavity_gain, breakup_amp, base_r/g/b and "
+					"the tint knobs) plus a `seed`, so retuning it afterwards is one propose_patch on a named "
+					"line rather than an edit to expression text -- and that is the idiom to COPY when you "
+					"author wear by hand. It REFUSES, changing nothing and costing only this call, when no "
+					"material is a readable flat colour, when the material is already worn (its slots already "
+					"read curv/occlusion), when every object bound to it sits on planar geometry, "
+					"where `curv` is 0 everywhere and the mask would render the flat colour it started from, or "
+					"when it collides with `add_wetness`'s own composition (a WET material's colour slot is "
+					"already bound to an expression_painter, never a plain uniformcolor_painter -- the two "
+					"verbs cannot currently be combined on one material; whichever ran first locks the other "
+					"out). THE FLAT-RECEIVER REFUSAL IS LIFTED BY `contact_radius`: with it set, a material "
+					"whose every object sits on planar geometry becomes a candidate, and the body it "
+					"gets is the CONTACT recipe -- proximity() alone, no curv and no occlusion, since neither "
+					"would say anything on a flat face. A refusal is a real answer: read it rather than "
+					"retrying. Always pass the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"material\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of the material to wear. Omit it to take the most prominent material that is still one flat colour on curved geometry -- which is what a DESIGN NOTE about unworn materials is pointing at, so the no-argument call is the usual one.\"},"
+						"\"contact_radius\":{\"type\":\"number\",\"description\":"
+						"\"Optional, a WORLD LENGTH; default 0 = off. Above 0 this ALSO grimes the CONTACT SEAM -- where this material's surface comes within that distance of ANOTHER object -- using proximity(), and it lets a FLAT receiver qualify at all: a plank lying on a plane, a flange bolted to a box. Those are refused without it, because curvature alone has nothing to key on there. YOU choose the number from the scene's own feature sizes and units: 0.002 is two millimetres in a metre-scale scene, which suits a nail resting on a board; a 2 cm radius (0.02) suits a bench foot on a floor. Too large and the seam becomes a wash.\"},"
+						"\"contact_grime\":{\"type\":\"number\",\"description\":"
+						"\"Optional, 0..1, default 0.5. How strongly the contact seam grimes, relative to the curvature crevices. Only read when contact_radius > 0.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"add_wetness",
+					"MAKE ONE MATERIAL WET -- darkened/saturated reflectance in the damp, a coat/gloss where it "
+					"pools -- in one call. Call this the moment a surface is meant to read RAIN-SLICKED, DAMP, or "
+					"STANDING IN WATER: a wet street, a rained-on wall, a damp cave floor. The physics: wetting a "
+					"porous substrate darkens and saturates it (index-matching plus internal-reflection recycling "
+					"at the water/air interface -- Lekner & Dorf 1988), and only WATER DEEP ENOUGH TO POOL lies "
+					"flat and mirror-smooth -- a merely-damp film still shows the substrate's own relief, "
+					"sharpened but not mirrored. This writes a shared `damp`/`wet` mask pair (`damp` drives "
+					"darkening; `wet = clamp(damp*film_amount, 0, damp)` drives the coat, so `wet` can never "
+					"exceed `damp` by construction) keyed on `curv` (dry ridges), `occlusion()` (pooling "
+					"cavities, gated by an up-facing term so water never pools on ceilings) and `fbm` (breakup). "
+					"A Lambertian base is WRAPPED, not rewritten: the original chunk is left byte-for-byte "
+					"untouched, a new `coated_material` chunk is minted (`base` naming the original, "
+					"`coat_weight` = coat coverage under `wet`, `coat_roughness` = a GGX gloss keyed on POOLING "
+					"so damp-but-unpooled regions stay broad-lobed rather than instantly mirror-flat), and every "
+					"bound object's `material` reference is moved to the new chunk. There is no separate "
+					"darkening painter on this branch -- `coated_material`'s own layered transport performs the "
+					"recycling-driven darkening, so a `pow(base,k)` painter on top would double-count it. A "
+					"GGX/PBR base is "
+					"left as its own kind and modulated IN PLACE (reflectance darkened the same way; roughness "
+					"driven toward a wet floor under `wet` -- an approximation of a film, not a real second "
+					"layer, so it sharpens the base's OWN tinted lobe and can flatten an authored anisotropy "
+					"where it bites). An Oren-Nayar base gets DARKENING ONLY, no coat (its retroreflective lobe "
+					"has no film analogue). The gravity gate (keeps pooling off ceilings/undersides) assumes "
+					"+Y UP -- `dot(N, vec3(0,1,0))` in the emitted `up_facing`/`gravity` lines -- a Z-up scene "
+					"needs that axis vector hand-edited. A single `dryness` param sweeps the whole thing back "
+					"to bone-dry. "
+					"ONE headVersion bump, ONE undo step. Pass NO ARGUMENTS to take the most prominent "
+					"qualifying material -- that is the normal way to call it, and it is what a DESIGN NOTE "
+					"about a dry rain scene is asking for. Pass `material` to name a different one, including a "
+					"metallic material (coat/gloss only, no darkening -- a wet metal has no subsurface to "
+					"darken). Every knob it writes is a named `param` carrying min/max/step/label (dryness, "
+					"base_wetness, pool_gain, ridge_shed, gravity_bias, film_amount, film_gloss_lo, breakup_amp/"
+					"scale, plus the darkening `k`/`base_r/g/b` where present) plus a `seed`, so retuning it "
+					"afterwards is one propose_patch on a named line. It REFUSES, changing nothing and costing "
+					"only this call, when nothing qualifies, when the material is already wet, when its colour "
+					"is a painter this cannot classify as either a flat constant or a genuinely textured/"
+					"procedural field (a blackbody/spectral painter, a non-default `colorspace`, or an "
+					"unresolvable reference -- there is no base to darken from), or when it "
+					"collides with `add_wear`'s own composition on a NON-Lambertian material (GGX/PBR/"
+					"Oren-Nayar's in-place darkening needs the SAME colour slot `add_wear` already rewrote, so "
+					"those kinds cannot currently be combined with `add_wear` -- each verb's refusal names the "
+					"other). A `lambertian_material` `add_wear` already wore IS combinable: this verb's "
+					"coat-WRAP branch never reads or rewrites the substrate's own colour slot at all, so "
+					"calling `add_wetness` on an already-worn Lambertian wraps the worn result in a new "
+					"`coated_material` -- wet grime settling over a worn surface. The reverse order (this verb "
+					"first, then `add_wear` on the same material) still refuses; `add_wear` names the reason. "
+					"A TEXTURED/PROCEDURAL albedo (a png_painter, a checker_painter, a plain expression_painter "
+					"not already worn) now darkens PER-TEXEL via the expression VM's sample(name) builtin "
+					"(DL-25) instead of being refused. "
+					"A refusal is a real answer: read it rather than retrying. Always pass the headVersion you "
+					"last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"material\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of the material to make wet. Omit it to take the most prominent non-metallic material that is still a flat, readable colour on a bound object -- which is what a DESIGN NOTE about a dry rain scene is pointing at, so the no-argument call is the usual one.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"make_fabric",
+					"TURN ONE MATERIAL INTO CLOTH in one call. Call this the moment a surface is meant to "
+					"read as FABRIC: a cushion, a curtain, a jacket, upholstery, a tablecloth, a banner, "
+					"bedding. What makes cloth look like cloth is a SHEEN LOBE -- a bright grazing halo at "
+					"the silhouette, from light scattering off the fuzz and the fibre ends -- sitting over a "
+					"substrate whose own highlight follows the WEAVE. A plain lambertian_material with a "
+					"cloth-coloured albedo has neither, and reads as painted cardboard no matter how good "
+					"the colour is. This writes the whole composition: a `fabric_material` (an "
+					"energy-compensated Charlie sheen over a restricted substrate -- it SUBTRACTS the "
+					"sheen's energy from the base, so a white fabric never returns more light than it "
+					"receives at grazing) wrapping a substrate of the class the preset was calibrated for. "
+					"WHEN THE BOUND BASE IS NOT THAT CLASS IT MINTS ONE, re-homing the colour painter that "
+					"is already there so your dye, texture or expression graph survives the conversion "
+					"untouched. That mint is the point: a preset CANNOT configure a substrate it merely "
+					"references, so wrapping a Lambertian in `fabric satin` gives chalk with a faint sheen "
+					"-- the tight, directional, anisotropic highlight that IS satin lives in the substrate. "
+					"A minted ggx substrate also gets `fresnel_mode schlick_f0` and an `rs` bound to a 0.04 "
+					"dielectric-F0 painter this call mints too, because `rs` resolves BY NAME and an unset "
+					"one is the BLACK `none` painter under conductor Fresnel -- i.e. no highlight at all, "
+					"the single most likely way to hand-author a silent black satin. For the anisotropic "
+					"presets it also mints a `weave_rotation` scalar_painter at a constant 0: a no-op "
+					"today, but the SLOT is then wired, so making the twill wale or the satin float "
+					"direction follow the yarn (including across a seam) is one propose_patch. "
+					"`sheen_color` and `sheen_roughness` are left unwritten on purpose so the chunk seeds "
+					"them from the same preset table. THE ORIGINAL CHUNK IS NEVER EDITED -- but after a "
+					"mint NOTHING REFERENCES IT ANY MORE (every bound object moved to the wrapper), which "
+					"the result reports as `originalNowUnreferenced`; when the base already matches the "
+					"preset's class it does the pure wrap instead and says so. ONE headVersion bump, ONE "
+					"undo step. Pass NO ARGUMENTS to take the most prominent convertible material and infer "
+					"the fabric from the object's own name -- that is the normal way to call it. Pass "
+					"`fabric` to say which cloth, and `material` to name a different one. Pass `weft_color` "
+					"only when this call MINTS a weave_material substrate (denim/silk/satin, and only when "
+					"the bound base is not already one): `\"match\"` binds the minted substrate's "
+					"`weft_color` to the SAME painter `warp_color` just took, for a single uniform dye "
+					"across both thread families instead of the preset's own two-tone weft; or name an "
+					"existing painter chunk to bind that painter instead. It REFUSES, "
+					"changing nothing and costing only this call, when nothing qualifies; when the material "
+					"is already a `fabric_material` (or already the substrate of one); when every bound "
+					"object is PLANAR and the preset's look is a tight grazing halo that a constant normal "
+					"field cannot show (velvet/satin/silk -- cotton, linen, denim and wool read fine on a "
+					"flat); when the base cannot become an allowlisted substrate -- a dielectric, an "
+					"emissive/luminaire, a hair material, a BSSRDF/subsurface material, an existing "
+					"coated/composite stack, or a material carrying none of `reflectance`/`base_color`/`rd` "
+					"to re-home; when it collides with an `add_wetness` coat on the same material (wet "
+					"fabric is a legitimate composition, but it needs coated_material to accept a fabric "
+					"substrate, which is a separate slice); and, when `weft_color` was passed, when the "
+					"preset does not mint a weave, when the weave base was REUSED rather than minted (set "
+					"`weft_color` on that existing chunk directly instead), or when the named value is "
+					"neither `match` nor an existing painter chunk. A refusal is a real answer: read it "
+					"rather than retrying. Always pass the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"material\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of the material to convert into cloth. Omit it to take the most prominent convertible material bound to an object -- the no-argument call is the intended one.\"},"
+						"\"fabric\":{\"type\":\"string\",\"enum\":[\"cotton\",\"denim\",\"silk\",\"satin\",\"velvet\",\"wool\",\"linen\"],\"description\":"
+						"\"Optional. Which fabric. This picks BOTH the fabric_material's own slots AND the substrate class and parameters the verb mints -- it is the one place a preset gets to configure the substrate, because this verb, unlike the chunk, can create chunks. cotton/linen/wool mint an orennayar_material (sigma 0.4 / 0.5 / 0.6); denim/silk/satin mint a weave_material -- the structured two-thread-family cloth BSDF -- carrying that fabric's own draft (denim a 3/1 twill wale, silk and satin a 5-harness satin float), because for those three the PATTERN is the fabric and a single anisotropic lobe cannot make one; velvet mints a lambertian_material and no direction at all (it is a pile, not a weave). Omit it to infer the fabric from the object's own name where that is unambiguous (denim_jacket -> denim; cushion names no fabric, so it falls back to cotton and the message SAYS so). custom is deliberately absent: it has no recommended substrate to mint.\"},"
+						"\"weft_color\":{\"type\":\"string\",\"description\":"
+						"\"Optional, and only meaningful when this call MINTS a weave_material substrate (the denim/silk/satin presets, and only when the bound base is not already one). match binds the minted substrate's weft_color to the SAME painter warp_color just took, for a single uniform dye across both thread families instead of the preset's own two-tone weft. Otherwise, name an existing painter chunk in this document to bind that painter instead. Omit it entirely to leave weft_color unwritten, so the chunk seeds it from the preset's own weft dye -- the no-argument path, unchanged. Refused, changing nothing, when the preset does not mint a weave (cotton/linen/wool/velvet); when the bound base is already a weave_material and is therefore REUSED rather than minted (set weft_color on that existing chunk directly instead); or when the named value is neither match nor an existing painter chunk.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"add_fuzz",
+					"GROW A SILHOUETTE FUZZ SHELL over a fabric -- a sparse hair_geometry/hair_material pair "
+					"added alongside a fabric_material/weave_material's own object(s), giving the silhouette "
+					"a fibrous fringe no BSDF term can produce (the fringe extends PAST the analytic edge; "
+					"measured 3.7 px extension and 14.6x more edge non-monotonicity than the bare material). "
+					"Call this the moment a fabric's edge should read as fuzzy rather than a mathematically "
+					"perfect curve: a wool throw, a felted cushion, a chenille blanket, anything whose fibre "
+					"ends should be visible at the silhouette. This ADDS chunks; it NEVER edits or rebinds "
+					"the target material or its bound objects. For EVERY object bound to the picked material "
+					"it mints a hair_geometry (`<obj>_fuzz`) grown on that object's own geometry, a "
+					"hair_material (`<obj>_fuzz_material`) whose `color` is the fabric's own dye copied "
+					"VERBATIM (name or inline literal alike, never re-resolved), and a standard_object "
+					"(`<obj>_fuzz_object`) binding the two with `parent <obj>` and no transform of its own, "
+					"so it exactly tracks the target's placement including any LATER edit to it. Density/"
+					"length/width scale with each object's own live bounding box off a tuned baseline "
+					"recipe, so `amount` looks consistent across differently-sized objects. `segments`/"
+					"`base_detail`/`frizz` stay at the tuned recipe's constants regardless of `amount`; no "
+					"comb/clump/gravity/curl is written -- the cheapest groom that measurably produces the "
+					"fringe. Pass NO ARGUMENTS to take the most prominent fabric_material/weave_material "
+					"bound to an object -- that is the normal way to call it. Pass `material` to fuzz a "
+					"named plain diffuse (orennayar_material/lambertian_material) surface instead -- a bare "
+					"call never reaches one on its own. Pass `amount` to say how dense/long. It REFUSES, "
+					"changing nothing and costing only this call, when nothing qualifies (no fabric/weave "
+					"material bound to an object, and no explicitly-named diffuse either); when a "
+					"`<obj>_fuzz`/`<obj>_fuzz_material`/`<obj>_fuzz_object` name already exists for a bound "
+					"object (an existing fuzz shell); when a bound object's own geometry cannot host a groom "
+					"(an infiniteplane_geometry, another hair_geometry, or no resolvable geometry); or when "
+					"the picked material resolves to the `silk` or `satin` fabric preset (their tight, "
+					"glossy structural sheen reads wrong with a fibrous fringe). A scene with fewer than two "
+					"non-ambient lights is NOT refused -- the message WARNS instead, because the shell mints correctly "
+					"either way and only its LOOK needs a rim/back light to glow rather than read dark. A "
+					"refusal is a real answer: read it rather than retrying. Always pass the headVersion you "
+					"last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"material\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of the fabric_material or weave_material to grow a fuzz shell over. Omit it to take the most prominent fabric_material/weave_material bound to an object -- the no-argument call is the intended one. Name a plain diffuse material (orennayar_material / lambertian_material) explicitly to fuzz it too -- a bare call never reaches one on its own.\"},"
+						"\"amount\":{\"type\":\"string\",\"enum\":[\"light\",\"medium\",\"heavy\"],\"description\":"
+						"\"Optional. How dense/long the fuzz shell is. medium (the default) reproduces the Phase 3 evaluation's own tuned recipe unscaled; light is half the density and shorter/thinner strands; heavy is double the density and longer/thicker strands. All three scale with the target object's own bounding box, so the same amount looks the same fuzz on a small object and a large one.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"remove_chunks",
+					"DELETE SEVERAL entities (whole chunks) in ONE call, ATOMICALLY. Prefer ONE remove_chunks "
+					"call over repeated remove_chunk calls whenever you are deleting more than one chunk: each "
+					"separate remove_chunk costs a full round-trip and a separate undo step, while one "
+					"remove_chunks call is one round-trip, ONE headVersion bump, and ONE undo step. "
+					"ALL-OR-NOTHING -- unlike insert_chunks, which applies what it can: if ANY target fails "
+					"(unknown name, ambiguous name, or still referenced from outside the batch) then NOTHING is "
+					"removed and the head is unchanged, so you can fix the one offender and resend. The result "
+					"carries applied, removed/total, and results: one entry per UNIQUE target (first-occurrence "
+					"order -- match by name, not index) whose issues localize exactly which target blocked the "
+					"batch. A chunk referenced ONLY by other chunks IN THE SAME BATCH is removable, in ANY order "
+					"-- list a painter and the material that uses it together and both go; you never need to "
+					"order the list by dependency. \"still_referenced\" is therefore reported only for referrers "
+					"OUTSIDE the batch, and suggestions NAMES them -- edit or remove those (or add them to the "
+					"batch) and retry. Duplicate names are deduped, not refused: the chunk is removed once and "
+					"note says which names you listed twice. There is NO per-target kind here -- targets are "
+					"bare names only. If a name is ambiguous, or you need the unnamed-camera case, use the "
+					"singular remove_chunk with kind for that one chunk (an ambiguous target refuses the batch "
+					"and names itself). Every other rule remove_chunk documents still applies: unnamed film and "
+					"rasterizer chunks are unremovable, there is no rename verb, and a repeatable-unnamed kind "
+					"(timeline, keyframe) is not addressable by kind here at all. Always pass the headVersion "
+					"you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"targets\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
+						"\"The bare NAMES of the chunks to remove (chunk names from the document), 1 or more. Order does not matter -- intra-batch references resolve automatically.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"targets\"]}"
+				},
+				{
 					"render",
 					"Re-render the live scene headlessly and return lean statistics "
 					"(dimensions + linear per-channel means -- a stable image signature "
@@ -481,6 +958,18 @@ namespace RISE
 					"compare the channel means against the previous render to confirm "
 					"the edit changed the image. After inserting a rasterizer, check "
 					"`integrator` to confirm which one is live. "
+					"AGENT RENDERS ARE CAPPED: this verb never renders above 256px on the "
+					"long edge or above 16 samples/pixel -- an omitted width/height renders "
+					"at the scene's own aspect ratio scaled to fit that cap (never the full "
+					"authored Film resolution), and an omitted `samples` is likewise capped "
+					"whenever the scene's authored sample count exceeds 16; an explicit "
+					"width/height/samples above the cap is silently clamped, never rejected. "
+					"When either cap actually reduced this render, the result carries an "
+					"`agentRenderCap` object naming what happened (omitted entirely when "
+					"nothing was capped) -- read it, don't guess. This is a fixed property "
+					"of the agent surface, not a per-call choice: the user's own full-frame, "
+					"full-sample renders happen from the GUI, a separate path this cap does "
+					"not touch. "
 					"TO SEE THE RESULT, pass imageMaxEdge (e.g. 192) and the PNG comes back "
 					"in THIS call -- do not follow an ordinary render with a separate "
 					"read_image; that is a wasted round-trip. Call read_image only to re-read "
@@ -498,33 +987,66 @@ namespace RISE
 					"actual image before you call the task done; plausible "
 					"coordinates routinely do not touch. "
 					"TOKEN ECONOMY: for modeling/placement checks use width/height 128-192 "
-					"(NOT the full authored resolution) and imageMaxEdge ~192 -- a "
-					"tiny preview is enough to confirm placement/shape/color and costs a "
-					"fraction of the tokens and render time. Use `camera` to check the "
-					"scene from 2-3 DIFFERENT ANGLES without editing the actual camera "
-					"chunk -- the override is EPHEMERAL (restored after this one render) "
-					"and never touches the document, so it's the cheap way to look at a "
-					"scene from the side/above/behind before committing to a placement. "
-					"For the CHEAPEST possible orientation check (is the geometry/camera "
-					"roughly right, nothing else), set quality:\"draft\" -- it renders "
-					"through a fixed studio-preview shader that IGNORES the scene's "
-					"authored materials and lighting entirely, capped at 4 samples. "
+					"and imageMaxEdge ~192 -- a tiny preview is enough to confirm "
+					"placement/shape/color and costs a fraction of the tokens and render "
+					"time; omitting width/height already renders at or under the 256px cap, "
+					"so there is rarely a reason to pass a SMALLER pair than that. Use "
+					"`camera` to check the scene from 2-3 DIFFERENT ANGLES without editing "
+					"the actual camera chunk -- the override is EPHEMERAL (restored after "
+					"this one render) and never touches the document, so it's the cheap way "
+					"to look at a scene from the side/above/behind before committing to a "
+					"placement. To judge ONE part's shape, pass `isolate` with that object's "
+					"name: it renders that object alone, auto-framed to fill the frame, so a "
+					"part that is only a few pixels (or in shadow, or behind something) in the "
+					"full scene becomes large enough to actually evaluate. mode:\"normals\" or "
+					"mode:\"facets\" read form best there -- surface direction and tessellation, "
+					"with no material or lighting in the way. Add `target` with the name of a part "
+					"you filed in file_build_plan (an ELEMENT name) and the same call also measures that object's "
+					"silhouette against the sketch you drew for it: it returns iou/mirroredIou plus a "
+					"[sketch | silhouette | overlay] image, rendered from the axis-aligned vantage your "
+					"sketch declared. To see how an object's material and fine detail (fur, weave, "
+					"grain, small parts) READ at full resolution from your own camera -- with its "
+					"neighbours and your lighting left in place -- pass `zoom` with its name "
+					"(nothing is hidden, unlike `isolate`). For the CHEAPEST possible orientation check (is the "
+					"geometry/camera roughly right, nothing else), set quality:\"draft\" -- "
+					"it renders through a fixed studio-preview shader that IGNORES the "
+					"scene's authored LIGHTING (a fixed synthetic studio rig stands in "
+					"for it, no shadows/GI), capped at 4 samples. It DOES shade each hit "
+					"with the material's own BSDF (colour/roughness, not just albedo) "
+					"under that fixed rig, so an expression-driven painter (including one "
+					"that queries `proximity`/`occlusion`) DOES run under draft -- it does "
+					"NOT show emission, transmission/refraction, or subsurface scattering. "
 					"Geometry/composition/camera framing ARE representative in a draft "
-					"image; materials, lighting, exposure, and colour are NOT -- never "
+					"image, and coarse material colour/roughness CAN be judged from it; "
+					"true lighting, exposure, and colour balance are NOT -- never "
 					"judge those from a draft, and check the result's `renderMode` field "
 					"(not `integrator`, which never changes with quality) to confirm which "
 					"pipeline actually ran. "
-					"Reserve full-size, full-sample, quality:\"production\" renders (the "
-					"default; no width/height/camera override) for the FINAL verification "
-					"once you're confident the edit is right, and for ANY judgement of "
-					"materials/lighting/exposure/colour.",
+					"quality:\"production\" (the default) is the fullest fidelity this verb "
+					"ever gives you -- geometry/composition/camera/materials/lighting/colour "
+					"are all real, just capped at 256px/16spp as described above; use it for "
+					"the FINAL verification once you're confident the edit is right, and for "
+					"ANY judgement of materials/lighting/exposure/colour. A full-resolution, "
+					"full-authored-sample-count render is a GUI action, not something this "
+					"tool can produce -- tell the user to render from the app if that's what "
+					"they need. "
+					"EVERY FULL-SCENE BEAUTY RENDER (production or draft, no isolate, no zoom, no mode:) "
+					"also comes back with an `inventory` block: how many objects the scene has, how "
+					"many covered at least one pixel, and one line per object saying how much of the "
+					"frame it covers and where it is -- in the frame for the ones that appeared, and "
+					"in the world plus which way it lies (behind the camera, off-frame left, "
+					"overlapping the frame but covering nothing, ...) for the ones that did not. It "
+					"is measured in a small one-ray-per-pixel identity pass through this render's "
+					"camera, whose dimensions the block states. Read it before concluding anything "
+					"about an empty-looking frame: an object that covered no pixels is still there, "
+					"and the block says where.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"samples\":{\"type\":\"number\",\"description\":"
-						"\"Optional sample-count override. Honoured by the pixel-based rasterizer family (PT, spectral PT, BDPT, VCM) via a transient, non-mutating setter -- check the result's samplesOverridden/effectiveSamples fields. On an unsupported rasterizer (MLT, photon-map-only, Auto's outer wrapper) the override is honestly reported as NOT applied, never silently ignored. Under quality:draft this is instead a firm request CAPPED at 4.\"},"
+						"\"Optional sample-count override, CLAMPED to [1,16] (an agent-surface cap -- see this tool's own description). Honoured by the pixel-based rasterizer family (PT, spectral PT, BDPT, VCM) via a transient, non-mutating setter -- check the result's samplesOverridden/effectiveSamples fields. On an unsupported rasterizer (MLT, photon-map-only, Auto's outer wrapper) the override is honestly reported as NOT applied, never silently ignored -- this also applies when the CAP itself could not be applied (no `samples` given, but the scene's authored count exceeds 16 and the rasterizer doesn't support the override): the message says so plainly rather than silently rendering at the higher count. Omit this and the render still runs at 16spp or less -- if the scene's own authored sample count is under 16, that count is used unchanged; if it's higher, it's capped to 16 and `effectiveSamples`/the result's `agentRenderCap.samplesCapped` report the cap honestly. Under quality:draft this is instead a firm request CAPPED at 4.\"},"
 						"\"width\":{\"type\":\"number\",\"description\":"
-						"\"Optional TRANSIENT preview width in pixels, clamped to [16,512]. Must be paired with height -- if only one of width/height is given, NEITHER is applied and the render silently proceeds at the scene's authored dimensions (not rejected); check previewWidth/previewHeight in the result to confirm an override took. Does not touch the document -- use 128-192 for cheap placement checks.\"},"
+						"\"Optional TRANSIENT preview width in pixels, clamped to [16,256] (an agent-surface cap -- see this tool's own description). Must be paired with height -- if only one of width/height is given, NEITHER is applied, not rejected. Omitting BOTH (the common case) does NOT mean 'the scene's full authored resolution' -- it renders at the scene's own aspect ratio, scaled so the long edge is 256px; check previewWidth/previewHeight (or the result's `agentRenderCap.filmWidth`/`filmHeight`, present when this default actually reduced the render) to confirm the actual dims and what the uncapped size would have been. Does not touch the document.\"},"
 						"\"height\":{\"type\":\"number\",\"description\":"
-						"\"Optional TRANSIENT preview height in pixels, clamped to [16,512]. Must be paired with width -- see width's description for the unpaired behavior.\"},"
+						"\"Optional TRANSIENT preview height in pixels, clamped to [16,256] (an agent-surface cap -- see this tool's own description). Must be paired with width -- see width's description for the unpaired behavior.\"},"
 						"\"camera\":{\"type\":\"object\",\"description\":"
 						"\"Optional EPHEMERAL camera-pose override for this ONE render only -- captured and restored automatically, never touches the document. Use to check the scene from a different angle.\","
 						"\"properties\":{"
@@ -534,14 +1056,32 @@ namespace RISE
 							"\"fov\":{\"type\":\"number\",\"description\":\"Optional field of view in degrees, EXCLUSIVE range (0, 180); defaults to the camera's current fov. 0, 180, negative, or non-finite values are rejected.\"}"
 						"},\"required\":[\"location\",\"lookat\"]},"
 						"\"quality\":{\"type\":\"string\",\"enum\":[\"draft\",\"production\"],\"description\":"
-						"\"Optional, default \\\"production\\\" (today's exact behaviour). \\\"draft\\\" renders through a wholly SEPARATE, cheap studio-preview pipeline (same fixed shader the GUI's live interactive editor uses) that IGNORES the scene's authored materials and lighting -- geometry/composition/camera framing are representative, materials/lighting/exposure/colour are NOT. Samples are capped at 4 under draft. Check the result's `renderMode` field to see which pipeline ran; `integrator` does not change with `quality`.\"},"
+						"\"Optional, default \\\"production\\\" (today's exact behaviour). \\\"draft\\\" renders through a wholly SEPARATE, cheap studio-preview pipeline (same fixed shader the GUI's live interactive editor uses) that IGNORES the scene's authored LIGHTING entirely (a fixed synthetic studio rig stands in for it, no shadows/GI) but DOES shade each hit with the material's own BSDF (colour/roughness, not just albedo) under that fixed rig -- so an expression-driven painter (including one that queries `proximity`/`occlusion`) DOES run under draft, and relief/bump/normal modifiers still apply; it does NOT show emission, transmission/refraction, or subsurface scattering. Geometry/composition/camera framing are representative, and coarse material colour/roughness can be judged; true lighting/exposure/colour balance are NOT. Samples are capped at 4 under draft. Check the result's `renderMode` field to see which pipeline ran; `integrator` does not change with `quality`.\"},"
 						"\"mode\":{\"type\":\"string\",\"enum\":[\"beauty\",\"objectmap\",\"normals\",\"depth\",\"facets\",\"wireframe\",\"deep_reflect\",\"direct\",\"indirect\",\"clay_lights\"],\"description\":"
-						"\"Optional, default \\\"beauty\\\". \\\"objectmap\\\" renders a flat per-object IDENTITY segmentation -- each scene object a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about which object is where and how much of the frame each covers. Read the objectmap image at NATIVE size (do NOT pass read_image maxEdge -- downscaling box-blends the identity colours and corrupts colorHex matching). quality/samples are ignored under objectmap (one fidelity). Orthogonal to quality (objectmap = geometry identity, draft = cheap shading); check renderMode==\\\"objectmap\\\" in the result. A generator-synthesized legend name (e.g. grid[0,1] from an instance_array) identifies the instance but is NOT a CST chunk -- to EDIT it, target the generator chunk (strip the [i,j] suffix, e.g. grid), not the instance name. \\\"normals\\\"/\\\"depth\\\"/\\\"facets\\\"/\\\"wireframe\\\" are single-pass false-colour DIAGNOSTIC modes, no legend: \\\"normals\\\" (which way do surfaces face -- world-space shading normal as RGB), \\\"depth\\\" (how far away is everything -- grayscale, near=bright, brightness normalized PER RENDER to the VISIBLE hit-distance range in that frame, auto-calibrated -- a wide shot and a close-up of the same scene use DIFFERENT brightness scales, self-calibrating within a single render call, falling back to the scene's bounding-box diagonal only for a degenerate/empty scene), \\\"facets\\\" (what does the actual tessellation look like -- headlamp-shaded GEOMETRIC normal, no smoothing), \\\"wireframe\\\" (where are the polygon edges -- triangle-mesh edges only; analytic primitives like sphere/box/SDF render as dim facet shading with no lines, which is correct, not a bug). quality/samples are ignored under all four too; check renderMode for the exact name that ran (e.g. \\\"normals\\\"). \\\"deep_reflect\\\"/\\\"direct\\\"/\\\"indirect\\\"/\\\"clay_lights\\\" are DIFFERENT: REAL production-class path-traced renders at a FIXED reduced resolution and FIXED higher sample count, not single-pass diagnostics -- \\\"deep_reflect\\\" (what do reflections and refractions resolve to -- quarter-res, 16 spp, 24 bounces; use it to check specular/glass/metal content), \\\"direct\\\" (what does direct lighting alone contribute -- half-res, 8 spp, 1 bounce; use it to check lighting placement independent of indirect bounce), \\\"indirect\\\" (beauty minus the direct/emission contribution at the camera-visible vertex, all indirect bounces intact -- half-res, 12 spp, 16 bounces; a directly-lit surface or directly-visible emitter/env background reads black, energy arriving after >=1 bounce reads normally; use it to see where bounced light actually lands), and \\\"clay_lights\\\" (full transport with every surface's reflectance replaced by a neutral mid-grey clay Lambertian, real lights/GI untouched -- half-res, 12 spp, 12 bounces; use it to check whether the LIGHTING is right independent of any surface's material). quality/samples are STILL ignored (the mode's config is fixed by the registry) -- check the result's `effectiveSamples` field for the actual spp used.\"},"
+						"\"Optional, default \\\"beauty\\\". \\\"objectmap\\\" renders a flat per-object IDENTITY segmentation -- each scene object a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about which object is where and how much of the frame each covers. Read the objectmap image at NATIVE size (do NOT pass read_image maxEdge -- downscaling box-blends the identity colours and corrupts colorHex matching). quality/samples are ignored under objectmap (one fidelity). Orthogonal to quality (objectmap = geometry identity, draft = cheap shading); check renderMode==\\\"objectmap\\\" in the result. A synthesized legend name (e.g. grid[0,1] from a `source` chunk with count_u/count_v) identifies one repetition but is NOT a CST chunk -- to EDIT it, target the instancing chunk (strip the [i,j] suffix, e.g. grid), not the instance name. \\\"normals\\\"/\\\"depth\\\"/\\\"facets\\\"/\\\"wireframe\\\" are single-pass false-colour DIAGNOSTIC modes, no legend: \\\"normals\\\" (which way do surfaces face -- world-space shading normal as RGB), \\\"depth\\\" (how far away is everything -- grayscale, near=bright, brightness normalized PER RENDER to the VISIBLE hit-distance range in that frame, auto-calibrated -- a wide shot and a close-up of the same scene use DIFFERENT brightness scales, self-calibrating within a single render call, falling back to the scene's bounding-box diagonal only for a degenerate/empty scene), \\\"facets\\\" (what does the actual tessellation look like -- headlamp-shaded GEOMETRIC normal, no smoothing), \\\"wireframe\\\" (where are the polygon edges -- triangle-mesh edges only; analytic primitives like sphere/box/SDF render as dim facet shading with no lines, which is correct, not a bug). quality/samples are ignored under all four too; check renderMode for the exact name that ran (e.g. \\\"normals\\\"). \\\"deep_reflect\\\"/\\\"direct\\\"/\\\"indirect\\\"/\\\"clay_lights\\\" are DIFFERENT: REAL production-class path-traced renders at a FIXED reduced resolution and FIXED higher sample count, not single-pass diagnostics -- \\\"deep_reflect\\\" (what do reflections and refractions resolve to -- quarter-res, 16 spp, 24 bounces; use it to check specular/glass/metal content), \\\"direct\\\" (what does direct lighting alone contribute -- half-res, 8 spp, 1 bounce; use it to check lighting placement independent of indirect bounce), \\\"indirect\\\" (beauty minus the direct/emission contribution at the camera-visible vertex, all indirect bounces intact -- half-res, 12 spp, 16 bounces; a directly-lit surface or directly-visible emitter/env background reads black, energy arriving after >=1 bounce reads normally; use it to see where bounced light actually lands), and \\\"clay_lights\\\" (full transport with every surface's reflectance replaced by a neutral mid-grey clay Lambertian, real lights/GI untouched -- half-res, 12 spp, 12 bounces; use it to check whether the LIGHTING is right independent of any surface's material). quality/samples are STILL ignored (the mode's config is fixed by the registry) -- check the result's `effectiveSamples` field for the actual spp used.\"},"
 						"\"xray\":{\"type\":\"boolean\",\"description\":"
 						"\"Optional, default FALSE. Only meaningful when mode is one of the false-colour diagnostics (normals/depth/facets/wireframe) -- when true, resolves the ray THROUGH transmissive (glass-like) surfaces to the first OPAQUE hit, following a STRAIGHT LINE with no refraction bending (deliberately an x-ray, not an optics simulation), up to 16 surfaces skipped. By default the transmissive surface itself is shown; pass xray:true to inspect opaque geometry underneath or inside it. If no opaque surface is ever reached, the LAST transmissive surface is shown instead of a black hole. Silently ignored under mode beauty/objectmap or a production-transport mode (deep_reflect/direct/indirect/clay_lights -- skipping glass would defeat their purpose).\"},"
 						"\"view\":{\"type\":\"string\",\"description\":"
 						"\"Optional name of a saved viewport bookmark (a live in-app GUI session's Named Views) or, headless, a scene CAMERA name -- renders from that vantage for THIS call only, composing with every mode above. If both view and camera are supplied, view wins. PINHOLE-ONLY: the override carries pose+FOV and cannot re-type the active camera, so a view naming a thin-lens/fisheye/orthographic camera FAILS the render (ok:false) naming the unsupported type rather than silently using the active camera's optics. An unresolvable name likewise FAILS with the available-name list in message.\"},"
-						"\"light\":{\"type\":\"string\",\"description\":"
+						"\"zoom\":{\"type\":\"string\",\"description\":"
+						"\"Optional name of ONE standard_object to look at CLOSE UP from the SCENE camera's own position: the camera keeps its location, aims at that object and narrows its field of view until the object fills ~85% of the frame (never wider than the scene's own fov; if the object already fills the frame the fov is kept and the result says so). Unlike `isolate`, NOTHING is hidden -- every other object, every light and the environment stay exactly as they are, so you see what a viewer of THIS scene would see of that object, occlusion included, at a size where its material and fine detail (fur, weave, grain, small parts) can actually be judged. Use it when the full frame shows an object too small to judge (a ~20-pixel cat tells you nothing about its fur). Composes with quality and mode. Mutually exclusive with `isolate`, `view` and `camera` (a clean error). Needs a pinhole active camera. On success (ok:true) the result adds a `zoom` object {object, eye, fovDegrees, sceneFovDegrees, keptSceneFov, coverage?, fitBasis}; `coverage` is the fraction of the frame covered by the projected bounds of the object's surface points (an UPPER BOUND on its silhouette); `fitBasis` is surface when the fit used points on the object's real surface, bbox when it fell back to the bounding box. An unknown name, a generator name covering several instances, or a CSG operand FAILS the render (ok:false) with the available names in message. A zoom render carries no inventory, anchor, sceneTarget or tonal fact (its camera is not the scene camera's full frame). Zoom also FAILS (ok:false, no zoom block) when the object is NOT IN VIEW of the scene camera (behind it, or its surface centre more than ~10% past the frame edge -- use isolate or camera for those), when any part of its surface lies on or behind the plane through the camera (the camera is inside or beside it, e.g. a floor or room around the camera), or when its extent is degenerate or unbounded.\"},"
+						"\"isolate\":{\"type\":\"string\",\"description\":"
+						"\"Optional name of ONE standard_object to render BY ITSELF, with the camera automatically framed on its surface (a three-quarter view filling the frame). Every other object is hidden for this one render -- it is hit by no camera, bounce, or shadow ray -- and the document is untouched. Use it to actually LOOK AT a part you just built when it is small, dark, or occluded in the full scene: a 20-pixel wing in a wide night shot tells you nothing about its shape. mode:\\\"normals\\\" or mode:\\\"facets\\\" read FORM best here (surface direction / tessellation, no material or lighting to confuse the read); mode:\\\"beauty\\\" still works but note that a hidden emissive object also stops lighting the scene, so a scene lit ONLY by other objects' emissive materials isolates dark -- explicit lights and the environment are unaffected. If you also pass camera or view, YOURS wins and no auto-framing happens (the result says which). On success (ok:true) the result carries an `isolate` object with the resolved name, world bbox/longest edge (omitted if the bbox turned out degenerate/unbounded), autoFramed, and bboxCoverage: the fraction of the frame covered by the projected screen bounds of points on the object's real surface (its bounding box only when it has no surface points, e.g. a CSG composite -- isolate.fitBasis says which; a camera-and-geometry calculation, not a pixel count, so identical across modes) -- an UPPER BOUND on its silhouette, not a pixel count, so it can OVERSTATE a thin or diagonal silhouette by a large factor (e.g. a wing seen edge-on); for an EXACT per-pixel count use mode:\\\"objectmap\\\" and read the legend's pixelCount instead. bboxCoverage is OMITTED (not approximated) whenever the active camera is not a pinhole, since the projected-bbox formula assumes pinhole projection; message says so when that happens. An unknown name, a generator name that covers several instances (pass one instance's full name), a CSG operand (message names the composite that consumes it), or an object with a degenerate/unbounded bbox and no camera/view of your own FAILS the render (ok:false) with the available names in message. The fit and bboxCoverage use points on the object's real surface (isolate.fitBasis = surface) or, where it has none (a CSG composite, an infinite plane), its bounding box (bbox).\"},"
+						// G3b fix-round (2026-08-10) FIX 2.  THIS text is the CANONICAL
+						// statement of the `target` contract; AgentMcpAdapter.cpp's `target`
+						// StringProp MIRRORS it, sentence for sentence, with the wording kept
+						// literally identical wherever the two surfaces' differing escape
+						// conventions allow -- so SourceHygieneTest's fact pins can be ONE
+						// substring per fact, checked against BOTH files.  This is the SECOND
+						// slice running in which the codec surface silently dropped caveats the
+						// MCP text carried (G1's bboxCoverage upper-bound disclosure was the
+						// first); three were missing here -- the canvas-vs-frame distinction for
+						// the two area fractions, and the two omitted-field conditions.  A caveat
+						// added to only ONE of these surfaces is a caveat added to NEITHER: every
+						// provider reads this one, and the MCP hosts read the other.
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"Optional name of an ELEMENT in the build plan you filed with file_build_plan -- compares that element's SKETCH against what the isolated object actually renders as. REQUIRES `isolate` (you make the plan-element-to-object join yourself, here); target without isolate is rejected. When you supply no camera or view, the render uses the AXIS-ALIGNED vantage your sketch declared: front = looking along -Z (world +X right, +Y up), side = looking along -X (world -Z right, +Y up), top = looking straight down (world +X right, -Z up in frame). Your own camera or view still wins, and the result's target.vantage then reads \\\"caller-camera\\\" instead of the view name. The comparison runs one extra internal identity render at the same pose and dims, so the silhouette it measures is exact and does not depend on mode, quality, lighting or materials. On success the result carries a `target` object: {element, view, vantage, iou, mirroredIou, sketchAreaFraction, silhouetteAreaFraction, sketchAspect, silhouetteAspect?, thinnestAxisRatio?, compositeWidth, compositeHeight}. iou is intersection-over-union in [0,1] of the two silhouettes after BOTH are cropped to their own bounding box and fitted to the same 256x256 canvas -- so it measures SHAPE ONLY, not position and not size; mirroredIou is the same number with the render flipped left-right. `sketchAreaFraction`/`silhouetteAreaFraction` are each mask's filled fraction OF THAT SHARED CANVAS (not of the frame -- `isolate.bboxCoverage` is the frame measurement). `silhouetteAspect` is OMITTED when no pixel of the object landed in the frame; `thinnestAxisRatio` (the object's smallest 3D bounding-box extent over its largest -- 1.0 for a cube, near 0 for a flat plane) is OMITTED when the bounding box is unusable. These are MEASUREMENTS, not scores: nothing is gated on them and no particular value is required. The image returned with this call is a [sketch | silhouette | overlay] strip -- three 256x256 tiles: your sketch, the rendered silhouette, and both together with sketch-only in RED, silhouette-only in CYAN, overlap in WHITE and neither in BLACK. That composite REPLACES the rendered frame as this call's image (imageMaxEdge is not needed and is not used when target is given); re-render without target, or call read_image, if you want the frame itself. An unknown element name, or no filed plan at all, FAILS the render (ok:false) with the filed element names in message.\"},"
+					"\"light\":{\"type\":\"string\",\"description\":"
 						"\"Optional name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting, not a dim/approximate preview of it. Valid with mode:beauty (default) and the four production-transport modes (deep_reflect/direct/indirect/clay_lights); silently ignored (honestly noted in message) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:draft -- none of those evaluate scene lighting. An unresolvable name FAILS the render (ok:false) with the available-name list in message, same contract as an unresolvable view. Use it to check one light's contribution in isolation.\"},"
 						"\"perception\":{\"type\":\"boolean\",\"description\":"
 						"\"Optional, default TRUE for agent transports. On a production beauty render, capture albedo, world-space normal, and primary-camera-hit depth alongside beauty without changing beauty pixels. Set false to save perception-specific memory when you only need beauty; OIDN may still allocate its own denoising auxiliaries. Ignored for draft/objectmap/view modes, which are already diagnostics.\"},"
@@ -610,6 +1150,44 @@ namespace RISE
 						"},\"required\":[\"location\",\"lookat\"]}"
 					"},\"required\":[\"x\",\"y\"]}"
 				},
+				// Arc 80 (2026-08-12).  THIS text is the CANONICAL statement of the
+				// scene_inventory contract; AgentMcpAdapter.cpp's entry MIRRORS it
+				// sentence for sentence, per the convention G3b's `target` block
+				// records -- a caveat added to only ONE of these surfaces is a
+				// caveat added to NEITHER.
+				{
+					"scene_inventory",
+					"Ask WHERE EVERYTHING IS: one line per object in the scene, saying how much of "
+					"the frame it covers and where it sits. Takes no arguments -- it inventories the "
+					"ACTIVE camera's view. This is the FORWARD question; query_object_at is the "
+					"inverse one (\"what is at this pixel\"), which can only answer about a spot you "
+					"already guessed, and whose \"no object at this pixel\" tells you nothing about "
+					"where anything actually is. An object that covered pixels is reported with its "
+					"pixel count, its share of the frame, and its position in the frame as fractions "
+					"from the left and from the top. An object that covered none is reported with its "
+					"world bounding-box centre and where it lies relative to the view: entirely behind "
+					"the camera, entirely off-frame (with the direction), overlapping the frame but "
+					"covering no pixels (occluded, or smaller than one pass pixel -- this does not "
+					"distinguish those), or crossing the camera plane. Positions are measured in a "
+					"small one-ray-per-pixel identity pass, so a footprint under one pass pixel reads "
+					"as 0, and the pass's dimensions are reported. An object that is part of an "
+					"assembly also carries the name of its `parent` node, and a repetition of an "
+					"instancing chunk (`grid[3,1]`) carries `instancedFrom` -- the chunk you can "
+					"actually EDIT, since a repetition is not a chunk of its own. Both are omitted "
+					"for an ordinary top-level object. Where an object lies relative to "
+					"the view is NOT computed -- and says so -- when the active camera is not a "
+					"pinhole, or the render was taken from a named view or an orientation-only camera "
+					"override. YOU USUALLY DO NOT NEED TO CALL THIS: the same inventory comes back "
+					"automatically, in the same words, on every full-scene beauty render's result "
+					"under `inventory`. Returns {ok,objects,covered,passWidth,passHeight,"
+					"framePositionComputed,framePositionNote,entries,notAreaSampled,text,message}. "
+					"`notAreaSampled` is an array of {name,reason} for emissive objects this render "
+					"measured as not selected by light sampling (their emission still shows on direct "
+					"view and BSDF hits); omitted when empty. It renders "
+					"internally (one cheap identity pass), changes nothing in the document, and does "
+					"not replace the image read_image returns.",
+					"{\"type\":\"object\",\"properties\":{}}"
+				},
 				{
 					"compare_to_reference",
 					"Measure how closely the current scene's render matches a reference photo -- "
@@ -628,10 +1206,17 @@ namespace RISE
 					"find WHICH region is worst (background/environment staging is the most common "
 					"weak spot) instead of guessing from one number; worstCell names that region "
 					"(e.g. \"top-right\"). QUALITY TRADEOFF: omit `samples` (the default) and the "
-					"comparison renders quality:\"draft\" -- cheap, but IGNORES materials/lighting "
-					"entirely, so a low draft-mode RMSE only confirms geometry/composition/camera "
-					"alignment, NOT colour/material match. Pass `samples` (e.g. 16-64) to switch to "
-					"quality:\"production\" for the real, grader-equivalent reading -- recommended "
+					"comparison renders quality:\"draft\" -- cheap, but IGNORES the scene's "
+					"authored LIGHTING (a fixed synthetic studio rig stands in for it, with no "
+					"shadows and no GI), so a low draft-mode RMSE only confirms "
+					"geometry/composition/camera alignment, NOT true lighting/exposure/colour "
+					"match (draft DOES shade each hit with the material's own BSDF -- colour, "
+					"roughness, and any procedural/expression painter it drives, including one "
+					"that queries `proximity`/`occlusion`, still runs -- just under the fixed "
+					"rig instead of the scene's real lights). "
+					"Pass `samples` (e.g. 8-16 -- an agent-"
+					"surface cap of 16 applies here too, same as the render verb's own samples cap) "
+					"to switch to quality:\"production\" for the real, grader-equivalent reading -- recommended "
 					"workflow: iterate cheaply under the draft default while getting composition "
 					"right, then request `samples` once composition looks plausible. `visual` "
 					"(default true) also returns a [render | reference | abs-diff heatmap] "
@@ -680,12 +1265,550 @@ namespace RISE
 						"\"visual\":{\"type\":\"boolean\",\"description\":"
 						"\"Optional, default true. When true, also returns a composite [render|reference|heatmap] diff image. Set false to save tokens once you only need the numeric feedback.\"},"
 						"\"samples\":{\"type\":\"number\",\"description\":"
-						"\"Optional sample-count override, clamped to [1,65536]. Omit for a cheap quality:draft comparison (materials/lighting ignored); supply for a real quality:production RMSE reading -- see the tool description's quality tradeoff.\"},"
+						"\"Optional sample-count override, clamped to [1,16] (an agent-surface cap, same as the render verb's own samples cap). Omit for a cheap quality:draft comparison (scene lighting ignored, a fixed studio rig stands in; materials ARE shaded under it); supply for a real quality:production RMSE reading -- see the tool description's quality tradeoff. When a requested value above 16 is clamped, the result carries an `agentRenderCap` object naming the cap.\"},"
 						"\"split\":{\"type\":\"boolean\",\"description\":"
 						"\"Optional, default false. Returns an object-vs-background RMSE breakdown (one extra objectmap render) -- see the tool description's split paragraph.\"},"
 						"\"splitObjects\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
 						"\"Optional array of object names, only meaningful alongside split:true. Scopes the OBJECT bucket to ONLY the named registered object(s) -- every other pixel, including other registered geometry like a ground plane or backdrop, falls into BACKGROUND instead. Without this, a modeled ground plane/backdrop counts as OBJECT too, inflating the OBJECT bucket -- see the tool description's WARNING. A name not found in the candidate's objectmap legend is dropped from the mask and surfaced in split.note (never a hard failure).\"}"
 					"},\"required\":[\"reference\"]}"
+				},
+				{
+					"file_build_plan",
+					"File the build plan for the scene you are building: one entry per ELEMENT, each broken "
+					"into named PIECES, each naming how that element will be constructed AND carrying a 2D "
+					"outline sketch of it. On a "
+					"session that has not filed one, EVERY call "
+					"that creates geometry (insert_chunk/insert_chunks carrying a geometry chunk, "
+					"insert_geometry_scaffold, replace_geometry_scaffold) is refused and names this "
+					"tool -- up to 3 refusals; the 4th such call is let through and the gate stops "
+					"intercepting for the rest of the session. `pieces` is REQUIRED per element: at "
+					"least one name, in your own words; any names are accepted and nothing checks them. "
+					"`construction` is REQUIRED per element: an ARRAY of one or two methods (a single "
+					"method may also be written as a plain string, e.g. \"lathe\" instead of "
+					"[\"lathe\"] -- both are accepted). Name TWO when the element genuinely needs two, "
+					"e.g. [\"lathe\",\"sweep\"] for a copper still whose pot is a solid of revolution "
+					"and whose condenser is a coiled tube: you are then given the grammar and a worked "
+					"example for BOTH, and hand-approximating one of them is what naming only one "
+					"leads to. At most 2 per element and no repeats -- each method you name adds its "
+					"own grammar to what the builder reads, and an element needing three methods is "
+					"two elements. Every entry "
+					"must be one of exactly: \"primitive\" (a single built-in shape chunk -- balls, "
+					"crates, poles, rings; the blockout default), \"csg\" (a csg_object or an "
+					"sdf_geometry combining shapes with boolean ops -- union/subtract/intersect: drilled "
+					"bores, clipped tapers, lenses), \"sweep\" (a sweep_geometry profile swept along a "
+					"path -- tentacles, stems, handles; taper and closed loops), \"lathe\" (a "
+					"lathe_geometry: an open `profile_point <r> <h>` silhouette spun about an axis -- "
+					"vases, bottles, goblets, turned legs, finials, any solid of revolution), \"chain\" "
+					"(a skeleton_geometry joint graph, or sdf_geometry parts blended with smin, into "
+					"one continuous form -- creature bodies, limbs, spines, necks, vessel bodies; a "
+					"chunk mixing smin AND booleans is \"chain\" -- the blend characterises the form, "
+					"booleans are trim), \"displaced\" (a "
+					"displaced_geometry driven by a painter -- terrain, bark, rock faces), \"mesh\" (a "
+					"triangle-mesh chunk -- imported "
+					"or authored assets). Only `sweep`, `chain` and `lathe` summon their chunk's schema "
+					"and a worked example into the builder prompt; every other value (`primitive`, "
+					"`csg`, `displaced`, `mesh`) adds nothing beyond the always-present basics and "
+					"costs one of the two method slots -- declare those alone for a simple element, "
+					"never beside a richer method; a creature is typically `chain` + `sweep`. "
+					"`outline` is REQUIRED per element: a closed 2D polygon of at "
+					"least 3 \"x y\" "
+					"points separated by semicolons, in any units you like (it is scaled to fit its own "
+					"bounding box). Any shape is accepted, a rough blob included. Each outline is drawn "
+					"into a 256x256 silhouette and returned to you as one tiled image alongside its point "
+					"count, filled-area fraction and aspect ratio, so you can see what you sketched. Any "
+					"construction answer is accepted, including \"primitive\" for every element. The plan is "
+					"NOT binding: declaring one construction and then authoring a different chunk kind is "
+					"allowed and is never refused, and no piece has to become a chunk. "
+					"FILING STARTS THE BUILD: the session enters the PIECES phase with the FIRST element "
+					"active, every chunk you create while an element is active is recorded against it, "
+					"finish_element closes it (reporting what was recorded and returning an isolate render "
+					"of it) and makes the next element active, and after the last one the session enters "
+					"the COMPOSE phase for arrangement, lighting and camera. An edit aimed at a chunk "
+					"recorded against a DIFFERENT element is refused (up to 3 times, then the phase rules "
+					"stop intercepting); chunks with no element recorded against them, and light, camera, "
+					"film, rasterizer, rasterizer-output, material and painter chunks, are editable in "
+					"every phase. "
+					"Filing does not change the document -- no chunk, no "
+					"head version, no undo step. Returns {filed,replacedPreviousPlan,elementCount,elements:"
+					"[{element,pieces,construction,note,outline,view,pointCount,areaFraction,aspect}],phase,"
+					"activeElement,png_base64,compositeWidth,compositeHeight,message}. Calling it again "
+					"replaces the previous plan, every sketch filed with it and every chunk-to-element "
+					"record, and makes the first element of the new plan active.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"elements\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":64,\"description\":"
+						"\"Required, at least one entry -- the elements of the scene you are about to build.\","
+						"\"items\":{\"type\":\"object\",\"properties\":{"
+							"\"element\":{\"type\":\"string\",\"description\":"
+							"\"Required. The name of this element, in your own words (e.g. \\\"wizard\\\", \\\"terrain\\\").\"},"
+							"\"pieces\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":32,\"items\":{\"type\":\"string\"},\"description\":"
+							"\"Required, at least one -- the pieces this element breaks down into, in your own words (e.g. [\\\"robe\\\",\\\"hat\\\",\\\"beard\\\",\\\"staff\\\"]). Any names are accepted and nothing checks what they say. They are a declaration, not a commitment: nothing requires a chunk per piece and no piece is separately gated.\"},"
+							"\"construction\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":2,"
+							"\"items\":{\"type\":\"string\","
+							"\"enum\":[\"primitive\",\"csg\",\"sweep\",\"lathe\",\"chain\",\"displaced\",\"mesh\"]},"
+							"\"description\":"
+							"\"Required. One or two of: primitive, csg, sweep, lathe, chain, displaced, mesh -- no repeats. Name two when the element really is built two ways (e.g. [\\\"lathe\\\",\\\"sweep\\\"] for a turned vessel with a coiled pipe); you then get the grammar for both. A single method may also be sent as a plain string instead of a one-item array.\"},"
+							"\"outline\":{\"type\":\"string\",\"description\":"
+							"\"Required. A closed 2D outline of this element as semicolon-separated \\\"x y\\\" points, at least 3 of them -- e.g. \\\"0 0; 3 0.4; 4 1.6; 1.2 2.1; -0.3 1.1\\\". The last point joins back to the first automatically. Units and origin are yours; the shape is scaled to fit its own bounding box. Self-intersecting outlines are allowed (filled by the even-odd rule). Rejected only if it has fewer than 3 points, a point that is not two finite numbers, or all points on one horizontal or vertical line.\"},"
+							"\"view\":{\"type\":\"string\","
+							"\"enum\":[\"front\",\"side\",\"top\"],"
+							"\"description\":"
+							"\"Optional, default \\\"front\\\". Which axis-aligned direction this outline is drawn from.\"},"
+							"\"note\":{\"type\":\"string\",\"description\":"
+							"\"Optional free text about this element.\"}"
+						"},\"required\":[\"element\",\"pieces\",\"construction\",\"outline\"]}}"
+					"},\"required\":[\"elements\"]}"
+				},
+				{
+					"finish_element",
+					"Close the element you are working on and move to the next one. Takes no arguments -- it "
+					"closes whichever element is currently active. Returns the facts of that element: the "
+					"chunks recorded against it, which of its declared pieces have a chunk whose NAME "
+					"contains that piece name (a case-insensitive substring check on names only -- it says "
+					"nothing about what was built or how well), the phase the session is now in, and the "
+					"next active element. It also returns TWO ISOLATE RENDERS of the element side by side -- "
+					"the object recorded against it, alone in the frame and auto-framed AT CLOSE RANGE; when "
+					"several objects were recorded, the one with the most authored parts (an sdf_geometry's "
+					"part lines, say), ties going to the larger bounding box and then the name; the message "
+					"says which, and finishing again with no change to the shape shows the next one. LEFT is a DRAFT (studio-preview shading: the material's own BSDF shaded under a "
+					"crude fixed rig, so form, proportion and coarse colour are visible but there is no true "
+					"light response -- no shadows, reflection/refraction, or emission); "
+					"RIGHT is the same object's MATERIALS under a fixed studio light rig that replaces the "
+					"scene's own lighting for that render only. The message asks you to reopen_element if "
+					"detail you authored is missing or melted, and to fix the material if a surface reads as "
+					"one flat colour or something meant to be glass or membrane reads opaque. After the "
+					"LAST element the session enters the COMPOSE phase, where arrangement, lighting, "
+					"camera, materials and edits to any element's chunks are allowed and creating new "
+					"geometry is refused. Nothing is required of an element before you finish it, and "
+					"nothing is scored. It changes nothing in the document -- no chunk, no head version, no "
+					"undo step. ok:false means the call did nothing (no build plan filed, or every element "
+					"is already finished) and message says which. Returns {ok,element,phase,nextElement,"
+					"chunks,piecesNamed,piecesNotNamed,isolate,isolateCandidates,rendered,png_base64,"
+					"message}.",
+					"{\"type\":\"object\",\"properties\":{}}"
+				},
+				{
+					"reopen_element",
+					"Go back to an element you already finished, or switch to a different one. The named "
+					"element becomes active, the session returns to the PIECES phase, and chunks you create "
+					"from then on are recorded against it. Legal from any phase, including compose; it is "
+					"never refused and never counts against any refusal cap. It is the way out of the "
+					"compose phase's refusal to create new geometry. It changes nothing in the document -- no "
+					"chunk, no head version, no undo step. ok:false means the call did nothing (no build "
+					"plan filed, or that name is not in it, in which case the message lists the names that "
+					"are). Returns {ok,element,phase,previousPhase,chunks,unfinished,message}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"element\":{\"type\":\"string\",\"description\":"
+						"\"Required. The name of an element in the filed build plan, exactly as you filed it.\"}"
+					"},\"required\":[\"element\"]}"
+				},
+				{
+					"build_element",
+					"Build the ACTIVE element in one go: this call asks your provider, in a FRESH "
+					"context that contains nothing but the scene-language grammar for the chunk kinds "
+					"involved, the pieces you declared for this element, the outline you sketched for "
+					"it, the height you ask for and a fixed local-frame contract, to construct the "
+					"whole element on its own. What comes back is split into chunks, checked, and "
+					"inserted here. It is the way the FIRST geometry for an element gets made: while "
+					"the active element has no chunk recorded against it, insert_chunk and "
+					"insert_chunks carrying a geometry chunk are refused and name this tool -- up to 3 "
+					"refusals shared with the other build-phase rules, after which they stop "
+					"intercepting. Once the element has any chunk recorded against it, authoring "
+					"geometry for it by hand is allowed and is never refused again. Only geometry "
+					"chunks are ever refused this way; materials, painters and standard_objects never "
+					"are. THE ELEMENT IS BUILT AT THE ORIGIN, NOT IN PLACE: the contract sent to the "
+					"builder puts the element's base-centre at (0,0,0) with +Y up, facing +Z -- "
+					"place_element is what moves it into the scene afterwards. `height` is a REQUEST, "
+					"not a limit: the realised bounding box is measured and reported back to you, and "
+					"nothing is refused for missing it. EVERY CHUNK NAME MUST BEGIN with the element's "
+					"prefix (the element name lowercased, non-alphanumerics collapsed to underscores, "
+					"plus a trailing underscore -- \"wizard\" gives \"wizard_\"); a chunk whose name "
+					"does not begin with the required prefix is rejected and is NOT renamed, because "
+					"renaming would break the references between the builder's own chunks. If anything "
+					"is rejected, ONE repair retry runs automatically with the exact rejection text -- "
+					"one, then it stops, and whatever landed stays landed. Nothing is ever dropped "
+					"silently: a chunk that came back unclosed, unnamed, wrongly prefixed or rejected "
+					"by insertion is reported with its reason. Everything that lands is recorded "
+					"against the active element exactly as if you had inserted it yourself. The "
+					"element's FIRST object also mints its ROOT NODE -- a geometry-less "
+					"`standard_object` container named \"<prefix>element_root\" that every object of "
+					"this element is parented to, so the element is one subtree in the scene graph "
+					"and place_element moves it with a single transform. You may parent objects to "
+					"each other inside the element to build real internal hierarchy; a `parent` you "
+					"write yourself is never overruled. On a "
+					"provider that cannot run a separate completion this returns ok:false with a plain "
+					"statement, nothing else changes, and authoring by hand is not blocked. Returns "
+					"{ok,element,provider,model,chunksExtracted,landed,rejected:[{name,kind,reason}],"
+					"chunkResults,retryRan,retrySucceeded,sdfPartCount,bbox:{min,max,height},message}; "
+					"landed names every chunk that went in (landedKinds gives each one's kind, landedAttempts the attempt -- 1, or 2 for the repair retry -- that landed it; each rejected entry carries its attempt too), and "
+					"chunkResults details only the chunks that did not insert cleanly or carry a "
+					"notice.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"element\":{\"type\":\"string\",\"description\":"
+						"\"Required. The name of the ACTIVE element, exactly as you filed it in file_build_plan. A name that is not the active element does nothing and says which element is active.\"},"
+						"\"height\":{\"type\":\"number\",\"description\":"
+						"\"Required. How tall the element should be in world units (its Y extent). Must be greater than 0. A request, not a limit -- the realised bounding box comes back in the result and nothing is refused for missing it.\"},"
+						"\"notes\":{\"type\":\"string\",\"description\":"
+						"\"Optional free text passed to the builder alongside the pieces and the outline -- anything about this element the plan does not already say. Nothing checks what it says.\"}"
+					"},\"required\":[\"element\",\"height\"]}"
+				},
+				{
+					"place_element",
+					"Move an element into the scene: ONE local transform written to the element's "
+					"ROOT NODE -- a container object every chunk the element created is parented to "
+					"-- so an element built at the origin ends up where you want it without you "
+					"patching each object. `position` is where the element's base-centre goes; each "
+					"object's own position inside the element is scaled, rotated and then added to it "
+					"by the engine's `world = parent.world * local` composition, so the objects keep "
+					"their arrangement relative to one another. `scale` is one uniform factor or "
+					"three per-axis factors about that same origin. `orientation` is Euler degrees "
+					"about it. Rotation and scale are EXACT for every object under the root, "
+					"including objects that carry a rotation of their own and objects authored with "
+					"`quaternion` or `matrix` -- a child's transform is its LOCAL one and composes as "
+					"a matrix. The objects' own authored values are NEVER rewritten, and the "
+					"placement is ABSOLUTE: calling again with the same arguments changes nothing, so "
+					"you can re-place freely. Legal in the pieces phase and in the compose phase. The "
+					"whole placement is ONE batch, so ONE head version bump and ONE undo step. "
+					"`skipped` names any object recorded against the element that the root does not "
+					"carry (it was authored with a `parent` of its own pointing outside the element, "
+					"or it is a CSG operand, which cannot be parented). ok:false means nothing was "
+					"submitted (no build plan, an element that is not in it, or an element with no "
+					"root node -- the root is created with the element's FIRST object) and the "
+					"document is unchanged. Returns {ok,element,root,objects,"
+					"skipped:[{object,reason}],patchResults,patchesApplied,patchesRejected,"
+					"bbox:{min,max},message}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"element\":{\"type\":\"string\",\"description\":"
+						"\"Required. The name of an element in the filed build plan, exactly as you filed it.\"},"
+						"\"position\":{\"type\":\"string\",\"description\":"
+						// 87 step 5 (2026-08-18): this SHORT line and the fuller
+						// description below now agree that the placement is
+						// ABSOLUTE.  It used to say OFFSET, because there was no
+						// node to hold the pose and the verb had to add into
+						// every object's own position; with a root node the
+						// value is simply where the element IS.
+						"\"Required. Where the element's base-centre goes in WORLD space, as "
+						"\\\"x y z\\\". ABSOLUTE, not an offset: it is written to the element's root "
+						"node, so calling again with the same value changes nothing. Each object's own "
+						"position inside the element is scaled, rotated and then added to it.\"},"
+						"\"scale\":{\"type\":\"string\",\"description\":"
+						"\"Optional, default \\\"1\\\". ONE uniform factor (\\\"2\\\") or THREE per-axis factors (\\\"sx sy sz\\\"). Every component must be finite and greater than 0 -- a zero makes the element's composed transform singular for every object under it. Scaling is about the element's own origin.\"},"
+						"\"orientation\":{\"type\":\"string\",\"description\":"
+						"\"Optional, default \\\"0 0 0\\\". Euler degrees about the element's own origin, as \\\"ex ey ez\\\".\"}"
+					"},\"required\":[\"element\",\"position\"]}"
+				},
+				{
+					"light_scene",
+					"Design the whole scene's lighting: this call first answers WHAT IN THIS WORLD "
+					"PHYSICALLY EMITS LIGHT for this scene in one request -- the sun or sky, an opening "
+					"light arrives through, a fixture or lamp, or something that itself glows; things in "
+					"the world, never a renderer light kind -- then authors the chunks for ALL of those "
+					"sources together in one further request. Both requests run in their own separate "
+					"FRESH context that contains nothing but this scene's object inventory (every object, "
+					"its screen footprint and its world position), the camera, the scene's world bounds, "
+					"the description you imagined if you wrote one, and the lights that already exist; "
+					"the second request additionally gets the light palette with its grammar. At most 16 "
+					"sources; a longer enumeration is cut to its first 16 and the result says so. For you "
+					"this is still ONE call and ONE result: both requests run here, so your turn count "
+					"does not grow with the lighting. What comes back is split into chunks, checked, and "
+					"inserted here. THE "
+					"PALETTE LEADS WITH AREA LIGHTING and is the only entry carrying a complete worked "
+					"example. A rectangular area light is ONE chunk, rect_light, taking center, size, "
+					"facing, color and exitance. A glowing SOLID is also ONE chunk, shape_light, taking "
+					"shape (sphere, ellipsoid, box or cylinder), center, size, orientation, color and "
+					"exitance -- a closed solid emits outward in every direction, so it needs no facing. "
+					"The parser expands either into the general form, which is "
+					"what any other shape of emitter needs -- an ordinary "
+					"object wearing an emissive lambertian_luminaire_material, which is a painter plus "
+					"that material plus a geometry plus a standard_object -- and being an ordinary "
+					"object, it is rendered like one: the camera sees its surface, so it is both a "
+					"light and a thing the picture shows. Then hosek_wilkie_skylight "
+					"(a physically based analytic sun-and-sky). Then omni_light, spot_light and "
+					"directional_light with their parameters and no example -- they are zero-area "
+					"idealizations whose shadows have no penumbra, for special cases. Each request to "
+					"insert one is refused once with the facts and the alternatives, and the identical "
+					"request after that refusal is applied. shape_light, rect_light, an emissive object "
+					"and hosek_wilkie_skylight are never subject to this at all. ambient_light is "
+					"NOT offered and is REFUSED on every path that could create one, in every phase and "
+					"with the build protocol off: it contributes the same color * power at every "
+					"shading point, has no position or direction, and casts no shadow ray, so it can "
+					"produce neither a shadow nor any falloff. It is the way the FIRST "
+					"lighting for a composed scene gets made: in the COMPOSE phase, while light_scene has "
+					"not run, insert_chunk and insert_chunks carrying a light chunk are refused and name "
+					"this tool -- up to 3 refusals shared with the other build-phase rules, after which "
+					"they stop intercepting. Once light_scene has run, authoring lights by hand is allowed "
+					"and is never refused again; editing a light that already exists is never refused at "
+					"all, and lights created inside an element window in the pieces phase are not affected "
+					"by any of this. THERE IS NO NAME PREFIX -- lights are scene-global and belong to no "
+					"element -- but a name already used in the scene is rejected and NOT renamed, because "
+					"renaming would break the references between the pass's own chunks. This call only "
+					"ADDS: it never removes a light, and it will not accept a camera, a film, a rasterizer "
+					"or a shader op, nor geometry unless the same answer defines an emissive material to "
+					"put on it. If the build's answer rejects anything, ONE repair retry runs automatically "
+					"with the exact rejection text over the WHOLE build, then it stops, and whatever landed "
+					"stays landed. Nothing is "
+					"ever dropped silently. The result then reports WHAT EACH LIGHT ACTUALLY DOES: every "
+					"light, emissive object and environment in the scene is rendered ALONE at a small size "
+					"and its frame's mean luma reported, against the same frame with all of them lit. That "
+					"measurement is capped and the message says so when the cap applies; the figures do "
+					"not sum to the all-lights frame, because light transport through this renderer is not "
+					"additive. On a provider that cannot run a separate completion this returns ok:false "
+					"with a plain statement, nothing else changes, and authoring lights by hand is not "
+					"blocked. Returns {ok,provider,model,chunksExtracted,landed,"
+					"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,soloableLights,"
+					"soloed,allLightsMeanLuma,contributions:[{name,kind,soloed,meanLuma,share,reason}],"
+					"sourcesPlanned,sourcesReturned,sourcesTruncated,completions,areaLights,"
+					"zeroAreaLights,skyLights,otherLights,"
+					"sources:[string],"
+					"message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"notes\":{\"type\":\"string\",\"description\":"
+						"\"Optional free text passed to the lighting pass alongside the inventory and the camera -- anything about the mood or the look this scene's own state does not already say. Nothing checks what it says.\"}"
+					"},\"required\":[]}"
+				},
+				{
+					"populate_scene",
+					"Populate the scene: this call asks your provider, in a FRESH context that "
+					"contains nothing but this scene's object inventory (every object, its screen "
+					"footprint and its world position), the camera, the scene's world bounds, the "
+					"description you imagined if you wrote one, and A LIST OF THE GEOMETRIES AND "
+					"MATERIALS THIS SCENE ALREADY HAS with the objects currently using each, to place "
+					"more objects. What comes back is split into chunks, checked, and inserted here. "
+					"IT CREATES standard_object CHUNKS AND NOTHING ELSE: no geometry, no material, no "
+					"painter, no light, no camera. Each chunk must do one of two things. Either it "
+					"must name a geometry and a material THAT ALREADY EXIST, or it clones an existing "
+					"object with `source <object>` -- a clone keeps its source's geometry, material "
+					"and children, so omit `material` there, and it may add count_u / count_v and "
+					"expr(...) positions. Counts must be positive integer literals (no expr, let "
+					"names or decimals), and count_v needs count_u. The source must already exist in "
+					"the scene: not declared in the same call, not itself carrying counts, and not "
+					"given new children in the same call. A chunk may not repeat a parameter such as "
+					"count_u or parent. One chunk may make at most 256 objects, counting the source's "
+					"whole subtree, and one call at most 1024. A chunk naming an unknown geometry, "
+					"material or source is rejected with that reason, and a chunk of any other kind "
+					"is rejected too. Making new form is "
+					"build_element's job, not this one's. The prompt carries ONE worked example, built "
+					"from this scene's own geometry and material names so it is literally insertable "
+					"here. It is the way the FIRST compose-phase render gets earned: in the COMPOSE "
+					"phase, while populate_scene has not run, the first full-scene render is refused "
+					"ONCE and names this tool -- one refusal, shared with the other build-phase rules "
+					"and capped with them, after which every render proceeds whether or not this ran; "
+					"renders in the pieces phase are never refused, and neither is a render with "
+					"`isolate` or `zoom` (inspection looks at one object). A name already used in the scene is rejected and NOT renamed. If "
+					"anything is rejected, ONE repair retry runs automatically with the exact "
+					"rejection text -- one, then it stops, and whatever landed stays landed. Nothing "
+					"is ever dropped silently. The result reports which objects were created and what "
+					"geometry and material each one repeats, what was rejected and why, and the "
+					"scene's object count before and after. On a provider that cannot run a separate "
+					"completion this returns ok:false with a plain statement, nothing else changes, "
+					"and authoring standard_object chunks by hand is not blocked. A scene with no "
+					"standard_object naming both a geometry and a material has nothing to repeat, and "
+					"this returns ok:false saying so without calling the provider. Returns "
+					"{ok,provider,model,chunksExtracted,created:[{name,geometry,material}],"
+					"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,objectsBefore,"
+					"objectsAfter,message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in created, with its kind.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"notes\":{\"type\":\"string\",\"description\":"
+						"\"Optional free text passed to the population pass alongside the inventory and the camera -- anything about what this scene is that its own state does not already say. Nothing checks what it says.\"}"
+					"},\"required\":[]}"
+				},
+				{
+					"environment_scene",
+					"Author the scene's SURROUND: what fills the frame where no object is, and the "
+					"medium light travels through. This call asks your provider, in a FRESH context "
+					"that contains nothing but this scene's object inventory (every object, its screen "
+					"footprint and its world position), the camera, the scene's world bounds, the "
+					"lights that already exist, the description you imagined if you wrote one, and "
+					"WHAT ENVIRONMENT THIS SCENE ALREADY HAS, to write the environment. It is ONE "
+					"request, because there is one environment. What comes back is split into chunks, "
+					"checked, and inserted here. THE PALETTE IS TWO FAMILIES. THE DOME is a PAINTER -- "
+					"there is no environment chunk in this language -- evaluated at a u,v derived from "
+					"the ray direction, and a graded one is two colours plus an expression_function2d "
+					"ramp plus a blend_painter mixing them, while a noise painter gives cloud or foam "
+					"structure and an hdr_painter or exr_painter names an image file. THE MEDIUM is a "
+					"homogeneous_medium (absorption, scattering, and phase on one line as either "
+					"`isotropic` or `hg <g>`) or a painter_heterogeneous_medium, plus a global_medium "
+					"chunk naming it, which is how this renderer spells fog, haze, underwater depth "
+					"falloff and shafts of light. THE BINDING IS MADE FOR YOU: the LAST painter the "
+					"answer lands is bound as the scene's radiance map with the camera background on, "
+					"by a rasterizer chunk this call appends carrying every parameter the previous one "
+					"had -- so any painter written before it is an input that one is built from, and "
+					"the document ends with two rasterizer chunks of which the last is live. IT "
+					"ACCEPTS painter, function and medium chunks and NOTHING ELSE: a geometry or a "
+					"standard_object is rejected by name, because a backdrop plane or a sky dome built "
+					"as a shape is FORM and making new form is build_element's job, not this one's; a "
+					"camera, a film, a rasterizer and a shader op are rejected too; and "
+					"hosek_wilkie_skylight is rejected because it is a light chunk that installs a "
+					"dome itself and belongs to light_scene -- on a scene that already carries one, "
+					"this pass authors no dome at all and writes only the medium. It is HALF of the "
+					"way the FIRST compose-phase render gets earned: in the COMPOSE phase the first "
+					"full-scene render is refused ONCE and names whichever of populate_scene and "
+					"environment_scene have not yet run -- one refusal for the whole checklist, "
+					"shared with the other build-phase rules and capped with them, after which every "
+					"render proceeds whether or not either ran; renders in the pieces phase are never "
+					"refused, and neither is a render with `isolate` or `zoom`. A name already used in the scene "
+					"is rejected and NOT renamed. If anything is rejected, ONE repair retry runs "
+					"automatically with the exact rejection text -- one, then it stops, and whatever "
+					"landed stays landed. Nothing is ever dropped silently. The result reports what "
+					"landed, what was bound, whether the scene has a dome and a global medium before "
+					"and after, and the frame's TONAL DISTRIBUTION measured before and after -- a "
+					"mean, a spread and two percentiles of the same small internal render, compared to "
+					"nothing. On a provider that cannot run a separate completion this returns "
+					"ok:false with a plain statement, nothing else changes, and authoring painter and "
+					"medium chunks by hand is not blocked. Returns {ok,provider,model,chunksExtracted,"
+					"landed,rejected:[{name,kind,reason}],chunkResults,patchResults,retryRan,"
+					"retrySucceeded,"
+					"completions,painters,media,boundPainter,bindingApplied,bindingReason,rasterizer,"
+					"radianceMapBefore,radianceMapAfter,globalMediumBefore,globalMediumAfter,"
+					"toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},toneAfter:{...},message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"notes\":{\"type\":\"string\",\"description\":"
+						"\"Optional free text passed to the environment pass alongside the inventory and the camera -- anything about the place or the weather this scene's own state does not already say. Nothing checks what it says.\"}"
+					"},\"required\":[]}"
+				},
+				{
+					"frame_scene",
+					"Frame the scene: decide where the camera goes and what it looks at. This call "
+					"asks your provider, in a FRESH context that contains nothing but THE FULL "
+					"INVENTORY OF THIS SCENE -- every object, its screen footprint, where it sits in "
+					"the frame and, for the ones covering no pixels, WHY (its bounding box is behind "
+					"the camera, or projects entirely off-frame in a named direction, or crosses the "
+					"camera plane) -- plus the current camera chunk VERBATIM and its resolved pose, "
+					"the scene's world bounds, the frame's measured tone, the description you imagined "
+					"if you wrote one, and the camera palette with each kind's own parameters. It is "
+					"ONE request, because there is one camera. IT RETURNS CAMERA PARAMETERS ONLY: "
+					"exactly ONE camera chunk is accepted, a second is rejected with that reason, and "
+					"a geometry, a light, a material or a `film` chunk is rejected by name -- film "
+					"carries width, height and pixelAR, which is raster-size policy rather than "
+					"framing, and this call never changes them. If the camera it writes is the SAME "
+					"KIND the scene already has, each parameter it names is applied to that chunk as "
+					"one patch batch -- one head bump, one undo step -- and any parameter it leaves "
+					"out keeps the value it has; a DIFFERENT kind is inserted and the previous camera "
+					"chunk then removed, in that order so a failed insert can never leave the scene "
+					"with no camera. THE RESULT IS MEASURED, NOT ASSERTED: the same object-coverage "
+					"pass runs through the camera before the edit and again through the camera after "
+					"it, and the result states how many objects covered at least one pixel on each "
+					"side, naming the ones brought into the picture and the ones no longer in it. If "
+					"the new camera covers FEWER objects that is stated plainly and NOTHING is "
+					"reverted -- a closer view of fewer things is a framing decision, not an error. It "
+					"is the way the FIRST framing of a composed scene gets made: in the COMPOSE phase, "
+					"while frame_scene has not run, the first camera-authoring edit -- an insert or a "
+					"patch of a camera chunk -- is refused ONCE and names this tool; one refusal, "
+					"shared with the other build-phase rules and capped with them, after which every "
+					"camera edit proceeds whether or not this ran. Camera edits in the pieces phase "
+					"are never refused. THIS CALL ITSELF IS ORDERED, too: frame_scene frames what "
+					"the scene CONTAINS, and in the COMPOSE phase, while populate_scene has not yet "
+					"reached the provider, frame_scene is refused ONCE and names populate_scene -- "
+					"the same shared refusal, capped with the others, after which every frame_scene "
+					"call proceeds whether or not populate_scene ran. If anything is rejected, ONE "
+					"repair retry runs automatically with the exact rejection text -- one, then it "
+					"stops. Nothing is ever dropped "
+					"silently. On a provider that cannot run a separate completion this returns "
+					"ok:false with a plain statement, nothing else changes, and editing the camera by "
+					"hand is not blocked. Returns {ok,provider,model,chunksExtracted,action,"
+					"cameraKindBefore,cameraNameBefore,cameraKindAfter,cameraNameAfter,paramsApplied,"
+					"rejected:[{name,kind,reason}],patchResults,chunkResults,retryRan,retrySucceeded,"
+					"completions,objectsBefore,coveredBefore,objectsAfter,coveredAfter,"
+					"broughtIntoFrame,pushedOutOfFrame,message}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"notes\":{\"type\":\"string\",\"description\":"
+						"\"Optional free text passed to the framing pass alongside the inventory and the current camera -- anything about the shot you want that this scene's own state does not already say. Nothing checks what it says.\"}"
+					"},\"required\":[]}"
+				},
+				{
+					"imagine_scene",
+					"Imagine the finished scene before you build it: write your own visual description "
+					"of what it should look like -- subject, composition, lighting, mood, colour -- and "
+					"this call asks your provider to generate one image from exactly that text, returns "
+					"it to you, and holds it as this session's SCENE TARGET. `description` is REQUIRED "
+					"and is free text; nothing checks what it says, and no wording is preferred. Writing "
+					"the description IS the imagining -- the image is what lets you check yourself "
+					"against it afterwards. Your words are the SUBJECT; the image is requested in a "
+					"simple, flat-shaded 3D-render style so it is something this renderer can actually "
+					"approach, rather than concept art it cannot. Once a target exists, every full-frame "
+					"production render (not draft, not a mode: render, not an isolate or zoom render) also "
+					"carries a `sceneTarget` block -- {imagined, targetWidth, targetHeight, composite, "
+					"compositeWidth, compositeHeight} -- and any such render you ask an image of shows "
+					"that target ABOVE your render in one picture, separated by a grey rule, in place of "
+					"the rendered frame on its own. The render half is exactly the size the frame alone "
+					"would have been, so looking at the target costs you no resolution. THERE IS NO "
+					"SCORE and there is deliberately no similarity number: comparing the two pictures is "
+					"your job, not a metric's, and nothing is gated on the target, no reproduction is "
+					"expected, and the target is a reminder of what you set out to make rather than a "
+					"specification. Calling it again replaces this session's scene target. On a provider "
+					"that does not generate images this returns ok:false with a plain statement and "
+					"nothing else changes -- no call is blocked by the absence of a target. Returns "
+					"{ok,imagined,replacedPreviousTarget,provider,model,width,height,png_base64,message}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"description\":{\"type\":\"string\",\"description\":"
+						"\"Required. Your own words for what the finished scene should look like -- what is in it, how it is arranged, how it is lit, what it feels like. Write it as you would describe a picture to someone who will draw it.\"}"
+					"},\"required\":[\"description\"]}"
+				},
+				{
+					// Doc 90 slice R1 (2026-08-22) -- THE ITERATION RATCHET's
+					// verb.  Kept semantically identical to
+					// AgentMcpAdapter.cpp's tools/list entry for the same
+					// drift-class reason as file_build_plan / imagine_scene.
+					"set_render_anchor",
+					"Keep the render you are looking at as this session's ANCHOR -- the picture "
+					"every later render is shown beside. Call it the moment a render is better "
+					"than the one you have been comparing against; it takes NO arguments and pins "
+					"your MOST RECENT full-frame production render. WHY IT EXISTS: without an "
+					"anchor you only ever see the newest frame, so an edit that made the scene "
+					"worse looks exactly like one that made it better, and a long refinement pass "
+					"can walk a good scene downhill with nothing noticing. From the first "
+					"full-frame production render after you finish your last element (or, in a "
+					"session with no build plan, your first full-frame render), every such render "
+					"you ask an image of comes back as ONE picture -- the anchor ABOVE, this "
+					"render BELOW, each pane labelled with the head revision it was rendered at -- "
+					"and the result carries an `anchor` block: {anchored, established, "
+					"anchorRevision, currentRevision, composite, compositeWidth, compositeHeight}. "
+					"THERE IS NO SCORE and there is deliberately no similarity number: which of "
+					"the two pictures is better is your judgment, nothing is gated on it, and no "
+					"particular answer is expected. The render that BECAME the anchor carries no "
+					"composite -- there is nothing yet to set it beside. Draft renders, mode: "
+					"renders, isolate renders and zoom renders are never anchored and never compared, because a "
+					"difference against one of those would be a render setting rather than a "
+					"change to the scene. It changes nothing in the document -- no chunk, no head "
+					"version, no undo step -- so there is no baseHeadVersion and no conflict "
+					"outcome. Returns {ok,pinned,anchorRevision,previousAnchorRevision,message}; "
+					"ok:false means only that no full-frame production render has completed in "
+					"this session yet.",
+					"{\"type\":\"object\",\"properties\":{},\"required\":[]}"
+				},
+				{
+					// Doc 90 slice R2 (2026-08-23) -- THE WAY BACK, the other
+					// half of the ratchet.  Kept semantically identical to
+					// AgentMcpAdapter.cpp's tools/list entry for the same
+					// drift-class reason set_render_anchor above is.
+					"revert_to_revision",
+					"PUT THE WHOLE DOCUMENT BACK to what it was at an earlier head revision of this "
+					"session. Call it the moment you can see that the scene got worse -- most often "
+					"straight after a render whose anchor pane looks better than the render below "
+					"it, passing the anchor's revision. Every render and every edit result you have "
+					"received carries the head revision it belongs to; those are the numbers this "
+					"takes. WHAT IT DOES: the restore is ONE NEW EDIT producing a NEW head revision "
+					"whose contents equal the old one's. Nothing is rewound and no history is "
+					"rewritten -- the revision you are leaving stays available, so you can revert "
+					"the revert if the older scene turns out to be worse after all, and one undo in "
+					"the app undoes the restore like any other edit. It is a WHOLE-DOCUMENT "
+					"restore: everything goes back together, including chunks you added since. It "
+					"REFUSES, changing nothing, when the revision is the CURRENT head (there is "
+					"nothing to restore), is higher than the head (it does not exist yet), or is "
+					"one this session no longer holds -- it keeps the recent revisions its own "
+					"edits and renders passed through, and a refusal names the oldest one still "
+					"available. Returns {ok,applied,status,headVersion,requestedRevision,"
+					"previousRevision,oldestAvailableRevision,droppedAttributions?,"
+					"restoredAttributions?,message}; `previousRevision` is the "
+					"head you just left, which is the number to pass to undo this restore. Always "
+					"pass the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"revision\":{\"type\":\"number\",\"description\":"
+						"\"Required. The head revision to restore the document to -- a number this session has already reported to you (a render's anchorRevision, or the headVersion.revision of an earlier edit result). Not the CURRENT head: that one is refused, because there would be nothing to restore.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"revision\"]}"
 				},
 				{
 					"ask_user",
@@ -998,6 +2121,13 @@ namespace RISE
 				return out;
 			}
 
+			//! Bound model-authored text quoted into an error message.
+			std::string CapSnippet( const std::string& t )
+			{
+				const std::size_t kCap = 600;
+				return t.size() <= kCap ? t : t.substr( 0, kCap ) + "...";
+			}
+
 			ChatStepResult MakeProviderError( ChatErrorKind kind, const std::string& message )
 			{
 				ChatStepResult r;
@@ -1073,10 +2203,13 @@ namespace RISE
 			//! True + the base64 payload iff this call is one of the
 			//! image-CAPABLE verbs and its JSON-RPC result actually carries a
 			//! non-empty png_base64 string.  compare_to_reference (visual:true),
-			//! render (imageMaxEdge:N) and read_viewport all reuse read_image's
+			//! render (imageMaxEdge:N, OR -- G3b, 2026-08-10 -- a `target`
+			//! comparison, which returns its [sketch | silhouette | overlay]
+			//! composite with or without imageMaxEdge and in place of the
+			//! rendered frame) and read_viewport all reuse read_image's
 			//! "png_base64" field name deliberately, so this ONE predicate --
 			//! and every retention/elision policy built on it -- covers all
-			//! four without a second code path.  The field test is what makes
+			//! five without a second code path.  The field test is what makes
 			//! listing render here safe: a render without imageMaxEdge has no
 			//! png_base64 and is not an image result; likewise a read_viewport
 			//! that came back available:false carries an empty png_base64 and
@@ -1088,10 +2221,45 @@ namespace RISE
 			//! injected or hallucinated read_viewport really does return a PNG
 			//! into the transcript.  Listing it here is what keeps the
 			//! image-retention cap covering every PNG that can actually get in.
+			//!
+			//! G3a (2026-08-10): file_build_plan joins the set -- its result
+			//! carries the composite SKETCH PNG under the same field name.
+			//! This is purely about the IMAGE POLICIES (build the image block,
+			//! count it against the retention cap, elide it when superseded);
+			//! it says NOTHING about the E4 sequencing gate, where
+			//! file_build_plan remains neither a mutation nor a look.  The two
+			//! classifications are independent on purpose: "carries pixels" is
+			//! a transport fact, "observed the scene" is a behavioural one, and
+			//! a sketch is the model's own drawing, not an observation.  See
+			//! AgentChatLoop.cpp's IsVisualObserveToolName.
+			//!
+			//! 2026-08-11: AgentMcpAdapter.cpp's tools/call handler now routes
+			//! through the public wrapper (ChatToolResultCarriesImage) too,
+			//! rather than keeping its own hardcoded verb list -- which it had
+			//! been doing, and which HAD drifted (it omitted a plain render).
+			//! This function is now the single source of truth for "does this
+			//! result carry an image" across all three transports.
 			bool IsImageResult( const ChatToolCall& call, const JsonValue& result, std::string& outB64 )
 			{
 				if( ( call.name != "read_image" && call.name != "compare_to_reference"
-				      && call.name != "render" && call.name != "read_viewport" )
+				      && call.name != "render" && call.name != "read_viewport"
+				      && call.name != "file_build_plan"
+				      // S1 (2026-08-11): finish_element's result carries the
+				      // element's ISOLATE RENDER under the same field name.
+				      // Unlike the sketch echo and the imagined target, these
+				      // ARE scene pixels -- which is why finish_element is also
+				      // on AgentChatLoop.cpp's IsVisualObserveToolName, the one
+				      // place where the two classifications coincide.
+				      && call.name != "finish_element"
+				      // Arc 77 Phase 2 (2026-08-11): imagine_scene's result carries
+				      // the generated scene target under the same `png_base64`
+				      // field name every other image-bearing verb uses.  `render`
+				      // is ALREADY on this list, so the whole-scene comparison
+				      // composite needs no entry of its own -- verified rather
+				      // than assumed: this predicate keys on the VERB plus a
+				      // non-empty png_base64, and AgentRpc.cpp's render handler
+				      // writes the composite into exactly that field.
+				      && call.name != "imagine_scene" )
 				    || !result.isObject() ) return false;
 				const JsonValue* b64 = result.find( "png_base64" );
 				if( !b64 || !b64->isString() || b64->asString().empty() ) return false;
@@ -1241,6 +2409,35 @@ namespace RISE
 			// read_document still gets correct supersession.
 			static const char* const kSupersedableVerbs[] = { "read_document", "list_proposals" };
 
+			// THE ONE ARGUMENT-NORMALIZING KEY (doc 91 slice L3a): a NAMED
+			// read_skill is the whole view of ONE named skill file, so a later
+			// read of the SAME name fully contains the earlier copy (property
+			// (1) holds per name) and the key is "read_skill" + the skill's
+			// name -- the argument-normalizing key function property (3) calls
+			// for.  Two DIFFERENT skills never share a key, and the INDEX form
+			// (no name; result {skills:[...]}) is never keyed.  The name comes
+			// from the RESULT (AgentSession::ReadSkill's canonical `name`) when
+			// present, else from the call's `name` argument.  Property (2) is
+			// NOT what admits it: a skill file is static, so the earlier copy
+			// is redundant rather than stale -- the cost rule doc 91 measured
+			// (three skill reads, 165 KB live to the end of a session).
+			if( call.name == "read_skill" ) {
+				JsonValue env;
+				std::string perr;
+				if( !JsonParse( rawJsonRpcResponseLine, env, perr ) || !env.isObject() ) return std::string();
+				if( env.find( "error" ) ) return std::string();
+				const JsonValue& result = env.get( "result" );
+				if( !result.isObject() || !result.get( "markdown" ).isString() ) return std::string();
+				std::string skill = result.get( "name" ).asString();
+				if( skill.empty() ) {
+					JsonValue args;
+					if( JsonParse( call.argsJson, args, perr ) && args.isObject() )
+						skill = args.get( "name" ).asString();
+				}
+				if( skill.empty() ) return std::string();
+				return std::string( kChatReadSkillKeyPrefix ) + skill;
+			}
+
 			bool listed = false;
 			for( std::size_t i = 0; i < sizeof( kSupersedableVerbs ) / sizeof( kSupersedableVerbs[0] ); ++i )
 				if( call.name == kSupersedableVerbs[i] ) { listed = true; break; }
@@ -1278,6 +2475,50 @@ namespace RISE
 		{
 			return "[" + verbName + " result elided -- superseded by a later " + verbName +
 			       " call in this conversation; call " + verbName + " again for the current state]";
+		}
+
+		std::string ChatSupersededResultNoteForKey( const std::string& supersessionKey )
+		{
+			const std::string prefix( kChatReadSkillKeyPrefix );
+			if( supersessionKey.compare( 0, prefix.size(), prefix ) == 0 ) {
+				const std::string skill = supersessionKey.substr( prefix.size() );
+				return "[read_skill \"" + skill + "\" result elided -- superseded by a later read_skill "
+				       "of the same skill in this conversation; call read_skill {\"name\":\"" + skill +
+				       "\"} again if you need it]";
+			}
+			return ChatSupersededResultNote( supersessionKey );
+		}
+
+		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
+		                                               const std::string& element,
+		                                               const std::string& facts,
+		                                               const std::string& carried )
+		{
+			// IMMUTABLE FACTS ONLY (review rounds 5-6): nothing about the
+			// CURRENT session or document -- no phase, mode or edit rule, and
+			// no claim that the element HAS chunks (nothing may have landed;
+			// a later edit or undo may remove them).  The stub is never
+			// rewritten, so every sentence is either past tense about this
+			// result or a pointer to where the current state is read.  The
+			// live rule is stated where it applies: the session's own refusal
+			// names reopen_element.
+			const std::string q = "\"" + element + "\"";
+			std::string note = "[" + verbName + " result for element " + q + " elided -- retired when " + q +
+				" was finished; read_document shows the current document; finish_element / reopen_element "
+				"results list the element's chunks.";
+			if( !facts.empty() ) note += " " + facts;
+			if( !carried.empty() )
+				note += " Per-chunk outcomes that call reported: " + carried + ".";
+			return note + "]";
+		}
+
+		std::string ChatComposeSkillRetirementNote( const std::string& skillName )
+		{
+			// Past tense (review round 6): reopen_element or a new plan makes
+			// "every element is finished" false later, and the stub stays.
+			return "[read_skill \"" + skillName + "\" elided -- retired when every element of the build "
+			       "plan was finished (compose phase); call read_skill {\"name\":\"" + skillName +
+			       "\"} again if you need it]";
 		}
 
 		int ChatUserEntryLiveImageCount( const std::string& userEntryJson )
@@ -1702,7 +2943,8 @@ namespace RISE
 		std::string AnthropicChatCodec::RewriteElidedToolResults(
 			const std::string& packedEntryJson,
 			const std::vector<std::size_t>& resultIndices,
-			const std::string& placeholderText ) const
+			const std::string& placeholderText ,
+			const std::string& /*noteKey: Anthropic carries a plain text block*/ ) const
 		{
 			// Parse + regenerate is LEGAL here: this entry was produced by
 			// PackToolResults above (loop-generated), not by a provider.
@@ -2161,7 +3403,7 @@ namespace RISE
 
 		const char* GeminiChatCodec::ProviderName() const { return "gemini"; }
 
-		const char* GeminiChatCodec::DefaultModelId() const { return "gemini-3.5-flash"; }
+		const char* GeminiChatCodec::DefaultModelId() const { return "gemini-4-argon"; }
 
 		std::string GeminiChatCodec::MakeUserEntry(
 			const std::string& text, const std::vector<ChatAttachment>& attachments ) const
@@ -2424,7 +3666,8 @@ namespace RISE
 		std::string GeminiChatCodec::RewriteElidedToolResults(
 			const std::string& packedEntryJson,
 			const std::vector<std::size_t>& resultIndices,
-			const std::string& placeholderText ) const
+			const std::string& placeholderText ,
+			const std::string& noteKey ) const
 		{
 			// Parse + regenerate is LEGAL here: this entry was produced by
 			// PackToolResults above (loop-generated), not by a provider.
@@ -2462,7 +3705,7 @@ namespace RISE
 				// cross-rule collision structurally impossible rather than
 				// merely gated.
 				JsonValue newResp = JsonValue::MakeObject();
-				newResp.set( "superseded_note", JsonValue::MakeString( placeholderText ) );
+				newResp.set( noteKey, JsonValue::MakeString( placeholderText ) );
 				JsonValue newFr = JsonValue::MakeObject();
 				const std::vector<std::pair<std::string, JsonValue>>& mem = fr->members();
 				for( std::size_t j = 0; j < mem.size(); ++j ) {
@@ -2816,6 +4059,12 @@ namespace RISE
 				( finishReason == "SAFETY" || finishReason == "RECITATION" ||
 				  finishReason == "BLOCKLIST" || finishReason == "PROHIBITED_CONTENT" ||
 				  finishReason == "SPII" || finishReason == "IMAGE_SAFETY" ) ? ChatErrorKind::Refusal :
+				// MALFORMED_FUNCTION_CALL: the model tried to call a tool but
+				// emitted an unparseable call (observed: chunk text without
+				// JSON string quoting).  The candidate carries one empty text
+				// part and a finishMessage quoting the attempt; recoverable by
+				// asking the model to re-issue -- see AgentChatLoop::HandleResponse.
+				( finishReason == "MALFORMED_FUNCTION_CALL" ) ? ChatErrorKind::MalformedToolCall :
 				ChatErrorKind::Provider;
 			if( !calls.empty() ) {
 				// Mirror the Anthropic stop_reason gate: a call turn that
@@ -2870,8 +4119,13 @@ namespace RISE
 			else {
 				// SAFETY / MAX_TOKENS / RECITATION / ... -> error with the
 				// finishReason in the message.
-				out.step = MakeProviderError( finishKind,
-					"gemini stopped with finishReason \"" + finishReason + "\"" );
+				std::string stopMsg = "gemini stopped with finishReason \"" + finishReason + "\"";
+				if( finishKind == ChatErrorKind::MalformedToolCall ) {
+					const JsonValue fm = cand.get( "finishMessage" );
+					if( fm.isString() && !fm.asString().empty() )
+						stopMsg += ": " + CapSnippet( fm.asString() );
+				}
+				out.step = MakeProviderError( finishKind, stopMsg );
 				return AttachReasoning();
 			}
 			out.assistantDisplayText = text;
@@ -3212,7 +4466,8 @@ namespace RISE
 		std::string OpenAIChatCodec::RewriteElidedToolResults(
 			const std::string& packedEntryJson,
 			const std::vector<std::size_t>& resultIndices,
-			const std::string& placeholderText ) const
+			const std::string& placeholderText ,
+			const std::string& noteKey ) const
 		{
 			// PackToolResults emits a loop-owned ARRAY of messages: one per
 			// result IN ORDER, so index i is result i.  (The only element
@@ -3229,7 +4484,7 @@ namespace RISE
 			// uniformly does not hit a lone bare string here.
 			// See the Gemini twin above for why the key is NOT "note".
 			JsonValue note = JsonValue::MakeObject();
-			note.set( "superseded_note", JsonValue::MakeString( placeholderText ) );
+			note.set( noteKey, JsonValue::MakeString( placeholderText ) );
 			const std::string notePayload = JsonSerialize( note );
 
 			bool changed = false;
@@ -3466,9 +4721,10 @@ namespace RISE
 						std::string aerr;
 						if( !JsonParse( item.get( "arguments" ).asString(), args, aerr ) ||
 						    !args.isObject() ) {
-							out.step = MakeProviderError( ChatErrorKind::Provider,
+							out.step = MakeProviderError( ChatErrorKind::MalformedToolCall,
 								"openai function_call \"" + c.name +
-								"\" carries malformed arguments JSON" );
+								"\" carries malformed arguments JSON: " +
+								CapSnippet( item.get( "arguments" ).asString() ) );
 							return out;
 						}
 						c.argsJson = JsonSerialize( args );
@@ -3673,9 +4929,14 @@ namespace RISE
 						// parse as a JSON object must not be recorded and then
 						// executed with fabricated empty args -- refuse the
 						// WHOLE response instead of silently degrading to "{}".
-						out.step = MakeProviderError( ChatErrorKind::Provider,
+						// A reply cut off by the token cap is truncation, not a
+						// model formatting error: a corrective retry would just
+						// truncate again.
+						out.step = MakeProviderError(
+							choice.get( "finish_reason" ).asString() == "length"
+								? ChatErrorKind::MaxTokens : ChatErrorKind::MalformedToolCall,
 							"openai tool_call \"" + c.name + "\" carries malformed arguments JSON -- "
-							"refusing the turn (executing it would fabricate empty args)" );
+							"refusing the turn (executing it would fabricate empty args): " + CapSnippet( argText ) );
 						return out;
 					}
 					c.argsJson = JsonSerialize( args );
@@ -3888,6 +5149,669 @@ namespace RISE
 		std::size_t OpenAIChatCodec::ToolsWireBytes() const
 		{
 			return ( mConfig.useResponsesApi ? OpenAIResponsesToolsJson() : OpenAIToolsJson() ).size();
+		}
+
+		//======================================================================
+		// Arc 77 Phase 2 (2026-08-11): PROVIDER IMAGE GENERATION -- the wire
+		// half of `imagine_scene`.  See AgentChatCodecs.h for the contract.
+		//
+		// THE INVARIANT THIS BORROWS, STATED SO IT CAN BE CHECKED.  The chat
+		// transport's auth idiom is: the key appears ONLY in the provider's
+		// own auth HEADER, sanitized of control characters, never in the URL
+		// and never in a log; a failure maps to a header-free CATEGORY, never
+		// to a dump of the request.  That idiom holds here for exactly the
+		// same reason it holds there -- these builders emit a ChatHttpRequest
+		// and the SAME IChatHttpTransport performs it, so the transport's
+		// documented key-hygiene contract (ChatHttpTransport.h) covers this
+		// call unchanged.  The one thing that is NOT inherited is response
+		// parsing: an image response body can echo the prompt, so the parse
+		// errors below name a SHAPE, never a body substring.
+		//======================================================================
+		namespace
+		{
+			//! Environment override, or `fallback` when unset/empty.  CONFIG
+			//! ONLY -- see the header's note; no credential is ever read from
+			//! the environment here.  Control characters are stripped for the
+			//! same header/URL-injection reason SanitizeHeaderValue exists.
+			std::string ImageEnvOr_( const char* name, const char* fallback )
+			{
+				const char* v = std::getenv( name );
+				if( !v || !*v ) return std::string( fallback );
+				std::string out;
+				for( const char* p = v; *p; ++p ) {
+					if( static_cast<unsigned char>( *p ) >= 0x20 ) out += *p;
+				}
+				if( out.empty() ) return std::string( fallback );
+				return out;
+			}
+
+			//! Arc 77 Phase 2b (2026-08-11): THE REACHABILITY WRAPPER.
+			//!
+			//! WHY THIS TEXT EXISTS.  Phase 2 forwarded the model's
+			//! description verbatim, and providers answered with cinematic
+			//! concept art: painterly brushwork, volumetric god-rays,
+			//! photographic depth of field, lens bloom.  A path tracer
+			//! driving SDF primitives cannot approach any of that, so the
+			//! target the model was handed to steer by was an unreachable
+			//! ideal -- it could show a difference on every render and never
+			//! a difference the model could close.  This directive asks for
+			//! an image of the SAME subject in a form this renderer can
+			//! actually get to.  The imagining stays the model's act; only
+			//! the rendering STYLE is constrained.
+			//!
+			//! Do not smuggle SUBJECT guidance in here (no "make it a
+			//! product shot", no composition advice): the moment this text
+			//! decides what is in the picture, the target stops being the
+			//! model's own imagination and the mechanism loses the property
+			//! the whole arc rests on.
+			const char* const kImageStyleDirectiveDefault =
+				"Style: render this as a simple 3D-rendered image -- plain matte flat-shaded "
+				"surfaces, simple clean geometric forms, neutral even lighting, a plain uncluttered "
+				"background. No painterly, sketched or hand-drawn texture; no photographic "
+				"depth-of-field, lens flare, bloom or film grain; no text, labels or watermarks. "
+				"Depict only the subject described above, in that style.";
+
+			//! Depth-first search for the first object under `v` that carries
+			//! BOTH `data` and a mime key -- the Gemini inlineData part, whose
+			//! exact nesting has moved between API revisions (`inlineData` vs
+			//! `inline_data`, and `parts` sometimes under `content`).  Shape-
+			//! tolerant on purpose: a nesting change should degrade to "found
+			//! it anyway", not to a false "the provider returned no image".
+			bool FindInlineImagePart_( const JsonValue& v, std::string& outB64, std::string& outMime,
+			                           int depth )
+			{
+				if( depth > 8 ) return false;
+				if( v.isArray() ) {
+					for( std::size_t i = 0; i < v.size(); ++i )
+						if( FindInlineImagePart_( v.at( i ), outB64, outMime, depth + 1 ) ) return true;
+					return false;
+				}
+				if( !v.isObject() ) return false;
+				const JsonValue* inl = v.find( "inlineData" );
+				if( !inl ) inl = v.find( "inline_data" );
+				if( inl && inl->isObject() ) {
+					const JsonValue* d = inl->find( "data" );
+					if( d && d->isString() && !d->asString().empty() ) {
+						outB64 = d->asString();
+						const JsonValue* m = inl->find( "mimeType" );
+						if( !m ) m = inl->find( "mime_type" );
+						outMime = ( m && m->isString() ) ? m->asString() : std::string( "image/png" );
+						return true;
+					}
+				}
+				const std::vector<std::pair<std::string, JsonValue> >& mem = v.members();
+				for( std::size_t i = 0; i < mem.size(); ++i )
+					if( FindInlineImagePart_( mem[i].second, outB64, outMime, depth + 1 ) ) return true;
+				return false;
+			}
+		}
+
+		bool ChatProviderSupportsImageGeneration( const std::string& providerName )
+		{
+			return providerName == "gemini" || providerName == "openai";
+		}
+
+		std::string ChatImageStyleDirective()
+		{
+			return ImageEnvOr_( "RISE_IMAGE_STYLE_PROMPT", kImageStyleDirectiveDefault );
+		}
+
+		std::string ComposeImageGenerationPrompt( const std::string& description )
+		{
+			const std::string style = ChatImageStyleDirective();
+			if( style.empty() ) return description;
+			if( description.empty() ) return style;
+			// The model's own words FIRST and unaltered -- the subject is
+			// its imagining, and the directive that follows constrains only
+			// how that subject is drawn.
+			return description + "\n\n" + style;
+		}
+
+		std::string ChatImageGenerationModelId( const std::string& providerName )
+		{
+			if( providerName == "gemini" )
+				// VERIFIED LIVE 2026-08-11: `gemini-3.6-flash-image` does NOT
+				// exist -- the first live imagine_scene 404'd on it.  The
+				// account's image-capable generateContent models are
+				// gemini-3.1-flash-image / -lite-image / gemini-3-pro-image
+				// (imagen-4.0-* are `predict`-method, a different shape this
+				// builder does not speak).  Do not "modernise" this to match
+				// the chat default's version number without listing
+				// v1beta/models first -- the image and chat model lines are
+				// versioned independently.
+				return ImageEnvOr_( "RISE_IMAGE_MODEL_GEMINI", "gemini-3.1-flash-image" );
+			if( providerName == "openai" )
+				return ImageEnvOr_( "RISE_IMAGE_MODEL_OPENAI", "gpt-image-1" );
+			return std::string();
+		}
+
+		bool BuildImageGenerationRequest( const std::string& providerName,
+		                                  const std::string& modelId,
+		                                  const std::string& apiKey,
+		                                  const std::string& prompt,
+		                                  ChatHttpRequest& outRequest,
+		                                  std::string& outError )
+		{
+			outRequest = ChatHttpRequest();
+			if( !ChatProviderSupportsImageGeneration( providerName ) ) {
+				outError = "provider `" + providerName + "` has no image-generation endpoint in this build";
+				return false;
+			}
+			if( modelId.empty() ) {
+				outError = "no image model id resolved for provider `" + providerName + "`";
+				return false;
+			}
+
+			// Arc 77 Phase 2b (2026-08-11): the model's description is the
+			// SUBJECT; the host appends the style directive that makes the
+			// generated target something this renderer can approach.  Done
+			// ONCE here, so both provider bodies below send the identical
+			// composed prompt and neither can drift.
+			const std::string composedPrompt = ComposeImageGenerationPrompt( prompt );
+
+			if( providerName == "gemini" ) {
+				// The SAME surface, auth header and model-id escaping as
+				// GeminiChatCodec::BuildRequest -- image generation is a
+				// generateContent call whose responseModalities ask for an
+				// image, not a separate API.
+				const std::string base =
+					ImageEnvOr_( "RISE_IMAGE_ENDPOINT_GEMINI",
+					             "https://generativelanguage.googleapis.com/v1beta/models" );
+				outRequest.url = base + "/" + SanitizeModelIdForUrl( modelId ) + ":generateContent";
+				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+				outRequest.headers.push_back(
+					std::make_pair( "x-goog-api-key", SanitizeHeaderValue( apiKey ) ) );
+
+				// responseModalities is a JSON array of bare enum tokens; the
+				// accepted set is model-version-dependent (some revisions
+				// require TEXT alongside IMAGE), hence the env override.
+				std::string modalities;
+				{
+					const std::string raw = ImageEnvOr_( "RISE_IMAGE_MODALITIES_GEMINI", "IMAGE" );
+					std::size_t start = 0;
+					while( start <= raw.size() ) {
+						const std::size_t comma = raw.find( ',', start );
+						const std::string tok = raw.substr(
+							start, comma == std::string::npos ? std::string::npos : comma - start );
+						if( !tok.empty() ) {
+							if( !modalities.empty() ) modalities += ",";
+							JsonAppendEscapedString( modalities, tok );
+						}
+						if( comma == std::string::npos ) break;
+						start = comma + 1;
+					}
+					if( modalities.empty() ) JsonAppendEscapedString( modalities, "IMAGE" );
+				}
+
+				std::string body = "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":";
+				JsonAppendEscapedString( body, composedPrompt );
+				body += "}]}],\"generationConfig\":{\"responseModalities\":[" + modalities + "]}}";
+				outRequest.body = body;
+				return true;
+			}
+
+			// openai: the dedicated images endpoint, Bearer auth -- the SAME
+			// header OpenAIChatCodec::BuildRequest emits.
+			outRequest.url = ImageEnvOr_( "RISE_IMAGE_ENDPOINT_OPENAI",
+			                              "https://api.openai.com/v1/images/generations" );
+			outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+			outRequest.headers.push_back(
+				std::make_pair( "Authorization", "Bearer " + SanitizeHeaderValue( apiKey ) ) );
+			std::string body = "{\"model\":";
+			JsonAppendEscapedString( body, modelId );
+			body += ",\"prompt\":";
+			JsonAppendEscapedString( body, composedPrompt );
+			body += ",\"n\":1,\"size\":";
+			JsonAppendEscapedString( body, ImageEnvOr_( "RISE_IMAGE_SIZE_OPENAI", "1024x1024" ) );
+			body += "}";
+			outRequest.body = body;
+			return true;
+		}
+
+		bool ParseImageGenerationResponse( const std::string& providerName,
+		                                   const std::string& body,
+		                                   std::vector<unsigned char>& outBytes,
+		                                   std::string& outMimeType,
+		                                   std::string& outError )
+		{
+			outBytes.clear();
+			outMimeType.clear();
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( body, root, perr ) || !root.isObject() ) {
+				outError = "the image response body did not parse as a JSON object";
+				return false;
+			}
+
+			std::string b64;
+			if( providerName == "gemini" ) {
+				const JsonValue* cands = root.find( "candidates" );
+				if( !cands || !cands->isArray() || cands->size() == 0 ) {
+					outError = "the image response carried no `candidates`";
+					return false;
+				}
+				if( !FindInlineImagePart_( *cands, b64, outMimeType, 0 ) ) {
+					outError = "the image response's candidate carried no inlineData image part";
+					return false;
+				}
+			}
+			else if( providerName == "openai" ) {
+				const JsonValue* data = root.find( "data" );
+				if( !data || !data->isArray() || data->size() == 0 ) {
+					outError = "the image response carried no `data` array";
+					return false;
+				}
+				const JsonValue& first = data->at( 0 );
+				const JsonValue* b = first.isObject() ? first.find( "b64_json" ) : nullptr;
+				if( !b || !b->isString() || b->asString().empty() ) {
+					outError = "the image response's data[0] carried no `b64_json` payload "
+					           "(a url-only response is not accepted -- the bytes must arrive inline)";
+					return false;
+				}
+				b64 = b->asString();
+				outMimeType = "image/png";
+			}
+			else {
+				outError = "provider `" + providerName + "` has no image-response shape in this build";
+				return false;
+			}
+
+			if( !Base64Decode( b64, outBytes ) || outBytes.empty() ) {
+				outBytes.clear();
+				outError = "the image payload was not valid base64";
+				return false;
+			}
+			if( outMimeType.empty() ) outMimeType = "image/png";
+			return true;
+		}
+
+		ChatImageGenerator MakeChatImageGenerator( const std::string& providerName,
+		                                            const std::string& apiKey,
+		                                            std::shared_ptr<IChatHttpTransport> transport )
+		{
+			ChatImageGenerator out;
+			out.providerName = providerName;
+			out.supported    = ChatProviderSupportsImageGeneration( providerName );
+			out.modelId      = ChatImageGenerationModelId( providerName );
+			if( !out.supported ) return out;
+
+			// `modelId` and `apiKey` are captured BY VALUE (not `providerName`
+			// again -- `out.providerName` above already holds the identical
+			// string, reused below by value-capture through the lambda's own
+			// copy) so the returned callable is self-contained and safe to
+			// outlive this function's locals.  `transport` is a shared_ptr:
+			// the callable keeps it alive for as long as the generator itself
+			// is held, exactly like AgentSession::AgentImageGenerator's own
+			// documented lifetime contract.
+			const std::string providerCopy = providerName;
+			const std::string modelIdCopy  = out.modelId;
+			const std::string apiKeyCopy   = apiKey;
+			out.generate =
+				[providerCopy, modelIdCopy, apiKeyCopy, transport]
+				( const std::string& description ) -> ChatImageGenOutcome
+			{
+				ChatImageGenOutcome result;
+				ChatHttpRequest req;
+				std::string berr;
+				if( !BuildImageGenerationRequest( providerCopy, modelIdCopy, apiKeyCopy,
+				                                  description, req, berr ) ) {
+					result.error = berr;
+					return result;
+				}
+				if( !transport ) {
+					result.error = "no HTTP transport was installed for image generation";
+					return result;
+				}
+				const ChatHttpResponse resp = transport->Post( req );
+				if( !resp.error.empty() ) {
+					// The transport's HEADER-FREE category, never the
+					// request and never the key -- see
+					// ChatHttpTransport.h's key-hygiene contract.
+					result.error = resp.error;
+					return result;
+				}
+				if( resp.status < 200 || resp.status >= 300 ) {
+					// The STATUS only.  A provider error body can echo the
+					// prompt back and must not be spliced into a result
+					// the model reads.
+					result.error = "the image provider answered HTTP " +
+						std::to_string( resp.status );
+					return result;
+				}
+				std::string perr;
+				if( !ParseImageGenerationResponse( providerCopy, resp.body, result.bytes,
+				                                   result.mimeType, perr ) ) {
+					result.bytes.clear();
+					result.error = perr;
+					return result;
+				}
+				result.ok = true;
+				return result;
+			};
+			return out;
+		}
+
+		//======================================================================
+		// Arc 79 slice S2 (2026-08-11): PROVIDER TEXT COMPLETION -- the wire
+		// half of `build_element`, the text sibling of the image block above.
+		// See AgentChatCodecs.h for the contract; the key discipline, the
+		// body-free parse errors and the endpoint/model override idiom are
+		// the image block's, reused rather than restated.
+		//======================================================================
+		namespace
+		{
+			//! Concatenate every `text`-bearing element of a provider content
+			//! array, tolerating both a bare {text:...} shape (Gemini parts)
+			//! and a typed {type:"...",text:...} shape (Anthropic blocks,
+			//! OpenAI output_text blocks).  `typeFilter` empty accepts any
+			//! typed block; otherwise only that `type`.  Shape-TOLERANT for
+			//! the same reason FindInlineImagePart_ is: an API revision that
+			//! moves a key should degrade to "found it anyway", never to a
+			//! false "the provider returned nothing".
+			void AppendTextBlocks_( const JsonValue& arr, const char* typeFilter, std::string& out )
+			{
+				if( !arr.isArray() ) return;
+				for( std::size_t i = 0; i < arr.size(); ++i ) {
+					const JsonValue& b = arr.at( i );
+					if( !b.isObject() ) continue;
+					// Gemini thinking models (e.g. gemini-4-argon) may emit
+					// thought-summary parts marked `"thought": true` alongside
+					// the visible answer text; skip them just as
+					// GeminiChatCodec::ParseResponse does so reasoning traces
+					// never leak into extracted builder chunks.
+					const JsonValue* thoughtFlag = b.find( "thought" );
+					if( thoughtFlag && thoughtFlag->isBool() && thoughtFlag->asBool() ) continue;
+					if( typeFilter && *typeFilter ) {
+						const JsonValue* t = b.find( "type" );
+						if( !t || !t->isString() || t->asString() != typeFilter ) continue;
+					}
+					const JsonValue* tx = b.find( "text" );
+					if( tx && tx->isString() ) out += tx->asString();
+				}
+			}
+		}
+
+		bool ChatProviderSupportsTextCompletion( const std::string& providerName )
+		{
+			return providerName == "anthropic" || providerName == "gemini" ||
+			       providerName == "openai"    || providerName == "xai";
+		}
+
+		std::string ChatTextCompletionModelId( const std::string& providerName )
+		{
+			// The DEFAULTS are each chat codec's own DefaultModelId, so a
+			// builder completion runs on the same model line the session
+			// runs on.  Keep them in step by hand when a codec default
+			// moves -- there is no shared constant to read them from
+			// (DefaultModelId is a virtual on a codec INSTANCE, and this
+			// function has no instance and must answer for a provider the
+			// caller may not have constructed a codec for).
+			if( providerName == "anthropic" )
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_ANTHROPIC", "claude-sonnet-5" );
+			if( providerName == "gemini" )
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_GEMINI", "gemini-4-argon" );
+			if( providerName == "openai" )
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_OPENAI", "gpt-5.6-terra" );
+			if( providerName == "xai" )
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_XAI", "grok-4.5" );
+			return std::string();
+		}
+
+		unsigned int ChatTextCompletionMaxTokens()
+		{
+			return 16384u;
+		}
+
+		bool BuildTextCompletionRequest( const std::string& providerName,
+		                                 const std::string& modelId,
+		                                 const std::string& apiKey,
+		                                 const std::string& prompt,
+		                                 ChatHttpRequest& outRequest,
+		                                 std::string& outError )
+		{
+			outRequest = ChatHttpRequest();
+			if( !ChatProviderSupportsTextCompletion( providerName ) ) {
+				outError = "provider `" + providerName +
+					"` has no text-completion endpoint in this build";
+				return false;
+			}
+			if( modelId.empty() ) {
+				outError = "no text model id resolved for provider `" + providerName + "`";
+				return false;
+			}
+			if( prompt.empty() ) {
+				outError = "the text-completion prompt was empty";
+				return false;
+			}
+
+			const std::string maxTok = std::to_string( ChatTextCompletionMaxTokens() );
+
+			if( providerName == "anthropic" ) {
+				outRequest.url = ImageEnvOr_( "RISE_BUILDER_ENDPOINT_ANTHROPIC",
+				                              "https://api.anthropic.com/v1/messages" );
+				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+				// The SAME two headers AnthropicChatCodec::BuildRequest emits,
+				// with the same sanitization.
+				outRequest.headers.push_back(
+					std::make_pair( "x-api-key", SanitizeHeaderValue( apiKey ) ) );
+				outRequest.headers.push_back( std::make_pair( "anthropic-version", "2023-06-01" ) );
+				std::string body = "{\"model\":";
+				JsonAppendEscapedString( body, modelId );
+				body += ",\"max_tokens\":" + maxTok +
+					",\"messages\":[{\"role\":\"user\",\"content\":";
+				JsonAppendEscapedString( body, prompt );
+				body += "}]}";
+				outRequest.body = body;
+				return true;
+			}
+
+			if( providerName == "gemini" ) {
+				const std::string base =
+					ImageEnvOr_( "RISE_BUILDER_ENDPOINT_GEMINI",
+					             "https://generativelanguage.googleapis.com/v1beta/models" );
+				outRequest.url = base + "/" + SanitizeModelIdForUrl( modelId ) + ":generateContent";
+				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+				outRequest.headers.push_back(
+					std::make_pair( "x-goog-api-key", SanitizeHeaderValue( apiKey ) ) );
+				// Gemini 4 Argon counts thinking tokens (thoughtsTokenCount)
+				// toward maxOutputTokens with a 32,768 non-streaming ceiling;
+				// use the full 32K ceiling so deep spatial reasoning on complex
+				// builder prompts never starves the visible .RISEscene output.
+				const std::string geminiMaxTok =
+					std::to_string( ChatTextCompletionMaxTokens() * 2u );
+				std::string body = "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":";
+				JsonAppendEscapedString( body, prompt );
+				body += "}]}],\"generationConfig\":{\"maxOutputTokens\":" + geminiMaxTok + "}}";
+				outRequest.body = body;
+				return true;
+			}
+
+			if( providerName == "openai" ) {
+				outRequest.url = ImageEnvOr_( "RISE_BUILDER_ENDPOINT_OPENAI",
+				                              "https://api.openai.com/v1/responses" );
+				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+				outRequest.headers.push_back(
+					std::make_pair( "authorization", "Bearer " + SanitizeHeaderValue( apiKey ) ) );
+				// The responses API's simplest single-turn form: `input` as a
+				// plain string.  No `instructions`, no `tools` -- a fresh
+				// minimal context is the mechanism.
+				std::string body = "{\"model\":";
+				JsonAppendEscapedString( body, modelId );
+				body += ",\"max_output_tokens\":" + maxTok + ",\"input\":";
+				JsonAppendEscapedString( body, prompt );
+				body += ",\"store\":false}";
+				outRequest.body = body;
+				return true;
+			}
+
+			// xai: the OpenAI-compatible chat-completions surface, Bearer
+			// auth -- the SAME shape AgentChatLoop configures OpenAIChatCodec
+			// with for this provider.
+			outRequest.url = ImageEnvOr_( "RISE_BUILDER_ENDPOINT_XAI",
+			                              "https://api.x.ai/v1/chat/completions" );
+			outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+			outRequest.headers.push_back(
+				std::make_pair( "authorization", "Bearer " + SanitizeHeaderValue( apiKey ) ) );
+			{
+				std::string body = "{\"model\":";
+				JsonAppendEscapedString( body, modelId );
+				body += ",\"max_completion_tokens\":" + maxTok +
+					",\"messages\":[{\"role\":\"user\",\"content\":";
+				JsonAppendEscapedString( body, prompt );
+				body += "}]}";
+				outRequest.body = body;
+			}
+			return true;
+		}
+
+		bool ParseTextCompletionResponse( const std::string& providerName,
+		                                  const std::string& body,
+		                                  std::string& outText,
+		                                  std::string& outError )
+		{
+			outText.clear();
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( body, root, perr ) || !root.isObject() ) {
+				outError = "the completion response body did not parse as a JSON object";
+				return false;
+			}
+
+			std::string text;
+			if( providerName == "anthropic" ) {
+				const JsonValue* content = root.find( "content" );
+				if( !content || !content->isArray() ) {
+					outError = "the completion response carried no `content` array";
+					return false;
+				}
+				AppendTextBlocks_( *content, "text", text );
+				if( text.empty() ) AppendTextBlocks_( *content, "", text );
+			}
+			else if( providerName == "gemini" ) {
+				const JsonValue* cands = root.find( "candidates" );
+				if( !cands || !cands->isArray() || cands->size() == 0 ) {
+					outError = "the completion response carried no `candidates`";
+					return false;
+				}
+				const JsonValue& c0 = cands->at( 0 );
+				const JsonValue* content = c0.isObject() ? c0.find( "content" ) : nullptr;
+				const JsonValue* parts = ( content && content->isObject() )
+					? content->find( "parts" ) : nullptr;
+				if( !parts || !parts->isArray() ) {
+					outError = "the completion response's candidate carried no content parts";
+					return false;
+				}
+				AppendTextBlocks_( *parts, "", text );
+			}
+			else if( providerName == "openai" ) {
+				const JsonValue* convenience = root.find( "output_text" );
+				if( convenience && convenience->isString() ) text = convenience->asString();
+				if( text.empty() ) {
+					const JsonValue* output = root.find( "output" );
+					if( !output || !output->isArray() ) {
+						outError = "the completion response carried neither `output_text` nor an "
+						           "`output` array";
+						return false;
+					}
+					for( std::size_t i = 0; i < output->size(); ++i ) {
+						const JsonValue& item = output->at( i );
+						if( !item.isObject() ) continue;
+						const JsonValue* content = item.find( "content" );
+						if( content ) AppendTextBlocks_( *content, "output_text", text );
+					}
+				}
+			}
+			else if( providerName == "xai" ) {
+				const JsonValue* choices = root.find( "choices" );
+				if( !choices || !choices->isArray() || choices->size() == 0 ) {
+					outError = "the completion response carried no `choices`";
+					return false;
+				}
+				const JsonValue& c0 = choices->at( 0 );
+				const JsonValue* msg = c0.isObject() ? c0.find( "message" ) : nullptr;
+				const JsonValue* content = ( msg && msg->isObject() ) ? msg->find( "content" ) : nullptr;
+				if( content && content->isString() ) text = content->asString();
+				else if( content && content->isArray() ) AppendTextBlocks_( *content, "", text );
+				else {
+					outError = "the completion response's first choice carried no message content";
+					return false;
+				}
+			}
+			else {
+				outError = "provider `" + providerName +
+					"` has no completion-response shape in this build";
+				return false;
+			}
+
+			if( text.empty() ) {
+				// WELL-FORMED BUT EMPTY IS A FAILURE.  A builder that returned
+				// nothing is not a builder that succeeded, and reporting
+				// "0 chunks landed, no rejections" would be a true sentence
+				// that reads as the model's own fault.
+				outError = "the completion response parsed but carried no assistant text";
+				return false;
+			}
+			outText.swap( text );
+			return true;
+		}
+
+		ChatTextCompleter MakeChatTextCompleter( const std::string& providerName,
+		                                          const std::string& apiKey,
+		                                          std::shared_ptr<IChatHttpTransport> transport )
+		{
+			ChatTextCompleter out;
+			out.providerName = providerName;
+			out.supported    = ChatProviderSupportsTextCompletion( providerName );
+			out.modelId      = ChatTextCompletionModelId( providerName );
+			if( !out.supported ) return out;
+
+			// By-value key/model capture and shared_ptr transport lifetime --
+			// identical to MakeChatImageGenerator's, for the identical reason
+			// (see that function's comment).
+			const std::string providerCopy = providerName;
+			const std::string modelIdCopy  = out.modelId;
+			const std::string apiKeyCopy   = apiKey;
+			out.complete =
+				[providerCopy, modelIdCopy, apiKeyCopy, transport]
+				( const std::string& prompt ) -> ChatTextCompletionOutcome
+			{
+				ChatTextCompletionOutcome result;
+				ChatHttpRequest req;
+				std::string berr;
+				if( !BuildTextCompletionRequest( providerCopy, modelIdCopy, apiKeyCopy,
+				                                 prompt, req, berr ) ) {
+					result.error = berr;
+					return result;
+				}
+				if( !transport ) {
+					result.error = "no HTTP transport was installed for text completion";
+					return result;
+				}
+				const ChatHttpResponse resp = transport->Post( req );
+				if( !resp.error.empty() ) {
+					// The transport's HEADER-FREE category, never the request
+					// and never the key -- ChatHttpTransport.h's contract.
+					result.error = resp.error;
+					return result;
+				}
+				if( resp.status < 200 || resp.status >= 300 ) {
+					// The STATUS only.  A provider error body can echo the
+					// prompt back and must not be spliced into a result the
+					// model reads.
+					result.error = "the completion provider answered HTTP " +
+						std::to_string( resp.status );
+					return result;
+				}
+				std::string pterr;
+				if( !ParseTextCompletionResponse( providerCopy, resp.body, result.text, pterr ) ) {
+					result.text.clear();
+					result.error = pterr;
+					return result;
+				}
+				result.ok = true;
+				return result;
+			};
+			return out;
 		}
 
 		//======================================================================

@@ -102,18 +102,13 @@
 #include <cstring>   // std::memset (WriteSyntheticSolidPng's z_stream init)
 #include <filesystem>
 #include <fstream>
+#include <iostream>  // T6b: on-failure dump of the offending diagnostics
 #include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
-// Per-process scratch directory -- see ScratchRunDir below.
-#ifdef _WIN32
-	#include <process.h>
-	#define getpid _getpid
-#else
-	#include <unistd.h>			// getpid(), fork(), pipe()
-	#include <sys/wait.h>		// waitpid() -- collision-hazard proof below
-#endif
+#include <set>
+#include "TestTempDir.h"
 
 #ifndef NO_PNG_SUPPORT
 	#include <zlib.h>   // P1 fix test: WriteSyntheticSolidPng streams a genuinely valid oversized PNG
@@ -303,72 +298,21 @@ static const char* const kBodyFinalText =
 // unique per process; ScratchTestRoot() is split out so main() can
 // recursively remove the ENTIRE per-process tree on exit, not just
 // individual leaf directories.
+static constexpr const char* kScratchPrefix = "rise_agent_eval_check_test_";
+
 static std::string ScratchTestRoot()
 {
-	const char* base = std::getenv( "TMPDIR" );
-	if( !base ) base = std::getenv( "TMP" );
-	std::string dir = base ? base : "/tmp";
-	if( !dir.empty() && dir.back() != '/' && dir.back() != '\\' ) dir += '/';
-	dir += "rise_agent_eval_check_test_";
-	dir += std::to_string( (long)getpid() );
-	return dir;
+	return RISE::TestSupport::ScratchTestRoot( kScratchPrefix );
 }
 
 static std::string ScratchRunDir( const char* leaf )
 {
-	std::string dir = ScratchTestRoot() + "/" + leaf;
-	std::error_code ec;
-	std::filesystem::remove_all( dir, ec );
-	return dir;
+	return RISE::TestSupport::ScratchRunDir( kScratchPrefix, leaf );
 }
 
-//----------------------------------------------------------------------
-// Collision-hazard proof: two processes calling ScratchTestRoot() must
-// get DISTINCT trees.  This is a cheap, honest regression guard for the
-// exact bug the pid suffix above fixes -- a real fork() (no exec, no
-// scene load, no render) is negligible cost, and it proves the actual
-// property (parent and child disagree) rather than just re-reading the
-// same source line back.  POSIX-only: Windows has no fork(), and the
-// pid-suffix logic itself is still exercised implicitly by every
-// ScratchRunDir() call the other tests make.
-//----------------------------------------------------------------------
 static void TestScratchRootDiffersAcrossProcesses()
 {
-#ifndef _WIN32
-	std::printf( "Collision-hazard check: ScratchTestRoot() differs across processes...\n" );
-	int fds[2];
-	if( pipe( fds ) != 0 ) { Check( false, "collision check: pipe() succeeded" ); return; }
-	const pid_t child = fork();
-	if( child < 0 ) {
-		Check( false, "collision check: fork() succeeded" );
-		close( fds[0] ); close( fds[1] );
-		return;
-	}
-	if( child == 0 ) {
-		// ---- child: report its OWN ScratchTestRoot() back to the parent ----
-		close( fds[0] );
-		const std::string childRoot = ScratchTestRoot();
-		ssize_t w = write( fds[1], childRoot.data(), childRoot.size() );
-		(void)w;
-		close( fds[1] );
-		_exit( 0 );
-	}
-	// ---- parent ----
-	close( fds[1] );
-	std::string childRoot;
-	char buf[4096]; ssize_t n;
-	while( ( n = read( fds[0], buf, sizeof( buf ) ) ) > 0 ) childRoot.append( buf, (size_t)n );
-	close( fds[0] );
-	int status = 0;
-	waitpid( child, &status, 0 );
-
-	const std::string parentRoot = ScratchTestRoot();
-	Check( !childRoot.empty(), "collision check: child reported a non-empty scratch root" );
-	Check( childRoot != parentRoot,
-		"collision check: parent (" + parentRoot + ") and child (" + childRoot + ") scratch roots differ" );
-#else
-	std::printf( "Collision-hazard check: skipped on Windows (no fork()); pid-suffix logic is still exercised by every ScratchRunDir() call above.\n" );
-#endif
+	RISE::TestSupport::VerifyScratchRootDiffersAcrossProcesses( kScratchPrefix, Check );
 }
 
 static bool WriteFile( const std::string& path, const std::string& text )
@@ -1071,8 +1015,34 @@ static void TestDiagnosticsLiveDocInvariant()
 
 		if( session ) {
 			// The invariant: the rejected edit left the document validate-clean.
+			// inPiecesPhase deliberately omitted (defaults false): these WrapJob
+			// fixtures never drive the build-protocol RPC surface, the only
+			// path that reaches AgentBuildPhase::Pieces -- reviewer P3, doc 91.
+			// Severity-aware, matching T6c/T6d's convention below: an Info-severity
+			// DESIGN_* advisory (AppendDesignDiagnostics_) is not "unclean" -- only
+			// an Error- or Warning-severity diagnostic is.  kScene may legitimately
+			// trip an advisory (e.g. DESIGN_ORPHANED_PAINTERS, cf. cf5c2f56) without
+			// that being evidence the rejected edit leaked through.
 			const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
-			Check( diags.empty(), "the live document is STILL validate-clean after the rejected edit (0 diagnostics) -- "
+			bool sawNonInfo = false;
+			for( const AgentDiagnostic& d : diags )
+				if( d.severity != AgentDiagnostic::Severity::Info ) sawNonInfo = true;
+			if( sawNonInfo ) {
+				auto sevName = []( AgentDiagnostic::Severity s ) {
+					switch( s ) {
+						case AgentDiagnostic::Severity::Error:   return "error";
+						case AgentDiagnostic::Severity::Warning: return "warning";
+						case AgentDiagnostic::Severity::Info:    return "info";
+					}
+					return "error";
+				};
+				std::cout << "    T6b offending diagnostics:" << std::endl;
+				for( const AgentDiagnostic& d : diags )
+					std::cout << "      [" << sevName( d.severity ) << "] "
+						<< d.code << ": " << d.message << std::endl;
+			}
+			Check( !sawNonInfo, "the live document is STILL validate-clean after the rejected edit "
+				"(no error/warning-severity diagnostic; Info-severity DESIGN_* advisories are fine) -- "
 				"a validate-dirty live document is unreachable by construction" );
 
 			// Drive the checker's diagnostics "clean" branch to a real PASS
@@ -1166,6 +1136,9 @@ static void TestDiagnosticsCheckpointCleanIgnoresInfo()
 			// actually fire, at Info severity, DESIGN_NO_ADVANCED_GEOMETRY
 			// must NOT (3 < 4), and no error/warning may be present -- else
 			// the assertions below are vacuous.
+			// inPiecesPhase deliberately omitted (defaults false): these WrapJob
+			// fixtures never drive the build-protocol RPC surface, the only
+			// path that reaches AgentBuildPhase::Pieces -- reviewer P3, doc 91.
 			const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
 			bool sawScalarInfo = false, sawGeom = false, sawAnyNonInfo = false;
 			for( const AgentDiagnostic& d : diags ) {
@@ -1268,6 +1241,9 @@ static void TestDiagnosticsCheckpointCleanFailsOnLuminaireNullGeometryWarning()
 			// actually fire, at Warning severity, and it must be the ONLY
 			// non-Info diagnostic present -- else the assertions below are
 			// vacuous (either passing/failing for an unrelated reason).
+			// inPiecesPhase deliberately omitted (defaults false): these WrapJob
+			// fixtures never drive the build-protocol RPC surface, the only
+			// path that reaches AgentBuildPhase::Pieces -- reviewer P3, doc 91.
 			const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
 			bool sawWarning = false;
 			unsigned int nonInfoCount = 0;
@@ -1977,6 +1953,8 @@ static void TestSeedScenariosCheckpointsAreTrue()
 	std::sort( paths.begin(), paths.end() );
 	Check( !paths.empty(), "evals/scenarios/*.json enumeration found at least one scenario file" );
 
+	int skippedNoFixture = 0;
+	std::set<std::string> skippedNoFixtureIds;
 	for( const std::string& path : paths ) {
 		const std::string id = std::filesystem::path( path ).stem().string();
 		AgentEvalScenario s;
@@ -1984,6 +1962,39 @@ static void TestSeedScenariosCheckpointsAreTrue()
 		Check( LoadEvalScenario( path, s, err ), id + ": loads (" + err + ")" );
 		Check( !s.checkpoints.isArray() || s.checkpoints.size() > 0,
 			id + ": carries at least one checkpoint to verify" );
+
+		// DL-60: a scenario that names no replay.fixture and has no
+		// replaySourceOverride is not a load_error IN THIS SCENARIO --
+		// it is a scenario the repo has committed with NO fixture at
+		// all (evals/scenarios/altar_stress.json, rainwet_closeup.json,
+		// both fixture-less by their own doc comments), and a fixture
+		// can only be authored from a REAL live-provider trajectory
+		// (recording one, then replaying it -- see
+		// docs/eval-hosted-provider-keys.md / the eval harness's own
+		// doctrine).  A build environment with no hosted provider key
+		// set (ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY /
+		// XAI_API_KEY -- the exact set docs/eval-hosted-provider-keys.md
+		// names) cannot record one here: doing so would either silently
+		// fabricate a fixture (never actually run against a model) or
+		// fail outright against a live provider call.  Per DL-60's
+		// disposition: skip with
+		// an explicit diagnostic naming the exact blocker, rather than
+		// asserting a false failure OR silently excluding the scenario
+		// from the enumeration (`paths` above still lists it, and this
+		// loop still runs its LoadEvalScenario/checkpoint-shape checks
+		// above) OR loosening its checkpoints to manufacture a pass.
+		// The row stays OPEN until a fixture is recorded from a real
+		// run once hosted credentials are available.
+		if( s.replayFixturePath.empty() ) {
+			std::cout << "  SKIP " << id << ": no evals/fixtures/*.fixture.jsonl and no "
+				"replaySourceOverride -- a fixture can only be recorded from a live "
+				"provider run, and no hosted provider API key "
+				"(ANTHROPIC_API_KEY/GEMINI_API_KEY/OPENAI_API_KEY/XAI_API_KEY) is set "
+				"in this environment (DL-60, docs/DEBT_LEDGER.md)" << std::endl;
+			++skippedNoFixture;
+			skippedNoFixtureIds.insert( id );
+			continue;
+		}
 
 		AgentEvalRunOptions opts;
 		opts.runDir = dir;
@@ -2004,6 +2015,30 @@ static void TestSeedScenariosCheckpointsAreTrue()
 		Check( r.allPassed, id + ": allPassed across its committed checkpoints" );
 		Check( r.checkpointFraction == 1.0, id + ": checkpointFraction is 1.0" );
 	}
+
+	// DL-60's own bound: exactly the two KNOWN fixture-less scenarios
+	// (altar_stress, rainwet_closeup) should be skipped -- not zero
+	// (which would mean this guard silently stopped firing, e.g. a
+	// hosted key appeared in the environment and the scenarios still
+	// have no fixture landed for them), and not more than two (which
+	// would mean a THIRD scenario lost its fixture and this loop is
+	// silently hiding it rather than failing loudly).  When a fixture
+	// IS eventually recorded for one of the two, this bound must be
+	// updated alongside it -- see docs/DEBT_LEDGER.md DL-60.
+	Check( skippedNoFixture == 2,
+		"T10: exactly 2 scenarios skipped for a missing replay fixture "
+		"(altar_stress, rainwet_closeup) -- DL-60; update this bound the day "
+		"either gains a real fixture, don't just widen it" );
+
+	// P2-2 (debt-cov review): a bare count of 2 is satisfied just as well by
+	// two DIFFERENT scenarios losing their fixtures while altar_stress or
+	// rainwet_closeup silently regained one -- the count alone can't tell
+	// the difference.  Pin the IDENTITY set, not just its size: this is the
+	// set DL-60's own disposition names, so nothing else may appear here.
+	const std::set<std::string> kExpectedSkippedNoFixture = { "altar_stress", "rainwet_closeup" };
+	Check( skippedNoFixtureIds == kExpectedSkippedNoFixture,
+		"T10: the skipped-for-missing-fixture set is EXACTLY {altar_stress, rainwet_closeup} "
+		"-- DL-60; a count match alone cannot tell these apart from some other pair" );
 }
 
 //----------------------------------------------------------------------
@@ -4270,6 +4305,24 @@ static void TestAdversarialOracleControls()
 			"lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" );
 		insertMsg( "Ground geometry.",
 			"clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" );
+		// E4 SEQUENCING GATE: this control scripts one insert_chunk/
+		// propose_patch per message (10 mutating calls land right here,
+		// exactly the gate's default threshold) -- a draft-render check-in
+		// resets the blind-edit streak before the remaining 8 mutating
+		// calls below, so none of them (including herogeom, the SDF the
+		// checkpoints under test require) get refused by the gate.  A real
+		// model built under the gate would have to check in here too; this
+		// keeps the control's SCRIPTED sequence gate-compliant without
+		// changing what it ultimately builds or which checkpoints it
+		// targets.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx++ ),
+			"Quick draft check before continuing.",
+			{ { "render", ( []{
+				JsonValue in = JsonValue::MakeObject();
+				in.set( "quality", JsonValue::MakeString( "draft" ) );
+				in.set( "width", JsonValue::MakeNumber( 128 ) );
+				in.set( "height", JsonValue::MakeNumber( 128 ) );
+				return in; } )() } }, "tool_use" ) );
 		insertMsg( "Backdrop geometry.",
 			"clippedplane_geometry\n{\n\tname backdropgeom\n\tpta -7 0 -4.5\n\tptb -7 7 -4.5\n\tptc 7 7 -4.5\n\tptd 7 0 -4.5\n}" );
 		insertMsg( "Key light geometry.",
@@ -4284,7 +4337,16 @@ static void TestAdversarialOracleControls()
 		insertMsg( "Backdrop object.", "standard_object\n{\n\tname backdrop\n\tgeometry backdropgeom\n\tmaterial backdrop\n}" );
 		insertMsg( "Key light object.", "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" );
 		insertMsg( "Hero object.", "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" );
-		insertMsg( "Cool omni fill light.", "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" );
+		// 2026-08-13: the zero-area light CONFIRMATION gate refuses this
+		// omni_light's FIRST creation request unconditionally now (the free
+		// budget of 2 is gone) and lands it on an identical re-issue -- this
+		// replayed (non-adaptive) fixture cannot react to that refusal by
+		// itself, so the message is scripted twice, matching what a real
+		// model's own repair turn would do.  One extra mutating call, still
+		// well under the E4 gate's 10-call threshold noted above (8 -> 9).
+		insertMsg( "Cool omni fill light.", "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n\tcolorspace sRGB\n}" );
+		insertMsg( "Cool omni fill light (confirming the zero-area light).",
+			"omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n\tcolorspace sRGB\n}" );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx ),
 			"Built the scene; key light is neutral white.", {}, "end_turn" ) );
 
@@ -4441,6 +4503,24 @@ static void TestAdversarialOracleControls()
 				{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname backdrop\n\treflectance pnt_backdrop\n}" ) },
 				{ "insert_chunk", InsertChunkInput( "lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" ) } },
 			"tool_use" ) );
+		// E4 SEQUENCING GATE: msg_3 (5 mutating calls) + msg_4 (4) = 9
+		// consecutive mutating calls with no look yet -- msg_5's 3 geometry
+		// inserts below would push the streak to 10/11/12, tripping the
+		// gate's default threshold (10) partway through msg_5 and refusing
+		// msg_6's herogeom (the SDF chunk the checkpoints under test
+		// require) along with everything after it.  A draft-render
+		// check-in here resets the streak, exactly what a real model built
+		// under the gate would have to do -- keeps the control's SCRIPTED
+		// sequence gate-compliant without changing what it ultimately
+		// builds or which checkpoints it targets.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4b",
+			"Quick draft check before continuing.",
+			{ { "render", ( []{
+				JsonValue in = JsonValue::MakeObject();
+				in.set( "quality", JsonValue::MakeString( "draft" ) );
+				in.set( "width", JsonValue::MakeNumber( 128 ) );
+				in.set( "height", JsonValue::MakeNumber( 128 ) );
+				return in; } )() } }, "tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5",
 			"Adding the ground plane, backdrop plane, and key-light quad geometry.",
 			{	{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" ) },
@@ -4465,8 +4545,29 @@ static void TestAdversarialOracleControls()
 				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" ) },
 				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" ) } },
 			"tool_use" ) );
+		// 2026-08-13: the zero-area light CONFIRMATION gate refuses this
+		// omni_light's FIRST creation request unconditionally now (the free
+		// budget of 2 is gone) and lands it on an identical re-issue -- this
+		// replayed (non-adaptive) fixture cannot react to that refusal
+		// itself, so the call is scripted TWICE.  The trajectory
+		// checkpoint's mechanical-loop detector (AgentEvalRunner.cpp
+		// `noMechanicalLoop`) compares ADJACENT tool RECORDS across the
+		// whole flattened call sequence, not adjacent MESSAGES -- splitting
+		// the reissue into its own message did not satisfy it, because the
+		// two insert_chunk records were still back-to-back in that
+		// sequence.  A `read_document` in between (a real model's plausible
+		// "what's actually in the scene" check after a refusal) breaks the
+		// adjacency the detector keys on.  Three post-checkin messages
+		// instead of one brings the E4 mutating streak to exactly 10
+		// (msg_5's 3 + msg_6's 1 + msg_7's 4 + msg_8's 1 + msg_8b's 1;
+		// msg_8a's read_document is not a mutating call and does not count).
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8", "Adding a dim cool omni fill light on the right side.",
-			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n\tcolorspace sRGB\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8a", "Checking what actually landed.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8b", "Confirming the fill light (re-issuing the identical request).",
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n\tcolorspace sRGB\n}" ) } },
 			"tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_9", "Rendering to check the composition.",
 			{ { "render", EmptyInput() } }, "tool_use" ) );
@@ -4588,6 +4689,24 @@ static void TestAdversarialOracleControls()
 				{ "insert_chunk", InsertChunkInput( "lambertian_material\n{\n\tname backdrop\n\treflectance pnt_backdrop\n}" ) },
 				{ "insert_chunk", InsertChunkInput( "lambertian_luminaire_material\n{\n\tname key_mat\n\texitance pnt_key\n\tscale 42.0\n\tmaterial none\n}" ) } },
 			"tool_use" ) );
+		// E4 SEQUENCING GATE: msg_3 (5 mutating calls) + msg_4 (4) = 9
+		// consecutive mutating calls with no look yet -- msg_5's 3 geometry
+		// inserts below would push the streak to 10/11/12, tripping the
+		// gate's default threshold (10) partway through msg_5 and refusing
+		// msg_6's herogeom (the SDF chunk the checkpoints under test
+		// require) along with everything after it.  A draft-render
+		// check-in here resets the streak, exactly what a real model built
+		// under the gate would have to do -- keeps the control's SCRIPTED
+		// sequence gate-compliant without changing what it ultimately
+		// builds or which checkpoints it targets.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_4b",
+			"Quick draft check before continuing.",
+			{ { "render", ( []{
+				JsonValue in = JsonValue::MakeObject();
+				in.set( "quality", JsonValue::MakeString( "draft" ) );
+				in.set( "width", JsonValue::MakeNumber( 128 ) );
+				in.set( "height", JsonValue::MakeNumber( 128 ) );
+				return in; } )() } }, "tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_5",
 			"Adding the ground plane, backdrop plane, and key-light quad geometry.",
 			{	{ "insert_chunk", InsertChunkInput( "clippedplane_geometry\n{\n\tname groundgeom\n\tpta 7 0 -7\n\tptb -7 0 -7\n\tptc -7 0 7\n\tptd 7 0 7\n}" ) },
@@ -4613,8 +4732,29 @@ static void TestAdversarialOracleControls()
 				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" ) },
 				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" ) } },
 			"tool_use" ) );
+		// 2026-08-13: the zero-area light CONFIRMATION gate refuses this
+		// omni_light's FIRST creation request unconditionally now (the free
+		// budget of 2 is gone) and lands it on an identical re-issue -- this
+		// replayed (non-adaptive) fixture cannot react to that refusal
+		// itself, so the call is scripted TWICE.  The trajectory
+		// checkpoint's mechanical-loop detector (AgentEvalRunner.cpp
+		// `noMechanicalLoop`) compares ADJACENT tool RECORDS across the
+		// whole flattened call sequence, not adjacent MESSAGES -- splitting
+		// the reissue into its own message did not satisfy it, because the
+		// two insert_chunk records were still back-to-back in that
+		// sequence.  A `read_document` in between (a real model's plausible
+		// "what's actually in the scene" check after a refusal) breaks the
+		// adjacency the detector keys on.  Three post-checkin messages
+		// instead of one brings the E4 mutating streak to exactly 10
+		// (msg_5's 3 + msg_6's 1 + msg_7's 4 + msg_8's 1 + msg_8b's 1;
+		// msg_8a's read_document is not a mutating call and does not count).
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8", "Adding a dim cool omni fill light on the right side.",
-			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n\tcolorspace sRGB\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8a", "Checking what actually landed.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8b", "Confirming the fill light (re-issuing the identical request).",
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n\tcolorspace sRGB\n}" ) } },
 			"tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_9", "Draft check of the composition.",
 			{ { "render", ( []{
@@ -5138,8 +5278,15 @@ static void TestTrajectoryAskUserAssertions()
 	// kMutatingToolNames is read as NON-mutating, so this run looks like
 	// "ask_user with zero mutations" and VACUOUSLY PASSES the very ordering
 	// assertion the checkpoint exists to enforce -- a silent hole that makes
-	// the grader more permissive without any scenario file changing.  Both
-	// batch verbs are driven so adding one and forgetting the other is caught.
+	// the grader more permissive without any scenario file changing.  All
+	// THREE batch verbs are driven so adding one and forgetting the others is
+	// caught (FIX 5a, R1 fix round, 2026-08-09: remove_chunks joins
+	// propose_patches/insert_chunks here -- it was already correctly present
+	// in kMutatingToolNames itself, but this table hadn't exercised the
+	// tripwire for it).  The removal target need not actually SUCCEED --
+	// this checkpoint only reads the tool call's NAME, never its result --
+	// so `pnt_albedo` (still referenced by mat_diffuse in kScene) is fine to
+	// name here.
 	{
 		struct BatchMutation { const char* verb; JsonValue input; };
 		const BatchMutation kBatchMutations[] = {
@@ -5149,6 +5296,10 @@ static void TestTrajectoryAskUserAssertions()
 			                              "uniformcolor_painter\n{\n\tname pnt_b2\n\tcolor 0.2 0.3 0.4\n}" ) );
 			                          JsonValue in = JsonValue::MakeObject();
 			                          in.set( "chunks", arr ); return in; }() },
+			{ "remove_chunks",   [] { JsonValue arr = JsonValue::MakeArray();
+			                          arr.push_back( JsonValue::MakeString( "pnt_albedo" ) );
+			                          JsonValue in = JsonValue::MakeObject();
+			                          in.set( "targets", arr ); return in; }() },
 		};
 		for( const BatchMutation& bm : kBatchMutations ) {
 			const std::string r1 = AnthropicBody( "msg_1", "Building first.",
@@ -5219,6 +5370,278 @@ static void TestTrajectoryAskUserAssertions()
 			"mutation for it to fail to precede" );
 		checkOne( h, s, "[{\"kind\":\"trajectory\",\"askUserMin\":1}]", true,
 			"askUserMin:1 still PASSES (the ask_user call itself is real, just nothing mutated afterward)" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T-tcc(a): "trajectory" checkpoint's "toolCallCount" field -- 88 S6, the
+// doc-88 §5 gate-(c) census primitive ("when the note fires, the verb is
+// called in >=1/3 runs").  LoadEvalScenario validation: name/min required,
+// min/max sign+ordering guards (mirrors objects_reaching_kinds' "min"), and
+// the metricLabel requirement THIS field carries that no other trajectory
+// field does (no "op" name to fall back to for the cross-checkpoint dedupe
+// pass -- see the field's own doc comment on ValidateTrajectoryCheckpointTypes).
+//----------------------------------------------------------------------
+static void TestToolCallCountLoaderValidation()
+{
+	std::printf( "T-tcc(a): LoadEvalScenario validates the trajectory \"toolCallCount\" field LOUDLY...\n" );
+	const std::string dir = ScratchRunDir( "t_tcc_loader" );
+
+	auto writeAndLoad = [&]( const std::string& id, const std::string& checkpointsJson, std::string& err ) -> bool {
+		JsonValue root = JsonValue::MakeObject();
+		root.set( "id", JsonValue::MakeString( id ) );
+		root.set( "title", JsonValue::MakeString( id ) );
+		JsonValue scene = JsonValue::MakeObject();
+		scene.set( "inline", JsonValue::MakeString( kScene ) );
+		root.set( "scene", scene );
+		JsonValue prompts = JsonValue::MakeArray();
+		prompts.push_back( JsonValue::MakeString( "do something" ) );
+		root.set( "prompts", prompts );
+		JsonValue cps; std::string perr;
+		if( !JsonParse( checkpointsJson, cps, perr ) ) { err = "checkpoints JSON itself does not parse: " + perr; return false; }
+		root.set( "checkpoints", cps );
+		const std::string path = dir + "/" + id + ".json";
+		WriteFile( path, JsonSerialize( root ) );
+		AgentEvalScenario s;
+		return LoadEvalScenario( path, s, err );
+	};
+
+	// toolCallCount must be an OBJECT.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_not_object",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":\"nope\",\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount as a bare string FAILS to load" );
+		Check( err.find( "toolCallCount" ) != std::string::npos,
+			"the load error names \"toolCallCount\" (got: " + err + ")" );
+	}
+	// name missing entirely.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_missing_name",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"min\":1},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount missing \"name\" FAILS to load" );
+		Check( err.find( "name" ) != std::string::npos,
+			"the load error names \"name\" (got: " + err + ")" );
+	}
+	// name empty string.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_empty_name",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"\",\"min\":1},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount with an EMPTY \"name\" FAILS to load" );
+		Check( err.find( "name" ) != std::string::npos,
+			"the load error names \"name\" (got: " + err + ")" );
+	}
+	// name wrong type.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_wrong_type_name",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":5,\"min\":1},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount with a NUMBER \"name\" FAILS to load" );
+	}
+	// min missing entirely -- an unbounded count checkpoint asserts nothing.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_missing_min",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\"},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount missing \"min\" FAILS to load" );
+		Check( err.find( "min" ) != std::string::npos,
+			"the load error names \"min\" (got: " + err + ")" );
+	}
+	// min negative -- a call COUNT can never be negative.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_negative_min",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":-1},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount with a NEGATIVE \"min\" FAILS to load" );
+		Check( err.find( "never be negative" ) != std::string::npos,
+			"the load error explains a count can never be negative (got: " + err + ")" );
+	}
+	// max < min -- an inverted band can never pass.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_inverted_band",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":3,\"max\":1},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount with max(1) < min(3) FAILS to load" );
+		Check( err.find( "inverted band" ) != std::string::npos,
+			"the load error explains the inverted band (got: " + err + ")" );
+	}
+	// max wrong type.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_max_wrong_type",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0,\"max\":\"lots\"},\"metricLabel\":\"x\"}]", err ),
+			"toolCallCount with a STRING \"max\" FAILS to load" );
+	}
+	// metricLabel REQUIRED -- unlike every other trajectory field, toolCallCount
+	// has no "op" name for the dedupe pass to fall back to.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_missing_metriclabel",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":1}}]", err ),
+			"toolCallCount with NO metricLabel FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// metricLabel present but empty -- same rule as absent.
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_empty_metriclabel",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":1},\"metricLabel\":\"\"}]", err ),
+			"toolCallCount with an EMPTY metricLabel FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// The fully-correct checkpoint loads cleanly.
+	{
+		std::string err;
+		Check( writeAndLoad( "tcc_good",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":1},"
+			"\"metricLabel\":\"vary_material_calls\",\"weight\":0}]", err ),
+			"a correctly-shaped toolCallCount checkpoint loads cleanly (" + err + ")" );
+	}
+	// The fully-correct checkpoint with an explicit max loads cleanly too.
+	{
+		std::string err;
+		Check( writeAndLoad( "tcc_good_with_max",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0,\"max\":5},"
+			"\"metricLabel\":\"vary_material_calls\"}]", err ),
+			"a correctly-shaped toolCallCount checkpoint with max loads cleanly (" + err + ")" );
+	}
+	// metricLabel COLLISION: two toolCallCount checkpoints in the same
+	// scenario resolving to the SAME effective label is a hard load error
+	// (the SAME cross-checkpoint dedupe pass distinct_chunk_kinds/
+	// param_binding/etc. participate in).
+	{
+		std::string err;
+		Check( !writeAndLoad( "tcc_label_collision",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0},\"metricLabel\":\"dup\"},"
+			"{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"collapse_to_instances\",\"min\":0},\"metricLabel\":\"dup\"}]", err ),
+			"two toolCallCount checkpoints with the SAME metricLabel FAILS to load" );
+		Check( err.find( "metricLabel" ) != std::string::npos,
+			"the load error names metricLabel (got: " + err + ")" );
+	}
+	// Two toolCallCount checkpoints with DISTINCT metricLabels load fine.
+	{
+		std::string err;
+		Check( writeAndLoad( "tcc_distinct_labels",
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0},\"metricLabel\":\"a\"},"
+			"{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"collapse_to_instances\",\"min\":0},\"metricLabel\":\"b\"}]", err ),
+			"two toolCallCount checkpoints with DISTINCT metricLabels load cleanly (" + err + ")" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T-tcc(b): "toolCallCount" driven through a REAL RunScenario run --
+// counts a NAMED tool's occurrences, reports the count as metricValue
+// (the ONE trajectory field that does), and min/max bound it the same way
+// askUserMin/askUserMax bound "ask_user".  This is the gate-(c) mechanism:
+// a scenario that reproduces "the note fired, was the verb called" reads
+// this checkpoint's metricValue per run, then a report tool counts how
+// many of N repeats have metricValue >= 1.
+//----------------------------------------------------------------------
+static void TestTrajectoryToolCallCountAssertion()
+{
+	std::printf( "T-tcc(b): \"trajectory\" checkpoint toolCallCount, driven through a REAL run...\n" );
+	const std::string dir = ScratchRunDir( "t_tcc_trajectory" );
+
+	auto checkOne = [&]( const AgentEvalRunHandle& h, const AgentEvalScenario& base, const std::string& cpJson,
+	                      bool expectPass, const std::string& label,
+	                      bool expectMetric = false, double expectMetricValue = 0.0,
+	                      const std::string& expectMetricLabel = std::string() ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses" );
+		AgentEvalScenario s2 = base; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		if( r.checkpoints.size() != 1 ) { Check( false, label + ": expected exactly one checkpoint result" ); return; }
+		Check( r.checkpoints[0].passed == expectPass,
+			label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+			" (detail: " + r.checkpoints[0].detail + ")" );
+		if( expectMetric ) {
+			Check( r.checkpoints[0].hasMetricValue, label + ": hasMetricValue is true" );
+			Check( r.checkpoints[0].metricValue == expectMetricValue,
+				label + ": metricValue == " + std::to_string( expectMetricValue ) +
+				" (got " + std::to_string( r.checkpoints[0].metricValue ) + ")" );
+			if( !expectMetricLabel.empty() )
+				Check( r.checkpoints[0].metricLabel == expectMetricLabel,
+					label + ": metricLabel == '" + expectMetricLabel + "' (got '" + r.checkpoints[0].metricLabel + "')" );
+		}
+	};
+
+	// Run A: exactly ONE vary_material call (a bare, no-argument call --
+	// kScene's sole material is lambertian_material, which has no
+	// microsurface slot, so this call REFUSES -- toolCallCount counts the
+	// CALL, not the outcome, mirroring what gate (c) actually reads: "the
+	// verb is called", not "the verb succeeded").
+	{
+		const std::string r1 = AnthropicBody( "msg_1", "Varying the material.",
+			{ { "vary_material", EmptyInput() } }, "tool_use" );
+		const std::string r2 = AnthropicBody( "msg_2", "Done.", {}, "end_turn" );
+		AgentEvalScenario s = MakeScenario( "tcc_one_call", kScene, "Make the materials feel less flat", "commit",
+			JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 ), dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "tcc_one_call: run reached final_text" );
+		Check( h.result.toolCalls == 1, "tcc_one_call: exactly 1 tool call (vary_material)" );
+
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":1},\"metricLabel\":\"vmc\"}]",
+			true, "min:1 PASSES with exactly one vary_material call", true, 1.0, "vmc" );
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":2},\"metricLabel\":\"vmc\"}]",
+			false, "min:2 FAILS with only one vary_material call -- but the metric is STILL reported",
+			true, 1.0, "vmc" );
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0,\"max\":1},\"metricLabel\":\"vmc\"}]",
+			true, "min:0/max:1 PASSES with exactly one call", true, 1.0, "vmc" );
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0,\"max\":0},\"metricLabel\":\"vmc\"}]",
+			false, "max:0 FAILS with one call", true, 1.0, "vmc" );
+		// A DIFFERENT tool name observes zero -- proves the count is really
+		// keyed on "name", not "any tool call at all".
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"collapse_to_instances\",\"min\":0,\"max\":0},\"metricLabel\":\"cti\"}]",
+			true, "a DIFFERENT tool name counts zero (collapse_to_instances was never called)", true, 0.0, "cti" );
+	}
+
+	// Run B: ZERO vary_material calls -- the metric reads 0, min:1 fails.
+	{
+		const std::string r1 = AnthropicBody( "msg_1", "Just rendering.",
+			{ { "render", EmptyInput() } }, "tool_use" );
+		const std::string r2 = AnthropicBody( "msg_2", "Done.", {}, "end_turn" );
+		AgentEvalScenario s = MakeScenario( "tcc_zero_calls", kScene, "Render the scene", "commit",
+			JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 ), dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "tcc_zero_calls: run reached final_text" );
+
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":1},\"metricLabel\":\"vmc\"}]",
+			false, "min:1 FAILS -- zero vary_material calls occurred", true, 0.0, "vmc" );
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":0},\"metricLabel\":\"vmc\"}]",
+			true, "min:0 PASSES trivially on zero calls", true, 0.0, "vmc" );
+	}
+
+	// Run C: MULTIPLE vary_material calls in one trajectory -- the count is
+	// a real tally, not a presence flag.
+	{
+		const std::string r1 = AnthropicBody( "msg_1", "First pass.",
+			{ { "vary_material", EmptyInput() } }, "tool_use" );
+		const std::string r2 = AnthropicBody( "msg_2", "Second pass.",
+			{ { "vary_material", EmptyInput() } }, "tool_use" );
+		const std::string r3 = AnthropicBody( "msg_3", "Done.", {}, "end_turn" );
+		AgentEvalScenario s = MakeScenario( "tcc_two_calls", kScene, "Vary it twice", "commit",
+			JsonlLine( "anthropic", r1 ) + JsonlLine( "anthropic", r2 ) + JsonlLine( "anthropic", r3 ), dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", "tcc_two_calls: run reached final_text" );
+		Check( h.result.toolCalls == 2, "tcc_two_calls: exactly 2 tool calls (both vary_material)" );
+
+		checkOne( h, s,
+			"[{\"kind\":\"trajectory\",\"toolCallCount\":{\"name\":\"vary_material\",\"min\":1},\"metricLabel\":\"vmc\"}]",
+			true, "min:1 PASSES (2 >= 1)", true, 2.0, "vmc" );
 	}
 }
 
@@ -6124,6 +6547,267 @@ static void TestMaterialRichnessCheckpoints()
 		Check( err.find( "metricLabel" ) != std::string::npos,
 			"the load error names metricLabel (got: " + err + ")" );
 	}
+}
+
+//----------------------------------------------------------------------
+// T-s6: doc 88 S6 eval-census checkpoints -- the two NEW checks added to
+// rich_material_closeup.json and, as a PURE metric, to the two
+// bare_prompt_build scenarios: (1) any_param_references_kind:scalar_painter
+// EXERCISED SPECIFICALLY against the S1/S2 `scalar_painter { expression
+// <body> }` FORM (T-mr above only ever exercises the pre-S1
+// `function2d`/inline-number forms -- this closes that gap for the form the
+// 0/24 deficit is actually about); (2) distinct_chunk_kinds over
+// kinds:["expression_painter","ramp_painter"] -- the "expression/ramp family
+// used anywhere" adoption census.  Every scene here is read-only
+// (kReadThenDoneFixture), so the checked document is the scene TEXT
+// verbatim, same idiom as T-mr.
+//----------------------------------------------------------------------
+
+// PASS case for both S6 checks at once: a ggx_material's alphax/alphay are
+// bound to a scalar_painter using the `expression` FORM (not `function2d`),
+// and an expression_painter feeds the material's diffuse reflectance --
+// mirrors rich_material_closeup.fixture.jsonl's sp_rough/pnt_patina shape at
+// a minimal scale.
+static const char* const kExpressionFormScalarScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"expression_painter\n{\n\tname pnt_field\n\tdef n fbm(P*3.0, 3, 0.5, 2.0)\n\tdef t clamp(0.5+0.5*n, 0, 1)\n\texpr mix(vec3(0.1,0.1,0.1), vec3(0.9,0.7,0.4), t)\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_spec\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"scalar_painter\n{\n\tname sp_rough\n\tdef f1 worley_f1(P*4.0, 1.0)\n\texpression mix(0.05, 0.6, clamp(f1, 0, 1))\n}\n\n"
+	"ggx_material\n{\n\tname mat_ggx\n\trd pnt_field\n\trs pnt_spec\n\talphax sp_rough\n\talphay sp_rough\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"box_geometry\n{\n\tname geo_ggx\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_ggx\n\tgeometry geo_ggx\n\tmaterial mat_ggx\n}\n";
+
+// PASS case for the expression/ramp family check via ramp_painter ALONE --
+// no expression_painter chunk anywhere -- proving the family checkpoint is a
+// genuine "EITHER kind" test (distinct_chunk_kinds over a 2-entry "kinds"
+// list, distinctMin:1), not silently keyed to only one of the two.  The
+// ramp's `input` is a plain uniformcolor_painter -- ramp_painter accepts any
+// colour-pipe painter as its driving field, and using the plainest one keeps
+// this scene isolated to exactly the one new kind under test.
+static const char* const kRampOnlyFamilyScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_field\n\tcolor 0.4 0.4 0.4\n}\n\n"
+	"ramp_painter\n{\n\tname pnt_ramp\n\tinput pnt_field\n\tchannel R\n\tinterpolation smooth\n\tstop 0.0  0.1 0.1 0.1\n\tstop 1.0  0.9 0.9 0.9\n\tcolor_space Rec709RGB_Linear\n}\n\n"
+	"lambertian_material\n{\n\tname mat_a\n\treflectance pnt_ramp\n}\n\n"
+	"box_geometry\n{\n\tname geo_a\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_a\n\tgeometry geo_a\n\tmaterial mat_a\n}\n";
+
+// P2-a (review round 1): the any_param_references_kind headline op EXERCISED
+// SPECIFICALLY against the S3 `scalar_painter { painter <name> channel R }`
+// bridge FORM (PainterChannelScalarPainter, form 12 -- P2.1's any-painter ->
+// scalar bridge).  T-mr only ever exercises the pre-S1 function2d/inline-
+// number forms; the T-s6 block above closes the S1/S2 `expression` form gap;
+// this scene closes the remaining named form -- a scalar_painter whose ONLY
+// content is `painter <colour painter> channel <R|G|B|A>`, bound to
+// mat_ggx's alphax/alphay, reaching obj_ggx.
+static const char* const kPainterChannelBridgeScalarScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_spec\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_field\n\tcolor 0.3 0.6 0.9\n}\n\n"
+	"scalar_painter\n{\n\tname sp_bridge\n\tpainter pnt_field\n\tchannel R\n}\n\n"
+	"ggx_material\n{\n\tname mat_ggx\n\trd pnt_spec\n\trs pnt_spec\n\talphax sp_bridge\n\talphay sp_bridge\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"box_geometry\n{\n\tname geo_ggx\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_ggx\n\tgeometry geo_ggx\n\tmaterial mat_ggx\n}\n";
+
+// Negative twin: BYTE-IDENTICAL to kPainterChannelBridgeScalarScene except
+// mat_ggx's alphax/alphay are inline numeric constants -- the bridge-form
+// scalar_painter chunk still EXISTS (sp_bridge) but is now orphaned (no
+// referrer anywhere), so any_param_references_kind:scalar_painter must FAIL.
+static const char* const kPainterChannelBridgeScalarOrphanScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_spec\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_field\n\tcolor 0.3 0.6 0.9\n}\n\n"
+	"scalar_painter\n{\n\tname sp_bridge\n\tpainter pnt_field\n\tchannel R\n}\n\n"
+	"ggx_material\n{\n\tname mat_ggx\n\trd pnt_spec\n\trs pnt_spec\n\talphax 0.2\n\talphay 0.2\n\tior 1.5\n\textinction 0.0\n}\n\n"
+	"box_geometry\n{\n\tname geo_ggx\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n"
+	"standard_object\n{\n\tname obj_ggx\n\tgeometry geo_ggx\n\tmaterial mat_ggx\n}\n";
+
+static void TestExpressionRampFamilyAndScalarExpressionFormCheckpoints()
+{
+	std::printf( "T-s6: doc 88 S6 census checks -- scalar_painter{expression} form + expression/ramp family...\n" );
+	const std::string dir = ScratchRunDir( "t_s6_census" );
+
+	auto makeHandle = [&]( const char* id, const char* sceneText ) -> AgentEvalRunHandle {
+		AgentEvalScenario s = MakeScenario( id, sceneText, "Read only", "commit", kReadThenDoneFixture, dir, "[]" );
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text", std::string( id ) + ": run reached final_text" );
+		Check( h.dispatcher != nullptr, std::string( id ) + ": run has a live dispatcher" );
+		return h;
+	};
+
+	const AgentEvalRunHandle hExprScalar = makeHandle( "s6_expr_scalar", kExpressionFormScalarScene );
+	const AgentEvalRunHandle hRampOnly    = makeHandle( "s6_ramp_only", kRampOnlyFamilyScene );
+	// Reuses T-mr's kFlatPainterScene (uniformcolor-only: no scalar_painter,
+	// no expression_painter, no ramp_painter at all) as the shared "nothing
+	// here" FAIL substrate for both checks below.
+	const AgentEvalRunHandle hFlat        = makeHandle( "s6_flat", kFlatPainterScene );
+	// T-mr's kMaterialRichnessSceneOrphanScalar: a scalar_painter EXISTS
+	// (via the pre-S1 function2d form) but mat_ggx's alphax/alphay are
+	// INLINE numbers -- "all-numeric microsurface slots", the FAIL case the
+	// task brief names explicitly, distinct from "no such chunk exists".
+	const AgentEvalRunHandle hOrphanScalar = makeHandle( "s6_orphan_scalar", kMaterialRichnessSceneOrphanScalar );
+	// P2-a (review round 1): the S3 `scalar_painter { painter <name> channel
+	// R }` bridge form, bound (PASS) and orphaned (FAIL negative twin).
+	const AgentEvalRunHandle hPainterBridge       = makeHandle( "s6_painter_bridge", kPainterChannelBridgeScalarScene );
+	const AgentEvalRunHandle hPainterBridgeOrphan = makeHandle( "s6_painter_bridge_orphan", kPainterChannelBridgeScalarOrphanScene );
+
+	auto checkAgainst = [&]( const AgentEvalRunHandle& h, const std::string& cpJson, bool expectPass, const std::string& label ) {
+		JsonValue cps; std::string err;
+		Check( JsonParse( cpJson, cps, err ), label + ": checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( h, s2 );
+		Check( r.checkpoints.size() == 1, label + ": exactly one checkpoint result" );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].passed == expectPass,
+				label + ": passed==" + std::string( expectPass ? "true" : "false" ) +
+				" (detail: " + r.checkpoints[0].detail + ")" );
+			Check( !r.checkpoints[0].detail.empty(), label + ": detail is never empty" );
+		}
+	};
+
+	// ---- any_param_references_kind:scalar_painter, specifically against the
+	// `expression` form (the rich_material_closeup headline checkpoint) ----
+
+	checkAgainst( hExprScalar,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		true, "any_param_references_kind: scalar_painter{expression} bound to ggx_material.alphax/alphay PASSES" );
+
+	checkAgainst( hOrphanScalar,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		false, "any_param_references_kind: all-numeric microsurface slots (scalar_painter exists but unbound) FAILS" );
+
+	checkAgainst( hFlat,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		false, "any_param_references_kind: no scalar_painter chunk at all FAILS" );
+
+	// ---- P2-a (review round 1): the S3 painter-channel bridge form,
+	// PASS + negative-twin FAIL ----
+
+	checkAgainst( hPainterBridge,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		true, "any_param_references_kind: scalar_painter{painter pnt_field channel R} bound to ggx_material.alphax/alphay PASSES" );
+
+	checkAgainst( hPainterBridgeOrphan,
+		"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+		false, "any_param_references_kind: painter-channel-bridge scalar_painter exists but is orphaned (numeric alphax/alphay) FAILS" );
+
+	// ---- review round 1 P1 fix: any_param_references_kind now populates
+	// CheckOutcome::metricValue as a 1.0/0.0 pass indicator on every
+	// substantive evaluation, so rich_material_closeup.json's headline
+	// "spatially_varying_scalar" metricLabel actually reaches results.jsonl
+	// (previously hasMetricValue was never set on this op, so the label --
+	// and the whole §10 gate-(a) reading instruction -- was dead).  Checked
+	// in both directions, with an explicit metricLabel (the
+	// rich_material_closeup.json shape) and label-less (the
+	// bare_prompt_build_courtyard/cozy_study shape, weight:0.5, no
+	// metricLabel), mirroring T-mr's "default metricLabel == op name"
+	// pattern for the pre-existing metric ops above.
+	{
+		JsonValue cps; std::string err;
+		Check( JsonParse(
+			"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\","
+			"\"metricLabel\":\"spatially_varying_scalar\"}]", cps, err ),
+			"any_param_references_kind metric: labeled checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( hExprScalar, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue,
+			"any_param_references_kind: hasMetricValue is true on PASS" );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].metricValue == 1.0,
+				"any_param_references_kind: metricValue == 1.0 on PASS (got " + std::to_string( r.checkpoints[0].metricValue ) + ")" );
+			Check( r.checkpoints[0].metricLabel == "spatially_varying_scalar",
+				"any_param_references_kind: explicit metricLabel carried through on PASS (got '" + r.checkpoints[0].metricLabel + "')" );
+		}
+	}
+	{
+		JsonValue cps; std::string err;
+		Check( JsonParse(
+			"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\","
+			"\"metricLabel\":\"spatially_varying_scalar\"}]", cps, err ),
+			"any_param_references_kind metric: labeled checkpoint JSON parses (no-such-chunk case) (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( hFlat, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue,
+			"any_param_references_kind: hasMetricValue is true on FAIL too (no chunk of kind exists at all)" );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].metricValue == 0.0,
+				"any_param_references_kind: metricValue == 0.0 when no chunk of the kind exists (got " + std::to_string( r.checkpoints[0].metricValue ) + ")" );
+			Check( r.checkpoints[0].metricLabel == "spatially_varying_scalar",
+				"any_param_references_kind: explicit metricLabel carried through on FAIL too" );
+		}
+	}
+	{
+		// hOrphanScalar: the chunk EXISTS but every referrer slot is numeric
+		// -- the third substantive outcome branch (chunks non-empty, none has
+		// a referrer), distinct from "no chunk of that kind at all" above.
+		// Deliberately LABEL-LESS -- the bare_prompt_build_courtyard/
+		// cozy_study shape (weight:0.5, no explicit metricLabel) -- to prove
+		// the fallback resolves to the op name, never an empty string, per
+		// the no-empty-label-row guarantee eval_report.py's per-label
+		// breakdown depends on.
+		JsonValue cps; std::string err;
+		Check( JsonParse(
+			"[{\"kind\":\"document\",\"op\":\"any_param_references_kind\",\"referencedKind\":\"scalar_painter\"}]",
+			cps, err ), "any_param_references_kind metric: label-less checkpoint JSON parses (" + err + ")" );
+		AgentEvalScenario s2; s2.checkpoints = cps;
+		AgentEvalCheckResult r = CheckScenario( hOrphanScalar, s2 );
+		Check( r.checkpoints.size() == 1 && r.checkpoints[0].hasMetricValue,
+			"any_param_references_kind: hasMetricValue is true when the chunk exists but is orphaned" );
+		if( r.checkpoints.size() == 1 ) {
+			Check( r.checkpoints[0].metricValue == 0.0,
+				"any_param_references_kind: metricValue == 0.0 when orphaned (got " + std::to_string( r.checkpoints[0].metricValue ) + ")" );
+			Check( r.checkpoints[0].metricLabel == "any_param_references_kind",
+				"any_param_references_kind: label-less checkpoint resolves metricLabel to the op name, not empty (got '" + r.checkpoints[0].metricLabel + "')" );
+			Check( !r.checkpoints[0].metricLabel.empty(),
+				"any_param_references_kind: metricLabel is never empty when hasMetricValue is true" );
+		}
+	}
+
+	// ---- distinct_chunk_kinds over kinds:[expression_painter,ramp_painter]
+	// ("used anywhere" family census) ----
+
+	checkAgainst( hExprScalar,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\","
+		"\"kinds\":[\"expression_painter\",\"ramp_painter\"],\"distinctMin\":1}]",
+		true, "expression/ramp family: expression_painter alone (no ramp_painter) PASSES distinctMin:1" );
+
+	checkAgainst( hRampOnly,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\","
+		"\"kinds\":[\"expression_painter\",\"ramp_painter\"],\"distinctMin\":1}]",
+		true, "expression/ramp family: ramp_painter alone (no expression_painter) PASSES distinctMin:1 -- proves EITHER kind satisfies it" );
+
+	checkAgainst( hFlat,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\","
+		"\"kinds\":[\"expression_painter\",\"ramp_painter\"],\"distinctMin\":1}]",
+		false, "expression/ramp family: neither kind present FAILS distinctMin:1" );
+
+	// The bare_prompt_build family's ADDITIVE metric use of this same
+	// checkpoint shape is weight:0/distinctMin:0 -- vacuously true on ANY
+	// document, including one with neither kind (a mutation deleting that
+	// vacuous-pass guard would flip a "never gates" metric into a silent new
+	// gate on two committed baseline-series scenarios).  Red-proved here
+	// directly against hFlat, independent of scenario-file parsing.
+	checkAgainst( hFlat,
+		"[{\"kind\":\"document\",\"op\":\"distinct_chunk_kinds\","
+		"\"kinds\":[\"expression_painter\",\"ramp_painter\"],\"distinctMin\":0,\"weight\":0}]",
+		true, "expression/ramp family: distinctMin:0 (the bare_prompt_build additive-metric shape) PASSES vacuously even with neither kind present" );
 }
 
 //----------------------------------------------------------------------
@@ -7245,8 +7929,222 @@ static void TestChunkNamePrefixCountGeometryCategoryRedProof()
 	}
 }
 
+//----------------------------------------------------------------------
+// P1b (E4 fix round): the SEQUENCING GATE pinned through the REAL
+// AgentEvalRunner::RunScenario driving loop -- not a hand-fed
+// AgentChatLoop unit test (AgentChatLoopTest.cpp already covers the
+// gate's OWN arithmetic/envelope in isolation), but the actual
+// interception order this eval-runner host wires in
+// (AgentEvalRunner.cpp: GateRefusalResponse checked BEFORE
+// dispatcher->HandleLine).  A scripted fixture crosses the gate's
+// default threshold (10) WITHOUT a look, so the gate genuinely fires
+// mid-replay against a LIVE AgentSession + AgentRpcDispatcher over a
+// real document -- not a synthesized envelope a unit test hands itself.
+//
+// Two sub-scenarios, both built on the SAME 10-setup-mutations prefix
+// (streak reaches exactly 10, none of the ten refused):
+//   (a) "blocked": the 11th mutating call (a distinctively-named
+//       chunk) is attempted and the turn ends immediately, no look.
+//       Proves the gate's refusal is not merely a WIRE-level rejection
+//       message -- the chunk is genuinely ABSENT from the document a
+//       real dispatcher produced, and the recorded trajectory record
+//       for that call carries applied:false/status:"rejected".
+//   (b) "recovered": the SAME sequence, but after the refused attempt
+//       the turn renders (the look, resetting the streak) and retries
+//       the SAME chunk -- proves it lands, and lands EXACTLY ONCE (the
+//       first attempt never reached the dispatcher at all, so there is
+//       only ever one real insert to land).
+//
+// RED-PROOF (manual, not re-run by this binary): reordering
+// AgentEvalRunner.cpp's tool-dispatch loop so GateRefusalResponse is
+// checked AFTER dispatcher->HandleLine (or removed) makes (a)'s
+// chunk_absent assertion FAIL -- the chunk really would have been
+// inserted for real before the gate's envelope overwrote the response
+// the model sees.  Verified by hand against that mutation while
+// developing this test; left as a comment (not a compile-time toggle)
+// since the production code has exactly one correct order and this
+// suite should not carry a deliberately-wrong branch just to exercise it.
+//----------------------------------------------------------------------
+static void TestSequencingGateRealRunScenario()
+{
+	std::printf( "P1b: SEQUENCING GATE fires through the REAL RunScenario driving loop...\n" );
+
+	// Shared prefix: read_document, then 10 setup mutations (each a
+	// distinct, disposable painter chunk) -- the streak reaches exactly
+	// the default threshold (10) without any of these ten being refused
+	// (GateRefusalResponse checks the streak BEFORE it advances, so the
+	// 10th setup call is checked at streak==9, still under threshold).
+	auto buildPrefix = []() {
+		std::string fixture;
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_1", "Reading the document.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		for( int i = 1; i <= 10; ++i ) {
+			fixture += JsonlLine( "anthropic", AnthropicBody( "msg_setup" + std::to_string( i ),
+				"Setup chunk " + std::to_string( i ) + ".",
+				{ { "insert_chunk", InsertChunkInput(
+					"uniformcolor_painter\n{\n\tname pnt_gate_" + std::to_string( i ) +
+					"\n\tcolor 0.1 0.1 0.1\n}" ) } }, "tool_use" ) );
+		}
+		return fixture;
+	};
+	// The chunk every "target" call below names -- distinctive enough
+	// that argsContains can select it out of the 10 setup calls above
+	// (none of which contain the substring "gate_target").
+	const std::string kTargetChunk =
+		"uniformcolor_painter\n{\n\tname pnt_gate_target\n\tcolor 0.2 0.3 0.4\n}";
+
+	// ---- (a) blocked: 11th mutating call refused, turn ends immediately ----
+	{
+		const std::string dir = ScratchRunDir( "p1b_gate_blocked" );
+		std::string fixture = buildPrefix();
+		// The 11th mutating call -- streak is 10 (>= threshold) when this
+		// is checked, so GateRefusalResponse refuses it BEFORE dispatch.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_target_attempt",
+			"Adding the target chunk.",
+			{ { "insert_chunk", InsertChunkInput( kTargetChunk ) } }, "tool_use" ) );
+		// No look -- the turn just ends.  Proves the refusal alone (with
+		// no recovery) really does leave the document untouched.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_done",
+			"Stopped -- built 10 setup chunks, the 11th was refused.", {}, "end_turn" ) );
+
+		AgentEvalScenario s;
+		s.id = "p1b_gate_blocked";
+		s.title = s.id;
+		s.sceneInline = kScene;
+		s.autonomy = "commit";
+		s.prompts.push_back( std::string( "Insert 11 chunks without ever looking." ) );
+		s.replayFixturePath = dir + "/" + s.id + ".fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ), "P1b(a): fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text",
+			"P1b(a): run reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+		Check( h.result.toolCalls == 12,
+			"P1b(a): 12 tool calls dispatched through the loop (1 read_document + 10 setup + 1 refused) -- "
+			"the refused call still counts as dispatched (it reached the eval runner's per-call accounting), "
+			"it just never reached the RPC dispatcher" );
+
+		// applied:false / status:"rejected" in the RECORDED trajectory
+		// result for the target attempt.
+		{
+			JsonValue cps; std::string err;
+			Check( JsonParse(
+				"[{\"kind\":\"trajectory\",\"toolOutcomes\":[{\"name\":\"insert_chunk\","
+				"\"argsContains\":\"pnt_gate_target\",\"expect\":\"rejected\"}]}]",
+				cps, err ), "P1b(a): toolOutcomes checkpoint JSON parses" );
+			AgentEvalScenario s2 = s; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			Check( r.checkpoints.size() == 1 && r.checkpoints[0].passed,
+				"P1b(a): the target chunk's insert_chunk call recorded applied:false/status:\"rejected\" "
+				"(detail: " + ( r.checkpoints.size() == 1 ? r.checkpoints[0].detail : std::string() ) + ")" );
+		}
+		// The document a REAL dispatcher produced never got the chunk.
+		{
+			JsonValue cps; std::string err;
+			Check( JsonParse(
+				"[{\"kind\":\"document\",\"op\":\"chunk_absent\",\"name\":\"pnt_gate_target\"}]",
+				cps, err ), "P1b(a): chunk_absent checkpoint JSON parses" );
+			AgentEvalScenario s2 = s; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			Check( r.checkpoints.size() == 1 && r.checkpoints[0].passed,
+				"P1b(a): pnt_gate_target is ABSENT from the final document -- the gate genuinely stopped "
+				"the mutation before the dispatcher, not merely relabeled its result "
+				"(detail: " + ( r.checkpoints.size() == 1 ? r.checkpoints[0].detail : std::string() ) + ")" );
+		}
+		// The 10 setup chunks DID land -- proves the gate refuses ONLY the
+		// (threshold+1)-th call, not the whole batch.
+		{
+			JsonValue cps; std::string err;
+			Check( JsonParse(
+				"[{\"kind\":\"document\",\"op\":\"chunk_exists\",\"name\":\"pnt_gate_10\"}]",
+				cps, err ), "P1b(a): chunk_exists(pnt_gate_10) checkpoint JSON parses" );
+			AgentEvalScenario s2 = s; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			Check( r.checkpoints.size() == 1 && r.checkpoints[0].passed,
+				"P1b(a): the 10th SETUP chunk landed normally -- only the 11th call was refused" );
+		}
+	}
+
+	// ---- (b) recovered: refused -> look -> retry -> lands exactly once ----
+	{
+		const std::string dir = ScratchRunDir( "p1b_gate_recovered" );
+		std::string fixture = buildPrefix();
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_target_attempt1",
+			"Adding the target chunk.",
+			{ { "insert_chunk", InsertChunkInput( kTargetChunk ) } }, "tool_use" ) );
+		// The look -- resets the streak to 0.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_look",
+			"That was refused -- let me check the scene before continuing.",
+			{ { "render", EmptyInput() } }, "tool_use" ) );
+		// Retry the IDENTICAL chunk -- the gate is clear now, so this one
+		// reaches the dispatcher and actually applies.
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_target_attempt2",
+			"Retrying the target chunk now that I've looked.",
+			{ { "insert_chunk", InsertChunkInput( kTargetChunk ) } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_done",
+			"Built the target chunk after looking.", {}, "end_turn" ) );
+
+		AgentEvalScenario s;
+		s.id = "p1b_gate_recovered";
+		s.title = s.id;
+		s.sceneInline = kScene;
+		s.autonomy = "commit";
+		s.prompts.push_back( std::string( "Insert 11 chunks without looking, then look and retry the refused one." ) );
+		s.replayFixturePath = dir + "/" + s.id + ".fixture.jsonl";
+		Check( WriteFile( s.replayFixturePath, fixture ), "P1b(b): fixture written to scratch" );
+
+		AgentEvalRunOptions opts; opts.runDir = dir;
+		AgentEvalRunHandle h = RunScenario( s, opts );
+		Check( h.result.terminalStatus == "final_text",
+			"P1b(b): run reaches final_text (got '" + h.result.terminalStatus + "': " + h.result.errorMessage + ")" );
+		Check( h.result.toolCalls == 14,
+			"P1b(b): 14 tool calls dispatched (1 read_document + 10 setup + 1 refused + 1 render + 1 retry)" );
+
+		// First attempt refused, retry applied -- SAME chunk, both outcomes
+		// pinned on the ONE trajectory via occurrence:first/last.
+		{
+			JsonValue cps; std::string err;
+			Check( JsonParse(
+				"[{\"kind\":\"trajectory\",\"toolOutcomes\":["
+				"{\"name\":\"insert_chunk\",\"argsContains\":\"pnt_gate_target\",\"occurrence\":\"first\",\"expect\":\"rejected\"},"
+				"{\"name\":\"insert_chunk\",\"argsContains\":\"pnt_gate_target\",\"occurrence\":\"last\",\"expect\":\"applied\"}"
+				"]}]",
+				cps, err ), "P1b(b): toolOutcomes checkpoint JSON parses" );
+			AgentEvalScenario s2 = s; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			Check( r.checkpoints.size() == 1 && r.checkpoints[0].passed,
+				"P1b(b): first attempt rejected, retry (after the look) applied -- both pinned on the "
+				"SAME trajectory (detail: " + ( r.checkpoints.size() == 1 ? r.checkpoints[0].detail : std::string() ) + ")" );
+		}
+		// It landed -- and since the first attempt never reached the
+		// dispatcher at all (proven by (a) above, same code path), the
+		// retry is the ONLY real insert that ever happened: "exactly
+		// once" holds by construction, not merely by the document's
+		// duplicate-name rejection rule masking a double-apply.
+		{
+			JsonValue cps; std::string err;
+			Check( JsonParse(
+				"[{\"kind\":\"document\",\"op\":\"chunk_exists\",\"name\":\"pnt_gate_target\"}]",
+				cps, err ), "P1b(b): chunk_exists checkpoint JSON parses" );
+			AgentEvalScenario s2 = s; s2.checkpoints = cps;
+			AgentEvalCheckResult r = CheckScenario( h, s2 );
+			Check( r.checkpoints.size() == 1 && r.checkpoints[0].passed,
+				"P1b(b): pnt_gate_target EXISTS in the final document after the look+retry -- lands exactly "
+				"once (detail: " + ( r.checkpoints.size() == 1 ? r.checkpoints[0].detail : std::string() ) + ")" );
+		}
+	}
+}
+
 int main()
 {
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentEvalCheckTest (Eval-harness slice E3: the checker engine) ===\n" );
 
 	TestScratchRootDiffersAcrossProcesses();
@@ -7285,12 +8183,16 @@ int main()
 	TestAskUserScriptedResponderMatching();
 	TestAskUserLoaderValidation();
 	TestTrajectoryAskUserAssertions();
+	TestToolCallCountLoaderValidation();
+	TestTrajectoryToolCallCountAssertion();
 	TestScenarioContentHashAskUserResponsesSensitivity();
 	TestAdversarialControlNeverAsksStillBuilds();
 	TestMaterialRichnessCheckpoints();
+	TestExpressionRampFamilyAndScalarExpressionFormCheckpoints();
 	TestParamBindingCheckpoint();
 	TestChunkNamePrefixCountCheckpoint();
 	TestChunkNamePrefixCountGeometryCategoryRedProof();
+	TestSequencingGateRealRunScenario();
 
 	std::printf( "=== AgentEvalCheckTest: %d passed, %d failed ===\n", g_pass, g_fail );
 

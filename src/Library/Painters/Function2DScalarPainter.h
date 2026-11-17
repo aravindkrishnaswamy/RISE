@@ -32,7 +32,13 @@ namespace RISE
 			public virtual Reference
 		{
 		protected:
-			IFunction2D* const pFunc;
+			//! CONST because every use of it here is const (`Evaluate`, and
+			//! `Reference::addref`/`release`, are all const methods), and a
+			//! const-widened parameter lets a caller holding only a
+			//! `const IFunction2D&` -- the legacy `RISE_API_CreateBumpMapModifier`
+			//! shim is one -- wrap it without a const_cast.  Callers holding a
+			//! mutable pointer convert implicitly, so nothing else changes.
+			const IFunction2D* const pFunc;
 			const Scalar scale;
 			const Scalar bias;
 			virtual ~Function2DScalarPainter()
@@ -45,7 +51,7 @@ namespace RISE
 			//! `texture` form's scale/bias so procedural IFunction2D sources
 			//! (e.g. the guilloché oxide dose) drop into the same heat-tint
 			//! window semantics as a baked map.
-			explicit Function2DScalarPainter( IFunction2D* p, const Scalar scale_ = Scalar(1), const Scalar bias_ = Scalar(0) ) :
+			explicit Function2DScalarPainter( const IFunction2D* p, const Scalar scale_ = Scalar(1), const Scalar bias_ = Scalar(0) ) :
 				pFunc( p ), scale( scale_ ), bias( bias_ )
 			{
 				if( pFunc ) pFunc->addref();

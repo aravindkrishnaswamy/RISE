@@ -214,6 +214,15 @@ private:
 		return dir;
 	}
 
+	// GEOMETRY-PRESENCE occlusion estimator for the interactive preview.
+	// Uses IRayCaster::CastOcclusionRay (not CastShadowRay): this is an
+	// AO cavity-darkening term, not a light-visibility test, so an
+	// occluder authored with `casts_shadows FALSE` must still occlude
+	// here -- exactly the bug AmbientOcclusionShaderOp had (see its
+	// header comment and docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+	// section 8.1); this was a second, independent occurrence of the
+	// same defect, found by auditing every CastShadowRay call site
+	// (2026-09-07).
 	Scalar AmbientOcclusion(
 		const RayIntersection& ri,
 		const IRayCaster& caster,
@@ -242,7 +251,7 @@ private:
 		unsigned int hits = 0;
 		for( unsigned int i = 0; i < samples; ++i ) {
 			const Vector3 dir = HemisphereDirection( n, tangent, bitangent, ri, i, samples, salt );
-			if( caster.CastShadowRay( Ray( origin, dir ), radius ) ) {
+			if( caster.CastOcclusionRay( Ray( origin, dir ), radius ) ) {
 				++hits;
 			}
 		}
@@ -1294,8 +1303,28 @@ bool RISE::Implementation::CreateInteractiveObjectMapPipeline(
 	// hitting an emitter BEFORE the ObjectIdShader runs, so the emissive
 	// object would vanish into background and its legend entry would be a
 	// permanent unexplained pixelCount:0.
-	IRayCaster* pCaster = new InteractiveMaterialPreviewRayCaster( *pShader, /*showLuminaires*/true );
+	InteractiveMaterialPreviewRayCaster* pCaster =
+		new InteractiveMaterialPreviewRayCaster( *pShader, /*showLuminaires*/true );
 	pShader->release();
+
+	// EXACTNESS INVARIANT, transport half: traverse a VACUUM.  Without this
+	// a scene that declares a `global_medium` (or an object with an interior
+	// medium the camera sits inside) destroys the identity contract three
+	// ways at once -- the free-flight sampler terminates most primary rays
+	// at a scatter event before they ever reach a surface (so ObjectIdShader
+	// never runs for those pixels and the legend's pixelCounts collapse),
+	// the survivors' flat identity colour is multiplied by the medium's
+	// per-channel transmittance, and an in-scattered radiance term is added
+	// on top.  The result is an image in which NONE of the registered
+	// palette colours appear, `query_object_at` reports "no object here" on
+	// points that are visibly on objects, and the whole render is
+	// Monte-Carlo noisy so it is not even reproducible run to run.
+	// Measured on scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene
+	// (47 objects, `global_medium med_ocean`): 0 of 47 legend colours
+	// present, 4964-5080 distinct colours in a 6912-pixel frame, and only
+	// ~2200 of 6912 pixels shaded, varying every run.  See
+	// AgentObjectMapTest's kSceneMedium coverage.
+	pCaster->SetBypassMediumTransport( true );
 
 	// Default preview config, progressive OFF -- a single exact pass.  We
 	// deliberately install NO polish caster and NO sampling kernel: the
@@ -1440,6 +1469,17 @@ bool RISE::Implementation::CreateInteractiveViewModeCaster(
 	// ResolveXrayView_.  This composes with all four data modes with no
 	// per-shader plumbing.
 	pCaster->SetXrayViewResolve( xray );
+	// The four data modes emit DATA, not radiance -- a world-space normal, a
+	// windowed depth, a facet index, an edge distance.  Volumetric transport
+	// has nothing to contribute to any of them and everything to take away:
+	// it terminates primary rays at scatter events (so a normal/depth pixel
+	// reports the medium rather than the surface behind it) and rescales the
+	// false colour that does survive.  Traverse a vacuum, same reasoning as
+	// the objectmap identity caster -- see RayCaster::bBypassMediumTransport.
+	// The BeautyVariant modes (deep_reflect / direct / indirect /
+	// clay_lights) are NOT built here; they route through
+	// CreateBeautyVariantPipeline and keep participating media, as they must.
+	pCaster->SetBypassMediumTransport( true );
 	*ppCaster = pCaster;
 	return true;
 }
@@ -1779,6 +1819,141 @@ bool RISE::Implementation::CreateBeautyVariantPipeline(
 	// CreateInteractiveViewModePipeline above: the rasterizer holds its OWN
 	// addref'd reference internally, so the caller's ref (this one) and the
 	// rasterizer's internal one are independent and both must be released.
+	*ppRasterizer = pRaster;
+	*ppCaster = pCaster;
+	return true;
+}
+
+namespace
+{
+	//! THE MATERIAL LOOK's fixed fidelity (2026-08-24).  Deliberately
+	//! constants here rather than a ViewportRenderModeInfo row: the material
+	//! look is not a viewport render mode and must never appear in the mode
+	//! registry (see CreateMaterialLookPipeline's header doc).
+	//!
+	//! 64 SPP + OIDN, and the number was MEASURED rather than picked.  This
+	//! look's whole value is that two of them are comparable, so the figure
+	//! that decided it is RUN-TO-RUN AGREEMENT, not smoothness: when the
+	//! figure was measured, RISE's PT workers each seeded their own
+	//! RandomNumberGenerator from libc concurrently (RasterizeDispatchers.h's
+	//! DoWork), so a render carried a noise floor that a model comparing
+	//! iterations would read as change.  (Since the DL-625 review the
+	//! dispatcher seeds per tile from one libc read, so two renders after the
+	//! same std::srand agree; renders without a common srand still differ by
+	//! that floor.)  At 24 spp
+	//! two renders of one glossy sphere differed by up to 44/255 per pixel;
+	//! at 64 the same measurement is 13/255 worst and 0.09/255 mean -- below
+	//! anything a reader would call a difference.  The cost of that is small
+	//! against the budget the feature was specified with (well under 2-3 s
+	//! per element at 256x256): 173 ms for a sphere and 357 ms for a
+	//! five-part sphere-traced sdf_geometry, on an M-series Mac.
+	const unsigned int kMaterialLookSamplesPerPixel = 64;
+
+	//! Six bounces, not the PT default, and MEASURED rather than reasoned.
+	//! Transmission is the reason: a closed dielectric shell costs FOUR
+	//! specular vertices to see through (enter front, exit back of the outer
+	//! wall, enter and exit the inner one) before a single diffuse or
+	//! environment vertex is reached, so a cap too low renders exactly the
+	//! "opaque glass" the look exists to expose -- as an artifact of the cap
+	//! rather than of the material.  Pinned by AgentRenderAnchorTest's [4d-D]
+	//! hollow-shell fixture, which was run at both settings: at 6 the shell's
+	//! interior carries refracted background (darkFrac 0.309, stdDev 0.192);
+	//! rebuilt at 4 the same render is a near-uniform dark disc (0.998,
+	//! 0.032).  A SOLID sphere costs only two vertices and looks fine at 4,
+	//! which is why that fixture is a shell and not the obvious sphere.
+	const unsigned int kMaterialLookMaxBounces = 6;
+}
+
+bool RISE::Implementation::CreateMaterialLookPipeline(
+	IRasterizer** ppRasterizer,
+	IRayCaster** ppCaster,
+	IShader* pDefaultShader,
+	unsigned int* outSamplesPerPixel,
+	unsigned int* outMaxBounces )
+{
+	if( ppRasterizer ) {
+		*ppRasterizer = 0;
+	}
+	if( ppCaster ) {
+		*ppCaster = 0;
+	}
+	if( outSamplesPerPixel ) {
+		*outSamplesPerPixel = kMaterialLookSamplesPerPixel;
+	}
+	if( outMaxBounces ) {
+		*outMaxBounces = kMaterialLookMaxBounces;
+	}
+	if( !ppRasterizer || !ppCaster ) {
+		return false;
+	}
+
+	// The caster and the owned-default-shader dance are LINE-FOR-LINE
+	// CreateBeautyVariantPipeline's above, and deliberately so -- the two
+	// pipelines have the same correctness requirements (a real per-object
+	// material path, and a real default shader so an SSS/BSSRDF continuation
+	// through RayCaster::SelectShader does not resolve to black).  See that
+	// function's comments for the full reasoning behind each argument.
+	IShader* pOwnedShader = 0;
+	BeautyVariantDefaultShader* pOwnedBVDefault = 0;
+	if( !pDefaultShader ) {
+		pOwnedBVDefault = BeautyVariantDefaultShader::Create();
+		if( !pOwnedBVDefault ) {
+			return false;
+		}
+		pOwnedShader = pOwnedBVDefault;
+		pOwnedBVDefault->SetMaxPathDepth( kMaterialLookMaxBounces );
+		// Neither diagnostic mask belongs on a material look: `indirectOnly`
+		// would delete the direct highlight that IS the roughness read, and
+		// `clayOverride` substitutes every reflectance for a neutral clay --
+		// i.e. it would delete the materials this render exists to show.
+		pOwnedBVDefault->SetIndirectOnly( false );
+		pOwnedBVDefault->SetClayOverride( false );
+	}
+	IShader* pShader = pDefaultShader ? pDefaultShader : pOwnedShader;
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, /*seeRadianceMap*/true, kMaterialLookMaxBounces, *pShader, /*showLuminaires*/true );
+	safe_release( pOwnedShader );
+	if( !pCaster ) {
+		return false;
+	}
+
+	ISampling2D* pSampler = 0;
+	RISE_API_CreateMultiJitteredSampling2D( &pSampler, 1.0, 1.0 );
+	if( pSampler ) {
+		pSampler->SetNumSamples( kMaterialLookSamplesPerPixel );
+	}
+	IPixelFilter* pFilter = 0;
+	RISE_API_CreateBoxPixelFilter( &pFilter, 1.0, 1.0 );
+
+	IRasterizer* pRaster = 0;
+	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pSampler, pFilter,
+		/*smsEnabled*/false, /*smsMaxIterations*/0, /*smsThreshold*/0.0, /*smsMaxChainDepth*/0,
+		/*smsBiased*/false, /*smsBernoulliTrials*/0, /*smsMultiTrials*/1, /*smsPhotonCount*/0,
+		/*smsTwoStage*/false, /*smsUseLevenbergMarquardt*/false, SMSSeedingMode::Snell, /*smsTargetBounces*/0,
+		/*oidnDenoise*/true, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast,
+		PathGuidingConfig(), AdaptiveSamplingConfig(), StabilityConfig(), /*useZSobol*/false );
+
+	safe_release( pSampler );
+	safe_release( pFilter );
+
+	if( !pRaster ) {
+		safe_release( pCaster );
+		return false;
+	}
+
+	{
+		// dynamic_cast for the same reason CreateBeautyVariantPipeline uses
+		// one: IRasterizer is a virtual base of PathTracingPelRasterizer.
+		PathTracingPelRasterizer* pPT = dynamic_cast<PathTracingPelRasterizer*>( pRaster );
+		if( pPT ) {
+			pPT->SetMaxPathDepth( kMaterialLookMaxBounces );
+			pPT->SetIndirectOnly( false );
+			pPT->SetClayOverride( false );
+		}
+	}
+
+	// `pCaster` is RETURNED as an owning reference (see the identical note at
+	// the end of CreateBeautyVariantPipeline) -- not released here.
 	*ppRasterizer = pRaster;
 	*ppCaster = pCaster;
 	return true;

@@ -1,8 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  OIDNDenoiser.h - Wrapper around Intel Open Image Denoise for
-//  post-process denoising of rendered images.  Entire file is
-//  compiled only when RISE_ENABLE_OIDN is defined.
+//  post-process denoising. Filter methods require RISE_ENABLE_OIDN;
+//  buffer conversion helpers are available without OIDN.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 28, 2026
@@ -29,12 +29,10 @@ namespace RISE
 	{
 		class AOVBuffers;
 
-		/// Stateful OIDN denoise context.  Caches the OIDN device,
-		/// filter, and per-buffer handles across calls; cross-render
-		/// reuse on the same rasterizer pays the device.commit() and
-		/// filter.commit() cost only once per cache key (resolution ×
-		/// quality × aux presence).  Held by the Rasterizer base for
-		/// the rasterizer's lifetime.
+		/// Stateful OIDN denoise context. Consecutive calls with unchanged
+		/// configuration and shared-buffer pointers reuse committed handles.
+		/// The device also survives filter-only rebuilds while its requested
+		/// backend is unchanged. Held by Rasterizer for its lifetime.
 		///
 		/// Stateless helpers (ImageToFloatBuffer, FloatBufferToImage,
 		/// CollectFirstHitAOVs) remain static — they don't touch any
@@ -67,19 +65,28 @@ namespace RISE
 				);
 
 #ifdef RISE_ENABLE_OIDN
+			/// Read while idle: cached preset (High before the first successful setup).
+			OidnQuality GetLastResolvedQuality() const;
+			/// Read while idle: Auto before device creation, otherwise actual CPU/GPU.
+			OidnDevice GetLastResolvedDevice() const;
+			/// Successful backend creations; unchanged requests reuse the device.
+			unsigned int GetDeviceGeneration() const;
+
 			/// Runs the OIDN RT filter on the given buffers.
 			/// beautyBuffer is the noisy input (w*h*3 floats, HDR).
-			/// albedoBuffer and normalBuffer are optional (may be NULL).
+			/// albedoBuffer and normalBuffer are optional (may be NULL), read-only.
+			/// Accurate prefiltering uses owned copies; caller inputs stay unchanged.
 			/// outputBuffer receives the denoised result (may alias beautyBuffer).
 			/// requestedQuality selects the OIDN quality preset; Auto picks
-			/// from the render-time heuristic (see docs/OIDN.md OIDN-P0-1).
+			/// from a deterministic work estimate (DL-360; see docs/OIDN.md).
 			/// requestedDevice picks the OIDN backend (Auto / CPU / GPU);
 			/// see docs/OIDN.md OIDN-P0-3 for fallback semantics.
 			/// requestedPrefilter selects between Fast (cleanAux=true on
 			/// the beauty filter, no prefilter pass) and Accurate (run
 			/// dedicated prefilter passes on each aux buffer first, then
 			/// the beauty filter).  See docs/OIDN.md OIDN-P1-1.
-			/// renderSecondsBeforeDenoise drives the Auto-quality heuristic.
+			/// workPerMegapixel = configured/adaptive spp * family policy weight.
+			/// It is a scene-static policy estimate, never measured wall-clock.
 			void Denoise(
 				float* beautyBuffer,
 				const float* albedoBuffer,
@@ -90,7 +97,7 @@ namespace RISE
 				OidnQuality requestedQuality,
 				OidnDevice requestedDevice,
 				OidnPrefilter requestedPrefilter,
-				double renderSecondsBeforeDenoise
+				double workPerMegapixel
 				);
 
 			/// Collects first-hit albedo and normal AOVs by casting one
@@ -108,9 +115,8 @@ namespace RISE
 			/// given AOV buffers.  Allocates temporary float buffers,
 			/// converts, denoises, and writes back.  See Denoise() for
 			/// requestedQuality / requestedDevice / requestedPrefilter
-			/// semantics.  renderSecondsBeforeDenoise is wall-clock from
-			/// rasterizer start to immediately before the denoise filter
-			/// runs.
+			/// semantics. workPerMegapixel is independent of image/region area,
+			/// elapsed time or early stopping.
 			void ApplyDenoise(
 				IRasterImage& image,
 				const AOVBuffers& aovBuffers,
@@ -119,7 +125,7 @@ namespace RISE
 				OidnQuality requestedQuality,
 				OidnDevice requestedDevice,
 				OidnPrefilter requestedPrefilter,
-				double renderSecondsBeforeDenoise
+				double workPerMegapixel
 				);
 
 			/// Region-restricted counterpart used by RasterizeRegion. The OIDN
@@ -137,7 +143,7 @@ namespace RISE
 				OidnQuality requestedQuality,
 				OidnDevice requestedDevice,
 				OidnPrefilter requestedPrefilter,
-				double renderSecondsBeforeDenoise
+				double workPerMegapixel
 				);
 #endif
 

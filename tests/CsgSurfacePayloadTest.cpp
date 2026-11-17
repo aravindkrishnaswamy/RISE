@@ -90,26 +90,53 @@
 //  P2-d's vTangent/bitangentSign promotion half is exercised by
 //  inspection of CSGObject.cpp rather than a dedicated test.
 //
+//
+//  WHY THIS FILE USES A FAILURE TALLY AND NOT `assert` (2026-08-17).
+//  Same NDEBUG hazard as CSGObjectIdentityTest.cpp: build/cmake/rise-tests/
+//  CMakeLists.txt never overrides CMAKE_CXX_FLAGS_RELEASE, MSVC's Release
+//  default carries `/DNDEBUG`, and run_all_tests.ps1 defaults to
+//  `-Config Release` -- so on that path every `assert` in this file used
+//  to compile to nothing and its 150+ checks verified NOTHING.
+//
+//  Worse: this file's setup calls `csg->AssignObjects(...)` -- a
+//  SIDE-EFFECTING call that actually builds the CSG composite's operand
+//  assignment -- and roughly fifteen of those calls sat INSIDE
+//  `assert(...)`.  Under NDEBUG the composite was never assigned and
+//  every check that followed ran against an unassigned CSG object instead
+//  of failing loudly.  Every such call is now made on its own line, with
+//  only its RESULT checked, so the setup always runs regardless of build
+//  configuration.
+//
+//  Style follows CSGObjectIdentityTest.cpp / CstSourceInstanceTest: a
+//  counted Check(), a printed tally, and a non-zero exit on any failure --
+//  exactly what run_all_tests.{sh,ps1} judge.
+//
 //////////////////////////////////////////////////////////////////////
 
-#include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
+#include <string>
 
 #include "../src/Library/Functions/ConstantFunctions.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
 #include "../src/Library/Geometry/CylinderGeometry.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Intersection/RayIntersection.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Objects/CSGObject.h"
+#include "../src/Library/Utilities/SurfaceCurvature.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+static int g_pass = 0, g_fail = 0;
+static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; std::printf( "  FAIL: %s\n", w ); } }
 
 namespace
 {
@@ -173,46 +200,46 @@ void TestIntersection_AEntersFirst_EntryIsWhollyB()
 	Ray r( Point3( 0.1, 0.05, -10 ), Vector3( 0, 0, 1 ) );
 
 	CSGObject* csg = new CSGObject( CSG_INTERSECTION );
-	assert( csg->AssignObjects( outer, inner ) );   // pObjectA = outer, pObjectB = inner
+	const bool assigned = csg->AssignObjects( outer, inner );   // pObjectA = outer, pObjectB = inner
+	Check( assigned, "Test1: composite takes outer(A)/inner(B) operands" );
 	csg->FinalizeTransformations();
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test1: (control) ray hits the composite at all" );
 
 	// Reference: intersect the SAME inner-box object directly, standalone.
 	RayIntersection refInner( r, nullRasterizerState );
 	Hit( inner, r, refInner );
-	assert( refInner.geometric.bHit );
+	Check( refInner.geometric.bHit, "Test1: (control) ray hits standalone inner box" );
 
 	// Reference: intersect the outer box too, to build a negative check.
 	RayIntersection refOuter( r, nullRasterizerState );
 	Hit( outer, r, refOuter );
-	assert( refOuter.geometric.bHit );
+	Check( refOuter.geometric.bHit, "Test1: (control) ray hits standalone outer box" );
 
 	// Sanity: the two boxes really do produce distinct UV / object-space
 	// points at this ray (otherwise the test wouldn't be discriminating).
-	assert( !Point2Close( refInner.geometric.ptCoord, refOuter.geometric.ptCoord ) );
-	assert( !PointClose( refInner.geometric.ptObjIntersec, refOuter.geometric.ptObjIntersec ) );
+	Check( !Point2Close( refInner.geometric.ptCoord, refOuter.geometric.ptCoord ), "Test1: (sanity) inner/outer ptCoord are distinct" );
+	Check( !PointClose( refInner.geometric.ptObjIntersec, refOuter.geometric.ptObjIntersec ), "Test1: (sanity) inner/outer ptObjIntersec are distinct" );
 
 	// The composite entry must be wholly B's (inner's) surface.
-	assert( VecClose( ri.geometric.vNormal, refInner.geometric.vNormal ) );
-	assert( VecClose( ri.geometric.vGeomNormal, refInner.geometric.vGeomNormal ) );
-	assert( Point2Close( ri.geometric.ptCoord, refInner.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refInner.geometric.ptObjIntersec ) );
-	assert( ri.geometric.derivatives.valid == refInner.geometric.derivatives.valid );
-	assert( ri.geometric.bHasVertexColor == refInner.geometric.bHasVertexColor );
-	assert( ri.geometric.bHasTangent == refInner.geometric.bHasTangent );
+	Check( VecClose( ri.geometric.vNormal, refInner.geometric.vNormal ), "Test1: composite vNormal matches inner's" );
+	Check( VecClose( ri.geometric.vGeomNormal, refInner.geometric.vGeomNormal ), "Test1: composite vGeomNormal matches inner's" );
+	Check( Point2Close( ri.geometric.ptCoord, refInner.geometric.ptCoord ), "Test1: composite ptCoord matches inner's" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refInner.geometric.ptObjIntersec ), "Test1: composite ptObjIntersec matches inner's" );
+	Check( ri.geometric.derivatives.valid == refInner.geometric.derivatives.valid, "Test1: composite derivatives.valid matches inner's" );
+	Check( ri.geometric.bHasVertexColor == refInner.geometric.bHasVertexColor, "Test1: composite bHasVertexColor matches inner's" );
+	Check( ri.geometric.bHasTangent == refInner.geometric.bHasTangent, "Test1: composite bHasTangent matches inner's" );
 
 	// Negative check: NOT A's (outer's) UV / object-space point -- this is
 	// exactly what the bug produced (B's normal paired with A's payload).
-	assert( !Point2Close( ri.geometric.ptCoord, refOuter.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refOuter.geometric.ptObjIntersec ) );
+	Check( !Point2Close( ri.geometric.ptCoord, refOuter.geometric.ptCoord ), "Test1: composite ptCoord is NOT outer's (the P1-a bug)" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refOuter.geometric.ptObjIntersec ), "Test1: composite ptObjIntersec is NOT outer's (the P1-a bug)" );
 
 	safe_release( csg );
 	safe_release( outer );
 	safe_release( inner );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -246,37 +273,37 @@ void TestIntersection_BEntersFirst_EntryIsWhollyA()
 	// but is now the FIRST-listed operand), pObjectB = outer.  Outer still
 	// enters first physically (its near face is farther out), so this
 	// exercises the "B enters first" branch instead of "A enters first".
-	assert( csg->AssignObjects( inner, outer ) );
+	const bool assigned = csg->AssignObjects( inner, outer );
+	Check( assigned, "Test2: composite takes inner(A)/outer(B) operands (roles swapped)" );
 	csg->FinalizeTransformations();
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test2: (control) ray hits the composite at all" );
 
 	RayIntersection refInner( r, nullRasterizerState );
 	Hit( inner, r, refInner );
-	assert( refInner.geometric.bHit );
+	Check( refInner.geometric.bHit, "Test2: (control) ray hits standalone inner box" );
 
 	RayIntersection refOuter( r, nullRasterizerState );
 	Hit( outer, r, refOuter );
-	assert( refOuter.geometric.bHit );
+	Check( refOuter.geometric.bHit, "Test2: (control) ray hits standalone outer box" );
 
 	// The composite entry must still be wholly the INNER box's surface
 	// (it's the operand that enters second / is nested), regardless of
 	// which CSG operand slot (A or B) it was assigned to.
-	assert( VecClose( ri.geometric.vNormal, refInner.geometric.vNormal ) );
-	assert( VecClose( ri.geometric.vGeomNormal, refInner.geometric.vGeomNormal ) );
-	assert( Point2Close( ri.geometric.ptCoord, refInner.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refInner.geometric.ptObjIntersec ) );
+	Check( VecClose( ri.geometric.vNormal, refInner.geometric.vNormal ), "Test2: composite vNormal matches inner's" );
+	Check( VecClose( ri.geometric.vGeomNormal, refInner.geometric.vGeomNormal ), "Test2: composite vGeomNormal matches inner's" );
+	Check( Point2Close( ri.geometric.ptCoord, refInner.geometric.ptCoord ), "Test2: composite ptCoord matches inner's" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refInner.geometric.ptObjIntersec ), "Test2: composite ptObjIntersec matches inner's" );
 
 	// Negative check: NOT the outer box's payload.
-	assert( !Point2Close( ri.geometric.ptCoord, refOuter.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refOuter.geometric.ptObjIntersec ) );
+	Check( !Point2Close( ri.geometric.ptCoord, refOuter.geometric.ptCoord ), "Test2: composite ptCoord is NOT outer's" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refOuter.geometric.ptObjIntersec ), "Test2: composite ptObjIntersec is NOT outer's" );
 
 	safe_release( csg );
 	safe_release( outer );
 	safe_release( inner );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -309,40 +336,40 @@ void TestSubtraction_VisibleBoundaryIsSubtractedOperand()
 	Ray r( Point3( 0, 0, -1.5 ), Vector3( 0, 0, 1 ) );
 
 	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
-	assert( csg->AssignObjects( oA, oB ) );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test3: composite takes A/B operands" );
 	csg->FinalizeTransformations();
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test3: (control) ray hits the composite at all" );
 
 	// Reference: standalone B at the same ray (unflipped).
 	RayIntersection refB( r, nullRasterizerState );
 	Hit( oB, r, refB );
-	assert( refB.geometric.bHit );
+	Check( refB.geometric.bHit, "Test3: (control) ray hits standalone B" );
 
 	RayIntersection refA( r, nullRasterizerState );
 	Hit( oA, r, refA );
-	assert( refA.geometric.bHit );
+	Check( refA.geometric.bHit, "Test3: (control) ray hits standalone A" );
 
 	// Sanity: A and B produce distinct UV / object-space points here.
-	assert( !PointClose( refA.geometric.ptObjIntersec, refB.geometric.ptObjIntersec ) );
+	Check( !PointClose( refA.geometric.ptObjIntersec, refB.geometric.ptObjIntersec ), "Test3: (sanity) A/B ptObjIntersec are distinct" );
 
 	// The composite boundary is B's surface, normal flipped (we're
 	// leaving A's solid into the void B carved out of it).
-	assert( VecClose( ri.geometric.vNormal, Vector3( -refB.geometric.vNormal.x, -refB.geometric.vNormal.y, -refB.geometric.vNormal.z ) ) );
-	assert( VecClose( ri.geometric.vGeomNormal, Vector3( -refB.geometric.vGeomNormal.x, -refB.geometric.vGeomNormal.y, -refB.geometric.vGeomNormal.z ) ) );
+	Check( VecClose( ri.geometric.vNormal, Vector3( -refB.geometric.vNormal.x, -refB.geometric.vNormal.y, -refB.geometric.vNormal.z ) ), "Test3: composite vNormal is B's normal, flipped" );
+	Check( VecClose( ri.geometric.vGeomNormal, Vector3( -refB.geometric.vGeomNormal.x, -refB.geometric.vGeomNormal.y, -refB.geometric.vGeomNormal.z ) ), "Test3: composite vGeomNormal is B's geom normal, flipped" );
 	// UV and object-space point are NOT sign-flipped -- they're B's own.
-	assert( Point2Close( ri.geometric.ptCoord, refB.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refB.geometric.ptObjIntersec ) );
+	Check( Point2Close( ri.geometric.ptCoord, refB.geometric.ptCoord ), "Test3: composite ptCoord matches B's (unflipped)" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refB.geometric.ptObjIntersec ), "Test3: composite ptObjIntersec matches B's (unflipped)" );
 
 	// Negative check: not A's payload.
-	assert( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ) );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ), "Test3: composite ptObjIntersec is NOT A's" );
 
 	safe_release( csg );
 	safe_release( oA );
 	safe_release( oB );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -377,35 +404,36 @@ void TestSubtraction_ExitDesignatedBoundary_ProbedPayloadMatchesRealFace()
 	Ray r( Point3( 0.1, 0.05, -10 ), Vector3( 0, 0, 1 ) );
 
 	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
-	assert( csg->AssignObjects( oA, oB ) );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test4 (P2-e): composite takes A/B operands" );
 	csg->FinalizeTransformations();
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test4 (P2-e): (control) ray hits the composite at all" );
 
 	RayIntersection refA( r, nullRasterizerState );
 	Hit( oA, r, refA );
-	assert( refA.geometric.bHit );
+	Check( refA.geometric.bHit, "Test4 (P2-e): (control) ray hits standalone A" );
 
 	// B's ENTRY-face payload (the pre-P2-e "honestly wrong face" answer)
 	// -- used below only as a NEGATIVE reference.
 	RayIntersection refBEntry( r, nullRasterizerState );
 	Hit( oB, r, refBEntry );
-	assert( refBEntry.geometric.bHit );
+	Check( refBEntry.geometric.bHit, "Test4 (P2-e): (control) ray hits standalone B" );
 
 	// Sanity: confirm we actually hit the exit-designated branch, i.e.
 	// the composite range lands on B's EXIT (range2), not B's entry
 	// (range) nor A's entry.
-	assert( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-3 ) );
-	assert( !Close( ri.geometric.range, refBEntry.geometric.range, 1e-3 ) );
-	assert( !Close( ri.geometric.range, refA.geometric.range, 1e-3 ) );
+	Check( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-3 ), "Test4 (P2-e): (sanity) composite range == B's exit range (range2)" );
+	Check( !Close( ri.geometric.range, refBEntry.geometric.range, 1e-3 ), "Test4 (P2-e): (sanity) composite range != B's entry range" );
+	Check( !Close( ri.geometric.range, refA.geometric.range, 1e-3 ), "Test4 (P2-e): (sanity) composite range != A's entry range" );
 
 	// Normal is B's EXIT normal, flipped -- untouched by the P2-e probe
 	// (the branch's own normal fields are authoritative; the probe only
 	// ever supplies the AUXILIARY payload, never range/vNormal/vGeomNormal).
-	assert( VecClose( ri.geometric.vNormal, Vector3( -refBEntry.geometric.vNormal2.x, -refBEntry.geometric.vNormal2.y, -refBEntry.geometric.vNormal2.z ) ) );
-	assert( VecClose( ri.geometric.vGeomNormal, Vector3( -refBEntry.geometric.vGeomNormal2.x, -refBEntry.geometric.vGeomNormal2.y, -refBEntry.geometric.vGeomNormal2.z ) ) );
+	Check( VecClose( ri.geometric.vNormal, Vector3( -refBEntry.geometric.vNormal2.x, -refBEntry.geometric.vNormal2.y, -refBEntry.geometric.vNormal2.z ) ), "Test4 (P2-e): composite vNormal is B's exit normal, flipped" );
+	Check( VecClose( ri.geometric.vGeomNormal, Vector3( -refBEntry.geometric.vGeomNormal2.x, -refBEntry.geometric.vGeomNormal2.y, -refBEntry.geometric.vGeomNormal2.z ) ), "Test4 (P2-e): composite vGeomNormal is B's exit geom normal, flipped" );
 
 	// P2-e reference: probe B's EXIT face DIRECTLY from the outside --
 	// an INDEPENDENT ray starting just past world z=-2 (B's +Z face)
@@ -415,29 +443,28 @@ void TestSubtraction_ExitDesignatedBoundary_ProbedPayloadMatchesRealFace()
 	Ray probeRef( Point3( 0.1, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refBExit( probeRef, nullRasterizerState );
 	Hit( oB, probeRef, refBExit );
-	assert( refBExit.geometric.bHit );
+	Check( refBExit.geometric.bHit, "Test4 (P2-e): (control) direct probe hits B's exit face" );
 
 	// Sanity: the probe reference actually lands on a DIFFERENT UV than
 	// B's entry face (box UV mapping is per-face) -- otherwise this
 	// test isn't discriminating between "entry payload" and "real exit
 	// payload".
-	assert( !Point2Close( refBExit.geometric.ptCoord, refBEntry.geometric.ptCoord ) );
+	Check( !Point2Close( refBExit.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test4 (P2-e): (sanity) exit-face ptCoord differs from entry-face ptCoord" );
 
 	// The composite's payload must be the REAL exit-face data (P2-e),
 	// not B's entry-face data (the pre-fix "honestly wrong face").
-	assert( Point2Close( ri.geometric.ptCoord, refBExit.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ) );
-	assert( !Point2Close( ri.geometric.ptCoord, refBEntry.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ) );
+	Check( Point2Close( ri.geometric.ptCoord, refBExit.geometric.ptCoord ), "Test4 (P2-e): composite ptCoord matches the REAL exit-face probe" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ), "Test4 (P2-e): composite ptObjIntersec matches the REAL exit-face probe" );
+	Check( !Point2Close( ri.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test4 (P2-e): composite ptCoord is NOT B's entry-face data" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ), "Test4 (P2-e): composite ptObjIntersec is NOT B's entry-face data" );
 
 	// Never A's payload either.
-	assert( !Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ) );
+	Check( !Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ), "Test4 (P2-e): composite ptCoord is NOT A's" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ), "Test4 (P2-e): composite ptObjIntersec is NOT A's" );
 
 	safe_release( csg );
 	safe_release( oA );
 	safe_release( oB );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -483,19 +510,20 @@ void TestIntersection_CrossOperandMaterialBindingFollowsOwner()
 		inner->FinalizeTransformations();
 
 		CSGObject* csg = new CSGObject( CSG_INTERSECTION );
-		assert( csg->AssignObjects( outer, inner ) );   // A = outer/matA, B = inner/matB
+		const bool assigned = csg->AssignObjects( outer, inner );   // A = outer/matA, B = inner/matB
+		Check( assigned, "Test5 case1: composite takes outer(A)/inner(B) operands" );
 
 		csg->FinalizeTransformations();
 
 		RayIntersection ri( r, nullRasterizerState );
 		Hit( csg, r, ri );
-		assert( ri.geometric.bHit );
+		Check( ri.geometric.bHit, "Test5 case1: (control) ray hits the composite at all" );
 
 		// Composite entry is wholly B's (inner's) surface -- material
 		// must be B's (matB), NOT A's (matA, the operand `ri` started
 		// life as a whole-record copy of -- the exact P1-a bug).
-		assert( ri.pMaterial == matB );
-		assert( ri.pMaterial != matA );
+		Check( ri.pMaterial == matB, "Test5 case1: composite ri.pMaterial == matB (owning operand)" );
+		Check( ri.pMaterial != matA, "Test5 case1: composite ri.pMaterial != matA (the P1-a bug)" );
 
 		safe_release( csg );
 		safe_release( outer );
@@ -522,18 +550,19 @@ void TestIntersection_CrossOperandMaterialBindingFollowsOwner()
 
 		CSGObject* csg = new CSGObject( CSG_INTERSECTION );
 		// Roles swapped: pObjectA = inner/matB, pObjectB = outer/matA.
-		assert( csg->AssignObjects( inner, outer ) );
+		const bool assigned = csg->AssignObjects( inner, outer );
+		Check( assigned, "Test5 case2: composite takes inner(A)/outer(B) operands (roles swapped)" );
 
 		csg->FinalizeTransformations();
 
 		RayIntersection ri( r, nullRasterizerState );
 		Hit( csg, r, ri );
-		assert( ri.geometric.bHit );
+		Check( ri.geometric.bHit, "Test5 case2: (control) ray hits the composite at all" );
 
 		// Composite entry is still wholly the inner box's surface --
 		// material must be matB regardless of which CSG slot it's in.
-		assert( ri.pMaterial == matB );
-		assert( ri.pMaterial != matA );
+		Check( ri.pMaterial == matB, "Test5 case2: composite ri.pMaterial == matB regardless of CSG slot" );
+		Check( ri.pMaterial != matA, "Test5 case2: composite ri.pMaterial != matA" );
 
 		safe_release( csg );
 		safe_release( outer );
@@ -544,7 +573,6 @@ void TestIntersection_CrossOperandMaterialBindingFollowsOwner()
 	safe_release( matB );
 	safe_release( painterA );
 	safe_release( painterB );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -576,7 +604,7 @@ void TestSubtraction_DisjointBothSides_CompositeIsAAlone()
 
 	RayIntersection refA( r, nullRasterizerState );
 	Hit( oA, r, refA );
-	assert( refA.geometric.bHit );
+	Check( refA.geometric.bHit, "Test6: (control) ray hits standalone A" );
 
 	// -- (i) B wholly BEFORE A: half-extent 0.5 box spanning z in
 	//    [-5.5,-4.5], well before A's entry at z=-2. --
@@ -588,18 +616,19 @@ void TestSubtraction_DisjointBothSides_CompositeIsAAlone()
 		oB->FinalizeTransformations();
 
 		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
-		assert( csg->AssignObjects( oA, oB ) );
+		const bool assigned = csg->AssignObjects( oA, oB );
+		Check( assigned, "Test6 (i) B-before-A: composite takes A/B operands" );
 		csg->FinalizeTransformations();
 
 		RayIntersection ri( r, nullRasterizerState );
 		Hit( csg, r, ri );
-		assert( ri.geometric.bHit );
+		Check( ri.geometric.bHit, "Test6 (i) B-before-A: (control) ray hits the composite at all" );
 
-		assert( Close( ri.geometric.range, refA.geometric.range ) );
-		assert( Close( ri.geometric.range2, refA.geometric.range2 ) );
-		assert( VecClose( ri.geometric.vNormal, refA.geometric.vNormal ) );
-		assert( VecClose( ri.geometric.vGeomNormal, refA.geometric.vGeomNormal ) );
-		assert( Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ) );
+		Check( Close( ri.geometric.range, refA.geometric.range ), "Test6 (i) B-before-A: composite range == A's range" );
+		Check( Close( ri.geometric.range2, refA.geometric.range2 ), "Test6 (i) B-before-A: composite range2 == A's range2" );
+		Check( VecClose( ri.geometric.vNormal, refA.geometric.vNormal ), "Test6 (i) B-before-A: composite vNormal == A's vNormal" );
+		Check( VecClose( ri.geometric.vGeomNormal, refA.geometric.vGeomNormal ), "Test6 (i) B-before-A: composite vGeomNormal == A's vGeomNormal" );
+		Check( Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ), "Test6 (i) B-before-A: composite ptCoord == A's ptCoord" );
 
 		safe_release( csg );
 		safe_release( oB );
@@ -615,25 +644,25 @@ void TestSubtraction_DisjointBothSides_CompositeIsAAlone()
 		oB->FinalizeTransformations();
 
 		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
-		assert( csg->AssignObjects( oA, oB ) );
+		const bool assigned = csg->AssignObjects( oA, oB );
+		Check( assigned, "Test6 (ii) B-after-A: composite takes A/B operands" );
 		csg->FinalizeTransformations();
 
 		RayIntersection ri( r, nullRasterizerState );
 		Hit( csg, r, ri );
-		assert( ri.geometric.bHit );
+		Check( ri.geometric.bHit, "Test6 (ii) B-after-A: (control) ray hits the composite at all" );
 
-		assert( Close( ri.geometric.range, refA.geometric.range ) );
-		assert( Close( ri.geometric.range2, refA.geometric.range2 ) );
-		assert( VecClose( ri.geometric.vNormal, refA.geometric.vNormal ) );
-		assert( VecClose( ri.geometric.vGeomNormal, refA.geometric.vGeomNormal ) );
-		assert( Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ) );
+		Check( Close( ri.geometric.range, refA.geometric.range ), "Test6 (ii) B-after-A: composite range == A's range" );
+		Check( Close( ri.geometric.range2, refA.geometric.range2 ), "Test6 (ii) B-after-A: composite range2 == A's range2" );
+		Check( VecClose( ri.geometric.vNormal, refA.geometric.vNormal ), "Test6 (ii) B-after-A: composite vNormal == A's vNormal" );
+		Check( VecClose( ri.geometric.vGeomNormal, refA.geometric.vGeomNormal ), "Test6 (ii) B-after-A: composite vGeomNormal == A's vGeomNormal" );
+		Check( Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ), "Test6 (ii) B-after-A: composite ptCoord == A's ptCoord" );
 
 		safe_release( csg );
 		safe_release( oB );
 	}
 
 	safe_release( oA );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -672,7 +701,8 @@ void TestIntersectionOnly_ScaledOperandNoShadowLeak()
 	oB->FinalizeTransformations();
 
 	CSGObject* csg = new CSGObject( CSG_INTERSECTION );
-	assert( csg->AssignObjects( oA, oB ) );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test7 (P1-c): composite takes A/B operands" );
 	csg->FinalizeTransformations();
 
 	Ray r( Point3( 0, 0, -100 ), Vector3( 0, 0, 1 ) );
@@ -682,18 +712,17 @@ void TestIntersectionOnly_ScaledOperandNoShadowLeak()
 	// says the composite IS hit, well within dHowFar (entry ~98).
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
-	assert( ri.geometric.range < dHowFar );
-	assert( ri.geometric.range > 90.0 && ri.geometric.range < 100.0 );
+	Check( ri.geometric.bHit, "Test7 (P1-c): (control) full IntersectRay hits the composite" );
+	Check( ri.geometric.range < dHowFar, "Test7 (P1-c): (control) hit range is within dHowFar" );
+	Check( ri.geometric.range > 90.0 && ri.geometric.range < 100.0, "Test7 (P1-c): (control) hit range is ~98 (B's span)" );
 
 	// IntersectRay_IntersectionOnly must agree.
 	const bool occluded = csg->IntersectRay_IntersectionOnly( r, dHowFar, true, true );
-	assert( occluded );
+	Check( occluded, "Test7 (P1-c): MONEY ASSERTION -- IntersectionOnly agrees, no shadow leak from scaled operand" );
 
 	safe_release( csg );
 	safe_release( oA );
 	safe_release( oB );
-	std::cout << "  Passed." << std::endl;
 }
 
 namespace
@@ -761,7 +790,8 @@ void TestUnion_TransformedCsgDerivativesMatchStandaloneRotated()
 	b->FinalizeTransformations();
 
 	CSGObject* csg = new CSGObject( CSG_UNION );
-	assert( csg->AssignObjects( a, b ) );
+	const bool assigned = csg->AssignObjects( a, b );
+	Check( assigned, "Test8 (P2-d): composite takes mesh(A)/far-sphere(B) operands" );
 	const Scalar angle = 0.6981317007977318;   // ~40 degrees, radians
 	csg->RotateObjectZAxis( angle );
 	csg->FinalizeTransformations();
@@ -779,8 +809,8 @@ void TestUnion_TransformedCsgDerivativesMatchStandaloneRotated()
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
-	assert( ri.geometric.derivatives.valid );
+	Check( ri.geometric.bHit, "Test8 (P2-d): (control) ray hits the rotated CSG" );
+	Check( ri.geometric.derivatives.valid, "Test8 (P2-d): (control) composite derivatives.valid" );
 
 	// Reference: a STANDALONE Object wrapping an independently-built
 	// (but geometrically identical) copy of the same triangle, with the
@@ -793,24 +823,23 @@ void TestUnion_TransformedCsgDerivativesMatchStandaloneRotated()
 
 	RayIntersection refRi( r, nullRasterizerState );
 	Hit( ref, r, refRi );
-	assert( refRi.geometric.bHit );
-	assert( refRi.geometric.derivatives.valid );
+	Check( refRi.geometric.bHit, "Test8 (P2-d): (control) ray hits the standalone rotated reference" );
+	Check( refRi.geometric.derivatives.valid, "Test8 (P2-d): (control) reference derivatives.valid" );
 
 	// Sanity: dpdu is actually non-degenerate, so this comparison is
 	// discriminating (a zero vector would trivially "match" whether or
 	// not promotion happened).
-	assert( Vector3Ops::SquaredModulus( refRi.geometric.derivatives.dpdu ) > 1e-6 );
+	Check( Vector3Ops::SquaredModulus( refRi.geometric.derivatives.dpdu ) > 1e-6, "Test8 (P2-d): (sanity) reference dpdu is non-degenerate" );
 
-	assert( VecClose( ri.geometric.derivatives.dpdu, refRi.geometric.derivatives.dpdu, 1e-4 ) );
-	assert( VecClose( ri.geometric.derivatives.dpdv, refRi.geometric.derivatives.dpdv, 1e-4 ) );
-	assert( VecClose( ri.geometric.derivatives.dndu, refRi.geometric.derivatives.dndu, 1e-4 ) );
-	assert( VecClose( ri.geometric.derivatives.dndv, refRi.geometric.derivatives.dndv, 1e-4 ) );
+	Check( VecClose( ri.geometric.derivatives.dpdu, refRi.geometric.derivatives.dpdu, 1e-4 ), "Test8 (P2-d): composite dpdu matches standalone rotated reference" );
+	Check( VecClose( ri.geometric.derivatives.dpdv, refRi.geometric.derivatives.dpdv, 1e-4 ), "Test8 (P2-d): composite dpdv matches standalone rotated reference" );
+	Check( VecClose( ri.geometric.derivatives.dndu, refRi.geometric.derivatives.dndu, 1e-4 ), "Test8 (P2-d): composite dndu matches standalone rotated reference" );
+	Check( VecClose( ri.geometric.derivatives.dndv, refRi.geometric.derivatives.dndv, 1e-4 ), "Test8 (P2-d): composite dndv matches standalone rotated reference" );
 
 	safe_release( csg );
 	safe_release( a );
 	safe_release( b );
 	safe_release( ref );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -846,7 +875,8 @@ void TestIntersectionOnly_NonUniformScale_DirectionTrueFactor()
 	oB->FinalizeTransformations();
 
 	CSGObject* csg = new CSGObject( CSG_UNION );
-	assert( csg->AssignObjects( oA, oB ) );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test9 (P1 item1): composite takes A(box)/B(far sphere) operands" );
 	// Non-uniform stretch on the CSG object itself: tiny in X, huge in Z.
 	// World span of A (local half-extent 2, box[-2,2]) becomes
 	// x in [-0.02,0.02], y in [-2,2], z in [-200,200].
@@ -862,19 +892,18 @@ void TestIntersectionOnly_NonUniformScale_DirectionTrueFactor()
 	// puts the entry at world z=-200, i.e. range ~100 from z=-300.
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
-	assert( ri.geometric.range > 95.0 && ri.geometric.range < 105.0 );
+	Check( ri.geometric.bHit, "Test9 (P1 item1): (control) full IntersectRay hits the composite" );
+	Check( ri.geometric.range > 95.0 && ri.geometric.range < 105.0, "Test9 (P1 item1): (control) hit range is ~100 (world z=-200 entry)" );
 
 	// A "light" at world distance 90 is CLOSER than the occluder's entry
 	// (~100) -- the occluder must NOT report as blocking it.
 	const Scalar dHowFarTest = 90.0;
 	const bool occluded = csg->IntersectRay_IntersectionOnly( r, dHowFarTest, true, true );
-	assert( !occluded );
+	Check( !occluded, "Test9 (P1 item1): MONEY ASSERTION -- not falsely occluded under non-uniform scale w/ direction-true factor" );
 
 	safe_release( csg );
 	safe_release( oA );
 	safe_release( oB );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -918,20 +947,21 @@ void TestUnion_CsgHonoursShadingTangentFromGeometry()
 	farB->FinalizeTransformations();
 
 	CSGObject* csg = new CSGObject( CSG_UNION );
-	assert( csg->AssignObjects( aOperand, farB ) );
+	const bool assigned = csg->AssignObjects( aOperand, farB );
+	Check( assigned, "Test10 (P2 item2): composite takes aOperand(A)/farB(B) operands" );
 	csg->FinalizeTransformations();
 
 	Ray r( Point3( 0.3, 0.2, 5.0 ), Vector3( 0, 0, -1 ) );
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
-	assert( ri.geometric.bShadingTangentFromGeometry );
+	Check( ri.geometric.bHit, "Test10 (P2 item2): (control) ray hits the composite" );
+	Check( ri.geometric.bShadingTangentFromGeometry, "Test10 (P2 item2): (control) composite bShadingTangentFromGeometry set" );
 
 	RayIntersection refRi( r, nullRasterizerState );
 	Hit( standalone, r, refRi );
-	assert( refRi.geometric.bHit );
-	assert( refRi.geometric.bShadingTangentFromGeometry );
+	Check( refRi.geometric.bHit, "Test10 (P2 item2): (control) ray hits the standalone reference" );
+	Check( refRi.geometric.bShadingTangentFromGeometry, "Test10 (P2 item2): (control) reference bShadingTangentFromGeometry set" );
 
 	// Sanity: the flag really does route to the WORLD-X-PROJECTED branch
 	// (CreateFromWU), not the default CreateFromW axis -- for an exact +Z
@@ -939,18 +969,17 @@ void TestUnion_CsgHonoursShadingTangentFromGeometry()
 	// the geometry-aware branch picks U=(+1,0,0) (world-X projected into
 	// the normal plane, which for n=(0,0,1) is just world-X itself).  If
 	// these coincided the test wouldn't discriminate.
-	assert( VecClose( refRi.geometric.onb.u(), Vector3( 1, 0, 0 ) ) );
-	assert( !VecClose( refRi.geometric.onb.u(), Vector3( -1, 0, 0 ) ) );
+	Check( VecClose( refRi.geometric.onb.u(), Vector3( 1, 0, 0 ) ), "Test10 (P2 item2): (sanity) reference onb.u() is world-X-projected" );
+	Check( !VecClose( refRi.geometric.onb.u(), Vector3( -1, 0, 0 ) ), "Test10 (P2 item2): (sanity) reference onb.u() is NOT the CreateFromW default" );
 
-	assert( VecClose( ri.geometric.onb.u(), refRi.geometric.onb.u() ) );
-	assert( VecClose( ri.geometric.onb.v(), refRi.geometric.onb.v() ) );
-	assert( VecClose( ri.geometric.onb.w(), refRi.geometric.onb.w() ) );
+	Check( VecClose( ri.geometric.onb.u(), refRi.geometric.onb.u() ), "Test10 (P2 item2): composite onb.u() matches standalone reference" );
+	Check( VecClose( ri.geometric.onb.v(), refRi.geometric.onb.v() ), "Test10 (P2 item2): composite onb.v() matches standalone reference" );
+	Check( VecClose( ri.geometric.onb.w(), refRi.geometric.onb.w() ), "Test10 (P2 item2): composite onb.w() matches standalone reference" );
 
 	safe_release( csg );
 	safe_release( aOperand );
 	safe_release( farB );
 	safe_release( standalone );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -998,11 +1027,13 @@ void TestSubtraction_ExitProbe_DoesNotOvershootToADifferentLobe()
 	decoyLobe->FinalizeTransformations();
 
 	CSGObject* nestedB = new CSGObject( CSG_UNION );
-	assert( nestedB->AssignObjects( realLobe, decoyLobe ) );
+	const bool nestedAssigned = nestedB->AssignObjects( realLobe, decoyLobe );
+	Check( nestedAssigned, "Test11 (P2 item3): nestedB takes realLobe/decoyLobe operands" );
 	nestedB->FinalizeTransformations();
 
 	CSGObject* outerCsg = new CSGObject( CSG_SUBTRACTION );
-	assert( outerCsg->AssignObjects( oA, nestedB ) );
+	const bool outerAssigned = outerCsg->AssignObjects( oA, nestedB );
+	Check( outerAssigned, "Test11 (P2 item3): outerCsg takes oA/nestedB operands" );
 	outerCsg->FinalizeTransformations();
 
 	// LONG camera range: exitRangeCsgLocal (the CSG-local distance from
@@ -1016,40 +1047,39 @@ void TestSubtraction_ExitProbe_DoesNotOvershootToADifferentLobe()
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( outerCsg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test11 (P2 item3): (control) ray hits the composite at long camera range" );
 
 	// Ground truth: the REAL exit face, probed directly (independent of
 	// production code) -- exactly the P2-e test's own oracle pattern.
 	Ray probeRefReal( Point3( 0.1, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refRealExit( probeRefReal, nullRasterizerState );
 	Hit( realLobe, probeRefReal, refRealExit );
-	assert( refRealExit.geometric.bHit );
+	Check( refRealExit.geometric.bHit, "Test11 (P2 item3): (control) direct probe hits realLobe's exit face" );
 
 	// The WRONG answer an overshooting probe lands on: the decoy lobe's
 	// near face, probed directly.
 	Ray probeDecoy( Point3( 0.1, 0.05, -1.0 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refDecoy( probeDecoy, nullRasterizerState );
 	Hit( decoyLobe, probeDecoy, refDecoy );
-	assert( refDecoy.geometric.bHit );
+	Check( refDecoy.geometric.bHit, "Test11 (P2 item3): (control) direct probe hits decoyLobe's near face" );
 
 	// Sanity: the two candidate faces produce distinct UV / object-space
 	// points, so this test is discriminating.
-	assert( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
-	assert( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+	Check( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ), "Test11 (P2 item3): (sanity) real-exit/decoy ptCoord are distinct" );
+	Check( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ), "Test11 (P2 item3): (sanity) real-exit/decoy ptObjIntersec are distinct" );
 
 	// The composite's recovered payload must be the REAL exit face, never
 	// the decoy.
-	assert( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ) );
-	assert( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+	Check( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ), "Test11 (P2 item3): MONEY ASSERTION -- composite ptCoord matches the REAL exit face" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ), "Test11 (P2 item3): MONEY ASSERTION -- composite ptObjIntersec matches the REAL exit face" );
+	Check( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ), "Test11 (P2 item3): composite ptCoord did NOT overshoot to the decoy lobe" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ), "Test11 (P2 item3): composite ptObjIntersec did NOT overshoot to the decoy lobe" );
 
 	safe_release( outerCsg );
 	safe_release( oA );
 	safe_release( nestedB );
 	safe_release( realLobe );
 	safe_release( decoyLobe );
-	std::cout << "  Passed." << std::endl;
 }
 
 namespace
@@ -1112,7 +1142,8 @@ namespace
 			oFarSphere->FinalizeTransformations();
 
 			csg = new CSGObject( CSG_UNION );
-			assert( csg->AssignObjects( oCylinder, oFarSphere ) );
+			const bool assigned = csg->AssignObjects( oCylinder, oFarSphere );
+			Check( assigned, "CompressedCsgScenario: composite takes oCylinder(A)/oFarSphere(B) operands" );
 			csg->SetScale( 0.1 );   // uniform 10x compress -- world span z in [-1,1]
 			csg->FinalizeTransformations();
 		}
@@ -1147,14 +1178,12 @@ void TestIntersectionOnly_CompressedCsg_NoShadowLeakThroughOperandPretest()
 	// within the test light's range.
 	RayIntersection ri( s.worldRay, nullRasterizerState );
 	Hit( s.csg, s.worldRay, ri );
-	assert( ri.geometric.bHit );
-	assert( Close( ri.geometric.range, 99.0, 1e-3 ) );
-	assert( ri.geometric.range < s.worldDHowFar );
+	Check( ri.geometric.bHit, "Test12 (review r3, item1a): (control) full IntersectRay hits the occluder" );
+	Check( Close( ri.geometric.range, 99.0, 1e-3 ), "Test12 (review r3, item1a): (control) hit range is ~99" );
+	Check( ri.geometric.range < s.worldDHowFar, "Test12 (review r3, item1a): (control) occluder is within worldDHowFar" );
 
 	const bool occluded = s.csg->IntersectRay_IntersectionOnly( s.worldRay, s.worldDHowFar, true, true );
-	assert( occluded );
-
-	std::cout << "  Passed." << std::endl;
+	Check( occluded, "Test12 (review r3, item1a): MONEY ASSERTION -- occluded, no shadow-ray light leak through operand pretest" );
 }
 
 //
@@ -1188,10 +1217,8 @@ void TestIntersectRay_CompressedCsg_ClosestHitNotCulledByOperandPretest()
 	// (unconverted) local-frame comparison would tolerate.
 	s.csg->IntersectRay( ri, s.worldDHowFar, true, true, true );
 
-	assert( ri.geometric.bHit );
-	assert( Close( ri.geometric.range, 99.0, 1e-3 ) );
-
-	std::cout << "  Passed." << std::endl;
+	Check( ri.geometric.bHit, "Test13 (review r3, item1b): closest hit found (not culled by operand pretest)" );
+	Check( Close( ri.geometric.range, 99.0, 1e-3 ), "Test13 (review r3, item1b): MONEY ASSERTION -- closest hit range is ~99, not culled" );
 }
 
 //
@@ -1218,6 +1245,17 @@ void TestIntersectRay_CompressedCsg_ClosestHitNotCulledByOperandPretest()
 //   decoy gap (real exit face at z=-2, decoy near face at z=-1.99): 0.01
 //     -- inside the OLD accept window (0.01 < 0.02984), outside the NEW
 //     one (0.01 >> 2.1e-12).
+//   2026-09-05 (debt-25 review, 655f352a): the margin's max() gained a
+//   third term, the operand primitive's own self-hit band mapped
+//   through its stretch and exit angle (selfHitFloor in
+//   AdoptCsgExitFacePayloadViaProbe), which dominates here:
+//     margin ~= 2 * (4*NEARZERO + kUlpFactor*|z_exit|) / (1 * 1) ~= 8.06e-12
+//     maxAcceptRange ~= 1.69e-11
+//   -- still 6e8x under the 0.01 gap.  That term reads ONLY the exit
+//   point's component along the face normal, which is what keeps this
+//   test's transverse 1e12 out of it (an L1-of-ptExit floor turned the
+//   margin into 8 world units here and adopted the decoy; that is the
+//   regression this test caught during that review).
 //
 void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 {
@@ -1254,11 +1292,13 @@ void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 	decoyLobe->FinalizeTransformations();
 
 	CSGObject* nestedB = new CSGObject( CSG_UNION );
-	assert( nestedB->AssignObjects( realLobe, decoyLobe ) );
+	const bool nestedAssigned = nestedB->AssignObjects( realLobe, decoyLobe );
+	Check( nestedAssigned, "Test14 (review r4, item2): nestedB takes realLobe/decoyLobe operands" );
 	nestedB->FinalizeTransformations();
 
 	CSGObject* outerCsg = new CSGObject( CSG_SUBTRACTION );
-	assert( outerCsg->AssignObjects( oA, nestedB ) );
+	const bool outerAssigned = outerCsg->AssignObjects( oA, nestedB );
+	Check( outerAssigned, "Test14 (review r4, item2): outerCsg takes oA/nestedB operands" );
 	outerCsg->FinalizeTransformations();
 
 	// Ray travels along +Z (dir.x == dir.y == 0) -- the probe's own
@@ -1271,26 +1311,26 @@ void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( outerCsg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test14 (review r4, item2): (control) ray hits the composite at BIG_X" );
 
 	// Ground truth: the REAL exit face, probed directly (independent of
 	// production code) -- same oracle pattern as Test 4/11.
 	Ray probeRefReal( Point3( BIG_X, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refRealExit( probeRefReal, nullRasterizerState );
 	Hit( realLobe, probeRefReal, refRealExit );
-	assert( refRealExit.geometric.bHit );
+	Check( refRealExit.geometric.bHit, "Test14 (review r4, item2): (control) direct probe hits realLobe's exit face" );
 
 	// The WRONG answer an overshooting (OLD-margin) probe lands on: the
 	// decoy lobe's near face, probed directly.
 	Ray probeDecoy( Point3( BIG_X, 0.05, -1.98 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refDecoy( probeDecoy, nullRasterizerState );
 	Hit( decoyLobe, probeDecoy, refDecoy );
-	assert( refDecoy.geometric.bHit );
+	Check( refDecoy.geometric.bHit, "Test14 (review r4, item2): (control) direct probe hits decoyLobe's near face" );
 
 	// Sanity: the two candidate faces produce distinct UV / object-space
 	// points, so this test is discriminating.
-	assert( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
-	assert( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+	Check( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ), "Test14 (review r4, item2): (sanity) real-exit/decoy ptCoord are distinct" );
+	Check( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ), "Test14 (review r4, item2): (sanity) real-exit/decoy ptObjIntersec are distinct" );
 
 	// The composite's recovered payload must be the REAL exit face, never
 	// the decoy -- this is the money assertion: it FAILS under the OLD
@@ -1299,17 +1339,16 @@ void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 	// BIG_X=1e12 (~0.0142) comfortably overshoots the 0.01-unit gap to
 	// the decoy, while the NEW direction-weighted margin (~1e-12, since
 	// dir.x==dir.y==0 here) does not.
-	assert( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ) );
-	assert( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+	Check( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ), "Test14 (review r4, item2): MONEY ASSERTION -- composite ptCoord matches the REAL exit face" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ), "Test14 (review r4, item2): MONEY ASSERTION -- composite ptObjIntersec matches the REAL exit face" );
+	Check( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ), "Test14 (review r4, item2): composite ptCoord did NOT overshoot to decoy (transverse coord)" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ), "Test14 (review r4, item2): composite ptObjIntersec did NOT overshoot to decoy (transverse coord)" );
 
 	safe_release( outerCsg );
 	safe_release( oA );
 	safe_release( nestedB );
 	safe_release( realLobe );
 	safe_release( decoyLobe );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -1357,6 +1396,12 @@ void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 //     decoyNearZ by ~5e-10 -- backward search finds the REAL exit face
 //     first (~1e-12 away, inside the 2.1e-12 window), never reaching
 //     the decoy.  RECOVERS THE REAL FACE (correct).
+//   2026-09-05 (debt-25 review, 655f352a): the margin's max() gained the
+//   operand primitive's self-hit band term (selfHitFloor), which now
+//   dominates: margin ~= 8.06e-12, maxAcceptRange ~= 1.69e-11 -- still
+//   ~30x BEFORE the decoy's near face (gap 5e-10), so the same
+//   conclusion holds; this test is what bounds that term from above
+//   (a floor >= ~2.4e-10 at normal incidence would overshoot here).
 //
 // Discrimination proven by temporarily restoring the 1e-9 floor in
 // CSGObject.cpp, rebuilding, and re-running this test: the money
@@ -1365,7 +1410,7 @@ void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 //
 void TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor()
 {
-	std::cout << "CSG_SUBTRACTION: exit-probe margin floor (1e-12) doesn't overshoot a tiny-gap decoy face (review r6, item 2)..." << std::endl;
+	std::cout << "CSG_SUBTRACTION: exit-probe margin floor (1e-12, plus the primitive self-hit band term ~8e-12 since 2026-09-05) doesn't overshoot a tiny-gap decoy face (review r6, item 2)..." << std::endl;
 
 	BoxGeometry* gA = new BoxGeometry( 6.0, 6.0, 6.0 );          // half-extent 3, spans z in [-3,3]
 	BoxGeometry* gRealLobe = new BoxGeometry( 4.0, 4.0, 4.0 );   // half-extent (2,2,2) -- identical to Tests 11/14
@@ -1402,25 +1447,27 @@ void TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor()
 	decoyLobe->FinalizeTransformations();
 
 	CSGObject* nestedB = new CSGObject( CSG_UNION );
-	assert( nestedB->AssignObjects( realLobe, decoyLobe ) );
+	const bool nestedAssigned = nestedB->AssignObjects( realLobe, decoyLobe );
+	Check( nestedAssigned, "Test15 (review r6, item2): nestedB takes realLobe/decoyLobe operands" );
 	nestedB->FinalizeTransformations();
 
 	CSGObject* outerCsg = new CSGObject( CSG_SUBTRACTION );
-	assert( outerCsg->AssignObjects( oA, nestedB ) );
+	const bool outerAssigned = outerCsg->AssignObjects( oA, nestedB );
+	Check( outerAssigned, "Test15 (review r6, item2): outerCsg takes oA/nestedB operands" );
 	outerCsg->FinalizeTransformations();
 
 	Ray r( Point3( 0.1, 0.05, -10 ), Vector3( 0, 0, 1 ) );
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( outerCsg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test15 (review r6, item2): (control) ray hits the composite" );
 
 	// Ground truth: the REAL exit face, probed directly (independent of
 	// production code) -- same oracle pattern as Tests 4/11/14.
 	Ray probeRefReal( Point3( 0.1, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refRealExit( probeRefReal, nullRasterizerState );
 	Hit( realLobe, probeRefReal, refRealExit );
-	assert( refRealExit.geometric.bHit );
+	Check( refRealExit.geometric.bHit, "Test15 (review r6, item2): (control) direct probe hits realLobe's exit face" );
 
 	// The WRONG answer an overshooting (r5-floor) probe lands on: the
 	// decoy lobe's near face, probed directly.  Probe starts well before
@@ -1430,12 +1477,12 @@ void TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor()
 	Ray probeDecoy( Point3( 0.1, 0.05, -1.0 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refDecoy( probeDecoy, nullRasterizerState );
 	Hit( decoyLobe, probeDecoy, refDecoy );
-	assert( refDecoy.geometric.bHit );
+	Check( refDecoy.geometric.bHit, "Test15 (review r6, item2): (control) direct probe hits decoyLobe's near face" );
 
 	// Sanity: the two candidate faces produce distinct UV / object-space
 	// points, so this test is discriminating.
-	assert( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
-	assert( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+	Check( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ), "Test15 (review r6, item2): (sanity) real-exit/decoy ptCoord are distinct" );
+	Check( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ), "Test15 (review r6, item2): (sanity) real-exit/decoy ptObjIntersec are distinct" );
 
 	// The composite's recovered payload must be the REAL exit face, never
 	// the decoy -- this is the money assertion.  It FAILS with the r5
@@ -1443,17 +1490,2152 @@ void TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor()
 	// the derivation above), because that margin's accept window
 	// (~2.1e-9) comfortably overshoots the 5e-10 gap to the decoy, while
 	// the reverted 1e-12 floor's window (~2.1e-12) does not.
-	assert( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ) );
-	assert( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+	Check( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ), "Test15 (review r6, item2): MONEY ASSERTION -- composite ptCoord matches the REAL exit face" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ), "Test15 (review r6, item2): MONEY ASSERTION -- composite ptObjIntersec matches the REAL exit face" );
+	Check( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ), "Test15 (review r6, item2): composite ptCoord did NOT overshoot to the tiny-gap decoy" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ), "Test15 (review r6, item2): composite ptObjIntersec did NOT overshoot to the tiny-gap decoy" );
 
 	safe_release( outerCsg );
 	safe_release( oA );
 	safe_release( nestedB );
 	safe_release( realLobe );
 	safe_release( decoyLobe );
-	std::cout << "  Passed." << std::endl;
+}
+
+namespace
+{
+	// Duplicated from GeometryUVRoundtripTest.cpp's identical helpers
+	// (P1-2) -- tests are standalone executables with no shared support
+	// library.  Builds a smooth-shaded (per-vertex analytic normal)
+	// triangle-mesh approximation of a sphere by reusing
+	// SphereGeometry::TessellateToMesh, so vertex positions/normals are
+	// exactly what the already-tested tessellator produces, not
+	// hand-derived spherical trig.  useFaceNormals=false so per-vertex
+	// normal differences are non-degenerate and dndu/dndv come out
+	// non-zero (a flat-shaded mesh would test nothing here).
+	TriangleMeshGeometryIndexed* BuildCsgTessellatedSphereMesh( Scalar radius, unsigned int detail )
+	{
+		SphereGeometry* g = new SphereGeometry( radius );
+		IndexTriangleListType tris;
+		VerticesListType verts;
+		NormalsListType norms;
+		TexCoordsListType coords;
+		const bool ok = g->TessellateToMesh( tris, verts, norms, coords, detail );
+		g->release();
+		if( !ok ) {
+			return 0;
+		}
+
+		TriangleMeshGeometryIndexed* pMesh = new TriangleMeshGeometryIndexed( true, false );
+		pMesh->BeginIndexedTriangles();
+		pMesh->AddVertices( verts );
+		pMesh->AddNormals( norms );
+		pMesh->AddTexCoords( coords );
+		pMesh->AddIndexedTriangles( tris );
+		pMesh->DoneIndexedTriangles();
+		return pMesh;
+	}
+
+	// Non-indexed twin of the helper above (P1-4b): builds a
+	// TriangleMeshGeometry (triangle-SOUP, no shared-vertex indices) with
+	// the SAME tessellation and per-vertex normals, by de-indexing the
+	// already-tested SphereGeometry::TessellateToMesh output rather than
+	// hand-deriving spherical trig.  TriangleMeshGeometry's Triangle element
+	// (Polygon_Template<3>, see Polygon.h) carries `vertices[3]`,
+	// `normals[3]`, `coords[3]` directly PER TRIANGLE -- there is no
+	// indexed/shared-vertex layer to be missing, so smooth per-vertex
+	// shading (non-degenerate dndu/dndv) is fully expressible with the
+	// non-indexed API; nothing here needed to fall back to flat shading.
+	TriangleMeshGeometry* BuildCsgTessellatedSphereMeshSoup( Scalar radius, unsigned int detail )
+	{
+		SphereGeometry* g = new SphereGeometry( radius );
+		IndexTriangleListType tris;
+		VerticesListType verts;
+		NormalsListType norms;
+		TexCoordsListType coords;
+		const bool ok = g->TessellateToMesh( tris, verts, norms, coords, detail );
+		g->release();
+		if( !ok ) {
+			return 0;
+		}
+
+		TriangleMeshGeometry* pMesh = new TriangleMeshGeometry( true );   // double sided
+		pMesh->BeginTriangles();
+		for( size_t i = 0; i < tris.size(); ++i ) {
+			Triangle tri;
+			for( int k = 0; k < 3; ++k ) {
+				tri.vertices[k] = verts[ tris[i].iVertices[k] ];
+				tri.normals[k]  = norms[ tris[i].iNormals[k] ];
+				tri.coords[k]   = coords[ tris[i].iCoords[k] ];
+			}
+			pMesh->AddTriangle( tri );
+		}
+		pMesh->DoneTriangles();
+		return pMesh;
+	}
+
+	// Duplicated from GeometryUVRoundtripTest.cpp's identical helper (P1-2).
+	Scalar CsgRecordMeanCurvatureH(
+		const Vector3& dpdu, const Vector3& dpdv,
+		const Vector3& dndu, const Vector3& dndv )
+	{
+		const Scalar E = Vector3Ops::Dot( dpdu, dpdu );
+		const Scalar F = Vector3Ops::Dot( dpdu, dpdv );
+		const Scalar G = Vector3Ops::Dot( dpdv, dpdv );
+		const Scalar e = Vector3Ops::Dot( dndu, dpdu );
+		const Scalar f = 0.5 * ( Vector3Ops::Dot( dndu, dpdv ) + Vector3Ops::Dot( dndv, dpdu ) );
+		const Scalar g = Vector3Ops::Dot( dndv, dpdv );
+		return ( e * G - 2.0 * f * F + g * E ) / ( 2.0 * ( E * G - F * F ) );
+	}
+
+	// Fires a LOCAL-frame ray through `csg`'s own final transform (mirrors
+	// GeometryUVRoundtripTest.cpp's HitMeshDerivatives / this file's own
+	// TestUnion_TransformedCsgDerivativesMatchStandaloneRotated technique)
+	// so the SAME local hit point is reached regardless of what transform
+	// is on the CSG object itself.
+	bool HitCsgDerivatives(
+		CSGObject* csg,
+		const Point3& localOrigin, const Vector3& localDir,
+		Vector3& dpdu, Vector3& dpdv, Vector3& dndu, Vector3& dndv )
+	{
+		const Matrix4 mxFinal = csg->GetFinalTransformMatrix();
+		const Point3 worldOrigin = Point3Ops::Transform( mxFinal, localOrigin );
+		const Vector3 worldDir = Vector3Ops::Transform( mxFinal, localDir );
+		const Ray r( worldOrigin, worldDir );
+
+		RayIntersection ri( r, nullRasterizerState );
+		Hit( csg, r, ri );
+		if( !ri.geometric.bHit || !ri.geometric.derivatives.valid ) {
+			return false;
+		}
+		dpdu = ri.geometric.derivatives.dpdu;
+		dpdv = ri.geometric.derivatives.dpdv;
+		dndu = ri.geometric.derivatives.dndu;
+		dndv = ri.geometric.derivatives.dndv;
+		return true;
+	}
+}
+
+//
+// Test 16 (P1-2): CSGObject::IntersectRay's quotient-rule derivatives
+// promotion block (P2-d) had ZERO non-rigid coverage -- the only existing
+// exercise, TestUnion_TransformedCsgDerivativesMatchStandaloneRotated
+// (Test 8), is rotation-only, a transform under which the quotient-rule
+// fix is a PROVABLE NO-OP (||M^-T n|| == 1 identically).  This test adds a
+// SCALED CSG_UNION: a tessellated triangle-mesh sphere operand (analytic
+// primitives like BoxGeometry/SphereGeometry never populate
+// derivatives.valid in IntersectRay -- mesh only) unioned with a
+// far-away never-hit second operand (this file's own established
+// "never hit" pattern from Test 8), with the SCALE applied to the CSG
+// OBJECT ITSELF via csg->SetScale(2.0) -- exercising CSGObject.cpp's own
+// m_mxInvTranspose quotient-rule block, not just Object.cpp's.
+//
+// Ground truth: H_identity/H_scaled must equal the scale factor s (world
+// mean curvature H_world = H_obj/s under the fixed quotient-rule
+// transform); the pre-fix plain inverse-transpose would have given
+// H_obj/s^2, i.e. ratio == s^2 -- s=2 separates these by 2x, far outside
+// the tight 1e-6*s tolerance either way.
+//
+void TestUnion_TransformedCsgDerivativesMatchStandaloneScaled()
+{
+	std::cout << "CSG_UNION: scaled-CSG dndu/dndv quotient-rule matches H_obj/s, not H_obj/s^2 (P1-2)..." << std::endl;
+
+	const Scalar r = 1.5;
+	const unsigned int detail = 40;
+	const Point3 localOrigin( 0.35, 0.22, 10.0 );
+	const Vector3 localDir( 0, 0, -1 );
+
+	Scalar H_identity = 0.0;
+	{
+		TriangleMeshGeometryIndexed* meshA = BuildCsgTessellatedSphereMesh( r, detail );
+		Check( meshA != 0, "Test16 (P1-2): identity mesh built" );
+		Object* a = new Object( meshA );
+		safe_release( meshA );
+		a->FinalizeTransformations();   // A itself carries no extra transform
+
+		SphereGeometry* gB = new SphereGeometry( 1.0 );
+		Object* b = new Object( gB );
+		safe_release( gB );
+		b->SetPosition( Point3( 10000, 10000, 10000 ) );   // never hit
+		b->FinalizeTransformations();
+
+		CSGObject* csg = new CSGObject( CSG_UNION );
+		const bool assigned = csg->AssignObjects( a, b );
+		Check( assigned, "Test16 (P1-2): identity composite takes mesh(A)/far-sphere(B) operands" );
+		csg->FinalizeTransformations();   // identity: no scale on the CSG itself
+
+		Vector3 dpdu, dpdv, dndu, dndv;
+		const bool hit = HitCsgDerivatives( csg, localOrigin, localDir, dpdu, dpdv, dndu, dndv );
+		Check( hit, "Test16 (P1-2): identity CSG hit with valid derivatives" );
+		if( hit ) {
+			H_identity = fabs( CsgRecordMeanCurvatureH( dpdu, dpdv, dndu, dndv ) );
+			Check( H_identity > 0.0, "Test16 (P1-2): identity |H| non-degenerate" );
+		}
+		safe_release( csg );
+		safe_release( a );
+		safe_release( b );
+	}
+
+	Scalar H_scaled = 0.0;
+	{
+		const Scalar s = 2.0;
+		TriangleMeshGeometryIndexed* meshA = BuildCsgTessellatedSphereMesh( r, detail );
+		Object* a = new Object( meshA );
+		safe_release( meshA );
+		a->FinalizeTransformations();   // A itself STILL carries no extra transform -- the
+		                                 // object-space (localOrigin, localDir) ray hits the
+		                                 // SAME local point on the SAME byte-identical mesh;
+		                                 // only the CSG's OWN transform (below) differs.
+
+		SphereGeometry* gB = new SphereGeometry( 1.0 );
+		Object* b = new Object( gB );
+		safe_release( gB );
+		b->SetPosition( Point3( 10000, 10000, 10000 ) );   // never hit, even after the CSG's own scale
+		b->FinalizeTransformations();
+
+		CSGObject* csg = new CSGObject( CSG_UNION );
+		const bool assigned = csg->AssignObjects( a, b );
+		Check( assigned, "Test16 (P1-2): scaled composite takes mesh(A)/far-sphere(B) operands" );
+		csg->SetScale( s );             // scale applied to the CSG OBJECT ITSELF
+		csg->FinalizeTransformations();
+
+		Vector3 dpdu, dpdv, dndu, dndv;
+		const bool hit = HitCsgDerivatives( csg, localOrigin, localDir, dpdu, dpdv, dndu, dndv );
+		Check( hit, "Test16 (P1-2): scaled CSG hit with valid derivatives" );
+		if( hit ) {
+			H_scaled = fabs( CsgRecordMeanCurvatureH( dpdu, dpdv, dndu, dndv ) );
+			Check( H_scaled > 0.0, "Test16 (P1-2): scaled |H| non-degenerate" );
+
+			if( H_identity > 0.0 && H_scaled > 0.0 ) {
+				const Scalar ratio = H_identity / H_scaled;
+				Check( Close( ratio, s, 1e-6 * s ),
+					"Test16 (P1-2): MONEY ASSERTION -- H_identity/H_scaled == s (CSG quotient-rule fix)" );
+				// Explicitly exclude the old buggy s^2 ratio (4.0 here) --
+				// s vs s^2 differ by 2x, far outside 1e-6*s^2 tolerance
+				// either way, so this fails loudly if the bug returns.
+				Check( !Close( ratio, s * s, 1e-6 * s * s ),
+					"Test16 (P1-2): ratio does NOT match the old buggy CSG s^2 behaviour" );
+			}
+		}
+		safe_release( csg );
+		safe_release( a );
+		safe_release( b );
+	}
+}
+
+//
+// Test 17 (P1-3): CSG_SUBTRACTION's entry-flip sign bug, regression guard.
+// Before P1-1, `ri.geometric.vNormal = -riObjB.geometric.vNormal` (the
+// reported shading normal, correctly negated) was paired with
+// `ri.geometric.derivatives.{dndu,dndv}` still carrying B's UN-negated
+// derivatives (from the whole-record `ri = riObjB` copy) -- a hard sign
+// error in reported world curvature on carved cavity walls. This test
+// exercises the "inside A, not inside B" branch (CSGObject.cpp, easiest of
+// the three fixed branches to set up: ray origin strictly inside operand A,
+// outside mesh-sphere B) and asserts SIGN-SENSITIVELY via two independent
+// checks: (a) finite-difference consistency between the reported dndu/dndv
+// and the empirical Delta(vNormal)/Delta(u) from two nearby CSG hits, and
+// (b) the signed mean curvature H flips sign vs. the SAME mesh sphere hit
+// as a stand-alone convex object (into-the-cavity concave vs. outward
+// convex), with matching |H|.
+//
+// Discrimination was verified by hand during development (per the task's
+// instructions): temporarily commenting out the P1-1 negation at the
+// "inside A, not inside B" branch (CSGObject.cpp) reproduces a ~2x FD
+// mismatch and a same-sign (convex, not concave) H -- both assertions
+// below fail loudly pre-fix and pass post-fix. Do NOT re-disable the fix
+// to "verify" this locally; trust the recorded result and git history.
+//
+void TestSubtraction_CavityWall_DndvSignMatchesFDAndCurvature()
+{
+	std::cout << "CSG_SUBTRACTION: cavity-wall dndu/dndv sign matches FD + flips signed curvature (P1-3)..." << std::endl;
+
+	const Scalar sphereA = 4.0;             // A: big sphere, radius 4
+	const Scalar sphereR = 1.5;             // B: carving mesh sphere, radius 1.5
+	const unsigned int detail = 40;
+
+	// A is an analytic SPHERE: CSGObject.cpp's "inside" signal is
+	// `range2 == 0` EXACTLY, and RaySphereIntersection.cpp hard-codes
+	// `hit.dRange2 = 0.0` for an inside-origin hit (the one-positive-root
+	// case; the torus and quadric/ellipsoid intersectors and SDFGeometry
+	// do likewise).  A BOX did NOT when this test was written --
+	// RayBoxIntersection.cpp reported the (negative) tmin verbatim, which
+	// Object::IntersectRay's exit-info promotion converted to a POSITIVE
+	// magnitude via `range2 = Magnitude(ptExit - origin)`, never exactly
+	// 0, misrouting a box operand into a different switch branch -- but
+	// since 2026-09-05 (docs/CLOTH_FABRIC_DESIGN.md debt 25, review
+	// round 3) BoxGeometry publishes range2 = 0 for an interior origin
+	// too, so the sphere is now a choice, not a requirement.
+	SphereGeometry* gA = new SphereGeometry( sphereA );
+	Object* oA = new Object( gA );
+	safe_release( gA );
+	oA->FinalizeTransformations();
+
+	TriangleMeshGeometryIndexed* meshB = BuildCsgTessellatedSphereMesh( sphereR, detail );
+	Check( meshB != 0, "Test17 (P1-3): mesh-sphere B built" );
+	Object* oB = new Object( meshB );
+	safe_release( meshB );
+	oB->SetPosition( Point3( 0, 0, 0 ) );   // centered inside A -- carves a spherical cavity
+	oB->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test17 (P1-3): composite takes A(sphere)/B(mesh sphere) operands" );
+	csg->FinalizeTransformations();
+
+	// Ray origin strictly INSIDE sphere A (dist < sphereA) and OUTSIDE
+	// mesh-sphere B (dist > sphereR): this trips CSGObject.cpp's
+	// `riObjA.geometric.range2 == 0` "inside A, not inside B" branch --
+	// B's own range2 (a mesh; TriangleMeshGeometryIndexed ignores
+	// bComputeExitInfo entirely, so Object::IntersectRay's promotion
+	// (`range2 = Magnitude(ptExit - origin)`, with ptExit derived from
+	// RISE_INFINITY) converts B's default RISE_INFINITY range2 into EITHER
+	// a huge finite magnitude OR a literal +inf, depending on whether the
+	// transform's FP arithmetic overflows -- never 0 either way) never
+	// satisfies the OTHER branch conditions, so this routing is
+	// unambiguous. Fire straight at B's near (cavity) wall from just
+	// outside B, well inside A.
+	const Point3 origin( 0, 0, -3.0 );      // inside A (dist 3 < 4), outside B (dist 3 > 1.5)
+	const Vector3 dir( 0, 0, 1 );
+	Ray r( origin, dir );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, "Test17 (P1-3): (control) ray hits the composite cavity wall" );
+	Check( ri.geometric.derivatives.valid, "Test17 (P1-3): (control) composite derivatives.valid (mesh B)" );
+
+	// Sanity: confirm we exercised the intended branch -- the reported
+	// range should match B's own entry range (B's near wall, dist ~1.5),
+	// strictly less than A's far wall (dist 4), and range2 should read 0
+	// (the "inside A" convention CSGObject.cpp uses throughout).
+	RayIntersection refBEntry( r, nullRasterizerState );
+	Hit( oB, r, refBEntry );
+	Check( refBEntry.geometric.bHit, "Test17 (P1-3): (control) ray hits standalone B" );
+	Check( Close( ri.geometric.range, refBEntry.geometric.range, 1e-3 ), "Test17 (P1-3): (sanity) composite range == B's entry range (confirms the exercised branch)" );
+	Check( Close( ri.geometric.range2, 0.0, 1e-9 ), "Test17 (P1-3): (sanity) composite range2 == 0 (\"inside A\" branch convention)" );
+
+	if( !ri.geometric.bHit || !ri.geometric.derivatives.valid ) {
+		safe_release( csg );
+		safe_release( oA );
+		safe_release( oB );
+		return;
+	}
+
+	// ---- Check (a): finite-difference consistency ----
+	// Two nearby rays, offset in world X at the SAME z (still inside A,
+	// still outside B, still hitting the same cavity-wall region), give an
+	// empirical Delta(vNormal)/Delta(x) that the reported dndu (transformed
+	// to a per-world-unit derivative alongside dpdu) must agree with in
+	// DIRECTION -- the old bug was off by sign (~2x the vector distance),
+	// far outside any FD-consistency tolerance.
+	const Scalar dx = 1e-4;
+	Ray rPlus( Point3( dx, 0, -3.0 ), dir );
+	Ray rMinus( Point3( -dx, 0, -3.0 ), dir );
+	RayIntersection riPlus( rPlus, nullRasterizerState );
+	Hit( csg, rPlus, riPlus );
+	RayIntersection riMinus( rMinus, nullRasterizerState );
+	Hit( csg, rMinus, riMinus );
+	Check( riPlus.geometric.bHit && riMinus.geometric.bHit, "Test17 (P1-3): (control) FD-offset rays hit the composite" );
+
+	if( riPlus.geometric.bHit && riMinus.geometric.bHit ) {
+		const Vector3 dN_FD(
+			( riPlus.geometric.vNormal.x - riMinus.geometric.vNormal.x ) / ( 2.0 * dx ),
+			( riPlus.geometric.vNormal.y - riMinus.geometric.vNormal.y ) / ( 2.0 * dx ),
+			( riPlus.geometric.vNormal.z - riMinus.geometric.vNormal.z ) / ( 2.0 * dx ) );
+
+		// Express the reported analytical dN/dx via the chain rule through
+		// (dndu, dndv) and the LOCAL (u,v)-per-world-x rate implied by
+		// (dpdu, dpdv): solve the 2x2 least-squares system
+		// dpdu*du/dx + dpdv*dv/dx ~= (1,0,0) (world X unit step) for
+		// (du/dx, dv/dx) via normal equations, then
+		// dN/dx ~= dndu*du/dx + dndv*dv/dx. This avoids assuming any
+		// particular parameterization scale/orthogonality.
+		const Vector3& dpdu = ri.geometric.derivatives.dpdu;
+		const Vector3& dpdv = ri.geometric.derivatives.dpdv;
+		const Vector3& dndu = ri.geometric.derivatives.dndu;
+		const Vector3& dndv = ri.geometric.derivatives.dndv;
+		const Vector3 target( 1, 0, 0 );
+		const Scalar Muu = Vector3Ops::Dot( dpdu, dpdu );
+		const Scalar Muv = Vector3Ops::Dot( dpdu, dpdv );
+		const Scalar Mvv = Vector3Ops::Dot( dpdv, dpdv );
+		const Scalar bu = Vector3Ops::Dot( dpdu, target );
+		const Scalar bv = Vector3Ops::Dot( dpdv, target );
+		const Scalar det = Muu * Mvv - Muv * Muv;
+		Check( fabs( det ) > 1e-12, "Test17 (P1-3): (control) dpdu/dpdv normal-equations system non-degenerate" );
+		if( fabs( det ) > 1e-12 ) {
+			const Scalar duDx = ( bu * Mvv - bv * Muv ) / det;
+			const Scalar dvDx = ( bv * Muu - bu * Muv ) / det;
+			const Vector3 dN_analytic(
+				dndu.x * duDx + dndv.x * dvDx,
+				dndu.y * duDx + dndv.y * dvDx,
+				dndu.z * duDx + dndv.z * dvDx );
+
+			// Sign-sensitive: dot product of FD and analytical dN/dx must be
+			// POSITIVE (same general direction) -- the pre-fix bug flips
+			// dndu/dndv's sign, which flips this dot product negative.
+			const Scalar dot = Vector3Ops::Dot( dN_FD, dN_analytic );
+			Check( dot > 0.0, "Test17 (P1-3): MONEY ASSERTION -- FD dN/dx and reported dndu/dndv agree in sign" );
+		}
+	}
+
+	// ---- Check (b): signed curvature flips vs. the same mesh sphere as a
+	// stand-alone convex object ----
+	// Reference: fire the mirror-image ray at the SAME sphere B, standing
+	// alone (no CSG, no box, no subtraction) -- from OUTSIDE, straight in,
+	// landing on the SAME local mesh point (sphere is centered at the
+	// origin in both cases, so the local hit geometry at world (0,0,-1.5)
+	// approached along +Z is identical either way).
+	Ray refRay( Point3( 0, 0, -10.0 ), dir );
+	RayIntersection refRi( refRay, nullRasterizerState );
+	Hit( oB, refRay, refRi );
+	Check( refRi.geometric.bHit, "Test17 (P1-3): (control) standalone-B reference ray hits" );
+	Check( refRi.geometric.derivatives.valid, "Test17 (P1-3): (control) standalone-B reference derivatives.valid" );
+
+	if( refRi.geometric.bHit && refRi.geometric.derivatives.valid ) {
+		Check( PointClose( ri.geometric.ptObjIntersec, refRi.geometric.ptObjIntersec, 1e-3 ),
+			"Test17 (P1-3): (sanity) composite and standalone-B reference land on the SAME local mesh point" );
+
+		const Scalar H_composite = CsgRecordMeanCurvatureH(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv );
+		const Scalar H_standalone = CsgRecordMeanCurvatureH(
+			refRi.geometric.derivatives.dpdu, refRi.geometric.derivatives.dpdv,
+			refRi.geometric.derivatives.dndu, refRi.geometric.derivatives.dndv );
+
+		Check( fabs( H_composite ) > 1e-6 && fabs( H_standalone ) > 1e-6,
+			"Test17 (P1-3): (control) both signed curvatures non-degenerate" );
+		// Opposite sign (concave cavity wall vs. convex stand-alone sphere).
+		Check( ( H_composite > 0.0 ) != ( H_standalone > 0.0 ),
+			"Test17 (P1-3): MONEY ASSERTION -- composite signed H has OPPOSITE sign from standalone convex sphere" );
+		// Same magnitude, up to mesh discretization tolerance -- same mesh,
+		// same local point, only the reported normal orientation differs.
+		Check( Close( fabs( H_composite ), fabs( H_standalone ), 0.02 * fabs( H_standalone ) ),
+			"Test17 (P1-3): composite |H| matches standalone |H| (same mesh, same point, up to mesh tolerance)" );
+	}
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+//
+// Test 18 (P1-A item 1): CSG_SUBTRACTION's "inside both A and B" entry-flip
+// branch (CSGObject.cpp ~line 876) -- the third of the three P1-1
+// dndu/dndv-negation branches, and the one with NO existing coverage at
+// all (Test 17 covers "inside A, not B"; the sibling below covers
+// "inside B, not A").
+//
+// REACHABILITY: this branch requires BOTH riObjA.range2==0 AND
+// riObjB.range2==0.  Only ANALYTIC geometries report range2=0 for an
+// inside-origin hit (the sphere, torus, and quadric/ellipsoid
+// intersectors hard-code it; SDFGeometry sets it directly; BoxGeometry
+// since 2026-09-05);
+// TriangleMeshGeometry(Indexed)::IntersectRay ignores bComputeExitInfo
+// entirely, so a mesh operand's range2 never reads as exactly 0.
+//
+// UPDATED 2026-08-29 (geometry-shading-signals Phase 1): this note used to
+// continue "and no analytic geometry populates derivatives.valid, so the
+// dndu/dndv negation inside this branch is UNREACHABLE code".  The analytic
+// primitives now publish their closed-form Weingarten map at intersection
+// time (design doc 5.4), so the negation is REACHABLE -- and since the
+// geometries that reach this branch are exactly the ones that gained the
+// population, this test's two NESTED analytic spheres now cover BOTH halves:
+// the vNormal/vGeomNormal negation AND the dndu/dndv pairing, with a signed
+// curvature check on top (the carved cavity wall must read concave).
+//
+void TestSubtraction_InsideBothAAndB_NormalNegationRoutesThroughBranch()
+{
+	std::cout << "CSG_SUBTRACTION: \"inside both A and B\" branch negates vNormal (P1-A item 1)..." << std::endl;
+
+	// A: big sphere, radius 4. B: smaller NESTED sphere, radius 2, same
+	// center -- so any point inside B is automatically inside A too.
+	SphereGeometry* gA = new SphereGeometry( 4.0 );
+	Object* oA = new Object( gA );
+	safe_release( gA );
+	oA->FinalizeTransformations();
+
+	SphereGeometry* gB = new SphereGeometry( 2.0 );
+	Object* oB = new Object( gB );
+	safe_release( gB );
+	oB->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test18 (P1-A item1): composite takes A(sphere r4)/B(nested sphere r2) operands" );
+	csg->FinalizeTransformations();
+
+	// Origin strictly inside BOTH spheres (dist 1 < 2 < 4).
+	const Point3 origin( 0, 0, -1.0 );
+	const Vector3 dir( 0, 0, 1 );
+	Ray r( origin, dir );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, "Test18 (P1-A item1): (control) ray hits the composite" );
+
+	// Reference: standalone hits on A and B alone confirm which branch fired.
+	RayIntersection refA( r, nullRasterizerState );
+	Hit( oA, r, refA );
+	RayIntersection refB( r, nullRasterizerState );
+	Hit( oB, r, refB );
+	Check( refA.geometric.bHit && Close( refA.geometric.range2, 0.0, 1e-9 ),
+		"Test18 (P1-A item1): (control) standalone A reports \"inside\" (range2==0)" );
+	Check( refB.geometric.bHit && Close( refB.geometric.range2, 0.0, 1e-9 ),
+		"Test18 (P1-A item1): (control) standalone B reports \"inside\" (range2==0)" );
+	Check( refB.geometric.range < refA.geometric.range,
+		"Test18 (P1-A item1): (control) B's exit is nearer than A's exit (branch's inner `if` condition)" );
+
+	// This routing means B is analytic -- derivatives are NEVER valid here.
+	// This is the empirical half of the reachability conclusion above.
+	// UPDATED 2026-08-29 (geometry-shading-signals Phase 1): this assertion
+	// used to read "derivatives.valid is FALSE -- sphere B never populates
+	// derivatives, so the dndu/dndv negation in this branch is unreachable".
+	// The analytic primitives now publish their closed-form Weingarten map at
+	// intersection time (design doc 5.4), so the branch IS reachable with
+	// valid derivatives -- which turns this from a documented gap into real
+	// coverage of the P1-1 negation.
+	Check( refB.geometric.derivatives.valid,
+		"Test18 (P1-A item1): (control) standalone analytic B publishes derivatives" );
+	Check( ri.geometric.derivatives.valid,
+		"Test18 (P1-A item1): composite carries B's derivatives through the entry-flip branch" );
+	if( ri.geometric.derivatives.valid && refB.geometric.derivatives.valid ) {
+		// The reported normal is -B.vNormal, so the derivatives OF that normal
+		// field must be negated with it.  dpdu/dpdv deliberately are NOT (that
+		// would reparameterize the surface -- docs/GEOMETRY_DERIVATIVES.md's
+		// CSG-subtraction exception).
+		Check( VecClose( ri.geometric.derivatives.dndu, -refB.geometric.derivatives.dndu, 1e-6 ),
+			"Test18 (P1-A item1): MONEY ASSERTION -- dndu negated in step with vNormal (P1-1)" );
+		Check( VecClose( ri.geometric.derivatives.dndv, -refB.geometric.derivatives.dndv, 1e-6 ),
+			"Test18 (P1-A item1): MONEY ASSERTION -- dndv negated in step with vNormal (P1-1)" );
+		Check( VecClose( ri.geometric.derivatives.dpdu, refB.geometric.derivatives.dpdu, 1e-6 ),
+			"Test18 (P1-A item1): dpdu UNCHANGED (no reparameterization -- the documented CSG exception)" );
+		Check( VecClose( ri.geometric.derivatives.dpdv, refB.geometric.derivatives.dpdv, 1e-6 ),
+			"Test18 (P1-A item1): dpdv UNCHANGED (no reparameterization)" );
+
+		// The user-visible payoff of that pairing: signed mean curvature reads
+		// CONCAVE on the carved cavity wall and CONVEX on the same sphere
+		// standing alone.  Without the negation both would read convex.
+		Scalar Hcavity = 0, Hstandalone = 0;
+		const bool okC = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv, Hcavity );
+		const bool okS = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			refB.geometric.derivatives.dpdu, refB.geometric.derivatives.dpdv,
+			refB.geometric.derivatives.dndu, refB.geometric.derivatives.dndv, Hstandalone );
+		Check( okC && okS, "Test18 (P1-A item1): curvature well-defined on both records" );
+		Check( okC && Hcavity < 0, "Test18 (P1-A item1): carved cavity wall reads CONCAVE (H < 0)" );
+		Check( okS && Hstandalone > 0, "Test18 (P1-A item1): the same sphere standing alone reads CONVEX (H > 0)" );
+	}
+
+	if( ri.geometric.bHit ) {
+		// MONEY ASSERTIONS: range == B's exit range, range2 == A's own
+		// "range" field (A's exit distance, since A also reports "inside"),
+		// and vNormal/vGeomNormal are B's exit-point normal, NEGATED.
+		Check( Close( ri.geometric.range, refB.geometric.range, 1e-3 ),
+			"Test18 (P1-A item1): (sanity) composite range == B's exit range" );
+		Check( Close( ri.geometric.range2, refA.geometric.range, 1e-3 ),
+			"Test18 (P1-A item1): (sanity) composite range2 == A's own \"range\" field (A's exit distance)" );
+		Check( VecClose( ri.geometric.vNormal, -refB.geometric.vNormal, 1e-6 ),
+			"Test18 (P1-A item1): MONEY ASSERTION -- composite vNormal == -(B's exit normal)" );
+		Check( VecClose( ri.geometric.vGeomNormal, -refB.geometric.vGeomNormal, 1e-6 ),
+			"Test18 (P1-A item1): MONEY ASSERTION -- composite vGeomNormal == -(B's exit geometric normal)" );
+	}
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+//
+// Test 19 (P1-A item 2): CSG_SUBTRACTION's "inside B, not A" entry-flip
+// branch (CSGObject.cpp ~line 920) -- the second of the three P1-1
+// dndu/dndv-negation branches without existing coverage.
+//
+// REACHABILITY: same reasoning as Test 18 -- this branch requires
+// riObjB.range2==0 (origin inside B), which only an ANALYTIC B
+// (sphere/torus/quadric/SDF) can report.  UPDATED 2026-08-29: those
+// geometries now DO publish derivatives at intersection time, so the
+// dndu/dndv negation here is REACHABLE and this test now asserts it
+// directly.  The historical note read: UNREACHABLE today under the
+// same analysis.  This test routes through the branch with an analytic
+// sphere B (nested inside a farther, off-center sphere A) to exercise the
+// reachable vNormal/vGeomNormal-negation half.
+//
+void TestSubtraction_InsideBNotA_NormalNegationRoutesThroughBranch()
+{
+	std::cout << "CSG_SUBTRACTION: \"inside B, not A\" branch negates vNormal (P1-A item 2)..." << std::endl;
+
+	// B: sphere radius 2, centered at the origin -- origin (0,0,-1) starts
+	// inside B.
+	SphereGeometry* gB = new SphereGeometry( 2.0 );
+	Object* oB = new Object( gB );
+	safe_release( gB );
+	oB->FinalizeTransformations();
+
+	// A: small sphere radius 1.5, centered further along +Z (3,0,0 in Z)
+	// so the origin (0,0,-1) starts OUTSIDE A, A is entered WHILE still
+	// inside B (A's entry z=1.5 < B's exit z=2), and A's exit (z=4.5) is
+	// AFTER B's exit (z=2) -- so at B's exit the ray is still inside A,
+	// giving a genuine A-minus-B solid boundary there (not an A wholly
+	// swallowed inside B, which would make A-minus-B empty).
+	SphereGeometry* gA = new SphereGeometry( 1.5 );
+	Object* oA = new Object( gA );
+	safe_release( gA );
+	oA->SetPosition( Point3( 0, 0, 3.0 ) );
+	oA->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test19 (P1-A item2): composite takes A(offset sphere r1.5)/B(sphere r2) operands" );
+	csg->FinalizeTransformations();
+
+	const Point3 origin( 0, 0, -1.0 );
+	const Vector3 dir( 0, 0, 1 );
+	Ray r( origin, dir );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, "Test19 (P1-A item2): (control) ray hits the composite" );
+
+	RayIntersection refA( r, nullRasterizerState );
+	Hit( oA, r, refA );
+	RayIntersection refB( r, nullRasterizerState );
+	Hit( oB, r, refB );
+	Check( refA.geometric.bHit && !Close( refA.geometric.range2, 0.0, 1e-9 ),
+		"Test19 (P1-A item2): (control) standalone A is a normal outside hit (range2 != 0)" );
+	Check( refB.geometric.bHit && Close( refB.geometric.range2, 0.0, 1e-9 ),
+		"Test19 (P1-A item2): (control) standalone B reports \"inside\" (range2==0)" );
+	Check( refA.geometric.range < refB.geometric.range,
+		"Test19 (P1-A item2): (control) A's entry precedes B's exit (branch's inner `if` condition)" );
+	Check( refA.geometric.range2 > refB.geometric.range,
+		"Test19 (P1-A item2): (control) A's exit is AFTER B's exit -- A is not wholly swallowed inside B" );
+
+	// UPDATED 2026-08-29 (geometry-shading-signals Phase 1): this assertion
+	// used to read "derivatives.valid is FALSE -- sphere B never populates
+	// derivatives, so the dndu/dndv negation in this branch is unreachable".
+	// The analytic primitives now publish their closed-form Weingarten map at
+	// intersection time (design doc 5.4), so the branch IS reachable with
+	// valid derivatives -- which turns this from a documented gap into real
+	// coverage of the P1-1 negation.
+	Check( refB.geometric.derivatives.valid,
+		"Test19 (P1-A item2): (control) standalone analytic B publishes derivatives" );
+	Check( ri.geometric.derivatives.valid,
+		"Test19 (P1-A item2): composite carries B's derivatives through the entry-flip branch" );
+	if( ri.geometric.derivatives.valid && refB.geometric.derivatives.valid ) {
+		// The reported normal is -B.vNormal, so the derivatives OF that normal
+		// field must be negated with it.  dpdu/dpdv deliberately are NOT (that
+		// would reparameterize the surface -- docs/GEOMETRY_DERIVATIVES.md's
+		// CSG-subtraction exception).
+		Check( VecClose( ri.geometric.derivatives.dndu, -refB.geometric.derivatives.dndu, 1e-6 ),
+			"Test19 (P1-A item2): MONEY ASSERTION -- dndu negated in step with vNormal (P1-1)" );
+		Check( VecClose( ri.geometric.derivatives.dndv, -refB.geometric.derivatives.dndv, 1e-6 ),
+			"Test19 (P1-A item2): MONEY ASSERTION -- dndv negated in step with vNormal (P1-1)" );
+		Check( VecClose( ri.geometric.derivatives.dpdu, refB.geometric.derivatives.dpdu, 1e-6 ),
+			"Test19 (P1-A item2): dpdu UNCHANGED (no reparameterization -- the documented CSG exception)" );
+		Check( VecClose( ri.geometric.derivatives.dpdv, refB.geometric.derivatives.dpdv, 1e-6 ),
+			"Test19 (P1-A item2): dpdv UNCHANGED (no reparameterization)" );
+
+		// The user-visible payoff of that pairing: signed mean curvature reads
+		// CONCAVE on the carved cavity wall and CONVEX on the same sphere
+		// standing alone.  Without the negation both would read convex.
+		Scalar Hcavity = 0, Hstandalone = 0;
+		const bool okC = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv, Hcavity );
+		const bool okS = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			refB.geometric.derivatives.dpdu, refB.geometric.derivatives.dpdv,
+			refB.geometric.derivatives.dndu, refB.geometric.derivatives.dndv, Hstandalone );
+		Check( okC && okS, "Test19 (P1-A item2): curvature well-defined on both records" );
+		Check( okC && Hcavity < 0, "Test19 (P1-A item2): carved cavity wall reads CONCAVE (H < 0)" );
+		Check( okS && Hstandalone > 0, "Test19 (P1-A item2): the same sphere standing alone reads CONVEX (H > 0)" );
+	}
+
+	if( ri.geometric.bHit ) {
+		// MONEY ASSERTIONS: range == B's exit range (unchanged from the
+		// `ri = riObjB` copy), range2 == A's own exit range2, and
+		// vNormal/vGeomNormal are B's exit-point normal, NEGATED.
+		Check( Close( ri.geometric.range, refB.geometric.range, 1e-3 ),
+			"Test19 (P1-A item2): (sanity) composite range == B's exit range" );
+		Check( Close( ri.geometric.range2, refA.geometric.range2, 1e-3 ),
+			"Test19 (P1-A item2): (sanity) composite range2 == A's exit range2" );
+		Check( VecClose( ri.geometric.vNormal, -refB.geometric.vNormal, 1e-6 ),
+			"Test19 (P1-A item2): MONEY ASSERTION -- composite vNormal == -(B's exit normal)" );
+		Check( VecClose( ri.geometric.vGeomNormal, -refB.geometric.vGeomNormal, 1e-6 ),
+			"Test19 (P1-A item2): MONEY ASSERTION -- composite vGeomNormal == -(B's exit geometric normal)" );
+	}
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+//
+// Test 20 (P1-B item 1): TriangleMeshGeometryIndexed's double-sided
+// back-face flip (TriangleMeshGeometryIndexed.cpp ~line 173-188) negates
+// vNormal AND (if valid) dndu/dndv together when a ray hits the mesh from
+// INSIDE (Dot(vNormal, dir) > 0 before the flip).  No existing test in
+// this repo fires an interior ray at a mesh -- every prior mesh test hits
+// from outside.  Fire from just off-center inside a tessellated mesh
+// sphere, straight out to the far wall: the interior hit trips the flip.
+//
+void TestMeshIndexed_BackFaceHit_DndvSignMatchesFDAndCurvature()
+{
+	std::cout << "TriangleMeshGeometryIndexed: back-face (interior-ray) hit flips vNormal+dndu/dndv together (P1-B item1)..." << std::endl;
+
+	const Scalar rad = 1.5;
+	const unsigned int detail = 40;
+
+	TriangleMeshGeometryIndexed* mesh = BuildCsgTessellatedSphereMesh( rad, detail );
+	Check( mesh != 0, "Test20 (P1-B item1): mesh sphere built" );
+	Object* o = new Object( mesh );
+	safe_release( mesh );
+	o->FinalizeTransformations();
+
+	// Interior origin, off-center (avoids the pole singularity); direction
+	// +Z hits the far wall FROM INSIDE.
+	const Point3 origin( 0.3, 0.2, 0.0 );
+	const Vector3 dir( 0, 0, 1 );
+	Ray r0( origin, dir );
+
+	RayIntersection ri( r0, nullRasterizerState );
+	Hit( o, r0, ri );
+	Check( ri.geometric.bHit, "Test20 (P1-B item1): (control) interior ray hits the far wall" );
+	Check( ri.geometric.derivatives.valid, "Test20 (P1-B item1): (control) derivatives.valid" );
+	// Confirms this really is a back-face hit that tripped the flip (see
+	// TriangleMeshGeometryIndexed.cpp:197-201 -- bGeomNormalOrientedToRay
+	// is set true exactly when the geometric-normal flip fired).
+	Check( ri.geometric.bGeomNormalOrientedToRay,
+		"Test20 (P1-B item1): (control) bGeomNormalOrientedToRay confirms a back-face hit" );
+
+	if( !ri.geometric.bHit || !ri.geometric.derivatives.valid ) {
+		safe_release( o );
+		return;
+	}
+
+	// ---- Check (a): finite-difference consistency (Test17's technique) ----
+	const Scalar dx = 1e-4;
+	Ray rPlus( Point3( 0.3 + dx, 0.2, 0.0 ), dir );
+	Ray rMinus( Point3( 0.3 - dx, 0.2, 0.0 ), dir );
+	RayIntersection riPlus( rPlus, nullRasterizerState );
+	Hit( o, rPlus, riPlus );
+	RayIntersection riMinus( rMinus, nullRasterizerState );
+	Hit( o, rMinus, riMinus );
+	Check( riPlus.geometric.bHit && riMinus.geometric.bHit,
+		"Test20 (P1-B item1): (control) FD-offset interior rays hit the far wall" );
+
+	if( riPlus.geometric.bHit && riMinus.geometric.bHit ) {
+		const Vector3 dN_FD(
+			( riPlus.geometric.vNormal.x - riMinus.geometric.vNormal.x ) / ( 2.0 * dx ),
+			( riPlus.geometric.vNormal.y - riMinus.geometric.vNormal.y ) / ( 2.0 * dx ),
+			( riPlus.geometric.vNormal.z - riMinus.geometric.vNormal.z ) / ( 2.0 * dx ) );
+
+		const Vector3& dpdu = ri.geometric.derivatives.dpdu;
+		const Vector3& dpdv = ri.geometric.derivatives.dpdv;
+		const Vector3& dndu = ri.geometric.derivatives.dndu;
+		const Vector3& dndv = ri.geometric.derivatives.dndv;
+		const Vector3 target( 1, 0, 0 );
+		const Scalar Muu = Vector3Ops::Dot( dpdu, dpdu );
+		const Scalar Muv = Vector3Ops::Dot( dpdu, dpdv );
+		const Scalar Mvv = Vector3Ops::Dot( dpdv, dpdv );
+		const Scalar bu = Vector3Ops::Dot( dpdu, target );
+		const Scalar bv = Vector3Ops::Dot( dpdv, target );
+		const Scalar det = Muu * Mvv - Muv * Muv;
+		Check( fabs( det ) > 1e-12, "Test20 (P1-B item1): (control) dpdu/dpdv normal-equations system non-degenerate" );
+		if( fabs( det ) > 1e-12 ) {
+			const Scalar duDx = ( bu * Mvv - bv * Muv ) / det;
+			const Scalar dvDx = ( bv * Muu - bu * Muv ) / det;
+			const Vector3 dN_analytic(
+				dndu.x * duDx + dndv.x * dvDx,
+				dndu.y * duDx + dndv.y * dvDx,
+				dndu.z * duDx + dndv.z * dvDx );
+			const Scalar dot = Vector3Ops::Dot( dN_FD, dN_analytic );
+			Check( dot > 0.0, "Test20 (P1-B item1): MONEY ASSERTION -- FD dN/dx and reported (flipped) dndu/dndv agree in sign" );
+		}
+	}
+
+	// ---- Check (b): signed curvature flips vs. a FRONT-face hit of the
+	// SAME mesh, fired from outside (no flip fires there) ----
+	Ray refRay( Point3( 0, 0, -10.0 ), dir );
+	RayIntersection refRi( refRay, nullRasterizerState );
+	Hit( o, refRay, refRi );
+	Check( refRi.geometric.bHit, "Test20 (P1-B item1): (control) front-face reference ray hits" );
+	Check( refRi.geometric.derivatives.valid, "Test20 (P1-B item1): (control) front-face reference derivatives.valid" );
+	Check( !refRi.geometric.bGeomNormalOrientedToRay,
+		"Test20 (P1-B item1): (control) front-face reference did NOT flip (confirms it's the un-flipped twin)" );
+
+	if( refRi.geometric.bHit && refRi.geometric.derivatives.valid ) {
+		const Scalar H_back = CsgRecordMeanCurvatureH(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv );
+		const Scalar H_front = CsgRecordMeanCurvatureH(
+			refRi.geometric.derivatives.dpdu, refRi.geometric.derivatives.dpdv,
+			refRi.geometric.derivatives.dndu, refRi.geometric.derivatives.dndv );
+
+		Check( fabs( H_back ) > 1e-6 && fabs( H_front ) > 1e-6,
+			"Test20 (P1-B item1): (control) both signed curvatures non-degenerate" );
+		Check( ( H_back > 0.0 ) != ( H_front > 0.0 ),
+			"Test20 (P1-B item1): MONEY ASSERTION -- back-face signed H has OPPOSITE sign from front-face" );
+		Check( Close( fabs( H_back ), fabs( H_front ), 0.05 * fabs( H_front ) ),
+			"Test20 (P1-B item1): back-face |H| matches front-face |H| (same mesh, up to discretization tolerance)" );
+	}
+
+	safe_release( o );
+}
+
+//
+// Test 21 (P1-B item 2): non-indexed TriangleMeshGeometry twin of Test 20.
+// Also gives TriangleMeshGeometry its first-ever end-to-end coverage of
+// the quotient-rule derivatives path in this repo (front-face sanity), on
+// top of the back-face sign check.
+//
+void TestMeshNonIndexed_FrontAndBackFace_DndvSign()
+{
+	std::cout << "TriangleMeshGeometry (non-indexed): front-face sanity + back-face sign flip (P1-B item2)..." << std::endl;
+
+	const Scalar rad = 1.5;
+	const unsigned int detail = 40;
+
+	TriangleMeshGeometry* mesh = BuildCsgTessellatedSphereMeshSoup( rad, detail );
+	Check( mesh != 0, "Test21 (P1-B item2): non-indexed mesh sphere built" );
+	Object* o = new Object( mesh );
+	safe_release( mesh );
+	o->FinalizeTransformations();
+
+	// ---- Front-face sanity: standard outside hit, |H| close to analytic
+	// 1/r, first-ever exercise of this class's quotient-rule path. ----
+	const Vector3 dir( 0, 0, 1 );
+	Ray frontRay( Point3( 0, 0, -10.0 ), dir );
+	RayIntersection frontRi( frontRay, nullRasterizerState );
+	Hit( o, frontRay, frontRi );
+	Check( frontRi.geometric.bHit, "Test21 (P1-B item2): (control) front-face ray hits" );
+	Check( frontRi.geometric.derivatives.valid, "Test21 (P1-B item2): (control) non-indexed mesh sets derivatives.valid" );
+	Check( !frontRi.geometric.bGeomNormalOrientedToRay,
+		"Test21 (P1-B item2): (control) front-face hit did NOT flip" );
+
+	if( frontRi.geometric.bHit && frontRi.geometric.derivatives.valid ) {
+		const Scalar H_front = fabs( CsgRecordMeanCurvatureH(
+			frontRi.geometric.derivatives.dpdu, frontRi.geometric.derivatives.dpdv,
+			frontRi.geometric.derivatives.dndu, frontRi.geometric.derivatives.dndv ) );
+		Check( Close( H_front, 1.0 / rad, 0.05 * (1.0/rad) ),
+			"Test21 (P1-B item2): non-indexed front-face |H| close to analytic sphere 1/r" );
+		const Vector3& n = frontRi.geometric.vNormal;
+		Check( fabs( Vector3Ops::Dot( frontRi.geometric.derivatives.dndu, n ) ) < 1e-6,
+			"Test21 (P1-B item2): non-indexed dndu . n ~= 0" );
+		Check( fabs( Vector3Ops::Dot( frontRi.geometric.derivatives.dndv, n ) ) < 1e-6,
+			"Test21 (P1-B item2): non-indexed dndv . n ~= 0" );
+	}
+
+	// ---- Back-face sign test: same interior-ray technique as Test 20. ----
+	const Point3 origin( 0.3, 0.2, 0.0 );
+	Ray r0( origin, dir );
+	RayIntersection ri( r0, nullRasterizerState );
+	Hit( o, r0, ri );
+	Check( ri.geometric.bHit, "Test21 (P1-B item2): (control) interior ray hits the far wall" );
+	Check( ri.geometric.derivatives.valid, "Test21 (P1-B item2): (control) back-face derivatives.valid" );
+	Check( ri.geometric.bGeomNormalOrientedToRay,
+		"Test21 (P1-B item2): (control) bGeomNormalOrientedToRay confirms a back-face hit" );
+
+	if( ri.geometric.bHit && ri.geometric.derivatives.valid && frontRi.geometric.bHit && frontRi.geometric.derivatives.valid ) {
+		const Scalar H_back = CsgRecordMeanCurvatureH(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv );
+		const Scalar H_front_signed = CsgRecordMeanCurvatureH(
+			frontRi.geometric.derivatives.dpdu, frontRi.geometric.derivatives.dpdv,
+			frontRi.geometric.derivatives.dndu, frontRi.geometric.derivatives.dndv );
+
+		Check( fabs( H_back ) > 1e-6 && fabs( H_front_signed ) > 1e-6,
+			"Test21 (P1-B item2): (control) both signed curvatures non-degenerate" );
+		Check( ( H_back > 0.0 ) != ( H_front_signed > 0.0 ),
+			"Test21 (P1-B item2): MONEY ASSERTION -- back-face signed H has OPPOSITE sign from front-face (non-indexed twin)" );
+		Check( Close( fabs( H_back ), fabs( H_front_signed ), 0.05 * fabs( H_front_signed ) ),
+			"Test21 (P1-B item2): back-face |H| matches front-face |H| (same mesh, up to discretization tolerance)" );
+	}
+
+	safe_release( o );
+}
+
+//
+// Test 22 (P2-C): CSGObject::IntersectRay's dndu/dndv quotient-rule
+// projection block (CSGObject.cpp ~1220-1232) previously had UNIFORM-scale
+// coverage only (Test 16, csg->SetScale).  Uniform scale cannot
+// discriminate whether the projection-onto-tangent-plane step actually
+// ran: under uniform scale s, M^-T is a scalar multiple of the identity,
+// and a scalar multiple trivially preserves orthogonality --
+// dndu_obj . n_obj == 0 (dndu is a derivative of a UNIT normal field)
+// implies (s * dndu_obj) . (s * n_obj)-direction is STILL proportional to
+// dndu_obj . n_obj == 0, with or without the explicit projection.  A
+// NON-uniform stretch has no such shortcut: skipping the projection would
+// generally leave dndu_lin . n_w nonzero, because (M^-T u) . (M^-T v) != u.v
+// in general (only the PAIRED transform (Mu).(M^-Tv) == u.v holds).  This
+// test exercises the discriminating non-uniform case on a mesh operand hit
+// and asserts the full orthogonality + finiteness invariant set
+// (docs/GEOMETRY_DERIVATIVES.md).  Also covers the CSG singular-guard
+// contract (derivatives.valid == false under a near-degenerate transform)
+// as a bonus, cheap addition.
+//
+void TestUnion_CsgQuotientRule_NonUniformStretch_OrthogonalityInvariants()
+{
+	std::cout << "CSG_UNION: non-uniform-stretch dndu/dndv/dpdu/dpdv orthogonality invariants (P2-C)..." << std::endl;
+
+	const Scalar rad = 1.5;
+	const unsigned int detail = 40;
+	const Point3 localOrigin( 0.35, 0.22, 10.0 );
+	const Vector3 localDir( 0, 0, -1 );
+
+	TriangleMeshGeometryIndexed* meshA = BuildCsgTessellatedSphereMesh( rad, detail );
+	Check( meshA != 0, "Test22 (P2-C): mesh A built" );
+	Object* a = new Object( meshA );
+	safe_release( meshA );
+	a->FinalizeTransformations();
+
+	SphereGeometry* gB = new SphereGeometry( 1.0 );
+	Object* b = new Object( gB );
+	safe_release( gB );
+	b->SetPosition( Point3( 10000, 10000, 10000 ) );   // never hit
+	b->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_UNION );
+	const bool assigned = csg->AssignObjects( a, b );
+	Check( assigned, "Test22 (P2-C): composite takes mesh(A)/far-sphere(B) operands" );
+	csg->SetStretch( Vector3( 2.0, 0.5, 1.25 ) );   // NON-uniform -- the discriminating case
+	csg->FinalizeTransformations();
+
+	const Matrix4 mxFinal = csg->GetFinalTransformMatrix();
+	const Point3 worldOrigin = Point3Ops::Transform( mxFinal, localOrigin );
+	const Vector3 worldDir = Vector3Ops::Transform( mxFinal, localDir );
+	const Ray r0( worldOrigin, worldDir );
+
+	RayIntersection ri( r0, nullRasterizerState );
+	Hit( csg, r0, ri );
+	Check( ri.geometric.bHit, "Test22 (P2-C): (control) non-uniform-stretched CSG hit" );
+	Check( ri.geometric.derivatives.valid, "Test22 (P2-C): (control) derivatives.valid" );
+
+	if( ri.geometric.bHit && ri.geometric.derivatives.valid ) {
+		const Vector3& n = ri.geometric.vNormal;
+		const Vector3& dpdu = ri.geometric.derivatives.dpdu;
+		const Vector3& dpdv = ri.geometric.derivatives.dpdv;
+		const Vector3& dndu = ri.geometric.derivatives.dndu;
+		const Vector3& dndv = ri.geometric.derivatives.dndv;
+
+		Check( Vector3Ops::SquaredModulus( dpdu ) > 1e-8 && Vector3Ops::SquaredModulus( dndu ) > 1e-8,
+			"Test22 (P2-C): (sanity) dpdu/dndu are non-degenerate (a zero vector would trivially pass orthogonality)" );
+
+		Check( std::isfinite( n.x ) && std::isfinite( n.y ) && std::isfinite( n.z ), "Test22 (P2-C): n finite" );
+		Check( std::isfinite( dpdu.x ) && std::isfinite( dpdu.y ) && std::isfinite( dpdu.z ), "Test22 (P2-C): dpdu finite" );
+		Check( std::isfinite( dpdv.x ) && std::isfinite( dpdv.y ) && std::isfinite( dpdv.z ), "Test22 (P2-C): dpdv finite" );
+		Check( std::isfinite( dndu.x ) && std::isfinite( dndu.y ) && std::isfinite( dndu.z ), "Test22 (P2-C): dndu finite" );
+		Check( std::isfinite( dndv.x ) && std::isfinite( dndv.y ) && std::isfinite( dndv.z ), "Test22 (P2-C): dndv finite" );
+
+		Check( fabs( Vector3Ops::Dot( dpdu, n ) ) < 1e-6, "Test22 (P2-C): dpdu_w . n_w ~= 0 under non-uniform stretch" );
+		Check( fabs( Vector3Ops::Dot( dpdv, n ) ) < 1e-6, "Test22 (P2-C): dpdv_w . n_w ~= 0 under non-uniform stretch" );
+		Check( fabs( Vector3Ops::Dot( dndu, n ) ) < 1e-6, "Test22 (P2-C): MONEY ASSERTION -- dndu_w . n_w ~= 0 under non-uniform stretch (projection step ran)" );
+		Check( fabs( Vector3Ops::Dot( dndv, n ) ) < 1e-6, "Test22 (P2-C): MONEY ASSERTION -- dndv_w . n_w ~= 0 under non-uniform stretch (projection step ran)" );
+	}
+
+	safe_release( csg );
+	safe_release( a );
+	safe_release( b );
+}
+
+//
+// Test 23 (P2-C, optional singular-guard bonus): a HUGE non-uniform
+// stretch along an axis the hit's local normal is EXACTLY aligned with
+// must collapse the promoted world-space normal magnitude below NEARZERO,
+// tripping CSGObject.cpp's singular-guard (`derivatives.valid = false`,
+// ~line 1233-1244) rather than dividing by ~0.  Fires straight down at the
+// mesh sphere's north pole (local normal (0,0,1) there) under a 1e13
+// stretch on Z.
+//
+void TestUnion_CsgSingularGuard_HugeAxisAlignedStretch()
+{
+	std::cout << "CSG_UNION: singular-guard trips under huge axis-aligned stretch (P2-C bonus)..." << std::endl;
+
+	const Scalar rad = 1.5;
+	const unsigned int detail = 40;
+	const Point3 localOrigin( 0, 0, 10.0 );
+	const Vector3 localDir( 0, 0, -1 );   // straight down onto the north pole
+
+	TriangleMeshGeometryIndexed* meshA = BuildCsgTessellatedSphereMesh( rad, detail );
+	Check( meshA != 0, "Test23 (P2-C bonus): mesh A built" );
+	Object* a = new Object( meshA );
+	safe_release( meshA );
+	a->FinalizeTransformations();
+
+	SphereGeometry* gB = new SphereGeometry( 1.0 );
+	Object* b = new Object( gB );
+	safe_release( gB );
+	b->SetPosition( Point3( 10000, 10000, 10000 ) );   // never hit
+	b->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_UNION );
+	const bool assigned = csg->AssignObjects( a, b );
+	Check( assigned, "Test23 (P2-C bonus): composite takes mesh(A)/far-sphere(B) operands" );
+	csg->SetStretch( Vector3( 1.0, 1.0, 1e13 ) );   // huge stretch on Z, matching the hit's normal axis
+	csg->FinalizeTransformations();
+
+	const Matrix4 mxFinal = csg->GetFinalTransformMatrix();
+	const Point3 worldOrigin = Point3Ops::Transform( mxFinal, localOrigin );
+	const Vector3 worldDir = Vector3Ops::Transform( mxFinal, localDir );
+	const Ray r0( worldOrigin, worldDir );
+
+	RayIntersection ri( r0, nullRasterizerState );
+	Hit( csg, r0, ri );
+	Check( ri.geometric.bHit, "Test23 (P2-C bonus): (control) hit lands (north pole, local normal (0,0,1))" );
+	if( ri.geometric.bHit ) {
+		Check( !ri.geometric.derivatives.valid,
+			"Test23 (P2-C bonus): MONEY ASSERTION -- singular guard trips (derivatives.valid == false) instead of dividing by ~0" );
+	}
+
+	safe_release( csg );
+	safe_release( a );
+	safe_release( b );
+}
+
+//
+// Test 24 (debt-25 review round 3, mutation M7 -- the `/ stretch`
+// factor in AdoptCsgExitFacePayloadViaProbe's `selfHitFloor`): mirrors
+// Test 4's geometry exactly, but the SUBTRACTED operand B (and the
+// containing operand A, so the exit face stays inside A) is uniformly
+// SCALED UP 1000x via `SetScale` -- baked into the OBJECT TRANSFORM,
+// not the box's own local dimensions, so the operand's local->world
+// matrix genuinely carries a non-1 `stretch = |M^-1 dir|` for the
+// probe's margin to divide by.  No existing decoy-lobe test (4, 11,
+// 14, 15) uses a scaled operand, so none of them can catch a dropped
+// `/ stretch`.
+//
+// Numeric derivation (kUlpFactor = 64*DBL_EPSILON ~= 1.4211e-14,
+// NEARZERO = 1e-12):
+//   B's local geometry is UNCHANGED from Test 4 (half-extent 2); the
+//   world exit point (100, 50, -2000) maps back through B's inverse
+//   transform (translate (0,0,-4000), scale 1000) to local
+//   (0.1, 0.05, 2.0) -- the SAME local +Z-face point Test 4 uses.
+//   stretch = |M^-1 dir| = 1/1000 = 1e-3 (dir=(0,0,1), uniform scale
+//     1000 -- a pure scale+translate doesn't rotate the ray direction,
+//     it only shrinks it by 1/scale).
+//   cosExit = |dir . exit normal| = 1 (axis-aligned, straight-in ray;
+//     uniform scale doesn't rotate the face normal either).
+//   alongNormalLocal = |exitLocal.z| = 2.0 (identical to Test 4/14/15's
+//     own figure, since B's local shape is identical to theirs).
+//   bandLocal = 4*NEARZERO + kUlpFactor*2.0 ~= 4.03e-12.
+//   CORRECT selfHitFloor = 2*bandLocal / rate, rate = |M^-1 dir . n_local|
+//     (== stretch*cosExit for THIS geometry -- uniform scale, so the
+//     factorisation the production code replaced in round 3 coincides
+//     with the exact rate here; it does NOT in general, see CSGObject.cpp's
+//     "Rate, exactly" note)
+//     ~= 8.06e-12 / 1e-3 = 8.06e-9 world units -- this dominates the
+//     margin's max() (the pre-existing dirWeightedAbs term is only
+//     kUlpFactor*2000 ~= 2.84e-11, an order of magnitude smaller).
+//   WITHOUT the `/ stretch` division (mutation M7), selfHitFloor'
+//     ~= 8.06e-12 world -- now SMALLER than the 2.84e-11
+//     dirWeightedAbs term, so the margin's max() picks 2.84e-11
+//     instead.  Mapped back into B's LOCAL frame (multiply by
+//     stretch=1e-3, since a world displacement along dir becomes a
+//     `stretch`-times-smaller local displacement under this scale),
+//     that is only 2.84e-14 local units of clearance past the exit
+//     plane -- far under B's own self-hit band (~4.03e-12 local).
+//     BoxGeometry::DropSelfHitRoot re-treats the probe origin as
+//     sitting ON the exit face it is trying to re-hit and drops that
+//     root; the probe's surviving hit is then B's FAR (-Z, entry)
+//     face, thousands of world units away -- far outside
+//     maxAcceptRange -- so AdoptCsgExitFacePayloadViaProbe falls back
+//     to B's entry-face payload (the wrong face) instead of the real
+//     exit face.
+//
+void TestSubtraction_ExitProbe_ScaledOperandMarginUsesStretch()
+{
+	std::cout << "CSG_SUBTRACTION: exit-probe margin divides by the operand's own local->world stretch (debt-25 review r3, M7)..." << std::endl;
+
+	BoxGeometry* gA = new BoxGeometry( 6.0, 6.0, 6.0 );   // half-extent 3 (local)
+	BoxGeometry* gB = new BoxGeometry( 4.0, 4.0, 4.0 );   // half-extent 2 (local)
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	// The 1000x scale is on the OBJECT TRANSFORM (SetScale), not the
+	// box's own dimensions -- that is what makes
+	// GetFinalInverseTransformMatrix() report a non-trivial stretch for
+	// the probe's margin to divide by.
+	oA->SetPosition( Point3( 0, 0, 0 ) );
+	oA->SetScale( 1000.0 );                    // world span [-3000,3000]
+	oB->SetPosition( Point3( 0, 0, -4000 ) );
+	oB->SetScale( 1000.0 );                    // world span [-6000,-2000]
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+
+	Ray r( Point3( 100, 50, -10000 ), Vector3( 0, 0, 1 ) );
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test24 (debt-25 r3, M7): composite takes A/B operands" );
+	csg->FinalizeTransformations();
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, "Test24 (debt-25 r3, M7): (control) ray hits the composite at all" );
+
+	RayIntersection refA( r, nullRasterizerState );
+	Hit( oA, r, refA );
+	Check( refA.geometric.bHit, "Test24 (debt-25 r3, M7): (control) ray hits standalone A" );
+
+	// B's ENTRY-face payload (the pre-P2-e "honestly wrong face" answer)
+	// -- used below only as a NEGATIVE reference.
+	RayIntersection refBEntry( r, nullRasterizerState );
+	Hit( oB, r, refBEntry );
+	Check( refBEntry.geometric.bHit, "Test24 (debt-25 r3, M7): (control) ray hits standalone B" );
+
+	// Sanity: confirm we hit the exit-designated branch, i.e. the
+	// composite range lands on B's EXIT (range2), not B's entry nor A's
+	// entry (same shape as Test 4, just scaled 1000x throughout).
+	Check( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-3 ), "Test24 (debt-25 r3, M7): (sanity) composite range == B's exit range (range2)" );
+	Check( !Close( ri.geometric.range, refBEntry.geometric.range, 1e-3 ), "Test24 (debt-25 r3, M7): (sanity) composite range != B's entry range" );
+	Check( !Close( ri.geometric.range, refA.geometric.range, 1e-3 ), "Test24 (debt-25 r3, M7): (sanity) composite range != A's entry range" );
+
+	// P2-e reference: probe B's EXIT face DIRECTLY from just past its
+	// world +Z face (z=-2000), same technique as Test 4/14 -- a
+	// hand-built test oracle, not a call into the production probe.
+	Ray probeRef( Point3( 100, 50, -1900 ), Vector3( 0, 0, -1 ) );
+	RayIntersection refBExit( probeRef, nullRasterizerState );
+	Hit( oB, probeRef, refBExit );
+	Check( refBExit.geometric.bHit, "Test24 (debt-25 r3, M7): (control) direct probe hits B's exit face" );
+
+	// Sanity: the probe reference lands on a DIFFERENT UV than B's
+	// entry face -- otherwise this test isn't discriminating.
+	Check( !Point2Close( refBExit.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test24 (debt-25 r3, M7): (sanity) exit-face ptCoord differs from entry-face ptCoord" );
+	Check( !PointClose( refBExit.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ), "Test24 (debt-25 r3, M7): (sanity) exit-face ptObjIntersec differs from entry-face ptObjIntersec" );
+
+	// The composite's payload must be the REAL exit-face data, not B's
+	// entry-face data -- this is the assertion mutation M7 (dropping
+	// the `/ stretch` division) breaks (see derivation above).
+	Check( Point2Close( ri.geometric.ptCoord, refBExit.geometric.ptCoord ), "Test24 (debt-25 r3, M7): MONEY ASSERTION -- composite ptCoord matches the REAL exit-face probe" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ), "Test24 (debt-25 r3, M7): MONEY ASSERTION -- composite ptObjIntersec matches the REAL exit-face probe" );
+	Check( !Point2Close( ri.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test24 (debt-25 r3, M7): composite ptCoord is NOT B's entry-face data" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ), "Test24 (debt-25 r3, M7): composite ptObjIntersec is NOT B's entry-face data" );
+
+	// Never A's payload either.
+	Check( !Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ), "Test24 (debt-25 r3, M7): composite ptCoord is NOT A's" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ), "Test24 (debt-25 r3, M7): composite ptObjIntersec is NOT A's" );
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+//
+// Test 25 (debt-25 review round 3, mutation M8 -- the `/ cosExit`
+// factor in AdoptCsgExitFacePayloadViaProbe's `selfHitFloor`): mirrors
+// Test 4's UNSCALED geometry (A half-extent 3 at the origin, B
+// half-extent 2 at world (0,0,-4)), but fires an OBLIQUE ray that
+// exits B's +Z face at |cos(angle-to-normal)| = 0.4 instead of
+// straight-in, so the probe's margin genuinely needs the `/ cosExit`
+// division.  No existing decoy-lobe test uses an oblique ray (4, 11,
+// 14, 15 all fire straight down the box's own axis), so none of them
+// can catch a dropped `/ cosExit`.
+//
+// Ray direction d = (0, sqrt(0.84), 0.4) -- already unit length, since
+// 0.84 + 0.16 = 1 exactly; cosExit = |d . (0,0,1)| = 0.4.  Tracing the
+// box slab per-axis entry/exit parametric distances by hand from the
+// chosen origin (0.1, -16.8303, -10.0), the ray:
+//   * enters B (y in [-2,2], z in [-6,-2]) through its y=-2 SIDE face
+//     at world length s ~= 16.18 -- z there is ~= -3.53, i.e. BELOW A
+//     (A hasn't been entered yet, since A's own z=-3 face isn't
+//     reached until s = 17.5);
+//   * enters A (x,y,z in [-3,3]) through its z=-3 face at s = 17.5 --
+//     y there is ~= -0.79, still inside B (B's own y=-2/z=-6 exit
+//     bounds aren't reached yet: B's y=2 exit is at s ~= 20.55, its
+//     z=-2 exit is at s = 20.0);
+//   * exits B through its z=-2 face at s = 20.0 -- y there = 1.5,
+//     still well inside A (A's own z=3 exit isn't reached until
+//     s = 32.5).  THIS is the exit-designated boundary the composite
+//     reports, same face Test 4 exercises, just approached obliquely.
+// (These figures describe the ray's path for readers checking the
+// geometry by hand; the test itself reads the true exit point off B's
+// own `range2` along ray `r`, so it is not sensitive to rounding in
+// this by-hand trace.)
+//
+// Numeric derivation of the margin (kUlpFactor = 64*DBL_EPSILON ~=
+// 1.4211e-14, NEARZERO = 1e-12; B is unscaled here, so stretch = 1):
+//   exitLocal (B's own local frame) ~= (0.1, 1.5, 2.0) -- the same
+//   half-extent-2 +Z face Test 4 uses, just a different (x,y) landing
+//   point on it.  alongNormalLocal = |exitLocal.z| = 2.0 (identical to
+//   Test 4/14/15/24's own figure, since B's shape is identical).
+//   bandLocal = 4*NEARZERO + kUlpFactor*2.0 ~= 4.03e-12.
+//   CORRECT selfHitFloor = 2*bandLocal / rate, rate = |M^-1 dir . n_local|
+//     (== stretch*cosExit for THIS geometry -- uniform scale, so the
+//     factorisation the production code replaced in round 3 coincides
+//     with the exact rate here; it does NOT in general, see CSGObject.cpp's
+//     "Rate, exactly" note)
+//     = 8.06e-12 / 0.4 ~= 2.01e-11 world units, and the ACTUAL
+//     clearance this buys along the face normal is
+//     margin*cosExit = 2*bandLocal/stretch = 8.06e-12 -- exactly the
+//     "2x headroom over the band" the selfHitFloor derivation
+//     promises, independent of the oblique angle.
+//   WITHOUT the `/ cosExit` division (mutation M8), margin'
+//     = 8.06e-12 (missing the /0.4), and the clearance it buys along
+//     the normal is only margin'*cosExit = 8.06e-12*0.4 ~= 3.22e-12 --
+//     LESS than B's own band (~4.03e-12), so the perturbed probe
+//     origin is STILL inside the band and BoxGeometry::
+//     DropSelfHitRoot drops the same root a second time.  The probe's
+//     surviving hit is then B's OWN entry face (y=-2), ~3.8 world
+//     units back along the probe -- far outside maxAcceptRange -- so
+//     AdoptCsgExitFacePayloadViaProbe falls back to B's entry-face
+//     payload instead of the real exit face.  (The pre-existing
+//     dirWeightedAbs margin term stays negligible throughout, using
+//     the CSG-local exit point (0.1, 1.5, -2): ~kUlpFactor*2.17 ~=
+//     3.1e-14, so it never masks this.)
+//
+void TestSubtraction_ExitProbe_ObliqueRayMarginUsesCosExit()
+{
+	std::cout << "CSG_SUBTRACTION: exit-probe margin divides by the oblique exit angle's cosine (debt-25 review r3, M8)..." << std::endl;
+
+	BoxGeometry* gA = new BoxGeometry( 6.0, 6.0, 6.0 );   // half-extent 3
+	BoxGeometry* gB = new BoxGeometry( 4.0, 4.0, 4.0 );   // half-extent 2
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	oA->SetPosition( Point3( 0, 0, 0 ) );      // spans z in [-3, 3]
+	oB->SetPosition( Point3( 0, 0, -4 ) );     // spans z in [-6, -2]
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+
+	// Unit direction with cosExit = 0.4 against B's +Z face normal
+	// (0,0,1): dz = 0.4, dy = sqrt(1 - 0.4^2) = sqrt(0.84).
+	const Vector3 dir = Vector3Ops::Normalize( Vector3( 0.0, std::sqrt( 0.84 ), 0.4 ) );
+	// Origin chosen (by tracing backward from the exit point, see the
+	// derivation above) so the ray starts well outside both operands
+	// and takes the enter-B / enter-A / exit-B path.
+	Ray r( Point3( 0.1, -16.8303, -10.0 ), dir );
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test25 (debt-25 r3, M8): composite takes A/B operands" );
+	csg->FinalizeTransformations();
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, "Test25 (debt-25 r3, M8): (control) ray hits the composite at all" );
+
+	RayIntersection refA( r, nullRasterizerState );
+	Hit( oA, r, refA );
+	Check( refA.geometric.bHit, "Test25 (debt-25 r3, M8): (control) ray hits standalone A" );
+
+	// B's ENTRY-face payload -- used below only as a NEGATIVE reference.
+	RayIntersection refBEntry( r, nullRasterizerState );
+	Hit( oB, r, refBEntry );
+	Check( refBEntry.geometric.bHit, "Test25 (debt-25 r3, M8): (control) ray hits standalone B" );
+
+	// Sanity: confirm the exit-designated branch fired -- composite
+	// range == B's exit range (range2), not B's entry nor A's entry.
+	Check( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-3 ), "Test25 (debt-25 r3, M8): (sanity) composite range == B's exit range (range2)" );
+	Check( !Close( ri.geometric.range, refBEntry.geometric.range, 1e-3 ), "Test25 (debt-25 r3, M8): (sanity) composite range != B's entry range" );
+	Check( !Close( ri.geometric.range, refA.geometric.range, 1e-3 ), "Test25 (debt-25 r3, M8): (sanity) composite range != A's entry range" );
+
+	// P2-e reference: probe B's EXIT face DIRECTLY, using the exact
+	// technique AdoptCsgExitFacePayloadViaProbe itself uses -- a point
+	// just past the exit point along the ORIGINAL ray direction,
+	// travelling back in the REVERSED direction -- so this hand-built
+	// oracle lands on the SAME (x,y) point on the z=-2 plane the
+	// production probe targets.  The exit point is read from B's own
+	// range2 along the SAME ray `r` (exact, not the by-hand backward-
+	// trace numbers in the derivation above), so this oracle is
+	// insensitive to rounding in that hand trace.
+	const Point3 ptExit = r.PointAtLength( refBEntry.geometric.range2 );
+	const Point3 probeOrigin( ptExit.x + dir.x * 0.1, ptExit.y + dir.y * 0.1, ptExit.z + dir.z * 0.1 );
+	Ray probeRef( probeOrigin, Vector3( -dir.x, -dir.y, -dir.z ) );
+	RayIntersection refBExit( probeRef, nullRasterizerState );
+	Hit( oB, probeRef, refBExit );
+	Check( refBExit.geometric.bHit, "Test25 (debt-25 r3, M8): (control) direct probe hits B's exit face" );
+
+	// Sanity: entry- and exit-face payloads are distinct (otherwise
+	// this test isn't discriminating).
+	Check( !Point2Close( refBExit.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test25 (debt-25 r3, M8): (sanity) exit-face ptCoord differs from entry-face ptCoord" );
+	Check( !PointClose( refBExit.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ), "Test25 (debt-25 r3, M8): (sanity) exit-face ptObjIntersec differs from entry-face ptObjIntersec" );
+
+	// The composite's payload must be the REAL exit-face data, not B's
+	// entry-face data -- this is the assertion mutation M8 (dropping
+	// the `/ cosExit` division) breaks (see derivation above).
+	Check( Point2Close( ri.geometric.ptCoord, refBExit.geometric.ptCoord ), "Test25 (debt-25 r3, M8): MONEY ASSERTION -- composite ptCoord matches the REAL exit-face probe" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ), "Test25 (debt-25 r3, M8): MONEY ASSERTION -- composite ptObjIntersec matches the REAL exit-face probe" );
+	Check( !Point2Close( ri.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test25 (debt-25 r3, M8): composite ptCoord is NOT B's entry-face data" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ), "Test25 (debt-25 r3, M8): composite ptObjIntersec is NOT B's entry-face data" );
+
+	// Never A's payload either.
+	Check( !Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ), "Test25 (debt-25 r3, M8): composite ptCoord is NOT A's" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ), "Test25 (debt-25 r3, M8): composite ptObjIntersec is NOT A's" );
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+//
+// Test 26 (debt-25 review round 5, the "Rate, exactly" note's
+// anisotropic-stretch case): Tests 24 and 25 each exercise ONE of the
+// two factors the exact rate divides by (stretch, cosExit) in
+// isolation, and a review proved both pass even after reverting to the
+// OLDER `stretch * |cos_world|` factorisation, because in both tests
+// the operand's stretch is UNIFORM -- a uniform scale commutes with
+// the cosine, so `stretch * cosExit` and the true rate
+// `|M^-1 dir . n_local| / |n_local|` coincide there.  This test uses
+// an ANISOTROPIC stretch whose stretched-up axis IS the exit face
+// normal (matching the exact rate's own worked example in
+// CSGObject.cpp), hit by an OBLIQUE ray -- the one combination where
+// the two formulas provably diverge (round 3's derivation: the old
+// factorisation under-estimates the rate by a factor of `s_z` on this
+// geometry, `s_z` being the stretch along the face normal).
+//
+// Geometry: A is Test 4/24/25's outer box (half-extent 3, origin).  B
+// is Test 24/25's inner box (half-extent 2 pre-transform) but
+// STRETCHED (1, 1, 4) -- Z 4x, X/Y unchanged -- via `SetStretch`, then
+// positioned at world (0, 0, -10):  B's local +-Z face (local z = +-2)
+// maps to world z = -10 +- 2*4 = -10 +- 8, i.e. world Z span
+// [-18, -2].  The ray direction is the same oblique unit vector as
+// Test 25, `(0, sqrt(0.84), 0.4)`, giving cosExit = 0.4 against B's
+// +Z face (whose WORLD normal stays exactly (0,0,1) under a pure
+// per-axis stretch -- axis-aligned faces don't rotate).
+//
+// Why position -10, not -7: the composite must land on the
+// EXIT-designated branch (CSGObject.cpp's CSG_SUBTRACTION "outside
+// both" switch, the branch that calls AdoptCsgExitFacePayloadViaProbe),
+// which requires B to be entered no later than A AND to exit before A
+// does (`riObjB.range2 < riObjA.range2` after excluding the
+// `riObjA.range < riObjB.range` "A enters first" branch).  With this
+// ray's shallow Z-slope (dz/dy = 0.4/sqrt(0.84) ~= 0.4364), reaching
+// -7 (as Tests 24/25's unstretched B does) puts B's own +Z face too
+// close to A's near wall for that ordering to hold simultaneously with
+// the exit landing on the Z-face rather than B's Y=+2 side face -- a
+// short derivation (equating the two per-axis "which-bound-governs"
+// crossovers for A and B) shows the ordering is achievable only when
+// B's world Z-center satisfies `zCenter + Bz + Az < m*(Ay+By)`, m =
+// dz/dy, Az/Ay = A's half-extent (3), Bz/By = B's WORLD half-extents
+// (8, 2 post-stretch).  At -7 that reads `-7+8+3=4 < 0.4364*5=2.182`
+// -- false (Tests 24/25 don't hit this, since neither combines an
+// anisotropic Z-stretch with an oblique ray).  At -10 it reads
+// `-10+8+3=1 < 2.182` -- true, with headroom.  The exact ray origin
+// below was derived from this and verified by direct arithmetic (not
+// just the inequality) -- see the parametrization comment at the s
+// values below.
+//
+// Ray parametrization (verified by direct computation, not just the
+// governing inequality above): origin (0.1, -20, -11), direction
+// d = (0, sqrt(0.84), 0.4).  At length s, the ray is at
+// (0.1, -20+0.9165151*s, -11+0.4*s).  Per-axis crossings:
+//   A's y in [-3,3]:  s in [17/0.9165151, 23/0.9165151] = [18.549, 25.096]
+//   A's z in [-3,3]:  s in [8/0.4, 14/0.4]               = [20, 35]
+//     -> A_entry = max(18.549, 20) = 20 (Z-governed); A_exit = min(25.096, 35) = 25.096
+//   B's y in [-2,2]:  s in [18/0.9165151, 22/0.9165151] = [19.640, 24.005]
+//   B's z in [-18,-2]: s in [-7/0.4, 9/0.4]              = [-17.5, 22.5]  (z = -11 at s = 0 is already inside the slab)
+//     -> B_entry = max(19.640, 17.5) = 19.640 (Y-governed, B's y=-2 side face);
+//        B_exit = min(24.005, 22.5) = 22.5 (Z-governed, B's world z=-2 face --
+//        the local +Z face this test targets)
+// Order: B_entry(19.640) < A_entry(20) < B_exit(22.5) < A_exit(25.096)
+// -- B entered before A, both inside when B exits via its Z-face while
+// still inside A: exactly the EXIT-designated branch, landing on the
+// Z-face (not the Y-face) as required.  At s=22.5 the ray is at
+// (0.1, 0.6216, -2.0) -- comfortably inside both boxes' other bounds
+// (not a grazing/knife-edge crossing).
+//
+// Numeric derivation of the rate/margin discrepancy (kUlpFactor =
+// 64*DBL_EPSILON ~= 1.4211e-14, NEARZERO = 1e-12; B's stretch is
+// (1,1,4), so its inverse-transform maps a WORLD displacement along
+// dir to a LOCAL one by dividing the Z component by 4 and leaving X/Y
+// unchanged):
+//   exitLocal (B's own pre-stretch local frame): undo position (add
+//     10 to world z: -2+10=8) then undo stretch (divide by (1,1,4)):
+//     local z = 8/4 = 2.0 -- the SAME half-extent-2 face Test 4/14/
+//     15/24/25 all use, regardless of x/y landing point on it.
+//   alongNormalLocal = |exitLocal.z| = 2.0.
+//   bandLocal = 4*NEARZERO + kUlpFactor*2.0 ~= 4.0284e-12.
+//   dirLocal = M^-1 dir = (0, sqrt(0.84), 0.4/4) = (0, 0.9165151, 0.1);
+//     stretch = |dirLocal| = sqrt(0.84 + 0.01) = sqrt(0.85) ~= 0.921954.
+//   n_local (unnormalized) = S * n_world = (1,1,4)-scaled (0,0,1) = (0,0,4);
+//     nLocalMag = 4.
+//   rate_exact = |dirLocal . n_local| / nLocalMag = |0.1*4| / 4 = 0.1
+//     (this is exactly cosExit / s_z = 0.4 / 4 -- the anisotropic
+//     per-axis rate the "Rate, exactly" note derives, which does NOT
+//     equal stretch*cosExit here because the stretch is NOT uniform).
+//   CORRECT selfHitFloor = 2*bandLocal / rate_exact
+//     = 2*4.0284e-12 / 0.1 ~= 8.0568e-11 world units -- the true LOCAL
+//     clearance this buys is selfHitFloor*rate_exact = 2*bandLocal
+//     ~= 8.057e-12, i.e. 2x the band, as the derivation promises.  The
+//     pre-existing dirWeightedAbs margin term stays negligible
+//     throughout (CSG-local exit point (0.1, 0.6216, -2.0), dir
+//     (0,0.9165,0.4): kUlpFactor*(0.6216*0.9165 + 2.0*0.4) ~=
+//     kUlpFactor*1.370 ~= 1.95e-14), so it never masks this.
+//   WITHOUT the anisotropic correction -- i.e. the OLDER factorisation
+//     `stretch * |cosExit_world|` (Test 24/25's M7/M8 mutations
+//     folded into ONE mutant here, since this geometry's stretch is
+//     non-uniform: `rate' = stretch * |dir . n_world|`)
+//     = 0.921954 * 0.4 ~= 0.368782.  This OVER-estimates the exact
+//     rate (0.1) -- the old formula is oblivious to the fact that only
+//     the Z axis is stretched, so it spreads the full isotropic
+//     `stretch` magnitude over a face whose true per-axis rate is 4x
+//     smaller -- which UNDER-estimates the resulting selfHitFloor:
+//     selfHitFloor' = 2*bandLocal / 0.368782 ~= 2.1854e-11.  The
+//     ACTUAL local clearance this buys is selfHitFloor' * rate_exact
+//     (the TRUE rate, since that's what actually governs the plane
+//     distance) = 2.1854e-11 * 0.1 ~= 2.1854e-12 -- LESS than the band
+//     (~4.0284e-12), so the perturbed probe origin is STILL inside
+//     B's own self-hit exclusion band and BoxGeometry::
+//     DropSelfHitRoot drops the true exit root a second time.  The
+//     probe's surviving hit is then B's own ENTRY face (the y=-2 side,
+//     ~2.86 world units back along the probe) -- far outside
+//     maxAcceptRange -- so AdoptCsgExitFacePayloadViaProbe falls back
+//     to B's entry-face payload instead of the real exit face.
+//
+void TestSubtraction_ExitProbe_AnisotropicStretchObliqueRayUsesExactRate()
+{
+	std::cout << "CSG_SUBTRACTION: exit-probe margin uses the EXACT per-axis rate on an anisotropic stretch + oblique ray (debt-25 review r5)..." << std::endl;
+
+	BoxGeometry* gA = new BoxGeometry( 6.0, 6.0, 6.0 );   // half-extent 3
+	BoxGeometry* gB = new BoxGeometry( 4.0, 4.0, 4.0 );   // half-extent 2 (local, pre-stretch)
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	oA->SetPosition( Point3( 0, 0, 0 ) );       // spans x,y,z in [-3, 3]
+	oB->SetStretch( Vector3( 1.0, 1.0, 4.0 ) );  // ANISOTROPIC: Z stretched 4x, X/Y untouched
+	oB->SetPosition( Point3( 0, 0, -10 ) );      // world spans x,y in [-2,2], z in [-18,-2]
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+
+	// Unit direction with cosExit = 0.4 against B's +Z face normal
+	// (0,0,1) -- identical to Test 25's oblique ray.
+	const Vector3 dir = Vector3Ops::Normalize( Vector3( 0.0, std::sqrt( 0.84 ), 0.4 ) );
+	// Origin derived above so the ray takes the B-enters-first /
+	// A-enters-while-in-B / B-exits-via-its-Z-face-while-in-A path.
+	Ray r( Point3( 0.1, -20.0, -11.0 ), dir );
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test26 (debt-25 r5): composite takes A/B operands" );
+	csg->FinalizeTransformations();
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, "Test26 (debt-25 r5): (control) ray hits the composite at all" );
+
+	RayIntersection refA( r, nullRasterizerState );
+	Hit( oA, r, refA );
+	Check( refA.geometric.bHit, "Test26 (debt-25 r5): (control) ray hits standalone A" );
+
+	// B's ENTRY-face payload (the y=-2 side face) -- used below only as
+	// a NEGATIVE reference.
+	RayIntersection refBEntry( r, nullRasterizerState );
+	Hit( oB, r, refBEntry );
+	Check( refBEntry.geometric.bHit, "Test26 (debt-25 r5): (control) ray hits standalone B" );
+
+	// Sanity: confirm the exit-designated branch fired -- composite
+	// range == B's exit range (range2), not B's entry nor A's entry.
+	Check( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-3 ), "Test26 (debt-25 r5): (sanity) composite range == B's exit range (range2)" );
+	Check( !Close( ri.geometric.range, refBEntry.geometric.range, 1e-3 ), "Test26 (debt-25 r5): (sanity) composite range != B's entry range" );
+	Check( !Close( ri.geometric.range, refA.geometric.range, 1e-3 ), "Test26 (debt-25 r5): (sanity) composite range != A's entry range" );
+
+	// P2-e reference: probe B's EXIT face DIRECTLY, using the exact
+	// technique AdoptCsgExitFacePayloadViaProbe itself uses -- a point
+	// just past the exit point along the ORIGINAL ray direction,
+	// travelling back in the REVERSED direction, landing on the SAME
+	// (x,y) point on the world z=-2 plane the production probe
+	// targets.  The exit point is read from B's own range2 along the
+	// SAME ray `r` (exact, not the by-hand trace numbers in the
+	// derivation above), so this oracle is insensitive to rounding in
+	// that hand trace.
+	const Point3 ptExit = r.PointAtLength( refBEntry.geometric.range2 );
+	const Point3 probeOrigin( ptExit.x + dir.x * 0.1, ptExit.y + dir.y * 0.1, ptExit.z + dir.z * 0.1 );
+	Ray probeRef( probeOrigin, Vector3( -dir.x, -dir.y, -dir.z ) );
+	RayIntersection refBExit( probeRef, nullRasterizerState );
+	Hit( oB, probeRef, refBExit );
+	Check( refBExit.geometric.bHit, "Test26 (debt-25 r5): (control) direct probe hits B's exit face" );
+
+	// Sanity: entry- and exit-face payloads are distinct (otherwise
+	// this test isn't discriminating).
+	Check( !Point2Close( refBExit.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test26 (debt-25 r5): (sanity) exit-face ptCoord differs from entry-face ptCoord" );
+	Check( !PointClose( refBExit.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ), "Test26 (debt-25 r5): (sanity) exit-face ptObjIntersec differs from entry-face ptObjIntersec" );
+
+	// The composite's payload must be the REAL exit-face data, not B's
+	// entry-face data -- this is the assertion the anisotropic-stretch
+	// rate mistake breaks (see derivation above).
+	Check( Point2Close( ri.geometric.ptCoord, refBExit.geometric.ptCoord ), "Test26 (debt-25 r5): MONEY ASSERTION -- composite ptCoord matches the REAL exit-face probe" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ), "Test26 (debt-25 r5): MONEY ASSERTION -- composite ptObjIntersec matches the REAL exit-face probe" );
+	Check( !Point2Close( ri.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test26 (debt-25 r5): composite ptCoord is NOT B's entry-face data" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ), "Test26 (debt-25 r5): composite ptObjIntersec is NOT B's entry-face data" );
+
+	// Never A's payload either.
+	Check( !Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ), "Test26 (debt-25 r5): composite ptCoord is NOT A's" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ), "Test26 (debt-25 r5): composite ptObjIntersec is NOT A's" );
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+//
+// Test 27: CSG_SUBTRACTION exit-probe must clear the OPERAND PRIMITIVE'S OWN
+// scale-relative root floor, not just BoxGeometry's per-axis band.
+// (adversarial review of a8bef210 -- the P1.)
+//
+// a8bef210 gave every primitive a scale-relative self-hit floor so a ray
+// published FROM its surface cannot re-hit it at t ~ 0:
+//
+//   RaySphereIntersection:  tMin = NEARZERO * (1 + |origin|_1 + radius)
+//   RayQuadricIntersection: tMin = NEARZERO * (1 + |origin|_1)
+//   ... and the same shape for plane, triangle and cylinder.
+//
+// AdoptCsgExitFacePayloadViaProbe stands a probe origin `margin` PAST the
+// operand's exit face and fires back at it, accepting a hit inside
+// ~2.1 * margin and otherwise falling back to the operand's ENTRY-face
+// payload.  Its margin floor was derived from BoxGeometry's band alone,
+//   2 * (4*NEARZERO + 64*DBL_EPSILON*|exitLocal . n|) / rate,
+// ~= 8e-12 at unit scale -- which is BELOW the primitives' own floors as
+// soon as the operand is more than a few units across.  For a sphere the
+// crossover is R ~ 3.5:  at R = 4 the sphere's floor is
+// NEARZERO*(1 + |exit|_1 + 4) ~ 9e-12 against a margin of ~8.1e-12, so
+// RaySphereIntersection drops the probe's root as a self-hit, the probe
+// misses, and the composite reports the ENTRY face's payload on the FAR
+// cavity wall -- the ANTIPODAL point of the carving sphere.  Reproduced
+// end to end (UV (0.0049, 0.4798) reported where the truth is
+// (0.4950, 0.4794)); R = 1..3 were correct, which is how this survived
+// the debt-25 review rounds.
+//
+// The fix asks the operand instead of assuming: IObject/IGeometry::
+// SelfHitRootFloor reports the gate in the operand's own local frame, and
+// the probe maps it back by dividing by `stretch` (a ROOT floor is a range
+// along the local ray) rather than by `rate` (the box band is a plane
+// distance).  This test pins the end-to-end consequence at two radii on
+// either side of the crossover, plus a control at R = 1 where the OLD
+// margin was already sufficient.
+//
+// Geometry: a box of half-extent 20 minus a sphere of radius R centred on
+// the box's front face (world x = -20), so the sphere carves a cavity
+// whose FAR wall is the visible surface for a camera ray coming in along
+// +x.  The ray is deliberately a little off-axis so entry and exit UVs are
+// unambiguously different points.
+//
+// RED-PROOF: deleting the `SelfHitRootFloor` term from the margin in
+// AdoptCsgExitFacePayloadViaProbe fails the R = 4 and R = 20 money
+// assertions and leaves the R = 1 control passing.
+//
+static void RunCavityFarWallProbeContract( const Scalar R, const std::string& label )
+{
+	BoxGeometry* gA = new BoxGeometry( 40.0, 40.0, 40.0 );   // half-extent 20
+	SphereGeometry* gB = new SphereGeometry( R );
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	oA->SetPosition( Point3( 0, 0, 0 ) );
+	oB->SetPosition( Point3( -20, 0, 0 ) );      // straddles A's front face
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, ( "Test27 (" + label + "): composite takes A/B operands" ).c_str() );
+	csg->FinalizeTransformations();
+
+	// Ordinary camera ray from well outside everything, slightly off the
+	// x axis so the near and far cavity walls carry clearly distinct UVs.
+	const Point3 o( -200.0, 0.13, 0.07 );
+	const Vector3 dir = Vector3Ops::Normalize( Vector3( 1.0, 0.0007, 0.0003 ) );
+	Ray r( o, dir );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, ( "Test27 (" + label + "): (control) ray hits the composite at all" ).c_str() );
+
+	// B's own ENTRY hit -- the NEAR cavity wall, and the payload the
+	// composite falls back to when the probe misses.
+	RayIntersection refBEntry( r, nullRasterizerState );
+	Hit( oB, r, refBEntry );
+	Check( refBEntry.geometric.bHit, ( "Test27 (" + label + "): (control) ray hits standalone B" ).c_str() );
+
+	// Sanity: the exit-designated branch fired -- the composite reports
+	// B's EXIT range, i.e. the far cavity wall.
+	Check( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-6 ),
+		( "Test27 (" + label + "): (sanity) composite range == B's exit range (range2)" ).c_str() );
+
+	// Oracle for the FAR wall: stand well clear of it (4R past the exit
+	// point, far outside any self-hit band at any radius here) and come
+	// back at it.  Deliberately NOT the production margin -- an oracle
+	// that reused the code under test could not fail.
+	const Point3 ptExit = r.PointAtLength( refBEntry.geometric.range2 );
+	const Point3 probeOrigin(
+		ptExit.x + dir.x * 4.0 * R,
+		ptExit.y + dir.y * 4.0 * R,
+		ptExit.z + dir.z * 4.0 * R );
+	Ray probeRef( probeOrigin, Vector3( -dir.x, -dir.y, -dir.z ) );
+	RayIntersection refBExit( probeRef, nullRasterizerState );
+	Hit( oB, probeRef, refBExit );
+	Check( refBExit.geometric.bHit, ( "Test27 (" + label + "): (control) direct probe hits B's exit face" ).c_str() );
+
+	// Sanity: near and far wall payloads are genuinely different (they are
+	// antipodal on the sphere, so this is a wide margin, not a hair).
+	Check( !Point2Close( refBExit.geometric.ptCoord, refBEntry.geometric.ptCoord ),
+		( "Test27 (" + label + "): (sanity) far-wall ptCoord differs from near-wall ptCoord" ).c_str() );
+	Check( !PointClose( refBExit.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ),
+		( "Test27 (" + label + "): (sanity) far-wall ptObjIntersec differs from near-wall ptObjIntersec" ).c_str() );
+
+	// MONEY: the composite's payload is the FAR wall's, not the near wall's.
+	Check( Point2Close( ri.geometric.ptCoord, refBExit.geometric.ptCoord ),
+		( "Test27 (" + label + "): MONEY ASSERTION -- composite ptCoord matches the FAR cavity wall" ).c_str() );
+	Check( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ),
+		( "Test27 (" + label + "): MONEY ASSERTION -- composite ptObjIntersec matches the FAR cavity wall" ).c_str() );
+	Check( !Point2Close( ri.geometric.ptCoord, refBEntry.geometric.ptCoord ),
+		( "Test27 (" + label + "): composite ptCoord is NOT the near-wall (entry) payload" ).c_str() );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ),
+		( "Test27 (" + label + "): composite ptObjIntersec is NOT the near-wall (entry) payload" ).c_str() );
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+void TestSubtraction_ExitProbe_ClearsOperandPrimitiveRootFloor()
+{
+	std::cout << "CSG_SUBTRACTION: exit-probe margin clears the OPERAND's own scale-relative root floor (a8bef210 review P1)..." << std::endl;
+
+	// R = 1: below the crossover -- the box-band margin alone already
+	// cleared the sphere's floor, so this passes with or without the fix.
+	// It is the control that proves the two failing rows below are about
+	// the operand's SCALE, not about the scene.
+	RunCavityFarWallProbeContract( 1.0, "sphere R=1, control -- old margin sufficed" );
+	// R = 4: just past the crossover (sphere floor ~9e-12 vs box-band
+	// margin ~8.1e-12) -- the reported P1 radius.
+	RunCavityFarWallProbeContract( 4.0, "sphere R=4, just past the crossover" );
+	// R = 20: far past it (sphere floor ~4.1e-11, 5x the old margin).
+	RunCavityFarWallProbeContract( 20.0, "sphere R=20, far past the crossover" );
+}
+
+//
+// Test 28: CSGObject::SelfHitRootFloor's OWN per-child recursion (not just
+// AdoptCsgExitFacePayloadViaProbe's single-level stretch/rate division that
+// Tests 24-26 exercise on a LEAF operand) must divide by the CHILD's own
+// local-direction length `s` and remap the normal through the child's own
+// forward-transpose -- the smallest case that puts a NESTED CSGObject on the
+// probed side of an exit-designated boundary, with s != 1 and a non-identity
+// normal remap at the recursion's own per-child step.
+// (adversarial review of 4b141ad3 -- "the smallest case that exercises the
+// child-frame arithmetic".)
+//
+// WHY THE OPERAND ROLES ARE REVERSED FROM A LITERAL "BOX MINUS SPHERE"
+// READING, AND WHY oA IS A BOX (NOT A SPHERE): CSGObject.cpp's
+// CSG_SUBTRACTION "B enters first, exits before A" branch -- the ONLY branch
+// that calls AdoptCsgExitFacePayloadViaProbe -- always forwards OPERAND A's
+// own range2/vGeomNormal2 as the COMPOSITE's own reported range2
+// (`ri.geometric.range2 = riObjA.geometric.range2;`).  So whichever operand
+// of `inner` is "A" is the one whose surface `inner` reports as ITS OWN
+// exit, and that is the ONLY surface a caller one level up (`outer`) can
+// ever recover via a probe of `inner` as a whole -- meaning "A" must be the
+// operand whose OWN SelfHitRootFloor the recursion's `/ s` and normal-remap
+// actually gate.  A literal "big box minus small sphere" reading (matching
+// Test 27) makes the BOX operand "A"; a SPHERE operand "A" would exercise
+// the `/ s` division (sphere's own floor ignores incidence angle entirely,
+// so mutation (a) alone was empirically sufficient there) but NOT the
+// normal-remap mutation, since SphereGeometry::SelfHitRootFloor never reads
+// its `localNormal` argument at all.  BoxGeometry::SelfHitRootFloor is the
+// one primitive whose floor genuinely depends on the normal it is handed
+// (it picks its face axis by the normal's largest component, then divides
+// by the incidence cosine) -- so oA is a BOX, oriented+stretched, standing
+// in for Test 27's carved-FROM shape, and oB is a small PLAIN box standing
+// in for Test 27's carving operand.  Putting the transform on "B" instead
+// (as Tests 24-26 do) only ever exercises AdoptCsgExitFacePayloadViaProbe's
+// own single-level division on a LEAF operand, never
+// CSGObject::SelfHitRootFloor's recursive body at all.
+//
+// GEOMETRY, PARAMETRIZED (not hand-derived to exact numbers -- the two
+// angles below are chosen for the algebraic reasons documented at each, and
+// every WORLD POSITION is then derived by probing the actual objects, so the
+// construction stays correct however those two angles are read):
+//   oA: BoxGeometry, half-extent 4, oriented `angleRad` degrees about Y then
+//       stretched (stretchX,1,1) -- Transformable composes a local point as
+//       Scale/Stretch, then Orientation, then Position (i.e. the
+//       conventional stretch-then-rotate-then-translate order; confirmed
+//       empirically against this exact construction and against Test 26's
+//       own SetStretch+SetPosition usage).
+//   oB: BoxGeometry, half-extent 2, PLAIN (no stretch/rotation) -- the small
+//       carving operand, positioned to straddle wherever the camera ray
+//       actually enters standalone oA.
+//   inner = CSG_SUBTRACTION, AssignObjects(oA, oB).
+//   oBig: BoxGeometry, half-extent 200, at the world origin.
+//   outer = CSG_SUBTRACTION, AssignObjects(oBig, inner) -- oA is positioned
+//       (via a two-pass trial-then-corrected placement, since its actual
+//       depth along an OBLIQUE ray bears no simple relationship to its own
+//       half-extent or stretch) so its measured span straddles oBig's own
+//       front-face crossing, putting `inner` on the exit-designated,
+//       probed-through-a-composite side of outer's own subtraction.  `inner`
+//       itself carries no extra transform, so outer-local == world and
+//       outer's own stretch/rate terms are trivial (1) -- the interesting
+//       arithmetic is entirely INSIDE `inner->SelfHitRootFloor`'s own
+//       per-child recursion over {oA, oB}.
+//
+// `angleRad = 60 degrees` (oA's own rotation): the WRONG (mutation (b),
+// un-remapped) normal fed into BoxGeometry::SelfHitRootFloor is oA's WORLD-
+// frame face normal, (cos(angleRad), 0, -sin(angleRad)); oA's TRUE local
+// face normal there is exactly local +X, (1,0,0).  BoxGeometry::
+// SelfHitRootFloor picks its axis by the LARGEST component of whichever
+// normal it is handed -- at 30 degrees cos > sin, so the wrong normal picks
+// the SAME (X) axis by accident and mutation (b) only perturbs the cosine
+// divisor (verified empirically to move the floor the WRONG way to fail: it
+// grows, since a ray aligned with oA's own axis already gives the BEST
+// possible correct incidence cosine of 1, and any other unit normal's dot
+// product with the direction can only be <= 1, never bigger).  At 60 degrees
+// sin > cos, so the wrong normal's largest component is Z -- a genuinely
+// different, wrong axis, AND (combined with `phi` below) a materially wrong
+// cosine.
+//
+// `phi = 20 degrees` (the camera ray's tilt AWAY from oA's own stretched
+// axis): exact alignment (`phi = 0`) makes the CORRECT incidence cosine
+// exactly 1 -- algebraically the best possible case, so ANY wrong normal
+// (itself a unit vector) can only make the box-band term's cosine divisor
+// <= 1 too, i.e. mutation (b) could only ever INFLATE the floor
+// (conservative, never a failure).  A non-zero `phi` gives the CORRECT
+// incidence real headroom below 1, so the wrong axis+cosine combination
+// mutation (b) substitutes can undershoot it.  `stretchX = 30` keeps `s`
+// (the child's own inverse-transformed unit direction length inside the
+// recursion) small, giving mutation (a)'s `/ s` removal a wide gap too.
+//
+// Money-relevant numbers from one build of this exact construction (all
+// computed at runtime by this function, not hardcoded -- reported here only
+// as a sanity cross-check for a future reader): oA's own measured span
+// straddled oBig's front-face crossing exactly (by construction of the
+// two-pass placement); the reported far wall's local point landed at oA's
+// own +X face CENTER, (4, ~0, ~0); `inner->SelfHitRootFloor` at the
+// outer-level query was ~1.29e-10, entirely from oA's contribution
+// (s ~= 0.343, floorChild ~= 4.44e-11) -- oB's own contribution (s=1,
+// floorChild ~= 4.43e-12) is smaller and does not govern the max().
+//
+// RED-PROOF (verified against the actual build, not asserted here from
+// arithmetic alone -- see the commit message's RED-PROOF table):
+//   (a) drop the recursion's `/ s` (treat s as 1): oA's contribution drops
+//       from ~1.29e-10 to ~4.44e-11 (its OWN un-divided floorChild, exactly
+//       -- s cancels out of the money-relevant ratio) -- money assertions
+//       fail; Test 27 (whose operands are all leaves, s = 1 throughout)
+//       stays green.
+//   (b) drop the forward-transpose normal remap (pass the parent-frame
+//       normal straight through): oA's contribution drops from ~1.29e-10 to
+//       ~1.29e-11 (wrong axis picked, wrong cosine) -- the same four money
+//       assertions fail.
+//   (c) seed CSGObject::SelfHitRootFloor's `worst` at IObject's generic
+//       `NEARZERO * (1 + |localOrigin|_1)` default instead of zero: this
+//       test's own children are both LEAVES (BoxGeometry), which already
+//       report the generic default's own order of magnitude or larger at
+//       these world offsets, so the generic-default seed never changes
+//       which term governs the max() here -- Test 28 stays GREEN under this
+//       mutation, while Test 14 (whose `localOrigin` sits at world X = 1e12,
+//       the documented trap this seed exists to avoid) goes red exactly as
+//       intended.
+//
+void TestSubtraction_NestedCsgOperandExitProbeUsesChildFrameRootFloor()
+{
+	std::cout << "CSG_SUBTRACTION: outer-level exit probe divides a NESTED CSG operand's SelfHitRootFloor by the child's own s (4b141ad3 review, child-frame arithmetic)..." << std::endl;
+
+	// See the header comment above for why each of these two angles is
+	// picked, and why oA is a box (not a sphere).
+	const Scalar angleRad = 60.0 * 3.14159265358979323846 / 180.0;   // oA's own rotation about Y
+	const Scalar stretchX = 30.0;                                     // oA's own stretch along its (rotated) local +X
+	const Scalar phi = 20.0 * 3.14159265358979323846 / 180.0;         // camera ray's tilt away from oA's stretched axis
+	const Scalar dirAngleRad = angleRad + phi;
+
+	BoxGeometry* gA = new BoxGeometry( 8.0, 8.0, 8.0 );   // half-extent 4
+	BoxGeometry* gB = new BoxGeometry( 4.0, 4.0, 4.0 );   // half-extent 2
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	const Vector3 dir = Vector3Ops::Normalize( Vector3( std::cos( dirAngleRad ) + 0.0007, 0.0004, -std::sin( dirAngleRad ) + 0.0003 ) );
+
+	BoxGeometry* gBig = new BoxGeometry( 400.0, 400.0, 400.0 );   // half-extent 200
+	Object* oBig = new Object( gBig );
+	safe_release( gBig );
+	oBig->SetPosition( Point3( 0, 0, 0 ) );
+	oBig->FinalizeTransformations();
+
+	// `tBig` is where the camera ray crosses oBig's own front face --
+	// computed DIRECTLY against this exact oBig/ray pair (a fresh probe
+	// from far along -dir, not a hand-derived constant), so this stays
+	// correct however `dir` is parametrized above.  oA needs to straddle
+	// this point (part before it, part after) for the exit-designated
+	// branch to fire at BOTH nesting levels (see the header comment's
+	// geometry section) -- but at this oblique `phi`, oA's own DEPTH
+	// along the ray bears no simple relationship to its stretched semi-
+	// axis (that long axis isn't aligned with the ray any more), so a
+	// fixed standoff can leave oA's whole span short of `tBig` entirely.
+	// Two-pass placement instead: place oA (trial) with its own local
+	// +X-face-CENTER at `tBig`, measure its ACTUAL entry/exit along this
+	// ray, then re-place it shifted so the MIDPOINT of that measured span
+	// lands exactly on `tBig` -- correct however `phi` reshapes oA's
+	// apparent depth.
+	const Point3 farOrigin( dir.x * -1000.0, dir.y * -1000.0, dir.z * -1000.0 );
+	RayIntersection riBigProbe( Ray( farOrigin, dir ), nullRasterizerState );
+	Hit( oBig, Ray( farOrigin, dir ), riBigProbe );
+	Check( riBigProbe.geometric.bHit, "Test28 (4b141ad3 review): (control) setup probe hits oBig" );
+	const Scalar tBig = -1000.0 + riBigProbe.geometric.range;
+
+	oA->SetOrientation( Vector3( 0, angleRad, 0 ) );
+	oA->SetStretch( Vector3( stretchX, 1.0, 1.0 ) );
+
+	auto PlaceOAFaceCenterAt = [&]( const Point3& target ) {
+		oA->SetPosition( Point3( 0, 0, 0 ) );
+		oA->FinalizeTransformations();
+		const Point3 facePoleOffset = Point3Ops::Transform( oA->GetFinalTransformMatrix(), Point3( 4.0, 0.0, 0.0 ) );
+		oA->SetPosition( Point3(
+			target.x - facePoleOffset.x,
+			target.y - facePoleOffset.y,
+			target.z - facePoleOffset.z ) );
+		oA->FinalizeTransformations();
+	};
+
+	// Trial pass, targeting tBig directly.
+	PlaceOAFaceCenterAt( Point3( dir.x * tBig, dir.y * tBig, dir.z * tBig ) );
+	RayIntersection riATrial( Ray( farOrigin, dir ), nullRasterizerState );
+	Hit( oA, Ray( farOrigin, dir ), riATrial );
+	Check( riATrial.geometric.bHit, "Test28 (4b141ad3 review): (control) trial probe hits standalone oA" );
+	const Scalar tAEntryTrial = -1000.0 + riATrial.geometric.range;
+	const Scalar tAExitTrial = -1000.0 + riATrial.geometric.range2;
+	const Scalar tAMidTrial = 0.5 * ( tAEntryTrial + tAExitTrial );
+
+	// Corrected pass: shift so the measured midpoint lands exactly on tBig.
+	const Scalar finalTargetT = tBig + ( tBig - tAMidTrial );
+	PlaceOAFaceCenterAt( Point3( dir.x * finalTargetT, dir.y * finalTargetT, dir.z * finalTargetT ) );
+
+	// Position oB (the small carving box) to straddle wherever the camera
+	// ray ACTUALLY hits standalone oA now (re-probed after the corrected
+	// placement), not any assumed face-center point.
+	RayIntersection riAProbe( Ray( farOrigin, dir ), nullRasterizerState );
+	Hit( oA, Ray( farOrigin, dir ), riAProbe );
+	Check( riAProbe.geometric.bHit, "Test28 (4b141ad3 review): (control) setup probe hits standalone oA" );
+	const Point3 oAEntryWorld(
+		farOrigin.x + dir.x * riAProbe.geometric.range,
+		farOrigin.y + dir.y * riAProbe.geometric.range,
+		farOrigin.z + dir.z * riAProbe.geometric.range );
+
+	oB->SetPosition( oAEntryWorld );
+	oB->FinalizeTransformations();
+
+	CSGObject* inner = new CSGObject( CSG_SUBTRACTION );
+	const bool innerAssigned = inner->AssignObjects( oA, oB );
+	Check( innerAssigned, "Test28 (4b141ad3 review): inner composite takes A(big oriented+stretched box)/B(small plain box) operands" );
+	inner->FinalizeTransformations();
+
+	CSGObject* outer = new CSGObject( CSG_SUBTRACTION );
+	const bool outerAssigned = outer->AssignObjects( oBig, inner );
+	Check( outerAssigned, "Test28 (4b141ad3 review): outer composite takes oBig/inner operands" );
+	outer->FinalizeTransformations();
+
+	const Point3 o( dir.x * -400.0, dir.y * -400.0, dir.z * -400.0 );
+	Ray r( o, dir );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( outer, r, ri );
+	Check( ri.geometric.bHit, "Test28 (4b141ad3 review): (control) ray hits the outer composite at all" );
+
+	// `inner`'s OWN reported hit -- the payload `outer` would fall back to
+	// on a probe miss, and the "wrong" (entry-designated) face this test
+	// must NOT match.
+	RayIntersection refInnerEntry( r, nullRasterizerState );
+	Hit( inner, r, refInnerEntry );
+	Check( refInnerEntry.geometric.bHit, "Test28 (4b141ad3 review): (control) ray hits standalone inner" );
+
+	// Sanity: outer's reported range matches inner's own range2 (confirms
+	// the exit-designated branch fired, landing on inner's own EXIT --
+	// oA's own far face -- not inner's own reported entry).
+	Check( Close( ri.geometric.range, refInnerEntry.geometric.range2, 1e-3 ),
+		"Test28 (4b141ad3 review): (sanity) outer range == inner's own range2 (exit-designated branch fired)" );
+
+	// Oracle for the far wall: probe `inner` fresh from well clear of the
+	// reported exit point (4 world units past it -- outside any self-hit
+	// band at this scale), exactly like AdoptCsgExitFacePayloadViaProbe's
+	// own technique, but NOT reusing the code under test.
+	const Point3 ptExit = r.PointAtLength( refInnerEntry.geometric.range2 );
+	const Point3 probeOrigin(
+		ptExit.x + dir.x * 4.0,
+		ptExit.y + dir.y * 4.0,
+		ptExit.z + dir.z * 4.0 );
+	Ray probeRef( probeOrigin, Vector3( -dir.x, -dir.y, -dir.z ) );
+	RayIntersection refInnerExit( probeRef, nullRasterizerState );
+	Hit( inner, probeRef, refInnerExit );
+	Check( refInnerExit.geometric.bHit, "Test28 (4b141ad3 review): (control) direct probe hits inner's own far (oA) face" );
+
+	// Sanity: the reported-exit oracle really landed on oA's own +X face
+	// (local x == oA's own half-extent, 4), not oB's (whose local
+	// coordinates would sit within its own half-extent-2 bound instead).
+	Check( Close( refInnerExit.geometric.ptObjIntersec.x, 4.0, 0.1 ),
+		"Test28 (4b141ad3 review): (sanity) oracle's local x == oA's own half-extent (4), confirming it is oA's face" );
+
+	// Sanity: near (inner's own entry-designated, box-carve) and far
+	// (oA) payloads are genuinely distinct.
+	Check( !Point2Close( refInnerExit.geometric.ptCoord, refInnerEntry.geometric.ptCoord ),
+		"Test28 (4b141ad3 review): (sanity) far-wall ptCoord differs from inner's own entry-designated ptCoord" );
+	Check( !PointClose( refInnerExit.geometric.ptObjIntersec, refInnerEntry.geometric.ptObjIntersec ),
+		"Test28 (4b141ad3 review): (sanity) far-wall ptObjIntersec differs from inner's own entry-designated ptObjIntersec" );
+
+	// MONEY: outer's payload is the REAL far (oA) wall, not inner's own
+	// entry-designated (box-carve) payload.
+	Check( Point2Close( ri.geometric.ptCoord, refInnerExit.geometric.ptCoord ),
+		"Test28 (4b141ad3 review): MONEY ASSERTION -- outer ptCoord matches the FAR (oA) wall" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refInnerExit.geometric.ptObjIntersec ),
+		"Test28 (4b141ad3 review): MONEY ASSERTION -- outer ptObjIntersec matches the FAR (oA) wall" );
+	Check( !Point2Close( ri.geometric.ptCoord, refInnerEntry.geometric.ptCoord ),
+		"Test28 (4b141ad3 review): outer ptCoord is NOT inner's own entry-designated payload" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refInnerEntry.geometric.ptObjIntersec ),
+		"Test28 (4b141ad3 review): outer ptObjIntersec is NOT inner's own entry-designated payload" );
+
+	safe_release( outer );
+	safe_release( oBig );
+	safe_release( inner );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+//
+// Test 29 (DL-30): CSG_SUBTRACTION's EXIT-DESIGNATED boundary branch
+// (CSGObject.cpp's "B enters first, B's exit lands inside A's span"
+// switch arm, ~line 1372, which calls AdoptCsgExitFacePayloadViaProbe)
+// -- the dndu/dndv RE-PAIRING dot-product test at that function's tail
+// (CSGObject.cpp ~line 728's "-operand.vNormal2" comment) has NEVER been
+// exercised with a nonzero derivative: every existing test in this
+// family that reaches this exact switch arm (Test4 and every
+// "ExitProbe_*" test) uses BoxGeometry for the probed operand, whose
+// flat faces give dndu == dndv == (0,0,0) -- a sign flip of zero is
+// still zero, so the dot-product repair's CORRECTNESS was untested by
+// construction, only its REACHABILITY.  This test is Test4's own
+// construction (same A, same B position, same ray) with B swapped from
+// a BoxGeometry to a SphereGeometry -- an analytic primitive whose
+// closed-form Weingarten map (design doc 5.4) gives genuinely nonzero
+// dndu/dndv at every hit, so a sign error here is actually visible.
+//
+// The re-pairing dot product ALWAYS fires for this construction: B's
+// analytic normal field is direction-independent (the outward radial
+// unit vector at a surface point, regardless of which way a ray
+// approached it), so the probe's OWN reported vNormal at the exit point
+// is B's plain outward normal there, while this switch arm sets
+// dst.vNormal = -B.vNormal2 (B's outward exit normal, NEGATED) --
+// Dot(outward, -outward) = -1 < 0 on every run, deterministically
+// routing through the negation this test exists to verify.
+//
+void TestSubtraction_ExitDesignatedBoundary_SphereDndxSignPairing()
+{
+	std::cout << "CSG_SUBTRACTION: exit-designated boundary dndu/dndv sign-pairing with a CURVED operand (DL-30)..." << std::endl;
+
+	BoxGeometry* gA = new BoxGeometry( 6.0, 6.0, 6.0 );      // half-extent 3, spans z in [-3, 3]
+	SphereGeometry* gB = new SphereGeometry( 2.0 );          // radius 2 -- CURVED, populates dndu/dndv
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	oA->SetPosition( Point3( 0, 0, 0 ) );
+	oB->SetPosition( Point3( 0, 0, -4 ) );   // spans z in [-6, -2]: overlaps A's near wall, same as Test4
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+
+	Ray r( Point3( 0.1, 0.05, -10 ), Vector3( 0, 0, 1 ) );   // same offset ray as Test4
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test29 (DL-30): composite takes A(box)/B(sphere) operands" );
+	csg->FinalizeTransformations();
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, "Test29 (DL-30): (control) ray hits the composite at all" );
+
+	RayIntersection refA( r, nullRasterizerState );
+	Hit( oA, r, refA );
+	Check( refA.geometric.bHit, "Test29 (DL-30): (control) ray hits standalone A" );
+
+	RayIntersection refBEntry( r, nullRasterizerState );
+	Hit( oB, r, refBEntry );
+	Check( refBEntry.geometric.bHit, "Test29 (DL-30): (control) ray hits standalone B" );
+
+	// Sanity: confirm we hit the EXIT-DESIGNATED branch (same shape as
+	// Test4's sanity block) -- composite range == B's exit range (range2),
+	// not B's entry, not A's entry.
+	Check( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-3 ),
+		"Test29 (DL-30): (sanity) composite range == B's exit range (range2)" );
+	Check( !Close( ri.geometric.range, refBEntry.geometric.range, 1e-3 ),
+		"Test29 (DL-30): (sanity) composite range != B's entry range" );
+	Check( !Close( ri.geometric.range, refA.geometric.range, 1e-3 ),
+		"Test29 (DL-30): (sanity) composite range != A's entry range" );
+
+	// Sanity: the sphere actually gives a NONZERO Weingarten map at the
+	// entry hit -- the property Test4's box operand structurally cannot
+	// have, and the whole reason this test exists.
+	Check( refBEntry.geometric.derivatives.valid,
+		"Test29 (DL-30): (control) standalone sphere B publishes derivatives" );
+	if( refBEntry.geometric.derivatives.valid ) {
+		const Scalar dnduMag = Vector3Ops::Dot( refBEntry.geometric.derivatives.dndu, refBEntry.geometric.derivatives.dndu );
+		Check( dnduMag > 1e-6,
+			"Test29 (DL-30): (sanity) B's dndu is genuinely NONZERO (unlike a box's flat-face zero)" );
+	}
+
+	Check( VecClose( ri.geometric.vNormal, Vector3( -refBEntry.geometric.vNormal2.x, -refBEntry.geometric.vNormal2.y, -refBEntry.geometric.vNormal2.z ) ),
+		"Test29 (DL-30): (control) composite vNormal is B's exit normal, flipped" );
+
+	// Independent oracle: probe B's EXIT face DIRECTLY from outside, exactly
+	// Test4's own `probeRef` technique -- a hand-built ray, NOT a call into
+	// the code under test (AdoptCsgExitFacePayloadViaProbe).  For this
+	// geometry B's exit face sits at world z = -2.
+	Ray probeRef( Point3( 0.1, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
+	RayIntersection refBExit( probeRef, nullRasterizerState );
+	Hit( oB, probeRef, refBExit );
+	Check( refBExit.geometric.bHit, "Test29 (DL-30): (control) direct probe hits B's exit face" );
+	Check( refBExit.geometric.derivatives.valid, "Test29 (DL-30): (control) direct probe's derivatives.valid" );
+	Check( ri.geometric.derivatives.valid, "Test29 (DL-30): composite carries B's derivatives through the exit-designated branch" );
+
+	// Sanity: the oracle really lands on the same point the composite
+	// reports (confirms the probe recovered the REAL exit-face payload,
+	// P2-e, not B's entry-face data) -- reusing Test4's own ptCoord/
+	// ptObjIntersec checks as the position half of the oracle match.
+	if( refBExit.geometric.bHit ) {
+		Check( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ),
+			"Test29 (DL-30): (sanity) composite ptObjIntersec matches the independent exit-face oracle" );
+	}
+
+	if( ri.geometric.derivatives.valid && refBExit.geometric.bHit && refBExit.geometric.derivatives.valid ) {
+		// MONEY ASSERTIONS -- the composite reports -B.vNormal2 (the
+		// oracle's OWN vNormal, negated), so the derivatives OF that
+		// normal field must be negated right along with it: a positive
+		// dot product here would mean the pre-DL-30 world shipped a
+		// convex-reading curvature on what is geometrically a concave
+		// notch.  dpdu/dpdv are NOT negated (same convention as Test18 --
+		// negating them would reparameterize the surface, which the CSG
+		// composite must not do).
+		Check( VecClose( ri.geometric.derivatives.dndu, Vector3( -refBExit.geometric.derivatives.dndu.x, -refBExit.geometric.derivatives.dndu.y, -refBExit.geometric.derivatives.dndu.z ), 1e-6 ),
+			"Test29 (DL-30): MONEY ASSERTION -- dndu negated in step with vNormal at the exit-designated boundary" );
+		Check( VecClose( ri.geometric.derivatives.dndv, Vector3( -refBExit.geometric.derivatives.dndv.x, -refBExit.geometric.derivatives.dndv.y, -refBExit.geometric.derivatives.dndv.z ), 1e-6 ),
+			"Test29 (DL-30): MONEY ASSERTION -- dndv negated in step with vNormal at the exit-designated boundary" );
+		Check( VecClose( ri.geometric.derivatives.dpdu, refBExit.geometric.derivatives.dpdu, 1e-6 ),
+			"Test29 (DL-30): dpdu is NOT negated (surface parameterization is unchanged)" );
+		Check( VecClose( ri.geometric.derivatives.dpdv, refBExit.geometric.derivatives.dpdv, 1e-6 ),
+			"Test29 (DL-30): dpdv is NOT negated (surface parameterization is unchanged)" );
+
+		// Curvature-sign bonus check, matching Tests 17/18's convention:
+		// the composite's reported boundary (a sphere bitten out of a
+		// box's corner, viewed from the notch's own concave side) must
+		// read CONCAVE, while the SAME sphere point read by the
+		// independent oracle (its own outward-facing normal, a plain
+		// convex sphere from outside) must read CONVEX.
+		Scalar H_composite = 0, H_oracle = 0;
+		const bool okC = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv, H_composite );
+		const bool okO = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			refBExit.geometric.derivatives.dpdu, refBExit.geometric.derivatives.dpdv,
+			refBExit.geometric.derivatives.dndu, refBExit.geometric.derivatives.dndv, H_oracle );
+		Check( okC && okO, "Test29 (DL-30): curvature well-defined on both records" );
+		Check( okC && H_composite < 0, "Test29 (DL-30): composite exit-designated boundary reads CONCAVE (H < 0)" );
+		Check( okO && H_oracle > 0, "Test29 (DL-30): the independent oracle (sphere's own outward face) reads CONVEX (H > 0)" );
+	}
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+//
+// Test 30 (DL-21): CSG boundary curvature convention:
+// At a CSG intersection, the composite forwards the contributing surface's
+// curvature from whichever operand generated the active boundary hit.
+// Sphere A (radius 1.5, center (0,0,-0.5)) and Sphere B (radius 1.0, center (0,0,0.5))
+// intersect. A ray along +Z enters A first and then B, so the entry boundary
+// is wholly B's surface and forwards B's curvature (H = 1.0).
+// A ray along -Z enters B first and then A, so the entry boundary is wholly
+// A's surface and forwards A's curvature (H = 1/1.5 = 0.666667).
+//
+void TestIntersection_CurvatureConvention_ContributingSurfaceForwarded()
+{
+	std::cout << "CSG_INTERSECTION: boundary curvature convention forwards contributing surface (DL-21)..." << std::endl;
+
+	SurfaceCurvatureDemand::Registration reg( true );
+
+	const Scalar rA = 1.5;
+	const Scalar rB = 1.0;
+	SphereGeometry* gA = new SphereGeometry( rA );
+	SphereGeometry* gB = new SphereGeometry( rB );
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	oA->SetPosition( Point3( 0, 0, -0.5 ) );
+	oB->SetPosition( Point3( 0, 0,  0.5 ) );
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_INTERSECTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test30 (DL-21): composite takes sphere A and sphere B operands" );
+	csg->FinalizeTransformations();
+
+	// Case 1: Ray along +Z (from (0.1, 0.05, -5))
+	// Enters A at z = -0.5 - 1.5 = -2.0.
+	// Enters B at z = 0.5 - 1.0 = -0.5 while inside A.
+	// Entry boundary is wholly B's surface!
+	{
+		Ray rFwd( Point3( 0.1, 0.05, -5.0 ), Vector3( 0, 0, 1 ) );
+		RayIntersection ri( rFwd, nullRasterizerState );
+		Hit( csg, rFwd, ri );
+
+		RayIntersection refB( rFwd, nullRasterizerState );
+		Hit( oB, rFwd, refB );
+
+		Check( ri.geometric.bHit, "Test30 (DL-21): +Z ray hits composite intersection" );
+		Check( refB.geometric.bHit, "Test30 (DL-21): +Z ray hits standalone B" );
+		Check( ri.geometric.derivatives.valid, "Test30 (DL-21): composite +Z entry derivatives valid" );
+
+		Scalar H_comp = 0, H_refB = 0;
+		const bool okComp = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv, H_comp );
+		const bool okRefB = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			refB.geometric.derivatives.dpdu, refB.geometric.derivatives.dpdv,
+			refB.geometric.derivatives.dndu, refB.geometric.derivatives.dndv, H_refB );
+
+		Check( okComp && okRefB, "Test30 (DL-21): curvature well-defined on composite and refB" );
+		Check( Close( H_comp, 1.0 / rB, 1e-4 ), "Test30 (DL-21): composite curvature matches 1/rB = 1.0" );
+		Check( Close( H_comp, H_refB, 1e-4 ), "Test30 (DL-21): composite curvature matches standalone B" );
+		Check( VecClose( ri.geometric.vNormal, refB.geometric.vNormal, 1e-5 ), "Test30 (DL-21): composite vNormal matches B's" );
+	}
+
+	// Case 2: Ray along -Z (from (0.1, 0.05, 5))
+	// Enters B at z = 0.5 + 1.0 = 1.5.
+	// Enters A at z = -0.5 + 1.5 = 1.0 while inside B.
+	// Entry boundary is wholly A's surface!
+	{
+		Ray rRev( Point3( 0.1, 0.05, 5.0 ), Vector3( 0, 0, -1 ) );
+		RayIntersection ri( rRev, nullRasterizerState );
+		Hit( csg, rRev, ri );
+
+		RayIntersection refA( rRev, nullRasterizerState );
+		Hit( oA, rRev, refA );
+
+		Check( ri.geometric.bHit, "Test30 (DL-21): -Z ray hits composite intersection" );
+		Check( refA.geometric.bHit, "Test30 (DL-21): -Z ray hits standalone A" );
+		Check( ri.geometric.derivatives.valid, "Test30 (DL-21): composite -Z entry derivatives valid" );
+
+		Scalar H_comp = 0, H_refA = 0;
+		const bool okComp = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv, H_comp );
+		const bool okRefA = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			refA.geometric.derivatives.dpdu, refA.geometric.derivatives.dpdv,
+			refA.geometric.derivatives.dndu, refA.geometric.derivatives.dndv, H_refA );
+
+		Check( okComp && okRefA, "Test30 (DL-21): curvature well-defined on composite and refA" );
+		Check( Close( H_comp, 1.0 / rA, 1e-4 ), "Test30 (DL-21): composite curvature matches 1/rA = 0.666667" );
+		Check( Close( H_comp, H_refA, 1e-4 ), "Test30 (DL-21): composite curvature matches standalone A" );
+		Check( VecClose( ri.geometric.vNormal, refA.geometric.vNormal, 1e-5 ), "Test30 (DL-21): composite vNormal matches A's" );
+	}
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
 }
 
 int main()
@@ -1473,6 +3655,21 @@ int main()
 	TestIntersectRay_CompressedCsg_ClosestHitNotCulledByOperandPretest();
 	TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin();
 	TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor();
-	std::cout << "\nAll CsgSurfacePayloadTest cases passed." << std::endl;
-	return 0;
+	TestUnion_TransformedCsgDerivativesMatchStandaloneScaled();
+	TestSubtraction_CavityWall_DndvSignMatchesFDAndCurvature();
+	TestSubtraction_InsideBothAAndB_NormalNegationRoutesThroughBranch();
+	TestSubtraction_InsideBNotA_NormalNegationRoutesThroughBranch();
+	TestMeshIndexed_BackFaceHit_DndvSignMatchesFDAndCurvature();
+	TestMeshNonIndexed_FrontAndBackFace_DndvSign();
+	TestUnion_CsgQuotientRule_NonUniformStretch_OrthogonalityInvariants();
+	TestUnion_CsgSingularGuard_HugeAxisAlignedStretch();
+	TestSubtraction_ExitProbe_ScaledOperandMarginUsesStretch();
+	TestSubtraction_ExitProbe_ObliqueRayMarginUsesCosExit();
+	TestSubtraction_ExitProbe_AnisotropicStretchObliqueRayUsesExactRate();
+	TestSubtraction_ExitProbe_ClearsOperandPrimitiveRootFloor();
+	TestSubtraction_NestedCsgOperandExitProbeUsesChildFrameRootFloor();
+	TestSubtraction_ExitDesignatedBoundary_SphereDndxSignPairing();
+	TestIntersection_CurvatureConvention_ContributingSurfaceForwarded();
+	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
+	return g_fail == 0 ? 0 : 1;
 }

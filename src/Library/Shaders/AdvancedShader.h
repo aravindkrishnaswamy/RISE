@@ -50,6 +50,7 @@ namespace RISE
 
 		public:
 			AdvancedShader( const ShadeOpListType& shaderops_ );
+			AdvancedShader( const AdvancedShader& other );
 
 			const ShadeOpListType& ShaderOpsForSSSClassification() const
 			{
@@ -63,7 +64,7 @@ namespace RISE
 				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				RISEPel& c,									///< [out] RISEPel value at the point
-				const IORStack& ior_stack				///< [in/out] Index of refraction stack
+				const IORStack& ior_stack				///< [in] Index of refraction stack
 				) const;
 
 			//! Tells the shader to apply shade to the given intersection point for the given wavelength
@@ -74,7 +75,7 @@ namespace RISE
 				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				const Scalar nm,							///< [in] Wavelength to shade
-				const IORStack& ior_stack				///< [in/out] Index of refraction stack
+				const IORStack& ior_stack				///< [in] Index of refraction stack
 				) const;
 
 			//! Tells the shader to apply shade for a bundle of HWSS wavelengths.
@@ -90,6 +91,23 @@ namespace RISE
 
 			//! Tells the shader to reset itself
 			void ResetRuntimeData() const;
+			bool HasRuntimeData() const;
+
+		protected:
+			//! DL-171/DL-209 (legacy shader-op chain, chain-aware MIS
+			//! partner): unlike `StandardShader`, an `AdvancedShader`'s
+			//! ops are depth-RANGED, so "does a DirectLightingShaderOp/
+			//! DistributionTracingShaderOp sibling exist" is a per-CALL
+			//! question (an op outside `[nMinDepth,nMaxDepth]` for the
+			//! CURRENT `depth` does not actually run at this vertex) --
+			//! resolved fresh each `Shade{,NM,HWSS}` call by scanning the
+			//! depth-filtered subset (the op list is a handful of entries,
+			//! so this is cheap).  See RAY_STATE::chainHasNEEOp's doc.
+			void ResolveChainFlagsForDepth(
+				unsigned int depth,
+				bool& outHasDirectLightingOp,
+				bool& outHasBsdfContinuationOp
+				) const;
 		};
 	}
 }

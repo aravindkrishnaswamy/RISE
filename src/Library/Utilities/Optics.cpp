@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "Optics.h"
+#include "FiniteMath.h"
 #include "../Interfaces/ILog.h"
 
 using namespace RISE;
@@ -38,7 +39,7 @@ Vector3 Optics::CalculateReflectedRay( const Vector3& vIn, const Vector3& vNorma
 
 bool Optics::CalculateRefractedRay( const Vector3& vNormal, const Scalar Ni, const Scalar Nt, Vector3& vIn )
 {
-	if( Ni <= NEARZERO || Nt <= NEARZERO ) {
+	if( !IsFiniteDouble(Ni) || !IsFiniteDouble(Nt) || Ni <= NEARZERO || Nt <= NEARZERO ) {
 		GlobalLog()->PrintEx( eLog_Error, "Optics::CalculateRefractedRay: Invalid IOR (Ni=%f, Nt=%f). IOR must be > 0", Ni, Nt );
 		return false;
 	}
@@ -85,17 +86,91 @@ bool Optics::CalculateRefractedRay( const Vector3& vNormal, const Scalar Ni, con
 		useNormal = -useNormal;
 	}
 
-	// Use Snell's law
-	Scalar		k = Vector3Ops::Dot( useNormal, useIn );
-	Vector3	s = (Ni/Nt) * (useIn-k*useNormal);
-	k = 1.0 - Vector3Ops::SquaredModulus(s);
-
-	if( k < NEARZERO ) {
-		return false;
-	} else {
-		vIn = s - sqrt(k) * useNormal;
+	// Equal media have no boundary, even when the incidence cosine is zero.
+	if( Ni == Nt ) {
+		vIn = useIn;
 		return true;
 	}
+	const Scalar k = Vector3Ops::Dot( useNormal, useIn );
+	Scalar cosT;
+	if( !CalculateRefractedCosine( -k, Ni, Nt, cosT ) ) return false;
+	const Vector3 tangent = (Ni/Nt) * (useIn-k*useNormal);
+	vIn = tangent - cosT * useNormal;
+	return true;
+}
+
+// Error-free residuals below are meaningful only without reassociation or
+// implicit contraction. Keep that local guarantee even in shipping fast-math.
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((optimize("no-fast-math")))
+#endif
+#if defined(_MSC_VER)
+#pragma float_control(precise, on, push)
+#endif
+bool Optics::CalculateRefractedCosine( Scalar cosI, Scalar Ni, Scalar Nt, Scalar& cosT )
+{
+#if defined(__clang__)
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+#endif
+	if( !IsFiniteDouble(cosI) || !IsFiniteDouble(Ni) || !IsFiniteDouble(Nt) || Ni <= 0 || Nt <= 0 ) return false;
+	cosI = fmin( 1.0, fabs(cosI) );
+	if( Ni == Nt ) { cosT = cosI; return true; }
+	if( cosI == 1.0 ) { cosT = 1.0; return true; }
+	// Preserve the absolute index difference before division. In particular,
+	// adjacent distinct indices must not acquire a rounded ratio contrast.
+	const Scalar large = fmax(Ni,Nt), small = fmin(Ni,Nt);
+	const Scalar q = small/large;
+	const Scalar gap = large-small;
+	const Scalar virtualNegSmall = gap-large;
+	const Scalar gapError = (large-(gap-virtualNegSmall)) + (-small-virtualNegSmall);
+	const Scalar delta = gap/large;
+	const Scalar deltaLow = (std::fma(-delta,large,gap)+gapError)/large;
+	// 1-q^2 = delta*(2-delta). Keep product and subtraction residuals
+	// so its error scales with the physical contrast, including near unity.
+	const Scalar factor = 2-delta;
+	const Scalar virtualNegDelta = factor-2;
+	const Scalar factorLow = (2-(factor-virtualNegDelta)) + (-delta-virtualNegDelta) - deltaLow;
+	const Scalar contrast = delta*factor;
+	const Scalar contrastLow = std::fma(delta,factor,-contrast)
+		+ delta*factorLow + deltaLow*factor + deltaLow*factorLow;
+	if( Ni < Nt ) {
+		// Noncancelling branch: cosT^2 = (1-q^2) + (q*cosI)^2.
+		const Scalar rc = q*cosI;
+		cosT = sqrt( contrast + (contrastLow + rc*rc) );
+	} else {
+		// Critical branch: cosT^2 = (cosI^2 - (1-q^2))/q^2.
+		// TwoSum and the square residual retain the represented TIR side.
+		const Scalar muSquare = cosI*cosI;
+		const Scalar muError = std::fma(cosI,cosI,-muSquare);
+		const Scalar high = muSquare-contrast;
+		const Scalar virtualNegContrast = high-muSquare;
+		const Scalar sumError = (muSquare-(high-virtualNegContrast)) + (-contrast-virtualNegContrast);
+		const Scalar discriminant = high + (sumError + muError - contrastLow);
+		if( discriminant < 0 ) return false;
+		cosT = sqrt(discriminant)/q;
+	}
+	return true;
+}
+
+#if defined(_MSC_VER)
+#pragma float_control(pop)
+#endif
+
+Scalar Optics::CalculateDielectricReflectanceCosine( Scalar cosI, Scalar Ni, Scalar Nt )
+{
+	Scalar cosT;
+	if( !CalculateRefractedCosine(cosI,Ni,Nt,cosT) ) return 1.0;
+	if( Ni == Nt ) return 0.0;
+	cosI = fmin( 1.0, fabs(cosI) );
+	const Scalar cosScale = fmax(cosI,cosT);
+	if( cosScale == 0.0 ) return 1.0;
+	const Scalar indexScale = fmax(Ni,Nt);
+	const Scalar ni = Ni/indexScale, nt = Nt/indexScale;
+	const Scalar ci = cosI/cosScale, ct = cosT/cosScale;
+	const Scalar rs = (ni*ci-nt*ct)/(ni*ci+nt*ct);
+	const Scalar rp = (nt*ci-ni*ct)/(nt*ci+ni*ct);
+	return fmin( 1.0, 0.5*(rs*rs+rp*rp) );
 }
 
 Scalar Optics::CalculateDielectricReflectance( const Vector3& v, const Vector3& tv, const Vector3& n, const Scalar Ni, const Scalar Nt )
@@ -115,7 +190,6 @@ Scalar Optics::CalculateDielectricReflectance( const Vector3& v, const Vector3& 
 
 	Vector3 useN = n;
 	Vector3 useV = v;
-	Vector3 useTv = tv;
 	if( fabs(normalMag - 1.0) > 1e-6 ) {
 		GlobalLog()->PrintEx( eLog_Warning, "Optics::CalculateDielectricReflectance: Non-unit normal passed in (|n|=%f), normalizing", normalMag );
 		useN = Vector3Ops::Normalize( useN );
@@ -126,35 +200,19 @@ Scalar Optics::CalculateDielectricReflectance( const Vector3& v, const Vector3& 
 	}
 	if( fabs(transMag - 1.0) > 1e-6 ) {
 		GlobalLog()->PrintEx( eLog_Warning, "Optics::CalculateDielectricReflectance: Non-unit transmitted vector passed in (|tv|=%f), normalizing", transMag );
-		useTv = Vector3Ops::Normalize( useTv );
 	}
 
-	const Scalar cosAi = fabs(Vector3Ops::Dot(useV, useN));
-	const Scalar cosAt = fabs(Vector3Ops::Dot(useTv, useN));
-	const Scalar nn = Ni * Nt;
-	const Scalar cc = cosAt * cosAi;
-	const Scalar Ni2 = Ni * Ni;
-	const Scalar Nt2 = Nt * Nt;
-	const Scalar ci2 = cosAi * cosAi;
-	const Scalar ct2 = cosAt * cosAt;
-	const Scalar Nit = Ni2 - Nt2;
-	const Scalar cit = ci2 - ct2;
-	const Scalar num = Nit*Nit*cc*cc +  cit*cit*nn*nn;
-	Scalar denom = cc*(Ni2 + Nt2) + nn*(ci2 + ct2);
-	denom = denom*denom;
-
-	Scalar answer;
-	if ((denom < 0.000001) && (num < 0.000001)) {
-		answer = 1.0;
-	} else {
-		answer = num/denom;
+	// Identical media have no interface, including at exact grazing.
+	// Keep this identity explicit rather than evaluating its 0/0 limit.
+	if( Ni == Nt ) {
+		return 0.0;
 	}
 
-	if (answer < 1.0) {
-		return answer;
-	} else {
-		// place a debug assertion here
-		return 1.00;
-	}
+	// Fresnel is determined by the incident cosine and ordered absolute
+	// indices. Reconstruct cosT with the same conditioned Snell kernel as
+	// refraction rather than recovering it from a tangent vector subtraction.
+	// `tv` remains validated above for the existing API contract.
+	return CalculateDielectricReflectanceCosine(
+		fabs(Vector3Ops::Dot(useV, useN)), Ni, Nt );
 }
 

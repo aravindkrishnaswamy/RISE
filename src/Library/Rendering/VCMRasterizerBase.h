@@ -31,6 +31,7 @@
 
 #include "BidirectionalRasterizerBase.h"
 #include "../Shaders/VCMIntegrator.h"
+#include <atomic>
 #include "../Shaders/VCMLightVertexStore.h"
 
 namespace RISE
@@ -40,6 +41,10 @@ namespace RISE
 		class VCMRasterizerBase : public BidirectionalRasterizerBase
 		{
 		protected:
+			//! DL-465: motion-blurred animation frames render multi-threaded
+			//! through per-thread time-indexed scene state.
+			bool SupportsTimeIndexedMotionBlur() const { return true; }
+
 			VCMIntegrator*			pIntegrator;
 			mutable LightVertexStore*	pLightVertexStore;
 
@@ -63,6 +68,22 @@ namespace RISE
 			mutable Scalar mMergeRadiusFloor;			///< Adaptive lower bound on r_n (recomputed per pass)
 			mutable Scalar mGeometricRadiusFloor;		///< Scene-derived safety floor (0.001 * medianSegment)
 			mutable unsigned int mMergeRadiusPassCount;	///< n in the Hachisuka shrinkage formula
+
+			// DL-469: volume-merge radius (3-D kernel, see
+			// VCMIntegrator.cpp "volume merging"), sized from the density
+			// of eligible medium light vertices and shrunk per pass like
+			// the surface radius (cube-root factor).  0 = off.
+			mutable Scalar mBaseVolumeRadius;
+			mutable Scalar mCurrentVolumeRadius;
+			mutable unsigned int mVolumeRadiusPassCount;
+			mutable Scalar mVolumeStoreProbability;		///< q: medium light vertices stored with this probability
+			mutable unsigned int mVolumeThinSeed;		///< the current pass's thinning seed
+
+		public:
+			/// DL-469 test hook: when > 0, forces the medium-vertex store
+			/// probability q (the MIS partition must not depend on it).
+			static std::atomic<double>& TestVolumeStoreProbabilityOverride();
+		protected:
 
 			// Tunable constants (exposed via scene params in a later step).
 			Scalar mRadiusShrinkAlpha;			///< Hachisuka alpha; 2/3 gives optimal rate
@@ -96,6 +117,11 @@ namespace RISE
 		/// one progress update per iteration.
 		bool SkipPerBlockIntermediateOutput() const { return true; }
 
+		/// DL-463 (a): with merging on, the light store is shared by every
+		/// eye sample of a pass, so a motion-blurred frame traces each
+		/// pass at one shutter time (PixelBasedRasterizerHelper).
+		bool WantsPerPassShutterTime() const;
+
 		/// Rebuild the light vertex store at each progressive pass
 		/// so merge-query noise averages across passes instead of
 		/// persisting from a single fixed store.  Uses passIdx as
@@ -105,18 +131,9 @@ namespace RISE
 			const IScene& pScene,
 			const unsigned int passIdx ) const;
 
-		/// Override the final flush to resolve the splat film
-			/// into a scratch copy of the primary image before
-			/// forwarding to the rasterizer outputs.  Mirrors BDPT's
-			/// final-flush splat resolve.
-			virtual void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
-
-			/// When OIDN denoising is enabled, RasterizeScene routes
-			/// the main flush through FlushPreDenoisedToOutputs and
-			/// FlushDenoisedToOutputs instead of FlushToOutputs.
-			/// Both overrides apply the same splat-resolve composition.
-			virtual void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
-			virtual void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
+		// FlushToOutputs / FlushPreDenoisedToOutputs /
+		// FlushDenoisedToOutputs (splat composition) are inherited from
+		// BidirectionalRasterizerBase (DL-458).
 
 		public:
 			VCMRasterizerBase(
@@ -137,6 +154,36 @@ namespace RISE
 			/// Light vertex store built during the light pass and
 			/// queried by EvaluateMerges during the eye pass.
 			const LightVertexStore* GetLightVertexStore() const { return pLightVertexStore; }
+
+			/// Flux tracking for strategy split / reach diagnostics (DL-167 candidate a).
+			void ResetFluxAccumulators() const
+			{
+				mTotalLum.store( 0.0, std::memory_order_relaxed );
+				mMergeLum.store( 0.0, std::memory_order_relaxed );
+			}
+
+			void AccumulateSampleFlux( double total, double merge ) const
+			{
+				if( total > 0.0 ) {
+					double cur = mTotalLum.load( std::memory_order_relaxed );
+					while( !mTotalLum.compare_exchange_weak( cur, cur + total, std::memory_order_relaxed ) ) {}
+				}
+				if( merge > 0.0 ) {
+					double cur = mMergeLum.load( std::memory_order_relaxed );
+					while( !mMergeLum.compare_exchange_weak( cur, cur + merge, std::memory_order_relaxed ) ) {}
+				}
+			}
+
+			double GetMergeFluxShare() const
+			{
+				const double tot = mTotalLum.load( std::memory_order_relaxed );
+				const double mrg = mMergeLum.load( std::memory_order_relaxed );
+				return ( tot > 0.0 ) ? ( mrg / tot ) : 0.0;
+			}
+
+		protected:
+			mutable std::atomic<double> mTotalLum{ 0.0 };
+			mutable std::atomic<double> mMergeLum{ 0.0 };
 		};
 	}
 }

@@ -35,10 +35,30 @@ namespace RISE
 
 			Matrix4	ComputeScaleFromAR( ) const;
 
+			//! The whole per-film-sample direction construction:
+			//! raster coordinate to image-plane point, the
+			//! `r = sin(theta)` lift onto the unit hemisphere, and
+			//! the normalised WORLD direction.  `screenX` / `screenY`
+			//! are raster coordinates.
+			//!
+			//! Returns FALSE — leaving `dir` untouched — for a sample
+			//! outside the projection's unit disc, i.e. past the
+			//! 90-degree angular limit, exactly as `GenerateRay` has
+			//! always reported for such a pixel.
+			//!
+			//! Single source of truth for both `GenerateRay` and its
+			//! +x / +y differential rays, so the pixelAR stretch and
+			//! the frame rotation are inherited by the differentials
+			//! rather than re-derived.
+			bool ComputeWorldDirection( const Scalar screenX, const Scalar screenY, Vector3& dir ) const;
+
 			//! Recomputes camera parameters from class values
 			void Recompute( const unsigned int width, const unsigned int height ) override;
 
 		public:
+			//! DL-465: see CameraCommon::CloneForTimeView.
+			CameraCommon* CloneForTimeView() const override { return new FisheyeCamera( *this ); }
+
 			//! Sets the camera based on two basis vectors and position
 			FisheyeCamera( 
 				const Point3& vPosition,			///< [in] Location of the camera in the world

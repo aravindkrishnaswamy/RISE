@@ -8,8 +8,12 @@
 //    it here.
 //
 //    Read-back routes through IObject virtuals (GetMaterial,
-//    GetShader, GetFinalTransformMatrix, DoesCastShadows,
-//    DoesReceiveShadows).  Write-back routes through SceneEdit ops
+//    GetShader, GetLocalTransformMatrix, DoesCastShadows,
+//    DoesReceiveShadows).  LOCAL, not final: since 87 an object's final
+//    matrix is `parentWorld * local`, and the position / orientation /
+//    scale rows here ARE the chunk's own params, which are parent-
+//    relative.  Showing the composed world transform under a
+//    parent-relative label would mislead and would not round-trip.  Write-back routes through SceneEdit ops
 //    (SetObjectPosition / Orientation / Stretch / Scale /
 //    SetObjectMaterial / SetObjectShader / SetObjectGeometry /
 //    SetObjectShadowFlags),
@@ -27,6 +31,8 @@
 
 #include "pch.h"
 #include "ObjectIntrospection.h"
+#include "../Interfaces/IObjectManager.h"
+#include "../Interfaces/IJobPriv.h"
 #include "ChunkDescriptorRegistry.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IMaterialManager.h"
@@ -36,6 +42,7 @@
 #include "../Interfaces/IJob.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Parsers/ChunkDescriptor.h"
+#include "../Utilities/Transformable.h"   // doc 89 slice C: the mirror axis behind the local matrix
 
 #include <cmath>
 #include <cstdio>
@@ -312,9 +319,43 @@ String ReadObjectParam( const String& paramName, const IObject& obj,
 	const IMaterialManager* materials, const IShaderManager* shaders,
 	const IJob* job )
 {
-	const Matrix4 m = obj.GetFinalTransformMatrix();
+	// LOCAL (87): these rows ARE the chunk's `position` / `orientation` /
+	// `scale` params, so they must show what the chunk stores -- the node's own
+	// transform, relative to its parent.  Showing the composed world transform
+	// under a parent-relative label would both mislead and round-trip wrong:
+	// the write side (SetObjectPosition / SetObjectOrientation /
+	// SetObjectStretch) is an absolute LOCAL setter for the same reason.  For
+	// an unparented object local == world, which is every object that existed
+	// before hierarchy.
+	// doc 89 slice C: UN-APPLY THE MIRROR before decomposing.  The local matrix is
+	// `P * O * Stretch * Scale * Mirror`, and a reflection is its own inverse, so
+	// right-multiplying by the same mirror recovers `P * O * Stretch * Scale`
+	// EXACTLY (no fitting, no tolerance).  Without this, a `mirror x` object with
+	// no rotation at all decomposes to a phantom `orientation 0 180 0` -- because
+	// DecomposeFinalAffine builds a PROPER (det +1) frame and has nowhere to put the
+	// reflection -- and the panel would then be showing, and offering to commit, a
+	// rotation the author never wrote on top of the mirror they did.
+	//
+	// dynamic_cast because the mirror is a non-virtual member of the concrete
+	// Implementation::Transformable (no interface vtable grew for it); an IObject
+	// that is not one degrades to the un-corrected read, which is what this did
+	// before the mirror existed.
+	Matrix4 m = obj.GetLocalTransformMatrix();
+	if( const Implementation::Transformable* tf =
+			dynamic_cast<const Implementation::Transformable*>( &obj ) ) {
+		if( tf->GetMirrorAxis() >= 0 ) m = m * tf->GetMirrorMatrix();
+	}
 	char buf[256];
 
+	if( paramName == String( "mirror" ) ) {
+		const Implementation::Transformable* tf =
+			dynamic_cast<const Implementation::Transformable*>( &obj );
+		const int axis = tf ? tf->GetMirrorAxis() : -1;
+		// EMPTY, not "none", for no mirror: the row then reads the same as an
+		// omitted optional param everywhere else in this panel, and committing the
+		// value back writes no `mirror` line.
+		return String( axis == 0 ? "x" : axis == 1 ? "y" : axis == 2 ? "z" : "" );
+	}
 	if( paramName == String( "position" ) ) {
 		std::snprintf( buf, sizeof(buf), "%g %g %g",
 			static_cast<double>( m._30 ),
@@ -341,6 +382,46 @@ String ReadObjectParam( const String& paramName, const IObject& obj,
 			static_cast<double>( ly ),
 			static_cast<double>( lz ) );
 		return String( buf );
+	}
+	if( paramName == String( "parent" ) ) {
+		// 87: read-only for now.  The value comes from the AUTHORED graph in the
+		// object manager, not from the object (a node holds no back-pointer to
+		// its parent, deliberately -- see IObjectManager).  Without this the
+		// panel showed a permanently blank row for a param the scene text can
+		// carry.  Making it EDITABLE needs a reparent SceneEdit op that writes
+		// the `parent` param back to the document, which belongs with the tree
+		// UI (87 section 5 step 4).
+		if( job ) {
+			// IJob has no object-manager accessor; IJobPriv does.  The panel is
+			// always driven by the concrete Job, so this resolves in practice
+			// and degrades to a blank row if it ever does not.
+			IJobPriv* priv = const_cast<IJobPriv*>( dynamic_cast<const IJobPriv*>( job ) );
+			IObjectManager* om = priv ? priv->GetObjects() : 0;
+			if( om ) {
+				// The manager keys by NAME, and `obj` does not carry its own,
+				// so find it by identity.
+				struct FindName : public IEnumCallback<const char*>
+				{
+					const IObjectManager* mgr = 0;
+					const IObject* target = 0;
+					String found;
+					bool operator()( const char* const& n ) override
+					{
+						if( !n || !mgr ) return true;
+						if( static_cast<const IObject*>( mgr->GetItem( n ) ) == target ) { found = String( n ); return false; }
+						return true;
+					}
+				} finder;
+				finder.mgr = om;
+				finder.target = &obj;
+				om->EnumerateItemNames( finder );
+				if( !finder.found.empty() ) {
+					const char* pn = om->GetObjectParent( finder.found.c_str() );
+					return String( pn ? pn : "" );
+				}
+			}
+		}
+		return String();
 	}
 	if( paramName == String( "geometry" ) ) {
 		const IGeometry* geom = obj.GetGeometry();
@@ -392,6 +473,7 @@ bool IsRuntimeEditable( const std::string& paramName )
 	if( paramName == "receives_shadows" ) return true;
 	if( paramName == "interior_medium" )  return true;
 	if( paramName == "geometry" )         return true;
+	if( paramName == "mirror" )           return true;   // doc 89 slice C -> SceneEdit::SetObjectMirror
 	return false;
 }
 

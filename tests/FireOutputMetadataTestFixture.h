@@ -53,7 +53,8 @@ namespace FireOutputMetadataTestFixture
 			{ "warmup_iterations", Value::Unsigned(0) } });
 		const Value sms = Value::MapValue({
 			{ "bernoulli_trials", Value::Unsigned(0) }, { "biased", Value::Bool(false) },
-			{ "enabled", Value::Bool(false) }, { "max_chain_depth", Value::Unsigned(0) },
+			{ "enabled", Value::Bool(false) }, { "extended", Value::Bool(false) },
+			{ "max_chain_depth", Value::Unsigned(0) },
 			{ "max_iterations", Value::Unsigned(0) },
 			{ "max_photon_seeds_per_shading_point", Value::Unsigned(0) },
 			{ "multi_trials", Value::Unsigned(0) }, { "photon_count", Value::Unsigned(0) },
@@ -107,10 +108,14 @@ namespace FireOutputMetadataTestFixture
 				{ "name", Value::String("box") }, { "param_a", Value::Float(0.0) },
 				{ "param_b", Value::Float(0.0) }, { "width", Value::Float(1.0) } }) },
 			{ "global_render_options", Value::MapValue({ { "auto_probe", autoProbe },
+				{ "time_indexed_motion_blur", Value::Bool(true) },
 				{ "vcm", Value::MapValue({
 					{ "progressive_radius_enabled", Value::Bool(true) },
 					{ "throughput_clamp_multiplier", Value::Float(20.0) },
-					{ "throughput_clamp_percentile", Value::Float(0.99) } }) } }) },
+					{ "throughput_clamp_percentile", Value::Float(0.99) },
+					{ "volume_merge_footprints", Value::Float(2.0) },
+					{ "volume_merge_max_vertices", Value::Float(250000.0) },
+					{ "volume_merge_neighbours", Value::Float(0.01) } }) } }) },
 			{ "integrator", Value::MapValue({ { "auto_choice", Value::Unsigned(0) },
 				{ "auto_probe_enabled", Value::Bool(false) },
 				{ "effective_kind", Value::String("pathtracing_spectral_rasterizer") },

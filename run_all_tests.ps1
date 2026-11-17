@@ -7,8 +7,10 @@
 # under build/cmake/rise-tests.
 #
 # Usage:
-#   .\run_all_tests.ps1                          # Release, no timeout
+#   .\run_all_tests.ps1                          # Release, Tier=all (extended on)
 #   .\run_all_tests.ps1 -Config Debug            # Use dbin/RISE.lib
+#   .\run_all_tests.ps1 -Tier fast               # Fast tier (RISE_TEST_EXTENDED=0)
+#   .\run_all_tests.ps1 -Tier extended           # Extended tier only (RISE_TEST_EXTENDED=1)
 #   .\run_all_tests.ps1 -TimeoutSeconds 60       # Kill any test exceeding 60s
 #   .\run_all_tests.ps1 -NoBuild                 # Run pre-built tests only
 #   .\run_all_tests.ps1 -BuildOnly               # Build only, don't run
@@ -22,6 +24,8 @@
 param(
     [ValidateSet('Release', 'Debug')]
     [string]$Config = 'Release',
+    [ValidateSet('all', 'fast', 'extended')]
+    [string]$Tier = $(if ($env:RISE_TEST_TIER) { $env:RISE_TEST_TIER } else { 'all' }),
     [int]$TimeoutSeconds = 0,
     [string]$LogDir,
     [switch]$ValidateLogDirOnly,
@@ -31,6 +35,78 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+$origRiseTestExtended = $env:RISE_TEST_EXTENDED
+$origTmpDir = $env:TMPDIR
+$origRiseMediaPath = $env:RISE_MEDIA_PATH
+try {
+# Clear any caller-inherited RISE_MEDIA_PATH (mirroring run_all_tests.sh) so
+# tests running from repo root resolve relative `scenes/...` and `models/...`
+# paths cleanly even if the user shell set RISE_MEDIA_PATH without a trailing
+# separator or pointing at another checkout.
+Remove-Item Env:RISE_MEDIA_PATH -ErrorAction SilentlyContinue
+if ([string]::IsNullOrEmpty($env:TMPDIR) -and -not [string]::IsNullOrEmpty($env:TEMP)) {
+    # Ensure tests that read std::getenv("TMPDIR") resolve to Windows TEMP rather than "/tmp".
+    $env:TMPDIR = $env:TEMP
+}
+# Best-effort `\tmp` creation on the current drive root; tests resolve scratch
+# paths via `RISE::TestSupport::ScratchBaseDir()` (`TMPDIR` -> `TEMP` -> `TMP`
+# -> `temp_directory_path()`), so a read-only drive root on locked-down hosts
+# must never abort the runner under `$ErrorActionPreference = 'Stop'`.
+$driveRoot = [System.IO.Path]::GetPathRoot((Get-Location).Path)
+if (-not [string]::IsNullOrEmpty($driveRoot)) {
+    $rootTmp = Join-Path $driveRoot 'tmp'
+    if (-not (Test-Path -LiteralPath $rootTmp)) {
+        try {
+            New-Item -ItemType Directory -Path $rootTmp -Force -ErrorAction Stop | Out-Null
+        } catch {
+            # Non-fatal: standalone tests use ScratchBaseDir() -> $env:TMPDIR / $env:TEMP.
+        }
+    }
+}
+
+$Tier = $Tier.ToLowerInvariant()
+switch ($Tier) {
+    'all' {
+        if ([string]::IsNullOrEmpty($origRiseTestExtended)) {
+            $env:RISE_TEST_EXTENDED = '1'
+        }
+    }
+    'fast' {
+        $env:RISE_TEST_EXTENDED = '0'
+    }
+    'extended' {
+        $env:RISE_TEST_EXTENDED = '1'
+    }
+}
+
+# Heavy multi-minute statistical/integration sweep suites assigned exclusively
+# to the extended tier when -Tier fast or -Tier extended is requested.
+$ExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
+    [string[]]@(
+        'BDPTStrategyBalanceTest', 'VCMStrategyBalanceTest', 'SMSExtendedReferenceTest',
+        'SMSExtendedPartitionTest', 'SMSUniformDispersionTest', 'SMSSupersededRowsTest',
+        'SMSFourVertexVarianceTest', 'PTGuidingMISPartitionTest', 'BDPTGuidedContinuationTest',
+        'CompositeEnergyConservationTest', 'LayeredWhiteFurnaceTest',
+        'VolumeAbsorptionAttenuationTest', 'MediumInsideOutsideInvariantTest',
+        'ExteriorIndexInvarianceTest', 'SSSExteriorIndexInvarianceTest',
+        'CstDeriveGoldenTest', 'AgentViewModeRenderTest', 'AgentProposeRenderTest'
+    ),
+    [System.StringComparer]::Ordinal
+)
+
+# Dual-mode suites that run fast smoke/structural checks under -Tier fast
+# (RISE_TEST_EXTENDED=0) and full extended workloads under -Tier extended / all
+# (RISE_TEST_EXTENDED=1).
+$DualModeExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
+    [string[]]@(
+        'AgentSkillsTest', 'InteriorCandidateWalkCostTest', 'LightExitanceTest',
+        'LuminarySamplerAreaTest', 'PavilionColonnadeShowcaseTest', 'PolishedBRDFConsistencyTest',
+        'SPFPdfConsistencyTest', 'ShelfBunnyShowcaseTest', 'TidalStonesShowcaseTest',
+        'TimeIndexedMotionBlurTest'
+    ),
+    [System.StringComparer]::Ordinal
+)
 
 $RepoRoot      = Split-Path -Parent $PSCommandPath
 $BinSubdir     = if ($Config -eq 'Debug') { 'dbin' } else { 'bin' }
@@ -247,6 +323,13 @@ if (-not (Test-Path -LiteralPath $SrcDir)) {
 }
 
 $testSources = Get-ChildItem -Path $SrcDir -Filter '*.cpp' -File | Sort-Object Name
+if ($Tier -eq 'fast') {
+    $testSources = $testSources | Where-Object { -not $ExtendedTests.Contains($_.BaseName) }
+} elseif ($Tier -eq 'extended') {
+    $testSources = $testSources | Where-Object {
+        $ExtendedTests.Contains($_.BaseName) -or $DualModeExtendedTests.Contains($_.BaseName)
+    }
+}
 if ($Filter) {
     # Accept "-Filter A,B,C" passed via powershell -File (which arrives as a
     # single string with commas) by splitting it into a real array.
@@ -264,7 +347,7 @@ if ($Filter) {
 
 $total = $testSources.Count
 if ($total -eq 0) {
-    Write-Host "ERROR: No test sources found under $SrcDir matching filter." -ForegroundColor Red
+    Write-Host "ERROR: No test sources found under $SrcDir matching selection." -ForegroundColor Red
     exit 1
 }
 
@@ -340,58 +423,61 @@ if (-not $NoBuild -and -not (Test-Path -LiteralPath $cacheFile)) {
 $built = 0
 $buildFailed = 0
 $buildFailures = @()
-$failedBuildTargets = @{}
+$buildRc = 0
+$failedTargets = @{}
+$failedBuildTargets = @{}   # fire: -NoBuild stale/missing-exe check (shared inputs)
 
 if (-not $NoBuild) {
     $buildLog = Join-Path $LogDir 'build.log'
-    Write-Host ('Building {0} test(s) [{1}]...' -f $total, $Config)
+    Write-Host ('Building {0} test(s) [{1}, tier={2}]...' -f $total, $Config, $Tier)
     $bs = Get-Date
 
-    if ($Filter) {
-        # Filtered subset: build each matching target individually so we don't
-        # over-build. msbuild startup overhead is acceptable for small subsets.
+    if ($Filter -or $Tier -eq 'extended') {
+        # Filtered or extended subset: build each matching target individually so
+        # we don't over-build. msbuild startup overhead is acceptable for small subsets.
         # Continue past per-test failures so one broken test doesn't mask the
         # state of the others (matches the bash script's loop semantics).
         foreach ($src in $testSources) {
             & $cmake --build $CmakeBuildDir --config $Config --target $src.BaseName *>&1 |
                 Out-File -FilePath $buildLog -Encoding utf8 -Append
-            $targetRc = $LASTEXITCODE
-            if ($targetRc -ne 0) {
-                $failedBuildTargets[$src.BaseName] = $targetRc
+            if ($LASTEXITCODE -ne 0) {
+                $failedTargets[$src.BaseName] = $true
+                $buildRc = 1
             }
         }
-        $buildRc = if ($failedBuildTargets.Count -eq 0) { 0 } else { 1 }
     } else {
         & $cmake --build $CmakeBuildDir --config $Config --target rise_all_tests --parallel *>&1 |
             Out-File -FilePath $buildLog -Encoding utf8
         $buildRc = $LASTEXITCODE
         if ($buildRc -ne 0) {
-            # The aggregate target cannot identify which stale executable owns
-            # the failure. Re-run every target through CMake so its dependency
-            # graph (including shared test headers and RISE.lib) determines the
-            # result; never infer freshness from source/exe timestamps.
+            # Isolate exact failing targets (matching run_all_tests.sh Phase 1.5 -> Phase 2)
+            # so header-broken rebuilds whose stale .exe is newer than tests/<Name>.cpp
+            # are still recorded in $failedTargets and skipped in Phase 2.
             foreach ($src in $testSources) {
                 & $cmake --build $CmakeBuildDir --config $Config --target $src.BaseName *>&1 |
                     Out-File -FilePath $buildLog -Encoding utf8 -Append
-                $targetRc = $LASTEXITCODE
-                if ($targetRc -ne 0) {
-                    $failedBuildTargets[$src.BaseName] = $targetRc
+                if ($LASTEXITCODE -ne 0) {
+                    $failedTargets[$src.BaseName] = $true
                 }
             }
-            $buildRc = if ($failedBuildTargets.Count -eq 0) { 0 } else { 1 }
+            if ($failedTargets.Count -eq 0) {
+                # Solution-level build error before per-target invocations succeeded.
+                foreach ($src in $testSources) {
+                    $failedTargets[$src.BaseName] = $true
+                }
+            }
         }
     }
     $bd = [int]((Get-Date) - $bs).TotalSeconds
 
-    # Every nonzero target build is authoritative even if an older executable
-    # remains on disk. Successful aggregate/individual CMake builds already
-    # evaluated the complete dependency graph.
+    # Walk the test list and check which exes were produced. Source-newer-than-exe
+    # or an explicit per-target cmake failure signals a broken rebuild even when a
+    # header-only edit left a stale binary newer than its test .cpp.
     foreach ($src in $testSources) {
         $exe = Join-Path $BinDir "$($src.BaseName).exe"
-        if ($failedBuildTargets.ContainsKey($src.BaseName)) {
-            $buildFailed++
-            $buildFailures += $src.BaseName
-        } elseif (Test-Path -LiteralPath $exe) {
+        if ((-not $failedTargets.ContainsKey($src.BaseName)) -and `
+            (Test-Path -LiteralPath $exe) -and `
+            ((Get-Item -LiteralPath $exe).LastWriteTime -ge $src.LastWriteTime)) {
             $built++
         } else {
             $buildFailed++
@@ -399,7 +485,7 @@ if (-not $NoBuild) {
         }
     }
 
-    if ($buildRc -eq 0) {
+    if ($buildRc -eq 0 -and $buildFailed -eq 0) {
         Write-Host ('Build: {0} built ({1}s)' -f $built, $bd)
     } else {
         Write-Host ('Build: {0} built, {1} failed (of {2}, {3}s) - see {4}' `
@@ -460,7 +546,7 @@ if (-not $NoBuild) {
 }
 
 if ($BuildOnly) {
-    if ($buildFailed -gt 0) { exit 1 } else { exit 0 }
+    if ($buildFailed -gt 0 -or $buildRc -ne 0) { exit 1 } else { exit 0 }
 }
 
 # -----------------------------------------------------------------------------
@@ -480,6 +566,11 @@ foreach ($src in $testSources) {
     $exe = Join-Path $BinDir "$name.exe"
     $prefix = '[ {0,3}/{1,3} ] {2,-46}' -f $i, $total, $name
 
+    if (-not $NoBuild -and $failedTargets.ContainsKey($name)) {
+        Write-Host "$prefix SKIP (build failed)"
+        $skipped++
+        continue
+    }
     if (-not (Test-Path -LiteralPath $exe)) {
         Write-Host "$prefix SKIP (build failed or missing)"
         $skipped++
@@ -594,8 +685,14 @@ if ($runFailures.Count -gt 0) {
     foreach ($f in $runFailures) { Write-Host "  - $($f.Name)" }
 }
 
-if ($failed -ne 0 -or $buildFailed -ne 0 -or $skipped -ne 0 -or $found -ne $total) {
+if ($failed -ne 0 -or $buildFailed -ne 0 -or $buildRc -ne 0 -or $skipped -ne 0 -or $found -ne $total) {
     exit 1
 }
 Write-Host "All $found tests passed"
 exit 0
+
+} finally {
+    $env:RISE_TEST_EXTENDED = $origRiseTestExtended
+    $env:TMPDIR = $origTmpDir
+    $env:RISE_MEDIA_PATH = $origRiseMediaPath
+}

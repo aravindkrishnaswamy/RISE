@@ -36,13 +36,16 @@
 //        (RED-proven during slice S1: a bogus parameter injected into
 //        one snippet made this section fail with an "invalid
 //        parameter(s)" derive diagnostic; reverted.)
-//        S1 review round 1 adds THE RENDER CONTRACT: each snippet is
-//        also RENDERED (AgentSession::LoadFromFile + Render on the
-//        extracted scene) and its linear mean luma must land in
+//        S1 review round 1 adds THE RENDER CONTRACT (enabled when
+//        --render-snippets, --extended, or RISE_TEST_EXTENDED=1 is passed):
+//        each snippet is also RENDERED (AgentSession::LoadFromFile + Render
+//        on the extracted scene) and its linear mean luma must land in
 //        (0.02, 0.98) -- a snippet that renders black (the lone-glass-
 //        under-a-delta-light anti-pattern) or a solid-white washout
-//        FAILS.  Renders are not bit-deterministic across thread
-//        schedules, so the contract is THRESHOLDS, never exact values.
+//        FAILS.  In default fast mode all 33 snippets are CST-parsed,
+//        round-tripped, and derived into a Job without running full
+//        path-traced renders.  Renders are not bit-deterministic across
+//        thread schedules, so the contract is THRESHOLDS, never exact values.
 //        (RED-proven: removing the crown-glass snippet's backdrop wall
 //        + dome makes that snippet render 100% black and this section
 //        fail; reverted.)  Plus the untagged-fence escape sweep: NO
@@ -87,6 +90,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "TestTempDir.h"
 
 #ifndef _WIN32
 #include <sys/stat.h>   // mkfifo for the S0 FIFO-hardening fixture
@@ -118,9 +122,7 @@ static void SetEnvVar( const char* name, const char* value )
 // The platform temp directory, WITH a trailing slash.
 static std::string TempDirBase()
 {
-	const char* base = std::getenv( "TMPDIR" );
-	if( !base ) base = std::getenv( "TMP" );   // Windows spelling
-	std::string dir = base ? base : "/tmp";
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 	return dir;
 }
@@ -129,10 +131,19 @@ static std::string TempDirBase()
 // Grew from six to seven with the observe-modes toolkit-slice-4 skill,
 // and to EIGHT with procedural-textures (the spatially-varying-painter
 // skill: models were reaching for uniformcolor_painter on every surface
-// because no skill mentioned any of the other 35 painter kinds)
+// because no skill mentioned any of the other 35 painter kinds).
+// NINE with hair-and-fur (2026-08-28): the hair/fur arc shipped
+// `hair_material` / `hair_geometry` / `hair_guides` through the engine
+// and the parser, so their parameters reach `read_schema` -- but nothing
+// told a model WHEN a groom is the answer, which colour tier is the only
+// achromatic one, that `comb` cannot sweep hair down a form, or that
+// count goes DOWN when fibres must resolve.  That judgment lives in the
+// three shipped scenes' headers and in HAIR_FUR_DESIGN.md, neither of
+// which is a channel an in-app agent reads.
 // (auto-discovered by ListSkillNames -- production never hardcodes
 // this list; only the test's own assertions do).
 static const char* const kSeedSkills[] = {
+	"hair-and-fur",
 	"lighting-recipes",
 	"materials-and-media-basics",
 	"modeling-from-image-captures",
@@ -163,6 +174,19 @@ static std::string SkillRequest( int id, const char* name )
 	req.set( "method", JsonValue::MakeString( "read_skill" ) );
 	req.set( "params", params );
 	return JsonSerialize( req );
+}
+
+// Skill markdown is served byte-faithfully (AgentSession's ReadFileText opens
+// binary), so on a Windows checkout -- where git's `text=auto` writes CRLF --
+// every phrase assertion below that spans a line break would miss against its
+// bare-\n literal (S3d's param-metadata contract did exactly that).  Normalize
+// once at the fetch boundary so the content checks assert on CONTENT, not on
+// line-ending encoding.
+static std::string NormalizeEol( std::string s )
+{
+	std::string::size_type r = 0;
+	while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
+	return s;
 }
 
 // Extract EVERY fenced block from a markdown text as (tag, content)
@@ -212,11 +236,7 @@ static std::vector<std::string> ExtractRiseBlocks( const std::string& md )
 // A writable temp directory (the same resolution the S0 fixture uses).
 static std::string TempDir()
 {
-	const char* base = std::getenv( "TMPDIR" );
-	if( !base ) base = std::getenv( "TMP" );   // Windows spelling
-	std::string dir = base ? base : "/tmp";
-	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
-	return dir;
+	return TempDirBase();
 }
 
 //----------------------------------------------------------------------
@@ -252,13 +272,11 @@ static void TestRootResolution()
 	// kSeedSkillCount) -- otherwise "tier 2 resolved" and "tier 2 was
 	// skipped" look identical from the repo root.
 	{
-		const std::string mediaRoot = TempDirBase() + "rise_agent_media_root";
+		std::error_code ec;
+		const std::string mediaRoot = RISE::TestSupport::ScratchTestRoot( "rise_agent_media_root_" );
 		const std::string mediaSkills = mediaRoot + "/skills/agent";
-#ifdef _WIN32
-		system( ( "mkdir \"" + mediaSkills + "\" 2>NUL" ).c_str() );
-#else
-		system( ( "mkdir -p '" + mediaSkills + "'" ).c_str() );
-#endif
+		std::filesystem::remove_all( mediaRoot, ec );
+		std::filesystem::create_directories( mediaSkills, ec );
 		{
 			std::ofstream f( ( mediaSkills + "/media-tier-skill.md" ).c_str(), std::ios::binary );
 			f << "# Media Tier Skill\n> hook: Reached only through RISE_MEDIA_PATH.\n";
@@ -289,22 +307,15 @@ static void TestRootResolution()
 
 		SetEnvVar( "RISE_SKILLS_PATH", nullptr );
 		SetEnvVar( "RISE_MEDIA_PATH", nullptr );
-		std::remove( ( mediaSkills + "/media-tier-skill.md" ).c_str() );
-#ifdef _WIN32
-		system( ( "rmdir /s /q \"" + mediaRoot + "\" 2>NUL" ).c_str() );
-#else
-		system( ( "rm -rf '" + mediaRoot + "'" ).c_str() );
-#endif
+		std::filesystem::remove_all( mediaRoot, ec );
 	}
 
 	// RISE_SKILLS_PATH override wins: a temp root with ONE fake skill.
 	{
-		std::string dir = TempDirBase() + "rise_agent_skills_test";
-#ifdef _WIN32
-		system( ( "mkdir \"" + dir + "\" 2>NUL" ).c_str() );
-#else
-		system( ( "mkdir -p '" + dir + "'" ).c_str() );
-#endif
+		std::error_code ec;
+		std::string dir = RISE::TestSupport::ScratchTestRoot( "rise_agent_skills_test_" );
+		std::filesystem::remove_all( dir, ec );
+		std::filesystem::create_directories( dir, ec );
 		const std::string fake = dir + "/fake-skill.md";
 		{
 			std::ofstream f( fake.c_str(), std::ios::binary );
@@ -320,10 +331,8 @@ static void TestRootResolution()
 			f << "# Hidden\n> hook: Should never index.\n";
 		}
 		const std::string dirmd = dir + "/dirskill.md";
-#ifdef _WIN32
-		system( ( "mkdir \"" + dirmd + "\" 2>NUL" ).c_str() );
-#else
-		system( ( "mkdir -p '" + dirmd + "'" ).c_str() );
+		std::filesystem::create_directories( dirmd, ec );
+#ifndef _WIN32
 		const std::string fifomd = dir + "/pipeskill.md";
 		std::remove( fifomd.c_str() );
 		Check( mkfifo( fifomd.c_str(), 0600 ) == 0, "test fixture: created the FIFO" );
@@ -371,11 +380,7 @@ static void TestRootResolution()
 		// different diagnosis.  (Before this, an existing-but-empty root
 		// returned a bare empty list -- indistinguishable from healthy.)
 		const std::string emptyRoot = dir + "/empty_root";
-#ifdef _WIN32
-		system( ( "mkdir \"" + emptyRoot + "\" 2>NUL" ).c_str() );
-#else
-		system( ( "mkdir -p '" + emptyRoot + "'" ).c_str() );
-#endif
+		std::filesystem::create_directories( emptyRoot, ec );
 		SetEnvVar( "RISE_SKILLS_PATH", emptyRoot.c_str() );
 		{
 			const AgentSkillResult e = AgentSession::ReadSkill();
@@ -387,19 +392,7 @@ static void TestRootResolution()
 		}
 
 		SetEnvVar( "RISE_SKILLS_PATH", nullptr );
-#ifdef _WIN32
-		system( ( "rmdir \"" + emptyRoot + "\" 2>NUL" ).c_str() );
-#else
-		system( ( "rmdir '" + emptyRoot + "'" ).c_str() );
-#endif
-		std::remove( fake.c_str() );
-		std::remove( dotfile.c_str() );
-#ifdef _WIN32
-		system( ( "rmdir \"" + dirmd + "\" 2>NUL" ).c_str() );
-#else
-		std::remove( fifomd.c_str() );
-		system( ( "rmdir '" + dirmd + "'" ).c_str() );
-#endif
+		std::filesystem::remove_all( dir, ec );
 	}
 }
 
@@ -438,7 +431,7 @@ static void TestVerbIndexAndFetch( AgentRpcDispatcher& rpc )
 		       std::string( "named fetch of " ) + kSeedSkills[i] + " succeeds" );
 		const JsonValue& res = fenv.get( "result" );
 		Check( res.get( "name" ).asString() == kSeedSkills[i], "result echoes the name" );
-		const std::string md = res.get( "markdown" ).asString();
+		const std::string md = NormalizeEol( res.get( "markdown" ).asString() );
 		Check( !md.empty() && md.find( title ) != std::string::npos,
 		       std::string( kSeedSkills[i] ) + " markdown contains its indexed title" );
 	}
@@ -488,9 +481,10 @@ static void TestVerbRejections( AgentRpcDispatcher& rpc )
 //----------------------------------------------------------------------
 // S3: THE SNIPPET CONTRACT.
 //----------------------------------------------------------------------
-static void TestSnippetContract( AgentRpcDispatcher& rpc )
+static void TestSnippetContract( AgentRpcDispatcher& rpc, const bool renderSnippets )
 {
-	std::printf( "S3: THE SNIPPET CONTRACT (every ```rise block parses + derives clean + RENDERS non-black)...\n" );
+	std::printf( "S3: THE SNIPPET CONTRACT (every ```rise block parses + derives clean%s)...\n",
+	             renderSnippets ? " + RENDERS non-black" : "; pass --render-snippets or RISE_TEST_EXTENDED=1 for 33 full renders" );
 
 	// THE RENDER CONTRACT thresholds.  Linear mean luma (Rec.709
 	// weights over the pre-quantization channel means) must exceed
@@ -508,7 +502,7 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	std::size_t totalSnippets = 0;
 	for( std::size_t s = 0; s < kSeedSkillCount; ++s ) {
 		const JsonValue fenv = ParseLine( rpc.HandleLine( SkillRequest( 5, kSeedSkills[s] ) ) );
-		const std::string md = fenv.get( "result" ).get( "markdown" ).asString();
+		const std::string md = NormalizeEol( fenv.get( "result" ).get( "markdown" ).asString() );
 		Check( !md.empty(), std::string( kSeedSkills[s] ) + ": markdown fetched" );
 
 		const std::vector<std::string> blocks = ExtractRiseBlocks( md );
@@ -542,35 +536,39 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 			// SOMETHING -- through the agent surface itself (the same
 			// LoadFromFile + Render an agent drives), asserting mean
 			// luma inside (kMinLuma, kMaxLuma).
-			{
-				std::ofstream f( scenePath.c_str(), std::ios::binary );
-				f << blocks[b];
+			if( renderSnippets ) {
+				{
+					std::ofstream f( scenePath.c_str(), std::ios::binary );
+					f << blocks[b];
+				}
+				const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+				std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+				Check( session != nullptr, label + ": loads through the agent surface" );
+				if( session ) {
+					const AgentRenderResult rr = session->Render();
+					Check( rr.ok, label + ": renders ok (" + rr.message + ")" );
+					const double luma = 0.2126 * rr.meanR + 0.7152 * rr.meanG + 0.0722 * rr.meanB;
+					std::printf( "    %s rendered %dx%d mean RGB (%.4f, %.4f, %.4f) luma %.4f\n",
+					             label.c_str(), rr.width, rr.height, rr.meanR, rr.meanG, rr.meanB, luma );
+					Check( rr.ok && luma > kMinLuma,
+					       label + ": mean luma " + std::to_string( luma ) + " > " + std::to_string( kMinLuma ) + " (not black)" );
+					Check( rr.ok && luma < kMaxLuma,
+					       label + ": mean luma " + std::to_string( luma ) + " < " + std::to_string( kMaxLuma ) + " (not a washout)" );
+				}
+				renderSeconds += std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
 			}
-			const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
-			std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
-			Check( session != nullptr, label + ": loads through the agent surface" );
-			if( session ) {
-				const AgentRenderResult rr = session->Render();
-				Check( rr.ok, label + ": renders ok (" + rr.message + ")" );
-				const double luma = 0.2126 * rr.meanR + 0.7152 * rr.meanG + 0.0722 * rr.meanB;
-				std::printf( "    %s rendered %dx%d mean RGB (%.4f, %.4f, %.4f) luma %.4f\n",
-				             label.c_str(), rr.width, rr.height, rr.meanR, rr.meanG, rr.meanB, luma );
-				Check( rr.ok && luma > kMinLuma,
-				       label + ": mean luma " + std::to_string( luma ) + " > " + std::to_string( kMinLuma ) + " (not black)" );
-				Check( rr.ok && luma < kMaxLuma,
-				       label + ": mean luma " + std::to_string( luma ) + " < " + std::to_string( kMaxLuma ) + " (not a washout)" );
-			}
-			renderSeconds += std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
 		}
 	}
 	std::remove( scenePath.c_str() );
-	std::printf( "  render contract: %.1f seconds over %d snippets\n",
-	             renderSeconds, static_cast<int>( totalSnippets ) );
+	if( renderSnippets ) {
+		std::printf( "  render contract: %.1f seconds over %d snippets\n",
+		             renderSeconds, static_cast<int>( totalSnippets ) );
+	}
 
 	// A rot guard for the extraction itself: the eight seed skills ship
-	// NINETEEN snippets total (lighting-recipes 3, materials-and-media-
+	// TWENTY snippets total (lighting-recipes 3, materials-and-media-
 	// basics 3, modeling-from-image-captures 1, modeling-workflow-and-
-	// geometry 3, object-modeling-recipes 5, observe-modes 1,
+	// geometry 3, object-modeling-recipes 6, observe-modes 1,
 	// procedural-textures 2, scene-skeleton-and-conventions 1) -- if the
 	// fence tag or extraction regresses, this trips before a snippet
 	// silently escapes checking.  object-modeling-recipes gained Recipe 4
@@ -585,7 +583,190 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// re-anchored on the scenes/Tests/Geometry/sweep_instances.RISEscene
 	// horn idiom, replacing Recipe 4's scenario-glued flask neck as the
 	// generic form -- Recipe 4 itself is untouched).
-	Check( totalSnippets == 19, "the seed skills carry the expected 19 ```rise snippets in total (got " +
+	//
+	// 87 STEP 5 (2026-08-18) took the count 19 -> 20, and the extra snippet
+	// is DELIBERATE rather than drift.  Doc 87 shipped a recursive scene
+	// graph -- `parent`, container nodes, `source` + `count_u`/`count_v`
+	// instancing -- through the engine and both GUI outliners with NO agent
+	// surface at all: the parameters reach `read_schema`, but nothing told a
+	// model the capability existed or when to reach for it, so no agent run
+	// has ever built a hierarchy or an instance array.  This is the ONE
+	// channel that carries "when", and hierarchy/instancing is exactly the
+	// kind of thing an example moves and prose does not (this workstream's
+	// own measurement).  It originally went into modeling-workflow-and-
+	// geometry rather than object-modeling-recipes on the argument that it
+	// is about PLACEMENT and REPETITION, not about how one object's shape
+	// is made -- the same distinction that keeps it out of the
+	// `construction` enum.
+	//
+	// 88 (2026-08-19) MOVED it to object-modeling-recipes, and the count
+	// stayed 20 because a move is not an addition (the per-skill split
+	// above went 4/5 -> 3/6).  A live gemini-3.7-flash run on an
+	// apothecary-workbench prompt adopted lathe_geometry, skeleton_geometry
+	// and superellipsoid -- every affordance on an always-delivered channel
+	// or in a skill it actually pulled -- and adopted `source`/`count_u`
+	// ZERO times, hand-authoring six standard_objects on one bottle
+	// geometry.  The trajectory shows why: it read object-modeling-recipes
+	// and materials-and-media-basics, and never opened modeling-workflow-
+	// and-geometry or read_schema standard_object, the only two channels
+	// carrying instancing.  The taxonomy argument was sound and the
+	// placement still lost; a model deciding how to build repeated objects
+	// is reading the RECIPES.  A short pointer stays behind in the workflow
+	// skill so the content still has exactly one home.
+	//
+	// 88 S5 (2026-08-20) took the count 20 -> 23, one snippet per file across
+	// the three-skill re-anchoring, and each one is REGISTERED HERE rather
+	// than merely written: the whole point of the S1-S4b arc was to ship
+	// expression_painter / scalar_painter{expression} / ramp_painter, and a
+	// teaching example for those that renders black or fails to parse would
+	// be worse than no example, because the measured lever is COPYING.  The
+	// three: materials-and-media-basics gains the hammered-pewter
+	// scalar_painter{expression} roughness field (the proven read-set's
+	// spatially-varying-microsurface worked example, the direct attack on the
+	// 0/24 deficit); object-modeling-recipes gains Recipe 2b, the
+	// expression_painter fbm field -> ramp_painter stops -> lambertian
+	// reflectance composition-boundary example ("field in the expression,
+	// colour in the ramp"); procedural-textures gains Recipe 3, rusted iron,
+	// where ONE expression field feeds both a ramp (colour) and the
+	// any-painter -> scalar bridge (roughness), so the rust and the roughness
+	// cannot drift apart.  Per-skill split is now 4/7/3 for those three.
+	//
+	// Doc 89 slice D (2026-08-22) took the count 23 -> 24: the audit found
+	// `displaced_geometry.base_geometry` genuinely composes over the newer
+	// builder meshes (lathe/sweep/skin) AND `sdf_geometry` (including a
+	// `skeleton_geometry`-expanded body and a `superellipsoid` part) --
+	// verified render-clean for the SDF case, visibly faceted for the mesh-
+	// builder cases (a real limitation at the time, since FIXED:
+	// TriangleMeshGeometryIndexed::TessellateToMesh now keeps shared
+	// vertices, so the builders shade smooth under displacement).
+	// object-modeling-recipes gains Recipe 6, the clean SDF-plus-
+	// dimples case (a `superellipsoid` cushion displaced by `perlin2d_painter`),
+	// with the (then faceting,) pinch-tear/SDF-UV caveats written as prose rather
+	// than a second snippet -- one more render-validated example is the
+	// deliberate addition; a second fence for the caveats is not.  Per-skill
+	// split is now 4/8/3 for materials-and-media-basics/object-modeling-
+	// recipes/procedural-textures.
+	//
+	// The hair/fur skill (2026-08-28) took the count 24 -> 26, and both of
+	// its snippets are DELIBERATE.  A groom has two failure modes an
+	// example fixes and prose does not: the minimal one (a `hair_material`
+	// with exactly ONE colour tier bound, plus `base_geometry`/`count`/
+	// `length`) is the shape a model gets wrong by binding two tiers or
+	// none, and the worked creature head is the two-layer coat with its
+	// region painters over the root's `Po`/`N` and an along-strand melanin
+	// band over `u` -- the one idiom that is reachable today but was
+	// documented nowhere a model reads.  Both are registered here because
+	// the render contract is what proves a groom example is not black:
+	// hair is thin, sub-pixel, and easy to author into invisibility.
+	// Per-skill split for this file is 2.
+	//
+	// The curv adoption wiring (2026-08-29, geometry-shading-signals Phase 1)
+	// took the count 26 -> 28, one snippet per proven-pull skill: materials-
+	// and-media-basics gains the patina-in-the-crevices example (a
+	// clamp(-curv,0,1) concave mask over an SDF scar, the direct attack on
+	// the "masks are made of P.z" prior), and object-modeling-recipes gains
+	// Recipe 7, edge wear from clamp(curv,0,1) on a filleted roundbox.  Both
+	// were execution-validated (parse + derive + render + measured luma
+	// separation between concave and convex regions) before registration.
+	// procedural-textures gets a pointer only (0/6 measured pull rate).
+	//
+	// The thickness adoption wiring (2026-08-30) took the count 28 -> 29:
+	// two graded gemini trajectories (the altar stress test, pre- and
+	// post-hardening) show the SAME failure -- asked for a thin-walled
+	// porcelain lantern glowing from inside with the glow dying where the
+	// walls thicken, the agent never calls thickness() and instead paints
+	// an emissive height-gradient onto an opaque shell, then overclaims
+	// physical transmission in its summary.  Root cause: thickness was
+	// taught as a one-sentence prose pointer with no worked example.
+	// materials-and-media-basics gains "Glow that dies in thick walls" --
+	// a varying-thickness SDF shell (distilled from the votive shell in
+	// scenes/FeatureBased/GeometrySignals/weathered_reliquary.RISEscene)
+	// with `1 - thickness(radius)` driving a ramp_painter pair into a REAL
+	// translucent_material's ref/tau.  Execution-validated: rendered luma
+	// bands from rim to base come back monotonically brighter at the thin
+	// end (65.0 -> 30.4 -> 24.1 -> 21.2 -> 16.6), and a light-off control
+	// (the interior shape_light deleted, not merely zeroed -- exitance 0
+	// refuses to parse) collapses that gradient to flat-within-noise and
+	// even inverts it (14.9 -> 20.0 -> 19.6 -> 16.9 -> 12.4), proving the
+	// glow is real transmitted light and not a painted fake that would
+	// have kept glowing regardless.  object-modeling-recipes gets a
+	// pointer only, next to the existing curv/occlusion recipe -- no new
+	// fence there, per the same one-worked-example-per-signal economy as
+	// the curv/occlusion ledger entry above.
+	//
+	// The wetness verb's skill-text slice (2026-08-31,
+	// docs/WETNESS_COAT_DESIGN.md section 13 Phase 1 step 9) took the
+	// count 29 -> 30: materials-and-media-basics gains "Wet surfaces --
+	// a coat plus a darkened substrate, not a texture", the
+	// `add_wetness` recipe (a `polished_material` with `reflectance`
+	// darkened via `pow(base_rgb, k)`, `tau` reading an
+	// occlusion/curv-driven coverage mask, `scattering` sharpening only
+	// where the mask actually pools) plus the per-substrate `k` table,
+	// the `colors/water_absorption.spectra` / three-number-RGB tau
+	// idiom, and the PT-vs-BDPT/VCM signal-neutrality caveat.  The
+	// review round on this slice's first draft caught the snippet
+	// violating the file's own contract -- a bare `polished_material`
+	// fragment, not a complete scene -- and, separately, keying
+	// `occlusion(0.08)` off a lone analytic sphere, which reads the
+	// signal's neutral fallback and would have demonstrated nothing.
+	// The corrected snippet is a full standalone scene (header,
+	// rasterizer, film, camera, light) whose geometry is a part-based
+	// `sdf_geometry` of two overlapping spheres -- the union's seam is a
+	// genuine self-concavity, so `occlusion(0.08)` reads a real pooled
+	// joint between the two lobes instead of its neutral 1 everywhere.
+	// object-modeling-recipes' geometry-level pooling recipe (the
+	// `dielectric_material` pool-as-its-own-object idiom, plus the
+	// heightfield-mode trap) is prose only, per the design doc's own
+	// "documentation, not code" framing for that item -- no new fence
+	// there.
+	//
+	// The relief-modifier arc (2026-09-06, docs/RELIEF_MODIFIER_DESIGN.md
+	// section 9 worked example) took the count 30 -> 31:
+	// materials-and-media-basics gains "One field, three consumers" --
+	// the crackle-glaze recipe where a single Worley f2-f1
+	// expression_painter drives colour (ramp_painter), roughness (a
+	// scalar_painter bridge into ggx alphax/alphay) and relief
+	// (relief_modifier over the SAME scalar_painter, negative scale so
+	// the fissures sink).  It shipped as a bare chunk fragment (no
+	// header, no camera, an undeclared sphere geometry) and this suite
+	// caught it on the next run: every fence here is a complete scene
+	// that derives with zero diagnostics and renders, so the fence now
+	// mirrors scenes/Tests/Painters/relief_crackle_glaze.RISEscene whole
+	// (128x128, 16 spp, box filter, no denoise, like its neighbours).
+	//
+	// The cross-object proximity arc (2026-09-08,
+	// docs/CROSS_OBJECT_PROXIMITY_DESIGN.md section 7) took the count
+	// 31 -> 32: procedural-textures gains "`proximity(r)` -- the fourth
+	// signal, and the only cross-object one", whose fence is the contact
+	// seam under a nail lying on a board -- the composition
+	// scenes/FeatureBased/Textures/plank_closeup.RISEscene ships, reduced
+	// to a standalone 128x128 scene.  It is the ONE fence in the seed
+	// skills whose point is a SECOND object: the nail's head disc is
+	// thicker than its shank, so the body rests on its buried tip -- the
+	// head rim comes close but does not quite touch -- and LIFTS in between,
+	// which is what makes the signal's fade
+	// visible and is exactly what an occlusion cannot draw.  A/B'd at
+	// authoring time (`grime` 0.85 -> 0, same seeds): 760 of 16384 pixels
+	// move, max delta 0.415, so the snippet demonstrates the term rather
+	// than merely parsing with it.
+	//
+	// Phase 3 of the same arc (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+	// section 5.6) took the count 32 -> 33: procedural-textures gains
+	// "`interior(r)` -- the signed half", whose fence is a stone sphere
+	// resting in a shallow DIELECTRIC pool.  The neighbour has to
+	// TRANSMIT for the point to be made at all -- a surface inside an
+	// OPAQUE neighbour is behind that neighbour and the camera never sees
+	// it -- and the fixture is sized so the numbers in the prose are
+	// closed forms rather than impressions: the pool is 60 cm DEEP for a
+	// 2 cm radius, so over the stone the nearest face of the water box is
+	// always the SURFACE, and `interior(0.02)` is exactly 0 at the
+	// waterline, exactly 0.5 one centimetre under it, and saturated at 1
+	// from 2 cm down.  THE DEPTH IS LOAD-BEARING, not decoration: this
+	// signal measures distance to the NEAREST surface of the containing
+	// solid, not depth below its top, so a shallow pool would saturate at
+	// mid-water and read LESS at the stone's lowest point -- the opposite
+	// of a wet line, and what the first draft of this fence taught.
+	Check( totalSnippets == 33, "the seed skills carry the expected 33 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
@@ -598,7 +779,7 @@ static void TestFenceEscapes( AgentRpcDispatcher& rpc )
 
 	for( std::size_t s = 0; s < kSeedSkillCount; ++s ) {
 		const JsonValue fenv = ParseLine( rpc.HandleLine( SkillRequest( 6, kSeedSkills[s] ) ) );
-		const std::string md = fenv.get( "result" ).get( "markdown" ).asString();
+		const std::string md = NormalizeEol( fenv.get( "result" ).get( "markdown" ).asString() );
 		const std::vector< std::pair<std::string, std::string> > all = ExtractFencedBlocks( md );
 		for( std::size_t b = 0; b < all.size(); ++b ) {
 			if( all[b].first == "rise" ) continue;
@@ -628,7 +809,7 @@ static void TestObserveModesTeaching( AgentRpcDispatcher& statelessRpc )
 	// the constant itself is private/unexported, so this is a literal
 	// cross-reference rather than a shared-symbol comparison.
 	const JsonValue fenv = ParseLine( statelessRpc.HandleLine( SkillRequest( 7, "observe-modes" ) ) );
-	const std::string md = fenv.get( "result" ).get( "markdown" ).asString();
+	const std::string md = NormalizeEol( fenv.get( "result" ).get( "markdown" ).asString() );
 	Check( !md.empty(), "observe-modes: markdown fetched" );
 	Check( md.find( "capped at 4" ) != std::string::npos,
 	       "observe-modes states the draft samples cap as 4 (matches AgentSession.cpp's kDraftMaxSamples)" );
@@ -833,8 +1014,8 @@ static void TestObserveModesTeaching( AgentRpcDispatcher& statelessRpc )
 
 	// Row 4: "does it actually look right" -- a production render (no
 	// `quality`) reports renderMode "production" and a non-black,
-	// non-washout image (materials/lighting are actually evaluated,
-	// unlike draft).
+	// non-washout image (the scene's OWN authored lighting is actually
+	// evaluated, unlike draft, which substitutes a fixed studio rig).
 	{
 		std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
 		Check( session != nullptr, "row4: session loads" );
@@ -869,7 +1050,9 @@ static void TestObserveModesTeaching( AgentRpcDispatcher& statelessRpc )
 // were never once looked at.  The rules:
 //
 //   1. TURNED FORMS ARE A PROFILE.  A solid of revolution is authored
-//      as an sdf_geometry roundcone/smin chain, never a cylinder stack.
+//      as a profile, never a cylinder stack -- a lathe_geometry
+//      `profile_point` silhouette since 2026-08-18, an sdf_geometry
+//      roundcone/smin chain before that (and still, as the fallback).
 //   2. BUILD CADENCE.  Look after each OBJECT GROUP, not once at the
 //      end.
 //   3. RELATIONAL CONSTRAINTS MUST BE SEEN.  Verify "resting against /
@@ -887,7 +1070,7 @@ static void TestOutputQualityRules( AgentRpcDispatcher& rpc )
 
 	auto fetch = []( AgentRpcDispatcher& r, int id, const char* name ) {
 		const JsonValue env = ParseLine( r.HandleLine( SkillRequest( id, name ) ) );
-		return env.get( "result" ).get( "markdown" ).asString();
+		return NormalizeEol( env.get( "result" ).get( "markdown" ).asString() );
 	};
 
 	const std::string omr = fetch( rpc, 300, "object-modeling-recipes" );
@@ -918,13 +1101,80 @@ static void TestOutputQualityRules( AgentRpcDispatcher& rpc )
 	// The PRESCRIPTION, not just the prohibition: the actual verbs.  A
 	// rule that says "do not stack cylinders" without naming what to do
 	// instead is the failure mode this whole change exists to fix.
+	//
+	// RE-EXPRESSED 2026-08-18.  This used to pin "roundcone" + "smin" as
+	// THE prescription, which was right when written and wrong the day
+	// lathe_geometry shipped: a chain of roundcones is now the FALLBACK
+	// (for a turned form that must join a CSG, carry a non-circular
+	// cross-section, or blend into a larger implicit body), and pinning
+	// it as the prescription pins the skill to stale advice.  The
+	// invariant underneath was never those two tokens -- it was that the
+	// skill NAMES A CONCRETE VERB instead of only banning the cylinder
+	// stack.  Three assertions carry that forward:
+	//   (a) the prescribed verb plus the parameter that makes it usable
+	//       (a model that reads "lathe_geometry" and not "profile_point"
+	//       cannot write one),
+	//   (b) the fallback still NAMED -- it stays correct for what the
+	//       lathe cannot reach, and both skeleton_geometry and the
+	//       blended_vessel/sdf_column scaffold families expand into it,
+	//       so a skill that forgets it strands those, and
+	//   (c) the prescription comes FIRST, inside the turned-forms
+	//       section itself.  (c) is the one that actually fires on the
+	//       next staleness of this shape: a newer verb ships, the
+	//       section keeps headlining the older one, and (a)/(b) both
+	//       still pass while the advice is wrong.
+	Check( omr.find( "lathe_geometry" ) != std::string::npos
+	       && omr.find( "profile_point" ) != std::string::npos,
+	       "S3c: object-modeling-recipes prescribes lathe_geometry with its profile_point silhouette" );
 	Check( omr.find( "roundcone" ) != std::string::npos && omr.find( "smin" ) != std::string::npos,
-	       "S3c: object-modeling-recipes prescribes sdf_geometry roundcone parts joined by smin" );
-	// And the honest scope limit: sweep_geometry sweeps a FIXED
-	// cross-section (point_width scales the x axis alone, end_scale_y is
-	// linear-only), so it is the curved-tube verb, NOT the lathe verb.
+	       "S3c: object-modeling-recipes still names the sdf_geometry roundcone/smin fallback" );
+	{
+		const size_t secBeg = omr.find( "## Turned forms" );
+		Check( secBeg != std::string::npos,
+		       "S3c: object-modeling-recipes carries the turned-forms section" );
+		size_t secEnd = omr.find( "\n## ", secBeg + 4 );
+		if( secEnd == std::string::npos ) secEnd = omr.size();
+		const std::string sec = omr.substr( secBeg, secEnd - secBeg );
+		const size_t pLathe = sec.find( "lathe_geometry" );
+		const size_t pFall  = sec.find( "roundcone" );
+		Check( pLathe != std::string::npos && pFall != std::string::npos && pLathe < pFall,
+		       "S3c: the turned-forms section leads with lathe_geometry and only then the roundcone fallback" );
+	}
+	// Creature scaffold slice (2026-08-25): the "mechanized verbs
+	// convert, prose doesn't" law applied one level up -- the creature-
+	// body guidance must LEAD with the callable verb
+	// (insert_geometry_scaffold family:quadruped), with a worked call
+	// example, BEFORE the hand-authored skeleton_geometry grammar
+	// section -- the SAME "prescription comes first" staleness check
+	// the turned-forms section above gets, for the identical reason.
+	{
+		const size_t pScaffold  = omr.find( "insert_geometry_scaffold family:quadruped" );
+		const size_t pBranching = omr.find( "A BRANCHING body" );
+		Check( pScaffold != std::string::npos,
+		       "S3c: object-modeling-recipes names insert_geometry_scaffold family:quadruped for a creature body" );
+		Check( pBranching != std::string::npos,
+		       "S3c: ...and still documents the hand-authored skeleton_geometry grammar" );
+		Check( pScaffold != std::string::npos && pBranching != std::string::npos && pScaffold < pBranching,
+		       "S3c MONEY: the creature-body guidance LEADS with the callable verb, before the "
+		       "hand-authoring section" );
+	}
+	Check( omr.find( "\"family\":\"quadruped\"" ) != std::string::npos,
+	       "S3c: ...with a worked insert_geometry_scaffold call example" );
+	// The superellipsoid teaching (85 C6): one part spans ellipsoid ->
+	// cushion/torso (e1,e2 in 0.4-0.7) -> box -> cylinder -> octahedron,
+	// which is what a model should reach for instead of composing a
+	// roundbox-plus-blend stack for one rounded mass.  Anchored on the
+	// primitive name alone -- the numbers are prose that may legitimately
+	// be reworded; the skill being SILENT about the primitive is the
+	// staleness worth failing on.
+	Check( omr.find( "superellipsoid" ) != std::string::npos,
+	       "S3c: object-modeling-recipes names the superellipsoid part for a rounded/cushion mass" );
+	// And the honest scope limit: sweep_geometry sweeps a FIXED profile
+	// SHAPE along a path -- point_scale/point_width vary its overall
+	// scale per station (round or x-only respectively), but never its
+	// outline -- so it is the curved-tube verb, NOT the lathe verb.
 	// Getting this backwards would send a model to a chunk that cannot
-	// express a varying-radius revolve at all.
+	// express a varying-OUTLINE revolve at all.
 	Check( omr.find( "NOT the lathe verb" ) != std::string::npos,
 	       "S3c: object-modeling-recipes states that sweep_geometry is not the lathe verb" );
 	// Not blanket cargo-culting: cylinders stay right for constant-radius
@@ -933,8 +1183,10 @@ static void TestOutputQualityRules( AgentRpcDispatcher& rpc )
 	       "S3c: object-modeling-recipes keeps a cylinder-is-correct carve-out" );
 	// The rule is reachable from the geometry-selection skill too -- a
 	// model that reads only modeling-workflow-and-geometry must still
-	// hit it.
+	// hit it, and must hit the PRESCRIBED verb there, not just the
+	// fallback (same re-expression as above).
 	Check( mwg.find( "solid of revolution" ) != std::string::npos
+	       && mwg.find( "lathe_geometry" ) != std::string::npos
 	       && mwg.find( "roundcone" ) != std::string::npos,
 	       "S3c: modeling-workflow-and-geometry carries the turned-form rule as well" );
 
@@ -1008,7 +1260,7 @@ static void TestProceduralTextureTeaching( AgentRpcDispatcher& rpc )
 
 	auto fetch = []( AgentRpcDispatcher& r, int id, const char* name ) {
 		const JsonValue env = ParseLine( r.HandleLine( SkillRequest( id, name ) ) );
-		return env.get( "result" ).get( "markdown" ).asString();
+		return NormalizeEol( env.get( "result" ).get( "markdown" ).asString() );
 	};
 
 	const std::string pt  = fetch( rpc, 400, "procedural-textures" );
@@ -1130,6 +1382,75 @@ static void TestProceduralTextureTeaching( AgentRpcDispatcher& rpc )
 	       "S3d: MONEY -- materials-and-media-basics cross-links procedural-textures" );
 	Check( pt.find( "materials-and-media-basics" ) != std::string::npos,
 	       "S3d: procedural-textures cross-links back to materials-and-media-basics" );
+
+	// ---- 88 S5 (2026-08-20): THE THREE SHIPPED MECHANISMS ----------------
+	// S1-S4b shipped expression_painter, scalar_painter{expression},
+	// scalar_painter{painter}, and ramp_painter.  Until S5, procedural-
+	// textures said the opposite -- that only `function2d` and `texture`
+	// varied across a surface -- so a model that read the skill was told the
+	// new capability did not exist.  These pin the corrected teaching.
+	// Positive assertions only, same discipline as the block above.
+	static const char* const kMechanisms[] = {
+		"expression_painter", "scalar_painter { expression <body> }", "ramp_painter",
+		"scalar_painter { painter <name> channel <R|G|B|A> scale <s> bias <b> }"
+	};
+	for( size_t i = 0; i < sizeof( kMechanisms ) / sizeof( kMechanisms[0] ); ++i )
+		Check( pt.find( kMechanisms[i] ) != std::string::npos,
+		       ( std::string( "S3d: procedural-textures names the shipped mechanism \"" )
+		         + kMechanisms[i] + "\"" ).c_str() );
+	// The FOUR-varying-forms count is the correction itself: the pre-S5 text
+	// said TWO, which was the false claim a model would have acted on.
+	Check( pt.find( "FOUR of" ) != std::string::npos && pt.find( "vary across a surface" ) != std::string::npos,
+	       "S3d: MONEY -- the trap's prescription now states FOUR varying scalar_painter forms, not two" );
+	// THE HUMAN-EDITABILITY CONTRACT (doc 88 P5 Tier 1).  This is what makes
+	// LLM-authored expression bodies retunable by a person at all, and it is
+	// a rule about EVERY number, not a suggestion about some.
+	Check( pt.find( "never a\n   literal in the body" ) != std::string::npos ||
+	       pt.find( "never a literal in the body" ) != std::string::npos,
+	       "S3d: MONEY -- the param-metadata contract (every art-directable number in a `param` "
+	       "with a range, never a literal in the body) is stated" );
+	Check( pt.find( "min 0.5 max 20" ) != std::string::npos,
+	       "S3d: ...with a worked `param <name> <value> min <a> max <b> step <s> label \"...\"` form" );
+	// The `seed` idiom -- the per-instance knob that costs no extra chunk.
+	Check( pt.find( "`seed`" ) != std::string::npos && pt.find( "per-instance" ) != std::string::npos,
+	       "S3d: procedural-textures teaches the `seed` per-instance-variation idiom" );
+	// THE DOMAIN TRAP, in its NEW form: the two expression surfaces differ
+	// exactly in whether P/Po/N are visible, and a model that reaches for
+	// expression_function2d expecting `P` gets a silently-zero context.
+	Check( pt.find( "`expression_function2d` is **2D**" ) != std::string::npos,
+	       "S3d: MONEY -- the skill states that expression_function2d is UV-only while the new "
+	       "expression surfaces are 3D (the P/Po/N availability split)" );
+	// The composition boundary, stated as the one line a model can carry.
+	Check( pt.find( "field in the expression, colour in the ramp" ) != std::string::npos,
+	       "S3d: MONEY -- procedural-textures states the composition-boundary rule verbatim" );
+	{
+		// C-READ: object-modeling-recipes is the MOST-read skill in the
+		// measured trajectories, so the composition-boundary idiom has to
+		// live there too, with a worked example -- not only in the skill
+		// every advisory points at and that a probe batch showed read 0/6.
+		const std::string obj = fetch( rpc, 402, "object-modeling-recipes" );
+		Check( obj.find( "field in the expression, colour in the ramp" ) != std::string::npos,
+		       "S3d: MONEY -- object-modeling-recipes (the most-read skill) states the same "
+		       "field->ramp rule" );
+		Check( obj.find( "expression_painter" ) != std::string::npos &&
+		       obj.find( "ramp_painter" ) != std::string::npos,
+		       "S3d: ...and carries a worked expression_painter -> ramp_painter example" );
+	}
+	// The unclamped-fbm hazard: raw fbm is not [0,1], and an unclamped mix on
+	// a ROUGHNESS slot walks the value toward a mirror.  Cheap to state, and
+	// the failure is invisible until someone looks at a specular highlight.
+	Check( pt.find( "do NOT span [0,1]" ) != std::string::npos,
+	       "S3d: the skill warns that raw fbm/perlin do not span [0,1] and must be remapped" );
+	// THE VERB.  Per doc 88 sec 2 C-VERB, advice asking for the hand rewrite
+	// is measured dead -- both skills that teach varying roughness must name
+	// the call that performs it.
+	Check( pt.find( "vary_material" ) != std::string::npos,
+	       "S3d: MONEY -- procedural-textures names the `vary_material` verb" );
+	Check( mat.find( "vary_material" ) != std::string::npos,
+	       "S3d: MONEY -- materials-and-media-basics names the `vary_material` verb too" );
+	Check( mat.find( "scalar_painter" ) != std::string::npos && mat.find( "expression" ) != std::string::npos,
+	       "S3d: materials-and-media-basics carries the scalar_painter{expression} worked example "
+	       "in the PROVEN read-set (C-READ: content behind an unmade pull is invisible)" );
 }
 
 //----------------------------------------------------------------------
@@ -1145,7 +1466,15 @@ static JsonValue ParseBody( const std::string& body )
 
 static void TestChatLoopWiring()
 {
-	std::printf( "S4: chat-loop tool table (sixteen tools, three providers) + SetSkillIndex...\n" );
+	// 32 -> 33, doc 90 slice R2 (2026-08-23): `revert_to_revision` joined the
+	// shared kToolDefs table.  33 -> 34, cat plan item 1 (2026-08-25):
+	// `fix_blend_scale` joined it too.  34 -> 35, GEOMETRY_SHADING_SIGNALS sec 11
+	// (2026-08-30): `add_wear` joined it too.  36 -> 37, CLOTH_FABRIC_DESIGN 9.7
+	// (2026-09-02): `make_fabric` joined it too.  37 -> 38, CLOTH_FABRIC_DESIGN
+	// Phase 3 (2026-09-03): `add_fuzz` joined it too.  Bumped deliberately, in
+	// all three provider renderings, because agreement ACROSS them is the
+	// property this pins.
+	std::printf( "S4: chat-loop tool table (thirty-eight tools, three providers) + SetSkillIndex...\n" );
 
 	// The count below is asserted, not narrated: every provider's request
 	// body must carry the SAME kToolDefs table, so a tool added to one codec
@@ -1162,7 +1491,7 @@ static void TestChatLoopWiring()
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 16, "anthropic body carries sixteen tools" );
+		Check( tools.isArray() && tools.size() == 38, "anthropic body carries thirty-eight tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() != "read_skill" ) continue;
@@ -1184,28 +1513,28 @@ static void TestChatLoopWiring()
 		Check( saw, "anthropic tool list includes read_skill" );
 	}
 
-	// Gemini: sixteen functionDeclarations, read_skill present.
+	// Gemini: nineteen functionDeclarations, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Gemini );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 16, "gemini body carries sixteen functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 38, "gemini body carries thirty-eight functionDeclarations" );
 		bool saw = false;
 		for( std::size_t i = 0; i < decls.size(); ++i )
 			if( decls.at( i ).get( "name" ).asString() == "read_skill" ) saw = true;
 		Check( saw, "gemini functionDeclarations include read_skill" );
 	}
 
-	// OpenAI Responses: sixteen flat function tools, read_skill present.
+	// OpenAI Responses: nineteen flat function tools, read_skill present.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::OpenAI );
 		loop.AddUserMessage( "hello" );
 		JsonValue root = ParseBody( loop.BuildRequest( "sk-test" ).body );
 		const JsonValue& tools = root.get( "tools" );
-		Check( tools.isArray() && tools.size() == 16, "openai body carries sixteen tools" );
+		Check( tools.isArray() && tools.size() == 38, "openai body carries thirty-eight tools" );
 		bool saw = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "type" ).asString() == "function" &&
@@ -1314,13 +1643,31 @@ static void TestToolRound( AgentRpcDispatcher& rpc )
 	// matching against the raw body).
 	const std::string text = tr.get( "content" ).at( 0 ).get( "text" ).asString();
 	const JsonValue payload = ParseLine( text );
-	const std::string md = payload.get( "markdown" ).asString();
+	const std::string md = NormalizeEol( payload.get( "markdown" ).asString() );
 	Check( md.find( "FROM-surface-TO-light" ) != std::string::npos,
 	       "the next body carries the skill markdown (direction convention present)" );
 }
 
-int main()
+int main( int argc, char** argv )
 {
+	bool renderSnippets = false;
+	if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
+		renderSnippets = ( ext[0] != '\0' && std::string( ext ) != "0" );
+	}
+	for( int i = 1; i < argc; ++i ) {
+		const std::string arg( argv[i] );
+		if( arg == "--render-snippets" || arg == "--extended" ) {
+			renderSnippets = true;
+		}
+	}
+
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentSkillsTest (Facet 5 slice S1: read_skill + seed skills + snippet contract) ===\n" );
 
 	// Pin the skills root to the deterministic ./skills/agent fallback:
@@ -1336,7 +1683,7 @@ int main()
 	AgentRpcDispatcher rpc( std::unique_ptr<AgentSession>( nullptr ) );
 	TestVerbIndexAndFetch( rpc );
 	TestVerbRejections( rpc );
-	TestSnippetContract( rpc );
+	TestSnippetContract( rpc, renderSnippets );
 	TestFenceEscapes( rpc );
 	TestOutputQualityRules( rpc );
 	TestProceduralTextureTeaching( rpc );

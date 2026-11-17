@@ -1,8 +1,8 @@
 # Spectral-vs-Pel Feature Parity Audit & Remediation Plan
 
 **Date:** 2026-05-07
-**Last verified:** 2026-06-07 — design-review round 1 on §3 v2 (per-photon-hero) **refuted 3-of-3** by an orthogonal adversarial panel; v2 is now retired and v3 chain-storage is the only path (see §3.6).  Design review also surfaced a **new sibling correctness gap** in the NM lobe-selection probability (Finding 13.2; affects PT-spectral / BDPT-spectral / MLT-spectral / VCM-spectral) — captured as §3.7.  Previous re-verifications: 2026-06-06 (§2.6 PT-spectral inline AOV landed; Phase 2b/2c shipped; §2.8 BDPT-spectral adaptive sampling landed); 2026-05-24 (post Stage-B colour-space + IScalarPainter; no regressions, no new gaps).
-**Scope:** Every ✗, partial, and "(limited)" cell in the optional-feature support matrix in [docs/RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4, decoded against the parser ([src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) `CreateAllChunkParsers()`) and the rasterizer / integrator source.
+**Last verified:** 2026-09-02 — §3.1 `ILight::emittedRadianceNM` is **CLOSED** (2026-09-02, Stage C slice 2), and stored merge throughputs now cache an illuminant uplift on `LightVertex::throughputSpectrum` at deposit/clamp time (`VCMLightVertex.h`, `VCMIntegrator::LightThroughputSpectrum`), leaving **VCM HWSS companion ancestor-chain re-evaluation** as the remaining §3 architectural item (`LightVertexNM` in `VCMLightVertex.h` remains unused scaffolding).  Prior verification (2026-06-07): design-review round 1 on §3 v2 (per-photon-hero) **refuted 3-of-3** by an orthogonal adversarial panel; v2 is retired and v3 chain-storage is the only path (see §3.6).  Design review also surfaced a **sibling correctness gap** in the NM lobe-selection probability (Finding 13.2; affects PT-spectral / BDPT-spectral / MLT-spectral / VCM-spectral) — captured as §3.7.  Previous re-verifications: 2026-06-06 (§2.6 PT-spectral inline AOV landed; Phase 2b/2c shipped; §2.8 BDPT-spectral adaptive sampling landed); 2026-05-24 (post Stage-B colour-space + IScalarPainter; no regressions, no new gaps).
+**Scope:** Every ✗, partial, and "(limited)" cell in the optional-feature support matrix in [docs/RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4, decoded against the parser ([src/Library/Parsers/ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) `CreateAllChunkParsers()`) and the rasterizer / integrator source.
 **Out of audit scope:** algorithmic changes, anything that requires open research, anything in MLT (deliberately empty per [MLT_POSTMORTEM.md](MLT_POSTMORTEM.md)).
 
 **Status tracker:** as remediation lands, items are flipped from `OPEN` → `DONE` in §6 with a one-line note. The §1 matrix and §2 inventory always reflect post-remediation state.
@@ -19,12 +19,12 @@ Historical scorecard for the 13 original ✗ / partial / "(limited)" cells:
 - **PT-spectral inline AOV LANDED 2026-06-02** — both `pathtracing_spectral_rasterizer` and `pixelintegratingspectral_rasterizer` allocate/accumulate the inline `PixelAOV` and feed AOV-guided OIDN in accurate mode (§2.6 OUTCOME, §6.2).  The shader-dispatch path uses a new `RuntimeContext::pAOV` bridge (no `IShaderOp` interface change); the Phase-2b Accurate hook was completed with its missing BSDF-section sibling (was inert for diffuse-behind-glass on Pel too).
 - **Phases 2b/2c LANDED 2026-05-31 / 2026-06-02** — the integrator refactor that PT-spectral and BDPT-spectral inline AOV blocked on is now complete; templatized PT, VCM, BDPT are all single-source-of-truth across Pel/NM (see [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md)).
 - **BDPT-spectral inline AOV** is structurally unblocked but not the listed gap — see §2.12.
-- **1 architectural item REMAINS OPEN** (2–4 weeks, design + implementation): **per-wavelength photon stores for VCM-spectral merging (§3)** — the single correctness issue.  Source still uses `LightVertexThroughput<NMTag>` → `RISEPelToNMProxy(lv.throughput)`; the declared-but-unused `LightVertexNM` struct in [VCMLightVertex.h:110](../src/Library/Shaders/VCMLightVertex.h#L110) is the intended storage destination.
+- **1 architectural item REMAINS OPEN** (4–6 weeks, design + implementation): **VCM HWSS companion ancestor-chain re-evaluation / per-wavelength photon stores for VCM-spectral merging (§3)** — the remaining §3 correctness issue now that §3.1 `ILight::emittedRadianceNM` is closed (2026-09-02).  The photon store is still Pel-sourced (caching a deposit-time illuminant uplift `LightVertex::throughputSpectrum` via `VCMIntegrator::LightThroughputSpectrum` rather than `RISEPelToNMProxy`, which was deleted; see §3's status block and [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7.5), and `LightVertexNM` in [VCMLightVertex.h](../src/Library/Shaders/VCMLightVertex.h) is currently unused scaffolding.
 - **2 deliberately out of scope** (MLT × 2): chain-based mutation has no useful interaction with the optional features.
 - **2 matrix errors** (no work — fixed in doc): pixelintegratingspectral_rasterizer's ✓ for adaptive sampling and optimal MIS were wrong; BDPT's ✓ for SMS was post-2026-05-excision stale.
 - **3 architecture- or research-blocked** (no path forward without a separate design): VCM-anything path guiding, BDPT/VCM optimal MIS, pixelintegratingspectral path guiding.
 
-The single **correctness** issue (vs feature gap) is **VCM-spectral merging via the `RISEPelToNMProxy` luminance projection** — see §3.
+The single **correctness** issue (vs feature gap) in the matrix is **VCM-spectral merging from a Pel-sourced photon store** — see §3.  (Update, 2026-09-02: `RISEPelToNMProxy` was deleted; `LightVertex::throughputSpectrum` caches an illuminant uplift via `VCMIntegrator::LightThroughputSpectrum` at deposit/clamp time and evaluates `.Eval(nm)` per merge candidate, rather than calling `LightThroughputRadianceNM` fresh per merge. Dispersion / HWSS companion ancestor-chain re-evaluation remains open; see §3's status block.)
 
 ---
 
@@ -67,15 +67,15 @@ For each ✗ / partial / (limited) cell, this section names the feature, locates
 
 ### 2.1 `pixelintegratingspectral_rasterizer` — Path guiding ✗
 
-- **Pel side wired at:** `pixelpel_rasterizer` parser block ([AsciiSceneParser.cpp:6135](../src/Library/Parsers/ChunkParserRegistry.cpp) `AddPathGuidingParams`) plus `PixelBasedPelRasterizer::PreRenderSetup` allocates the OpenPGL field.
-- **Spectral side:** parser does not call `AddPathGuidingParams` ([AsciiSceneParser.cpp:6276-6286](../src/Library/Parsers/ChunkParserRegistry.cpp)). `PixelBasedSpectralIntegratingRasterizer` has no `pGuidingField` member.
+- **Pel side wired at:** `pixelpel_rasterizer` parser block ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) `AddPathGuidingParams`) plus `PixelBasedPelRasterizer::PreRenderSetup` allocates the OpenPGL field.
+- **Spectral side:** parser does not call `AddPathGuidingParams` ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)). `PixelBasedSpectralIntegratingRasterizer` has no `pGuidingField` member.
 - **Diagnosis:** **architectural — out of scope.** The legacy spectral rasterizer is shader-dispatch (runs an `IShaderOp` chain at every hit). OpenPGL guiding is per-pixel directional density estimation that requires the integrator to drive per-vertex training samples; the shader-op chain has no such hook. Adding it would mean rewiring the chain dispatch through a new "guiding-aware" path-tracing shader-op variant — a substantial refactor for a legacy code path users are encouraged to migrate off of.
 - **Effort:** out of scope. Recommend documenting in the matrix as ✗ with a "shader-dispatch architecture" footnote. Users who need spectral path guiding should use `pathtracing_spectral_rasterizer`.
 - **Refactor dependency:** none (we're not building this).
 
 ### 2.2 `pixelintegratingspectral_rasterizer` — Adaptive sampling ✗ (matrix corrected)
 
-- **Pel side wired at:** `pixelpel_rasterizer` parser ([AsciiSceneParser.cpp:6136](../src/Library/Parsers/ChunkParserRegistry.cpp) `AddAdaptiveSamplingParams`) + `PixelBasedPelRasterizer::IntegratePixel` Welford loop.
+- **Pel side wired at:** `pixelpel_rasterizer` parser ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) `AddPathGuidingParams` / `AddAdaptiveSamplingParams`) + `PixelBasedPelRasterizer::IntegratePixel` Welford loop.
 - **Spectral side:** parser does NOT add adaptive params, Finalize() does not parse them. `PixelBasedSpectralIntegratingRasterizer` has no `adaptiveConfig` member.
 - **Diagnosis:** legacy chunk is soft-deprecated; not building this feature here. Modern alternative (`pathtracing_spectral_rasterizer`) has full adaptive sampling.
 - **Effort:** out of scope (soft deprecation). Implementing the feature = ~2 days if priorities change.
@@ -90,7 +90,7 @@ For each ✗ / partial / (limited) cell, this section names the feature, locates
 
 ### 2.4 `pixelintegratingspectral_rasterizer` — Optimal MIS ✗ (matrix corrected)
 
-- **Pel side wired at:** `pixelpel_rasterizer` parser ([AsciiSceneParser.cpp:6139](../src/Library/Parsers/ChunkParserRegistry.cpp) `AddOptimalMISParams`) + `PixelBasedPelRasterizer::PreRenderSetup` ([PixelBasedPelRasterizer.cpp:396-472](../src/Library/Rendering/PixelBasedPelRasterizer.cpp#L396)) trains and exposes via `rc.pOptimalMIS`.
+- **Pel side wired at:** `pixelpel_rasterizer` parser ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) `AddOptimalMISParams`) + `PixelBasedPelRasterizer::PreRenderSetup` ([PixelBasedPelRasterizer.cpp:396-472](../src/Library/Rendering/PixelBasedPelRasterizer.cpp#L396)) trains and exposes via `rc.pOptimalMIS`.
 - **Spectral side:** parser does NOT call `AddOptimalMISParams`. Spectral integrating rasterizer base never sets `rc.pOptimalMIS`.
 - **Diagnosis:** the Kondapaneni 2019 optimal-MIS implementation in RISE is RGB-internal; extending it to spectral would require either training one alpha map per wavelength bucket (memory-prohibitive) or projecting spectral contributions to luminance for the training samples (defeats the spectral accuracy that the chunk exists for).
 - **Effort:** out of scope (soft deprecation). True remediation = research + ~1 week.
@@ -131,7 +131,7 @@ For each ✗ / partial / (limited) cell, this section names the feature, locates
 
 ### 2.7 `bdpt_spectral_rasterizer` — Path guiding ✓ (DONE 2026-05-07)
 
-- **Pel side wired at:** `bdpt_pel_rasterizer` parser ([AsciiSceneParser.cpp:6397](../src/Library/Parsers/ChunkParserRegistry.cpp) `AddPathGuidingParams`) supplies the **full** PathGuidingConfig set including `pathguiding_max_light_depth`, `pathguiding_complete_path_strategy_selection`, `pathguiding_complete_path_strategy_samples`.
+- **Pel side wired at:** `bdpt_pel_rasterizer` parser ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) `AddPathGuidingParams`) supplies the **full** PathGuidingConfig set including `pathguiding_max_light_depth`, `pathguiding_complete_path_strategy_selection`, `pathguiding_complete_path_strategy_samples`.
 - **Pre-fix spectral side:** descriptor hand-rolled a subset that omitted `pathguiding_learned_alpha`, `pathguiding_light_max_depth`, `pathguiding_complete_path_strategy_selection`, and `pathguiding_complete_path_strategy_samples` (4 fields).  Finalize() also missed the last three.
 - **Fix landed:** descriptor block replaced with `AddPathGuidingParams( P );`; 3 missing `bag.Has` lines added to Finalize.  `BDPTRasterizerBase::PreRenderSetup` honors every field regardless of subclass, so no integrator change was needed.  Smoke-tested with a minimal scene authoring all three previously-dropped params — parser accepts them.  Matrix flipped from "partial" to ✓.
 - **HWSS interaction:** light-subpath guiding works as before; training samples on the NM path are luminance-projected (an open future direction for wavelength-dependent guiding, separate from this gap).
@@ -140,7 +140,7 @@ For each ✗ / partial / (limited) cell, this section names the feature, locates
 
 - **Pel side wired at:** `BDPTPelRasterizer` carries `adaptiveConfig` ([BDPTPelRasterizer.h:83](../src/Library/Rendering/BDPTPelRasterizer.h#L83)), runs the per-pixel Welford luminance gate ([BDPTPelRasterizer.cpp:263-475](../src/Library/Rendering/BDPTPelRasterizer.cpp#L263)). Parser calls `AddAdaptiveSamplingParams`.
 - **Fix landed:** `BDPTSpectralRasterizer` now carries `adaptiveConfig` and overrides `GetProgressiveTotalSPP()` to honor `adaptiveConfig.maxSamples`.  `IntegratePixel` mirrors the Pel-side adaptive loop using `sampleXYZ.Y` (CIE photometric luminance) as the Welford signal, applies `adaptiveConfig.threshold` for relative-error convergence, supports `adaptiveConfig.showMap` heat-map output, and calls `AddAdaptiveSamples(pixelSampleIndex - passStartSampleIndex)` for splat-film normalization parity with the Pel side.  Side effect: also fixes a latent bias bug — the pre-existing Welford code in `BDPTSpectralRasterizer` gated convergence-based termination on `pProgFilm` instead of `adaptive`, which would freeze "lucky-low" pixels in pure-progressive mode while firefly pixels regress to truth, exactly the issue [BDPTPelRasterizer.cpp:412-428](../src/Library/Rendering/BDPTPelRasterizer.cpp#L412) warns about.
-- **Parser:** [AsciiSceneParser.cpp `BDPTSpectralRasterizerAsciiChunkParser`](../src/Library/Parsers/ChunkParserRegistry.cpp) now exposes `adaptive_max_samples`, `adaptive_threshold`, `show_adaptive_map` via `AddAdaptiveSamplingParams(P)`.
+- **Parser:** [ChunkParserRegistry.cpp `BDPTSpectralRasterizerAsciiChunkParser`](../src/Library/Parsers/ChunkParserRegistry.cpp) now exposes `adaptive_max_samples`, `adaptive_threshold`, `show_adaptive_map` via `AddAdaptiveSamplingParams(P)`.
 - **API:** new `RISE_API_CreateBDPTSpectralRasterizerAdaptive` factory; legacy `RISE_API_CreateBDPTSpectralRasterizer` retained as a thin wrapper that delegates with `AdaptiveSamplingConfig()` (maxSamples == 0 → adaptive disabled, behaviour identical to pre-fix).  `IJob::SetBDPTSpectralRasterizer` virtual gained an `adaptiveConfig` parameter — verified no out-of-tree implementations exist (`grep -rn "public IJob" --include='*.h' --include='*.cpp'` returns only the in-tree `Job` class via `IJobPriv`).
 - **HWSS interaction:** the Welford gate fires once per pixel sample regardless of how many wavelength bundles a sample contains, so adaptive convergence rate per wall-clock-second is independent of `hwss true/false`. No special handling — confirmed empirically.
 - **Verification:** clean rebuild warning-free, 115/115 unit tests pass, smoke render of `cornellbox_bdpt_spectral.RISEscene` with `adaptive_max_samples 32 / adaptive_threshold 0.05 / show_adaptive_map FALSE` completes cleanly, and a negative test confirms the parser still hard-rejects unknown params on the chunk.
@@ -184,6 +184,14 @@ For each ✗ / partial / (limited) cell, this section names the feature, locates
 
 ### 2.16 `vcm_spectral_rasterizer` — Spectral merging via `RISEPelToNMProxy` (CORRECTNESS)
 
+> **Correction (2026-09-02):** this heading's function name is historical — `RISEPelToNMProxy`
+> was deleted (Stage C slice 2 follow-up); `LightVertex::throughputSpectrum` now caches a
+> deposit-time illuminant uplift (`VCMIntegrator::LightThroughputSpectrum`, rebuilt on deposit
+> in `ConvertLightSubpath` and on rescaling in `ClampOutlierThroughputs`) so the merge path
+> evaluates `lv.throughputSpectrum.Eval(nm)` without a per-merge LUT lookup. See §3's status
+> block and [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7.5. The
+> feature-gap classification (correctness, not feature) is unchanged.
+
 This is the only listed gap that's a **correctness** issue, not a feature gap. It gets its own §3.
 
 ### 2.17 `vcm_spectral_rasterizer` — OIDN albedo proxy ✓ (DONE 2026-05-07)
@@ -197,7 +205,226 @@ This is the only listed gap that's a **correctness** issue, not a feature gap. I
 
 ---
 
+### 2.x `CookTorranceSPF` — `PdfNM` reports a DIFFERENT mixture from `ScatterNM` ✓ (FIXED 2026-09-03)
+
+**Not an integrator gap — a per-material RGB/NM parity defect**, filed here
+because this document is where spectral-vs-Pel divergences are tracked. Found
+while broadening `tests/SPFPdfConsistencyTest.cpp`'s spectral companion beyond
+the two `fabric_material` rows it originally covered; **pre-existing, not
+introduced by that change**.
+
+- **The divergence.** `CookTorranceSPF::ScatterNM` built its 3-lobe selection
+  weights **per wavelength** —
+  `alpha = pMasking->GetValueAtNM(ri, nm)`,
+  `wd = GuardedGetColorNM(*pDiffuse, ri, nm)`,
+  `ws = GuardedGetColorNM(*pSpecular, ri, nm)` — while
+  `CookTorranceSPF::PdfNM` was a bare `return Pdf( ri, wo, ior_stack );`, and
+  `Pdf` rebuilds the same weights from the **RGB max3**
+  (`ColorMath::MaxValue( pDiffuse->GetColor(ri) )`, etc.), with
+  `wms = ws * (1 - LookupEss(cosWi, alpha))` inheriting both. So the density
+  stored on a spectral sample was a different mixture from the one `PdfNM`
+  reported for that same direction whenever a painter's spectral sample
+  differed from its RGB max3 — which, under the Jakob-Hanika uplift, it
+  always does slightly.
+- **Why it matters.** The Scatter↔Pdf agreement is what MIS and path guiding
+  consume. The RGB pipe satisfies it exactly; the spectral pipe did not.
+- **Measured before the fix** (660 nm, grey 0.5 diffuse / 0.3 specular, 50k
+  samples): `maxRelErr` **1.44e-4** at 30° and **1.55e-4** at 60°, on ~49.6k
+  of 50k samples. For scale, every *other* row in that sweep — Lambertian,
+  Oren-Nayar, GGX isotropic and anisotropic, SubSurfaceScattering, both
+  `coated_material` rows and both `fabric_material` rows — lands between
+  **4e-16 and 1.6e-13**, so Cook-Torrance was ~11 orders of magnitude out of
+  family. A real defect, not quadrature noise.
+- **The fix.** `ScatterNM`'s lobe-SELECTION weights (`wdSel`/`wsSel`, feeding
+  `total`/`wms`/`pDiffuseSelect`/`pSpecSelect`/every `mixPdf` site) and its
+  `alpha` are now read **ACHROMATICALLY** — the identical RGB max3 /
+  `GetValuesAt(ri).v[0]` sources `Pdf()` already used — so `PdfNM`'s bare
+  forward to `Pdf()` is now correct **by construction**, for every `nm`, not
+  approximately. This is the convention `fabric_material` chose deliberately
+  (see the note on `FabricBRDF::ResolveFabric`'s declaration: a
+  wavelength-dependent selection weight puts `Scatter`'s stored
+  hero-wavelength pdf out of step with a companion-wavelength `Pdf()` call).
+  `CoatedBRDF::ResolveCoat` and `GGXSPF` take the OTHER precedent
+  (per-wavelength weights on both `ScatterNM` AND `PdfNM`, using the SAME
+  `nm` on both sides, so they stay internally self-consistent) — CookTorrance's
+  actual bug was neither convention applied consistently, but the achromatic
+  one mixing with the per-wavelength one across the `ScatterNM`/`PdfNM` pair.
+  The per-wavelength **VALUE** (`wdValNM`/`wsValNM`, feeding `kray`/`krayNM`
+  via `GuardedGetColorNM`) is UNCHANGED — only the selection weights and
+  `alpha` moved to the achromatic source. `PdfNM` itself needed no code
+  change beyond a comment recording why the bare forward is now provably
+  correct.
+- **Measured after the fix**: `tests/SPFPdfConsistencyTest.cpp`'s CookTorrance
+  NM row now lands at `maxRelErr` **1.18e-13** at 30° and **1.27e-13** at
+  60° — squarely inside the 4e-16-to-1.6e-13 family every other row occupies.
+  The row's `crossValTol` override was removed; it now uses the shared
+  `CROSS_VAL_TOL` (1e-6) like every other exact row.
+- **Sibling audit** (docs/skills/audit-by-bug-pattern.md): every `PdfNM` body
+  in `src/Library/Materials` was read against its own `ScatterNM`.
+  CookTorranceSPF was the **only** site carrying the pattern (an achromatic
+  `PdfNM`/`Pdf` paired with a per-wavelength `ScatterNM`). Verdicts:
+  - **Already correct, achromatic by design** (matches CookTorrance's new
+    convention): `FabricSPF`/`FabricBRDF`, `WeaveSPF`/`WeaveBRDF`,
+    `HairSPF` (all selection-relevant scalars read via `GetValuesAt`/no `nm`,
+    documented and independently audited).
+  - **Already correct, per-wavelength self-consistent** (matches the OTHER
+    precedent — `PdfNM` recomputes weights from the SAME `nm` `ScatterNM`
+    used, so the pair never drifts even though neither is achromatic):
+    `GGXSPF`, `CoatedSPF`/`CoatedBRDF`.
+  - **Single-lobe or delta-only — no selection-weight mixture to desync**:
+    `LambertianSPF`, `OrenNayarSPF`, `SheenSPF`, `SubSurfaceScatteringSPF`
+    (pure geometry/IOR branch, no color-weighted mixture),
+    `PerfectReflectorSPF`, `PerfectRefractorSPF`, `DielectricSPF` (`Pdf`/
+    `PdfNM` both trivially 0).
+  - **Fixed-constant weight, not color-derived**: `CompositeSPF` (0.5/0.5
+    coin flip between top/bottom, wavelength-independent by construction).
+  - **Pre-existing, DIFFERENT, already-documented model limitation — RGB
+    pipe is ALSO inexact, so this is not a NM-vs-RGB twin-drift bug**:
+    `AshikminShirleyAnisotropicPhongSPF`, `IsotropicPhongSPF`, `SchlickSPF`,
+    `WardIsotropicGaussianSPF`, `WardAnisotropicEllipticalGaussianSPF`,
+    `PolishedSPF`, `TranslucentSPF`. These emit multiple lobes as
+    INDEPENDENT scattered rays, each carrying its own single-lobe pdf (not a
+    combined mixture pdf); `Pdf()`/`PdfNM()` approximate a combined density
+    using a "representative weight at the mirror direction" that was never
+    exact even on the RGB pipe (`SPFPdfConsistencyTest`'s own
+    `skipCrossVal=true` rows, with the comment "the actual selection
+    probability in RandomlySelect is proportional to kray magnitude computed
+    at shading time, may differ from static painter weights"). Out of scope
+    for this fix; a different defect class. **`TranslucentSPF` update
+    (2026-09-12):** this multi-lobe-selection approximation is still
+    unfixed and still applies, but a DIFFERENT, narrower bug in the same
+    material was found and closed afterward: the diffuse EXIT lobe's own
+    stored/evaluated density negated its cosine on an inside hit, and NM
+    sampled that exit with a Phong-N lobe while RGB already used cosine — a
+    genuine RGB/NM twin-drift bug in one lobe's shape, not the cross-lobe
+    selection-weight approximation described above. Fixed by `a041e51d`
+    (`TranslucentSpectralParityTest` 1918/0 checks/failures, was 324); see
+    [DL-02](DL02_TRANSLUCENT_EXIT_DENSITY.md). A separate double-charged-tau
+    bug in the same material's NM exit weight was fixed by `1239edf2`
+    ([DL-01](DL01_TRANSLUCENT_EXIT_WEIGHT.md)).
+
+#### Follow-up (2026-09-04, REVIEW_CHIP3): `CookTorranceSPF` — achromatic selection floor
+
+Adversarial review of the fix above (`REVIEW_CHIP3.md`) found a NEW, smaller
+bias the achromatic-selection fix itself introduced.
+
+- **The hole.** `wdSel`/`wsSel` are an *exact* RGB max3 (`ColorMath::MaxValue`
+  of the diffuse/specular painter's `GetColor`). An authored PURE-BLACK slot
+  (RGB `(0,0,0)`) therefore gives an exact-0 selection weight when the other
+  lobe is non-black — that lobe is permanently unreachable from `ScatterNM`.
+  But `GuardedGetColorNM` on the same black slot is NOT exactly 0: the JH
+  LUT's black cell bakes to coefficients `(0,0,-100)`, and the sigmoid uplift
+  `0.5 + x/(2*sqrt(1+x^2))` at `x=-100` evaluates to `~2.5e-5`, not 0
+  (`RGBToSpectrumTable_LUTData.cpp`). `CookTorranceBRDF::valueNM` (consumed by
+  NEE) still reports that `~2.5e-5` term every time, so the true spectral
+  value is nonzero everywhere while BSDF sampling could never reach it — a
+  real, if small, dropped-lobe bias. Neither the grey/tinted rows above nor
+  `CookTorranceMultiscatterTest`/`CookTorranceHWSSTest` exercise a black
+  slot, so nothing in the existing coverage caught it.
+- **The fix.** A single shared helper (`ComputeLobeWeights`, anonymous
+  namespace in `CookTorranceSPF.cpp`) computes `wd`/`ws`/`wms`/`total` from
+  `wdRGB`/`wsRGB` for `Scatter`, `ScatterNM`, and `Pdf` (`PdfNM` still
+  bare-forwards to `Pdf`), flooring `wd`/`ws` at `kSelFloor = 1e-3` before
+  normalising: `wd = r_max(wdRGB, kSelFloor)`, same for `ws`; `wms` and
+  `total` are derived from the FLOORED `wd`/`ws`, so `Σw == 1` after
+  normalising. `kSelFloor` is ~40x the ~2.5e-5 JH black-cell leak — the
+  sampled `kray`/`krayNM` already divides by the selection probability it
+  was drawn with, so the estimator is unbiased for ANY floor in `(0,1]`
+  (the floor steers effort, it does not change the expectation); 1e-3 is a
+  negligible extra-sampling tax against the bias it removes. Both painters
+  are unconditionally bound in `CookTorranceSPF` (no "disabled lobe" state),
+  so the floor applies unconditionally to both; it is algebraically INERT
+  for any material whose RGB max3 exceeds `kSelFloor` (`r_max` is a no-op
+  there), so ordinary tinted/white materials are bit-identical to the
+  pre-floor code.
+- **Proof.**
+  - `SPFPdfConsistencyTest`'s `CookTorrance` row (grey/tinted, no exact
+    zeros) is unaffected: `maxRelErr` unchanged at `1.18e-13`/`1.27e-13`.
+  - Two new rows, `CookTorrance_BlackDiffuse` / `CookTorrance_BlackSpecular`
+    (one authored-black slot each, non-black on the other side), pass
+    cross-validation at the same `CROSS_VAL_TOL = 1e-6` — `maxRelErr`
+    `5.3e-15`-`1.3e-13` — proving the floor keeps `Scatter<->Pdf` and
+    `ScatterNM<->PdfNM` exact at the RGB-max3==0 corner too.
+  - A dedicated reachability block runs the sampler directly (200k trials)
+    and counts which lobe fired, disambiguated from outside the class by
+    type (`eRayReflection` is specular-only) and, where both diffuse and
+    multiscatter share `eRayDiffuse`, by value (the diffuse branch's
+    `kray`/`krayNM` is a fixed per-call constant that the multiscatter
+    branch's `wo`-dependent value cannot coincidentally match). Measured:
+    `CookTorrance_BlackDiffuse` RGB fires 667/200000 (rate 0.003335)
+    against a predicted floor-driven `pDiffuseSelect` of 0.0032759, with
+    `kray` exactly `(0,0,0)` on every fire (correct — the RGB pipe has no
+    JH leak, so the floored lobe legitimately contributes nothing there);
+    NM fires 677/200000 (rate 0.003385) at the same predicted rate, with
+    `krayNM = 0.00763` on every fire — the previously-unreachable ~2.5e-5
+    leak is now sampled. `CookTorrance_BlackSpecular` RGB fires exactly
+    0/200000: the lobe is still ENTERED at the floored rate (consistent
+    with `Pdf()`'s matching mixture weight above), but `Scatter`'s specular
+    branch only calls `AddScatteredRay` when `kray > 0` strictly, and RGB
+    `kray` is the literal `(0,0,0)` (no JH leak on the RGB pipe) — a
+    pre-existing, unrelated optimisation, not a regression. NM fires
+    407/200000 (rate 0.002035) against a predicted `pSpecSelect` of
+    0.0019960 — the JH leak makes `krayNM > 0` strictly, so the branch adds
+    a ray, and the rate matches the floor prediction.
+  - `CookTorranceMultiscatterTest`'s Test E (BRDF/SPF multiscatter twin,
+    which happens to use an authored pure-black diffuse painter already)
+    needed its own replicated selection-weight formula updated to apply the
+    same floor — without it, the test's independently-computed `pMSSelect`
+    drifted from the SPF's own (now-floored) value by ~0.1-0.3%, which is
+    exactly the order of `kSelFloor` relative to this fixture's `total`.
+    17/17 pass after the update; `CookTorranceHWSSTest` unaffected (4/4
+    pass, 0.84% RGB/spectral luminance delta, well under its 5% gate).
+  - Furnace/energy check: the base grey(0.5)/spec(0.3) `CookTorrance`
+    fixture's directional-hemispherical reflectance (200k-sample MC mean of
+    `kray`) measures `rho = 0.512` at 30° incidence — energy-conserving, and
+    by the algebraic no-op argument above, bit-identical to what the
+    pre-floor code would have measured for this material (the floor never
+    activates when RGB max3 exceeds `1e-3`), so this is a stronger
+    guarantee than "unchanged within MC noise."
+- **Sibling audit** (docs/skills/audit-by-bug-pattern.md): does
+  `FabricSPF`/`FabricBRDF`'s sheen selection weight (`m = max3(tint)`) or
+  `WeaveSPF`/`WeaveBRDF`'s `SurfaceSelectWeight` (`w`, derived from
+  `max3(tint)`) have the same hole? **No — both already guard it, by two
+  different mechanisms:**
+  - `WeaveBRDF::SurfaceSelectWeight` ([WeaveBRDF.cpp:548](../src/Library/Materials/WeaveBRDF.cpp#L548))
+    already floors: `r_max(kMinLobeWeight, raw)` clamped to
+    `[kMinLobeWeight, 1-kMinLobeWeight]` with `kMinLobeWeight = 0.15`
+    ([WeaveBRDF.cpp:45](../src/Library/Materials/WeaveBRDF.cpp#L45)) — a
+    selection weight can only be exactly 0 when the whole thread family is
+    genuinely absent (`f.valid == false`), which matches this fix's own
+    "genuinely absent lobe keeps weight 0" carve-out. Same shared static
+    helper called from every `WeaveSPF` Scatter/ScatterNM/Pdf/PdfNM site.
+  - `FabricBRDF` takes the OTHER valid approach — capping the VALUE at the
+    selection weight instead of flooring the weight at the value:
+    `ValueNMWithParams` computes
+    `tintNMCapped = r_min(p.tintNM, p.m)`
+    ([FabricBRDF.cpp:343](../src/Library/Materials/FabricBRDF.cpp#L343)),
+    so when `m == 0` (authored-black sheen tint) the reported spectral
+    value is capped to exactly 0 regardless of `tintNM`'s ~2.5e-5 JH leak —
+    selection-weight-0 and value-exactly-0 stay consistent by construction,
+    so there is no bias to floor away. (`m == 0` here is also physically
+    correct: no sheen tint means no sheen lobe, not a residual to preserve.)
+
+---
+
 ## 3. Special section — VCM-spectral merging via `RISEPelToNMProxy`
+
+> **Status update (2026-09-02, Stage C slice 2 follow-up).** `RISEPelToNMProxy` **no
+> longer exists**. Site (1), `EvalLightRadiance<NMTag>`, is **CLOSED**: `ILight` gained
+> `emittedRadianceNM`, so point / spot / directional lights are evaluated at the
+> wavelength from their own cached illuminant spectrum
+> ([SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7). Site (2),
+> `LightVertexThroughput<NMTag>`, is **STILL OPEN as described below** — the store is
+> still Pel-sourced and VCM HWSS companion ancestor-chain re-evaluation / dispersion
+> separation remains open — but its projection is no longer a flat Rec.709 luma scalar or
+> a per-merge LUT lookup: `LightVertex::throughputSpectrum` caches the illuminant uplift
+> (`VCMIntegrator::LightThroughputSpectrum(lv.throughput)`) at deposit/clamp time and
+> evaluates `lv.throughputSpectrum.Eval(nm)` per merge candidate, so the VM strategies at
+> least land on the same chroma as the VC strategies they share a MIS partition with (a
+> flat spectrum resolves to `(1.205, 0.948, 0.909)` on this film, so the old projection
+> made merges differentially wrong once every other source term moved to D65). Read the
+> code snippets in this section as historical; the ARGUMENT for a per-wavelength
+> ancestor-chain store stands unchanged.
 
 This is the only gap with **correctness** (not just feature) impact. The proxy is documented in [docs/INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md):35 as a "v1 architectural debt", and in [docs/VCM.md](VCM.md):242 as a known limitation.
 
@@ -228,6 +455,8 @@ The merge contribution at NM is:
 contribution_NM = cameraBsdfNM * RISEPelToNMProxy( lv.throughput ) * weight
 ```
 
+(Historical, per §3's status block: read as `lv.throughputSpectrum.Eval( nm )` — the deposit-time cached `VCMIntegrator::LightThroughputSpectrum` illuminant uplift; `RISEPelToNMProxy` no longer exists. The shape of the argument below is otherwise unchanged.)
+
 `lv.throughput` is the photon's accumulated alpha from light source through every BSDF lobe along the light subpath, captured at a single hero wavelength during the light pass. The luminance proxy projects this to a scalar **at merge time** rather than carrying the photon's per-wavelength throughput.
 
 **Symptoms on dispersive caustics:**
@@ -243,7 +472,7 @@ VC strategies (s=0, NEE, interior, t=1) are **fully wavelength-accurate** — th
 
 ### 3.3 What a per-wavelength photon store would look like
 
-The data structure for the fix already exists. [VCMLightVertex.h:110-120](../src/Library/Shaders/VCMLightVertex.h#L110) declares:
+The initial scaffolding for a single-wavelength record exists in [VCMLightVertex.h:195-205](../src/Library/Shaders/VCMLightVertex.h#L195), which declares:
 
 ```cpp
 struct LightVertexNM : public LightVertex {
@@ -253,7 +482,7 @@ struct LightVertexNM : public LightVertex {
 };
 ```
 
-The struct is **declared but unused** — `grep -rn LightVertexNM src/Library/` returns only its declaration. The intended-but-not-built design:
+The struct is **currently unused scaffolding** (`grep -rn LightVertexNM src/Library/` returns only its declaration, and per §3.6 it would also need ancestor-chain storage to support VCM HWSS companion re-evaluation). The originally intended (pre-§3.6) design:
 
 1. **Store layout.** `VCMLightVertexStore` becomes templated on the vertex type (`LightVertex` for Pel, `LightVertexNM` for spectral) — the existing KD-tree balance/query template (`VCMLightVertexKDTree<T>`) already accepts a type parameter. The first two fields (`ptPosition`, `plane`) match for both, so the spatial index code is invariant.
 2. **Light pass per-iteration.** The HWSS rasterizer already samples a hero wavelength per pixel. The light pass shoots one photon batch per progressive iteration; in spectral mode, sample a hero wavelength per photon (separate Sobol stream) and store both `throughput` (RGB rendering of the per-wavelength SPF dispatch) **and** `throughputNM` (the scalar NM throughput at the photon's hero) plus `nm`.
@@ -268,7 +497,7 @@ The struct is **declared but unused** — `grep -rn LightVertexNM src/Library/` 
 ### 3.4 Effort
 
 - ~~**Per-photon hero only:** ~2 weeks. Templatize the store on `LightVertex`/`LightVertexNM`, populate `throughputNM` + `nm` in the spectral light pass, swap the merge read path. No chain storage; companion mismatch falls back to current proxy with a warning. Captures most of the win on hero-matched merges.~~ **— REFUTED 2026-06-07 in design-review round 1.  See §3.6.**
-- **Full chain storage + per-companion re-evaluation:** ~~~3–4 weeks~~ → revised **4–6 weeks** post-design-review.  Better correctness on heavy-dispersion scenes; pays a 4–7× memory tax (per design doc §14.1).  The original 3–4 week estimate omitted the §3.1 ILight `Le` migration dependency (which v3 cannot defer — see §3.6 finding 13.4) and the newly-discovered lobe-selection wavelength-divergence sibling (see §3.7).
+- **Full chain storage + per-companion re-evaluation:** ~~~3–4 weeks~~ → revised **4–6 weeks** post-design-review (now slightly narrower since the §3.1 `ILight::emittedRadianceNM` migration landed 2026-09-02).  Better correctness on heavy-dispersion scenes; pays a 4–7× memory tax (per design doc §14.1).  The original 3–4 week estimate omitted the §3.1 `ILight` `Le` migration dependency (now **CLOSED** 2026-09-02 — see §3's status block) and the newly-discovered lobe-selection wavelength-divergence sibling (see §3.7).
 
 Both are architectural, not refactor-blocked. Phase 2a's VCM templatization established the pattern (`LightVertexThroughput<Tag>` is already the dispatch point); the change is essentially "swap the NM specialization to read `lv.throughputNM` instead of projecting via proxy" — **but with full per-companion chain replay**, not the per-photon-hero shortcut.
 
@@ -286,7 +515,7 @@ Five additional non-fatal but corroborating findings (sodium-vapour + dye glass 
 
 **Implication for §7-Q1.**  The audit's "v2 default; v3 only if regression scenes show residual error" recommendation rested on the load-bearing assumption that v2 is at worst neutral on dispersive scenes.  Findings 13.1, 13.6, 13.7, 13.8 demolish that.  **v3 is now the only path to closing §3 properly.**
 
-**Status of §3 going forward:** OPEN.  The v3 chain-storing design is sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14 but is **NOT design-reviewed** — that's a separate effort the user has deferred to a future focused session.  The current proxy (`RISEPelToNMProxy(lv.throughput)`) remains in tree as the known-wrong-but-stable behaviour.
+**Status of §3 going forward:** OPEN (specifically **VCM HWSS companion ancestor-chain re-evaluation**; §3.1 `ILight::emittedRadianceNM` was closed 2026-09-02, and `LightVertexNM` in `VCMLightVertex.h` remains unused scaffolding).  The v3 chain-storing design is sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14 but is **NOT design-reviewed** — that's a separate effort the user has deferred to a future focused session.  In tree today, `LightVertex::throughputSpectrum` caches the illuminant uplift `VCMIntegrator::LightThroughputSpectrum(lv.throughput)` at deposit/clamp time and evaluates `lv.throughputSpectrum.Eval(nm)` per merge candidate (`RISEPelToNMProxy` was deleted 2026-09-02; see §3's status block).  The dispersion-loss / companion-re-evaluation architectural gap this section's OPEN status refers to is unchanged because the photon store is still Pel-sourced.
 
 ### 3.7 NEW finding from design review — NM lobe-selection wavelength divergence (Finding 13.2)
 
@@ -379,11 +608,11 @@ Per-gap HWSS implications:
 | Status | Item | Effort | Files touched | Risk |
 |---|---|---|---|---|
 | **DONE 2026-05-07** | **Fix the matrix.** Row corrections in [docs/RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4 per §1 of this audit; soft-deprecation footnote added for `pixelintegratingspectral_rasterizer`; cross-cutting bullets rewritten to match source. | 5 min | 1 doc | None |
-| **DONE 2026-05-07** | **Reject silently-ignored params (§7-Q4 → option a).** Removed `AddOptimalMISParams` from `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, and `pathtracing_spectral_rasterizer` descriptors + Finalize.  Migrated `optimal_mis*` hint check in [RasterizerDefaultsConsistencyTest.cpp:305-307](../tests/RasterizerDefaultsConsistencyTest.cpp#L305) to `pathtracing_pel_rasterizer`.  Updated [src/Library/Parsers/README.md](../src/Library/Parsers/README.md) helper-table.  Verified hard-fail with manual repro: `ChunkParser:: Failed to parse parameter name 'optimal_mis' (not declared in 'bdpt_pel_rasterizer' descriptor)`.  No production scenes affected (`grep -r optimal_mis scenes/` returns 0).  All 88 tests pass.  VCM already cleanly rejected path-guiding params at descriptor level; pixIntSpec already rejected adaptive/optimal_mis. | 1 day | [AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp), [Parsers/README.md](../src/Library/Parsers/README.md), [RasterizerDefaultsConsistencyTest.cpp](../tests/RasterizerDefaultsConsistencyTest.cpp) | Low — descriptor-driven parser hard-fails cleanly |
-| **DONE 2026-05-07** | **BDPT-spectral path-guiding subset (§2.7).** Replaced hand-rolled descriptor block with `AddPathGuidingParams( P );` (now exposes `pathguiding_learned_alpha`, `pathguiding_light_max_depth`, `pathguiding_complete_path_strategy_selection`, `pathguiding_complete_path_strategy_samples`); added matching `bag.Has` lines for the 3 previously-dropped fields in Finalize.  Smoke-tested: parser accepts the previously-rejected params; build clean; all 88 tests pass. | 1 day | [AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) BDPTSpectralRasterizerAsciiChunkParser | Low — existing scenes that don't author the params unaffected |
+| **DONE 2026-05-07** | **Reject silently-ignored params (§7-Q4 → option a).** Removed `AddOptimalMISParams` from `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, and `pathtracing_spectral_rasterizer` descriptors + Finalize.  Migrated `optimal_mis*` hint check in [RasterizerDefaultsConsistencyTest.cpp:305-307](../tests/RasterizerDefaultsConsistencyTest.cpp#L305) to `pathtracing_pel_rasterizer`.  Updated [src/Library/Parsers/README.md](../src/Library/Parsers/README.md) helper-table.  Verified hard-fail with manual repro: `ChunkParser:: Failed to parse parameter name 'optimal_mis' (not declared in 'bdpt_pel_rasterizer' descriptor)`.  No production scenes affected (`grep -r optimal_mis scenes/` returns 0).  All 88 tests pass.  VCM already cleanly rejected path-guiding params at descriptor level; pixIntSpec already rejected adaptive/optimal_mis. | 1 day | [ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp), [Parsers/README.md](../src/Library/Parsers/README.md), [RasterizerDefaultsConsistencyTest.cpp](../tests/RasterizerDefaultsConsistencyTest.cpp) | Low — descriptor-driven parser hard-fails cleanly |
+| **DONE 2026-05-07** | **BDPT-spectral path-guiding subset (§2.7).** Replaced hand-rolled descriptor block with `AddPathGuidingParams( P );` (now exposes `pathguiding_learned_alpha`, `pathguiding_light_max_depth`, `pathguiding_complete_path_strategy_selection`, `pathguiding_complete_path_strategy_samples`); added matching `bag.Has` lines for the 3 previously-dropped fields in Finalize.  Smoke-tested: parser accepts the previously-rejected params; build clean; all 88 tests pass. | 1 day | [ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) BDPTSpectralRasterizerAsciiChunkParser | Low — existing scenes that don't author the params unaffected |
 | **DONE 2026-05-07** | **BDPT/VCM-spectral OIDN albedo proxy (§2.11, §2.17).** Replaced `BSDF->value(N,rig) * π` Lambertian-normal-incidence proxy with `BSDF->albedo(rig)` at all 3 sites; also synthesized the `RayIntersectionGeometric.ray` from the actual `eyeVerts[0]→eyeVerts[iv]` view direction (matching `BDPTPelRasterizer` pattern) so the BSDF reads a real view direction.  Smoke render of `cornellbox_bdpt_spectral.RISEscene` with OIDN denoise on completed cleanly; all 88 tests pass; build clean. | 1 day (both rasterizers) | [BDPTSpectralRasterizer.cpp](../src/Library/Rendering/BDPTSpectralRasterizer.cpp) (NM + HWSS sites), [VCMSpectralRasterizer.cpp](../src/Library/Rendering/VCMSpectralRasterizer.cpp) | Low — IBSDF::albedo signature unchanged, AOV is RGB |
 | **DONE 2026-05-07 (review fix)** | **AOV `RayIntersectionGeometric` reconstruction now uses `PathVertexEval::PopulateRIGFromVertex` (5 sites).** Adversarial review (`audit-by-bug-pattern` skill) flagged that all 5 OIDN-AOV walks (BDPT pel, BDPT spectral × 2, VCM pel, VCM spectral) hand-rolled the rig and only set 3 of the 8 fields the helper populates — `ptCoord` / `ptObjIntersec` / `vColor` / `bHasVertexColor` were silently zero, giving textured surface AOVs the texel at UV (0,0) regardless of where the camera ray landed.  Replaced all 5 sites with the canonical helper (which has an explicit CONTRACT block in [PathVertexEval.h:94-106](../src/Library/Utilities/PathVertexEval.h#L94)).  Also harmonised the `GetBSDF()==nullptr` fallback to `RISEPel(1,1,1)` on BDPT-spectral (was `(0,0,0)` — black albedo would have over-blurred edge information for emitter-only materials).  Build clean, 88 tests pass. | 1 day | [BDPTPelRasterizer.cpp](../src/Library/Rendering/BDPTPelRasterizer.cpp), [BDPTSpectralRasterizer.cpp](../src/Library/Rendering/BDPTSpectralRasterizer.cpp), [VCMPelRasterizer.cpp](../src/Library/Rendering/VCMPelRasterizer.cpp), [VCMSpectralRasterizer.cpp](../src/Library/Rendering/VCMSpectralRasterizer.cpp) | Low — helper signature unchanged, behaviour for non-textured materials identical |
-| **DONE 2026-05-24** | **BDPT-spectral adaptive sampling (§2.8).**  Mirrored the Pel adaptive Welford loop into [BDPTSpectralRasterizer::IntegratePixel](../src/Library/Rendering/BDPTSpectralRasterizer.cpp) using the XYZ.Y luminance signal (CIE photometric Y).  Added `adaptiveConfig` member, `GetProgressiveTotalSPP()` override, `AddAdaptiveSamples` splat-normalization tracking, and `adaptiveConfig.showMap` heat-map output — matching the VCM-spectral precedent precisely.  Side effect: also fixes a latent bias bug where the existing Welford loop fired convergence-based termination in pure-progressive mode (gated on `pProgFilm` instead of `adaptive`, same "lucky-low" issue the Pel side warned against).  Parser exposes `adaptive_max_samples`, `adaptive_threshold`, `show_adaptive_map` on the `bdpt_spectral_rasterizer` chunk.  ABI-preserving: new `RISE_API_CreateBDPTSpectralRasterizerAdaptive` symbol; legacy `RISE_API_CreateBDPTSpectralRasterizer` retained as a thin wrapper that passes `AdaptiveSamplingConfig()` (maxSamples == 0 → disabled).  `IJob::SetBDPTSpectralRasterizer` virtual gained the `adaptiveConfig` parameter (no out-of-tree IJob implementations exist; verified).  Clean rebuild warning-free; 115/115 unit tests pass; smoke render of `cornellbox_bdpt_spectral.RISEscene` with `adaptive_max_samples 32 / adaptive_threshold 0.05` completes cleanly; negative test confirms unknown params still hard-reject. | ~1 day actual | [BDPTSpectralRasterizer.{h,cpp}](../src/Library/Rendering), [AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp), [RISE_API.{h,cpp}](../src/Library), [IJob.h](../src/Library/Interfaces/IJob.h), [Job.{h,cpp}](../src/Library) | Low — new code is structurally identical to the well-tested VCM-spectral path |
+| **DONE 2026-05-24** | **BDPT-spectral adaptive sampling (§2.8).**  Mirrored the Pel adaptive Welford loop into [BDPTSpectralRasterizer::IntegratePixel](../src/Library/Rendering/BDPTSpectralRasterizer.cpp) using the XYZ.Y luminance signal (CIE photometric Y).  Added `adaptiveConfig` member, `GetProgressiveTotalSPP()` override, `AddAdaptiveSamples` splat-normalization tracking, and `adaptiveConfig.showMap` heat-map output — matching the VCM-spectral precedent precisely.  Side effect: also fixes a latent bias bug where the existing Welford loop fired convergence-based termination in pure-progressive mode (gated on `pProgFilm` instead of `adaptive`, same "lucky-low" issue the Pel side warned against).  Parser exposes `adaptive_max_samples`, `adaptive_threshold`, `show_adaptive_map` on the `bdpt_spectral_rasterizer` chunk.  ABI-preserving: new `RISE_API_CreateBDPTSpectralRasterizerAdaptive` symbol; legacy `RISE_API_CreateBDPTSpectralRasterizer` retained as a thin wrapper that passes `AdaptiveSamplingConfig()` (maxSamples == 0 → disabled).  `IJob::SetBDPTSpectralRasterizer` virtual gained the `adaptiveConfig` parameter (no out-of-tree IJob implementations exist; verified).  Clean rebuild warning-free; 115/115 unit tests pass; smoke render of `cornellbox_bdpt_spectral.RISEscene` with `adaptive_max_samples 32 / adaptive_threshold 0.05` completes cleanly; negative test confirms unknown params still hard-reject. | ~1 day actual | [BDPTSpectralRasterizer.{h,cpp}](../src/Library/Rendering), [ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp), [RISE_API.{h,cpp}](../src/Library), [IJob.h](../src/Library/Interfaces/IJob.h), [Job.{h,cpp}](../src/Library) | Low — new code is structurally identical to the well-tested VCM-spectral path |
 
 ### 6.2 Refactor-blocked — wait for Phase 2b/2c
 
@@ -396,7 +625,7 @@ Per-gap HWSS implications:
 
 | Item | Effort | Risk | Notes |
 |---|---|---|---|
-| **VCM-spectral per-wavelength photon store (§3).** Templatize `VCMLightVertexStore` on `LightVertex`/`LightVertexNM`, populate `throughputNM` + `nm` in spectral light pass, swap merge read path. | ~~2 weeks (per-photon-hero only) to 3–4 weeks (full chain storage)~~ → **4–6 weeks (full chain only; per-photon-hero refuted 2026-06-07, see §3.6).** | High — touches threading, KD-tree determinism, HWSS bundle interaction. Phase 2a's `LightVertexThroughput<Tag>` is the right plug-in point.  Now also coupled to audit §3.1 `ILight::emittedRadianceNM` migration (cannot be deferred — see §3.6 finding 13.4). | v3 design sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14, not yet design-reviewed; deferred to a future focused session. |
+| **VCM-spectral per-wavelength photon store / HWSS companion ancestor-chain re-evaluation (§3).** Templatize `VCMLightVertexStore` on `LightVertex`/`LightVertexNM` (currently unused scaffolding in `VCMLightVertex.h`), store ancestor chains, populate `throughputNM` + `nm` in spectral light pass, swap merge read path. | ~~2 weeks (per-photon-hero only) to 3–4 weeks (full chain storage)~~ → **4–6 weeks (full chain only; per-photon-hero refuted 2026-06-07, see §3.6).** | High — touches threading, KD-tree determinism, HWSS bundle interaction. Phase 2a's `LightVertexThroughput<Tag>` is the right plug-in point.  Note: the audit §3.1 `ILight::emittedRadianceNM` prerequisite (Finding 13.4) was **CLOSED 2026-09-02**, so only VCM HWSS companion ancestor-chain re-evaluation remains open. | v3 design sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14, not yet design-reviewed; deferred to a future focused session. |
 | **NM lobe-selection wavelength divergence (§3.7).** Separate, newly-discovered Pel-vs-NM correctness gap in `BDPTIntegrator` stochastic lobe selection.  Affects every NM rasterizer (PT-spectral, BDPT-spectral, MLT-spectral, VCM-spectral), not just merging. | TBD — needs sizing + design review of its own. | Medium — Pel-side semantics intentional and stable; NM-side semantics are likely the bug.  Likely fixes: (a) match Pel's `MaxValue(kray)` in NM; (b) Pel migrates to per-λ selection with MIS reweighting; (c) document as accepted stratification.  Empirical measurement needed to choose. | Not in §3 scope; flagged as its own item. |
 
 ### 6.4 Out of scope (matrix correction only, no implementation)
@@ -415,7 +644,7 @@ These came up during the audit and need a decision before the corresponding reme
 
 1. **VCM per-wavelength photon storage: hero-only or full chain? RESOLVED 2026-06-07 — full chain only.**
    - ~~Hero-only (~2 weeks, ~88 B/photon)~~: **REFUTED in design-review round 1; see §3.6.**  Three independently-fatal failure modes were uncovered, the most serious being dispersive-photon contamination (Finding 13.6): photons traced at η(λ_p) are geometrically wrong-path for λ_eye ≠ λ_p, making v2 a correctness regression vs the proxy on dispersive scenes.  The "stratified-hero" framing this Q1 originally recommended was mathematically false on dispersive / absorbing scenes.
-   - **Full chain (~~~3–4 weeks~~ → 4–6 weeks revised, ~570–970 B/photon)**: each photon retains its bounce-prefix chain; companion mismatches re-walk via `RecomputeSubpathThroughputNM`.  Memory grows 4–7× on typical caustic chains.  Also couples in the audit §3.1 `ILight::emittedRadianceNM` migration (cannot be deferred — Finding 13.4) and surfaces the §3.7 NM lobe-selection sibling that needs its own design.
+   - **Full chain (~~~3–4 weeks~~ → 4–6 weeks revised, ~570–970 B/photon)**: each photon retains its bounce-prefix chain; companion mismatches re-walk via `RecomputeSubpathThroughputNM`.  Memory grows 4–7× on typical caustic chains.  Note: the audit §3.1 `ILight::emittedRadianceNM` migration (Finding 13.4) was **CLOSED 2026-09-02**, leaving VCM HWSS companion ancestor-chain re-evaluation (and the separate §3.7 NM lobe-selection sibling) as the remaining work.
    - **Resolution:** the v2 shortcut is rejected; v3 chain-storage is the only path that closes §3 correctly.  Sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14, not yet design-reviewed; deferred to a future focused session.
 
 2. **BDPT-spectral adaptive sampling: per-pixel luminance signal source?**
@@ -442,7 +671,7 @@ These came up during the audit and need a decision before the corresponding reme
 - [docs/VCM.md](VCM.md) — VCM design, the "spectral merges use luminance proxy" v1 limitation (line 242), the HWSS interaction, scope of optimal-MIS research.
 - [docs/OIDN.md](OIDN.md) — OIDN integration, the AOV retrace fallback and inline-AOV (Accurate) modes, the FilteredFilm bypass invariant.
 - [docs/MLT_POSTMORTEM.md](MLT_POSTMORTEM.md) — why MLT is deliberately feature-empty.
-- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) `CreateAllChunkParsers()` — the helper-template wiring this audit cross-references against the matrix.
-- [src/Library/Shaders/VCMIntegrator.cpp:129-251](../src/Library/Shaders/VCMIntegrator.cpp#L129) — the `RISEPelToNMProxy` luminance projection and its callers.
-- [src/Library/Shaders/VCMLightVertex.h:110-120](../src/Library/Shaders/VCMLightVertex.h#L110) — the unused `LightVertexNM` struct that's the storage destination for the §3 fix.
+- [src/Library/Parsers/ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) `CreateAllChunkParsers()` — the helper-template wiring this audit cross-references against the matrix.
+- [src/Library/Shaders/VCMIntegrator.cpp:204-259](../src/Library/Shaders/VCMIntegrator.cpp#L204) — `VCMIntegrator::LightThroughputSpectrum` (cached at deposit/clamp time onto `LightVertex::throughputSpectrum` and evaluated via `.Eval(nm)` at merge time; `RISEPelToNMProxy` was deleted 2026-09-02 — see §3's status block and [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7.5).
+- [src/Library/Shaders/VCMLightVertex.h:195-205](../src/Library/Shaders/VCMLightVertex.h#L195) — the currently unused `LightVertexNM` scaffolding struct (and `LightVertex::throughputSpectrum` at line 143).
 - [AGENTS.md change checklist](../AGENTS.md) — required reading for any of §6.1's `RISE_API_*` factory changes.

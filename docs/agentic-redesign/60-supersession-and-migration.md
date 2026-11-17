@@ -1,10 +1,19 @@
 # Facet 6 — Supersession Inventory, Migration Path & Risk Register
 
-> **Status:** **CUTOVER COMPLETE; BROADER SUPERSESSION PARTIAL.** The v6 corpus
-> migration, v7-only runtime, CST-native save, and deletion of the legacy
-> streaming/span machinery are complete. Rows concerning the future immutable
-> derived/prepared architecture and remaining GUI/security work are still
-> roadmap material.
+> **Status (updated 2026-11):** **CUTOVER COMPLETE; HYBRID SUPERSESSION SHIPPED.**
+> - **Shipped:** v6→v7 corpus migration; native v7-only CST runtime (`Cst.{h,cpp}`) and **176** registered
+>   chunk keywords in [`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp);
+>   deletion of `AsciiSceneParser`, legacy streaming/macro/`FOR` machinery, `SaveEngine` byte-splice,
+>   `SourceSpanIndex`, and `OverrideSpanIndex`; CST-native atomic CAS `SaveEngine`; and the full
+>   `src/Library/Agent/` stack (5 chat providers, 38 chat tools + MCP server).
+> - **Retained & CST-adapted (rather than deleted per §2.3):** `SceneEditor`, `SceneEdit` (31 ops incl.
+>   `AgentEditBatch`), `EditHistory` (with exact-byte CST undo via `DocReplaceChunkIfText` /
+>   `mObjectSpellingJournal`), `DirtyTracker`, and 9 `*Introspection` classes.
+> - **Post-cutover language evolution:** `instance_array` (cited in §2.6 / §3.2 / §5) shipped for the
+>   July 2026 cutover and was later **retired in [doc 87](87-recursive-scene-graph.md) step 3d** in favor
+>   of `standard_object` `source` + `count_u` / `count_v`.
+> - **Still unbuilt target design:** immutable `DerivedScene` / `PreparedRenderState` stamp-keyed artifacts,
+>   persistent `VersionGraph` DAG + `GestureBuffer`, and generic `UiModel.h` consolidation.
 >
 > **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–6).** Where this
 > doc previously hedged behind open decisions (O1/O2/O3) or offered forks, it now
@@ -150,8 +159,9 @@ byte-splicing `SaveEngine` that **re-reads the file from disk at save time**
   (returns a `ChunkDescriptor`) and `Finalize()`. `ChunkDescriptor` /
   `ParameterDescriptor` / `ValueKind` (`Bool, UInt, Double, DoubleVec3, DoubleVec4,
   DoubleMat4, String, Filename, Enum, Reference`) / `ChunkCategory` live in
-  `src/Library/Parsers/ChunkDescriptor.h`. **153 chunk parsers** are registered in
-  `CreateAllChunkParsers()` (`AsciiSceneParser.cpp:~9640`). The descriptor IS the
+  `src/Library/Parsers/ChunkDescriptor.h`. **176 unique chunk keywords** are now registered in
+  `CreateAllChunkParsers()` ([`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp);
+  153 in the retired `AsciiSceneParser.cpp` at the time of this baseline). The descriptor IS the
   accepted-parameter-name set (drift on *names* is structurally impossible);
   **enum *values* are advisory, not enforced** (`reference_riseascene_parser_quirks.md`,
   the 2026-06-08 filter_type bug) — a real hazard for a schema-driven UI.
@@ -249,7 +259,9 @@ byte-splicing `SaveEngine` that **re-reads the file from disk at save time**
 
 ### 1.5 The agent/MCP surface (Facet 5's territory)
 
-**100% unbuilt.** `src/Library/Agent/` **does not exist**. The MCP server, LLM
+*(Pre-implementation baseline — `src/Library/Agent/` has since **SHIPPED** with MCP stdio/loopback HTTP, 5 chat providers, and 38 chat tools; see [50-agentic-surface.md](50-agentic-surface.md).)*
+
+**100% unbuilt (at baseline).** `src/Library/Agent/` **does not exist**. The MCP server, LLM
 runtime, provider adapters, credential store, the safe `validate` pass, scene-text
 retention on `Job`, framebuffer encoding — all net-new, all design-only in
 [docs/gui/MCP_TOOL_SURFACE.md](../gui/MCP_TOOL_SURFACE.md) /
@@ -376,6 +388,12 @@ Cross-facet ownership is noted so synthesis can detect double-claims or gaps.
 | **Render-populated caches** (irradiance cache, accumulation buffers) | `PixelBasedRasterizerHelper.cpp` | **EVOLVE → render-local mutable (D21); NOT lost** | Caches populated **DURING** a pass are **render-local mutable** state owned by the render pass — **NOT** part of the immutable snapshot. They may persist across passes/frames for temporal coherence (keyed to the snapshot they accelerate, invalidated when the scene changes). (Caches built **BEFORE** a pass — photon maps, light samplers, TLAS — stay immutable, built at seal/prepare; TLAS in `DerivedScene`, samplers/photons in `PreparedRenderState`.) | 2 |
 
 ### 2.3 The edit subsystem (the supersession centroid)
+
+> **Implementation note (2026-11):** `SourceSpanIndex`, `OverrideSpanIndex`, `TransformSnapshot`, and
+> `SaveEngine`'s Mode-A/B byte-splice were **deleted** as planned here, while `SceneEdit` (now 31 ops
+> incl. `AgentEditBatch`), `EditHistory`, `DirtyTracker`, `SceneEditor`, and 9 CST-adapted `*Introspection`
+> classes were **retained** and wired to exact-byte CST undo (`DocReplaceChunkIfText` /
+> `mObjectSpellingJournal`) rather than replaced by a standalone persistent `VersionGraph`.
 
 | Component | Files | Lines | Fate | Why | Facet |
 |---|---|---|---|---|---|

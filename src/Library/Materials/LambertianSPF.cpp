@@ -43,7 +43,7 @@ void LambertianSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
@@ -61,7 +61,7 @@ void LambertianSPF::Scatter(
 		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( ri.onb, ptrand ) );
 	}
 
-	diffuse.kray = pReflectance->GetColor(ri);
+	diffuse.kray = ReflectanceColor( *pReflectance, ri );
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;
@@ -92,7 +92,7 @@ void LambertianSPF::ScatterNM(
 	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
@@ -110,7 +110,7 @@ void LambertianSPF::ScatterNM(
 		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( ri.onb, ptrand ) );
 	}
 	
-	diffuse.krayNM = pReflectance->GetColorNM(ri, nm);
+	diffuse.krayNM = ReflectanceColorNM( *pReflectance, ri, nm );
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;

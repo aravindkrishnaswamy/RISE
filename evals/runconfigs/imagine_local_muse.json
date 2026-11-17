@@ -1,0 +1,14 @@
+{
+ "//": "Arc-77 local arm (user 2026-08-11): muse-glimmer 32B via Ollama -- tools+VISION+thinking, 131k ctx. NOTE: Ollama exposes no image-generation endpoint, so imagine_scene honestly refuses (local is not in the capability map) and the part-plan gate stays PLAN-ONLY. What this run tests: (a) a vision-capable LOCAL model driving the full agent loop; (b) whether it files plans/sketches like the hosted arms; (c) whether being able to SEE composites changes anything vs the hosted models that also see them. Phase 2 itself is not exercised here.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_dreamscape_figure.json"
+ ],
+ "providers": [
+  {
+   "provider": "local",
+   "model": "muse-glimmer:30b-mxfp8-dflash"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_local_muse"
+}

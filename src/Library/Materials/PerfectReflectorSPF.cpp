@@ -41,7 +41,7 @@ void PerfectReflectorSPF::Scatter(
 		const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 		ISampler& sampler,				///< [in] Sampler
 		ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-		const IORStack& ior_stack								///< [in/out] Index of refraction stack
+		const IORStack& ior_stack								///< [in] Index of refraction stack
 		) const
 {
 	OrthonormalBasis3D myonb = ri.onb;
@@ -73,7 +73,7 @@ void PerfectReflectorSPF::Scatter(
 	specular.pdf = 1.0;
 
 	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), n ) );
-	specular.kray = pReflectivity->GetColor(ri);
+	specular.kray = ReflectanceColor( *pReflectivity, ri );
 
 	if( Vector3Ops::Dot( specular.ray.Dir(), geomN ) <= 0 ) {
 		// A perfect mirror has no companion lobe to carry the energy -- there
@@ -96,7 +96,7 @@ void PerfectReflectorSPF::ScatterNM(
 	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	OrthonormalBasis3D myonb = ri.onb;
@@ -118,7 +118,7 @@ void PerfectReflectorSPF::ScatterNM(
 	specular.pdf = 1.0;
 
 	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), n ) );
-	specular.krayNM = pReflectivity->GetColorNM(ri,nm);
+	specular.krayNM = ReflectanceColorNM( *pReflectivity, ri, nm );
 
 	if( Vector3Ops::Dot( specular.ray.Dir(), geomN ) <= 0 ) {
 		// Mandatory (no companion lobe) -- see Scatter() for the rationale.

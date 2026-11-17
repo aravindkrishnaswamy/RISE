@@ -58,6 +58,13 @@ PathTracingSpectralRasterizer::PathTracingSpectralRasterizer(
 		);
 }
 
+void PathTracingSpectralRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
+{
+    PixelBasedSpectralIntegratingRasterizer::PrepareRuntimeContext(rc);
+    rc.pNativePTSubsurfaceBounceCap = rc.pStabilityConfig ?
+        &rc.pStabilityConfig->maxTranslucentBounce : nullptr;
+}
+
 PathTracingSpectralRasterizer::~PathTracingSpectralRasterizer()
 {
 	safe_release( pIntegrator );
@@ -147,7 +154,7 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 		for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 		{
 			const Scalar u = rc.random.CanonicalRandom();
-			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
+			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end, num_wavelengths );
 
 			Scalar result[SampledWavelengths::N] = {0};
 			pIntegrator->IntegrateRayHWSS(
@@ -215,6 +222,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
@@ -223,7 +231,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 	RasterizerState rast = {x,y};
 	const IRadianceMap* pRadianceMap = pScene.GetGlobalRadianceMap();
 
-	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
+	const bool bMultiSample = sampling && rc.UsesPixelSampling();
 
 	// Derive a per-pixel seed for Owen scrambling.
 	uint32_t pixelSeed = SobolSequence::HashCombine(
@@ -234,7 +242,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 	if( bMultiSample )
 	{
 		const bool adaptive = adaptiveConfig.maxSamples > 0 && rc.AllowsAdaptiveSampling();
-		const unsigned int batchSize = pSampling->GetNumSamples();
+		const unsigned int batchSize = sampling->GetNumSamples();
 		const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 		ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
@@ -310,7 +318,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 		while( sampleIndex < passEndIndex && !converged )
 		{
 			ISampling2D::SamplesList2D samples;
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 
 			ISampling2D::SamplesList2D::const_iterator m, n;
 			for( m=samples.begin(), n=samples.end(); m!=n && sampleIndex<passEndIndex; m++, sampleIndex++ )
@@ -320,20 +328,18 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 				const bool filmMode = (pFilteredFilm != 0);
 				Scalar weight;
 				if( filmMode ) {
-					ptOnScreen = Point2(
-						static_cast<Scalar>(x) + (*m).x - 0.5,
-						static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+					ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 					weight = 1.0;
 				} else if( pPixelFilter ) {
-					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-1-y );
 				} else {
-					ptOnScreen = Point2( x, height-y );
+					ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 					weight = 1.0;
 				}
 				weights += weight;
 
 				if( temporal_samples && !pScene.FireTemporalHold() ) {
-					pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+					AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 				}
 
 				const uint32_t effectiveIndex = useZSobol
@@ -457,7 +463,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 
 		PixelAOV aov;
 		const XYZPel sampleXYZ = IntegratePixelSpectral(
-			rc, rast, Point2(x, height-y), pScene, sampler, pRadianceMap,
+			rc, rast, RasterConvention::PixelCentreToScreen( x, y, height ), pScene, sampler, pRadianceMap,
 			pAOVBuffers ? &aov : 0 );
 		if( pAOVBuffers ) {
 			if( aov.valid ) {

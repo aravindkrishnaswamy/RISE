@@ -50,6 +50,13 @@ namespace RISE
 		void FinalizeTransformations() {}
 		Matrix4 const GetFinalTransformMatrix() const { return Matrix4(); }
 		Matrix4 const GetFinalInverseTransformMatrix() const { return Matrix4(); }
+		// 87 recursive scene graph: this stub carries no transform at all, so
+		// every hierarchy accessor collapses to identity / a pass-through.
+		void FinalizeTransformations( const Matrix4& ) {}
+		Matrix4 const GetLocalTransformMatrix() const { return Matrix4(); }
+		Matrix4 const GetParentWorldTransformMatrix() const { return Matrix4Ops::Identity(); }
+		bool IsParentWorldInvertible() const { return true; }
+		Matrix4 const WorldToLocal( const Matrix4& m ) const { return m; }
 
 	protected:
 		~StubObject() {}

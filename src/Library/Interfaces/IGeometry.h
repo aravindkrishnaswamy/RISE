@@ -19,6 +19,7 @@
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Utilities/BoundingBox.h"
 #include "../Polygon.h"
+#include <cmath>			// std::fabs (SelfHitRootFloor's default body)
 
 namespace RISE
 {
@@ -34,10 +35,44 @@ namespace RISE
 		Point2  uv;			///< Surface parameters at this point
 		bool    valid;		///< True if derivatives were successfully computed
 
+		//! THE CHART MAP: the 2x2 Jacobian of the TEXTURE coordinate
+		//! `(s, t)` this geometry stamps into
+		//! `RayIntersectionGeometric::ptCoord` with respect to the
+		//! parameters `(u, v)` the four vectors above differentiate.
+		//!
+		//! `dpdu` / `dpdv` are free to use the geometry's OWN natural
+		//! parameters (docs/GEOMETRY_DERIVATIVES.md "Magnitudes and
+		//! parameter scaling": the sphere's `u` is an azimuth in
+		//! RADIANS, the cylinder's is an axial WORLD coordinate, the
+		//! torus swaps its two angles for right-handedness), while
+		//! `ptCoord` is whatever normalised, possibly axis-swapped,
+		//! possibly sign-flipped `[0, 1]^2` chart the matching
+		//! `GeometricUtilities::*TextureCoord` produces.  A consumer
+		//! that combines `ptCoord` with a `(u, v)`-chart derivative --
+		//! `SolveFootprintUV`, whose output feeds mip LOD -- needs the
+		//! affine bridge between the two, and cannot guess it.
+		//!
+		//!   ds = dsdu*du + dsdv*dv
+		//!   dt = dtdu*du + dtdv*dv
+		//!
+		//! LOCAL: at a wrap seam or a pole the underlying map is not
+		//! differentiable, and this states the Jacobian of the local
+		//! branch only.
+		//!
+		//! DEFAULT identity with `texChartValid = false` -- the honest
+		//! "this geometry did not say".  A consumer must treat false as
+		//! "no texcoord Jacobian available" rather than assuming the
+		//! identity: an unset flag on a geometry whose two charts differ
+		//! by 2*pi is exactly the wrong-chart bug this field exists to
+		//! prevent.
+		Scalar  dsdu, dsdv, dtdu, dtdv;
+		bool    texChartValid;
+
 		SurfaceDerivatives() :
 		dpdu( Vector3(0,0,0) ), dpdv( Vector3(0,0,0) ),
 		dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
-		uv( Point2(0,0) ), valid( false )
+		uv( Point2(0,0) ), valid( false ),
+		dsdu( 1 ), dsdv( 0 ), dtdu( 0 ), dtdv( 1 ), texChartValid( false )
 		{
 		}
 	};
@@ -223,6 +258,66 @@ namespace RISE
 		//! geometries (sphere, mesh, ...) are always realized — no-op.
 		virtual void Realize() const {}
 
+		//! The smallest ray parameter this geometry's intersection routines will
+		//! accept as a genuine hit, for a ray leaving `localOrigin` (which sits on
+		//! or immediately off the face whose OUTWARD unit normal is `localNormal`)
+		//! along the UNIT direction `localDir`.  Everything is in this geometry's
+		//! OWN object space, and the return value is a range in those units.
+		//!
+		//! Every RISE intersector gates its roots with a self-hit floor so that a
+		//! ray published FROM a surface (Object::IntersectRay backs the hit point
+		//! off SURFACE_INTERSEC_ERROR = 1e-12 along the incoming ray) does not
+		//! re-hit that same surface at t ~ 0.  Since a8bef210 those floors are
+		//! SCALE-RELATIVE, so they are no longer a single global constant a caller
+		//! can hard-code: a sphere of radius 4 rejects roots below ~9e-12, a
+		//! 1000-unit one below ~2e-9.  Any caller that deliberately stands a ray
+		//! off a surface in order to re-hit it must clear the floor of the
+		//! geometry it is aiming at, so it has to be able to ASK.  The one such
+		//! caller today is CSGObject's exit-face payload probe
+		//! (AdoptCsgExitFacePayloadViaProbe), which stood off by a box-derived
+		//! band and silently fell back to the ENTRY face's payload -- an
+		//! antipodal UV on the far cavity wall -- on any operand bigger than a few
+		//! units.
+		//!
+		//! Default: the generic `NEARZERO * (1 + |localOrigin|_1)` floor that
+		//! RayQuadricIntersection (EllipsoidGeometry) and RayPlaneIntersection
+		//! (InfinitePlaneGeometry, CircularDiskGeometry) use verbatim.  Override
+		//! wherever the geometry's own gate is different (a larger coordinate
+		//! scale, a plane-distance band, a ray-march surface epsilon).  A
+		//! geometry whose gate is SMALLER than the default may leave it alone --
+		//! over-stating is the safe direction for the contract below, just
+		//! conservative (HairGeometry, whose curve gate is a flat NEARZERO, does
+		//! exactly that).
+		//!
+		//! Contract for overriders: the return must be an UPPER bound on the
+		//! geometry's own gate along `localDir` -- a caller standing off by more
+		//! than this and firing back must get the hit.  A geometry whose gate is
+		//! a PLANE DISTANCE rather than a range (BoxGeometry) must therefore
+		//! divide the band by |localDir . localNormal|, clamped away from zero so
+		//! a grazing query returns a finite (if large) answer rather than
+		//! infinity.
+		//!
+		//! DEFAULTED (a real body, not `= 0`) so an out-of-tree IGeometry
+		//! implementer that predates this method still COMPILES and gets the
+		//! generic floor, the same reason CanBeAreaLight / CanTessellate carry
+		//! bodies.  It is NOT declared last -- CanTessellate follows it -- so it
+		//! makes no vtable-slot claim: this is a source-compatibility promise
+		//! only.  (An earlier draft of this comment asserted both; corrected in
+		//! the adversarial review of 4b141ad3.)  In-tree, `src/3DSMax`'s
+		//! MAXGeometry is one such default-inheriting implementer -- it is not
+		//! part of any in-tree build, and it never acts as a CSG operand, so the
+		//! generic floor is all it needs.
+		virtual Scalar SelfHitRootFloor(
+			const Point3&  localOrigin,		///< [in] Ray origin, this geometry's object space
+			const Vector3& localDir,		///< [in] UNIT ray direction, same space
+			const Vector3& localNormal		///< [in] Unit outward normal of the face being re-hit
+			) const
+		{
+			(void)localDir; (void)localNormal;
+			return NEARZERO * ( Scalar(1) +
+				std::fabs( localOrigin.x ) + std::fabs( localOrigin.y ) + std::fabs( localOrigin.z ) );
+		}
+
 		//! Cheap, static capability hint: can this geometry produce a triangle
 		//! mesh via TessellateToMesh (after Realize, if deferred)?  Used at SCENE-
 		//! PARSE time so a composite like DisplacedGeometry can REFUSE a
@@ -235,6 +330,138 @@ namespace RISE
 		//! vtable slot ABI-stable (the mid-vtable insert this replaces would have
 		//! shifted IntersectRay and every later slot for stale implementers).
 		virtual bool CanTessellate() const { return true; }
+
+		//! SHORTEST DISTANCE from `ptObject` to this geometry's own surface,
+		//! in this geometry's own object space -- the per-family half of the
+		//! `proximity(r)` query (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2).
+		//!
+		//! UNSIGNED.  A point INSIDE the solid is at distance 0 from the
+		//! surface for this query's purposes, not at a negative distance:
+		//! interpenetration is contact, and the signal is deliberately
+		//! sign-free in v1 (a signed variant needs an inside test per
+		//! family, and is Phase 3).
+		//!
+		//! THE CONTRACT FOR OVERRIDERS IS ONE-SIDED, and it is the whole
+		//! safety argument of the signal: the value written must be the
+		//! true distance or an UPPER BOUND on it -- NEVER a lower one.  An
+		//! over-report makes `proximity` under-paint a seam, which is a
+		//! feature failure.  An under-report makes it paint contact where
+		//! there is none, which is a wrong render.  A family that cannot
+		//! honour that must REFUSE.
+		//!
+		//! `maxDistObject` is a permission, not a promise: an implementer
+		//! may return false as soon as it can prove the answer exceeds it,
+		//! and one that ignores it is still correct, only slower.  A
+		//! refusal means "this geometry contributes nothing to this query",
+		//! and the caller treats it as far.
+		//!
+		//! DEFAULTED to a refusal (a real body, not `= 0`) so every
+		//! geometry that has no closed form -- non-indexed RAW meshes,
+		//! Bezier patches, hair, and the out-of-tree 3DSMax implementer --
+		//! compiles unchanged and honestly contributes nothing.  Declared
+		//! LAST and defaulted, so it makes no claim on any existing vtable
+		//! slot.
+		//! \return TRUE and writes `outDist` (>= 0), or FALSE with
+		//!         `outDist` untouched.
+		virtual bool DistanceToSurface(
+			const Point3& ptObject,			///< [in] Query point, THIS geometry's object space
+			const Scalar maxDistObject,		///< [in] Search radius in the same space; may refuse beyond it
+			Scalar& outDist					///< [out] Distance to the surface, same space
+			) const
+		{
+			(void)ptObject; (void)maxDistObject; (void)outDist;
+			return false;
+		}
+
+		//! SIGNED distance LOWER BOUND from `ptObject` to this geometry's
+		//! surface, with an EXACT SIGN -- the other direction from
+		//! `DistanceToSurface`, and the capability Phase 3 of the
+		//! cross-object proximity design rests on
+		//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+		//!
+		//! THE CONTRACT, and it is the mirror image of the unsigned one:
+		//!   * SIGN IS EXACT.  `outSigned < 0` iff `ptObject` is strictly
+		//!     inside this geometry's solid, `> 0` iff strictly outside,
+		//!     `0` on the surface.  A family that cannot decide inside
+		//!     from outside -- every SHEET (plane, disk, clipped plane,
+		//!     open cylinder, mesh, patch, hair) -- must REFUSE.
+		//!   * MAGNITUDE IS A LOWER BOUND: `|outSigned| <= ` the true
+		//!     distance to the surface.  That is what makes the CSG
+		//!     descent step `|f|` unable to overshoot the zero set and
+		//!     what makes an `interior` depth an under-read rather than an
+		//!     over-read.  It is the OPPOSITE direction from
+		//!     `DistanceToSurface`'s upper bound, so the two cannot share
+		//!     an implementation and the transform layer converts them by
+		//!     different singular values (`×σ_min` here, `×σ_max` there).
+		//!
+		//! `outExact` says the magnitude IS the distance (not merely a
+		//! bound), which is what a CSG composite's BOUNDARY ARM consumes
+		//! to admit a landing exactly on this operand's surface.  Set it
+		//! ONLY for a closed-form family on a NON-DEGENERATE instance; a
+		//! bounded family (ellipsoid, SDF) must leave it false.  Cleared
+		//! by the refusing default below, so an implementer that forgets
+		//! it cannot leak a stale `true` from the caller's stack.
+		//!
+		//! IT NEVER REFUSES FOR RANGE.  `maxDistObject` bounds EFFORT only
+		//! -- the CSG descent evaluates operands at points well outside
+		//! any query radius, so an implementer that copied
+		//! `DistanceToSurface`'s lower-bound early-out into this method
+		//! would make every intersection with a small subtrahend refuse.
+		//! Only a FAMILY or a DEGENERACY refusal is legitimate here.
+		//!
+		//! DEFAULTED to a refusal, declared LAST: no claim on any existing
+		//! vtable slot, and every sheet family compiles unchanged.
+		//! \return TRUE and writes both outputs, or FALSE with
+		//!         `outSigned` untouched and `outExact` cleared.
+		virtual bool SignedDistanceLower(
+			const Point3& ptObject,			///< [in] Query point, THIS geometry's object space
+			const Scalar maxDistObject,		///< [in] Effort budget in the same space; NOT a range refusal
+			Scalar& outSigned,				///< [out] Signed lower bound, same space: `<0` strictly inside, `>0` strictly outside, `0` ON the surface (a single primitive promises the two-state form; the tri-state `0 = no information` is IObject's, for a composite's interior seam)
+			bool& outExact					///< [out] TRUE when the magnitude is the exact distance
+			) const
+		{
+			(void)ptObject; (void)maxDistObject; (void)outSigned;
+			outExact = false;
+			return false;
+		}
+
+		//! DL-320: whether a hit on this surface's BACK face is reported
+		//! with the normal FLIPPED TOWARD THE RAY (the double-sided
+		//! convention, `RayIntersectionGeometric::bGeomNormalOrientedToRay`).
+		//!
+		//! It matters for emitters.  A Lambertian luminaire is one-sided
+		//! about the normal it is HANDED, so on a surface that reports a
+		//! ray-facing normal it emits from BOTH faces for every strategy
+		//! that HITS it (docs/SCENE_CONVENTIONS.md: "with `doublesided
+		//! TRUE` the quad emits from BOTH faces").  Every strategy that
+		//! SAMPLES the emitter -- NEE, the light-subpath root, the photon
+		//! tracers -- asks this to describe the same two-faced source: a
+		//! sampled point emits from the face toward the receiver, a light
+		//! subpath leaves from either face with probability 1/2, and the
+		//! emitter's total power counts both faces.  See
+		//! docs/DL320_DOUBLE_SIDED_EMITTER.md.
+		//!
+		//! TRUE for: `TriangleMeshGeometry` / `TriangleMeshGeometryIndexed`
+		//! with `bDoubleSided`, `DisplacedGeometry` (its internal mesh's
+		//! flag), `ClippedPlaneGeometry` with `doublesided`, and
+		//! `BezierPatchGeometry` (it flips on every back-face hit it
+		//! accepts).  FALSE (the default) for every analytic primitive
+		//! (sphere, box, disk, bilinear patch, ...): their back faces
+		//! report the outward normal, so a luminaire on them is one-sided.
+		//! `HairGeometry` flips unconditionally but cannot be an area light
+		//! (`CanBeAreaLight()` is false), so it keeps the default.
+		//!
+		//! DEFAULTED, declared LAST: no claim on any existing vtable slot.
+		virtual bool IsDoubleSided() const { return false; }
+
+		//! DL-626: monotonic per-instance revision bumped whenever this
+		//! geometry's shape, vertex positions, control points, or topology
+		//! mutate in place (e.g. `RegenerateData`, `UpdateVertices`,
+		//! `DoneIndexedTriangles`, `AddPatch` / `Prepare`, `RefreshMeshVertices`).
+		//! Defaulted to 0 for stateless / out-of-tree implementers;
+		//! `Implementation::Geometry` maintains the atomic counter.
+		//! DEFAULTED, declared LAST: no claim on any existing vtable slot.
+		virtual unsigned long long ShapeRevision() const { return 0; }
 	};
 }
 

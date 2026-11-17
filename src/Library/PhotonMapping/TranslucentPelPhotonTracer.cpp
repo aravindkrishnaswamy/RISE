@@ -13,11 +13,13 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/PathVertexEval.h"
 #include "TranslucentPelPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayIntersection.h"
+#include "../Utilities/GradedIndexMedium.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -55,13 +57,12 @@ void TranslucentPelPhotonTracer::TracePhoton(
 	const RISEPel& power,
 	const bool bFromTranslucent,
 	TranslucentPelPhotonMap& pPhotonMap,
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,								///< [in] Index of refraction stack (not modified; DL-315)
+	const unsigned int depth								///< [in] Recursion depth (0 = primary photon emitted from the light)
 	) const
 {
-	static unsigned int		numRecursions = 0;
-
 #ifdef ENABLE_MAX_RECURSION
-	if( numRecursions > nMaxRecursions )
+	if( depth > nMaxRecursions )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
@@ -78,12 +79,11 @@ void TranslucentPelPhotonTracer::TracePhoton(
 		return;
 	}
 
-	numRecursions++;
-
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, nullRasterizerState );
 	ri.geometric.ray.SetDir(Vector3Ops::Normalize(ri.geometric.ray.Dir()));
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	IndependentSampler alphaSampler(random);
+	pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
 
 	if( ri.geometric.bHit )
 	{
@@ -103,8 +103,45 @@ void TranslucentPelPhotonTracer::TracePhoton(
 			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
 		}
 
-		// Set the current object on the IOR stack
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: this hit's current object lives on a COPY; the caller's
+		// stack is `const` and is no longer written through (IORStack's
+		// pCurrentObject used to be `mutable`).
+		IORStack hitStack( ior_stack );
+
+		// DL-292: the interior-segment graded-index factor (DL-09) for the
+		// straight segment this photon just traced, in IMPORTANCE order
+		// (n(hit)/top)^2 -- a straight graded segment has no refraction
+		// Jacobian to supply it implicitly, unlike an interface.  Paid on
+		// the photon's power here, so a gather that pairs it with an eye
+		// walk (which pays its own radiance-order factors) prices the path
+		// as PT/BDPT do; the stack top is re-recorded as n(hit), so the
+		// next segment telescopes.  Exactly nothing happens unless the
+		// medium the photon travelled through is graded.  Before DL-292
+		// the photon tracers never Advanced: photon-map gathers kept the
+		// pre-DL-09 accounting.
+		Scalar gradedScale = 1;
+		if( GradedIndexMedium::Advance( hitStack, ri.geometric.ptIntersection,
+				GradedIndexMedium::eImportance, gradedScale ) ) {
+			const Scalar ambIOR = hitStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
+		RISEPel hitPower( power );
+		if( gradedScale != Scalar( 1 ) ) {
+			hitPower = hitPower * gradedScale;
+		}
+		hitStack.SetCurrentObject( ri.pObject );
+
+		// Separate incident-flux packets from translucent diffuse-exit
+		// packets, whose SPF weight already includes Beer*(1-scattering).
+		// Capture this pre-scatter state before recursive walks change the
+		// stack's current object. The gather must not price that transport
+		// attenuation again as a front-reflection material response.
+		bool bTranslucentExit = false;
+		if( ri.pMaterial ) {
+			const SpecularInfo info =
+				ri.pMaterial->GetSpecularInfo( ri.geometric, hitStack );
+			bTranslucentExit = info.valid && info.hasInterior && hitStack.containsCurrent();
+		}
 
 		ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
 
@@ -114,38 +151,50 @@ void TranslucentPelPhotonTracer::TracePhoton(
 			ScatteredRayContainer		scattered;
 
 			IndependentSampler samplerWrapper( random );
-		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
+		// IMPORTANCE mode: NO eta^2 basic-radiance factor (debt 30).
+		// A photon carries FLUX, and flux is conserved across a smooth
+		// interface up to Fresnel -- it is RADIANCE that picks up
+		// (eta_before/eta_after)^2, and only on the camera-rooted side.
+		// Scaling here too would cancel the non-symmetry and put every
+		// gather/merge that pairs a photon with an eye vertex back where
+		// it was.  See docs/REFRACTIVE_RADIANCE_SCALING.md.
+		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, hitStack );
 
-			RISEPel accum_scattered;
+			// DL39: preserve the diffuse exit lobe's Beer-weighted packet,
+			// rather than treating absorption as deposited flux. At ordinary
+			// receivers the entire arriving packet is retained (DL280): a
+			// sampled glossy continuation is not a flux partition to subtract
+			// before the query BSDF is evaluated. DL39's historical pure-wall
+			// control did not exercise that mixed-material subtraction.
+			RISEPel diffuse_deposit;
 			for( unsigned int i=0; i<scattered.Count(); i++ ) {
 				ScatteredRay& scat = scattered[i];
 				// Trace all rays
 				scat.ray.Advance( 1e-8 );
 				bool bTraceTranslucent = true;
-				if( !bTraceDirectTranslucent && numRecursions==1 ) {
+				if( !bTraceDirectTranslucent && depth==0 ) {
 					bTraceTranslucent = false;
 				}
 
 				if( (scat.type==ScatteredRay::eRayTranslucent && bTraceTranslucent) ||
 					(scat.type==ScatteredRay::eRayReflection && bTraceReflections) ||
 					(scat.type==ScatteredRay::eRayRefraction && bTraceRefractions) ) {
-					TracePhoton( scat.ray, power*scat.kray, scat.type==ScatteredRay::eRayTranslucent, pPhotonMap, ior_stack );
-					if( bFromTranslucent ) {
-						accum_scattered = accum_scattered + scat.kray;
-					}
+					TracePhoton( scat.ray, hitPower*scat.kray*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), scat.type==ScatteredRay::eRayTranslucent, pPhotonMap, scat.ior_stack?*scat.ior_stack:hitStack, depth+1 );
+				} else if( scat.type==ScatteredRay::eRayDiffuse ) {
+					diffuse_deposit = diffuse_deposit + scat.kray;
 				}
 			}
 
-			// Only deposit if the photon came from a translucent surface, 
+			// Only deposit if the photon came from a translucent surface,
 			if( bFromTranslucent ) {
-				pPhotonMap.Store( power*(RISEPel(1,1,1)-accum_scattered), ri.geometric.ptIntersection );
+				pPhotonMap.Store(
+					(bTranslucentExit ? hitPower*diffuse_deposit : hitPower) * (1 / ri.acceptedAlphaCoverage),
+					ri.geometric.ptIntersection, -ri.geometric.ray.Dir(), bTranslucentExit );
 			}
 		}
 	}
 
 	// If there was no hit then the photon just got ejected into space!
-
-	numRecursions--;
 }
 
 

@@ -51,6 +51,7 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IFunction1D.h"
 #include "../src/Library/RISE_API.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 
@@ -96,8 +97,7 @@ static void ArmWatchdog( unsigned int ) {}
 
 static std::string TmpDir()
 {
-	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? tmp : "/tmp/";
+	std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 	return dir;
 }

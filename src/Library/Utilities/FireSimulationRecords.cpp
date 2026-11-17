@@ -6,6 +6,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include "pch.h"
 #include "FireSimulationRecords.h"
 #include <algorithm>
 #include <cmath>

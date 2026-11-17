@@ -316,7 +316,7 @@ namespace RISE
 			//!              behavior.
 			//! `n == 0` maps to 128 (the historical default) rather than a cap
 			//! that would process zero vertices and return black.
-			void SetMaxPathDepth( unsigned int n ) { mMaxPathDepth = ( n == 0 ) ? 128 : n; }
+			void SetMaxPathDepth( unsigned int n ) { mMaxPathDepth = ( n == 0 ) ? kDefaultPathTracingMaxDepth : n; }
 
 			//! GUI render modes P2b `indirect` mode (docs/gui/RENDER_MODES.md
 			//! §3 Lighting): when true, suppresses the DIRECT contribution
@@ -520,7 +520,26 @@ namespace RISE
 				Scalar glossyFilterWidth_,
 				bool smsPassedThroughSpecular_,
 				bool smsHadNonSpecularShading_,
-				PixelAOV* pAOV = 0
+				PixelAOV* pAOV = 0,
+				//! DL-74: the incoming vertex's MIS-PARTNER density, read off
+				//! the producer's `RAY_STATE::MisPartnerPdf()`.  Negative
+				//! means "same as `bsdfPdf_`", which is the right answer for
+				//! every camera-ray and legacy-rasterizer entry.  It is NOT
+				//! the right answer for `RayCaster`'s volume phase-scatter
+				//! continuation, whose two fields differ under volume
+				//! guiding (`bsdfPdf` = the guided mixture, `bsdfMisPdf` =
+				//! the raw phase pdf that volume NEE weights against), so
+				//! `PathTracingShaderOp` forwards `MisPartnerPdf()` here.
+				Scalar bsdfMisPdf_ = -1,
+				//! DL-185: `RayCaster::CastRay`'s own cast-level RR
+				//! compensation for the call that reached THIS hit -- see
+				//! `RAY_STATE::castRRCompensation`.  1 (no-op) for an
+				//! ordinary top-level camera-ray dispatch; only nonzero for
+				//! a re-entry through `RayCaster::CastRay` (e.g. a
+				//! BSSRDF/random-walk continuation's exit hit).  Scales the
+				//! FIRST vertex's own NEE training integrand only, never
+				//! the returned radiance.
+				Scalar castRRCompensation_ = 1
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (NM).
@@ -549,7 +568,36 @@ namespace RISE
 				Scalar glossyFilterWidth_,
 				bool smsPassedThroughSpecular_ = false,
 				bool smsHadNonSpecularShading_ = false,
-				PixelAOV* pAOV = 0
+				PixelAOV* pAOV = 0,
+				//! DL-74: the incoming vertex's MIS-PARTNER density, read off
+				//! the producer's `RAY_STATE::MisPartnerPdf()`.  Negative
+				//! means "same as `bsdfPdf_`", which is the right answer for
+				//! every camera-ray and legacy-rasterizer entry.  It is NOT
+				//! the right answer for `RayCaster`'s volume phase-scatter
+				//! continuation, whose two fields differ under volume
+				//! guiding (`bsdfPdf` = the guided mixture, `bsdfMisPdf` =
+				//! the raw phase pdf that volume NEE weights against), so
+				//! `PathTracingShaderOp` forwards `MisPartnerPdf()` here.
+				Scalar bsdfMisPdf_ = -1, ///< DL-74 -- see the RGB twin
+				Scalar castRRCompensation_ = 1, ///< DL-185 -- see the RGB twin
+				//! DL-295: the caller's SMS-uncovered-chain state (see
+				//! `PTNextSMSChainUncovered` in the .cpp) -- true when the
+				//! specular chain that reached @a firstHit already crossed
+				//! a delta vertex SMS cannot represent, so SMS holds no
+				//! estimate for any emitter this chain goes on to hit.
+				//! Only the HWSS body's per-wavelength hand-offs pass it;
+				//! every other entry starts a chain and passes false.
+				bool smsChainUncovered_ = false,
+				//! DL-372 / DL-336: the SMS anchor + delta chain recorded
+				//! before this hand-off (see `SMSChainRecord`), so an
+				//! emitter hit past it can ask whether SMS's own seed
+				//! reaches it.  Only the HWSS body's per-wavelength
+				//! hand-offs pass it; null (no record) keeps today's
+				//! suppress-everything rule for an inherited anchor.
+				const SMSChainRecord* pSMSChain_ = nullptr,
+                //! Internal HWSS hand-off mode; its RuntimeContext scope also
+                //! carries legacy provenance through NM shader/SSS recasts.
+                bool smsIgnoreExtended_ = false
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (HWSS).
@@ -576,7 +624,35 @@ namespace RISE
 				unsigned int volumeBounces_,
 				Scalar glossyFilterWidth_,
 				Scalar result[SampledWavelengths::N],
-				PixelAOV* pAOV = 0
+				PixelAOV* pAOV = 0,
+				//! DL-74: the incoming vertex's MIS-PARTNER density, read off
+				//! the producer's `RAY_STATE::MisPartnerPdf()`.  Negative
+				//! means "same as `bsdfPdf_`", which is the right answer for
+				//! every camera-ray and legacy-rasterizer entry.  It is NOT
+				//! the right answer for `RayCaster`'s volume phase-scatter
+				//! continuation, whose two fields differ under volume
+				//! guiding (`bsdfPdf` = the guided mixture, `bsdfMisPdf` =
+				//! the raw phase pdf that volume NEE weights against), so
+				//! `PathTracingShaderOp` forwards `MisPartnerPdf()` here.
+				Scalar bsdfMisPdf_ = -1, ///< DL-74 -- see the RGB twin
+				//! DL-196: `RayCaster::CastRayHWSS`'s own cast-level RR
+				//! compensation for the call that reached THIS hit -- the
+				//! HWSS twin of the RGB/NM `castRRCompensation_` parameter
+				//! above (DL-185).  Forwarded into the hero-bundle PART-2
+				//! NEE call only at `firstHit` (the two per-wavelength
+				//! NM-delegation fallbacks in this body's own entry
+				//! branches); every mid-path delegation to
+				//! `IntegrateFromHitNM` reached later in this body's own
+				//! loop is a FRESH vertex, not a `RayCaster::CastRay`
+				//! re-entry, and keeps the default 1.0 (no-op).  1.0 for an
+				//! ordinary top-level camera-ray dispatch; only nonzero for
+				//! a re-entry through `RayCaster::CastRayHWSS` (currently
+				//! inert in production -- see DL-196's own doc note: the
+				//! only production caller of `CastRayHWSS` always passes a
+				//! default-constructed `RAY_STATE`, so this is a training-
+				//! consistency fix with no observable effect today).
+				Scalar castRRCompensation_ = 1,
+				const IORStack* preseededOriginLanes_ = 0
 				) const;
 
 			/// Traces one complete path for a single wavelength.
@@ -656,7 +732,14 @@ namespace RISE
 				bool smsHadNonSpecularShading_,
 				PixelAOV* pAOV,
 				typename SpectralDispatch::SpectralValueTraits<Tag>::value_type* pDirectResult,
-				const Tag& tag
+				const Tag& tag,
+				Scalar bsdfMisPdf_ = -1,		///< DL-74 -- see IntegrateFromHit
+				Scalar castRRCompensation_ = 1,	///< DL-185 -- see IntegrateFromHit
+				bool smsChainUncovered_ = false,	///< DL-295 -- see IntegrateFromHitNM
+				const SMSChainRecord* pSMSChain_ = nullptr,
+                //! Internal HWSS hand-off mode; its RuntimeContext scope also
+                //! carries legacy provenance through NM shader/SSS recasts.
+                bool smsIgnoreExtended_ = false	///< DL-372 -- see IntegrateFromHitNM
 				) const;
 
 			/// Shared body of IntegrateRay / IntegrateRayNM.
@@ -704,7 +787,8 @@ namespace RISE
 				unsigned int volumeBounces,
 				Scalar glossyFilterWidth,
 				PixelAOV* pAOV,
-				const Tag& tag
+				const Tag& tag,
+				Scalar bsdfMisPdf = -1		///< DL-74 -- see IntegrateFromHit
 				) const;
 		};
 	}

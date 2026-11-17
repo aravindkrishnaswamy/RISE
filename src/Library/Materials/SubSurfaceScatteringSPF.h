@@ -3,21 +3,21 @@
 //  SubSurfaceScatteringSPF.h - Defines the surface scattering
 //  probability function for BSSRDF-based subsurface scattering.
 //
-//  With the BSSRDF approach, all subsurface light transport is
-//  handled analytically by the diffusion profile (evaluated in the
-//  integrator via probe ray sampling).  The SPF is responsible only
+//  Subsurface transport is handled by the integrator through a
+//  diffusion BSSRDF or volumetric random walk. The SPF is responsible only
 //  for surface interactions at the boundary:
 //
 //  From outside (front face):
 //    - GGX-sampled reflection (non-delta when rough, delta when smooth)
-//    - The refracted (entry) ray is NOT generated here — the BDPT
-//      integrator samples entry points via BSSRDF importance sampling.
+//    - The refracted (entry) ray is NOT generated here; the
+//      integrator handles subsurface entry separately.
 //      The SPF only emits a surface reflection ray.
 //
 //  From inside (back face):
-//    - Should not occur with BSSRDF (no volumetric random walk).
-//      If hit from inside (e.g. BDPT light subpath), emit a delta
-//      Fresnel reflection back into the medium.
+//    - Shipped SSS materials set bAbsorbBackFace=true and emit no rays.
+//    - The standalone non-absorbing fallback emits delta Fresnel
+//      reflection and exit refraction into the post-pop medium; total
+//      internal reflection emits only the reflected ray.
 //
 //  References:
 //    - Christensen & Burley, "Approximate Reflectance Profiles for
@@ -78,7 +78,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,										///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -89,7 +89,7 @@ namespace RISE
 				ISampler& sampler,										///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Evaluates the PDF for the scattered direction.

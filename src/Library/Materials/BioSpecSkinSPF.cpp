@@ -302,7 +302,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 				photon_in,
 				photon_temp,
 				onb,
-				1.0 );
+				sp.ior_outside );	// DL-290: live exterior, was 1.0
 
 			if( ref > 0.0 && sampler.Get1D() < ref ) {
 				// Take the reflectance and use the Trowbridge scattering
@@ -423,7 +423,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 				photon_temp,
 				leaving_skin,
 				onb,
-				1.0
+				sp.ior_outside	// DL-290: live exterior, was 1.0
 				);
 
 			if( ref > 0.0 && sampler.Get1D() < ref ) {
@@ -883,7 +883,7 @@ void BioSpecSkinSPF::Scatter(
 		const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 		ISampler& sampler,				///< [in] Sampler
 		ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-		const IORStack& ior_stack								///< [in/out] Index of refraction stack
+		const IORStack& ior_stack								///< [in] Index of refraction stack
 		) const
 {
 
@@ -898,6 +898,7 @@ void BioSpecSkinSPF::Scatter(
 	sp.ior_epidermis = pnt_ior_epidermis.GetValuesAt(ri).v[0];
 	sp.ior_papillary_dermis = pnt_ior_papillary_dermis.GetValuesAt(ri).v[0];
 	sp.ior_reticular_dermis = pnt_ior_reticular_dermis.GetValuesAt(ri).v[0];
+	sp.ior_outside = OutsideIOR( ri );
 
 	sp.concentration_eumelanin = pnt_concentration_eumelanin.GetValuesAt(ri).v[0];
 	sp.concentration_pheomelanin = pnt_concentration_pheomelanin.GetValuesAt(ri).v[0];
@@ -967,7 +968,7 @@ void BioSpecSkinSPF::ScatterNM(
 		ISampler& sampler,				///< [in] Sampler
 		const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 		ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-		const IORStack& ior_stack								///< [in/out] Index of refraction stack
+		const IORStack& ior_stack								///< [in] Index of refraction stack
 		) const
 {
 	// Setup the instance specific variables
@@ -981,6 +982,7 @@ void BioSpecSkinSPF::ScatterNM(
 	sp.ior_epidermis = pnt_ior_epidermis.GetValueAtNM(ri,nm);
 	sp.ior_papillary_dermis = pnt_ior_papillary_dermis.GetValueAtNM(ri,nm);
 	sp.ior_reticular_dermis = pnt_ior_reticular_dermis.GetValueAtNM(ri,nm);
+	sp.ior_outside = OutsideIOR( ri );
 
 	sp.concentration_eumelanin = pnt_concentration_eumelanin.GetValueAtNM(ri,nm);
 	sp.concentration_pheomelanin = pnt_concentration_pheomelanin.GetValueAtNM(ri,nm);

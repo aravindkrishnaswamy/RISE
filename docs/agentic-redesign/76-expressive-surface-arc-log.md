@@ -81,6 +81,27 @@
    BDPT's phantom term looked like 9.26-vs-29.5 on direct view; on
    indirect paths it was weight ≈ 4e-4.  *Characterize deferred defects
    at their WORST geometry before writing the severity word down.*
+7. **The yield law has a mirror failure: blocking dies too (post-arc,
+   benchmark #2).**  The count reached 13+ occurrences across every
+   model tier — including a Fable subagent — and the resume-gate's
+   demand to "wait in foreground" then hit the OTHER wall: a subagent
+   that blocks past ~10 minutes is killed by the 600s stream watchdog
+   (context lost, disk state intact).  Neither yield nor block works
+   for hour-scale jobs inside a subagent.  *Any job longer than ~8
+   minutes is SUPERVISOR-OWNED as harness-tracked background Bash;
+   the subagent's role ends at authoring the inputs — and a watchdog
+   kill is reconstructed from disk (outputs + logs), not by resuming
+   the dead context.*
+8. **A verification command that runs in the wrong cwd fails SILENTLY
+   as an empty grep.**  A compound `cd scratchpad && sed > repo-path
+   && export RISE_MEDIA_PATH="$(pwd)/" && ./bin/rise ...` verified
+   nothing: after the `cd`, the relative binary path pointed nowhere
+   and `$(pwd)` baked the WRONG media path — the pipeline emitted
+   nothing and empty grep output could read as "no errors".  *A
+   verification step must require a POSITIVE success marker (the
+   expected output line, an explicit exit echo); silence is never a
+   pass — and don't mix `cd`-relative and repo-relative paths in one
+   compound command.*
 
 ## 3. Domain facts worth not re-deriving
 
@@ -122,6 +143,19 @@
   never tool-list browsing); exposure necessary but not sufficient;
   scene-skeleton-and-conventions is the highest-reach carrier (read
   first in every observed run).
+- **`file_rasterizeroutput` relative patterns resolve against the
+  media path, not the process cwd** (observed on the benchmark-#2
+  re-render: cwd was the scratchpad, `RISE_MEDIA_PATH` the repo root,
+  and `final_v2.png` landed in the repo root as an absolute path;
+  earlier runs with media path = cwd wrote beside the scene).  When
+  scripting renders outside the repo, either run with cwd == media
+  path or expect outputs at the media root.
+- **Result-payload facts are acted on where ambient advice is not**
+  (post-E4 mermaid run): `volume_bank`'s bbox note in its tool RESULT
+  drove correct bbox updates on reposition.  A task-specific fact
+  arriving in the response to a call the model just made sits on the
+  blocking-fact side of the mechanism law — worth exploiting
+  deliberately when choosing where a fact should surface.
 
 ## 4. Working practices that earned their keep
 
@@ -144,3 +178,265 @@
   sharpened at that step at least five times (the gallery "silent
   failure", the S2 qwen reach question, the S3b cozy attribution,
   the degenerate-turn diagnosis, the perfect-group causal trace).
+
+## 5. Post-arc R1 (2026-08-09) — process notes
+
+Three slices (`e666f72d`) driven by a trajectory forensic rather than a
+hypothesis; design + measurement record is
+[75-expressive-surface-arc.md](75-expressive-surface-arc.md) §7 "POST-ARC R1".
+What earned recording here:
+
+- **Read the trajectory before proposing the lever.**  The user asked for
+  bulk removal and "never do a full render"; the forensic supplied the
+  numbers that made both concrete (20 removal calls / 40 of 93 records;
+  `imageMaxEdge` bounding only the returned PNG, never the render) and
+  turned "never do a full render" from an instruction — the one form
+  measured to zero at every exposure — into a structural cap.  The same
+  run supplied a free mechanism-law datapoint: our own render tool
+  description already advised `quality:"draft"`, and it measured 0/5.
+- **Workers pushing back with evidence beat workers complying.**  Three
+  arbitrated instructions were refused on grounds and the refusals were
+  right: a rasterizer-in-batch test (structurally unreachable — rasterizer
+  chunks have no `name`; the shipped tool text already says they are
+  unremovable), a diagnostic-string fix (the string is built only after
+  the failure path has returned), and an assertion wording (production
+  emits a distinct, more precise phrase for the unknown case).  Briefs
+  should invite this explicitly; two of the three refutations corrected a
+  reviewer's or the supervisor's premise, not the code.
+- **Verify a predicate is TOTAL, not merely correct.**  The round-1 P1 was
+  a cap that worked for every value it was tested with and silently did
+  nothing for the sentinel (`-1 > 16` is false).  Every fixture had used a
+  PT-family rasterizer.
+- **A supervisor misdiagnosis propagated two hops before review caught
+  it.**  A log line ("delegating to 'pt'") became a claim that
+  `AutoRasterizer` forwards the sample-count override, which became a
+  worker brief, which became a code comment asserting it as fact — while
+  two OTHER comments in the same round said the opposite.  The real cause
+  was a one-word assertion mismatch.  Fresh reviewers reading the header
+  beat three parties reasoning from a log line.
+- **Don't run a gate concurrently with an editing worker.**  A clean
+  rebuild + full suite was launched while a fix worker was still editing;
+  mixed object state invalidated the run and cost a full cycle.  Sequence:
+  workers report → tree verified stable → gate runs alone.
+- **A scanner extension proved itself inside the same session.**  Four
+  stale verb-count comments survived because the hygiene scanner's scope
+  excluded the GUI trees; the widened scanner then caught a planted fifth
+  by file and line, and a hand sweep found a sixth in `tests/` — a scope
+  the scanner still does not cover (recorded residual).
+- **Splitting a commit is only worth it if the pieces are green.**  R1's
+  three slices interleave within the same functions and their tests
+  cross-reference; three commits would not have built independently, so
+  bisectability was better served by one documented commit.
+
+## 6. Post-arc R2 (2026-08-10) — process notes
+
+Slice record is [75-expressive-surface-arc.md](75-expressive-surface-arc.md)
+§7 "POST-ARC R2" (`4b9da97c`).  What earned recording here:
+
+- **Decode the render, don't just read the call log.**  The census said
+  "9 of 12 primitives"; LOOKING at the trajectory's own `png_base64`
+  said "the wizard is a traffic cone".  The second is what made the
+  finding legible and is a step the supervisor can always take — the
+  bytes are already in the trajectory.  We ask agents to close a
+  looking loop; the supervisor should close it too.
+- **The revision histogram is a better instrument than the build
+  census.**  Counting what the model CHANGED after each render (13
+  position / 10 power / 6 color / 0 geometry) localized the constraint
+  far more sharply than counting what it built.  For any "why didn't it
+  fix X" question, census the REVISIONS, not the artifact.
+- **A correct-looking idiom transplanted across a boundary is now a
+  two-instance pattern.**  R1b's sample cap was correct for every value
+  except the sentinel; R2's `if(!ok) return MakeError(...)` was correct
+  in the sibling verb whose `ok` means only "bad request".  Both passed
+  their own tests.  Standing review question, worth adding to briefs:
+  *what invariant does this idiom depend on, and does it hold here?*
+- **Extending a fix to a sibling site is half the job.**  The fix round
+  correctly propagated the conflict CLASSIFICATION to a third site the
+  brief hadn't named (good, audit-by-bug-pattern), but not the
+  field-CLEARING that goes with it — creating a path that reported
+  "document unchanged" beside `previousGeometry.removed:true`.  When
+  propagating, propagate the whole behaviour, not the branch you came
+  for.
+- **A test can encode the bug.**  RG7 asserted `!stale.ok` — the old,
+  wrong contract — and had to be corrected as part of the fix.  A
+  green test is evidence about consistency, not about correctness.
+- **Say what a slice does NOT do, in the commit.**  R2 removes the COST
+  of form revision; it cannot make a model NOTICE a plank-shaped wing.
+  Writing that into the commit and the arc record before measuring
+  keeps the pending result honest either way.
+- **The user declined a proposed scaffold family as too scene-specific**
+  — the anti-overfit mandate applied to the supervisor's own proposal.
+  Evidence from one scene justifies a MECHANISM (cost removal), not a
+  taxonomy entry.
+
+## 7. Post-arc G-series + arc-77 (2026-08-10) — process notes
+
+Slice records: 75-arc §7 "POST-ARC G-SERIES" *(note: G2's `file_part_plan` was superseded by `file_build_plan` in [78-staged-build-protocol.md](78-staged-build-protocol.md) §3)*; design =
+[77-imagination-target-design.md](77-imagination-target-design.md).
+What earned recording:
+
+- **The user's reframe beat the supervisor's roadmap.**  E4-lite and
+  the G2 battery were the named next levers; the user cut both ("the
+  battery will only show what I can intuit") and substituted the
+  imagination-target mechanism.  The redesign fit the measured
+  evidence BETTER than the roadmap did — the looking loop fires but
+  has no criterion; a self-authored target converts an aesthetic
+  judgement into the one currency the law says works.  Hold roadmaps
+  loosely; the census data outlives the plan built on it.
+- **Red-proof-by-restoration is now the strongest tool in the loop.**
+  Three times today a fix was proved by putting the bug back and
+  watching the specific assertion fail (AutoRasterizer pt/vcm log;
+  the wire-gate mutation that exposed a vacuous test; the race pin
+  observing superseded-plan facts).  Every fix round should budget
+  for it.
+- **The transplanted-idiom failure got its third and fourth
+  instances** (G2's missing patch arm; G3b copying params dims into
+  the identity pass — caught by the implementer this time, which is
+  the pattern working).  The two standing review questions ("what
+  invariant does this idiom depend on?", "what does the neighbouring
+  gate defend against?") are now permanent brief furniture.
+- **The codec-drops-caveats drift class recurred one slice after it
+  was fixed** (G1 upper-bound disclosure → G3b canvas/omission
+  caveats).  Structural fix adopted: the codec string is canonical,
+  the MCP text mirrors it, and every load-bearing caveat gets a
+  two-surface hygiene pin the day it is written.
+- **"Not reachable" claims must name the surface.**  G3b's race was
+  "not model-reachable" — true of the tool schema, false of the raw
+  wire.  A reachability claim that does not enumerate surfaces is a
+  narrow truth waiting to ship.
+- **Design decisions became tripwires.**  The retention decision
+  (sketch elided by next look; comparison composite re-surfaces it)
+  is enforced by a BIDIRECTIONAL test that goes red if elision
+  breaks AND if someone pins sketches (silent per-request token-cost
+  change).  A decision without a tripwire is a comment.
+- **Supervisor build-discipline ledger, honest:** one gate killed by
+  a too-short timeout run concurrently with a worker (the third
+  overlap; first one that cost a rebuild).  Rule held since: stages
+  under the cap, gate runs alone, workers warned when handed a
+  possibly-dirty build dir.
+
+---
+
+## Arc 79 — clean-room construction (2026-08-11)
+
+**The finding the arc was built on, and it held.**  Context volume, not
+knowledge, was the constraint.  A wizard that sat at 1–4 SDF parts for twelve
+runs across three arcs went to **10** the first time an element was built in a
+fresh minimal context — with the beard and staff the focused probe had named
+and no live run ever produced.  Scene total 20 → 48 parts.  Six mechanisms
+aimed at information, feedback, visibility, cost, serialization and reasoning
+all measured zero; the seventh, aimed at dilution, moved the number on the
+first run.  **When six well-built mechanisms fail on one axis, the axis is
+wrong — stop building on it and go measure a different one.**
+
+- **The gain is uneven, and the unevenness is informative.**  The wizard 2.5×;
+  the dragon only 1.4×, because arc-78 already spent a 16-part chain there.
+  Clean rooms recover attention for the elements being *skimped*, not the one
+  already getting it.  Expect the benefit to concentrate wherever the loaded
+  context was cutting corners.
+- **The constraint moved rather than closed.**  `place_element` was called 24
+  times — the most-used verb in the run, against 0/64 for every voluntary tool
+  this workstream shipped, so the verb is clearly wanted — and it never
+  converged: the same element re-placed at 0.85, 0.45, 0.5, 0.9, 3.5, 1.0.
+  The final render crops both figures.  **Richness stopped being the limiter
+  and arrangement started.**  Cost doubled (38 → 76 turns) buying that trade.
+- **A precondition inherited from a neighbouring arc ate a whole provider
+  call.**  `build_element`'s insertion goes through `InsertChunks`, which
+  carries arc-77's "no target, no insert" rule *(from `file_part_plan` / `imagine_scene`, superseded on the plan side by `file_build_plan` in [78-staged-build-protocol.md](78-staged-build-protocol.md) and bypassed for `build_element` post-run)*; the first builder produced
+  real geometry and had every chunk refused for a reason unrelated to
+  building.  The transplanted-idiom class again, in its inverse form: not a
+  guard copied where its precondition is absent, but a guard INHERITED where
+  its precondition does not apply.  New brief question: *what does the shared
+  path I am reusing already refuse?*
+- **Provider schema is a compatibility surface, and it took an outage to
+  learn it.**  Two tools declared `exclusiveMinimum`; Gemini's
+  functionDeclarations proto rejects unknown keywords with a request-killing
+  400, so every Gemini session broke.  `kToolDefs` is shared verbatim by all
+  providers, so it must satisfy the most restrictive one — constraints go in
+  prose and are enforced server-side.  Now pinned by a red-proved denylist
+  test that scans the real wire body.
+- **Supervisor ledger, honest:** ran `git checkout` on a file holding an
+  uncommitted worker fix and destroyed it (recovered by hand); wrote a
+  red-prove script under `set -e` whose first grep correctly matched nothing
+  and silently aborted the whole thing; then wrote an injection anchor that
+  matched three tools and proved nothing while appearing to pass.  All three
+  are the same error — **a verification step that cannot distinguish "clean"
+  from "did not run" is not a verification step.**  The guard test was only
+  trustworthy once it was made to fail on demand.
+
+### Arc 79, second subject — the mermaid runs (2026-08-11)
+
+- **A single false sentence in a rejection message cost an entire
+  mechanism for a whole session.**  The builder quoted a chunk name; the
+  prefix check compared the leading quote character and reported "does not
+  begin with the required prefix", which was untrue and therefore
+  unfixable-from.  All 17 chunks of a finished coral reef died, the element
+  stayed empty, the clean-room gate gave up as designed, and the model
+  hand-authored the rest of the run.  The repo rule that a model-facing
+  payload must never contain a false claim is not a style preference — this
+  is what it costs.
+- **A failure with no retained evidence is a failure you cannot fix.**  The
+  builder's completion text was kept nowhere, so the run could not be
+  reconstructed after the fact.  Any host-mediated call that can reject
+  everything it produced must retain an excerpt of what it produced.
+- **The clean room's best result yet, and its author destroyed it.**  Five
+  builders, 82 SDF parts, `place_element` converging in exactly one call per
+  element — then the compose phase removed all 31 objects and re-inserted
+  twice, and finished by replacing rich SDF forms with ellipsoids and
+  cylinders.  2 of 82 parts survived.  Every operation applied cleanly; this
+  was deliberate, not a bug in the edits.
+- **The mechanism that matters most is the one that stops good work from
+  being thrown away.**  `query_object_at` said "no object at this pixel"
+  four times and the composed scene renders empty, so the model rationally
+  blamed its geometry and simplified.  It was wrong, and nothing in the
+  harness could tell it so.  A future arrangement arc needs to make "your
+  geometry is fine, your placement or camera is not" a fact the model
+  receives — otherwise every composition failure will keep being paid for
+  in destroyed construction.
+- **Judge a subject by whether it was measured, not by its output.**  The
+  first mermaid run looked like evidence the scene was too hard; it was
+  evidence of a quoting bug.  The rendered result of a run whose mechanism
+  never engaged says nothing about the subject.
+
+### The measurement-harness bug that corrupted three arcs (2026-08-12)
+
+Three arcs' rendered-frame conclusions were wrong for one reason: the
+supervisor's scene-prep step resized the film with
+
+```
+re.sub(r'(?m)^(\s*width\s+)\d+', r'\g<1>800', scene)
+```
+
+`box_geometry` also takes `width` / `height`, and `\d+` matched only the
+integer part, so **`width 0.8` became `width 800.8`**.  Every box inflated to
+~800×600 world units and swallowed the camera.  The render was the inside of
+a giant box: a mathematically constant frame.
+
+- **It looked like a real pattern.**  Scenes built purely from `sdf_geometry`
+  (both dragon runs) have no `width` param and rendered fine, so the failure
+  landed exclusively on the mermaid-family scenes.  "Two mermaid scenes flat,
+  two dragon scenes fine" reads as a genuine scene-class signal.  It was an
+  artifact of which chunk kinds each scene happened to use.
+- **The false conclusion survived a long forensic hunt** — parse errors,
+  unresolved and forward references, lights, materials, media, environment,
+  camera aim, geometry scale, raw-vs-denoised.  Every hypothesis was about
+  the SCENE, because the possibility that the instrument was lying was never
+  on the list.  The user reporting "both of those scenes render fine in the
+  GUI" is what broke it open.
+- **The rule this earns: when something misbehaves only in YOUR pipeline and
+  not in the user's, suspect the pipeline first.**  A discrepancy between two
+  observers of the same artifact is evidence about the observers.
+- **The narrower rule: a regex written for one chunk's parameter will match
+  another chunk's parameter of the same name.**  Scene-prep edits must be
+  scoped to the chunk (parse, edit the film chunk, re-serialize) or not made
+  at all.  Appending an output chunk and touching NOTHING else is the safe
+  form, and is what the corrected renders used.
+- **What survived, and why:** every number taken from scene TEXT or the
+  trajectory — parts built, parts surviving, removals, light counts, power
+  ranges, kinds, tool sequences — was never routed through the corrupted
+  copy.  Arc 80's inventory probe also ran on an unmodified copy, which is
+  why it correctly reported 17 of 19 objects covering pixels while the beauty
+  render next to it showed nothing.  **That contradiction was visible in the
+  evidence and was rationalized instead of investigated** — the inventory and
+  the render disagreed, and the conclusion drawn was "the lighting must be
+  drowned" rather than "one of these two is lying".

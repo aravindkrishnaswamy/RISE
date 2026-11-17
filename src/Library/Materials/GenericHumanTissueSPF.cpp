@@ -24,7 +24,21 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-GenericHumanTissueSPF::GenericHumanTissueSPF( 
+// DL-183 nit: this ctor's parameter ORDER (whole_blood_, betacarotene_
+// concentration_, bilirubin_concentration_, hb_ratio_) does NOT match
+// GenericHumanTissueMaterial's ctor order (hb_ratio_, whole_blood,
+// bilirubin_concentration, betacarotene_concentration) in
+// GenericHumanTissueMaterial.h, which passes its own same-named members
+// straight through positionally. Traced end to end (debt-dl183 review
+// round 1): that mismatch is the INVERSE of a second one at
+// RISE_API_CreateGenericHumanTissueMaterial's call into
+// GenericHumanTissueMaterial, so the two cancel and each scalar lands in
+// the correctly-NAMED member here despite two layers of positionally-
+// scrambled passthroughs. Confusing-but-currently-correct, NOT a defect
+// -- do NOT reorder this parameter list to "match" GenericHumanTissue-
+// Material without re-deriving the full chain; see docs/DEBT_LEDGER.md's
+// DL-183 row for the full trace.
+GenericHumanTissueSPF::GenericHumanTissueSPF(
 	const IScalarPainter& sca_,									///< Scattering co-efficient (how much scattering happens)
 	const IScalarPainter& g_,										///< Anisotropy factor for the HG phase function
 	const Scalar whole_blood_,								///< Amount of tissue composed of whole blood
@@ -120,11 +134,17 @@ void GenericHumanTissueSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	ScatteredRay trans;
-	trans.ray.origin = ri.ray.origin;
+	// DL-183: this used to be `ri.ray.origin` -- the INCOMING ray's
+	// origin (the camera, or the previous bounce point), not the point
+	// on THIS surface the ray actually hit.  Every continuation ray
+	// started on the wrong line.  BioSpecSkinSPF's sibling sites
+	// (`remmitted.ray.origin = ri.ptIntersection`) always did this
+	// correctly.
+	trans.ray.origin = ri.ptIntersection;
 	trans.type = ScatteredRay::eRayTranslucent;
 	trans.kray = RISEPel(1.0,1.0,1.0);
 	trans.isDelta = false;
@@ -151,18 +171,23 @@ void GenericHumanTissueSPF::Scatter(
 			// Scattering
 			if( diffuse ) {
 				// Just diffusely scatter the ray and send it on its way
-				trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(), 
+				trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(),
 					acos( sqrt(sampler.Get1D()) ),
-					sampler.Get1D() * TWO_PI 
+					sampler.Get1D() * TWO_PI
 				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
 				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, pG->GetValuesAt(ri).v[0] ));
 			}
+		} else {
+			// DL-184: this branch used to be unconditional (outside the
+			// `if` above), so it ran AFTER the scattering branch too and
+			// silently overwrote whatever direction it had just sampled
+			// -- every interior interaction was straight-through
+			// regardless of the scattering roll.  It belongs here only:
+			// otherwise its just transmitted!
+			trans.ray.SetDir(ri.ray.Dir());
 		}
-		
-		// Otherwise its just transmitted!
-		trans.ray.SetDir(ri.ray.Dir());
 	} else{
 		if( diffuse ) {
 			// Just diffusely scatter the ray and send it on its way
@@ -179,16 +204,18 @@ void GenericHumanTissueSPF::Scatter(
 	scattered.AddScatteredRay( trans );
 }
 
-void GenericHumanTissueSPF::ScatterNM( 
+void GenericHumanTissueSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	ScatteredRay trans;
-	trans.ray.origin = ri.ray.origin;
+	// DL-183: see Scatter()'s twin comment -- this used to be
+	// `ri.ray.origin` instead of the actual hit point.
+	trans.ray.origin = ri.ptIntersection;
 	trans.type = ScatteredRay::eRayTranslucent;
 	trans.krayNM = 1.0;
 	trans.isDelta = false;
@@ -214,18 +241,25 @@ void GenericHumanTissueSPF::ScatterNM(
 			// Scattering
 			if( diffuse ) {
 				// Just diffusely scatter the ray and send it on its way
-				trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(), 
+				trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(),
 					acos( sqrt(sampler.Get1D()) ),
-					sampler.Get1D() * TWO_PI 
+					sampler.Get1D() * TWO_PI
 				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
-				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, pG->GetValuesAt(ri).v[0] ));
+				// DL-126 review round 4 (P2-2): this was `pG->GetValuesAt(ri).v[0]`
+				// (the RGB accessor) inside ScatterNM's interior branch, so the
+				// in-medium HG lobe's `g` was not actually wavelength-resolved
+				// in the NM pipe -- the OUTSIDE branch two lines below already
+				// uses `GetValueAtNM(ri,nm)` for this identical parameter.
+				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, pG->GetValueAtNM(ri,nm) ));
 			}
+		} else {
+			// DL-184: see the RGB Scatter()'s twin comment -- this branch
+			// used to be unconditional and silently overwrote the
+			// scattering branch's own sampled direction.
+			trans.ray.SetDir(ri.ray.Dir());
 		}
-		
-		// Otherwise its just transmitted!
-		trans.ray.SetDir(ri.ray.Dir());
 	} else{
 		if( diffuse ) {
 			// Just diffusely scatter the ray and send it on its way

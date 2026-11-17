@@ -70,6 +70,76 @@ namespace RISE
 			) const = 0;
 
 		//!
+		//! Per-wavelength sample of this painter used as a RADIANCE SOURCE
+		//! (Stage C slice 2, docs/SPECTRAL_ILLUMINANT_CONVENTION.md).
+		//!
+		//! `GetColorNM` answers "what fraction of the light arriving here
+		//! does this surface send on at λ" — a REFLECTANCE, trained under
+		//! D65.  `GetRadianceNM` answers "what does a source of this
+		//! authored colour EMIT at λ", which is that same reflectance
+		//! TIMES the reference illuminant.  A white source therefore
+		//! radiates D65, not a flat spectrum, and resolves through the
+		//! film back to the authored (1, 1, 1) instead of the flat-
+		//! spectrum chromaticity (1.20, 0.95, 0.91).
+		//!
+		//! ROUTING IS BY SLOT, NOT BY PAINTER KIND.  A named painter can
+		//! be bound to a reflectance slot on one material and an emissive
+		//! slot on another, so the construction-time `SpectrumKind` cannot
+		//! decide this — the CONSUMER does, by calling `GetColorNM` for a
+		//! multiplicative slot and `GetRadianceNM` for a source term.
+		//! Every emitter, light, radiance map and radiance-uplifting
+		//! shader op calls this one.
+		//!
+		//! DEFAULT (SLOW PATH): uplift the composed `GetColor` per call
+		//! through the Jakob-Hanika LUT as an illuminant.  That costs a
+		//! LUT lookup per sample, and it is the CORRECT semantics for a
+		//! painter that genuinely BLENDS several sources into one colour
+		//! (e.g. `BlendPainter`, `RampPainter`, `CurlNoise3DPainter`,
+		//! `CompositeFunction2DPainter`): the thing that emits is the
+		//! composed colour, so the composed colour is what carries the
+		//! illuminant shape.  Forwarding to the children's own spectra
+		//! would sum reflectance-shaped spectra and never produce D65.
+		//! (Dated 2026-09-02: `CheckerPainter` and `MappingPainter` used
+		//! to be cited here too, but they SELECT one child rather than
+		//! blending -- they now override `GetRadianceNM` to forward to
+		//! that child, alongside `LinesPainter`, `Voronoi2DPainter`,
+		//! `Voronoi3DPainter`, `ScatterPainter`, `StochasticTilePainter`,
+		//! `TexCoord1Painter` and `UVTransformPainter`; see
+		//! docs/SPECTRAL_ILLUMINANT_CONVENTION.md §7.1/§7.5.)  Painters
+		//! that already hold (or can cheaply build) an illuminant
+		//! spectrum override this.
+		//!
+		/// \return The emitted radiance at the particular wavelength
+		virtual Scalar GetRadianceNM(
+			const RayIntersectionGeometric& ri,					///< [in] Geometric intersection details
+			const Scalar nm										///< [in] Wavelength to process
+			) const;
+
+		//!
+		//! RGB twin of `GetRadianceNM`: this painter's colour when it is
+		//! used as a RADIANCE SOURCE in an RGB render (DL-396).
+		//!
+		//! For every painter authored in RGB the two RGB views coincide --
+		//! the authored triple IS the colour the source has -- so the
+		//! default forwards to `GetColor` and every such emitter renders
+		//! bit-identically.  They differ only for a painter that carries a
+		//! PHYSICAL spectrum F(lambda) used verbatim in both roles (the
+		//! `GetColorNM == GetRadianceNM` painters): as a reflectance its
+		//! RGB is F viewed under D65, `M (Int F D65 cmf) / (Int D65 ybar)`,
+		//! while as a source the film sees F itself,
+		//! `M (Int F cmf) / (Int ybar)` -- an equal-energy F is white in
+		//! the first and (1.20, 0.95, 0.91) in the second.  Emitters,
+		//! radiance maps and radiance shader ops call this one, mirroring
+		//! their spectral `GetRadianceNM` calls; reflectance slots keep
+		//! `GetColor`.  Painters that SELECT one child per sample forward
+		//! it to that child, exactly as they forward `GetRadianceNM`.
+		//!
+		/// \return The emitted colour (linear Rec.709)
+		virtual RISEPel GetRadianceColor(
+			const RayIntersectionGeometric& ri					///< [in] Geometric intersection details
+			) const { return GetColor( ri ); }
+
+		//!
 		//! This function is also similar to the above ones, however it returns the entire spectrum
 		//! rather than just the value at the particular wavelength
 		//!
@@ -92,7 +162,168 @@ namespace RISE
 		virtual Scalar GetAlpha(
 			const RayIntersectionGeometric& /*ri*/				///< [in] Geometric intersection details
 			) const { return Scalar(1); }
+
+		//! DL-165 (docs/DEBT_LEDGER.md): true iff this painter's `GetColorNM`
+		//! answers from a genuine, independently-AUTHORED spectral power
+		//! distribution rather than a Jakob-Hanika uplift of an RGB triple --
+		//! at the LEAF level exactly `SpectralColorPainter`
+		//! (`spectral_painter`), `BlackBodyPainter` (`blackbody_painter`),
+		//! and `Function1DSpectralPainter` (a `piecewise_linear_function`'s
+		//! dual-registration into the colour-painter manager; its own
+		//! `GetColor` returned pure BLACK until DL-396 and is now the
+		//! spectrum's D65 reflectance projection) -- and, since DL-203, true
+		//! TRANSITIVELY through any composite/wrapping painter whose own
+		//! `GetColorNM` forwards to a child's REAL `GetColorNM` (not just
+		//! its `GetColor`) and that child is itself spectrally defined:
+		//! `BlendPainter`/`CheckerPainter`/`MappingPainter`/every noise-family
+		//! painter/etc. all combine or select among their children's TRUE
+		//! spectra at every wavelength, so a spectral leaf anywhere inside
+		//! one of these still reaches `GetColorNM` genuinely -- the override
+		//! on each such class is a simple OR over its own children's
+		//! `IsSpectrallyDefined()`.
+		//!
+		//! Default FALSE for every RGB-defined LEAF painter, and for a
+		//! wrapper/adapter whose OWN `GetColorNM` does NOT forward a child's
+		//! true spectrum even when that child is spectral -- e.g.
+		//! `ChannelPainter` (deliberately reads only `GetColor()` and
+		//! broadcasts one channel at every wavelength, because a channel
+		//! value like roughness/metallic has no spectral meaning to begin
+		//! with) or `RampPainter` (its driving `input` supplies only a
+		//! scalar position along the ramp via `GetColor`/`GetAlpha`; the
+		//! ramp's own colours are independently-authored RGB stops, never a
+		//! forwarded child spectrum) -- for these, reading the child through
+		//! `GetColor` and re-uplifting elsewhere loses nothing a direct bind
+		//! would not also lose, so they correctly keep the base `false` with
+		//! NO override.
+		//!
+		//! DL-396: also consulted by `GuardedGetColorNM` (below), which must
+		//! never replace a physical spectrum's samples by 1 just because
+		//! its RGB projection reads white.
+		//!
+		//! Otherwise consulted by the expression VM's `sample(name)` builtin
+		//! (ExpressionPainter.h's `BuildExpressionProgramFromChunkFields`,
+		//! at ATTACH time) to REFUSE binding a spectrally-defined painter --
+		//! `sample()` reads `GetColor()` only, so binding one here would
+		//! silently collapse its real SPD to RGB and then re-uplift a
+		//! DIFFERENT curve through whatever spectral consumer the
+		//! expression feeds. Consulted nowhere else; a painter with no
+		//! opinion (the default) is assumed RGB-defined, which is correct
+		//! for every LEAF painter kind in this codebase except the three
+		//! above, and for every composite kind except the ones that override
+		//! this method to recurse.
+		virtual bool IsSpectrallyDefined() const { return false; }
 	};
+
+	//! An authored colour is "untinted white" iff its minimum RGB
+	//! component is >= 1 - 1e-6 (same epsilon as
+	//! CoatedBRDF::ResolveCoat's `out.tinted` decision).  A multiplicative
+	//! slot at authored white must be a BIT-EXACT no-op on the spectral
+	//! pipe too, so that the NM path and the RGB path agree exactly.
+	//! `GetColorNM` runs the Jakob-Hanika uplift, whose sigmoid reaches
+	//! white only asymptotically: authored white samples to 1 - epsilon
+	//! (measured 0.99999970 at 660 nm, 0.99999015 at 550 nm), and
+	//! epsilon varies with wavelength -- so without this guard an
+	//! untinted slot would attenuate throughput slightly, and
+	//! wavelength-dependently, on every bounce.
+	//!
+	//! HISTORICAL: before Stage C (2026-09-02,
+	//! docs/SPECTRAL_ILLUMINANT_CONVENTION.md) the LUT was trained under
+	//! a flat E illuminant, under which white was not representable at
+	//! all and its uplift COLLAPSED above ~620 nm (1.28e-5 at 660 nm) --
+	//! an ~8-10 % red loss per bounce rather than an epsilon.  That is
+	//! the measurement the guard was introduced for; the collapse is
+	//! gone, the exactness requirement is not.  (Measured curve +
+	//! rationale: CoatedLayer.h `PassTransmittance`, ~line 302;
+	//! precedent decision: CoatedBRDF::ResolveCoat, ~line 107.)
+	inline bool IsUntintedWhite( const RISEPel& c )
+	{
+		const Scalar minc = r_min( r_min( c[0], c[1] ), c[2] );
+		return minc >= Scalar(1) - Scalar(1e-6);
+	}
+
+	//! Guarded spectral sample of a multiplicative painter slot: returns
+	//! exactly 1.0 when the AUTHORED (un-uplifted) colour is untinted
+	//! white, else the raw `GetColorNM` sample.  See `IsUntintedWhite`.
+	//!
+	//! Precondition: the bound painter must be an eSpectrumKind_Albedo
+	//! source.  The floor-only `minc >= 1 - 1e-6` check is EXACT only
+	//! because `RGBAlbedoSpectrum::FromRGB` clamps its input to [0, 1]
+	//! before the LUT lookup (src/Library/Utilities/Color/RGBSpectra.h:39-40,
+	//! clamp itself performed by RGBToSpectrumTable::operator(), documented
+	//! at RGBToSpectrumTable.h:93) -- so `minc >= 1 - 1e-6` implies every
+	//! channel is already at the clamp ceiling and uplifts as exact white.
+	//! An Unbounded or Illuminant-kind painter does NOT clamp (see
+	//! RGBUnboundedSpectrum::FromRGB / RGBIlluminantSpectrum::FromRGB in the
+	//! same header) -- binding one to a guarded slot would break this
+	//! assumption and must not be done without revisiting the guard.
+	//! The white-guard predicate for a painter slot, given the painter's
+	//! RGB sample `c` already in hand: authored untinted white AND not a
+	//! physical spectrum (DL-396 -- a spectrally defined painter's RGB is
+	//! only a projection; a bright SPD can project to min channel >= 1
+	//! while its samples are anything but 1, so it must never be replaced
+	//! by exact white).  THE one predicate: `GuardedGetColorNM` and every
+	//! inlined guard (WeaveBRDF, FabricBRDF, CoatedBRDF) call it.
+	//! `IsSpectrallyDefined` is evaluated only after the cheap test passes.
+	inline bool IsUntintedWhitePainter( const IPainter& p, const RISEPel& c )
+	{
+		return IsUntintedWhite( c ) && !p.IsSpectrallyDefined();
+	}
+
+	inline Scalar GuardedGetColorNM( const IPainter& p, const RayIntersectionGeometric& ri, const Scalar nm )
+	{
+		if( IsUntintedWhitePainter( p, p.GetColor( ri ) ) ) {
+			return Scalar(1);
+		}
+		return p.GetColorNM( ri, nm );
+	}
+
+	//! DL-386 (docs/DEBT_LEDGER.md, ruled 2026-10-02): THE accessor every
+	//! material uses to read a REFLECTANCE-type colour slot (diffuse /
+	//! specular reflectance, sheen and yarn colour, coat tint,
+	//! reflectivity / refractivity / transmittance colours, hair target
+	//! reflectance) on the RGB pipe.  It clamps NEGATIVE channels to 0 and
+	//! leaves every other value -- including channels ABOVE 1 -- exactly as
+	//! authored.
+	//!
+	//! Why: a colour authored outside the Rec.709 working gamut (e.g.
+	//! `uniformcolor_painter` with `colorspace ROMMRGB_Linear`, converted by
+	//! matrix only: the classic Cornell red becomes (1.134, -0.100, 0.020))
+	//! carries a negative reflectance channel.  A negative albedo is not a
+	//! physical quantity, a negative `kray` reverses
+	//! `ScatteredRayContainer::RandomlySelect`'s CDF (cf. DL-100), and PT
+	//! and BDPT measurably disagreed on it.  The spectral pipe already
+	//! clamped: `RGBAlbedoSpectrum::FromRGB` clamps its input to [0, 1]
+	//! before the Jakob-Hanika lookup, so after this accessor the RGB and
+	//! spectral reads of a negative channel agree (both 0).  (Above 1 they
+	//! still differ, by the ruling: RGB keeps the authored value, the
+	//! albedo uplift saturates -- pre-existing and unchanged.)
+	//!
+	//! NOT for emission / radiance slots (`GetRadianceNM`, emitters),
+	//! normal-map painters, rotation / data painters, or `IScalarPainter`
+	//! -- those read the painter directly.  SourceHygieneTest pins that
+	//! every RGB `GetColor(ri)` read under src/Library/Materials goes
+	//! through this function except a short allowlist of those.
+	inline RISEPel ReflectanceColor( const IPainter& p, const RayIntersectionGeometric& ri )
+	{
+		RISEPel c = p.GetColor( ri );
+		if( c[0] < 0 ) c[0] = 0;
+		if( c[1] < 0 ) c[1] = 0;
+		if( c[2] < 0 ) c[2] = 0;
+		return c;
+	}
+
+	//! DL-386: the spectral twin of ReflectanceColor -- GuardedGetColorNM
+	//! (exact 1 at authored white) with a negative sample clamped to 0.
+	//! For every RGB-sourced painter the clamp is a no-op (the albedo
+	//! uplift is already non-negative); it matters only for spectrally
+	//! AUTHORED data (`spectral_painter`, a `piecewise_linear_function`,
+	//! a blend of them) that dips below zero.  Used by every material
+	//! reflectance read on the NM / HWSS pipe.
+	inline Scalar ReflectanceColorNM( const IPainter& p, const RayIntersectionGeometric& ri, const Scalar nm )
+	{
+		const Scalar v = GuardedGetColorNM( p, ri, nm );
+		return v < 0 ? Scalar(0) : v;
+	}
 }
 
 #include "../Intersection/RayIntersectionGeometric.h"

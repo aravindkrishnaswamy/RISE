@@ -1364,7 +1364,10 @@ int main()
 		// the singleton resolver DocFindByNameAnyRole(..., "film", uniqueFallback=true) would thereafter REFUSE (occ>1),
 		// bricking ALL future film edits.  The sibling camera insert/remove path has had occ/separator bugs twice, so this
 		// invariant is locked with a committed test.  Modeled on FILM6's no-film-chunk setup; the inserted chunk text is
-		// `film {\n\twidth ...\n\theight ...\n}` (per Job::ApplyCstFilmEdit), so the chunk header serializes as `film {`.
+		// `film\n{\n\twidth ...\n\theight ...\n}` (per Job::ApplyCstFilmEdit -- fixed task_7f42984d to put the opening
+		// `{` on its own line, matching the documented convention; it used to emit a glued `film {`, which derived fine
+		// in-memory but hard-failed to reload after a save once ChunkBraceViolations started enforcing the rule), so the
+		// chunk header serializes as `film\n{`.
 		// RED-PROVE: make Job::ApplyCstFilmEdit ALWAYS take the insert branch (skip the present-chunk filmId!=0 route) ->
 		// the second/third calls double-insert -> "exactly one film chunk" fails AND the singleton resolver would brick.
 		const char* tf = "cst_film8.RISEscene";
@@ -1378,24 +1381,24 @@ int main()
 		       "standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"; }
 		Job* j = new Job();
 		Check( j->LoadAsciiSceneViaCst( tf ), "FILM8: loads scene (NO film chunk) via CST" );
-		Check( CountOcc( DocText( *j ), "film {" ) == 0, "FILM8: the authored Document has NO film chunk" );
+		Check( CountOcc( DocText( *j ), "film\n{" ) == 0, "FILM8: the authored Document has NO film chunk" );
 
 		// First call: INSERT path (FILM6).  Returns 1 and yields EXACTLY ONE `film {` chunk.
 		Check( j->SetFilm( 1280, 720, FilmPAR( *j ) ), "FILM8: live SetFilm to 1280x720 succeeds" );
 		Check( j->ApplyCstFilmEdit( "1280", "720", nullptr ) == 1, "FILM8: 1st ApplyCstFilmEdit INSERTs a film chunk (returns 1)" );
-		Check( CountOcc( DocText( *j ), "film {" ) == 1, "FILM8: after the INSERT there is EXACTLY ONE film chunk" );
+		Check( CountOcc( DocText( *j ), "film\n{" ) == 1, "FILM8: after the INSERT there is EXACTLY ONE film chunk" );
 
 		// Second call: a DIFFERENT width.  MUST take the present-chunk route -> still EXACTLY ONE `film {` chunk.
 		Check( j->SetFilm( 1600, 720, FilmPAR( *j ) ), "FILM8: live SetFilm to width 1600 succeeds" );
 		Check( j->ApplyCstFilmEdit( "1600", nullptr, nullptr ) == 1, "FILM8: 2nd ApplyCstFilmEdit(width) returns 1 (present-chunk route)" );
-		Check( CountOcc( DocText( *j ), "film {" ) == 1, "FILM8: after the 2nd edit there is STILL EXACTLY ONE film chunk (no double-insert)" );
+		Check( CountOcc( DocText( *j ), "film\n{" ) == 1, "FILM8: after the 2nd edit there is STILL EXACTLY ONE film chunk (no double-insert)" );
 		{ const std::string s = DocText( *j );
 		  Check( s.find( "width 1600" ) != std::string::npos, "FILM8: the single film chunk reflects the LATEST width 1600" ); }
 
 		// Third call: a DIFFERENT height.  MUST take the present-chunk route -> still EXACTLY ONE `film {` chunk.
 		Check( j->SetFilm( 1600, 900, FilmPAR( *j ) ), "FILM8: live SetFilm to height 900 succeeds" );
 		Check( j->ApplyCstFilmEdit( nullptr, "900", nullptr ) == 1, "FILM8: 3rd ApplyCstFilmEdit(height) returns 1 (present-chunk route)" );
-		Check( CountOcc( DocText( *j ), "film {" ) == 1, "FILM8: after the 3rd edit there is STILL EXACTLY ONE film chunk (no double-insert)" );
+		Check( CountOcc( DocText( *j ), "film\n{" ) == 1, "FILM8: after the 3rd edit there is STILL EXACTLY ONE film chunk (no double-insert)" );
 		{ const std::string s = DocText( *j );
 		  Check( s.find( "width 1600" ) != std::string::npos && s.find( "height 900" ) != std::string::npos,
 		         "FILM8: the single film chunk reflects the LATEST width 1600 + height 900" ); }
@@ -1408,7 +1411,7 @@ int main()
 		Job* j2 = new Job();
 		Check( j2->LoadAsciiSceneViaCst( tf ), "FILM8: reloads the saved file via CST" );
 		Check( FilmW( *j2 ) == 1600u && FilmH( *j2 ) == 900u, "FILM8: the LATEST dims PERSISTED through save->reload (1600x900)" );
-		Check( CountOcc( DocText( *j2 ), "film {" ) == 1, "FILM8: the reloaded Document has EXACTLY ONE film chunk (no double-insert survived save)" );
+		Check( CountOcc( DocText( *j2 ), "film\n{" ) == 1, "FILM8: the reloaded Document has EXACTLY ONE film chunk (no double-insert survived save)" );
 		j2->release();
 		std::remove( tf );
 	}

@@ -65,6 +65,7 @@
 #include <fstream>
 #include <vector>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <algorithm>
 #ifdef _WIN32
@@ -81,6 +82,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -172,6 +174,13 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	std::vector<double> redFracs;
 	redFracs.reserve( cap.pixels.size() );
 	for( const RISEColor& c : cap.pixels ) {
+		// DL-40: a nonfinite (NaN/Inf) pixel component is a broken render,
+		// not a statistic -- reject the whole capture before it reaches
+		// sum/max/redFracs.  Without this, "if( lum > maxlum )" silently
+		// discards a NaN lum (NaN > maxlum is always false).
+		if( !std::isfinite( c.base.r ) || !std::isfinite( c.base.g ) || !std::isfinite( c.base.b ) ) {
+			return ImageStats{};   // valid stays false
+		}
 		sum[0] += c.base.r;
 		sum[1] += c.base.g;
 		sum[2] += c.base.b;
@@ -198,6 +207,43 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	return s;
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-40 red-proof: ComputeStats must reject a capture containing a
+// nonfinite pixel component (return valid==false) rather than silently
+// folding NaN/Inf into the mean/maxlum.  Explicit malformed
+// CapturingRasterizerOutput fixtures, not a live render.
+//////////////////////////////////////////////////////////////////////
+static void TestNonfiniteCandidateRejected()
+{
+	std::cout << std::endl << "-- DL-40: nonfinite candidate statistics are rejected --" << std::endl;
+
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 2; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.5, 0.5, 0.5 ), 1.0 ) );
+		cap->pixels.push_back( RISEColor( RISEPel( std::nan(""), 0.2, 0.2 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with a NaN pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.3, std::numeric_limits<double>::infinity(), 0.3 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with an Inf pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.4, 0.5, 0.6 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( s.valid, "DL-40: ComputeStats control -- an all-finite capture stays valid" );
+		cap->release();
+	}
+}
+
 static double RedFraction( const ImageStats& s )
 {
 	const double sum = s.mean[0] + s.mean[1] + s.mean[2];
@@ -206,10 +252,10 @@ static double RedFraction( const ImageStats& s )
 
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
 		"%s/fg_spectral_%s_%d.RISEscene",
-		(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp"),
+		RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
@@ -402,9 +448,16 @@ int main()
 
 		// B. WARM CHROMA preserved — the gathered GI carries the warm
 		//    light's hue.  Scale-invariant.  A luminance / flat fallback
-		//    would gray it (R == B) and FAIL this.
-		Check( spec.mean[0] > spec.mean[2] * 1.10,
-			"spectral final-gather GI keeps the warm hue (mean R dominates B)" );
+		//    would gray it (per-pixel R/(R+G+B) == 1/3) and FAIL this.
+		//    Asserted on the firefly-robust MEDIAN red fraction (stable to
+		//    ~0.01 run-to-run), NOT the whole-frame mean — the mean is
+		//    dominated by a few bright hue-unstable firefly pixels at this
+		//    low sample count and flapped below its old 1.10x R-vs-B cap
+		//    about 1 run in 10 (see check C's comment for the same
+		//    mean-vs-median reasoning).  0.36 sits ~3 sigma above the gray
+		//    fallback's 1/3 and well below the warm light's ~0.40+.
+		Check( spec.medianRedFraction > 0.36,
+			"spectral final-gather GI keeps the warm hue (median red fraction clears the gray-fallback 1/3)" );
 	}
 
 	// C. HUE matches the RGB render.  Both root in the same RGB photon-map
@@ -430,6 +483,8 @@ int main()
 		Check( std::fabs( mrfSpec - mrfRgb ) < 0.10,
 			"spectral final-gather hue matches the RGB render (median red fraction within 0.10)" );
 	}
+
+	TestNonfiniteCandidateRejected();
 
 	std::cout << "=======================" << std::endl;
 	std::cout << "Passed: " << passCount << "  Failed: " << failCount << std::endl;

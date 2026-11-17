@@ -124,7 +124,7 @@ The implementation matches the original design intent in §3–§7, with these m
 3. **Serialized observer dispatch with per-observer lifetime tracking**: each FrameStore serializes its raw-pointer callbacks, snapshots the registration list, and rechecks registration immediately before claiming each callback. Per-observer in-flight counts let an external `RemoveObserver` wait for precisely the removed observer; same-thread self-detach excludes only its own active callback. A callback-side removal that would wait for a different active callback fails before mutation, and recursive publication fails before metadata or generation changes. Independent FrameStores may dispatch concurrently.
 4. **`ChannelTraits<Alpha>::Type = Chel`**, not `float`: the original design said float, but L2 review HIGH-1 found that the double→float→double roundtrip breaks byte-identity for non-1.0 alpha values. Now stored as Chel (double); 4-byte-per-pixel cost is acceptable.
 5. **`TransferFunction::Linear` is true identity**: original design had it Sanitise-clamped (NaN/Inf/negatives → 0), which is wrong for HDR archival. L1 round 2 P3 fixed this — Linear now passes through bit-identically; sanitise responsibility shifts to the LDR-fixed quantisation step in `EncodePixel`.
-6. **Two explicit ROMM export `TargetFormat` values**: `RGBA32F_ROMM_Linear` and `RGB32F_ROMM_Linear` produce scene-referred ROMM RGB (D50) archival output. RISEPel's native working space is Rec.709-linear (D65), so these targets apply the documented Rec.709→ROMM chromatic-adaptation and matrix conversion; they are not byte-identical to internal pixels. The existing `*_Linear` variants retain Rec.709/sRGB primaries and are the bit-identical float targets.
+6. **Two explicit ROMM export `TargetFormat` values**: `RGBA32F_ROMM_Linear` and `RGB32F_ROMM_Linear` for explicit wide-gamut scene-referred archival in ROMM RGB (D50) linear primaries. Since 2026-05-24, RISE's native `RISEPel` working space is `Rec709RGBPel` (`ColorSpace::sRGB_Linear`, D65), so `RGBA32F_Linear` and `RGB32F_Linear` are direct, bit-identical working-space pass-throughs (the industry-default sRGB/Rec.709 primaries for EXR archival) while `*_ROMM_Linear` applies the documented Rec.709→ROMM chromatic-adaptation and matrix conversion when requested; those targets are not byte-identical to internal pixels.
 7. **`cameraExposureEV` consumed via `FrameStore::Meta()`**: encoders read `store.Meta().cameraExposureEV` and add to `opts.viewTransform.exposureEV` to mirror legacy `FileRasterizerOutput.cpp:231`'s `staticEV + cameraEV` sum. L2 review HIGH-2 fix.
 
 ---
@@ -232,9 +232,9 @@ The canonical artifact.
 
 ```cpp
 enum class ChannelId : uint32_t {
-    Beauty,         // RISEPel, Rec.709 RGB linear (D65), always present
+    Beauty,         // RISEPel, Rec709RGBPel (ColorSpace::sRGB_Linear, D65; migrated 2026-05-24), always present
     Alpha,          // float, [0,1]
-    Albedo,         // RISEPel, Rec.709 RGB linear (D65; denoiser AOV / export)
+    Albedo,         // RISEPel, Rec709RGBPel (ColorSpace::sRGB_Linear, D65; migrated 2026-05-24; denoiser AOV / export)
     Normal,         // Vector3, world space, unit length
     Depth,          // float, camera-space distance
     ObjectId,       // uint32_t
@@ -274,7 +274,12 @@ public:
 
     // Bulk path for Phase 1 FrameSink.
     void CopyTileFromRasterImage(size_t tileX, size_t tileY,
-                                 const IRasterImage& src, const Rect& srcRect);
+                                 const IRasterImage& src, const Rect& srcRect,
+                                 const Rect* dstClip = nullptr);
+    // dstClip (optional, INCLUSIVE): only destination pixels inside it are copied
+    // and the source is not read elsewhere; the tile's other pixels keep their
+    // previous content. Used by the unbound ViewportFrameStore path so a tile
+    // overlapping the delivered region does not read source pixels outside it.
 
     // Final-frame signal (separate from per-tile so observers know the render is complete).
     void MarkFrameComplete(unsigned frame);
@@ -364,12 +369,12 @@ struct ViewTransform {
 Pipeline ordering (immutable contract, encoded in `FrameStore::Render`):
 
 ```
-Rec.709-linear D65 pixel  → exposure (multiply by 2^EV)
-                          → white balance (3×3 matrix in RISEPel working space)
-                          → Rec.709 D65 → target color space matrix [from TargetFormat]
-                          → tone curve                    [iff TargetFormat is LDR-fixed]
-                          → output transfer (sRGB / PQ / Linear) [from TargetFormat]
-                          → quantise into TargetFormat pixel layout
+Rec709RGBPel (sRGB-linear, D65) pixel → exposure (multiply by 2^EV)
+                                       → white balance (3×3 matrix in linear Rec.709 / sRGB working space)
+                                       → sRGB_Linear (D65) → target color space matrix [from TargetFormat]
+                                       → tone curve                              [iff TargetFormat is LDR-fixed]
+                                       → output transfer (sRGB / PQ / Linear)    [from TargetFormat]
+                                       → quantise into TargetFormat pixel layout
 ```
 
 ### 3.4 `TargetFormat` and `ColorSpace`

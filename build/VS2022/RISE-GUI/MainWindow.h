@@ -27,6 +27,7 @@
 #include "Theme.h"
 
 class QAction;
+class QCloseEvent;
 class QTimer;
 class QActionGroup;
 class QMenu;
@@ -49,7 +50,10 @@ class ViewportTimeline;
 class ViewportProperties;
 class OutlinerWidget;
 class EnvironmentPanel;
+class NamedViewsPanel;
 class StartWidget;
+class NodeGraphCanvas;
+class ObjectGraphCanvas;
 
 class MainWindow : public QMainWindow
 {
@@ -145,6 +149,16 @@ protected:
     // implementation the per-panel conversions cite.
     void changeEvent(QEvent* e) override;
 
+    /// Quit-time unsaved-work prompt -- mirrors macOS AppDelegate's
+    /// applicationShouldTerminate (RISEApp.swift).  Fires on the window
+    /// close box AND File > Exit (both route through QWidget::close(),
+    /// which posts a QCloseEvent).  Reuses promptToSaveUnsavedWork, the
+    /// SAME Save/Discard/Cancel gate Close Scene / load-over already run.
+    /// event->ignore() aborts the quit exactly like Cancel aborts a Close
+    /// Scene; the render-cancel-then-flush ordering on an accepted quit
+    /// stays in ~MainWindow(), unchanged.
+    void closeEvent(QCloseEvent* event) override;
+
 private:
     void createMenuBar();
     void createStatusBar();
@@ -191,8 +205,10 @@ private:
     QWidget* buildCenterColumn();
     QWidget* buildRightPanel();
     QWidget* buildLogDrawer();
+    /// index: 0 = Agent, 1 = Scene file, 2 = Graph (doc-88 Phase 3
+    /// S16+S22's third left-panel tab).
     void     setLeftTab(int index);
-    /// Refreshes just the Agent/Scene-file tab buttons' font weight +
+    /// Refreshes just the Agent/Scene-file/Graph tab buttons' font weight +
     /// border-underline stylesheet from the CURRENTLY checked button and
     /// the CURRENT Theme:: token values -- factored out of setLeftTab()
     /// so restyleTheme() can re-apply it on a theme switch WITHOUT
@@ -451,9 +467,25 @@ private:
     QStackedWidget* m_leftPanelStack = nullptr;
     QToolButton*  m_agentTabBtn = nullptr;
     QToolButton*  m_sceneTabBtn = nullptr;
-    // Agent/Scene-file tab strip container -- stored (rather than kept
-    // as a buildLeftPanel()-local) so restyleTheme() can re-apply its
-    // border-bottom stylesheet on a live theme switch.
+    // doc-88 Phase 3 S16+S22 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): a
+    // third left-panel tab, alongside Agent/Scene file -- mirrors the
+    // Mac reference's identical choice (NodeGraphCanvas.swift's own
+    // "ENTRY POINT" comment: the left panel already has the "swap the
+    // whole pane" tab idiom at zero new chrome cost, unlike the fixed
+    // center viewport). Persistent (built once, like m_chatPanel/
+    // m_sceneEditor), shows nothing until setBridge() gives it a scene.
+    QToolButton*  m_graphTabBtn = nullptr;
+    NodeGraphCanvas* m_nodeGraphCanvas = nullptr;
+    // S3 (Qt carry): a fourth left-panel tab, "Object Graph" -- sibling of
+    // m_graphTabBtn/m_nodeGraphCanvas above (now labeled "Material Graph"
+    // in the tab strip -- display strings only, no code symbols renamed).
+    // Same persistent-widget discipline: built once, shows nothing until
+    // setBridge() gives it a scene.
+    QToolButton*  m_objectGraphTabBtn = nullptr;
+    ObjectGraphCanvas* m_objectGraphCanvas = nullptr;
+    // Agent/Scene-file/Graph tab strip container -- stored (rather than
+    // kept as a buildLeftPanel()-local) so restyleTheme() can re-apply
+    // its border-bottom stylesheet on a live theme switch.
     QWidget*      m_leftTabStrip = nullptr;
 
     // Right panel: fixed-width host for the outliner (persistent, built
@@ -466,6 +498,10 @@ private:
     // Shows nothing until setBridge() gives it a live scene; hides itself
     // entirely when the scene has no active rasterizer.
     EnvironmentPanel* m_environmentPanel = nullptr;
+    // Named Views (session/UI camera bookmarks, docs/gui/CAMERA_CONTROLS_UX.md §3),
+    // persistent between EnvironmentPanel and the per-scene ViewportProperties
+    // (mirrors macOS ContentView.swift:854-859).
+    NamedViewsPanel*  m_namedViewsPanel = nullptr;
 
     // Center column: persistent host for the view stack / timeline /
     // log drawer.  m_viewportTimeline is inserted/removed at index 1

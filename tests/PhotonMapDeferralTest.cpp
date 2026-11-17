@@ -124,6 +124,15 @@ static std::string WriteSceneToTempFile( const char* sceneText )
 
 // A caustic photon map (pending shoot) + a pixelpel rasterizer whose
 // advanced_shader consumes it.  The bdpt_pel_rasterizer is lazy-built by name.
+//
+// OIDN-DENOISED-OK: the lazily built bdpt_pel_rasterizer / bdpt_spectral_
+// rasterizer have no scene-chunk text to carry `oidn_denoise FALSE`, so
+// their captures ARE OIDN-denoised (SourceHygieneTest's guard is per-file
+// and would otherwise pass this file by accident of the pixelpel string).
+// Every check against those renders is structural -- photon-shoot counts
+// and `maxLum > 0` -- never a numeric radiance comparison, so the denoise
+// cannot flip a verdict.  Add a numeric assertion on a BDPT render here
+// and this token must go, with the rasterizer given an explicit chunk.
 static const char* kSceneText =
 	"RISE ASCII SCENE 7\n"
 	"\n"
@@ -132,7 +141,7 @@ static const char* kSceneText =
 	"advanced_shader\n{\n\tname global\n"
 	"\tshaderop DefaultDirectLighting        1 100 +\n"
 	"\tshaderop DefaultCausticPelPhotonMap   1 100 +\n}\n\n"
-	"pixelpel_rasterizer\n{\n\tmax_recursion 4\n\tsamples 1\n\tlum_samples 1\n}\n\n"
+	"pixelpel_rasterizer\n{\n\tmax_recursion 4\n\tsamples 1\n\tlum_samples 1\n\toidn_denoise FALSE\n}\n\n"
 	"directional_light\n{\n\tname sun\n\tpower 3.14159\n\tcolor 1 1 1\n\tdirection 0 0 -1\n}\n\n"
 	"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.7 0.7 0.7\n}\n\n"
 	"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
@@ -211,7 +220,7 @@ static const char* kSpectralSceneText =
 	"advanced_shader\n{\n\tname global\n"
 	"\tshaderop DefaultDirectLighting           1 100 +\n"
 	"\tshaderop DefaultCausticSpectralPhotonMap 1 100 +\n}\n\n"
-	"pixelintegratingspectral_rasterizer\n{\n\tsamples 1\n\tlum_samples 1\n\tnmbegin 405\n\tnmend 705\n\tnum_wavelengths 4\n\tmax_recursion 3\n}\n\n"
+	"pixelintegratingspectral_rasterizer\n{\n\tsamples 1\n\tlum_samples 1\n\tnmbegin 405\n\tnmend 705\n\tnum_wavelengths 4\n\tmax_recursion 3\n\toidn_denoise FALSE\n}\n\n"
 	"directional_light\n{\n\tname sun\n\tpower 3.14159\n\tcolor 1 1 1\n\tdirection 0 0 -1\n}\n\n"
 	"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.7 0.7 0.7\n}\n\n"
 	"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"

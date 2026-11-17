@@ -463,18 +463,18 @@ namespace
 		RISEPel transmittance;
 		caster->SetTransparentShadows( false );
 		Check( !caster->CastShadowRayAuto(
-			nullChain, 6.0, true, 550.0, transmittance ) &&
+			nullChain, 6.0, true, 550.0, transmittance, false ) &&
 			SamePel( transmittance, RISEPel( 1, 1, 1 ) ),
 			"null boundary is unit-transparent with transparent_shadows disabled" );
 		caster->SetTransparentShadows( true );
 		Check( !caster->CastShadowRayAuto(
-			nullChain, 6.0, true, 550.0, transmittance ) &&
+			nullChain, 6.0, true, 550.0, transmittance, false ) &&
 			SamePel( transmittance, RISEPel( 1, 1, 1 ) ),
 			"null boundary is unit-transparent with transparent_shadows enabled" );
 
 		const Ray thinThenBlocked( Point3( 6, 0, 0 ), Vector3( 0, 0, 1 ) );
 		Check( caster->CastShadowRayAuto(
-			thinThenBlocked, 4.0, true, 550.0, transmittance ),
+			thinThenBlocked, 4.0, true, 550.0, transmittance, false ),
 			"exact null traversal does not step over a resolvably close blocker" );
 	}
 

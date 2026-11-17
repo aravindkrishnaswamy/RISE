@@ -1,0 +1,439 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           shelf_bunny.RISEscene                                                                  #
+#   Description:    Proximity showcase 3/3 -- mesh-to-mesh and mesh-to-plank contact.  A bunny stands on   #
+#                   a shelf against a wall, a small dragon perched on the bunny's head.                    #
+#   Author:         RISE contributors                                                                      #
+#   Birthdate:      2026-09-10                                                                              #
+#                                                                                                           #
+#############################################################################################################
+#
+#   docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 8 is the engine (5.2 the mesh-family closest-point query, 8.3 the
+#   Phase-2 gate); docs/PROXIMITY_SHOWCASES.md 3 is this showcase's full spec (twenty adversarial review
+#   rounds); tests/ShelfBunnyShowcaseTest.cpp re-derives every number below from the scene's own chunks and
+#   the mesh assets and asserts it.
+#
+#   ------------------------------------------------------------------------------------------------
+#   WHAT IT SHOWS
+#   ------------------------------------------------------------------------------------------------
+#
+#   `proximity(0.02)` on a MESH receiver, where the neighbour is also a mesh -- the case
+#   `proximity_mesh_contact.RISEscene` (`MeshClosestPointTest` (g)) proves in isolation, staged here as a
+#   picture instead of a fixture.  Two receivers read the signal from separate `expression_painter` chunks
+#   (a `def` is per chunk, so the cost gate has to zero `dust` in BOTH):
+#
+#     - the SHELF reads its neighbours -- the bunny (a dust ring around its single contact vertex; the
+#       bunny touches the shelf at ONE point, not four -- scene D's "four" were four probe DIRECTIONS from
+#       that one point) and the WALL (its back edge sits flush with the wall's front face, so a 2 cm dust
+#       band runs the shelf's full length along that edge -- a box neighbour's exact closed form, pinned by
+#       M5).
+#     - the BUNNY reads its neighbours -- the shelf (a band around its whole base wherever its surface comes
+#       within 2 cm of the shelf top) and the dragon (mesh-on-mesh at the dragon's feet, pinned at M4).
+#
+#   The dragon reads nothing (a plain Lambertian) and the shelf never sees the dragon: the dragon's lowest
+#   point sits 15.4 cm above the shelf top, 7.7x the 2 cm radius. The wall reads nothing either.
+#
+#   ------------------------------------------------------------------------------------------------
+#   GEOMETRY
+#   ------------------------------------------------------------------------------------------------
+#
+#   shelf   box_geometry 0.60 (X) x 0.025 (Y) x 0.24 (Z) at (0, -0.0125, 0) -> top face y = 0,
+#           x in [-0.30, 0.30], z in [-0.12, 0.12].
+#   wall    box_geometry 0.60 (X) x 0.40 (Y) x 0.02 (Z) at (0, 0.19, -0.13) -> y in [-0.01, 0.39],
+#           z in [-0.14, -0.12].  Its front face (z = -0.12) is flush with the shelf's back face
+#           (also z = -0.12): the two share a 0.60 x 0.01 m coplanar patch (the wall's y in [-0.01, 0]
+#           against the shelf's own y in [-0.025, 0]), hidden below and behind the shelf top.  Stated,
+#           not moved.
+#   bunny   risemesh_geometry (models/risemesh/bunny.risemesh), scale 1, position (0, Y_b, 0) with
+#           Y_b = -(lowest vertex y) = -0.0329874 (re-derived from the asset by the test at 1e-6 -- the
+#           SAME number `proximity_mesh_contact.RISEscene` uses for the same asset against a different
+#           receiver, because the placement rule is "lowest vertex on y = 0" either way).  The bunny's
+#           lowest vertex is at object (x, z) = (-0.053835, 0.0179508), a FOOT, not the model centre --
+#           the world contact point is therefore (-0.053835, 0, 0.0179508), MEASURED from the vertex
+#           array, never assumed.  World bounding box: x in [-0.0946899, 0.0610091] (inside the shelf's
+#           [-0.30, 0.30] with room to spare), z in [-0.0618736, 0.0587997] -- MEASURED clearance from the
+#           wall's front face (z = -0.12) is 0.0581264 m, comfortably over the 2 cm the spec requires.
+#   dragon  risemesh_geometry (models/risemesh/dragon_small.risemesh), scale 0.35 0.35 0.35 (three
+#           components -- a bare `scale 0.35` derives to a DEGENERATE (0.35, 0, 0) transform silently, an
+#           early-draft bug `MeshClosestPointTest` (g) documents), position (-0.0318315, 0.135862595,
+#           -0.014760295): the SAME literals `proximity_mesh_contact.RISEscene` uses, because that scene's
+#           "relative-to-bunny" correction (0, Y_b + 0.0329874, 0) is identically zero here (Y_b IS
+#           -0.0329874 in both scenes).  The dragon's lowest vertex lands on the bunny's highest vertex in
+#           world space -- (-0.0175221, 0.1543336, -0.0198494), re-derived from both vertex arrays and
+#           asserted at 1e-6 -- so the two meshes touch at a single point rather than merely having
+#           touching bounding boxes.  The shelf top sits 0.1543336 m below that contact, 7.7x the 2 cm
+#           radius, so the shelf never reads the dragon.
+#
+#   ------------------------------------------------------------------------------------------------
+#   CAMERA -- thinlens_camera named `beauty_cam`, 50 mm, f/16, focus 0.52 m
+#   ------------------------------------------------------------------------------------------------
+#
+#     location (0.22, 0.25, 0.42), lookat (0, 0.06, 0), up (0, 1, 0)
+#     distance to lookat            |location - lookat| = sqrt(0.22^2 + 0.19^2 + 0.42^2) = 0.511 m
+#     sensor                        36 mm (horizontal extent)
+#     DoF (1-px circle of confusion, c = 0.045 mm at 800 px wide):
+#         near = s*f^2 / (f^2 + N*c*(s-f)) = 0.52*0.0025 / (0.0025 + 16*0.000045*0.47) = 0.458 m
+#         far  = s*f^2 / (f^2 - N*c*(s-f)) = 0.52*0.0025 / (0.0025 - 16*0.000045*0.47) = 0.601 m
+#     M1 (contact vertex) at 0.547 m from the camera, M3's chosen direction (-x) at 0.574 m -- both
+#     inside [0.458, 0.601].  The bunny's near flank (~0.40 m) and the shelf's near edge fall soft;
+#     stated, not hidden.
+#     Framing: the shelf top at the contact vertex is seen at 27.2 deg elevation (asin(0.25 / 0.547)) from
+#     0.547 m; a 2 cm ring there images at 20 px radial (0.02 m tangential subtense in pixels,
+#     44.7 px, times sin(27.2 deg)) -- comfortably over the framing rule's 8 px floor.
+#
+#   ------------------------------------------------------------------------------------------------
+#   LIGHTING -- ONE omni_light, no fill, no sky, no ambient (docs/PROXIMITY_SHOWCASES.md 0's zero-area
+#   requirement; SCENE_CONVENTIONS.md 3.5)
+#   ------------------------------------------------------------------------------------------------
+#
+#   `key`, pinned at (-0.35, 0.45, 0.25), camera-left and above, color (1.0, 0.96, 0.90) linear Rec.709
+#   (no gamma decode -- SCENE_CONVENTIONS.md 4).  `power` chosen for exposure: see "EXPOSURE" below.
+#   n.L at the shelf's painter stations, computed from the light and station geometry alone (independent
+#   of `power`): 0.7854 (M1p), 0.7821 (M1q), 0.7993 (M3) -- the shadow rays leave toward -x, away from the
+#   bunny; the test casts each against the loaded scene and asserts it clear (the bunny, though blacked in
+#   the probe copies, still occludes).  No fill: indirect light off the wall and shelf top does that job
+#   (`shaderop DefaultPathTracing`); the bunny's upper, away-from-key flank reads near-black against the
+#   black background -- predicted here, judged honestly in the BEAUTY section below.
+#
+#   EXPOSURE.  `power 2.6`: MEASURED via the actual 32-spp beauty render (see below) rather than guessed;
+#   raised from an initial 1.5 after the first render read dark on the shelf top.
+#
+#   ------------------------------------------------------------------------------------------------
+#   STATIONS (r = 0.02; predicted here from the geometry above, MEASURED by
+#   tests/ShelfBunnyShowcaseTest.cpp against the loaded scene -- both recorded)
+#   ------------------------------------------------------------------------------------------------
+#
+#   Query stations, `self` = the shelf for M1-M3 and M5, the bunny for M4:
+#     M1  shelf top, 1 mm outside the contact vertex's xz in each of +-x, +-z -- PREDICTED >= 0.9 (by
+#         analogy with scene D's 0.9519 / 0.9740 / 0.9865 / 0.9913 at the same 1 mm offset on the same
+#         asset); MEASURED: see table below.
+#     M2  shelf top, 2 mm outside, worst direction -- PREDICTED >= 0.9 (scene D: 0.9037); MEASURED below.
+#     M3  shelf top, 5 cm from the contact vertex, direction DERIVED by the test as the one whose minimum
+#         3D distance to any bunny vertex exceeds 0.025 AND whose camera sightline is unoccluded.
+#         MEASURED clearances (this scene, brute force over the bunny's vertex array): -x 33.14 mm,
+#         +z 21.47 mm, +x 4.57 mm, -z 11.88 mm -- only -x clears 25 mm, so M3 = contact + (-0.05, 0, 0) =
+#         (-0.103835, 0, 0.0179508).  PREDICTED reading there: 0 (5 cm is 2.5x the radius). MEASURED below.
+#     M4  the bunny's highest vertex (self = bunny) -- PREDICTED 1.0 exactly (the dragon's lowest vertex is
+#         there, distance 0); 5 mm straight below it (a query-only point, inside the bunny) -- PREDICTED
+#         0.75 EXACTLY: the dragon's lowest world vertex IS the contact point and no other dragon point
+#         lies below that plane, so every dragon point is >= 5 mm from a station 5 mm straight below it,
+#         with equality at the shared vertex (`MeshClosestPointTest` 6b makes the identical argument on the
+#         same two assets and measures 0.75). MEASURED below, asserted at 1e-4.
+#     M5  shelf top at z = -0.11 (1 cm from the wall's front face z = -0.12), x = 0.20 (away from the
+#         bunny) -- PREDICTED 0.5 EXACT (box neighbour, closed form); at z = -0.09 -- PREDICTED 0.
+#         MEASURED below at 1e-9 (a box neighbour is exact).
+#
+#   Painter stations (both probe copies black out every object but the shelf; the shelf's material is
+#   already a pure-albedo Lambertian, so its probe is the `expr` swap alone -- no rebind needed):
+#   NOT at M1 (1 mm) or even 5 mm out along -x -- the bunny's foot flares, so a station there is still
+#   0.83 mm from the bunny's surface and its camera sightline is blocked by the bunny's own silhouette
+#   (the nail-failure trap 8.2 names). The ray cast against the bunny first goes clear between 23 and 24 mm
+#   out along -x.
+#     M1p 28 mm from the contact vertex along -x: (-0.081835, 0, 0.0179508). PREDICTED from the mesh's
+#         nearest-surface distance (13.7 mm) via 1 - 13.7/20 = 0.315 -- MEASURED query value and rendered
+#         ratio below (within 0.15 of each other, sightline clear, camera occlusion cast passes).
+#     M1q 30 mm along +z: (-0.053835, 0, 0.0479508). PREDICTED 0.84 (foot flare keeps the surface 3.2 mm
+#         away) -- MEASURED below.
+#     M3  -> PREDICTED 0 within 0.08 -- MEASURED below.
+#     No painter station on the bunny at M4 (the pixel there shows the dragon's foot, not the bunny).
+#
+#   ------------------------------------------------------------------------------------------------
+#   MEASURED STATION TABLE (tests/ShelfBunnyShowcaseTest.cpp, this scene, this session)
+#   ------------------------------------------------------------------------------------------------
+#
+#     M1  +x 1mm  0.9519             M1  -x 1mm  0.9740
+#     M1  +z 1mm  0.9865             M1  -z 1mm  0.9913        (worst 0.9519 -- MONEY >= 0.9; BIT-IDENTICAL
+#                                                                 to scene D's four numbers at the same 1 mm
+#                                                                 offset on the same bunny asset)
+#     M2  worst of four at 2mm       0.9037                    (BIT-IDENTICAL to scene D)
+#     M3  query (direction -x)       0                         (5 cm is outside the 2 cm radius, exact)
+#     M4  at the shared vertex       1.0 (>= 0.999)             5mm below   0.75 EXACT (1e-4)
+#     M5  z=-0.11                    0.5 EXACT (1e-9)           z=-0.09     0 EXACT
+#     M1p query / rendered ratio     0.3136 / 0.3195  (diff 0.006, well inside the +-0.15 band)
+#     M1q query / rendered ratio     0.8385 / 0.8327  (diff 0.006, well inside the +-0.15 band)
+#     M3  painter query / rendered ratio   0 / 0  (exact)
+#     Shadow n.L at M1p / M1q / M3      0.7854 / 0.7821 / 0.7993  (all cast clear; predicted 0.79/0.78/0.80)
+#     Camera sightlines to M1p / M1q / M3, and the M3-direction sightline: all cast CLEAR (asserted)
+#
+#   All 63 assertions in tests/ShelfBunnyShowcaseTest.cpp pass (0 failed), including the two MONEY
+#   re-derivations (the bunny's y-offset and the dragon's onto-the-bunny placement, both re-computed from
+#   the .risemesh vertex arrays and matched to the literals above at 1e-6) and the bunny footprint /
+#   wall-clearance assertions above.
+#
+#   ------------------------------------------------------------------------------------------------
+#   BEAUTY -- judged honestly, not a ring
+#   ------------------------------------------------------------------------------------------------
+#
+#   Casting camera and key sightlines around the contact vertex: at 20 mm every azimuth is hidden behind
+#   the bunny's own foot; at 25 mm only the arc from +z round to -x is visible and lit; at 40 mm the
+#   visible, lit arc spans roughly 90-225 degrees.  So the picture shows a lit ARC of dust from +z round to
+#   -x over radii ~24-40 mm, strongest behind the foot's silhouette, plus darkening under the dragon's
+#   claws and the bunny's own base band; nothing on the dragon.
+#
+#   JUDGED, honestly: NOT a ring, as predicted -- the shelf top under and immediately around the bunny's
+#   forefoot is fully occluded by the foot's own silhouette from both the camera and the key, and reads as
+#   an ordinary contact shadow there.  The dust IS visible as a warm vignette on the visible arc: sampling
+#   pixels outward from the contact area along -x (the rendered 800x600 PNG, denoised off for measurement
+#   consistency with the probe copies), R/G/B goes from (240,236,228) far from the bunny to (217,206,187)
+#   approaching it -- a genuine WARMING (the R-B gap widens from 12 to 30), not merely a darkening, which
+#   is what distinguishes the signal from the neutral-grey key shadow sitting right beside it.  It reads as
+#   a soft brown-grey stain rather than a crisp band, because the shelf's own `grain` term and the ramp's
+#   modest contrast keep the wear subtle by design (a 0.30/0.24/0.18 worn tone against a 0.58/0.50/0.40
+#   base, the same order of contrast plank_closeup uses).  The shelf-to-wall band (M5) is present in the
+#   scene per its exact closed form but is NOT prominent in the beauty frame: the wall's own front face is
+#   in shadow behind the shelf lip at this camera angle, so the band sits in a part of the shelf the camera
+#   grazes rather than one it frames face-on -- an honest limitation of this particular camera placement,
+#   not of the signal.  The bunny's own base band (dust from the shelf) and the darkening under the
+#   dragon's claws are both present and subtle for the same reason.  Nothing appears on the dragon or the
+#   wall, matching the "reads no signal" design.
+#
+#   ------------------------------------------------------------------------------------------------
+#   COST (2 warm-ups + >= 3 interleaved pairs, live `dust` vs `def dust 0` in BOTH the shelf's and the
+#   bunny's expression_painter chunks, every core busy -- render_thread_reserve_count 0)
+#   ------------------------------------------------------------------------------------------------
+#
+#   CALL-RATE REGIME: `pathtracing_pel_rasterizer`, a path-traced scene -- the painter evaluates many
+#   times per camera sample (not comparable to a `pixelpel_rasterizer` showcase's roughly-once-per-sample
+#   figure; docs/PROXIMITY_SHOWCASES.md 0).  Measured on the gate machine, `render_thread_reserve_count 0`
+#   (every core busy, via the same RISE_OPTIONS_FILE route bench.sh uses), 800x600, 32 spp, CLI wall clock
+#   (`time (printf "render\nquit\n" | ./bin/rise <scene>)`), 2 warm-up runs then 4 interleaved pairs
+#   (live vs `def dust 0` in both the shelf's and the bunny's expression_painter chunks):
+#
+#     pair   live (s)   def-dust-0 (s)   ratio
+#      1       5.892         5.625       1.047
+#      2       5.842         5.569       1.049
+#      3       5.775         5.554       1.040
+#      4       5.690         5.504       1.034
+#
+#   Mean ratio 1.043x -- well inside the <= 1.15x target (the plank's 1.11-1.13x reference).
+#
+#   ------------------------------------------------------------------------------------------------
+#   DEVIATIONS FROM THE SPEC
+#   ------------------------------------------------------------------------------------------------
+#
+#     None identified.  Every binding item in docs/PROXIMITY_SHOWCASES.md 0 and 3 is followed as written:
+#     both receivers (shelf, bunny) are Lambertian with their OWN `expression_painter` (so the shelf's
+#     probe needed no rebind); the wall and dragon are plain Lambertians reading no signal; the single
+#     pinned `omni_light` is the only light (no fill, no sky, no ambient); the camera is named `beauty_cam`;
+#     the rasterizer carries `standard_shader { shaderop DefaultPathTracing }`; `film { width 800 height
+#     600 }`; `samples 32` (the descriptor default) is stated explicitly; `file_rasterizeroutput` points at
+#     `rendered/shelf_bunny`.  The one authorial judgement call the spec leaves open -- the shelf's and
+#     bunny's own "wear recipe" -- is a modest grain + warm/worn colour mix rather than plank_closeup's
+#     full seven-doctrine treatment, which the spec explicitly leaves "at the author's discretion" for this
+#     showcase (its point is the cross-object mesh signal, not a second procedural-texture showcase).
+#############################################################################################################
+
+##################################################
+# Painters and materials
+##################################################
+
+#
+# THE SHELF's own wear + the cross-object contact signal.  A plain warm-grey shelf top with a little
+# painted grain, darkened and greyed toward a worn tone wherever `proximity(0.02)` reports a neighbour
+# (the bunny's foot, and the wall along the back edge).  Lambertian (not GGX/coated): docs/PROXIMITY_
+# SHOWCASES.md 0's albedo-probe protocol requires a pure-albedo receiver so the probe/control ratio IS
+# the signal with no rebind needed.
+#
+expression_painter
+{
+	name			p_shelf
+	def				dust		proximity(0.02)
+	def				grain		fbm(vec3(P.x*40.0, P.y*260.0, P.z*40.0) + vec3(2.0, 5.0, 1.0), 3, 0.5, 2.0)
+	def				base		vec3(0.58, 0.50, 0.40) + 0.05*grain*vec3(1.0, 1.0, 0.85)
+	def				worn		vec3(0.30, 0.24, 0.18)
+	expr			mix(base, worn, clamp(dust, 0, 1))
+}
+
+lambertian_material
+{
+	name			m_shelf
+	reflectance		p_shelf
+}
+
+#
+# The WALL: plain matte plaster, no signal (docs/PROXIMITY_SHOWCASES.md 3 -- it is the shelf's neighbour,
+# not a receiver).
+#
+uniformcolor_painter
+{
+	name			p_wall
+	color			0.78 0.76 0.72
+}
+
+lambertian_material
+{
+	name			m_wall
+	reflectance		p_wall
+}
+
+#
+# THE BUNNY's own field.  A separate `expression_painter` chunk from the shelf's -- `def` is per chunk, so
+# the cost gate has to zero `dust` in BOTH -- mixing a warm cream base toward the same worn tone wherever
+# the bunny's surface is close to another object (the shelf top under its whole base, the dragon at its
+# head).  Lambertian, and a signal RECEIVER in the beauty even though it is blacked out (given no painter
+# station) in both probe copies.
+#
+expression_painter
+{
+	name			p_bunny
+	def				dust		proximity(0.02)
+	def				fur			fbm(P*70.0 + vec3(9.0, 3.0, 6.0), 3, 0.5, 2.0)
+	def				base		vec3(0.74, 0.64, 0.50) + 0.03*fur*vec3(1.0, 0.9, 0.8)
+	def				worn		vec3(0.22, 0.17, 0.13)
+	expr			mix(base, worn, clamp(dust, 0, 1))
+}
+
+lambertian_material
+{
+	name			m_bunny
+	reflectance		p_bunny
+}
+
+#
+# The DRAGON: plain bronze-dark Lambertian, no signal (a plain prop; the shelf never sees it -- 15.4 cm
+# clear, 7.7x the radius).
+#
+uniformcolor_painter
+{
+	name			p_dragon
+	color			0.32 0.26 0.20
+}
+
+lambertian_material
+{
+	name			m_dragon
+	reflectance		p_dragon
+}
+
+##################################################
+# Geometries
+##################################################
+
+box_geometry
+{
+	name			g_shelf
+	width			0.60
+	height			0.025
+	depth			0.24
+}
+
+box_geometry
+{
+	name			g_wall
+	width			0.60
+	height			0.40
+	depth			0.02
+}
+
+risemesh_geometry
+{
+	name			g_bunny
+	file			models/risemesh/bunny.risemesh
+}
+
+risemesh_geometry
+{
+	name			g_dragon
+	file			models/risemesh/dragon_small.risemesh
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name			shelf
+	geometry		g_shelf
+	material		m_shelf
+	position		0 -0.0125 0
+}
+
+standard_object
+{
+	name			wall
+	geometry		g_wall
+	material		m_wall
+	position		0 0.19 -0.13
+}
+
+#
+# Lowest vertex ON the shelf top (y = 0).  See the header: Y_b is -(bounding box floor), the SAME number
+# `proximity_mesh_contact.RISEscene` uses for this asset, and the test re-derives it from the asset.
+#
+standard_object
+{
+	name			bunny
+	geometry		g_bunny
+	material		m_bunny
+	position		0 -0.0329874 0
+}
+
+#
+# Lowest vertex ON the bunny's highest vertex.  See the header.
+#
+standard_object
+{
+	name			dragon
+	geometry		g_dragon
+	material		m_dragon
+	position		-0.0318315 0.135862595 -0.014760295
+	scale			0.35 0.35 0.35
+}
+
+##################################################
+# Lighting -- the scene's ONLY light (no fill, no sky, no ambient: docs/PROXIMITY_SHOWCASES.md 0's
+# zero-area requirement).
+##################################################
+
+omni_light
+{
+	name			key
+	position		-0.35 0.45 0.25
+	color			1.0 0.96 0.90
+	colorspace		Rec709RGB_Linear
+	power			2.6
+}
+
+##################################################
+# Shader, rasterizer, camera and output
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			32
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/shelf_bunny
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+film
+{
+	width			800
+	height			600
+}
+
+thinlens_camera
+{
+	name				beauty_cam
+	location			0.22 0.25 0.42
+	lookat				0 0.06 0
+	up					0 1 0
+	sensor_size			36
+	focal_length		50
+	fstop				16
+	focus_distance		0.52
+}

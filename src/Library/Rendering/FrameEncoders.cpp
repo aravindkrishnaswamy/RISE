@@ -21,11 +21,15 @@
 #include "../Interfaces/IWriteBuffer.h"
 #include "../RISE_API.h"
 #include "../RasterImages/EXRWriter.h"
+#include "../RasterImages/PNGWriter.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <vector>
+#include <limits>
+#include <stdexcept>
+#include <memory>
 
 // L5c — libpng for HDR10 PNG encoder.
 #ifndef NO_PNG_SUPPORT
@@ -37,29 +41,6 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 using namespace RISE::FrameStoreOutput;
-
-namespace
-{
-	template <typename T>
-	class LoggedReference
-	{
-	public:
-		explicit LoggedReference( T* ptr = nullptr ) : ptr_(ptr) {}
-		~LoggedReference()
-		{
-			if( ptr_ ) {
-				GlobalLog()->PrintDelete(ptr_,__FILE__,__LINE__);
-				ptr_->release();
-			}
-		}
-		LoggedReference( const LoggedReference& ) = delete;
-		LoggedReference& operator=( const LoggedReference& ) = delete;
-		void reset( T* ptr ) { ptr_ = ptr; }
-
-	private:
-		T* ptr_;
-	};
-}
 
 namespace RISE
 {
@@ -75,15 +56,17 @@ namespace RISE
 		{
 			const FrameStore::Metadata metadata = opts.useMetadataSnapshot ?
 				opts.metadataSnapshot : store.Meta();
-			IRasterImageWriter* pWriter = CreateWriter( dst, opts );
+			// Scoped ownership releases the display-transform wrapper before
+			// the inner writer on both success and exception unwind.
+			const auto release = []( IRasterImageWriter* writer ) { writer->release(); };
+			std::unique_ptr<IRasterImageWriter, decltype(release)> pWriter( CreateWriter(dst, opts), release );
 			if ( !pWriter ) {
 				GlobalLog()->PrintEx( eLog_Error,
 					"FrameEncoder[%s]: writer factory returned null",
 					FormatName().c_str() );
-				return;
+				throw std::runtime_error( "Frame encoder writer factory returned null" );
 			}
-			LoggedReference<IRasterImageWriter> writerReference(pWriter);
-			if( EXRWriter* exr = dynamic_cast<EXRWriter*>(pWriter) ) {
+			if( EXRWriter* exr = dynamic_cast<EXRWriter*>(pWriter.get()) ) {
 				exr->SetStringAttributes(opts.attrs);
 				exr->SetPixelAspectRatio(opts.exrPixelAspectRatio);
 			}
@@ -98,9 +81,8 @@ namespace RISE
 			// immutable FrameStore metadata snapshot (or a direct encoder
 			// call's snapshot taken above).  See L2
 			// adversarial review HIGH-2.
-			IRasterImageWriter* pEffective = pWriter;
-			DisplayTransformWriter* pDtw = nullptr;
-			LoggedReference<DisplayTransformWriter> transformReference;
+			IRasterImageWriter* pEffective = pWriter.get();
+			std::unique_ptr<IRasterImageWriter, decltype(release)> pDtw( nullptr, release );
 			if ( !IsHDRFormat() ) {
 				FrameStoreOutput::ViewTransform effectiveTransform = opts.viewTransform;
 				effectiveTransform.exposureEV +=
@@ -116,12 +98,11 @@ namespace RISE
 					|| ( effectiveTransform.toneCurve != eDisplayTransform_None &&
 						effectiveTransform.toneCurveStrength > 0.0f );
 				if ( useDt ) {
-					pDtw = new DisplayTransformWriter(
-						*pWriter,effectiveTransform,opts.colorSpace );
-					transformReference.reset(pDtw);
+					pDtw.reset( new DisplayTransformWriter(
+						*pWriter, effectiveTransform, opts.colorSpace ) );
 					GlobalLog()->PrintNew(
-						pDtw, __FILE__, __LINE__, "DisplayTransformWriter" );
-					pEffective = pDtw;
+						pDtw.get(), __FILE__, __LINE__, "DisplayTransformWriter" );
+					pEffective = pDtw.get();
 				}
 			}
 
@@ -133,8 +114,6 @@ namespace RISE
 			// for the same input.
 			store.AsBeautyRasterImage().DumpImage( pEffective );
 
-			// Scoped references release the wrapper before the inner writer
-			// on both success and exception unwind.
 		}
 
 		// ─────────────────────────────────────────────────────────────
@@ -219,10 +198,15 @@ namespace RISE
 			void HDR10PNG_WriteCallback( png_structp png_ptr, png_bytep data, png_size_t length )
 			{
 				IWriteBuffer* buf = static_cast<IWriteBuffer*>( png_get_io_ptr( png_ptr ) );
-				if ( !buf || !buf->setBytes(
-					static_cast<const void*>(data),static_cast<unsigned int>(length)) ) {
-					png_error(png_ptr,"RISE output buffer rejected HDR10 PNG bytes");
+				bool written = false;
+				try {
+					written = buf && length <= std::numeric_limits<unsigned int>::max() &&
+						buf->setBytes( data, static_cast<unsigned int>( length ) );
+				} catch( ... ) {
+					// Finish the catch before longjmp; release the active C++
+					// exception rather than jumping across its lifetime.
 				}
+				if( !written ) png_error( png_ptr, "HDR10 PNG output write failed" );
 			}
 			void HDR10PNG_FlushCallback( png_structp /*png_ptr*/ )
 			{
@@ -242,7 +226,7 @@ namespace RISE
 				"HDR10PNGFrameEncoder::Encode: NO_PNG_SUPPORT — "
 				"libpng not compiled in; cannot emit HDR10 PNG",
 				__FILE__, __LINE__ );
-			throw std::runtime_error("HDR10 PNG encoder is unavailable");
+			throw std::runtime_error( "HDR10 PNG encoding is unavailable: NO_PNG_SUPPORT" );
 #else
 			// L5c review P1 — host-endian guard.  `png_set_swap`
 			// below assumes little-endian host (the only platforms
@@ -263,6 +247,8 @@ namespace RISE
 				"HDR10 PNG encoder assumes little-endian host (uses png_set_swap "
 				"to convert host-endian uint16 samples to PNG's big-endian)" );
 
+			if( store.Width() > 0x7fffffffU || store.Height() > 0x7fffffffU )
+				throw std::runtime_error( "HDR10 PNG image dimensions exceed the PNG format limit" );
 			const unsigned int W = static_cast<unsigned int>( store.Width() );
 			const unsigned int H = static_cast<unsigned int>( store.Height() );
 			if ( W == 0 || H == 0 ) {
@@ -276,7 +262,12 @@ namespace RISE
 			// FrameStore through the L5c RGB16_BT2020_PQ pipeline.
 			// 3-channel (no alpha) keeps the file size minimal and
 			// matches the typical HDR10 PNG profile (PNG color type 2).
-			const size_t rowStride = static_cast<size_t>( W ) * 3u * sizeof( uint16_t );
+			const size_t rowWidth = store.Width();
+			if( rowWidth > std::numeric_limits<size_t>::max() / (3u * sizeof(uint16_t)) )
+				throw std::runtime_error( "HDR10 PNG row storage size overflow" );
+			const size_t rowStride = rowWidth * 3u * sizeof( uint16_t );
+			if( H > std::numeric_limits<size_t>::max() / rowStride )
+				throw std::runtime_error( "HDR10 PNG pixel storage size overflow" );
 			std::vector<uint8_t> bytes( rowStride * H );
 
 			Rect roi( 0, 0, H, W );  // top, left, bottom, right (inclusive)
@@ -293,7 +284,7 @@ namespace RISE
 				GlobalLog()->PrintSourceError(
 					"HDR10PNGFrameEncoder::Encode: png_create_write_struct failed",
 					__FILE__, __LINE__ );
-				throw std::runtime_error("HDR10 PNG write-structure allocation failed");
+				throw std::runtime_error( "HDR10 PNG: Could not allocate PNG structure" );
 			}
 			png_infop info_ptr = png_create_info_struct( png_ptr );
 			if ( !info_ptr ) {
@@ -301,7 +292,7 @@ namespace RISE
 				GlobalLog()->PrintSourceError(
 					"HDR10PNGFrameEncoder::Encode: png_create_info_struct failed",
 					__FILE__, __LINE__ );
-				throw std::runtime_error("HDR10 PNG info-structure allocation failed");
+				throw std::runtime_error( "HDR10 PNG: Could not allocate PNG info structure" );
 			}
 
 			// libpng uses setjmp/longjmp for error reporting.  If any
@@ -312,7 +303,7 @@ namespace RISE
 				GlobalLog()->PrintSourceError(
 					"HDR10PNGFrameEncoder::Encode: libpng error during write",
 					__FILE__, __LINE__ );
-				throw std::runtime_error("HDR10 PNG codec write failed");
+				throw std::runtime_error( "HDR10 PNG: libpng encoding failed" );
 			}
 
 			png_set_write_fn( png_ptr, &dst, HDR10PNG_WriteCallback, HDR10PNG_FlushCallback );
@@ -341,6 +332,8 @@ namespace RISE
 			// the IHDR and any auto-emitted ancillary chunks but
 			// BEFORE the IDAT pixel data, which is spec-compliant.
 			png_write_info( png_ptr, info_ptr );
+			if( ForTest_PNGWriteFailureAfterHeader() )
+				png_error( png_ptr, "injected HDR10 PNG codec failure after header" );
 
 			// cICP (Coding-Independent Code Points) — 4 bytes:
 			//   colorPrimaries          = 9   (BT.2020)

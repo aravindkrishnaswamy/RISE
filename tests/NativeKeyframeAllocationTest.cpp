@@ -1,0 +1,211 @@
+// DL-532: exact native cameras/lights may consume numeric scratch immediately.
+#include <atomic>
+#include <cstdlib>
+#include <new>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+#include <functional>
+#include <limits>
+#include "../src/Library/Cameras/ThinLensCamera.h"
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Cameras/CameraCommon.h"
+#include "../src/Library/Lights/PointLight.h"
+#include "../src/Library/Lights/SpotLight.h"
+#include "../src/Library/Lights/DirectionalLight.h"
+#include "../src/Library/Animation/Timeline.h"
+#include "../src/Library/Animation/KeyframableHelper.h"
+#include "../src/Library/Utilities/SimpleInterpolators.h"
+using namespace RISE;
+using namespace RISE::Implementation;
+static std::atomic<size_t> allocations{0};
+static bool counting=false;
+void* operator new(std::size_t n) {
+    if(counting) ++allocations;
+    if(void* p=std::malloc(n?n:1)) return p;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t n) { return ::operator new(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p,std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p,std::size_t) noexcept { std::free(p); }
+static int failures=0;
+template<class T,class Read>
+static void Measure(const char* label,IKeyframable& target,const char* parameter,
+                    const char* firstText,const char* lastText,Read read,size_t expectedAlloc=0)
+{
+    IKeyframeParameter* a=target.KeyframeFromParameters(parameter,firstText);
+    IKeyframeParameter* b=target.KeyframeFromParameters(parameter,lastText);
+    if(!a || !b) { safe_release(a);safe_release(b);++failures;return; }
+    std::vector<KeyframeParameterDispatch> values;
+    values.emplace_back(*a);values.emplace_back(*b);a->release();b->release();
+    std::vector<T> reference(5000);
+    auto* legacy=new LinearInterpolator<KeyframeParameterDispatch>();
+    for(int i=1;i<5000;++i) {
+        auto first=values.cbegin(),last=first+1;
+        auto value=legacy->Interpolate2Values(values,first,last,Scalar(i)/5000);
+        reference[i]=*static_cast<T*>(value.GetParam().getValue());
+    }
+    legacy->release();
+    size_t mismatches=0;
+    {
+        Timeline timeline(&target,parameter);
+        if(!timeline.InsertKeyframe(firstText,0,nullptr) || !timeline.InsertKeyframe(lastText,1,nullptr)) {
+            ++failures;return;
+        }
+        allocations=0;
+        for(int i=1;i<5000;++i) {
+            counting=true;timeline.EvaluateAtTime(Scalar(i)/5000);counting=false;
+            const T got=read();
+            if(std::memcmp(&got,&reference[i],sizeof(T))) ++mismatches;
+        }
+        std::printf("%s n=4999 allocations=%zu allocations/interpolation=%.6g bit mismatches=%zu SD=0 (counter)\n",
+                    label,allocations.load(),double(allocations.load())/4999,mismatches);
+        if(allocations!=expectedAlloc || mismatches) ++failures;
+    }
+    // Also read after Timeline and its keyframes are destroyed.
+    const T last=read();
+    if(std::memcmp(&last,&reference[4999],sizeof(T))) ++failures;
+}
+class RetainingPointLight final : public PointLight {
+public:
+    const IKeyframeParameter* retained=nullptr;
+    RetainingPointLight():PointLight(1,RISEPel(1,1,1),false) {}
+    ~RetainingPointLight() override { safe_release(retained); }
+    void SetIntermediateValue(const IKeyframeParameter& p) override {
+        PointLight::SetIntermediateValue(p);
+        p.addref();safe_release(retained);retained=&p;
+    }
+};
+int main() {
+    double triple[3]={10,20,30};
+    double pair[2]={10,20};
+    if(ParseStrictVec3("1 invalid 3",triple) || triple[0]!=10 || triple[1]!=20 || triple[2]!=30) ++failures;
+    if(ParseStrictVec2("1 invalid",pair) || pair[0]!=10 || pair[1]!=20) ++failures;
+    const Point3 location(0,0,4),lookAt(0,0,0);
+    const Vector3 up(0,1,0),orientation(0,0,0);
+    const Vector2 target(0,0);
+    for(int kind=0;kind<4;++kind) {
+        ICamera* camera=nullptr;bool ok=false;
+        const char* labels[]={"pinhole","thinlens","fisheye","orthographic"};
+        if(kind==0) ok=RISE_API_CreatePinholeCamera(&camera,location,lookAt,up,1,32,32,1,1,0,0,orientation,target);
+        if(kind==1) ok=RISE_API_CreateThinlensCamera(&camera,location,lookAt,up,36,50,4,5,1,32,32,1,1,0,0,orientation,target,0,0,1,0,0,0,0);
+        if(kind==2) ok=RISE_API_CreateFisheyeCamera(&camera,location,lookAt,up,32,32,1,1,0,0,orientation,target,1);
+        if(kind==3) ok=RISE_API_CreateOrthographicCamera(&camera,location,lookAt,up,32,32,Vector2(2,2),1,1,0,0,orientation,target);
+        auto* common=dynamic_cast<CameraCommon*>(camera);
+        if(!ok || !common) { ++failures;safe_release(camera);continue; }
+        std::vector<const char*> scalarFields = { "theta", "elevation", "phi", "azimuth", "exposure", "width", "height" };
+        if(kind==0) scalarFields.push_back("fov");
+        if(kind==1) scalarFields.insert(scalarFields.end(), { "sensor_size", "focal_length", "fstop", "focus_distance",
+            "aperture_blades", "aperture_rotation", "anamorphic_squeeze", "tilt_x", "tilt_y", "shift_x", "shift_y" });
+        if(kind==2) scalarFields.push_back("scale");
+        for(const char* field : scalarFields) {
+            auto* valid=camera->KeyframeFromParameters(field,"1.25");
+            if(!valid) ++failures;
+            else {
+                const bool orbitAngle=std::strcmp(field,"theta")==0 || std::strcmp(field,"elevation")==0 ||
+                    std::strcmp(field,"phi")==0 || std::strcmp(field,"azimuth")==0;
+                const Scalar expected=orbitAngle?1.25*DEG_TO_RAD:1.25;
+                if(*static_cast<const Scalar*>(valid->getValue())!=expected) ++failures;
+                valid->release();
+            }
+            for(const char* text : { "", "garbage", "nan", "inf", "1e1000", "1junk", "1 2" }) {
+                auto* parameter=camera->KeyframeFromParameters(field,text);
+                if(parameter) {
+                    std::printf("FAIL: %s accepts invalid %s value '%s'\n",labels[kind],field,text);
+                    ++failures;parameter->release();
+                }
+            }
+        }
+        for(const char* field : { "location", "lookat", "up", "orientation", "target_orientation" }) {
+            for(const char* text : { "nan 0 0", "0 inf 0", "0 0 1e1000", "1", "1 2 3 4" }) {
+                auto* parameter=camera->KeyframeFromParameters(field,text);
+                if(parameter) { ++failures;parameter->release(); }
+            }
+        }
+        auto* whitespaceScalar=camera->KeyframeFromParameters("exposure","\v1.5\f");
+        if(!whitespaceScalar || *static_cast<const Scalar*>(whitespaceScalar->getValue())!=1.5) ++failures;
+        safe_release(whitespaceScalar);
+        auto* whitespaceVector=camera->KeyframeFromParameters("location","\v1\f2\t3\r");
+        if(!whitespaceVector) ++failures;
+        else {
+            const auto& point=*static_cast<const Point3*>(whitespaceVector->getValue());
+            if(point.x!=1 || point.y!=2 || point.z!=3) ++failures;
+            whitespaceVector->release();
+        }
+        auto* whitespacePair=camera->KeyframeFromParameters("target_orientation","1\f2\v");
+        if(!whitespacePair) ++failures;
+        else {
+            const auto& angles=*static_cast<const Vector2*>(whitespacePair->getValue());
+            if(angles.x!=DEG_TO_RAD || angles.y!=2*DEG_TO_RAD) ++failures;
+            whitespacePair->release();
+        }
+        for(const char* field : { "width", "height" }) {
+            auto* probe=camera->KeyframeFromParameters(field,"32");
+            if(!probe) { ++failures;continue; }
+            for(const char* text : { "0", "-1", "4294967296" }) {
+                auto* invalid=camera->KeyframeFromParameters(field,text);
+                if(invalid) { ++failures;invalid->release(); }
+            }
+            Parameter<Scalar> validDimension(40,probe->getID());
+            camera->SetIntermediateValue(validDimension);
+            const unsigned int expectedWidth=std::strcmp(field,"width")==0?40:32;
+            const unsigned int expectedHeight=std::strcmp(field,"height")==0?40:32;
+            if(common->GetWidth()!=expectedWidth || common->GetHeight()!=expectedHeight) ++failures;
+            for(Scalar dimension : { Scalar(0), Scalar(-1), Scalar(4294967296.0), std::numeric_limits<Scalar>::quiet_NaN() }) { // HYGIENE-OK: exercise rejection of non-finite interpolated camera state.
+                Parameter<Scalar> interpolated(dimension,probe->getID());
+                camera->SetIntermediateValue(interpolated);
+                if(common->GetWidth()!=expectedWidth || common->GetHeight()!=expectedHeight) ++failures;
+            }
+            camera->SetIntermediateValue(*probe);
+            probe->release();
+        }
+        if(auto* lens=dynamic_cast<ThinLensCamera*>(camera)) {
+            const auto oldBlades=lens->GetApertureBlades();
+            auto* probe=camera->KeyframeFromParameters("aperture_blades","6");
+            if(!probe) ++failures;
+            else {
+                camera->SetIntermediateValue(*probe);
+                if(lens->GetApertureBlades()!=6) ++failures;
+                for(const char* text : { "-1", "4294967296" }) {
+                    auto* invalid=camera->KeyframeFromParameters("aperture_blades",text);
+                    if(invalid) { ++failures;invalid->release(); }
+                }
+                for(Scalar blades : { Scalar(-1), Scalar(4294967296.0), std::numeric_limits<Scalar>::quiet_NaN() }) { // HYGIENE-OK: exercise rejection of non-finite interpolated camera state.
+                    Parameter<Scalar> interpolated(blades,probe->getID());
+                    camera->SetIntermediateValue(interpolated);
+                    if(lens->GetApertureBlades()!=6) ++failures;
+                }
+                Parameter<Scalar> restoreBlades(oldBlades,probe->getID());
+                camera->SetIntermediateValue(restoreBlades);
+                probe->release();
+            }
+        }
+        char label[64];std::snprintf(label,sizeof(label),"%s location",labels[kind]);
+        Measure<Point3>(label,*camera,"location","1.125 2.25 3.5","9.625 8.75 6.5",[&]{return common->GetRestLocation();});
+        std::snprintf(label,sizeof(label),"%s orientation",labels[kind]);
+        Measure<Vector3>(label,*camera,"orientation","1.125 2.25 3.5","9.625 8.75 6.5",[&]{return common->GetEulerOrientation();});
+        std::snprintf(label,sizeof(label),"%s target orientation",labels[kind]);
+        Measure<Vector2>(label,*camera,"target_orientation","1.125 2.25","9.625 8.75",[&]{return common->GetTargetOrientation();});
+        std::snprintf(label,sizeof(label),"%s exposure",labels[kind]);
+        Measure<Scalar>(label,*camera,"exposure","1.125","9.625",[&]{return common->GetExposureTimeStored();});
+        camera->release();
+    }
+    ILightPriv* lights[3]={new PointLight(1,RISEPel(1,1,1),false),
+        new SpotLight(1,Point3(0,0,-1),.2,.4,RISEPel(1,1,1),false),
+        new DirectionalLight(1,RISEPel(1,1,1),Vector3(0,0,1))};
+    const char* names[]={"point","spot","directional"};
+    for(int i=0;i<3;++i) {
+        char label[64];std::snprintf(label,sizeof(label),"%s energy",names[i]);
+        Measure<Scalar>(label,*lights[i],"energy","1.125","9.625",[&]{return lights[i]->emissionEnergy();});
+        std::snprintf(label,sizeof(label),"%s colour",names[i]);
+        Measure<RISEPel>(label,*lights[i],"color","0.125 0.25 0.375","0.625 0.75 0.875",[&]{return lights[i]->emissionColor();});
+        lights[i]->release();
+    }
+    auto* holder=new RetainingPointLight();
+    Measure<Scalar>("retaining point subclass",*holder,"energy","1.125","9.625",
+        [&]{return holder->retained?*static_cast<Scalar*>(holder->retained->getValue()):Scalar(-1);},9998);
+    holder->release();
+    std::printf("%d failures\n",failures);return failures?1:0;
+}

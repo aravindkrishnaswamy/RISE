@@ -31,6 +31,7 @@
 #include "../Shaders/BDPTVertex.h"
 
 #include <vector>
+#include "../Cameras/CameraUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -109,9 +110,9 @@ void VCMPelRasterizer::FlushDenoisedToOutputs( const IRasterImage& img, const Re
 	VCMRasterizerBase::FlushDenoisedToOutputs( img, rcRegion, frame );
 }
 
-IRasterImage& VCMPelRasterizer::GetIntermediateOutputImage( IRasterImage& primary ) const
+IRasterImage& VCMPelRasterizer::GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const
 {
-	return VCMRasterizerBase::GetIntermediateOutputImage( primary );
+	return VCMRasterizerBase::GetIntermediateOutputImage( primary, region );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -136,6 +137,7 @@ void VCMPelRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
@@ -145,8 +147,8 @@ void VCMPelRasterizer::IntegratePixel(
 	// rendering, per-sample t=1 splats, and the splat film normalization
 	// all accumulate across passes identically to BDPT.
 
-	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+	const bool bMultiSample = sampling && rc.UsesPixelSampling();
+	const unsigned int batchSize = bMultiSample ? sampling->GetNumSamples() : 1;
 
 	// Mirror BDPT's adaptive + ZSobol seed computation.
 	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
@@ -215,7 +217,7 @@ void VCMPelRasterizer::IntegratePixel(
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		colAccrued = px.colorSum;
+		colAccrued = px.LoadPelPassInit();
 		weightsAccrued = px.weightSum;
 		alphasAccrued = px.alphaSum;
 		wMean = px.wMean;
@@ -265,7 +267,7 @@ void VCMPelRasterizer::IntegratePixel(
 	{
 		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 		} else {
 			samples.push_back( Point2( 0, 0 ) );
 		}
@@ -281,16 +283,14 @@ void VCMPelRasterizer::IntegratePixel(
 			// BDPTPelRasterizer::IntegratePixel for the rationale
 			// (filter.warp causes severe blur with wide kernels).
 			if( bMultiSample ) {
-				ptOnScreen = Point2(
-					static_cast<Scalar>(x) + (*m).x - 0.5,
-					static_cast<Scalar>(height - y) + (*m).y - 0.5 );
+				ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 			} else {
-				ptOnScreen = Point2( x, height - y );
+				ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 			}
 			weightsAccrued += weight;
 
 			if( temporal_samples && !pScene.FireTemporalHold() ) {
-				pScene.GetAnimator()->EvaluateAtTime(
+				AnimateSceneToSampleTime( pScene,
 					temporal_start + ( rc.random.CanonicalRandom() * temporal_exposure ) );
 			}
 
@@ -350,6 +350,16 @@ void VCMPelRasterizer::IntegratePixel(
 				continue;
 			}
 
+			// Debt 28: the point on the camera's entrance APERTURE that the t=1
+			// splats from this light subpath land on.  Its own sampler stream so
+			// it stays stratified across pixels.  A camera whose aperture is a
+			// point consumes NOTHING here (see DrawApertureSample); for a thin
+			// lens this is what gives the splat layer the depth of field the eye
+			// layer has.
+			const Point2 cameraLensSample =
+				BDPTCameraUtilities::DrawApertureSample( *pCamera, sampler,
+					BDPTCameraUtilities::APERTURE_DEDICATED_STREAM );
+
 			RISEPel sampleColor( 0, 0, 0 );
 
 			// Strategy (t=1): splat every connectible light-subpath
@@ -360,12 +370,13 @@ void VCMPelRasterizer::IntegratePixel(
 				lightMis.clear();
 				lightStoreScratch.clear();
 				VCMIntegrator::ConvertLightSubpath(
-					localLightVerts, mVCMNormalization, lightStoreScratch, &lightMis );
+					localLightVerts, mVCMNormalization, lightStoreScratch, &lightMis,
+					VCMIntegrator::SeeThroughLive( *pCaster ) );
 				if( pSplatFilm && !localLightVerts.empty() && !lightMis.empty() ) {
 					pIntegrator->SplatLightSubpathToCamera(
 						localLightVerts, lightMis,
-						pScene, *pCaster, *pCamera, *pSplatFilm,
-						mVCMNormalization, pPixelFilter );
+						pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
+						mVCMNormalization, pPixelFilter, &sampler );
 				}
 			}
 
@@ -396,13 +407,15 @@ void VCMPelRasterizer::IntegratePixel(
 						pScene, *pCaster,
 						localLightVerts, lightMis,
 						eyeVerts, eyeMis,
-						mVCMNormalization );
+						mVCMNormalization, &sampler );
 				}
 			}
 
+			RISEPel mergeColor( 0, 0, 0 );
 			if( pLightVertexStore && mVCMNormalization.mEnableVM ) {
-				sampleColor = sampleColor + pIntegrator->EvaluateMerges(
+				mergeColor = pIntegrator->EvaluateMerges(
 					eyeVerts, eyeMis, *pLightVertexStore, mVCMNormalization );
+				sampleColor = sampleColor + mergeColor;
 			}
 
 			// Clamp per-SmallVCM convention.
@@ -416,6 +429,10 @@ void VCMPelRasterizer::IntegratePixel(
 					}
 				}
 			}
+
+			const double sampleLum = ( sampleColor[0] + sampleColor[1] + sampleColor[2] ) / 3.0;
+			const double mergeLum  = ( mergeColor[0] + mergeColor[1] + mergeColor[2] ) / 3.0;
+			AccumulateSampleFlux( sampleLum, mergeLum );
 
 			// Approach C: cross-pixel filter-weighted splat — see
 			// BDPTPelRasterizer::IntegratePixel for the rationale.
@@ -474,7 +491,7 @@ void VCMPelRasterizer::IntegratePixel(
 	// Write back persistent state for progressive rendering.
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		px.colorSum = colAccrued;
+		colAccrued = px.StorePelPassDelta( colAccrued );
 		px.weightSum = weightsAccrued;
 		px.alphaSum = alphasAccrued;
 		px.wMean = wMean;
@@ -484,16 +501,8 @@ void VCMPelRasterizer::IntegratePixel(
 		px.converged = converged;
 	}
 
-	// Track total samples for the splat film normalization.  In
-	// adaptive mode add the live delta (samples rendered THIS pass);
-	// otherwise add the static batch (every pixel takes the full
-	// configured SPP each pass since convergence-based skip is gated
-	// on `adaptive` only — see Welford comment above).
-	if( adaptive ) {
-		AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
-	} else {
-		AddAdaptiveSamples( batchSize );
-	}
+	// Track actual completed samples this pass for splat film normalization.
+	AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
 
 	if( pAOVBuffers && alphasAccrued > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphasAccrued );

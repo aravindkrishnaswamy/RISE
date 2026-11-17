@@ -54,6 +54,19 @@ namespace RISE
 			//! If this element has no timelines in that animation it is left
 			//! untouched (RegenerateData is not called).
 			void EvaluateAtTimeForAnimation( const Scalar time, const String& animation );
+
+			//! DL-465: the same evaluation written into `target` (a clone of
+			//! this element) instead of the element itself, then
+			//! target.RegenerateData().  Read-only on the timelines; returns
+			//! false (target untouched) if the element has no timelines in
+			//! the named animation.
+			bool EvaluateIntoForAnimation( const Scalar time, const String& animation, IKeyframable& target ) const;
+
+			//! DL-465: names of the parameters keyframed in the named animation.
+			void GetAnimatedParameters( const String& animation, std::vector<String>& out ) const;
+
+			//! DL-457: appends the named animation's keyframe times inside (t0, t1).
+			void CollectKeyframeTimesForAnimation( const Scalar t0, const Scalar t1, const String& animation, std::vector<Scalar>& out ) const;
 		};
 	}
 }

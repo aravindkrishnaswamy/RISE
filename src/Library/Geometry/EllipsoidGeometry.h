@@ -34,12 +34,16 @@ namespace RISE
 			//! consistent with the tessellated mesh and with each other.
 			void EllipsoidUVFromPosition( const Point3& pt, Point2& uv ) const;
 
-			// Marginal theta CDF for area-uniform sampling on the ellipsoid surface.
-			// The naive (costheta = 1-2u) mapping is only uniform on a sphere;
-			// for an ellipsoid we precompute a CDF that warps theta to account
-			// for the varying area element.
-			static const unsigned int THETA_CDF_SIZE = 256;
-			Scalar			m_thetaCDF[THETA_CDF_SIZE + 1];
+			// DL-448: area-uniform sampling by REJECTION from the uniform unit
+			// sphere: x = diag(a,b,c) s, accepted with probability
+			// J(s)/Jmax, J(s) = |(bc s_x, ac s_y, ab s_z)| the area stretch
+			// (Nanson) -- acceptance >= 1/2.  The old marginal-theta CDF with
+			// uniform phi was area-uniform only for a == b, and GetArea()
+			// was a ~1 % approximation (Thomsen) the sampler never matched.
+			// m_dArea is the area by a 256 x 64 midpoint quadrature (~1e-5;
+			// periodic in phi, so phi converges spectrally).
+			Scalar			m_dArea;
+			Scalar			m_dJacobianMax;
 
 			virtual ~EllipsoidGeometry( );
 
@@ -62,6 +66,23 @@ namespace RISE
 			Scalar GetArea( ) const override;
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
+
+			//! IGeometry::DistanceToSurface -- an UPPER BOUND, not exact: there is no closed form
+			//! for point-to-ellipsoid distance, so this maps the query onto the
+			//! unit sphere and scales the answer back by the LARGEST semi-axis.
+			//! Over-reports by at most the ratio of largest to smallest
+			//! semi-axis, which is the safe direction
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
+			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
+
+			//! IGeometry::SignedDistanceLower -- the SIGN is exact
+			//! (`sum (p_i/a_i)^2 <= 1` is the exact inside test), the
+			//! MAGNITUDE is a lower bound: the unit-sphere signed distance
+			//! scaled by the SMALLEST semi-axis, the mirror of the
+			//! unsigned query's `x max`.  NEVER exact, so a CSG composite
+			//! reaching an ellipsoid always takes the strict arm.
+			bool SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+				Scalar& outSigned, bool& outExact ) const override;
 
 			// Smoothing is a no-op on ellipsoids — there's no high-frequency
 			// detail to attenuate.  Same analytical formulas at any s.

@@ -1,9 +1,9 @@
 # Editor-State & Transaction Hardening — de-brittling the SceneEditor
 
-**Status:** **EXECUTED HARDENING RECORD.** H1, H2, and the narrowed H3 shipped;
-the sections retain their failure analysis, implementation sequence, and named
-residuals. Distilled from eight review rounds on the
-snapshot/transaction foundation (`feature/gui-snapshot-prototype`).
+**Status:** **SINGLE-DOCUMENT HARDENING SHIPPED; V2 MULTI-DOCUMENT SNAPSHOTS UNBUILT.**
+- **Shipped for single-document safety:** H1–H3 `SceneEditor` state/walk/light-invalidation hardening, `AgentSession` / `Cst::CstHeadVersion` `(uuid, revision)` `headVersion` CAS, `SceneEditController` single-slot FIFO render admission, CST exact-byte undo (`Cst::DocReplaceChunkIfText` + per-object gizmo spelling journal), L1 staged `AgentProposal` queue, `EditorUiSnapshot` UI read surface, and `FileIdentity` external-modification check on save.
+- **Unbuilt (v2 / multi-document design in [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) & [RENDER_COORDINATOR.md](RENDER_COORDINATOR.md)):** multi-document process-wide `RenderCoordinator`, lock-free RCU `SceneSnapshot` / `AcquireSnapshot()` for background jobs, `DocumentId{uuidHi,uuidLo,revision}`, and interactive external-edit reconciliation prompt UX.
+Distilled from eight review rounds on the snapshot/transaction foundation (`feature/gui-snapshot-prototype`).
 **Owner:** Aravind Krishnaswamy
 **Why now:** the *remaining* GUI lift — the LLM/MCP agent that "fully operates the
 scene," entity creation, the material editor — all drive `SceneEditController`

@@ -45,6 +45,7 @@
 #include "FrameStore.h"  // L6e-1.1 — FrameStoreBulkBracket RAII guard
 #include "FilteredFilm.h"
 #include "../RISE_API.h"
+#include <cstring>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -307,12 +308,64 @@ BDPTRasterizerBase::~BDPTRasterizerBase()
 	// BidirectionalRasterizerBase destructor.
 }
 
+void BDPTRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
+{
+	PixelBasedRasterizerHelper::PreRenderSetup( pScene, pRect );
+
+	const IFilm* pFilm = pScene.GetFilm();
+	if( !pFilm ) {
+		return;
+	}
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
+	ConfigureSplatRegion( pRect, width, height );
+	// Composition scratch for per-block previews.  Prepared here,
+	// single-threaded, BEFORE any worker pass (path-guiding training
+	// dispatches blocks right after this, and every animation frame runs
+	// PreRenderSetup); GetIntermediateOutputImage never allocates.
+	EnsureCompositionScratch( width, height );
+
+	// Share the RayCaster's prepared LightSampler with the integrator.
+	pIntegrator->SetLightSampler( pCaster ? pCaster->GetLightSampler() : 0 );
+
+	// Fresh splat film for the s<=1 / t==1 strategies.  Per animation
+	// frame this also discards the previous frame's splats (the Flush*
+	// overrides in BidirectionalRasterizerBase composite them).
+	// DL-462: the second field of an interlaced frame keeps the film and
+	// the counter -- both fields' splats compose in the frame's single
+	// flush, divided by the full frame's sample count.
+	// (Same film dimensions by construction: both fields share one image.)
+	const bool continuing = mContinuingInterlacedFrame && pSplatFilm;
+	if( !continuing ) {
+		safe_release( pSplatFilm );
+		pSplatFilm = new SplatFilm( width, height );
+
+		// Reset adaptive sample counter for this render / frame.
+		mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
+	}
+
+	// Total sample count for splat film resolve/unresolve.  Must be set
+	// before any blocks render so the progressive hooks work.
+	mSplatTotalSamples = 1.0;
+	if( ActiveSampling() ) {
+		mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
+	}
+	mSplatTotalSamples *= GetSplatSampleScale();
+}
+
 void BDPTRasterizerBase::RasterizeScene(
 	const IScene& pScene,
 	const Rect* pRect,
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	// Completion tracking (IFireRasterizerState::LastRenderCompleted), as in
+	// PixelBasedRasterizerHelper::RasterizeScene: this override bypasses that
+	// entry, so without its own tracking a cancelled earlier render (e.g. an
+	// animation frame) left the flag false and Job refused every later still
+	// or region render on this rasterizer.
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	bool renderCompleted = true;
 	FireOutputTopologyLease fireOutputTopologyLease(
 		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot the active camera once at entry; structural camera
@@ -328,10 +381,21 @@ void BDPTRasterizerBase::RasterizeScene(
 	// member AOV planes, while the successful tail may retain only the
 	// documented OIDN cache.
 	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
+	// Filtered film and every preview composition scratch (including the
+	// bidirectional splat-composition scratch) are render-scoped: released
+	// here on success, cancel and unwind, after all workers have joined.
+	RasterizerScopeExit renderScratch( [this]() {
+		ReleaseRenderScopedPreviewResources();
+	} );
+	RasterizerScopeExit renderProgress( [this, base=mProgressBase, weight=mProgressWeight, total=mProgressTotal]() {
+		mProgressBase = base;
+		mProgressWeight = weight;
+		mProgressTotal = total;
+	} );
 
 #ifdef RISE_ENABLE_OIDN
-	// Stamp render-start wall clock so the OIDN auto-quality heuristic
-	// can compute render_seconds / megapixels at denoise time.
+	// Stamp render-start wall clock for duration telemetry.
+	// Auto quality uses configured work (DL-360), never this timer.
 	BeginRenderTimer();
 #endif
 
@@ -341,7 +405,6 @@ void BDPTRasterizerBase::RasterizeScene(
 	const IFilm* pFilm = pScene.GetFilm();
 	const unsigned int width = pFilm->GetWidth();
 	const unsigned int height = pFilm->GetHeight();
-	ConfigureSplatRegion( pRect, width, height );
 
 	// Training can cast probe rays to estimate incident radiance,
 	// so the ray caster needs the scene attached before training starts.
@@ -349,31 +412,12 @@ void BDPTRasterizerBase::RasterizeScene(
 	pCaster->AttachScene( &pScene );
 	pScene.GetObjects()->PrepareForRendering();
 
-	// Per-rasterizer pre-render hook.  BDPT inherits the empty no-op
-	// default from PixelBasedRasterizerHelper; PT/VCM use their own
-	// overrides (e.g. SMS photon-map build, path-guide warmup).
+	// Per-render setup shared with every animation frame (DL-458):
+	// light sampler -> integrator, fresh splat film, splat region,
+	// adaptive counter, splat sample divisor.  See PreRenderSetup below.
 	PreRenderSetup( pScene, pRect );
 
-	// Share the RayCaster's prepared LightSampler with the integrator
-	const LightSampler* pLS = pCaster->GetLightSampler();
-	pIntegrator->SetLightSampler( pLS );
-
-	// Create the splat film for s<=1 strategies
-	safe_release( pSplatFilm );
-	pSplatFilm = new SplatFilm( width, height );
-
-	// Reset adaptive sample counter for this render
-	mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
-
 	PrepareAOVBuffers_( width, height );
-
-	// Compute total sample count for splat film resolve/unresolve.
-	// Must be set before any blocks render so the progressive hooks work.
-	mSplatTotalSamples = 1.0;
-	if( pSampling ) {
-		mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
-	}
-	mSplatTotalSamples *= GetSplatSampleScale();
 
 #ifdef RISE_ENABLE_OPENPGL
 	// Path guiding: training phase
@@ -390,6 +434,9 @@ void BDPTRasterizerBase::RasterizeScene(
 	// disabled builds (where the pointer simply stays null and nothing
 	// happens).
 	IRasterImage* pCombineAccum = 0;
+	RasterizerScopeExit pCombineAccumOwner( [&]() {
+		safe_release( pCombineAccum );
+	} );
 	Scalar combineAccumWeight = 0;
 
 	if( guidingConfig.enabled )
@@ -449,6 +496,9 @@ void BDPTRasterizerBase::RasterizeScene(
 				Scalar previousIndirectEnergyDensity = 0;
 				unsigned int lowGainPasses = 0;
 				IRasterImage* pPreviousTrainingImage = 0;
+				RasterizerScopeExit pPreviousTrainingImageOwner( [&]() {
+					safe_release( pPreviousTrainingImage );
+				} );
 
 				if( guidingConfig.combineTrainingIterations ) {
 					pCombineAccum = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
@@ -478,20 +528,32 @@ void BDPTRasterizerBase::RasterizeScene(
 
 			// Use a temporary low-spp sampling object for training
 			ISampling2D* pTrainSampling = 0;
+			RasterizerScopeExit trainingSamplingOwner( [&]() {
+				safe_release( pTrainSampling );
+			} );
 			RISE_API_CreateUniformSampling2D( &pTrainSampling, 1.0, 1.0 );
 			if( pTrainSampling ) {
 				pTrainSampling->SetNumSamples( currentTrainingSPP );
 			}
 
-			ISampling2D* pSavedSampling = pSampling;
-			const_cast<BDPTRasterizerBase*>(this)->pSampling = pTrainSampling;
+			ScopedActiveSampling samplingOverride( *this, pTrainSampling );
 
 			// Create a temporary image for training (results are discarded)
 			IRasterImage* pTrainImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+			RasterizerScopeExit pTrainImageOwner( [&]() {
+				safe_release( pTrainImage );
+			} );
 
 			// Create a temporary splat film for training
 			SplatFilm* pTrainSplat = new SplatFilm( width, height );
+			RasterizerScopeExit pTrainSplatOwner( [&]() {
+				safe_release( pTrainSplat );
+			} );
 			SplatFilm* pSavedSplat = pSplatFilm;
+			RasterizerScopeExit restoreSplat( [this, pSavedSplat, total=mSplatTotalSamples]() {
+				pSplatFilm = pSavedSplat;
+				mSplatTotalSamples = total;
+			} );
 			pSplatFilm = pTrainSplat;
 			mSplatTotalSamples = static_cast<Scalar>( currentTrainingSPP ) * GetSplatSampleScale();
 
@@ -507,6 +569,9 @@ void BDPTRasterizerBase::RasterizeScene(
 					static_cast<unsigned int>( HowManyThreadsToSpawn() ),
 					8, 8, 64 );
 				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( trainTileEdge );
+				RasterizerScopeExit pTrainBlocksOwner( [&]() {
+					safe_release( pTrainBlocks );
+				} );
 				RasterizeBlocksForPass(
 					RuntimeContext::PASS_PATHGUIDING,
 					pScene,
@@ -571,10 +636,10 @@ void BDPTRasterizerBase::RasterizeScene(
 				}
 
 			// Restore state
-			pSplatFilm = pSavedSplat;
+			restoreSplat.Run();
 			safe_release( pTrainSplat );
 			safe_release( pTrainImage );
-			const_cast<BDPTRasterizerBase*>(this)->pSampling = pSavedSampling;
+			samplingOverride.Restore();
 			safe_release( pTrainSampling );
 
 			pGuidingField->EndTrainingIteration();
@@ -827,8 +892,8 @@ void BDPTRasterizerBase::RasterizeScene(
 		// Restore splat total samples for main render
 		mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
 		mSplatTotalSamples = 1.0;
-		if( pSampling ) {
-			mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+		if( ActiveSampling() ) {
+			mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
 		}
 		mSplatTotalSamples *= GetSplatSampleScale();
 
@@ -859,9 +924,15 @@ void BDPTRasterizerBase::RasterizeScene(
 	// later via `FrameSink::CopyImageIntoStore`.  Post-L6d the
 	// rasterizer's per-pixel writes land directly in the FrameStore.
 	IRasterImage* pImage = AcquireRenderImage( width, height );
+	RasterizerScopeExit imageOwner( [&]() {
+		if( pImage ) {
+			ReleaseRenderImage( std::exchange(pImage,nullptr) );
+		}
+	} );
 
-	safe_release( pScratchImage );
-	pScratchImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+	// Single-threaded (no pass in flight).  Normally a no-op after
+	// PreRenderSetup; also covers subclasses that override it.
+	EnsureCompositionScratch( width, height );
 
 	// Allocate FilteredFilm for wide-support reconstruction (approach
 	// C: uniform sub-pixel jitter + per-sample splat across neighbours
@@ -871,11 +942,12 @@ void BDPTRasterizerBase::RasterizeScene(
 	// estimator into a proper filter-weighted reconstruction.  When
 	// UseFilteredFilm() returns false (narrow / no filter configured),
 	// IntegratePixel falls back to per-pixel accumulation.
+	// No pFilteredScratch: the bidirectional preview getter composes the
+	// filtered film into pScratchImage (UsesFilteredPreviewScratch).
 	safe_release( pFilteredFilm );
 	safe_release( pFilteredScratch );
 	if( UseFilteredFilm() ) {
 		pFilteredFilm = new FilteredFilm( width, height );
-		pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
 	}
 
 	{
@@ -917,6 +989,9 @@ void BDPTRasterizerBase::RasterizeScene(
 
 	// If there is no raster sequence, create a default one
 	MortonRasterizeSequence* blocks = 0;
+	RasterizerScopeExit blocksOwner( [&]() {
+		safe_release( blocks );
+	} );
 	if( !pRasterSequence ) {
 		blocks = new MortonRasterizeSequence( bdptTileEdge );
 		pRasterSequence = blocks;
@@ -953,6 +1028,10 @@ void BDPTRasterizerBase::RasterizeScene(
 		const unsigned int numPasses = (totalSPP + spp - 1) / spp;
 
 		ProgressiveFilm progFilm( width, height );
+		RasterizerScopeExit progressiveState( [this, previous=mProgressiveFilm, total=mTotalProgressiveSPP]() {
+			mProgressiveFilm = previous;
+			mTotalProgressiveSPP = total;
+		} );
 		mProgressiveFilm = &progFilm;
 		mTotalProgressiveSPP = totalSPP;
 
@@ -984,8 +1063,11 @@ void BDPTRasterizerBase::RasterizeScene(
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
 
 			ISampling2D* pPassSampling = pSavedSampling->Clone();
+			RasterizerScopeExit samplingOwner( [&]() {
+				safe_release( pPassSampling );
+			} );
 			pPassSampling->SetNumSamples( passSPP );
-			const_cast<BDPTRasterizerBase*>(this)->pSampling = pPassSampling;
+			ScopedActiveSampling samplingOverride( *this, pPassSampling );
 
 			if( pProgressFunc ) {
 				pProgressFunc->SetTitle( "BDPT Rasterizing: " );
@@ -1002,19 +1084,27 @@ void BDPTRasterizerBase::RasterizeScene(
 			mProgressTotal  = totalProgressUnits;
 
 			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( bdptTileEdge );
+			RasterizerScopeExit pPassSeqOwner( [&]() {
+				safe_release( pPassSeq );
+			} );
 			const bool passCompleted = RasterizeBlocksForPass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pPassSeq );
 			safe_release( pPassSeq );
 
 			accumulatedProgress += static_cast<double>( numTilesPerPass ) *
 			                       static_cast<double>( passSPP );
 
-			const_cast<BDPTRasterizerBase*>(this)->pSampling = pSavedSampling;
+			samplingOverride.Restore();
 			safe_release( pPassSampling );
 
 			if( !passCompleted ) {
+				renderCompleted = false;
 				GlobalLog()->PrintEx( eLog_Event,
 					"BDPT Progressive:: Cancelled after pass %u/%u",
 					passIdx+1, numPasses );
+				if( progFilm.CountDone( 1, pRect ) > 0 ) {
+					FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
+				}
 				break;
 			}
 
@@ -1034,7 +1124,7 @@ void BDPTRasterizerBase::RasterizeScene(
 					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
 				}
 
-				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
+				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage, ActiveSplatRegion() );
 				ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
 					output->OutputIntermediateImage( outputImage, pRect );
 				});
@@ -1100,9 +1190,14 @@ void BDPTRasterizerBase::RasterizeScene(
 			pool.ParallelFor( static_cast<unsigned int>( threads ), [&dispatcher]( unsigned int /*workerIdx*/ ) {
 				dispatcher.DoWork();
 			} );
+			if( dispatcher.WasCancelled() || ( pProgressFunc && pProgressFunc->IsCancelled() ) ) {
+				renderCompleted = false;
+			}
 		}
 		else
 		{
+			ThreadLocalSplatBufferTaskScope splatTask;
+
 			// Legacy low-priority mode: lower this caller thread to
 			// match the rest of the render.  Mirrors the fix in
 			// PixelBasedRasterizerHelper::RasterizeScenePass.
@@ -1116,16 +1211,26 @@ void BDPTRasterizerBase::RasterizeScene(
 			pRasterSequence->Begin( startx, endx, starty, endy );
 
 			const unsigned int numseq = pRasterSequence->NumRegions();
+			const bool hasMedium = SceneHasParticipatingMedium( pScene );
+			unsigned long long bdptProgressBits = 0;
+			std::memcpy( &bdptProgressBits, &mProgressBase, sizeof( bdptProgressBits ) );
+			const unsigned int baseBdptMediumSeed = hasMedium ? DeriveSeed( LockedLibcRand(), bdptProgressBits ) : 0u;
 
 			for( unsigned int i=0; i<numseq; i++ ) {
 				const Rect rect = pRasterSequence->GetNextRegion();
 
-				if( pProgressFunc && i>0 ) {
-					if( !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) ) ) {
+				if( pProgressFunc ) {
+					if( pProgressFunc->IsCancelled() ||
+						( i > 0 && !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) ) ) ) {
+						renderCompleted = false;
 						break;
 					}
 				}
 
+				const unsigned long long tileKey =
+					( static_cast<unsigned long long>( rect.top ) << 32 ) |
+					static_cast<unsigned long long>( rect.left );
+				ScopedMediumTileSeed mediumSeed( hasMedium ? DeriveSeed( baseBdptMediumSeed, tileKey ) : 0u, hasMedium );
 				SPRasterizeSingleBlock( rc, *pImage, pScene, rect, height );
 			}
 
@@ -1146,9 +1251,18 @@ void BDPTRasterizerBase::RasterizeScene(
 		// runtime).
 #ifdef RISE_ENABLE_OPENPGL
 		if( pCombineAccum ) {
-			const Scalar finalWeight = skipFinalPass ?
-				static_cast<Scalar>( 0 ) :
-				static_cast<Scalar>( pSampling ? pSampling->GetNumSamples() : 0 );
+			Scalar finalWeight = static_cast<Scalar>( 0 );
+			if( !skipFinalPass ) {
+				const uint64_t completedTotal = mTotalAdaptiveSamples.load( std::memory_order_relaxed );
+				if( progressiveConfig.enabled ) {
+					const uint64_t regionPx = RegionalPixelCount( width, height, pRect );
+					finalWeight = ( completedTotal > 0 && regionPx > 0 )
+						? static_cast<Scalar>( static_cast<double>( completedTotal ) / static_cast<double>( regionPx ) )
+						: static_cast<Scalar>( 0 );
+				} else {
+					finalWeight = static_cast<Scalar>( pSampling ? pSampling->GetNumSamples() : 0 );
+				}
+			}
 			FinalizeVarianceAwareCombine(
 				*pImage,
 				*pCombineAccum,
@@ -1213,28 +1327,13 @@ void BDPTRasterizerBase::RasterizeScene(
 	}
 
 	if( bWillDenoise ) {
-		// Pre-denoised output = inline box + splats.  Resolve the splat
-		// film into the canonical image for the duration of the flush,
-		// then subtract it back out so OIDN's denoise input below stays
-		// splat-free.  The previous separate pre-denoised copy reached
-		// only the legacy IRasterizerOutput chain; bound-mode FrameStore
-		// observers (FileEncoderObserver — the post-L8 CLI file outputs)
-		// read the CANONICAL at MarkPreDenoiseComplete and wrote the
-		// plain file without any t=1 splat energy.  See the twin fix at
-		// VCMRasterizerBase::FlushPreDenoisedToOutputs, where VCM's
-		// balance heuristic makes the loss catastrophic; observer
-		// dispatch is synchronous so the Unresolve cannot race a file
-		// write.
-		const Scalar splatSpp = GetEffectiveSplatSPP( width, height );
-		{
-			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-			pSplatFilm->Resolve( *pImage, splatSpp, ActiveSplatRegion() );
-		}
+		// Pre-denoised output = inline box + splats.
+		// BidirectionalRasterizerBase::FlushPreDenoisedToOutputs resolves
+		// the splat film into the canonical image for the duration of the
+		// flush and then Unresolves it, so OIDN's input below stays
+		// splat-free (see that function's comment for why the canonical,
+		// not a scratch copy, must carry the splats).
 		FlushPreDenoisedToOutputs( *pImage, pRect, 0 );
-		{
-			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-			pSplatFilm->Unresolve( *pImage, splatSpp, ActiveSplatRegion() );
-		}
 	}
 
 #ifdef RISE_ENABLE_OIDN
@@ -1262,32 +1361,22 @@ void BDPTRasterizerBase::RasterizeScene(
 			mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
 				pRect->left, pRect->top, pRect->right, pRect->bottom,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				GetRenderElapsedSeconds() );
+				EstimateDenoiseWorkPerMegapixel() );
 		} else {
 			mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				GetRenderElapsedSeconds() );
+				EstimateDenoiseWorkPerMegapixel() );
 		}
 	}
 #endif
 
-	// Resolve splat film: add t==1 strategy contributions to the
-	// denoised image.  Each pixel sample may have contributed one
-	// splat per (s,t) strategy with needsSplat=true, so we divide
-	// by the total number of pixel samples to get the correct
-	// per-pixel average.  Splats are added AFTER denoising because
-	// their splatted accumulation pattern is incompatible with OIDN.
-	// Skipped in show_adaptive_map mode — the heatmap from the
-	// progressive resolve is the final output; overlaying splats
-	// would corrupt the grayscale ramp.
-	if( !GetAdaptiveShowMap() ) {
-		// L6e-1.1 — bracket the full-image splat resolve via RAII.
-		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-		pSplatFilm->Resolve(
-			*pImage,
-			GetEffectiveSplatSPP( width, height ),
-			ActiveSplatRegion() );
-	}
+	// The t==1 splat film is composited onto the (denoised) image by the
+	// BidirectionalRasterizerBase Flush* overrides below (DL-458): splats
+	// are added AFTER denoising because their splatted accumulation is
+	// incompatible with OIDN, and skipped in show_adaptive_map mode.
+	// Keeping the composition in the flush (not inline here) is what lets
+	// an animation frame, which flushes through the same overrides from
+	// PixelBasedRasterizerHelper::RasterizeSceneAnimation, match a still.
 
 #ifdef RISE_ENABLE_OPENPGL
 	{
@@ -1324,7 +1413,7 @@ void BDPTRasterizerBase::RasterizeScene(
 		FlushToOutputs( *pImage, pRect, 0 );
 	}
 
-	safe_release( pImage );
+	imageOwner.Run();
 	safe_release( pSplatFilm );
 	pSplatFilm = 0;
 	safe_release( pScratchImage );
@@ -1336,6 +1425,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	delete pAOVBuffers;
 	pAOVBuffers = 0;
 	aovUnwindGuard.Dismiss();
+	mLastRenderCompleted.store(renderCompleted,std::memory_order_release);
 #ifdef RISE_ENABLE_OPENPGL
 	pIntegrator->SetGuidingField( 0, 0, 0, 0, 0, eGuidingOneSampleMIS, 2 );
 	pIntegrator->SetCompletePathGuide( 0, false, 0 );

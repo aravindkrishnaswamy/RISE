@@ -157,9 +157,25 @@ all : librise rise meshconverter imageconverter biospecbsdfmaker fire-simulator
 
 drise : drise_server drise_client drise_submitter
 
-librise : $(OBJLIB)
+LIBRISE_A = $(PATHDEST)librise.a
+ARCHIVE_BUILD_DEFS = Makefile Filelist Config.common Config.specific
+ifdef IS_MACOS_BUILD
+ARCHIVE_LINK_LIBRISE = -Wl,-dead_strip $(LIBRISE_A)
+else
+ARCHIVE_LINK_LIBRISE = -Wl,--start-group $(LIBRISE_A) -Wl,--end-group
+endif
+
+librise : $(LIBRISE_A)
+
+# Depend on $(ARCHIVE_BUILD_DEFS) in addition to $(OBJLIB) so removing a
+# translation unit from Filelist (or changing platform gates in Config.*)
+# invalidates and recreates the archive rather than leaving removed members
+# inside a stale librise.a.
+$(LIBRISE_A) : $(OBJLIB) $(ARCHIVE_BUILD_DEFS)
+	@mkdir -p $(PATHDEST)
 	@echo Creating archive
-	@ar rcs $(PATHDEST)librise.a $(OBJLIB)
+	@rm -f $(LIBRISE_A)
+	@ar rcs $(LIBRISE_A) $(OBJLIB)
 
 rise : $(OBJLIB) $(PATHSRCS)commandconsole.o
 	@echo Linking $(PATHDEST)rise
@@ -264,6 +280,8 @@ $(PATHTESTS)FireSequenceTest.o : $(PATHTESTS)FireSequenceTest.cpp
 	@echo Compiling strict calibration owner: $<
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
+$(PATHTESTS)ImageReaderOverflowTest.o: CPPFLAGS += -DRISE_TEST_SOURCE_ROOT='"$(abspath ../../..)"'
+
 $(PATHTESTS)%.o : $(PATHTESTS)%.cpp
 	@echo Compiling: $<
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
@@ -296,14 +314,22 @@ ifdef IS_MACOS_BUILD
 		echo 'calibration owner unexpectedly contains a production Metal implementation'; rm -f $@; exit 1; fi
 endif
 
-$(PATHTESTDEST)% : $(PATHTESTS)%.o $(OBJLIB)
+$(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_A)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
-	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(OBJLIB) $(LDLIBS)
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(ARCHIVE_LINK_LIBRISE) $(LDLIBS)
+
+# Targeted diagnostic builds (for reproducible certification audits/timings).
+build-tool/% : $(PATHTOOLDEST)%
+	@:
+
+$(PATHTOOLDEST)% : $(PATHTOOLS)%.o $(LIBRISE_A)
+	@mkdir -p $(PATHTOOLDEST)
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTOOLS)$*.o $(ARCHIVE_LINK_LIBRISE) $(LDLIBS)
 
 # Build all tools. Mirrors the `tests` target — same loop-and-continue
 # pattern so one broken tool doesn't block the rest.
-tools : $(OBJLIB)
+tools : $(LIBRISE_A)
 	@mkdir -p $(PATHTOOLDEST)
 	@fail_count=0; failed_list=""; \
 	for tool_src in $(SRCTOOLS); do \
@@ -314,7 +340,7 @@ tools : $(OBJLIB)
 			continue; \
 		fi; \
 		echo Linking $(PATHTOOLDEST)$$tool_name; \
-		if ! $(CXX) $(CPPFLAGS) -o $(PATHTOOLDEST)$$tool_name $(PATHTOOLS)$$tool_name.o $(OBJLIB) $(LDLIBS); then \
+		if ! $(CXX) $(CPPFLAGS) -o $(PATHTOOLDEST)$$tool_name $(PATHTOOLS)$$tool_name.o $(ARCHIVE_LINK_LIBRISE) $(LDLIBS); then \
 			fail_count=$$((fail_count + 1)); failed_list="$$failed_list $$tool_name(link)"; \
 		fi; \
 	done; \
@@ -325,9 +351,9 @@ tools : $(OBJLIB)
 	fi; \
 	echo "tools: all built successfully"
 
-# Build only the library .o files needed to link tests. Used by
+# Build the library .o files and static archive needed to link tests. Used by
 # run_all_tests.sh as a one-shot library-build phase before per-test builds.
-test-objs : $(OBJLIB)
+test-objs : $(LIBRISE_A)
 	@:
 
 # Build and run all tests
@@ -456,8 +482,9 @@ clean:
 # prerequisites: it was compiled by an older make (pre -MMD), orphaned when a
 # .d was deleted, or carried in from another tree.  It therefore looks up to
 # date against its lone .cpp prerequisite even after a header it includes has
-# changed.  The test and standalone binaries link the object list directly
-# ($(OBJLIB) + the per-binary .o), and compile/link are separate rules, so such
+# changed.  Test and tool binaries link $(LIBRISE_A) + the per-binary .o (and
+# standalone binaries link $(OBJLIB) + the per-binary .o), and compile/link are
+# separate rules, so such
 # a stale object is RELINKED in place when a library-header change rebuilds the
 # library half: a stale vtable at best, an "Undefined symbols" link failure on
 # any signature change at worst (the exact failure mode this tracking exists to

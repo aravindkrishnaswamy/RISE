@@ -17,6 +17,8 @@
 #include "../Polygon.h"
 #include "../Interfaces/ILog.h"
 #include "../Interfaces/IFunction2D.h"
+#include "../Interfaces/IScalarPainter.h"
+#include "../Intersection/RayIntersectionGeometric.h"
 
 namespace RISE
 {
@@ -69,7 +71,11 @@ namespace RISE
 		// Now divide all the elements in vNormList list by incident and normalize!
 		for( int i = 0; i < nNumVerts; i++ )
 		{
-			Scalar	OOIncident = 1.0f / Scalar( incident[i] );
+			if( incident[i] == 0 ) {
+				vNormals.emplace_back( 0, 0, 0 );
+				continue;
+			}
+			Scalar OOIncident = 1.0f / Scalar( incident[i] );
 			sum[i] = sum[i] * OOIncident;
 			vNormals.push_back( Vector3Ops::Normalize(sum[i]) );
 		}
@@ -123,20 +129,45 @@ namespace RISE
 			}
 			const Vector3 vCross = vCrossRaw * (1.0 / crossMag);
 
-			vNormals[tri.iVertices[0]] = vNormals[tri.iVertices[0]] + vCross;
-			incident[tri.iVertices[0]]++;
-
-			vNormals[tri.iVertices[1]] = vNormals[tri.iVertices[1]] + vCross;
-			incident[tri.iVertices[1]]++;
-
-			vNormals[tri.iVertices[2]] = vNormals[tri.iVertices[2]] + vCross;
-			incident[tri.iVertices[2]]++;
+			// ANGLE-WEIGHTED accumulation: each corner contributes the face
+			// normal scaled by the triangle's INTERIOR ANGLE at that corner.  The
+			// angles at a vertex of a closed fan sum to the cone angle whatever
+			// the triangulation, so the result is independent of how a surface
+			// patch was split into triangles -- a sliver (two huge angles at one
+			// end, a vanishing one at the other) cannot dominate a vertex's
+			// normal the way an unweighted per-face average lets it (the
+			// streaking that adaptive mesh refinement exposed).  The two agree
+			// where every incident face has the same corner angle at the vertex
+			// (a regular triangle fan); they do NOT agree in general -- on a
+			// quad grid split into triangles the corner angles differ (45/90 deg)
+			// and the angle-weighted normal is the one a finer or differently
+			// split mesh of the same surface would give.
+			for( int k = 0; k < 3; k++ )
+			{
+				const Vertex& pk = vVertices[tri.iVertices[k]];
+				const Vector3 ea = Vector3Ops::mkVector3( vVertices[tri.iVertices[(k+1)%3]], pk );
+				const Vector3 eb = Vector3Ops::mkVector3( vVertices[tri.iVertices[(k+2)%3]], pk );
+				const Scalar la = Vector3Ops::Magnitude( ea );
+				const Scalar lb = Vector3Ops::Magnitude( eb );
+				if( !( la > 0.0 ) || !( lb > 0.0 ) ) {
+					continue;	// zero-length edge: no defined angle at this corner
+				}
+				Scalar c = Vector3Ops::Dot( ea, eb ) / ( la * lb );
+				c = c > 1.0 ? 1.0 : ( c < -1.0 ? -1.0 : c );	// rounding can push |cos| past 1
+				const Scalar angle = acos( c );
+				if( !( angle > 0.0 ) ) {
+					continue;
+				}
+				vNormals[tri.iVertices[k]] = vNormals[tri.iVertices[k]] + vCross * angle;
+				incident[tri.iVertices[k]]++;
+			}
 		}
 
 		for( int i = 0; i < nNumVerts; i++ )
 		{
 			if( incident[i] > 0 ) {
-				vNormals[i] = Vector3Ops::Normalize( vNormals[i] * (1.0 / Scalar( incident[i] )) );
+				const Scalar sumMag = Vector3Ops::Magnitude( vNormals[i] );
+				vNormals[i] = ( sumMag > 0.0 ) ? vNormals[i] * ( 1.0 / sumMag ) : fallback[i];
 			} else {
 				// Vertex was only incident to degenerate triangles.  Fall back to the
 				// pre-recompute normal the base geometry produced.
@@ -521,6 +552,83 @@ namespace RISE
 					Vertex& v = vVertices[idx];
 
 					const Scalar disp = displacement.Evaluate( vCoords[idx].x, vCoords[idx].y ) * scale;
+					v = Point3Ops::mkPoint3( v, vNormals[idx] * disp );
+
+					done_list[idx] = true;
+				}
+			}
+		}
+	}
+
+	void ApplyScalarHeightToObject(
+		IndexTriangleListType& vFaces,
+		VerticesListType& vVertices,
+		NormalsListType& vNormals,
+		TexCoordsListType& vCoords,
+		const IScalarPainter& height,
+		const Scalar scale
+		)
+	{
+		// Same once-per-vertex guard as the IFunction2D twin above: a vertex
+		// shared by N faces is displaced ONCE, and the read of `v` happens
+		// immediately before its own write, so every evaluation sees the
+		// PRE-displacement position.
+		std::vector<bool> done_list( vVertices.size(), false );
+
+		IndexTriangleListType::iterator i, e;
+		for( i=vFaces.begin(), e=vFaces.end(); i!=e; i++ )
+		{
+			IndexedTriangle& poly = *i;
+			for( int j=0; j<3; j++ )
+			{
+				const unsigned int idx = poly.iVertices[j];
+				if( !done_list[idx] ) {
+					Vertex& v = vVertices[idx];
+
+					// The SYNTHETIC hit -- the same build-time
+					// painter-evaluation idiom HairGenerator::MakeRootRi
+					// uses.  What is set, and what is deliberately not:
+					//   ptObjIntersec / ptIntersection : the vertex, in
+					//     OBJECT space, in BOTH (see the header caveat --
+					//     the geometry has no object transform at bake).
+					//   ptCoord : the vertex UV, exactly as the caller
+					//     supplied it (seam-folded or raw), so a UV field
+					//     reads identically through either route.
+					//   vNormal / vGeomNormal : the PRE-displacement vertex
+					//     normal -- the same direction the offset is applied
+					//     along, so a triplanar/normal-reading field agrees
+					//     with the geometry it is about to move.
+					//   txFootprint.valid / derivatives.valid : FALSE.  There
+					//     is no ray and no pixel here, so a footprint would be
+					//     a fabrication; the noise builtins' octave fade reads
+					//     `fw = 0` and resolves every octave, which is the
+					//     right answer for a bake (the mesh is built once, at
+					//     no particular viewing distance).
+					//   `derivatives.valid = false` ALSO means no signal
+					//     state: `curv`/`curvR` read 0 and the
+					//     `occlusion()`/`thickness()` builtins read their
+					//     neutral fallback (1/1) here, so a field that keys
+					//     on them (e.g. `mix(a, b, clamp(curv,0,1))`)
+					//     displaces FLAT at bake time even where a
+					//     `ReliefModifier::Modify` bound to the SAME field
+					//     sees real curvature/occlusion/thickness at hit
+					//     time and tilts the normal accordingly -- see
+					//     docs/RELIEF_MODIFIER_DESIGN.md section 5.3.
+					// Both `valid` flags are false out of the default
+					// constructors; set explicitly so the contract is
+					// readable at the call site rather than inherited.
+					RayIntersectionGeometric ri( Ray(), nullRasterizerState );
+					ri.bHit               = true;
+					ri.ptObjIntersec      = v;
+					ri.ptIntersection     = v;
+					ri.ptCoord            = vCoords[idx];
+					ri.vNormal            = vNormals[idx];
+					ri.vGeomNormal        = vNormals[idx];
+					ri.txFootprint.valid  = false;
+					ri.txFootprint.widthValid = false;
+					ri.derivatives.valid  = false;
+
+					const Scalar disp = height.GetValuesAt( ri ).v[0] * scale;
 					v = Point3Ops::mkPoint3( v, vNormals[idx] * disp );
 
 					done_list[idx] = true;

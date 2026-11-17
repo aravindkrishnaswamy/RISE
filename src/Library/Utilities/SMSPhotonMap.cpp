@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "PathVertexEval.h"
 #include "SMSPhotonMap.h"
 
 #include "../Interfaces/ILog.h"
@@ -20,6 +21,8 @@
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IGeometry.h"
+#include "../Interfaces/IEmitter.h"
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/ILightManager.h"
@@ -27,6 +30,7 @@
 #include "../Interfaces/IScenePriv.h"
 #include "../Intersection/RayIntersection.h"
 #include "../Rendering/LuminaryManager.h"
+#include "../Lights/LightSampler.h"
 #include "BoundingBox.h"
 #include "IndependentSampler.h"
 #include "RandomNumbers.h"
@@ -193,8 +197,10 @@ void SMSPhotonMap::Clear()
 // so ManifoldSolver can use it as a Newton-iteration seed.
 //
 // The walk is fully inline (no recursion — deterministic bound of
-// kMaxBounces) to avoid the static-variable shared-state in
-// CausticPelPhotonTracer::TracePhoton's numRecursions counter.
+// kMaxBounces).  Historically this also side-stepped a function-local
+// static recursion counter in CausticPelPhotonTracer::TracePhoton; that
+// static is gone (depth is a threaded parameter now), so the inline form
+// stays purely for the deterministic bound.
 //////////////////////////////////////////////////////////////////////
 namespace
 {
@@ -234,7 +240,8 @@ namespace
 			ray.SetDir( Vector3Ops::Normalize( ray.Dir() ) );
 
 			RayIntersection ri( ray, nullRasterizerState );
-			pObjMgr->IntersectRay( ri, true, true, false );
+			IndependentSampler alphaSampler(rng);
+			pObjMgr->IntersectRaySampled(ri, alphaSampler);
 			if( !ri.geometric.bHit ) {
 				return false;
 			}
@@ -270,6 +277,12 @@ namespace
 			// surrounding medium, not air.  Air scenes stay byte-identical (1.0).
 			const Scalar ambIOR = ior_stack.top();
 			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+			// IMPORTANCE mode: NO eta^2 basic-radiance factor (debt 30).  These
+			// are SMS photon SEEDS -- a light-rooted flux walk, same rule as the
+			// photon tracers.  (The SMS chain evaluation in ManifoldSolver.cpp
+			// does apply the factor, because that walk runs eye->light and
+			// carries radiance; the two are disjoint segments, not a double
+			// count.)
 			pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
 
 			// Classical caustic pattern: a hit with a non-delta BSDF
@@ -290,7 +303,8 @@ namespace
 			// here would bias toward photons that land on reflect-at-both-
 			// sides materials).  RandomlySelectNonDiffuse respects the
 			// per-ray kray weights.
-			ScatteredRay* pScat = scattered.RandomlySelectNonDiffuse( rng.CanonicalRandom(), false );
+			Scalar selectProb;
+			ScatteredRay* pScat = scattered.RandomlySelectNonDiffuse( rng.CanonicalRandom(), false, &selectProb );
 			if( !pScat ) {
 				return false;
 			}
@@ -329,23 +343,36 @@ namespace
 			// so we preserve the raw cosI-based side indicator (consumer
 			// uses it only for Fresnel eta_i/eta_t bookkeeping on the
 			// reflection, which is direction-dependent).
-			// Side-of-surface decision: use the GEOMETRIC normal so the
-			// `bEntering` flag stamped on the photon chain matches the
-			// actual face orientation (not Phong-perturbed shading).
-			// A bump-mapped reflector can otherwise mislabel entering vs
-			// exiting on a reflection vertex, propagating a wrong
-			// `isExiting` bit into the photon record and downstream
-			// Fresnel etaI/etaT pair.  PBRT 4e §10.1.1.
-			const Scalar cosI = Vector3Ops::Dot( ray.Dir(), ri.geometric.vGeomNormal );
+			// Snapshot the native interface before adopting the scattered ray's
+			// stack. Reflection preserves membership; transmission reverses
+			// this pair when the receiver reconstructs the photon seed.
 			const bool bReflection = ( pScat->type == ScatteredRay::eRayReflection );
-			const bool bEntering = bReflection
-			    ? ( cosI < 0 )          // reflection: medium unchanged; keep
-			                             // cosI-based side for Fresnel lookup
-			    : ( !bSameObjectAlreadyPreScatter ); // refraction: pre-scatter stack state
+			const SpecularInfo specInfo = ri.pMaterial->GetSpecularInfo( ri.geometric, ior_stack );
+			IORStack destination( ior_stack );
+			bool bEntering = !bSameObjectAlreadyPreScatter;
+			Scalar etaI = bEntering ? ior_stack.top() : specInfo.ior;
+			Scalar etaT = specInfo.ior;
+			if( IORStackSeeding::IsPolishedCoatMaterial( ri.pMaterial ) ) {
+				bEntering = true;
+				etaI = ior_stack.top();
+				etaT = specInfo.ior;
+			} else if( ri.geometric.bProvablyNoInterior ) {
+				const IORStackSeeding::OpenSheetCrossing crossing =
+					IORStackSeeding::ResolveOpenSheetCrossing( ri.geometric, specInfo.ior, destination );
+				bEntering = crossing.bEntering;
+				etaI = crossing.etaFrom;
+				etaT = crossing.etaTo;
+			} else if( !bEntering ) {
+				destination.pop();
+				etaT = destination.top();
+			}
+
 
 			// Record vertex in photon-direction order.
 			SMSPhotonChainVertex& v = out.chain[specularHits];
 			v.position  = ri.geometric.ptIntersection;
+			v.objectPosition = ri.geometric.ptObjIntersec;
+			v.uv = ri.geometric.ptCoord;
 			v.normal    = ri.geometric.vNormal;
 			// Store geometric face normal alongside the shading normal so
 			// the receiver-side ManifoldSolver reconstruction can populate
@@ -353,16 +380,19 @@ namespace
 			// (ManifoldSolver::ValidateChainPhysics) actually fires on
 			// photon-aided chains.  Without this slot, the validator would
 			// silently fall back to shading via its NEARZERO check.
-			v.geomNormal = ri.geometric.vGeomNormal;
+			// DL-70: store the TRUE, ray-INDEPENDENT outward normal, the
+			// same invariant `ManifoldVertex::geomNormal` carries -- the
+			// receiver-side reconstruction copies this field straight
+			// into a synthetic `RayIntersectionGeometric` whose
+			// `bGeomNormalOrientedToRay` defaults FALSE, so anything
+			// stored flipped would be republished as an unflipped normal
+			// and lie to any consumer that performs the recovery.
+			v.geomNormal = ri.geometric.UnflippedGeomNormal();
 			v.pObject   = ri.pObject;
 			v.pMaterial = ri.pMaterial;
-			// eta comes from the material's specular info at this vertex.
-			// GetSpecularInfo returns (isSpecular, ior, canRefract, ...).
-			// Use the IOR of the material directly.
-			{
-				SpecularInfo specInfo = ri.pMaterial->GetSpecularInfo( ri.geometric, ior_stack );
-				v.eta = specInfo.ior;
-			}
+			v.eta = specInfo.ior;
+			v.etaI = etaI;
+			v.etaT = etaT;
 			v.flags = static_cast<unsigned char>(
 				( bEntering   ? 0x0 : 0x1 ) |
 				( bReflection ? 0x2 : 0x0 ) );
@@ -370,7 +400,8 @@ namespace
 
 			ray = pScat->ray;
 			ray.Advance( 1e-8 );
-			power = power * pScat->kray;
+			power = power * pScat->kray * (PathVertexEval::ImportanceShadingNormalFactor(
+				ri.geometric.vNormal, ri.geometric.vGeomNormal, -ri.geometric.ray.Dir(), pScat->ray.Dir() ) / selectProb);
 			if( pScat->ior_stack ) {
 				ior_stack = *pScat->ior_stack;
 			}
@@ -407,8 +438,11 @@ unsigned int SMSPhotonMap::Build(
 	Scalar totalExitance = 0;
 	for( LuminaryManager::LuminariesList::const_iterator i = luminaries.begin(); i != luminaries.end(); ++i ) {
 		if( i->pLum && i->pLum->GetMaterial() && i->pLum->GetMaterial()->GetEmitter() ) {
-			const Scalar area = i->pLum->GetArea();
-			const RISEPel pw = i->pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * area;
+			// DL-320: both faces of a double-sided luminary radiate.
+			const bool twoSided = i->pLum->GetGeometry() && i->pLum->GetGeometry()->IsDoubleSided();
+			const Scalar area = i->pLum->GetArea() * EmitterSides::FaceCount( twoSided );
+			// DL-431: the luminary's own surface mean, not the emitter's P = Po = 0 estimate.
+			const RISEPel pw = LightSampler::AverageLuminaryExitance( i->pLum ).average * area;
 			totalExitance += ColorMath::MaxValue( pw );
 		}
 	}
@@ -446,8 +480,14 @@ unsigned int SMSPhotonMap::Build(
 			continue;
 		}
 		const IEmitter* pEmitter = i->pLum->GetMaterial()->GetEmitter();
-		const Scalar area = i->pLum->GetArea();
-		const RISEPel emitterTotal = pEmitter->averageRadiantExitance() * area;
+		// DL-320: a double-sided luminary radiates from both faces
+		// (docs/DL320_DOUBLE_SIDED_EMITTER.md), exactly as SMS's own
+		// light-directed connection already treats it (its emitter
+		// cosine is `fabs`); its photon budget counts both faces and each
+		// seed photon leaves from a face chosen with probability 1/2.
+		const bool twoSided = i->pLum->GetGeometry() && i->pLum->GetGeometry()->IsDoubleSided();
+		const Scalar area = i->pLum->GetArea() * EmitterSides::FaceCount( twoSided );
+		const RISEPel emitterTotal = LightSampler::AverageLuminaryExitance( i->pLum ).average * area;
 
 		const unsigned int target = static_cast<unsigned int>(
 			ColorMath::MaxValue( emitterTotal ) / totalExitance * numPhotons );
@@ -461,15 +501,25 @@ unsigned int SMSPhotonMap::Build(
 			i->pLum->UniformRandomPoint( &r.origin, &normal, &coord,
 				Point3( geomRng.CanonicalRandom(), geomRng.CanonicalRandom(), geomRng.CanonicalRandom() ) );
 
-			RayIntersectionGeometric rig( r, nullRasterizerState );
-			rig.vNormal = normal;
-			// Luminary normal from UniformRandomPoint is geometric; mirror.
-			rig.vGeomNormal = normal;
-			rig.ptCoord = coord;
-			rig.onb.CreateFromW( rig.vNormal );
+			// DL-320: the emitting face, chosen by remapping the first
+			// direction coordinate (no extra draw).
+			Point2 dirRand( geomRng.CanonicalRandom(), geomRng.CanonicalRandom() );
+			if( twoSided ) {
+				if( dirRand.x < 0.5 ) {
+					dirRand.x = dirRand.x * 2.0;
+				} else {
+					dirRand.x = dirRand.x * 2.0 - 1.0;
+					normal = -normal;
+				}
+			}
 
-			r.SetDir( pEmitter->getEmmittedPhotonDir( rig,
-				Point2( geomRng.CanonicalRandom(), geomRng.CanonicalRandom() ) ) );
+			RayIntersectionGeometric rig( r, nullRasterizerState );
+			// DL-298: the shared emitter-record fill (world position `P`,
+			// normals, `onb`, UV, `Po`).
+			LightSampler::FillEmitterRecord( rig, r.origin, normal, coord,
+				LightSampler::EmitterObjectPoint( i->pLum, r.origin, rig.ptObjIntersec ) );
+
+			r.SetDir( pEmitter->getEmmittedPhotonDir( rig, dirRand ) );
 
 			const RISEPel power = emitterTotal;
 
@@ -482,7 +532,7 @@ unsigned int SMSPhotonMap::Build(
 			// sign check and every photon dies on bounce 1.  Mirrors
 			// BDPT's light-subpath seeding (BDPTIntegrator.cpp:1356).
 			IORStack iorStack( 1.0 );
-			IORStackSeeding::SeedFromPoint( iorStack, r.origin, scene );
+			IORStackSeeding::SeedFromPoint( iorStack, r.origin, scene, 0, true, i->pLum );
 			SMSPhoton out;
 			if( TraceSMSPhoton( scene, r, power, rng, iorStack, out ) ) {
 				mPhotons.push_back( out );

@@ -73,6 +73,20 @@ namespace
 			return model->SampleRadiance( dir, nm );
 		}
 
+		// PHYSICAL SPD -- pass through verbatim (Stage C slice 2), same
+		// as SpectralColorPainter / BlackBodyPainter / Function1D-
+		// SpectralPainter.  `model->SampleRadiance` IS an absolute sky
+		// radiance in W/(m^2 sr nm), not a Jakob-Hanika uplift of an RGB
+		// triple, and the sky is the archetypal SOURCE term.  Letting
+		// the IPainter default run would throw the model's spectrum away
+		// and re-uplift the RGB projection from IntegrateRGB -- the very
+		// bug the rest of HosekWilkieSpectralRadianceMap is kept off the
+		// painter path to avoid.
+		Scalar GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+		{
+			return GetColorNM( ri, nm );
+		}
+
 		Scalar GetAlpha( const RayIntersectionGeometric& ) const { return Scalar(1); }
 
 		IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) { return 0; }

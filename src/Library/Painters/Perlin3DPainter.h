@@ -17,7 +17,6 @@
 #define PERLIN_3D_PAINTER_
 
 #include "Painter.h"
-#include "../Noise/PerlinNoise.h"
 #include "../Interfaces/ISimpleInterpolator.h"
 
 namespace RISE
@@ -38,7 +37,11 @@ namespace RISE
 			Scalar					dPersistence;
 			unsigned int			nOctaves;
 
-			PerlinNoise3D*					pFunc;
+			//! Layered-octave sum matching the historical PerlinNoise3D
+			//! engine's LUT construction bit-for-bit (see
+			//! ProceduralNoiseCore.h for the shared single-octave primitive).
+			Scalar							EvaluateField( const Scalar x, const Scalar y, const Scalar z ) const;
+
 			ISimpleInterpolator<Scalar>*	pInterp;
 			ISimpleInterpolator<RISEPel>*	pColorInterp;
 
@@ -52,6 +55,11 @@ namespace RISE
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
 			void SetIntermediateValue( const IKeyframeParameter& val );
 			void RegenerateData( );
+			//! DL-203 (docs/DEBT_LEDGER.md): this class's `a`/`b` operands genuinely combine or select
+			//! among their own TRUE `GetColorNM` (see this class's own GetColorNM),
+			//! so this recurses -- see IPainter::IsSpectrallyDefined's own doc
+			//! comment for the full rationale and which composites do NOT recurse.
+			bool IsSpectrallyDefined() const { return a.IsSpectrallyDefined() || b.IsSpectrallyDefined(); }
 		};
 	}
 }

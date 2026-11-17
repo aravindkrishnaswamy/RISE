@@ -17,6 +17,7 @@
 
 #include "../Interfaces/ITransformable.h"
 
+#include <atomic>
 #include <deque>
 
 namespace RISE
@@ -29,7 +30,7 @@ namespace RISE
 			Transformable( );
 			virtual ~Transformable( );
 
-			Matrix4		m_mxFinalTrans;		// Finalized transformation matrix
+			Matrix4		m_mxFinalTrans;		// Finalized WORLD transformation matrix (parentWorld * local)
 			Matrix4		m_mxInvFinalTrans;	// Inverse of finalized transformation matrix
 
 			typedef std::deque<Matrix4> TransformStackType;
@@ -39,6 +40,89 @@ namespace RISE
 			Matrix4		m_mxOrientation;	// Orientation matrix
 			Matrix4		m_mxScale;			// Scale matrix
 			Matrix4		m_mxStretch;		// Stretch matrix
+
+			//! doc 89 slice C -- the MIRROR: a reflection across a plane through
+			//! the node's LOCAL origin, perpendicular to one local axis.  Identity
+			//! when no mirror is set.  Composed INNERMOST (rightmost) in
+			//! `P * O * Stretch * Scale * M`, so it reflects the node's own shape
+			//! -- and, through the composed world matrix, its whole subtree --
+			//! BEFORE the node's own placement is applied.  Author one wing, mirror
+			//! the other.
+			//!
+			//! A SEPARATE MATRIX, NOT A NEGATIVE `m_mxStretch` COMPONENT, and the
+			//! reason is that `stretch` is an AUTHORED param with its own value: a
+			//! mirror folded into it could not be read back, could not be cleared
+			//! independently, and would be silently destroyed by the next absolute
+			//! SetStretch (which the transform panel issues on any `scale` edit).
+			//! It is also NOT on the transform stack: stack entries LEFT-multiply
+			//! (outermost), which is the wrong side -- a mirror applied outside the
+			//! node's own rotation reflects the WORLD placement, not the shape.
+			Matrix4		m_mxMirror;
+			//! The authored axis behind `m_mxMirror`: -1 none, 0 = x, 1 = y, 2 = z.
+			//! Kept alongside the matrix so the value can be read back EXACTLY (for
+			//! the properties panel, and to un-apply the reflection before decomposing
+			//! the local matrix into position / orientation / scale) without having to
+			//! recognise a reflection in a composed matrix.
+			int			m_mirrorAxis;
+
+			//! This node's OWN transform: (P * O * Stretch * Scale) folded with
+			//! the transform stack, with NO parent contribution.  Cached by
+			//! FinalizeTransformations so the authored value can be read back
+			//! exactly -- without inverting anything -- by the scene-document
+			//! commit, the transform panel and undo capture.
+			Matrix4		m_mxLocalTrans;
+
+			//! The parent world transform last composed into this node
+			//! (identity for a root), plus its VERIFIED inverse.  Held as
+			//! VALUES, never as a pointer to the parent: `Reference` has no
+			//! weak-ref primitive, so a child -> parent back-pointer is the one
+			//! change that would introduce a genuine lifetime cycle
+			//! (docs/agentic-redesign/86-object-grouping.md §3).
+			Matrix4		m_mxParentWorld;
+			Matrix4		m_mxParentWorldInv;
+
+			//! Is the parent world transform usable as a change of frame?  TRUE
+			//! only when its NORMALISED linear part passes both halves of the
+			//! test in FinalizeTransformations: the computed inverse really is
+			//! an inverse (a rank test), and it is well enough conditioned to
+			//! conjugate a world-space operation through.  FALSE for a
+			//! collapsed or rank-deficient ancestor, for an extreme anisotropy,
+			//! for a non-finite entry, and for a projective row.  Four earlier
+			//! formulations of this test are recorded at the implementation,
+			//! each with the input that defeats it.
+			bool		m_bParentWorldInvertible;
+
+			//! The authoritative-matrix metadata a matrix-authored transform
+			//! (SetFinalTransformMatrix / a V2 restore) carries, so later
+			//! absolute SetPosition / SetOrientation / SetScale / SetStretch
+			//! edit that matrix.  Inactive (the default) for a transform built
+			//! from components.  PER INSTANCE (DL-465 review P1): it used to
+			//! live in a process-wide locked registry, which serialised
+			//! multi-threaded per-sample posing.  Copied with the object (a
+			//! copy-constructed clone carries it; CopyTransformMetadataTo
+			//! copies it explicitly).
+			struct FinalMatrixMetadata
+			{
+				bool	active;
+				Matrix4	scaleBase;
+				Vector3	appliedStretch;
+				bool	scaleBaseValid;
+				size_t	authoritativeIndex;
+
+				FinalMatrixMetadata() :
+					active( false ),
+					scaleBase( Matrix4Ops::Identity() ),
+					appliedStretch( 1, 1, 1 ),
+					scaleBaseValid( false ),
+					authoritativeIndex( 0 )
+				{}
+			};
+			FinalMatrixMetadata	m_finalMetadata;
+
+			bool ReadFinalMetadata_( FinalMatrixMetadata& metadata ) const;	///< true iff active
+			void StoreFinalMetadata_( const FinalMatrixMetadata& metadata );
+			void ClearFinalMetadata_( );
+
 			Matrix4 CollapsedTransformStack_( ) const;
 			void ReplaceFinalStack_( const Matrix4& matrix );
 
@@ -62,33 +146,33 @@ namespace RISE
 			static bool BeginPreparedExternalMutation();
 			static void EndPreparedExternalMutation();
 			// These two methods allow direct access to the transformation stack
-			virtual void PushTopTransStack( const Matrix4& mat );
-			virtual void PushBottomTransStack( const Matrix4& mat );
-			virtual void PopTopTransStack( );
-			virtual void PopBottomTransStack( );
-			virtual void ClearTransformStack( );
+			virtual void PushTopTransStack( const Matrix4& mat ) override;
+			virtual void PushBottomTransStack( const Matrix4& mat ) override;
+			virtual void PopTopTransStack( ) override;
+			virtual void PopBottomTransStack( ) override;
+			virtual void ClearTransformStack( ) override;
 
 			// Clears all transforms
-			virtual void ClearAllTransforms( );
+			virtual void ClearAllTransforms( ) override;
 
 			// Applies a translation to the transformation stack
-			virtual void TranslateObject( const Vector3& vec );
+			virtual void TranslateObject( const Vector3& vec ) override;
 
 			// Applies rotations to the transformation stack
-			virtual void RotateObjectXAxis( const Scalar nAmount );
-			virtual void RotateObjectYAxis( const Scalar nAmount );
-			virtual void RotateObjectZAxis( const Scalar nAmount );
-			virtual void RotateObjectArbAxis( const Vector3& axis, const Scalar nAmount );
+			virtual void RotateObjectXAxis( const Scalar nAmount ) override;
+			virtual void RotateObjectYAxis( const Scalar nAmount ) override;
+			virtual void RotateObjectZAxis( const Scalar nAmount ) override;
+			virtual void RotateObjectArbAxis( const Vector3& axis, const Scalar nAmount ) override;
 
 			// Allows the user to directly set the position, orientation and scale
 			// values
-			virtual void SetPosition( const Point3& pos );
-			virtual void SetOrientation( const Vector3& orient );
-			virtual void SetScale( const Scalar nAmount );
-			virtual void SetStretch( const Vector3& stretch );
+			virtual void SetPosition( const Point3& pos ) override;
+			virtual void SetOrientation( const Vector3& orient ) override;
+			virtual void SetScale( const Scalar nAmount ) override;
+			virtual void SetStretch( const Vector3& stretch ) override;
 
 			// Finalizes all transformations and computes the final matrix
-			virtual void FinalizeTransformations( );
+			virtual void FinalizeTransformations( ) override;
 
 			//! Legacy component-only snapshot retained for ABI compatibility.
 			//! Matrix-authored callers needing exact subsequent setter semantics
@@ -101,20 +185,139 @@ namespace RISE
 			bool RestoreTransformStateV2( const TransformStateV2& st );
 			void CopyTransformMetadataTo( Transformable& destination ) const;
 
-			//! Replace the whole transform with one authoritative affine matrix.
-			//! Unlike a raw Clear+Push sequence, later absolute SetPosition /
-			//! SetOrientation / SetScale / SetStretch calls edit this matrix rather
-			//! than composing hidden component state underneath it.
+			//! Replace this node's whole LOCAL transform with one authoritative
+			//! affine matrix.  Unlike a raw Clear+Push sequence, later absolute
+			//! SetPosition / SetOrientation / SetScale / SetStretch calls edit
+			//! this matrix rather than composing hidden component state
+			//! underneath it.
+			//!
+			//! LOCAL, not world: a parented node's world matrix is
+			//! `parentWorld * matrix` after the next finalize.  A caller
+			//! holding a WORLD matrix must convert with WorldToLocal() first
+			//! (having checked IsParentWorldInvertible()).
+			//!
+			//! THE CALLER MUST FINALIZE.  This installs the matrix on the
+			//! transform STACK and updates the authoritative-matrix metadata;
+			//! it does NOT recompute m_mxLocalTrans, m_mxFinalTrans, or the
+			//! Object caches.  Until FinalizeTransformations() runs, every
+			//! accessor still describes the PREVIOUS transform.  Every call
+			//! site in tree finalizes immediately afterward -- Job::AddObjectMatrix,
+			//! override_object's two arms, and SceneEditor's ReplaceFinalTransform_
+			//! (whose callers all reach RunObjectInvariantChain).  A new one that
+			//! forgets would read stale matrices with no diagnostic.
 			void SetFinalTransformMatrix( const Matrix4& matrix );
 
+			//! doc 89 slice C: set (or clear) this node's LOCAL mirror axis.
+			//! `axis` is -1 for none, 0 for x, 1 for y, 2 for z; any other value is
+			//! REFUSED (returns false, changes nothing) rather than silently mapped.
+			//!
+			//! NON-VIRTUAL, reached through `dynamic_cast<Implementation::Transformable*>`
+			//! exactly as `SetFinalTransformMatrix` is -- no interface vtable grows for
+			//! it, so there is no ABI decision to review.
+			//!
+			//! THE CALLER MUST FINALIZE.  Like SetFinalTransformMatrix, this updates
+			//! the building block only; `m_mxLocalTrans` / `m_mxFinalTrans` and the
+			//! Object caches still describe the PREVIOUS transform until
+			//! FinalizeTransformations() runs.
+			/// \return TRUE if the axis was accepted, FALSE if it was out of range
+			bool SetMirrorAxis( int axis );
+
+			//! The authored mirror axis: -1 none, 0 = x, 1 = y, 2 = z.
+			inline int GetMirrorAxis( ) const { return m_mirrorAxis; }
+
+			//! The mirror as a matrix (identity when no mirror is set).  Its own
+			//! inverse, so `GetLocalTransformMatrix() * GetMirrorMatrix()` is the
+			//! local transform with the reflection UN-applied -- which is what a
+			//! position / orientation / scale readback has to decompose.
+			inline Matrix4 const GetMirrorMatrix( ) const { return m_mxMirror; }
+
 			// Retrieves the transformation matrix
-			virtual inline Matrix4 const GetFinalTransformMatrix( ) const { return m_mxFinalTrans; };
-			virtual inline Matrix4 const GetFinalInverseTransformMatrix( ) const { return m_mxInvFinalTrans; };
+			virtual inline Matrix4 const GetFinalTransformMatrix( ) const override { return m_mxFinalTrans; };
+			virtual inline Matrix4 const GetFinalInverseTransformMatrix( ) const override { return m_mxInvFinalTrans; };
+
+			// ---- recursive scene graph (docs/agentic-redesign/87-recursive-scene-graph.md)
+			void FinalizeTransformations( const Matrix4& parentWorld ) override;
+			virtual inline Matrix4 const GetLocalTransformMatrix( ) const override { return m_mxLocalTrans; };
+			virtual inline Matrix4 const GetParentWorldTransformMatrix( ) const override { return m_mxParentWorld; };
+			virtual inline bool IsParentWorldInvertible( ) const override { return m_bParentWorldInvertible; };
+			virtual inline Matrix4 const WorldToLocal( const Matrix4& worldMatrix ) const override
+				{ return m_bParentWorldInvertible ? Matrix4( m_mxParentWorldInv * worldMatrix ) : worldMatrix; };
 
 			// For keyframamble interface
-			virtual IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			virtual void SetIntermediateValue( const IKeyframeParameter& val );
-			virtual void RegenerateData( );
+			virtual IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			virtual void SetIntermediateValue( const IKeyframeParameter& val ) override;
+			virtual void RegenerateData( ) override;
+
+			//! Monotonic transform-pose epochs (DL-626 / DL-631):
+			//! - `GlobalTransformPoseEpoch`: bumped when `FinalizeTransformations`
+			//!   updates any non-time-indexed transform (`TimeIndexed::tlsSlots == nullptr`).
+			//! - `ThreadTransformPoseEpoch`: per-thread counter bumped on every
+			//!   `FinalizeTransformations` call on this thread AND when
+			//!   `TimeIndexedThread` installs/restores per-thread time-view slots,
+			//!   avoiding cross-thread atomic contention during multi-threaded
+			//!   motion-blur posing while keeping per-thread caches exact.
+			static inline std::atomic<unsigned long long>& GlobalPoseEpochCounter()
+			{
+				static std::atomic<unsigned long long> epoch( 1 );
+				return epoch;
+			}
+			static inline unsigned long long GlobalTransformPoseEpoch()
+			{
+				return GlobalPoseEpochCounter().load( std::memory_order_acquire );
+			}
+			static inline void BumpGlobalTransformPoseEpoch()
+			{
+				GlobalPoseEpochCounter().fetch_add( 1, std::memory_order_acq_rel );
+			}
+			static inline unsigned long long& ThreadPoseEpochRef()
+			{
+				static thread_local unsigned long long epoch = 1;
+				return epoch;
+			}
+			static inline unsigned long long ThreadTransformPoseEpoch()
+			{
+				return ThreadPoseEpochRef();
+			}
+			static inline void BumpThreadTransformPoseEpoch()
+			{
+				++ThreadPoseEpochRef();
+			}
+			//! Per-thread epoch bumped ONLY when a `CSGObject`, a consumed CSG
+			//! operand (`Object::IsConsumed()`), an unslotted `Object` finalize
+			//! (`TimeIndexed::tlsSlots == nullptr`), or a `TimeIndexedThread`
+			//! scope transition runs -- NOT when animated lights or standalone
+			//! non-CSG `Object` clones are posed per pixel sample.
+			static inline unsigned long long& ThreadCsgPoseEpochRef()
+			{
+				static thread_local unsigned long long epoch = 1;
+				return epoch;
+			}
+			static inline unsigned long long ThreadCsgPoseEpoch()
+			{
+				return ThreadCsgPoseEpochRef();
+			}
+			static inline void BumpThreadCsgPoseEpoch()
+			{
+				++ThreadCsgPoseEpochRef();
+			}
+			//! Per-thread epoch bumped ONLY when a trackable/refractive/CSG
+			//! `Object` is finalized, an unslotted `Object` finalize runs, or a
+			//! `TimeIndexedThread` scope transition runs -- keeping
+			//! `IORStackSeeding::EnsureCatalogPoseState` O(1) hot when animated
+			//! lights, cameras, or opaque non-CSG objects move per pixel sample.
+			static inline unsigned long long& ThreadTrackablePoseEpochRef()
+			{
+				static thread_local unsigned long long epoch = 1;
+				return epoch;
+			}
+			static inline unsigned long long ThreadTrackablePoseEpoch()
+			{
+				return ThreadTrackablePoseEpochRef();
+			}
+			static inline void BumpThreadTrackablePoseEpoch()
+			{
+				++ThreadTrackablePoseEpochRef();
+			}
 		};
 	}
 }

@@ -22,6 +22,8 @@
 #include <cmath>
 #include <string>
 #include "../src/Library/Painters/ExpressionEval.h"
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Interfaces/IPainter.h"
 #include "GuillocheDialExpr.h"		// the six dial patterns (shared with the scene-chunk emitter)
 
 using namespace RISE;
@@ -89,6 +91,18 @@ static void TestEngine()
 	  Check( !b.Finalize( "sin(1,2)", p ), "wrong arity rejects" ); }
 	{ ExpressionProgram p = ExpressionProgram::Invalid(); ExpressionProgram::Builder b;
 	  Check( !b.Finalize( "(1 + 2", p ), "unbalanced paren rejects" ); }
+
+	// This surface (expression_function2d) keeps context vars OFF (doc 88
+	// decision 5) and contracts one scalar per (u,v): `time` must stay a
+	// hard error here, and a vec3-typed final must be refused at painter
+	// creation rather than silently evaluating as its .x.
+	{ ExpressionProgram p = ExpressionProgram::Invalid(); ExpressionProgram::Builder b;
+	  Check( !b.Finalize( "time*2+1", p ), "context var `time` rejects without opt-in" ); }
+	{ ExpressionProgram p = ExpressionProgram::Invalid(); ExpressionProgram::Builder b;
+	  Check( b.Finalize( "vec3(1,2,3)", p ), "vec3 final compiles at the VM level" );
+	  IPainter* pPainter = 0;
+	  Check( !RISE_API_CreateExpressionFunction2D( &pPainter, p ) && !pPainter,
+	         "RISE_API_CreateExpressionFunction2D refuses a vec3-typed program" ); }
 }
 
 // Compile a templated pattern from GuillocheDialExpr (the SAME code the

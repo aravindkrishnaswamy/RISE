@@ -7,7 +7,7 @@
 //  reflection for BDPT connection strategies:
 //
 //  Both outside (front/front): GGX microfacet reflection BRDF
-//    (rough surfaces) or diffuse Fresnel approximation (smooth).
+//    (rough surfaces); smooth reflection is delta, with zero finite value.
 //  All other cases: return 0.  The subsurface transport between
 //    surface points is handled by the diffusion profile in the
 //    integrator, not by the BSDF.
@@ -53,9 +53,24 @@ namespace RISE
 				const Scalar roughness_
 				);
 
-			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
-			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
-			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+			RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const override;
+			Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const override;
+			RISEPel albedo( const RayIntersectionGeometric& ri ) const override;
+			//! The SPF labels every ordinary finite term as reflection. Jump
+			//! transport is absent from this BSDF and must not enter the split.
+			bool valueByScatterType(const Vector3& w, const RayIntersectionGeometric& ri,
+				const IORStack*, RISEPel out[5]) const override {
+				for(unsigned t=0;t<5;++t) out[t]=RISEPel(0,0,0);
+				out[ScatteredRay::eRayReflection]=value(w,ri);
+				return true;
+			}
+			bool valueByScatterTypeNM(const Vector3& w, const RayIntersectionGeometric& ri,
+				Scalar nm, const IORStack*, Scalar out[5]) const override {
+				for(unsigned t=0;t<5;++t) out[t]=0;
+				out[ScatteredRay::eRayReflection]=valueNM(w,ri,nm);
+				return true;
+			}
+
 
 			//! Read-back + rebind for the interactive editor.
 			inline const IScalarPainter& GetIOR() const { return *pIOR; }

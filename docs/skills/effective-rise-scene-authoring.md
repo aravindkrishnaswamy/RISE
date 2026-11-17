@@ -46,10 +46,18 @@ description: |
 The single biggest predictor of "this scene renders correctly the
 first time" is whether you started from a working reference.  Find one
 in `scenes/Tests/` whose **rasterizer + camera + lighting style** matches
-what you want (e.g. `pixelpel_rasterizer` + `pinhole_camera` + a
-directional key + ambient is the most common combo) and adapt it.
+what you want (e.g. `pathtracing_pel_rasterizer` or `auto_rasterizer` +
+`pinhole_camera` + an area light or directional key + an environment
+`radiance_map` / `hosek_wilkie_skylight` is the modern norm; never start
+from the frozen `pixelpel_rasterizer` or `ambient_light`) and adapt it.
 Don't start with a blank file unless you're authoring something
 genuinely novel.
+
+Native scenes use the `RISE ASCII SCENE 7` header, declare output
+resolution in a top-level `film { width … height … }` chunk (not inside
+the camera chunk), and express parametric values with document-level
+`let` constants and `expr(...)` rather than retired `$(...)` / `FOR`
+constructs (see [src/Library/Parsers/README.md](../../src/Library/Parsers/README.md)).
 
 Good starting points:
 
@@ -58,7 +66,7 @@ Good starting points:
 - `scenes/Tests/Materials/pbr_metallic_roughness.RISEscene` — PBR
   spheres with `pbr_metallic_roughness_material`.
 - `scenes/Tests/Importers/gltf_import_avocado.RISEscene` — glTF bulk
-  import + key/ambient lighting.
+  import + environment `radiance_map` / key lighting.
 - `scenes/Tests/Geometry/sweep_instances.RISEscene` — the procedural
   chunks (`sweep_geometry`, `path_instances_geometry`) on four reuse
   cases: tube on a 3D S-curve, tapered horn, beads on an arc, twisted
@@ -76,6 +84,37 @@ Good starting points:
 Open [docs/SCENE_CONVENTIONS.md](../SCENE_CONVENTIONS.md) and audit
 each section against your scene:
 
+0. **§3.5 Which light kind.**  Reach for an **area light** first.  For
+   a rectangular panel — the usual case — that is one chunk,
+   `rect_light { name … center … size <w> <h> … facing … color …
+   exitance … }`: `facing` is the direction it emits toward (and it
+   emits that way only), and `exitance` is brightness per unit area,
+   so the same number on a panel twice the size delivers twice the
+   light.  There is no `power` on it.  For a glowing solid — a bulb, an
+   orb, a lamp body — it is one chunk, `shape_light { name … shape …
+   center … size … exitance … }`, `shape` one of `sphere` / `ellipsoid`
+   / `box` / `cylinder` (each fixing `size`'s arity); it has no
+   `facing` because a closed solid's normal already points outward
+   everywhere, and no `power` either.  For an emitter of any **other**
+   shape (a mesh fixture, a torus) write the four-chunk chain
+   `rect_light` and `shape_light` both expand into — painter →
+   `lambertian_luminaire_material` → geometry → `standard_object` —
+   spelled out in
+   [§3.5](../SCENE_CONVENTIONS.md#35-which-light-kind-to-use--area-lights-are-the-norm).
+   All three are the only kinds with real area, so they are the only
+   ones that give soft shadows and physical falloff.
+   `hosek_wilkie_skylight` is fine (a physically based sky).
+   `omni_light` / `spot_light` / `directional_light` are zero-area
+   idealizations — use them only when a hard, sourceless key is what
+   you actually want; on the agent surface every insert of one of these
+   three kinds needs confirmation, unconditionally from the first
+   request, refused once and inserted on an identical re-issue.
+   **Never author `ambient_light`**: it adds the same
+   `color · power` at every shading point, casts no shadow ray, and has
+   no falloff.  A dark path-traced scene wants a bigger or brighter
+   emitter, or a sky, not a constant term.  (Convention, not
+   enforcement, for hand-authored scenes; the agent surface refuses
+   `ambient_light` outright.)
 1. **§1 Directional light direction.**  `direction` points FROM
    surface TO light source.  For a camera at `+Z` looking at the
    origin, your `direction` vector should have a **positive Z**
@@ -102,6 +141,16 @@ each section against your scene:
    use `matrix`.  Hand-authored scenes usually use Euler `orientation`.
 5. **§6 Coordinate system.**  Y-up, right-handed.  Camera at `+Z`
    looking at `-Z`.
+6. **§11 Backlit hair/fur rims read achromatic — but the broader glow
+   does not.**  If a `hair_material` groom shows a hairline-thin
+   white/silver RIM right at a strand's backlit silhouette edge no
+   matter what colour you set `sigma_a` / `eumelanin` / `pheomelanin`
+   to, that's the Fresnel R lobe, not a lost tint — don't spend time on
+   the colour painter for THAT feature.  Reach for `hair_geometry.count`
+   (density), the kicker light's angle, or `width_root`/`width_tip` /
+   `medulla_scatter` instead.  A broader, tinted GLOW across the whole
+   backlit fibre body is a different effect (the TT halo) and DOES
+   read your pigment tier correctly — don't "fix" that one either.
 
 ### 3. Render a Lambertian-white control sphere first
 
@@ -141,10 +190,10 @@ standard_object
 }
 ```
 
-A dark control sphere with `power 3.14` directional + `power 0.25`
-ambient indicates a wrong-direction directional (most common — see
-§1).  A control sphere that's bright but tinted indicates a colour
-space bug (§4).
+A dark control sphere with a `power 3.14` directional key + a dim sky
+or environment `radiance_map` indicates a wrong-direction directional
+(most common — see §1).  A control sphere that's bright but tinted
+indicates a colour space bug (§4).
 
 ### 4. Render at low SPP first
 
@@ -184,7 +233,8 @@ confirm the lighting works in isolation before trusting the importer.
 
 If the scene has SMS enabled (`sms_enabled TRUE`), three SMS knobs
 need scene-class-aware values, not defaults.  See
-[CLAUDE.md] §"SMS seeding mode" + [docs/SMS_PHOTON_REGIME.md] for the
+[CLAUDE.md](../../CLAUDE.md) §"SMS seeding mode" +
+[docs/SMS_PHOTON_REGIME.md](../SMS_PHOTON_REGIME.md) for the
 full empirical writeup; quick decision tree:
 
 1. **`sms_seeding`**:
@@ -206,13 +256,14 @@ full empirical writeup; quick decision tree:
    - Required (not optional) when `sms_seeding "uniform"` — without
      it, uniform mode produces variable-length chains and a 36-53 %
      phys-fail rate vs. snell's 3-17 %.  See commit `a3790c4` and
-     [docs/SMS_SEEDING_OVERTRACE_FIX.md] §"Uniform-mode follow-up".
+     [docs/SMS_SEEDING_OVERTRACE_FIX.md](../SMS_SEEDING_OVERTRACE_FIX.md)
+     §"Uniform-mode follow-up".
 
 3. **`sms_photon_count`**: default `0` = off.  Enable (`100000` is a
    reasonable starting value) ONLY when the no-photon ok rate is
    below ~10 % — i.e. snell-trace is systematically missing
    caustic basins.  Diagnostic decision tree in
-   [docs/SMS_PHOTON_REGIME.md]:
+   [docs/SMS_PHOTON_REGIME.md](../SMS_PHOTON_REGIME.md):
    - **Diacaustic-class** (multi-basin curved mirror): photons help
      both modes, uniform sees the bigger gain.  `sms_photon_count
      100000` + `sms_seeding "uniform"` is the canonical combo.
@@ -221,6 +272,15 @@ full empirical writeup; quick decision tree:
      with them ratio is 3.6+.
    - **Displaced-egg-class** (single-basin interior-light): photons
      don't help, just cost ~6× more wall-time.  Don't enable.
+
+4. **`sms_extended`**: default `FALSE`.  `TRUE` switches to the
+   extended reference estimators (point/spot lights and area emitters,
+   with a PT ownership partition so missed roots cost variance, not
+   energy).  It ignores `sms_seeding`, `sms_biased` and `sms_two_stage`, needs `sms_enabled TRUE`, and
+   `sms_photon_count > 0` disables SMS under it.  It is inert on
+   scenes with a `composite_material`, and it costs roughly 10-17x on
+   caustic-heavy scenes.  See [docs/SMS_EXTENDED_DESIGN.md](../SMS_EXTENDED_DESIGN.md) §"Using
+   extended SMS".
 
 ### 8. Save the working scene to `scenes/Tests/` or `scenes/FeatureBased/`
 
@@ -247,20 +307,34 @@ self-contained, and live-rebind in the GUI like any named geometry.
 ### The catalog
 
 - **`sweep_geometry`** — an arbitrary CLOSED 2D profile polygon
-  (repeatable `profile_point <x> <h>` lines) swept along an arbitrary
-  3D Catmull-Rom path (repeatable `point <x> <y> <z>` lines) with
-  rotation-minimizing frames.  Tubes, rails, mouldings, bands, cables,
-  straps.  Knobs: `n_len` (path samples), `end_scale_x` / `end_scale_y`
-  (linear per-axis taper, e.g. a 20→16 mm strap is
-  `end_scale_x 0.7997`), `cap_start` / `cap_end` (ear-clipped caps —
-  non-convex profiles like grooved straps are fine), `frame_hint <x y z>`
-  (initial binormal; omit = world axis most perpendicular to the start
-  tangent — a planar YZ path therefore gets world X as the width axis).
-  Conventions: profile **CCW = outward normals**; profile `x` maps to
-  the frame binormal, `h` to the normal; UV = (profile arc fraction,
-  path fraction).  Caveats: the path sampler is OPEN (reflective end
-  padding) — a closed loop's two seam segments deviate from the ideal
-  curve; sharp path corners get rounded by Catmull-Rom (author more
+  (repeatable `profile_point <x> <h>` lines, or the `profile_circle <r>
+  [n]` / `profile_rect <w> <h> [r]` convenience) swept along an
+  arbitrary 3D Catmull-Rom path (repeatable `point <x> <y> <z>` lines)
+  with rotation-minimizing frames.  Tubes, rails, mouldings, bands,
+  cables, straps, handles, wreaths.  Knobs: `n_len` (path samples),
+  `end_scale_x` / `end_scale_y` (linear per-axis taper, e.g. a 20→16 mm
+  strap is `end_scale_x 0.7997`), `point_width` (repeatable, one per
+  `point`, x-axis-only multiplier — a NON-linear taper, e.g. neck in at
+  one end; deliberately flattens since it only ever scales x),
+  `point_scale` (repeatable, one per `point`, UNIFORM both-axes
+  multiplier, composed with `point_width` and `end_scale` — use this
+  one for a ROUND varying radius, e.g. a tapered tentacle), `cap_start`
+  / `cap_end` (ear-clipped caps — non-convex profiles like grooved
+  straps are fine), `frame_hint <x y z>` (initial binormal; omit =
+  world axis most perpendicular to the start tangent — a planar YZ path
+  therefore gets world X as the width axis).  Conventions: profile
+  **CCW = outward normals**; profile `x` maps to the frame binormal,
+  `h` to the normal; UV = (profile arc fraction, path fraction) — U
+  wraps with no duplicated seam vertex.  `path_closed TRUE` sweeps a
+  SEAMLESS closed loop instead of the default open path: periodic
+  Catmull-Rom path sampling (no reflective-end padding, so there is no
+  seam segment to deviate — the loop is exact all the way around, V
+  wraps with no duplicated seam ring), a holonomy-corrected periodic
+  rotation-minimizing frame (removes any seam twist on a torsional
+  path), and cyclic ring stitching with no end caps; `end_scale_x/y`
+  must stay 1.0 there (a loop has no end to taper toward), but
+  `point_width` / `point_scale` still work, sampled periodically.
+  Caveat: sharp path corners get rounded by Catmull-Rom (author more
   control points to tighten).
 - **`path_instances_geometry`** — a named TEMPLATE geometry stamped
   along a 3D Catmull-Rom path at arc-length `pitch`.  Fence posts,
@@ -415,6 +489,12 @@ object binds it.
 - **Lighting a test scene with `omni_light power 3.14` at tens of
   units.**  That's the directional-light starting value; omnis need
   `power ≈ π·r²`.
+- **Reaching for `omni_light` / `spot_light` / `directional_light` as
+  the default way to light a scene, or for `ambient_light` at all.**
+  Area lights (an object wearing a luminaire material) are the norm;
+  the zero-area kinds are for special cases and ambient light is an
+  anachronism with no shadow and no falloff.  See
+  [SCENE_CONVENTIONS.md §3.5](../SCENE_CONVENTIONS.md#35-which-light-kind-to-use--area-lights-are-the-norm).
 
 ## Concrete Example
 

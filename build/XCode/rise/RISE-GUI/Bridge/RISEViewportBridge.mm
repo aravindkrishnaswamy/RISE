@@ -30,8 +30,11 @@
 #include "Agent/AgentRpc.h"
 #include "Agent/AgentMcpAdapter.h"          // Secure-MCP slice 5c: GUI-hosted external MCP endpoint
 #include "Agent/AgentLoopbackHttpServer.h"  // Secure-MCP slice 5c
+#include "Agent/AgentChatCodecs.h"          // Arc 77 Phase 2 GUI wiring: MakeChatImageGenerator (imagine_scene)
+#include "Agent/ChatHttpTransport.h"        // Arc 77 Phase 2 GUI wiring: CreateSystemChatHttpTransport
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -76,6 +79,53 @@ NSString* NamedViewDisplayName( const char* bytes )
 - (void)_fireDirtyChangedFromBackground:(BOOL)hasUnsavedChanges;
 @end
 
+// Class extensions: private initialisers for the 87 step 4a tree value types.
+@interface RISESceneTreeNode ()
+- (instancetype)initWithName:(NSString *)name
+                      parent:(NSInteger)parent
+                    children:(NSArray<NSNumber *> *)children;
+@end
+
+@interface RISESceneTree ()
+- (instancetype)initWithNodes:(NSArray<RISESceneTreeNode *> *)nodes
+                        roots:(NSArray<NSNumber *> *)roots;
+@end
+
+// Class extensions: private initialisers for the doc-88 Phase 3 S14
+// Painter/Material graph value types.
+@interface RISEGraphPort ()
+- (instancetype)initWithParamName:(NSString *)paramName
+                        occurrence:(NSInteger)occurrence
+                    otherNodeIndex:(NSInteger)otherNodeIndex
+                         otherName:(NSString *)otherName
+                          portPipe:(NSInteger)portPipe
+        portColorAlsoAcceptsScalar:(BOOL)portColorAlsoAcceptsScalar;
+@end
+
+@interface RISEGraphNode ()
+- (instancetype)initWithHandle:(unsigned long long)handle
+                           name:(NSString *)name
+                   chunkKeyword:(NSString *)chunkKeyword
+                       category:(NSInteger)category
+                     outputPipe:(NSInteger)outputPipe
+                       defCount:(NSInteger)defCount
+                     repeatCount:(NSInteger)repeatCount
+                              x:(double)x
+                              y:(double)y
+                       outEdges:(NSArray<RISEGraphPort *> *)outEdges
+                        inEdges:(NSArray<RISEGraphPort *> *)inEdges;
+@end
+
+@interface RISEPainterMaterialGraph ()
+- (instancetype)initWithNodes:(NSArray<RISEGraphNode *> *)nodes
+                    generation:(unsigned long long)generation
+                 snapshotFresh:(BOOL)snapshotFresh;
+@end
+
+@interface RISEAppearanceClosureEntry ()
+- (instancetype)initWithCategory:(NSInteger)category name:(NSString *)name;
+@end
+
 // Class extension: private initializer for RISEViewportProperty.
 @interface RISEViewportProperty ()
 - (instancetype)initWithName:(NSString *)name
@@ -84,7 +134,15 @@ NSString* NamedViewDisplayName( const char* bytes )
                         kind:(NSInteger)kind
                     editable:(BOOL)editable
                      presets:(NSArray<RISEViewportPropertyPreset *> *)presets
-                   unitLabel:(NSString *)unitLabel;
+                   unitLabel:(NSString *)unitLabel
+                    hasRange:(BOOL)hasRange
+                    rangeMin:(double)rangeMin
+                    rangeMax:(double)rangeMax
+                   rangeStep:(double)rangeStep
+              targetsPainter:(BOOL)targetsPainter
+           inlinePainterKind:(NSInteger)inlinePainterKind
+          inlinePainterValue:(NSString *)inlinePainterValue
+       inlinePainterRefCount:(NSUInteger)inlinePainterRefCount;
 @end
 
 // Class extension: private initializer for RISEViewportPropertyPreset.
@@ -106,6 +164,47 @@ NSString* NamedViewDisplayName( const char* bytes )
                                orientY:(double)orientY
                                orientZ:(double)orientZ
                             background:(BOOL)background;
+@end
+
+// Class extension: private initialiser for RISERewireOutcome (doc-88 S19)
+// — same hoisting reason as RISEEnvironmentInfo's above; the
+// implementation lives near the bottom of this file.
+@interface RISERewireOutcome ()
+- (instancetype)initWithApplied:(BOOL)applied
+                         status:(NSString *)status
+                        message:(NSString *)message
+                        closure:(RISERewireClosure)closure
+                legalityRefused:(BOOL)legalityRefused
+         canInsertScalarAdapter:(BOOL)canInsertScalarAdapter
+                    adapterName:(NSString *)adapterName
+                   cycleRefused:(BOOL)cycleRefused
+                   sharedChunks:(NSArray<NSString *> *)sharedChunks
+          outOfClosureReferrers:(NSArray<NSString *> *)outOfClosureReferrers
+                         owners:(NSArray<NSString *> *)owners
+                nowUnreferenced:(NSArray<NSString *> *)nowUnreferenced;
+@end
+
+// Class extensions: private initialisers for the doc-88 S20 delete /
+// duplicate value objects — same hoisting reason as RISERewireOutcome's
+// above; the implementations live near the bottom of this file.
+@interface RISEDeleteOutcome ()
+- (instancetype)initWithApplied:(BOOL)applied
+                         status:(NSString *)status
+                        message:(NSString *)message
+                        closure:(RISERewireClosure)closure
+               referenceRefused:(BOOL)referenceRefused
+                 cascadeRefused:(BOOL)cascadeRefused
+                      referrers:(NSArray<NSString *> *)referrers
+                        removed:(NSArray<NSString *> *)removed;
+@end
+
+@interface RISEDuplicateOutcome ()
+- (instancetype)initWithApplied:(BOOL)applied
+                         status:(NSString *)status
+                        message:(NSString *)message
+                        closure:(RISERewireClosure)closure
+                        newName:(NSString *)newName
+                  originalIndex:(NSInteger)originalIndex;
 @end
 
 // Class extension: private initialiser for RISEViewportGizmoHandle —
@@ -495,6 +594,14 @@ private:
 
 @implementation RISEViewportBridge {
     SceneEditController* _controller;
+    // Serializes off-main preview fetches (painterPreviewFor:, rampStripPreviewFor:,
+    // materialPreviewFor:, thinFilmAngleStripFor:, evaluateThinFilmFor:) against
+    // -shutdown's destruction of `_controller`, preventing a background thumbnail
+    // task from calling into a freed controller across scene reload/teardown.
+    // `_previewShuttingDown` is latched BEFORE `-shutdown` takes the mutex so
+    // queued/retrying background tasks bail out without starving `-shutdown`.
+    std::atomic<bool>    _previewShuttingDown;
+    std::mutex           _previewLifecycleMutex;
     RISEBridge*          _host;          // strong: we share its scene
     BOOL                 _ownsRunning;
 
@@ -597,6 +704,7 @@ private:
     if (!self) return nil;
 
     _host = host;
+    _previewShuttingDown.store(false, std::memory_order_relaxed);
     _ownsRunning = NO;
     _caster = nullptr;
     _polishCaster = nullptr;
@@ -824,7 +932,42 @@ private:
     // calls Stop()/joins the worker; clearing the host's pointer here just
     // stops any NEW production render from being submitted to a controller
     // that is about to disappear.
-    [_host attachSceneEditController:nullptr];
+    //
+    // GUI scene-switch bug (2026-08-20): this call MUST be guarded on
+    // `_controller` being non-null, i.e. "this instance has not already
+    // shut down" -- see ViewportReattachProbe's header doc (RISEApp.swift)
+    // for the full mechanism this fixes, proven red before this guard
+    // existed and green after. `-shutdown` is documented below as
+    // idempotent (the agent-dispatcher/`_controller` teardown already
+    // nil-guards every step), but this FIRST line was the one exception:
+    // called a second time -- e.g. from `-dealloc` running against an
+    // instance some OTHER strong reference kept alive past an explicit
+    // `-shutdown` + release (RenderViewModel.loadScene's teardown does
+    // `viewportBridge?.shutdown(); viewportBridge = nil`; several SwiftUI
+    // views HISTORICALLY stored this class in a plain, non-weak `let
+    // bridge: RISEViewportBridge` property -- ViewportView/
+    // ViewportGizmoOverlay/ViewportNavOverlay/PropertiesPanel/
+    // EnvironmentPanel/NamedViewsPanel/OutlinerView/MultiPaneViewport row
+    // structs -- and a body evaluation of any of them not yet discarded at
+    // the swap was a plausible, though never individually confirmed,
+    // real-app source of exactly this extra strong reference.  Those
+    // holders are `weak var bridge: RISEViewportBridge?` as of this change,
+    // so the known enabler is gone; the guard STAYS because a stray strong
+    // reference is reintroducible by any future holder, and
+    // ViewportReattachProbe manufactures one deliberately) -- it
+    // unconditionally re-detached the host,
+    // even though by then a BRAND NEW `RISEViewportBridge` for the next
+    // scene had already registered ITS controller.  That clobbered the
+    // live registration with NULL, so every production render on the new
+    // scene silently refused via ViewportControllerLease::CanProceed
+    // ("no viewport controller registered while one is required").
+    // Guarding on `_controller` makes every step in this method agree on
+    // the same "already shut down" signal, so a stray second call --
+    // regardless of which caller produces it -- is a true no-op instead
+    // of a live-registration-clobbering footgun.
+    if (_controller) {
+        [_host attachSceneEditController:nullptr];
+    }
 
     // Secure-MCP slice 5c: stop the EXTERNAL hosted server BEFORE the
     // in-process agent dispatcher / controller below.  -stopAgentHostedServer
@@ -882,15 +1025,26 @@ private:
     delete _agentToolDispatcherPropose;
     _agentToolDispatcherPropose = nullptr;
 
-    if (_controller) {
+    _previewShuttingDown.store(true, std::memory_order_release);
+    SceneEditController* controllerToDestroy = nullptr;
+    {
+        // Drain any in-flight off-main preview fetch (PainterThumbnailCache
+        // background queue) and publish `_controller = nullptr` atomically
+        // under `_previewLifecycleMutex` BEFORE destroying the controller, so
+        // no background worker can enter or remain inside Get*Preview on a
+        // freed controller.
+        std::lock_guard<std::mutex> previewLk(_previewLifecycleMutex);
+        controllerToDestroy = _controller;
+        _controller = nullptr;
+    }
+    if (controllerToDestroy) {
         // Detach the dirty-changed listener BEFORE destroying the
         // controller so its captured `self` pointer can't fire into
         // a half-dealloc'd instance.  Pair-balances with the
         // setDirtyChangedBlock attach in `[setDirtyChangedBlock:]`.
         RISE_API_SceneEditController_SetDirtyChangedCallback(
-            _controller, nullptr, nullptr);
-        RISE_API_DestroySceneEditController(_controller);
-        _controller = nullptr;
+            controllerToDestroy, nullptr, nullptr);
+        RISE_API_DestroySceneEditController(controllerToDestroy);
     }
     _dirtyChangedBlock = nil;
     [self releaseLivePreview];
@@ -1525,6 +1679,157 @@ private:
     return hasAnimation ? 1 : 0;
 }
 
+- (NSData *)painterPreviewFor:(NSString *)painterName
+                       defIndex:(NSInteger)defIndex
+                          width:(NSUInteger)width
+                         height:(NSUInteger)height
+                      wasScalar:(BOOL *)wasScalar
+                       rangeMin:(double *)rangeMin
+                       rangeMax:(double *)rangeMax {
+    if (painterName.length == 0 || width == 0 || height == 0) return nil;
+    if (_previewShuttingDown.load(std::memory_order_acquire)) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    bool scalar = false;
+    double rmin = 0, rmax = 0;
+    {
+        std::lock_guard<std::mutex> previewLk(_previewLifecycleMutex);
+        if (!_controller || _previewShuttingDown.load(std::memory_order_acquire)) return nil;
+        if (!RISE_API_SceneEditController_PainterPreview(
+                _controller, painterName.UTF8String, static_cast<int>(defIndex),
+                static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+                static_cast<unsigned char *>(data.mutableBytes),
+                &scalar, &rmin, &rmax)) {
+            return nil;
+        }
+    }
+    if (wasScalar) *wasScalar = scalar ? YES : NO;
+    if (rangeMin) *rangeMin = rmin;
+    if (rangeMax) *rangeMax = rmax;
+    return data;
+}
+
+- (NSData *)rampStripPreviewFor:(NSString *)painterName
+                            width:(NSUInteger)width
+                           height:(NSUInteger)height {
+    if (painterName.length == 0 || width == 0 || height == 0) return nil;
+    if (_previewShuttingDown.load(std::memory_order_acquire)) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    std::lock_guard<std::mutex> previewLk(_previewLifecycleMutex);
+    if (!_controller || _previewShuttingDown.load(std::memory_order_acquire)) return nil;
+    if (!RISE_API_SceneEditController_RampStripPreview(
+            _controller, painterName.UTF8String,
+            static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+            static_cast<unsigned char *>(data.mutableBytes))) {
+        return nil;
+    }
+    return data;
+}
+
+- (NSData *)materialPreviewFor:(NSString *)materialName
+                          width:(NSUInteger)width
+                         height:(NSUInteger)height {
+    if (materialName.length == 0 || width == 0 || height == 0) return nil;
+    if (_previewShuttingDown.load(std::memory_order_acquire)) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    std::lock_guard<std::mutex> previewLk(_previewLifecycleMutex);
+    if (!_controller || _previewShuttingDown.load(std::memory_order_acquire)) return nil;
+    if (!RISE_API_SceneEditController_MaterialPreview(
+            _controller, materialName.UTF8String,
+            static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+            static_cast<unsigned char *>(data.mutableBytes))) {
+        return nil;
+    }
+    return data;
+}
+
+- (NSData *)thinFilmAngleStripFor:(NSString *)materialName
+                             width:(NSUInteger)width
+                            height:(NSUInteger)height
+                       thicknessNm:(double *)outThicknessNm
+                           filmIor:(double *)outFilmIor {
+    if (materialName.length == 0 || width == 0 || height == 0) return nil;
+    if (_previewShuttingDown.load(std::memory_order_acquire)) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    std::lock_guard<std::mutex> previewLk(_previewLifecycleMutex);
+    if (!_controller || _previewShuttingDown.load(std::memory_order_acquire)) return nil;
+    if (!RISE_API_SceneEditController_ThinFilmAngleStrip(
+            _controller, materialName.UTF8String,
+            static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+            static_cast<unsigned char *>(data.mutableBytes),
+            outThicknessNm, outFilmIor)) {
+        return nil;
+    }
+    return data;
+}
+
+- (NSData *)evaluateThinFilmFor:(NSString *)materialName
+                       angleDeg:(double)angleDeg
+                    thicknessNm:(double *)outThicknessNm
+                        filmIor:(double *)outFilmIor {
+    if (materialName.length == 0) return nil;
+    if (_previewShuttingDown.load(std::memory_order_acquire)) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:4];
+    std::lock_guard<std::mutex> previewLk(_previewLifecycleMutex);
+    if (!_controller || _previewShuttingDown.load(std::memory_order_acquire)) return nil;
+    if (!RISE_API_SceneEditController_EvaluateThinFilmAtAngle(
+            _controller, materialName.UTF8String, angleDeg,
+            static_cast<unsigned char *>(data.mutableBytes),
+            outThicknessNm, outFilmIor)) {
+        return nil;
+    }
+    return data;
+}
+
+- (NSData *)blackbodyKelvinStripWithWidth:(NSUInteger)width
+                                    height:(NSUInteger)height
+                                 minKelvin:(double)minKelvin
+                                 maxKelvin:(double)maxKelvin {
+    if (width == 0 || height == 0) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    if (!RISE_API_SceneEditController_BlackbodyKelvinStrip(
+            static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+            minKelvin, maxKelvin,
+            static_cast<unsigned char *>(data.mutableBytes))) {
+        return nil;
+    }
+    return data;
+}
+
+- (NSData *)evaluateBlackbodyKelvin:(double)kelvin
+                             peakNm:(double *)outPeakNm {
+    NSMutableData *data = [NSMutableData dataWithLength:4];
+    if (!RISE_API_SceneEditController_EvaluateBlackbodyKelvin(
+            kelvin, outPeakNm, static_cast<unsigned char *>(data.mutableBytes))) {
+        return nil;
+    }
+    return data;
+}
+
+- (BOOL)evaluateSellmeierMetrics:(NSString *)sellmeierParamValue
+                              nd:(double *)outNd
+                          abbeVd:(double *)outAbbeVd {
+    if (sellmeierParamValue.length == 0) return NO;
+    return RISE_API_SceneEditController_EvaluateSellmeierMetrics(
+        sellmeierParamValue.UTF8String, outNd, outAbbeVd) ? YES : NO;
+}
+
+- (NSData *)measuredMetalPresetSwatch:(NSString *)presetId {
+    if (presetId.length == 0) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:4];
+    if (!RISE_API_SceneEditController_MeasuredMetalPresetSwatch(
+            presetId.UTF8String, static_cast<unsigned char *>(data.mutableBytes))) {
+        return nil;
+    }
+    return data;
+}
+
+- (BOOL)applySpectralPresetForCategory:(RISEViewportCategory)category
+                              presetId:(NSString *)presetId {
+    if (!_controller || presetId.length == 0) return NO;
+    return RISE_API_SceneEditController_ApplySpectralPreset(
+        _controller, static_cast<int>(category), presetId.UTF8String) ? YES : NO;
+}
+
 #pragma mark - Time scrubber
 
 - (BOOL)scrubTimeBegin {
@@ -1562,6 +1867,15 @@ private:
 - (void)redo {
     if (!_controller) return;
     RISE_API_SceneEditController_Redo(_controller);
+}
+
+// 2026-10-16: the notice a refused Undo/Redo left (e.g. an agent batch edit whose inverse would not derive);
+// "" when none.  Cleared on read.
+- (NSString *)consumeHistoryNotice {
+    if (!_controller) return @"";
+    char buf[1024] = {0};
+    if (!RISE_API_SceneEditController_ConsumeHistoryNotice(_controller, buf, sizeof(buf))) return @"";
+    return [NSString stringWithUTF8String:buf] ?: @"";
 }
 
 - (NSString *)undoActionLabel {
@@ -1782,6 +2096,222 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return out;
 }
 
+- (RISESceneTree *)categoryTree:(RISEViewportCategory)category {
+    if (!_controller) {
+        return [[RISESceneTree alloc] initWithNodes:@[] roots:@[]];
+    }
+
+    // ONE TRANSACTIONAL READ.  SceneEditController::ReadTree refreshes once
+    // and then copies the whole published tree out under a single hold of the
+    // snapshot lock, so what lands here cannot be a mixture of two trees --
+    // which a walk built out of the per-node getters CAN be, because each of
+    // those takes the lock on its own and another thread's count call may
+    // republish between two of them.  That is an API property of ReadTree,
+    // documented at its declaration; the Qt shell reads the same guarantee.
+    //
+    // Called directly on the C++ controller, not through RISE_API_*: this file
+    // is Objective-C++ and already calls SceneEditController natively (see
+    // -categoryEntities: above).  The C ABI exists for callers that cannot see
+    // C++, and its node surface is per-node -- i.e. exactly the non-
+    // transactional shape this method is here to avoid.
+    //
+    // The indices in the returned tree are RAW indices into its own node table,
+    // NOT the generation-tagged handles the per-node getters mint, because this
+    // copy is ours and nothing can republish underneath it.  They map
+    // one-to-one onto the RISESceneTreeNode positions built below, so no
+    // handle -- and nothing that can expire -- crosses into Swift.
+    SceneEditController::AuthoredTree t;
+    _controller->ReadTree(static_cast<SceneEditController::Category>(category), t);
+
+    const std::size_t n = t.nodes.size();
+    if (n == 0) {
+        return [[RISESceneTree alloc] initWithNodes:@[] roots:@[]];
+    }
+
+    NSMutableArray<RISESceneTreeNode *> *nodes = [NSMutableArray arrayWithCapacity:n];
+    for (std::size_t i = 0; i < n; ++i) {
+        const SceneEditController::TreeNodeRow &row = t.nodes[i];
+
+        // Same decode the flat -categoryEntities: path uses, so a tree row and
+        // a list row render byte-identically and hand -setSelection:name: the
+        // identical string.  NamedViewDisplayName is a UTF-8 decode with a
+        // Latin-1 fallback, not a cosmetic transform -- there is no display /
+        // raw split to carry.
+        NSString *name = NamedViewDisplayName(row.name.c_str());
+
+        // kInvalidNodeIndex means ROOT, which the shell draws as a top-level
+        // row -- what -1 says here.  The extra range test is belt-and-braces:
+        // an index the shell could not resolve must degrade to "root", never
+        // to an out-of-bounds subscript in Swift.
+        NSInteger parent = -1;
+        if (row.parent != SceneEditController::kInvalidNodeIndex && row.parent < n) {
+            parent = static_cast<NSInteger>(row.parent);
+        }
+
+        NSMutableArray<NSNumber *> *children =
+            [NSMutableArray arrayWithCapacity:row.childCount];
+        for (unsigned int k = 0; k < row.childCount; ++k) {
+            const std::size_t slot = static_cast<std::size_t>(row.firstChild) + k;
+            if (slot >= t.childIndices.size()) break;
+            const unsigned int child = t.childIndices[slot];
+            if (child < n) [children addObject:@(static_cast<NSInteger>(child))];
+        }
+
+        [nodes addObject:[[RISESceneTreeNode alloc] initWithName:(name ?: @"")
+                                                          parent:parent
+                                                        children:children]];
+    }
+
+    NSMutableArray<NSNumber *> *roots =
+        [NSMutableArray arrayWithCapacity:t.roots.size()];
+    for (std::size_t r = 0; r < t.roots.size(); ++r) {
+        if (t.roots[r] < n) [roots addObject:@(static_cast<NSInteger>(t.roots[r]))];
+    }
+
+    return [[RISESceneTree alloc] initWithNodes:nodes roots:roots];
+}
+
+// Shared by -painterMaterialGraph and -painterMaterialGraphFocusedForCategory:name:
+// (user-requested focused-view slice) -- ONE GraphPort/GraphNode ->
+// RISEGraphPort/RISEGraphNode conversion, not two independently
+// maintained copies. Extracted verbatim from -painterMaterialGraph's own
+// prior inline body.
+static NSArray<RISEGraphPort *>* ConvertGraphPortsToRISE(const std::vector<RISE::SceneEditController::GraphPort>& ports) {
+    NSMutableArray<RISEGraphPort *> *out = [NSMutableArray arrayWithCapacity:ports.size()];
+    for (const RISE::SceneEditController::GraphPort &p : ports) {
+        const NSInteger otherIdx =
+            (p.otherNode == RISE::SceneEditController::kInvalidNodeIndex)
+                ? -1 : static_cast<NSInteger>(p.otherNode);
+        NSString *paramName = NamedViewDisplayName(p.paramName.c_str()) ?: @"";
+        NSString *otherName = NamedViewDisplayName(p.otherName.c_str()) ?: @"";
+        [out addObject:[[RISEGraphPort alloc] initWithParamName:paramName
+                                                       occurrence:p.occurrence
+                                                   otherNodeIndex:otherIdx
+                                                        otherName:otherName
+                                                         portPipe:static_cast<NSInteger>(p.portPipe)
+                                       portColorAlsoAcceptsScalar:p.portColorAlsoAcceptsScalar]];
+    }
+    return out;
+}
+
+// TEMPLATE, not two independently maintained copies: `PainterMaterialGraphLaidOut`
+// (S14) and `ObjectGraphLaidOut` (S1 core, the Object Graph slice) are two
+// DIFFERENT C++ struct types with the IDENTICAL `{graph, positions}` shape
+// (see `SceneEditController::SceneGraphModel`'s own comment on why the two
+// graphs share every building block but this ONE composed wrapper stayed
+// deliberately distinct on the C++ side) -- a template lets this one
+// conversion serve both `-painterMaterialGraph`/`-painterMaterialGraphFocusedForCategory:name:`
+// AND `-objectGraph`/`-objectGraphFocusedForObject:name:` without a second
+// near-identical function to keep in sync.
+template <typename LaidOutGraphT>
+static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const LaidOutGraphT& g) {
+    const std::size_t n = g.graph.nodes.size();
+    NSMutableArray<RISEGraphNode *> *nodes = [NSMutableArray arrayWithCapacity:n];
+    for (std::size_t i = 0; i < n; ++i) {
+        const RISE::SceneEditController::GraphNode &gn = g.graph.nodes[i];
+        const RISE::SceneEditController::GraphNodePosition &pos = g.positions[i];
+        NSString *name = NamedViewDisplayName(gn.name.c_str()) ?: @"";
+        NSString *chunkKeyword = NamedViewDisplayName(gn.chunkKeyword.c_str()) ?: @"";
+        [nodes addObject:[[RISEGraphNode alloc] initWithHandle:gn.handle
+                                                            name:name
+                                                    chunkKeyword:chunkKeyword
+                                                        category:static_cast<NSInteger>(gn.category)
+                                                      outputPipe:static_cast<NSInteger>(gn.outputPipe)
+                                                        defCount:gn.defCount
+                                                     repeatCount:gn.repeatCount
+                                                               x:pos.x
+                                                               y:pos.y
+                                                        outEdges:ConvertGraphPortsToRISE(gn.outEdges)
+                                                         inEdges:ConvertGraphPortsToRISE(gn.inEdges)]];
+    }
+    return nodes;
+}
+
+- (RISEPainterMaterialGraph *)painterMaterialGraph {
+    if (!_controller) {
+        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0 snapshotFresh:YES];
+    }
+
+    // ONE TRANSACTIONAL READ, the SAME discipline -categoryTree: documents
+    // above: SceneEditController::ReadPainterMaterialGraphLaidOut composes
+    // S11's graph + S13's saved sidecar positions + S12's auto-layout
+    // fill-in under one snapshot-lock hold (plus one small sidecar file
+    // read -- see that method's own header comment), so what lands here
+    // cannot straddle two different published generations. Called
+    // directly on the C++ controller, not through RISE_API_*, for the
+    // same reason -categoryTree: is: this file already calls
+    // SceneEditController natively, and the C ABI's PainterGraph* surface
+    // is per-node -- exactly the non-transactional shape this method
+    // exists to avoid.
+    SceneEditController::PainterMaterialGraphLaidOut g;
+    _controller->ReadPainterMaterialGraphLaidOut(g);
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation snapshotFresh:g.graph.snapshotFresh];
+}
+
+- (nullable RISEPainterMaterialGraph *)painterMaterialGraphFocusedForCategory:(NSInteger)category name:(NSString *)name {
+    if (!_controller || name.length == 0) {
+        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0 snapshotFresh:YES];
+    }
+    const char* utf8 = [name UTF8String] ?: "";
+    bool degraded = false;
+    SceneEditController::PainterMaterialGraphLaidOut g;
+    _controller->ReadPainterMaterialGraphLaidOutFocused(
+        static_cast<RISE::ChunkCategory>(category), RISE::String(utf8), g, &degraded);
+    // nil vs empty is load-bearing here -- the SAME contract
+    // -appearanceClosureForObject: documents (see this method's own
+    // header comment). Do NOT collapse this to "return empty either way".
+    if (degraded) return nil;
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation snapshotFresh:g.graph.snapshotFresh];
+}
+
+- (RISEPainterMaterialGraph *)objectGraph {
+    if (!_controller) {
+        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0 snapshotFresh:YES];
+    }
+    // ONE TRANSACTIONAL READ -- same discipline -painterMaterialGraph
+    // documents above; ReadObjectGraphLaidOut composes the object graph
+    // + a fresh (never sidecar-backed) auto-layout under one snapshot
+    // lock hold.
+    SceneEditController::ObjectGraphLaidOut g;
+    _controller->ReadObjectGraphLaidOut(g);
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation snapshotFresh:g.graph.snapshotFresh];
+}
+
+- (nullable RISEPainterMaterialGraph *)objectGraphFocusedForObject:(NSString *)name {
+    if (!_controller || name.length == 0) {
+        return [[RISEPainterMaterialGraph alloc] initWithNodes:@[] generation:0 snapshotFresh:YES];
+    }
+    const char* utf8 = [name UTF8String] ?: "";
+    bool degraded = false;
+    SceneEditController::ObjectGraphLaidOut g;
+    _controller->ReadObjectGraphLaidOutFocused(RISE::String(utf8), g, &degraded);
+    // nil vs empty is load-bearing here -- the SAME contract
+    // -painterMaterialGraphFocusedForCategory:name: documents. Do NOT
+    // collapse this to "return empty either way".
+    if (degraded) return nil;
+    return [[RISEPainterMaterialGraph alloc] initWithNodes:ConvertLaidOutGraphToRISE(g) generation:g.graph.generation snapshotFresh:g.graph.snapshotFresh];
+}
+
+- (nullable NSArray<RISEAppearanceClosureEntry *> *)appearanceClosureForObject:(NSString *)objectName {
+    // Empty (not nil): a null controller or an empty name is a genuine,
+    // resolved "nothing to show" -- never a lock-contention degrade, so it
+    // must not be reported as one (see this method's own header comment).
+    if (!_controller || objectName.length == 0) return @[];
+    const char* utf8 = [objectName UTF8String] ?: "";
+    bool degraded = false;
+    const std::vector<RISE::SceneEditController::AppearanceClosureEntry> closure =
+        _controller->AppearanceClosureForObject(RISE::String(utf8), &degraded);
+    // nil vs empty is load-bearing here (see the header comment) -- do NOT
+    // collapse this to "return @[] either way".
+    if (degraded) return nil;
+    NSMutableArray<RISEAppearanceClosureEntry *> *out = [NSMutableArray arrayWithCapacity:closure.size()];
+    for (const RISE::SceneEditController::AppearanceClosureEntry &e : closure) {
+        NSString *s = NamedViewDisplayName(e.name.c_str()) ?: @"";
+        [out addObject:[[RISEAppearanceClosureEntry alloc] initWithCategory:static_cast<NSInteger>(e.category) name:s]];
+    }
+    return out;
+}
+
 - (NSString *)activeNameForCategory:(RISEViewportCategory)category {
     if (!_controller) return @"";
     const int catInt = static_cast<int>(category);
@@ -1816,6 +2346,16 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     if (!_controller) return @"";
     char buf[128] = {0};
     if (!RISE_API_SceneEditController_GetSelectionName(_controller, buf, sizeof(buf))) {
+        return @"";
+    }
+    NSString *s = [NSString stringWithUTF8String:buf];
+    return s ?: @"";
+}
+
+- (NSString *)selectionRowName {
+    if (!_controller) return @"";
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_GetSelectionRowName(_controller, buf, sizeof(buf))) {
         return @"";
     }
     NSString *s = [NSString stringWithUTF8String:buf];
@@ -1990,6 +2530,356 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return applied;
 }
 
+#pragma mark - Node-graph canvas: create node (S18)
+
+- (NSArray<NSDictionary<NSString *, id> *> *)chunkNodeRequirementsForKeyword:(NSString *)keyword {
+    if (!_controller || !keyword) return @[];
+    const char *kw = [keyword UTF8String];
+    const unsigned int n =
+        RISE_API_SceneEditController_ChunkNodeRequiredArgCount(_controller, kw);
+    NSMutableArray<NSDictionary<NSString *, id> *> *out =
+        [NSMutableArray arrayWithCapacity:n];
+    for (unsigned int i = 0; i < n; ++i) {
+        char paramBuf[128] = {0};
+        char descBuf[1024] = {0};
+        int isRef = 0;
+        if (!RISE_API_SceneEditController_ChunkNodeRequiredArg(
+                _controller, kw, i,
+                paramBuf, sizeof(paramBuf),
+                descBuf, sizeof(descBuf), &isRef)) {
+            continue;
+        }
+        [out addObject:@{
+            @"param":       [NSString stringWithUTF8String:paramBuf] ?: @"",
+            @"description": [NSString stringWithUTF8String:descBuf] ?: @"",
+            @"isReference": @(isRef != 0)
+        }];
+    }
+    return out;
+}
+
+- (BOOL)createChunkNodeWithKeyword:(NSString *)keyword
+                          baseName:(NSString *)baseName
+                         argParams:(NSArray<NSString *> *)argParams
+                         argValues:(NSArray<NSString *> *)argValues
+                           outName:(NSString **)outName
+                        outMessage:(NSString **)outMessage {
+    if (outName)    *outName    = nil;
+    if (outMessage) *outMessage = nil;
+    if (!_controller || !keyword) return NO;
+
+    // round-1 P2-c: ORDERED parallel arrays, not a keyed NSDictionary --
+    // a dictionary can neither repeat a param (voronoi's repeatable
+    // `gen`) nor preserve caller order (enumeration order over an
+    // NSDictionary is unspecified), and the C ABI beneath is itself two
+    // parallel arrays.  A count mismatch is a caller bug; clip to the
+    // shorter length rather than reading past either array's end.  The
+    // NSString objects are held in `keep` for the duration of the call
+    // so the UTF8String pointers stay valid (a bare fast-enumeration
+    // temporary could be released before the call returns under a
+    // tight autorelease pool).
+    NSMutableArray<NSString *> *keep = [NSMutableArray array];
+    std::vector<const char *> params, values;
+    const NSUInteger n = MIN(argParams.count, argValues.count);
+    for (NSUInteger i = 0; i < n; ++i) {
+        NSString *k = argParams[i];
+        NSString *v = argValues[i];
+        if (![k isKindOfClass:[NSString class]] || ![v isKindOfClass:[NSString class]]) continue;
+        [keep addObject:k];
+        [keep addObject:v];
+        params.push_back([k UTF8String]);
+        values.push_back([v UTF8String]);
+    }
+
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const BOOL applied = RISE_API_SceneEditController_CreateChunkNode(
+        _controller, [keyword UTF8String],
+        baseName ? [baseName UTF8String] : "",
+        params.empty() ? nullptr : params.data(),
+        values.empty() ? nullptr : values.data(),
+        (unsigned int)params.size(),
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf)) ? YES : NO;
+    [keep removeAllObjects];
+
+    if (outName && nameBuf[0] != '\0') {
+        *outName = [NSString stringWithUTF8String:nameBuf];
+    }
+    if (outMessage && messageBuf[0] != '\0') {
+        *outMessage = [NSString stringWithUTF8String:messageBuf];
+    }
+    // round-1 P2-b: a DIAGNOSED result (statusBuf "diagnosed") also
+    // landed a real, undoable mutation -- the chunk was spliced in and
+    // the live managers were rebuilt, even though `applied` reports NO
+    // for it (the re-derive additionally emitted diagnostics).  Refresh
+    // on either outcome, matching CreateChunkNode's own "code 2 or 3"
+    // mutation test rather than gating on `applied` alone.
+    const BOOL landed = applied || (strcmp(statusBuf, "diagnosed") == 0);
+    if (landed) {
+        // Structural mutation -- same refresh the entity-creation calls
+        // above do, so the outliner/properties panel re-enumerate.
+        [self refreshProperties];
+    }
+    return applied;
+}
+
+#pragma mark - Node-graph canvas: rewire a connection (S19)
+
+// Split a '\n'-JOINED name list (the C ABI's list convention -- see
+// RISE_API.h's RewireConnection doc) back into an NSArray.  An empty
+// buffer means an EMPTY list, not a list containing one empty string,
+// which a naive componentsSeparatedByString would produce.
+static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
+    if (!buf || buf[0] == '\0') return @[];
+    NSString *s = [NSString stringWithUTF8String:buf];
+    if (!s) return @[];
+    return [s componentsSeparatedByString:@"\n"];
+}
+
+- (nullable RISERewireOutcome *)insertScalarAdapterAndRewireWithTargetCategory:(NSInteger)targetCategory
+    targetName:(NSString *)targetName param:(NSString *)param occurrence:(NSInteger)occurrence
+    sourceCategory:(NSInteger)sourceCategory sourceName:(NSString *)sourceName {
+    if (!_controller) return nil;
+    char name[256] = {0}, status[64] = {0}, message[2048] = {0};
+    const bool applied = RISE_API_SceneEditController_InsertScalarAdapterAndRewire(
+        _controller, (int)targetCategory, targetName.UTF8String, param.UTF8String, (int)occurrence,
+        (int)sourceCategory, sourceName.UTF8String, name, sizeof(name), status, sizeof(status), message, sizeof(message));
+    if (applied || strcmp(status, "diagnosed") == 0) [self refreshProperties];
+    return [[RISERewireOutcome alloc] initWithApplied:applied
+        status:[NSString stringWithUTF8String:status] ?: @""
+        message:[NSString stringWithUTF8String:message] ?: @""
+        closure:RISERewireClosureClean legalityRefused:NO canInsertScalarAdapter:NO
+        adapterName:[NSString stringWithUTF8String:name] ?: @""
+        cycleRefused:NO sharedChunks:@[] outOfClosureReferrers:@[] owners:@[] nowUnreferenced:@[]];
+}
+
+- (nullable RISERewireOutcome *)rewireConnectionWithTargetCategory:(NSInteger)targetCategory
+                                                        targetName:(NSString *)targetName
+                                                             param:(NSString *)param
+                                                        occurrence:(NSInteger)occurrence
+                                                    newRefCategory:(NSInteger)newRefCategory
+                                                        newRefName:(NSString *)newRefName {
+    if (!_controller || !targetName || !param || !newRefName) return nil;
+
+    int closure = 0, legality = 0, cycle = 0, adapter = 0;
+    char statusBuf[64] = {0};
+    char messageBuf[2048] = {0};
+    char sharedBuf[1024] = {0};
+    char referrersBuf[2048] = {0};
+    char ownersBuf[1024] = {0};
+    char orphanBuf[1024] = {0};
+
+    const bool applied = RISE_API_SceneEditController_RewireConnectionEx(
+        _controller,
+        (int)targetCategory, [targetName UTF8String],
+        [param UTF8String], (int)occurrence,
+        (int)newRefCategory, [newRefName UTF8String],
+        &adapter, &closure, &legality, &cycle,
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf),
+        sharedBuf, sizeof(sharedBuf),
+        referrersBuf, sizeof(referrersBuf),
+        ownersBuf, sizeof(ownersBuf),
+        orphanBuf, sizeof(orphanBuf));
+
+    // A "diagnosed" result mutated the Document even though `applied` is
+    // NO -- refresh on either, exactly as createChunkNode does (round-1
+    // P2-b's lesson: gating the refresh on `applied` alone leaves the
+    // panels stale after a real, undoable mutation).
+    const BOOL landed = applied || (strcmp(statusBuf, "diagnosed") == 0);
+    if (landed) {
+        [self refreshProperties];
+    }
+
+    return [[RISERewireOutcome alloc]
+        initWithApplied:applied ? YES : NO
+                 status:[NSString stringWithUTF8String:statusBuf] ?: @""
+                message:[NSString stringWithUTF8String:messageBuf] ?: @""
+                closure:(RISERewireClosure)closure
+        legalityRefused:legality != 0
+ canInsertScalarAdapter:adapter != 0
+            adapterName:@""
+           cycleRefused:cycle != 0
+           sharedChunks:RISESplitJoinedNames(sharedBuf)
+  outOfClosureReferrers:RISESplitJoinedNames(referrersBuf)
+                 owners:RISESplitJoinedNames(ownersBuf)
+        nowUnreferenced:RISESplitJoinedNames(orphanBuf)];
+}
+
+#pragma mark - Node-graph canvas: reference-safe delete + duplicate (S20)
+
+- (nullable RISEDeleteOutcome *)deleteGraphNodeWithCategory:(NSInteger)category
+                                                       name:(NSString *)name
+                                                    cascade:(BOOL)cascade {
+    if (!_controller || !name) return nil;
+
+    int closure = 0, refRefused = 0, cascadeRefused = 0;
+    char statusBuf[64] = {0};
+    char messageBuf[2048] = {0};
+    char referrersBuf[2048] = {0};
+    char removedBuf[2048] = {0};
+
+    const bool applied = RISE_API_SceneEditController_DeleteGraphNode(
+        _controller, (int)category, [name UTF8String], cascade ? 1 : 0,
+        &closure, &refRefused, &cascadeRefused,
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf),
+        referrersBuf, sizeof(referrersBuf),
+        removedBuf, sizeof(removedBuf));
+
+    // A "diagnosed" result mutated the Document even though `applied` is NO
+    // -- refresh on either, exactly as createChunkNode / rewireConnection do.
+    const BOOL landed = applied || (strcmp(statusBuf, "diagnosed") == 0);
+    if (landed) {
+        [self refreshProperties];
+    }
+
+    return [[RISEDeleteOutcome alloc]
+        initWithApplied:applied ? YES : NO
+                 status:[NSString stringWithUTF8String:statusBuf] ?: @""
+                message:[NSString stringWithUTF8String:messageBuf] ?: @""
+                closure:(RISERewireClosure)closure
+       referenceRefused:refRefused != 0
+         cascadeRefused:cascadeRefused != 0
+              referrers:RISESplitJoinedNames(referrersBuf)
+                removed:RISESplitJoinedNames(removedBuf)];
+}
+
+- (nullable RISEDuplicateOutcome *)duplicateGraphNodeWithCategory:(NSInteger)category
+                                                             name:(NSString *)name {
+    if (!_controller || !name) return nil;
+
+    int closure = 0, originalIndex = -1;
+    char newNameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[2048] = {0};
+
+    const bool applied = RISE_API_SceneEditController_DuplicateGraphNode(
+        _controller, (int)category, [name UTF8String],
+        &closure, &originalIndex,
+        newNameBuf, sizeof(newNameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf));
+
+    const BOOL landed = applied || (strcmp(statusBuf, "diagnosed") == 0);
+    if (landed) {
+        [self refreshProperties];
+    }
+
+    return [[RISEDuplicateOutcome alloc]
+        initWithApplied:applied ? YES : NO
+                 status:[NSString stringWithUTF8String:statusBuf] ?: @""
+                message:[NSString stringWithUTF8String:messageBuf] ?: @""
+                closure:(RISERewireClosure)closure
+                newName:[NSString stringWithUTF8String:newNameBuf] ?: @""
+          originalIndex:(NSInteger)originalIndex];
+}
+
+#pragma mark - Node-graph canvas: drag-to-wire pre-checks + drag-to-reposition (S21)
+
+- (BOOL)checkConnectionWithTargetCategory:(NSInteger)targetCategory
+                                targetName:(NSString *)targetName
+                                     param:(NSString *)param
+                         candidateCategory:(NSInteger)candidateCategory
+                             candidateName:(NSString *)candidateName
+                            outDiagnostic:(NSString **)outDiagnostic {
+    if (outDiagnostic) *outDiagnostic = nil;
+    if (!_controller || !targetName || !param || !candidateName) return NO;
+    char diagBuf[1024] = {0};
+    const BOOL legal = RISE_API_SceneEditController_CheckConnection(
+        _controller,
+        (int)targetCategory, [targetName UTF8String],
+        [param UTF8String],
+        (int)candidateCategory, [candidateName UTF8String],
+        diagBuf, sizeof(diagBuf)) ? YES : NO;
+    if (outDiagnostic && diagBuf[0] != '\0') {
+        *outDiagnostic = [NSString stringWithUTF8String:diagBuf];
+    }
+    return legal;
+}
+
+- (BOOL)wouldCycleFromCategory:(NSInteger)fromCategory
+                       fromName:(NSString *)fromName
+                     toCategory:(NSInteger)toCategory
+                         toName:(NSString *)toName {
+    if (!_controller || !fromName || !toName) return NO;
+    return RISE_API_SceneEditController_WouldCycle(
+        _controller,
+        (int)fromCategory, [fromName UTF8String],
+        (int)toCategory, [toName UTF8String]) ? YES : NO;
+}
+
+- (BOOL)checkConnectionByKeywordTargetKeyword:(NSString *)targetKeyword
+                                         param:(NSString *)param
+                              candidateKeyword:(NSString *)candidateKeyword
+                             candidateCategory:(NSInteger)candidateCategory
+                                outDiagnostic:(NSString **)outDiagnostic {
+    if (outDiagnostic) *outDiagnostic = nil;
+    if (!targetKeyword || !param || !candidateKeyword) return NO;
+    char diagBuf[1024] = {0};
+    const BOOL legal = RISE_API_ConnectionLegality_CheckConnectionByKeyword(
+        [targetKeyword UTF8String], [param UTF8String],
+        [candidateKeyword UTF8String], (int)candidateCategory,
+        0,
+        diagBuf, sizeof(diagBuf)) ? YES : NO;
+    if (outDiagnostic && diagBuf[0] != '\0') {
+        *outDiagnostic = [NSString stringWithUTF8String:diagBuf];
+    }
+    return legal;
+}
+
+- (BOOL)writeGraphNodeLayoutPositionWithName:(NSString *)name
+                                            x:(double)x
+                                            y:(double)y
+                                     outError:(NSString **)outError {
+    if (outError) *outError = nil;
+    if (!_controller || !name) return NO;
+    char errBuf[512] = {0};
+    const BOOL ok = RISE_API_SceneEditController_WriteGraphNodeLayoutPosition(
+        _controller, [name UTF8String], x, y, errBuf, sizeof(errBuf)) ? YES : NO;
+    if (!ok && outError && errBuf[0] != '\0') {
+        *outError = [NSString stringWithUTF8String:errBuf];
+    }
+    return ok;
+}
+
+#pragma mark - Node-graph canvas: add-node search palette (S21)
+
+- (NSArray<NSString *> *)paletteKeywordsForCategory:(NSInteger)category {
+    if (!_controller) return @[];
+    const unsigned int n =
+        RISE_API_SceneEditController_PaletteKeywordCount(_controller, (int)category);
+    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:n];
+    for (unsigned int i = 0; i < n; ++i) {
+        char buf[128] = {0};
+        if (!RISE_API_SceneEditController_PaletteKeyword(
+                _controller, (int)category, i, buf, sizeof(buf))) {
+            continue;
+        }
+        NSString *s = [NSString stringWithUTF8String:buf];
+        if (s.length > 0) [out addObject:s];
+    }
+    return out;
+}
+
+- (nullable NSString *)paletteDeprecationReplacementForKeyword:(NSString *)keyword {
+    if (!_controller || keyword.length == 0) return nil;
+    char buf[1024] = {0};
+    if (!RISE_API_SceneEditController_PaletteKeywordDeprecation(
+            _controller, keyword.UTF8String, buf, sizeof(buf))) {
+        return nil;
+    }
+    return [NSString stringWithUTF8String:buf];
+}
+
+- (BOOL)paletteKeywordIsFrozen:(NSString *)keyword {
+    if (!_controller || keyword.length == 0) return NO;
+    return RISE_API_SceneEditController_PaletteKeywordFrozen(_controller, keyword.UTF8String) ? YES : NO;
+}
+
 #pragma mark - Environment / IBL section
 
 - (nullable RISEEnvironmentInfo *)environmentInfo {
@@ -2111,7 +3001,7 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     NSMutableArray<RISEViewportProperty *> *out = [NSMutableArray arrayWithCapacity:n];
     char nameBuf[128];
     char valBuf[256];
-    char descBuf[512];
+    char descBuf[2048];
     // Preset label/value buffers are sized generously so future
     // descriptors with longer labels (multi-byte UTF-8 for non-ASCII
     // names) can grow without churn.  CopyToBuf NUL-terminates on
@@ -2121,6 +3011,7 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     char presetLabelBuf[256];
     char presetValueBuf[256];
     char unitLabelBuf[64];
+    char inlinePainterValBuf[256];
     for (unsigned int i = 0; i < n; ++i) {
         RISE_API_SceneEditController_PropertyName(_controller, i, nameBuf, sizeof(nameBuf));
         RISE_API_SceneEditController_PropertyValue(_controller, i, valBuf, sizeof(valBuf));
@@ -2153,13 +3044,39 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
             if( u ) unitLabel = u;
         }
 
-        RISEViewportProperty *p = [[RISEViewportProperty alloc] initWithName:[NSString stringWithUTF8String:nameBuf]
-                                                                       value:[NSString stringWithUTF8String:valBuf]
-                                                                  describing:[NSString stringWithUTF8String:descBuf]
+        // doc 88 S4b: the row's authored numeric range, when it declared one
+        // (an expression painter's `param[i]` line today).  The min/max/step
+        // readers answer 0 for a row with no range, so `hasRange` is the only
+        // thing that decides whether the panel draws a slider.
+        const BOOL hasRange = RISE_API_SceneEditController_PropertyHasRange(_controller, i) ? YES : NO;
+        const double rangeMin  = RISE_API_SceneEditController_PropertyRangeMin(_controller, i);
+        const double rangeMax  = RISE_API_SceneEditController_PropertyRangeMax(_controller, i);
+        const double rangeStep = RISE_API_SceneEditController_PropertyRangeStep(_controller, i);
+
+        const BOOL targetsPainter = RISE_API_SceneEditController_PropertyTargetsPainter(_controller, i) ? YES : NO;
+        const NSInteger inlinePainterKind = static_cast<NSInteger>(RISE_API_SceneEditController_PropertyInlinePainterKind(_controller, i));
+        NSString *inlinePainterValue = @"";
+        if (inlinePainterKind != 0 && RISE_API_SceneEditController_PropertyInlinePainterValue(_controller, i, inlinePainterValBuf, sizeof(inlinePainterValBuf))) {
+            NSString *iv = [NSString stringWithUTF8String:inlinePainterValBuf];
+            if (iv) inlinePainterValue = iv;
+        }
+        const NSUInteger inlinePainterRefCount = static_cast<NSUInteger>(RISE_API_SceneEditController_PropertyInlinePainterRefCount(_controller, i));
+
+        RISEViewportProperty *p = [[RISEViewportProperty alloc] initWithName:[NSString stringWithUTF8String:nameBuf] ?: @""
+                                                                       value:[NSString stringWithUTF8String:valBuf] ?: @""
+                                                                  describing:[NSString stringWithUTF8String:descBuf] ?: @""
                                                                         kind:kind
                                                                     editable:editable ? YES : NO
                                                                      presets:presets
-                                                                   unitLabel:unitLabel];
+                                                                   unitLabel:unitLabel
+                                                                    hasRange:hasRange
+                                                                    rangeMin:rangeMin
+                                                                    rangeMax:rangeMax
+                                                                   rangeStep:rangeStep
+                                                              targetsPainter:targetsPainter
+                                                           inlinePainterKind:inlinePainterKind
+                                                          inlinePainterValue:inlinePainterValue
+                                                       inlinePainterRefCount:inlinePainterRefCount];
         [out addObject:p];
     }
     return out;
@@ -2229,6 +3146,34 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return YES;
 }
 
+- (BOOL)propertyJumpTargetForCategory:(RISEViewportCategory)category
+                              atIndex:(NSUInteger)idx
+                          outCategory:(RISEViewportCategory *)outCategory
+                              outName:(NSString * _Nullable * _Nonnull)outName {
+    if (outName) *outName = nil;
+    if (!_controller || !outCategory || !outName) return NO;
+    int cat = 0;
+    char nameBuf[128] = {0};
+    if (!RISE_API_SceneEditController_PropertyJumpTargetForCategory(
+            _controller, (int)category, (unsigned int)idx, &cat, nameBuf, sizeof(nameBuf))) {
+        return NO;
+    }
+    NSString *n = [NSString stringWithUTF8String:nameBuf];
+    if (!n || n.length == 0) return NO;
+    switch (cat) {
+        case 1:  *outCategory = RISEViewportCategoryCamera;   break;
+        case 3:  *outCategory = RISEViewportCategoryObject;   break;
+        case 4:  *outCategory = RISEViewportCategoryLight;    break;
+        case 6:  *outCategory = RISEViewportCategoryMaterial; break;
+        case 7:  *outCategory = RISEViewportCategoryMedium;   break;
+        case 10: *outCategory = RISEViewportCategoryPainter;  break;
+        case 11: *outCategory = RISEViewportCategoryGeometry; break;
+        default: return NO;
+    }
+    *outName = n;
+    return YES;
+}
+
 - (NSArray<RISEViewportProperty *> *)propertySnapshotFor:(RISEViewportCategory)category {
     if (!_controller) return @[];
     const int cat = (int)category;
@@ -2236,7 +3181,7 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     NSMutableArray<RISEViewportProperty *> *out = [NSMutableArray arrayWithCapacity:n];
     char nameBuf[128];
     char valBuf[256];
-    char descBuf[512];
+    char descBuf[2048];
     char presetLabelBuf[256];
     char presetValueBuf[256];
     char unitLabelBuf[64];
@@ -2266,13 +3211,40 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
             if( u ) unitLabel = u;
         }
 
-        RISEViewportProperty *p = [[RISEViewportProperty alloc] initWithName:[NSString stringWithUTF8String:nameBuf]
-                                                                       value:[NSString stringWithUTF8String:valBuf]
-                                                                  describing:[NSString stringWithUTF8String:descBuf]
+        // doc 88 S4b: the row's authored numeric range (see the selection-scoped
+        // snapshot above).  This is the path the panel actually reads.
+        const BOOL hasRange = RISE_API_SceneEditController_PropertyHasRangeFor(_controller, cat, i) ? YES : NO;
+        const double rangeMin  = RISE_API_SceneEditController_PropertyRangeMinFor(_controller, cat, i);
+        const double rangeMax  = RISE_API_SceneEditController_PropertyRangeMaxFor(_controller, cat, i);
+        const double rangeStep = RISE_API_SceneEditController_PropertyRangeStepFor(_controller, cat, i);
+
+        const BOOL targetsPainter = RISE_API_SceneEditController_PropertyTargetsPainterFor(_controller, cat, i) ? YES : NO;
+        const NSInteger inlinePainterKind = RISE_API_SceneEditController_PropertyInlinePainterKindFor(_controller, cat, i);
+        NSString *inlinePainterValue = @"";
+        char inlineValBuf[256];
+        if (inlinePainterKind != 0 &&
+            RISE_API_SceneEditController_PropertyInlinePainterValueFor(_controller, cat, i, inlineValBuf, sizeof(inlineValBuf))) {
+            NSString *iv = [NSString stringWithUTF8String:inlineValBuf];
+            if (iv) inlinePainterValue = iv;
+        }
+        const NSUInteger inlinePainterRefCount =
+            RISE_API_SceneEditController_PropertyInlinePainterRefCountFor(_controller, cat, i);
+
+        RISEViewportProperty *p = [[RISEViewportProperty alloc] initWithName:[NSString stringWithUTF8String:nameBuf] ?: @""
+                                                                       value:[NSString stringWithUTF8String:valBuf] ?: @""
+                                                                  describing:[NSString stringWithUTF8String:descBuf] ?: @""
                                                                         kind:kind
                                                                     editable:editable ? YES : NO
                                                                      presets:presets
-                                                                   unitLabel:unitLabel];
+                                                                   unitLabel:unitLabel
+                                                                    hasRange:hasRange
+                                                                    rangeMin:rangeMin
+                                                                    rangeMax:rangeMax
+                                                                   rangeStep:rangeStep
+                                                              targetsPainter:targetsPainter
+                                                           inlinePainterKind:inlinePainterKind
+                                                          inlinePainterValue:inlinePainterValue
+                                                       inlinePainterRefCount:inlinePainterRefCount];
         [out addObject:p];
     }
     return out;
@@ -2288,6 +3260,29 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         [self refreshProperties];
     }
     return ok;
+}
+
+- (BOOL)setReferenceSlotPainterValueForCategory:(RISEViewportCategory)category
+                                      slotParam:(NSString *)slotParam
+                                          value:(NSString *)value {
+    if (!_controller || !slotParam || !value) return NO;
+    BOOL ok = RISE_API_SceneEditController_SetReferenceSlotPainterValue(
+        _controller, (int)category, [slotParam UTF8String], [value UTF8String]) ? YES : NO;
+    if (ok) {
+        [self refreshProperties];
+    }
+    return ok;
+}
+
+- (nullable NSString *)forkReferenceSlotPainterForCategory:(RISEViewportCategory)category
+                                                 slotParam:(NSString *)slotParam {
+    if (!_controller || !slotParam) return nil;
+    char newNameBuf[256] = {0};
+    BOOL ok = RISE_API_SceneEditController_ForkReferenceSlotPainter(
+        _controller, (int)category, [slotParam UTF8String], newNameBuf, sizeof(newNameBuf)) ? YES : NO;
+    if (!ok || !newNameBuf[0]) return nil;
+    [self refreshProperties];
+    return [NSString stringWithUTF8String:newNameBuf];
 }
 
 #pragma mark - Agent surface (Facet 5 slice 1c-1)
@@ -2313,6 +3308,31 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         _agentDispatcher->HandleLine(std::string(utf8 ? utf8 : ""));
     NSString* out = [NSString stringWithUTF8String:response.c_str()];
     return out ?: kNoDispatcher;
+}
+
+- (int64_t)agentHeadVersionRevision {
+    if (!_agentDispatcher || !_agentDispatcher->Session()) return -1;
+    return static_cast<int64_t>(_agentDispatcher->Session()->ReadHeadVersion().revision);
+}
+
+- (nullable NSString *)agentReadDocumentSnapshotTextWithUuid:(uint64_t *)outUuid
+                                                     revision:(uint64_t *)outRevision {
+    if (!outUuid || !outRevision) return nil;
+    if (!_agentDispatcher || !_agentDispatcher->Session()) return nil;
+    const RISE::Agent::AgentSession::AgentDocumentSnapshot snap =
+        _agentDispatcher->Session()->ReadDocumentSnapshot();
+    if (!snap.hasDocument) return nil;
+    // Convert FIRST, and only write the out-params on success -- mirrors
+    // the -propertySnapshot convention above (~line 2118): invalid UTF-8
+    // must read as "no document to save" (nil), never as a valid empty
+    // snapshot that a recovery path would trust and persist.  `?: @""`
+    // here would do exactly that -- silently turn a corrupt document into
+    // an empty one.
+    NSString *text = [NSString stringWithUTF8String:snap.document.c_str()];
+    if (!text) return nil;
+    *outUuid = snap.headVersion.uuid;
+    *outRevision = snap.headVersion.revision;
+    return text;
 }
 
 #pragma mark - Agent autonomy selector (2026-07 GUI composer chips)
@@ -2366,6 +3386,110 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     const std::string response = dispatcher->HandleLine(std::string(utf8 ? utf8 : ""));
     NSString* out = [NSString stringWithUTF8String:response.c_str()];
     return out ?: kNoDispatcher;
+}
+
+#pragma mark - Agent image generation (Arc 77 Phase 2: imagine_scene GUI wiring)
+
+- (void)agentSetImageGeneratorProvider:(NSString *)providerName
+                                 apiKey:(NSString *)apiKey {
+    const char* providerUtf8 = providerName ? [providerName UTF8String] : "";
+    const char* keyUtf8      = apiKey       ? [apiKey UTF8String]       : "";
+    const std::string provider(providerUtf8 ? providerUtf8 : "");
+    const std::string key(keyUtf8 ? keyUtf8 : "");
+
+    // ONE system transport, shared by all three sessions' generators
+    // below -- safe because every in-app dispatcher is called only from
+    // the main/UI thread (see the ivar block's doc), so no two `generate`
+    // callables can be inside Post() at once. CreateSystemChatHttpTransport
+    // never returns null (see ChatHttpTransport.h).
+    const std::shared_ptr<RISE::Agent::IChatHttpTransport> transport(
+        RISE::Agent::CreateSystemChatHttpTransport().release());
+
+    const RISE::Agent::ChatImageGenerator wire =
+        RISE::Agent::MakeChatImageGenerator(provider, key, transport);
+
+    RISE::Agent::AgentSession::AgentImageGenerator gen;
+    gen.providerName = wire.providerName;
+    gen.supported     = wire.supported;
+    gen.modelId       = wire.modelId;
+    if (wire.supported) {
+        // Copy (not move) the codec-layer callable: `gen` itself is
+        // copied into three sessions below via SetImageGenerator, and
+        // std::function's copy is cheap (a few captured strings + a
+        // shared_ptr).
+        const std::function<RISE::Agent::ChatImageGenOutcome(const std::string&)> rawGenerate =
+            wire.generate;
+        gen.generate =
+            [rawGenerate](const std::string& description) -> RISE::Agent::AgentSession::AgentImageGenOutcome {
+            RISE::Agent::AgentSession::AgentImageGenOutcome out;
+            const RISE::Agent::ChatImageGenOutcome r = rawGenerate(description);
+            out.ok       = r.ok;
+            out.bytes    = r.bytes;
+            out.mimeType = r.mimeType;
+            out.error    = r.error;
+            return out;
+        };
+    }
+
+    // S2 (2026-08-11): the TEXT sibling of the generator above --
+    // `build_element`'s builder completion, built from the SAME provider
+    // name, the SAME key and the SAME shared transport, and installed on
+    // the SAME three sessions in the SAME loop below. One installation
+    // point for both capabilities, so a credential change reinstalls both
+    // or neither.
+    const RISE::Agent::ChatTextCompleter wireText =
+        RISE::Agent::MakeChatTextCompleter(provider, key, transport);
+
+    RISE::Agent::AgentSession::AgentTextCompleter comp;
+    comp.providerName = wireText.providerName;
+    comp.supported    = wireText.supported;
+    comp.modelId      = wireText.modelId;
+    if (wireText.supported) {
+        const std::function<RISE::Agent::ChatTextCompletionOutcome(const std::string&)> rawComplete =
+            wireText.complete;
+        comp.complete =
+            [rawComplete](const std::string& prompt) -> RISE::Agent::AgentSession::AgentTextCompletionOutcome {
+            RISE::Agent::AgentSession::AgentTextCompletionOutcome out;
+            const RISE::Agent::ChatTextCompletionOutcome r = rawComplete(prompt);
+            out.ok    = r.ok;
+            out.text  = r.text;
+            out.error = r.error;
+            return out;
+        };
+    }
+
+    // Every in-app TOOL-CALL-REACHABLE session: `_agentDispatcher` (the
+    // administrative path -agentHandleLine drives; imagine_scene is on
+    // the read-safe allowlist so it dispatches there too), plus both
+    // tool-call sessions -agentHandleToolCall: routes between by
+    // autonomy. AgentSession::SetImageGenerator copies its argument, so
+    // handing the SAME `gen` to all three is safe -- each session ends up
+    // with its own independent AgentImageGenerator, all three sharing the
+    // one `transport` via shared_ptr.  SetTextCompleter copies too, so the
+    // same is true of `comp`.
+    RISE::Agent::AgentRpcDispatcher* dispatchers[] = {
+        _agentDispatcher, _agentToolDispatcherOwner, _agentToolDispatcherPropose};
+    for (RISE::Agent::AgentRpcDispatcher* d : dispatchers) {
+        if (d && d->Session()) {
+            d->Session()->SetImageGenerator(gen);
+            d->Session()->SetTextCompleter(comp);
+        }
+    }
+}
+
+#pragma mark - Agent session mode (Arc 83 §4.1: the build/refine transition)
+
+- (void)agentNoteFinalAnswer {
+    // The SAME three in-app sessions the generator install above touches,
+    // and for the same reason: they serve one document, so the turn that
+    // just ended is the same turn for all of them.  NoteFinalAnswer is
+    // idempotent and one-way (AgentSession.h's block above SessionMode), so
+    // calling this on every final turn is correct and costs nothing.
+    RISE::Agent::AgentRpcDispatcher* dispatchers[] = {
+        _agentDispatcher, _agentToolDispatcherOwner, _agentToolDispatcherPropose};
+    for (RISE::Agent::AgentRpcDispatcher* d : dispatchers) {
+        if (d && d->Session()) d->Session()->NoteFinalAnswer();
+    }
 }
 
 #pragma mark - Secure-MCP slice 5c: GUI-hosted external MCP endpoint
@@ -2571,6 +3695,15 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     BOOL _editable;
     NSArray<RISEViewportPropertyPreset *> *_presets;
     NSString *_unitLabel;
+    // doc 88 S4b: the authored numeric range (see the header doc).
+    BOOL _hasRange;
+    double _rangeMin;
+    double _rangeMax;
+    double _rangeStep;
+    BOOL _targetsPainter;
+    NSInteger _inlinePainterKind;
+    NSString *_inlinePainterValue;
+    NSUInteger _inlinePainterRefCount;
 }
 
 - (instancetype)initWithName:(NSString *)name
@@ -2580,6 +3713,14 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
                     editable:(BOOL)editable
                      presets:(NSArray<RISEViewportPropertyPreset *> *)presets
                    unitLabel:(NSString *)unitLabel
+                    hasRange:(BOOL)hasRange
+                    rangeMin:(double)rangeMin
+                    rangeMax:(double)rangeMax
+                   rangeStep:(double)rangeStep
+              targetsPainter:(BOOL)targetsPainter
+           inlinePainterKind:(NSInteger)inlinePainterKind
+          inlinePainterValue:(NSString *)inlinePainterValue
+       inlinePainterRefCount:(NSUInteger)inlinePainterRefCount
 {
     self = [super init];
     if (self) {
@@ -2590,6 +3731,17 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         _editable = editable;
         _presets = [presets copy] ?: @[];
         _unitLabel = [unitLabel copy] ?: @"";
+        // A range is only usable when BOTH bounds arrived and they are ordered;
+        // the core already enforces that, and re-checking here means a future
+        // producer cannot hand the panel a degenerate slider track.
+        _hasRange = (hasRange && rangeMax > rangeMin) ? YES : NO;
+        _rangeMin = rangeMin;
+        _rangeMax = rangeMax;
+        _rangeStep = rangeStep;
+        _targetsPainter = targetsPainter;
+        _inlinePainterKind = inlinePainterKind;
+        _inlinePainterValue = [inlinePainterValue copy] ?: @"";
+        _inlinePainterRefCount = inlinePainterRefCount;
     }
     return self;
 }
@@ -2601,6 +3753,353 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 - (BOOL)editable          { return _editable; }
 - (NSArray<RISEViewportPropertyPreset *> *)presets { return _presets; }
 - (NSString *)unitLabel   { return _unitLabel; }
+- (BOOL)hasRange          { return _hasRange; }
+- (double)rangeMin        { return _rangeMin; }
+- (double)rangeMax        { return _rangeMax; }
+- (double)rangeStep       { return _rangeStep; }
+- (BOOL)targetsPainter    { return _targetsPainter; }
+- (NSInteger)inlinePainterKind { return _inlinePainterKind; }
+- (NSString *)inlinePainterValue { return _inlinePainterValue; }
+- (NSUInteger)inlinePainterRefCount { return _inlinePainterRefCount; }
+
+@end
+
+// 87 §5 step 4a value types -- immutable rows handed to the Swift outliner.
+
+@implementation RISESceneTreeNode {
+    NSString *_name;
+    NSInteger _parent;
+    NSArray<NSNumber *> *_children;
+}
+
+- (instancetype)initWithName:(NSString *)name
+                      parent:(NSInteger)parent
+                    children:(NSArray<NSNumber *> *)children
+{
+    self = [super init];
+    if (self) {
+        _name = [name copy] ?: @"";
+        _parent = parent;
+        // -copy on an NSMutableArray yields an immutable snapshot, which is
+        // what the readonly property promises.
+        _children = [children copy] ?: @[];
+    }
+    return self;
+}
+
+- (NSString *)name { return _name; }
+- (NSInteger)parent { return _parent; }
+- (NSArray<NSNumber *> *)children { return _children; }
+
+@end
+
+@implementation RISESceneTree {
+    NSArray<RISESceneTreeNode *> *_nodes;
+    NSArray<NSNumber *> *_roots;
+}
+
+- (instancetype)initWithNodes:(NSArray<RISESceneTreeNode *> *)nodes
+                        roots:(NSArray<NSNumber *> *)roots
+{
+    self = [super init];
+    if (self) {
+        _nodes = [nodes copy] ?: @[];
+        _roots = [roots copy] ?: @[];
+    }
+    return self;
+}
+
+- (NSArray<RISESceneTreeNode *> *)nodes { return _nodes; }
+- (NSArray<NSNumber *> *)roots { return _roots; }
+
+@end
+
+// doc-88 Phase 3 S14 value types -- immutable rows handed to the Swift
+// node-graph canvas.
+
+@implementation RISEGraphPort {
+    NSInteger _portPipe;
+    BOOL _portColorAlsoAcceptsScalar;
+    NSString *_paramName;
+    NSInteger _occurrence;
+    NSInteger _otherNodeIndex;
+    NSString *_otherName;
+}
+
+- (instancetype)initWithParamName:(NSString *)paramName
+                        occurrence:(NSInteger)occurrence
+                    otherNodeIndex:(NSInteger)otherNodeIndex
+                         otherName:(NSString *)otherName
+                          portPipe:(NSInteger)portPipe
+        portColorAlsoAcceptsScalar:(BOOL)portColorAlsoAcceptsScalar
+{
+    self = [super init];
+    if (self) {
+        _paramName = [paramName copy] ?: @"";
+        _portPipe = portPipe;
+        _portColorAlsoAcceptsScalar = portColorAlsoAcceptsScalar;
+        _occurrence = occurrence;
+        _otherNodeIndex = otherNodeIndex;
+        _otherName = [otherName copy] ?: @"";
+    }
+    return self;
+}
+
+- (NSString *)paramName { return _paramName; }
+- (NSInteger)occurrence { return _occurrence; }
+- (NSInteger)otherNodeIndex { return _otherNodeIndex; }
+- (NSString *)otherName { return _otherName; }
+
+- (NSInteger)portPipe { return _portPipe; }
+- (BOOL)portColorAlsoAcceptsScalar { return _portColorAlsoAcceptsScalar; }
+@end
+
+@implementation RISEAppearanceClosureEntry {
+    NSInteger _category;
+    NSString *_name;
+}
+
+- (instancetype)initWithCategory:(NSInteger)category name:(NSString *)name
+{
+    self = [super init];
+    if (self) {
+        _category = category;
+        _name = [name copy] ?: @"";
+    }
+    return self;
+}
+
+- (NSInteger)category { return _category; }
+- (NSString *)name { return _name; }
+
+@end
+
+@implementation RISEGraphNode {
+    unsigned long long _handle;
+    NSString *_name;
+    NSString *_chunkKeyword;
+    NSInteger _category;
+    NSInteger _outputPipe;
+    NSInteger _defCount;
+    NSInteger _repeatCount;
+    double _x;
+    double _y;
+    NSArray<RISEGraphPort *> *_outEdges;
+    NSArray<RISEGraphPort *> *_inEdges;
+}
+
+- (instancetype)initWithHandle:(unsigned long long)handle
+                           name:(NSString *)name
+                   chunkKeyword:(NSString *)chunkKeyword
+                       category:(NSInteger)category
+                     outputPipe:(NSInteger)outputPipe
+                       defCount:(NSInteger)defCount
+                     repeatCount:(NSInteger)repeatCount
+                              x:(double)x
+                              y:(double)y
+                       outEdges:(NSArray<RISEGraphPort *> *)outEdges
+                        inEdges:(NSArray<RISEGraphPort *> *)inEdges
+{
+    self = [super init];
+    if (self) {
+        _handle = handle;
+        _name = [name copy] ?: @"";
+        _chunkKeyword = [chunkKeyword copy] ?: @"";
+        _category = category;
+        _outputPipe = outputPipe;
+        _defCount = defCount;
+        _repeatCount = repeatCount;
+        _x = x;
+        _y = y;
+        _outEdges = [outEdges copy] ?: @[];
+        _inEdges = [inEdges copy] ?: @[];
+    }
+    return self;
+}
+
+- (unsigned long long)handle { return _handle; }
+- (NSString *)name { return _name; }
+- (NSString *)chunkKeyword { return _chunkKeyword; }
+- (NSInteger)category { return _category; }
+- (NSInteger)defCount { return _defCount; }
+- (NSInteger)repeatCount { return _repeatCount; }
+- (double)x { return _x; }
+- (double)y { return _y; }
+- (NSArray<RISEGraphPort *> *)outEdges { return _outEdges; }
+- (NSArray<RISEGraphPort *> *)inEdges { return _inEdges; }
+
+- (NSInteger)outputPipe { return _outputPipe; }
+@end
+
+@implementation RISEPainterMaterialGraph {
+    NSArray<RISEGraphNode *> *_nodes;
+    unsigned long long _generation;
+    BOOL _snapshotFresh;
+}
+
+- (instancetype)initWithNodes:(NSArray<RISEGraphNode *> *)nodes
+                    generation:(unsigned long long)generation
+                 snapshotFresh:(BOOL)snapshotFresh
+{
+    self = [super init];
+    if (self) {
+        _nodes = [nodes copy] ?: @[];
+        _generation = generation;
+        _snapshotFresh = snapshotFresh;
+    }
+    return self;
+}
+
+- (NSArray<RISEGraphNode *> *)nodes { return _nodes; }
+- (unsigned long long)generation { return _generation; }
+
+- (BOOL)snapshotFresh { return _snapshotFresh; }
+@end
+
+// doc-88 Phase 3 S19 -- the rewire outcome value object.  Same
+// readonly-properties-plus-designated-init shape as RISEEnvironmentInfo
+// below, so the bridge hands Swift an immutable snapshot rather than a
+// mutable bag the canvas could accidentally edit.
+@implementation RISERewireOutcome {
+    BOOL _applied;
+    NSString *_status;
+    NSString *_message;
+    RISERewireClosure _closure;
+    BOOL _legalityRefused;
+    BOOL _canInsertScalarAdapter;
+    NSString *_adapterName;
+    BOOL _cycleRefused;
+    NSArray<NSString *> *_sharedChunks;
+    NSArray<NSString *> *_outOfClosureReferrers;
+    NSArray<NSString *> *_owners;
+    NSArray<NSString *> *_nowUnreferenced;
+}
+
+- (instancetype)initWithApplied:(BOOL)applied
+                         status:(NSString *)status
+                        message:(NSString *)message
+                        closure:(RISERewireClosure)closure
+                legalityRefused:(BOOL)legalityRefused
+         canInsertScalarAdapter:(BOOL)canInsertScalarAdapter
+                    adapterName:(NSString *)adapterName
+                   cycleRefused:(BOOL)cycleRefused
+                   sharedChunks:(NSArray<NSString *> *)sharedChunks
+          outOfClosureReferrers:(NSArray<NSString *> *)outOfClosureReferrers
+                         owners:(NSArray<NSString *> *)owners
+                nowUnreferenced:(NSArray<NSString *> *)nowUnreferenced
+{
+    self = [super init];
+    if (self) {
+        _applied = applied;
+        _status = [status copy] ?: @"";
+        _message = [message copy] ?: @"";
+        _closure = closure;
+        _legalityRefused = legalityRefused;
+        _canInsertScalarAdapter = canInsertScalarAdapter;
+        _adapterName = [adapterName copy] ?: @"";
+        _cycleRefused = cycleRefused;
+        _sharedChunks = [sharedChunks copy] ?: @[];
+        _outOfClosureReferrers = [outOfClosureReferrers copy] ?: @[];
+        _owners = [owners copy] ?: @[];
+        _nowUnreferenced = [nowUnreferenced copy] ?: @[];
+    }
+    return self;
+}
+
+- (BOOL)applied                { return _applied; }
+- (NSString *)status           { return _status; }
+- (NSString *)message          { return _message; }
+- (RISERewireClosure)closure   { return _closure; }
+- (BOOL)legalityRefused        { return _legalityRefused; }
+- (BOOL)cycleRefused           { return _cycleRefused; }
+- (NSArray<NSString *> *)sharedChunks          { return _sharedChunks; }
+- (NSArray<NSString *> *)outOfClosureReferrers { return _outOfClosureReferrers; }
+- (NSArray<NSString *> *)owners                { return _owners; }
+- (NSArray<NSString *> *)nowUnreferenced       { return _nowUnreferenced; }
+
+- (BOOL)canInsertScalarAdapter { return _canInsertScalarAdapter; }
+- (NSString *)adapterName { return _adapterName; }
+@end
+
+@implementation RISEDeleteOutcome {
+    BOOL _applied;
+    NSString *_status;
+    NSString *_message;
+    RISERewireClosure _closure;
+    BOOL _referenceRefused;
+    BOOL _cascadeRefused;
+    NSArray<NSString *> *_referrers;
+    NSArray<NSString *> *_removed;
+}
+
+- (instancetype)initWithApplied:(BOOL)applied
+                         status:(NSString *)status
+                        message:(NSString *)message
+                        closure:(RISERewireClosure)closure
+               referenceRefused:(BOOL)referenceRefused
+                 cascadeRefused:(BOOL)cascadeRefused
+                      referrers:(NSArray<NSString *> *)referrers
+                        removed:(NSArray<NSString *> *)removed
+{
+    self = [super init];
+    if (self) {
+        _applied = applied;
+        _status = [status copy] ?: @"";
+        _message = [message copy] ?: @"";
+        _closure = closure;
+        _referenceRefused = referenceRefused;
+        _cascadeRefused = cascadeRefused;
+        _referrers = [referrers copy] ?: @[];
+        _removed = [removed copy] ?: @[];
+    }
+    return self;
+}
+
+- (BOOL)applied              { return _applied; }
+- (NSString *)status         { return _status; }
+- (NSString *)message        { return _message; }
+- (RISERewireClosure)closure { return _closure; }
+- (BOOL)referenceRefused     { return _referenceRefused; }
+- (BOOL)cascadeRefused       { return _cascadeRefused; }
+- (NSArray<NSString *> *)referrers { return _referrers; }
+- (NSArray<NSString *> *)removed   { return _removed; }
+
+@end
+
+@implementation RISEDuplicateOutcome {
+    BOOL _applied;
+    NSString *_status;
+    NSString *_message;
+    RISERewireClosure _closure;
+    NSString *_newName;
+    NSInteger _originalIndex;
+}
+
+- (instancetype)initWithApplied:(BOOL)applied
+                         status:(NSString *)status
+                        message:(NSString *)message
+                        closure:(RISERewireClosure)closure
+                        newName:(NSString *)newName
+                  originalIndex:(NSInteger)originalIndex
+{
+    self = [super init];
+    if (self) {
+        _applied = applied;
+        _status = [status copy] ?: @"";
+        _message = [message copy] ?: @"";
+        _closure = closure;
+        _newName = [newName copy] ?: @"";
+        _originalIndex = originalIndex;
+    }
+    return self;
+}
+
+- (BOOL)applied              { return _applied; }
+- (NSString *)status         { return _status; }
+- (NSString *)message        { return _message; }
+- (RISERewireClosure)closure { return _closure; }
+- (NSString *)newName        { return _newName; }
+- (NSInteger)originalIndex   { return _originalIndex; }
 
 @end
 

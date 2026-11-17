@@ -90,6 +90,10 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
+
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -179,9 +183,9 @@ static PixelRGB CentralBlockMean( const CapturingRasterizerOutput& cap )
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/raycaster_volabs_%s_%d.RISEscene",
+		"%s/raycaster_volabs_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
@@ -218,6 +222,7 @@ static PixelRGB RenderCentralBlock( const std::string& sceneText, const char* ta
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	std::srand( g_renderSeed++ );
 	const bool bRendered = pJob->Rasterize();
 	if( !bRendered ) {
 		safe_release( pCap );
@@ -281,6 +286,7 @@ static std::string BuildScene(
 			"\tnum_wavelengths 8\n"
 			"\tspectral_samples 1\n"
 			"\thwss false\n"
+			"\toidn_denoise FALSE\n"
 			"}\n";
 	} else {
 		ss <<
@@ -289,16 +295,17 @@ static std::string BuildScene(
 			"\tsamples " << samples << "\n"
 			"\tmax_volume_bounce 16\n"
 			"\tpixel_filter box\n"
+			"\toidn_denoise FALSE\n"
 			"}\n";
 	}
 	ss <<
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/raycaster_volabs_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/raycaster_volabs_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"

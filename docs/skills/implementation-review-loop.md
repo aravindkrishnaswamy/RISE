@@ -123,8 +123,8 @@ A latent bug in the surrounding code is still a bug. "Pre-existing",
 "not introduced by this change", "not reachable today" are NOT grounds to
 skip a fix — the only non-fix dispositions are "genuinely not a bug" (with a
 stated reason) or an explicit user-approved deferral. See
-[adversarial-code-review](adversarial-code-review.md) and
-[the feedback memory on provenance]. The item-4 loop's first action was
+[adversarial-code-review](adversarial-code-review.md); provenance is never an
+excuse to leave a discovered defect unfixed. The item-4 loop's first action was
 fixing a *pre-existing* stale-format test failure the rebuild surfaced.
 
 ## The doc-drift family (the lesson that made item 4 take seven rounds)
@@ -162,14 +162,18 @@ re-found every round until the words match reality.
 
 ## Per-round hygiene (RISE specifics)
 
-- Build: `make -C build/make/rise build-test/<TestName>` then run the binary;
-  the full CST/feature suite as relevant.
+- Build: `make -C build/make/rise -j8 all && make -C build/make/rise build-test/<TestName>`
+  then run `./bin/tests/<TestName>`. For broader passes, use
+  `./run_all_tests.sh --tier fast --filter "<glob>"` during iteration and
+  `./run_all_tests.sh --tier all` for full-suite sign-off.
 - Warnings are bugs — a clean rebuild must be warning-free (touch the .cpp to
   force a recompile when checking; incremental builds hide warnings).
-- ASan/UBSan: `g++ -std=gnu++17 -fsanitize=address,undefined -I. <test>.cpp <impl>.cpp`.
-- Test-exe relink race: test executables link the library object list, so
-  touching a shared .cpp relinks them — run binaries in a phase SEPARATE from
-  any concurrent `make`, or a binary read mid-relink reports a phantom failure.
+- ASan/UBSan: `g++ -std=gnu++17 -fsanitize=address,undefined -I. <test>.cpp <impl>.cpp`
+  (or link against `bin/librise.a` when exercising full-library integration).
+- Archive/relink race: test executables link against `bin/librise.a`, so
+  touching a shared `.cpp` updates the archive and relinks dependent tests —
+  always run test binaries in a phase SEPARATE from any concurrent `make`, or a
+  binary/archive touched mid-relink reports a phantom failure.
 - Commit each round's fixes on the branch with a message that names the round,
   the reviewer verdicts, and each P1 fixed. NEVER push (the user pushes).
 - Render sequentially, never in parallel (a render takes all cores).

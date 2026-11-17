@@ -25,6 +25,11 @@
 #include "../Acceleration/BVH.h"
 #include "../Octree.h"
 
+#include <map>
+#include <set>
+#include <string>
+#include <atomic>	// two consumers: the proximity AABB snapshot's publish/read edge, and pBVH's DCLP fix (see its own comment below)
+
 namespace RISE
 {
 	namespace Implementation
@@ -35,15 +40,127 @@ namespace RISE
 			public virtual TreeElementProcessor<const IObjectPriv*>
 		{
 		protected:
+			mutable bool smsPolicyPrepared = false;
+			mutable bool smsHasComposite = false;
+			mutable std::string smsFirstCompositeObject;
+			//! DL-419: a visible object carries an interior medium.  Extended
+			//! SMS has no segment medium laws, so such a scene runs legacy
+			//! SMS (which prices chain media) instead of refusing every anchor.
+			mutable bool smsHasObjectMedium = false;
+			mutable std::string smsFirstMediumObject;
+			//! DL-382: the offending-object set last warned about, so the
+			//! uncertified-open-mesh warning fires once per scene, not per
+			//! PrepareForRendering (an animation prepares every frame).
+			mutable std::string openMeshWarningKey;
+            mutable std::vector<const IObject*> smsExtendedCasters;
+            mutable bool smsRejectedTransmissiveCaster = false;
+            mutable bool smsUncertainNormalOrientation = false;
 			virtual ~ObjectManager();
 
 			// Top-level acceleration: SAH BVH (BVH4-collapsed, SIMD AABB
 			// test) over scene objects.  bUseBSPtree is the constructor
 			// gate name kept for back-compat; semantically it now means
 			// "build a top-level BVH".
-			mutable BVH<const IObjectPriv*>*    pBVH;
+			//
+			// ATOMIC, not a plain pointer, because of a REAL double-checked-
+			// locking race and not only a theoretical one: `IntersectRay` /
+			// `IntersectShadowRay` / `IntersectOcclusionRay` each read this
+			// with no lock and lazily call `CreateBVH()` on a null read (the
+			// "PrepareForRendering was skipped" self-heal) -- and several
+			// render worker threads reach that read at once the FIRST time a
+			// scene renders without a prior `PrepareForRendering`.  Under a
+			// plain `T*` that is a textbook DCLP bug: `CreateBVH`'s
+			// `pBVH = newpBVH` (an ordinary store, under `treeCreationMutex`)
+			// gives the mutex no say over what an UNLOCKED reader on another
+			// thread observes -- the compiler/CPU are free to make that
+			// store visible before the `BVH` object's own constructor writes
+			// are, so a second thread's unlocked read of a non-null `pBVH`
+			// is not a guarantee that the object behind it is fully built.
+			// `std::atomic<T*>` with a `memory_order_release` store here and
+			// `memory_order_acquire` loads at every reader closes that:
+			// once a reader observes the new pointer, it is guaranteed to
+			// observe everything the builder wrote before publishing it.
+			//
+			// `InvalidateSpatialStructure` now runs its body -- the generation
+			// bump, the tree teardown and the snapshot cleanup; only the trailing
+			// shadow-cache memset sits outside -- under `treeCreationMutex` (the
+			// same mutex `CreateBVH` holds for its whole body), specifically so an invalidate cannot be LOST
+			// against a concurrent lazy `CreateBVH()` self-heal: without the
+			// lock, a self-heal could pass its "is `pBVH` already built"
+			// re-check just before the invalidate's exchange-to-null landed,
+			// and go on to publish a tree built over an object set an
+			// in-flight edit was in the middle of changing.  See
+			// `InvalidateSpatialStructure`'s own comment for the concrete
+			// interleaving this closes.
+			//
+			// WHAT THIS DOES **NOT** FIX: the mutex serializes
+			// `InvalidateSpatialStructure` against `CreateBVH`, not against
+			// an UNLOCKED reader that has already loaded the old pointer and
+			// is mid-traversal when an invalidate on another thread releases
+			// the last reference -- that is a genuine use-after-free
+			// REGARDLESS of atomicity or locking on the writer side, because
+			// nothing extends the pointee's lifetime past a concurrent
+			// release for a reader that took no lock at all. That hazard is
+			// bounded today by the engine's documented contract that a
+			// render pass owns a frozen scene (docs/ARCHITECTURE.md) --
+			// `InvalidateSpatialStructure` is a between-passes / scene-edit
+			// operation, never one a render worker calls or races against.
+			// A reader-holds-a-reference (hazard-pointer / epoch-reclamation)
+			// scheme would be needed to close that hazard structurally; out
+			// of scope here.
+			mutable std::atomic<BVH<const IObjectPriv*>*> pBVH;
 			mutable Octree<const IObjectPriv*>* pOctree;
 			mutable unsigned long long          mSpatialGen;   //!< advanced on every InvalidateSpatialStructure (see IObjectManager)
+
+			//! DL-457 swept (shutter) bounds, keyed by object.  `box` is the
+			//! union of the object's box over the accumulated shutter samples;
+			//! `pad` the largest per-axis change of any box face between two
+			//! consecutive samples, half of which is added on every side so
+			//! motion that curves between samples stays inside.  An axis on
+			//! which any sample's box is non-finite or at least DBL_MAX/4 (an
+			//! infinite plane, whose +-DBL_MAX box overflows under a rotation)
+			//! is NOT swept: the build uses the full +-RISE_INFINITY extent on
+			//! that axis, because inf - inf is NaN (BoundingBox::Include
+			//! ignores NaN) and the nominal box could under-cover.
+			//! Written only between passes (BeginMotionSweep /
+			//! AccumulateMotionBounds / EndMotionSweep / ClearMotionBounds),
+			//! read only by the single-threaded builds.
+			struct MotionBox
+			{
+				BoundingBox box;
+				BoundingBox last;
+				Vector3 pad;
+				bool axisFinite[3];
+			};
+			mutable std::map<const IObjectPriv*, MotionBox> motionBounds;
+
+			//! DL-457: per-sample hierarchy re-compose policy.  During a
+			//! sweep every RecomposeAnimatedHierarchy runs and records whether
+			//! any sample after the first moved a parented object; after the
+			//! sweep that record decides whether the per-pixel-sample calls
+			//! run at all (a scene with links but no animated parented
+			//! subtree pays nothing per sample).  TRUE (always re-compose)
+			//! whenever no sweep has decided it.
+			mutable bool motionSweepActive;
+			mutable unsigned int motionSweepSamples;
+			mutable bool motionSweepMovedHierarchy;
+			mutable bool recomposePerSample;
+
+			//! DL-463 (d): the hierarchy nodes a sweep saw move (after its
+			//! first sample), and -- built at EndMotionSweep -- the
+			//! parent-before-child list of every node in the subtrees under
+			//! their hierarchy roots, with each node's parent (null: a root
+			//! or a dangling link, composed against identity).  The
+			//! per-sample re-compose walks only this list instead of every
+			//! link.  Empty whenever no sweep has decided it (the full walk
+			//! then runs, as before).
+			mutable std::set<String> motionSweepMovedNames;
+			mutable std::vector<std::pair<IObjectPriv*, IObjectPriv*> > recomposeList;
+			void BuildRecomposeList() const;
+
+			//! The box every spatial build uses for `elem`: its swept box when
+			//! one was accumulated, else its current box.
+			BoundingBox ElementBounds( const IObjectPriv* elem ) const;
 
 			bool bUseBSPtree;
 			bool bUseOctree;
@@ -51,6 +168,104 @@ namespace RISE
 			const unsigned int nMaxTreeDepth;
 
 			RMutex treeCreationMutex;
+
+			//! The AUTHORED graph: child name -> parent name.  Only non-root
+			//! objects appear.  See IObjectManager's block comment for why this
+			//! is by name and one-directional.
+			//!
+			//! LIVES AND DIES WITH THE MANAGER.  Two consequences worth knowing
+			//! before 87 step 3 (instancing) makes them hotter:
+			//!  - Job::SetPrimaryAcceleration REPLACES the manager, so it drops
+			//!    every link along with every object.  Its existing contract
+			//!    ("call before adding objects") already covers this.
+			//!  - Scene::RestoreFromSnapshot (marked EXPERIMENTAL, not a
+			//!    production path) clears the manager name-by-name and re-adds
+			//!    clones, so the links do not survive it.  The clones carry the
+			//!    right composed matrices, so the scene LOOKS right until the
+			//!    next compose finds every node a root and flattens the
+			//!    hierarchy to local poses.  Restoring the link map alongside
+			//!    the objects is the fix if that path is ever productionised.
+			//!    87 STEP 3b SCALES THE BLAST RADIUS, and `provenanceByName`
+			//!    (below) is dropped by the same path with the same effect.
+			//!    Before 3b a lost link stranded ONE authored child; a `source`
+			//!    instance of a subtree produces a whole synthesized SUBTREE
+			//!    whose members exist only as links to their clone-parents, so
+			//!    the flatten moves every one of them at once.  It is worst for
+			//!    a member whose LOCAL transform is identity -- a cloned
+			//!    `rect_light` places its panel through `center` / `facing`, not
+			//!    through a local matrix, so once its link to the instance root
+			//!    is gone it collapses to the WORLD ORIGIN rather than merely
+			//!    losing the instance's offset.  Losing `provenanceByName` on
+			//!    top of that leaves those entries unattributable: the editor
+			//!    can no longer answer "which chunk do I move to move this?"
+			//!    and the gizmo's own refusal message has nothing to name.
+			//!    Documented rather than fixed, deliberately -- this is not a
+			//!    production path, and the fix belongs with productionising it.
+			//!    A THIRD 3b CONSEQUENCE ON THE SAME PATH, this one FIXED rather
+			//!    than documented: `Scene::CreateSnapshot` clones every manager
+			//!    item BY NAME, so a `csg_object`'s operands are cloned once on
+			//!    their own account as well as underneath the composite's clone.
+			//!    Once being an operand became a CONSUMPTION COUNT (87 step 3b)
+			//!    rather than a cleared visibility flag, and since
+			//!    `Object::CopySnapshotStateInto` deliberately does not copy that
+			//!    count, the standalone clone came out WORLD-VISIBLE -- a second,
+			//!    renderable copy of a shape that has no standalone existence
+			//!    (zero such clones before 3b, one per operand after).  That
+			//!    helper now copies the COMPOSED `IsWorldVisible()` rather than
+			//!    the base flag, which restores the pre-3b outcome exactly; see
+			//!    the comment at the assignment.  Restoring the link map remains
+			//!    the outstanding item above.
+			//!  - RemoveItem + a re-add under the SAME name leaves the ex-
+			//!    children rooted: the removal retires their links by design,
+			//!    and the re-add cannot know they were there.
+			std::map<String,String> parentByName;
+
+			//! 87 step 3: where a SYNTHESIZED entry came from.
+			//! `entry name -> (instancing chunk name, source node name)`.
+			//!
+			//! Populated by the derive whenever an object is produced by an
+			//! expansion rather than by a chunk of its own name -- i.e. by a
+			//! `standard_object` carrying `source`: the collapse case (step 3a,
+			//! entry name == instancing chunk name), each subtree clone `I.X`
+			//! (step 3b) and each repetition `I[i,j]` / `I[i,j].X` (step 3c).
+			//! The `sourceNode` field is always populated now that step 3d has
+			//! deleted the one expansion that had no source OBJECT.
+			//!
+			//! This is the ONLY sanctioned way to get from a rendered entry
+			//! back to the chunk an author can edit.  Every consumer does a MAP
+			//! LOOKUP -- nobody may split the name on `.` or probe for a `[`,
+			//! because a synthesized name is an opaque token whose spelling is
+			//! the expansion's business and nobody else's.
+			//!
+			//! Lives and dies with the manager, exactly like `parentByName`
+			//! above, and is retired by the same two hooks (`RemoveItem` for one
+			//! entry, `Shutdown` for the lot).
+			std::map<String, std::pair<String,String> > provenanceByName;
+
+			//! Did the LAST walk compose anything against a parent LINK?  (Not
+			//! "against a non-identity matrix" -- a link whose parent happens
+			//! to be identity still counts.  Conservative in the safe
+			//! direction: it can only cause an extra walk, never skip a needed
+			//! one.)  This is what makes the "no links -> no
+			//! work" fast path SOUND.  Without it, un-parenting the last child
+			//! (a detach, or removing its parent) would empty `parentByName`
+			//! and the fast path would then skip the one walk that still had to
+			//! run -- leaving the ex-child rendering at its old composed pose
+			//! forever.
+			mutable bool anyComposedAgainstParent;
+
+			//! Names whose recorded parent has since disappeared from the
+			//! manager.  Warned about once each (a dangling link is treated as
+			//! "root"), so a per-frame compose cannot turn one authoring
+			//! mistake into a log flood.
+			mutable std::set<String> danglingParentWarned;
+
+			//! One-shot latch for RebakeHierarchy's "composed N of M" diagnostic.
+			//! A dedicated flag rather than a sentinel key in the set above: that
+			//! set is keyed by OBJECT NAME, so a sentinel shares a keyspace with
+			//! real names -- an object actually so named would silence the
+			//! diagnostic, and RemoveItem's erase-by-name would re-arm it.
+			mutable bool rebakeIncompleteWarned;
 
 			// Shadow cache: per-slot last occluder, padded to avoid false sharing.
 			// Each thread hashes into a slot; collisions are harmless (just a stale hint).
@@ -60,6 +275,138 @@ namespace RISE
 				char pad[64 - sizeof(const IObjectPriv*)];
 			};
 			mutable ShadowCacheSlot* shadowCache;
+
+			//! THE WORLD-AABB SNAPSHOT the cross-object proximity query
+			//! scans (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2).
+			//!
+			//! WHY IT IS NEW WORK RATHER THAN A FREE BYPRODUCT of the TLAS.
+			//! World AABBs are computed INSIDE CreateBVH() / CreateOctree(),
+			//! which run only when `items.size() > nMaxObjectsPerNode`, so a
+			//! four-object scene never builds one -- and `Object::
+			//! getBoundingBox()` transforms eight corners through the world
+			//! matrix on EVERY call (tens of nanoseconds plus a virtual), so
+			//! a naive per-query scan of a 405-object scene is 20-40 us, not
+			//! ~1 us.  At tens of millions of hits per frame that is the
+			//! difference between a few percent and a multiple.
+			//!
+			//! IMMUTABLE ONCE PUBLISHED, which is the whole thread-safety
+			//! argument: it is built whole, published behind ONE pointer
+			//! exactly as `pBVH` is, never grown and never edited in place,
+			//! and released at the same call sites as `pBVH` (there under
+			//! `treeCreationMutex`, which `pBVH` does not need) -- so a query copies the
+			//! pointer once and reads lock-free, with no reallocation
+			//! hazard.
+			//!
+			//! WHAT IT DOES ADD, said plainly rather than waved away as "no
+			//! race class `pBVH` does not already have" -- which is FALSE
+			//! for a small scene.  `pBVH` is built only when
+			//! `items.size() > nMaxObjectsPerNode` (4); at or below that
+			//! threshold there is no TLAS at all, so the manager's "never
+			//! invalidate during a pass" contract has never had anything to
+			//! protect there.  THIS snapshot IS built for a four-object
+			//! scene, and `InvalidateSpatialStructure` deletes it at the
+			//! same call site where it releases `pBVH` (under
+			//! `treeCreationMutex`, unlike `pBVH`, because EnsureBoxSnapshot
+			//! retires and republishes inside that lock).  So the
+			//! honest statement is: the snapshot EXTENDS the existing
+			//! "never during a pass" contract to scenes small enough that
+			//! it used to be vacuous.  It is the same contract, newly
+			//! load-bearing on a population that had been exempt.
+			//!
+			//! The pointer is `std::atomic` for the publish/read edge that
+			//! IS in scope: `EnsureBoxSnapshot` fills a fresh snapshot and
+			//! then stores it, and a query on another thread loads it and
+			//! dereferences immediately.  A plain pointer makes that a data
+			//! race by the language's definition and leaves the store free
+			//! to be seen before the writes that filled the vector; the
+			//! release store / acquire load pair is what makes "published
+			//! whole" true at the memory model rather than only in prose.
+			//! Relaxed would not do: it orders nothing.
+			//!
+			//! Holds EVERY registered object, world-invisible ones
+			//! included; the query filters.  Filtering at build time would
+			//! be faster and is deliberately not done: visibility is
+			//! immutable within a pass but this snapshot can outlive one
+			//! (nothing drops it unless the spatial structure is
+			//! invalidated), and a stale visibility filter baked into it
+			//! would be invisible.
+			struct ObjectBoxSnapshot
+			{
+				struct Entry
+				{
+					BoundingBox			box;
+					const IObjectPriv*	pObj;
+				};
+				std::vector<Entry>	entries;
+			};
+			mutable std::atomic<const ObjectBoxSnapshot*> pBoxes;
+
+			//! SUPERSEDED snapshots, kept alive until the next real
+			//! invalidate.
+			//!
+			//! `EnsureBoxSnapshot` rebuilds when the object COUNT has moved
+			//! under it (see its own comment for why that case exists at
+			//! all), and it can be reached from `IntersectRay` -- i.e.
+			//! potentially while other render threads are mid-scan of the
+			//! snapshot it is replacing.  DELETING the old one there would
+			//! be a use-after-free, and a strictly worse hazard than the
+			//! staleness it is fixing.  So a replaced snapshot is RETIRED
+			//! rather than freed: the new pointer is published, the old
+			//! object stays valid for anyone still reading it, and the
+			//! whole retired set is freed in `InvalidateSpatialStructure`
+			//! and the destructor -- both of which already carry the "never
+			//! during a pass" contract that makes freeing safe.
+			//!
+			//! Bounded by the number of structural mutations between two
+			//! invalidates, which is small: every Job-level edit that MOVES
+			//! anything invalidates, and object adds -- the case this
+			//! exists for -- come in batches at scene build.
+			mutable std::vector<const ObjectBoxSnapshot*> retiredBoxes;
+
+			//! Builds `pBoxes` if it is null OR its entry count no longer
+			//! matches the manager's.  Mutex-serialized and double-checked,
+			//! exactly like CreateBVH().
+			void EnsureBoxSnapshot() const;
+
+			//! Print the design's promised once-per-refusing-object line for
+			//! `obj`, naming the scene chunk and its geometry kind.  Called
+			//! only after `IObject::NoteDistanceRefusal()` has said this
+			//! call won the object's latch, so the O(n) reverse name lookup
+			//! it does runs at most once per object for the life of that
+			//! object -- never on the hot path.
+			void LogDistanceRefusal( const IObjectPriv* obj ) const;
+
+			//! ONE CANDIDATE's half of `NearestOtherSurface`: the exclusion
+			//! rules (self by identity, world-invisible, emitters), the call
+			//! into the object's own distance, and the once-per-object
+			//! refusal diagnostic with its unbounded-radius confirm.
+			//!
+			//! It exists so the FLAT SCAN and the TLAS POINT QUERY cannot
+			//! drift: those two differ only in WHICH objects they hand to
+			//! this function, and every rule the design states about which
+			//! neighbours count lives here, once.
+			//!
+			//! `budget` is the caller's running best, passed straight through
+			//! as the geometry's search radius so a close neighbour found
+			//! early still prunes the expensive families.
+			//! \return the candidate's world distance, or `RISE_INFINITY`
+			//!         when it does not count or could not answer -- a value
+			//!         that can never beat any admissible `budget`.
+			Scalar ProximityCandidateDistance(
+				const IObjectPriv* obj,
+				const IObject* self,
+				const Point3& ptWorld,
+				const Scalar budget ) const;
+
+			//! THE THREE EXCLUSIONS ON THEIR OWN -- self by identity,
+			//! `IsWorldVisible()` (which is what keeps CSG operands out),
+			//! and emitters.  Factored out of the function above when
+			//! `DeepestOtherContainment` arrived, because the two queries
+			//! answer DIFFERENT questions about the SAME candidate set and
+			//! a rule that drifted between them would be a wrong render in
+			//! one of the two signals only.
+			//! \return TRUE when this candidate counts at all.
+			static bool ProximityCandidateCounts( const IObjectPriv* obj, const IObject* self );
 
 			// Realize all objects' deferred geometry (idempotent) before any bbox/
 			// TLAS query.  Called from PrepareForRendering AND CreateBVH/CreateOctree.
@@ -82,12 +429,124 @@ namespace RISE
 				const bool bComputeExitInfo
 				) const;
 
+            // Complete a current direct-object hit with the same scene signal
+            // provenance as traversal. Does not replace primitive payloads.
+            void CompleteShadingSignals(RayIntersectionGeometric&, const IObject*) const;
+
 			bool IntersectShadowRay(
 				const Ray& ray,
 				const Scalar dHowFar,
 				const bool bHitFrontFaces,
 				const bool bHitBackFaces
 				) const;
+
+			//! See IObjectManager::IntersectOcclusionRay's contract comment.
+			//! Same three-path traversal (BVH / octree / linear) as
+			//! IntersectShadowRay, but filtered on IsWorldVisible() only --
+			//! no DoesCastShadows() gate, and no shadow cache (a separate,
+			//! smaller-volume query; not worth a second cache).
+			bool IntersectOcclusionRay(
+				const Ray& ray,
+				const Scalar dHowFar,
+				const bool bHitFrontFaces,
+				const bool bHitBackFaces
+				) const;
+
+			//! See IObjectManager::IntersectShadowRayOpaque's contract
+			//! comment (DL-05).
+			bool IntersectShadowRayOpaque(
+				const Ray& ray,
+				const Scalar dHowFar,
+				const bool bHitFrontFaces,
+				const bool bHitBackFaces
+				) const;
+
+			//! See IObjectManager::RandomWalkObjectContaining (DL-370).
+			const IObject* RandomWalkObjectContaining(
+				const Point3& ptWorld,
+				const Vector3& probeDir,
+				const IObject* self
+				) const;
+
+			//! See IObjectManager::ObjectsNearPoint (DL-408).
+			unsigned int ObjectsNearPoint(
+				const Point3& ptWorld,
+				const Scalar radius,
+				const IObject* self,
+				const IObject** out,
+				const unsigned int maxOut
+				) const;
+
+			//! See IObjectManager::ObjectContainsPoint (DL-408).
+			bool ObjectContainsPoint(
+				const IObject* pObject,
+				const Point3& ptWorld,
+				const Vector3& probeDir
+				) const;
+
+			//! See IObjectManager::IntersectSingleObject (DL-408).
+			void IntersectSingleObject(
+				RayIntersection& ri,
+				const IObject* pObject,
+				const Scalar dHowFar
+				) const;
+
+			//! DL-370 / DL-408: the shared containment walk; `bRandomWalkOnly`
+			//! restricts the candidates to random-walk materials.
+			const IObject* ObjectContaining_(
+				const Point3& ptWorld,
+				const Vector3& probeDir,
+				const IObject* self,
+				const bool bRandomWalkOnly
+				) const;
+
+			//! See IObjectManager::NearestOtherSurface's contract comment.
+			bool NearestOtherSurface(
+				const Point3& ptWorld,
+				const IObject* self,
+				const Scalar maxDistWorld,
+				Scalar& outDist,
+				std::size_t* outNodesVisited = 0,
+				std::size_t* outCandidatesVisited = 0
+				) const;
+
+			//! See IObjectManager::DeepestOtherContainment's contract comment.
+			bool DeepestOtherContainment(
+				const Point3& ptWorld,
+				const IObject* self,
+				const Scalar maxDepthWorld,
+				Scalar& outDepth,
+				std::size_t* outNodesVisited = 0,
+				std::size_t* outCandidatesVisited = 0
+				) const;
+
+			//! TEST-ONLY: has the proximity AABB snapshot been built?
+			//!
+			//! Exists for the demand-gate test, which has no other way to
+			//! observe that a scene with no live `proximity()` consumer
+			//! never pays for the snapshot -- the gate is a NEGATIVE
+			//! (work not done), and a timing assertion would be a flake.
+			//! Reads the published pointer, nothing else.
+			bool ForTest_HasBoxSnapshot() const
+			{
+				return pBoxes.load( std::memory_order_acquire ) != 0;
+			}
+
+			//! TEST-ONLY: how many primitives does the top-level BVH hold?
+			//!
+			//! Exists so a differential test comparing the TLAS point-query
+			//! candidate source against the flat-scan one can assert the
+			//! TLAS side actually WALKED A TREE rather than passing
+			//! vacuously because the build gate (`bUseBSPtree &&
+			//! items.size() > nMaxObjectsPerNode`) stopped holding. Returns
+			//! 0 when no top-level BVH has been built (including the small-
+			//! scene / `bUseBSPtree` FALSE regime), matching `BVH::numPrims()`
+			//! when one has.
+			std::size_t TopLevelPrimCount() const
+			{
+				BVH<const IObjectPriv*>* const localBVH = pBVH.load( std::memory_order_acquire );
+				return localBVH ? localBVH->numPrims() : 0;
+			}
 
 			void EnumerateObjects( IEnumCallback<IObject>& pFunc ) const;
 			void EnumerateObjects( IEnumCallback<IObjectPriv>& pFunc ) const;
@@ -107,8 +566,73 @@ namespace RISE
 			//! Tells all the objects to reset any runtime data
 			void ResetRuntimeData() const;
 
+			bool SetObjectParent( const char* child, const char* parent );
+			const char* GetObjectParent( const char* child ) const;
+			bool HasChildren( const char* parent ) const;
+			bool SetObjectProvenance( const char* entry, const char* instancingChunk, const char* sourceNode );
+			bool GetObjectProvenance( const char* entry, const char** outInstancingChunk, const char** outSourceNode ) const;
+			bool ComposeWorldTransforms() const;
+
+			//! The PER-FRAME half of composition: re-bake ONLY the nodes that are
+			//! part of a hierarchy, and leave every unparented, childless object
+			//! alone.
+			//!
+			//! ComposeWorldTransforms walks EVERY registered object, which is right
+			//! for the structural calls (a derive, a detach, a removal -- where an
+			//! object that just LEFT the graph still has to be put back on identity)
+			//! and wrong once per render pass: a single `parent` line anywhere made
+			//! a 16k-object scene re-finalize all 16k every pass, measured at
+			//! +3.5 ms/pass, with nothing amortizing it -- the TLAS rebuild that was
+			//! supposed to dwarf it is exactly what does NOT run when the walk
+			//! reports no change.
+			//!
+			//! Sized by the number of LINKS, not the number of objects: one link in
+			//! a 16k scene touches two nodes.  Skipping the rest is not an
+			//! approximation -- an unparented, childless object composes against
+			//! identity, which is what its own last finalize already used, so the
+			//! full walk's visit to it is a no-op by construction (its before/after
+			//! compare never fires).
+			//!
+			//! DEPENDS on every structural site continuing to call
+			//! ComposeWorldTransforms: a detach removes the ex-child from the link
+			//! map, so this walk can no longer see it, and it is the full walk that
+			//! puts it back on identity.
+			bool RebakeHierarchy( std::set<String>* pChangedNames = 0 ) const;
+
+			//! Removing an object also retires its place in the authored graph:
+			//! its own parent link goes, and any object that named it as parent
+			//! is RE-ROOTED.  Doing it here rather than leaving the link to
+			//! dangle keeps `parentByName` an exact description of the live
+			//! object set -- which is what lets ComposeWorldTransforms treat a
+			//! dangling link as a genuine anomaly worth a warning.
+			bool RemoveItem( const char* szName );
+
+			//! The authored graph dies with the objects.  RemoveItem retires
+			//! links one at a time; this is the same rule for the wholesale
+			//! clear, and it is the ONE manager-lifecycle hook RemoveItem's
+			//! retirement does not otherwise cover.  Unreachable as a bug
+			//! today -- the sole caller (Job::SetPrimaryAcceleration) releases
+			//! the manager on the next line -- but a future "clear the scene in
+			//! place" that reused the manager would otherwise resurrect stale
+			//! parenting the moment a removed name was re-added.
+			void Shutdown();
+
 			void PrepareForRendering() const;
+
+			// Prepared static-scene policy; read-only during worker execution.
+			bool ExtendedSMSAllowed() const { return smsPolicyPrepared && !smsHasComposite && !smsHasObjectMedium; }
+			const std::string& FirstCompositeObject() const { return smsFirstCompositeObject; }
+            const std::vector<const IObject*>& ExtendedSMSCasters() const { return smsExtendedCasters; }
+            bool HasUncertainSMSNormalOrientation() const { return smsUncertainNormalOrientation; }
+            bool HasRejectedTransmissiveCaster() const { return smsRejectedTransmissiveCaster || smsUncertainNormalOrientation; }
+
 			void InvalidateSpatialStructure() const;
+			void ClearMotionBounds() const;
+			void BeginMotionSweep() const;
+			void AccumulateMotionBounds() const;
+			void EndMotionSweep() const;
+			void RecomposeAnimatedHierarchy() const;
+			bool GetPerSampleRecomposePlan( std::vector< std::pair<IObjectPriv*, IObjectPriv*> >& out ) const;
 			unsigned long long GetSpatialStructureGeneration() const { return mSpatialGen; }
 		};
 	}

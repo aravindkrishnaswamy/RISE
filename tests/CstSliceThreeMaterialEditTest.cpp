@@ -4,7 +4,7 @@
 //    pivot), staged to ONE edit-type.  A material painter-slot edit on a
 //    CST-loaded scene routes through the canonical CST -- Job::ApplyCstParamEdit
 //    (DocSetOrAddParamValue + DocEditClosure + DeriveToJobIncremental, or a full
-//    re-derive fallback for variant/animated/instance_array scenes) -- instead of
+//    re-derive fallback for variant/animated/source-instance scenes) -- instead of
 //    the direct manager mutation, so the retained Document stays the source of
 //    truth (Slice 4's save will serialize it).
 //

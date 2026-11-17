@@ -39,6 +39,14 @@ namespace RISE
 		}
 
 		const Point3&  o = ray.origin;
+		// Scale-relative self-intersection floor -- same floor as
+		// RaySphereIntersection (see its note) and the capped path's
+		// IntersectCappedSolid: a ray published from a hit on this wall
+		// that crosses it has a ~1e-12 self root the fixed NEARZERO gate
+		// let through.  Measured 2026-09-05 (debt 25 sibling audit): an
+		// open unit tube seen side-on, carrying a full-sphere transmissive
+		// weave lit from behind, read PT 0.36x of BDPT.
+		const Scalar tMin = NEARZERO * ( Scalar(1) + fabs( o.x ) + fabs( o.y ) + fabs( o.z ) + fabs( radius ) );
 		Scalar oc1 = o.y - yCenter;
 		Scalar oc2 = o.z - zCenter;
 		Scalar b = v.y * oc1 + v.z * oc2;
@@ -57,7 +65,7 @@ namespace RISE
 
 		// Check if the first hit is ok... 
 		bool	bFirstHit = true;
-		if ( x < xMin || x > xMax || t < NEARZERO)
+		if ( x < xMin || x > xMax || t < tMin)
 		{
 			// First hit no, good, that means we are inside the cylinder now
 			// for there to be a hit
@@ -67,7 +75,7 @@ namespace RISE
 		}
 
 		// Check if the ray hits the cylinder, no dice here either, there's no hit
-		if ( x < xMin || x > xMax || t < NEARZERO) {
+		if ( x < xMin || x > xMax || t < tMin) {
 			return;
 		}
 	    
@@ -97,6 +105,14 @@ namespace RISE
 		}
 
 		const Point3&  o = ray.origin;
+		// Scale-relative self-intersection floor -- same floor as
+		// RaySphereIntersection (see its note) and the capped path's
+		// IntersectCappedSolid: a ray published from a hit on this wall
+		// that crosses it has a ~1e-12 self root the fixed NEARZERO gate
+		// let through.  Measured 2026-09-05 (debt 25 sibling audit): an
+		// open unit tube seen side-on, carrying a full-sphere transmissive
+		// weave lit from behind, read PT 0.36x of BDPT.
+		const Scalar tMin = NEARZERO * ( Scalar(1) + fabs( o.x ) + fabs( o.y ) + fabs( o.z ) + fabs( radius ) );
 		Scalar oc1 = o.z - zCenter;
 		Scalar oc2 = o.x - xCenter;
 		Scalar b = v.z * oc1 + v.x * oc2;
@@ -116,7 +132,7 @@ namespace RISE
 
 		// Check if the first hit is ok... 
 		bool	bFirstHit = true;
-		if ( y < yMin || y > yMax || t < NEARZERO)
+		if ( y < yMin || y > yMax || t < tMin)
 		{
 			// First hit no, good, that means we are inside the cylinder now
 			// for there to be a hit
@@ -126,7 +142,7 @@ namespace RISE
 		}
 
 		// Check if the ray hits the cylinder, no dice here either, there's no hit
-		if ( y < yMin || y > yMax || t < NEARZERO) {
+		if ( y < yMin || y > yMax || t < tMin) {
 			return;
 		}
 	    
@@ -156,6 +172,14 @@ namespace RISE
 		}
 
 		const Point3&  o = ray.origin;
+		// Scale-relative self-intersection floor -- same floor as
+		// RaySphereIntersection (see its note) and the capped path's
+		// IntersectCappedSolid: a ray published from a hit on this wall
+		// that crosses it has a ~1e-12 self root the fixed NEARZERO gate
+		// let through.  Measured 2026-09-05 (debt 25 sibling audit): an
+		// open unit tube seen side-on, carrying a full-sphere transmissive
+		// weave lit from behind, read PT 0.36x of BDPT.
+		const Scalar tMin = NEARZERO * ( Scalar(1) + fabs( o.x ) + fabs( o.y ) + fabs( o.z ) + fabs( radius ) );
 		Scalar oc1 = o.x - xCenter;
 		Scalar oc2 = o.y - yCenter;
 		Scalar b = v.x * oc1 + v.y * oc2;
@@ -175,7 +199,7 @@ namespace RISE
 
 		// Check if the first hit is ok... 
 		bool	bFirstHit = true;
-		if ( z < zMin || z > zMax || t < NEARZERO)
+		if ( z < zMin || z > zMax || t < tMin)
 		{
 			// First hit no, good, that means we are inside the cylinder now
 			// for there to be a hit
@@ -185,7 +209,7 @@ namespace RISE
 		}
 
 		// Check if the ray hits the cylinder, no dice here either, there's no hit
-		if ( z < zMin || z > zMax || t < NEARZERO) {
+		if ( z < zMin || z > zMax || t < tMin) {
 			return;
 		}
 	    

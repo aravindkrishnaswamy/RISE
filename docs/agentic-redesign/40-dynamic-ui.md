@@ -1,10 +1,15 @@
 # Facet 4 — Dynamic Schema-Driven UI
 
-> **Status:** **PARTIALLY IMPLEMENTED.** Descriptor/CST-driven properties,
-> outliner/entity/environment/camera/render-mode surfaces, source trace, and
-> macOS/Windows workspace shells have shipped. The fully generic widget tree,
-> immutable-snapshot status model, and some Android/advanced panels remain
-> design work. One of the parallel facet docs under the
+> **Status (updated 2026-11):** **PARTIALLY IMPLEMENTED (hybrid CST + retained introspection).**
+> Shipped in macOS and Windows workspace shells: descriptor/CST-driven property panels (over the 9
+> retained & CST-adapted `*Introspection` classes), the hierarchical **Tree Outliner** ([doc 87](87-recursive-scene-graph.md)),
+> **Node Graph** (material/painter DAG) and **Object Graph** canvases ([doc 88](88-procedural-texture-expressiveness-candidates.md)),
+> **Material Editor Slices 1–6** (`MaterialPreview` + `PainterPreview` thumbnails/swatches), the
+> `chunk_type` property-row rename, the `show-legacy` filter toggle for frozen shader-dispatch chunks,
+> source trace, and environment/camera/render-mode/variant surfaces. Still unbuilt target design:
+> consolidating the 9 `*Introspection` classes into a single generic `UiModel.h` (`UiModel::Build` /
+> `UiTree` / `UiPatch`) tree, the immutable-snapshot (`PreparedStamp`) status model, and Android/advanced
+> panels. One of the parallel facet docs under the
 > [Agentic Redesign Charter](00-CHARTER.md).
 > **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–6, D1–D51):** binding keys on the
 > immutable **NodeId** (lineage identity, D9/D15, and now the *locked* charter L5/INV-5 after **D44**),
@@ -57,8 +62,9 @@ has are the seed of what this facet generalizes.
 ### 1.1 The descriptor schema (the L6 source of truth) — already exists
 
 `ChunkDescriptor` ([src/Library/Parsers/ChunkDescriptor.h](../../src/Library/Parsers/ChunkDescriptor.h))
-is the schema. Each of the **152** chunk parsers (`grep -c "ChunkDescriptor& Describe"
-src/Library/Parsers/AsciiSceneParser.cpp`) returns one via
+is the schema. Each of the **176** unique chunk keywords registered in `CreateAllChunkParsers()`
+([src/Library/Parsers/ChunkParserRegistry.cpp](../../src/Library/Parsers/ChunkParserRegistry.cpp);
+replacing the retired `AsciiSceneParser.cpp`, ~152 at initial draft time) returns one via
 `IAsciiChunkParser::Describe()`
 ([src/Library/Parsers/IAsciiChunkParser.h](../../src/Library/Parsers/IAsciiChunkParser.h)).
 A descriptor carries:
@@ -521,7 +527,9 @@ inline re-implementation.
 
 **Declarative generators render as form + synthetic preview.** Per L3
 (iteration is declarative; FOR/DEFINE removed), repetition is a generator chunk
-(instancer, `sweep_geometry`, `sdf_geometry`, `guilloche_disk_geometry`,
+(`standard_object` with `source` + `count_u`/`count_v` *(superseding the v7-cutover
+`instance_array` chunk in doc 87 step 3d)*, `sweep_geometry`, `sdf_geometry`,
+`cartesian_disk_geometry` *(formerly `guilloche_disk_geometry`)*,
 `path_instances_geometry`). Its `GeneratorCard` shows the parameter form
 normally (so editing the generator's knobs is ordinary `SetParam`), **plus** a
 collapsed, **read-only** list of the instances it *derives* — emitted as
@@ -695,7 +703,9 @@ the only Android-specific UI code, and it is mechanical.
   `ObjectIntrospection`, `FilmIntrospection`, `MediaIntrospection`,
   `RasterizerIntrospection`) collapse into the single `UiModel::Build` walk.
   *(Their descriptor-lookup + value-formatting helpers are harvested — see
-  Reuse — but the per-family class structure goes.)*
+  Reuse — but the per-family class structure goes. **Shipped note:** the current
+  hybrid implementation retained and expanded the family to 9 CST-backed
+  `*Introspection` classes while `UiModel::Build` remains unbuilt.)*
 - The Model-A write-back surface this facet drove: `SceneEditController::
   SetProperty`/`SetPropertyForCategory` → `*Introspection::SetProperty` →
   engine-setter → `RegenerateData()`, and the **save-engine round-trip as a
@@ -724,7 +734,7 @@ the only Android-specific UI code, and it is mechanical.
 
 **Reuse (unchanged):**
 
-- The **152 `Describe()` descriptors** — the whole point; they are already the
+- The **176 `Describe()` descriptors** (in [`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp)) — the whole point; they are already the
   schema and need no per-UI change beyond the additive `ParameterSemantics`.
 - The descriptor-lookup + value-as-string formatting logic inside the
   introspection classes (e.g. `to_hint`, the `ValueKind`→string conversions)
@@ -909,7 +919,7 @@ contribution to that slice, kept deliberately minimal:
 ### Acceptance-criteria seed (per [GUI_ROADMAP.md §15](../GUI_ROADMAP.md))
 
 - **Tests:** golden-`UiTree` snapshot per descriptor (purity: same CST+schema
-  ⇒ same tree); a **descriptor-coverage test** asserting every one of the 152
+  ⇒ same tree); a **descriptor-coverage test** asserting every one of the 176
   chunk keywords produces a non-empty, fully-typed `UiTree` node (the
   "new chunk gets UI for free" invariant, enforced like the parser's
   `Describe()` pure-virtual); a round-trip test (form edit → CST patch → text

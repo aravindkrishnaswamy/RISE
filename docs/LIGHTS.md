@@ -21,8 +21,8 @@ mechanisms:
 
 | Mechanism | Implements | Carries emission via | Tracked by |
 |---|---|---|---|
-| **`ILight`** ("hack lights") | [ILight.h](../src/Library/Interfaces/ILight.h) | `radiantExitance()` + `emittedRadiance(dir)` + `generateRandomPhoton()` | `IScene::GetLights()` (registered through `omni_light` / `spot_light` / `directional_light` / `ambient_light` chunks) |
-| **Luminaire materials** ("mesh lights" / "area lights") | [IEmitter.h](../src/Library/Interfaces/IEmitter.h), held by `IMaterial::GetEmitter()` | The material's emitter responds to area-measure queries on its host geometry | [`LuminaryManager`](../src/Library/Rendering/LuminaryManager.h) — auto-collects every `IObject` whose material has an emitter |
+| **`ILight`** ("hack lights") | [ILight.h](../src/Library/Interfaces/ILight.h) | `radiantExitance()` + `emittedRadiance(dir)` + `emittedRadianceNM(dir, nm)` + `generateRandomPhoton()` | `IScene::GetLights()` (registered through `omni_light` / `spot_light` / `directional_light` / `ambient_light` (**DEPRECATED**) chunks) |
+| **Luminaire / emissive materials** ("mesh lights" / "area lights") | [IEmitter.h](../src/Library/Interfaces/IEmitter.h), held by `IMaterial::GetEmitter()` | The material's emitter responds to area-measure queries on its host geometry | [`LuminaryManager`](../src/Library/Rendering/LuminaryManager.h) — auto-collects every `IObject` whose material has an emitter |
 
 The key distinction is **delta** (point in space, no spatial extent —
 all `ILight` types are delta-position) versus **area** (mesh luminaire,
@@ -31,8 +31,10 @@ sampled by area). These two split the sampling pipeline as well: see
 
 There is no separate "area light" chunk. Area lights are constructed
 by giving an object a luminaire material
-([`lambertian_luminaire_material`](../src/Library/Materials/LambertianLuminaireMaterial.h),
-[`phong_luminaire_material`](../src/Library/Materials/PhongLuminaireMaterial.h)).
+([`lambertian_luminaire_material`](../src/Library/Materials/LambertianLuminaireMaterial.h);
+[`phong_luminaire_material`](../src/Library/Materials/PhongLuminaireMaterial.h) is **FROZEN** legacy)
+or by authoring `emissive` + `emissive_scale` on a surface material that supports self-emission
+([`ggx_material`](../src/Library/Materials/GGXMaterial.h) / [`pbr_metallic_roughness_material`](../src/Library/Job.cpp)).
 
 ## 2. Catalogue of `ILight` chunks
 
@@ -41,7 +43,7 @@ by giving an object a luminaire material
 | `omni_light` | [`PointLight`](../src/Library/Lights/PointLight.h) | Isotropic point source. `IsPositionalLight() = true`, `emissionConeHalfAngle = π`. |
 | `spot_light` | [`SpotLight`](../src/Library/Lights/SpotLight.h) | Cone-restricted point source. Reports `emissionDirection` and `emissionConeHalfAngle` so the BVH and equiangular sampler can use them. |
 | `directional_light` | [`DirectionalLight`](../src/Library/Lights/DirectionalLight.h) | Infinitely distant parallel-ray source. `IsPositionalLight() = false`. **`direction` semantics**: vector pointing FROM the surface TO the light source — see [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) for the convention and the foreign-format negation rule. |
-| `ambient_light` | [`AmbientLight`](../src/Library/Lights/AmbientLight.h) | Constant directionless ambient. Evaluated deterministically — does not enter stochastic light selection. |
+| `ambient_light` (**DEPRECATED**) | [`AmbientLight`](../src/Library/Lights/AmbientLight.h) | Legacy constant directionless ambient (deprecated in `kLegacyTierTable`; breaks energy conservation). Evaluated deterministically — does not enter stochastic light selection. |
 
 Two consequences of these defaults that bite contributors:
 
@@ -77,13 +79,15 @@ during scene attach. This means:
   `LightSampler` queries `IObject::SamplePoint(...)` to get a
   uniform-area position with `pdfPos = 1/area`.
 - The cosine-weighted hemisphere emission is queried via the
-  emitter's profile (Lambertian luminaires give `cos/π`; Phong
-  luminaires give the corresponding directional lobe).
+  emitter's profile (Lambertian luminaires and emissive `ggx_material` /
+  `pbr_metallic_roughness_material` surfaces give `cos/π`; **FROZEN**
+  `phong_luminaire_material` gives its directional lobe).
 
 A scene with no `ILight` chunks but a single mesh under a
-`lambertian_luminaire_material` is fully lit. That is the recommended
-modern setup; the four `ILight` types are retained for compactness
-and historical compatibility.
+`lambertian_luminaire_material` (or an emissive `ggx_material` /
+`pbr_metallic_roughness_material`) is fully lit. That is the recommended
+modern setup; the `ILight` types are retained for compactness and
+historical compatibility (`ambient_light` is **DEPRECATED**).
 
 ## 5. `LightSampler` — the unified NEE / emission pipeline
 
@@ -128,9 +132,9 @@ active at a time** and each has different MIS implications:
 
 | Mode | Knob | When | MIS support |
 |---|---|---|---|
-| **Light BVH** (Conty & Kulla 2018) | `light_bvh TRUE` (default — see [LightBVH.h](../src/Library/Lights/LightBVH.h) for the construction details) | Production default. O(log N) shading-point-conditional importance with bbox + orientation cone + power. PDF is fully evaluable. | **Full MIS** with BSDF sampling. |
-| **Plain alias table** | `light_bvh FALSE`, `pathguiding_ris_candidates` absent | Compact scenes (≲ 10 lights) where the per-shading-point cost of BVH traversal isn't worth it. | Full MIS via the alias-table selection PDF. |
-| **RIS spatial resampling** | `light_bvh FALSE` plus `pathguiding_ris_candidates M` (only N=2 currently implemented; reserved for future expansion) | Many-light path-guiding mode. Draws M candidates from the alias table, reweights by `exitance / dist²` at the shading point, picks one. | **MIS DISABLED** (see §5.4). |
+| **Light BVH** (Conty & Kulla 2018) | `light_bvh TRUE` (see [LightBVH.h](../src/Library/Lights/LightBVH.h) for construction details) | Spatial O(log N) shading-point-conditional importance with bbox + orientation cone + power. PDF is fully evaluable; supersedes RIS when enabled. | **Full MIS** with BSDF sampling. |
+| **Plain alias table** | `light_bvh FALSE`, ≤ 8 lights (`SetRISCandidates(0)`) | Compact scenes (≤ 8 lights) where per-shading-point BVH traversal or RIS resampling isn't needed. | Full MIS via the alias-table selection PDF. |
+| **Many-light spatial RIS** (`LightSampler::SetRISCandidates(M)`) | `light_bvh FALSE` with > 8 lights (auto-configured to `M = 8` candidates when `light_bvh` is off) | Many-light fallback without BVH. Draws `M` candidates from the global alias table, reweights by `exitance / dist²` at the shading point, and picks one. *(Distinct from OpenPGL directional guiding's `pathguiding_ris_candidates`, which controls BSDF-vs-guide directional RIS with `N = 2`.)* | **MIS DISABLED** (see §5.4). |
 
 ### 5.4 MIS subtleties — the failure modes that bite
 
@@ -227,7 +231,8 @@ directional, a portal-shaped distant source):
 
 1. **Subclass `ILight`** under [src/Library/Lights/](../src/Library/Lights/).
 2. **Implement** `CanGeneratePhotons`, `radiantExitance`,
-   `emittedRadiance`, `position`, `generateRandomPhoton`,
+   `emittedRadiance`, `emittedRadianceNM` (per-wavelength emission for
+   spectral NEE / BDPT / VCM), `position`, `generateRandomPhoton`,
    `pdfDirection`, `ComputeDirectLighting`. Override
    `IsPositionalLight`, `emissionDirection`,
    `emissionConeHalfAngle` if your light is positional / directional

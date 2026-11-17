@@ -26,8 +26,12 @@
 //    * document byte-identity across an objectmap render.
 //    * camera-override composition: aiming at one object makes its
 //      pixelCount dominate.
-//    * instance_array -> 4 distinct <gen>[i,j] legend entries; CSG -> a
-//      single root entry.
+//    * a counted `source` -> 4 distinct <chunk>[i,j] legend entries plus the
+//      source itself (which keeps rendering); CSG -> a single root entry.
+//    * PARTICIPATING MEDIUM (2026-08-12 regression): the identity render is
+//      exact and reproducible inside a `global_medium` -- every pixel is a
+//      legend colour, each object's image count equals its shader tally, and
+//      three renders are byte-identical.  See kSceneMedium's header.
 //    * downscale guard (native-size rule): read_image maxEdge box-blends
 //      the identity colours, so the downscaled image carries colours that
 //      do NOT all match a legend entry.
@@ -104,6 +108,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "TestTempDir.h"
 // Round-8 review P2: per-process temp filenames -- see WriteTemp below.
 #ifdef _WIN32
 	#include <process.h>
@@ -144,8 +149,15 @@ static const char* const kScene3 =
 	"standard_object\n{\n\tname sph_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
 	"standard_object\n{\n\tname sph_c\n\tgeometry geo\n\tmaterial mat\n\tposition 1.7 0 0\n}\n";
 
-// A 2x2 instance_array named `grid` -> grid[0,0], grid[1,0], grid[0,1],
-// grid[1,1] (the `%s[%d,%d]` synthesized-name format from Cst.cpp).
+// A 2x2 counted `source` named `grid` -> grid[0,0], grid[1,0], grid[0,1],
+// grid[1,1] (Cst.cpp's `InstanceBaseName` `<name>[i,j]` spelling, unchanged
+// from the `instance_array` generator 87 step 3d deleted -- these very
+// assertions are why it was kept byte-compatible).
+//
+// `src` is the SOURCE, and it is a fifth WORLD-VISIBLE object: `source`
+// COPIES, it does not move or hide anything, so the legend carries it too.
+// It sits at the origin, in the hole the 2x2 grid leaves, so every legend
+// entry here still covers real pixels.
 static const char* const kSceneInstances =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
@@ -155,7 +167,8 @@ static const char* const kSceneInstances =
 	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
 	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
 	"sphere_geometry\n{\n\tname geo\n\tradius 0.5\n}\n\n"
-	"instance_array\n{\n\tname grid\n\ttemplate geo\n\tcount_u 2\n\tcount_v 2\n\tmaterial mat\n\tposition expr(u*3.0-1.5) expr(v*3.0-1.5) 0\n}\n";
+	"standard_object\n{\n\tname src\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname grid\n\tsource src\n\tcount_u 2\n\tcount_v 2\n\tposition expr(u*3.0-1.5) expr(v*3.0-1.5) 0\n}\n";
 
 // Two spheres that OVERLAP in screen space (one partly occludes the other),
 // so a boundary pixel's sub-pixel samples straddle TWO distinct objects.  The
@@ -213,6 +226,51 @@ static const char* const kSceneCsg =
 	"standard_object\n{\n\tname op_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0.4 0 0\n}\n\n"
 	"csg_object\n{\n\tname csg_root\n\tobja op_a\n\tobjb op_b\n\toperation union\n\tmaterial mat\n}\n";
 
+// The SAME 3-sphere layout as kScene3, but the whole scene sits inside a
+// PARTICIPATING MEDIUM (`global_medium`) -- the regression guard for the
+// 2026-08-12 identity-corruption defect.
+//
+// Before the fix, the objectmap caster ran full volumetric transport, which
+// broke the identity contract three ways at once:
+//   * the medium's free-flight sampler terminated most primary rays at a
+//     scatter event BEFORE any surface, so ObjectIdShader never ran for
+//     those pixels and the legend's pixelCounts collapsed to a fraction of
+//     the covered area;
+//   * a surviving ray's flat identity colour was multiplied by the medium's
+//     per-channel transmittance, so the encoded byte no longer equalled the
+//     object's reserved palette byte;
+//   * an in-scattered radiance term was ADDED on top, and that term is
+//     Monte-Carlo sampled, so the "exact" render was not even reproducible
+//     run to run.
+// Measured on scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene (47
+// objects, `global_medium med_ocean`) at 96x72: ZERO of the 47 registered
+// legend colours appeared anywhere in the image, the frame carried
+// 4964-5080 DISTINCT colours out of 6912 pixels, only ~2200 of 6912 pixels
+// were ever shaded, and every run differed.  query_object_at therefore
+// answered "hit an unregistered/unmapped object" for points visibly on
+// objects -- the exact failure mode behind the arc-79 SS8.2 incident, in
+// which an agent read five such answers and deleted 80 of the 82 SDF parts
+// it had just built.
+//
+// The coefficients below are deliberately dense relative to the ~6-unit
+// camera distance (sigma_t ~ 0.55/unit) so the pre-fix breakage is gross
+// rather than marginal: with the fix reverted this scene's assertions fail
+// by a wide margin, not by an LSB.
+static const char* const kSceneMedium =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"homogeneous_medium\n{\n\tname fog\n\tabsorption 0.15 0.20 0.25\n\tscattering 0.35 0.30 0.28\n\tphase hg 0.4\n}\n\n"
+	"global_medium\n{\n\tmedium fog\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname sph_a\n\tgeometry geo\n\tmaterial mat\n\tposition -1.7 0 0\n}\n\n"
+	"standard_object\n{\n\tname sph_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname sph_c\n\tgeometry geo\n\tmaterial mat\n\tposition 1.7 0 0\n}\n";
+
 // Toolkit slice 3b test (5): the SAME 3-sphere layout as kScene3, but with
 // NO rasterizer chunk (and no standard_shader, which existed only to be
 // resolved by the now-absent rasterizer's Finalize) -- Job::GetRasterizer()
@@ -237,8 +295,7 @@ static const char* const kScene3NoRasterizer =
 
 static std::string WriteTemp( const char* name, const std::string& text )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
@@ -493,11 +550,12 @@ static void RunCameraOverrideTest()
 }
 
 //----------------------------------------------------------------------
-// (8a) instance_array -> 4 distinct <gen>[i,j] entries.
+// (8a) a counted `source` -> 4 distinct <chunk>[i,j] entries, plus the
+// source object itself.
 //----------------------------------------------------------------------
 static void RunInstanceArrayTest()
 {
-	std::printf( "=== AgentObjectMapTest: instance_array legend ===\n" );
+	std::printf( "=== AgentObjectMapTest: counted-source legend ===\n" );
 	const std::string scenePath = WriteTemp( "rise_objmap_inst.RISEscene", kSceneInstances );
 	Job* pJob = new Job();
 	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "instance scene loads" ); return; }
@@ -507,11 +565,24 @@ static void RunInstanceArrayTest()
 	AgentRenderParams p;
 	p.renderTarget = AgentRenderTarget::ObjectMap;
 	AgentRenderResult r = session->Render( p );
-	Check( r.ok && r.renderMode == "objectmap", "instance_array objectmap render succeeds" );
-	Check( r.legend.size() == 4, "instance_array of 2x2 yields exactly 4 legend entries" );
+	Check( r.ok && r.renderMode == "objectmap", "counted-source objectmap render succeeds" );
 	Check( FindLegend( r, "grid[0,0]" ) && FindLegend( r, "grid[1,0]" )
 	    && FindLegend( r, "grid[0,1]" ) && FindLegend( r, "grid[1,1]" ),
-	    "each instance carries its synthesized <gen>[i,j] name" );
+	    "each repetition carries its synthesized <chunk>[i,j] name" );
+	// EXACTLY four repetitions, counted by name rather than by legend size, so
+	// the SOURCE entry below is a separate claim instead of slack in this one.
+	std::size_t repetitions = 0;
+	for( std::size_t k = 0; k < r.legend.size(); ++k )
+		if( r.legend[k].name.compare( 0, 5, "grid[" ) == 0 ) ++repetitions;
+	Check( repetitions == 4, "a 2x2 counted `source` yields exactly 4 synthesized entries" );
+	// AND THE SOURCE IS STILL THERE.  `source` copies; it does not move or hide
+	// anything, so `src` is a fifth world-visible object with pixels of its own.
+	// (The `instance_array` generator this fixture replaced had no source OBJECT
+	// -- its `template` was a geometry -- which is why the old assertion read 4.)
+	const LegendEntry* srcEntry = FindLegend( r, "src" );
+	Check( srcEntry && srcEntry->pixelCount > 0,
+	       "the SOURCE object keeps rendering alongside its four copies" );
+	Check( r.legend.size() == 5, "... and it is the only other entry: 4 repetitions + 1 source" );
 	pJob->release();
 }
 
@@ -536,6 +607,127 @@ static void RunCsgTest()
 		Check( r.legend[0].name == "csg_root", "the single entry is the CSG root object" );
 		Check( r.legend[0].pixelCount > 0, "the CSG root covers pixels" );
 	}
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// PARTICIPATING-MEDIUM REGRESSION (2026-08-12): the identity render must be
+// exact and reproducible inside a `global_medium`.  See kSceneMedium's
+// header for the defect this pins and the measurements behind it.
+//
+// The four assertions below are chosen so that each one independently fails
+// on the pre-fix build -- there is no single weak link whose accidental
+// pass would let the defect back in:
+//   (A) EVERY non-background pixel is EXACTLY some legend colour.  Kills the
+//       transmittance-multiply and the in-scattering add: both produce
+//       colours no identity carries.
+//   (B) Per object, the image's count of that colour EQUALS the legend's
+//       shader-side pixelCount, and sum(pixelCount) + background == w*h.
+//       Kills the swallowed-primary-ray failure: a ray that scatters short
+//       of a surface is neither tallied nor background, so the identity
+//       breaks.
+//   (C) Three consecutive renders are byte-identical PNGs with identical
+//       legends.  Kills the Monte-Carlo residue directly -- this is the
+//       assertion that catches a partial fix that gets the mean right.
+//   (D) query_object_at at a known object pixel names THAT object.  The
+//       consumer-level statement of the same contract, and the one whose
+//       pre-fix failure ("hit an unregistered/unmapped object") is what an
+//       agent actually reads.
+//----------------------------------------------------------------------
+static void RunParticipatingMediumExactnessTest()
+{
+	std::printf( "=== AgentObjectMapTest: identity exactness inside a participating medium ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_medium.RISEscene", kSceneMedium );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "medium scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "medium session" ); return; }
+
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok && r.renderMode == "objectmap", "objectmap render succeeds inside a global_medium" );
+	Check( r.legend.size() == 3, "medium scene legend has one entry per object (3)" );
+	if( !r.ok || r.legend.size() != 3 ) { pJob->release(); return; }
+
+	Decoded dec;
+	Check( DecodePng( r.png, dec ), "medium-scene objectmap PNG decodes" );
+	if( dec.w != 64 || dec.h != 64 ) { Check( false, "medium-scene dims are 64x64" ); pJob->release(); return; }
+
+	// Build the per-colour image histogram once; every assertion reads it.
+	std::map<std::array<unsigned char, 3>, std::uint64_t> hist;
+	std::uint64_t background = 0;
+	for( std::size_t i = 0; i < dec.px.size(); ++i ) {
+		if( dec.px[i][3] == 0 ) { ++background; continue; }
+		++hist[ std::array<unsigned char, 3>{ dec.px[i][0], dec.px[i][1], dec.px[i][2] } ];
+	}
+
+	// (A) every non-background pixel is exactly SOME legend colour.
+	std::set<std::array<unsigned char, 3> > legendColors;
+	for( std::size_t i = 0; i < r.legend.size(); ++i ) {
+		unsigned char b[3];
+		if( HexToBytes( r.legend[i].colorHex, b ) )
+			legendColors.insert( std::array<unsigned char, 3>{ b[0], b[1], b[2] } );
+	}
+	std::uint64_t unregistered = 0;
+	for( std::map<std::array<unsigned char, 3>, std::uint64_t>::const_iterator it = hist.begin();
+	     it != hist.end(); ++it ) {
+		if( legendColors.find( it->first ) == legendColors.end() ) unregistered += it->second;
+	}
+	Check( unregistered == 0,
+	       "MONEY ASSERTION (A): NO pixel carries a colour outside the legend -- the medium neither"
+	       " attenuated nor in-scattered into the identity bytes" );
+
+	// (B) per-object image count == shader tally, and the totals close.
+	bool countsMatch = true;
+	std::uint64_t tallySum = 0;
+	for( std::size_t i = 0; i < r.legend.size(); ++i ) {
+		unsigned char b[3];
+		if( !HexToBytes( r.legend[i].colorHex, b ) ) { countsMatch = false; continue; }
+		std::map<std::array<unsigned char, 3>, std::uint64_t>::const_iterator it =
+			hist.find( std::array<unsigned char, 3>{ b[0], b[1], b[2] } );
+		const std::uint64_t inImage = ( it == hist.end() ) ? 0 : it->second;
+		if( inImage != r.legend[i].pixelCount ) countsMatch = false;
+		if( r.legend[i].pixelCount == 0 ) countsMatch = false;   // all 3 spheres are on screen
+		tallySum += r.legend[i].pixelCount;
+	}
+	Check( countsMatch,
+	       "MONEY ASSERTION (B): every object's IMAGE pixel count equals its shader-side legend"
+	       " pixelCount -- no primary ray was swallowed by a scatter event before its surface" );
+	Check( tallySum + background == (std::uint64_t)dec.w * dec.h,
+	       "sum(legend pixelCounts) + background == w*h inside a medium" );
+
+	// (C) reproducibility: the in-scattering term was Monte-Carlo sampled, so
+	// this is the assertion a mean-only fix cannot pass.
+	bool stable = true;
+	for( int run = 0; run < 2; ++run ) {
+		AgentRenderResult again = session->Render( p );
+		if( !again.ok || again.png != r.png ) stable = false;
+		if( again.legend.size() != r.legend.size() ) { stable = false; continue; }
+		for( std::size_t i = 0; i < again.legend.size(); ++i ) {
+			if( again.legend[i].pixelCount != r.legend[i].pixelCount ||
+			    again.legend[i].colorHex   != r.legend[i].colorHex ) stable = false;
+		}
+	}
+	Check( stable,
+	       "MONEY ASSERTION (C): three consecutive renders inside a medium are byte-identical PNGs"
+	       " with identical legends (no Monte-Carlo residue in an identity render)" );
+
+	// (D) the consumer-level contract: query_object_at names the object.
+	unsigned char cb[3];
+	if( HexToBytes( r.legend[1].colorHex, cb ) ) {   // sph_b, the center sphere
+		unsigned int qx = 0, qy = 0;
+		if( FindPixelForColor( dec, cb, qx, qy ) ) {
+			AgentSession::AgentQueryObjectResult q =
+				session->QueryObjectAt( (int)qx, (int)qy );
+			Check( q.hit && q.name == r.legend[1].name,
+			       "MONEY ASSERTION (D): query_object_at names the object at a known object pixel"
+			       " inside a medium (pre-fix: \"hit an unregistered/unmapped object\")" );
+		} else {
+			Check( false, "found a pixel carrying sph_b's identity colour" );
+		}
+	}
+
 	pJob->release();
 }
 
@@ -1486,9 +1678,39 @@ static std::string ReadImageReq( double id, const std::string& extraParamsJson )
 	       ",\"method\":\"read_image\",\"params\":{" + extraParamsJson + "}}";
 }
 
+//! Doc 90 slice R1 (2026-08-22): restore the PRODUCTION build-protocol
+//! default for the width of one fixture.
+//!
+//! main() opts this whole binary OUT of the build-plan gate as a
+//! convenience (its fixtures insert geometry directly).  That is invisible
+//! to almost everything -- but `BuildProtocolActive_()` is
+//! `protocolEnabled && gateEnabled`, so switching the gate off ALSO takes
+//! the phase machinery off, which puts these sessions in the "no staged
+//! build at all" configuration where the iteration ratchet arms on the
+//! FIRST full-frame render instead of waiting for the Compose phase.
+//!
+//! The two fixtures below are about the render -> inline-image PLUMBING --
+//! "one encoder, not two", the clamp is read_image's clamp, the exact key
+//! set -- and those properties are stated for a render with NO composite
+//! mechanism in force.  A production session's early renders are exactly
+//! that (protocol on, still in the Plan phase, nothing anchored), so
+//! turning the gate back on here makes the fixture MATCH production rather
+//! than dodge the ratchet.  Neither fixture creates geometry, so the gate
+//! itself never fires.  The ratchet's own coverage -- including that the
+//! composite REPLACES the frame once armed, and that read_image still
+//! serves the plain frame -- is AgentRenderAnchorTest.
+namespace {
+struct ProductionBuildProtocolForFixture
+{
+	ProductionBuildProtocolForFixture()  { AgentSession::SetBuildPlanGateDefaultEnabled( true ); }
+	~ProductionBuildProtocolForFixture() { AgentSession::SetBuildPlanGateDefaultEnabled( false ); }
+};
+}
+
 static void RunInlineRenderImageTest()
 {
 	std::printf( "=== AgentObjectMapTest: render{imageMaxEdge} one-call observe ===\n" );
+	const ProductionBuildProtocolForFixture productionProtocol;
 	// Review P3-5 (fixture-coupling): the exact-key-set assertion below
 	// (b) depends on kScene3 tripping design-note condition A (3 bare
 	// spheres, no scalar_painter chunk).  Assert that PRECONDITION
@@ -1530,7 +1752,16 @@ static void RunInlineRenderImageTest()
 			"previewWidth", "previewHeight", "cameraOverridden", "message",
 			"renderJobId", "samplesOverridden", "effectiveSamples", "renderMode",
 			"perceptionAvailable", "perceptionPersistentBytes", "perceptionAuxiliaryPeakBytes",
-			"note" };
+			"note",
+			// Arc 80 (2026-08-12): the SCENE INVENTORY rides every full-scene
+			// beauty render -- "where is everything", answered with the picture
+			// rather than waiting to be asked for (every voluntary consultation
+			// surface this workstream shipped measured 0/64 uses).
+			"inventory",
+			// Arc 81 (2026-08-12): the TONAL FACT rides the same surface, and
+			// unlike the inventory beside it costs NO extra render -- it is
+			// computed from the pixels this call already produced.
+			"tone" };
 		const std::size_t nPlain = sizeof( kPlainKeys ) / sizeof( kPlainKeys[0] );
 		bool allPresent = true;
 		for( std::size_t i = 0; i < nPlain; ++i ) if( !r.has( kPlainKeys[i] ) ) allPresent = false;
@@ -1709,6 +1940,12 @@ static void RunInlineRenderImageTest()
 static void RunDriverAsyncInlineImageTest()
 {
 	std::printf( "=== AgentObjectMapTest: render{imageMaxEdge} through the drivers' async detour ===\n" );
+	// Doc 90 slice R1: same reason as RunInlineRenderImageTest's -- see
+	// ProductionBuildProtocolForFixture.  This one compares the async
+	// detour's result FIELD BY FIELD against the synchronous form, which
+	// only means anything when neither carries a composite whose content
+	// depends on which render came first.
+	const ProductionBuildProtocolForFixture productionProtocol;
 	const std::string scenePath = WriteTemp( "rise_driver_inline_img.RISEscene", kScene3 );
 	Job* pJob = new Job();
 	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "driver-inline scene loads" ); return; }
@@ -2003,10 +2240,18 @@ static void RunDesignNoteRenderCarrierCleanSceneTest()
 
 int main()
 {
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	RunCoreTests();
 	RunCameraOverrideTest();
 	RunInstanceArrayTest();
 	RunCsgTest();
+	RunParticipatingMediumExactnessTest();
 	RunIsolationTest();
 	RunDownscaleGuardTest();
 	RunExactnessRedProve();

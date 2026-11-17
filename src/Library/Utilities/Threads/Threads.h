@@ -21,6 +21,7 @@
 #define UTIL_THREADS_
 
 #include <vector>
+#include <cstddef>
 
 namespace RISE
 {
@@ -36,7 +37,11 @@ namespace RISE
 	//! Utility thread functions
 	struct Threading
 	{
-		//! Creates and starts a thread running
+		//! Creates and starts a thread running.  `initial_stack_size` is the
+		//! thread's stack size in bytes; 0 means the platform default
+		//! (512 KB for a secondary pthread on macOS, 8 MB on glibc Linux,
+		//! 1 MB on Windows).  Honoured on every platform since DL-315 (the
+		//! pthread build used to ignore it).
 		/// \return 1 if successful, 0 otherwise
 		static unsigned int riseCreateThread(
 			THREAD_FUNC pFunc,
@@ -95,6 +100,13 @@ namespace RISE
 
 		/// \return Handle to the current thread
 		static RISETHREADID riseGetCurrentThread( );
+
+		//! DL-315: bytes of stack still available to the CALLING thread
+		//! below the caller's frame, or SIZE_MAX when the platform cannot
+		//! say.  The stack's low bound is looked up once per thread and
+		//! cached, so a call is a thread-local read and a subtraction.  Any
+		//! guard page is inside the reported region; callers keep a margin.
+		static size_t riseRemainingStackBytes( );
 
 		//! Initializes a structure which threads can use to put themselves to sleep for 
 		//! some period of time

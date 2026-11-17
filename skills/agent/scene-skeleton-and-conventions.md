@@ -96,19 +96,27 @@ above.
 
 ## A one-call alternative for turned geometry
 
-Hand-authoring a turned profile -- a chain of `sdf_geometry`
-`roundcone` parts joined by `smin` (see object-modeling-recipes' turned-
-vessel recipe) -- is the right verb but several lines of `part` math.
-`insert_geometry_scaffold` expands one of four family templates
-(`displaced_slab`, `sweep_rail`, `blended_vessel`, `sdf_column`) into
-that graph in a single call, e.g. `insert_geometry_scaffold
-{family:"sdf_column", name:"column1", size:1.0, detail:0.5,
-aspect:1.5}` -- this lands `tmpl_column1_col` (a single `sdf_geometry`
-base/shaft/capital `smin` chain, closed with the same flat-bottom cut)
-as an ordinary, editable chunk.  Unlike `insert_material_scaffold`,
-this tool never emits a material or a `standard_object` -- point a
+A turned profile is a `lathe_geometry`: `profile_point <r> <h>` lines
+that ARE the silhouette (see object-modeling-recipes' turned-vessel
+recipe).  When the form must instead be an SDF -- to take part in CSG,
+or to blend into a larger body -- that is a chain of `roundcone` parts
+joined by `smin`, and several lines of `part` math.
+`insert_geometry_scaffold` expands one of seven family templates
+(`displaced_slab`, `sweep_rail`, `blended_vessel`, `sdf_column`,
+`blended_chain`, `quadruped` [alias `creature`], `volume_bank`) into that graph in a single call, e.g.
+`insert_geometry_scaffold {family:"sdf_column", name:"column1",
+size:1.0, detail:0.5, aspect:1.5}` -- this lands `tmpl_column1_col` (a
+single `sdf_geometry` base/shaft/capital `smin` chain, closed with the
+same flat-bottom cut) as an ordinary, editable chunk.  Unlike
+`insert_material_scaffold`, this tool never emits a material or a
+`standard_object` (except `volume_bank`, which emits its own -- see the
+modeling-workflow-and-geometry skill) -- point a
 `standard_object.geometry` at `tmpl_column1_col` yourself, exactly like
-`sph` in the minimal scene above.
+`sph` in the minimal scene above.  Already placed a part and want to
+revise its FORM rather than author it from scratch -- `replace_geometry_scaffold`
+expands the same graph and rebinds an existing object's `geometry` slot
+to it in one call, preserving every other param; see the
+modeling-workflow-and-geometry skill for the full contract.
 
 ## Convention traps (each has caused real bugs)
 
@@ -117,11 +125,19 @@ this tool never emits a material or a `standard_object` -- point a
    the camera at `+Z` looking at the origin, a light needs **positive
    Z** in `direction` to light what the camera sees.  Importers from
    shine-direction conventions (glTF, Unity, Unreal) must NEGATE first.
-2. **`power` multiplies `color`.**  Directional/ambient: radiance =
+2. **`power` multiplies `color`.**  Directional: radiance =
    `color * power` (no falloff).  `omni_light` / `spot_light`:
    `color * power / r^2` — distant point lights need large powers
    (hundreds+).  `power 3.14` (pi) on a directional key makes a fully
-   lit white Lambertian surface return ~1.
+   lit white Lambertian surface return ~1.  On an emissive material it
+   is `scale` that multiplies the `exitance` painter instead — and
+   **most scenes should be lit by AREA LIGHTS**, an object wearing a
+   `lambertian_luminaire_material`, in most cases a rectangle.  The
+   point / spot / directional kinds are zero-area idealizations (hard
+   shadows, no penumbra, nothing visible in frame) and are for special
+   cases; `ambient_light` is REFUSED on every path that could create it
+   (no position, no direction, no shadow ray, so no shadow and no
+   falloff).  Full recipe in the lighting-recipes skill.
 3. **Colorspace defaults.**  `uniformcolor_painter` treats `color` as
    already-linear Rec.709 (`colorspace Rec709RGB_Linear`).  Add
    `colorspace sRGB` when the value came from a color picker / hex code
@@ -145,3 +161,29 @@ the standard dual EXR (HDR archive) + PNG (display preview) idiom.
 Declare the rasterizer chunk BEFORE any `file_rasterizeroutput`
 chunk; FRO-first (or no rasterizer chunk) fails the load with a
 "no rasterizer is set" diagnostic.
+
+## Choosing the integrator
+
+You may select exactly two integrator families, in either their RGB
+or spectral form:
+
+| Rasterizer chunk | Use it for |
+| --- | --- |
+| `pathtracing_pel_rasterizer` / `pathtracing_spectral_rasterizer` | Everything, unless there is a specific reason not to.  This is the default. |
+| `vcm_pel_rasterizer` / `vcm_spectral_rasterizer` | Caustics and refractive / dispersive transport — light focused through glass, water, gems.  PT misses much of that energy. |
+
+`bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, `mlt_rasterizer`,
+`mlt_spectral_rasterizer`, `auto_rasterizer` and
+`auto_spectral_rasterizer` are **specialized rasterizers you may not
+select** — inserting one is refused, and there is no override
+parameter.  If a scene needs one, the user selects it themselves.
+`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer` are
+**frozen legacy rasterizers** (unsupported since 2026-10-09) and are
+refused too.  Material alpha (`alpha_coverage` / `alpha_mode` /
+`alpha_cutoff`) works under PT and VCM, so no scene needs them.
+
+A scene the user handed you that already contains one of the blocked
+rasterizers stays **fully editable** — edit any chunk in it, including
+that rasterizer's own parameters, and render it normally.  The one
+parameter edit that is refused is pinning an `auto_rasterizer`'s
+`integrator` to `bdpt`; `pt`, `vcm` and `auto` are all fine.

@@ -1,16 +1,33 @@
 # Jakob-Hanika LUT — Gamut Failures & Why Better Solver ≠ Better LUT
 
-**Date:** 2026-05-09 (Stage A update: 2026-05-24)
-**Status:** known-limitation greatly mitigated by Stage A migration; current LUT shipped is `extlib/jakob-hanika-luts/rec709.coeff`
-**Related:** [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md) (the spectral-uplift work the LUT supports), [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) (Stage A done, Stage B in progress)
+**Date:** 2026-05-09 (Stage A update: 2026-05-24; Stage C resolution: 2026-09-01)
+**Status:** RESOLVED (Stage B Rec.709 working space + Stage C D65 reference-illuminant LUT, 2026-09-01); current LUT shipped is `extlib/jakob-hanika-luts/rec709.coeff`
+**Related:** [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md) (the spectral-uplift work the LUT supports), [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) (Stages A–B complete), [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) (Stage C complete)
 
 ---
 
-## TL;DR (Stage A update)
+## TL;DR (Stage C update, 2026-09-02 — SUPERSEDES the Stage A figures below)
 
-**Stage A migration (2026-05-24)** retrained the LUT against Rec.709 Linear (D65). The current LUT (`extlib/jakob-hanika-luts/rec709.coeff`, baked into `src/Library/Utilities/Color/RGBToSpectrumTable_LUTData.cpp`) ships with **3.9 % of cells unconverged** (mean residual 1.2 × 10⁻³, max 9.5 × 10⁻²). A **5–6× quality improvement** over the prior ROMM LUT.
+**The LUT now converges on 100 % of cells** (mean residual 2.554 × 10⁻⁵, max < 1 × 10⁻⁴).
+[Stage C](SPECTRAL_ILLUMINANT_CONVENTION.md) put the target's **reference illuminant (D65)
+into the generator's forward model** — PBRT-v4's convention — instead of training under a
+flat (E) illuminant. That was the real cause of the residual failures *and* of the white-
+corner collapse: under flat E a flat spectrum resolves to `(1.2048, 0.9483, 0.9089)`, not
+neutral, so the white cell was only reachable by a sigmoid that suppresses red, which
+`S ≤ 1` forbids. The "richer spectral model / more coefficients" conclusion recorded below
+was wrong — the sigmoid was expressive enough all along, it was being asked the wrong
+question.
 
-The residual ~4% failures are at the deep-blue gamut corner where the JH sigmoid model itself has limited expressive power — not at primaries-outside-locus cells (Rec.709 primaries are all inside the locus). Tightening this further would require a richer spectral model (more coefficients) rather than colour-space gymnastics.
+Consequences: authored white uplifts to ≥ 0.99999 at every wavelength, greys uplift flat
+to ~1.5 × 10⁻⁴, and the ~19 %-per-multiply red loss described in the 2026-09-01 note below
+is closed. **Everything from here down describes the pre-Stage-C LUT** and is retained as
+diagnostic history.
+
+## TL;DR (Stage A update — HISTORICAL, see Stage C above)
+
+**Stage A migration (2026-05-24)** retrained the LUT against Rec.709 Linear (D65). That LUT (`extlib/jakob-hanika-luts/rec709.coeff`, baked into `src/Library/Utilities/Color/RGBToSpectrumTable_LUTData.cpp`) shipped with **3.9 % of cells unconverged** (mean residual 1.2 × 10⁻³, max 9.5 × 10⁻²). A **5–6× quality improvement** over the prior ROMM LUT.
+
+The residual ~4% failures were at the deep-blue gamut corner, then believed to be a limit of the JH sigmoid model's expressive power — not at primaries-outside-locus cells (Rec.709 primaries are all inside the locus). Stage C showed that diagnosis was wrong; the failures were a forward-model error, and putting D65 in removed all of them.
 
 The historical 22 % failure rate below applies to the **pre-Stage-A ROMM LUT** (`romm.coeff`, no longer shipped). It is preserved below for diagnostic context.
 
@@ -81,6 +98,8 @@ This is intrinsic to wide-gamut RGB spaces with primaries outside the locus. Cha
 
 The 22 % isn't impacting any production scene. It's an LUT-quality metric, not a render-quality metric.
 
+**2026-09-01 update — the WHITE corner cell IS a render-quality issue, now guarded engine-wide.** Authored white `(1,1,1)` uplifts to a spectrum that collapses above ~620 nm (1.28e-5 @ 660 nm — measured curve in `CoatedLayer.h` `PassTransmittance`), which cost ~8–10 % of the red channel *per bounce* on every multiplicative slot (reflectance / tint / transmittance / alpha / extinction) in spectral renders while RGB stayed exact. Commit `c3d38ea2` generalizes `CoatedBRDF::ResolveCoat`'s decision into `IsUntintedWhite` / `GuardedGetColorNM` (`src/Library/Interfaces/IPainter.h`) and applies it across all material + shader-op multiplicative slots; regression tripwires in `tests/JHWhiteGuardSpectralTest.cpp`. Emitter *exitance* slots are deliberately unguarded — for a source term the albedo uplift of white is round-trip-exact, and flat 1.0 would shift the whitepoint. Known residual the guard does NOT touch: grey albedos uplift non-flat (0.5 grey → 0.36 @ 660 nm, round-trip-preserving), so every throughput multiply compounds metamerically (~19 % R per multiply measured at 0.95 grey) — that is the JH-shape limitation this document describes, not a per-slot bug.
+
 ## Worst-case residual translation
 
 Mean residual 1.6 × 10⁻² in ROMM RGB units = ~1.6 % chromatic error per channel after round-trip. Max 0.39 = ~39 % off in the worst single cell, but those cells are at `(R=1, G=0, B=0)`-style corners. An 8-bit display quantum is ~4 × 10⁻³, so:
@@ -100,7 +119,7 @@ Mean residual 1.6 × 10⁻² in ROMM RGB units = ~1.6 % chromatic error per chan
 
 - **Don't try to make the solver converge harder on the failed cells.** The targets aren't reachable; you'd be fitting noise.
 - **Don't loosen the acceptance tolerance.** The current 1 × 10⁻⁴ threshold is correct (well below the 8-bit quantum). Loosening it would mark genuinely-near-converged cells as "passed" while the gamut-corner cells stay unreachable.
-- **Don't switch back to flat-E training.** The previous 5 %-failure rate under matrix-only forward model was a *different* convention and required `IntegratorXYZtoROMMRGB` at runtime, which broke physical-spectrum scenes (BioSpec under blackbody → lavender). Landing 3 v2's adapt+matrix forward + standard runtime resolve is correct; the gamut limitation is the cost.
+- **Don't switch back to flat-E training.** *(Still true, and Stage C made it emphatic — flat-E training is exactly what Stage C removed; see [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md). The rest of this bullet is the older ROMM-era argument.)* The previous 5 %-failure rate under matrix-only forward model was a *different* convention and required `IntegratorXYZtoROMMRGB` at runtime, which broke physical-spectrum scenes (BioSpec under blackbody → lavender). Landing 3 v2's adapt+matrix forward + standard runtime resolve was correct for its time; the gamut limitation was the cost.
 
 ## Forward path
 
@@ -123,7 +142,7 @@ make -C build/make/rise tools
 #    Windows (VS2022):
 "$msbuild" build\VS2022\Tools\JakobHanikaLUTGen.vcxproj /p:Configuration=Release /p:Platform=x64
 
-# 2. Regenerate the binary LUT (~30-60 sec on modern hardware for the
+# 2. Regenerate the binary LUT (~1 sec on modern hardware for the
 #    default 64-resolution grid).  Default target is rec709 since 2026-05.
 #    Output: extlib/jakob-hanika-luts/rec709.coeff
 ./bin/tools/JakobHanikaLUTGen --target rec709 \
@@ -142,5 +161,11 @@ make -C build/make/rise -j8 all                 # Mac / Linux
 # OR VS2022: rebuild Library.vcxproj
 ```
 
-`tools/JakobHanikaLUTGen.cpp` accepts `--target {rec709|romm|acescg}` so a future migration to ACES AP1 is a one-line change at LUT bake time.  The runtime
+Since Stage C the generator integrates under the target's **reference illuminant SPD**, so
+`--target romm` and `--target acescg` **refuse with an explicit message** until someone adds
+the D50 / ACES-white SPD resampled onto the 380–780 nm / 5 nm CMF grid (the error text says
+exactly where to put it). Enabling ACES is therefore now "add its SPD + flip the runtime
+`LUTTargetPel`", not just a bake flag.
+
+`tools/JakobHanikaLUTGen.cpp` accepts `--target {rec709|romm|acescg}` so a future migration to ACES AP1 is a small change at LUT bake time.  The runtime
 `RGBToSpectrumTable::operator()` hardcodes the boundary conversion into Rec.709 — switching targets in the LUT alone without extending the runtime's conversion type is a silent footgun, so the bake script refuses anything other than `rec709` until that runtime extension lands (see comment in `tools/GenerateSpectrumLUTHeader.py`).

@@ -132,19 +132,80 @@ namespace RISE
 				       // autonomy posture, including Read, exactly like
 				       // render itself.
 				       method == "query_object_at" ||
+				       // Arc 80 (2026-08-12): scene_inventory is a PURE READ by
+				       // exactly query_object_at's test -- it runs the same
+				       // ephemeral identity render and never touches the
+				       // retained Document.
+				       method == "scene_inventory" ||
 				       // compare_to_reference is a PURE READ -- it renders
 				       // (never mutates the retained Document, exactly like
 				       // render itself) and grades against a HOST-registered
 				       // reference image; available under every autonomy
 				       // posture, including Read.
-				       method == "compare_to_reference";
+				       method == "compare_to_reference" ||
+				       // S1 (2026-08-11): the two staged-build-protocol verbs are
+				       // read-safe on exactly the test file_build_plan passes --
+				       // both touch per-session state ONLY (which element is
+				       // active, which chunks were recorded against it) and the
+				       // retained Document not at all: no chunk, no param, no
+				       // head bump, no staging, no authority branch.
+				       // finish_element additionally RENDERS, which is itself
+				       // read-safe (render is on this list two entries up).  And
+				       // both must be reachable under every posture for the
+				       // load-bearing reason file_build_plan's own entry gives:
+				       // reopen_element is the escape the compose-phase refusal
+				       // names, so an autonomy layer that refused it would strand
+				       // exactly the session that needs it.
+				       method == "finish_element" ||
+				       method == "reopen_element" ||
+				       // G2 (2026-08-10): file_build_plan records a per-session
+				       // DECLARATION (the elements, their pieces and their
+				       // declared construction) and touches the retained Document not
+				       // at all -- no chunk, no param, no head bump -- so it is
+				       // read-safe on the same test render/read_viewport pass.
+				       // It must ALSO be reachable under every posture for a
+				       // second, load-bearing reason: it is the ONLY way to
+				       // disarm the build-plan gate, and under Propose the gate
+				       // can genuinely fire (insert_chunk reaches the session
+				       // there).  A gate whose unblock is refused by the
+				       // autonomy layer would be an un-unlockable session.
+				       method == "file_build_plan" ||
+				       // Arc 77 Phase 2 (2026-08-11): imagine_scene records a
+				       // per-session IMAGE TARGET (the model's own description,
+				       // rendered by the provider) and touches the retained
+				       // Document not at all -- read-safe on the same test
+				       // file_build_plan passes.  And it must be reachable under
+				       // every posture for the same second, load-bearing
+				       // reason: on a capable provider it is one of the TWO
+				       // ways to disarm the build-plan gate, and a gate whose
+				       // unblock the autonomy layer refuses would be an
+				       // un-unlockable session.
+				       method == "imagine_scene" ||
+				       // Doc 90 slice R1 (2026-08-22): set_render_anchor
+				       // re-points a per-session BOOKMARK (which completed
+				       // render the next render is shown beside) and touches
+				       // the retained Document not at all -- no chunk, no
+				       // param, no head bump, no staging, no authority branch.
+				       // Read-safe on exactly the test file_build_plan and
+				       // imagine_scene pass.
+				       //
+				       // It has no second, gate-shaped reason to be on this
+				       // list -- it unblocks nothing, and a session that never
+				       // calls it is never stranded.  It belongs here on the
+				       // first test alone, and it must be reachable under Read
+				       // for the plain reason that `render` is: a Read-posture
+				       // session still renders, so it still accumulates the
+				       // renders this verb bookmarks, and refusing the bookmark
+				       // while allowing the renders would be an arbitrary
+				       // half-mechanism.
+				       method == "set_render_anchor";
 			}
 
 			//! Secure-MCP slice 5b: the additional verbs `Propose` autonomy lets
-			//! through beyond the read-safe allowlist above -- the 5 known-
-			//! mutating verbs (the 3 single-item verbs plus the 2 BATCH forms,
-			//! insert_chunks and propose_patches, which mutate through the very
-			//! same per-element delegates and so carry the identical posture).
+			//! through beyond the read-safe allowlist above -- the 6 known-
+			//! mutating verbs (the 3 single-item verbs plus the 3 BATCH forms,
+			//! insert_chunks, propose_patches and -- R1a (2026-08-09) --
+			//! remove_chunks, which carry the identical posture).
 			//! Dispatching them under Propose does NOT itself
 			//! commit anything: it only lets the call REACH AgentSession, whose
 			//! own Owner/External authority decides staging-vs-commit (see
@@ -165,7 +226,15 @@ namespace RISE
 				       // session's own Owner/External authority still decides
 				       // staging-vs-commit per element.
 				       method == "insert_chunks" ||
-				       method == "remove_chunk";
+				       method == "remove_chunk" ||
+				       // R1a (2026-08-09): remove_chunks is the BATCH form of
+				       // remove_chunk and carries the IDENTICAL posture -- letting
+				       // it reach AgentSession under Propose does not commit
+				       // anything; the session's own Owner/External authority still
+				       // decides staging-vs-commit.  Its one difference from
+				       // insert_chunks is WHAT gets staged: ONE proposal for the
+				       // whole batch (see AgentSession::RemoveChunks' doc), never N.
+				       method == "remove_chunks";
 			}
 
 			//! The severity token for a diagnostic.
@@ -268,8 +337,8 @@ namespace RISE
 			}
 
 			//! Secure-MCP slice 6: the queue-full refusal error envelope for
-			//! all 5 mutating verbs (propose_patch/propose_patches/
-			//! insert_chunk/insert_chunks/remove_chunk) -- built when the
+			//! all 6 mutating verbs (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk/remove_chunks) -- built when the
 			//! wrapped AgentSession's result carries queueFull==true (see
 			//! AgentPatchResult::queueFull / AgentChunkResult::queueFull's
 			//! doc).  The BATCH forms raise it too, from the per-element
@@ -315,8 +384,8 @@ namespace RISE
 			}
 
 			//! Model-B F5 slice S2: parse the OPTIONAL `baseHeadVersion` param
-			//! shared by all 5 mutating verbs (propose_patch/propose_patches/
-			//! insert_chunk/insert_chunks/remove_chunk).  Returns
+			//! shared by all 6 mutating verbs (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk/remove_chunks).  Returns
 			//! 1 = present and valid (outBase filled), 0 = absent (or null --
 			//! unconditional edit), -1 = malformed (outErr carries the -32602
 			//! message).  The validation is the slice-1a contract verbatim:
@@ -463,7 +532,7 @@ namespace RISE
 			//! remove_chunk) AND the inline result construction of
 			//! propose_patch and propose_patches below, so the
 			//! {param,value,reason,suggestions} shape can never drift across
-			//! the 5 mutating verbs that can emit it.
+			//! the 6 mutating verbs that can emit it.
 			JsonValue IssuesJson( const std::vector<AgentChunkIssue>& issues )
 			{
 				JsonValue arr = JsonValue::MakeArray();
@@ -485,7 +554,57 @@ namespace RISE
 			//! Model-B F5 slice S2: serialize an AgentChunkResult (insert_chunk /
 			//! remove_chunk share the shape: the propose_patch result fields plus
 			//! the affected chunk's name/kind echo).
-			JsonValue ChunkResultJson( const AgentChunkResult& cr )
+			//!
+			//! S1 fix-round (2026-08-11): `element` is the build-protocol
+			//! attribution -- the element that was active when this chunk was
+			//! created.  Passed in by the CREATION verbs only (the caller holds
+			//! the session; this helper does not), and OMITTED entirely when
+			//! empty, so every existing caller's response shape is unchanged and
+			//! no existing field changes meaning.  WHY IT IS ON THE WIRE: design
+			//! sec 4 item 2 -- "are the chunks attributed to element X the ones
+			//! the wizard window was spent on" -- is the slice's central
+			//! measurement, and before this the attribution only reached a
+			//! trajectory through `finish_element`'s result.  A run that ends
+			//! mid-element (turns exhausted, model stops) never calls
+			//! finish_element, so its attributed set was stated nowhere at all.
+			//! A PLAIN FACT, never a judgement: it says which window a chunk was
+			//! made in, nothing about whether it was a good chunk.
+			//! ARC 83 SLICE 6 (2026-08-13): ONE `AgentPatchResult` as the
+			//! per-element JSON shape the wire has always emitted for a patch.
+			//! It EXISTED IN TWO INLINE COPIES before this slice
+			//! (`propose_patches` and `place_element`, the second carrying a
+			//! comment noting there was "no shared helper to call"), and this
+			//! slice needed a third for `frame_scene`.  Three copies of a wire
+			//! shape is exactly the drift surface this file's own
+			//! IsReadSafeVerb doc argues against, so the two existing sites now
+			//! call this and the new one does too -- the emitted keys are
+			//! unchanged, byte for byte, from what both copies produced.
+			JsonValue PatchResultJson( const AgentPatchResult& pr )
+			{
+				JsonValue itemRes = JsonValue::MakeObject();
+				itemRes.set( "applied",   JsonValue::MakeBool( pr.applied ) );
+				itemRes.set( "rawCode",   JsonValue::MakeNumber( static_cast<double>( pr.rawCode ) ) );
+				itemRes.set( "status",    JsonValue::MakeString( pr.status ) );
+				itemRes.set( "retriable", JsonValue::MakeBool( pr.retriable ) );
+				itemRes.set( "headVersion", HeadVersionJson( pr.headVersion ) );
+				itemRes.set( "message",   JsonValue::MakeString( pr.message ) );
+				if( !pr.issues.empty() ) itemRes.set( "issues", IssuesJson( pr.issues ) );
+				// Doc 90 R3: orphan-pressure report -- CONDITIONAL key, same
+				// back-compat posture as `issues` above and the SAME wire
+				// shape ("orphans", an array of "keyword/name" strings)
+				// replace_geometry_scaffold's own `reportedOrphans` already
+				// uses (see this file's ReplaceGeometryScaffold handler).
+				if( !pr.reportedOrphans.empty() ) {
+					JsonValue orphans = JsonValue::MakeArray();
+					for( const std::string& o : pr.reportedOrphans )
+						orphans.push_back( JsonValue::MakeString( o ) );
+					itemRes.set( "orphans", orphans );
+				}
+				return itemRes;
+			}
+
+			JsonValue ChunkResultJson( const AgentChunkResult& cr,
+			                           const std::string& element = std::string() )
 			{
 				JsonValue result = JsonValue::MakeObject();
 				result.set( "applied",   JsonValue::MakeBool( cr.applied ) );
@@ -496,6 +615,12 @@ namespace RISE
 				result.set( "message",   JsonValue::MakeString( cr.message ) );
 				result.set( "name",      JsonValue::MakeString( cr.name ) );
 				result.set( "kind",      JsonValue::MakeString( cr.kind ) );
+				// S1 fix-round (2026-08-11): CONDITIONAL key -- absent when the
+				// chunk carries no attribution (the protocol is off, the session
+				// is not in an element window, or the caller is a verb that does
+				// not create).  Absent means "no element recorded", which is
+				// exactly the state that makes a chunk freely editable.
+				if( !element.empty() ) result.set( "element", JsonValue::MakeString( element ) );
 				// Model-B F5 slice S3, extended to remove_chunk by a later slice:
 				// actionable insert_chunk/remove_chunk diagnostics -- a non-blocking
 				// WARNING on a successful insert (a forward reference), the
@@ -507,6 +632,79 @@ namespace RISE
 				// unchanged response shape on a clean insert/remove or an unexplained
 				// rejection.
 				if( !cr.issues.empty() ) result.set( "issues", IssuesJson( cr.issues ) );
+				return result;
+			}
+
+			//! Doc 91 slice L1 (2026-10-17): a CLEAN chunk success -- it
+			//! landed (applied, status "applied"), has nothing to say (no
+			//! `issues`), and its rawCode and message are EXACTLY the shared
+			//! canonical pair (kCstChunkInsertedRawCode /
+			//! kCstChunkInsertedMessage, IJobPriv.h) that every insert fold
+			//! writes.  Only then is everything else ChunkResultJson emits
+			//! per-chunk BOILERPLATE.  Review round 1 P1: a success with
+			//! EMPTY `issues` can still carry real content in its message --
+			//! the auto-parent notice ("This chunk was NOT parented to the
+			//! element's root node: ..."), the CSG-operand detach warning, the
+			//! S1 / G2 folds, or a batch's rawCode-3 "; note: ... ANOTHER
+			//! element" -- so a message that differs from the canonical one
+			//! in ANY way keeps the full entry.  Measured on two live
+			//! sessions (doc 91 sec 1): ~85% of each 18-28 KB build_element
+			//! report was this, re-sent on every later turn.  A "diagnosed",
+			//! "staged", "conflict" or "rejected" chunk is NEVER clean, so the
+			//! shapes the GUI drivers' retry gate and head-version guard read
+			//! (ChatPanel.cpp / ChatViewModel.swift: a WHOLLY refused batch)
+			//! keep every field.
+			bool IsCleanChunkSuccess( const AgentChunkResult& cr )
+			{
+				return cr.applied && cr.status == "applied" && cr.issues.empty() &&
+				       cr.rawCode == kCstChunkInsertedRawCode &&
+				       cr.message == kCstChunkInsertedMessage;
+			}
+
+			//! Doc 91 slice L1: `chunkResults` for four clean-room verbs
+			//! (build_element, light_scene, populate_scene, environment_scene;
+			//! frame_scene keeps every entry, see its handler).  Each of them
+			//! already NAMES every chunk that landed (`landed` / `created`, with
+			//! the kind in `landedKinds` / `created[].kind`), so a clean,
+			//! NAMED success is reported there once and omitted here; what
+			//! remains is the per-chunk detail that carries information -- a
+			//! rejected / diagnosed / issue-bearing chunk, and an UNNAMED
+			//! chunk (environment_scene's global_medium), whose kind is
+			//! recorded nowhere else.  Empty when everything landed cleanly.
+			JsonValue NotableChunkResultsJson( const std::vector<AgentChunkResult>& results,
+			                                   const AgentSession& s )
+			{
+				JsonValue arr = JsonValue::MakeArray();
+				for( std::size_t i = 0; i < results.size(); ++i ) {
+					const AgentChunkResult& cr = results[i];
+					if( IsCleanChunkSuccess( cr ) && !cr.name.empty() ) continue;
+					// S1 fix-round's `element` attribution rides along -- see
+					// ChunkResultJson's doc.
+					arr.push_back( ChunkResultJson( cr, s.ChunkElement( cr.name ) ) );
+				}
+				return arr;
+			}
+
+			//! Doc 91 slice L1: one `results` element of the insert_chunks
+			//! batch.  The array stays INDEX-ALIGNED with `chunks` (the
+			//! documented contract, read by ToolOutcomeLine and the GUI
+			//! retry gate), so a clean success is SLIMMED rather than
+			//! omitted: it keeps its identity (name, kind, element), its
+			//! verdict (applied, status) and its headVersion -- the head a
+			//! model passes as the NEXT call's baseHeadVersion -- and drops
+			//! only rawCode / retriable / message, which are implied by
+			//! status "applied".  Any other outcome is the full
+			//! ChunkResultJson.
+			JsonValue BatchChunkResultJson( const AgentChunkResult& cr, const std::string& element )
+			{
+				if( !IsCleanChunkSuccess( cr ) ) return ChunkResultJson( cr, element );
+				JsonValue result = JsonValue::MakeObject();
+				result.set( "applied",     JsonValue::MakeBool( true ) );
+				result.set( "status",      JsonValue::MakeString( cr.status ) );
+				result.set( "headVersion", HeadVersionJson( cr.headVersion ) );
+				result.set( "name",        JsonValue::MakeString( cr.name ) );
+				result.set( "kind",        JsonValue::MakeString( cr.kind ) );
+				if( !element.empty() ) result.set( "element", JsonValue::MakeString( element ) );
 				return result;
 			}
 
@@ -540,10 +738,14 @@ namespace RISE
 				result.set( "samplesOverridden", JsonValue::MakeBool( rr.samplesOverridden ) );
 				result.set( "effectiveSamples", JsonValue::MakeNumber( static_cast<double>( rr.effectiveSamples ) ) );
 				// Toolkit slice 2 ADDITIVE wire field -- see
-				// AgentRenderResult::renderMode's doc.  "production" or
-				// "draft"; distinct from `integrator`, which always names
-				// the head's ACTIVE (production) rasterizer regardless of
-				// which mode this render actually used.
+				// AgentRenderResult::renderMode's doc for the CURRENT value
+				// set, deliberately not re-listed here: it has grown three
+				// times since this comment was written ("objectmap", the view
+				// modes' own wire names, and 2026-08-24's "material"), and a
+				// copy of the list is a copy that goes stale.  Distinct from
+				// `integrator`, which always names the head's ACTIVE
+				// (production) rasterizer regardless of which mode this render
+				// actually used.
 				result.set( "renderMode", JsonValue::MakeString( rr.renderMode ) );
 				result.set( "perceptionAvailable", JsonValue::MakeBool( rr.perceptionAvailable ) );
 				result.set( "perceptionPersistentBytes", JsonValue::MakeNumber(
@@ -582,7 +784,333 @@ namespace RISE
 				// objectmap/view-mode render).
 				if( !rr.note.empty() )
 					result.set( "note", JsonValue::MakeString( rr.note ) );
+				// GPT slice item 1 (2026-08-24): the coverage-delta advisory --
+				// same omit-when-empty convention as `note` above.  See
+				// AgentRenderResult::coverageDeltaNote's doc.
+				if( !rr.coverageDeltaNote.empty() )
+					result.set( "coverageDeltaNote", JsonValue::MakeString( rr.coverageDeltaNote ) );
+				// G1 (2026-08-10) `render{isolate:}`: the measured facts about
+				// an isolated render, under ONE nested key.  CONDITIONAL --
+				// present ONLY when isolation actually applied AND the render
+				// itself succeeded (same omit-when-absent convention as
+				// `legend`/`note`/`agentRenderCap` above), so every existing
+				// render result is byte-identical.  The `rr.ok` check matters:
+				// `isolateApplied` is set as soon as object-solo framing
+				// happens, but a LATER stage of the same render (e.g. a
+				// `light:` resolution/support failure) can still flip
+				// `rr.ok` to false -- without this check the result would
+				// carry a full isolate block (bbox/framing) describing an
+				// image that was never produced, contradicting the
+				// `AgentRpc.h` and `AgentMcpAdapter.cpp` docs, which both
+				// promise the block only on a SUCCESSFUL isolate render.
+				// G1 fix-round (2026-08-10).
+				if( rr.ok && rr.isolateApplied ) {
+					JsonValue iso = JsonValue::MakeObject();
+					iso.set( "object", JsonValue::MakeString( rr.isolateObject ) );
+					// FIX 4 (G1 fix-round, 2026-08-10): bboxMin/bboxMax/
+					// longestEdge are OMITTED (not sent as measured-looking
+					// zeros) when the box is degenerate/unusable -- see
+					// AgentRenderResult::isolateBBoxUsable's doc.  Same
+					// sentinel-then-omit convention as `bboxCoverage` below.
+					if( rr.isolateBBoxUsable ) {
+						JsonValue bmin = JsonValue::MakeArray();
+						JsonValue bmax = JsonValue::MakeArray();
+						for( int a = 0; a < 3; ++a ) {
+							bmin.push_back( JsonValue::MakeNumber( rr.isolateBBoxMin[a] ) );
+							bmax.push_back( JsonValue::MakeNumber( rr.isolateBBoxMax[a] ) );
+						}
+						iso.set( "bboxMin", bmin );
+						iso.set( "bboxMax", bmax );
+						iso.set( "longestEdge", JsonValue::MakeNumber( rr.isolateLongestEdge ) );
+					}
+					iso.set( "autoFramed", JsonValue::MakeBool( rr.isolateAutoFramed ) );
+					if( !rr.isolateFitBasis.empty() )
+						iso.set( "fitBasis", JsonValue::MakeString( rr.isolateFitBasis ) );
+					if( rr.isolateBBoxCoverage >= 0.0 )
+						iso.set( "bboxCoverage", JsonValue::MakeNumber( rr.isolateBBoxCoverage ) );
+					result.set( "isolate", iso );
+				}
+				// Doc 91 V2 `render{zoom:}`: what the zoom camera did, under ONE
+				// nested key.  Conditional and gated on `ok` from the start, the
+				// same discipline as `isolate` above (facts about an image that
+				// never happened are the one defect this payload cannot afford).
+				if( rr.ok && rr.zoomApplied ) {
+					JsonValue zm = JsonValue::MakeObject();
+					zm.set( "object", JsonValue::MakeString( rr.zoomObject ) );
+					zm.set( "fovDegrees", JsonValue::MakeNumber( rr.zoomFovDegrees ) );
+					zm.set( "sceneFovDegrees", JsonValue::MakeNumber( rr.zoomSceneFovDegrees ) );
+					zm.set( "keptSceneFov", JsonValue::MakeBool( rr.zoomKeptSceneFov ) );
+					if( rr.zoomCoverage >= 0.0 )
+						zm.set( "coverage", JsonValue::MakeNumber( rr.zoomCoverage ) );
+					zm.set( "fitBasis", JsonValue::MakeString( rr.zoomFitBasis ) );
+					JsonValue eye = JsonValue::MakeArray();
+					for( int a = 0; a < 3; ++a ) eye.push_back( JsonValue::MakeNumber( rr.zoomEye[a] ) );
+					zm.set( "eye", eye );
+					result.set( "zoom", zm );
+				}
+				// G3b (2026-08-10) `render{target:}`: the measured shape match
+				// against the part's filed sketch, under ONE nested key.
+				// CONDITIONAL, same omit-when-absent convention as `isolate`
+				// above -- and gated on `rr.ok` from the START rather than
+				// after a review round, because this is EXACTLY the shape of
+				// G1's fix-round P1: facts describing an image that never
+				// happened.  `targetApplied` is itself only ever set on a
+				// successful render whose internal identity pass also
+				// succeeded, so the `rr.ok` term is belt-and-braces against a
+				// later stage flipping ok after the fact.
+				//
+				// EVERY NUMBER HERE IS REPORTED, NEVER CHARACTERIZED -- no
+				// threshold, no verdict, no advice anywhere in this block or
+				// in the message it accompanies (design doc
+				// docs/agentic-redesign/77-imagination-target-design.md sec 5.4).
+				if( rr.ok && rr.targetApplied ) {
+					JsonValue tgt = JsonValue::MakeObject();
+					tgt.set( "element", JsonValue::MakeString( rr.targetElement ) );
+					tgt.set( "view",    JsonValue::MakeString( rr.targetView ) );
+					tgt.set( "vantage", JsonValue::MakeString( rr.targetVantage ) );
+					tgt.set( "iou",         JsonValue::MakeNumber( rr.targetIou ) );
+					tgt.set( "mirroredIou", JsonValue::MakeNumber( rr.targetMirroredIou ) );
+					tgt.set( "sketchAreaFraction",
+						JsonValue::MakeNumber( rr.targetSketchAreaFraction ) );
+					tgt.set( "silhouetteAreaFraction",
+						JsonValue::MakeNumber( rr.targetSilhouetteAreaFraction ) );
+					tgt.set( "sketchAspect", JsonValue::MakeNumber( rr.targetSketchAspect ) );
+					// Both of these carry the -1.0 "not computed" sentinel and
+					// are OMITTED rather than serialized as a measured-looking
+					// number -- the same convention `bboxCoverage` and
+					// `bboxMin`/`bboxMax` already follow in the isolate block.
+					if( rr.targetSilhouetteAspect >= 0.0 )
+						tgt.set( "silhouetteAspect", JsonValue::MakeNumber( rr.targetSilhouetteAspect ) );
+					if( rr.targetThinnestAxisRatio >= 0.0 )
+						tgt.set( "thinnestAxisRatio", JsonValue::MakeNumber( rr.targetThinnestAxisRatio ) );
+					tgt.set( "compositeWidth",
+						JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeWidth ) ) );
+					tgt.set( "compositeHeight",
+						JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeHeight ) ) );
+					result.set( "target", tgt );
+				}
+				// Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: the
+				// WHOLE-SCENE target, under ONE nested key, same
+				// omit-when-absent convention and same `rr.ok`
+				// belt-and-braces as the two blocks above.
+				// `sceneTargetApplied` is only ever set on a qualifying,
+				// successful render of a session that imagined a scene (see
+				// AgentRenderResult::sceneTargetApplied for the qualification
+				// rule), so a session that never imagined one produces a
+				// byte-identical render result to before this slice.
+				//
+				// PHASE 2b (2026-08-11): THERE IS NO SCORE IN THIS BLOCK, AND
+				// NONE MAY BE ADDED BACK.  It used to carry `rmse` plus six
+				// per-channel means; a live run showed those are a TONE
+				// signal, and the only edits they can motivate are exposure /
+				// emissive / light-power cranking, which measurably made the
+				// picture worse.  The COMPOSITE IMAGE is the comparison.
+				// What ships here is only what cannot be chased: that a
+				// target exists, its own pixel size, and whether (and at what
+				// size) the composite rode back.  See
+				// AgentRenderResult::sceneTargetApplied for the full record.
+				if( rr.ok && rr.sceneTargetApplied ) {
+					JsonValue st = JsonValue::MakeObject();
+					st.set( "imagined", JsonValue::MakeBool( true ) );
+					st.set( "targetWidth",
+						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetWidth ) ) );
+					st.set( "targetHeight",
+						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetHeight ) ) );
+					const bool haveComposite = !rr.sceneTargetCompositePng.empty();
+					st.set( "composite", JsonValue::MakeBool( haveComposite ) );
+					if( haveComposite ) {
+						st.set( "compositeWidth",
+							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeWidth ) ) );
+						st.set( "compositeHeight",
+							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeHeight ) ) );
+					}
+					result.set( "sceneTarget", st );
+				}
+				// Doc 90 slice R1 (2026-08-22): THE ITERATION RATCHET, under
+				// ONE nested key, same omit-when-absent convention and same
+				// `rr.ok` belt-and-braces as the blocks above.  `anchorApplied`
+				// is only ever set on a qualifying, successful full-frame
+				// production render (see AgentRenderResult::anchorApplied), so
+				// a session that never got one produces a byte-identical
+				// render result to before this slice.
+				//
+				// THERE IS NO SCORE IN THIS BLOCK, AND NONE MAY BE ADDED --
+				// Phase 2b's law (see the sceneTarget block above), which doc
+				// 90 sec 2's history note reaffirmed after the SCORED form of
+				// this very slice was falsified.  `anchorRevision` and
+				// `currentRevision` are IDENTITIES: which render is the
+				// anchor, and which one this is.  Nothing here is a
+				// measurement of one image against another, and nothing may
+				// become one.
+				if( rr.ok && rr.anchorApplied ) {
+					JsonValue an = JsonValue::MakeObject();
+					an.set( "anchored", JsonValue::MakeBool( true ) );
+					an.set( "established", JsonValue::MakeBool( rr.anchorEstablished ) );
+					an.set( "anchorRevision",
+						JsonValue::MakeNumber( static_cast<double>( rr.anchorRevision ) ) );
+					an.set( "currentRevision",
+						JsonValue::MakeNumber( static_cast<double>( rr.anchorCurrentRevision ) ) );
+					const bool haveAnchorComposite = !rr.anchorCompositePng.empty();
+					an.set( "composite", JsonValue::MakeBool( haveAnchorComposite ) );
+					if( haveAnchorComposite ) {
+						an.set( "compositeWidth",
+							JsonValue::MakeNumber( static_cast<double>( rr.anchorCompositeWidth ) ) );
+						an.set( "compositeHeight",
+							JsonValue::MakeNumber( static_cast<double>( rr.anchorCompositeHeight ) ) );
+					}
+					result.set( "anchor", an );
+				}
+				// Arc 80 (2026-08-12): the SCENE INVENTORY -- "where is
+				// everything?" -- under ONE nested key, same omit-when-absent
+				// convention and same `rr.ok` belt-and-braces as the three
+				// blocks above.  `inventoryApplied` is only ever set on a
+				// successful, non-isolate, full-scene BEAUTY render of a scene
+				// with at least one object (see AgentRenderResult::
+				// inventoryApplied), so every other render is byte-identical
+				// to before this mechanism existed.
+				//
+				// IT RIDES THE RENDER RESULT ON PURPOSE.  `scene_inventory`
+				// returns the same measurement (through the same code path)
+				// for anyone who asks, but every voluntary consultation
+				// surface this workstream shipped measured 0/64 uses -- so the
+				// answer to "did my objects appear, and where are they" is
+				// delivered with the picture, unasked.
+				//
+				// `text` is the whole inventory as prose; it is what a model
+				// actually reads, and the counts beside it are the same facts
+				// in machine form.  EVERY CLAUSE IN IT IS A MEASUREMENT --
+				// nothing is characterized, no object is called missing, and
+				// no fix is suggested (arc 79 sec 8.1: a false clause in a
+				// model-facing payload cost an entire session's mechanism).
+				if( rr.ok && rr.inventoryApplied ) {
+					JsonValue inv = JsonValue::MakeObject();
+					inv.set( "objects", JsonValue::MakeNumber( static_cast<double>( rr.inventoryObjectCount ) ) );
+					inv.set( "covered", JsonValue::MakeNumber( static_cast<double>( rr.inventoryCoveredCount ) ) );
+					inv.set( "passWidth",  JsonValue::MakeNumber( static_cast<double>( rr.inventoryPassWidth ) ) );
+					inv.set( "passHeight", JsonValue::MakeNumber( static_cast<double>( rr.inventoryPassHeight ) ) );
+					inv.set( "text", JsonValue::MakeString( rr.inventoryText ) );
+					// Arc 83 (2026-08-14): emissive objects this render measured
+					// as NOT selected by NEE area-light sampling, and why -- see
+					// AgentSceneNotAreaSampledEntry.  Same omit-when-empty
+					// convention as `issues`/`legend` elsewhere: absent rather
+					// than an empty array when every emissive object passed, so
+					// an existing caller sees an unchanged response shape.
+					if( !rr.inventoryNotAreaSampled.empty() ) {
+						JsonValue nas = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < rr.inventoryNotAreaSampled.size(); ++i ) {
+							const AgentSceneNotAreaSampledEntry& e = rr.inventoryNotAreaSampled[i];
+							JsonValue o = JsonValue::MakeObject();
+							o.set( "name",   JsonValue::MakeString( e.name ) );
+							o.set( "reason", JsonValue::MakeString( e.reason ) );
+							nas.push_back( o );
+						}
+						inv.set( "notAreaSampled", nas );
+					}
+					result.set( "inventory", inv );
+				}
+				// Arc 81 (2026-08-12): THE TONAL FACT -- the frame's own luma
+				// distribution -- under ONE nested key, same omit-when-absent
+				// convention and same `rr.ok` belt-and-braces as the blocks
+				// above.  `tonalApplied` is only ever set on a successful,
+				// non-isolate, full PRODUCTION beauty render (see
+				// AgentRenderResult::tonalApplied for why each exclusion is a
+				// truthfulness requirement rather than conservatism), so every
+				// other render is byte-identical to before this existed.
+				//
+				// IT COSTS NO RENDER.  Unlike the inventory beside it, every
+				// number here is computed from the pixels this call already
+				// produced.
+				//
+				// WHY IT EXISTS: arc 80 sec 6.1 found the scene that "renders
+				// empty" was not empty -- 17 of 19 objects covered pixels, and
+				// the picture was one flat blue at about 3% contrast across the
+				// frame.  The inventory says where things are; this says
+				// whether they are distinguishable.  EVERY CLAUSE IN `text` IS
+				// A MEASUREMENT: no threshold, no verdict, no adjective, and
+				// none may be added -- the model draws the conclusion.
+				if( rr.ok && rr.tonalApplied ) {
+					JsonValue tone = JsonValue::MakeObject();
+					tone.set( "lumaMean",   JsonValue::MakeNumber( rr.tonalLumaMean ) );
+					tone.set( "lumaStdDev", JsonValue::MakeNumber( rr.tonalLumaStdDev ) );
+					tone.set( "lumaP1",  JsonValue::MakeNumber( static_cast<double>( rr.tonalLumaP1 ) ) );
+					tone.set( "lumaP99", JsonValue::MakeNumber( static_cast<double>( rr.tonalLumaP99 ) ) );
+					tone.set( "lumaMode", JsonValue::MakeNumber( static_cast<double>( rr.tonalLumaMode ) ) );
+					tone.set( "modeConcentration", JsonValue::MakeNumber( rr.tonalModeConcentration ) );
+					tone.set( "modeBand",
+						JsonValue::MakeNumber( static_cast<double>( kTonalConcentrationBand ) ) );
+					tone.set( "pixels",
+						JsonValue::MakeNumber( static_cast<double>( rr.tonalPixelsMeasured ) ) );
+					tone.set( "text", JsonValue::MakeString( rr.tonalText ) );
+					result.set( "tone", tone );
+				}
 				return result;
+			}
+
+			//! R1b (2026-08-09): the RPC-layer-only half of the
+			//! `agentRenderCap` fact (see BuildAgentRenderCapJson below) --
+			//! the raw, PRE-clamp width/height/samples the caller actually
+			//! sent, for an EXPLICIT value the render `render` handler's own
+			//! ParseClampedUInt/samples parse reduced.  Only the RPC layer
+			//! (AgentRpc.cpp) ever sees these raw numbers -- by the time a
+			//! value reaches AgentSession it is already clamped -- so this is
+			//! computed and filled entirely inline in the `render` handler,
+			//! never inside AgentSession.  Default-constructed = "nothing was
+			//! explicitly clamped", matching every field's meaning.
+			struct AgentRenderCapFacts
+			{
+				bool         explicitWidthClamped = false;
+				unsigned int rawWidthRequested = 0;
+				bool         explicitHeightClamped = false;
+				unsigned int rawHeightRequested = 0;
+				bool         explicitSamplesClamped = false;
+				double       rawSamplesRequested = 0.0;
+			};
+
+			//! R1b (2026-08-09): the honest `agentRenderCap` fact -- see
+			//! AgentRenderParams::fromAgentSurface's doc for the full
+			//! mechanism this reports on.  Combines what AgentSession itself
+			//! resolved (`rr.agentResolutionCapped`/`filmWidth`/`filmHeight`/
+			//! `agentSamplesCapped` -- the two ABSENT-value implicit
+			//! defaults, live-Job-state-dependent, so only AgentSession can
+			//! know them) with what the RPC layer alone knows (`facts` -- an
+			//! EXPLICIT value this parser itself clamped, from the caller's
+			//! raw pre-clamp request).  Returns false (leaves `out`
+			//! untouched) when NEITHER happened -- the caller should omit the
+			//! `agentRenderCap` key entirely in that case, matching every
+			//! other conditional-key convention in this file (`legend`,
+			//! `note`, `issues`): when nothing was clamped, add nothing.
+			bool BuildAgentRenderCapJson( const AgentRenderResult& rr,
+			                             const AgentRenderCapFacts& facts, JsonValue& out )
+			{
+				const bool resolutionCapped = rr.agentResolutionCapped ||
+					facts.explicitWidthClamped || facts.explicitHeightClamped;
+				const bool samplesCapped = rr.agentSamplesCapped || facts.explicitSamplesClamped;
+				if( !resolutionCapped && !samplesCapped ) return false;
+
+				out = JsonValue::MakeObject();
+				out.set( "maxEdge",    JsonValue::MakeNumber(
+					static_cast<double>( kAgentSurfaceMaxRenderEdge ) ) );
+				out.set( "maxSamples", JsonValue::MakeNumber(
+					static_cast<double>( kAgentSurfaceMaxSamples ) ) );
+				out.set( "resolutionCapped", JsonValue::MakeBool( resolutionCapped ) );
+				// `filmWidth`/`filmHeight` (the scene's authored Film dims --
+				// what an UNCAPPED absent-dims render would have produced)
+				// are populated ONLY for the implicit-default case; an
+				// explicit over-request needs no such echo -- the caller
+				// already knows exactly what it asked for.
+				if( rr.agentResolutionCapped ) {
+					out.set( "filmWidth",  JsonValue::MakeNumber( static_cast<double>( rr.filmWidth ) ) );
+					out.set( "filmHeight", JsonValue::MakeNumber( static_cast<double>( rr.filmHeight ) ) );
+				}
+				if( facts.explicitWidthClamped || facts.explicitHeightClamped ) {
+					out.set( "requestedWidth",  JsonValue::MakeNumber( static_cast<double>( facts.rawWidthRequested ) ) );
+					out.set( "requestedHeight", JsonValue::MakeNumber( static_cast<double>( facts.rawHeightRequested ) ) );
+				}
+				out.set( "samplesCapped", JsonValue::MakeBool( samplesCapped ) );
+				if( facts.explicitSamplesClamped ) {
+					out.set( "requestedSamples", JsonValue::MakeNumber( facts.rawSamplesRequested ) );
+				}
+				return true;
 			}
 
 			//! Parse a schema JSON STRING (from SchemaGen) into a JsonValue so
@@ -765,6 +1293,16 @@ namespace RISE
 			}
 		}
 
+		bool AgentRpcIsCleanChunkSuccess( const AgentChunkResult& cr )
+		{
+			return IsCleanChunkSuccess( cr );
+		}
+
+		std::string AgentRpcBatchChunkResultJsonText( const AgentChunkResult& cr, const std::string& element )
+		{
+			return JsonSerialize( BatchChunkResultJson( cr, element ) );
+		}
+
 		AgentRpcDispatcher::AgentRpcDispatcher( std::unique_ptr<AgentSession> session,
 		                                        AgentAutonomy autonomy )
 			: mSession( std::move( session ) )
@@ -827,7 +1365,7 @@ namespace RISE
 				// membership; a count or a copy of it here would just be one
 				// more thing to drift).  A verb that
 				// is not on the read-safe list is refused under Read -- this
-				// covers the 5 known-mutating verbs, resolve_proposal, AND any
+				// covers the 6 known-mutating verbs, resolve_proposal, AND any
 				// future verb that reaches dispatch without being consciously
 				// classified read-safe (the fail-closed property this
 				// hardening exists for).  Under AgentAutonomy::Read this is a
@@ -837,7 +1375,7 @@ namespace RISE
 				// "conflict" success result.
 				//
 				// Secure-MCP slice 5b: AgentAutonomy::Propose extends the
-				// read-safe set with the 5 mutating verbs (IsProposeSafeVerb)
+				// read-safe set with the 6 mutating verbs (IsProposeSafeVerb)
 				// -- letting them REACH AgentSession, whose own Owner/External
 				// authority decides staging-vs-commit (see AgentRpc.h's file
 				// header).  resolve_proposal is deliberately excluded from
@@ -882,8 +1420,8 @@ namespace RISE
 							"refused: this session runs with --agent-autonomy=propose; insert_material_scaffold "
 							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
 							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
-							"propose_patch/propose_patches/remove_chunk remain available under Propose and "
-							"STAGE proposals as usual" );
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
 					}
 					// Arc-75 S3b: insert_geometry_scaffold is the geometry
 					// sibling of insert_material_scaffold above -- SAME
@@ -896,8 +1434,199 @@ namespace RISE
 							"refused: this session runs with --agent-autonomy=propose; insert_geometry_scaffold "
 							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
 							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
-							"propose_patch/propose_patches/remove_chunk remain available under Propose and "
-							"STAGE proposals as usual" );
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					// R2 (2026-08-10): replace_geometry_scaffold is the third
+					// scaffold verb, excluded from IsProposeSafeVerb for the SAME
+					// reason -- and, for this one, additionally because a
+					// composite whole-document swap has no AgentProposalKind an
+					// Owner could approve card-by-card (see
+					// AgentSession::ReplaceGeometryScaffold's authority note).
+					if( m == "replace_geometry_scaffold" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; replace_geometry_scaffold "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					// 88 step 2 (2026-08-19): collapse_to_instances is the SECOND
+					// verb whose commit is one composite whole-document swap, so it
+					// is excluded from IsProposeSafeVerb for the identical reason --
+					// there is no AgentProposalKind an Owner could approve
+					// card-by-card, and inventing one would replay the collapse
+					// against a DIFFERENT head than the one it was fitted to.
+					if( m == "collapse_to_instances" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; collapse_to_instances "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					// 88 S5 (2026-08-20): vary_material is the THIRD verb whose
+					// commit is one composite whole-document swap, so it is
+					// excluded from IsProposeSafeVerb for exactly the reason
+					// collapse_to_instances above is, with the same message shape.
+					if( m == "vary_material" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; vary_material "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					// Doc 90 slice R2 (2026-08-23): revert_to_revision is the
+					// FOURTH verb whose commit is one composite whole-document
+					// swap, so it is excluded from IsProposeSafeVerb for exactly
+					// the reason the three above are, with the same message
+					// shape.  There is no AgentProposalKind for "put the whole
+					// document back to what it was", and inventing one would
+					// replay the restore against a DIFFERENT head than the one
+					// it was checked against.
+					if( m == "revert_to_revision" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; revert_to_revision "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					// Cat plan item 1 (2026-08-25): fix_blend_scale is the FIFTH
+					// verb whose commit is one composite whole-document swap
+					// (potentially across multiple sdf_geometry chunks' `part`
+					// occurrences in a single call), so it is excluded from
+					// IsProposeSafeVerb for exactly the reason vary_material
+					// above is, with the same message shape.
+					if( m == "fix_blend_scale" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; fix_blend_scale "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					// GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): add_wear is the
+					// SIXTH verb whose commit is one composite whole-document swap
+					// (a painter or two spliced in plus the material's slots
+					// repointed), so it is excluded from IsProposeSafeVerb for
+					// exactly the reason vary_material above is, with the same
+					// message shape.
+					if( m == "add_wear" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; add_wear "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					// WETNESS_COAT_DESIGN sec 6/13 (2026-08-31, item 8 2026-09-01):
+					// add_wetness is the SEVENTH verb whose commit is one composite
+					// whole-document swap (a Lambertian base is WRAPPED in a new
+					// `coated_material` chunk with every bound object rebound to it;
+					// a GGX/PBR base gets one or more field chunks spliced plus its
+					// slots repointed), so it is excluded from IsProposeSafeVerb for
+					// exactly the reason add_wear above is, with the same message
+					// shape and the same "each verb refuses what the other has
+					// already rewritten" collision with add_wear.
+					if( m == "add_wetness" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; add_wetness "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					// CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): make_fabric's
+					// commit is one composite whole-document swap too -- up to
+					// four minted chunks (a dielectric-F0 painter, a substrate
+					// of the preset's class, a weave painter, the
+					// `fabric_material`) plus every bound object's `material`
+					// reference moved onto the wrapper -- so it is excluded
+					// from IsProposeSafeVerb for exactly the reason add_wetness
+					// above is, with the same message shape.
+					if( m == "make_fabric" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; make_fabric "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					// CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): add_fuzz's
+					// commit is one composite whole-document swap too -- a
+					// hair_geometry/hair_material/standard_object triad per
+					// bound object -- so it is excluded from
+					// IsProposeSafeVerb for exactly the reason make_fabric
+					// above is, with the same message shape.
+					if( m == "add_fuzz" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; add_fuzz "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					// S2 (2026-08-11): build_element and place_element are the
+					// two clean-room verbs.  BOTH mutate (build_element inserts
+					// through InsertChunks, place_element patches through
+					// ProposePatches), so neither is read-safe -- and both are
+					// excluded from IsProposeSafeVerb for the SAME reason the
+					// three scaffold verbs above are, with the SAME
+					// Propose-specific message shape (truthful
+					// data.autonomy="propose", not the generic Read-posture
+					// fallback's hardcoded "read").
+					// Arc 81 (2026-08-12): light_scene is the clean-room LIGHTING
+					// verb and mutates (it inserts the chunks its pass
+					// returned, through the ordinary InsertChunks path), so it
+					// is excluded from IsProposeSafeVerb for exactly the reason
+					// build_element is, with the same message shape.
+					if( m == "light_scene" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; light_scene "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					// Arc 82 (2026-08-12): populate_scene is the clean-room
+					// POPULATION verb and mutates (it inserts the
+					// standard_object chunks its pass returned, through the
+					// ordinary InsertChunks path), so it is excluded from
+					// IsProposeSafeVerb for exactly the reason light_scene is,
+					// with the same message shape.
+					if( m == "populate_scene" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; populate_scene "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					// Arc 83 slices 5 and 6 (2026-08-13): environment_scene and
+					// frame_scene are the clean-room ENVIRONMENT and FRAMING
+					// verbs.  BOTH mutate -- environment_scene inserts through
+					// InsertChunks and appends the rasterizer chunk carrying its
+					// dome binding, frame_scene patches or replaces the camera
+					// chunk -- so both are excluded from IsProposeSafeVerb for
+					// exactly the reason light_scene is, with the same message
+					// shape.
+					if( m == "environment_scene" || m == "frame_scene" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; " + m +
+							" is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
+					if( m == "build_element" || m == "place_element" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; " + m +
+							" is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
 					}
 					return MakeAutonomyRefusedError( idValue, m );
 				}
@@ -1196,16 +1925,54 @@ namespace RISE
 							"Invalid params: 'text' must be a string when supplied "
 							"(omit it entirely to validate the current scene)" );
 					}
-					// PRESENCE of a string selects the text form; only
-					// OMISSION (or an explicit null) selects the head.  An
-					// empty candidate is a VALID candidate -- it just is not a
-					// valid scene, and ValidateText says so with an
-					// EMPTY_DOCUMENT diagnostic.  (Reading "" as ABSENT here
-					// instead was the wrong lever: it dodged the "clean verdict
-					// on a non-document" lie by silently validating something
-					// the caller did not ask about, and made `{"text":""}` fail
-					// outright when no scene is loaded.)
-					const bool haveText = ( text != nullptr && text->isString() );
+					// PRESENCE of a NON-EMPTY string selects the text form;
+					// OMISSION, an explicit null, OR an explicit empty string
+					// selects the head.
+					//
+					// This reverses an earlier decision (see git history) that
+					// deliberately made `{"text":""}` take the text form and
+					// report EMPTY_DOCUMENT.  That reasoning was sound for a
+					// caller that TYPED an empty string on purpose -- but the
+					// GPT wire transport's tool-calling SDK convention fills
+					// EVERY optional string parameter it isn't using with ""
+					// rather than omitting it, so a GPT-backed session cannot
+					// express "no text" at all: every `validate` call arrives
+					// as `{"text":""}`, taking the text form, and reporting
+					// EMPTY_DOCUMENT no matter what the live document holds --
+					// observed retrying the IDENTICAL call three times
+					// verbatim, apparently unable to tell "I asked for text
+					// validation and my empty string was rejected" from "I
+					// asked to validate the live head and it says EMPTY_
+					// DOCUMENT", because from that transport's side those two
+					// requests are byte-identical.
+					//
+					// There is no genuine caller-visible loss: an ACTUAL empty
+					// candidate has exactly one possible verdict either way
+					// (EMPTY_DOCUMENT), so a caller who really means "validate
+					// nothing" learns nothing this reroute would have told
+					// them that the head form does not already say just as
+					// well (EMPTY_DOCUMENT again, if the head itself is
+					// empty).  Whitespace-only and comments-only candidates
+					// are UNCHANGED -- they are non-empty STRINGS, so they
+					// still take the text form and still report EMPTY_
+					// DOCUMENT; only the literal `""` is reinterpreted, which
+					// is exactly the one shape a "fill unset optionals with
+					// empty string" SDK convention can produce.
+					//
+					// "" reads as absent ONLY when there is a LIVE DOCUMENT for
+					// it to be absent FROM -- a session with no scene loaded
+					// (or none at all) has nothing to fall back to, and the
+					// earlier decision's own worked example still applies
+					// there verbatim: routing an empty string to the no-head
+					// error path turns a valid, stateless `{"text":""}` call
+					// into a hard failure with no document in play to justify
+					// it.  So a headless/docless session keeps the pre-
+					// existing behaviour -- "" still takes the text form and
+					// reports EMPTY_DOCUMENT -- while a session WITH a live
+					// head gets the GPT-tolerance fix.
+					const bool emptyText  = ( text != nullptr && text->isString() && text->asString().empty() );
+					const bool hasHeadDoc = ( s != nullptr ) && s->ReadDocumentSnapshot().hasDocument;
+					const bool haveText   = ( text != nullptr && text->isString() && !( emptyText && hasHeadDoc ) );
 					// ONE renderer for both forms, so the two result shapes
 					// cannot drift apart field by field.
 					auto diagnosticsArray = []( const std::vector<AgentDiagnostic>& diags ) {
@@ -1243,8 +2010,14 @@ namespace RISE
 								"validate; supply 'text' to validate a candidate document" );
 						}
 						JsonValue headResult = JsonValue::MakeObject();
+						// (Doc 91) condition G's phase gate: `s` is non-null here
+						// (checked just above), so pass its real build phase
+						// through rather than ValidateText's conservative
+						// no-session default.
 						headResult.set( "diagnostics", diagnosticsArray(
-							AgentSession::ValidateText( snap.document ) ) );
+							AgentSession::ValidateText( snap.document,
+								s->BuildProtocolActive() && s->BuildPhase() == AgentSession::AgentBuildPhase::Pieces,
+								&s->LightSoloMeasurements() ) ) );
 						headResult.set( "validated", JsonValue::MakeString( "head" ) );
 						headResult.set( "headVersion", HeadVersionJson( snap.headVersion ) );
 						// Creative-richness P2.b (73-creative-richness-design.md
@@ -1260,8 +2033,14 @@ namespace RISE
 						return MakeSuccess( idValue, headResult );
 					}
 					JsonValue result = JsonValue::MakeObject();
+					// (Doc 91) `s` may be null here (the text form works with no
+					// head/session loaded -- the no-head bootstrap case
+					// ValidateText's default is conservative for); when it
+					// exists, pass its real build phase through.
 					result.set( "diagnostics", diagnosticsArray(
-						AgentSession::ValidateText( text->asString() ) ) );
+						AgentSession::ValidateText( text->asString(),
+							s && s->BuildProtocolActive() && s->BuildPhase() == AgentSession::AgentBuildPhase::Pieces,
+							s ? &s->LightSoloMeasurements() : nullptr ) ) );
 					result.set( "validated", JsonValue::MakeString( "text" ) );
 					// Creative-richness P2.b: no `note` field here either -- see
 					// the head-form branch's comment above.
@@ -1274,7 +2053,12 @@ namespace RISE
 				//   `applied` is CLEAN success only; `status` is the four-state
 				//   gate {"applied","rejected","diagnosed","conflict"} (a rawCode-3
 				//   re-derive is applied=false/status="diagnosed": mutated but
-				//   the re-derive diagnosed -- NOT a clean apply; a stale
+				//   the re-derive diagnosed -- NOT a clean apply; in a
+				//   propose_patches / insert_chunks BATCH the one shared
+				//   re-derive's diagnostics mark only the element they are
+				//   attributed to "diagnosed" and the other landed elements
+				//   applied=true/rawCode=3 with the diagnostics quoted -- or
+				//   every landed element "diagnosed" when unattributable; a stale
 				//   baseHeadVersion is applied=false/status="conflict", head
 				//   untouched).  REQUIRES a head (it edits the retained Document):
 				//   no session -> error.  Facet 5 slice 1a: the OPTIONAL
@@ -1331,6 +2115,26 @@ namespace RISE
 						if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
 						sp.hasBaseVersion = ( b == 1 );
 					}
+					// 1b: OPTIONAL `occurrence` -- which occurrence of a
+					// REPEATABLE `param` (skeleton_geometry's `joint`,
+					// sdf_geometry's `part`) to edit, 0-based, document
+					// order.  Absent -> occurrence 0 with the legacy
+					// (non-occurrence-addressed) resolution, byte-identical
+					// to every propose_patch call before this field existed.
+					if( const JsonValue* occ = params.find( "occurrence" ) ) {
+						if( !occ->isNumber() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'occurrence' must be a number" );
+						const double ov = occ->asNumber();
+						// Bounded well under INT_MAX (no realistic chunk has
+						// anywhere near this many repeated-param lines) so
+						// the static_cast below can never overflow `int`.
+						if( !RISE::IsFiniteDouble( ov ) ||
+						    !( ov >= 0.0 && ov <= 1000000.0 && ov == std::floor( ov ) ) )
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'occurrence' must be a non-negative integer" );
+						sp.occurrence    = static_cast<int>( ov );
+						sp.hasOccurrence = true;
+					}
 					const AgentPatchResult pr = s->ProposePatch( sp );
 					// Secure-MCP slice 6: a queue-full refusal is a distinct
 					// top-level JSON-RPC error, not the normal success-
@@ -1349,6 +2153,15 @@ namespace RISE
 					// doc). CONDITIONAL key, OMITTED entirely when empty -- same
 					// back-compat posture as ChunkResultJson's `issues`.
 					if( !pr.issues.empty() ) result.set( "issues", IssuesJson( pr.issues ) );
+					// Doc 90 R3: orphan-pressure report -- CONDITIONAL key, same
+					// shape PatchResultJson's own copy uses (the propose_patches
+					// batch path) and replace_geometry_scaffold's `orphans`.
+					if( !pr.reportedOrphans.empty() ) {
+						JsonValue orphans = JsonValue::MakeArray();
+						for( const std::string& o : pr.reportedOrphans )
+							orphans.push_back( JsonValue::MakeString( o ) );
+						result.set( "orphans", orphans );
+					}
 					return MakeSuccess( idValue, result );
 				}
 
@@ -1421,6 +2234,27 @@ namespace RISE
 								return MakeError( idValue, kInvalidParams, buf );
 							}
 						}
+						// 1b: per-element `occurrence`, same validation and
+						// meaning as propose_patch's own -- see that parse
+						// site's comment.
+						if( const JsonValue* occ = item.find( "occurrence" ) ) {
+							if( !occ->isNumber() ) {
+								char buf[128];
+								std::snprintf( buf, sizeof( buf ),
+									"Invalid params: 'patches[%zu].occurrence' must be a number", i );
+								return MakeError( idValue, kInvalidParams, buf );
+							}
+							const double ov = occ->asNumber();
+							if( !RISE::IsFiniteDouble( ov ) ||
+							    !( ov >= 0.0 && ov <= 1000000.0 && ov == std::floor( ov ) ) ) {
+								char buf[160];
+								std::snprintf( buf, sizeof( buf ),
+									"Invalid params: 'patches[%zu].occurrence' must be a non-negative integer", i );
+								return MakeError( idValue, kInvalidParams, buf );
+							}
+							sp.occurrence    = static_cast<int>( ov );
+							sp.hasOccurrence = true;
+						}
 						patches.push_back( sp );
 					}
 					RISE::Cst::CstHeadVersion base;
@@ -1436,15 +2270,7 @@ namespace RISE
 					JsonValue resultsArr = JsonValue::MakeArray();
 					for( const AgentPatchResult& pr : results ) {
 						if( pr.applied ) ++appliedCount;
-						JsonValue itemRes = JsonValue::MakeObject();
-						itemRes.set( "applied", JsonValue::MakeBool( pr.applied ) );
-						itemRes.set( "rawCode", JsonValue::MakeNumber( static_cast<double>( pr.rawCode ) ) );
-						itemRes.set( "status",  JsonValue::MakeString( pr.status ) );
-						itemRes.set( "retriable", JsonValue::MakeBool( pr.retriable ) );
-						itemRes.set( "headVersion", HeadVersionJson( pr.headVersion ) );
-						itemRes.set( "message", JsonValue::MakeString( pr.message ) );
-						if( !pr.issues.empty() ) itemRes.set( "issues", IssuesJson( pr.issues ) );
-						resultsArr.push_back( itemRes );
+						resultsArr.push_back( PatchResultJson( pr ) );
 					}
 					JsonValue outRes = JsonValue::MakeObject();
 					outRes.set( "applied", JsonValue::MakeNumber( static_cast<double>( appliedCount ) ) );
@@ -1486,7 +2312,9 @@ namespace RISE
 					// Secure-MCP slice 6: see propose_patch's identical
 					// queue-full check above.
 					if( cr.queueFull ) return MakeProposalQueueFullError( idValue, "insert_chunk" );
-					return MakeSuccess( idValue, ChunkResultJson( cr ) );
+					// S1 fix-round (2026-08-11): carry the attribution -- see
+					// ChunkResultJson's `element` doc.
+					return MakeSuccess( idValue, ChunkResultJson( cr, s->ChunkElement( cr.name ) ) );
 				}
 
 				//--------------------------------------------------------------
@@ -1505,9 +2333,12 @@ namespace RISE
 				//   the BATCH AS A WHOLE (checked against the FIRST element
 				//   only -- see AgentSession::InsertChunks's doc).  `applied` is
 				//   the count of `results` entries with applied==true; `total`
-				//   is `chunks.size()`.  Each `results` element is the EXACT
+				//   is `chunks.size()`.  Each `results` element is the
 				//   same shape ChunkResultJson gives insert_chunk (status, name,
-				//   kind, issues warnings/causes per chunk).  REQUIRES a head:
+				//   kind, issues warnings/causes per chunk) -- EXCEPT that a
+				//   clean success is slimmed to {applied,status,headVersion,
+				//   name,kind,element?} (doc 91 L1; BatchChunkResultJson's
+				//   doc).  REQUIRES a head:
 				//   no session -> error.
 				//--------------------------------------------------------------
 				if( m == "insert_chunks" ) {
@@ -1560,7 +2391,12 @@ namespace RISE
 					JsonValue resultsArr = JsonValue::MakeArray();
 					for( const AgentChunkResult& cr : results ) {
 						if( cr.applied ) ++appliedCount;
-						resultsArr.push_back( ChunkResultJson( cr ) );
+						// S1 fix-round (2026-08-11): per ELEMENT of the batch --
+						// a batch spanning a finish_element cannot happen (one
+						// call, one window), but asking per chunk costs nothing
+						// and cannot go stale.  Doc 91 L1: a clean success is
+						// slimmed (see BatchChunkResultJson's doc).
+						resultsArr.push_back( BatchChunkResultJson( cr, s->ChunkElement( cr.name ) ) );
 					}
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "applied", JsonValue::MakeNumber( static_cast<double>( appliedCount ) ) );
@@ -1595,6 +2431,1240 @@ namespace RISE
 				//   autonomy staging-vs-commit, conflict detection, and
 				//   per-chunk `issues` are all inherited unchanged.
 				//--------------------------------------------------------------
+				//--------------------------------------------------------------
+				// file_build_plan {elements:[{element,pieces,construction,outline,view?,note?},...]}
+				//   -> {filed:true, replacedPreviousPlan:bool, elementCount:number,
+				//       elements:[{element,pieces,construction,note,outline,view,
+				//                  pointCount,areaFraction,aspect},...],
+				//       phase, activeElement,
+				//       png_base64, byteLength, compositeWidth, compositeHeight,
+				//       sketchCanvas, message}
+				//   G2 (2026-08-10): the ONLY way to disarm the build-plan gate
+				//   (AgentSession.h's block above FileBuildPlan).  READ-SAFE --
+				//   it records a per-session declaration and touches the
+				//   Document not at all, so there is no headVersion, no
+				//   baseHeadVersion, no conflict, no staging, and no authority
+				//   branch: an External-authority session files a plan
+				//   directly, exactly like it renders directly.
+				//   Every param error below is a clean kInvalidParams naming
+				//   the accepted enum; the plan CONTENT is never judged (a
+				//   plan of all-`primitive` is as valid as any other).
+				//   G3a (2026-08-10) SCHEMA v2: `outline` is REQUIRED per
+				//   element and `view` is optional.  Both are validated HERE,
+				//   before FileBuildPlan is called, so a defect is a clean
+				//   -32602 naming the element INDEX and the defect -- and, being
+				//   a schema error rather than a gate interception, it never
+				//   touches the gate's refusal counter (G2h pins that; the
+				//   G3a cases extend it).  The result gains ONE composite PNG
+				//   under the SAME `png_base64` field name read_image /
+				//   render{imageMaxEdge} / compare_to_reference use, so every
+				//   image-retention and image-surfacing policy built on that
+				//   field covers it with no second code path.  The wire still
+				//   carries only numbers and names INBOUND -- the mask bytes
+				//   are computed host-side from the model's own coordinates,
+				//   so no caller-supplied image data enters the process.
+				//   S1 (2026-08-11) SCHEMA v3: `parts` became `elements`, each
+				//   entry's `part` became `element`, and `pieces` (a REQUIRED
+				//   list of at least one name) joined them.  Filing also enters
+				//   the PIECES phase with the first element active, reported in
+				//   `phase`/`activeElement`.  Same validate-here contract: an
+				//   empty or over-long `pieces` is a -32602 that never touches
+				//   the gate's counter.
+				//--------------------------------------------------------------
+				if( m == "file_build_plan" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const std::string enumList = AgentSession::BuildPlanConstructionList();
+					const std::string viewList = AgentSession::BuildPlanViewList();
+					const JsonValue* elementsVal = params.find( "elements" );
+					if( !elementsVal || !elementsVal->isArray() || elementsVal->size() == 0 ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'elements' (non-empty array of {element, pieces, construction, "
+							"outline[, view][, note]}) is required; each element's 'construction' must be one "
+							"of: " + enumList );
+					}
+					// G3a: bound the plan SIZE before doing per-entry work.
+					// Unlike G2's fields, the plan's cost now grows with the
+					// caller's array (one 64 KB mask per element), so an
+					// unbounded list is an unbounded allocation reachable from
+					// the wire.  See AgentSession's kBuildPlanMaxElements.
+					if( elementsVal->size() > AgentSession::kBuildPlanMaxElements ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'elements' has " + std::to_string( elementsVal->size() ) +
+							" entries -- at most " + std::to_string( AgentSession::kBuildPlanMaxElements ) +
+							" are accepted" );
+					}
+					std::vector<AgentSession::AgentBuildPlanEntry> entries;
+					entries.reserve( elementsVal->size() );
+					for( std::size_t i = 0; i < elementsVal->size(); ++i ) {
+						const JsonValue& e = elementsVal->at( i );
+						char idx[40];
+						std::snprintf( idx, sizeof( idx ), "elements[%d]", static_cast<int>( i ) );
+						if( !e.isObject() ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + " must be an object "
+								"{element, pieces, construction, outline[, view][, note]}" );
+						}
+						const JsonValue* elemVal = e.find( "element" );
+						if( !elemVal || !elemVal->isString() || elemVal->asString().empty() ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".element (non-empty string) is required" );
+						}
+						// S1: `pieces` is REQUIRED with at least one non-empty
+						// entry -- the decomposition IS the artifact this
+						// mechanism measures, so there is no default and no
+						// opt-out.  ANY names are accepted; nothing checks what
+						// they say (the same anti-Goodhart freedom `outline`
+						// has on the shape dimension).
+						const JsonValue* piecesVal = e.find( "pieces" );
+						if( !piecesVal || !piecesVal->isArray() || piecesVal->size() == 0 ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".pieces (non-empty array of "
+								"strings) is required -- the pieces this element breaks down into, in your "
+								"own words" );
+						}
+						if( piecesVal->size() > AgentSession::kBuildPlanMaxPiecesPerElement ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".pieces has " +
+								std::to_string( piecesVal->size() ) + " entries -- at most " +
+								std::to_string( AgentSession::kBuildPlanMaxPiecesPerElement ) +
+								" are accepted" );
+						}
+						std::vector<std::string> pieces;
+						pieces.reserve( piecesVal->size() );
+						for( std::size_t p = 0; p < piecesVal->size(); ++p ) {
+							const JsonValue& pv = piecesVal->at( p );
+							if( !pv.isString() || pv.asString().empty() ) {
+								char pidx[24];
+								std::snprintf( pidx, sizeof( pidx ), "[%d]", static_cast<int>( p ) );
+								return MakeError( idValue, kInvalidParams,
+									std::string( "Invalid params: " ) + idx + ".pieces" + pidx +
+									" must be a non-empty string" );
+							}
+							pieces.push_back( pv.asString() );
+						}
+						// C4 (2026-08-19): `construction` is a LIST of at most
+						// AgentSession::kBuildPlanMaxConstructionMethods
+						// methods -- a copper still is a `lathe` pot AND a
+						// `sweep` coil, and the single-value field made the
+						// second verb's gated schema unreachable for the whole
+						// element.
+						//
+						// A BARE STRING IS ALSO ACCEPTED and normalized to a
+						// one-entry list.  The schema says array, but models
+						// routinely send a scalar where a schema says array,
+						// and refusing that costs a turn and teaches nothing:
+						// the intent of "construction": "lathe" is not
+						// ambiguous.  Both tool-description surfaces state
+						// that both forms work, so this is a documented
+						// contract rather than a silent leniency.
+						//
+						// Everything past the shape check is
+						// AgentSession::ValidateConstructionList -- the SAME
+						// predicate FileBuildPlan re-checks with, so the wire
+						// error and the session's own precondition cannot
+						// disagree (the pattern `outline` already follows).
+						const JsonValue* consVal = e.find( "construction" );
+						std::vector<std::string> construction;
+						if( !consVal || ( !consVal->isString() && !consVal->isArray() ) ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".construction is required "
+								"-- an array of at most " +
+								std::to_string( AgentSession::kBuildPlanMaxConstructionMethods ) +
+								" of: " + enumList + " (a single method may also be given as a plain "
+								"string)" );
+						}
+						if( consVal->isString() ) {
+							construction.push_back( consVal->asString() );
+						}
+						else {
+							for( std::size_t c = 0; c < consVal->size(); ++c ) {
+								const JsonValue& cv = consVal->at( c );
+								if( !cv.isString() ) {
+									char cidx[24];
+									std::snprintf( cidx, sizeof( cidx ), "[%d]", static_cast<int>( c ) );
+									return MakeError( idValue, kInvalidParams,
+										std::string( "Invalid params: " ) + idx + ".construction" + cidx +
+										" must be a string -- one of: " + enumList );
+								}
+								construction.push_back( cv.asString() );
+							}
+						}
+						{
+							std::string cerr;
+							if( !AgentSession::ValidateConstructionList( construction, cerr ) ) {
+								return MakeError( idValue, kInvalidParams,
+									std::string( "Invalid params: " ) + idx + ".construction " + cerr );
+							}
+						}
+						const JsonValue* noteVal = e.find( "note" );
+						if( noteVal && !noteVal->isString() ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".note must be a string when present" );
+						}
+						// G3a: `outline` is REQUIRED with NO opt-out value --
+						// the force level the design resolves to (every element
+						// gets a sketch; a blob is legal, an absence is not).
+						// The grammar check is AgentSession::ValidateElementOutline,
+						// the SAME predicate FileBuildPlan itself uses, so the
+						// wire error and the session's own precondition can
+						// never disagree about what a valid outline is.
+						const JsonValue* outlineVal = e.find( "outline" );
+						if( !outlineVal || !outlineVal->isString() ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".outline (string) is required "
+								"-- a closed 2D polygon of at least 3 \"x y\" points separated by "
+								"semicolons, e.g. \"0 0; 1 0; 1 2; 0 2\"" );
+						}
+						{
+							std::string oerr;
+							if( !AgentSession::ValidateElementOutline( outlineVal->asString(), oerr ) ) {
+								return MakeError( idValue, kInvalidParams,
+									std::string( "Invalid params: " ) + idx + ".outline " + oerr );
+							}
+						}
+						// G3a: `view` is OPTIONAL and defaults to
+						// AgentSession::kBuildPlanDefaultView.  Present-but-
+						// wrong is an error (a typo'd view would otherwise be
+						// silently recorded as `front` and mislead G3b's
+						// comparison vantage); absent is not.
+						const JsonValue* viewVal = e.find( "view" );
+						if( viewVal && ( !viewVal->isString() ||
+						                 !AgentSession::IsValidElementView( viewVal->asString() ) ) ) {
+							return MakeError( idValue, kInvalidParams,
+								std::string( "Invalid params: " ) + idx + ".view is `" +
+								( viewVal->isString() ? viewVal->asString() : JsonSerialize( *viewVal ) ) +
+								"` -- when present it must be one of: " + viewList );
+						}
+						AgentSession::AgentBuildPlanEntry entry;
+						entry.element      = elemVal->asString();
+						entry.pieces       = pieces;
+						entry.construction = construction;
+						entry.outline      = outlineVal->asString();
+						if( viewVal ) entry.view = viewVal->asString();
+						if( noteVal ) entry.note = noteVal->asString();
+						entries.push_back( entry );
+					}
+
+					const AgentSession::AgentBuildPlanResult pr = s->FileBuildPlan( entries );
+					// G3a: every outline was validated above with the SAME
+					// predicate FileBuildPlan re-checks, so !ok is unreachable
+					// from the wire.  Surface it as kInvalidParams anyway
+					// rather than shipping filed:false with an ok-shaped
+					// envelope -- a silent disagreement between the two layers
+					// would otherwise look like a successful filing.
+					if( !pr.ok ) return MakeError( idValue, kInvalidParams, pr.message );
+					JsonValue elementsArr = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < pr.elements.size(); ++i ) {
+						const AgentSession::AgentBuildPlanEntry& e = pr.elements[i];
+						JsonValue o = JsonValue::MakeObject();
+						o.set( "element",      JsonValue::MakeString( e.element ) );
+						JsonValue piecesArr = JsonValue::MakeArray();
+						for( std::size_t p = 0; p < e.pieces.size(); ++p )
+							piecesArr.push_back( JsonValue::MakeString( e.pieces[p] ) );
+						o.set( "pieces",       piecesArr );
+						// C4 (2026-08-19): the echo is an ARRAY, always -- even
+						// for a caller that sent a bare string.  One shape
+						// back means a reader never has to branch on what was
+						// sent, and it is the honest report of what the
+						// session actually recorded.  Consumers of this field
+						// (AgentChatLoop's transcript one-liner) read
+						// array-or-string defensively so an older recorded
+						// payload still renders.
+						JsonValue consArr = JsonValue::MakeArray();
+						for( std::size_t c = 0; c < e.construction.size(); ++c )
+							consArr.push_back( JsonValue::MakeString( e.construction[c] ) );
+						o.set( "construction", consArr );
+						o.set( "note",         JsonValue::MakeString( e.note ) );
+						// The per-element sketch FACTS, index-parallel to
+						// pr.elements by construction (FileBuildPlan builds one
+						// sketch per entry, in order).
+						if( i < pr.sketches.size() ) {
+							const AgentSession::AgentElementSketch& sk = pr.sketches[i];
+							o.set( "outline",      JsonValue::MakeString( sk.outline ) );
+							o.set( "view",         JsonValue::MakeString( sk.view ) );
+							o.set( "pointCount",   JsonValue::MakeNumber( static_cast<double>( sk.pointCount ) ) );
+							o.set( "areaFraction", JsonValue::MakeNumber( sk.areaFraction ) );
+							o.set( "aspect",       JsonValue::MakeNumber( sk.aspect ) );
+						}
+						elementsArr.push_back( o );
+					}
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "filed",                JsonValue::MakeBool( pr.ok ) );
+					result.set( "replacedPreviousPlan", JsonValue::MakeBool( pr.replacedPreviousPlan ) );
+					result.set( "elementCount",         JsonValue::MakeNumber( static_cast<double>( pr.elements.size() ) ) );
+					result.set( "elements",             elementsArr );
+					// S1: the phase facts, so a driver (and a census) can read
+					// the state transition without parsing prose.
+					result.set( "phase",                JsonValue::MakeString(
+						AgentSession::BuildPhaseName( s->BuildPhase() ) ) );
+					// ARC 83 sec 4.1: the SESSION MODE travels with the phase
+					// wherever session state is surfaced -- "building" while
+					// the gates can fire, "refining" once they cannot.  A
+					// census reads the transition here rather than inferring
+					// it from the absence of refusals.
+					result.set( "mode",                 JsonValue::MakeString(
+						AgentSession::SessionModeName( s->SessionMode() ) ) );
+					if( !s->ActiveElement().empty() )
+						result.set( "activeElement",    JsonValue::MakeString( s->ActiveElement() ) );
+					// G3a: the ONE composite sketch PNG, under the SAME
+					// `png_base64` field name every other image-bearing verb
+					// uses (see this handler's header comment).
+					if( !pr.compositePng.empty() ) {
+						result.set( "png_base64",      JsonValue::MakeString( Base64Encode( pr.compositePng ) ) );
+						result.set( "byteLength",      JsonValue::MakeNumber( static_cast<double>( pr.compositePng.size() ) ) );
+						result.set( "compositeWidth",  JsonValue::MakeNumber( static_cast<double>( pr.compositeWidth ) ) );
+						result.set( "compositeHeight", JsonValue::MakeNumber( static_cast<double>( pr.compositeHeight ) ) );
+						result.set( "sketchCanvas",    JsonValue::MakeNumber( static_cast<double>( AgentSession::kElementSketchCanvas ) ) );
+					}
+					result.set( "message",              JsonValue::MakeString( pr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// finish_element {}
+				//   -> {ok, element, phase, nextElement?, chunks:[...],
+				//       piecesNamed:[...], piecesNotNamed:[...], isolate?,
+				//       isolateCandidates?, rendered, materialLook,
+				//       png_base64?, byteLength?, imageWidth?, imageHeight?,
+				//       message}
+				//   S1 (2026-08-11).  Takes NO params: it closes whichever
+				//   element is active, which is session state, not something a
+				//   caller names -- naming it would invite a mismatch the model
+				//   would then have to resolve.  READ-SAFE: it changes the
+				//   session's phase and nothing in the Document.  It RENDERS
+				//   (the isolate look of the element just closed), which is
+				//   read-safe for exactly the reason the `render` verb is.
+				//   ok:false is not an error envelope -- it means the call did
+				//   nothing (no plan filed, already in the compose phase, or the
+				//   protocol is off) and `message` says which.
+				//--------------------------------------------------------------
+				if( m == "finish_element" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const AgentSession::AgentFinishElementResult fr = s->FinishElement();
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",    JsonValue::MakeBool( fr.ok ) );
+					result.set( "phase", JsonValue::MakeString( fr.phase ) );
+					result.set( "mode",  JsonValue::MakeString(
+						AgentSession::SessionModeName( s->SessionMode() ) ) );
+					if( !fr.element.empty() )     result.set( "element",     JsonValue::MakeString( fr.element ) );
+					if( !fr.nextElement.empty() ) result.set( "nextElement", JsonValue::MakeString( fr.nextElement ) );
+					if( fr.ok ) {
+						JsonValue chunksArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.chunks.size(); ++i )
+							chunksArr.push_back( JsonValue::MakeString( fr.chunks[i] ) );
+						result.set( "chunks", chunksArr );
+						JsonValue namedArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.piecesNamed.size(); ++i )
+							namedArr.push_back( JsonValue::MakeString( fr.piecesNamed[i] ) );
+						result.set( "piecesNamed", namedArr );
+						JsonValue notNamedArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.piecesNotNamed.size(); ++i )
+							notNamedArr.push_back( JsonValue::MakeString( fr.piecesNotNamed[i] ) );
+						result.set( "piecesNotNamed", notNamedArr );
+						result.set( "rendered", JsonValue::MakeBool( fr.rendered ) );
+						if( !fr.isolateObject.empty() ) {
+							result.set( "isolate", JsonValue::MakeString( fr.isolateObject ) );
+							result.set( "isolateCandidates",
+								JsonValue::MakeNumber( static_cast<double>( fr.isolateCandidates ) ) );
+						}
+						// 2026-08-24 (the lit material look): whether the SECOND,
+						// studio-lit panel made it into the image below.  A
+						// tail-appended boolean beside the existing `rendered`,
+						// never a second image field -- see
+						// AgentFinishElementResult::png's doc for why a second
+						// `png_base64` would reach no model on any transport.
+						result.set( "materialLook", JsonValue::MakeBool( fr.materialLookRendered ) );
+						// The isolate look rides under the SAME `png_base64`
+						// field name every image-bearing verb uses, so every
+						// image-retention and surfacing policy covers it with no
+						// second code path.  Since 2026-08-24 those bytes are
+						// normally a TWO-PANEL composite (draft form left,
+						// studio-lit materials right) and `imageWidth`/
+						// `imageHeight` describe the composite, not a panel.
+						if( !fr.png.empty() ) {
+							result.set( "png_base64",  JsonValue::MakeString( Base64Encode( fr.png ) ) );
+							result.set( "byteLength",  JsonValue::MakeNumber( static_cast<double>( fr.png.size() ) ) );
+							result.set( "imageWidth",  JsonValue::MakeNumber( static_cast<double>( fr.width ) ) );
+							result.set( "imageHeight", JsonValue::MakeNumber( static_cast<double>( fr.height ) ) );
+						}
+					}
+					result.set( "message", JsonValue::MakeString( fr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// reopen_element {element}
+				//   -> {ok, element, phase, previousPhase, chunks:[...],
+				//       unfinished:[...], message}
+				//   S1 (2026-08-11).  READ-SAFE and NEVER GATED: it is the
+				//   escape the compose-phase creation refusal names, so refusing
+				//   it -- at the autonomy layer, by a phase rule, or by any cap
+				//   -- would strand exactly the session that needs it.  The only
+				//   -32602 is a missing/empty/non-string `element`; an element
+				//   that is not in the filed plan comes back ok:false listing the
+				//   filed names, because that is a STATE mismatch (which names
+				//   exist depends on the session), not a param-SHAPE defect.
+				//--------------------------------------------------------------
+				if( m == "reopen_element" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* elemVal = params.find( "element" );
+					if( !elemVal || !elemVal->isString() || elemVal->asString().empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'element' (non-empty string) is required -- the name of an "
+							"element in the filed build plan" );
+					}
+					const AgentSession::AgentReopenElementResult rr2 =
+						s->ReopenElement( elemVal->asString() );
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",            JsonValue::MakeBool( rr2.ok ) );
+					result.set( "phase",         JsonValue::MakeString( rr2.phase ) );
+					result.set( "mode",          JsonValue::MakeString(
+						AgentSession::SessionModeName( s->SessionMode() ) ) );
+					result.set( "previousPhase", JsonValue::MakeString( rr2.previousPhase ) );
+					if( !rr2.element.empty() ) result.set( "element", JsonValue::MakeString( rr2.element ) );
+					if( rr2.ok ) {
+						JsonValue chunksArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < rr2.chunks.size(); ++i )
+							chunksArr.push_back( JsonValue::MakeString( rr2.chunks[i] ) );
+						result.set( "chunks", chunksArr );
+						JsonValue unfinishedArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < rr2.unfinished.size(); ++i )
+							unfinishedArr.push_back( JsonValue::MakeString( rr2.unfinished[i] ) );
+						result.set( "unfinished", unfinishedArr );
+					}
+					result.set( "message", JsonValue::MakeString( rr2.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// build_element {element, height, notes?}
+				//   -> {ok, element, provider, model, chunksExtracted,
+				//       landed:[...], rejected:[{name?,kind?,reason}],
+				//       chunkResults:[...], retryRan, retrySucceeded,
+				//       sdfPartCount, bbox?:{min:[3],max:[3],height},
+				//       capabilityRefusal?, message}
+				//   Doc 91 L1: `chunkResults` carries only the chunks with
+				//   something to say (NotableChunkResultsJson); a clean success
+				//   is named in `landed` and nowhere else.
+				//   S2 (2026-08-11).  MUTATING -- it inserts the chunks the
+				//   builder returned through the ordinary InsertChunks path, so
+				//   it is NOT on IsReadSafeVerb.  It is also deliberately NOT on
+				//   IsProposeSafeVerb, for the same reason and with the same
+				//   Propose-specific message shape the three scaffold verbs have
+				//   (see the autonomy block above): adding a verb there ripples
+				//   through every "N mutating verbs" prose restatement that
+				//   SourceHygieneTest's verb-parity scan pins, and this slice
+				//   does not need Propose reachability to be measured.
+				//   `element` and `height` are validated HERE so a defect is a
+				//   clean -32602 -- a schema error, which (like file_build_plan's)
+				//   never touches any refusal counter.  Every STATE mismatch (not
+				//   the active element, wrong phase, no completer installed) is an
+				//   ok:false success envelope instead, because which element is
+				//   active depends on the session, not on the request's shape.
+				//--------------------------------------------------------------
+				if( m == "build_element" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* elemVal = params.find( "element" );
+					if( !elemVal || !elemVal->isString() || elemVal->asString().empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'element' (non-empty string) is required -- the name of the "
+							"ACTIVE element in the filed build plan" );
+					}
+					const JsonValue* hVal = params.find( "height" );
+					if( !hVal || !hVal->isNumber() || !( hVal->asNumber() > 0.0 ) ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'height' (a number greater than 0) is required -- the "
+							"element's target extent in Y, in world units" );
+					}
+					std::string notes;
+					{
+						const JsonValue* nVal = params.find( "notes" );
+						if( nVal ) {
+							if( !nVal->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'notes', when present, must be a string" );
+							}
+							notes = nVal->asString();
+						}
+					}
+
+					const AgentSession::AgentBuildElementResult br =
+						s->BuildElement( elemVal->asString(), hVal->asNumber(), notes );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok", JsonValue::MakeBool( br.ok ) );
+					if( br.capabilityRefusal )
+						result.set( "capabilityRefusal", JsonValue::MakeBool( true ) );
+					if( !br.element.empty() )      result.set( "element",  JsonValue::MakeString( br.element ) );
+					if( !br.providerName.empty() ) result.set( "provider", JsonValue::MakeString( br.providerName ) );
+					if( !br.modelId.empty() )      result.set( "model",    JsonValue::MakeString( br.modelId ) );
+					if( br.ok ) {
+						result.set( "chunksExtracted",
+							JsonValue::MakeNumber( static_cast<double>( br.chunksExtracted ) ) );
+						JsonValue landedArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < br.landed.size(); ++i )
+							landedArr.push_back( JsonValue::MakeString( br.landed[i] ) );
+						result.set( "landed", landedArr );
+						// Doc 91 L1 review round 1: the kinds, index-parallel to
+						// `landed` -- a clean chunk has no chunkResults entry any
+						// more, and the builder (not the model) chose the kind.
+						JsonValue landedKindsArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < br.landedKinds.size(); ++i )
+							landedKindsArr.push_back( JsonValue::MakeString( br.landedKinds[i] ) );
+						result.set( "landedKinds", landedKindsArr );
+						// Doc 91 review round 4: the attempt (1 or 2) that landed
+						// each `landed` entry, index-parallel.
+						JsonValue landedAttemptsArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < br.landedAttempts.size(); ++i )
+							landedAttemptsArr.push_back( JsonValue::MakeNumber( static_cast<double>( br.landedAttempts[i] ) ) );
+						result.set( "landedAttempts", landedAttemptsArr );
+						JsonValue rejArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < br.rejected.size(); ++i ) {
+							JsonValue o = JsonValue::MakeObject();
+							if( !br.rejected[i].name.empty() )
+								o.set( "name", JsonValue::MakeString( br.rejected[i].name ) );
+							if( !br.rejected[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( br.rejected[i].kind ) );
+							o.set( "reason", JsonValue::MakeString( br.rejected[i].reason ) );
+							// Doc 91 review round 4: which attempt (1 or 2).
+							o.set( "attempt", JsonValue::MakeNumber( static_cast<double>( br.rejected[i].attempt ) ) );
+							rejArr.push_back( o );
+						}
+						result.set( "rejected", rejArr );
+						// Doc 91 L1: only the chunks with something to say --
+						// every clean success is already named in `landed`.
+						result.set( "chunkResults", NotableChunkResultsJson( br.chunkResults, *s ) );
+						result.set( "retryRan",       JsonValue::MakeBool( br.retryRan ) );
+						result.set( "retrySucceeded", JsonValue::MakeBool( br.retrySucceeded ) );
+						result.set( "sdfPartCount",
+							JsonValue::MakeNumber( static_cast<double>( br.sdfPartCount ) ) );
+						if( br.bboxValid ) {
+							JsonValue bbox = JsonValue::MakeObject();
+							JsonValue mn = JsonValue::MakeArray(), mx = JsonValue::MakeArray();
+							for( int k = 0; k < 3; ++k ) {
+								mn.push_back( JsonValue::MakeNumber( br.bboxMin[k] ) );
+								mx.push_back( JsonValue::MakeNumber( br.bboxMax[k] ) );
+							}
+							bbox.set( "min", mn );
+							bbox.set( "max", mx );
+							bbox.set( "height", JsonValue::MakeNumber( br.bboxMax[1] - br.bboxMin[1] ) );
+							result.set( "bbox", bbox );
+						}
+					}
+					result.set( "message", JsonValue::MakeString( br.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// place_element {element, position, scale?, orientation?}
+				//   -> {ok, element, root, objects:[...], skipped:[{object,reason}],
+				//       patchResults:[...], patchesApplied, patchesRejected,
+				//       bbox?:{min:[3],max:[3]}, message}
+				//   S2 (2026-08-11).  MUTATING (it submits one ProposePatches
+				//   batch), so NOT read-safe and -- like build_element above --
+				//   deliberately not on IsProposeSafeVerb either.  The only
+				//   -32602s are param SHAPE defects; an element that is not in
+				//   the plan, or has no placeable object, is an ok:false success
+				//   envelope, for reopen_element's reason (a STATE mismatch, not
+				//   a shape defect).
+				//--------------------------------------------------------------
+				if( m == "place_element" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* elemVal = params.find( "element" );
+					if( !elemVal || !elemVal->isString() || elemVal->asString().empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'element' (non-empty string) is required -- the name of an "
+							"element in the filed build plan" );
+					}
+					const JsonValue* posVal = params.find( "position" );
+					if( !posVal || !posVal->isString() || posVal->asString().empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'position' (a \"x y z\" string) is required -- where the "
+							"element's base-centre goes in world space" );
+					}
+					std::string scaleStr, orientStr;
+					{
+						const JsonValue* sc = params.find( "scale" );
+						if( sc ) {
+							// Accepted as a NUMBER or as a STRING; the session
+							// layer parses one canonical form.  87 step 5 made
+							// the string form carry three per-axis factors as
+							// well as one uniform one, which is why the schema
+							// now advertises `string` -- a bare number is still
+							// accepted, and still means a uniform factor.
+							if( sc->isNumber() ) {
+								char b[48];
+								std::snprintf( b, sizeof( b ), "%.10g", sc->asNumber() );
+								scaleStr = b;
+							}
+							else if( sc->isString() ) scaleStr = sc->asString();
+							else {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'scale', when present, must be a number (a uniform "
+									"factor greater than 0) or a string -- one factor \"2\" or three "
+									"\"sx sy sz\"" );
+							}
+						}
+						const JsonValue* orv = params.find( "orientation" );
+						if( orv ) {
+							if( !orv->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'orientation', when present, must be a \"ex ey ez\" "
+									"string in degrees" );
+							}
+							orientStr = orv->asString();
+						}
+					}
+
+					const AgentSession::AgentPlaceElementResult prr =
+						s->PlaceElement( elemVal->asString(), posVal->asString(), scaleStr, orientStr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok", JsonValue::MakeBool( prr.ok ) );
+					if( !prr.element.empty() ) result.set( "element", JsonValue::MakeString( prr.element ) );
+					// 87 step 5: the ROOT NODE the transform landed on.  Named
+					// rather than left implicit, because it is a real, editable
+					// chunk in the document -- a caller that wants to nudge the
+					// element by hand patches this one name instead of N.
+					if( !prr.root.empty() ) result.set( "root", JsonValue::MakeString( prr.root ) );
+					JsonValue objArr = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < prr.objects.size(); ++i )
+						objArr.push_back( JsonValue::MakeString( prr.objects[i] ) );
+					result.set( "objects", objArr );
+					JsonValue skipArr = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < prr.skipped.size(); ++i ) {
+						JsonValue o = JsonValue::MakeObject();
+						o.set( "object", JsonValue::MakeString( prr.skipped[i].object ) );
+						o.set( "reason", JsonValue::MakeString( prr.skipped[i].reason ) );
+						skipArr.push_back( o );
+					}
+					result.set( "skipped", skipArr );
+					// The SAME per-element shape propose_patches emits -- arc 83
+					// slice 6 made PatchResultJson the one definition of it, and
+					// the keys are unchanged from the inline copy that stood here.
+					JsonValue prArr = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < prr.patchResults.size(); ++i )
+						prArr.push_back( PatchResultJson( prr.patchResults[i] ) );
+					result.set( "patchResults", prArr );
+					result.set( "patchesApplied",
+						JsonValue::MakeNumber( static_cast<double>( prr.patchesApplied ) ) );
+					result.set( "patchesRejected",
+						JsonValue::MakeNumber( static_cast<double>( prr.patchesRejected ) ) );
+					if( prr.bboxValid ) {
+						JsonValue bbox = JsonValue::MakeObject();
+						JsonValue mn = JsonValue::MakeArray(), mx = JsonValue::MakeArray();
+						for( int k = 0; k < 3; ++k ) {
+							mn.push_back( JsonValue::MakeNumber( prr.bboxMin[k] ) );
+							mx.push_back( JsonValue::MakeNumber( prr.bboxMax[k] ) );
+						}
+						bbox.set( "min", mn );
+						bbox.set( "max", mx );
+						result.set( "bbox", bbox );
+					}
+					result.set( "message", JsonValue::MakeString( prr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// light_scene {notes?}
+				//   -> {ok, provider, model, chunksExtracted, landed,
+				//       rejected:[{name,kind,reason}], chunkResults, retryRan,
+				//       retrySucceeded, contributions:[{name,kind,soloed,
+				//       meanLuma?,share?,reason?}], soloableLights, soloed,
+				//       allLightsMeanLuma?, sourcesPlanned, sourcesReturned,
+				//       sourcesTruncated, completions,
+				//       areaLights, zeroAreaLights, skyLights?, otherLights?,
+				//       sources:[string], message}
+				//   Arc 81 (2026-08-12), the clean-room LIGHTING pass.
+				//   ARC 83 SLICE 2 (2026-08-12), the owner's direct redesign:
+				//   ONE call is exactly TWO completions -- one enumeration
+				//   completion answering WHAT IN THIS WORLD PHYSICALLY EMITS
+				//   LIGHT, bounded at kLightSourceBudget sources, then one
+				//   build completion authoring the chunks for ALL of them in
+				//   one answer (plus at most one repair retry on the build).
+				//   The verb, its params and every field above the arc-83
+				//   block are unchanged, so the model's turn count does not
+				//   grow; the new fields report the enumeration and the
+				//   completions actually spent.
+				//   MUTATING -- it inserts the chunks its pass returned through
+				//   the ordinary InsertChunks path, so it is NOT on
+				//   IsReadSafeVerb; it is also deliberately NOT on
+				//   IsProposeSafeVerb, for build_element's reason and with the
+				//   same Propose-specific message (see the autonomy block
+				//   above).
+				//   THE ONLY -32602 is a non-string `notes`.  There are no
+				//   required params at all: which scene gets lit is a property
+				//   of the session, not of the request, and every state outcome
+				//   (no head, no completer, the per-session cap) is an ok:false
+				//   success envelope rather than a schema error.
+				//--------------------------------------------------------------
+				if( m == "light_scene" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string notes;
+					{
+						const JsonValue* nVal = params.find( "notes" );
+						if( nVal ) {
+							if( !nVal->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'notes', when present, must be a string" );
+							}
+							notes = nVal->asString();
+						}
+					}
+
+					const AgentSession::AgentLightSceneResult lr = s->LightScene( notes );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok", JsonValue::MakeBool( lr.ok ) );
+					if( lr.capabilityRefusal )
+						result.set( "capabilityRefusal", JsonValue::MakeBool( true ) );
+					if( !lr.providerName.empty() ) result.set( "provider", JsonValue::MakeString( lr.providerName ) );
+					if( !lr.modelId.empty() )      result.set( "model",    JsonValue::MakeString( lr.modelId ) );
+					if( lr.ok ) {
+						result.set( "chunksExtracted",
+							JsonValue::MakeNumber( static_cast<double>( lr.chunksExtracted ) ) );
+						JsonValue landedArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < lr.landed.size(); ++i )
+							landedArr.push_back( JsonValue::MakeString( lr.landed[i] ) );
+						result.set( "landed", landedArr );
+						// Doc 91 L1 review round 3: kinds, index-parallel to
+						// `landed` -- this pass chose them, and a clean chunk
+						// has no chunkResults entry.
+						JsonValue landedKindsArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < lr.landedKinds.size(); ++i )
+							landedKindsArr.push_back( JsonValue::MakeString( lr.landedKinds[i] ) );
+						result.set( "landedKinds", landedKindsArr );
+						JsonValue rejArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < lr.rejected.size(); ++i ) {
+							JsonValue o = JsonValue::MakeObject();
+							if( !lr.rejected[i].name.empty() )
+								o.set( "name", JsonValue::MakeString( lr.rejected[i].name ) );
+							if( !lr.rejected[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( lr.rejected[i].kind ) );
+							o.set( "reason", JsonValue::MakeString( lr.rejected[i].reason ) );
+							rejArr.push_back( o );
+						}
+						result.set( "rejected", rejArr );
+						// Doc 91 L1: clean successes are named in `landed`.
+						result.set( "chunkResults", NotableChunkResultsJson( lr.chunkResults, *s ) );
+						result.set( "retryRan",       JsonValue::MakeBool( lr.retryRan ) );
+						result.set( "retrySucceeded", JsonValue::MakeBool( lr.retrySucceeded ) );
+						result.set( "soloableLights",
+							JsonValue::MakeNumber( static_cast<double>( lr.soloableLightCount ) ) );
+						result.set( "soloed",
+							JsonValue::MakeNumber( static_cast<double>( lr.soloedCount ) ) );
+						// OMITTED when nothing was soloed: with no solo there
+						// is no frame to have been the reference, and a 0.0
+						// here would read as a black scene rather than as an
+						// absent measurement (the inventory's own
+						// omit-rather-than-fabricate rule).
+						if( lr.soloedCount > 0 )
+							result.set( "allLightsMeanLuma", JsonValue::MakeNumber( lr.allLightsMeanLuma ) );
+						JsonValue conArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < lr.contributions.size(); ++i ) {
+							const AgentSession::AgentLightContribution& c = lr.contributions[i];
+							JsonValue o = JsonValue::MakeObject();
+							o.set( "name", JsonValue::MakeString( c.name ) );
+							o.set( "kind", JsonValue::MakeString( c.kind ) );
+							o.set( "soloed", JsonValue::MakeBool( c.soloed ) );
+							if( c.soloed ) {
+								o.set( "meanLuma", JsonValue::MakeNumber( c.meanLuma ) );
+								o.set( "share",    JsonValue::MakeNumber( c.shareOfSoloedTotal ) );
+							}
+							else if( !c.reason.empty() ) {
+								o.set( "reason", JsonValue::MakeString( c.reason ) );
+							}
+							conArr.push_back( o );
+						}
+						result.set( "contributions", conArr );
+
+						// ---- ARC 83 SLICE 2: the enumeration step, as STRUCTURE
+						// and not only as prose.  A census that has to parse
+						// the message to learn how many completions a call
+						// spent is a census that will drift.
+						result.set( "sourcesPlanned",
+							JsonValue::MakeNumber( static_cast<double>( lr.sources.size() ) ) );
+						result.set( "sourcesReturned",
+							JsonValue::MakeNumber( static_cast<double>( lr.sourcesReturned ) ) );
+						result.set( "sourcesTruncated", JsonValue::MakeBool( lr.sourcesTruncated ) );
+						result.set( "completions",
+							JsonValue::MakeNumber( static_cast<double>( lr.completionsSpent ) ) );
+						result.set( "areaLights",
+							JsonValue::MakeNumber( static_cast<double>( lr.areaLightsBuilt ) ) );
+						result.set( "zeroAreaLights",
+							JsonValue::MakeNumber( static_cast<double>( lr.zeroAreaLightsBuilt ) ) );
+						// OMITTED when zero, for the same reason the inventory
+						// omits what it did not measure: a kind that was never
+						// built is not a fact worth a line.
+						if( lr.skyLightsBuilt > 0 )
+							result.set( "skyLights",
+								JsonValue::MakeNumber( static_cast<double>( lr.skyLightsBuilt ) ) );
+						if( lr.otherLightsBuilt > 0 )
+							result.set( "otherLights",
+								JsonValue::MakeNumber( static_cast<double>( lr.otherLightsBuilt ) ) );
+						JsonValue srcArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < lr.sources.size(); ++i )
+							srcArr.push_back( JsonValue::MakeString( lr.sources[i] ) );
+						result.set( "sources", srcArr );
+					}
+					result.set( "message", JsonValue::MakeString( lr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// populate_scene {notes?}
+				//   -> {ok, capabilityRefusal?, provider, model, chunksExtracted,
+				//       created:[{name,kind?,geometry?,material?,source?,objects?}],
+				//       rejected:[{name?,kind?,reason}], chunkResults, retryRan,
+				//       retrySucceeded, objectsBefore, objectsAfter, message}
+				//   Arc 82 (2026-08-12), the clean-room POPULATION pass.
+				//   MUTATING -- it inserts the standard_object chunks its pass
+				//   returned through the ordinary InsertChunks path, so it is
+				//   NOT on IsReadSafeVerb; it is also deliberately NOT on
+				//   IsProposeSafeVerb, for light_scene's reason and with the
+				//   same Propose-specific message (see the autonomy block
+				//   above).
+				//   THE ONLY -32602 is a non-string `notes`.  There are no
+				//   required params at all: which scene gets populated is a
+				//   property of the session, not of the request, and every
+				//   state outcome (no head, no completer, no geometry to
+				//   repeat, the per-session cap) is an ok:false success
+				//   envelope rather than a schema error.
+				//--------------------------------------------------------------
+				if( m == "populate_scene" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string notes;
+					{
+						const JsonValue* nVal = params.find( "notes" );
+						if( nVal ) {
+							if( !nVal->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'notes', when present, must be a string" );
+							}
+							notes = nVal->asString();
+						}
+					}
+
+					const AgentSession::AgentPopulateSceneResult pr = s->PopulateScene( notes );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok", JsonValue::MakeBool( pr.ok ) );
+					if( pr.capabilityRefusal )
+						result.set( "capabilityRefusal", JsonValue::MakeBool( true ) );
+					if( !pr.providerName.empty() ) result.set( "provider", JsonValue::MakeString( pr.providerName ) );
+					if( !pr.modelId.empty() )      result.set( "model",    JsonValue::MakeString( pr.modelId ) );
+					if( pr.ok ) {
+						result.set( "chunksExtracted",
+							JsonValue::MakeNumber( static_cast<double>( pr.chunksExtracted ) ) );
+						JsonValue createdArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < pr.created.size(); ++i ) {
+							JsonValue o = JsonValue::MakeObject();
+							o.set( "name", JsonValue::MakeString( pr.created[i].name ) );
+							// Doc 91 L1 review round 3: the landed chunk's kind.
+							if( !pr.created[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( pr.created[i].kind ) );
+							// OMITTED rather than sent empty: a repeat always
+							// names both, but a chunk result whose identity
+							// echo came back without them must not report a
+							// blank as if it were a reference.
+							if( !pr.created[i].geometry.empty() )
+								o.set( "geometry", JsonValue::MakeString( pr.created[i].geometry ) );
+							if( !pr.created[i].material.empty() )
+								o.set( "material", JsonValue::MakeString( pr.created[i].material ) );
+							if( !pr.created[i].source.empty() ) {
+								o.set( "source", JsonValue::MakeString( pr.created[i].source ) );
+								o.set( "objects", JsonValue::MakeNumber( static_cast<double>( pr.created[i].expandedCount ) ) );
+							}
+							createdArr.push_back( o );
+						}
+						result.set( "created", createdArr );
+						JsonValue rejArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < pr.rejected.size(); ++i ) {
+							JsonValue o = JsonValue::MakeObject();
+							if( !pr.rejected[i].name.empty() )
+								o.set( "name", JsonValue::MakeString( pr.rejected[i].name ) );
+							if( !pr.rejected[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( pr.rejected[i].kind ) );
+							o.set( "reason", JsonValue::MakeString( pr.rejected[i].reason ) );
+							rejArr.push_back( o );
+						}
+						result.set( "rejected", rejArr );
+						// Doc 91 L1: clean successes are named in `created`.
+						result.set( "chunkResults", NotableChunkResultsJson( pr.chunkResults, *s ) );
+						result.set( "retryRan",       JsonValue::MakeBool( pr.retryRan ) );
+						result.set( "retrySucceeded", JsonValue::MakeBool( pr.retrySucceeded ) );
+						result.set( "objectsBefore",
+							JsonValue::MakeNumber( static_cast<double>( pr.objectCountBefore ) ) );
+						result.set( "objectsAfter",
+							JsonValue::MakeNumber( static_cast<double>( pr.objectCountAfter ) ) );
+					}
+					result.set( "message", JsonValue::MakeString( pr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// environment_scene {notes?}
+				//   -> {ok, capabilityRefusal?, provider, model, chunksExtracted,
+				//       landed:[string], rejected:[{name?,kind?,reason}],
+				//       chunkResults, patchResults, retryRan, retrySucceeded, completions,
+				//       painters, media, boundPainter?, bindingApplied,
+				//       bindingReason, rasterizer?, radianceMapBefore,
+				//       radianceMapAfter, globalMediumBefore, globalMediumAfter,
+				//       toneBefore?:{lumaMean,lumaStdDev,lumaP1,lumaP99},
+				//       toneAfter?:{...}, message}
+				//   Arc 83 slice 5 (2026-08-13), the clean-room ENVIRONMENT pass
+				//   -- ONE completion (plus at most one repair retry) authoring
+				//   the scene's SURROUND: the dome that fills the frame where no
+				//   object is, and the medium light travels through.  It inserts
+				//   painter / function / medium chunks through the ordinary
+				//   InsertChunks path and then MAKES THE DOME BINDING itself by
+				//   appending a rasterizer chunk that carries `radiance_map` --
+				//   see AgentSession::EnvironmentScene for why an append rather
+				//   than a patch (an appended painter referenced from an EARLIER
+				//   rasterizer chunk would derive to a silent no-dome).
+				//   MUTATING: not read-safe, and deliberately not on the Propose
+				//   allowlist either, exactly like light_scene.
+				//   THE ONLY -32602 is a non-string `notes`.
+				//--------------------------------------------------------------
+				if( m == "environment_scene" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string notes;
+					{
+						const JsonValue* nVal = params.find( "notes" );
+						if( nVal ) {
+							if( !nVal->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'notes', when present, must be a string" );
+							}
+							notes = nVal->asString();
+						}
+					}
+
+					const AgentSession::AgentEnvironmentSceneResult er = s->EnvironmentScene( notes );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok", JsonValue::MakeBool( er.ok ) );
+					if( er.capabilityRefusal )
+						result.set( "capabilityRefusal", JsonValue::MakeBool( true ) );
+					if( !er.providerName.empty() ) result.set( "provider", JsonValue::MakeString( er.providerName ) );
+					if( !er.modelId.empty() )      result.set( "model",    JsonValue::MakeString( er.modelId ) );
+					if( er.ok ) {
+						result.set( "chunksExtracted",
+							JsonValue::MakeNumber( static_cast<double>( er.chunksExtracted ) ) );
+						JsonValue landedArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < er.landed.size(); ++i )
+							landedArr.push_back( JsonValue::MakeString( er.landed[i] ) );
+						result.set( "landed", landedArr );
+						// Doc 91 L1 review round 3: kinds, index-parallel to
+						// `landed` -- this pass chose them, and a clean chunk
+						// has no chunkResults entry.
+						JsonValue landedKindsArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < er.landedKinds.size(); ++i )
+							landedKindsArr.push_back( JsonValue::MakeString( er.landedKinds[i] ) );
+						result.set( "landedKinds", landedKindsArr );
+						JsonValue rejArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < er.rejected.size(); ++i ) {
+							JsonValue o = JsonValue::MakeObject();
+							if( !er.rejected[i].name.empty() )
+								o.set( "name", JsonValue::MakeString( er.rejected[i].name ) );
+							if( !er.rejected[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( er.rejected[i].kind ) );
+							o.set( "reason", JsonValue::MakeString( er.rejected[i].reason ) );
+							rejArr.push_back( o );
+						}
+						result.set( "rejected", rejArr );
+						// Doc 91 L1: clean NAMED successes are named in `landed`;
+						// an unnamed one (global_medium) keeps its full entry.
+						result.set( "chunkResults", NotableChunkResultsJson( er.chunkResults, *s ) );
+						// The TWO parameter edits the dome binding is made of,
+						// in the same per-patch shape every other patching verb
+						// emits -- an empty array when no binding was made, in
+						// which case `bindingReason` says why.
+						JsonValue prArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < er.patchResults.size(); ++i )
+							prArr.push_back( PatchResultJson( er.patchResults[i] ) );
+						result.set( "patchResults", prArr );
+						result.set( "retryRan",       JsonValue::MakeBool( er.retryRan ) );
+						result.set( "retrySucceeded", JsonValue::MakeBool( er.retrySucceeded ) );
+						result.set( "completions",
+							JsonValue::MakeNumber( static_cast<double>( er.completionsSpent ) ) );
+						result.set( "painters",
+							JsonValue::MakeNumber( static_cast<double>( er.paintersBuilt ) ) );
+						result.set( "media",
+							JsonValue::MakeNumber( static_cast<double>( er.mediaBuilt ) ) );
+						// OMITTED rather than sent empty, the inventory's
+						// omit-rather-than-fabricate rule: no painter was bound,
+						// so there is no name to report and `bindingReason` says
+						// why.
+						if( !er.boundPainter.empty() )
+							result.set( "boundPainter", JsonValue::MakeString( er.boundPainter ) );
+						result.set( "bindingApplied", JsonValue::MakeBool( er.bindingApplied ) );
+						if( !er.bindingReason.empty() )
+							result.set( "bindingReason", JsonValue::MakeString( er.bindingReason ) );
+						if( !er.rasterizerKind.empty() )
+							result.set( "rasterizer", JsonValue::MakeString( er.rasterizerKind ) );
+						result.set( "radianceMapBefore",  JsonValue::MakeBool( er.radianceMapBefore ) );
+						result.set( "radianceMapAfter",   JsonValue::MakeBool( er.radianceMapAfter ) );
+						result.set( "globalMediumBefore", JsonValue::MakeBool( er.globalMediumBefore ) );
+						result.set( "globalMediumAfter",  JsonValue::MakeBool( er.globalMediumAfter ) );
+						// THE HEADLINE, as STRUCTURE and not only as prose -- a
+						// census that has to parse the message to read a tonal
+						// spread is a census that will drift.  Each reading is
+						// OMITTED ENTIRELY when it was not measured: zeros here
+						// would read as a black frame rather than as an absent
+						// measurement.
+						if( er.toneBefore.measured ) {
+							JsonValue t = JsonValue::MakeObject();
+							t.set( "lumaMean",   JsonValue::MakeNumber( er.toneBefore.lumaMean ) );
+							t.set( "lumaStdDev", JsonValue::MakeNumber( er.toneBefore.lumaStdDev ) );
+							t.set( "lumaP1",     JsonValue::MakeNumber( er.toneBefore.lumaP1 ) );
+							t.set( "lumaP99",    JsonValue::MakeNumber( er.toneBefore.lumaP99 ) );
+							result.set( "toneBefore", t );
+						}
+						if( er.toneAfter.measured ) {
+							JsonValue t = JsonValue::MakeObject();
+							t.set( "lumaMean",   JsonValue::MakeNumber( er.toneAfter.lumaMean ) );
+							t.set( "lumaStdDev", JsonValue::MakeNumber( er.toneAfter.lumaStdDev ) );
+							t.set( "lumaP1",     JsonValue::MakeNumber( er.toneAfter.lumaP1 ) );
+							t.set( "lumaP99",    JsonValue::MakeNumber( er.toneAfter.lumaP99 ) );
+							result.set( "toneAfter", t );
+						}
+					}
+					result.set( "message", JsonValue::MakeString( er.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// frame_scene {notes?}
+				//   -> {ok, capabilityRefusal?, provider, model, chunksExtracted,
+				//       action, cameraKindBefore?, cameraNameBefore?,
+				//       cameraKindAfter?, cameraNameAfter?, paramsApplied:[string],
+				//       rejected:[{name?,kind?,reason}], patchResults, chunkResults,
+				//       retryRan, retrySucceeded, completions,
+				//       objectsBefore?, coveredBefore?, objectsAfter?, coveredAfter?,
+				//       broughtIntoFrame:[string], pushedOutOfFrame:[string],
+				//       message}
+				//   Arc 83 slice 6 (2026-08-13), the clean-room FRAMING pass --
+				//   ONE completion (plus at most one repair retry) returning ONE
+				//   camera chunk, applied as a PATCH of the scene's existing
+				//   camera when the kind matches and as an insert-then-remove
+				//   REPLACEMENT when it does not.  The arc-80 inventory is run on
+				//   BOTH sides of the edit, so the coverage figures are measured
+				//   rather than asserted, and a reframe that covers FEWER objects
+				//   is reported plainly and never auto-reverted.
+				//   MUTATING: not read-safe, and deliberately not on the Propose
+				//   allowlist either, exactly like light_scene.
+				//   THE ONLY -32602 is a non-string `notes`.
+				//--------------------------------------------------------------
+				if( m == "frame_scene" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string notes;
+					{
+						const JsonValue* nVal = params.find( "notes" );
+						if( nVal ) {
+							if( !nVal->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'notes', when present, must be a string" );
+							}
+							notes = nVal->asString();
+						}
+					}
+
+					const AgentSession::AgentFrameSceneResult fr = s->FrameScene( notes );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok", JsonValue::MakeBool( fr.ok ) );
+					if( fr.capabilityRefusal )
+						result.set( "capabilityRefusal", JsonValue::MakeBool( true ) );
+					if( !fr.providerName.empty() ) result.set( "provider", JsonValue::MakeString( fr.providerName ) );
+					if( !fr.modelId.empty() )      result.set( "model",    JsonValue::MakeString( fr.modelId ) );
+					if( fr.ok ) {
+						result.set( "chunksExtracted",
+							JsonValue::MakeNumber( static_cast<double>( fr.chunksExtracted ) ) );
+						result.set( "action", JsonValue::MakeString( fr.action ) );
+						if( !fr.cameraKindBefore.empty() )
+							result.set( "cameraKindBefore", JsonValue::MakeString( fr.cameraKindBefore ) );
+						if( !fr.cameraNameBefore.empty() )
+							result.set( "cameraNameBefore", JsonValue::MakeString( fr.cameraNameBefore ) );
+						if( !fr.cameraKindAfter.empty() )
+							result.set( "cameraKindAfter", JsonValue::MakeString( fr.cameraKindAfter ) );
+						if( !fr.cameraNameAfter.empty() )
+							result.set( "cameraNameAfter", JsonValue::MakeString( fr.cameraNameAfter ) );
+						JsonValue paramArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.paramsApplied.size(); ++i )
+							paramArr.push_back( JsonValue::MakeString( fr.paramsApplied[i] ) );
+						result.set( "paramsApplied", paramArr );
+						JsonValue rejArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.rejected.size(); ++i ) {
+							JsonValue o = JsonValue::MakeObject();
+							if( !fr.rejected[i].name.empty() )
+								o.set( "name", JsonValue::MakeString( fr.rejected[i].name ) );
+							if( !fr.rejected[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( fr.rejected[i].kind ) );
+							o.set( "reason", JsonValue::MakeString( fr.rejected[i].reason ) );
+							rejArr.push_back( o );
+						}
+						result.set( "rejected", rejArr );
+						JsonValue prArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.patchResults.size(); ++i )
+							prArr.push_back( PatchResultJson( fr.patchResults[i] ) );
+						result.set( "patchResults", prArr );
+						// Doc 91 L1 review round 3: frame_scene keeps EVERY entry.
+						// It has at most two (the new camera's insert and the old
+						// camera's removal), and when the removal fails the new
+						// camera is not necessarily the one `cameraNameAfter`
+						// names -- so compacting it would make "named elsewhere"
+						// false exactly when it matters.
+						JsonValue crArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.chunkResults.size(); ++i )
+							crArr.push_back( ChunkResultJson( fr.chunkResults[i],
+								s->ChunkElement( fr.chunkResults[i].name ) ) );
+						result.set( "chunkResults", crArr );
+						result.set( "retryRan",       JsonValue::MakeBool( fr.retryRan ) );
+						result.set( "retrySucceeded", JsonValue::MakeBool( fr.retrySucceeded ) );
+						result.set( "completions",
+							JsonValue::MakeNumber( static_cast<double>( fr.completionsSpent ) ) );
+						// OMITTED when the identity pass did not succeed: a 0
+						// coverage count would read as "nothing is in frame"
+						// rather than as "this was not measured".
+						if( fr.measuredBefore ) {
+							result.set( "objectsBefore",
+								JsonValue::MakeNumber( static_cast<double>( fr.objectsBefore ) ) );
+							result.set( "coveredBefore",
+								JsonValue::MakeNumber( static_cast<double>( fr.coveredBefore ) ) );
+						}
+						if( fr.measuredAfter ) {
+							result.set( "objectsAfter",
+								JsonValue::MakeNumber( static_cast<double>( fr.objectsAfter ) ) );
+							result.set( "coveredAfter",
+								JsonValue::MakeNumber( static_cast<double>( fr.coveredAfter ) ) );
+						}
+						JsonValue inArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.broughtIntoFrame.size(); ++i )
+							inArr.push_back( JsonValue::MakeString( fr.broughtIntoFrame[i] ) );
+						result.set( "broughtIntoFrame", inArr );
+						JsonValue outArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.pushedOutOfFrame.size(); ++i )
+							outArr.push_back( JsonValue::MakeString( fr.pushedOutOfFrame[i] ) );
+						result.set( "pushedOutOfFrame", outArr );
+					}
+					result.set( "message", JsonValue::MakeString( fr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// imagine_scene {description}
+				//   -> {ok, imagined:bool, replacedPreviousTarget, provider,
+				//       model, width, height, png_base64, byteLength,
+				//       imageWidth, imageHeight, message}
+				//   Arc 77 Phase 2 (2026-08-11).  READ-SAFE -- it records a
+				//   per-session IMAGE TARGET and touches the Document not at
+				//   all, so there is no headVersion, no conflict, no staging
+				//   and no authority branch, exactly like file_build_plan.
+				//
+				//   THE ONLY SCHEMA ERROR is a missing/empty/non-string
+				//   `description`, and it is a clean -32602.  That distinction
+				//   is load-bearing, not cosmetic: a -32602 is a SCHEMA defect
+				//   and DISARMS NOTHING (it never reaches AgentSession, so it
+				//   cannot touch the gate's refusal counter and cannot trip the
+				//   provider-failure disarm), whereas a PROVIDER failure --
+				//   which arrives as ok:false from the session -- drops the
+				//   imagine requirement for the session.  A model that
+				//   mis-shapes the call must not be able to switch the
+				//   mechanism off by doing so.
+				//
+				//   A provider with no image capability answers ok:false with
+				//   an honest statement; the tool is still DECLARED there (one
+				//   shared tool table for every provider -- see
+				//   AgentChatCodecs.cpp's kToolDefs), so the wire shape is
+				//   uniform and only the answer differs.
+				//
+				//   The generated image rides under the SAME `png_base64`
+				//   field name every other image-bearing verb uses, so
+				//   IsImageResult and every retention/elision policy built on
+				//   it cover this with no second code path.
+				//--------------------------------------------------------------
+				if( m == "imagine_scene" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* descVal = params.find( "description" );
+					if( !descVal || !descVal->isString() || descVal->asString().empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'description' (non-empty string) is required -- your own "
+							"words for what the finished scene should look like" );
+					}
+					const AgentSession::AgentImagineResult ir = s->ImagineScene( descVal->asString() );
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",      JsonValue::MakeBool( ir.ok ) );
+					// `imagined` is the same bool under the name a reader of
+					// the verb expects, mirroring file_build_plan's `filed`.
+					result.set( "imagined", JsonValue::MakeBool( ir.ok ) );
+					result.set( "replacedPreviousTarget", JsonValue::MakeBool( ir.replacedPreviousTarget ) );
+					if( !ir.providerName.empty() )
+						result.set( "provider", JsonValue::MakeString( ir.providerName ) );
+					if( !ir.modelId.empty() )
+						result.set( "model", JsonValue::MakeString( ir.modelId ) );
+					// Two structured facts about WHY a refusal happened, so a
+					// census (and a driver) can tell the three outcomes apart
+					// without matching on prose: capability refusal, provider
+					// failure that disarmed the requirement, or success.
+					if( ir.capabilityRefusal )
+						result.set( "capabilityAvailable", JsonValue::MakeBool( false ) );
+					if( ir.requirementDisarmed )
+						result.set( "requirementDisarmed", JsonValue::MakeBool( true ) );
+					if( ir.ok ) {
+						result.set( "width",  JsonValue::MakeNumber( static_cast<double>( ir.width ) ) );
+						result.set( "height", JsonValue::MakeNumber( static_cast<double>( ir.height ) ) );
+						if( !ir.png.empty() ) {
+							result.set( "png_base64",  JsonValue::MakeString( Base64Encode( ir.png ) ) );
+							result.set( "byteLength",  JsonValue::MakeNumber( static_cast<double>( ir.png.size() ) ) );
+							result.set( "imageWidth",  JsonValue::MakeNumber( static_cast<double>( ir.width ) ) );
+							result.set( "imageHeight", JsonValue::MakeNumber( static_cast<double>( ir.height ) ) );
+						}
+					}
+					result.set( "message", JsonValue::MakeString( ir.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// set_render_anchor {}  ->  {ok, pinned, anchorRevision,
+				//                            previousAnchorRevision?, message}
+				//   Doc 90 slice R1 (2026-08-22).  READ-SAFE -- it re-points a
+				//   per-session bookmark and touches the Document not at all,
+				//   so there is no headVersion, no conflict, no staging and no
+				//   authority branch, exactly like file_build_plan.
+				//
+				//   IT TAKES NO PARAMETERS, so there is no schema error it can
+				//   produce: any `params` object is accepted and ignored.  See
+				//   AgentSession::SetRenderAnchor for why the no-argument
+				//   shape was chosen over a revision argument (two frames held
+				//   instead of every frame of the session, and "keep this one"
+				//   is the move the measured failure needed -- time travel on
+				//   the DOCUMENT is slice R2's verb).
+				//
+				//   `ok:false` means only "nothing to pin": no full-frame
+				//   production render has completed in this session yet.  It
+				//   is a plain answer, not an error, and nothing changed.
+				//--------------------------------------------------------------
+				if( m == "set_render_anchor" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const AgentSession::AgentSetRenderAnchorResult ar = s->SetRenderAnchor();
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",     JsonValue::MakeBool( ar.ok ) );
+					// `pinned` is the same bool under the name a reader of the
+					// verb expects, mirroring file_build_plan's `filed` and
+					// imagine_scene's `imagined`.
+					result.set( "pinned", JsonValue::MakeBool( ar.pinned ) );
+					if( ar.ok ) {
+						result.set( "anchorRevision",
+							JsonValue::MakeNumber( static_cast<double>( ar.anchorRevision ) ) );
+						if( ar.hadPreviousAnchor )
+							result.set( "previousAnchorRevision",
+								JsonValue::MakeNumber( static_cast<double>( ar.previousAnchorRevision ) ) );
+					}
+					result.set( "message", JsonValue::MakeString( ar.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
 				if( m == "insert_material_scaffold" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					const JsonValue* familyVal = params.find( "family" );
@@ -1638,7 +3708,9 @@ namespace RISE
 					JsonValue resultsArr = JsonValue::MakeArray();
 					for( const AgentChunkResult& cr : sr.chunkResults ) {
 						if( cr.applied ) ++appliedCount;
-						resultsArr.push_back( ChunkResultJson( cr ) );
+						// S1 fix-round (2026-08-11): see ChunkResultJson's
+						// `element` doc.
+						resultsArr.push_back( ChunkResultJson( cr, s->ChunkElement( cr.name ) ) );
 					}
 					JsonValue material = JsonValue::MakeObject();
 					material.set( "name", JsonValue::MakeString( sr.materialName ) );
@@ -1662,35 +3734,49 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
-				// insert_geometry_scaffold {family, name, size, detail, aspect, baseHeadVersion?}
+				// insert_geometry_scaffold {family, name, ..., baseHeadVersion?}
 				//   -> {applied:number, total:number, results:[ChunkResultJson,...],
 				//       family, name, geometry:{name,kind}}
-				//   Arc-75 slice S3b: expand one of FOUR geometry-family
-				//   templates ("displaced_slab", "sweep_rail",
-				//   "blended_vessel", "sdf_column") into a small
-				//   GEOMETRY-ONLY chunk graph (1-3 chunks, every chunk
-				//   named tmpl_<name>_<role>) -- one tool call instead of
-				//   hand-composing a displaced_geometry/sweep_geometry/
-				//   sdf_geometry chunk.  ALL THREE params are REQUIRED (no
-				//   defaults): a missing param is a BLOCKING error naming
-				//   it.  `size` is >0 (overall scale); `detail` is 0..1
-				//   (displacement amplitude / profile complexity / smin
-				//   tightness / tessellation, per family); `aspect` is >0
-				//   (elongation).  Chunk generation, param validation, and
-				//   the name-collision precheck (refuses the WHOLE
-				//   expansion, document unchanged, before any chunk is
-				//   generated) all happen in
-				//   AgentSession::InsertGeometryScaffold; this handler only
-				//   extracts params and serializes the result.  The actual
-				//   insert is submitted through the SAME InsertChunks path
-				//   insert_chunks/insert_material_scaffold use, so
-				//   authority/autonomy staging-vs-commit, conflict
+				//   Arc-75 slice S3b (original four families) + slice E3
+				//   (blended_chain, volume_bank): expand one of SIX
+				//   geometry-family templates into a small chunk graph
+				//   (every chunk named tmpl_<name>_<role>) -- one tool call
+				//   instead of hand-composing the underlying chunk(s)
+				//   yourself.  REQUIRED params differ BY FAMILY (E3 widened
+				//   this beyond the original uniform five -- see
+				//   AgentSession::InsertGeometryScaffold's header doc for
+				//   the full per-family table):
+				//     - displaced_slab / sweep_rail / blended_vessel /
+				//       sdf_column: family, name, size (>0), detail (0..1),
+				//       aspect (>0).
+				//     - blended_chain: family, name, points (2-6
+				//       semicolon-separated "x y z" triplets), size (>0),
+				//       taper (0..1), detail (0..1) -- NO aspect.
+				//     - volume_bank: family, name, size (>0), aspect (>0),
+				//       detail (0..1), tone ("r g b" each 0..1) -- NO
+				//       points/taper.
+				//   A missing param for the RESOLVED family is a BLOCKING
+				//   error naming it; `family` itself must resolve to one of
+				//   the six names before any other param is checked (so an
+				//   unrecognized family is refused before a family-specific
+				//   "missing param" message would be misleading).  Chunk
+				//   generation, full param validation, and the name-
+				//   collision precheck (refuses the WHOLE expansion,
+				//   document unchanged, before any chunk is generated) all
+				//   happen in AgentSession::InsertGeometryScaffold; this
+				//   handler only extracts params and serializes the result.
+				//   The actual insert is submitted through the SAME
+				//   InsertChunks path insert_chunks/insert_material_scaffold
+				//   use, so authority/autonomy staging-vs-commit, conflict
 				//   detection, and per-chunk `issues` are all inherited
 				//   unchanged.  Unlike insert_material_scaffold, no
-				//   material/standard_object is ever generated -- the
-				//   model wires those itself; `geometry` names the ONE
-				//   geometry chunk to bind into a standard_object.geometry
-				//   slot.
+				//   material/standard_object is generated for FIVE of the
+				//   six families -- the model wires those itself;
+				//   `geometry` names the ONE geometry chunk to bind into a
+				//   standard_object.geometry slot.  volume_bank is the sole
+				//   exception (see InsertGeometryScaffold's doc for why) --
+				//   its result additionally carries non-empty `material`/
+				//   `medium`/`object` fields.
 				//--------------------------------------------------------------
 				if( m == "insert_geometry_scaffold" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
@@ -1698,8 +3784,39 @@ namespace RISE
 					if( !familyVal || !familyVal->isString() ) {
 						return MakeError( idValue, kInvalidParams,
 							"Invalid params: 'family' (string) is required -- one of displaced_slab, "
-							"sweep_rail, blended_vessel, sdf_column" );
+							"sweep_rail, blended_vessel, sdf_column, blended_chain, volume_bank, quadruped "
+							"(alias: creature)" );
 					}
+					const std::string familyStr = familyVal->asString();
+					// P3 fix-round: validate `family` against the known list
+					// BEFORE any per-family required-param check runs -- an
+					// unrecognized family must always come back as "unknown
+					// family", never as a misleading "'aspect' is required"
+					// (or similar) just because the unrecognized name
+					// happened to fall through to the wrong per-family
+					// branch below.
+					static const char* const kKnownGeometryScaffoldFamilies[] = {
+						"displaced_slab", "sweep_rail", "blended_vessel", "sdf_column",
+						"blended_chain", "volume_bank", "quadruped", "creature",
+					};
+					bool familyKnown = false;
+					for( const char* f : kKnownGeometryScaffoldFamilies ) {
+						if( familyStr == f ) { familyKnown = true; break; }
+					}
+					if( !familyKnown ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: unknown family `" + familyStr + "` -- valid families are: "
+							"displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, volume_bank, "
+							"quadruped (alias: creature)" );
+					}
+					const bool isChain     = ( familyStr == "blended_chain" );
+					const bool isBank      = ( familyStr == "volume_bank" );
+					// Creature scaffold slice: quadruped needs neither
+					// `detail` nor `aspect` (see AgentSession::
+					// InsertGeometryScaffold's header doc for why) -- takes
+					// `build` instead, parsed below.
+					const bool isQuadruped = ( familyStr == "quadruped" || familyStr == "creature" );
+
 					const JsonValue* nameVal = params.find( "name" );
 					if( !nameVal || !nameVal->isString() ) {
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'name' (string) is required" );
@@ -1708,22 +3825,68 @@ namespace RISE
 					if( !sizeVal || !sizeVal->isNumber() ) {
 						return MakeError( idValue, kInvalidParams, "Invalid params: 'size' (number, > 0) is required" );
 					}
-					const JsonValue* detailVal = params.find( "detail" );
-					if( !detailVal || !detailVal->isNumber() ) {
-						return MakeError( idValue, kInvalidParams, "Invalid params: 'detail' (number, 0..1) is required" );
+					double detailNum = 0.0;
+					if( !isQuadruped ) {
+						const JsonValue* detailVal = params.find( "detail" );
+						if( !detailVal || !detailVal->isNumber() ) {
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'detail' (number, 0..1) is required" );
+						}
+						detailNum = detailVal->asNumber();
 					}
-					const JsonValue* aspectVal = params.find( "aspect" );
-					if( !aspectVal || !aspectVal->isNumber() ) {
-						return MakeError( idValue, kInvalidParams, "Invalid params: 'aspect' (number, > 0) is required" );
+
+					double aspectNum = 1.0;   // placeholder for blended_chain/quadruped, which ignore it
+					std::string pointsStr;
+					double taperNum = 0.0;
+					std::string toneStr;
+					std::string buildStr;
+
+					if( isChain ) {
+						const JsonValue* pointsVal = params.find( "points" );
+						if( !pointsVal || !pointsVal->isString() ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'points' (string, 2-6 semicolon-separated \"x y z\" triplets) "
+								"is required for family blended_chain" );
+						}
+						pointsStr = pointsVal->asString();
+						const JsonValue* taperVal = params.find( "taper" );
+						if( !taperVal || !taperVal->isNumber() ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'taper' (number, 0..1) is required for family blended_chain" );
+						}
+						taperNum = taperVal->asNumber();
+					} else if( isQuadruped ) {
+						const JsonValue* buildVal = params.find( "build" );
+						if( buildVal ) {
+							if( !buildVal->isString() ) {
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'build' must be a string" );
+							}
+							buildStr = buildVal->asString();
+						}
+					} else {
+						const JsonValue* aspectVal = params.find( "aspect" );
+						if( !aspectVal || !aspectVal->isNumber() ) {
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'aspect' (number, > 0) is required" );
+						}
+						aspectNum = aspectVal->asNumber();
+						if( isBank ) {
+							const JsonValue* toneVal = params.find( "tone" );
+							if( !toneVal || !toneVal->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'tone' (string, \"r g b\" each 0..1) is required for family volume_bank" );
+							}
+							toneStr = toneVal->asString();
+						}
 					}
+
 					RISE::Cst::CstHeadVersion base;
 					std::string bErr;
 					const int b = ParseBaseHeadVersionParam( params, base, bErr );
 					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
 
 					const AgentSession::AgentGeometryScaffoldResult sr = s->InsertGeometryScaffold(
-						familyVal->asString(), nameVal->asString(),
-						sizeVal->asNumber(), detailVal->asNumber(), aspectVal->asNumber(),
+						familyStr, nameVal->asString(),
+						sizeVal->asNumber(), detailNum, aspectNum,
+						pointsStr, taperNum, toneStr, buildStr,
 						( b == 1 ) ? &base : nullptr );
 
 					if( !sr.ok ) return MakeError( idValue, kInvalidParams, sr.message );
@@ -1735,7 +3898,9 @@ namespace RISE
 					JsonValue resultsArr = JsonValue::MakeArray();
 					for( const AgentChunkResult& cr : sr.chunkResults ) {
 						if( cr.applied ) ++appliedCount;
-						resultsArr.push_back( ChunkResultJson( cr ) );
+						// S1 fix-round (2026-08-11): see ChunkResultJson's
+						// `element` doc.
+						resultsArr.push_back( ChunkResultJson( cr, s->ChunkElement( cr.name ) ) );
 					}
 					JsonValue geometry = JsonValue::MakeObject();
 					geometry.set( "name", JsonValue::MakeString( sr.geometryName ) );
@@ -1747,6 +3912,883 @@ namespace RISE
 					result.set( "family",   JsonValue::MakeString( sr.family ) );
 					result.set( "name",     JsonValue::MakeString( nameVal->asString() ) );
 					result.set( "geometry", geometry );
+					// E3: volume_bank is the sole family with non-empty
+					// material/medium/object -- see BuildVolumeBank's doc.
+					// Every other family keeps these three objects with
+					// empty name/kind, matching `geometry` on the original
+					// four families' shape.
+					if( !sr.materialName.empty() || !sr.materialKind.empty() ) {
+						JsonValue material = JsonValue::MakeObject();
+						material.set( "name", JsonValue::MakeString( sr.materialName ) );
+						material.set( "kind", JsonValue::MakeString( sr.materialKind ) );
+						result.set( "material", material );
+					}
+					if( !sr.mediumName.empty() || !sr.mediumKind.empty() ) {
+						JsonValue medium = JsonValue::MakeObject();
+						medium.set( "name", JsonValue::MakeString( sr.mediumName ) );
+						medium.set( "kind", JsonValue::MakeString( sr.mediumKind ) );
+						result.set( "medium", medium );
+					}
+					if( !sr.objectName.empty() || !sr.objectKind.empty() ) {
+						JsonValue object = JsonValue::MakeObject();
+						object.set( "name", JsonValue::MakeString( sr.objectName ) );
+						object.set( "kind", JsonValue::MakeString( sr.objectKind ) );
+						result.set( "object", object );
+					}
+					if( !sr.message.empty() ) result.set( "message", JsonValue::MakeString( sr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// replace_geometry_scaffold {target, family, name, ..., baseHeadVersion?}
+				//   -> {applied:number, total:number, results:[ChunkResultJson,...],
+				//       status, retriable, headVersion,
+				//       family, name, target, geometry:{name,kind},
+				//       previousGeometry:{name,kind,removed,referrers[]},
+				//       orphans:[...], message}
+				//   R2 (2026-08-10): the SAME six-family expansion
+				//   insert_geometry_scaffold performs (identical params, identical
+				//   validation, identical generators -- one shared code path),
+				//   but instead of leaving the model to wire the result it
+				//   REBINDS an EXISTING standard_object's `geometry` slot to the
+				//   new chunk, preserves every other param on that object
+				//   (position/orientation/scale/material -- placement tuned by
+				//   LOOKING survives a form change), and removes the old geometry
+				//   chunk when nothing else references it.  ONE call = ONE head
+				//   bump = ONE undo step; all-or-nothing on any refusal.
+				//   `target` (string) is REQUIRED and names the object, NOT the
+				//   geometry; `family` volume_bank is refused (it emits its own
+				//   object -- see AgentSession::ReplaceGeometryScaffold's doc).
+				//   Target resolution, the geometry-chunk-instead-of-object
+				//   diagnosis, orphan policy, the E1/R1c candidate gates and the
+				//   External-authority refusal all live in
+				//   AgentSession::ReplaceGeometryScaffold; this handler only
+				//   extracts params and serializes the result.
+				//   R2 fix-round (2026-08-10, P1): top-level `status`/`retriable`/
+				//   `headVersion` carry the composite commit's ACTUAL disposition --
+				//   "applied" / "rejected" / "conflict" / "diagnosed" -- mirroring
+				//   remove_chunks' identically-named fields.  EVERY outcome that
+				//   reached a commit attempt returns MakeSuccess with these fields
+				//   set (including a conflict, a transient-retriable reject, and a
+				//   diagnosed-but-mutated code-3, none of which are "the request was
+				//   invalid"); MakeError is reserved for genuine pre-commit request
+				//   failures (bad/missing params, unknown family, the volume_bank
+				//   refusal, target-resolution failure, name collision, no retained
+				//   Document, the External-authority hard refusal).
+				//--------------------------------------------------------------
+				if( m == "replace_geometry_scaffold" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* targetVal = params.find( "target" );
+					if( !targetVal || !targetVal->isString() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'target' (string) is required -- the name of the standard_object "
+							"whose geometry slot to rebind" );
+					}
+					const JsonValue* familyVal = params.find( "family" );
+					if( !familyVal || !familyVal->isString() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'family' (string) is required -- one of displaced_slab, "
+							"sweep_rail, blended_vessel, sdf_column, blended_chain, quadruped (alias: creature)" );
+					}
+					const std::string familyStr = familyVal->asString();
+					// Same rule as insert_geometry_scaffold's own P3 fix: resolve
+					// `family` against the known list BEFORE any per-family
+					// required-param check, so an unrecognized family never comes
+					// back as a misleading "'aspect' is required".  volume_bank IS
+					// in the known list here (so it gets the specific "that family
+					// emits its own object" refusal from the session, not a
+					// generic "unknown family" that would send the model hunting
+					// for a typo it did not make).
+					static const char* const kKnownGeometryScaffoldFamiliesR2[] = {
+						"displaced_slab", "sweep_rail", "blended_vessel", "sdf_column",
+						"blended_chain", "volume_bank", "quadruped", "creature",
+					};
+					bool familyKnownR2 = false;
+					for( const char* f : kKnownGeometryScaffoldFamiliesR2 ) {
+						if( familyStr == f ) { familyKnownR2 = true; break; }
+					}
+					if( !familyKnownR2 ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: unknown family `" + familyStr + "` -- valid families are: "
+							"displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, quadruped "
+							"(alias: creature) (volume_bank emits its own standard_object and cannot rebind an "
+							"existing one -- use insert_geometry_scaffold for it)" );
+					}
+					const bool isChainR2     = ( familyStr == "blended_chain" );
+					const bool isBankR2      = ( familyStr == "volume_bank" );
+					const bool isQuadrupedR2 = ( familyStr == "quadruped" || familyStr == "creature" );
+
+					const JsonValue* nameVal = params.find( "name" );
+					if( !nameVal || !nameVal->isString() ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'name' (string) is required" );
+					}
+					const JsonValue* sizeVal = params.find( "size" );
+					if( !sizeVal || !sizeVal->isNumber() ) {
+						return MakeError( idValue, kInvalidParams, "Invalid params: 'size' (number, > 0) is required" );
+					}
+					double detailNumR2 = 0.0;
+					if( !isQuadrupedR2 ) {
+						const JsonValue* detailVal = params.find( "detail" );
+						if( !detailVal || !detailVal->isNumber() ) {
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'detail' (number, 0..1) is required" );
+						}
+						detailNumR2 = detailVal->asNumber();
+					}
+
+					double aspectNumR2 = 1.0;   // placeholder for blended_chain/quadruped, which ignore it
+					std::string pointsStrR2;
+					double taperNumR2 = 0.0;
+					std::string toneStrR2;
+					std::string buildStrR2;
+
+					if( isChainR2 ) {
+						const JsonValue* pointsVal = params.find( "points" );
+						if( !pointsVal || !pointsVal->isString() ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'points' (string, 2-6 semicolon-separated \"x y z\" triplets) "
+								"is required for family blended_chain" );
+						}
+						pointsStrR2 = pointsVal->asString();
+						const JsonValue* taperVal = params.find( "taper" );
+						if( !taperVal || !taperVal->isNumber() ) {
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'taper' (number, 0..1) is required for family blended_chain" );
+						}
+						taperNumR2 = taperVal->asNumber();
+					} else if( isQuadrupedR2 ) {
+						const JsonValue* buildVal = params.find( "build" );
+						if( buildVal ) {
+							if( !buildVal->isString() ) {
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'build' must be a string" );
+							}
+							buildStrR2 = buildVal->asString();
+						}
+					} else {
+						const JsonValue* aspectVal = params.find( "aspect" );
+						if( !aspectVal || !aspectVal->isNumber() ) {
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'aspect' (number, > 0) is required" );
+						}
+						aspectNumR2 = aspectVal->asNumber();
+						if( isBankR2 ) {
+							const JsonValue* toneVal = params.find( "tone" );
+							if( toneVal && toneVal->isString() ) toneStrR2 = toneVal->asString();
+							// A missing `tone` is NOT diagnosed here: volume_bank is refused outright by the
+							// session below, and demanding a param for a family that cannot be used would
+							// bury the real reason under a param error.
+						}
+					}
+
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentGeometryScaffoldResult sr = s->ReplaceGeometryScaffold(
+						targetVal->asString(), familyStr, nameVal->asString(),
+						sizeVal->asNumber(), detailNumR2, aspectNumR2,
+						pointsStrR2, taperNumR2, toneStrR2, buildStrR2,
+						( b == 1 ) ? &base : nullptr );
+
+					// R2 fix-round (P1): `sr.ok` now means "reached a commit-stage disposition" (see
+					// AgentGeometryScaffoldResult::ok's doc) -- false ONLY for a genuine pre-commit refusal
+					// (bad/missing params, unknown family, the volume_bank refusal, target-resolution
+					// failure, name collision, no retained Document, the External-authority hard refusal).
+					// EVERY commit-stage outcome -- applied, rejected, conflict, diagnosed, or a transient
+					// retriable reject -- is `ok==true` and returns MakeSuccess below, carrying `status`/
+					// `retriable`/`headVersion` so a caller can tell them apart without string-matching
+					// `message`.  Before this fix, ALL of those non-applied commit outcomes were folded into
+					// this one `MakeError( kInvalidParams, ... )` -- a code that is factually wrong (the
+					// params were fine) and gave a caller no field to branch on; see `remove_chunks` above for
+					// the identical envelope shape this now matches.
+					if( !sr.ok ) return MakeError( idValue, kInvalidParams, sr.message );
+
+					// P3 fix-round: NO queueFull check here (unlike insert_chunk(s)/remove_chunk(s)) --
+					// this verb has no staging path at all (see ReplaceGeometryScaffold's AUTHORITY doc):
+					// an External-authority session is refused with kInvalidParams above, BEFORE any commit
+					// is built, so `AgentChunkResult::queueFull` can never be set on a result that reaches
+					// this line.  (A prior revision of this handler looped `sr.chunkResults` checking it --
+					// dead code, removed.)
+					std::size_t appliedCountR2 = 0;
+					JsonValue resultsArrR2 = JsonValue::MakeArray();
+					for( const AgentChunkResult& cr : sr.chunkResults ) {
+						if( cr.applied ) ++appliedCountR2;
+						// S1 fix-round (2026-08-11): see ChunkResultJson's
+						// `element` doc.  The chunk this verb ERASED (the
+						// previous geometry) is reported under `previousGeometry`
+						// and carries no attribution any more -- by the same fix
+						// round that dropped it (AgentSession.cpp).
+						resultsArrR2.push_back( ChunkResultJson( cr, s->ChunkElement( cr.name ) ) );
+					}
+					JsonValue geometryR2 = JsonValue::MakeObject();
+					geometryR2.set( "name", JsonValue::MakeString( sr.geometryName ) );
+					geometryR2.set( "kind", JsonValue::MakeString( sr.geometryKind ) );
+					JsonValue prevGeom = JsonValue::MakeObject();
+					prevGeom.set( "name",    JsonValue::MakeString( sr.previousGeometryName ) );
+					prevGeom.set( "kind",    JsonValue::MakeString( sr.previousGeometryKind ) );
+					prevGeom.set( "removed", JsonValue::MakeBool( sr.previousGeometryRemoved ) );
+					if( !sr.previousGeometryReferrers.empty() ) {
+						JsonValue refs = JsonValue::MakeArray();
+						for( const std::string& rname : sr.previousGeometryReferrers )
+							refs.push_back( JsonValue::MakeString( rname ) );
+						prevGeom.set( "referrers", refs );
+					}
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "applied",   JsonValue::MakeNumber( static_cast<double>( appliedCountR2 ) ) );
+					result.set( "total",     JsonValue::MakeNumber( static_cast<double>( sr.chunkResults.size() ) ) );
+					result.set( "results",   resultsArrR2 );
+					// R2 fix-round (P1): the composite-commit disposition, mirroring remove_chunks' own
+					// top-level status/retriable/headVersion fields (see AgentGeometryScaffoldResult's doc).
+					result.set( "status",     JsonValue::MakeString( sr.status ) );
+					result.set( "retriable",  JsonValue::MakeBool( sr.retriable ) );
+					result.set( "headVersion", HeadVersionJson( sr.headVersion ) );
+					result.set( "family",   JsonValue::MakeString( sr.family ) );
+					result.set( "name",     JsonValue::MakeString( nameVal->asString() ) );
+					result.set( "target",   JsonValue::MakeString( sr.replacedObject ) );
+					result.set( "geometry", geometryR2 );
+					result.set( "previousGeometry", prevGeom );
+					if( !sr.reportedOrphans.empty() ) {
+						JsonValue orphans = JsonValue::MakeArray();
+						for( const std::string& o : sr.reportedOrphans )
+							orphans.push_back( JsonValue::MakeString( o ) );
+						result.set( "orphans", orphans );
+					}
+					if( !sr.message.empty() ) result.set( "message", JsonValue::MakeString( sr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// collapse_to_instances {target?, name?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       source,geometry,collapsed,countU,countV,
+				//       instanceChunks:[string,...],removedObjects:[string,...]}
+				//   88 step 2 (2026-08-19): the VERB half of design-note
+				//   condition C -- rewrite a run of hand-authored copies of one
+				//   geometry as ONE `source` + `count_u` instancing chunk (two
+				//   for a grid), keeping the first copy as the source.  The
+				//   contract is that the RENDERED SCENE is unchanged, so every
+				//   case it cannot prove that for is a REFUSAL with the document
+				//   byte-identical (see AgentSession::CollapseToInstances).  A
+				//   pre-commit refusal comes back as ok=false with the reason in
+				//   `message` -- a SUCCESSFUL response, not a JSON-RPC error,
+				//   because "these copies are not on a regular grid" is an answer
+				//   rather than a malformed call.
+				//--------------------------------------------------------------
+				if( m == "collapse_to_instances" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string targetStr, nameStr;
+					if( const JsonValue* tv = params.find( "target" ) ) {
+						if( tv->isString() ) targetStr = tv->asString();
+						else if( !tv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'target' must be a string" );
+					}
+					if( const JsonValue* nv = params.find( "name" ) ) {
+						if( nv->isString() ) nameStr = nv->asString();
+						else if( !nv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'name' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentCollapseResult cir =
+						s->CollapseToInstances( targetStr, nameStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( cir.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( cir.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( cir.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( cir.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( cir.retriable ) );
+					result.set( "headVersion", HeadVersionJson( cir.headVersion ) );
+					if( !cir.message.empty() )      result.set( "message",  JsonValue::MakeString( cir.message ) );
+					if( !cir.sourceObject.empty() ) result.set( "source",   JsonValue::MakeString( cir.sourceObject ) );
+					if( !cir.geometry.empty() )     result.set( "geometry", JsonValue::MakeString( cir.geometry ) );
+					if( cir.collapsedCount > 0 )
+						result.set( "collapsed", JsonValue::MakeNumber( static_cast<double>( cir.collapsedCount ) ) );
+					if( cir.countU > 0 ) {
+						result.set( "countU", JsonValue::MakeNumber( static_cast<double>( cir.countU ) ) );
+						result.set( "countV", JsonValue::MakeNumber( static_cast<double>( cir.countV ) ) );
+					}
+					if( !cir.instanceChunks.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& nm : cir.instanceChunks ) arr.push_back( JsonValue::MakeString( nm ) );
+						result.set( "instanceChunks", arr );
+					}
+					if( !cir.removedObjects.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& nm : cir.removedObjects ) arr.push_back( JsonValue::MakeString( nm ) );
+						result.set( "removedObjects", arr );
+					}
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// revert_to_revision {revision, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       requestedRevision,previousRevision,
+				//       oldestAvailableRevision,droppedAttributions?,
+				//       restoredAttributions?}
+				//   Doc 90 slice R2 (2026-08-23): restore the DOCUMENT to its
+				//   text as of an earlier head revision of this session, as ONE
+				//   NEW commit -- append-only history, one undo step (see
+				//   AgentSession::RevertToRevision).  Every refusal leaves the
+				//   document byte-identical, and comes back as ok=false with the
+				//   reason in `message` -- a SUCCESSFUL response, not a JSON-RPC
+				//   error, for collapse_to_instances' reason: "that revision has
+				//   aged out, the oldest still here is 40" is an ANSWER rather
+				//   than a malformed call, and the model's next move is in it.
+				//   A missing/ill-typed `revision` IS malformed, so that one is
+				//   an error.
+				//--------------------------------------------------------------
+				if( m == "revert_to_revision" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* rv = params.find( "revision" );
+					if( !rv || !rv->isNumber() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'revision' (number, a head revision this session has already "
+							"reported) is required" );
+					}
+					const double rvNum = rv->asNumber();
+					// The SAME bound ParseBaseHeadVersionParam applies to a head
+					// version on this wire: 2^53, past which a JSON number
+					// cannot represent consecutive integers at all.
+					if( !( rvNum >= 0.0 && rvNum <= 9007199254740992.0 &&
+					       rvNum == std::floor( rvNum ) ) ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'revision' must be a non-negative whole number" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentRevertResult rr2 =
+						s->RevertToRevision( static_cast<std::uint64_t>( rvNum ),
+						                     ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( rr2.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( rr2.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( rr2.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( rr2.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( rr2.retriable ) );
+					result.set( "headVersion", HeadVersionJson( rr2.headVersion ) );
+					result.set( "requestedRevision",
+						JsonValue::MakeNumber( static_cast<double>( rr2.requestedRevision ) ) );
+					result.set( "previousRevision",
+						JsonValue::MakeNumber( static_cast<double>( rr2.previousRevision ) ) );
+					result.set( "oldestAvailableRevision",
+						JsonValue::MakeNumber( static_cast<double>( rr2.oldestAvailableRevision ) ) );
+					if( rr2.droppedAttributions > 0 ) {
+						result.set( "droppedAttributions",
+							JsonValue::MakeNumber( static_cast<double>( rr2.droppedAttributions ) ) );
+					}
+					// The SYMMETRIC half (doc 90 R2 fix round): a restore can
+					// bring a chunk -- and its build-element attribution --
+					// BACK, which a client tracking the ledger needs to see
+					// for the same reason it needs the drops.  Same
+					// present-only-when-nonzero shape.
+					if( rr2.restoredAttributions > 0 ) {
+						result.set( "restoredAttributions",
+							JsonValue::MakeNumber( static_cast<double>( rr2.restoredAttributions ) ) );
+					}
+					if( !rr2.message.empty() ) result.set( "message", JsonValue::MakeString( rr2.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// vary_material {material?, all?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       material,materialKind,painter,slots:[string,...],
+				//       previousRoughness,qualifying,objects}
+				//   88 S5 (2026-08-20): the VERB half of design-note condition D --
+				//   bind ONE material's roughness slot(s) to a
+				//   `scalar_painter { expression ... }` fbm wear field banded
+				//   around the constant that is already there.  A pre-commit
+				//   refusal comes back as ok=false with the reason in `message` --
+				//   a SUCCESSFUL response, not a JSON-RPC error, because "no
+				//   material here has a readable constant microsurface" is an
+				//   answer rather than a malformed call (the same shape
+				//   collapse_to_instances uses).
+				//
+				//   Materials-realism item 2 (2026-08-24): `all:true` routes to
+				//   AgentSession::VaryMaterialAll instead -- ONE call fixes EVERY
+				//   currently-flagged material (capped, `remaining` names the
+				//   rest) rather than requiring one call per material, which
+				//   measurement showed models rarely do on their own (coverage-
+				//   per-call observed at 1 against 17-20 flagged materials).
+				//   `all` and `material` are mutually exclusive: `all:true` with
+				//   a `material` string is a malformed call, same posture as any
+				//   other param combination this dispatcher already refuses
+				//   rather than silently prioritizes one over the other.
+				//--------------------------------------------------------------
+				if( m == "vary_material" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string materialStr;
+					if( const JsonValue* mv = params.find( "material" ) ) {
+						if( mv->isString() ) materialStr = mv->asString();
+						else if( !mv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'material' must be a string" );
+					}
+					bool allFlag = false;
+					if( const JsonValue* av = params.find( "all" ) ) {
+						if( av->isBool() ) allFlag = av->asBool();
+						else if( !av->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'all' must be a boolean" );
+					}
+					if( allFlag && !materialStr.empty() )
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'all' and 'material' are mutually exclusive -- pass 'all':true to "
+							"fix every flagged material, or 'material' to name one" );
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					if( allFlag ) {
+						const AgentSession::AgentVaryMaterialBatchResult br =
+							s->VaryMaterialAll( ( b == 1 ) ? &base : nullptr );
+						JsonValue result = JsonValue::MakeObject();
+						result.set( "ok",         JsonValue::MakeBool( br.ok ) );
+						// Review-round P2-2: matches the single-material form
+						// (and AgentCollapseResult) -- always set, "" for a
+						// normal (non-conflict/non-rejected) outcome, so the
+						// wire's generic status=="conflict"/"rejected"
+						// interception can catch a batch refusal.
+						result.set( "status",     JsonValue::MakeString( br.status ) );
+						result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( br.qualifyingMaterials ) ) );
+						result.set( "applied",    JsonValue::MakeNumber( static_cast<double>( br.appliedCount ) ) );
+						result.set( "refused",    JsonValue::MakeNumber( static_cast<double>( br.refusedCount ) ) );
+						result.set( "remaining",  JsonValue::MakeNumber( static_cast<double>( br.remainingCount ) ) );
+						if( !br.message.empty() ) result.set( "message", JsonValue::MakeString( br.message ) );
+						JsonValue arr = JsonValue::MakeArray();
+						for( const AgentSession::AgentVaryMaterialResult& vr : br.perMaterial ) {
+							JsonValue entry = JsonValue::MakeObject();
+							entry.set( "applied", JsonValue::MakeBool( vr.applied ) );
+							if( !vr.material.empty() )     entry.set( "material",     JsonValue::MakeString( vr.material ) );
+							if( !vr.materialKind.empty() ) entry.set( "materialKind", JsonValue::MakeString( vr.materialKind ) );
+							if( !vr.painterChunk.empty() ) entry.set( "painter",      JsonValue::MakeString( vr.painterChunk ) );
+							if( !vr.message.empty() )      entry.set( "message",      JsonValue::MakeString( vr.message ) );
+							arr.push_back( entry );
+						}
+						result.set( "perMaterial", arr );
+						return MakeSuccess( idValue, result );
+					}
+
+					const AgentSession::AgentVaryMaterialResult vr =
+						s->VaryMaterial( materialStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( vr.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( vr.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( vr.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( vr.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( vr.retriable ) );
+					result.set( "headVersion", HeadVersionJson( vr.headVersion ) );
+					if( !vr.message.empty() )      result.set( "message",      JsonValue::MakeString( vr.message ) );
+					if( !vr.material.empty() )     result.set( "material",     JsonValue::MakeString( vr.material ) );
+					if( !vr.materialKind.empty() ) result.set( "materialKind", JsonValue::MakeString( vr.materialKind ) );
+					if( !vr.painterChunk.empty() ) result.set( "painter",      JsonValue::MakeString( vr.painterChunk ) );
+					if( !vr.reboundSlots.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& nm : vr.reboundSlots ) arr.push_back( JsonValue::MakeString( nm ) );
+						result.set( "slots", arr );
+					}
+					if( !vr.material.empty() )
+						result.set( "previousRoughness", JsonValue::MakeNumber( vr.previousRoughness ) );
+					result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( vr.qualifyingMaterials ) ) );
+					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( vr.boundObjects ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// fix_blend_scale {target?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       offendersFound,fixed,remaining,perJoint:[string,...]}
+				//   Cat plan item 1 (2026-08-25): the CALLABLE VERB half of
+				//   design-note condition J (the blend-scale law) -- clamps
+				//   every offending smin joint's k down to its safe bound in
+				//   ONE call, using the SAME ScanSdfGeometryBlendScaleOffenders_
+				//   scan the note and diagnostic read.  `target` (optional)
+				//   scopes the scan-and-fix to one named sdf_geometry chunk;
+				//   omitted, it covers the whole document.  A pre-commit
+				//   refusal (nothing to fix, an unresolvable target) comes
+				//   back as ok=false with the reason in `message` -- a
+				//   SUCCESSFUL response, not a JSON-RPC error, the same shape
+				//   vary_material uses for its own "nothing qualifies" case.
+				//--------------------------------------------------------------
+				if( m == "fix_blend_scale" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string targetStr;
+					if( const JsonValue* tv = params.find( "target" ) ) {
+						if( tv->isString() ) targetStr = tv->asString();
+						else if( !tv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'target' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentFixBlendScaleResult fr =
+						s->FixBlendScale( targetStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",             JsonValue::MakeBool( fr.ok ) );
+					result.set( "applied",        JsonValue::MakeBool( fr.applied ) );
+					result.set( "rawCode",        JsonValue::MakeNumber( static_cast<double>( fr.rawCode ) ) );
+					result.set( "status",         JsonValue::MakeString( fr.status ) );
+					result.set( "retriable",      JsonValue::MakeBool( fr.retriable ) );
+					result.set( "headVersion",    HeadVersionJson( fr.headVersion ) );
+					if( !fr.message.empty() ) result.set( "message", JsonValue::MakeString( fr.message ) );
+					result.set( "offendersFound", JsonValue::MakeNumber( static_cast<double>( fr.offendersFound ) ) );
+					result.set( "fixed",          JsonValue::MakeNumber( static_cast<double>( fr.fixedCount ) ) );
+					result.set( "remaining",      JsonValue::MakeNumber( static_cast<double>( fr.remainingCount ) ) );
+					if( !fr.perJointSummary.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& line : fr.perJointSummary ) arr.push_back( JsonValue::MakeString( line ) );
+						result.set( "perJoint", arr );
+					}
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// add_wear {material?, contact_radius?, contact_grime?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       material,materialKind,colorSlot,painter,roughPainter,
+				//       roughSlots:[string,...],previousRoughness,baseColor:[r,g,b],
+				//       geometry,qualifying,objects}
+				//   GEOMETRY_SHADING_SIGNALS sec 11 / sec 13 Phase 4 (2026-08-30):
+				//   the VERB half of design-note condition L -- rewrite ONE
+				//   material's colour (and, where it has one, its roughness) into
+				//   the curvature wear composition the 2026-08-29 census proved
+				//   models will not author unprompted.  A pre-commit refusal comes
+				//   back as ok=false with the reason in `message` -- a SUCCESSFUL
+				//   response, not a JSON-RPC error, the same shape vary_material
+				//   uses for its own "nothing qualifies" case.
+				//   docs/CROSS_OBJECT_PROXIMITY_DESIGN.md sec 5.6 (2026-09-09):
+				//   `contact_radius` is a WORLD LENGTH, default 0 = OFF -- at
+				//   which every output is byte-identical to before it existed
+				//   with exactly TWO pinned exceptions, both messages: clause
+				//   (d)'s decline string (which now names all six shading
+				//   signals) and the bare-call "no material qualifies" text
+				//   (which gains a clause about this argument, and only when
+				//   the call did not pass it).  See `AgentSession::AddWear`.  Above 0 it folds
+				//   a `proximity(contact_r)` contact-seam term into the crevice
+				//   endpoint, and it lets a FLAT receiver -- a plank on a plane, a
+				//   flange on a box -- qualify at all, which the curvature-only
+				//   verb has always had to refuse.  `contact_grime` (default 0.5,
+				//   [0,1]) is that term's weight.
+				//--------------------------------------------------------------
+				if( m == "add_wear" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string materialStr;
+					if( const JsonValue* mv = params.find( "material" ) ) {
+						if( mv->isString() ) materialStr = mv->asString();
+						else if( !mv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'material' must be a string" );
+					}
+					// The contact pair.  Both OPTIONAL; absent means "off" /
+					// "the default weight", and a call that names neither is
+					// byte-identical to every add_wear call before Phase 3.
+					double contactRadius = 0.0;
+					double contactGrime  = 0.5;
+					if( const JsonValue* cr = params.find( "contact_radius" ) ) {
+						if( !cr->isNumber() ) {
+							if( !cr->isNull() )
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'contact_radius' must be a number (a WORLD length; 0 = off)" );
+						}
+						else {
+							const double v = cr->asNumber();
+							if( !RISE::IsFiniteDouble( v ) || v < 0.0 )
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'contact_radius' must be a finite, non-negative world length "
+									"(0 = off)" );
+							contactRadius = v;
+						}
+					}
+					if( const JsonValue* cg = params.find( "contact_grime" ) ) {
+						if( !cg->isNumber() ) {
+							if( !cg->isNull() )
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'contact_grime' must be a number in [0, 1]" );
+						}
+						else {
+							const double v = cg->asNumber();
+							if( !RISE::IsFiniteDouble( v ) || v < 0.0 || v > 1.0 )
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'contact_grime' must be a finite number in [0, 1]" );
+							contactGrime = v;
+						}
+					}
+
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentAddWearResult wr =
+						s->AddWear( materialStr, ( b == 1 ) ? &base : nullptr,
+						            contactRadius, contactGrime );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( wr.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( wr.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( wr.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( wr.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( wr.retriable ) );
+					result.set( "headVersion", HeadVersionJson( wr.headVersion ) );
+					if( !wr.message.empty() )          result.set( "message",      JsonValue::MakeString( wr.message ) );
+					if( !wr.material.empty() )         result.set( "material",     JsonValue::MakeString( wr.material ) );
+					if( !wr.materialKind.empty() )     result.set( "materialKind", JsonValue::MakeString( wr.materialKind ) );
+					if( !wr.colorSlot.empty() )        result.set( "colorSlot",    JsonValue::MakeString( wr.colorSlot ) );
+					if( !wr.colorPainter.empty() )     result.set( "painter",      JsonValue::MakeString( wr.colorPainter ) );
+					if( !wr.roughnessPainter.empty() ) result.set( "roughPainter", JsonValue::MakeString( wr.roughnessPainter ) );
+					if( !wr.roughnessSlots.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& nm : wr.roughnessSlots ) arr.push_back( JsonValue::MakeString( nm ) );
+						result.set( "roughSlots", arr );
+					}
+					if( !wr.geometryKind.empty() )     result.set( "geometry",     JsonValue::MakeString( wr.geometryKind ) );
+					if( !wr.material.empty() ) {
+						result.set( "previousRoughness", JsonValue::MakeNumber( wr.previousRoughness ) );
+						JsonValue rgb = JsonValue::MakeArray();
+						rgb.push_back( JsonValue::MakeNumber( wr.baseR ) );
+						rgb.push_back( JsonValue::MakeNumber( wr.baseG ) );
+						rgb.push_back( JsonValue::MakeNumber( wr.baseB ) );
+						result.set( "baseColor", rgb );
+					}
+					result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( wr.qualifyingMaterials ) ) );
+					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( wr.boundObjects ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// add_wetness {material?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       material,materialKind,wrappedInCoat,coatedMaterial,
+				//       coatWeightPainter,coatRoughnessPainter,rebindObjectCount,
+				//       reflectanceSlot,reflectancePainter,texturedAlbedo,
+				//       scatteringSlots:[string,...],scatteringPainters:[string,...],
+				//       baseColor:[r,g,b] (OMITTED when `texturedAlbedo` is true or
+				//       the material is metallic-named -- there is no literal base
+				//       triple on either branch),geometry,geometryUniform,isMetallic,
+				//       isOrenNayar,qualifying,objects}
+				//   docs/WETNESS_COAT_DESIGN.md Phase 1 + Phase 2 item 8
+				//   (2026-08-31): apply the two-mask (damp/wet) wetness
+				//   composition to ONE material -- a Lambertian base is WRAPPED
+				//   in a new `coated_material` chunk (the original left
+				//   untouched, bound objects rebound to the wrapper), a GGX/PBR
+				//   base in place.  A pre-commit refusal comes back as ok=false with the
+				//   reason in `message`, the same shape add_wear/vary_material use.
+				//--------------------------------------------------------------
+				if( m == "add_wetness" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string materialStr;
+					if( const JsonValue* mv = params.find( "material" ) ) {
+						if( mv->isString() ) materialStr = mv->asString();
+						else if( !mv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'material' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentAddWetnessResult wr =
+						s->AddWetness( materialStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( wr.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( wr.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( wr.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( wr.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( wr.retriable ) );
+					result.set( "headVersion", HeadVersionJson( wr.headVersion ) );
+					if( !wr.message.empty() )      result.set( "message",      JsonValue::MakeString( wr.message ) );
+					if( !wr.material.empty() )     result.set( "material",     JsonValue::MakeString( wr.material ) );
+					if( !wr.materialKind.empty() ) result.set( "materialKind", JsonValue::MakeString( wr.materialKind ) );
+					result.set( "wrappedInCoat", JsonValue::MakeBool( wr.wrappedInCoat ) );
+					if( !wr.coatedMaterial.empty() )       result.set( "coatedMaterial",       JsonValue::MakeString( wr.coatedMaterial ) );
+					if( !wr.coatWeightPainter.empty() )    result.set( "coatWeightPainter",    JsonValue::MakeString( wr.coatWeightPainter ) );
+					if( !wr.coatRoughnessPainter.empty() ) result.set( "coatRoughnessPainter", JsonValue::MakeString( wr.coatRoughnessPainter ) );
+					if( wr.rebindObjectCount > 0 )          result.set( "rebindObjectCount",   JsonValue::MakeNumber( static_cast<double>( wr.rebindObjectCount ) ) );
+					if( !wr.reflectanceSlot.empty() )    result.set( "reflectanceSlot",    JsonValue::MakeString( wr.reflectanceSlot ) );
+					if( !wr.reflectancePainter.empty() ) result.set( "reflectancePainter", JsonValue::MakeString( wr.reflectancePainter ) );
+					// DL-25: only meaningful alongside reflectancePainter -- omitted (rather than
+					// forced false) when that half was skipped entirely, matching every other
+					// "populated only when X" field's own conditional-emit convention here.
+					if( !wr.reflectancePainter.empty() ) result.set( "texturedAlbedo", JsonValue::MakeBool( wr.texturedAlbedo ) );
+					if( !wr.scatteringSlots.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& nm : wr.scatteringSlots ) arr.push_back( JsonValue::MakeString( nm ) );
+						result.set( "scatteringSlots", arr );
+					}
+					if( !wr.scatteringPainters.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& nm : wr.scatteringPainters ) arr.push_back( JsonValue::MakeString( nm ) );
+						result.set( "scatteringPainters", arr );
+					}
+					if( !wr.geometryKind.empty() ) result.set( "geometry", JsonValue::MakeString( wr.geometryKind ) );
+					if( !wr.material.empty() ) {
+						result.set( "geometryUniform", JsonValue::MakeBool( wr.geometryUniform ) );
+						result.set( "isMetallic",      JsonValue::MakeBool( wr.isMetallic ) );
+						result.set( "isOrenNayar",     JsonValue::MakeBool( wr.isOrenNayar ) );
+						// DL-25 review P1-2: OMITTED on a textured/procedural substrate (and on a
+						// metallic-named material), where there is no literal triple -- emitting the
+						// zero defaults there reported `baseColor: [0, 0, 0]` as if the document said
+						// so.  Same conditional-emit convention as `reflectancePainter` above.
+						if( wr.hasBaseColor ) {
+							JsonValue rgb = JsonValue::MakeArray();
+							rgb.push_back( JsonValue::MakeNumber( wr.baseR ) );
+							rgb.push_back( JsonValue::MakeNumber( wr.baseG ) );
+							rgb.push_back( JsonValue::MakeNumber( wr.baseB ) );
+							result.set( "baseColor", rgb );
+						}
+					}
+					result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( wr.qualifyingMaterials ) ) );
+					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( wr.boundObjects ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// make_fabric {material?, fabric?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       material,materialKind,fabricPreset,fabricMaterial,
+				//       baseMaterial,mintedSubstrate,mintedSubstrateKind,
+				//       substrateWasReused,originalNowUnreferenced,weavePainter,
+				//       rotationPainter,rebindObjectCount,geometry,geometryUniform,
+				//       qualifying,objects}
+				//   docs/CLOTH_FABRIC_DESIGN.md 9.7 (2026-09-02): convert ONE
+				//   material into a `fabric_material` over a substrate of the
+				//   preset's class, MINTING that substrate when the bound base
+				//   is not already one (9.3: a preset cannot configure a
+				//   substrate it merely references).  `fabric` is the first
+				//   ENUM-typed argument on any of these verbs; an unknown
+				//   spelling is a refusal, not a silent fall back to `custom`.
+				//   A pre-commit refusal comes back as ok=false with the reason
+				//   in `message` -- a SUCCESSFUL response, not a JSON-RPC
+				//   error, the same shape add_wetness/add_wear use.
+				//--------------------------------------------------------------
+				if( m == "make_fabric" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string materialStr, fabricStr, weftColorStr;
+					if( const JsonValue* mv = params.find( "material" ) ) {
+						if( mv->isString() ) materialStr = mv->asString();
+						else if( !mv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'material' must be a string" );
+					}
+					if( const JsonValue* fv = params.find( "fabric" ) ) {
+						if( fv->isString() ) fabricStr = fv->asString();
+						else if( !fv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'fabric' must be a string" );
+					}
+					// Round 9 (reviewer P2.4): OPTIONAL `weft_color` -- see
+					// AgentSession::MakeFabric's own doc for its two
+					// accepted shapes (`"match"`, or a bare painter name).
+					if( const JsonValue* wv = params.find( "weft_color" ) ) {
+						if( wv->isString() ) weftColorStr = wv->asString();
+						else if( !wv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'weft_color' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentMakeFabricResult fr =
+						s->MakeFabric( materialStr, fabricStr, weftColorStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( fr.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( fr.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( fr.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( fr.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( fr.retriable ) );
+					result.set( "headVersion", HeadVersionJson( fr.headVersion ) );
+					if( !fr.message.empty() )             result.set( "message",             JsonValue::MakeString( fr.message ) );
+					if( !fr.material.empty() )            result.set( "material",            JsonValue::MakeString( fr.material ) );
+					if( !fr.materialKind.empty() )        result.set( "materialKind",        JsonValue::MakeString( fr.materialKind ) );
+					if( !fr.fabricPreset.empty() )        result.set( "fabricPreset",        JsonValue::MakeString( fr.fabricPreset ) );
+					if( !fr.fabricMaterial.empty() )      result.set( "fabricMaterial",      JsonValue::MakeString( fr.fabricMaterial ) );
+					if( !fr.baseMaterial.empty() )        result.set( "baseMaterial",        JsonValue::MakeString( fr.baseMaterial ) );
+					if( !fr.mintedSubstrate.empty() )     result.set( "mintedSubstrate",     JsonValue::MakeString( fr.mintedSubstrate ) );
+					if( !fr.mintedSubstrateKind.empty() ) result.set( "mintedSubstrateKind", JsonValue::MakeString( fr.mintedSubstrateKind ) );
+					if( !fr.weavePainter.empty() )        result.set( "weavePainter",        JsonValue::MakeString( fr.weavePainter ) );
+					if( !fr.rotationPainter.empty() )     result.set( "rotationPainter",     JsonValue::MakeString( fr.rotationPainter ) );
+					if( !fr.weftColorPainter.empty() )    result.set( "weftColorPainter",    JsonValue::MakeString( fr.weftColorPainter ) );
+					if( fr.rebindObjectCount > 0 )        result.set( "rebindObjectCount",   JsonValue::MakeNumber( static_cast<double>( fr.rebindObjectCount ) ) );
+					if( !fr.geometryKind.empty() )        result.set( "geometry",            JsonValue::MakeString( fr.geometryKind ) );
+					if( !fr.material.empty() ) {
+						// The three substrate-decision bools and the geometry
+						// read are facts about the DOCUMENT, so they ship
+						// whenever a material was actually chosen -- including
+						// on a refusal that got far enough to read them.
+						result.set( "substrateWasReused",      JsonValue::MakeBool( fr.substrateWasReused ) );
+						result.set( "originalNowUnreferenced", JsonValue::MakeBool( fr.originalNowUnreferenced ) );
+						result.set( "geometryUniform",         JsonValue::MakeBool( fr.geometryUniform ) );
+					}
+					result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( fr.qualifyingMaterials ) ) );
+					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( fr.boundObjects ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// add_fuzz {material?, amount?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       material,materialKind,amount,fuzzGeometry,fuzzMaterial,
+				//       fuzzObject,strandCount,mintedObjectCount,boundObjects,
+				//       qualifying}
+				//   docs/CLOTH_FABRIC_DESIGN.md Phase 3 (2026-09-03): grow a
+				//   sparse hair_geometry/hair_material fuzz shell over every
+				//   object bound to a fabric-like material.  NEVER edits or
+				//   rebinds the target material or its bound objects -- it
+				//   only ADDS new sibling chunks.  A pre-commit refusal comes
+				//   back as ok=false with the reason in `message` -- a
+				//   SUCCESSFUL response, not a JSON-RPC error, the same shape
+				//   make_fabric/add_wetness/add_wear use.
+				//--------------------------------------------------------------
+				if( m == "add_fuzz" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string materialStr, amountStr;
+					if( const JsonValue* mv = params.find( "material" ) ) {
+						if( mv->isString() ) materialStr = mv->asString();
+						else if( !mv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'material' must be a string" );
+					}
+					if( const JsonValue* av = params.find( "amount" ) ) {
+						if( av->isString() ) amountStr = av->asString();
+						else if( !av->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'amount' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentAddFuzzResult zr =
+						s->AddFuzz( materialStr, amountStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( zr.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( zr.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( zr.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( zr.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( zr.retriable ) );
+					result.set( "headVersion", HeadVersionJson( zr.headVersion ) );
+					if( !zr.message.empty() )      result.set( "message",      JsonValue::MakeString( zr.message ) );
+					if( !zr.material.empty() )     result.set( "material",     JsonValue::MakeString( zr.material ) );
+					if( !zr.materialKind.empty() ) result.set( "materialKind", JsonValue::MakeString( zr.materialKind ) );
+					if( !zr.amount.empty() )       result.set( "amount",       JsonValue::MakeString( zr.amount ) );
+					if( !zr.fuzzGeometry.empty() ) result.set( "fuzzGeometry", JsonValue::MakeString( zr.fuzzGeometry ) );
+					if( !zr.fuzzMaterial.empty() ) result.set( "fuzzMaterial", JsonValue::MakeString( zr.fuzzMaterial ) );
+					if( !zr.fuzzObject.empty() )   result.set( "fuzzObject",   JsonValue::MakeString( zr.fuzzObject ) );
+					if( zr.strandCount > 0 )       result.set( "strandCount",       JsonValue::MakeNumber( static_cast<double>( zr.strandCount ) ) );
+					if( zr.mintedObjectCount > 0 ) result.set( "mintedObjectCount", JsonValue::MakeNumber( static_cast<double>( zr.mintedObjectCount ) ) );
+					result.set( "boundObjects", JsonValue::MakeNumber( static_cast<double>( zr.boundObjects ) ) );
+					result.set( "qualifying",   JsonValue::MakeNumber( static_cast<double>( zr.qualifyingMaterials ) ) );
 					return MakeSuccess( idValue, result );
 				}
 
@@ -1790,6 +4832,103 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
+				// remove_chunks {targets:[string,...], baseHeadVersion?}
+				//   -> {applied,rawCode,status,retriable,headVersion,message,
+				//       removed:number,total:number,note?,results:[ChunkResultJson,...]}
+				//   R1a (2026-08-09): the ATOMIC BATCH form of remove_chunk (see
+				//   AgentSession::RemoveChunks' doc) -- delete N chunks in ONE
+				//   call, ONE head-version bump, ONE undo step, instead of N
+				//   round-trips.  DELIBERATELY UNLIKE insert_chunks, which is
+				//   sequential/best-effort: this is ALL-OR-NOTHING.  Every
+				//   target resolves and the remainder derives, or NOTHING is
+				//   removed and `headVersion` is the head the call started from
+				//   (a half-torn-down subassembly is a state the model never
+				//   reasoned about; a half-built one is at least coherent).
+				//   Intra-batch references need no ordering: a chunk referenced
+				//   ONLY by other chunks in the same batch is removable in any
+				//   listed order, and `still_referenced` fires only for
+				//   referrers OUTSIDE the batch (which it names).  Duplicate
+				//   names are deduped, not refused -- reported in `note`.
+				//   NO per-target `kind`: bare names only, so the sole-unnamed-
+				//   camera case (`remove_chunk kind:"camera"`) stays exclusive
+				//   to the singular verb, and an ambiguous name refuses the
+				//   batch naming itself.
+				//   `results` is one ChunkResultJson per UNIQUE target in
+				//   first-occurrence order (NOT one per input element -- match
+				//   by `name`); each carries the batch verdict plus, on a
+				//   refusal, the `issues` that localize the cause
+				//   ("unknown_target" / "still_referenced").  `removed` is the
+				//   number of chunks actually removed (0 on any refusal, else
+				//   `total`); `total` is the deduped target count.  `note` is a
+				//   CONDITIONAL key, omitted when there is nothing to report.
+				//   REQUIRES a head: no session -> error.
+				//--------------------------------------------------------------
+				if( m == "remove_chunks" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* tv = params.find( "targets" );
+					if( !tv || !tv->isArray() ) {
+						std::string msg = "Invalid params: 'targets' (array of strings) is required";
+						// See DescribeOtherParamKeys's doc (mirrors insert_chunks'
+						// identical guidance): name whatever the caller sent
+						// INSTEAD -- notably a singular 'target', the most likely
+						// slip for someone reaching for this verb -- so a
+						// wrong-key mistake is visible in the SAME round-trip.
+						const std::string other = DescribeOtherParamKeys(
+							params, { "targets", "baseHeadVersion" } );
+						if( !other.empty() )
+							msg += " (got " + other + " instead -- rename to 'targets'; "
+							       "remove_chunks takes an ARRAY, remove_chunk takes a single 'target')";
+						return MakeError( idValue, kInvalidParams, msg );
+					}
+					if( tv->size() == 0 ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'targets' must be a non-empty array of chunk names" );
+					}
+					std::vector<std::string> targets;
+					targets.reserve( tv->size() );
+					for( std::size_t i = 0; i < tv->size(); ++i ) {
+						const JsonValue& item = tv->at( i );
+						if( !item.isString() ) {
+							char buf[128];
+							std::snprintf( buf, sizeof( buf ),
+								"Invalid params: 'targets[%zu]' must be a string", i );
+							return MakeError( idValue, kInvalidParams, buf );
+						}
+						targets.push_back( item.asString() );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+					const AgentSession::AgentRemoveBatchResult br =
+						s->RemoveChunks( targets, ( b == 1 ) ? &base : nullptr );
+					// Secure-MCP slice 6: see propose_patch's identical queue-full
+					// check.  ONE batch stages ONE proposal, so there is one flag
+					// to check, not a per-element scan like insert_chunks does.
+					if( br.queueFull ) return MakeProposalQueueFullError( idValue, "remove_chunks" );
+					JsonValue resultsArr = JsonValue::MakeArray();
+					for( const AgentChunkResult& tr : br.targetResults )
+						resultsArr.push_back( ChunkResultJson( tr ) );
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "applied",     JsonValue::MakeBool( br.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( br.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( br.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( br.retriable ) );
+					result.set( "headVersion", HeadVersionJson( br.headVersion ) );
+					result.set( "message",     JsonValue::MakeString( br.message ) );
+					// ALL-OR-NOTHING, restated numerically so a caller never has to
+					// infer it from the per-target array.
+					result.set( "removed", JsonValue::MakeNumber(
+						br.applied ? static_cast<double>( br.targetResults.size() ) : 0.0 ) );
+					result.set( "total",   JsonValue::MakeNumber( static_cast<double>( br.targetResults.size() ) ) );
+					// CONDITIONAL key (same back-compat posture as `issues`): a
+					// batch with nothing to remark on carries no `note` at all.
+					if( !br.note.empty() ) result.set( "note", JsonValue::MakeString( br.note ) );
+					result.set( "results", resultsArr );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
 				// render {samples?,width?,height?,camera?,imageMaxEdge?} ->
 				//   {ok,width,height,meanR,meanG,meanB,integrator,
 				//    previewWidth,previewHeight,cameraOverridden,message,
@@ -1806,7 +4945,10 @@ namespace RISE
 				//    `integrator` = the ACTIVE
 				//    rasterizer's chunk keyword, empty when none is active.
 				//    width/height/camera are the OPTIONAL preview-render
-				//    overrides -- absent = today's exact behaviour.
+				//    overrides -- `camera` absent = today's exact behaviour;
+				//    width/height absent = the R1b agent-surface resolution
+				//    default below, NOT "the scene's authored dims" (see the
+				//    R1b block further down this comment).
 				//    `renderJobId` (Model-B F2 slice S1, ADDITIVE) is a
 				//    monotonically increasing id for this render -- see
 				//    AgentRenderResult::renderJobId's doc for the LIVE
@@ -1828,10 +4970,74 @@ namespace RISE
 				//    attached" message rather than silently downgrading to
 				//    a synchronous render.  Use the non-async `render` verb
 				//    from `--agent-stdio`.)
+				//
+				//   R1b slice (2026-08-09, docs/agentic-redesign/
+				//   75-expressive-surface-arc.md): the agent RPC surface is
+				//   now STRUCTURALLY unable to trigger an expensive
+				//   production render.  Motivating trajectory: a live GUI
+				//   session called `render {imageMaxEdge:512}` with no
+				//   width/height -- `imageMaxEdge` only downscales the
+				//   RETURNED png, it never bounds render cost -- and the
+				//   call ran at the scene's FULL authored Film resolution
+				//   and FULL authored sample count, a very long render for
+				//   no reason the model could see coming.  Two caps, BOTH
+				//   production-beauty-only (draft/objectmap/view-mode/
+				//   BeautyVariant all keep their existing FIXED configs,
+				//   completely untouched -- see AgentSession::
+				//   kAgentSurfaceMaxRenderEdge / ::kAgentSurfaceMaxSamples's
+				//   doc and AgentRenderParams::fromAgentSurface's doc for
+				//   the full mechanism):
+				//     * RESOLUTION: explicit width/height are now clamped to
+				//       [16,kAgentSurfaceMaxRenderEdge] (was [16,512]); an
+				//       ABSENT pair no longer falls through to the scene's
+				//       full authored Film size -- it renders at the
+				//       scene's own aspect ratio, scaled so the long edge is
+				//       kAgentSurfaceMaxRenderEdge, resolved by AgentSession::
+				//       RenderCore_'s applyFilmOverride() (aspect-ratio
+				//       math needs the live Film, only safely readable
+				//       under the coordinator's park -- see that function's
+				//       own doc).
+				//     * SAMPLES: explicit `samples` is now clamped to
+				//       [1,kAgentSurfaceMaxSamples] (was [1,65536]); an
+				//       ABSENT override on a rasterizer whose scene-authored
+				//       sample count exceeds the cap is force-capped inside
+				//       RenderCore_'s doRenderWork, reusing the EXISTING
+				//       samplesOverridden/effectiveSamples honesty fields
+				//       (Model-B F2 slice S3) -- a caller reads the SAME two
+				//       fields regardless of whether an override was
+				//       REQUESTED or silently FORCED.  On a rasterizer that
+				//       does not support IRasterizer::SetSampleCountOverride
+				//       (MLT, photon-map-only, AutoRasterizer's outer
+				//       wrapper) the cap attempt is reported as honestly NOT
+				//       applied in `message`, never silently ignored, and
+				//       the render still runs (never refused).
+				//   Both caps report an ADDITIVE `agentRenderCap` result
+				//   key -- see BuildAgentRenderCapJson's doc above -- ONLY
+				//   when something actually got reduced below what an
+				//   uncapped call would have produced; omitted entirely
+				//   otherwise (the "when nothing was clamped, add nothing"
+				//   convention this file uses throughout).  `render_wait`'s
+				//   post-completion echo (RenderResultJson, shared with the
+				//   sync path here) carries the SAME fact for an async or
+				//   pinned submission, so the async/pinned/sync paths are
+				//   capped and REPORTED identically.
+				//   Gated on AgentRenderParams::fromAgentSurface, set true
+				//   ONLY by this handler (and nowhere else) -- CheckRenderKind's
+				//   eval-scoring grading renders (AgentEvalRunner.cpp) build
+				//   AgentRenderParams directly in C++ and never route
+				//   through this dispatcher, so they see FULL requested
+				//   fidelity, completely unaffected by either cap.
 				//--------------------------------------------------------------
 				if( m == "render" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
 					int samples = -1;
+					// R1b (2026-08-09): honest fact-reporting bookkeeping -- see
+					// AgentRenderCapFacts' doc below.  `explicitSamplesClamped`
+					// is true iff the raw request exceeded the cap BEFORE the
+					// clamp below reduced it; `rawSamplesRequested` keeps that
+					// raw value for the result's `agentRenderCap.requestedSamples`.
+					bool explicitSamplesClamped = false;
+					double rawSamplesRequested = 0.0;
 					if( const JsonValue* sm = params.find( "samples" ) ) {
 						if( sm->isNumber() ) {
 							// Guard the cast: static_cast<int>(inf/nan) is UB.  A
@@ -1846,31 +5052,53 @@ namespace RISE
 							// Model-B F2 slice S3 (EffectiveRenderConfig): -1
 							// stays the "no override" sentinel (AgentRenderParams::
 							// samples doc); anything else is CLAMPED into
-							// [1,65536] rather than rejected (a caller's
-							// out-of-range guess still renders, just at the
-							// clamped count -- matches the width/height
-							// ParseClampedUInt convention just below).  65536 is
-							// a generous cap: no production RISE scene
-							// authors anywhere near that SPP, but the clamp
-							// exists to keep a hostile/typo'd huge value from
-							// ballooning a single render's cost unboundedly.
+							// [1,kAgentSurfaceMaxSamples] rather than rejected (a
+							// caller's out-of-range guess still renders, just at
+							// the clamped count -- matches the width/height
+							// ParseClampedUInt convention just below).
+							//
+							// R1b (2026-08-09): TIGHTENED from a generous
+							// [1,65536] to [1,kAgentSurfaceMaxSamples] -- the
+							// agent RPC surface must be STRUCTURALLY unable to
+							// trigger an expensive production render (a live
+							// GUI trajectory once requested a full-authored-spp
+							// render this way); see AgentSession::
+							// kAgentSurfaceMaxSamples's doc.  A caller that
+							// genuinely needs a higher-fidelity measurement
+							// renders from the GUI directly -- that path is
+							// untouched (this clamp lives ONLY on the agent RPC
+							// surface, never in AgentSession itself).
 							if( samples != -1 ) {
 								if( samples < 1 ) samples = 1;
-								else if( samples > 65536 ) samples = 65536;
+								else if( samples > kAgentSurfaceMaxSamples ) {
+									explicitSamplesClamped = true;
+									rawSamplesRequested = sv;
+									samples = kAgentSurfaceMaxSamples;
+								}
 							}
 						}
 						else if( !sm->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a number" );
 					}
 
-					// Preview-render dims: width/height are CLAMPED to [16,512]
-					// (never rejected -- an out-of-range guess still renders,
-					// just at the clamped size) and must be supplied TOGETHER
-					// (one without the other is ambiguous: keep today's exact
-					// behaviour -- no override -- rather than guess an aspect
-					// ratio).
+					// Preview-render dims: width/height are CLAMPED to
+					// [16,kAgentSurfaceMaxRenderEdge] (never rejected -- an
+					// out-of-range guess still renders, just at the clamped
+					// size) and must be supplied TOGETHER (one without the
+					// other is ambiguous: keep today's exact behaviour -- no
+					// override -- rather than guess an aspect ratio).
+					//
+					// R1b (2026-08-09): TIGHTENED from [16,512] -- same
+					// rationale as the `samples` cap just above; see
+					// kAgentSurfaceMaxRenderEdge's doc.  ABSENT
+					// width/height on a production beauty render used to fall
+					// through to the scene's full authored Film resolution --
+					// closed below (`rparams.fromAgentSurface = true`, which
+					// gates RenderCore_'s implicit aspect-preserving default;
+					// see AgentRenderParams::fromAgentSurface's doc).
 					AgentRenderParams rparams;
 					rparams.samples = samples;
+					rparams.fromAgentSurface = true;
 					// Agent transports roll perception out by default; direct C++
 					// callers retain AgentRenderParams' opt-in false default.
 					rparams.perception = true;
@@ -1881,13 +5109,31 @@ namespace RISE
 					}
 					unsigned int width = 0, height = 0;
 					std::string dimErr;
-					const int wPresent = ParseClampedUInt( params, "width",  16, 512, width,  dimErr );
+					const int wPresent = ParseClampedUInt( params, "width",  16,
+						kAgentSurfaceMaxRenderEdge, width,  dimErr );
 					if( wPresent < 0 ) return MakeError( idValue, kInvalidParams, dimErr );
-					const int hPresent = ParseClampedUInt( params, "height", 16, 512, height, dimErr );
+					const int hPresent = ParseClampedUInt( params, "height", 16,
+						kAgentSurfaceMaxRenderEdge, height, dimErr );
 					if( hPresent < 0 ) return MakeError( idValue, kInvalidParams, dimErr );
+					// R1b: raw pre-clamp values, for the honest
+					// `agentRenderCap.requestedWidth/Height` fact below --
+					// ParseClampedUInt already validated these are finite and
+					// in double-range, so re-reading them here is safe.
+					bool explicitWidthClamped = false, explicitHeightClamped = false;
+					unsigned int rawWidthRequested = 0, rawHeightRequested = 0;
 					if( wPresent == 1 && hPresent == 1 ) {
 						rparams.width  = width;
 						rparams.height = height;
+						const double rawW = params.find( "width"  )->asNumber();
+						const double rawH = params.find( "height" )->asNumber();
+						if( rawW > static_cast<double>( kAgentSurfaceMaxRenderEdge ) ) {
+							explicitWidthClamped = true;
+							rawWidthRequested = static_cast<unsigned int>( rawW );
+						}
+						if( rawH > static_cast<double>( kAgentSurfaceMaxRenderEdge ) ) {
+							explicitHeightClamped = true;
+							rawHeightRequested = static_cast<unsigned int>( rawH );
+						}
 					}
 
 					AgentCameraOverride camOverride;
@@ -2049,6 +5295,76 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'light' must be a string" );
 					}
 
+					// G1 (2026-08-10) `render{isolate:}` ADDITIVE param:
+					// {"isolate":"<standard_object name>"} ->
+					// AgentRenderParams::isolate.  Valid with EVERY mode and
+					// with quality:"draft" -- see AgentRenderParams::isolate's
+					// doc.  Any non-string, non-null value is a clean -32602;
+					// an unresolvable/ambiguous name is NOT rejected here
+					// (that needs a live Job to check against) --
+					// AgentSession::RenderCore_ fails the render itself with
+					// the available-name list, same contract as `view`/`light`.
+					if( const JsonValue* iv = params.find( "isolate" ) ) {
+						if( iv->isString() ) {
+							rparams.isolate = iv->asString();
+						}
+						else if( !iv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'isolate' must be a string" );
+					}
+
+					// Doc 91 V2 `render{zoom:}` ADDITIVE param:
+					// {"zoom":"<object name>"} -> AgentRenderParams::zoom -- look at
+					// ONE object close up from the SCENE camera's own position (the
+					// field of view narrowed onto it, everything else in place).
+					// Any non-string, non-null value is a clean -32602, and so is
+					// combining it with `isolate`, `view` or an explicit `camera`
+					// (all decidable with no live scene; the sentence comes from
+					// AgentSession::ZoomConflictMessage so the wire and the session
+					// state the rule identically).  An unresolvable name is NOT
+					// rejected here (that needs a live Job) -- RenderCore_ fails
+					// the render itself with the available names, like `isolate`.
+					if( const JsonValue* zv = params.find( "zoom" ) ) {
+						if( zv->isString() ) {
+							rparams.zoom = zv->asString();
+						}
+						else if( !zv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'zoom' must be a string" );
+					}
+					{
+						const std::string zoomConflict = AgentSession::ZoomConflictMessage( rparams );
+						if( !zoomConflict.empty() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: " + zoomConflict );
+					}
+
+					// G3b (2026-08-10) `render{target:}` ADDITIVE param:
+					// {"target":"<part name from the filed build plan>"} ->
+					// AgentRenderParams::target.  Two DIFFERENT rejection
+					// classes, deliberately:
+					//   * a non-string value, or `target` WITHOUT `isolate`,
+					//     is a param-SHAPE defect -- decidable with no live
+					//     scene and no filed plan -- so it is a clean -32602
+					//     here, and the missing-pairing sentence comes from
+					//     AgentSession::TargetRequiresIsolateMessage so the
+					//     wire and the session state the requirement
+					//     identically (the G3a shared-validator discipline).
+					//   * a name that is not in the filed plan, or no plan
+					//     filed at all, needs LIVE session state, so it is NOT
+					//     rejected here: AgentSession::RenderCore_ fails the
+					//     render itself (ok:false) with the filed part names
+					//     in `message` -- the same contract an unresolvable
+					//     `view`/`light`/`isolate` already has.
+					if( const JsonValue* tv = params.find( "target" ) ) {
+						if( tv->isString() ) {
+							rparams.target = tv->asString();
+						}
+						else if( !tv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'target' must be a string" );
+					}
+					if( !rparams.target.empty() && rparams.isolate.empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: " + AgentSession::TargetRequiresIsolateMessage( rparams.target ) );
+					}
+
 					// GUI render modes P1 (docs/gui/RENDER_MODES.md "X-ray axis")
 					// ADDITIVE param: {"xray":false} -> AgentRenderParams::xray.
 					// DEFAULT FALSE -- absent means the transmissive surface is
@@ -2101,6 +5417,14 @@ namespace RISE
 						}
 					}
 
+					// Arc 77 Phase 2b (2026-08-11): relay the bound into the
+					// session so the scene-target composite's RENDER TILE is
+					// sized by the SAME number the plain frame below is -- see
+					// AgentRenderParams::imageMaxEdge.  0 when absent, which is
+					// also what the async path always sees (imageMaxEdge is
+					// refused with `async` above).
+					rparams.imageMaxEdge = ( imePresent == 1 ) ? imageMaxEdge : 0u;
+
 					if( wantAsync ) {
 						const AgentSession::AgentRenderAsyncResult ar = s->RenderAsync( rparams );
 						JsonValue result = JsonValue::MakeObject();
@@ -2119,6 +5443,28 @@ namespace RISE
 					// build inline -- factored out so render_wait's
 					// post-completion echo can return an IDENTICAL shape.
 					JsonValue renderResult = RenderResultJson( rr );
+					// R1b (2026-08-09): the honest `agentRenderCap` fact --
+					// see BuildAgentRenderCapJson's doc.  Combines what THIS
+					// handler alone knows (the caller's raw pre-clamp width/
+					// height/samples, captured above) with what AgentSession
+					// resolved inside `rr` (the two absent-value implicit
+					// defaults).  Only the SYNC path can report the explicit-
+					// clamp half -- the raw pre-clamp request never survives
+					// into an async submission's later render_wait echo (see
+					// that handler's own call to this same helper, with an
+					// all-false `facts`).  Omitted entirely when nothing was
+					// clamped.
+					{
+						AgentRenderCapFacts facts;
+						facts.explicitWidthClamped   = explicitWidthClamped;
+						facts.rawWidthRequested      = rawWidthRequested;
+						facts.explicitHeightClamped  = explicitHeightClamped;
+						facts.rawHeightRequested     = rawHeightRequested;
+						facts.explicitSamplesClamped = explicitSamplesClamped;
+						facts.rawSamplesRequested    = rawSamplesRequested;
+						JsonValue cap;
+						if( BuildAgentRenderCapJson( rr, facts, cap ) ) renderResult.set( "agentRenderCap", cap );
+					}
 					// The inline image rides under the SAME "png_base64" field
 					// name read_image and compare_to_reference use, so
 					// AgentChatCodecs' IsImageResult -- and every retention /
@@ -2126,7 +5472,44 @@ namespace RISE
 					// code path.  Attached only on a SUCCESSFUL render: on a
 					// failure the cache still holds the PREVIOUS render, and
 					// returning those pixels as this call's image would be a lie.
-					if( imePresent == 1 && rr.ok ) {
+					// Arc 77 Phase 2 (2026-08-11): `sceneTargetImageRides`
+					// joins `!rr.targetApplied` on this branch for the
+					// IDENTICAL reason -- the scene-target composite below
+					// REPLACES the frame, and exactly one `png_base64` may be
+					// written (JsonValue::set APPENDS, so a second write would
+					// serialize a duplicate key, not overwrite).  The two
+					// comparison blocks are themselves mutually exclusive (see
+					// ApplySceneTargetComparison_'s qualification rule), so at
+					// most one of the two branches below can fire.
+					//
+					// Phase 2b (2026-08-11): the test is now the composite's
+					// PRESENCE, not `sceneTargetApplied`, because the two can
+					// now differ -- a qualifying render whose composite failed
+					// to encode still reports the scene-target facts, and it
+					// must fall back to the plain frame rather than returning
+					// no image at all.  (The other way they differ, a render
+					// that asked for no image, cannot reach this branch:
+					// imePresent is 0 there.)
+					const bool sceneTargetImageRides =
+						rr.ok && rr.sceneTargetApplied && !rr.sceneTargetCompositePng.empty();
+					// Doc 90 slice R1 (2026-08-22): the ANCHOR composite joins
+					// the exactly-one-`png_base64` discipline as the OUTERMOST
+					// of the three, because it CONTAINS whichever of the other
+					// two would otherwise have ridden: when a scene-target
+					// composite was built, AgentSession::
+					// ApplyRenderAnchorComparison_ used it as the anchor
+					// composite's lower pane, and otherwise the lower pane is
+					// the very frame the plain branch would have returned, at
+					// the very dimensions that branch would have used.  So
+					// this is a SUPERSET, never a substitution -- nothing the
+					// model would have seen is lost by this branch winning.
+					// (The part-`target` strip is disjoint by construction: it
+					// requires `isolate`, which the anchor's qualification rule
+					// refuses.)
+					const bool anchorImageRides =
+						rr.ok && rr.anchorApplied && !rr.anchorCompositePng.empty();
+					if( imePresent == 1 && rr.ok && !rr.targetApplied &&
+						!sceneTargetImageRides && !anchorImageRides ) {
 						unsigned int imgW = 0, imgH = 0;
 						const std::vector<unsigned char> png = s->ReadImage( imageMaxEdge, imgW, imgH );
 						if( !png.empty() ) {
@@ -2136,6 +5519,97 @@ namespace RISE
 							renderResult.set( "imageWidth",  JsonValue::MakeNumber( static_cast<double>( imgW ) ) );
 							renderResult.set( "imageHeight", JsonValue::MakeNumber( static_cast<double>( imgH ) ) );
 						}
+					}
+					// G3b (2026-08-10): on a `target` comparison the inline
+					// image is the [sketch | silhouette | overlay] COMPOSITE,
+					// and it rides UNCONDITIONALLY -- `imageMaxEdge` is not
+					// required, and when it IS supplied the composite REPLACES
+					// the rendered frame (hence the `!rr.targetApplied` term on
+					// the branch above: exactly one image, never two
+					// `png_base64` writes).
+					//
+					// WHY the composite wins.  The composite IS the call: the
+					// transport keeps only the most recent tool-result image
+					// live (one global slot), so this strip is the ONE moment
+					// the filed sketch re-enters the model's context, which is
+					// the mechanism the design doc's sec 4.3 "Retention
+					// interaction" decision rests on -- if the beauty frame
+					// won, the sketch would never be seen again and the whole
+					// comparison would degrade to numbers.  A caller that wants
+					// the rendered frame of the same isolate render can re-issue
+					// without `target`, or call read_image (the comparison's own
+					// internal identity pass is cache-guarded, so read_image
+					// still serves THIS render's beauty pixels).  Both tool
+					// surfaces state this outright.
+					//
+					// Same "png_base64" field name every image-bearing verb
+					// uses, so AgentChatCodecs' IsImageResult -- which already
+					// lists `render` -- covers it with no second code path.
+					if( rr.ok && rr.targetApplied && !rr.targetCompositePng.empty() ) {
+						renderResult.set( "png_base64",
+							JsonValue::MakeString( Base64Encode( rr.targetCompositePng ) ) );
+						renderResult.set( "byteLength",
+							JsonValue::MakeNumber( static_cast<double>( rr.targetCompositePng.size() ) ) );
+						renderResult.set( "imageWidth",
+							JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeWidth ) ) );
+						renderResult.set( "imageHeight",
+							JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeHeight ) ) );
+					}
+					// Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: on a
+					// qualifying full-frame render of a session that has
+					// imagined a scene AND asked for an inline image, that
+					// image is the composite -- the imagined target ABOVE this
+					// render, on a canvas exactly as wide as the frame would
+					// have been.
+					//
+					// WHY IT IS NOW CONDITIONAL ON `imageMaxEdge`.  Phase 2
+					// shipped the strip unconditionally, and it REPLACED the
+					// frame with a half-width panel of it: the model saw its
+					// own scene smaller than it would have with no target at
+					// all -- less resolution to spot its own defects -- and it
+					// saw it permanently juxtaposed with an unreachable ideal.
+					// The composite now carries the render at exactly the size
+					// the plain frame would have been (see
+					// AgentSession::ApplySceneTargetComparison_), which means
+					// it is sized by `imageMaxEdge` and therefore exists only
+					// when one was asked for.  A render that wanted no picture
+					// gets none, exactly as before this mechanism existed.
+					// The retention argument that made the composite a
+					// requirement is unchanged: the transport keeps only the
+					// most recent tool-result image live, so this is the ONE
+					// moment the imagined target re-enters the model's context.
+					// A caller that wants the plain frame can call read_image,
+					// which still serves THIS render's own beauty pixels
+					// (nothing here touches the image cache).
+					if( sceneTargetImageRides && !anchorImageRides ) {
+						renderResult.set( "png_base64",
+							JsonValue::MakeString( Base64Encode( rr.sceneTargetCompositePng ) ) );
+						renderResult.set( "byteLength",
+							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositePng.size() ) ) );
+						renderResult.set( "imageWidth",
+							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeWidth ) ) );
+						renderResult.set( "imageHeight",
+							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeHeight ) ) );
+					}
+					// Doc 90 slice R1 (2026-08-22): the ANCHOR composite --
+					// this render set beneath the render the model chose as
+					// its reference point, both panes labelled with the head
+					// revision they were rendered at.  It wins over both
+					// branches above because it CONTAINS what they would have
+					// shown (see anchorImageRides' comment); it never fires
+					// without `imageMaxEdge`, because the lower pane is sized
+					// by exactly the rule that flag drives, and it never fires
+					// on the render that BECAME the anchor, because there is
+					// then nothing to set it beside.
+					if( anchorImageRides ) {
+						renderResult.set( "png_base64",
+							JsonValue::MakeString( Base64Encode( rr.anchorCompositePng ) ) );
+						renderResult.set( "byteLength",
+							JsonValue::MakeNumber( static_cast<double>( rr.anchorCompositePng.size() ) ) );
+						renderResult.set( "imageWidth",
+							JsonValue::MakeNumber( static_cast<double>( rr.anchorCompositeWidth ) ) );
+						renderResult.set( "imageHeight",
+							JsonValue::MakeNumber( static_cast<double>( rr.anchorCompositeHeight ) ) );
 					}
 					return MakeSuccess( idValue, renderResult );
 				}
@@ -2233,7 +5707,25 @@ namespace RISE
 					result.set( "pinned", JsonValue::MakeBool( st.pinned ) );
 					if( completed ) {
 						const AgentSession::AgentLastAsyncRenderResult ar = s->LastAsyncRenderResult( jobId );
-						if( ar.found ) result.set( "result", RenderResultJson( ar.result ) );
+						if( ar.found ) {
+							JsonValue nested = RenderResultJson( ar.result );
+							// R1b (2026-08-09): the ABSENT-value half of the
+							// `agentRenderCap` fact -- see BuildAgentRenderCapJson's
+							// doc.  An async submission's raw pre-clamp explicit
+							// width/height/samples request (if any) was already
+							// clamped and does not survive to this later echo
+							// (the render's own `render{async:true}` submit
+							// call is the only place that saw it) -- an
+							// all-default AgentRenderCapFacts here means this
+							// reports ONLY what AgentSession itself resolved
+							// (`ar.result.agentResolutionCapped`/
+							// `agentSamplesCapped`), which is exactly the same
+							// information the SYNC path's `rr.*` half carries.
+							JsonValue cap;
+							if( BuildAgentRenderCapJson( ar.result, AgentRenderCapFacts(), cap ) )
+								nested.set( "agentRenderCap", cap );
+							result.set( "result", nested );
+						}
 					}
 					return MakeSuccess( idValue, result );
 				}
@@ -2541,6 +6033,123 @@ namespace RISE
 				}
 
 				//--------------------------------------------------------------
+				// scene_inventory {} ->
+				//   {ok,objects,covered,passWidth,passHeight,
+				//    framePositionComputed,framePositionNote?,
+				//    entries:[{name,pixelCount,frameFraction,onScreen,
+				//              frameX?,frameY?,worldCentre?,placement,
+				//              offFrameDirection?}],
+				//    text,message}
+				//   Arc 80 (2026-08-12): "where is everything?", asked
+				//   directly.  TAKES NO PARAMS -- it inventories the ACTIVE
+				//   camera's view of the live scene.  Shares ONE code path
+				//   (AgentSession::ComputeSceneInventory_) with the `inventory`
+				//   block every full-scene beauty render already carries, so
+				//   the two surfaces cannot describe the same scene
+				//   differently; the PAYLOAD path is the one expected to
+				//   matter (every voluntary consultation surface this
+				//   workstream shipped measured 0/64 uses), and no behaviour
+				//   depends on this verb being called.
+				//   A scene with no objects, or a failed identity pass,
+				//   returns ok:false with the reason in `message` -- never a
+				//   fabricated empty inventory.
+				//--------------------------------------------------------------
+				if( m == "scene_inventory" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+
+					const AgentSession::AgentSceneInventoryResult si = s->SceneInventory();
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",         JsonValue::MakeBool( si.ok ) );
+					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( si.objectCount ) ) );
+					result.set( "covered",    JsonValue::MakeNumber( static_cast<double>( si.coveredCount ) ) );
+					result.set( "passWidth",  JsonValue::MakeNumber( static_cast<double>( si.passWidth ) ) );
+					result.set( "passHeight", JsonValue::MakeNumber( static_cast<double>( si.passHeight ) ) );
+					result.set( "framePositionComputed",
+						JsonValue::MakeBool( si.framePositionComputed ) );
+					// CONDITIONAL, the same omit-when-empty convention as
+					// `note`/`legend`/`issues`: present only when there IS a
+					// reason, i.e. when the analytic classification was
+					// suppressed rather than run.
+					if( !si.framePositionSuppressedReason.empty() )
+						result.set( "framePositionNote",
+							JsonValue::MakeString( si.framePositionSuppressedReason ) );
+					JsonValue entries = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < si.entries.size(); ++i ) {
+						const AgentSession::AgentSceneInventoryEntry& e = si.entries[i];
+						JsonValue o = JsonValue::MakeObject();
+						o.set( "name",          JsonValue::MakeString( e.name ) );
+						o.set( "pixelCount",    JsonValue::MakeNumber( static_cast<double>( e.pixelCount ) ) );
+						o.set( "frameFraction", JsonValue::MakeNumber( e.frameFraction ) );
+						o.set( "onScreen",      JsonValue::MakeBool( e.onScreen ) );
+						o.set( "placement",     JsonValue::MakeString( e.placement ) );
+						// Every remaining key is OMITTED rather than sent as a
+						// measured-looking zero when it was not measured --
+						// the sentinel-then-omit convention `bboxCoverage` and
+						// `bboxMin`/`bboxMax` already follow above.
+						// frameX/frameY ride ONLY when a position was really
+						// measured, and `framePositionSource` says WHICH
+						// measurement it is: "pixels" (the object's pixel
+						// bounding box in the identity pass) or "bbox" (its
+						// projected world bounding box, the fallback when no
+						// pixel carried its identity colour).  A fabricated
+						// 0,0 would read as "top-left corner".
+						if( e.framePositionKnown ) {
+							o.set( "frameX", JsonValue::MakeNumber( e.frameX ) );
+							o.set( "frameY", JsonValue::MakeNumber( e.frameY ) );
+							o.set( "framePositionSource", JsonValue::MakeString(
+								e.framePositionFromPixels ? "pixels" : "bbox" ) );
+						}
+						if( e.worldCentreKnown ) {
+							JsonValue c = JsonValue::MakeArray();
+							for( int a = 0; a < 3; ++a )
+								c.push_back( JsonValue::MakeNumber( e.worldCentre[a] ) );
+							o.set( "worldCentre", c );
+						}
+						if( !e.offFrameDirection.empty() )
+							o.set( "offFrameDirection", JsonValue::MakeString( e.offFrameDirection ) );
+						// 87 STEP 5 (2026-08-18): the two STRUCTURE keys, under
+						// the same omit-when-absent convention as every key
+						// above -- a root, authored object sends neither, so a
+						// flat scene's payload is byte-identical to what it was
+						// before hierarchy existed.  `parent` is the authored
+						// tree (which rows are one assembly); `instancedFrom`
+						// is the chunk an author can actually edit for a
+						// synthesized repetition, and is the ONLY sanctioned
+						// way to get it -- a client must not derive it by
+						// splitting the name.
+						if( !e.parent.empty() )
+							o.set( "parent", JsonValue::MakeString( e.parent ) );
+						if( !e.instancedFrom.empty() )
+							o.set( "instancedFrom", JsonValue::MakeString( e.instancedFrom ) );
+						entries.push_back( o );
+					}
+					result.set( "entries", entries );
+					// F9(b) fix round (2026-08-14): AgentSession.h documents
+					// `AgentRenderResult::inventoryNotAreaSampled` as carrying
+					// "the same fact in machine form" as `inventoryText` -- that
+					// claim was only true on the render payload's `inventory`
+					// block (see above), not here.  `si` is the SAME
+					// AgentSceneInventoryResult struct (ComputeSceneInventory_
+					// populates both), so si.notAreaSampled is already there for
+					// free; mirror the render path's serialization so the two
+					// surfaces cannot drift.  Same omit-when-empty convention.
+					if( !si.notAreaSampled.empty() ) {
+						JsonValue nas = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < si.notAreaSampled.size(); ++i ) {
+							const AgentSceneNotAreaSampledEntry& e = si.notAreaSampled[i];
+							JsonValue o = JsonValue::MakeObject();
+							o.set( "name",   JsonValue::MakeString( e.name ) );
+							o.set( "reason", JsonValue::MakeString( e.reason ) );
+							nas.push_back( o );
+						}
+						result.set( "notAreaSampled", nas );
+					}
+					result.set( "text",    JsonValue::MakeString( si.text ) );
+					result.set( "message", JsonValue::MakeString( si.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
 				// compare_to_reference {reference,camera?,visual?,samples?,split?,splitObjects?} ->
 				//   {rmse,channelDelta:{r,g,b},grid:[{rmse,dr,dg,db},x9],
 				//    worstCell,width,height,reference,summary,
@@ -2599,6 +6208,18 @@ namespace RISE
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'visual' must be a boolean" );
 					}
 
+					// R1b (2026-08-09): TIGHTENED from a generous [1,65536] to
+					// [1,kAgentSurfaceMaxSamples] -- supplying `samples` here
+					// switches this comparison render to
+					// AgentRenderQuality::Production (see
+					// AgentCompareToReferenceParams' doc), the SAME production-
+					// beauty cost concern the `render` verb's own samples cap
+					// addresses; see kAgentSurfaceMaxSamples's doc.
+					// Does NOT affect AgentEvalRunner's own grading renders --
+					// those call AgentSession::Render/CheckRenderKind directly
+					// in C++, never through this RPC handler.
+					bool compareSamplesClamped = false;
+					double compareRawSamplesRequested = 0.0;
 					if( const JsonValue* sv = params.find( "samples" ) ) {
 						if( sv->isNumber() ) {
 							// Explicit finite-range guard.  NOTE: this is NOT
@@ -2616,7 +6237,11 @@ namespace RISE
 								return MakeError( idValue, kInvalidParams, "Invalid params: 'samples' must be a finite, in-range number" );
 							int samples = static_cast<int>( sd );
 							if( samples < 1 ) samples = 1;
-							else if( samples > 65536 ) samples = 65536;
+							else if( samples > kAgentSurfaceMaxSamples ) {
+								compareSamplesClamped = true;
+								compareRawSamplesRequested = sd;
+								samples = kAgentSurfaceMaxSamples;
+							}
 							cparams.samples = samples;
 						}
 						else if( !sv->isNull() )
@@ -2699,6 +6324,21 @@ namespace RISE
 						split.set( "objectPixelFraction", JsonValue::MakeNumber( cr.split.objectPixelFraction ) );
 						split.set( "note",                JsonValue::MakeString( cr.split.note ) );
 						result.set( "split", split );
+					}
+					// R1b (2026-08-09): honest `agentRenderCap` fact -- see
+					// BuildAgentRenderCapJson's doc.  compare_to_reference has
+					// no width/height override at all (always the reference's
+					// own dims -- see AgentCompareToReferenceParams' doc), so
+					// only the samples half of the fact is ever meaningful
+					// here; omitted entirely when the request's `samples` (if
+					// any) was already within the cap.
+					if( compareSamplesClamped ) {
+						JsonValue cap = JsonValue::MakeObject();
+						cap.set( "maxSamples", JsonValue::MakeNumber(
+							static_cast<double>( kAgentSurfaceMaxSamples ) ) );
+						cap.set( "samplesCapped", JsonValue::MakeBool( true ) );
+						cap.set( "requestedSamples", JsonValue::MakeNumber( compareRawSamplesRequested ) );
+						result.set( "agentRenderCap", cap );
 					}
 					return MakeSuccess( idValue, result );
 				}

@@ -32,6 +32,7 @@
 
 #include "../src/Library/Agent/AgentEvalRunner.h"
 #include "../src/Library/Agent/ChatHttpTransport.h"
+#include "../src/Library/Agent/AgentChatCodecs.h"   // GUI wiring (2026-08-11): MakeChatImageGenerator -- the shared imagine_scene generator helper
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
@@ -45,14 +46,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
-// Per-process scratch directory -- see ScratchRunDir below.
-#ifdef _WIN32
-	#include <process.h>
-	#define getpid _getpid
-#else
-	#include <unistd.h>			// getpid(), fork(), pipe()
-	#include <sys/wait.h>		// waitpid() -- collision-hazard proof below
-#endif
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -74,65 +68,16 @@ static void Check( bool c, const std::string& w )
 // other's fixtures/results via the remove_all() below, surfacing as a
 // bogus flaky failure.  The pid suffix makes the tree unique per process;
 // ScratchTestRoot() lets main() remove the WHOLE tree on exit.
+static constexpr const char* kScratchPrefix = "rise_agent_eval_live_test_";
+
 static std::string ScratchTestRoot()
 {
-	const char* base = std::getenv( "TMPDIR" );
-	if( !base ) base = std::getenv( "TMP" );
-	std::string dir = base ? base : "/tmp";
-	if( !dir.empty() && dir.back() != '/' && dir.back() != '\\' ) dir += '/';
-	dir += "rise_agent_eval_live_test_";
-	dir += std::to_string( (long)getpid() );
-	return dir;
+	return RISE::TestSupport::ScratchTestRoot( kScratchPrefix );
 }
 
 static std::string ScratchRunDir( const char* leaf )
 {
-	std::string dir = ScratchTestRoot() + "/" + leaf;
-	std::error_code ec;
-	std::filesystem::remove_all( dir, ec );
-	return dir;
-}
-
-//----------------------------------------------------------------------
-// Collision-hazard proof: two processes calling ScratchTestRoot() must
-// get DISTINCT trees.  See AgentEvalCheckTest.cpp's twin of this test for
-// the full rationale; POSIX-only (no fork() on Windows).
-//----------------------------------------------------------------------
-static void TestScratchRootDiffersAcrossProcesses()
-{
-#ifndef _WIN32
-	std::printf( "Collision-hazard check: ScratchTestRoot() differs across processes...\n" );
-	int fds[2];
-	if( pipe( fds ) != 0 ) { Check( false, "collision check: pipe() succeeded" ); return; }
-	const pid_t child = fork();
-	if( child < 0 ) {
-		Check( false, "collision check: fork() succeeded" );
-		close( fds[0] ); close( fds[1] );
-		return;
-	}
-	if( child == 0 ) {
-		close( fds[0] );
-		const std::string childRoot = ScratchTestRoot();
-		ssize_t w = write( fds[1], childRoot.data(), childRoot.size() );
-		(void)w;
-		close( fds[1] );
-		_exit( 0 );
-	}
-	close( fds[1] );
-	std::string childRoot;
-	char buf[4096]; ssize_t n;
-	while( ( n = read( fds[0], buf, sizeof( buf ) ) ) > 0 ) childRoot.append( buf, (size_t)n );
-	close( fds[0] );
-	int status = 0;
-	waitpid( child, &status, 0 );
-
-	const std::string parentRoot = ScratchTestRoot();
-	Check( !childRoot.empty(), "collision check: child reported a non-empty scratch root" );
-	Check( childRoot != parentRoot,
-		"collision check: parent (" + parentRoot + ") and child (" + childRoot + ") scratch roots differ" );
-#else
-	std::printf( "Collision-hazard check: skipped on Windows (no fork()); pid-suffix logic is still exercised by every ScratchRunDir() call above.\n" );
-#endif
+	return RISE::TestSupport::ScratchRunDir( kScratchPrefix, leaf );
 }
 
 static std::vector<JsonValue> ReadJsonl( const std::string& path )
@@ -1221,6 +1166,191 @@ static void TestKeyHygieneRedProve()
 	//     transport never echoing headers into its response.
 	Check( !AnyFileUnderContains( runDir, kFakeKey ),
 	       "the fake key appears in NO runDir output file (trajectory/result/results.jsonl)" );
+}
+
+//----------------------------------------------------------------------
+// T5b: Agent::MakeChatImageGenerator (AgentChatCodecs.h) -- the ONE
+// shared implementation `imagine_scene`'s host generator is now built
+// from in every host (this runner via the FetchFnTransport adapter,
+// the Mac and Windows GUIs directly).  Before the Arc 77 Phase 2
+// GUI-wiring extraction this glue -- capture the key, call
+// BuildImageGenerationRequest, drive the transport, format an
+// HTTP-status-only error -- was hand-rolled inline inside
+// RunScenarioDriven with zero direct test coverage.  This is its
+// first: three properties against the SAME MockTransport this file
+// already drives the chat path with.
+//   (a) key hygiene -- the key rides the provider's OWN auth header
+//       ONLY, never the request URL or body, and no OTHER header;
+//   (b) a failed HTTP response yields a STATUS-CODE-ONLY error
+//       message, never the response body (a provider error body can
+//       echo the prompt back -- see ParseImageGenerationResponse's doc
+//       for why that must never reach the model);
+//   (c) the success path threads the decoded image bytes + mime type
+//       through end to end.
+//----------------------------------------------------------------------
+static void TestMakeChatImageGeneratorWiring()
+{
+	std::printf( "T5b: MakeChatImageGenerator -- key hygiene + status-only error + success decode...\n" );
+
+	const std::string kFakeKey = "AIza-FAKE-IMAGE-KEY-DO-NOT-LEAK-0123456789";
+
+	// (a) + (b): a 403 whose body carries a distinctive "leak" marker --
+	// proves the marker never reaches the outcome's error string, and
+	// that the key never rides anywhere but its own auth header.
+	{
+		std::shared_ptr<MockTransport> mock = std::make_shared<MockTransport>();
+		mock->responses.push_back(
+			{ 403, "{\"error\":{\"message\":\"SECRET_PROMPT_LEAK_MARKER\"}}", "", 3 } );
+
+		const ChatImageGenerator gen = MakeChatImageGenerator( "gemini", kFakeKey, mock );
+		Check( gen.supported, "gemini reports image-generation capability" );
+		Check( gen.generate != nullptr, "gemini generator has a callable generate" );
+
+		const ChatImageGenOutcome out = gen.generate( "a red sphere on a checkerboard" );
+		Check( !out.ok, "a 403 response is reported as a failure" );
+		Check( out.error.find( "403" ) != std::string::npos,
+		       "the failure message names the HTTP status" );
+		Check( out.error.find( "SECRET_PROMPT_LEAK_MARKER" ) == std::string::npos,
+		       "the failure message never echoes the response body" );
+
+		Check( mock->seenRequests.size() == 1, "exactly one POST was issued" );
+		if( !mock->seenRequests.empty() ) {
+			const ChatHttpRequest& req = mock->seenRequests[0];
+			Check( req.url.find( kFakeKey ) == std::string::npos,
+			       "the key never appears in the request URL" );
+			Check( req.body.find( kFakeKey ) == std::string::npos,
+			       "the key never appears in the request body" );
+			Check( mock->AnyRequestHeaderContains( kFakeKey ),
+			       "the key DOES appear in a request header (red-prove: not vacuously absent)" );
+			bool keyOnlyInAuthHeader = true;
+			for( std::size_t h = 0; h < req.headers.size(); ++h ) {
+				const bool hasKey = req.headers[h].second.find( kFakeKey ) != std::string::npos;
+				if( hasKey && req.headers[h].first != "x-goog-api-key" ) keyOnlyInAuthHeader = false;
+			}
+			Check( keyOnlyInAuthHeader,
+			       "the key rides ONLY the provider's own auth header (x-goog-api-key), no other header" );
+		}
+	}
+
+	// (c) success: a canned Gemini generateContent body carrying one
+	// inlineData image part decodes through end to end.
+	{
+		std::shared_ptr<MockTransport> mock = std::make_shared<MockTransport>();
+		const std::vector<unsigned char> srcBytes =
+			{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02 };
+		const std::string b64 = Base64Encode( srcBytes );
+		const std::string body =
+			"{\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\","
+			"\"data\":\"" + b64 + "\"}}]}}]}";
+		mock->responses.push_back( { 200, body, "", 5 } );
+
+		const ChatImageGenerator gen = MakeChatImageGenerator( "gemini", kFakeKey, mock );
+		const ChatImageGenOutcome out = gen.generate( "a blue cube" );
+		Check( out.ok, "a 200 response with an inlineData part succeeds" );
+		Check( out.mimeType == "image/png", "the mime type threads through" );
+		Check( out.bytes == srcBytes, "the decoded bytes match the source bytes exactly" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T5c (S2 fix-round, 2026-08-11, P3): Agent::MakeChatTextCompleter
+// (AgentChatCodecs.h) -- the TEXT sibling of T5b just above, for the same
+// reason: build_element's host completer is real transport-wired code
+// that, before this fix, had zero coverage of its own -- every clean-room
+// test (AgentChunkCrudTest.cpp's S2 block) mocks the completer at the
+// AgentSession::SetTextCompleter seam, never exercising
+// BuildTextCompletionRequest / ParseTextCompletionResponse / the glue that
+// binds them to a transport.  Exercises all four supported providers
+// against the SAME MockTransport this file already drives the chat and
+// image paths with:
+//   (a) key hygiene -- the key rides the provider's OWN auth header ONLY;
+//   (b) a failed HTTP response yields a STATUS-CODE-ONLY error, never the
+//       body (a provider error body can echo the prompt straight back);
+//   (c) the success path threads decoded text through end to end, for one
+//       representative provider -- the per-provider response SHAPES
+//       themselves are pinned directly in AgentChatLoopTest.cpp's T51.
+//----------------------------------------------------------------------
+static void TestMakeChatTextCompleterWiring()
+{
+	std::printf( "T5c: MakeChatTextCompleter -- key hygiene + status-only error, all 4 providers...\n" );
+
+	struct ProviderCase { const char* name; const char* authHeader; };
+	const ProviderCase cases[] = {
+		{ "anthropic", "x-api-key" },
+		{ "gemini",    "x-goog-api-key" },
+		{ "openai",    "authorization" },
+		{ "xai",       "authorization" },
+	};
+
+	for( const ProviderCase& pc : cases ) {
+		const std::string kFakeKey =
+			std::string( "FAKE-" ) + pc.name + "-TEXT-KEY-DO-NOT-LEAK-0123456789";
+
+		// (a) + (b): a 403 whose body carries a distinctive "leak" marker --
+		// proves the marker never reaches the outcome's error string, and
+		// that the key never rides anywhere but its own auth header.
+		std::shared_ptr<MockTransport> mock = std::make_shared<MockTransport>();
+		mock->responses.push_back(
+			{ 403, "{\"error\":{\"message\":\"SECRET_PROMPT_LEAK_MARKER\"}}", "", 3 } );
+
+		const ChatTextCompleter comp = MakeChatTextCompleter( pc.name, kFakeKey, mock );
+		Check( comp.supported, std::string( "T5c: " ) + pc.name + " reports text-completion capability" );
+		Check( comp.complete != nullptr,
+		       std::string( "T5c: " ) + pc.name + " completer has a callable complete" );
+
+		const ChatTextCompletionOutcome out = comp.complete( "build the wizard element" );
+		Check( !out.ok, std::string( "T5c: " ) + pc.name + " -- a 403 response is reported as a failure" );
+		Check( out.error.find( "403" ) != std::string::npos,
+		       std::string( "T5c: " ) + pc.name + " -- the failure message names the HTTP status" );
+		Check( out.error.find( "SECRET_PROMPT_LEAK_MARKER" ) == std::string::npos,
+		       std::string( "T5c MONEY ASSERTION: " ) + pc.name +
+		       " -- the failure message never echoes the response body" );
+
+		Check( mock->seenRequests.size() == 1,
+		       std::string( "T5c: " ) + pc.name + " -- exactly one POST was issued" );
+		if( !mock->seenRequests.empty() ) {
+			const ChatHttpRequest& req = mock->seenRequests[0];
+			Check( req.url.find( kFakeKey ) == std::string::npos,
+			       std::string( "T5c: " ) + pc.name + " -- the key never appears in the request URL" );
+			Check( req.body.find( kFakeKey ) == std::string::npos,
+			       std::string( "T5c: " ) + pc.name + " -- the key never appears in the request body" );
+			Check( mock->AnyRequestHeaderContains( kFakeKey ),
+			       std::string( "T5c: " ) + pc.name +
+			       " -- the key DOES appear in a request header (red-prove: not vacuously absent)" );
+			bool keyOnlyInAuthHeader = true;
+			for( std::size_t h = 0; h < req.headers.size(); ++h ) {
+				const bool hasKey = req.headers[h].second.find( kFakeKey ) != std::string::npos;
+				if( hasKey && req.headers[h].first != pc.authHeader ) keyOnlyInAuthHeader = false;
+			}
+			Check( keyOnlyInAuthHeader,
+			       std::string( "T5c: " ) + pc.name + " -- the key rides ONLY its own auth header (" +
+			       pc.authHeader + "), no other header" );
+		}
+	}
+
+	// (c) success: one representative provider (anthropic) decodes an
+	// end-to-end canned response through the transport.
+	{
+		std::shared_ptr<MockTransport> mock = std::make_shared<MockTransport>();
+		mock->responses.push_back( { 200,
+			"{\"content\":[{\"type\":\"text\",\"text\":\"sdf_geometry\\n{\\n\\tname wizard_body_sdf\\n}\\n\"}]}",
+			"", 5 } );
+
+		const ChatTextCompleter comp = MakeChatTextCompleter( "anthropic", "SOME-KEY", mock );
+		const ChatTextCompletionOutcome out = comp.complete( "build the wizard element" );
+		Check( out.ok, "T5c: a 200 response with a text content block succeeds" );
+		Check( out.text.find( "wizard_body_sdf" ) != std::string::npos,
+		       "T5c: the decoded text threads through end to end" );
+	}
+
+	// no HTTP transport installed -- an honest, factual refusal, never a
+	// crash.
+	{
+		const ChatTextCompleter comp = MakeChatTextCompleter( "anthropic", "k", nullptr );
+		const ChatTextCompletionOutcome out = comp.complete( "p" );
+		Check( !out.ok && out.error.find( "no HTTP transport" ) != std::string::npos,
+		       "T5c: with no transport installed, the completer fails honestly rather than crashing" );
+	}
 }
 
 //----------------------------------------------------------------------
@@ -3062,9 +3192,15 @@ static void TestCompareToImageMatrixResume()
 
 int main()
 {
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentEvalLiveTransportTest (Eval-harness slice E4: live headless runner) ===\n" );
 
-	TestScratchRootDiffersAcrossProcesses();
 	TestFactory();
 	TestLiveRunViaMock();
 	TestLiveBudget();
@@ -3076,6 +3212,8 @@ int main()
 	TestLiveDegenerateRetryAccumulatesAcrossRounds();
 	TestLive5xxDoesNotStackWithDegenerate();
 	TestKeyHygieneRedProve();
+	TestMakeChatImageGeneratorWiring();
+	TestMakeChatTextCompleterWiring();
 	TestLiveLocalProviderTimeoutBudget();
 	TestLiveHttp5xxRetrySucceeds();
 	TestLiveHttp5xxRetryStillFails();

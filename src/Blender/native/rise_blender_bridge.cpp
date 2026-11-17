@@ -1,6 +1,7 @@
 #include "rise_blender_bridge.h"
 
 #include <algorithm>
+#include <cctype>
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -10,6 +11,8 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <limits>
+#include <stdexcept>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -24,9 +27,13 @@
 #include <Interfaces/IMaterialManager.h>
 #include <Interfaces/IMedium.h>
 #include <Interfaces/IObjectPriv.h>
+#include <Interfaces/IPainter.h>
 #include <Interfaces/IPainterManager.h>
 #include <Interfaces/IPhaseFunction.h>
+#include <Interfaces/IScalarPainter.h>
+#include <Interfaces/IScalarPainterManager.h>
 #include <Interfaces/IProgressCallback.h>
+#include <Shaders/AdvancedShaderWiring.h>
 #include <Utilities/AdaptiveSamplingConfig.h>
 #include <Utilities/Math3D/Math3D.h>
 #include <Utilities/OidnConfig.h>
@@ -71,33 +78,22 @@ namespace
 		);
 	}
 
-	// sRGB OETF (encode): linear → sRGB-display values.
-	// Required because Job::AddPointOmniLight / AddPointSpotLight /
-	// AddDirectionalLight / AddAmbientLight wrap the input in
-	// sRGBPel(srgb[3]) and rely on the implicit sRGBPel→ROMMRGBPel
-	// conversion, which calls ColorUtils::sRGBtoROMMRGB (=
-	// Linearize_sRGB followed by Rec709→ROMM matrix).  Blender's
-	// `light.color` is already linear Rec.709 — without this encode,
-	// the renderer's gamma decode would dim mid-greys by ~57 % and
-	// nonlinearly desaturate colours.
-	double linear_to_srgb_channel( const float value )
+	// Blender's `light.color` is linear Rec.709, and since 2026-09-02
+	// Job::Add*Light take a linear triple plus a colour-space name -- so
+	// the value passes straight through.  What used to live here was an
+	// sRGB OETF encode that existed ONLY to cancel those methods'
+	// unconditional gamma DECODE (without it, mid-greys came out ~57 %
+	// dim and colours nonlinearly desaturated).  Both the trap and the
+	// workaround are gone; see IJob.h's "COLOUR CONVENTION (2026-09-02)".
+	//
+	// Negative clamp is kept: Blender colour pickers occasionally emit
+	// slightly negative tristimulus values, which have no meaning as
+	// emitted radiance.
+	void blender_light_color( const float linear[3], double out[3] )
 	{
-		// Operate on negative-clamped magnitude.  Blender colour
-		// pickers occasionally emit slightly negative tristimulus
-		// values; the standard sRGB curve mirrors around 0 in
-		// practice, so we just clamp.
-		const double v = std::max( 0.0, double( value ) );
-		if( v <= 0.0031308 ) {
-			return v * 12.92;
-		}
-		return 1.055 * std::pow( v, 1.0 / 2.4 ) - 0.055;
-	}
-
-	void linear_rgb_to_srgb( const float linear[3], double srgb[3] )
-	{
-		srgb[0] = linear_to_srgb_channel( linear[0] );
-		srgb[1] = linear_to_srgb_channel( linear[1] );
-		srgb[2] = linear_to_srgb_channel( linear[2] );
+		out[0] = std::max( 0.0, double( linear[0] ) );
+		out[1] = std::max( 0.0, double( linear[1] ) );
+		out[2] = std::max( 0.0, double( linear[2] ) );
 	}
 
 	void normalize3( double value[3] )
@@ -119,9 +115,13 @@ namespace
 		case RISE_BLENDER_COLOR_SRGB:
 			return "sRGB";
 		case RISE_BLENDER_COLOR_ROMM_LINEAR:
-			return "ROMMRGB_Linear";
 		case RISE_BLENDER_COLOR_LINEAR:
 		default:
+			// Native working-space linear passthrough (RISEPel = Rec709RGBPel).
+			// RISE_BLENDER_COLOR_ROMM_LINEAR is a deprecated Stage-A alias whose
+			// ABI v4 contract is bit-exact non-colour / normal-map passthrough;
+			// routing it to ROMMRGB_Linear post-Stage-B would apply a Bradford +
+			// ProPhoto->Rec.709 matrix and warp encoded tangent normals.
 			return "Rec709RGB_Linear";
 		}
 	}
@@ -129,15 +129,16 @@ namespace
 	char texture_color_space_value( const int color_space )
 	{
 		// Char encoding mirrors Job::AddPNGTexturePainter etc.:
-		//   0 = Rec709RGB_Linear
+		//   0 = Rec709RGB_Linear  (native working space; preserves bit-exact vector/scalar data)
 		//   1 = sRGB
-		//   2 = ROMMRGB_Linear  (preserves bit-exact vector data)
+		//   2 = ROMMRGB_Linear    (ProPhoto->Rec.709 matrix; never used by the Blender bridge)
+		// Deprecated RISE_BLENDER_COLOR_ROMM_LINEAR maps to 0 to honour its
+		// ABI v4 bit-exact normal-map passthrough contract.
 		switch( color_space )
 		{
 		case RISE_BLENDER_COLOR_SRGB:
 			return 1;
 		case RISE_BLENDER_COLOR_ROMM_LINEAR:
-			return 2;
 		case RISE_BLENDER_COLOR_LINEAR:
 		default:
 			return 0;
@@ -263,6 +264,44 @@ namespace
 		return true;
 	}
 
+	struct RGBAStorageLayout
+	{
+		size_t row_values;
+		size_t values;
+		size_t bytes;
+	};
+
+	template<typename Scalar>
+	RGBAStorageLayout checked_rgba_storage( const uint32_t width, const uint32_t height )
+	{
+		// The ABI carries dimensions, not a 32-bit channel count. Check the
+		// actual native storage/container limits before multiplying.
+		const size_t maximum = std::numeric_limits<size_t>::max();
+		const size_t native_width = width;
+		if( native_width == 0 || height == 0 || native_width > maximum / 4u )
+			throw std::length_error( "Blender RGBA row size is not representable" );
+		const size_t row_values = native_width * 4u;
+		const size_t maximum_values = std::min( maximum / sizeof(Scalar), std::vector<Scalar>().max_size() );
+		if( height > maximum_values / row_values )
+			throw std::length_error( "Blender RGBA image size is not representable" );
+		const size_t values = row_values * height;
+		return { row_values, values, values * sizeof(Scalar) };
+	}
+
+	size_t rgba_value_offset( const size_t y, const size_t x, const size_t width )
+	{
+		// Callers first validate the full image layout and rectangle bounds.
+		return (y * width + x) * 4u;
+	}
+
+	bool valid_image_region( const unsigned int width, const unsigned int height,
+		const unsigned int top, const unsigned int left,
+		const unsigned int bottom, const unsigned int right )
+	{
+		return width != 0 && height != 0 && top <= bottom && left <= right &&
+			bottom < height && right < width;
+	}
+
 	class MemoryRasterizerOutput : public RISE::IJobRasterizerOutput
 	{
 	protected:
@@ -307,22 +346,23 @@ namespace
 			// callback shouldn't fire in production renders — kept for
 			// the pure-virtual contract and as a safety fallback for
 			// any RISE build that predates the float32 plumbing.
-			if( !pImageData ) {
+			if( !pImageData || !valid_image_region( width, height, rc_top, rc_left, rc_bottom, rc_right ) ) {
 				return;
 			}
+			const auto storage = checked_rgba_storage<float>( width, height );
 
 			{
 				std::lock_guard<std::mutex> guard( buffer_mutex_ );
 
 				if( width_ != width || height_ != height || rgba_.empty() ) {
+					rgba_.assign( storage.values, 0.0f );
 					width_ = width;
 					height_ = height;
-					rgba_.assign( width_ * height_ * 4, 0.0f );
 				}
 
 				for( unsigned int y = rc_top; y <= rc_bottom; ++y ) {
 					for( unsigned int x = rc_left; x <= rc_right; ++x ) {
-						const unsigned int offset = ( y * width_ + x ) * 4;
+						const size_t offset = rgba_value_offset( y, x, width_ );
 						rgba_[offset+0] = float( pImageData[offset+0] ) / 65535.0f;
 						rgba_[offset+1] = float( pImageData[offset+1] ) / 65535.0f;
 						rgba_[offset+2] = float( pImageData[offset+2] ) / 65535.0f;
@@ -334,17 +374,18 @@ namespace
 			if( image_callback_ ) {
 				const unsigned int region_width = rc_right - rc_left + 1;
 				const unsigned int region_height = rc_bottom - rc_top + 1;
-				std::vector<unsigned short> region_rgba( region_width * region_height * 4, 0 );
+				const auto region_storage = checked_rgba_storage<unsigned short>( region_width, region_height );
+				std::vector<unsigned short> region_rgba( region_storage.values, 0 );
 
 				for( unsigned int y = 0; y < region_height; ++y ) {
-					const unsigned short* src = pImageData + ( ( ( rc_top + y ) * width + rc_left ) * 4 );
-					unsigned short* dst = &region_rgba[y * region_width * 4];
-					std::memcpy( dst, src, sizeof( unsigned short ) * region_width * 4 );
+					const unsigned short* src = pImageData + rgba_value_offset( static_cast<size_t>(rc_top) + y, rc_left, width );
+					unsigned short* dst = region_rgba.data() + static_cast<size_t>(y) * region_storage.row_values;
+					std::memcpy( dst, src, sizeof( unsigned short ) * region_storage.row_values );
 				}
 
 				image_callback_(
 					user_data_,
-					&region_rgba[0],
+					region_rgba.data(),
 					region_width,
 					region_height,
 					width,
@@ -378,22 +419,23 @@ namespace
 			const unsigned int rc_right
 		) override
 		{
-			if( !pImageData ) {
+			if( !pImageData || !valid_image_region( width, height, rc_top, rc_left, rc_bottom, rc_right ) ) {
 				return;
 			}
+			const auto storage = checked_rgba_storage<float>( width, height );
 
 			{
 				std::lock_guard<std::mutex> guard( buffer_mutex_ );
 
 				if( width_ != width || height_ != height || rgba_.empty() ) {
+					rgba_.assign( storage.values, 0.0f );
 					width_ = width;
 					height_ = height;
-					rgba_.assign( width_ * height_ * 4, 0.0f );
 				}
 
 				for( unsigned int y = rc_top; y <= rc_bottom; ++y ) {
 					for( unsigned int x = rc_left; x <= rc_right; ++x ) {
-						const unsigned int offset = ( y * width_ + x ) * 4;
+						const size_t offset = rgba_value_offset( y, x, width_ );
 						rgba_[offset+0] = pImageData[offset+0];
 						rgba_[offset+1] = pImageData[offset+1];
 						rgba_[offset+2] = pImageData[offset+2];
@@ -410,16 +452,20 @@ namespace
 			if( image_callback_ ) {
 				const unsigned int region_width = rc_right - rc_left + 1;
 				const unsigned int region_height = rc_bottom - rc_top + 1;
-				std::vector<unsigned short> region_rgba( region_width * region_height * 4, 0 );
+				const auto region_storage = checked_rgba_storage<unsigned short>( region_width, region_height );
+				std::vector<unsigned short> region_rgba( region_storage.values, 0 );
 
 				for( unsigned int y = 0; y < region_height; ++y ) {
 					for( unsigned int x = 0; x < region_width; ++x ) {
-						const unsigned int src = ( ( rc_top + y ) * width + ( rc_left + x ) ) * 4;
-						const unsigned int dst = ( y * region_width + x ) * 4;
+						const size_t src = rgba_value_offset( static_cast<size_t>(rc_top) + y,
+							static_cast<size_t>(rc_left) + x, width );
+						const size_t dst = rgba_value_offset( y, x, region_width );
 						for( int c = 0; c < 4; ++c ) {
 							float v = pImageData[src + c];
-							if( v < 0.0f ) v = 0.0f;
-							if( v > 1.0f ) v = 1.0f;
+							// Keep non-finite values out of float-to-integer casts.
+							// Final float pixels above remain untouched.
+							if( !(v > 0.0f) ) v = 0.0f;
+							else if( v >= 1.0f ) v = 1.0f;
 							region_rgba[dst + c] = static_cast<unsigned short>( v * 65535.0f + 0.5f );
 						}
 					}
@@ -427,7 +473,7 @@ namespace
 
 				image_callback_(
 					user_data_,
-					&region_rgba[0],
+					region_rgba.data(),
 					region_width,
 					region_height,
 					width,
@@ -446,13 +492,14 @@ namespace
 				return false;
 			}
 
-			const size_t total_values = rgba_.size();
-			result.rgba = static_cast<float*>( std::malloc( total_values * sizeof( float ) ) );
+			const auto storage = checked_rgba_storage<float>( width_, height_ );
+			if( rgba_.size() != storage.values ) return false;
+			result.rgba = static_cast<float*>( std::malloc( storage.bytes ) );
 			if( !result.rgba ) {
 				return false;
 			}
 
-			std::memcpy( result.rgba, &rgba_[0], total_values * sizeof( float ) );
+			std::memcpy( result.rgba, rgba_.data(), storage.bytes );
 			result.width = width_;
 			result.height = height_;
 			return true;
@@ -998,17 +1045,51 @@ namespace
 		switch( modifier.kind )
 		{
 		case RISE_BLENDER_MODIFIER_BUMP:
-			if( !job.AddBumpMapModifier( modifier.name, modifier.source_painter_name, modifier.scale, modifier.window ) ) {
-				write_error( error_message, error_message_size, "Failed to create a bump modifier" );
-				return false;
+			{
+				// `IJob::AddBumpMapModifier`'s SIGNATURE is ABI-frozen (it has no
+				// `normalize` parameter) and always builds the legacy
+				// window-COUPLED fold (RISE_API_CreateBumpMapModifier ==
+				// ...Ex(..., normalizeGradient=false)) -- see Job.cpp /
+				// RISE_API.cpp.  That fold made the exporter's Bump-node
+				// amplitude ~200x weaker once `_build_bump_modifier` shrank its
+				// half-step `window` from 1.0 (the whole UV range -- a bug) to
+				// 0.005 (a texel-scale finite-difference step), because the
+				// delivered tilt is `scale*2*window*grad`.  Bypass the ABI-frozen
+				// shim here and reach `RISE_API_CreateBumpMapModifierEx` directly
+				// with normalizeGradient=modifier.normalize, resolving/registering
+				// through IJobPriv exactly the way the old registry-parser
+				// `normalize_gradient TRUE` path did -- the same
+				// resolve-via-manager / Ex-create / AddItem-then-release shape
+				// used elsewhere in this file (e.g. the hair scalar-painter
+				// wrapper above).
+				RISE::IFunction2D* pFunc = job.GetFunction2Ds()->GetItem( modifier.source_painter_name );
+				if( !pFunc ) {
+					write_error( error_message, error_message_size, "Failed to create a bump modifier: source painter/function not found" );
+					return false;
+				}
+
+				RISE::IRayIntersectionModifier* pModifier = 0;
+				RISE::RISE_API_CreateBumpMapModifierEx(
+					&pModifier, *pFunc, modifier.scale, modifier.window, modifier.normalize != 0 );
+				if( !pModifier ) {
+					write_error( error_message, error_message_size, "Failed to create a bump modifier" );
+					return false;
+				}
+
+				const bool added = job.GetModifiers()->AddItem( pModifier, modifier.name );
+				pModifier->release();
+				if( !added ) {
+					write_error( error_message, error_message_size, "Failed to create a bump modifier" );
+					return false;
+				}
 			}
 			return true;
 
 		case RISE_BLENDER_MODIFIER_NORMAL_MAP:
 			// AddNormalMapModifier(name, painter, scale) — glTF
 			// normalTexture.scale.  The painter must have been
-			// registered with ROMMRGB_Linear colour space so the
-			// encoded surface tangent stays bit-exact.
+			// registered with Rec709RGB_Linear (RISE_BLENDER_COLOR_LINEAR)
+			// colour space so the encoded surface tangent stays bit-exact.
 			if( !job.AddNormalMapModifier( modifier.name, modifier.source_painter_name, modifier.scale ) ) {
 				write_error( error_message, error_message_size, "Failed to create a normal-map modifier" );
 				return false;
@@ -1018,6 +1099,93 @@ namespace
 
 		write_error( error_message, error_message_size, "Encountered an unsupported modifier type" );
 		return false;
+	}
+
+	//! ABI v18.  Registers a wavelength-varying IOR for Blender 5.3 /
+	//! OpenPBR transmission dispersion: Cauchy's n(lambda) = A + B /
+	//! lambda^2 with n(587.6 nm) = n_d and Abbe number
+	//! (n_d - 1) / (n(486.1) - n(656.3)) = abbe.  Sampled every 1 nm over
+	//! 300-900 nm into a piecewise-linear scalar painter, so spectral
+	//! rasterizers see true dispersion and RGB rasterizers the per-channel
+	//! IOR at ScalarPainterRGB::kChannelNM (DL-82).  Linear interpolation
+	//! error is h^2/8 * max|n''| = 0.75 B / lambda^4 at h = 1 nm: 2.4e-6 in
+	//! n at 300 nm for n_d = 1.5, abbe = 10 (BlenderBridgeThinFilm-
+	//! DispersionTest pins the bound at abbe 8).  Refuses a curve that
+	//! drops to or below zero inside the sampled band (an extreme abbe /
+	//! n_d < 1).  Returns the painter name, or an empty string on failure.
+	std::string register_cauchy_ior_painter(
+		RISE::IJobPriv& job,
+		const std::string& materialName,
+		const double n_d,
+		const double abbe,
+		std::string& why
+	)
+	{
+		RISE::IScalarPainterManager* smgr = job.GetScalarPainters();
+		if( !smgr || !( n_d > 0.0 ) || !( abbe > 0.0 ) ) {
+			why = "needs a positive IOR and Abbe number";
+			return std::string();
+		}
+
+		const double lambdaF = 486.1, lambdaD = 587.6, lambdaC = 656.3;
+		const double invF = 1.0 / ( lambdaF * lambdaF );
+		const double invC = 1.0 / ( lambdaC * lambdaC );
+		const double invD = 1.0 / ( lambdaD * lambdaD );
+		const double B = ( n_d - 1.0 ) / ( abbe * ( invF - invC ) );
+		const double A = n_d - B * invD;
+
+		std::vector<std::pair<RISE::Scalar, RISE::Scalar>> samples;
+		samples.reserve( 601 );
+		for( int nm = 300; nm <= 900; ++nm ) {
+			const double lambda = double( nm );
+			const double n = A + B / ( lambda * lambda );
+			if( !( n > 0.0 ) || !std::isfinite( n ) ) {
+				why = "the Cauchy curve must stay positive over 300-900 nm";
+				return std::string();
+			}
+			samples.emplace_back( RISE::Scalar( lambda ), RISE::Scalar( n ) );
+		}
+
+		const std::string name = materialName + "::ior_cauchy";
+		if( smgr->GetItem( name.c_str() ) ) {
+			why = "a scalar painter named '" + name + "' already exists";
+			return std::string();
+		}
+		RISE::IScalarPainter* painter = 0;
+		RISE::RISE_API_CreatePiecewiseLinearScalarPainter( &painter, samples );
+		if( !painter ) {
+			why = "the piecewise-linear painter could not be created";
+			return std::string();
+		}
+		const bool added = smgr->AddItem( painter, name.c_str() );
+		painter->release();
+		if( !added ) {
+			why = "the painter could not be registered";
+			return std::string();
+		}
+		return name;
+	}
+
+	//! Parses a whole-string numeric literal (the exporter's inline
+	//! scalar format); false on trailing garbage or non-finite values.
+	bool parse_scalar_literal( const char* text, double& out )
+	{
+		if( !text || !text[0] ) {
+			return false;
+		}
+		char* end = 0;
+		const double value = std::strtod( text, &end );
+		if( end == text ) {
+			return false;
+		}
+		while( *end && std::isspace( static_cast<unsigned char>( *end ) ) ) {
+			++end;
+		}
+		if( *end || !std::isfinite( value ) ) {
+			return false;
+		}
+		out = value;
+		return true;
 	}
 
 	bool create_surface_material(
@@ -1055,22 +1223,289 @@ namespace
 			return false;
 
 		case RISE_BLENDER_MATERIAL_DIELECTRIC:
-			if( material.tau_painter_name && material.ior_painter_name && material.scatter_painter_name &&
-				job.AddDielectricMaterial(
-					material_name,
-					material.tau_painter_name,
-					material.ior_painter_name,
-					material.scatter_painter_name,
-					false ) )
-			{
+		{
+			if( !material.tau_painter_name || !material.ior_painter_name || !material.scatter_painter_name ) {
+				write_error( error_message, error_message_size, "Failed to create a dielectric material" );
+				return false;
+			}
+
+			// ABI v18: transmission dispersion turns the numeric IOR into
+			// a Cauchy curve pinned at the d line.
+			std::string iorName = material.ior_painter_name;
+			if( material.dispersion_abbe > 0.0 ) {
+				double n_d = 0.0;
+				if( !parse_scalar_literal( material.ior_painter_name, n_d ) || !( n_d > 0.0 ) ) {
+					write_error( error_message, error_message_size,
+						"Dielectric dispersion needs a single numeric IOR literal" );
+					return false;
+				}
+				std::string why;
+				iorName = register_cauchy_ior_painter( job, material_name, n_d, material.dispersion_abbe, why );
+				if( iorName.empty() ) {
+					const std::string message = "Failed to create the dispersive (Cauchy) IOR painter: " + why;
+					write_error( error_message, error_message_size, message.c_str() );
+					return false;
+				}
+			}
+
+			// ABI v18: a Principled thin film on glass is a single
+			// transparent AR-coating layer on the dielectric interface.
+			bool ok = false;
+			if( material.thin_film_thickness > 0.0 ) {
+				const RISE::Scalar arN[1] = { RISE::Scalar( material.thin_film_ior > 0.0 ? material.thin_film_ior : 1.33 ) };
+				const RISE::Scalar arK[1] = { RISE::Scalar( 0.0 ) };
+				const RISE::Scalar arT[1] = { RISE::Scalar( material.thin_film_thickness ) };
+				ok = job.AddDielectricMaterial(
+					material_name, material.tau_painter_name, iorName.c_str(),
+					material.scatter_painter_name, false, arN, arK, arT, 1u );
+			} else {
+				ok = job.AddDielectricMaterial(
+					material_name, material.tau_painter_name, iorName.c_str(),
+					material.scatter_painter_name, false );
+			}
+			if( ok ) {
 				return true;
 			}
 			write_error( error_message, error_message_size, "Failed to create a dielectric material" );
 			return false;
 		}
+		}
 
 		write_error( error_message, error_message_size, "Encountered an unsupported material model" );
 		return false;
+	}
+
+	//! Forward declaration -- defined below, near its hair-path sibling
+	//! `resolve_hair_scalar_slot` (ABI v12 / DL-18; see that function's
+	//! own banner and this one's definition for the wrapper mechanism).
+	//! `square` (ABI v13 / DL-186 review P1) -- see the definition's own
+	//! banner.
+	std::string resolve_material_scalar_slot(
+		RISE::IJobPriv& job,
+		const char* painterName,
+		const std::string& fallbackLiteral,
+		const bool square = false
+	);
+
+	//! Name of a shared uniform colour painter, registered on first use.
+	std::string ensure_uniform_color_painter( RISE::IJobPriv& job, const char* name, const double value )
+	{
+		RISE::IPainterManager* pmgr = job.GetPainters();
+		if( pmgr && pmgr->GetItem( name ) ) {
+			return name;
+		}
+		double rgb[3] = { value, value, value };
+		return job.AddUniformColorPainter( name, rgb, "Rec709RGB_Linear" ) ? std::string( name ) : std::string();
+	}
+
+	//! Cycles' estimate of a metal's complex index once a thin film is
+	//! present (intern/cycles/kernel/closure/bsdf_microfacet.h, F82_TINT;
+	//! inputs as set up in kernel/svm/closure.h): Gulbrandsen's "Artist
+	//! Friendly Metallic Fresnel" with r = min(F0, 0.999) and g = the
+	//! F82-tint reflectance at cos 1/7 = saturate(min(tint, 1) *
+	//! Schlick(F0, 1/7)) -- Cycles clamps the tint to 1 and saturates g, so
+	//! g <= 1 and F(0) = r always.  One deliberate difference remains: when
+	//! a film is present Cycles takes the film/substrate reflectance
+	//! MAGNITUDE from the F82 model and only the phase from (n, k); RISE's
+	//! thin-film Fresnel uses the exact conductor Fresnel of (n, k) for both,
+	//! so the two agree at normal incidence and drift apart off-normal.
+	void cycles_thin_film_metal_nk( const double f0, const double tint, double& n, double& k )
+	{
+		const double f0Clamped = std::min( 1.0, std::max( 0.0, f0 ) );
+		const double r = std::min( 0.999, f0Clamped );
+		const double schlick = f0Clamped + ( 1.0 - f0Clamped ) * std::pow( 1.0 - 1.0 / 7.0, 5.0 );
+		const double g = std::min( 1.0, std::max( 0.0, std::min( 1.0, tint ) * schlick ) );
+		const double sqrtR = std::sqrt( r );
+		const double nMax = ( 1.0 + sqrtR ) / ( 1.0 - sqrtR );
+		const double nMin = ( 1.0 - r ) / ( 1.0 + r );
+		n = nMax * ( 1.0 - g ) + nMin * g;
+		const double k2 = ( r * ( n + 1.0 ) * ( n + 1.0 ) - ( n - 1.0 ) * ( n - 1.0 ) ) / ( 1.0 - r );
+		k = std::sqrt( std::max( 0.0, k2 ) );
+	}
+
+	//! ABI v18.  A metal substrate under a thin film, as wavelength-varying
+	//! n(lambda), k(lambda) painters.  RISE's thin-film Fresnel is evaluated
+	//! per WAVELENGTH (exactly on the spectral path, by a spectral integral
+	//! per shading call on the RGB path -- ThinFilm::ReflectanceConductor-
+	//! RGBSpectral), so the substrate must be a spectrum, not an RGB triple:
+	//! handing it the per-channel Cycles n, k as an "r g b" literal spreads
+	//! them over 450/550/650 nm, which badly desaturated a saturated metal
+	//! under a vanishing film (an earlier revision).  Instead the
+	//! Base Color (F0) and Specular Tint are uplifted to reflectance spectra
+	//! by the same Jakob-Hanika path every material uses (ReflectanceColorNM)
+	//! and Cycles' estimate is applied at each wavelength, so F(0) = F0 at
+	//! every wavelength.  Sampled every 5 nm over 300-900 nm.  (On the RGB
+	//! path the per-call spectral integration still leaves a residual for
+	//! saturated metals: BlenderBridgeThinFilmDispersionTest pins it.)
+	bool register_thin_film_metal_substrate(
+		RISE::IJobPriv& job,
+		const std::string& registerName,
+		const double f0[3],
+		const double tint[3],
+		std::string& nName,
+		std::string& kName
+	)
+	{
+		RISE::IPainterManager* pmgr = job.GetPainters();
+		RISE::IScalarPainterManager* smgr = job.GetScalarPainters();
+		if( !pmgr || !smgr ) {
+			return false;
+		}
+		const std::string f0Name = registerName + "::tf_f0";
+		const std::string tintName = registerName + "::tf_tint";
+		double f0Rgb[3] = { f0[0], f0[1], f0[2] };
+		double tintRgb[3] = { tint[0], tint[1], tint[2] };
+		if( !job.AddUniformColorPainter( f0Name.c_str(), f0Rgb, "Rec709RGB_Linear" ) ||
+		    !job.AddUniformColorPainter( tintName.c_str(), tintRgb, "Rec709RGB_Linear" ) ) {
+			return false;
+		}
+		const RISE::IPainter* f0Painter = pmgr->GetItem( f0Name.c_str() );
+		const RISE::IPainter* tintPainter = pmgr->GetItem( tintName.c_str() );
+		if( !f0Painter || !tintPainter ) {
+			return false;
+		}
+
+		// Uniform painters ignore the hit record; any valid one will do.
+		RISE::RasterizerState rs = { 0, 0 };
+		const RISE::RayIntersectionGeometric ri(
+			RISE::Ray( RISE::Point3( 0, 0, 0 ), RISE::Vector3( 0, 0, 1 ) ), rs );
+
+		std::vector<std::pair<RISE::Scalar, RISE::Scalar>> nSamples, kSamples;
+		for( int nm = 300; nm <= 900; nm += 5 ) {
+			const RISE::Scalar lambda = RISE::Scalar( nm );
+			double n = 1.0, k = 0.0;
+			cycles_thin_film_metal_nk(
+				RISE::ReflectanceColorNM( *f0Painter, ri, lambda ),
+				RISE::ReflectanceColorNM( *tintPainter, ri, lambda ), n, k );
+			nSamples.emplace_back( lambda, RISE::Scalar( n ) );
+			kSamples.emplace_back( lambda, RISE::Scalar( k ) );
+		}
+
+		nName = registerName + "::tf_n";
+		kName = registerName + "::tf_k";
+		RISE::IScalarPainter* nPainter = 0;
+		RISE::IScalarPainter* kPainter = 0;
+		RISE::RISE_API_CreatePiecewiseLinearScalarPainter( &nPainter, nSamples );
+		RISE::RISE_API_CreatePiecewiseLinearScalarPainter( &kPainter, kSamples );
+		bool ok = nPainter && kPainter;
+		if( ok ) ok = smgr->AddItem( nPainter, nName.c_str() );
+		if( ok ) ok = smgr->AddItem( kPainter, kName.c_str() );
+		if( nPainter ) nPainter->release();
+		if( kPainter ) kPainter->release();
+		return ok;
+	}
+
+	//! ABI v18.  The base of a Principled material carrying a Thin Film:
+	//! a `ggx_material` in `thinfilm` Fresnel mode (an Airy thin film over
+	//! the substrate n + i k), registered under `registerName` in place of
+	//! the PBR painter graph.  Sheen/coat wraps and deferred emission layer
+	//! over it exactly as over the PBR base.  Isotropic: alpha = roughness^2
+	//! (the exporter warns when Anisotropic is set).
+	bool add_thin_film_ggx_base(
+		RISE::IJobPriv& job,
+		const rise_blender_material& material,
+		const std::string& registerName,
+		const char* emissive,
+		char* error_message,
+		const size_t error_message_size
+	)
+	{
+		// Accept what AddPBRMetallicRoughnessMaterial accepts: a registered
+		// painter, or a numeric literal (a direct API caller may pass ".3").
+		RISE::IPainterManager* pmgr = job.GetPainters();
+		std::string alpha;
+		double roughnessLiteral = 0.0;
+		if( pmgr && pmgr->GetItem( material.roughness_painter_name ) ) {
+			alpha = resolve_material_scalar_slot( job, material.roughness_painter_name, std::string(), /*square*/ true );
+		} else if( parse_scalar_literal( material.roughness_painter_name, roughnessLiteral ) ) {
+			char literal[64];
+			std::snprintf( literal, sizeof( literal ), "%.9g", roughnessLiteral * roughnessLiteral );
+			alpha = literal;
+		}
+		if( alpha.empty() ) {
+			write_error( error_message, error_message_size, "Failed to derive the thin-film GGX roughness (roughness must be a registered painter or a number)" );
+			return false;
+		}
+
+		// A metal's diffuse is black, so only a dielectric needs Base Color.
+		const bool conductor = material.thin_film_conductor != 0;
+		std::string baseColor = material.base_color_painter_name ? material.base_color_painter_name : "";
+		if( !conductor && ( !pmgr || !pmgr->GetItem( baseColor.c_str() ) ) ) {
+			// "v" or "r g b" literal (whole string) -> a uniform painter.
+			double rgb[3] = { 0, 0, 0 };
+			int consumed = 0;
+			int got = std::sscanf( baseColor.c_str(), "%lf %lf %lf %n", &rgb[0], &rgb[1], &rgb[2], &consumed );
+			if( got != 3 || baseColor.c_str()[consumed] != 0 ) {
+				consumed = 0;
+				got = std::sscanf( baseColor.c_str(), "%lf %n", &rgb[0], &consumed ) == 1 && baseColor.c_str()[consumed] == 0 ? 1 : 0;
+				rgb[1] = rgb[2] = rgb[0];
+			}
+			baseColor = registerName + "::tf_base";
+			if( got == 0 || !job.AddUniformColorPainter( baseColor.c_str(), rgb, "Rec709RGB_Linear" ) ) {
+				write_error( error_message, error_message_size, "Thin-film material's base_color is neither a registered painter nor a colour literal" );
+				return false;
+			}
+		}
+
+		const std::string white = ensure_uniform_color_painter( job, "__rise_blender_thinfilm_white", 1.0 );
+		const std::string black = ensure_uniform_color_painter( job, "__rise_blender_thinfilm_black", 0.0 );
+		if( white.empty() || black.empty() ) {
+			write_error( error_message, error_message_size, "Failed to create thin-film helper painters" );
+			return false;
+		}
+
+		// A metal's colour is carried entirely by its n, k: no diffuse,
+		// untinted specular.  A dielectric keeps Base Color as its
+		// diffuse and Specular Tint as the tint on the film's reflectance.
+		const std::string diffuse = conductor ? black : baseColor;
+		const std::string specular = ( !conductor && material.specular_color_painter_name && material.specular_color_painter_name[0] )
+			? std::string( material.specular_color_painter_name ) : white;
+
+		// Substrate: a real dielectric index (k = 0), or the per-wavelength
+		// metal built above.
+		std::string substrateN, substrateK;
+		if( conductor ) {
+			if( !register_thin_film_metal_substrate( job, registerName,
+			        material.thin_film_metal_f0, material.thin_film_metal_tint, substrateN, substrateK ) ) {
+				write_error( error_message, error_message_size, "Failed to build the thin-film metal substrate" );
+				return false;
+			}
+		} else {
+			if( !( material.thin_film_dielectric_ior > 0.0 ) ) {
+				write_error( error_message, error_message_size, "Thin-film dielectric substrate needs a positive thin_film_dielectric_ior" );
+				return false;
+			}
+			char iorLiteral[64];
+			std::snprintf( iorLiteral, sizeof( iorLiteral ), "%.9g", material.thin_film_dielectric_ior );
+			substrateN = iorLiteral;
+			substrateK = "0";
+		}
+
+		char filmIor[64];
+		std::snprintf( filmIor, sizeof( filmIor ), "%.9g", material.thin_film_ior > 0.0 ? material.thin_film_ior : 1.33 );
+		char filmThickness[64];
+		std::snprintf( filmThickness, sizeof( filmThickness ), "%.9g", material.thin_film_thickness );
+
+		if( !job.AddGGXEmissiveMaterial(
+			registerName.c_str(),
+			diffuse.c_str(),
+			specular.c_str(),
+			alpha.c_str(),
+			alpha.c_str(),
+			substrateN.c_str(),
+			substrateK.c_str(),
+			emissive,
+			material.emissive_scale > 0.0 ? material.emissive_scale : 1.0,
+			"thinfilm",
+			"none",
+			filmIor,
+			"none",
+			filmThickness ) )
+		{
+			write_error( error_message, error_message_size, "Failed to create a thin-film GGX material" );
+			return false;
+		}
+		return true;
 	}
 
 	bool add_pbr_metallic_roughness_material(
@@ -1081,9 +1516,10 @@ namespace
 	)
 	{
 		// AddPBRMetallicRoughnessMaterial bakes emission into the
-		// material itself, so we don't need the Luminaire wrapper
-		// here.  Painter slots default to RISE's documented sentinels
-		// when the bridge passes null: specular_factor="1.0",
+		// material itself -- fine when there's no sheen wrap ahead of
+		// it, so the no-sheen path below still needs no Luminaire
+		// wrapper.  Painter slots default to RISE's documented
+		// sentinels when the bridge passes null: specular_factor="1.0",
 		// specular_color="none" (untinted), anisotropy_factor="0.0",
 		// anisotropy_rotation="0.0".  emissive="none" disables.
 		const char* base_color = material.base_color_painter_name;
@@ -1105,13 +1541,93 @@ namespace
 		const char* anisotropy_rotation = ( material.anisotropy_rotation_painter_name && material.anisotropy_rotation_painter_name[0] )
 			? material.anisotropy_rotation_painter_name : "0.0";
 
-		if( !job.AddPBRMetallicRoughnessMaterial(
-			material.name,
+		// ABI v12 / DL-18 (docs/DEBT_LEDGER.md; source heading
+		// CLOTH_FABRIC_DESIGN.md §15 item 13).  When Principled's Sheen
+		// contributes, the PBR material this function builds is NOT the
+		// final one: it registers under an INTERMEDIATE name and a
+		// `fabric_material` sheen layer wraps it under the requested
+		// `material.name` -- exactly the `pbrRegisterName` mechanism
+		// GLTFSceneImporter.cpp's own KHR_materials_sheen handling uses
+		// (see that file's "Sheen layer, via fabric_material" block).
+		// The anisotropic GGX this call builds (alphaX/alphaY,
+		// tangent_rotation, above) is already baked into that
+		// intermediate base, so a material with BOTH Sheen and
+		// Anisotropic set gets fabric-over-anisotropic-GGX for free --
+		// no separate composition step needed.
+		const bool hasSheen = ( material.sheen_color_painter_name && material.sheen_color_painter_name[0] );
+
+		// ABI v13 / DL-186 (docs/DEBT_LEDGER.md).  Coat contributes when
+		// either the numeric fallback is positive or a texture overrides
+		// it -- the same two-way gate `resolve_material_scalar_slot`'s
+		// callers already use for `sheen_roughness_texture_painter_name`
+		// (a texture can drive the weight above zero even when the
+		// numeric fallback field itself is left at its exporter default).
+		const bool hasCoatTexture = ( material.coat_weight_texture_painter_name && material.coat_weight_texture_painter_name[0] );
+		const bool hasCoat = hasCoatTexture || ( material.coat_weight > 0.0 );
+
+		const bool hasEmission = ( material.emission_painter_name && material.emission_painter_name[0] );
+		const std::string finalName = material.name;
+
+		// Sheen takes priority over coat for THIS particular
+		// intermediate-name choice (the raw PBR base), mirroring
+		// GLTFSceneImporter.cpp's identical `pbrRegisterName` decision
+		// (that file's own comment: "sheen still takes priority over
+		// clearcoat when picking THIS particular intermediate name").
+		// When both contribute, the fabric (sheen) wrap built over THIS
+		// name is in turn wrapped by a `coated_material` layer below
+		// (DL-23, docs/DEBT_LEDGER.md, lifted `coated_material`'s
+		// refusal of a `FabricMaterial` substrate) -- coat is the
+		// OUTERMOST layer when both contribute, matching glTF's own
+		// base -> sheen -> clearcoat order; see `BuildCoatWrap`'s
+		// `hasCoat` call site inside the `hasSheen` branch below.
+		const std::string pbrRegisterName = ( hasSheen || hasCoat ) ? ( finalName + "::pbrbase" ) : finalName;
+
+		// P1 FIX (post-DL-18 review, 2026-09-17).  `FabricMaterial::-
+		// IsSupportedSubstrate` (FabricMaterial.h) unconditionally
+		// refuses any substrate with `GetEmitter() != 0` -- a real
+		// luminaire cannot be re-scattered by a sheen lobe.
+		// `AddPBRMetallicRoughnessMaterial` bakes `emissive` into the
+		// GGXMaterial it builds UNCONDITIONALLY (`Job::-
+		// AddPBRMetallicRoughnessMaterial` -> `RISE_API_-
+		// CreateGGXEmissiveMaterial`), so the ORIGINAL code below baked
+		// emission into `pbrRegisterName` even when that material was
+		// about to become `AddFabricMaterial`'s substrate -- Emission
+		// Strength > 0 together with Sheen Weight > 0 on one Principled
+		// node made `AddFabricMaterial` refuse ("the substrate is a
+		// luminaire") and, because `add_material`'s caller
+		// (`rise_blender_scene_to_job`) aborts the WHOLE job on any one
+		// material's failure, that single material combination failed
+		// the entire render.
+		//
+		// Fix: when sheen contributes, build the PBR base WITHOUT
+		// emission (`pbrEmissive = "none"`) so it is always a legal
+		// fabric substrate, then re-attach the emission at the OUTER
+		// layer via `AddLambertianLuminaireMaterial` once the fabric
+		// wrap exists.  This keeps BOTH the sheen lobe and the
+		// emission, rather than dropping one -- `LambertianLuminaire-
+		// Material` (LambertianLuminaireMaterial.h) is a fully generic
+		// wrapper: it forwards `GetBSDF`/`GetSPF` from whatever
+		// `IMaterial` it is handed and builds its OWN `LambertianEmitter`
+		// -- the IDENTICAL class `GGXMaterial`'s own emissive
+		// constructor uses (GGXMaterial.h) -- so the rendered emission
+		// is physically indistinguishable from baking it directly into
+		// the GGX base; `add_material`'s own non-PBR branch a few lines
+		// below already wraps an arbitrary surface material this exact
+		// way for every emissive non-PBR material shipped to date.
+		const char* pbrEmissive = ( hasSheen || hasCoat ) ? "none" : emissive;
+
+		if( material.thin_film_thickness > 0.0 ) {
+			if( !add_thin_film_ggx_base( job, material, pbrRegisterName, pbrEmissive, error_message, error_message_size ) ) {
+				return false;
+			}
+		}
+		else if( !job.AddPBRMetallicRoughnessMaterial(
+			pbrRegisterName.c_str(),
 			base_color,
 			metallic,
 			roughness,
 			1.5,                              // ior — preserved for API stability, ignored
-			emissive,
+			pbrEmissive,
 			material.emissive_scale > 0.0 ? material.emissive_scale : 1.0,
 			specular_factor,
 			specular_color,
@@ -1121,6 +1637,276 @@ namespace
 			write_error( error_message, error_message_size, "Failed to create a PBR metallic-roughness material" );
 			return false;
 		}
+
+		if( !hasSheen && !hasCoat ) {
+			return true;
+		}
+
+		// Shared coat-wrap builder (DL-23 follow-up, docs/DEBT_LEDGER.md /
+		// docs/IMPROVEMENTS.md "Clearcoat over `fabric_material`"):
+		// `CoatedMaterial::IsSupportedSubstrate` now accepts a
+		// `FabricMaterial`, so this is reused both when coat wraps the
+		// bare PBR base directly (hasCoat && !hasSheen, below) and when
+		// it wraps the sheen's OWN `fabric_material` result (hasCoat &&
+		// hasSheen, in the `hasSheen` branch below) -- matching glTF's
+		// identical base -> sheen -> clearcoat layer order
+		// (`GLTFSceneImporter.cpp`'s own `BuildClearcoatWrap` lambda is
+		// the C++ importer's twin of this one).  `coat_roughness` arrives
+		// as Blender's PERCEPTUAL roughness [0,1]; `coated_material`'s
+		// own `coat_roughness` slot is a GGX alpha, so it is SQUARED here
+		// -- the identical conversion GLTFSceneImporter.cpp applies to
+		// `clearcoat_roughness_factor` (that file's own comment:
+		// "passing the perceptual value straight through would silently
+		// render a coat about sqrt too rough").  Applied to the NUMERIC
+		// fallback here; the TEXTURE-driven branch needs the IDENTICAL
+		// per-texel squaring, so `square=true` is passed to
+		// `resolve_material_scalar_slot` below rather than assuming (as
+		// an earlier revision of this comment wrongly did) that a bound
+		// texture "already encodes the desired alpha directly" -- review
+		// found that assumption false (`CoatedBRDF::GetCoatRoughness()`
+		// read alpha 0.25 on the numeric path vs 0.5 on the texture path
+		// for the SAME authored value 0.5, a 2x divergence) and the
+		// review is what added the `square` parameter.
+		// `sheen_roughness_texture_painter_name` (below, in the `hasSheen`
+		// branch) is a genuinely DIFFERENT case, not a counter-example:
+		// Charlie alpha is never squared from a perceptual value on
+		// EITHER its numeric or texture path, so `square=false` (the
+		// default) there is correct, not merely unaudited.
+		auto BuildCoatWrap = [&]( const std::string& coatOutputName, const std::string& substrateName ) -> bool {
+			char weightLiteral[64];
+			std::snprintf( weightLiteral, sizeof( weightLiteral ), "%.9g", material.coat_weight );
+			const std::string coatWeight = resolve_material_scalar_slot(
+				job, material.coat_weight_texture_painter_name, weightLiteral );
+
+			const double coatRoughSq = material.coat_roughness * material.coat_roughness;
+			char roughLiteral[64];
+			std::snprintf( roughLiteral, sizeof( roughLiteral ), "%.9g", coatRoughSq );
+			const std::string coatRoughness = resolve_material_scalar_slot(
+				job, material.coat_roughness_texture_painter_name, roughLiteral, /*square*/ true );
+
+			char iorLiteral[64];
+			std::snprintf( iorLiteral, sizeof( iorLiteral ), "%.9g",
+				material.coat_ior > 0.0 ? material.coat_ior : 1.5 );
+
+			const char* coatTint = ( material.coat_tint_painter_name && material.coat_tint_painter_name[0] )
+				? material.coat_tint_painter_name : "none";
+
+			// ABI v14 / DL-192 (docs/DEBT_LEDGER.md): Blender's Coat
+			// Normal socket -- an already-registered COLOUR painter (a
+			// Normal Map node, textured) applied ONLY to the coat's own
+			// GGX lobe.  NULL/empty = no perturbation (the pre-v14
+			// default, via `AddCoatedMaterialEx`'s own "none" sentinel).
+			const char* coatNormal = ( material.coat_normal_painter_name && material.coat_normal_painter_name[0] )
+				? material.coat_normal_painter_name : "none";
+
+			return job.AddCoatedMaterialEx(
+				coatOutputName.c_str(),
+				substrateName.c_str(),
+				coatWeight.c_str(),
+				iorLiteral,
+				coatRoughness.c_str(),
+				"0.0",			// coat_thickness -- no Blender Principled equivalent, clear film
+				"0.0",			// coat_absorption -- no Blender Principled equivalent, clear film
+				coatTint,
+				coatNormal,
+				material.coat_normal_scale > 0.0 ? material.coat_normal_scale : 1.0 );
+		};
+
+		// `wrapRegisterName` names whichever layer (sheen, coat, or
+		// coat-over-sheen) is the LAST one built over `pbrRegisterName`
+		// -- the substrate the deferred emission wrapper below re-attaches
+		// over.  Set by whichever branch runs.
+		std::string wrapRegisterName;
+
+		if( hasSheen ) {
+			char roughnessLiteral[64];
+			std::snprintf( roughnessLiteral, sizeof( roughnessLiteral ), "%.9g", material.sheen_roughness );
+			const std::string sheenRoughness = resolve_material_scalar_slot(
+				job, material.sheen_roughness_texture_painter_name, roughnessLiteral );
+
+			// The fabric (sheen) wrap's register name.  When coat ALSO
+			// contributes, the fabric result feeds a `coated_material`
+			// wrap below as ITS substrate, so the fabric layer is NEVER
+			// `finalName` in that case, regardless of whether emission
+			// also contributes.  Otherwise unchanged from before: an
+			// intermediate name when emission contributes (a
+			// `LambertianLuminaireMaterial` layer re-attaches it under
+			// `finalName`, see below), or `finalName` directly.
+			const std::string fabricRegisterName =
+				hasCoat     ? ( finalName + "::sheenbase_undercoat" ) :
+				hasEmission ? ( finalName + "::sheenbase" ) :
+				              finalName;
+
+			// `fabric` = "custom" (no preset seeding -- Blender's
+			// Principled Sheen carries no fabric-type concept, matching
+			// GLTFSceneImporter.cpp's identical choice for
+			// KHR_materials_sheen) and `weave_rotation` = "0.0"
+			// (Blender's Sheen model has no weave-direction concept
+			// either; the anisotropic-GGX case above already carries
+			// its own `tangent_rotation`).
+			if( !job.AddFabricMaterial(
+				fabricRegisterName.c_str(),
+				"custom",
+				pbrRegisterName.c_str(),
+				material.sheen_color_painter_name,
+				sheenRoughness.c_str(),
+				"0.0" ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create a fabric (sheen) material wrap" );
+				return false;
+			}
+			wrapRegisterName = fabricRegisterName;
+
+			// ----- Coat OVER sheen, via coated_material -----
+			// LAYERING DECISION (DL-186, docs/BLENDER_MATERIAL_-
+			// TRANSLATION.md "Coat and Subsurface"), UPDATED (DL-23
+			// follow-up): glTF's own KHR_materials_clearcoat +
+			// KHR_materials_sheen combination (GLTFSceneImporter.cpp) used
+			// to skip clearcoat and keep sheen because `coated_material`'s
+			// substrate allowlist did not accept a `fabric_material`
+			// result -- that blocker was lifted by DL-23
+			// (docs/DEBT_LEDGER.md, closed 2026-09-14), and both importers'
+			// wiring have since been updated to compose the coat over the
+			// sheen result instead of dropping it.
+			if( hasCoat ) {
+				const std::string coatOverSheenName = hasEmission ? ( finalName + "::coatoversheenbase" ) : finalName;
+				if( !BuildCoatWrap( coatOverSheenName, fabricRegisterName ) ) {
+					write_error( error_message, error_message_size, "Failed to create a coated material wrap over the fabric (sheen) material" );
+					return false;
+				}
+				wrapRegisterName = coatOverSheenName;
+			}
+		} else {
+			// hasCoat && !hasSheen: coat wraps the PBR base directly.
+			const std::string coatRegisterName = hasEmission ? ( finalName + "::coatbase" ) : finalName;
+
+			if( !BuildCoatWrap( coatRegisterName, pbrRegisterName ) ) {
+				write_error( error_message, error_message_size, "Failed to create a coated material wrap" );
+				return false;
+			}
+			wrapRegisterName = coatRegisterName;
+		}
+
+		if( !hasEmission ) {
+			return true;
+		}
+
+		// Re-attach the emission the PBR base above deliberately did
+		// NOT bake in, now that the sheen/coat wrap is a legal
+		// (non-emissive) IMaterial to layer it over.
+		if( !job.AddLambertianLuminaireMaterial(
+			finalName.c_str(),
+			material.emission_painter_name,
+			wrapRegisterName.c_str(),
+			material.emissive_scale > 0.0 ? material.emissive_scale : 1.0 ) )
+		{
+			write_error( error_message, error_message_size, "Failed to create an emissive wrapper over the sheen/coat material" );
+			return false;
+		}
+		return true;
+	}
+
+	//! ABI v13 / DL-186.  Adds a `randomwalk_sss_material` from
+	//! Principled BSDF Subsurface inputs, ALREADY CONVERTED to
+	//! sigma_a/sigma_s inline literals by exporter.py (see the field
+	//! comments on `rise_blender_material` above).  A separate model
+	//! from `add_pbr_metallic_roughness_material` -- it REPLACES the
+	//! surface entirely rather than wrapping a PBR base, matching
+	//! Blender's own diffuse/SSS blend-by-weight behaviour (mirrors
+	//! this file's pre-existing PBR-vs-DIELECTRIC mutual exclusivity
+	//! for Transmission).  Emission still layers on top via the same
+	//! generic `AddLambertianLuminaireMaterial` wrapper every other
+	//! emissive branch in this file uses.
+	bool add_randomwalk_sss_material(
+		RISE::IJobPriv& job,
+		const rise_blender_material& material,
+		char* error_message,
+		const size_t error_message_size
+	)
+	{
+		if( !material.subsurface_absorption || !material.subsurface_absorption[0] ||
+		    !material.subsurface_scattering || !material.subsurface_scattering[0] ) {
+			write_error( error_message, error_message_size,
+				"Random-walk SSS material missing subsurface_absorption/subsurface_scattering" );
+			return false;
+		}
+
+		const bool hasEmission = ( material.emission_painter_name && material.emission_painter_name[0] );
+		const std::string finalName = material.name;
+		const std::string sssRegisterName = hasEmission ? ( finalName + "::sssbase" ) : finalName;
+
+		char iorLiteral[64];
+		std::snprintf( iorLiteral, sizeof( iorLiteral ), "%.9g",
+			material.subsurface_ior > 0.0 ? material.subsurface_ior : 1.4 );
+		char gLiteral[64];
+		std::snprintf( gLiteral, sizeof( gLiteral ), "%.9g", material.subsurface_g );
+		char roughLiteral[64];
+		std::snprintf( roughLiteral, sizeof( roughLiteral ), "%.9g", material.subsurface_roughness );
+
+		if( !job.AddRandomWalkSSSMaterial(
+			sssRegisterName.c_str(),
+			iorLiteral,
+			material.subsurface_absorption,
+			material.subsurface_scattering,
+			gLiteral,
+			roughLiteral,
+			"64" ) )		// max_bounces -- matches scenes/Tests/SubsurfaceScattering's own convention
+		{
+			write_error( error_message, error_message_size, "Failed to create a random-walk SSS material" );
+			return false;
+		}
+
+		if( !hasEmission ) {
+			return true;
+		}
+
+		if( !job.AddLambertianLuminaireMaterial(
+			finalName.c_str(),
+			material.emission_painter_name,
+			sssRegisterName.c_str(),
+			material.emissive_scale > 0.0 ? material.emissive_scale : 1.0 ) )
+		{
+			write_error( error_message, error_message_size, "Failed to create an emissive wrapper over the random-walk SSS material" );
+			return false;
+		}
+		return true;
+	}
+
+    // ABI v14 Alpha socket payload now binds material intersection coverage.
+    // A linked Alpha texture replaces the numeric socket value, matching Blender.
+    // The historical helper name and exported shader name remain ABI-compatible;
+    // no alpha shader operation is installed on top of the material property.
+	bool wire_alpha_shader_for_material(
+		RISE::IJobPriv& job,
+		const rise_blender_material& material,
+		char* error_message,
+		const size_t error_message_size
+	)
+	{
+		if( material.alpha_mode == RISE_BLENDER_ALPHA_OPAQUE ) {
+			return true;
+		}
+
+		const std::string matName = material.name;
+        char alphaLiteral[32];
+        std::snprintf(alphaLiteral, sizeof(alphaLiteral), "%.17g", double(material.alpha));
+        std::string alpha = alphaLiteral;
+        if (material.alpha_texture_painter_name && material.alpha_texture_painter_name[0]) {
+            alpha = matName + ".alpha";
+            if (!job.AddPainterChannelScalarPainter(alpha.c_str(), material.alpha_texture_painter_name, 3, 1, 0)) {
+                write_error(error_message, error_message_size, "Failed to bind scalar alpha texture");
+                return false;
+            }
+        }
+        if (!job.SetMaterialAlpha(matName.c_str(), alpha.c_str(),
+            material.alpha_mode == RISE_BLENDER_ALPHA_CLIP ? "mask" : "blend", material.alpha_threshold)) return false;
+        // ABI-v14 exporters may still bind this name. Keep its ordinary
+        // shading response, with coverage applied only by traversal.
+        const char* ops[] = {"DefaultEmission", "DefaultDirectLighting"};
+        const unsigned int lo[] = {0,0}, hi[] = {100,100};
+        const char operations[] = {'+','+'};
+        if (!job.AddAdvancedShader((matName + ".shader").c_str(), 2, ops, lo, hi, operations)) return false;
+
 		return true;
 	}
 
@@ -1136,25 +1922,40 @@ namespace
 			return false;
 		}
 
+		bool base_ok = false;
+
 		// PBR-MR handles its own emission inside the factory — no
 		// Luminaire wrapper needed.
 		if( material.model == RISE_BLENDER_MATERIAL_PBR_METALLIC_ROUGHNESS ) {
-			return add_pbr_metallic_roughness_material( job, material, error_message, error_message_size );
+			base_ok = add_pbr_metallic_roughness_material( job, material, error_message, error_message_size );
 		}
-
-		if( material.emission_painter_name && material.emission_painter_name[0] ) {
+		// ABI v13 / DL-186: random-walk SSS handles its own emission
+		// wrap internally too (mirrors the PBR-MR branch just above).
+		else if( material.model == RISE_BLENDER_MATERIAL_RANDOMWALK_SSS ) {
+			base_ok = add_randomwalk_sss_material( job, material, error_message, error_message_size );
+		}
+		else if( material.emission_painter_name && material.emission_painter_name[0] ) {
 			const std::string surface_name = std::string( material.name ) + "::surface";
 			if( !create_surface_material( job, material, surface_name.c_str(), error_message, error_message_size ) ) {
-				return false;
-			}
-			if( !job.AddLambertianLuminaireMaterial( material.name, material.emission_painter_name, surface_name.c_str(), 1.0 ) ) {
+				base_ok = false;
+			} else if( !job.AddLambertianLuminaireMaterial( material.name, material.emission_painter_name, surface_name.c_str(), 1.0 ) ) {
 				write_error( error_message, error_message_size, "Failed to create an emissive material wrapper" );
-				return false;
+				base_ok = false;
+			} else {
+				base_ok = true;
 			}
-			return true;
+		}
+		else {
+			base_ok = create_surface_material( job, material, material.name, error_message, error_message_size );
 		}
 
-		return create_surface_material( job, material, material.name, error_message, error_message_size );
+		if( !base_ok ) {
+			return false;
+		}
+
+		// ABI v14 / DL-214: install shared scalar material coverage over
+		// whichever branch above just registered `material.name`.
+		return wire_alpha_shader_for_material( job, material, error_message, error_message_size );
 	}
 
 	bool add_mesh(
@@ -1168,7 +1969,11 @@ namespace
 			return false;
 		}
 
-		if( !job.AddIndexedTriangleMeshGeometry(
+        if (mesh.tangent_is_shader_direction > 1) {
+            write_error(error_message,error_message_size,"Invalid tangent semantic"); return false;
+        }
+        const bool added = mesh.tangent_is_shader_direction
+            ? job.AddIndexedTriangleMeshGeometryWithShaderDirections(
 			mesh.name,
 			mesh.vertices,
 			mesh.normals,
@@ -1181,7 +1986,22 @@ namespace
 			mesh.num_uvs,
 			mesh.num_triangles,
 			mesh.double_sided != 0,
-			mesh.use_face_normals != 0 ) )
+			mesh.use_face_normals != 0, mesh.tangent_attribute, mesh.num_tangents )
+            : job.AddIndexedTriangleMeshGeometryWithTangents(
+			mesh.name,
+			mesh.vertices,
+			mesh.normals,
+			mesh.uvs,
+			mesh.vertex_indices,
+			mesh.uv_indices,
+			mesh.normal_indices,
+			mesh.num_vertices,
+			mesh.num_normals,
+			mesh.num_uvs,
+			mesh.num_triangles,
+			mesh.double_sided != 0,
+			mesh.use_face_normals != 0, mesh.tangent_attribute, mesh.num_tangents );
+        if (!added)
 		{
 			write_error( error_message, error_message_size, "Failed to add indexed triangle mesh geometry to the RISE job" );
 			return false;
@@ -1207,12 +2027,19 @@ namespace
 
 		RISE::RadianceMapConfig object_radiance_map;
 
+		// ABI v14 / DL-193: an object-authored shader override (an
+		// already-registered `advanced_shader`, typically the alpha
+		// ordinary compatibility chain built for its bound
+		// material) -- NULL/empty (the pre-v14 default) keeps the
+		// renderer's default per-rasterizer shader, exactly as before.
+		const char* shaderName = ( object.shader_name && object.shader_name[0] ) ? object.shader_name : 0;
+
 		if( !job.AddObject(
 			object.name,
 			object.geometry_name,
 			object.material_name,
 			object.modifier_name,
-			0,
+			shaderName,
 			object_radiance_map,
 			zero,
 			zero,
@@ -1237,6 +2064,590 @@ namespace
 		return true;
 	}
 
+	//
+	// Hair / fur (ABI v9; the texture-driven scalar slots are v10).  See
+	// rise_blender_hair_material / rise_blender_hair_object in the
+	// header for the struct contract, and
+	// docs/BLENDER_MATERIAL_TRANSLATION.md's hair section for the
+	// Blender-side translation these two consume.
+	//
+	// EVERYTHING IN THIS BLOCK IS NON-FATAL.  Unlike add_material /
+	// add_mesh / add_object above -- which write into `error_message`
+	// and abort the whole render -- a hair failure records a warning
+	// and skips exactly one groom.  A `.hair` path that went stale
+	// between the export and the render (a cleared temp dir, a
+	// half-written file) is a routine, recoverable condition; killing a
+	// frame the other 400 objects rendered fine over it would be the
+	// wrong trade.  The warnings reach the artist through
+	// rise_blender_render_result.warnings.
+	//
+	// The v10 texture-scalar slots degrade one step FURTHER than that:
+	// an unresolvable `*_texture_painter_name` does not even skip the
+	// material, it falls back to that slot's numeric field and warns.
+	// A missing roughness map is a reason to render the groom at its
+	// constant roughness, not a reason to lose the groom.
+	//
+
+	// Blender-parity rescale for the two melanin concentrations.
+	//
+	// Cycles and RISE both take (eumelanin, pheomelanin) CONCENTRATIONS
+	// and multiply them by a per-pigment sigma_a triple, but the triples
+	// differ (docs/BLENDER_MATERIAL_TRANSLATION.md, "Units disclosure"):
+	//
+	//     pigment      Cycles                  RISE (OMLC, G-anchored)
+	//     eumelanin    (0.506, 0.841, 1.653)   (0.518, 0.697, 1.293)
+	//     pheomelanin  (0.343, 0.733, 1.924)   (0.232, 0.400, 1.067)
+	//
+	// At equal concentration RISE absorbs ~17 % less green for eumelanin
+	// and ~45 % less for pheomelanin, so the same Melanin / Melanin
+	// Redness sliders read lighter and less saturated here than in a
+	// Cycles reference.  These two ratios are the green-channel
+	// correction that puts the two renderers back on top of each other.
+	//
+	// GREEN IS THE ANCHOR, and that is the whole approximation: one
+	// scalar per pigment cannot match all three channels (the R and B
+	// ratios differ -- eumelanin R is 0.977, B is 1.278), so the rescale
+	// restores luminance-level parity, not a per-channel match.  Green
+	// carries most of the luminance and is the channel RISE's own
+	// triples are anchored on, which is why it is the one chosen.
+	//
+	// DEFAULT ON, decided in this slice (P2-D): the add-on's job is to
+	// render the artist's Blender scene, and an artist who dialled a
+	// groom in against Cycles' viewport expects that groom back.  The
+	// physical-anchoring alternative would silently re-light their
+	// asset.  Per-material and switchable: clear
+	// `apply_melanin_parity_rescale` to get RISE's own OMLC-anchored
+	// absorption instead.  A future .RISEscene export path would NOT
+	// apply it -- a scene file is authored in RISE's own units.
+	const double kEumelaninBlenderParityScale   = 0.841 / 0.697;	// ~1.2066
+	const double kPheomelaninBlenderParityScale = 0.733 / 0.400;	// ~1.8325
+
+	void record_warning( std::vector<std::string>& warnings, const std::string& message )
+	{
+		warnings.push_back( message );
+		// Also into the RISE log, so a headless / non-Blender caller
+		// that ignores the result struct's warnings still sees it.
+		RISE::GlobalLog()->PrintEx( RISE::eLog_Warning, "%s", message.c_str() );
+	}
+
+	std::string quoted_name( const char* name )
+	{
+		return std::string( "'" ) + ( name && name[0] ? name : "(unnamed)" ) + "'";
+	}
+
+	// Format a float as an inline numeric literal for one of
+	// `AddHairMaterial`'s IScalarPainter slots.  %.9g round-trips every
+	// float exactly, and Job's own parser (ResolveScalarPainterArg)
+	// reads it back with strtod.
+	std::string scalar_literal( const float value )
+	{
+		char buffer[64];
+		std::snprintf( buffer, sizeof( buffer ), "%.9g", double( value ) );
+		return std::string( buffer );
+	}
+
+	std::string rgb_literal( const float value[3] )
+	{
+		char buffer[192];
+		std::snprintf( buffer, sizeof( buffer ), "%.9g %.9g %.9g",
+			double( value[0] ), double( value[1] ), double( value[2] ) );
+		return std::string( buffer );
+	}
+
+	//! Suffix that turns a colour-painter name into the name of its
+	//! hair-scalar wrapper.  The two live in DIFFERENT managers (an
+	//! `IPainterManager` and an `IScalarPainterManager`), so the suffix
+	//! is not needed to avoid a clash between them -- it is there so
+	//! that the wrapper is unmistakably bridge-private and cannot be
+	//! confused with, or collide with, a scalar painter some other code
+	//! path registered under a plain name.  `::`-qualified derived names
+	//! are this bridge's existing idiom (`<object>::hairgeom`).  The
+	//! incoming painter name is itself unique -- it came out of the
+	//! exporter's `_unique_name` / painter-registration path and has
+	//! already been accepted by `IPainterManager::AddItem`, which
+	//! refuses duplicates -- so the derived name is unique too.
+	const char* const kHairScalarWrapperSuffix = "::hairscalar";
+
+	//! Resolve one OPTIONAL v10 texture-driven IScalarPainter slot on a
+	//! hair material to the string `IJob::AddHairMaterial` should be
+	//! handed for it.
+	//!
+	//! `Job::AddHairMaterial` resolves every scalar slot by looking the
+	//! string up in the job's IScalarPainterManager FIRST and only then
+	//! parsing it as an inline number (Job.cpp's
+	//! `ResolveOrDiagnoseScalar` / `ResolveScalarPainterArg`), so the
+	//! job of this function is to get a suitable `IScalarPainter`
+	//! registered under a name and return that name.
+	//!
+	//! The wrapper is `RISE_API_CreatePainterChannelScalarPainter`
+	//! (`PainterChannelScalarPainter`), NOT the older
+	//! `PainterToScalarAdapter`: it is the general, already-shipped
+	//! "wrap a named colour painter as a named scalar painter" surface
+	//! the scene language's `scalar_painter { painter <name> }` chunk is
+	//! built on (ChunkParserRegistry.cpp, doc 88 P2.1/S3), it supports
+	//! channel selection and an affine remap should this ever need them,
+	//! and it carries the SAME post-colourspace caveat as the adapter.
+	//! CHANNEL R (0), matching both that chunk's default channel and
+	//! `PainterToScalarAdapter`'s fixed channel: the exporter registers
+	//! these maps as non-colour data (`colorspace_is_data=True` ->
+	//! linear), i.e. a single physical value replicated across the
+	//! channels, so R is the value.  scale 1 / bias 0 -- the numeric
+	//! remap the artist wants already lives in the image.
+	//!
+	//! CAVEAT, inherited from the wrapper and worth repeating: the value
+	//! read is POST-colourspace, whatever the source painter was
+	//! registered with.  For the data-linear maps the exporter sends
+	//! that is the texel value verbatim, which is the intent.
+	//!
+	//! NON-FATAL throughout, matching this whole block: an empty field,
+	//! an unresolvable name, or a failure to build/register the wrapper
+	//! all return `fallbackLiteral` (the slot's numeric field, already
+	//! formatted) so the material still registers with its constant
+	//! value.
+	std::string resolve_hair_scalar_slot(
+		RISE::IJobPriv& job,
+		const char* painterName,
+		const char* slotLabel,
+		const std::string& who,
+		const std::string& fallbackLiteral,
+		std::vector<std::string>& warnings
+	)
+	{
+		if( !painterName || !painterName[0] ) {
+			return fallbackLiteral;			// the common case: no texture bound
+		}
+
+		RISE::IPainterManager* pmgr = job.GetPainters();
+		RISE::IScalarPainterManager* smgr = job.GetScalarPainters();
+		RISE::IPainter* source = pmgr ? pmgr->GetItem( painterName ) : 0;
+
+		if( !source || !smgr ) {
+			record_warning( warnings,
+				std::string( "RISE could not bind the texture named '" ) + painterName +
+				"' to hair material " + who + "'s " + slotLabel +
+				"; that one parameter falls back to its constant value." );
+			return fallbackLiteral;
+		}
+
+		const std::string wrapperName = std::string( painterName ) + kHairScalarWrapperSuffix;
+
+		// Two hair materials may legitimately share one texture painter
+		// (a groom split across several Blender materials that all point
+		// at the same roughness map).  The wrapper is fully determined by
+		// the source painter plus the fixed channel/scale/bias, so the
+		// second material reuses the first's rather than failing on
+		// AddItem's duplicate-name refusal.
+		if( !smgr->GetItem( wrapperName.c_str() ) ) {
+			RISE::IScalarPainter* wrapper = 0;
+			RISE::RISE_API_CreatePainterChannelScalarPainter(
+				&wrapper, *source, 0, RISE::Scalar( 1.0 ), RISE::Scalar( 0.0 ) );
+			if( !wrapper ) {
+				record_warning( warnings,
+					std::string( "RISE could not build a scalar view of texture '" ) + painterName +
+					"' for hair material " + who + "'s " + slotLabel +
+					"; that one parameter falls back to its constant value." );
+				return fallbackLiteral;
+			}
+
+			// AddItem takes its OWN reference (GenericManager::AddItem
+			// addrefs), so the local one is released either way -- the
+			// same add-then-release pairing ChunkParserRegistry.cpp's
+			// scalar_painter chunk uses.
+			const bool added = smgr->AddItem( wrapper, wrapperName.c_str() );
+			wrapper->release();
+
+			if( !added ) {
+				record_warning( warnings,
+					std::string( "RISE could not register a scalar view of texture '" ) + painterName +
+					"' for hair material " + who + "'s " + slotLabel +
+					"; that one parameter falls back to its constant value." );
+				return fallbackLiteral;
+			}
+		}
+
+		return wrapperName;
+	}
+
+	//! Suffix for `resolve_material_scalar_slot`'s wrapper, the material
+	//! (non-hair) sibling of `kHairScalarWrapperSuffix` immediately
+	//! above -- same reasoning, different suffix so a colour painter
+	//! shared between a hair material and a `sheen_roughness` texture
+	//! (unusual, but not forbidden) gets two distinct, non-colliding
+	//! IScalarPainter wrappers rather than one mis-scoped one.
+	const char* const kMaterialScalarWrapperSuffix = "::matscalar";
+
+	//! Resolve one OPTIONAL v12/v13 texture-driven IScalarPainter slot on
+	//! a `rise_blender_material` to the string a `Job::Add*Material`
+	//! scalar slot should be handed for it -- the material-path sibling
+	//! of `resolve_hair_scalar_slot` above, same wrapper mechanism
+	//! (`RISE_API_CreatePainterChannelScalarPainter`, channel R, scale 1,
+	//! bias 0), but SILENT on failure rather than warning: unlike hair's
+	//! `warnings` vector (a channel that reaches the artist through
+	//! `RenderResult.warnings`), the surrounding non-hair material path
+	//! has no such channel -- every other optional PBR slot in this file
+	//! (`specular_factor`, `anisotropy_factor`, ...) already degrades to
+	//! its literal default with no warning when unset or unresolvable,
+	//! and this slot matches that existing convention rather than
+	//! inventing a new one.
+	//!
+	//! `square` (default false, ABI v13 / DL-186 review P1): when true,
+	//! the returned scalar painter reports `channelR(u,v)^2`, not the
+	//! raw channel value -- for slots whose NUMERIC fallback is a
+	//! PERCEPTUAL roughness the caller SQUARES into a GGX alpha before
+	//! handing it here (`coat_roughness`), so the texture-driven branch
+	//! must apply the identical per-texel conversion or a textured coat
+	//! renders at up to 2x the intended alpha wherever the numeric and
+	//! textured paths would otherwise agree (caught by review: reading
+	//! back `CoatedBRDF::GetCoatRoughness()` for the authored value 0.5
+	//! measured numeric alpha 0.25 against textured alpha 0.5 -- the
+	//! square was silently skipped on the texture path only).  Squaring
+	//! is layered onto the SAME shared channel-view wrapper (so two
+	//! slots binding one texture, one squared and one not -- unusual,
+	//! not forbidden -- each get their own correct result) via a
+	//! `RISE_API_CreateMultiplyScalarPainter(view, view)` self-product,
+	//! registered under a further-derived `::sq` name and cached the
+	//! same way.
+	std::string resolve_material_scalar_slot(
+		RISE::IJobPriv& job,
+		const char* painterName,
+		const std::string& fallbackLiteral,
+		const bool square
+	)
+	{
+		if( !painterName || !painterName[0] ) {
+			return fallbackLiteral;			// the common case: no texture bound
+		}
+
+		RISE::IPainterManager* pmgr = job.GetPainters();
+		RISE::IScalarPainterManager* smgr = job.GetScalarPainters();
+		RISE::IPainter* source = pmgr ? pmgr->GetItem( painterName ) : 0;
+
+		if( !source || !smgr ) {
+			return fallbackLiteral;
+		}
+
+		const std::string wrapperName = std::string( painterName ) + kMaterialScalarWrapperSuffix;
+
+		// Two materials may legitimately share one texture painter (the
+		// same roughness map on several fabric materials) -- reuse the
+		// existing wrapper rather than failing on AddItem's duplicate-name
+		// refusal, matching `resolve_hair_scalar_slot`'s own reuse rule.
+		if( !smgr->GetItem( wrapperName.c_str() ) ) {
+			RISE::IScalarPainter* wrapper = 0;
+			RISE::RISE_API_CreatePainterChannelScalarPainter(
+				&wrapper, *source, 0, RISE::Scalar( 1.0 ), RISE::Scalar( 0.0 ) );
+			if( !wrapper ) {
+				return fallbackLiteral;
+			}
+
+			const bool added = smgr->AddItem( wrapper, wrapperName.c_str() );
+			wrapper->release();
+
+			if( !added ) {
+				return fallbackLiteral;
+			}
+		}
+
+		if( !square ) {
+			return wrapperName;
+		}
+
+		const std::string squaredName = wrapperName + "::sq";
+		if( !smgr->GetItem( squaredName.c_str() ) ) {
+			RISE::IScalarPainter* view = smgr->GetItem( wrapperName.c_str() );
+			if( !view ) {
+				return fallbackLiteral;
+			}
+			RISE::IScalarPainter* squared = 0;
+			RISE::RISE_API_CreateMultiplyScalarPainter( &squared, view, view );
+			if( !squared ) {
+				return fallbackLiteral;
+			}
+
+			const bool added = smgr->AddItem( squared, squaredName.c_str() );
+			squared->release();
+
+			if( !added ) {
+				return fallbackLiteral;
+			}
+		}
+
+		return squaredName;
+	}
+
+	// Pack the accumulated non-fatal warnings into the fixed result
+	// buffer: newline separated, NUL terminated, and truncated with a
+	// visible note rather than silently cut mid-sentence.  Factored out
+	// of rise_blender_render_scene so it is reachable from a test
+	// without driving a whole render.
+	void pack_warnings( const std::vector<std::string>& warnings, char* out, const size_t capacity )
+	{
+		if( !out || capacity == 0 ) {
+			return;
+		}
+
+		std::string joined;
+		for( size_t i = 0; i < warnings.size(); ++i ) {
+			if( !joined.empty() ) {
+				joined += '\n';
+			}
+			joined += warnings[i];
+		}
+
+		const char* truncation_note = "\n(further warnings omitted; see the RISE log)";
+		const size_t note_length = std::strlen( truncation_note );
+		if( joined.size() >= capacity ) {
+			// capacity-1 usable bytes, minus room for the note.  A
+			// buffer too small to hold even the note degrades to a plain
+			// snprintf truncation below.
+			if( capacity > note_length + 1 ) {
+				// Note: this resize() is a byte-count cut and can land
+				// mid-codepoint if a warning contains multi-byte UTF-8
+				// (e.g. a Blender object/material name with non-ASCII
+				// characters) right at the boundary.  Not fixed up here:
+				// the Python side decodes with errors="replace"
+				// (bridge.py's `_decode_bridge_warnings`), which turns a
+				// split sequence into a single U+FFFD instead of raising.
+				joined.resize( capacity - 1 - note_length );
+				joined += truncation_note;
+			}
+		}
+
+		std::snprintf( out, capacity, "%s", joined.c_str() );
+	}
+
+	bool add_hair_material(
+		RISE::IJobPriv& job,
+		const rise_blender_hair_material& material,
+		std::vector<std::string>& warnings
+	)
+	{
+		if( !material.name || !material.name[0] ) {
+			record_warning( warnings, "RISE skipped a hair material with no name." );
+			return false;
+		}
+
+		const std::string who = quoted_name( material.name );
+
+		// Non-finite values would reach AddHairMaterial as the literal
+		// spellings "inf" / "nan", which its resolver rejects at the
+		// string layer with a diagnostic that doesn't name Blender.
+		// Catch them here so the artist gets a message about their
+		// material instead.
+		if( !std::isfinite( material.beta_m ) || !std::isfinite( material.beta_n ) ||
+			!std::isfinite( material.alpha_degrees ) || !std::isfinite( material.ior ) )
+		{
+			record_warning( warnings,
+				"RISE skipped hair material " + who +
+				": one of beta_m / beta_n / alpha / ior is not a finite number." );
+			return false;
+		}
+
+		std::string color       = "none";
+		std::string sigma_a     = "none";
+		std::string eumelanin   = "none";
+		std::string pheomelanin = "none";
+
+		switch( material.tier )
+		{
+		case RISE_BLENDER_HAIR_TIER_MELANIN:
+		{
+			if( !std::isfinite( material.eumelanin ) || !std::isfinite( material.pheomelanin ) ||
+				material.eumelanin < 0.0f || material.pheomelanin < 0.0f )
+			{
+				record_warning( warnings,
+					"RISE skipped hair material " + who +
+					": eumelanin / pheomelanin must be finite and non-negative concentrations." );
+				return false;
+			}
+
+			double eu = double( material.eumelanin );
+			double ph = double( material.pheomelanin );
+			if( material.apply_melanin_parity_rescale ) {
+				eu *= kEumelaninBlenderParityScale;
+				ph *= kPheomelaninBlenderParityScale;
+			}
+			eumelanin   = scalar_literal( float( eu ) );
+			pheomelanin = scalar_literal( float( ph ) );
+			break;
+		}
+
+		case RISE_BLENDER_HAIR_TIER_SIGMA_A:
+		{
+			if( !std::isfinite( material.sigma_a[0] ) || !std::isfinite( material.sigma_a[1] ) ||
+				!std::isfinite( material.sigma_a[2] ) )
+			{
+				record_warning( warnings,
+					"RISE skipped hair material " + who + ": sigma_a is not a finite RGB triple." );
+				return false;
+			}
+			if( material.sigma_a[0] < 0.0f || material.sigma_a[1] < 0.0f || material.sigma_a[2] < 0.0f )
+			{
+				record_warning( warnings,
+					"RISE skipped hair material " + who +
+					": sigma_a must be non-negative absorption coefficients (a negative value would amplify energy)." );
+				return false;
+			}
+			sigma_a = rgb_literal( material.sigma_a );
+			break;
+		}
+
+		case RISE_BLENDER_HAIR_TIER_COLOR:
+		{
+			if( !material.color_painter_name || !material.color_painter_name[0] ) {
+				record_warning( warnings,
+					"RISE skipped hair material " + who +
+					": the colour tier is selected but no colour painter is bound." );
+				return false;
+			}
+			color = material.color_painter_name;
+			break;
+		}
+
+		default:
+			record_warning( warnings,
+				"RISE skipped hair material " + who + ": unrecognised colour tier." );
+			return false;
+		}
+
+		// v10: three of the shared scalar slots may be driven by a
+		// texture instead of a number.  Each resolves to a registered
+		// IScalarPainter NAME when a painter is bound and resolvable, and
+		// to the numeric literal otherwise -- including on a name the job
+		// cannot resolve, which warns but does not lose the material.
+		// `alpha_degrees` has no texture form by design (Blender's
+		// `Offset` socket is never texture-sampled by the exporter).
+		const std::string beta_m = resolve_hair_scalar_slot(
+			job, material.beta_m_texture_painter_name, "beta_m (Roughness)",
+			who, scalar_literal( material.beta_m ), warnings );
+		const std::string beta_n = resolve_hair_scalar_slot(
+			job, material.beta_n_texture_painter_name, "beta_n (Radial Roughness)",
+			who, scalar_literal( material.beta_n ), warnings );
+		const std::string alpha  = scalar_literal( material.alpha_degrees );
+		const std::string ior    = resolve_hair_scalar_slot(
+			job, material.ior_texture_painter_name, "ior (IOR)",
+			who, scalar_literal( material.ior ), warnings );
+
+		if( !job.AddHairMaterial(
+			material.name,
+			color.c_str(),
+			sigma_a.c_str(),
+			eumelanin.c_str(),
+			pheomelanin.c_str(),
+			beta_m.c_str(),
+			beta_n.c_str(),
+			alpha.c_str(),
+			ior.c_str() ) )
+		{
+			// AddHairMaterial logged the specific reason (unknown
+			// painter, tier-count violation, unparseable literal).
+			record_warning( warnings,
+				"RISE could not create hair material " + who +
+				"; the groom(s) using it will not render (see the RISE log for the reason)." );
+			return false;
+		}
+
+		return true;
+	}
+
+	bool add_hair_object(
+		RISE::IJobPriv& job,
+		const rise_blender_hair_object& object,
+		std::vector<std::string>& warnings
+	)
+	{
+		if( !object.name || !object.name[0] ) {
+			record_warning( warnings, "RISE skipped a hair object with no name." );
+			return false;
+		}
+
+		const std::string who = quoted_name( object.name );
+
+		if( !object.file_path || !object.file_path[0] ) {
+			record_warning( warnings, "RISE skipped hair object " + who + ": no .hair file path." );
+			return false;
+		}
+
+		if( !object.material_name || !object.material_name[0] ) {
+			record_warning( warnings, "RISE skipped hair object " + who + ": no hair material bound." );
+			return false;
+		}
+
+		if( !std::isfinite( object.width_root_scale ) || object.width_root_scale <= 0.0f ||
+			!std::isfinite( object.width_tip_scale ) || object.width_tip_scale <= 0.0f )
+		{
+			record_warning( warnings,
+				"RISE skipped hair object " + who +
+				": the width multipliers must be finite and greater than zero." );
+			return false;
+		}
+
+		// Check the material BEFORE importing the file.  Two reasons:
+		// a groom whose material failed cannot be placed anyway, and a
+		// production `.hair` file is megabytes -- there is no sense
+		// paying that read to then fail at AddObject and leave an
+		// orphaned geometry registered under a name nothing references.
+		if( !job.GetMaterials() || !job.GetMaterials()->GetItem( object.material_name ) ) {
+			record_warning( warnings,
+				"RISE skipped hair object " + who + ": its hair material '" +
+				object.material_name + "' was not created (see the earlier warning for why)." );
+			return false;
+		}
+
+		// The geometry is an internal registration, one per groom -- the
+		// ABI carries no geometry name because a `.hair` file is written
+		// per Curves object by the exporter, so there is nothing to
+		// share.  Suffixed rather than reusing the object's own name
+		// because objects and geometries live in different managers but
+		// the same author-visible namespace in diagnostics.
+		const std::string geometry_name = std::string( object.name ) + "::hairgeom";
+
+		RISE::HairFileGroomDescriptor descriptor;
+		descriptor.file = object.file_path;
+		descriptor.widthRootScale = double( object.width_root_scale );
+		descriptor.widthTipScale = double( object.width_tip_scale );
+
+		if( !job.AddHairGeometryFromFile( geometry_name.c_str(), descriptor ) ) {
+			// HairFileLoader logged the specific reason: missing file,
+			// bad magic, truncated arrays, counts over its caps, every
+			// strand rejected.
+			record_warning( warnings,
+				"RISE could not import the .hair file for " + who + " ('" + object.file_path +
+				"'); that groom will not render (see the RISE log for the reason)." );
+			return false;
+		}
+
+		// Bind through the SAME object path a mesh takes -- transform
+		// convention, visibility and shadow flags included -- rather
+		// than a parallel implementation that could drift from it.
+		rise_blender_object bound;
+		std::memset( &bound, 0, sizeof( bound ) );
+		bound.name = object.name;
+		bound.geometry_name = geometry_name.c_str();
+		bound.material_name = object.material_name;
+		std::memcpy( bound.transform, object.transform, sizeof( bound.transform ) );
+		bound.casts_shadows = object.casts_shadows;
+		bound.receives_shadows = object.receives_shadows;
+		bound.visible = object.visible;
+		bound.modifier_name = 0;
+		bound.interior_medium_name = 0;
+
+		char object_error[512];
+		object_error[0] = 0;
+		if( !add_object( job, bound, object_error, sizeof( object_error ) ) ) {
+			// The geometry above registered successfully; add_object
+			// failing (e.g. a duplicate object name) must not leave it
+			// behind under a name nothing references.
+			job.RemoveGeometry( geometry_name.c_str() );
+			record_warning( warnings,
+				"RISE could not place hair object " + who + " (material '" + object.material_name +
+				"'): " + ( object_error[0] ? object_error : "unknown error" ) + "." );
+			return false;
+		}
+
+		return true;
+	}
+
 	bool add_light(
 		RISE::IJobPriv& job,
 		const rise_blender_light& light,
@@ -1249,11 +2660,11 @@ namespace
 			return false;
 		}
 
-		// Blender's light.color is linear Rec.709.  Job::Add*Light
-		// expects sRGB-encoded values (see sRGBPel(srgb)→ROMMRGBPel
-		// conversion in Job.cpp:4772), so we gamma-encode here.
+		// Blender's light.color is linear Rec.709 -- which is exactly
+		// what Job::Add*Light take when handed "Rec709RGB_Linear".
 		double color[3];
-		linear_rgb_to_srgb( light.color, color );
+		blender_light_color( light.color, color );
+		const char* const kLinear = "Rec709RGB_Linear";
 
 		switch( light.type )
 		{
@@ -1261,7 +2672,7 @@ namespace
 		case RISE_BLENDER_LIGHT_AREA:
 		{
 			double position[3] = { light.position[0], light.position[1], light.position[2] };
-			if( !job.AddPointOmniLight( light.name, light.intensity, color, position, false ) ) {
+			if( !job.AddPointOmniLight( light.name, light.intensity, color, kLinear, position, false ) ) {
 				write_error( error_message, error_message_size, "Failed to add a point light" );
 				return false;
 			}
@@ -1279,7 +2690,7 @@ namespace
 			};
 			const double outer_angle = clamp_value<float>( light.spot_size, 0.0f, float( kPi ) );
 			const double inner_angle = outer_angle * ( 1.0 - clamp_value<float>( light.spot_blend, 0.0f, 1.0f ) );
-			if( !job.AddPointSpotLight( light.name, light.intensity, color, focus, inner_angle, outer_angle, position, false ) ) {
+			if( !job.AddPointSpotLight( light.name, light.intensity, color, kLinear, focus, inner_angle, outer_angle, position, false ) ) {
 				write_error( error_message, error_message_size, "Failed to add a spot light" );
 				return false;
 			}
@@ -1289,7 +2700,7 @@ namespace
 		{
 			double direction[3] = { -light.direction[0], -light.direction[1], -light.direction[2] };
 			normalize3( direction );
-			if( !job.AddDirectionalLight( light.name, light.intensity, color, direction ) ) {
+			if( !job.AddDirectionalLight( light.name, light.intensity, color, kLinear, direction ) ) {
 				write_error( error_message, error_message_size, "Failed to add a directional light" );
 				return false;
 			}
@@ -1297,7 +2708,7 @@ namespace
 		}
 		case RISE_BLENDER_LIGHT_AMBIENT:
 		default:
-			if( !job.AddAmbientLight( light.name, light.intensity, color ) ) {
+			if( !job.AddAmbientLight( light.name, light.intensity, color, kLinear ) ) {
 				write_error( error_message, error_message_size, "Failed to add an ambient light" );
 				return false;
 			}
@@ -1647,6 +3058,7 @@ namespace
 		sms_config.useLevenbergMarquardt = settings.sms_use_levenberg_marquardt != 0;
 		sms_config.seedingMode = sms_seeding_mode_from_int( settings.sms_seeding_mode );
 		sms_config.targetBounces = settings.sms_target_bounces;
+		sms_config.extended = settings.sms_extended != 0;
 	}
 
 	void build_path_guiding_config( const rise_blender_render_settings& settings, RISE::PathGuidingConfig& guiding_config )
@@ -2095,6 +3507,7 @@ extern "C" int rise_blender_render_scene(
 		result->rgba = 0;
 		result->width = 0;
 		result->height = 0;
+		result->warnings[0] = 0;
 	}
 
 	if( !scene || !scene->camera || !settings || !result ) {
@@ -2103,149 +3516,200 @@ extern "C" int rise_blender_render_scene(
 	}
 
 	RISE::IJobPriv* job = 0;
-	if( !RISE::RISE_CreateJobPriv( &job ) || !job ) {
-		write_error( error_message, error_message_size, "Failed to create a RISE job" );
-		return 0;
-	}
+	try {
+		if( !RISE::RISE_CreateJobPriv( &job ) || !job ) {
+			write_error( error_message, error_message_size, "Failed to create a RISE job" );
+			return 0;
+		}
 
-	ProgressBridge progress( progress_callback, user_data );
-	MemoryRasterizerOutput raster_output( image_callback, user_data );
-	VolumeCacheGuard volume_cache_guard;
+		ProgressBridge progress( progress_callback, user_data );
+		MemoryRasterizerOutput raster_output( image_callback, user_data );
+		VolumeCacheGuard volume_cache_guard;
+		struct JobCleanup
+		{
+			RISE::IJobPriv*& job;
+			~JobCleanup() { RISE::safe_release( job ); }
+		} cleanup{ job };
+		// Non-fatal diagnostics (ABI v9); DL-193 (docs/DEBT_LEDGER.md) adds
+		// the alpha/integrator-compatibility warning below, alongside the
+		// pre-existing hair-import warnings this vector already carried.
+		std::vector<std::string> warnings;
 
-	job->SetProgress( &progress );
-	// Top-level BVH for the scene's objects.  CLAUDE.md documents the
-	// production default as (leaf=4, depth=32) — same as
-	// `InitializeContainers` installs; we re-call to be explicit and to
-	// keep this on the documented path.  The previous (leaf=100,
-	// depth=8) silently overflowed for any scene with > 25k objects:
-	// 2^8 leaves × 100 objects/leaf = 25,600 max-addressable objects.
-	// Real Blender scenes (Geometry-Nodes scatters, packed grass,
-	// foliage instancing) routinely exceed 80k objects; the overflow
-	// collapsed traversal so that primary rays never found a hit, and
-	// the whole frame rendered as just the world IBL.  See the
-	// lone-monk scene (≈ 87,800 objects) which failed silently under
-	// the old caps.
-	job->SetPrimaryAcceleration( true, false, 4, 32 );
+		job->SetProgress( &progress );
+		// Top-level BVH for the scene's objects.  CLAUDE.md documents the
+		// production default as (leaf=4, depth=32) — same as
+		// `InitializeContainers` installs; we re-call to be explicit and to
+		// keep this on the documented path.  The previous (leaf=100,
+		// depth=8) silently overflowed for any scene with > 25k objects:
+		// 2^8 leaves × 100 objects/leaf = 25,600 max-addressable objects.
+		// Real Blender scenes (Geometry-Nodes scatters, packed grass,
+		// foliage instancing) routinely exceed 80k objects; the overflow
+		// collapsed traversal so that primary rays never found a hit, and
+		// the whole frame rendered as just the world IBL.  See the
+		// lone-monk scene (≈ 87,800 objects) which failed silently under
+		// the old caps.
+		job->SetPrimaryAcceleration( true, false, 4, 32 );
 
-	if( !configure_camera( *job, *scene->camera, error_message, error_message_size ) ) {
-		RISE::safe_release( job );
-		return 0;
-	}
-
-	for( uint32_t i = 0; i < scene->num_painters; ++i ) {
-		if( !add_painter( *job, scene->painters[i], error_message, error_message_size ) ) {
+		if( !configure_camera( *job, *scene->camera, error_message, error_message_size ) ) {
 			RISE::safe_release( job );
 			return 0;
 		}
-	}
 
-	for( uint32_t i = 0; i < scene->num_modifiers; ++i ) {
-		if( !add_modifier( *job, scene->modifiers[i], error_message, error_message_size ) ) {
+		for( uint32_t i = 0; i < scene->num_painters; ++i ) {
+			if( !add_painter( *job, scene->painters[i], error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+		}
+
+		for( uint32_t i = 0; i < scene->num_modifiers; ++i ) {
+			if( !add_modifier( *job, scene->modifiers[i], error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+		}
+
+		// DL-193 (docs/DEBT_LEDGER.md): tracked here, from the SCENE struct
+		// directly rather than from anything `add_material` decides, since
+		// `alpha_mode` is authoritative regardless of which model branch a
+		// material takes.  Consumed after `configure_rasterizer` below.
+		for( uint32_t i = 0; i < scene->num_materials; ++i ) {
+			if( !add_material( *job, scene->materials[i], error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+
+		}
+
+		for( uint32_t i = 0; i < scene->num_meshes; ++i ) {
+			if( !add_mesh( *job, scene->meshes[i], error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+		}
+
+		for( uint32_t i = 0; i < scene->num_objects; ++i ) {
+			if( !add_object( *job, scene->objects[i], error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+		}
+
+		// Hair / fur grooms (ABI v9).  Materials first -- a hair object
+		// names one.  Both loops are non-fatal: a failure skips that groom
+		// and records a warning for the result struct (see the hair block
+		// in the anonymous namespace above for why).
+		for( uint32_t i = 0; i < scene->num_hair_materials; ++i ) {
+			(void)add_hair_material( *job, scene->hair_materials[i], warnings );
+		}
+
+		for( uint32_t i = 0; i < scene->num_hair_objects; ++i ) {
+			(void)add_hair_object( *job, scene->hair_objects[i], warnings );
+		}
+
+		if( !create_and_assign_media( *job, *scene, *settings, volume_cache_guard, error_message, error_message_size ) ) {
 			RISE::safe_release( job );
 			return 0;
 		}
-	}
 
-	for( uint32_t i = 0; i < scene->num_materials; ++i ) {
-		if( !add_material( *job, scene->materials[i], error_message, error_message_size ) ) {
+		for( uint32_t i = 0; i < scene->num_lights; ++i ) {
+			if( !add_light( *job, scene->lights[i], error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+		}
+
+		if( scene->use_world_ambient && scene->world_strength > 1e-6f && color_non_zero( scene->world_color ) ) {
+			rise_blender_light ambient;
+			std::memset( &ambient, 0, sizeof( ambient ) );
+			ambient.name = "rise_blender_world_ambient";
+			ambient.type = RISE_BLENDER_LIGHT_AMBIENT;
+			ambient.color[0] = scene->world_color[0];
+			ambient.color[1] = scene->world_color[1];
+			ambient.color[2] = scene->world_color[2];
+			ambient.intensity = scene->world_strength;
+			if( !add_light( *job, ambient, error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+		}
+
+		if( !configure_shader( *job, *settings, error_message, error_message_size ) ) {
 			RISE::safe_release( job );
 			return 0;
 		}
-	}
 
-	for( uint32_t i = 0; i < scene->num_meshes; ++i ) {
-		if( !add_mesh( *job, scene->meshes[i], error_message, error_message_size ) ) {
+		if( !configure_rasterizer( *job, *settings, *scene, error_message, error_message_size ) ) {
 			RISE::safe_release( job );
 			return 0;
 		}
-	}
 
-	for( uint32_t i = 0; i < scene->num_objects; ++i ) {
-		if( !add_object( *job, scene->objects[i], error_message, error_message_size ) ) {
+
+		if( !job->AddCallbackRasterizerOutput( &raster_output ) ) {
+			write_error( error_message, error_message_size, "Failed to attach the rasterizer callback output" );
 			RISE::safe_release( job );
 			return 0;
 		}
-	}
 
-	if( !create_and_assign_media( *job, *scene, *settings, volume_cache_guard, error_message, error_message_size ) ) {
-		RISE::safe_release( job );
-		return 0;
-	}
-
-	for( uint32_t i = 0; i < scene->num_lights; ++i ) {
-		if( !add_light( *job, scene->lights[i], error_message, error_message_size ) ) {
+		if( !job->Rasterize() ) {
+			if( progress.Aborted() ) {
+				write_error( error_message, error_message_size, "RISE render canceled" );
+			} else {
+				write_error( error_message, error_message_size, "RISE rasterization failed" );
+			}
 			RISE::safe_release( job );
 			return 0;
 		}
-	}
 
-	if( scene->use_world_ambient && scene->world_strength > 1e-6f && color_non_zero( scene->world_color ) ) {
-		rise_blender_light ambient;
-		std::memset( &ambient, 0, sizeof( ambient ) );
-		ambient.name = "rise_blender_world_ambient";
-		ambient.type = RISE_BLENDER_LIGHT_AMBIENT;
-		ambient.color[0] = scene->world_color[0];
-		ambient.color[1] = scene->world_color[1];
-		ambient.color[2] = scene->world_color[2];
-		ambient.intensity = scene->world_strength;
-		if( !add_light( *job, ambient, error_message, error_message_size ) ) {
+		if( !raster_output.CopyToResult( *result ) ) {
+			write_error( error_message, error_message_size, "RISE did not produce an image buffer" );
 			RISE::safe_release( job );
 			return 0;
 		}
-	}
 
-	if( !configure_shader( *job, *settings, error_message, error_message_size ) ) {
-		RISE::safe_release( job );
-		return 0;
-	}
+		// Auto-dispatcher resolution (ABI v8): if the active rasterizer is the
+		// auto_rasterizer, report the concrete integrator it resolved to + the reason
+		// for the Blender UI's "Auto -> X" surfacing.  Queried while the rasterizer is
+		// still alive (before the job is released).
+		// Non-fatal diagnostics (ABI v9).  Populated only on the success
+		// path: a failed render reports through `error_message` instead.
+		// DL-193's own alpha/integrator warning is appended to `warnings`
+		// BELOW (for the Auto case) before `pack_warnings` runs, so the
+		// pack call itself stays at the end of this block, moved past the
+		// auto-dispatcher resolution it now depends on.
+		result->is_auto = 0;
+		result->resolved_integrator[0] = '\0';
+		result->resolve_reason[0] = '\0';
+		{
+			RISE::IRasterizer* active = job->GetRasterizer();
+			if( active && active->IsAutoDispatcher() ) {
+				result->is_auto = 1;
+				std::snprintf( result->resolved_integrator, sizeof( result->resolved_integrator ),
+					"%s", active->ResolvedIntegratorName() );
+				std::snprintf( result->resolve_reason, sizeof( result->resolve_reason ),
+					"%s", active->ResolveReason() );
 
-	if( !configure_rasterizer( *job, *settings, *scene, error_message, error_message_size ) ) {
-		RISE::safe_release( job );
-		return 0;
-	}
 
-	if( !job->AddCallbackRasterizerOutput( &raster_output ) ) {
-		write_error( error_message, error_message_size, "Failed to attach the rasterizer callback output" );
-		RISE::safe_release( job );
-		return 0;
-	}
-
-	if( !job->Rasterize() ) {
-		if( progress.Aborted() ) {
-			write_error( error_message, error_message_size, "RISE render canceled" );
-		} else {
-			write_error( error_message, error_message_size, "RISE rasterization failed" );
+			}
 		}
+
+		pack_warnings( warnings, result->warnings, sizeof( result->warnings ) );
+
 		RISE::safe_release( job );
+		return 1;
+	} catch( const std::exception& failure ) {
+		RISE::safe_release( job );
+		rise_blender_free_render_result( result );
+		result->warnings[0] = 0;
+		write_error( error_message, error_message_size, failure.what() );
+		return 0;
+	} catch( ... ) {
+		RISE::safe_release( job );
+		rise_blender_free_render_result( result );
+		result->warnings[0] = 0;
+		write_error( error_message, error_message_size, "Unexpected error during Blender render" );
 		return 0;
 	}
-
-	if( !raster_output.CopyToResult( *result ) ) {
-		write_error( error_message, error_message_size, "RISE did not produce an image buffer" );
-		RISE::safe_release( job );
-		return 0;
-	}
-
-	// Auto-dispatcher resolution (ABI v8): if the active rasterizer is the
-	// auto_rasterizer, report the concrete integrator it resolved to + the reason
-	// for the Blender UI's "Auto -> X" surfacing.  Queried while the rasterizer is
-	// still alive (before the job is released).
-	result->is_auto = 0;
-	result->resolved_integrator[0] = '\0';
-	result->resolve_reason[0] = '\0';
-	{
-		RISE::IRasterizer* active = job->GetRasterizer();
-		if( active && active->IsAutoDispatcher() ) {
-			result->is_auto = 1;
-			std::snprintf( result->resolved_integrator, sizeof( result->resolved_integrator ),
-				"%s", active->ResolvedIntegratorName() );
-			std::snprintf( result->resolve_reason, sizeof( result->resolve_reason ),
-				"%s", active->ResolveReason() );
-		}
-	}
-
-	RISE::safe_release( job );
-	return 1;
 }
 
 extern "C" void rise_blender_free_render_result( rise_blender_render_result* result )

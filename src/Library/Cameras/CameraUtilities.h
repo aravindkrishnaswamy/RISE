@@ -17,24 +17,281 @@
 
 #include "../Interfaces/ICamera.h"
 #include "../Utilities/Ray.h"
+#include "../Utilities/ISampler.h"
 
 namespace RISE
 {
 	namespace BDPTCameraUtilities
 	{
-		/// Maps a 3D world point to raster coordinates [0,width) x [0,height)
-		/// \return FALSE if the point is behind the camera or outside the image
+		/// Sampler stream reserved for the t==1 camera-aperture sample
+		/// (debt 28) -- for samplers whose streams are unbounded (Sobol,
+		/// Independent).  NOT usable with `PSSMLTSampler`: see the
+		/// `APERTURE_CURRENT_STREAM` policy below and
+		/// `DrawApertureSample`'s contract.
+		///
+		/// The walks are NOT confined to streams 0..48.  Their true
+		/// ranges, read off the code rather than off an old comment:
+		///
+		///   0                                    light source sampling
+		///   1 .. 15                               light-subpath bounces 0..14
+		///   16 .. 46                              eye-subpath bounces 0..30
+		///   139264 .. 141265                      DEEPER light / eye bounces
+		///                                          (DL-286: 1 + d and 16 + d
+		///                                          used to run into each
+		///                                          other; BDPTUtilities::
+		///                                          LightWalkStream /
+		///                                          EyeWalkStream -- under
+		///                                          PSSMLT the deep lanes
+		///                                          are 2049 .. 4050)
+		///   31 .. 46                              SMS (reserved; no
+		///                                          `StartStream` call
+		///                                          in this range today
+		///                                          -- inherited from a
+		///                                          stale SobolSampler.h
+		///                                          comment, kept as a
+		///                                          bound, not a claim
+		///                                          of current use)
+		///   47                                    BDPT strategy select
+		///   kPSSMLTFilmLensApertureStream         MLT film/lens/aperture
+		///                                          under PSSMLTSampler
+		///                                          (DL-08 fix, 2026-09-17;
+		///                                          was the literal 48)
+		///   48 + i, i >= 1                        VCM per-eye-vertex NEE
+		///                                          (i starts at 1; VCM
+		///                                          never itself starts
+		///                                          stream 48; VCM never
+		///                                          drives a PSSMLTSampler
+		///                                          either, so this range
+		///                                          does not interact with
+		///                                          `kPSSMLTFilmLensApertureStream`)
+		///
+		/// Both walk loops saturate their iteration count at 1024
+		/// (`GenerateEyeSubpath` / `GenerateLightSubpath`), and an
+		/// iteration appends at most three vertices (medium entry,
+		/// medium scatter, surface), so the largest stream index VCM's
+		/// NEE can reach is bounded by
+		///     48 + (3 * 1024 + 1)  =  3121,
+		/// and nothing else below the deep walk block goes past 47.
+		/// With `max_volume_bounce` at its 64 default and a typical
+		/// depth of 20 the real maximum is ~116.
+		///
+		/// 3322 is NOT just "comfortably above 3121".  Being above the
+		/// walk streams was the whole argument while
+		/// `SobolSequence::Sample` was padded -- it hashed the dimension
+		/// index, so any distinct stream was a distinct hash seed and
+		/// the constant could be anything large (it was 8192).  DL-81
+		/// gave the sampler a FINITE supply of real Sobol' dimensions,
+		/// and 8192*32 = 262144 wrapped onto dimension 1001 -- stream 31
+		/// slot 9, eye bounce 15, well inside a normal render -- so the
+		/// aperture would have drawn the SAME dimension as that bounce.
+		/// 3322 is the smallest stream above 3121 that placed the
+		/// aperture clear of that.
+		///
+		/// Since DL-81 round 2 the wrap no longer enters the argument
+		/// at all for THIS constant: `DrawApertureSample` draws with
+		/// `Get2D`, and `Get2D` is a padded (0,2)-net pair -- Sobol'
+		/// dimensions 0 and 1 at a sample index permuted per dimension
+		/// group -- keyed by the RAW dimension index, 3322*32 = 106304.
+		/// No table row is read, nothing is reduced modulo the table
+		/// size, and no walk stream can key the same group because none
+		/// reaches stream 3322.  What the constant still has to be is
+		/// ABOVE every walk stream, which is what
+		/// `SobolDimensionBudgetTest` Test F asserts; Test G1 separately
+		/// asserts that no shipped scene drives a WALK stream past the
+		/// end of the dimension table, which is where the wrap would
+		/// still matter (for Get1D draws).
+		///
+		/// Drawing the aperture point from a dedicated stream keeps it
+		/// stratified across pixels under Sobol and, under PSSMLT,
+		/// makes a small mutation move the aperture point continuously
+		/// instead of teleporting it (the same property
+		/// `GenerateRayWithLensSample` exists to give the primary ray).
+		static const int kApertureSamplerStream = 3322;
+
+		/// One past the last stream BELOW the MLT reserved lane that
+		/// BDPTIntegrator's own `StartStream` calls can open WHILE DRIVEN
+		/// BY A `PSSMLTSampler` (i.e. under MLT).  VCM never drives a
+		/// PSSMLTSampler, so its `48 + eye-vertex-index` NEE stream is not
+		/// in this set.  Since DL-286 the walks' lanes under PSSMLT are
+		///   light source sampling:        0
+		///   light walk, iterations 0..14:  1 .. 15   (1 + depth)
+		///   eye walk,   iterations 0..30:  16 .. 46  (16 + depth)
+		///   BDPT (s,t) strategy select:    47
+		///   deeper iterations of both walks: 2049 .. 4050, ABOVE the
+		///     reserved lane (`BDPTUtilities::LightWalkStream` /
+		///     `EyeWalkStream` with `bFixedBudget == false`; checked
+		///     against PSSMLTSampler's 4096 bound there)
+		/// so the reserved lane sits strictly BETWEEN the two ranges.
+		/// Before DL-286 the walks ran contiguously up to 16 + 1023 =
+		/// 1039 (this constant was `kMaxBdptWalkStreamUnderPSSMLT`,
+		/// `16 + 1024`), and the light walk re-opened the eye walk's lanes
+		/// from iteration 15 -- see the DL-286 ledger row.
+		///
+		/// DL-283: the per-event medium distance-sampling blocks
+		/// (`BDPTUtilities::MediumDistanceStream`, streams 8192+) are used
+		/// only by fixed-budget samplers, never by PSSMLTSampler
+		/// (SobolDimensionBudgetTest Test H drives the generators with one
+		/// and asserts it).
+		static const int kBdptShallowWalkStreamEndUnderPSSMLT = 48;
+
+		/// Stream reserved for the MLT film / lens / (debt 28) aperture
+		/// block under `PSSMLTSampler` (DL-08 fix, 2026-09-17).  Used by
+		/// `MLTRasterizer::EvaluateSample` and
+		/// `MLTSpectralRasterizer::EvaluateSampleSpectral` in place of the
+		/// historical literal `48`.
+		///
+		/// Debt 29 / DL-08: `PSSMLTSampler` multiplexes lanes as
+		/// `idx = stream + kNumStreams*sample`.  Stream 48 was NOT a safe
+		/// choice for this block: BDPT's eye walk reaches stream 48
+		/// itself at eye depth 32 (`StabilityConfig::maxVolumeBounce`
+		/// defaults to 64, so ordinary scattering-medium scenes reach that
+		/// depth with no unusual settings), and a chain whose accepted
+		/// path is that deep had its 32nd-bounce scattering direction and
+		/// its film position living in the literal same primary-sample
+		/// slot -- not modular aliasing, an outright integer collision.
+		/// Chosen (DL-08) comfortably above the walks' then-contiguous
+		/// ceiling (1039); since DL-286 the walks' DEEP lanes start just
+		/// above it (2049), so it sits between
+		/// `kBdptShallowWalkStreamEndUnderPSSMLT` and
+		/// `BDPTUtilities::kDeepWalkStreamBaseUnboundedLanes` and can never
+		/// collide with either walk at any depth `PSSMLTSampler`'s own loop
+		/// caps allow (`tests/PSSMLTStreamAliasingTest.cpp` Test C3).  See
+		/// `tests/PSSMLTStreamAliasingTest.cpp` Test F for the red-proof
+		/// and `PSSMLTSampler::kDefaultNumStreams` (2048 -> 4096, DL-08)
+		/// for the paired modulus increase that keeps this a private lane.
+		static const int kPSSMLTFilmLensApertureStream = 2048;
+
+		/// Where `DrawApertureSample` takes its two canonical randoms.
+		enum ApertureStreamPolicy
+		{
+			/// `StartStream( kApertureSamplerStream )` first.  Correct
+			/// for `SobolSampler` / `IndependentSampler`, whose streams
+			/// are unbounded (Sobol's Get2D is padded and keyed by the
+			/// raw dimension index, so a large stream is simply its own
+			/// group -- see `kApertureSamplerStream` -- and Independent
+			/// ignores the stream entirely).
+			APERTURE_DEDICATED_STREAM,
+
+			/// Draw from whatever stream is already active.  This is
+			/// the ONLY correct policy for `PSSMLTSampler`, which
+			/// multiplexes lanes as `idx = stream + kNumStreams*sample`
+			/// with `kNumStreams == PSSMLTSampler::kDefaultNumStreams`
+			/// (4096, DL-08): a stream index >= kNumStreams does not
+			/// get a fresh lane, it ALIASES an existing one.  The MLT
+			/// rasterizers therefore draw the aperture point as a
+			/// further `Get2D` on their own reserved stream
+			/// (`kPSSMLTFilmLensApertureStream`, 2048 -- NOT the literal
+			/// 48 this comment described before DL-08; see that
+			/// constant's own doc for why 48 was unsafe), contiguous
+			/// with the film and lens samples -- but the exact lanes
+			/// depend on which MLT rasterizer is asking:
+			///   `MLTRasterizer` (RGB): film Get2D + lens Get2D leave
+			///     4 lanes consumed, so the aperture Get2D lands at
+			///     sample indices 4 and 5 on the reserved stream.
+			///   `MLTSpectralRasterizer::EvaluateSampleSpectral`:
+			///     film + lens are the same 4 lanes, but it THEN
+			///     pre-consumes `nSpectralSamples` (S) wavelength
+			///     `Get1D`s from the reserved stream before drawing the
+			///     aperture point, so the aperture lanes shift to
+			///     sample indices `4+S` and `5+S` (8 and 9 at the
+			///     default S=4).
+			/// The safety argument is not "the lane depth stays below
+			/// some fixed number" -- it is that lanes on streams
+			/// `0..kNumStreams-1` are partitioned by RESIDUE mod
+			/// `kNumStreams`, and every draw on the reserved stream
+			/// (film, lens, wavelengths, aperture, at any sample index)
+			/// keeps that stream's residue, which no OTHER stream <
+			/// kNumStreams can ever produce.
+			///
+			/// That residue argument only protects streams that STAY
+			/// below `kNumStreams`.  `kPSSMLTFilmLensApertureStream`
+			/// (2048) is chosen outside every lane BDPT's own walks open
+			/// under PSSMLT (0..47, then 2049..4050 for deep iterations
+			/// since DL-286 -- see `kBdptShallowWalkStreamEndUnderPSSMLT`)
+			/// specifically so the eye walk can never reach it at ANY
+			/// depth PSSMLTSampler's own loop caps allow -- unlike the
+			/// historical literal 48, which the eye
+			/// walk reached at eye depth 32
+			/// (`StabilityConfig::maxVolumeBounce` defaults to 64, so
+			/// ordinary scattering-medium scenes reached it with no
+			/// unusual settings).  This was debt 29 / DL-08 in
+			/// docs/RENDERING_INTEGRATORS.md §7 and
+			/// docs/DEBT_LEDGER.md; CLOSED 2026-09-17, see
+			/// docs/DL08_PSSMLT_LANE_LAYOUT.md.
+			APERTURE_CURRENT_STREAM
+		};
+
+		/// DL-294: the raster guard band.  The camera-side projections
+		/// (`Rasterize`, `RasterizeThrough`, `ThinLensCamera::
+		/// RasterFromLensPoint`) do NOT decide which raster points are on
+		/// the film -- the FILM does, in the same pixel convention the
+		/// eye subpaths are sampled in (every rasterizer draws pixel
+		/// (x, row y) at `RasterConvention::PixelToScreen`, ICamera.h,
+		/// and `SplatFilm` and the unfiltered splat fallbacks send a
+		/// splat to the pixel containing it in that convention).  Since
+		/// DL-368 that convention IS the camera's nominal film
+		/// [0, W) x [0, H); the band below stays convention-agnostic.
+		/// Before DL-294 the camera cut at its NOMINAL film while the
+		/// rasterizers sampled half a pixel off it on both axes: the
+		/// eye film was screen x in [-0.5, W - 0.5), y in [0.5, H + 0.5),
+		/// so the camera rejected the strips x in [-0.5, 0) and
+		/// y in [H, H + 0.5) that lie ON it (the strips it accepted in
+		/// their place lie off it and were rightly dropped by the film),
+		/// and a light-traced (t = 1) splat covered (W - 0.5) x (H - 0.5)
+		/// of a W x H film (-6.15 % on a uniformly lit 16 x 16 frame,
+		/// image column 0 and row 0 at half radiance).  The projections
+		/// now reject only points outside this convention-agnostic
+		/// one-pixel band around the nominal film -- wide enough to
+		/// contain the film under any half-pixel convention, narrow
+		/// enough that every caller's integer cast of a rounded raster
+		/// coordinate stays in range.
+		inline bool InRasterGuardBand(
+			const Scalar px, const Scalar py,
+			const Scalar width, const Scalar height )
+		{
+			return px >= Scalar( -1 ) && px < width + Scalar( 1 ) &&
+			       py >= Scalar( -1 ) && py < height + Scalar( 1 );
+		}
+
+		/// Maps a 3D world point to raster coordinates.  The result is
+		/// NOT clipped to the film: see `InRasterGuardBand` (DL-294) --
+		/// the splat film decides membership.
+		/// \return FALSE if the point is behind the camera or outside
+		/// the one-pixel guard band around the nominal [0,width) x
+		/// [0,height) film
 		bool Rasterize(
 			const ICamera& cam,					///< [in] Camera to project through
 			const Point3& worldPoint,				///< [in] 3D world point to project
 			Point2& rasterPoint						///< [out] Resulting raster coordinates
 			);
 
-		/// Camera importance function We for a ray
+		/// Camera importance for the t==1 light-tracing connection.
+		///
+		/// CONTRACT (debt 28): this is NOT the bare PBRT `We`.  It is
+		/// `We * cos(theta) / p_A(camera vertex)` -- the aperture
+		/// cosine and the reciprocal of the aperture-sampling density
+		/// are already folded in -- so that every t==1 site can write
+		///     contribution = beta_light * f * G * Importance
+		/// with G = |cos at the light vertex| / dist^2 and no further
+		/// camera-side factor, for every camera type.
+		///
+		/// For a delta-position camera (pinhole / fisheye) the camera
+		/// vertex is `GetLocation()` and `p_A` is PBRT-v4's unit-area
+		/// fiction (`lensArea = 1` when `lensRadius == 0`), so the fold
+		/// is just the cosine -- which is why the pinhole form carries
+		/// cos^3 where PBRT's raw `We` carries cos^4.  For a thin lens
+		/// the caller MUST have connected to a point drawn by
+		/// `SampleAperture` below, whose density is uniform 1/A_lens;
+		/// A_lens then cancels against the 1/A_lens in the thin-lens
+		/// `We` and the result is the pinhole form again.  Connecting
+		/// to the lens CENTRE and using this value anyway is the debt-28
+		/// defect in reverse: it was the 1/A_lens, uncancelled, that
+		/// inflated BDPT/VCM splats by up to 4e5x.
+		///
 		/// \return The importance value for this ray direction
 		Scalar Importance(
 			const ICamera& cam,					///< [in] Camera
-			const Ray& ray							///< [in] Ray from the camera
+			const Ray& ray							///< [in] Ray TOWARD the scene, originating at the camera vertex
 			);
 
 		/// PDF of generating this ray direction from the camera
@@ -42,6 +299,122 @@ namespace RISE
 		Scalar PdfDirection(
 			const ICamera& cam,					///< [in] Camera
 			const Ray& ray							///< [in] Ray from the camera
+			);
+
+		/// The camera's directional density AS AN MIS INPUT (DL-402).
+		///
+		/// `PdfDirection` is the density of ONE PIXEL's sample, but BDPT
+		/// and MLT trace one light subpath per eye sample and splat it
+		/// anywhere on the film, so per pixel the light-tracing (t == 1)
+		/// strategies draw W*H times as many samples as the eye
+		/// strategies.  The balance / power heuristic with sample counts
+		/// (Veach 9.2) therefore carries the WHOLE-FILM density,
+		/// `PdfDirection / (W * H)` -- PBRT-v3/v4's `PdfWe` (film area,
+		/// splat scaled by 1/spp) and SmallVCM's division by the
+		/// light-path count, which RISE's own VCM applies in
+		/// `InitCamera`.  Using the per-pixel density instead still
+		/// partitions to one (no bias) but gives t == 1 W*H times too
+		/// little weight.  Every site where the camera density enters a
+		/// BDPT MIS ratio -- the first eye vertex's `pdfFwd` and every
+		/// t == 1 connection's light-endpoint `pdfRev` -- must use THIS,
+		/// never `PdfDirection`, or the partition breaks.  Contributions
+		/// (`Importance`) and VCM (`emissionPdfW`, its own count) are
+		/// unaffected.  A delta-direction (orthographic) camera has no
+		/// t == 1 strategy and is returned unscaled.
+		Scalar PdfDirectionMIS(
+			const ICamera& cam,					///< [in] Camera
+			const Ray& ray							///< [in] Ray from the camera
+			);
+
+		/// A point on the camera's entrance aperture, sampled for a
+		/// t==1 light-tracing connection.
+		struct ApertureSample
+		{
+			/// WORLD-space point the light vertex connects to.  For a
+			/// delta-position camera this is `cam.GetLocation()`.
+			Point3	point;
+			/// The same point in the camera's LOCAL aperture
+			/// coordinates (z == 0).  Meaningful only when `isFinite`;
+			/// `RasterizeThrough` consumes it.
+			Point3	local;
+			/// The aperture has area and `local` was drawn from it with
+			/// density 1 / (that area).  FALSE for pinhole / fisheye /
+			/// orthographic cameras and for a degenerate thin-lens
+			/// aperture, all of which collapse to the camera location.
+			bool	isFinite;
+
+			ApertureSample() : point( 0, 0, 0 ), local( 0, 0, 0 ), isFinite( false ) {}
+		};
+
+		/// Sample a point on the camera's entrance aperture, with the
+		/// SAME shape and density the camera's primary rays use.
+		///
+		/// `uv` are two canonical randoms; they are ignored by cameras
+		/// whose aperture is a point, which return the camera location
+		/// with `isFinite == false`.  The returned point's density does
+		/// not appear in the caller's estimator: `Importance` above has
+		/// already folded `1 / p_A` in.
+		ApertureSample SampleAperture(
+			const ICamera& cam,					///< [in] Camera
+			const Point2& uv						///< [in] Two canonical randoms in [0,1)
+			);
+
+		/// Raster position of `worldPoint` as imaged THROUGH `ap`.
+		///
+		/// For a finite aperture this is what gives a light-traced
+		/// contribution the depth of field the eye rays have: the world
+		/// point is imaged through the SAMPLED lens point, so an
+		/// off-focus point lands a circle-of-confusion away from where
+		/// the lens centre would put it, and an on-focus point lands at
+		/// the same pixel for every lens sample.  For a delta-position
+		/// aperture it is exactly `Rasterize` above.
+		/// \return FALSE if the point is behind the camera or off-film
+		bool RasterizeThrough(
+			const ICamera& cam,					///< [in] Camera
+			const Point3& worldPoint,				///< [in] 3D world point to project
+			const ApertureSample& ap,				///< [in] Aperture point from SampleAperture
+			Point2& rasterPoint						///< [out] Resulting raster coordinates
+			);
+
+		/// True if the camera samples an entrance aperture of non-zero
+		/// AREA on a single lens plane (e.g. a thin-lens camera with a
+		/// real aperture), as opposed to a pinhole (`t == 1` lens-area
+		/// sampling in `SampleAperture` / `PdfDirection`).  Note that
+		/// bidirectional integrators check `HasFiniteAperture(cam) ||
+		/// IsDeltaDirection(cam)` when placing `eyeVerts[0].position` at
+		/// `cameraRay.origin`, because orthographic cameras have a zero
+		/// entrance aperture (`HasFiniteAperture == false`) yet vary
+		/// `cameraRay.origin` across the image plane (`IsDeltaDirection == true`).
+		///
+		/// It does NOT change how MIS treats the camera vertex: the
+		/// aperture-positional density is the same under every
+		/// strategy -- each samples the camera vertex from the same
+		/// aperture with the same density -- so it cancels out of every
+		/// pdf ratio, exactly as PBRT-v4's `MISWeight` never reads
+		/// `cameraVertices[0].pdfFwd`.
+		bool HasFiniteAperture(
+			const ICamera& cam						///< [in] Camera
+			);
+
+		/// The two canonical randoms a t==1 site feeds to
+		/// `SampleAperture`, or (0,0) CONSUMING NOTHING when the
+		/// camera's aperture is a point.
+		///
+		/// The "consuming nothing" half is load-bearing, not an
+		/// optimisation.  Every integrator that supports light tracing
+		/// calls this once per sample, pinhole scenes included; if it
+		/// drew unconditionally, every pinhole MLT render would walk a
+		/// different Markov chain than before debt 28 (two extra
+		/// primary-sample dimensions per `EvaluateSample`) and every
+		/// pinhole Sobol render would burn a dimension it does not use.
+		/// A pinhole / fisheye / orthographic camera ignores `uv`
+		/// entirely (`SampleAperture` returns `GetLocation()`), so the
+		/// draw would be pure chain perturbation.
+		/// \return Two canonical randoms in [0,1)^2, or (0,0)
+		Point2 DrawApertureSample(
+			const ICamera& cam,					///< [in] Camera
+			ISampler& sampler,						///< [in,out] Sampler to draw from
+			ApertureStreamPolicy policy			///< [in] Which stream to draw on
 			);
 
 		/// True if the camera's importance is a Dirac delta in DIRECTION

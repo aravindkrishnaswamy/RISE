@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstdarg>
 #include <cstring>
+#include <atomic>
 #include <mutex>
 
 namespace RISE
@@ -35,7 +36,9 @@ namespace RISE
 			int			targetY;
 			FILE*		out;
 			std::mutex	mu;
-			bool		initialized;
+			//! Double-checked: atomic so the unlocked first check is not a
+			//! data race against the locked publish (ThreadSanitizer, DL-465).
+			std::atomic<bool>	initialized;
 			State() : targetX(-1), targetY(-1), out(0), initialized(false) {}
 		};
 
@@ -48,9 +51,9 @@ namespace RISE
 		inline void LazyInit()
 		{
 			State& s = GetState();
-			if( s.initialized ) return;
+			if( s.initialized.load( std::memory_order_acquire ) ) return;
 			std::lock_guard<std::mutex> lk( s.mu );
-			if( s.initialized ) return;
+			if( s.initialized.load( std::memory_order_relaxed ) ) return;
 			const char* sx = std::getenv( "RISE_FFTRACE_X" );
 			const char* sy = std::getenv( "RISE_FFTRACE_Y" );
 			const char* sf = std::getenv( "RISE_FFTRACE_FILE" );
@@ -64,7 +67,7 @@ namespace RISE
 			if( !s.out ) {
 				s.out = stderr;
 			}
-			s.initialized = true;
+			s.initialized.store( true, std::memory_order_release );
 		}
 
 		inline bool IsActive( int x, int y )

@@ -1,0 +1,15 @@
+{
+ "//": "Arc-79 S2 clean-room construction evaluation (2026-08-11): same figure subject, gemini, with build_element issuing a FRESH minimal provider completion per element in a canonical local frame, validated insertion, and place_element. HEADLINE (79 SS6 item 1): SDF parts per figure element -- live-session baseline 1-2 across twelve runs, clean-room hand simulation 15. Does the shipped path reach the simulation? Also: first-insertion rejection rate + repair-retry success (the validated-insertion contract health), realised bbox vs requested height (is the frame contract honoured), place_element usage and whether elements still interpenetrate, turn/token cost vs arc-78.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_dreamscape_figure.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_s2_gemini"
+}

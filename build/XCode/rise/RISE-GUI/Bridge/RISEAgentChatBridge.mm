@@ -47,6 +47,22 @@ static NSString *ToNS(const std::string& s) {
     return out ?: @"";
 }
 
+@implementation RISEAgentChatDocumentSnapshot
+
+- (instancetype)initWithText:(NSString *)text
+                     headUuid:(uint64_t)headUuid
+                 headRevision:(uint64_t)headRevision {
+    self = [super init];
+    if (self) {
+        _text = [text copy];
+        _headUuid = headUuid;
+        _headRevision = headRevision;
+    }
+    return self;
+}
+
+@end
+
 @implementation RISEAgentChatAttachment
 
 - (instancetype)initWithMimeType:(NSString *)mimeType
@@ -148,6 +164,7 @@ static NSString *ToNS(const std::string& s) {
     RISEAgentChatErrorKind _errorKind;
     NSString *_assistantDisplayText;
     NSString *_reasoningText;
+    BOOL _retryDegenerateTurn;
 }
 
 - (instancetype)initWithStep:(const Agent::ChatStepResult&)step {
@@ -171,6 +188,8 @@ static NSString *ToNS(const std::string& s) {
             _errorKind = RISEAgentChatErrorKindHttp;         break;
         case Agent::ChatErrorKind::Parse:
             _errorKind = RISEAgentChatErrorKindParse;        break;
+        case Agent::ChatErrorKind::MalformedToolCall:
+            _errorKind = RISEAgentChatErrorKindMalformedToolCall; break;
         case Agent::ChatErrorKind::Provider:
             _errorKind = RISEAgentChatErrorKindProvider;     break;
         case Agent::ChatErrorKind::Refusal:
@@ -195,6 +214,7 @@ static NSString *ToNS(const std::string& s) {
     _errorMessage         = ToNS(step.errorMessage);
     _assistantDisplayText = ToNS(step.assistantDisplayText);
     _reasoningText        = ToNS(step.reasoningText);
+    _retryDegenerateTurn  = step.retryDegenerateTurn ? YES : NO;
     return self;
 }
 
@@ -205,6 +225,7 @@ static NSString *ToNS(const std::string& s) {
 - (RISEAgentChatErrorKind)errorKind { return _errorKind; }
 - (NSString *)assistantDisplayText  { return _assistantDisplayText; }
 - (NSString *)reasoningText         { return _reasoningText; }
+- (BOOL)retryDegenerateTurn         { return _retryDegenerateTurn; }
 
 @end
 
@@ -360,6 +381,12 @@ static NSString *ToNS(const std::string& s) {
                                              static_cast<int>(rpcId)));
 }
 
+- (NSString *)gateRefusalResponseFor:(RISEAgentChatToolCall *)call
+                                rpcId:(NSInteger)rpcId {
+    return ToNS(_loop->GateRefusalResponse([call cppCall],
+                                           static_cast<int>(rpcId)));
+}
+
 - (void)addToolResult:(RISEAgentChatToolCall *)call
   jsonRpcResponseLine:(NSString *)line {
     _loop->AddToolResult([call cppCall], ToStd(line));
@@ -407,10 +434,40 @@ static NSString *ToNS(const std::string& s) {
     _loop->SetTrajectorySink(Agent::MakeTrajectoryFileSink(path), cfg);
 }
 
+- (void)setDocumentSnapshotProvider:(RISEAgentChatDocumentSnapshotProvider)provider {
+    if (!provider) {
+        _loop->SetDocumentSnapshotProvider(
+            std::function<bool( std::string&, uint64_t&, uint64_t& )>());
+        return;
+    }
+    // Captured by value: an ObjC block is ARC-retained by the C++
+    // lambda's copy just like any other strong reference, so `provider`
+    // stays alive for as long as `_loop` keeps this std::function -- no
+    // dangling call once -setDocumentSnapshotProvider: returns.
+    _loop->SetDocumentSnapshotProvider(
+        [provider]( std::string& outText, uint64_t& outUuid, uint64_t& outRevision ) -> bool {
+            RISEAgentChatDocumentSnapshot* snap = provider();
+            if (!snap) return false;
+            outText = ToStd(snap.text);
+            outUuid = snap.headUuid;
+            outRevision = snap.headRevision;
+            return true;
+        });
+}
+
 - (void)recordHttpRoundWithStatus:(NSInteger)httpStatus
                              body:(NSString *)rawBody
                         elapsedMs:(int64_t)elapsedMs {
     _loop->RecordHttpRound(static_cast<long>(httpStatus), ToStd(rawBody), elapsedMs);
+}
+
+- (void)recordHttpRoundWithStatus:(NSInteger)httpStatus
+                             body:(NSString *)rawBody
+                        elapsedMs:(int64_t)elapsedMs
+                          attempt:(NSInteger)attempt
+                          retryOf:(NSInteger)retryOf {
+    _loop->RecordHttpRound(static_cast<long>(httpStatus), ToStd(rawBody), elapsedMs,
+                           static_cast<int>(attempt), static_cast<int>(retryOf));
 }
 
 - (void)finishTrajectoryWithStatus:(NSString *)status {

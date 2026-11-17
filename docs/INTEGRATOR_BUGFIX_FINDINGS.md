@@ -13,15 +13,15 @@ BDPT was an FP16 EXR-*write* overflow, FIXED at the writer. The VCM "Inf"
 integrator defect. FIXED at the reader (`EXRReader` now reads FLOAT). See §1's
 final "CORRECTED AGAIN" note for the evidence (pyOpenEXR shows the EXRs are
 finite; synthetic `R=100000` reads `inf` via `EXRReader`, finite via pyOpenEXR;
-deterministic sweep 8/16 "inf" → 0/16 after the fix). Bug 2 FIXED (working tree,
-pending commit). **Bug 3 FIXED 2026-06-04** — three root causes in the SHARED
+deterministic sweep 8/16 "inf" → 0/16 after the fix). Bug 2 FIXED. **Bug 3
+FIXED 2026-06-04** — three root causes in the SHARED
 spectral-HWSS companion path (`RecomputeSubpathThroughputNM` direction flip +
 `EvalEmitterRadiance<NMTag>` missing `pLuminary` fallback + `totalActive`
 terminated-companion over-count); restores the BDPT **and** VCM HWSS bundle
 invariant (uniform + dispersive) and also closes the documented HWSS env-IBL
-deficit; one separate **PT** HWSS env bias remains open (out of scope). See §3.
+deficit; the separate **PT** HWSS env bias noted in §3 was subsequently closed
+in `DL-170` (see [DEBT_LEDGER.md](DEBT_LEDGER.md)).
 **Discipline:** every claim below is from instrumented renders, not intuition.
-All changes are uncommitted for review.
 
 ---
 
@@ -430,27 +430,27 @@ spectral **hwss=true**: BDPT mean ~0.39–0.47 (**−30 %** vs its own hwss=fals
 **byte-identical** (no `PathTracingIntegrator` change); Pel and non-HWSS NM paths
 **byte-identical** (the three fixes live only in the HWSS-companion code).
 
-### Open remainder (out of scope, documented) — a SEPARATE pre-existing **PT** HWSS env-IBL bias
-On the uniform env-only Lambertian scene **PT itself violates the bundle
-invariant**: PT-hwss=true renders ~20 % under PT-hwss=false (PT's forward
+### ~~Open remainder (out of scope, documented) — a SEPARATE pre-existing **PT** HWSS env-IBL bias~~ SUBSEQUENTLY CLOSED (`DL-170`)
+> **Subsequently CLOSED (`DL-170`, see [DEBT_LEDGER.md](DEBT_LEDGER.md)):** PT HWSS's scalar `RAY_STATE::bsdfMisPdf` vs per-wavelength emitter-hit MIS mismatch was subsequently fixed in `DL-170`. The historical note from 2026-06-04 is preserved below.
+
+On the uniform env-only Lambertian scene **PT itself violated the bundle
+invariant** at the time Bug 3 landed: PT-hwss=true rendered ~20 % under PT-hwss=false (PT's forward
 `PathTracingIntegrator::IntegrateFromHitHWSS`, a *different* mechanism from the
-shared `RecomputeSubpathThroughputNM`). This is the "separate spectral-bundle
-workstream" CLAUDE.md already flags; **this fix does not touch PT.** Because the
+shared `RecomputeSubpathThroughputNM`). Because the
 old `EnvLightBalanceTest` compared spectral integrators against PT at the *same*
 hwss, master "passed" the env-only hwss=true row only by coincidence — BDPT/VCM's
 own (larger) companion bias landed near PT's bias (all three biased low together).
-With the companion fix BDPT/VCM are now correct and diverge from the still-biased
+With the companion fix BDPT/VCM became correct and diverged from the then-biased
 PT-hwss=true. The test was corrected to reference the **unbiased PT-hwss=false**
 ground truth for the env-only spectral row (a one-line change in
 [tests/EnvLightBalanceTest.cpp](../tests/EnvLightBalanceTest.cpp) `TestEnvOnlySpectral`,
 no tolerance loosened — and the new comparison *would have caught* the master
-companion bug the old one missed). Fixing PT's own HWSS env-IBL bias remains the
-documented separate workstream.
+companion bug the old one missed).
 
-### Sibling note
-VCM-spectral **merging** still uses a luminance proxy (`RISEPelToNMProxy`), a
+### ~~Sibling note~~ SUBSEQUENTLY CLOSED (Stage C slice 2)
+VCM-spectral **merging** previously used a luminance proxy (`RISEPelToNMProxy`), a
 *separate* documented HWSS correctness gap ([SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
-§3) — a different mechanism from the three fixes above, still open.
+§3) — subsequently **CLOSED in Stage C slice 2** (per-wavelength / hero-compatible spectral VCM merge evaluation; see [DEBT_LEDGER.md](DEBT_LEDGER.md)).
 
 ---
 
@@ -790,7 +790,7 @@ are all **history**. Airy remains the single-film production form for **cost**.
 **P1-C — `ThinFilmTMMTest` is ORACLE-ONLY, so its cited pins bound nothing in
 production.** It includes only `tests/thinfilm/*` and runs under
 `using namespace RISE::ThinFilmReference`, so every `detail::` name resolves to
-the oracle copy. Production comments nevertheless cited `[8/8](d)` as pinning
+the oracle copy. Production comments nevertheless cited `[8/8]` sub-check `(d)` as pinning
 the production `Sinc` / `ExpM1OverZ`. **Demonstrated by mutation:** stubbing the
 *production* `Sinc` to a constant 1 below its cut passed all five
 production-header binaries *and* `ThinFilmTMMTest` (6138/0).
@@ -818,7 +818,7 @@ silently-wrong oracle is the more dangerous of the two. `[6/7]` now sweeps
 evanescent gaps to 1e7 nm over three substrates and asserts the decay
 invariant; both oracle mutants die.
 
-**Also corrected in `[8/8](d)`:** the "long-double reference" is not higher
+**Also corrected in `[8/8]` sub-check `(d)`:** the "long-double reference" is not higher
 precision on arm64 macOS, where `sizeof(long double) == 8` — the same type as
 the value under test. That cross-check pins the *formula* and the branch
 continuity, never accuracy beyond double. The genuinely-higher-precision pin is

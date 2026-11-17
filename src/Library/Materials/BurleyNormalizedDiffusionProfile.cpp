@@ -16,6 +16,7 @@
 
 #include "pch.h"
 #include "BurleyNormalizedDiffusionProfile.h"
+#include "../Utilities/BSSRDFSampling.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -62,20 +63,6 @@ Scalar BurleyNormalizedDiffusionProfile::ComputeScalingFactor( const Scalar A )
 	// For high albedo, the profile is wide (light scatters many times).
 	const Scalar diff = A - 0.8;
 	return 1.9 - A + 3.5 * diff * diff;
-}
-
-Scalar BurleyNormalizedDiffusionProfile::SchlickFresnel(
-	const Scalar cosTheta,
-	const Scalar eta
-	)
-{
-	// Schlick's approximation for Fresnel reflectance.
-	// R0 = ((eta_i - eta_t) / (eta_i + eta_t))^2
-	// F(cos) = R0 + (1 - R0) * (1 - cos)^5
-	const Scalar R0 = ((1.0 - eta) / (1.0 + eta)) * ((1.0 - eta) / (1.0 + eta));
-	const Scalar c = 1.0 - cosTheta;
-	const Scalar c2 = c * c;
-	return R0 + (1.0 - R0) * c2 * c2 * c;
 }
 
 //=============================================================
@@ -239,8 +226,15 @@ Scalar BurleyNormalizedDiffusionProfile::FresnelTransmission(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const Scalar eta = pIOR->GetValuesAt( ri ).v[0];
-	return 1.0 - SchlickFresnel( fabs(cosTheta), eta );
+	// DL-49: the boundary is an interface between this material and the
+	// medium the ray arrived through (`ri.ambientIOR`, stamped from the
+	// IOR stack; 1.0 = air for a stackless record), so Fresnel is a
+	// function of the RELATIVE index.  DL-306: the EXACT dielectric law,
+	// the one SubSurfaceScatteringSPF prices the surface reflection of the
+	// same interface with, so reflection + transmission = 1 (a denser
+	// exterior is totally reflected past the critical angle).
+	return BSSRDFSampling::BoundaryTransmission( fabs( cosTheta ),
+		pIOR->GetValuesAt( ri ).v[0], BSSRDFSampling::ExteriorIOR( ri ) );
 }
 
 Scalar BurleyNormalizedDiffusionProfile::GetIOR(
@@ -283,4 +277,14 @@ RISEPel BurleyNormalizedDiffusionProfile::ComputeTotalExtinction(
 	// accurately.  Return zero — the actual evaluation is done
 	// through EvaluateProfile() which has access to ri.
 	return RISEPel( 0, 0, 0 );
+}
+
+// DL-334: material and exterior indices describe the same wavelength.
+Scalar BurleyNormalizedDiffusionProfile::GetIORNM(const RayIntersectionGeometric& ri, const Scalar nm) const
+{ return pIOR->GetValueAtNM(ri, nm); }
+Scalar BurleyNormalizedDiffusionProfile::FresnelTransmissionNM(const Scalar cosTheta,
+    const RayIntersectionGeometric& ri, const Scalar nm) const
+{
+    return BSSRDFSampling::BoundaryTransmission(fabs(cosTheta),
+        GetIORNM(ri, nm), BSSRDFSampling::ExteriorIOR(ri));
 }

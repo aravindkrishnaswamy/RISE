@@ -24,13 +24,52 @@
 #include "AOVBuffers.h"
 #include "../Utilities/RuntimeContext.h"
 #include "../Utilities/ProgressiveConfig.h"
+#include "TimeIndexedMotionBlur.h"
+#include "../Utilities/Transformable.h"
 #include <atomic>
+#include <utility>
 #include <typeinfo>	// Model-B F2 S3 fix round: ForTest_SamplingKernelName's typeid
 
 namespace RISE
 {
 	namespace Implementation
 	{
+		// Internal render cleanup. Explicit Run propagates normal-path errors;
+		// unwind cleanup preserves the active callback/observer exception.
+		template< class F >
+		class RasterizerScopeExit
+		{
+			F cleanup_;
+			bool armed_ = true;
+
+		public:
+			explicit RasterizerScopeExit( F cleanup ) :
+				cleanup_( std::move(cleanup) )
+			{}
+
+			RasterizerScopeExit( const RasterizerScopeExit& ) = delete;
+			RasterizerScopeExit& operator=( const RasterizerScopeExit& ) = delete;
+
+			~RasterizerScopeExit() noexcept
+			{
+				if( armed_ ) {
+					try {
+						cleanup_();
+					} catch( ... ) {
+						// Cleanup must preserve the original render failure.
+					}
+				}
+			}
+
+			void Run()
+			{
+				if( armed_ ) {
+					armed_ = false;
+					cleanup_();
+				}
+			}
+		};
+
 		class PixelBasedRasterizerHelper : public virtual Rasterizer
 		{
 		public:
@@ -180,6 +219,54 @@ namespace RISE
 		protected:
 			IRayCaster*			pCaster;
 			ISampling2D*		pSampling;
+
+			// Per-invocation execution state, separate from the authored owning
+			// kernel above. Installed only between joined worker phases; workers
+			// read it while the scoped owner is alive. Concurrent render calls
+			// on one rasterizer and callback re-entry are not supported.
+			mutable ISampling2D* mActiveSampling = nullptr;
+			mutable bool mHasActiveSampling = false;
+			ISampling2D* ActiveSampling() const
+			{
+				return mHasActiveSampling ? mActiveSampling : pSampling;
+			}
+
+			// Borrows the caller-owned kernel. Declare its owner first so this
+			// override restores the prior execution state before releasing it.
+			class ScopedActiveSampling
+			{
+				const PixelBasedRasterizerHelper& owner_;
+				ISampling2D* previous_;
+				bool hadPrevious_;
+				bool armed_ = true;
+
+			public:
+				ScopedActiveSampling( const PixelBasedRasterizerHelper& owner, ISampling2D* sampling ) :
+					owner_( owner ),
+					previous_( owner.mActiveSampling ),
+					hadPrevious_( owner.mHasActiveSampling )
+				{
+					owner_.mActiveSampling = sampling;
+					owner_.mHasActiveSampling = true;
+				}
+
+				ScopedActiveSampling( const ScopedActiveSampling& ) = delete;
+				ScopedActiveSampling& operator=( const ScopedActiveSampling& ) = delete;
+
+				~ScopedActiveSampling() noexcept
+				{
+					Restore();
+				}
+
+				void Restore() noexcept
+				{
+					if( armed_ ) {
+						owner_.mActiveSampling = previous_;
+						owner_.mHasActiveSampling = hadPrevious_;
+						armed_ = false;
+					}
+				}
+			};
 			IPixelFilter*		pPixelFilter;
 			bool				useZSobol;		///< Use Morton-indexed Sobol (blue-noise error distribution)
 
@@ -237,6 +324,30 @@ namespace RISE
 			mutable double				mProgressWeight;	///< Work units per tile in this pass (= passSPP)
 			mutable double				mProgressTotal;		///< Total work units across all passes
 
+			//! True only while PreRenderSetup runs for the SECOND field of an
+			//! interlaced animation frame (RenderFrameOfAnimation with
+			//! resetAOVs == false).  Both fields render into ONE image that is
+			//! flushed once, so per-frame accumulators shared across the frame
+			//! (BDPT/VCM splat film, adaptive sample counter) must survive the
+			//! second field's setup (DL-462).  Per-field state (light vertex
+			//! store, light sampler) is still rebuilt at the field's time.
+			mutable bool				mContinuingInterlacedFrame;
+
+			//! DL-463 (a): true while a motion-blurred animation frame runs
+			//! its progressive passes at ONE shutter time per pass (see
+			//! WantsPerPassShutterTime): the scene has been moved to the
+			//! pass's time before OnProgressivePassBegin, so per-pass state
+			//! (VCM's light vertex store) must be rebuilt for EVERY pass,
+			//! pass 0 included.
+			mutable bool				mPerPassShutterTime = false;
+			//! DL-463: true only while PreRenderSetup runs for a frame that
+			//! MAY render with a per-pass shutter time (exposure, no scanning
+			//! / pixel rate).  A hook whose pass-0 state the per-pass loop
+			//! would rebuild anyway may skip building it at the frame time.
+			mutable bool				mPerPassShutterTimeCandidate = false;
+			//! DL-465: the single-threaded-fallback note was logged for this frame.
+			mutable bool				mTimeIndexedFallbackLogged = false;
+
 			mutable AOVBuffers*		pAOVBuffers;		///< Planned first-hit AOV sidecar (OIDN and/or FrameStore consumers)
 			mutable std::atomic<bool>	mLastRenderCompleted;
 
@@ -271,6 +382,13 @@ namespace RISE
 			//! production default keeps DOF/AA coverage; interactive
 			//! preview overrides to 1 for latency.
 			virtual unsigned int GetDenoiseAOVSamplesPerPixel() const;
+
+			// DL-360: fixed family policy in seconds per million samples.
+			virtual double DenoiseWorkPerMegaSample() const { return 0.1; }
+		public:
+			// Scene-static policy rate, also available to diagnostics.
+			double EstimateDenoiseWorkPerMegapixel() const;
+		protected:
 
 #endif
 
@@ -389,12 +507,69 @@ namespace RISE
 				}
 			}
 
-			/// Returns a reference to the image that should be sent to
-			/// OutputIntermediateImage.  The default just returns the
-			/// primary image.  BDPT overrides this to return a scratch
-			/// copy with resolved splats composited in, avoiding any
-			/// mutation of the primary accumulation buffer.
-			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
+			/// Returns the image the caller hands to OutputIntermediateImage
+			/// together with @a region.  The primary accumulation buffer is
+			/// never mutated: when a FilteredFilm (or, in
+			/// BidirectionalRasterizerBase, a SplatFilm) is active the result
+			/// is a scratch image composed from the primary plus the films;
+			/// otherwise it is @a primary itself.
+			///
+			/// Contract:
+			///  * @a region non-null: only the pixels inside that INCLUSIVE
+			///    rect, clamped to the image, are valid in the returned
+			///    image (film contributions are additionally limited to the
+			///    active output / splat region, exactly as a full-frame
+			///    composition would produce them).  Pixels outside it may
+			///    hold anything, including another caller's composition.
+			///    An empty or wholly off-image region composes nothing.
+			///  * @a region null: the whole image is valid.
+			///  * The returned reference is valid until the caller's
+			///    consumers have returned; consumers must not retain it.
+			///  * Concurrent calls are allowed only for pairwise-DISJOINT
+			///    regions on the same primary (the per-block worker shape:
+			///    each worker passes its own finished tile).  A null region
+			///    must not run concurrently with any other call.
+			///  * The scratch image is never allocated or resized here; it is
+			///    prepared single-threaded before any worker pass (render
+			///    dimensions are constant within a pass).  If it is missing
+			///    or its dimensions do not match @a primary, the primary is
+			///    returned unchanged (one warning per process).
+			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const;
+
+			/// Clamps an inclusive region to a w x h image (null = whole
+			/// image).  False when nothing of it lies on the image.
+			static bool ClampRegionToImage( const Rect* region, unsigned int w, unsigned int h, Rect& out );
+
+			/// Inclusive intersection of @a a with @a b (null @a b = no
+			/// limit).  False when the intersection is empty.
+			static bool IntersectRegion( const Rect& a, const Rect* b, Rect& out );
+
+			/// Copies src -> dst over an inclusive region already clamped
+			/// to both images.
+			static void CopyRegion( const IRasterImage& src, IRasterImage& dst, const Rect& r );
+
+			/// Region the single-threaded per-pass preview composes: the
+			/// render's clamped output crop (ConfigureOutputRegion), or null
+			/// (whole image) when there is none.  An invalid crop renders the
+			/// full frame (BoundsFromRect), so it composes the full frame too.
+			const Rect* PreviewCompositionRegion() const {
+				return mHasActiveOutputRegion ? &mActiveOutputRegion : 0;
+			}
+
+			/// Release the render-scoped preview composition resources
+			/// (filtered film + its scratch here; subclasses add their own
+			/// composition scratch).  Called by every top-level render
+			/// entry point's scope guard -- on success, cancel and unwind --
+			/// on the dispatching thread after all workers have joined and
+			/// the last preview consumer has returned, so no frame-sized
+			/// buffer outlives the render.  Must be idempotent.
+			virtual void ReleaseRenderScopedPreviewResources() const;
+
+			/// Whether GetIntermediateOutputImage composes into
+			/// pFilteredScratch.  True for the base getter; a subclass whose
+			/// getter composes elsewhere returns false so the render entry
+			/// points do not allocate an unread frame-sized scratch.
+			virtual bool UsesFilteredPreviewScratch() const { return true; }
 
 			// Our own functions
 			virtual void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
@@ -496,6 +671,51 @@ namespace RISE
 		/// as path guiding training.  Default does nothing.
 		virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const {}
 
+		/// DL-457: moves the scene to ONE motion-blur sample's time.
+		/// Evaluating the animator alone leaves parented objects composed
+		/// against their parents' frame-time pose; the hierarchy re-bake
+		/// carries them along.
+		///
+		/// DL-465: inside a time-indexed pass (TimeIndexedMotionBlur.h) the
+		/// calling render thread poses only its OWN clones of the moving
+		/// elements -- the same evaluation and re-compose -- and the shared
+		/// scene is never written, so such a frame renders multi-threaded.
+		/// Otherwise (the single-threaded fallback, the shutter sweep and
+		/// the per-pass VCM time) the shared scene moves, on the one
+		/// thread rendering it.
+		static void AnimateSceneToSampleTime( const IScene& pScene, const Scalar t )
+		{
+			// The per-sample pose is the render's own internal mutation.
+			// A Job render request holds the prepared mutation freeze
+			// (Job::BeginPreparedRequest) for the whole call, and under it
+			// the keyframe setters refuse external mutation -- on render
+			// worker threads too -- so without this capability every
+			// sample silently kept the frame-time pose (no motion blur).
+			struct InternalMutation {
+				InternalMutation() { Transformable::BeginPreparedInternalMutation(); }
+				~InternalMutation() { Transformable::EndPreparedInternalMutation(); }
+			} internalMutation;
+			if( TimeIndexedThread* pThread = TimeIndexedThread::Current() ) {
+				pThread->PoseAt( t );
+				return;
+			}
+			pScene.GetAnimator()->EvaluateAtTime( t );
+			pScene.GetObjects()->RecomposeAnimatedHierarchy();
+		}
+
+		/// DL-457: the interval [t0, t1] every motion-blur sample time of
+		/// the frame at `time` falls in (camera exposure plus any scanning
+		/// / pixel rate across the image).  False when the camera has no
+		/// exposure (no per-sample time).
+		static bool FrameShutterInterval( const ICamera& cam, const Scalar time, const unsigned int width, const unsigned int height, Scalar& t0, Scalar& t1 );
+
+		/// DL-457: moves the scene to a frame's nominal time and prepares
+		/// the spatial structure for it -- over the whole shutter when the
+		/// camera has exposure and `bSweepShutter` is set, so a ray that
+		/// meets an object anywhere it goes during the exposure tests it.
+		/// The AOV fallback passes FALSE: it traces the nominal time only.
+		void PrepareSceneForFrame( const IScene& pScene, const Scalar time, const bool bHasKeyframedObjects, const unsigned int width, const unsigned int height, const bool bSweepShutter = true ) const;
+
 		/// Called at the beginning of each progressive pass, before
 		/// the per-pixel dispatch.  Subclasses can override to
 		/// refresh per-iteration state (e.g. VCM rebuilds its
@@ -506,6 +726,27 @@ namespace RISE
 			const IScene& pScene,
 			const unsigned int passIdx ) const {}
 
+		/// DL-463 (a): true when this rasterizer's progressive passes
+		/// share state ACROSS pixel samples that must be traced at the
+		/// samples' own time -- VCM's vertex-merging light store, which
+		/// every eye sample of a pass merges against.  A motion-blurred
+		/// animation frame (exposure, no scanning / pixel rate) then
+		/// moves the whole scene to one shutter time per pass (one stratum
+		/// per pass, strata in a random order, jittered within each) and renders
+		/// the pass's light store and all its eye samples at that time,
+		/// instead of a per-sample time against a frame-time store.  The
+		/// progressive film's average over passes is the shutter average.
+		/// Queried after PreRenderSetup.  Default false.
+		virtual bool WantsPerPassShutterTime() const { return false; }
+
+		/// DL-465: may a motion-blurred animation frame of this rasterizer
+		/// render MULTI-threaded through per-thread time-indexed scene
+		/// state (TimeIndexedMotionBlur.h)?  True for the PT, BDPT and VCM
+		/// rasterizers, whose per-sample work reaches moving state only
+		/// through the time-indexed interfaces.  Default false: the legacy
+		/// rasterizers (frozen) keep the single-threaded per-sample path.
+		virtual bool SupportsTimeIndexedMotionBlur() const { return false; }
+
 		/// When true, per-block intermediate output is skipped during
 		/// the block dispatch.  The end-of-pass flush still runs.
 		/// VCM overrides this to true because each pass is a single
@@ -515,7 +756,7 @@ namespace RISE
 #ifdef RISE_ENABLE_OIDN
 		/// Called immediately before the canonical beauty denoiser.  Subclasses
 		/// with companion outputs can reuse the same pre-denoise render timing
-		/// so Auto quality is not biased by the first denoiser's own latency.
+		/// for any derived rasterizer that needs render-duration telemetry.
 		virtual void OnBeforeDenoise( double /*renderElapsedSeconds*/ ) const {}
 #endif
 

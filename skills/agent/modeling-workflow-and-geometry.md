@@ -209,10 +209,15 @@ invent kinds not listed here.
   shaped.  Declare the geometry chunk before the `standard_object`
   that references it, same declare-before-use rule as painters and
   materials.
-- **Other real kinds worth knowing about**: `circulardisk_geometry`,
+- **Other real kinds worth knowing about**: `lathe_geometry` (a
+  `profile_point <r> <h>` silhouette revolved about an axis -- the
+  LATHE verb, see the rule below), `skeleton_geometry` (a `joint <name>
+  <parent|none> <x> <y> <z> <radius>` graph, the verb for a limbed
+  body), `circulardisk_geometry`,
   `bezierpatch_geometry`, `bilinearpatch_geometry` (patch/surface
-  primitives), `sdf_geometry` (signed-distance-field geometry -- also
-  the LATHE verb, see the rule below),
+  primitives), `sdf_geometry` (signed-distance-field geometry -- blends,
+  fillets, and one `superellipsoid` part for any rounded box/cushion/
+  torso mass),
   `cartesian_disk_geometry`, `sweep_geometry`, `path_instances_geometry`
   (instancing along a path), and `displaced_geometry` (tessellates a
   `base_geometry` and offsets vertices by a `displacement` painter --
@@ -324,6 +329,70 @@ Unlike `insert_material_scaffold`, this tool NEVER emits a material or
 a `standard_object` -- wire those yourself exactly as `pnt_slab` /
 `mat_slab` / `slab1` do above.
 
+**A one-call tapered, blended limb/branch/tendril: `blended_chain`.**
+Any part that reads as a jointed, organic protrusion -- a limb, a
+branch, a tendril, a root, a horn, a tentacle -- suffers two recurring
+defects when hand-built: an untapered cylinder (uniform thickness end
+to end, reads as a pipe) and assembly by positional overlap (segments
+butted together with no smin blend, so the joints show as visible
+seams).  `insert_geometry_scaffold {family:"blended_chain",
+name:"branch1", points:"0 0 0; 0.4 1.1 -0.2; 0.9 1.6 0.3; 1.5 1.4 0.9",
+size:0.22, taper:0.65, detail:0.6}` sweeps a smin-blended chain of
+spheres along that path (a clamped Catmull-Rom spline through every
+point, so the chain's first and last nodes land EXACTLY on `0 0 0` and
+`1.5 1.4 0.9` -- aim an endpoint precisely at another part's surface by
+naming that surface's coordinate as a `points` entry) and returns
+`geometry` naming the one `sdf_geometry` chunk (`tmpl_branch1_chain`)
+to bind into a `standard_object.geometry` slot, exactly like every
+other family here.  `taper` shrinks the radius from `size` at the
+first point toward the last (0.65 here: a base three times thicker
+than the tip); every joint's blend radius is floored against the
+realized node spacing, so the chain can never show a visible seam
+regardless of `size`/`taper`/`detail`.  Unlike the other families,
+`blended_chain` takes `points` and `taper` INSTEAD of `aspect` -- the
+path itself is this family's creative essence.
+
+**When the body BRANCHES (more than one limb sharing a joint), reach
+for `skeleton_geometry` instead of chaining `blended_chain` calls.**
+`blended_chain` sweeps ONE spline through a single ordered list of
+points -- exactly right for one limb, but it cannot express two bones
+sharing a joint (a hip with two legs and a tail).  `skeleton_geometry`
+takes the joint GRAPH directly (`joint <name> <parent|none> <x> <y> <z>
+<radius>` per joint, a bone implied between every joint and its
+parent) and expands into one `sdf_geometry` chunk, same as this
+family does.  Use `blended_chain` for a single tapering protrusion;
+use `skeleton_geometry` the moment more than one bone needs to meet at
+the same joint.  See object-modeling-recipes' geometry vocabulary
+table for the chunk's full parameter list.
+
+**Revising a part's FORM is ONE call, exactly like revising its
+colour.**  When a render shows you that a shape is too plain, or the
+wrong form entirely -- the "wings" you built as a thin box, the
+"faceted crystal" that came out a smooth ellipsoid -- do NOT leave it
+and go tune the material instead.  `replace_geometry_scaffold
+{target:"wing_l", family:"blended_chain", name:"wing2", points:"0 0 0;
+0.6 0.3 -0.2; 1.1 0.1 -0.5", size:0.18, taper:0.8, detail:0.6}`
+expands the SAME graph `insert_geometry_scaffold` would and rebinds
+`wing_l`'s `geometry` slot to it, in one call.  `target` is the
+`standard_object`'s name, NOT the geometry chunk's.  The object's
+`position`, `orientation`, `scale`, `material` and every other
+parameter are preserved exactly -- placement you tuned by LOOKING
+survives the new form -- and the old geometry chunk is removed for you
+when nothing else references it (when something does, it is kept and
+the result names what).  Chunks the removal leaves unreferenced one
+hop deeper (e.g. the noise source that only fed the old displaced
+geometry) come back in `orphans` for you to clear with `remove_chunks`
+if you want them gone.  Families are the same five, minus
+`volume_bank` (that one emits its own object, so there is nothing to
+rebind -- use `insert_geometry_scaffold` for it).  The whole thing is
+one atomic edit: one undo step, and nothing changes at all if it is
+refused (check `status`: `"applied"` is the only outcome where
+anything landed).  The one exception is `"diagnosed"`: the Document
+WAS mutated -- the new geometry landed and the slot was rebound -- but
+the re-derive still emitted diagnostics, so `previousGeometry`/
+`orphans` describe something real, not a discarded plan; look at the
+log before touching that part again.
+
 **One override to "reach for the analytic primitives first": turned
 forms.**  If an object's silhouette is a solid of revolution -- bottle,
 jar, flask, retort, vase, cup, bowl, mortar, candlestick, goblet, urn,
@@ -332,17 +401,44 @@ A cylinder stack gives a faceted silhouette with a hard right-angle
 step at every joint where the real object curves continuously, and that
 single choice is what makes a render read as cartoonish regardless of
 how good the lighting and materials are.  Author it as a PROFILE
-instead: a chain of `sdf_geometry` `roundcone` parts (each one a
-`<r1> <r2> <h>` frustum = one height/radius span) joined with `smin`,
-whose blend radius fillets the joints into a continuous curve.
-`sweep_geometry` is NOT the lathe verb -- it sweeps a FIXED
-cross-section along a path, so it is right for a tube that FOLLOWS A
-CURVE (a retort's neck, a spout, a handle) and wrong for a
-varying-radius body.  A cylinder is still exactly right when the real
+instead, and the verb for that is `lathe_geometry`: repeated
+`profile_point <r> <h>` lines (radius from the axis, height along it)
+ARE the silhouette, revolved about `axis` (default `y`), with a point at
+`r = 0` collapsing to a pole so a profile that starts and ends there is
+a closed watertight vessel.  The FALLBACK is a chain of `sdf_geometry`
+`roundcone` parts (each one a `<r1> <r2> <h>` frustum = one
+height/radius span) joined with `smin`, whose blend radius fillets the
+joints into a continuous curve -- use it when the turned form must also
+take part in CSG, needs a non-circular cross-section, or has to blend
+into a larger implicit body.
+`sweep_geometry` is NOT the lathe verb, but its cross-section is no
+longer fixed either: `point_scale <sx> <sy>` scales the two profile
+axes INDEPENDENTLY per station (flatter than it is wide, and changing
+that ratio along the spine -- a torso, a fin, a strap, a hull), and a
+second profile (`profile2_point` / `profile2_circle` / `profile2_rect`)
+with per-station `point_morph <t>` changes the OUTLINE along the path
+(a round skull into a narrow muzzle, a round shaft into a square post);
+omitting `point_morph` gives a linear 0 -> 1 ramp, but a closed loop
+instead requires explicit `point_morph` values -- the ramp is refused
+there, since it would jump at the seam.
+What it still cannot do is interpolate more than TWO sections, so it is
+right for a body that follows a curve and changes section once (a
+retort's neck, a spout, a handle, a snout, a limb) and wrong for one
+whose outline changes character three or more times (a belly, then a
+waist, then a shoulder) -- that is a lathe, or two chained sweeps.  Its
+cross-section is `profile_circle <r> [n]` or `profile_rect <w> <h> [r]`
+(one line each) instead of a hand-listed `profile_point` polygon, and
+`path_closed TRUE` sweeps a seamless loop (a handle, a wreath) without
+matching endpoints.  A cylinder is still exactly right when the real
 object's radius does not change along its axis: a straight shaft, a
 peg, a pipe, a cork, a candle, a coin.  Full rule, the flat-bottom cut,
 and a rendered profile recipe: object-modeling-recipes, "Turned forms
-are a PROFILE, never a stack of cylinders" and Recipe 4.
+are a PROFILE, never a stack of cylinders" and Recipe 4.  The
+roundcone-chain-plus-smin fallback is exactly what `skeleton_geometry`
+now automates for a JOINT GRAPH (see above) -- hand-chain parts only
+for what neither the lathe nor the joint graph reaches (a non-circular
+cross-section, a hollow interior, a form that must blend into a larger
+implicit body).
 
 ## Placement and scale sanity
 
@@ -369,6 +465,17 @@ are a PROFILE, never a stack of cylinders" and Recipe 4.
   silhouette agrees.  The second-angle render in the observe loop
   above is what actually catches depth placement bugs; do not skip it
   for any placement you are not already sure of.
+
+## Assemblies are subtrees; repeats are one chunk
+
+Objects form a TREE, not a flat list: `parent` makes a node's
+transform LOCAL (and a node with no `geometry` a pure container), and
+`source` + `count_u` repeats a whole node from ONE chunk.  Reach for
+both before you write the tenth near-identical chunk.  When to reach
+for each, the five things that bite, and a worked fence example live
+in object-modeling-recipes, "Assemblies are subtrees; repeats are one
+chunk" -- next to the recipes that repeat parts, where the choice
+actually gets made.
 
 ## Complete example 1: blocking out three primitives on a floor
 
@@ -717,11 +824,21 @@ directional_light
    `csg_object`, must appear EARLIER in the file than their consumer
    -- same rule as painters-before-materials in the scene-skeleton
    skill.
-5. **`insert_chunk`/`remove_chunk` are one-way doors per call** --
-   each inserts or removes exactly ONE complete chunk and validates
-   before applying; there is no multi-chunk batch and no undo verb,
-   so prefer the observe loop (small renders between edits) over
-   inserting several unverified chunks in a row.
+5. **Prefer batch verbs — and `revert_to_revision` is commit-only.**
+   Every insert and every removal validates before applying.  Under
+   `commit` autonomy `revert_to_revision` can restore any prior session
+   revision, whereas under `propose` autonomy it is unavailable, so
+   still prefer the observe loop (small renders between edits) over
+   stacking unverified speculative edits.  When you DO know what you
+   want, batch it: `insert_chunks` adds N chunks in one call
+   (sequential, best-effort -- list them in dependency order),
+   `remove_chunks` deletes N chunks in one call ATOMICALLY
+   (all-or-nothing, order irrelevant -- chunks that reference each other
+   inside the same batch come out together), and `propose_patches`
+   applies multiple parameter edits in one round-trip.  Reach for the
+   singular `insert_chunk` / `remove_chunk` only for a genuinely single
+   edit, or when you need `remove_chunk`'s `kind` disambiguator, which
+   the batch form does not have.
 6. **`cylinder_geometry`'s default axis is `x`.**  A cylinder with no
    `axis` line lies on its side; use `axis y` to stand it upright
    under a Y-up camera.

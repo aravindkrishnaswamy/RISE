@@ -5,8 +5,9 @@
 //    be written generically on a tag (PelTag or NMTag) and resolve
 //    at compile time to the right value() / valueNM() call.
 //
-//    Zero new logic here: these are thin dispatchers that forward
-//    to the pre-existing dual-signature helpers.  They exist so the
+//    Raw-value methods are thin dispatchers to the dual-signature
+//    helpers; the area-response adapter also converts the projected
+//    shading measure for path-space estimators. These let the
 //    integrator templatization phase (2a / 2b / 2c) can write one
 //    body per concern instead of two.
 //
@@ -106,6 +107,76 @@ namespace RISE
 			return PathVertexEval::EvalBSDFAtVertexNM( vertex, wi, wo, tag.nm );
 		}
 
+		// Area-measure surface response for connections, light tracing and
+		// photon merging. Sampling/guiding callers keep EvalBSDFAtVertex's
+		// raw material value, whose cosine is in the shading frame.
+		template<class Tag>
+		inline typename SpectralValueTraits<Tag>::value_type EvalAreaBSDFAtVertex(
+			const BDPTVertex& vertex, const Vector3& wi, const Vector3& wo,
+			const Tag& tag )
+		{
+			return EvalBSDFAtVertex<Tag>( vertex, wi, wo, tag ) *
+				PathVertexEval::RadianceShadingNormalFactor( vertex, wi );
+		}
+
+		// Area-measure response at a LIGHT-subpath endpoint that connects
+		// (or splats) toward `woOut`; `wiArrival` points back toward the
+		// previous light vertex.  A BSSRDF entry vertex (`isBSSRDFEntry`)
+		// is reached by the subsurface JUMP from the hit where the light
+		// went in, so `wiArrival` there is the jump chord, not a ray: the
+		// entry re-emits with Sw in the direction it LEAVES, i.e. toward
+		// `woOut` (DL-317 for VCM, DL-377 for BDPT/MLT).  Evaluating Sw
+		// along the chord instead reads exactly 0 on a convex shape, whose
+		// chord faces INTO the surface at the entry.
+		template<class Tag>
+		inline typename SpectralValueTraits<Tag>::value_type EvalLightEndAreaBSDFAtVertex(
+			const BDPTVertex& vertex, const Vector3& wiArrival, const Vector3& woOut,
+			const Tag& tag )
+		{
+			return vertex.isBSSRDFEntry
+				? EvalAreaBSDFAtVertex<Tag>( vertex, woOut, wiArrival, tag )
+				: EvalAreaBSDFAtVertex<Tag>( vertex, wiArrival, woOut, tag );
+		}
+
+		//////////////////////////////////////////////////////////////
+		// DL-481: the area-measure response split by lobe label
+		// (PathVertexEval::EvalBSDFByTypeAtVertex), with the same
+		// shading-normal factor and argument order as
+		// EvalAreaBSDFAtVertex / EvalLightEndAreaBSDFAtVertex.  A split
+		// endpoint is never a BSSRDF entry (it has no lobe type), so the
+		// light-end form needs no entry swap.  False when the vertex has
+		// no split.
+		//////////////////////////////////////////////////////////////
+
+		inline bool EvalBSDFByTypeAtVertexTag(
+			const BDPTVertex& vertex, const Vector3& wi, const Vector3& wo,
+			const PelTag& /*tag*/, RISEPel out[5] )
+		{
+			return PathVertexEval::EvalBSDFByTypeAtVertex( vertex, wi, wo, out );
+		}
+
+		inline bool EvalBSDFByTypeAtVertexTag(
+			const BDPTVertex& vertex, const Vector3& wi, const Vector3& wo,
+			const NMTag& tag, Scalar out[5] )
+		{
+			return PathVertexEval::EvalBSDFByTypeAtVertexNM( vertex, wi, wo, tag.nm, out );
+		}
+
+		template<class Tag>
+		inline bool EvalAreaBSDFByTypeAtVertex(
+			const BDPTVertex& vertex, const Vector3& wi, const Vector3& wo,
+			const Tag& tag, typename SpectralValueTraits<Tag>::value_type out[5] )
+		{
+			if( !EvalBSDFByTypeAtVertexTag( vertex, wi, wo, tag, out ) ) {
+				return false;
+			}
+			const Scalar k = PathVertexEval::RadianceShadingNormalFactor( vertex, wi );
+			for( int t = 0; t < 5; t++ ) {
+				out[t] = out[t] * k;
+			}
+			return true;
+		}
+
 		//////////////////////////////////////////////////////////////
 		// PDF evaluation at a path vertex.  PDFs are wavelength-
 		// independent in their return type (always Scalar) but the
@@ -138,6 +209,42 @@ namespace RISE
 			const NMTag& tag )
 		{
 			return PathVertexEval::EvalPdfAtVertexNM( vertex, wi, wo, tag.nm );
+		}
+
+		//////////////////////////////////////////////////////////////
+		// Context-carrying twins.  Same dispatch, same semantics; the
+		// caller supplies a `PathVertexEval::VertexPdfContext` built
+		// once for a vertex so that several queries at that ONE vertex
+		// share a single reconstructed RayIntersectionGeometric and
+		// IORStack.  See that class's comment for the contract (it
+		// holds a reference to the vertex; it must not outlive it).
+		//////////////////////////////////////////////////////////////
+
+		template<class Tag>
+		Scalar EvalPdfAtVertex(
+			PathVertexEval::VertexPdfContext& ctx,
+			const Vector3& wi,
+			const Vector3& wo,
+			const Tag& tag );
+
+		template<>
+		inline Scalar EvalPdfAtVertex<PelTag>(
+			PathVertexEval::VertexPdfContext& ctx,
+			const Vector3& wi,
+			const Vector3& wo,
+			const PelTag& /*tag*/ )
+		{
+			return PathVertexEval::EvalPdfAtVertex( ctx, wi, wo );
+		}
+
+		template<>
+		inline Scalar EvalPdfAtVertex<NMTag>(
+			PathVertexEval::VertexPdfContext& ctx,
+			const Vector3& wi,
+			const Vector3& wo,
+			const NMTag& tag )
+		{
+			return PathVertexEval::EvalPdfAtVertexNM( ctx, wi, wo, tag.nm );
 		}
 
 		// Note: no Scale() helpers here.  Both RISEPel and Scalar

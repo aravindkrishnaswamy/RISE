@@ -1,0 +1,1072 @@
+RISE ASCII SCENE 7
+#############################################################################
+#                          RISE Ascii Scene File                            #
+#                                                                           #
+#   File:           empty_starter.RISEscene                                 #
+#   Description:    The agent-path starter scene.  Loaded (from the app    #
+#                   bundle / build-output copy) when the user creates a    #
+#                   scene from a prompt on the start screen.  Deliberately #
+#                   the STRUCTURAL MINIMUM for a loadable scene: shader,   #
+#                   rasterizer, film, camera -- ZERO objects, lights, or   #
+#                   environment.  It renders black by design (start-screen #
+#                   spec decision 2, 2026-07-15); the agent constructs     #
+#                   everything.  Do NOT add scaffold geometry here -- the  #
+#                   agent harness owns empty-scene competence.             #
+#                                                                           #
+#                   Canonical copy: scenes/Templates/empty_starter         #
+#                   .RISEscene (this file).  The GUI builds copy it into   #
+#                   their resources; a test asserts the copies stay        #
+#                   identical.  See docs/gui/START_SCREEN.md.              #
+#   Author:         Aravind Krishnaswamy                                    #
+#                                                                           #
+#############################################################################
+
+
+uniformcolor_painter
+{
+	name seabed_sand_color_pnt
+	color 0.74 0.66 0.49
+}
+
+uniformcolor_painter
+{
+	name seabed_rock_color_pnt
+	color 0.36 0.34 0.30
+}
+
+uniformcolor_painter
+{
+	name seabed_shell_color_pnt
+	color 1.0 0.88 0.82
+}
+
+uniformcolor_painter
+{
+	name sea_turtle_skin_pnt
+	color 0.24 0.22 0.13
+}
+
+uniformcolor_painter
+{
+	name branching_coral_color_pnt
+	color 0.68 0.12 0.78
+}
+
+uniformcolor_painter
+{
+	name brain_coral_base_col
+	color 0.42 0.36 0.28
+}
+
+uniformcolor_painter
+{
+	name brain_coral_dome_col
+	color 0.92 0.48 0.14
+}
+
+uniformcolor_painter
+{
+	name anemone_cluster_coral_pnt
+	color 0.95 0.25 0.42
+}
+
+uniformcolor_painter
+{
+	name anemone_cluster_glow_pnt
+	color 0.85 0.15 0.35
+}
+
+uniformcolor_painter
+{
+	name tropical_fish_yellow_pnt
+	color 0.98 0.76 0.04
+}
+
+uniformcolor_painter
+{
+	name	pnt_water_dome
+	color	0.02 0.20 0.32
+}
+
+uniformcolor_painter
+{
+	name	pnt_sand_base
+	color	0.98 0.88 0.70
+}
+
+uniformcolor_painter
+{
+	name	pnt_sand_ridge
+	color	0.85 0.70 0.48
+}
+
+turbulence3d_painter
+{
+	name		pnt_sand_proc
+	colora		pnt_sand_base
+	colorb		pnt_sand_ridge
+	octaves		3
+	persistence	0.6
+	scale		12.0 4.0 12.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_turtle_shell_a
+	color	0.38 0.26 0.08
+}
+
+uniformcolor_painter
+{
+	name	pnt_turtle_shell_b
+	color	0.10 0.08 0.03
+}
+
+perlin3d_painter
+{
+	name		pnt_turtle_proc
+	colora		pnt_turtle_shell_a
+	colorb		pnt_turtle_shell_b
+	octaves		4
+	persistence	0.65
+	scale		8.0 8.0 8.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_fish_yellow
+	color	1.0 0.78 0.02
+}
+
+uniformcolor_painter
+{
+	name	pnt_fish_blue
+	color	0.02 0.70 0.98
+}
+
+iridescent_painter
+{
+	name	pnt_fish_proc
+	colora	pnt_fish_yellow
+	colorb	pnt_fish_blue
+	bias	0.25
+}
+
+uniformcolor_painter
+{
+	name	pnt_coral_violet
+	color	0.70 0.05 0.85
+}
+
+uniformcolor_painter
+{
+	name	pnt_coral_magenta
+	color	1.0 0.15 0.65
+}
+
+perlin3d_painter
+{
+	name		pnt_coral_proc
+	colora		pnt_coral_violet
+	colorb		pnt_coral_magenta
+	octaves		3
+	persistence	0.6
+	scale		6.0 6.0 6.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_brain_coral_orange
+	color	0.92 0.32 0.04
+}
+
+uniformcolor_painter
+{
+	name	pnt_brain_coral_gold
+	color	0.96 0.62 0.08
+}
+
+perlin3d_painter
+{
+	name		pnt_brain_coral_proc
+	colora		pnt_brain_coral_orange
+	colorb		pnt_brain_coral_gold
+	octaves		3
+	persistence	0.6
+	scale		10.0 10.0 10.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_tang_blue
+	color	0.02 0.40 1.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_tang_yellow
+	color	1.0 0.90 0.0
+}
+
+iridescent_painter
+{
+	name	pnt_blue_tang_proc
+	colora	pnt_tang_blue
+	colorb	pnt_tang_yellow
+	bias	0.4
+}
+
+uniformcolor_painter
+{
+	name	pnt_brain_coral_dark
+	color	0.95 0.12 0.15
+}
+
+uniformcolor_painter
+{
+	name	pnt_brain_coral_bright
+	color	1.0 0.40 0.05
+}
+
+turbulence3d_painter
+{
+	name		pnt_brain_coral_grooves
+	colora		pnt_brain_coral_bright
+	colorb		pnt_brain_coral_dark
+	octaves		4
+	persistence	0.7
+	scale		18.0 18.0 18.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_turtle_carapace_a
+	color	0.95 0.65 0.18
+}
+
+uniformcolor_painter
+{
+	name	pnt_turtle_carapace_b
+	color	0.25 0.15 0.04
+}
+
+perlin3d_painter
+{
+	name		pnt_turtle_carapace_proc
+	colora		pnt_turtle_carapace_a
+	colorb		pnt_turtle_carapace_b
+	octaves		4
+	persistence	0.65
+	scale		12.0 12.0 12.0
+}
+standard_shader
+{
+	name				global
+	shaderop			DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				16
+	pixel_filter		box
+radiance_map pnt_water_dome
+radiance_scale 1.5
+radiance_background TRUE
+}
+
+film
+{
+	width				800
+	height				600
+}
+
+pinhole_camera
+{
+	location			0 1.6 4.8
+	lookat				0 0.8 0
+	up					0 1 0
+	fov					48.0
+}
+
+pbr_metallic_roughness_material
+{
+	name seabed_sand_mat
+	base_color pnt_sand_proc
+	metallic 0.0
+	roughness 0.9
+}
+
+pbr_metallic_roughness_material
+{
+	name seabed_rock_mat
+	base_color seabed_rock_color_pnt
+	metallic 0.0
+	roughness 0.85
+}
+
+pbr_metallic_roughness_material
+{
+	name seabed_shell_mat
+	base_color seabed_shell_color_pnt
+	metallic 0.05
+	roughness 0.35
+}
+
+sdf_geometry
+{
+	name seabed_sand_geo
+	part box union 0 0 0.1 0 0 0 0 1 1 1 5.0 0.1 4.0 0.05
+	part sphere smin 0.4 -3.0 0.2 -1.5 0 0 0 1 1 1 2.0 0.15 1.5 0
+	part sphere smin 0.4 -1.0 0.22 1.0 0 15 0 1 1 1 1.8 0.12 1.2 0
+	part sphere smin 0.4 1.5 0.18 -1.0 0 -10 0 1 1 1 2.2 0.14 1.8 0
+	part sphere smin 0.4 3.5 0.25 0.5 0 20 0 1 1 1 1.9 0.16 1.4 0
+	part roundbox smin 0.3 0 0.15 -2.0 0 5 0 1 1 1 3.5 0.08 0.4 0.1
+	part roundbox smin 0.3 -0.5 0.18 0.0 0 -8 0 1 1 1 3.8 0.07 0.4 0.1
+	part roundbox smin 0.3 0.8 0.16 2.0 0 12 0 1 1 1 3.2 0.08 0.4 0.1
+}
+
+sdf_geometry
+{
+	name seabed_rocks_geo
+	part sphere union 0 -2.5 0.45 -0.5 10 25 -15 1 1 1 0.7 0.5 0.6 0
+	part roundbox smin 0.15 -2.2 0.6 -0.3 -5 10 30 1 1 1 0.35 0.3 0.4 0.1
+	part sphere smin 0.1 -2.8 0.35 -0.8 0 0 0 1 1 1 0.45 0.35 0.45 0
+	part sphere subtract 0 -2.3 0.7 -0.2 0 0 0 1 1 1 0.2 0.2 0.2 0
+	part sphere smin 0.1 -2.0 0.3 -0.1 0 0 0 1 1 1 0.35 0.25 0.35 0
+	part roundbox union 0 2.2 0.4 0.2 15 -20 10 1 1 1 0.5 0.4 0.45 0.12
+	part sphere smin 0.12 2.5 0.55 0.4 -10 15 5 1 1 1 0.4 0.35 0.35 0
+	part sphere smin 0.15 1.8 0.35 0.6 0 0 0 1 1 1 0.35 0.25 0.3 0
+	part sphere subtract 0 2.1 0.5 0.5 0 0 0 1 1 1 0.15 0.15 0.15 0
+	part roundbox smin 0.1 2.0 0.25 -0.3 5 45 0 1 1 1 0.3 0.2 0.3 0.08
+	part sphere union 0 -0.8 0.25 1.8 0 35 10 1 1 1 0.25 0.18 0.2 0
+	part sphere smin 0.08 -0.6 0.2 1.6 0 0 0 1 1 1 0.18 0.15 0.15 0
+	part sphere union 0 0.5 0.22 -1.2 20 10 0 1 1 1 0.22 0.16 0.2 0
+}
+
+sdf_geometry
+{
+	name seabed_shells_geo
+	part roundcone union 0 -1.2 0.24 0.8 -25 40 15 1 1 1 0.12 0.03 0.22 0
+	part sphere smin 0.03 -1.3 0.22 0.72 -25 40 15 1 1 1 0.11 0.1 0.1 0
+	part sphere smin 0.03 -1.36 0.21 0.67 0 0 0 1 1 1 0.08 0.07 0.08 0
+	part torus smin 0.02 -1.26 0.23 0.75 -25 40 15 1 1 1 0.09 0.035 0 0
+	part sphere union 0 0.9 0.2 0.9 15 -30 20 1 0.4 1 0.16 0.16 0.16 0
+	part sphere subtract 0 0.9 0.22 0.9 15 -30 20 1 0.4 1 0.14 0.14 0.14 0
+	part sphere union 0 0.86 0.19 0.86 15 -30 20 1 0.3 1 0.14 0.14 0.14 0
+	part torus union 0 0.2 0.18 1.4 75 20 0 1 1 1 0.08 0.03 0 0
+	part sphere smin 0.02 0.18 0.18 1.43 0 0 0 1 1 1 0.05 0.05 0.05 0
+	part sphere union 0 -0.2 0.18 -0.6 -10 15 -45 1 0.35 1 0.13 0.13 0.13 0
+}
+
+
+pbr_metallic_roughness_material
+{
+	name sea_turtle_mat
+	base_color pnt_turtle_carapace_proc
+	roughness 0.22
+	metallic 0.0
+	specular_factor 1.0
+}
+
+sdf_geometry
+{
+	name sea_turtle_geo
+	part sphere union 0.0 0 0.45 0 0 0 0 0.75 0.4 0.95 0 0 0 0
+	part roundbox smin 0.12 0 0.32 0 0 0 0 0.72 0.14 0.92 0 0 0 0.06
+	part roundbox smin 0.1 0 0.18 0.05 0 0 0 0.55 0.12 0.75 0 0 0 0.06
+	part sphere smin 0.1 0 0.38 0.9 0 0 0 0.25 0.2 0.3 0 0 0 0
+	part sphere smin 0.1 0 0.42 1.25 0 0 0 0.22 0.2 0.32 0 0 0 0
+	part sphere smin 0.08 0 0.38 1.5 0 0 0 0.15 0.13 0.18 0 0 0 0
+	part sphere smin 0.04 0.17 0.45 1.32 0 0 0 0.06 0.06 0.06 0 0 0 0
+	part sphere smin 0.04 -0.17 0.45 1.32 0 0 0 0.06 0.06 0.06 0 0 0 0
+	part roundbox smin 0.12 0.9 0.32 0.5 5 -25 12 0.52 0.05 0.22 0 0 0 0.04
+	part roundbox smin 0.1 1.5 0.24 0.3 5 -45 8 0.42 0.04 0.16 0 0 0 0.03
+	part roundbox smin 0.12 -0.9 0.32 0.5 5 25 -12 0.52 0.05 0.22 0 0 0 0.04
+	part roundbox smin 0.1 -1.5 0.24 0.3 5 45 -8 0.42 0.04 0.16 0 0 0 0.03
+	part roundbox smin 0.1 0.5 0.26 -0.85 0 35 -10 0.28 0.04 0.2 0 0 0 0.03
+	part roundbox smin 0.1 -0.5 0.26 -0.85 0 -35 10 0.28 0.04 0.2 0 0 0 0.03
+	part sphere smin 0.06 0 0.25 -1.05 0 0 0 0.08 0.06 0.15 0 0 0 0
+	maxsteps 256
+}
+
+pbr_metallic_roughness_material
+{
+	name branching_coral_mat
+	base_color pnt_coral_proc
+	roughness 0.65
+	metallic 0.0
+}
+
+sdf_geometry
+{
+	name branching_coral_geo
+	maxsteps 256
+	part sphere union 0.08 0 0.02 0 0 0 0 1 1 1 0.32 0 0 0
+	part sphere smin 0.08 0.15 0.02 0.10 0 0 0 1 1 1 0.16 0 0 0
+	part sphere smin 0.08 -0.15 0.02 0.12 0 0 0 1 1 1 0.16 0 0 0
+	part sphere smin 0.08 0.12 0.02 -0.14 0 0 0 1 1 1 0.16 0 0 0
+	part sphere smin 0.08 -0.14 0.02 -0.12 0 0 0 1 1 1 0.16 0 0 0
+	part sphere smin 0.08 0 0.12 0 0 0 0 1 1 1 0.20 0 0 0
+	part sphere smin 0.08 0 0.26 0 0 0 0 1 1 1 0.17 0 0 0
+	part sphere smin 0.08 0 0.40 0 0 0 0 1 1 1 0.15 0 0 0
+	part sphere smin 0.08 0 0.54 0 0 0 0 1 1 1 0.13 0 0 0
+	part sphere smin 0.08 -0.10 0.68 0.05 0 0 0 1 1 1 0.11 0 0 0
+	part sphere smin 0.08 -0.22 0.85 0.08 0 0 0 1 1 1 0.095 0 0 0
+	part sphere smin 0.08 -0.35 1.05 0.06 0 0 0 1 1 1 0.085 0 0 0
+	part sphere smin 0.08 -0.50 1.18 0.02 0 0 0 1 1 1 0.075 0 0 0
+	part sphere smin 0.08 -0.62 1.32 -0.02 0 0 0 1 1 1 0.06 0 0 0
+	part sphere smin 0.08 -0.70 1.45 -0.05 0 0 0 1 1 1 0.045 0 0 0
+	part sphere smin 0.08 -0.30 1.22 0.10 0 0 0 1 1 1 0.07 0 0 0
+	part sphere smin 0.08 -0.26 1.38 0.12 0 0 0 1 1 1 0.055 0 0 0
+	part sphere smin 0.08 -0.22 1.50 0.14 0 0 0 1 1 1 0.042 0 0 0
+	part sphere smin 0.08 0.12 0.68 -0.04 0 0 0 1 1 1 0.11 0 0 0
+	part sphere smin 0.08 0.25 0.86 -0.06 0 0 0 1 1 1 0.095 0 0 0
+	part sphere smin 0.08 0.38 1.06 -0.05 0 0 0 1 1 1 0.085 0 0 0
+	part sphere smin 0.08 0.55 1.20 -0.08 0 0 0 1 1 1 0.07 0 0 0
+	part sphere smin 0.08 0.68 1.34 -0.10 0 0 0 1 1 1 0.055 0 0 0
+	part sphere smin 0.08 0.78 1.46 -0.12 0 0 0 1 1 1 0.042 0 0 0
+	part sphere smin 0.08 0.34 1.24 0.02 0 0 0 1 1 1 0.07 0 0 0
+	part sphere smin 0.08 0.30 1.39 0.06 0 0 0 1 1 1 0.055 0 0 0
+	part sphere smin 0.08 0.28 1.52 0.08 0 0 0 1 1 1 0.042 0 0 0
+	part sphere smin 0.08 0.02 0.70 0.18 0 0 0 1 1 1 0.10 0 0 0
+	part sphere smin 0.08 0.04 0.90 0.28 0 0 0 1 1 1 0.085 0 0 0
+	part sphere smin 0.08 0.06 1.10 0.35 0 0 0 1 1 1 0.07 0 0 0
+	part sphere smin 0.08 -0.08 1.26 0.40 0 0 0 1 1 1 0.055 0 0 0
+	part sphere smin 0.08 -0.14 1.42 0.42 0 0 0 1 1 1 0.04 0 0 0
+	part sphere smin 0.08 0.16 1.28 0.38 0 0 0 1 1 1 0.055 0 0 0
+	part sphere smin 0.08 0.22 1.45 0.38 0 0 0 1 1 1 0.04 0 0 0
+	part sphere smin 0.08 -0.02 0.72 -0.16 0 0 0 1 1 1 0.10 0 0 0
+	part sphere smin 0.08 -0.05 0.92 -0.26 0 0 0 1 1 1 0.085 0 0 0
+	part sphere smin 0.08 -0.08 1.12 -0.32 0 0 0 1 1 1 0.07 0 0 0
+	part sphere smin 0.08 -0.18 1.28 -0.36 0 0 0 1 1 1 0.055 0 0 0
+	part sphere smin 0.08 -0.24 1.44 -0.38 0 0 0 1 1 1 0.04 0 0 0
+	part sphere smin 0.08 0.05 1.26 -0.34 0 0 0 1 1 1 0.055 0 0 0
+	part sphere smin 0.08 0.12 1.42 -0.34 0 0 0 1 1 1 0.04 0 0 0
+}
+
+pbr_metallic_roughness_material
+{
+	name brain_coral_base_mat
+	base_color brain_coral_base_col
+	metallic 0.0
+	roughness 0.85
+}
+
+pbr_metallic_roughness_material
+{
+	name brain_coral_dome_mat
+	base_color pnt_brain_coral_grooves
+	metallic 0.0
+	roughness 0.45
+}
+
+sdf_geometry
+{
+	name brain_coral_base_geo
+	part roundcone union 0.0  0 0.05 0  0 0 0  1 1 1  0.95 0.8 0.35  0.05
+	part sphere smin 0.1  -0.4 0.15 0.3  0 0 0  1 0.7 1  0.4 0 0  0.0
+	part sphere smin 0.1  0.5 0.12 -0.2  0 0 0  1 0.6 1  0.45 0 0  0.0
+	part sphere smin 0.1  0.1 0.1 -0.5  0 0 0  1 0.6 1  0.42 0 0  0.0
+	part sphere smin 0.1  -0.5 0.1 -0.3  0 0 0  1 0.7 1  0.38 0 0  0.0
+	maxsteps 256
+	sampling_detail 64
+}
+
+sdf_geometry
+{
+	name brain_coral_dome_geo
+	part sphere union 0.0  0 0.62 0  0 0 0  1.15 0.85 1.1  0.68 0 0  0.0
+	part sphere smin 0.15  0 0.75 0  0 0 0  1.0 0.7 0.95  0.62 0 0  0.0
+	part sphere smin 0.12  -0.45 0.65 0.2  0 15 10  0.9 0.8 1.0  0.48 0 0  0.0
+	part sphere smin 0.12  0.45 0.65 -0.15  0 -20 -10  0.95 0.8 0.9  0.48 0 0  0.0
+	part sphere smin 0.12  0.15 0.68 0.45  10 5 0  1.0 0.8 0.85  0.46 0 0  0.0
+	part sphere smin 0.12  -0.2 0.68 -0.45  -10 -5 0  0.9 0.8 1.0  0.45 0 0  0.0
+	part sphere smin 0.1  -0.65 0.48 0.0  0 0 15  0.8 0.8 0.9  0.38 0 0  0.0
+	part sphere smin 0.1  0.65 0.48 0.1  0 0 -15  0.85 0.8 0.85  0.38 0 0  0.0
+	part sphere smin 0.1  0.0 0.5 0.65  15 0 0  0.9 0.8 0.8  0.36 0 0  0.0
+	part sphere smin 0.1  0.0 0.5 -0.65  -15 0 0  0.9 0.8 0.8  0.36 0 0  0.0
+	part sphere smin 0.08  -0.3 0.95 0.15  5 25 5  0.8 0.6 0.8  0.32 0 0  0.0
+	part sphere smin 0.08  0.25 0.98 -0.1  -5 -20 -5  0.8 0.6 0.8  0.32 0 0  0.0
+	part sphere smin 0.08  -0.05 1.02 0.25  10 0 10  0.75 0.55 0.75  0.28 0 0  0.0
+	part sphere smin 0.08  0.1 1.0 -0.3  -10 0 -10  0.75 0.55 0.75  0.28 0 0  0.0
+	part sphere smin 0.08  -0.5 0.8 -0.2  0 30 0  0.7 0.6 0.7  0.3 0 0  0.0
+	part sphere smin 0.08  0.5 0.8 0.25  0 -30 0  0.7 0.6 0.7  0.3 0 0  0.0
+	maxsteps 256
+	sampling_detail 64
+}
+
+pbr_metallic_roughness_material
+{
+	name anemone_cluster_mat
+	base_color anemone_cluster_coral_pnt
+	metallic 0.0
+	roughness 0.35
+	emissive anemone_cluster_glow_pnt
+	emissive_scale 0.5
+}
+
+sdf_geometry
+{
+	name anemone_cluster_geo
+	part roundcone union 0.0 0 0.25 0 0 0 0 1 1 1 0.35 0.28 0.5 0.05
+	part roundcone smin 0.1 -0.3 0.18 0.1 0 0 15 1 1 1 0.22 0.18 0.35 0.04
+	part roundcone smin 0.1 0.28 0.16 -0.15 0 0 -12 1 1 1 0.20 0.16 0.32 0.04
+	part roundcone smin 0.1 0.05 0.15 0.28 10 0 0 1 1 1 0.18 0.15 0.30 0.04
+	part roundcone smin 0.08 0 0.65 0 0 0 0 1 1 1 0.08 0.04 0.5 0.02
+	part roundcone smin 0.08 0 1.0 0 -10 0 5 1 1 1 0.04 0.02 0.45 0.02
+	part roundcone smin 0.08 0.22 0.65 0.1 -10 20 -25 1 1 1 0.07 0.04 0.55 0.02
+	part roundcone smin 0.08 0.42 1.02 0.18 -20 30 -40 1 1 1 0.04 0.02 0.4 0.02
+	part roundcone smin 0.08 -0.22 0.65 0.12 -10 -20 25 1 1 1 0.07 0.04 0.55 0.02
+	part roundcone smin 0.08 -0.45 1.0 0.2 -25 -30 45 1 1 1 0.04 0.02 0.4 0.02
+	part roundcone smin 0.08 0.1 0.68 -0.22 25 10 -15 1 1 1 0.07 0.04 0.55 0.02
+	part roundcone smin 0.08 0.18 1.05 -0.4 40 15 -25 1 1 1 0.04 0.02 0.4 0.02
+	part roundcone smin 0.08 -0.15 0.65 -0.2 20 -15 20 1 1 1 0.07 0.04 0.55 0.02
+	part roundcone smin 0.08 -0.3 0.98 -0.35 35 -25 35 1 1 1 0.04 0.02 0.4 0.02
+	part roundcone smin 0.08 0.35 0.55 -0.05 10 15 -45 1 1 1 0.06 0.035 0.45 0.02
+	part roundcone smin 0.08 0.62 0.85 -0.08 20 20 -60 1 1 1 0.035 0.015 0.35 0.02
+	part roundcone smin 0.08 -0.38 0.52 -0.05 10 -15 45 1 1 1 0.06 0.035 0.45 0.02
+	part roundcone smin 0.08 -0.65 0.82 -0.08 20 -20 60 1 1 1 0.035 0.015 0.35 0.02
+	part roundcone smin 0.08 0.0 0.58 0.3 -35 0 0 1 1 1 0.06 0.035 0.45 0.02
+	part roundcone smin 0.08 0.0 0.88 0.55 -55 0 0 1 1 1 0.035 0.015 0.35 0.02
+	part roundcone smin 0.08 0.0 0.55 -0.3 35 0 0 1 1 1 0.06 0.035 0.45 0.02
+	part roundcone smin 0.08 0.0 0.82 -0.52 55 0 0 1 1 1 0.035 0.015 0.35 0.02
+	part roundcone smin 0.08 -0.45 0.4 0.2 -15 -35 30 1 1 1 0.05 0.03 0.35 0.02
+	part roundcone smin 0.08 -0.68 0.65 0.3 -25 -45 45 1 1 1 0.03 0.015 0.3 0.02
+	part roundcone smin 0.08 0.42 0.38 -0.25 25 30 -30 1 1 1 0.05 0.03 0.35 0.02
+	part roundcone smin 0.08 0.62 0.62 -0.38 35 40 -45 1 1 1 0.03 0.015 0.3 0.02
+	part sphere smin 0.05 0 1.2 0 0 0 0 1 1 1 0.035 0 0 0
+	part sphere smin 0.05 0.55 1.15 0.25 0 0 0 1 1 1 0.03 0 0 0
+	part sphere smin 0.05 -0.6 1.12 0.28 0 0 0 1 1 1 0.03 0 0 0
+	part sphere smin 0.05 0.22 1.18 -0.48 0 0 0 1 1 1 0.03 0 0 0
+	part sphere smin 0.05 -0.38 1.1 -0.42 0 0 0 1 1 1 0.03 0 0 0
+	part sphere smin 0.05 0.75 0.95 -0.1 0 0 0 1 1 1 0.028 0 0 0
+	part sphere smin 0.05 -0.78 0.92 -0.1 0 0 0 1 1 1 0.028 0 0 0
+	part sphere smin 0.05 0.0 1.0 0.68 0 0 0 1 1 1 0.028 0 0 0
+	part sphere smin 0.05 0.0 0.92 -0.65 0 0 0 1 1 1 0.028 0 0 0
+}
+
+pbr_metallic_roughness_material
+{
+	name tropical_fish_mat
+	base_color pnt_tang_yellow
+	roughness 0.18
+	metallic 0.05
+}
+
+sdf_geometry
+{
+	name tropical_fish_geo
+	sampling_detail 64
+	part sphere union 0  0 0.40 -0.02  0 0 0  0.075 0.20 0.28  0 0 0  0
+	part sphere smin 0.05  0 0.38 0.25  0 0 0  0.04 0.065 0.10  0 0 0  0
+	part sphere smin 0.02  0 0.36 0.34  0 0 0  0.02 0.025 0.03  0 0 0  0
+	part sphere smin 0.06  0 0.40 -0.28  0 0 0  0.03 0.075 0.10  0 0 0  0
+	part roundbox smin 0.025  0 0.66 -0.08  -10 0 0  0.012 0.11 0.20  0 0 0  0.01
+	part roundbox smin 0.025  0 0.13 -0.10  12 0 0  0.012 0.11 0.18  0 0 0  0.01
+	part roundbox smin 0.02  0 0.20 0.10  30 0 0  0.01 0.06 0.05  0 0 0  0.005
+	part roundbox smin 0.03  0 0.50 -0.44  -28 0 0  0.01 0.10 0.09  0 0 0  0.008
+	part roundbox smin 0.03  0 0.30 -0.44  28 0 0  0.01 0.10 0.09  0 0 0  0.008
+	part roundbox smin 0.03  0 0.40 -0.42  0 0 0  0.008 0.08 0.07  0 0 0  0.008
+	part roundbox smin 0.02  0.075 0.36 0.06  15 35 -15  0.008 0.05 0.08  0 0 0  0.005
+	part roundbox smin 0.02  -0.075 0.36 0.06  15 -35 15  0.008 0.05 0.08  0 0 0  0.005
+	part sphere smin 0.01  0.062 0.41 0.20  0 0 0  0.02 0.02 0.02  0 0 0  0
+	part sphere smin 0.01  -0.062 0.41 0.20  0 0 0  0.02 0.02 0.02  0 0 0  0
+}
+
+sdf_geometry
+{
+	name	seabed_sand_geo2
+	part	box union 0.0  0 -0.2 0  0 0 0  1 1 1  16.0 0.2 16.0  0.0
+	part	sphere smin 0.35  -2.5 0.05 1.0  0 0 0  1 0.3 1  0.8 0 0  0.0
+	part	sphere smin 0.35  2.0 0.02 -0.5  0 0 0  1 0.25 1  0.9 0 0  0.0
+	part	sphere smin 0.35  0.5 0.04 2.2  0 0 0  1 0.2 1  0.7 0 0  0.0
+	part	roundbox smin 0.2  0 0.02 -1.5  0 10 0  1 0.2 1  2.5 0.1 0.8  0.05
+	part	roundbox smin 0.2  -1.0 0.02 0.5  0 -15 0  1 0.2 1  2.2 0.1 0.7  0.05
+	maxsteps 256
+}
+
+sdf_geometry
+{
+	name	sea_turtle_geo2
+	part	sphere union 0.0  0 0.22 0  0 0 0  1.0 0.5 1.35  0.65 0 0  0.0
+	part	box subtract 0.0  0 -0.4 0  0 0 0  1 1 1  1.2 0.4 1.5  0.0
+	part	sphere smin 0.05  0 0.0 0  0 0 0  0.85 0.25 1.15  0.55 0 0  0.0
+	part	sphere smin 0.08  0 0.16 0.72  0 0 0  1 1 1  0.15 0 0  0.0
+	part	sphere smin 0.08  0 0.20 1.05  0 0 0  0.9 0.85 1.2  0.17 0 0  0.0
+	part	sphere smin 0.02  0.13 0.24 1.12  0 0 0  1 1 1  0.032 0 0  0.0
+	part	sphere smin 0.02  -0.13 0.24 1.12  0 0 0  1 1 1  0.032 0 0  0.0
+	part	roundbox smin 0.08  0.72 0.12 0.52  -8 -30 -12  1 1 1  0.42 0.022 0.14  0.015
+	part	roundbox smin 0.08  -0.72 0.12 0.52  -8 30 12  1 1 1  0.42 0.022 0.14  0.015
+	part	roundbox smin 0.06  0.45 0.06 -0.62  6 40 -8  1 1 1  0.22 0.018 0.10  0.012
+	part	roundbox smin 0.06  -0.45 0.06 -0.62  6 -40 8  1 1 1  0.22 0.018 0.10  0.012
+	part	roundcone smin 0.04  0 0.05 -0.75  -15 0 0  1 1 1  0.07 0.015 0.22  0.0
+	maxsteps 256
+}
+
+sdf_geometry
+{
+	name	tropical_fish_geo2
+	part	sphere union 0.0  0 0.2 0  0 0 0  0.35 1.0 1.5  0.22 0 0  0.0
+	part	roundcone smin 0.04  0 0.18 0.28  0 0 0  1 1 1  0.10 0.03 0.15  0.0
+	part	roundbox smin 0.02  0 0.38 -0.05  -15 0 0  1 1 1  0.012 0.09 0.16  0.005
+	part	roundbox smin 0.02  0 0.04 -0.02  15 0 0  1 1 1  0.012 0.07 0.14  0.005
+	part	roundbox smin 0.02  0 0.2 -0.4  0 0 0  1 1 1  0.01 0.14 0.12  0.005
+	part	roundbox smin 0.02  0.1 0.18 0.08  10 35 -15  1 1 1  0.01 0.04 0.08  0.005
+	part	roundbox smin 0.02  -0.1 0.18 0.08  10 -35 15  1 1 1  0.01 0.04 0.08  0.005
+	part	sphere smin 0.01  0.07 0.22 0.22  0 0 0  1 1 1  0.025 0 0  0.0
+	part	sphere smin 0.01  -0.07 0.22 0.22  0 0 0  1 1 1  0.025 0 0  0.0
+	maxsteps 256
+}
+
+pbr_metallic_roughness_material
+{
+	name		tropical_fish_blue_mat
+	base_color	pnt_blue_tang_proc
+	roughness	0.18
+	metallic	0.05
+}
+standard_object
+{
+	name seabed_sand_obj
+	geometry seabed_sand_geo2
+	material seabed_sand_mat
+}
+
+standard_object
+{
+	name seabed_rocks_obj
+	geometry seabed_rocks_geo
+	material seabed_rock_mat
+}
+
+standard_object
+{
+	name seabed_shells_obj
+	geometry seabed_shells_geo
+	material seabed_shell_mat
+}
+
+standard_object
+{
+	name sea_turtle_obj
+	geometry sea_turtle_geo2
+	material sea_turtle_mat
+	position 0.1 1.7 1.9
+	orientation 22 -40 -12
+	scale 0.75 0.75 0.75
+}
+
+standard_object
+{
+	name branching_coral_obj
+	geometry branching_coral_geo
+	material branching_coral_mat
+}
+
+standard_object
+{
+	name brain_coral_base_obj
+	geometry brain_coral_base_geo
+	material brain_coral_base_mat
+}
+
+standard_object
+{
+	name brain_coral_dome_obj
+	geometry brain_coral_dome_geo
+	material brain_coral_dome_mat
+}
+
+standard_object
+{
+	name anemone_cluster_obj
+	geometry anemone_cluster_geo
+	material anemone_cluster_mat
+}
+
+standard_object
+{
+	name tropical_fish_obj
+	geometry tropical_fish_geo2
+	material tropical_fish_mat
+}
+
+rect_light
+{
+	name		sunlight_shaft_light
+	center		3.5 5.5 2.5
+	size		3.0 3.0
+	facing		-0.55 -0.8 -0.25
+	color		1.0 0.98 0.90
+	exitance	280
+}
+
+rect_light
+{
+	name		surface_diffuse_daylight
+	center		0.0 4.5 0.5
+	size		12.0 10.0
+	facing		0 -1 0
+	color		0.04 0.40 0.55
+	exitance	10
+}
+
+shape_light
+{
+	name		scattered_sea_glow
+	shape		box
+	center		0.0 0.5 -4.5
+	size		14.0 8.0 2.0
+	color		0.01 0.18 0.30
+	exitance	4
+}
+
+rect_light
+{
+	name		caustic_refraction_light
+	center		0.5 4.5 1.5
+	size		1.0 1.0
+	facing		-0.3 -0.95 -0.2
+	color		0.6 0.95 1.0
+	exitance	60
+}
+
+standard_object
+{
+	name		tropical_fish_inst_01
+	geometry	tropical_fish_geo2
+	material	tropical_fish_blue_mat
+	position	-1.0 1.3 2.0
+	orientation	-5 -45 5
+	scale		0.65 0.65 0.65
+}
+
+standard_object
+{
+	name		tropical_fish_inst_02
+	geometry	tropical_fish_geo2
+	material	tropical_fish_mat
+	position	-0.65 1.6 1.7
+	orientation	-10 -35 0
+	scale		0.55 0.55 0.55
+}
+
+standard_object
+{
+	name		tropical_fish_inst_03
+	geometry	tropical_fish_geo2
+	material	tropical_fish_blue_mat
+	position	0.9 1.1 2.2
+	orientation	5 135 -10
+	scale		0.6 0.6 0.6
+}
+
+standard_object
+{
+	name		tropical_fish_inst_04
+	geometry	tropical_fish_geo2
+	material	tropical_fish_mat
+	position	1.3 1.6 1.7
+	orientation	-5 155 -5
+	scale		0.6 0.6 0.6
+}
+
+standard_object
+{
+	name		tropical_fish_inst_05
+	geometry	tropical_fish_geo2
+	material	tropical_fish_blue_mat
+	position	0.5 2.0 0.9
+	orientation	-10 110 5
+	scale		0.85 0.85 0.85
+}
+
+standard_object
+{
+	name		tropical_fish_inst_06
+	geometry	tropical_fish_geo2
+	material	tropical_fish_mat
+	position	0.5 0.9 -0.5
+	orientation	0 -80 -10
+	scale		0.65 0.65 0.65
+}
+
+standard_object
+{
+	name		tropical_fish_inst_07
+	geometry	tropical_fish_geo2
+	material	tropical_fish_mat
+	position	-0.2 1.1 0.2
+	orientation	0 110 5
+	scale		0.6 0.6 0.6
+}
+
+standard_object
+{
+	name		branching_coral_inst_01
+	geometry	branching_coral_geo
+	material	branching_coral_mat
+	position	-1.2 0.1 0.5
+	orientation	0 40 5
+	scale		1.3 1.3 1.3
+}
+
+standard_object
+{
+	name		branching_coral_inst_02
+	geometry	branching_coral_geo
+	material	branching_coral_mat
+	position	1.4 0.05 0.8
+	orientation	0 -60 -5
+	scale		1.5 1.5 1.5
+}
+
+standard_object
+{
+	name		branching_coral_inst_03
+	geometry	branching_coral_geo
+	material	branching_coral_mat
+	position	-0.5 0.05 -0.8
+	orientation	0 120 0
+	scale		1.1 1.1 1.1
+}
+
+standard_object
+{
+	name		branching_coral_inst_04
+	geometry	branching_coral_geo
+	material	branching_coral_mat
+	position	0.8 0.08 -0.3
+	orientation	0 -15 8
+	scale		1.2 1.2 1.2
+}
+
+standard_object
+{
+	name		branching_coral_inst_05
+	geometry	branching_coral_geo
+	material	branching_coral_mat
+	position	1.8 0.1 -1.0
+	orientation	0 85 0
+	scale		1.6 1.6 1.6
+}
+
+standard_object
+{
+	name		branching_coral_inst_06
+	geometry	branching_coral_geo
+	material	branching_coral_mat
+	position	-1.8 0.08 1.2
+	orientation	0 -45 0
+	scale		1.4 1.4 1.4
+}
+
+standard_object
+{
+	name		brain_coral_base_inst_01
+	geometry	brain_coral_base_geo
+	material	brain_coral_base_mat
+	position	-1.8 0.02 1.4
+	orientation	0 20 0
+	scale		0.9 0.9 0.9
+}
+
+standard_object
+{
+	name		brain_coral_dome_inst_01
+	geometry	brain_coral_dome_geo
+	material	brain_coral_dome_mat
+	position	-1.8 0.02 1.4
+	orientation	0 20 0
+	scale		0.9 0.9 0.9
+}
+
+standard_object
+{
+	name		brain_coral_base_inst_02
+	geometry	brain_coral_base_geo
+	material	brain_coral_base_mat
+	position	1.6 0.02 1.3
+	orientation	0 -50 0
+	scale		0.8 0.8 0.8
+}
+
+standard_object
+{
+	name		brain_coral_dome_inst_02
+	geometry	brain_coral_dome_geo
+	material	brain_coral_dome_mat
+	position	1.6 0.02 1.3
+	orientation	0 -50 0
+	scale		0.8 0.8 0.8
+}
+
+standard_object
+{
+	name		brain_coral_base_inst_03
+	geometry	brain_coral_base_geo
+	material	brain_coral_base_mat
+	position	-1.6 0.05 -0.4
+	orientation	0 75 0
+	scale		1.4 1.4 1.4
+}
+
+standard_object
+{
+	name		brain_coral_dome_inst_03
+	geometry	brain_coral_dome_geo
+	material	brain_coral_dome_mat
+	position	-1.6 0.05 -0.4
+	orientation	0 75 0
+	scale		1.4 1.4 1.4
+}
+
+standard_object
+{
+	name		brain_coral_base_inst_04
+	geometry	brain_coral_base_geo
+	material	brain_coral_base_mat
+	position	0.3 0.05 -1.2
+	orientation	0 -110 0
+	scale		1.0 1.0 1.0
+}
+
+standard_object
+{
+	name		brain_coral_dome_inst_04
+	geometry	brain_coral_dome_geo
+	material	brain_coral_dome_mat
+	position	0.3 0.05 -1.2
+	orientation	0 -110 0
+	scale		1.0 1.0 1.0
+}
+
+standard_object
+{
+	name		anemone_cluster_inst_01
+	geometry	anemone_cluster_geo
+	material	anemone_cluster_mat
+	position	-1.6 0.02 1.2
+	orientation	0 15 0
+	scale		0.65 0.65 0.65
+}
+
+standard_object
+{
+	name		anemone_cluster_inst_02
+	geometry	anemone_cluster_geo
+	material	anemone_cluster_mat
+	position	1.7 0.02 1.2
+	orientation	0 -70 0
+	scale		0.65 0.65 0.65
+}
+
+standard_object
+{
+	name		anemone_cluster_inst_03
+	geometry	anemone_cluster_geo
+	material	anemone_cluster_mat
+	position	-0.9 0.02 0.4
+	orientation	0 130 0
+	scale		0.75 0.75 0.75
+}
+
+standard_object
+{
+	name		anemone_cluster_inst_04
+	geometry	anemone_cluster_geo
+	material	anemone_cluster_mat
+	position	0.7 0.04 0.8
+	orientation	0 45 0
+	scale		0.9 0.9 0.9
+}
+
+standard_object
+{
+	name		anemone_cluster_inst_05
+	geometry	anemone_cluster_geo
+	material	anemone_cluster_mat
+	position	0.0 0.05 -0.6
+	orientation	0 -30 0
+	scale		1.0 1.0 1.0
+}
+
+standard_object
+{
+	name		seabed_rocks_inst_01
+	geometry	seabed_rocks_geo
+	material	seabed_rock_mat
+	position	-2.0 0.0 1.0
+	orientation	0 40 0
+	scale		1.3 1.3 1.3
+}
+
+standard_object
+{
+	name		seabed_rocks_inst_02
+	geometry	seabed_rocks_geo
+	material	seabed_rock_mat
+	position	2.2 0.0 1.2
+	orientation	0 -85 0
+	scale		0.85 0.85 0.85
+}
+
+standard_object
+{
+	name		seabed_rocks_inst_03
+	geometry	seabed_rocks_geo
+	material	seabed_rock_mat
+	position	0.4 0.0 -0.8
+	orientation	0 160 0
+	scale		1.5 1.5 1.5
+}
+
+standard_object
+{
+	name		seabed_rocks_inst_04
+	geometry	seabed_rocks_geo
+	material	seabed_rock_mat
+	position	-2.4 0.0 1.8
+	orientation	0 25 0
+	scale		0.8 0.8 0.8
+}
+
+standard_object
+{
+	name		seabed_shells_inst_01
+	geometry	seabed_shells_geo
+	material	seabed_shell_mat
+	position	0.15 0.02 1.9
+	orientation	-10 25 15
+	scale		1.4 1.4 1.4
+}
+
+standard_object
+{
+	name		seabed_shells_inst_02
+	geometry	seabed_shells_geo
+	material	seabed_shell_mat
+	position	-0.35 0.02 2.1
+	orientation	15 -45 -10
+	scale		1.3 1.3 1.3
+}
+
+standard_object
+{
+	name		seabed_shells_inst_03
+	geometry	seabed_shells_geo
+	material	seabed_shell_mat
+	position	0.6 0.02 2.2
+	orientation	5 70 20
+	scale		1.4 1.4 1.4
+}
+
+standard_object
+{
+	name		seabed_shells_inst_04
+	geometry	seabed_shells_geo
+	material	seabed_shell_mat
+	position	-1.2 0.02 2.2
+	orientation	0 -110 0
+	scale		0.9 0.9 0.9
+}

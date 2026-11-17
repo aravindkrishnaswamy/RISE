@@ -446,11 +446,12 @@ void applyPalette(QApplication& app);
 //        reference implementation.
 //
 // 5. QUEUED (never synchronous) row rebuilds for panels whose dynamic
-//    rows bake tokens (added 2026-07-23 review, P2 fix). Point 2 already
-//    forbids restyleTheme() from creating widgets -- several panels
-//    (OutlinerWidget, ViewportProperties, EnvironmentPanel) have rows
-//    that are torn down and rebuilt wholesale on every data refresh
-//    (rebuild() / rebuildPropertyRows()), baking Theme:: tokens into
+//    rows bake tokens (added 2026-07-23 review, P2 fix; scope corrected
+//    2026-08-18, see the exemption at the end of this point). Point 2
+//    already forbids restyleTheme() from creating widgets -- several
+//    panels (ViewportProperties, EnvironmentPanel) have rows that are
+//    torn down and rebuilt wholesale on every data refresh
+//    (rebuildPropertyRows() / rebuild()), baking Theme:: tokens into
 //    each row at BUILD time rather than reading them live in a
 //    paintEvent. Those panels correctly do NOT call their own
 //    rebuild-style method synchronously from restyleTheme() -- but the
@@ -466,9 +467,9 @@ void applyPalette(QApplication& app);
 //    destroying widgets is safe again. Two rules for what the queued
 //    lambda may call:
 //      (a) Prefer the CHEAPEST existing rebuild path that replays from
-//          members ALREADY CACHED on the panel (e.g. OutlinerWidget's
-//          m_entitiesByCategory, EnvironmentPanel's m_env/m_hasInfo) --
-//          never a method that pulls a fresh snapshot from the engine/
+//          members ALREADY CACHED on the panel (e.g. EnvironmentPanel's
+//          m_env/m_hasInfo) -- never a method that pulls a fresh
+//          snapshot from the engine/
 //          controller (e.g. ViewportBridge::propertySnapshot(), which
 //          calls RISE_API_SceneEditController_RefreshProperties and can
 //          block on the controller's commit mutex during a render).  If
@@ -486,6 +487,30 @@ void applyPalette(QApplication& app);
 //    A queued rebuild that loses a race with a real refresh()/rebuild()
 //    that runs first is a harmless no-op, not a hazard -- both replay
 //    idempotently from the same underlying state.
+//
+//    THE EXEMPTION, and the ONLY one: a panel whose rows are NOT WIDGETS
+//    -- drawn by a QStyledItemDelegate (or a paintEvent) that reads every
+//    Theme:: token, and every Theme::iconPixmap() tint, LIVE on each paint
+//    -- needs no queued rebuild and MUST NOT be given one. OutlinerWidget
+//    is the reference for this shape as of 87 step 4c (2026-08-18), which
+//    replaced its torn-down-and-rebuilt QWidget rows with a QTreeView +
+//    delegate; it therefore no longer appears in the list above, and the
+//    QTimer::singleShot(0, ...) follow-up it used to carry was REMOVED,
+//    not overlooked. Point 5's hazard is specifically "the theme switched
+//    while the viewport is idle and nothing re-triggers the panel", and
+//    for such a panel that hazard is closed at the source rather than
+//    deferred: restyleTheme() ends with an explicit
+//    <the row view>->viewport()->update(), and point 1 guarantees the
+//    QEvent::PaletteChange that calls restyleTheme() reaches every nested
+//    widget in the app, idle viewport or not. A repaint is the whole fix,
+//    it creates no widgets (so point 2 is satisfied synchronously), and it
+//    cannot lose a race with a concurrent refresh(). Requirements for
+//    claiming this exemption: (i) no row-construction path bakes a token,
+//    (ii) restyleTheme() still handles the panel's PERSISTENT CHROME the
+//    normal point-2 way, and (iii) it ends by explicitly repainting the
+//    row-drawing widget's viewport -- do not rely on Qt's own palette-
+//    driven update(), which only covers widgets whose RESOLVED palette
+//    actually changed.
 //
 // System mode: ThemeMode::System resolves to Dark or Light at apply
 // time via QGuiApplication::styleHints()->colorScheme() (added Qt 6.5;

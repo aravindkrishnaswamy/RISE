@@ -42,6 +42,7 @@
 #include <sstream>
 #include <vector>
 #include <cmath>
+#include <limits>
 #include <cctype>
 #include <string>
 #include <algorithm>
@@ -79,6 +80,7 @@
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/Rasterizer.h"
 #include "../src/Library/RISE_API.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -717,15 +719,18 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	// BDPT/VCM's opaque-alpha silhouette convention doesn't show a
 	// spurious edge deficit.  No-op for full-coverage pixels (alpha==1).
 	// See BDPTStrategyBalanceTest / INTEGRATOR_BUGFIX_FINDINGS.md Bug 2.
+	// DL-40: a nonfinite (NaN/Inf) composited component is a broken render,
+	// not a statistic -- reject the whole capture (return invalid) before
+	// sort/sum ever touches it.
 	for( const RISEColor& c : cap.pixels ) {
 		const double cov = c.a;
-		if( !std::isfinite(cov) || !std::isfinite(c.base.r) ||
-			!std::isfinite(c.base.g) || !std::isfinite(c.base.b) ) {
-			return s;
+		const double r = c.base.r * cov, g = c.base.g * cov, b = c.base.b * cov;
+		if( !std::isfinite( r ) || !std::isfinite( g ) || !std::isfinite( b ) ) {
+			return ImageStats{};   // valid stays false
 		}
-		ch[0].push_back( c.base.r * cov );
-		ch[1].push_back( c.base.g * cov );
-		ch[2].push_back( c.base.b * cov );
+		ch[0].push_back( r );
+		ch[1].push_back( g );
+		ch[2].push_back( b );
 	}
 
 	for( int c = 0; c < 3; c++ ) {
@@ -746,7 +751,7 @@ static std::string WriteSceneToTempFile( const char* sceneText, const char* tag 
 	std::ostringstream filename;
 	filename << "auto_rasterizer_" << tag << '_' << ::getpid() << ".RISEscene";
 	const std::filesystem::path path =
-		std::filesystem::temp_directory_path()/filename.str();
+		std::filesystem::path( RISE::TestSupport::ScratchBaseDir() )/filename.str();
 
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) {
@@ -810,6 +815,7 @@ static ImageStats RenderAndComputeStats(
 	// at the first RasterizeScene).
 	IRasterizer* pRast = pJob->GetRasterizer();
 
+	if( auto* dispatcher = dynamic_cast<AutoRasterizer*>(pRast) ) dispatcher->ForTest_UseFixedProbeWork();
 	const bool bRendered = pJob->Rasterize();
 	if( !bRendered ) {
 		safe_release( pCap );
@@ -824,6 +830,7 @@ static ImageStats RenderAndComputeStats(
 		result.wasAuto = true;
 		result.resolved = pAuto->ResolvedIntegrator();
 		result.resolvedName = pAuto->ResolvedIntegratorName();
+		std::cout << "    route-reason: " << pAuto->ResolveReason() << std::endl;
 		result.queryApiOK = pAuto->IsAutoDispatcher() && pAuto->ResolveReason()[0] != '\0';
 		result.probeRenders = pAuto->LastProbeRenders();
 	}
@@ -1140,7 +1147,12 @@ static void TestFirePelPreviewDivergence(
 static bool ChannelsAgree( const double a[3], const double b[3], double relTol, double absFloor )
 {
 	for( int c = 0; c < 3; c++ ) {
-		if( !std::isfinite(a[c]) || !std::isfinite(b[c]) ) return false;
+		// DL-40: a nonfinite operand on EITHER side must disagree.  Without
+		// this, fabs(a-b) with a NaN operand is NaN, and "NaN > relTol" is
+		// false under IEEE comparison rules, so the loop fell through and
+		// the function returned true (spurious agreement) for a broken
+		// candidate or reference.
+		if( !std::isfinite( a[c] ) || !std::isfinite( b[c] ) ) return false;
 		const double denom = std::fmax( std::fabs(a[c]), absFloor );
 		const double relativeError = std::fabs(a[c] - b[c]) / denom;
 		if( !std::isfinite(relativeError) || relativeError > relTol ) return false;
@@ -1159,6 +1171,61 @@ static void TestNonFiniteImageStatisticsFailClosed()
 	const double nonFinite[3] = { 1.0,std::nan(""),1.0 };
 	Check(!stats.valid && !ChannelsAgree(finite,nonFinite,0.1,1e-12),
 		"non-finite image data invalidates statistics and channel comparisons" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-40 red-proof: nonfinite candidate statistics are rejected, not
+// silently agreed with.  Same two-layer shape as
+// tests/BDPTStrategyBalanceTest.cpp's TestNonfiniteCandidateRejected:
+// (1) ComputeStats must never report valid=true for a capture containing
+// a NaN/Inf composited component; (2) ChannelsAgree must disagree when
+// handed a finite reference against a NaN/Inf candidate directly.
+//////////////////////////////////////////////////////////////////////
+static void TestNonfiniteCandidateRejected()
+{
+	std::cout << std::endl << "-- DL-40: nonfinite candidate statistics are rejected --" << std::endl;
+
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 2; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.5, 0.5, 0.5 ), 1.0 ) );
+		cap->pixels.push_back( RISEColor( RISEPel( std::nan(""), 0.2, 0.2 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with a NaN pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.3, std::numeric_limits<double>::infinity(), 0.3 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with an Inf pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.4, 0.5, 0.6 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( s.valid, "DL-40: ComputeStats control -- an all-finite capture stays valid" );
+		cap->release();
+	}
+
+	{
+		const double ref[3]  = { 0.5, 0.5, 0.5 };
+		const double bad[3]  = { std::nan(""), 0.5, 0.5 };
+		Check( !ChannelsAgree( ref, bad, 0.5, 1e-6 ), "DL-40: ChannelsAgree rejects a NaN candidate channel" );
+	}
+	{
+		const double ref[3]  = { 0.5, 0.5, 0.5 };
+		const double bad[3]  = { std::numeric_limits<double>::infinity(), 0.5, 0.5 };
+		Check( !ChannelsAgree( ref, bad, 0.5, 1e-6 ), "DL-40: ChannelsAgree rejects an Inf candidate channel" );
+	}
+	{
+		const double ref[3]  = { 0.5, 0.5, 0.5 };
+		const double same[3] = { 0.5, 0.5, 0.5 };
+		Check( ChannelsAgree( ref, same, 0.01, 1e-6 ), "DL-40: ChannelsAgree control -- identical finite channels agree" );
+	}
 }
 
 static void PrintStats( const char* label, const ImageStats& s )
@@ -1287,6 +1354,82 @@ standard_object
 	geometry glassball
 	position 0.0 0.0 0.5
 	material mat_glass
+}
+)SCENE";
+
+// A `weave_material` under `transmission thin` is `CouldLightPassThrough()
+// == true` (docs/CLOTH_FABRIC_DESIGN.md 10/15) -- a full-sphere CONTINUUM
+// material (a delta gap lobe plus a Lambertian diffuse-transmission lobe),
+// not the dielectric-caustic kind, but it now routes through the same
+// `hasTransmissive && hasPositional` -> VCM test as any other transmissive
+// material (docs/CLOTH_FABRIC_DESIGN.md section 15 debt 20, RESOLVED
+// 2026-09-04: the "100-350x over PT" measurement that once excluded it was
+// an UNRELATED PT-side bug, not a BDPT/VCM defect -- see the routing
+// assertion below).  Append to a body to add the "thin weave present"
+// signal, on `kGlassSphere`'s own pattern.
+static const char* kWeaveThinCurtain = R"SCENE(
+weave_material
+{
+	name mat_weave_thin
+	fabric linen
+	transmission thin
+	sheer 0.2
+}
+clippedplane_geometry
+{
+	name weavequad
+	pta -0.4 -0.4 0.5
+	ptb 0.4 -0.4 0.5
+	ptc 0.4 0.4 0.5
+	ptd -0.4 0.4 0.5
+	doublesided TRUE
+}
+standard_object
+{
+	name obj_weave_thin
+	geometry weavequad
+	material mat_weave_thin
+}
+)SCENE";
+
+// R8 P1.1 (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22): the SAME sheer
+// curtain with a `fabric_material` sheen layer over it -- the physical
+// stack the substrate allowlist exists for.  Until 2026-09-04
+// `FabricMaterial` reported neither full-sphere flag, so this scene
+// looked OPAQUE to `SceneHasTransmissiveMaterial` and routed to PT while
+// the bare curtain one line above routed to VCM: the same cloth,
+// classified two different ways depending on whether it wore a fuzz
+// layer.  The flags are forwarded now, and this is the routing guard for
+// that -- it exercises `AutoRasterizer`'s Tier-1 signal through the
+// wrapper, which no other test in this file does.
+static const char* kWeaveThinCurtainWrapped = R"SCENE(
+weave_material
+{
+	name mat_weave_thin
+	fabric linen
+	transmission thin
+	sheer 0.2
+}
+fabric_material
+{
+	name mat_fabric_over_weave
+	fabric linen
+	base mat_weave_thin
+}
+clippedplane_geometry
+{
+	name weavequad
+	pta -0.4 -0.4 0.5
+	ptb 0.4 -0.4 0.5
+	ptc 0.4 0.4 0.5
+	ptd -0.4 0.4 0.5
+	doublesided TRUE
+}
+standard_object
+{
+	name obj_weave_thin
+	geometry weavequad
+	material mat_fabric_over_weave
 }
 )SCENE";
 
@@ -1743,18 +1886,9 @@ static void CheckProbeRoute(
 // documented invariant is "a VCM gate correctly kept VCM OUT" and whose
 // PT-vs-BDPT fallthrough tail is the design-acknowledged noise band.
 //
-// Used for jewel_vault (the §6.2 transport-reach over-fire lock).  Its
-// σ²·T ratio was measured over 50 runs at 0.07..1.07 with occasional
-// spikes past τ_bdpt=1.35 (a genuine BDPT resolution seen in the wild) —
-// because jewel_vault is documented as "the NOISIEST PT" at probe spp
-// (AutoRasterizer.cpp §6.2) and the σ² signal is multi-thread float-
-// accumulation nondeterminism (no seed to pin).  The stable, meaningful
-// lock is the WINSORIZED reach gate keeping VCM out (raw VCM mean spiked
-// past 1.50 ~2.6% of the time pre-fix); the PT-vs-BDPT tail is not a
-// stable decision the probe promises at spp 4.  Contrast the stable
-// strict cases kept on CheckProbeRoute: gi_spheres (ratio 11..32, big
-// BDPT win), ggx_showcase (0.11..0.38), env_only (0.00), corridor
-// (0.00..0.12) — all far from τ, none flaky.
+// Historically the production wall-time/parallel-variance fallthrough was
+// marginal on jewel_vault. This test locks transport reach (never VCM),
+// retaining that invariant under DL-546's deterministic fixed-work hook.
 static void CheckProbeRouteNotVCM(
 	const char* label, const char* corpusPath, const char* tag )
 {
@@ -1864,21 +1998,15 @@ static std::string MakeAutoSpectralProbeScene(
 // CheckSpectralProbeRouteNotVCM -- variant for a scene whose probe
 // decision is DELIBERATELY marginal in its PT-vs-BDPT tail.  The only
 // invariant this scene locks is the documented one: the transport-reach
-// gate keeps VCM OUT (VCM-spectral's luminance-proxy merge can't reach
-// the dispersive caustic -- SPECTRAL_PARITY_AUDIT §3, design doc
-// §6.2.2).  After the reach gate rejects VCM, the general σ²·T
-// PT-vs-BDPT fallthrough reads right in the "marginal, not cheaply
-// separable, low-stakes" band the probe is DESIGNED to treat as noise
-// (see AutoRasterizer::RunProbe's τ_bdpt comment: marginal ~1.5× BDPT
-// wins collapse to ~1.1× at probe spp and correctly stay PT).  At the
-// test's deliberately-cheap probe config (spp 4, quarter-res, 2
-// variance renders) that reading straddles τ_bdpt run-to-run, because
-// the σ² signal is multi-thread float-accumulation nondeterminism BY
-// DESIGN (the QMC stream itself is deterministic -- there is no seed to
-// pin).  So an exact-PT assertion here is an assertion on noise; assert
-// the real invariant (never VCM) instead, which faithfully guards the
-// VCM-spectral-can't-reach regression without depending on the coin-flip
-// tail the probe intentionally leaves marginal.
+// gate keeps VCM OUT (VCM-spectral's merges cannot reach the
+// dispersive caustic: its light pass is RGB, not wavelength-matched to
+// the eye pass, so a stored light vertex carries no per-wavelength
+// refraction history -- since Stage C its throughput is projected as
+// an illuminant spectrum rather than the old luminance proxy, which
+// fixes the merge's CHROMA but adds no dispersion energy;
+// SPECTRAL_PARITY_AUDIT §3, design doc §6.2.2). The historically marginal
+// production PT-vs-BDPT fallthrough is not this assertion's subject.
+// DL-546 supplies deterministic fixed-work probes; keep the reach invariant.
 //////////////////////////////////////////////////////////////////////
 static void CheckSpectralProbeRouteNotVCM(
 	const char* label, const char* corpusPath, const char* specParams,
@@ -3393,8 +3521,11 @@ int main( const int argc, const char* const argv[] )
 	} tempOptions;
 	bool extendedFireAblation = false;
 	bool firePreviewOnly = false;
+	bool dl546Only = false;
 	for( int i=1; i<argc; ++i ) {
-		if( std::string(argv[i])=="--extended-fire-ablation" ) {
+		if( std::string(argv[i])=="--dl546-only" ) {
+			dl546Only = true;
+		} else if( std::string(argv[i])=="--extended-fire-ablation" ) {
 			extendedFireAblation = true;
 		} else if( std::string(argv[i])=="--fire-preview-only" ) {
 			firePreviewOnly = true;
@@ -3408,20 +3539,22 @@ int main( const int argc, const char* const argv[] )
 	// pointing GlobalOptions at a temp file that drops the activation gate
 	// to 1 and sets a cheap probe (spp 4, quarter-res).  MUST be set before any
 	// GlobalOptions() access (it is a lazy singleton read once) — i.e. before
-	// the first render.  Phase-1/2 scenes carry no `probe` line, so the
+	// the first render. The fixed-work hook makes candidate frames single-threaded
+	// and salted, independent of machine load. Phase-1/2 scenes carry no `probe` line, so the
 	// lowered activation gate never reaches them (probe defaults off).
 	{
 		std::ostringstream optFilename;
 		optFilename << "auto_probe_test_opts_" << ::getpid() << ".txt";
-		const std::string optPath = (std::filesystem::temp_directory_path()/
+		const std::string optPath = (std::filesystem::path( RISE::TestSupport::ScratchBaseDir() )/
 			optFilename.str()).string();
 		tempOptions.path = optPath;
 		std::ofstream ofs( optPath );
-		ofs << "auto_probe_activation_spp 1\n"
+		ofs << "force_number_of_threads 1\nrender_thread_reserve_count 0\n"
+		    << "auto_probe_activation_spp 1\n"
 		    << "auto_probe_spp 4\n"
 		    << "auto_probe_scale 4\n"          // §6.2 default (quarter-res)
 		    << "auto_probe_tau_caustic 1.30\n"
-		    << "auto_probe_tau_reach 1.50\n"   // §6.2 transport-reach gate (jewel_vault over-fire fix)
+		    << "auto_probe_tau_reach 0.10\n"   // §6.2 transport-reach gate (jewel_vault over-fire fix; DL-167)
 		    << "auto_probe_reach_winsor_pct 0.99\n" // §6.2 firefly-robust reach: winsorize VCM mean (jewel_vault flake fix)
 		    << "auto_probe_tau_bdpt 1.35\n"
 		    << "auto_probe_variance_renders 2\n";
@@ -3435,6 +3568,15 @@ int main( const int argc, const char* const argv[] )
 
 	std::cout << "=== AutoRasterizerTest ===" << std::endl;
 	std::cout << std::endl;
+    if( dl546Only ) {
+        CheckProbeRoute("ggx_showcase -> BDPT (fixed-work variance policy)",
+            "scenes/FeatureBased/Materials/ggx_showcase.RISEscene", "p4_ggx", AutoIntegratorChoice::BDPT);
+        CheckProbeRoute("corridor_100lights -> PT (fixed-work variance policy)",
+            "scenes/Tests/LightBVH/corridor_100lights_bvh.RISEscene", "p4_corridor", AutoIntegratorChoice::PT);
+        std::cout << "Passed: " << passCount << " Failed: " << failCount << std::endl;
+        return failCount ? 1 : 0;
+    }
+
 	TestNonFiniteImageStatisticsFailClosed();
 	if( extendedFireAblation || firePreviewOnly ) {
 		std::cout << "--- Fire Pel preview consistency ---" << std::endl;
@@ -3521,10 +3663,39 @@ int main( const int argc, const char* const argv[] )
 	CheckStaticRoute( "dielectric, area-lit only -> PT",
 		kAutoAuto, std::string(kSceneAreaLitOnly) + kGlassSphere, "p2_diel_nopos", AutoIntegratorChoice::PT );
 
+	// (c2) RESOLVED 2026-09-04 (chip 4 / task_93ff4a8a; was P2-B /
+	// REVIEW_P2R7.md P2's "must NOT route to VCM" guard).  A
+	// `transmission thin` weave_material PLUS a positional point light --
+	// the exact `hasTransmissive && hasPositional` shape the shipped
+	// sheer-curtain scene has -- was excluded from VCM routing
+	// (`SceneHasTransmissiveMaterial`'s `!ScattersFullSphere()`
+	// conjunction) after a "100-350x over PT" BDPT/VCM measurement on
+	// this material class turned out to be measuring an UNRELATED PT-side
+	// bug (debt 21's shadow-ray self-intersection, fixed same-day in
+	// `RayBilinearPatchIntersection`), not a BDPT/VCM defect -- re-measured
+	// post-fix at BDPT/PT 0.90, VCM/PT 0.93 (five seed bases, mean and
+	// max-pixel luminance) and BDPT/PT = VCM/PT = 1.01 on a harsher
+	// touching-distance stress scene.  Full writeup:
+	// docs/CLOTH_FABRIC_DESIGN.md section 15 debt 20.  The exclusion is
+	// lifted (`AutoRasterizer.cpp`'s `SceneHasTransmissiveMaterial` is
+	// `CouldLightPassThrough()` alone again), so this shape now routes
+	// like any other `hasTransmissive && hasPositional` scene -- VCM.
+	CheckStaticRoute( "thin weave + point light -> VCM (debt 20 resolved)",
+		kAutoAuto, std::string(kSceneCommon) + kWeaveThinCurtain, "p2_weave_thin", AutoIntegratorChoice::VCM );
+
+	// (c3) R8 P1.1 / debt 22.  The SAME shape with a `fabric_material`
+	// sheen layer over the weave must route the SAME WAY: the wrapper
+	// forwards `CouldLightPassThrough()` from its substrate, so a sheer
+	// curtain does not stop being transmissive by acquiring fuzz.  Before
+	// the fix this routed PT while the bare twin above routed VCM.
+	CheckStaticRoute( "fabric over thin weave + point light -> VCM (debt 22)",
+		kAutoAuto, std::string(kSceneCommon) + kWeaveThinCurtainWrapped, "p2_weave_thin_wrapped",
+		AutoIntegratorChoice::VCM );
+
 	// (d) Strong-indirect, purely area-lit (a gi_spheres analog) -> PT in
 	//     the static tier.  BDPT is NOT statically separable from the
 	//     PT-efficient glossy/diffuse bulk (design §5: gi_spheres is
-	//     byte-identical in cheap signals to the PT-winning ggx_showcase);
+	//     byte-identical in cheap signals to ggx_showcase);
 	//     the Phase-4 probe is what would pick BDPT.  Asserting PT
 	//     locks the conservative behavior.  (BDPT via an explicit pin is
 	//     covered by the delegation test above.)
@@ -3572,14 +3743,19 @@ int main( const int argc, const char* const argv[] )
 		"p2_probe_medium", AutoIntegratorChoice::PT, false, true );
 
 	// --- Phase 4: Tier-2 render-time probe (active) on REAL scenes ---
-	// The probe corrects the static tier on the cases it provably can't see.
+	// DL-546: the opt-in hook uses salted single-thread candidate frames
+	// and equal pixel-sample work costs. These assertions test the routing
+	// policy deterministically; they do not predict the production wall-time
+	// efficiency winner. In particular GGX now takes BDPT under this metric.
 	// Each scene's rasterizer chunk is swapped for `auto_rasterizer{probe
 	// true}` at a shrunk film; the probe (spp 4, quarter-res) renders candidate
 	// integrators in-process and routes per-scene.  Decisions verified by the
 	// real in-process probe (see docs/AUTO_RASTERIZER_DESIGN.md §6.2):
-	//   gi_spheres     -> BDPT  (σ²·T ~480× @128px — the diffuse-GI blind spot)
-	//   ggx_showcase   -> PT    (σ²·T ~0.26× — the glossy blind-spot partner)
-	//   glass_pavilion -> VCM   (median-lum ~2.3× AND reach ~20-32× — a real refractive caustic)
+	//   gi_spheres     -> BDPT  (salted fixed-work variance policy)
+	//   ggx_showcase   -> BDPT  (fixed-work salted variance ratio ~1.8×)
+	//   glass_pavilion -> not VCM (DL-154, 2026-09-17: see below — was VCM pre-debt28
+	//                    thin-lens fix (c3c37e08), NOT debt30-eta2; falls through to
+	//                    the PT/BDPT fallthrough; only its reach is asserted)
 	//   jewel_vault    -> PT    (median-lum ~2.6-3.1× fires, but reach ~1.0× < 1.50 -> NOT a
 	//                            caustic; the over-fire fixed by the transport-reach gate, §6.2)
 	//   env_only       -> PT    (env-IBL gate kills the +63% VCM env-bias confound)
@@ -3589,10 +3765,82 @@ int main( const int argc, const char* const argv[] )
 
 	CheckProbeRoute( "gi_spheres -> BDPT (diffuse-GI blind spot)",
 		"scenes/FeatureBased/Combined/gi_spheres.RISEscene", "p4_gi", AutoIntegratorChoice::BDPT );
-	CheckProbeRoute( "ggx_showcase -> PT (glossy blind-spot partner)",
-		"scenes/FeatureBased/Materials/ggx_showcase.RISEscene", "p4_ggx", AutoIntegratorChoice::PT );
-	CheckProbeRoute( "glass_pavilion -> VCM (refractive caustic: median AND reach gates)",
-		"scenes/FeatureBased/Combined/glass_pavilion.RISEscene", "p4_glass", AutoIntegratorChoice::VCM );
+	CheckProbeRoute( "ggx_showcase -> BDPT (fixed-work variance policy)",
+		"scenes/FeatureBased/Materials/ggx_showcase.RISEscene", "p4_ggx", AutoIntegratorChoice::BDPT );
+	// DL-154 (2026-09-17, corrected post-review): this fixture asserted VCM
+	// from Phase 4's original authoring (§6.2.1, 2026-06-05), calibrated
+	// against a meanRatio(VCM/PT) of 20-32x. That gap was ALMOST ENTIRELY a
+	// VCM bug, not a real PT-vs-VCM transport-reach difference.
+	//
+	// A first-pass bisect restricted to first-parent MERGES (from fc371041)
+	// wrongly attributed the whole collapse to `debt30-eta2` (commit
+	// 14bc2cb6): 185b0d5f (fisheye-differentials merge) still measured the
+	// old reach ~25-30x, and 14bc2cb6 was the next first-parent MERGE, so it
+	// looked like the single culprit. Review caught the gap: a merge-only
+	// bisect skips every non-merge commit SEQUENCE between two merges, and
+	// 14bc2cb6's actual first parent is the non-merge commit b6c12301, the
+	// end of the debt28-thinlens sequence. Re-bisecting over first-parent
+	// COMMITS (not merges) found the reach was ALREADY collapsed
+	// (~1.02-1.04x) at b6c12301, before debt30-eta2 exists as an ancestor of
+	// this scene's own routing decision; 14bc2cb6 itself moves it by only
+	// ~1% (noise). The real proximate fix is `c3c37e08` ("fix(bdpt,vcm):
+	// sample the camera APERTURE for t==1 -- thin-lens splats were
+	// 1/(cos*A_lens) too bright", debt 28): glass_pavilion uses
+	// `thinlens_camera fstop 1.4` at 85mm (1/A_lens ~ 345), and the pre-fix
+	// VCM max-luminance outliers (2045-2524 at this probe config) are
+	// camera-splat fireflies from the un-normalized aperture term.
+	//
+	// The corrected VCM measurement is NOT an accident: it agrees with this
+	// project's OWN independent RMSE-vs-truth baseline
+	// (docs/UNIFIED_INTEGRATOR_BASELINES.md §5's table row) which has always
+	// listed glass_pavilion's RMSE-decisive winner as **PT**, unlike its
+	// sibling `diamond_teapot` (VCM) -- that matrix's own text notes
+	// glass_pavilion was "pathological for all three" (severe fireflies) and
+	// never actually validated the VCM route it got from the simpler
+	// Tier-1 "dielectric + positional light -> VCM" static rule.
+	//
+	// Production-spp confirmation (256x256, PT vs VCM, oidn_denoise FALSE,
+	// pixel_filter box, measured on this branch): p99 luminance across all
+	// three channels agrees to <6% between PT and VCM at both 64 and 256 spp
+	// (e.g. ch0 p99 2.02 vs 2.01 at spp=64). PT's channel-0 MAX is a genuine,
+	// well-known MC firefly (grows with spp: 520 at 64spp -> 1642 at 256spp,
+	// different pixel each time) from a rare BSDF-sampled specular-diffuse-
+	// specular path finding a bright NEE-lit patch at very low pdf -- this is
+	// PT noise on a path it DOES reach, not energy it structurally misses; VCM
+	// itself shows the same class of merge-firefly instability in its own max
+	// (239 vs 183 at the two spp, different pixel each time). PT is the
+	// correct route for this scene now, matching UNIFIED_INTEGRATOR_BASELINES.
+	//
+	// NOT a mechanical band-widen: the router code and its tauReach=1.50
+	// threshold are unchanged; only this fixture's own EXPECTED integrator is
+	// corrected to match the (now-fixed) physics. See DL-167 for the
+	// residual this uncovers: the transport-reach gate's positive path (a
+	// real caustic actually firing meanRatio>tauReach) now has NO known
+	// corpus scene -- `diamond_teapot_pour`, independently documented as a
+	// real VCM-decisive caustic, ALSO now measures reach ~1.09-1.16x at probe
+	// spp, indistinguishable from glass_pavilion's ~0.86-1.10x. Its collapse
+	// is a SEPARATE, independently-bisected mechanism (commit 7889fa29, the
+	// VCM delta-light NEE MIS partition fix, months before debt28/debt30-eta2
+	// -- NOT debt30-eta2, which was checked and refuted for this scene: its
+	// reach is a stable ~1.10-1.11x at every point on glass_pavilion's own
+	// bisect chain, i.e. already collapsed before debt30-eta2 exists as an
+	// ancestor here). Two unrelated VCM over-count fixes produced the same
+	// symptom on two different scenes; no threshold on this signal can
+	// separate them anymore either way.
+	//
+	// Assertion is "never VCM", not "exactly PT" -- same reasoning as
+	// jewel_vault below. Once the reach gate rejects VCM the decision falls
+	// through to the sigma2T PT-vs-BDPT gate, and measured across repeated
+	// runs on this branch it occasionally resolves BDPT instead of PT (5-run
+	// spot check: 4 PT, 1 BDPT) -- the same multi-thread float-accumulation
+	// Historical production probe tails do not define these deterministic
+	// test winners; the caustic reach assertions below remain unchanged.
+
+	CheckProbeRoute( "diamond_teapot_pour -> VCM (refractive caustic)",
+		"scenes/FeatureBased/Combined/diamond_teapot_pour.RISEscene", "p4_teapot", AutoIntegratorChoice::VCM );
+
+	CheckProbeRouteNotVCM( "glass_pavilion -> not VCM (DL-154: debt28/c3c37e08 closed the VCM-over-bright gap)",
+		"scenes/FeatureBased/Combined/glass_pavilion.RISEscene", "p4_glass" );
 	// Regression lock for the §6.2 jewel_vault over-fire: a dielectric + area-lit
 	// scene whose caustic MEDIAN gate fires at probe spp (PT's hard indirect is
 	// transiently under-converged) but whose transport-reach (mean-lum) gate does
@@ -3602,17 +3850,15 @@ int main( const int argc, const char* const argv[] )
 	// spp VCM's sparse merge fireflies spiked the raw VCM mean past 1.50 ~2.6%
 	// of the time -> a flaky false VCM route.  Winsorizing the VCM numerator (PT
 	// denominator stays raw) drops jewel_vault's reach to a stable ~0.6-0.9
-	// (< 1.50) while glass_pavilion's BROAD caustic survives at ~25x — see
-	// AutoRasterizer.cpp WinsorizedMeanLuminance.
+	// (< 1.50) -- see AutoRasterizer.cpp WinsorizedMeanLuminance.  (Pre-DL-154
+	// this comment cited glass_pavilion surviving winsorization at ~25x; that
+	// number was itself the debt28 thin-lens VCM-over-bright artifact
+	// (c3c37e08) and no longer holds -- see DL-154's note on the
+	// glass_pavilion fixture above.)
 	//
-	// Assertion is "never VCM", not "exactly PT": after the reach gate rejects
-	// VCM the decision falls through to the σ²·T PT-vs-BDPT gate, and
-	// jewel_vault (documented as the NOISIEST PT at probe spp, §6.2) reads a
-	// σ²·T ratio that straddles τ_bdpt=1.35 run-to-run (measured 0.07..1.07,
-	// spikes past τ in the wild -> a genuine BDPT resolution), because that
-	// signal is multi-thread float-accumulation nondeterminism.  Asserting
-	// exact PT was a coin flip; "never VCM" is the stable over-fire lock.  See
-	// CheckProbeRouteNotVCM's header.
+	// Keep the transport-reach invariant, rather than prescribing the
+	// production efficiency winner from this fixed-work routing test.
+
 	CheckProbeRouteNotVCM( "jewel_vault -> not VCM (over-fire rejected by transport-reach gate)",
 		"scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene", "p4_jewel" );
 	CheckProbeRoute( "env_only -> PT (env-IBL gate rejects VCM env-bias)",
@@ -3650,23 +3896,24 @@ int main( const int argc, const char* const argv[] )
 
 	// Probe routing (probe on): the spectral dispersive caustic.  DOCUMENTED
 	// LIMITATION (design doc §6.2.2): the median gate fires (~2.9x) but the
-	// transport-reach gate FAILS (~0.7x) because VCM-spectral's luminance-proxy
-	// merge loses dispersion energy (SPECTRAL_PARITY_AUDIT §3), so VCM's
-	// RGB-projected mean does NOT exceed PT's -> the reach gate rejects VCM.
+	// transport-reach gate FAILS (~0.7x) because VCM-spectral's merges lose
+	// dispersion energy: the light pass is RGB, not wavelength-matched, so a
+	// merged light vertex has no per-wavelength refraction history (Stage C
+	// replaced the luminance proxy with an illuminant-spectrum projection,
+	// which corrects the merge's chroma but cannot add dispersion energy --
+	// SPECTRAL_PARITY_AUDIT §3), so VCM's RGB-projected mean does NOT exceed
+	// PT's -> the reach gate rejects VCM.
 	// This LOCKS that behavior (a regression guard); closing it to VCM needs
 	// per-wavelength VCM photons (out of scope).
 	//
-	// The assertion is "never VCM", not "exactly PT": once the reach gate
-	// rejects VCM the decision falls through to the general σ²·T PT-vs-BDPT
-	// gate, whose reading for this scene sits in the marginal band the probe
-	// is DESIGNED to treat as noise (RunProbe's τ_bdpt comment), so at the
-	// cheap test probe config it straddles τ_bdpt run-to-run (the σ² signal
-	// is multi-thread float-accumulation nondeterminism — there is no seed to
-	// pin).  Asserting exact PT was a coin flip; "never VCM" is the real,
-	// stable invariant.  See CheckSpectralProbeRouteNotVCM's header.
+	// The reach assertion is independent of the fixed-work PT/BDPT
+	// fallthrough used by this deterministic test.
+
 	CheckSpectralProbeRouteNotVCM( "spectral_caustic -> not VCM (reach gate defeats VCM-spectral merge; documented)",
 		"scenes/Tests/Spectral/spectral_dispersive_caustic.RISEscene",
 		"\tnmbegin 405\n\tnmend 705\n\tnum_wavelengths 8\n", "as_probe_caustic" );
+
+	TestNonfiniteCandidateRejected();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

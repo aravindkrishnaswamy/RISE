@@ -55,6 +55,11 @@ namespace RISE
 			/// \return The SPF for this material.  NULL If there is no SPF
 			inline ISPF* GetSPF() const override {			return pSPF; };
 
+			//! DL-471 (IMaterial::ConnectionScatterTypes): diffuse and glossy-reflection lobes only.
+			inline unsigned int ConnectionScatterTypes() const override { return ( 1u << ScatteredRay::eRayDiffuse ) | ( 1u << ScatteredRay::eRayReflection ); }
+			//! DL-481: its BSDF splits the connection value by its SPF's lobe labels (IBSDF::valueByScatterType).
+			inline bool HasConnectionTypeSplit() const override { return true; }
+
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const override {	return 0; };
 
@@ -70,7 +75,7 @@ namespace RISE
 					return 0;
 				}
 				return CreateIsotropicPhongContinuationClosurePel(
-					ri,pBRDF->GetRd().GetColor(ri),pBRDF->GetRs().GetColor(ri),
+					ri,ReflectanceColor(pBRDF->GetRd(),ri),ReflectanceColor(pBRDF->GetRs(),ri),
 					exponent.v[0],pathState);
 			}
 
@@ -80,8 +85,8 @@ namespace RISE
 				const ContinuationPathState& pathState ) const override
 			{
 				return CreateIsotropicPhongContinuationClosureNM(
-					ri,pBRDF->GetRd().GetColorNM(ri,nm),
-					pBRDF->GetRs().GetColorNM(ri,nm),
+					ri,ReflectanceColorNM(pBRDF->GetRd(),ri,nm),
+					ReflectanceColorNM(pBRDF->GetRs(),ri,nm),
 					pBRDF->GetExponent().GetValueAtNM(ri,nm),pathState);
 			}
 

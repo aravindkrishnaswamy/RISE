@@ -25,9 +25,28 @@
 //       applies to `vGeomNormal` / `vGeomNormal2` too.
 //
 //////////////////////////////////////////////////////////////////////
+//
+//  WHY THIS FILE USES A FAILURE TALLY AND NOT `assert`.
+//  It was written assert-only, which on the project's own DOCUMENTED
+//  WINDOWS PATH verifies NOTHING: build/cmake/rise-tests/CMakeLists.txt
+//  does not override CMAKE_CXX_FLAGS_RELEASE, MSVC's default for that
+//  config carries `/DNDEBUG`, and run_all_tests.ps1 defaults to
+//  `-Config Release`.  Under NDEBUG every `assert` compiles to nothing,
+//  so an INVERTED assertion still prints "Passed." and exits 0.
+//
+//  Worse than a silently-absent CHECK: several of the CSG tests build
+//  their scene with `assert( csg->AssignObjects( a, b ) )` — a
+//  SIDE-EFFECTING call sitting INSIDE the assert.  Under NDEBUG that
+//  call never runs at all, so the composite is never assigned its
+//  operands and every check downstream silently runs against an
+//  unassigned CSG object instead of failing loudly.  Every
+//  side-effecting call is therefore made on its own line here, with
+//  only its RESULT checked.
+//
+//////////////////////////////////////////////////////////////////////
 
-#include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <vector>
 
@@ -40,6 +59,9 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+static int g_pass = 0, g_fail = 0;
+static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; std::printf( "  FAIL: %s\n", w ); } }
 
 namespace
 {
@@ -86,19 +108,18 @@ void TestSphere_GeomEqualsShading()
 						nullRasterizerState );
 	Hit( pObj, ri.geometric.ray, ri );
 
-	assert( ri.geometric.bHit );
-	assert( IsUnit( ri.geometric.vNormal ) );
-	assert( IsUnit( ri.geometric.vGeomNormal ) );
-	assert( IsUnit( ri.geometric.vNormal2 ) );
-	assert( IsUnit( ri.geometric.vGeomNormal2 ) );
-	assert( VecClose( ri.geometric.vGeomNormal,  ri.geometric.vNormal ) );
-	assert( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ) );
+	Check( ri.geometric.bHit, "Sphere: ray hits the sphere" );
+	Check( IsUnit( ri.geometric.vNormal ), "Sphere: entry shading normal is unit length" );
+	Check( IsUnit( ri.geometric.vGeomNormal ), "Sphere: entry geometric normal is unit length" );
+	Check( IsUnit( ri.geometric.vNormal2 ), "Sphere: exit shading normal is unit length" );
+	Check( IsUnit( ri.geometric.vGeomNormal2 ), "Sphere: exit geometric normal is unit length" );
+	Check( VecClose( ri.geometric.vGeomNormal,  ri.geometric.vNormal ), "Sphere: entry vGeomNormal equals vNormal" );
+	Check( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ), "Sphere: exit vGeomNormal2 equals vNormal2" );
 	// Sanity: entry and exit on opposite poles
-	assert( VecClose( ri.geometric.vGeomNormal,  Vector3( 0, 0,  1 ) ) );
-	assert( VecClose( ri.geometric.vGeomNormal2, Vector3( 0, 0, -1 ) ) );
+	Check( VecClose( ri.geometric.vGeomNormal,  Vector3( 0, 0,  1 ) ), "Sphere: entry vGeomNormal is +Z pole" );
+	Check( VecClose( ri.geometric.vGeomNormal2, Vector3( 0, 0, -1 ) ), "Sphere: exit vGeomNormal2 is -Z pole" );
 
 	safe_release( pObj );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -118,14 +139,13 @@ void TestBox_GeomEqualsShading()
 						nullRasterizerState );
 	Hit( pObj, ri.geometric.ray, ri );
 
-	assert( ri.geometric.bHit );
-	assert( VecClose( ri.geometric.vGeomNormal,  ri.geometric.vNormal ) );
-	assert( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ) );
-	assert( VecClose( ri.geometric.vGeomNormal,  Vector3( 0, 0,  1 ) ) );
-	assert( VecClose( ri.geometric.vGeomNormal2, Vector3( 0, 0, -1 ) ) );
+	Check( ri.geometric.bHit, "Box: ray hits the box" );
+	Check( VecClose( ri.geometric.vGeomNormal,  ri.geometric.vNormal ), "Box: entry vGeomNormal equals vNormal" );
+	Check( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ), "Box: exit vGeomNormal2 equals vNormal2" );
+	Check( VecClose( ri.geometric.vGeomNormal,  Vector3( 0, 0,  1 ) ), "Box: entry vGeomNormal is +Z face" );
+	Check( VecClose( ri.geometric.vGeomNormal2, Vector3( 0, 0, -1 ) ), "Box: exit vGeomNormal2 is -Z face" );
 
 	safe_release( pObj );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -184,21 +204,20 @@ void TestMesh_GeomDistinctFromShading()
 						nullRasterizerState );
 	Hit( pObj, ri.geometric.ray, ri, false );
 
-	assert( ri.geometric.bHit );
-	assert( IsUnit( ri.geometric.vNormal ) );
-	assert( IsUnit( ri.geometric.vGeomNormal ) );
+	Check( ri.geometric.bHit, "Mesh: ray hits the triangle" );
+	Check( IsUnit( ri.geometric.vNormal ), "Mesh: shading normal is unit length" );
+	Check( IsUnit( ri.geometric.vGeomNormal ), "Mesh: geometric normal is unit length" );
 
 	// Geometric normal must be exactly the face normal (+Y).
-	assert( VecClose( ri.geometric.vGeomNormal, Vector3( 0, 1, 0 ) ) );
+	Check( VecClose( ri.geometric.vGeomNormal, Vector3( 0, 1, 0 ) ), "Mesh: geometric normal is the flat face normal (+Y)" );
 
 	// Shading normal must DIFFER from the geometric normal at this
 	// off-center sample (otherwise the test isn't meaningful).
 	const Scalar diff = std::fabs( ri.geometric.vNormal.x - ri.geometric.vGeomNormal.x )
 					  + std::fabs( ri.geometric.vNormal.z - ri.geometric.vGeomNormal.z );
-	assert( diff > 1e-3 );
+	Check( diff > 1e-3, "Mesh: Phong shading normal differs from geometric normal at off-center hit" );
 
 	safe_release( pObj );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -226,19 +245,18 @@ void TestObject_TransformsGeomNormals()
 						nullRasterizerState );
 	Hit( pObj, ri.geometric.ray, ri );
 
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Object-transform: ray hits the translated sphere" );
 
 	// Entry normal must point from the sphere center toward (3,4,6)
 	// in world space → (0,0,+1).  Exit normal → (0,0,-1).
-	assert( VecClose( ri.geometric.vGeomNormal,  Vector3( 0, 0,  1 ) ) );
-	assert( VecClose( ri.geometric.vGeomNormal2, Vector3( 0, 0, -1 ) ) );
+	Check( VecClose( ri.geometric.vGeomNormal,  Vector3( 0, 0,  1 ) ), "Object-transform: entry vGeomNormal is world +Z" );
+	Check( VecClose( ri.geometric.vGeomNormal2, Vector3( 0, 0, -1 ) ), "Object-transform: exit vGeomNormal2 is world -Z" );
 
 	// And of course they still equal the shading normals.
-	assert( VecClose( ri.geometric.vGeomNormal,  ri.geometric.vNormal ) );
-	assert( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ) );
+	Check( VecClose( ri.geometric.vGeomNormal,  ri.geometric.vNormal ), "Object-transform: entry vGeomNormal equals vNormal" );
+	Check( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ), "Object-transform: exit vGeomNormal2 equals vNormal2" );
 
 	safe_release( pObj );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -267,7 +285,8 @@ void TestCSG_Subtraction_FlippedGeomNormal()
 	oB->FinalizeTransformations();
 
 	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
-	assert( csg->AssignObjects( oA, oB ) );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "CSG-Subtraction: the composite takes both operands" );
 	csg->FinalizeTransformations();
 
 	// Ray enters from +Z along -Z, axis-aligned.  It enters A at z=+1,
@@ -308,19 +327,19 @@ void TestCSG_Subtraction_FlippedGeomNormal()
 		Ray r( Point3( -5, 0, 0.7 ), Vector3( 1, 0, 0 ) );
 		RayIntersection ri( r, nullRasterizerState );
 		Hit( csg, r, ri );
-		assert( ri.geometric.bHit );
+		Check( ri.geometric.bHit, "CSG-Subtraction: ray hits the composite (entry-A/exit-B case)" );
 
 		// Entry: A's outer surface at x ≈ -0.714, normal ≈ (-x,0,0)
 		// in object space, here world == object since CSG identity transform.
 		// Just verify entry geom == shading.
-		assert( VecClose( ri.geometric.vGeomNormal, ri.geometric.vNormal ) );
+		Check( VecClose( ri.geometric.vGeomNormal, ri.geometric.vNormal ), "CSG-Subtraction: entry vGeomNormal equals vNormal (A's outer surface)" );
 
 		// Exit: when the ray hits B's near surface at x=-0.6,
 		// composite (A-B) ends; the exit normal is -vNormal_B.
 		// vNormal_B at that point = (-0.6, 0, 0)/0.6 = (-1, 0, 0),
 		// so exit vNormal2 (and vGeomNormal2) = -(-1,0,0) = (+1, 0, 0).
-		assert( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ) );
-		assert( VecClose( ri.geometric.vGeomNormal2, Vector3( 1, 0, 0 ) ) );
+		Check( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ), "CSG-Subtraction: exit vGeomNormal2 equals vNormal2 (flipped B surface)" );
+		Check( VecClose( ri.geometric.vGeomNormal2, Vector3( 1, 0, 0 ) ), "CSG-Subtraction: exit vGeomNormal2 is flipped B normal (+1,0,0)" );
 	}
 
 	// Now fire a ray that starts INSIDE the carved hole of A:
@@ -332,21 +351,20 @@ void TestCSG_Subtraction_FlippedGeomNormal()
 		Ray r( Point3( 0, 0, 0.7 ), Vector3( 1, 0, 0 ) );
 		RayIntersection ri( r, nullRasterizerState );
 		Hit( csg, r, ri );
-		assert( ri.geometric.bHit );
+		Check( ri.geometric.bHit, "CSG-Subtraction: ray hits the composite (inside-carve case)" );
 
 		// We exit B at x = +0.6.  The B normal at (0.6, 0, 0) (object
 		// space of B, which is offset to (0,0,0.7) in CSG space — but
 		// here normal is from sphere center, which after offset is
 		// still (1, 0, 0) on the local x-axis since the offset is in Z).
 		// So composite vNormal = -B_normal = (-1, 0, 0).
-		assert( VecClose( ri.geometric.vGeomNormal, ri.geometric.vNormal ) );
-		assert( VecClose( ri.geometric.vGeomNormal, Vector3( -1, 0, 0 ) ) );
+		Check( VecClose( ri.geometric.vGeomNormal, ri.geometric.vNormal ), "CSG-Subtraction: entry vGeomNormal equals vNormal (flipped B, inside-carve case)" );
+		Check( VecClose( ri.geometric.vGeomNormal, Vector3( -1, 0, 0 ) ), "CSG-Subtraction: entry vGeomNormal is flipped B normal (-1,0,0)" );
 	}
 
 	safe_release( csg );
 	safe_release( oA );
 	safe_release( oB );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -372,7 +390,8 @@ void TestCSG_Intersection_GeomFollowsShading()
 	oB->FinalizeTransformations();
 
 	CSGObject* csg = new CSGObject( CSG_INTERSECTION );
-	assert( csg->AssignObjects( oA, oB ) );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "CSG-Intersection: the composite takes both operands" );
 	csg->FinalizeTransformations();
 
 	// Ray from -X along +X, straight through the origin.
@@ -384,22 +403,21 @@ void TestCSG_Intersection_GeomFollowsShading()
 	Ray r( Point3( -10, 0, 0 ), Vector3( 1, 0, 0 ) );
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "CSG-Intersection: ray hits the composite" );
 
 	// Entry world-space point: (-0.5, 0, 0) → on B's surface.
 	// B's center is (0.5, 0, 0); normal = (-0.5 - 0.5, 0, 0) / 1 = (-1, 0, 0).
-	assert( VecClose( ri.geometric.vGeomNormal, ri.geometric.vNormal ) );
-	assert( VecClose( ri.geometric.vGeomNormal, Vector3( -1, 0, 0 ) ) );
+	Check( VecClose( ri.geometric.vGeomNormal, ri.geometric.vNormal ), "CSG-Intersection: entry vGeomNormal equals vNormal (later child, B)" );
+	Check( VecClose( ri.geometric.vGeomNormal, Vector3( -1, 0, 0 ) ), "CSG-Intersection: entry vGeomNormal is B's surface normal" );
 
 	// Exit world-space point: (+0.5, 0, 0) → on A's surface.
 	// A's center is (-0.5, 0, 0); normal = (0.5 - (-0.5), 0, 0) / 1 = (+1, 0, 0).
-	assert( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ) );
-	assert( VecClose( ri.geometric.vGeomNormal2, Vector3( 1, 0, 0 ) ) );
+	Check( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ), "CSG-Intersection: exit vGeomNormal2 equals vNormal2 (earlier child, A)" );
+	Check( VecClose( ri.geometric.vGeomNormal2, Vector3( 1, 0, 0 ) ), "CSG-Intersection: exit vGeomNormal2 is A's surface normal" );
 
 	safe_release( csg );
 	safe_release( oA );
 	safe_release( oB );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -427,7 +445,8 @@ void TestCSG_Union_ExitPromotion()
 	oB->FinalizeTransformations();
 
 	CSGObject* csg = new CSGObject( CSG_UNION );
-	assert( csg->AssignObjects( oA, oB ) );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "CSG-Union-exit: the composite takes both operands" );
 	csg->FinalizeTransformations();
 
 	// Ray from -X along +X, same as intersection test.
@@ -437,11 +456,11 @@ void TestCSG_Union_ExitPromotion()
 	Ray r( Point3( -10, 0, 0 ), Vector3( 1, 0, 0 ) );
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "CSG-Union-exit: ray hits the composite (axis-aligned case)" );
 
 	// Entry: A's near pole at (-1.5, 0, 0) → normal (-1, 0, 0).
-	assert( VecClose( ri.geometric.vGeomNormal, ri.geometric.vNormal ) );
-	assert( VecClose( ri.geometric.vGeomNormal, Vector3( -1, 0, 0 ) ) );
+	Check( VecClose( ri.geometric.vGeomNormal, ri.geometric.vNormal ), "CSG-Union-exit: entry vGeomNormal equals vNormal (A's near pole)" );
+	Check( VecClose( ri.geometric.vGeomNormal, Vector3( -1, 0, 0 ) ), "CSG-Union-exit: entry vGeomNormal is A's near-pole normal" );
 
 	// Exit: B's far pole at (+1.5, 0, 0).  B center (+0.5,0,0),
 	// normal = (1.5 - 0.5, 0, 0) / 1 = (+1, 0, 0).
@@ -449,7 +468,7 @@ void TestCSG_Union_ExitPromotion()
 	// `-entryGeomNormal` = (+1,0,0) which would coincidentally match,
 	// so make this case more discriminating: aim the ray off-axis
 	// so the "fabricated" answer would be wrong.
-	assert( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ) );
+	Check( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ), "CSG-Union-exit: exit vGeomNormal2 equals vNormal2 (B's far pole)" );
 
 	// Now an off-axis ray to confirm the geom normal isn't just an
 	// echo of the entry normal.
@@ -457,34 +476,33 @@ void TestCSG_Union_ExitPromotion()
 		Ray r2( Point3( -10, 0.3, 0 ), Vector3( 1, 0, 0 ) );
 		RayIntersection ri2( r2, nullRasterizerState );
 		Hit( csg, r2, ri2 );
-		assert( ri2.geometric.bHit );
+		Check( ri2.geometric.bHit, "CSG-Union-exit: ray hits the composite (off-axis case)" );
 
 		// Entry on A: world point (xA, 0.3, 0) where xA = -0.5 - sqrt(1 - 0.09).
 		const Scalar dx = std::sqrt( 1.0 - 0.09 );
 		const Scalar xA_entry = -0.5 - dx;
 		const Vector3 nA_entry = Vector3Ops::Normalize(
 			Vector3( xA_entry - (-0.5), 0.3, 0 ) );
-		assert( VecClose( ri2.geometric.vGeomNormal, ri2.geometric.vNormal ) );
-		assert( VecClose( ri2.geometric.vGeomNormal, nA_entry, 1e-4 ) );
+		Check( VecClose( ri2.geometric.vGeomNormal, ri2.geometric.vNormal ), "CSG-Union-exit: off-axis entry vGeomNormal equals vNormal" );
+		Check( VecClose( ri2.geometric.vGeomNormal, nA_entry, 1e-4 ), "CSG-Union-exit: off-axis entry vGeomNormal matches computed A entry normal" );
 
 		// Exit on B: world point (xB, 0.3, 0) where xB = +0.5 + sqrt(1 - 0.09).
 		const Scalar xB_exit = +0.5 + dx;
 		const Vector3 nB_exit = Vector3Ops::Normalize(
 			Vector3( xB_exit - 0.5, 0.3, 0 ) );
 
-		assert( VecClose( ri2.geometric.vGeomNormal2, ri2.geometric.vNormal2 ) );
-		assert( VecClose( ri2.geometric.vGeomNormal2, nB_exit, 1e-4 ) );
+		Check( VecClose( ri2.geometric.vGeomNormal2, ri2.geometric.vNormal2 ), "CSG-Union-exit: off-axis exit vGeomNormal2 equals vNormal2" );
+		Check( VecClose( ri2.geometric.vGeomNormal2, nB_exit, 1e-4 ), "CSG-Union-exit: off-axis exit vGeomNormal2 matches computed B exit normal" );
 
 		// Negative check: confirm the prior buggy `-entryGeomNormal`
 		// answer would have been WRONG here.
 		const Vector3 fabricated = Vector3( -nA_entry.x, -nA_entry.y, -nA_entry.z );
-		assert( !VecClose( ri2.geometric.vGeomNormal2, fabricated, 1e-3 ) );
+		Check( !VecClose( ri2.geometric.vGeomNormal2, fabricated, 1e-3 ), "CSG-Union-exit: exit vGeomNormal2 is NOT the fabricated -entryGeomNormal value" );
 	}
 
 	safe_release( csg );
 	safe_release( oA );
 	safe_release( oB );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -526,17 +544,18 @@ void TestCSG_WorldTransform()
 	// normals as a sanity baseline.
 	{
 		CSGObject* csgNoTx = new CSGObject( CSG_UNION );
-		assert( csgNoTx->AssignObjects( oA, oB ) );
+		const bool noTxAssigned = csgNoTx->AssignObjects( oA, oB );
+		Check( noTxAssigned, "CSG-WorldTransform: (baseline) the no-transform composite takes both operands" );
 		csgNoTx->FinalizeTransformations();
 
 		Ray r( Point3( -10, 0.3, 0 ), Vector3( 1, 0, 0 ) );
 		RayIntersection ri( r, nullRasterizerState );
 		Hit( csgNoTx, r, ri );
-		assert( ri.geometric.bHit );
-		assert( IsUnit( ri.geometric.vGeomNormal ) );
-		assert( IsUnit( ri.geometric.vGeomNormal2 ) );
-		assert( VecClose( ri.geometric.vGeomNormal,  ri.geometric.vNormal ) );
-		assert( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ) );
+		Check( ri.geometric.bHit, "CSG-WorldTransform: (baseline) ray hits the untransformed composite" );
+		Check( IsUnit( ri.geometric.vGeomNormal ), "CSG-WorldTransform: (baseline) vGeomNormal is unit length" );
+		Check( IsUnit( ri.geometric.vGeomNormal2 ), "CSG-WorldTransform: (baseline) vGeomNormal2 is unit length" );
+		Check( VecClose( ri.geometric.vGeomNormal,  ri.geometric.vNormal ), "CSG-WorldTransform: (baseline) entry vGeomNormal equals vNormal" );
+		Check( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ), "CSG-WorldTransform: (baseline) exit vGeomNormal2 equals vNormal2" );
 		safe_release( csgNoTx );
 	}
 
@@ -545,7 +564,8 @@ void TestCSG_WorldTransform()
 	// the m_mxInvTranspose world-transform step.
 	{
 		CSGObject* csgTx = new CSGObject( CSG_UNION );
-		assert( csgTx->AssignObjects( oA, oB ) );
+		const bool txAssigned = csgTx->AssignObjects( oA, oB );
+		Check( txAssigned, "CSG-WorldTransform: the rotated composite takes both operands" );
 		csgTx->SetOrientation( Vector3( 0, kThirtyDeg, 0 ) );
 		csgTx->FinalizeTransformations();
 
@@ -555,13 +575,13 @@ void TestCSG_WorldTransform()
 		Ray r( Point3( -10, 0.3, 0 ), Vector3( 1, 0, 0 ) );
 		RayIntersection ri( r, nullRasterizerState );
 		Hit( csgTx, r, ri );
-		assert( ri.geometric.bHit );
+		Check( ri.geometric.bHit, "CSG-WorldTransform: ray hits the rotated composite" );
 
 		// Convention-independent claims:
-		assert( IsUnit( ri.geometric.vGeomNormal ) );
-		assert( IsUnit( ri.geometric.vGeomNormal2 ) );
-		assert( VecClose( ri.geometric.vGeomNormal,  ri.geometric.vNormal  ) );
-		assert( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ) );
+		Check( IsUnit( ri.geometric.vGeomNormal ), "CSG-WorldTransform: rotated vGeomNormal is unit length" );
+		Check( IsUnit( ri.geometric.vGeomNormal2 ), "CSG-WorldTransform: rotated vGeomNormal2 is unit length" );
+		Check( VecClose( ri.geometric.vGeomNormal,  ri.geometric.vNormal  ), "CSG-WorldTransform: rotated entry vGeomNormal equals vNormal" );
+		Check( VecClose( ri.geometric.vGeomNormal2, ri.geometric.vNormal2 ), "CSG-WorldTransform: rotated exit vGeomNormal2 equals vNormal2" );
 
 		// The transform is non-identity (we rotated 30°), so the geom
 		// normal is no longer along world ±X.  Confirm the rotation
@@ -569,15 +589,15 @@ void TestCSG_WorldTransform()
 		const Scalar offAxis =
 			std::fabs( ri.geometric.vGeomNormal.y ) +
 			std::fabs( ri.geometric.vGeomNormal.z );
-		assert( offAxis > 1e-3 ||
-				std::fabs( std::fabs( ri.geometric.vGeomNormal.x ) - 1.0 ) > 1e-3 );
+		Check( offAxis > 1e-3 ||
+				std::fabs( std::fabs( ri.geometric.vGeomNormal.x ) - 1.0 ) > 1e-3,
+			   "CSG-WorldTransform: rotation actually moved vGeomNormal off world ±X (non-identity transform)" );
 
 		safe_release( csgTx );
 	}
 
 	safe_release( oA );
 	safe_release( oB );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -596,17 +616,15 @@ void TestRayIntersectionGeometric_CopySemantics()
 
 	// Copy ctor
 	RayIntersectionGeometric b( a );
-	assert( VecClose( b.vGeomNormal,  Vector3( 0, 0, 1 ) ) );
-	assert( VecClose( b.vGeomNormal2, Vector3( 1, 1, 0 ) ) );
+	Check( VecClose( b.vGeomNormal,  Vector3( 0, 0, 1 ) ), "RayIntersectionGeometric-copy: copy-ctor preserves vGeomNormal" );
+	Check( VecClose( b.vGeomNormal2, Vector3( 1, 1, 0 ) ), "RayIntersectionGeometric-copy: copy-ctor preserves vGeomNormal2" );
 
 	// op=
 	RayIntersectionGeometric c( Ray( Point3(0,0,0), Vector3(1,0,0) ),
 								nullRasterizerState );
 	c = a;
-	assert( VecClose( c.vGeomNormal,  Vector3( 0, 0, 1 ) ) );
-	assert( VecClose( c.vGeomNormal2, Vector3( 1, 1, 0 ) ) );
-
-	std::cout << "  Passed." << std::endl;
+	Check( VecClose( c.vGeomNormal,  Vector3( 0, 0, 1 ) ), "RayIntersectionGeometric-copy: operator= preserves vGeomNormal" );
+	Check( VecClose( c.vGeomNormal2, Vector3( 1, 1, 0 ) ), "RayIntersectionGeometric-copy: operator= preserves vGeomNormal2" );
 }
 
 int main()
@@ -620,6 +638,6 @@ int main()
 	TestCSG_Intersection_GeomFollowsShading();
 	TestCSG_Union_ExitPromotion();
 	TestCSG_WorldTransform();
-	std::cout << "\nAll GeometricNormalPlumbingTest cases passed." << std::endl;
-	return 0;
+	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
+	return g_fail == 0 ? 0 : 1;
 }

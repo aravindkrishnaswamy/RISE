@@ -29,6 +29,7 @@ namespace RISE
 			IReadBuffer&		pReadBuffer;
 			unsigned char*		pBuffer;
 			unsigned int		bufW;
+			unsigned int		bufH;
 			COLOR_SPACE			color_space;
 
 		public:

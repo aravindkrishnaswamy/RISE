@@ -1,0 +1,74 @@
+RISE ASCII SCENE 7
+# Coverage: modifier_stack (ordered composition of modifiers).
+# Exercises the chunk's grammar: two repeatable `modifier` members, a
+# relief_modifier applied FIRST and a glint_modifier applied LAST -- the
+# recommended "... -> glint" order from docs/RELIEF_MODIFIER_DESIGN.md
+# section 4 (glint replaces the normal with a facet normal drawn about
+# the CURRENT one, so it must see the final smooth frame).
+#
+# See docs/RELIEF_MODIFIER_DESIGN.md section 4.  This scene exists to
+# cover the chunk's grammar, not to be looked at.
+
+film
+{
+	width		64
+	height		64
+}
+
+scalar_painter
+{
+	name		cc_stack_height
+	expression	fbm(P*9.0, 4, 0.5, 2.0)
+}
+
+relief_modifier
+{
+	name		cc_stack_relief
+	height		cc_stack_height
+	scale		-0.2
+	domain		surface
+	step		0.002
+}
+
+glint_modifier
+{
+	name		cc_stack_glint
+	density		5.0
+	coverage	0.15
+	fill		0.6
+	spread		2.0
+}
+
+modifier_stack
+{
+	name		cc_stack
+	modifier	cc_stack_relief
+	modifier	cc_stack_glint
+}
+
+sphere_geometry
+{
+	name		cc_stack_sphere
+	radius		1.0
+}
+
+uniformcolor_painter
+{
+	name		cc_stack_albedo
+	color		0.72 0.66 0.58
+}
+
+lambertian_material
+{
+	name		cc_stack_mat
+	reflectance	cc_stack_albedo
+}
+
+standard_object
+{
+	name		cc_stack_object
+	geometry	cc_stack_sphere
+	material	cc_stack_mat
+	modifier	cc_stack
+	position	0 0 0
+}

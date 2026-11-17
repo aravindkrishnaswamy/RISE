@@ -1,0 +1,402 @@
+# Node-Graph Canvas (doc-88 Phase 3 / MATERIAL_EDITOR C2)
+
+**Material Editor Slice 5 shipped (2026-10-31):** Material nodes (`category == 2`)
+on both `NodeGraphCanvas.swift` (macOS) and `NodeGraphCanvas.{h,cpp}` (Windows)
+now render live 40×40 3D studio shaderball thumbnails via the shared
+`MaterialPreview` engine (`src/Library/SceneEditor/MaterialPreview.{h,cpp}`),
+alongside the existing 2D `PainterPreview` swatches on Painter nodes. In addition,
+both desktop shells ship the sibling **`ObjectGraphCanvas`** (see §ObjectGraphCanvas
+below) over Objects, Geometry, and CSG/instancing wires.
+
+**Material Editor Slice 4 shipped (2026-10-31):** Both desktop graph canvases
+colour input sockets, output handles and connected wires by pipe: Color gold,
+Scalar neutral grey, Material green and Function purple; dual Color/Scalar
+rotation inputs have a grey outer ring. Material sockets use the green success
+tint; category headers retain their existing lavender material tint. Eligible Color → Scalar refusals offer
+**Insert scalar_painter Adapter & Wire**. The shared controller inserts an
+R-channel adapter immediately after its upstream source (`texture` for PNG,
+JPG, HDR, EXR and TIFF; `painter` for other Color-capable painters, including
+`piecewise_linear_function`) and rewires the slot in one operation-level undo
+batch. Declaration order, cycle, occurrence, ownership, edit-addressing, scalar-form,
+transaction and head-version gates apply to both the offer and insertion;
+Undo/Redo preserves unrelated document edits. Metadata and edits are
+exposed through the C ABI and both bulk desktop bridges. Bulk reads report
+snapshot freshness, so contended reads retry without closing the epoch gate
+or losing pending adapter selection. A manual node selection cancels that pending
+selection. Expression sample ports carry the call's Color/Scalar pipe (including
+dangling calls); `piecewise_linear_function2d.cp` ports carry Function1D. Windows/MSVC
+build
+verification remains owed on a Windows host.
+
+**Status: SHIPPED — S11 through S23 all complete (2026-08-20 → 2026-08-21).**
+All six design calls landed as approved: C1 two-level model (defs = internal
+stage strip), C2 sidecar layout, C3 read-only Phase A then editable Phase B
+immediately after, C4 shared headless C++ core + thin per-platform widgets,
+C5 rank-by-dependency layout, C6 the full S11-S23 plan.  This doc supersedes
+MATERIAL_EDITOR.md §3/§3.7/§3.8 as the load-bearing spec (those sections
+remain as original rationale).
+
+**Per-slice commit hashes** (`git log --oneline -- docs/gui/NODE_GRAPH_CANVAS.md`
+and the slice-tagged commit subjects are the source of truth; re-derive if
+this list ever drifts):
+
+| Slice | Commit | Subject |
+|---|---|---|
+| S11 | `c0528b06` | SceneReferenceGraph + painter/material DAG assembler |
+| S12+S13 | `4b581337` | graph layout core + layout sidecar |
+| S14 | `fde6ca2b` | laid-out graph snapshot through both bridges |
+| S15 | `33fd0431` | read-only node-graph canvas (Mac) |
+| S16 | `0397cbad` | Qt node canvas, read-only half (carried with S22, see below) |
+| S17 | `3ebd7c5a` | connection-legality validator + `ParameterSemantics.pipe` |
+| S18 | `fb4ab2ca` | structured chunk-node creation |
+| S19 | `a7335877` | ownership-closure rewrite + REFUSE path |
+| S20 | `8c1a994c` | reference-safe delete, positioned duplicate, cycle findings |
+| S21 | `459249d0` | edit canvas (Mac) |
+| S22 | `0397cbad` | Qt node canvas, edit half (carried with S16, see below) |
+| S23 | *(this pass)* | eval/regression pass + doc close-out + GUI stress-test scenes |
+
+S16 and S22 shipped as **one combined commit** (`0397cbad`, "Qt node canvas,
+read-only + edit (carry-only)") rather than two — the Windows mirror was
+written once, whole, against the finished Mac reference (S15+S21 both
+already shipped by the time the Windows session started), so there was no
+intermediate read-only-only Windows state worth a separate commit.
+
+**Standing debts carried forward, not silently dropped:**
+
+1. **MSVC verification of the Qt canvas + all carried bridges is still
+   owed.**  `0397cbad` was written and reviewed on this (non-Windows) host
+   against an embedded 27-row Mac↔Qt parity table and an explicit
+   MSVC-verification checklist (`build/VS2022/RISE-GUI/NodeGraphCanvas.cpp`,
+   the "MSVC-verification checklist (for the owed Windows build session)"
+   block near the end of the file) — compile-plausibility, moc/vcxproj
+   wiring, and bridge signature byte-matching were reviewed by inspection,
+   but no MSVC compiler has actually built this code.  Run that checklist
+   on a real Windows/MSVC host before trusting the Qt canvas in production.
+2. **Def-row scroll-anchor gap (Windows/Qt only).**  Mac's double-click-a-def
+   interaction (`RenderViewModel.focusPainterDefRows`) selects the owning
+   node AND scrolls/highlights that specific `def[i]` row in the property
+   panel.  Qt's mirror (`NodeGraphCanvas::openDefs`, see parity table row 10
+   in `NodeGraphCanvas.cpp`) only selects the node — there is no
+   `ViewportProperties` equivalent of a def-row scroll-anchor on Windows
+   today (grep confirms no `defStageIndex`/scroll-to-row concept there).
+   The def rows themselves ARE visible once the node is selected; they are
+   just not auto-scrolled-to.  Closing this is `ViewportProperties` work,
+   out of the canvas arc's own scope.
+3. **`fw` (filter-width) domain-scaling caveat — RESOLVED (2026-09-06).**  Originally
+   documented as a standing limitation (`docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md`
+   §7 decision 3) where `fw` was passed unscaled into noise builtins when the
+   position argument was scaled (e.g. `fbm(P*10, ...)`).  Resolved via
+   compile-time forward-mode Jacobian singular-value analysis
+   (`Builder::NoiseFwScales` in `src/Library/Functions/ExpressionEval.h`,
+   covered by `tests/ExpressionFunctionTest.cpp`), so both final renders and
+   `PainterPreview` node/stage thumbnails rescale `fw` automatically.
+4. **Post-S23 canvas enhancements shipped:** Both the macOS and Windows canvases
+   also carry the **`All` vs. `Focused` view-scope toggle** (`PainterMaterialGraphFocused`
+   centered on the sticky object's appearance closure) and the **object-pick
+   spotlight** (`AppearanceClosureForObject` highlights and auto-scrolls the
+   picked object's material/painter subgraph).
+
+
+Companion to `docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md` §4 P5.4 and §7 decision 6 (canvas is ON the roadmap, Phase 3, "no longer only if data demands"), and to `docs/gui/MATERIAL_EDITOR.md` §3/§3.7/§3.8 (C2 node graph — the design this doc narrows into an implementable slice plan).
+
+---
+
+## 0. What already exists (verified against the tree, HEAD `02f6124a`)
+
+This is not a greenfield feature. Phase 3 inherits a lot:
+
+| Surface | What it gives the canvas | Citation |
+|---|---|---|
+| **Painter round-trip (single-occ + occurrence-addressed)** | Every painter node's own parameters — including a ramp's `stop[i]` lines and an expression's `param[i]`/`def[i]` lines — already edit through one CST path with undo | `src/Library/SceneEditor/PainterIntrospection.h:1-97` (S4/S4b editability contract) |
+| **`PainterPreview` engine** | Per-node thumbnail (painter's own output), per-def-stage thumbnail, ramp gradient strip — all headless, no scene render | `src/Library/SceneEditor/PainterPreview.h:145-249`; wired Mac (`PropertiesPanel.swift:503-531,569-583`) and Windows (`build/VS2022/RISE-GUI/ViewportBridge.h:592-604`) |
+| **Retained CST `Document` + reference graph** | The DAG *is already computed* — `Cst::BuildReferenceGraph` returns `edges` (`ReferenceUse{sourceValueNodeId, targetNodeId}`) and `dependents` (reverse adjacency), and `Cst::DocEditClosure`/`MaintainedReferenceGraph` give O(closure·log N) incremental reuse | `src/Library/Cst/Cst.h:822-826` (`ReferenceGraph`), `:778` (`ReferenceUse`), `:1043-1055` (`MaintainedReferenceGraph`) |
+| **Typed reference ports on the descriptor** | `ParameterDescriptor::referenceCategories` already declares which `ChunkCategory` a `Reference`-kind param accepts | `src/Library/Parsers/ChunkDescriptor.h:297-311` |
+| **Jump-to-definition** | `CameraProperty::referenceCategories` + `SceneEditController::PropertyJumpTarget`/`PropertyJumpTargetFor` already resolve a row's reference value to a selectable entity | `src/Library/SceneEditor/CameraIntrospection.h:58-67`; `SceneEditController.h:3156-3164` |
+| **Single-parent authored TREE (Object category only)** | `BuildAuthoredTree`/`RefreshTreeSnapshot_` — generation-tagged handles, stale-fallback publish, cycle/dangling-parent guards — is a proven pattern, but it is a **tree** (one parent per node), not a DAG, and it is **not wired for Painter/Material today** | `src/Library/SceneEditor/SceneEditController.cpp:4372-4640`; `RISEViewportBridge.h:96-113` (`RISESceneTree`/`RISESceneTreeNode`) |
+| **Composite transactions** | `BeginTransaction`/`RollbackTransaction`/`EndTransaction` — inverse-edit-based, not snapshot — is the primitive an atomic "create node + rewire edge" needs | `src/Library/SceneEditor/SceneEditController.h:1900,1928,1936` |
+| **Chunk insert precedent (camera only)** | `Job::ApplyCstInsertCameraChunk` / `Cst::DocInsertItem` is the ONLY shipped chunk-creation-into-Document path; there is no painter/material analog yet | `src/Library/Job.cpp:11688-11744`; `src/Library/Cst/Cst.h:575` |
+| **Descriptor-level pipe (`ParameterSemantics`)** | Confirmed-adopted (`docs/GUI_ROADMAP.md:361`) but **not implemented** — today the pipe for socket-coloring must come from `PainterIntrospection::PipesFor` (a live-manager lookup), not the descriptor | `docs/GUI_ROADMAP.md:361`; `PainterIntrospection.h:114-132` |
+| **Painter→painter edges for reference-safe delete** | Marked TO-BUILD in `ENTITY_CREATION.md` before `PainterIntrospection` existed; `PainterIntrospection::Inspect` now surfaces every `Reference`-kind row (with `referenceCategories`) for a painter chunk, so the missing edge source is **substantially closable now**, but no `ReferenceGraph.h`/`FindReferencesTo` C++ type has been built yet — it is still spec-only | `docs/gui/ENTITY_CREATION.md:487-529` (design); no `FindReferencesTo` symbol in `src/` today (verified: `grep -rl FindReferencesTo src/` → empty) |
+
+The upshot: **Phase A (read-only graph view) is nearly all plumbing reuse.** The genuinely new work is (1) a multi-parent DAG assembler generalizing `BuildAuthoredTree`, (2) a `ReferenceGraph`/`FindReferencesTo` shared type that both the canvas and `ENTITY_CREATION.md`'s reference-safe-delete can consume, and (3) — only for Phase B — painter/material chunk-insert ops modeled on `ApplyCstInsertCameraChunk`.
+
+---
+
+## 1. Graph model
+
+### 1.1 What is a node?
+
+**Recommendation: two-level model.** Chunk-level nodes are the *structural* graph; `def` stages inside an `expression_painter`/`scalar_painter{expression}` are a *second, nested* micro-graph rendered inside that one node — never promoted to top-level canvas nodes.
+
+| Option | Description | Pros | Cons |
+|---|---|---|---|
+| **A. Chunk = node, flat** | Every `*_material`/`*_painter` chunk is one canvas node; `def`s stay text inside the node's inspector, exactly as today's flat panel already shows them (`PropertiesPanel.swift:569-583`) | Simplest; zero new node-identity concept; directly matches "the chunk vocabulary already IS the serialization" (`MATERIAL_EDITOR.md:166`) | Loses the def-chain's own explanatory value the canvas is partly meant to add (doc 88 §4 P5.4 cites "defs-as-nodes... are the design basis") |
+| **B. Chunk = node, `def` = node too (fully flattened)** | Every `def` line becomes its own canvas node with its own edges, wired into the same graph as chunks | Maximum visual fidelity to VOPs/Substance | **Violates C-TEXT (doc 88 §2) and the G6 lesson directly**: it re-introduces "every intermediate value is a separately-addressable graph object," which is exactly the shape LLMs fumble and which G6 says is expensive per node. It also has no source-of-truth problem to solve — `def`s are *already* one expression body, one chunk, one edit unit; splitting them into independent nodes invents graph structure the CST doesn't have and Phase B would have to invert. |
+| **C. Two-level (recommended)** | Chunk-level DAG (nodes = `*_material`/`*_painter` chunks, edges = `Reference`-kind params) is the canvas graph; opening/expanding an expression-family node reveals its `def` chain as an **internal, linear-with-backrefs mini-strip** (thumbnail-per-stage, exactly what `PainterPreview::RenderDefStagePreview` and the S10 panel integration already render) — not separate canvas nodes, not separately wired | Matches the P5 tier framing verbatim ("Tier 2 — defs are visible, previewable stages," doc 88 §4 P5 tier 2); zero new persistence (defs already round-trip via occurrence-addressed edit, S4b); reuses 100% of the shipped `PainterPreview` def-stage machinery; keeps G6's "few, powerful, parameterized chunks" discipline intact — a canvas node's *internal* richness doesn't inflate the *external* chunk count | The def-strip is a bespoke micro-widget, not the generic node-canvas widget; scoping discipline needed so it doesn't grow into option B by accretion |
+
+**Recommendation: C.** This is also the only option consistent with doc 88's own P5 framing, which already drew this exact line (Tier 2 stage thumbnails "with none of the canvas machinery," §4 P5.4: "If P5.4 ever builds, defs render as nodes" — read in context of Tier 2's "most of a node graph's explanatory value with none of the canvas machinery," this means defs render as *the node's internal stage strip*, not as independent canvas nodes with their own wiring surface).
+
+### 1.2 What is an edge?
+
+An edge is a resolved `ReferenceUse` from `Cst::BuildReferenceGraph`: a chunk's `Reference`-kind param (`colora`/`colorb`/`mask`/`source`/`rd`/`ior`/… — any param whose descriptor declares `referenceCategories` including `Painter` or `Material`) pointing at another chunk by name (`Cst.h:778`, `ChunkDescriptor.h:304`). This is **not a new concept** — it is the same edge `PropertyJumpTarget` already resolves for jump-to-definition (`CameraIntrospection.h:63-66`) and the same edge `MaterialIntrospection`/(TO-BUILD)`PainterIntrospection` reference-scanning would use for reference-safe deletion (`ENTITY_CREATION.md:487-529`).
+
+**`def`-identifier use is explicitly NOT a canvas edge** (per §1.1 option C) — it stays internal to the expression VM's own name resolution (`ExpressionProgram`, `ExpressionEval.h:126-270`) and is visualized only as the node's internal stage strip, never as a wire on the canvas.
+
+One wrinkle to design in from day one, already flagged in `MATERIAL_EDITOR.md` §3.8: shared painters are **links, not copies** (RISE chunks are reference-by-name; two materials referencing the same `ramp_painter` is one node, two out-edges) — the graph model must represent this as a single node with fan-out, with a visible "shared" badge, not silently duplicate the node per referrer.
+
+### 1.3 Position persistence
+
+| Option | Mechanism | Pros | Cons |
+|---|---|---|---|
+| **A. Sidecar file** (e.g. `<scene>.risegraph.json` next to the `.RISEscene`) | Positions/frames/comments keyed by node name, loaded alongside the scene | Zero CST grammar risk; trivially diffable/gitignorable per-user; matches the "layout is UI/session state, not scene semantics" instinct already stated (`MATERIAL_EDITOR.md:154,182`) | A second file to keep in sync (rename must update both); orphaned entries when a node is deleted; not visible to an agent unless it explicitly opens the sidecar |
+| **B. Scene-file annotation** (e.g. a reserved comment-block or a `layout { ... }` pseudo-chunk) | Positions live in the `.RISEscene` text itself | One file to ship/share; travels with the scene | **Directly contradicts C-TEXT and the CST byte-preservation discipline**: it either (a) becomes a real chunk kind, which is the exact "no new `node`/`graph` chunk type" non-goal (`MATERIAL_EDITOR.md:340`) and inflates G6's per-chunk cost for something with zero render semantics, or (b) becomes a comment convention, which the CST's trivia-preserving serializer treats as prose it round-trips verbatim but never parses — so it would need a *third*, ad hoc mini-parser bolted onto `Cst::SerializeCst`, duplicating exactly the grammar-extension risk sidecar avoids. It also pollutes every agent's read of the scene text with UI-only bytes it must learn to ignore — the opposite of the "agent surface sees only semantic content" property the CST cutover was designed to preserve. |
+| **C. No persistence — always auto-layout** | Positions recomputed by the layout algorithm on every open, never stored | Simplest; zero drift risk; layout algorithm quality is directly on the hook for readability | Loses a user's manual arrangement (frames, groupings) across sessions — the exact "auto-destroyed layout" Hypershade anti-pattern doc 88's sibling doc already flags as a sin to avoid (`MATERIAL_EDITOR.md:150,343`) |
+
+**Recommendation: A, sidecar file, gitignored by default with an explicit "commit layout" opt-in.** This is what `MATERIAL_EDITOR.md` already recommended (§3.5 "Deterministic layout persistence... stored in a sidecar layout file," `MATERIAL_EDITOR.md:154`) and is the only option that satisfies all three stated constraints simultaneously: CST byte-preservation is untouched (zero grammar risk, zero new trivia-parsing surface), the agent surface can genuinely ignore it (it isn't in the scene file at all — no "teach every agent to skip this block" tax), and manual layout survives reload (unlike C). Keyed by **node name** (not NodeId — NodeIds are per-session/per-parse and not stable across a reload per `Cst.h`'s own NodeId lineage caveats around rename/reparse, `Cst.h:909-926`); a renamed node's layout entry is best-effort-migrated using the same rename-lineage machinery the CST already runs (`Cst.h:909-926`), and an entry whose node no longer exists is dropped silently on next save of the sidecar (never treated as an error — matches "layout is disposable, semantics are not").
+
+**Cost: S.**
+
+---
+
+## 2. Read-only first vs editable-first
+
+**Recommendation: strictly phased, Phase A (read-only) → Phase B (editable), exactly as `MATERIAL_EDITOR.md` §3.7 already lays out** — this design doc's job is to make that phasing concrete and slice-planned, not to re-litigate it.
+
+| Consideration | Read-only (Phase A) | Full edit (Phase B) |
+|---|---|---|
+| New persistence risk | **None.** Pure introspection over `Cst::BuildReferenceGraph` + the new multi-parent assembler (§1.3, §3) | Real: painter/material chunk-insert is genuinely new (`ApplyCstInsertCameraChunk` has no painter/material sibling yet), plus the ownership-closure rewrite fallback (`MATERIAL_EDITOR.md` §3.7a) for topology edits whose closure is shared/scattered/macro-generated |
+| Value delivered | Immediate: "see the structure of an LLM-authored material graph, click to jump to the row" — directly serves the stated use case (understanding LLM-authored scenes) | Adds authoring, which the flat property panel (C1, already shipped for single-occurrence + occurrence-addressed params) already covers for **editing existing nodes**; Phase B's marginal value is specifically **topology** (create/delete/rewire), a narrower need |
+| Failure mode if under-designed | Wrong layout, a missed edge type — cosmetic, fixable without data loss | A botched topology-edit reconciliation can corrupt a scene file or silently rewrite a shared/macro-generated region another material depends on — exactly the hazard `MATERIAL_EDITOR.md` §3.7a's "REFUSE when ambiguous" rule exists to bound |
+| Agent-authoring interaction | None — Phase A doesn't touch the mutation path at all | Must NOT get a private writer (`MATERIAL_EDITOR.md:339`); every canvas edit must be the same `insert_chunk`/`propose_patch`/`remove_chunk`-shaped operation an agent already uses, so canvas edits and agent edits stay one mutation path, one undo history |
+
+**Recommendation stands as MATERIAL_EDITOR.md already decided: Phase A first, gated on nothing but the multi-parent tree assembler + a bridge call; Phase B strictly after, gated on the new chunk-insert ops.** The one refinement this doc adds: **Phase A should also ship node *selection* wired into the existing property panel** (click node → `SetSelectionCategory` for the Painter/Material category, which already drives the flat panel — `RISEViewportBridge.h:822-838,926`) — this makes Phase A double as the read/edit split the interaction-minimums (§5) ask for, with zero Phase-B-shaped work.
+
+**Cost: Phase A — M. Phase B — L** (dominated by the ownership-closure rewrite + chunk-insert ops, both already scoped in `MATERIAL_EDITOR.md` §3.7/§3.7a but unimplemented).
+
+---
+
+## 3. Platform strategy
+
+**Recommendation: shared C++ layout core (headless, tested) + thin per-platform canvas widgets — NOT "Mac first, Windows later" for the graph model itself.** This is not actually a deviation from the standing "Mac SwiftUI first, Qt mirrors later" pattern the repo uses for *widgets*; the graph **model** was never widget work — it belongs to the same "shared C++, thin shell" split every other doc-88/MATERIAL_EDITOR deliverable uses (`MATERIAL_EDITOR.md` §7 table: "Graph model... serialization... connection-legality validator... layout-sidecar read/write... thumbnail engine" are ALL listed as shared C++; only "the node-canvas widget" is per-platform).
+
+| Layer | Where it lives | Precedent |
+|---|---|---|
+| Multi-parent DAG assembler (nodes/edges from `Cst::BuildReferenceGraph` + `PainterIntrospection`) | `src/Library/SceneEditor/` — a new headless-testable type, generalizing `BuildAuthoredTree`'s proven pattern (pure function, seeds → tree; live-manager read separated into its own `Build*SeedsLocked_` step) | `SceneEditController.cpp:4372-4640` is the literal template to generalize |
+| `ReferenceGraph`/`FindReferencesTo`-shaped query | New `ReferenceGraph.{h,cpp}` (already anticipated as a 5-build-project add in `ENTITY_CREATION.md:521-522`) | serves BOTH this canvas and `ENTITY_CREATION.md`'s reference-safe delete — one implementation, two consumers, avoiding the doc's own warned-against risk of two recipe systems |
+| Layout-sidecar read/write | Shared C++ (parse/serialize the sidecar JSON, migrate on rename) | same "shared, not duplicated per shell" discipline the CST/save engine already enforces |
+| Connection-legality validator (Phase B) | Shared C++, reusing `Job::ResolveOrDiagnoseScalar` (`Job.cpp:2718`) so a canvas-attempted illegal drop reports the identical diagnostic a hand-edit would | `MATERIAL_EDITOR.md:145` (already the recommendation) |
+| **The canvas widget itself** (draw nodes, drag wires, pan/zoom, frames, search palette) | **Per-platform, genuinely** — SwiftUI `Canvas`/custom layout on Mac, Qt Graphics View (`QGraphicsScene`/`QGraphicsView`) on Windows | This is the one deliverable `MATERIAL_EDITOR.md` §7 explicitly calls "the one genuinely large per-platform UI piece" — same category as the viewport's GPU present surface |
+
+Why NOT a headless layout core that also owns positioning math shared across shells (a stronger reading of "headless-core-first"): auto-layout (§4) genuinely is headless-testable and shared (recommended below), but *interactive* layout (drag-to-reposition, snap, frame resize) is inherently a widget concern with no meaningful headless test — forcing it into shared C++ would mean simulating mouse gestures in a unit test for no real coverage gain, the same reason the viewport's render-present loop stays platform-owned despite the renderer itself being fully shared.
+
+**Sequencing (the "standing pattern," made explicit for this deliverable):** Phase A ships **Mac-first** for the *widget* (the graph *model*, sidecar, and `ReferenceGraph` type are shared and Windows-buildable from day one — they are pure C++ with no Cocoa/Qt dependency); the Windows canvas widget is a standing-debt slice that carries the repo's existing MSVC-verification caveat (the same one `MATERIAL_EDITOR.md:69` already flags for the Qt range-slider: "needs an MSVC build to verify").
+
+**Cost: shared core — M. Mac canvas widget — L. Windows canvas widget — L (owed, MSVC-gated).**
+
+---
+
+## 4. Layout algorithm
+
+| Option | Description | Pros | Cons |
+|---|---|---|---|
+| **A. Layered/Sugiyama** (rank by longest-path-from-source, minimize crossings, barycenter ordering within rank) | Standard DAG layout; industry precedent (Blender's node-arrange, most auto-layout node editors) | Best crossing-minimization on deep graphs (e.g. a `blend_painter` chain feeding a `ramp_painter` feeding a material); well-understood, small headless-testable core (rank assignment + a crossing-reduction pass) | More implementation than needed for RISE's typical graph depth (painter chains today are shallow — G6's "few, powerful chunks" discipline keeps node COUNT low by design, so a full Sugiyama crossing-minimizer is solving a harder problem than the data actually presents) |
+| **B. Simple rank-by-dependency columns** (topological rank = longest path from any root; within a rank, order by a stable key — declaration order, matching the existing "child order for display comes from declaration order" convention already used by the authored-object tree, `SceneEditController.cpp:4539-4544`) | Trivial headless-testable core (topo-sort + rank assignment); deterministic and stable across edits (declaration order doesn't reshuffle on an unrelated edit, unlike a barycenter pass that can flip node columns for cosmetic reasons); directly reuses the `BuildAuthoredTree` ordering precedent | Can produce more crossings on a wide/tangled graph than a real Sugiyama pass would |
+| **C. Force-directed** | Physically-simulated node repulsion/edge attraction | Handles arbitrary topology without rank logic | **Unstable across edits by construction** (the failure mode the design questions explicitly ask to weigh) — a small edit can globally reshuffle positions, which is exactly what a sidecar-persisted, user-tweakable layout must NOT do; also non-deterministic without a fixed seed, complicating tests |
+
+**Recommendation: B, rank-by-dependency columns, ordered by CST declaration order within a rank — with room to grow into A's crossing-reduction pass later if real scenes show tangled graphs.** Rationale:
+
+1. **Stability is the load-bearing requirement**, stated explicitly in the design questions and reinforced by doc 88's own institutional memory of "auto-destroyed layout" as a named anti-pattern (`MATERIAL_EDITOR.md:150`). Declaration-order-within-rank means an edit that doesn't change the *set* of nodes in a rank leaves that rank's column order untouched — the same "don't reshuffle rows on an unrelated edit" property the object tree already guarantees for the panel (`SceneEditController.cpp:4417-4423`'s discussion of why name/serial comparisons matter for a *stable* republish).
+2. **Matches the actual graph shape.** G6 (doc 88 §1) already establishes RISE's painter graphs are shallow by design (few, powerful, parameterized chunks, not Blender-parity node-per-op) — a full Sugiyama solver is engineering for a graph depth the architecture deliberately avoids producing.
+3. **The headless-testable core is small**: `Rank(node) = 1 + max(Rank(referent) for referent in node.references)`, roots at rank 0, ties broken by CST declaration order (already available — the same `order` field `BuildAuthoredTree` sorts by, `SceneEditController.cpp:4539-4547`). This is directly unit-testable against synthetic `ReferenceGraph`s with zero UI dependency.
+4. Only computed **when the sidecar has no saved position for a node** (a brand-new node, or a node the sidecar never saw) — an already-positioned node never moves under auto-layout, which is the other half of the stability requirement.
+
+**Cost: S.**
+
+---
+
+## 5. Scope fences
+
+### Explicitly OUT
+
+- **No shader-graph execution model.** The graph is a *view* over the existing chunk DAG plus a *reconciler* into chunk text; it is never itself evaluated. Evaluation stays exactly where it is today (`Job`/`IPainter`/`IScalarPainter`). This is the direct continuation of doc 88's C-TEXT discipline (§2): "a single expression string is exactly the shape [LLMs] excel at" — the canvas must not become a second execution semantics competing with the expression VM.
+- **No new chunk grammar** (no `node`/`graph` chunk kind). `MATERIAL_EDITOR.md`'s non-goal stands verbatim (`MATERIAL_EDITOR.md:340`): "A material graph serializes as the named `*_material` + `*_painter` chunks it already lowers to." §1.3's rejection of scene-file layout annotations (option B) is the same discipline applied to the layout question specifically.
+- **No inline anonymous nodes.** Doc 88's C-TEXT rationale is explicit about *why*: G6 (§1) measures that a new painter touches ~12 files and that "many small nodes" architectures are taxed by per-chunk cost; the external survey's condensed verdict (§3) is that a deep painter DAG "is exactly the cross-reference-consistency shape LLMs fumble" while a single expression string is the shape they author reliably. An anonymous/inline node (an unnamed sub-expression embedded directly in a slot rather than a named top-level chunk) would either (a) require a real grammar extension — ruled out by the prior bullet — or (b) be sugar the canvas silently expands into a named chunk on save, which just re-derives the existing named-chunk model with extra canvas-side bookkeeping for no semantic gain. **Every node the canvas creates is a named top-level chunk, full stop** — this is not a compromise, it is the model (§1.1).
+- **No decomposition of composed/sugar materials** (`pbr_metallic_roughness_material`, `ggx_emissive`) into their lowered painter graph by default — they render as opaque nodes with their high-level dials, matching `MATERIAL_EDITOR.md` §11 item 5's open-question recommendation ("show the high-level uber-node dials... offer 'unpack to graph' as an explicit, irreversible-ish action"). Unpacking is Phase-B-or-later, gated behind an explicit action, never silent.
+- **No node-graph mutation from any path other than `SceneEditController`.** A canvas topology edit (Phase B) must terminate in the *same* chunk-insert/reference-rewrite operations an MCP `insert_chunk`/`propose_patch`/`remove_chunk` call would use (`AgentChatCodecs.cpp:168-329` enumerates these verbs' semantics) — no private writer (`MATERIAL_EDITOR.md:339`).
+- **No MaterialX-shaped graph paradigm.** Doc 88 §6 and `MATERIAL_EDITOR.md` §10 both already reject MaterialX as a second graph system; this canvas visualizes RISE's *own* reference-by-name chunk graph, nothing else.
+
+### Interaction minimums (Phase A ships all three; none require new machinery beyond wiring)
+
+1. **Select → property panel focus.** Clicking a canvas node calls the existing `SetSelectionCategory:name:` for `RISEViewportCategoryPainter`/`Material` (`RISEViewportBridge.h:926`), which already drives the flat property panel via `propertySnapshotFor:` — zero new selection machinery.
+2. **Double-click a `def` → its expression row focuses.** Already shipped in substance: the flat panel already renders a def-stage thumbnail inline per `def[i]` row (`PropertiesPanel.swift:569-583`, `defStageIndex(rowName:)`); "double-click def on canvas" therefore only needs to (a) select the owning painter node and (b) scroll/highlight that row — no new introspection.
+3. **Thumbnail on node via `PainterPreview` and `MaterialPreview`.** `RenderPainterPreview`/`RenderRampStripPreview` (`PainterPreview.h`) and `RenderMaterialPreview` (`MaterialPreview.h`, Slice 5) produce the exact RGBA8 buffer a canvas node's swatch needs (`Painter` nodes via `PainterThumbnailView`/`RampStripThumbnailView`, `Material` nodes (`category == 2`) via `MaterialThumbnailView` / `ViewportBridge::materialPreview`), with the caller-held-lock, cancel/refuse, and budget discipline (`kMaxSampleBudget`) shared across both engines.
+
+Node header text = the chunk's declared name (never invented); node subtitle = its chunk keyword (`type` row's value, already surfaced — `PropertiesPanel.swift:534`). Node headers retain their category tint. Slice 4 colours sockets and wires from descriptor `ParameterSemantics.pipe` and the source chunk's keyword/category output pipe; dual Color/Scalar inputs also carry `colorAlsoAcceptsScalar`. These fields travel in both bulk bridge snapshots without live-manager pipe probes.
+
+---
+
+## 6. Slice plan (S11–Sn)
+
+Same discipline as doc 88 §8: each slice runs the implementation-review-loop to zero P1; headless-testable core named per slice; Mac-manual-checklist items called out; Windows debt explicitly tracked, never silently dropped.
+
+- **S11 — `ReferenceGraph` shared type + multi-parent DAG assembler** (worker: sonnet; opus reviewer on the concurrency/handle-churn discipline, mirroring `BuildAuthoredTree`'s generation-tag design). New `src/Library/SceneEditor/ReferenceGraph.{h,cpp}` (5-build-project add): wraps `Cst::BuildReferenceGraph` + `PainterIntrospection::Inspect`'s `Reference`-kind rows + `MaterialIntrospection`'s slot refs into one `FindReferencesTo(Category, name)` query (closing the `ENTITY_CREATION.md:487-497` TO-BUILD gap for painter→painter edges as a side effect — one implementation, two consumers per §3). A new `BuildPainterMaterialGraph_(seeds)` generalizing `BuildAuthoredTree` to **multi-parent** (a node's `parents` becomes a list, not an index; shared-node fan-out is a first-class case, not an edge case — `MATERIAL_EDITOR.md` §3.8's copy-vs-link semantics start here). Same generation-tagged-handle, stale-fallback-publish discipline as the object tree (`SceneEditController.cpp:4473-4528`). **Headless unit test**: synthetic `ReferenceGraph`s with shared nodes, self-references (must not be treated as edges to nowhere), and a crafted cycle (parser-level cycles shouldn't exist post-derive, but the assembler must not infinite-loop on a hostile input — same "only layer a test can hand a hostile input to" discipline `BuildAuthoredTree` documents, `SceneEditController.cpp:4376-4379`). No UI yet. **Cost: M.** **Handle discipline SHIPPED (review round 2, 2026-08-20)**: the published `GraphNode` no longer carries a raw `Cst::NodeId` — it carries a generation-tagged `GraphNodeHandle` (`SceneEditController::GraphNodeHandle`, same `(generation << 32) | index` layout as `TreeNodeHandle`, minted with the SAME `EncodeTreeHandle`), stamped in `RefreshPainterMaterialGraphSnapshot_` once a publish is decided and resolved back via the new static `ResolveGraphNodeHandle` (refuses a handle from a different generation rather than aliasing onto whatever node sits at the same index in a newer snapshot) — closing the exact aliasing hole this bullet flagged (`GraphNodeSeed::id`/`Cst::NodeId` is per-parse). `tests/ReferenceGraphTest.cpp` PART 7 covers both the pure-assembler's unstamped-handle case and cross-generation refusal.
+- **S12 — Rank-by-dependency layout core** (sonnet). `LayoutGraph(nodes, edges, savedPositions) -> positions` in shared C++: topological rank + declaration-order tiebreak (§4); only computes a position for nodes absent from `savedPositions`. **Headless unit test**: golden layouts on synthetic graphs (linear chain, diamond/shared-node fan-in, a wide flat rank), stability assertion (re-running layout with one node's saved position present leaves every other already-positioned node's rank/column untouched). **Cost: S.**
+- **S13 — Layout sidecar format + read/write** (sonnet). New sidecar file type (`<scene>.risegraph.json` per §1.3), keyed by node name, migrated on rename via the existing CST rename-lineage machinery (`Cst.h:909-926`); orphan-entry pruning on save. **Headless unit test**: round-trip, rename-survival, orphan-drop, missing-sidecar-falls-back-to-full-auto-layout. **Cost: S.**
+- **S14 — Bridge surface: `{nodes, edges, positions}` snapshot call** (sonnet). `SceneEditController::PainterMaterialGraph()` (mirrors `categoryTree:`'s lock/publish discipline) → new `RISE_API_SceneEditController_PainterMaterialGraph` C-ABI → both bridges (`RISEViewportBridge.h`/`.mm` on Mac; `ViewportBridge.h`/`.cpp` on Windows — both get the call in this slice, since it is pure data plumbing with no widget dependency, per §3's "shared core, thin widget" split). **Gate item**: bridge-enum mirror audit if any new enum crosses the ABI (per the `abi-preserving-api-evolution` skill, already the convention `MATERIAL_EDITOR.md:291,374` cites). **Cost: M.**
+- **S15 — Mac canvas widget: Phase A, read-only** (sonnet; Mac-manual-checklist item: open a scene with a shared painter across two materials, confirm one node renders with a fan-out badge, not two nodes). SwiftUI `Canvas`-based widget: node boxes with `PainterThumbnailView`/`RampStripThumbnailView` reuse (already-shipped views, `PropertiesPanel.swift:294,347`), edges as bezier/orthogonal connectors, pan/zoom, click-to-select wired to `setSelectionCategory` (§5 item 1), double-click-def wired to row focus (§5 item 2). No editing. **Cost: L.**
+- **S16 — Windows canvas widget: Phase A, read-only (standing debt, MSVC-gated)** (sonnet; carries the repo's existing owed-MSVC-verification caveat, same posture as S4b's Qt range-slider and S10's Qt swatch widget, `MATERIAL_EDITOR.md:69,205`). Qt `QGraphicsScene`/`QGraphicsView` mirror of S15 over the same S14 bridge call. **This slice is explicitly NOT blocking S17+** — Phase B lands on Mac first per the standing pattern, Windows Phase A can trail. **Cost: L (owed).**
+- **S17 — Connection-legality validator + `ParameterSemantics.pipe` minimal implementation** (sonnet; opus reviewer — this is the piece `MATERIAL_EDITOR.md` §6.4 flags as "the one genuinely new shared-C++ piece," now finally load-bearing for Phase B). Implements the confirmed-but-unbuilt `ParameterSemantics` structure (`docs/GUI_ROADMAP.md:361`) as an additive `ParameterDescriptor` field; a drop-legality check reusing `Job::ResolveOrDiagnoseScalar` (`Job.cpp:2718`) so a canvas-rejected drop reproduces the parser's own diagnostic verbatim (`MATERIAL_EDITOR.md:145`). **Headless unit test**: `SchemaConformanceTest.cpp`-style corpus check that the new field neither over- nor under-accepts vs the real parser (mirrors `MATERIAL_EDITOR.md:365`'s acceptance criterion). **Cost: M.**
+- **S18 — Painter/material chunk-insert ops (the Phase-B prerequisite)** (sonnet; opus reviewer on the ownership-closure logic — highest-risk slice in this plan). ~~`Job::ApplyCstInsert{Painter,Material}Chunk` modeled directly on `ApplyCstInsertCameraChunk` (`Job.cpp:11688-11744`)~~; stable generated names via the `UniqueName` dedup pattern (`ENTITY_CREATION.md`'s `CloneActiveCamera` precedent). **Cost: M.**
+
+  **SHIPPED as `SceneEditController::CreateChunkNode` + `EntityTemplates::{NodeRequirements,BuildNodeChunkText}` — NO new `Job` op.** The prescribed shape was corrected during implementation, because the landscape already had three chunk-creation paths and a fourth would have re-derived machinery that exists:
+  * `Job::ApplyCstInsertCameraChunk` is **not** the right model. It is Document-only *by necessity*, not by design: `CloneActiveCamera` puts the clone in the LIVE scene first (`CameraIntrospection::AddCameraFromSnapshot`), so a re-derive would throw the clone away. It bumps the head revision and stops — no dry-run, no derive, no history, no epoch, and its undo sibling `ApplyCstRemoveCameraChunk` carries a documented CLONE-UNDO-ONLY precondition. Copying it would mean re-implementing full-derivability, undo, dirty, and epoch by hand.
+  * `Job::ApplyCstInsertChunk` (reached via `SceneEditController::ApplyAgentInsertChunk`) is the general creator and already does *all* of it: declaration-tier positioning with append-at-end fallback, dry-run-guarded full re-derive (so a refusal leaves the Document byte-identical), the U2 `EditHistory` record with the exact splice index, `MarkCstHeadDirty`, the scene-epoch bump, and the render kick.
+  * `SceneEditController::InstantiateEntityTemplate` supplies the *ergonomics* — pick a collision-free name, hand back a live entity — but only over a fixed hand-authored table keyed by (category, index).
+
+  S18 is therefore the composition of the last two, over the OPEN keyword set the canvas palette needs: derive the minimal body from the `ChunkDescriptorRegistry`, dedup the name the way `InstantiateEntityTemplate` does, then commit through `ApplyAgentInsertChunk`. Light-generation needs no explicit bump (an insert is D2-class; the whole Scene and its luminary list are rebuilt).
+
+  Two contracts worth knowing before S21: (a) `ParameterDescriptor::required` is **metadata only** — the dispatcher does not enforce it — and several chunks carry minimal-validity rules the descriptor has no vocabulary for (a repeatable minimum: `ramp_painter` needs ≥2 `stop`s; a one-of form selection: `scalar_painter`'s thirteen forms).
+  Those live in a small seed table in `EntityTemplates.cpp`, pinned by a sweep over every Painter/Material keyword in `tests/EntityTemplatesTest.cpp`.
+  (b) `ChunkNodeRequirements(keyword)` is the pre-flight contract S21 fills from the drag context — required references (`ramp_painter.input`, `composite_function2d_painter.child_{a,b}`, …) plus the file slots (`png_painter.file`, …), which must be supplied *before* the derive so incomplete file-backed nodes receive a contextual error.
+  EXR read failures are diagnosed and return failure. Voronoi borders are optional and default to `none`.
+
+  **Not exposed to the agent surface, deliberately**: `insert_chunk` already accepts arbitrary chunk text, which strictly dominates a keyword + arg list. The passthrough is C ABI + both GUI bridges only (the Windows half carried, MSVC-owed, same posture as S16/S22).
+- **S19 — Ownership-closure rewrite + REFUSE path** (sonnet; opus reviewer — the other highest-risk slice). Implements `MATERIAL_EDITOR.md` §3.7a exactly: compute the solely-owned/single-source/unshared closure for a topology edit, rewrite only that closure, REFUSE (with the diagnostic shape §3.7a specifies) when shared/scattered/macro-generated. **Headless unit test**: the three acceptance-criteria cases from `MATERIAL_EDITOR.md:367` verbatim (solely-owned closure rewrites cleanly and leaves everything else byte-identical; ambiguous closure REFUSEs and modifies nothing; Duplicate-node escape hatch forks and unblocks). **Cost: L.**
+
+  **SHIPPED as `SceneEditor/OwnershipClosure.{h,cpp}` (new pair, 5 build projects) + `SceneEditController::RewireConnection` + `RISE_API_SceneEditController_RewireConnection` + both bridges.** Three implementation decisions worth carrying forward:
+
+  * **Ownership is computed against ROOTS, not referrer counts.** §3.7a's acceptance criterion says "a painter with ≥ 2 referrers", but a literal referrer count is wrong in both directions: it would *over*-refuse (one material binding the same painter into two of its own slots, or two blend painters under one material both naming it, gives two referrer edges/chunks while the painter is still solely owned) and it says nothing about the case that must NOT refuse (a material two objects bind — §3.8's ordinary link semantics). So `OwnersOf(c)` = *every chunk that is not Painter/Function-category and from which `c` is reachable*; a root owns itself, an interior node inherits the union of its referrers' owners, a referrer-less interior node owns itself. `|Owners| == 1` IS §3.7a's "solely owned, single-source, unshared"; `>= 2` IS its REFUSE case. Cycle-safe by visited set (a hostile hand-edited document can carry a cycle; `Cst::ParseToCst` is pure syntax and never derives).
+  * **Gate order is load-bearing: legality + cycle FIRST, ownership second.** An illegal or cyclic wire is refused whether or not the edit owns what it touches, and its diagnostic must be the real parser's own (`ConnectionLegality`, S17) — pinned by a test that asserts the rewire refusal carries `CheckConnection`'s verdict verbatim, and by a cycle case whose closure is provably *clean* (so only the earlier gate can have refused it). Every gate runs before the single mutating call, which is what makes "byte-identical on refusal" structural rather than cleanup.
+  * **The commit is `ApplyAgentParamEditInner_`, not a new path** — inheriting mid-transaction refusal, the optimistic-concurrency conflict gate, the U1 prior-value capture at the *same* occurrence, the full-derivability check, the D2 rebind, dirty, the scene-epoch bump (already present at that call site since S15; deliberately NOT re-bumped here), and the render kick.
+
+  Two scoping decisions, stated rather than left to be discovered: (a) **this slice does NOT auto-delete newly-unreferenced chunks.** A rewire that drops a chunk's last reference REPORTS it (`RewireResult::nowUnreferenced`) for the canvas to badge and leaves it in the document, where undo can still restore the wiring; the block-or-cascade delete policy is S20's (`ENTITY_CREATION.md` §5). The report is deliberately not cascaded down the old subtree — since nothing is deleted, an orphaned parent still sits in the document still referencing its children. (b) **DETACH is computable but not commitable.** `OwnershipClosure::Compute` models `TopologyEditKind::Detach` so a canvas can pre-flight "would detaching this orphan anything?", but `RewireConnection` requires a real referent. NOT because a reference slot has no valid empty literal — `none` parses and commits into most reference slots fine when written directly (probes landed it in 5 of 6 tried slots) — but because `ConnectionLegality::CheckConnection` (S17) is `Cst::NodeId`-addressed on both sides, and `none` is a runtime default with no `NodeId`: there is no candidate to run the legality gate against, so a detach's per-slot legality can't be checked. Closing that (a NodeId-free legality path for `none`) is S20's scope, alongside the reference-safe delete/unbind policy it already owns. Two further refusals the shape forced: a **tuple-embedded** reference (`voronoi2d_painter.gen`'s `<x> <y> <painter>`) is refused rather than mangled, since rewriting it means re-emitting the whole line; and **occurrence-addressed rewire has no reachable case today** — a registry sweep in the test pins that no chunk kind addressable through this verb declares a repeatable pure-`ValueKind::Reference` param (the only one that exists, `standard_shader.shaderop`, is on a Shader-category chunk the controller cannot name-address), and fails loudly the day that changes.
+
+  **A finding handed to S20**: the shipped fork (`DuplicateEntity`) **appends** its copy at the end of the document, so an earlier-declared material cannot then be re-pointed at it — the full-derivability gate correctly refuses (`ENTITY_CREATION.md` §7.3 declaration order). Today's Duplicate therefore cannot, by itself, complete §3.7a's escape hatch. S20's Duplicate-node action must **position** the copy where the original sits. `RewireConnectionTest` case 1c′ pins this gap as a standing assertion; it flips the day S20 fixes it, which is the right moment to rewrite it into an end-to-end hatch test. Case 1c meanwhile proves the load-bearing half unconditionally — the refusal is *ownership-driven*, not a blanket ban: drop the second owner's dependency and the identical previously-refused edit lands.
+- **S20 — Cycle/orphan/copy-vs-link enforcement** (sonnet). Forward-reachability cycle check before committing a wire (`MATERIAL_EDITOR.md:192`); reference-safe delete via S11's `FindReferencesTo` (block-or-cascade, `ENTITY_CREATION.md` §5 policy); explicit Duplicate-node action forking a shared painter into an owned copy. **Headless unit test**: a wire that would cycle is rejected pre-commit; deleting a referenced painter blocks or cascades, never orphans; duplicate forks while link shares (the exact `MATERIAL_EDITOR.md:366` acceptance criterion). **Cost: M.**
+  **S20 OUTCOME (2026-08-21), and the finding that bounded its scope.** The load-bearing question — what does the derive do with a cycle? — was answered by probe against this tree, not reasoned about: **a cyclic document never becomes a live head.** `DeriveToJob` binds references in DECLARATION ORDER, so a cycle needs at least one FORWARD reference and a forward reference simply does not resolve; the derive REFUSES (`apply failed (e.g. unresolved reference)`) — it does not hang and it does not silently accept a half-bound painter graph. A hand-edited cyclic `.RISEscene` fails to *load*. Every reference-edge-creating path is already gated on that same rule: the agent/canvas param edit through `ApplyCstParamEditChecked`'s full-derivability dry-run; the GUI property panel through `WouldPersistDanglingReference_`, whose "declared BEFORE the referencing chunk" clause *is* the forward-reference test (this is the one path that reaches the UNCHECKED `Job::ApplyCstParamEdit`, whose own comment wrongly claims its callers never retarget references — safe, but only because that pre-check runs first, so it is now pinned by a test); and `insert_chunk` / the duplicate through `ApplyCstInsertChunk`'s dry-run. **So `ConnectionLegality::WouldCycle` is defense-in-depth for the canvas only** — its value is the precise "`X` already reaches `Y`" diagnostic in place of an opaque "would not derive" — **and the agent surface needs no cycle check added. None was.** All four findings are pinned as tests (`DeleteDuplicateGraphNodeTest` PART 3).
+
+  Shipped: `SceneEditController::DeleteGraphNode` (ambiguity-aware resolve → refuse-naming-every-referrer in *both* modes → cascade over the solely-owned closure, with an ownership cross-check by `OwnershipClosure::OwnersOf` that refuses rather than sweep a shared chunk; committed through `ApplyAgentRemoveChunk` / `ApplyAgentRemoveChunks`, the latter being the atomic composite — `BeginTransaction`/`EndTransaction` is *mutually exclusive* with the agent-commit surface, so it cannot be the composite here) and `SceneEditController::DuplicateGraphNode` (copy spliced IMMEDIATELY AFTER the original, shallow by design, undone/redone through a new `SceneEdit::AgentDuplicateNode` byte-exact prior/post document pair — `AgentInsertChunk`'s redo would re-run the tier heuristic and land the copy elsewhere). Both are NEW verbs rather than policies grown onto `RemoveEntity`/`DuplicateEntity`, which stay the outliner's and are UI-`Category`-addressed through the Painter|Function UI union a graph node must not merge. **S19's 1c′ standing marker is flipped**: `RewireConnectionTest` case 1c′ is now the escape hatch end to end (shared-refusal → Duplicate → rewire → applied, four states byte-verified), with 1c″ keeping the outliner fork's append behaviour pinned separately so the two verbs cannot be conflated.
+
+- **S21 — Mac canvas widget: Phase B, edit** (sonnet; Mac-manual-checklist item: create a `ramp_painter` node, wire it into an existing material's `rd` slot, save, reload, confirm byte-stable re-open per `MATERIAL_EDITOR.md:366`'s round-trip criterion; then attempt a topology edit on a painter shared with a second material and confirm the REFUSE dialog + working Duplicate-node escape). Search/add palette, drag-to-wire, frames/comments (`MATERIAL_EDITOR.md` §3.5), all routed through `BeginTransaction`/`EndTransaction` (`SceneEditController.h:1900,1936`) so a multi-step create+rewire is one undo entry. **Cost: L.**
+- **S22 — Windows canvas widget: Phase B, edit (standing debt)** (sonnet; MSVC-gated, same caveat as S16). **Cost: L (owed).**
+- **S23 — Eval/regression pass**. `CstSaveFidelityTest.cpp`-pattern extension for graph round-trip (`MATERIAL_EDITOR.md:366`'s byte-stability acceptance test); no production-render regression check (integrators untouched, per `MATERIAL_EDITOR.md:369`'s correctness invariant); update this doc's status header + doc 88's status line to point here. **Cost: S.**
+
+  **S23 OUTCOME (2026-08-21).** Two parts.
+
+  *Part 1 — regression pass.* Added PART 10 to `GraphCanvasEditSmokeTest.cpp`
+  (the S21 headless probe that already drives create→wire→reposition→
+  duplicate→delete through `SceneEditController`, the exact verb set the Mac
+  and Qt canvases call) rather than a new file: after the create/rewire/
+  duplicate/delete sequence, it (a) re-parses and re-serializes the live
+  head's `SerializeCst` output and asserts byte-identity (the
+  `CstSaveFidelityTest` case-A invariant, now pinned on content the canvas
+  verbs themselves produced, not a hand-authored fixture), and (b) writes
+  that text to disk, reloads it into a fresh `Job`, and asserts the
+  reloaded document reserializes to the identical bytes — the actual
+  GUI Save-then-Open round trip. Both passed with no changes needed to
+  production code. Full relevant battery, one pass, all green:
+  ReferenceGraphTest 230/230, GraphLayoutTest 65/65, GraphLayoutSidecarTest
+  101/101, ConnectionLegalityTest 293/293, EntityTemplatesTest 417/417,
+  RewireConnectionTest 188/188, DeleteDuplicateGraphNodeTest 181/181,
+  GraphCanvasEditSmokeTest 49/49 (was 40 before the new PART 10 cases),
+  PainterIntrospectionRoundTripTest 285/285, AgentLiveCommitTest 883/883,
+  AgentChunkCrudTest 3535/3535, SceneEditorBasicsTest 66/66,
+  CstDeriveGoldenTest 404 MATCH / 0 DRIFT (411 corpus scenes, 0 UNCOVERED,
+  0 STALE — the +3 golden-manifest growth is the three new S23 stress
+  scenes below), SourceHygieneTest 158/158 (245 test files scanned). Both
+  `xcodebuild` targets (`rise`, `RISE-GUI`; Deployment, arm64, CLEAN
+  rebuild — the S14 reviewer's owed clean-rebuild note) built with **zero
+  compiler warnings**; the only `ld: warning:` lines are a pre-existing,
+  unrelated OIDN-install search-path notice (this sandbox never ran the
+  one-time `extlib/oidn` submodule build) present before and after this
+  slice's changes.
+
+  *Part 2 — GUI stress-test scenes.* Three scenes landed in
+  `scenes/Tests/GUI/` alongside the reattach-probe fixtures (not
+  `scenes/FeatureBased/Textures/` — these exist to stress the GUI's own
+  canvas/panel surfaces, not to showcase a render, matching the
+  reattach-probe pair's existing placement rationale). Each is both
+  render-verified (`bin/rise`, clean `RISE_Log.txt`, non-degenerate pixel
+  variance) and graph-verified (`SceneEditController::ReadPainterMaterialGraph`
+  node/edge counts via a throwaway probe, the same call `ReferenceGraphTest`
+  PART 5/6 uses):
+  - `graph_stress_wide.RISEscene` — 128 Painter/Material chunks (96
+    painters + 32 materials), 207 edges, 0 dangling; hub fan-out up to 24
+    referrers (several nodes at 5+); a 7-rank-deep chain (base colour →
+    `perlin3d_painter` → `mapping_painter` → `stochastic_tile_painter` →
+    `blend_painter` → a second `blend_painter` consuming the first →
+    `scalar_painter` → material); every arc chunk kind present at least
+    once (`expression_painter` ×8 with full param metadata,
+    `ramp_painter` ×8, `mapping_painter` ×6, `stochastic_tile_painter`
+    ×6, `scatter_painter` ×8, `voronoi3d_painter` ×2 incl. one
+    `space world`, `blend_painter` ×24 cycling all five modes). Film
+    800×600, 4 samples, `pixelpel_rasterizer` — renders in ~1s.
+  - `graph_stress_editing.RISEscene` — 20 Painter/Material chunks (12
+    painters + 8 materials), 15 edges, purpose-built for edit-flow
+    exercises, each documented in-file as "exercise X by doing Y": a
+    painter shared across exactly 3 `ggx_material`s (`pnt_shared_bronze`/
+    `pnt_spec_dull`, referrer count 3 each — the S19 ownership-REFUSE +
+    Duplicate-node escape hatch); three zero-referrer orphans
+    (`orphan_ripple`/`orphan_specks`/`orphan_tint` — the badge check);
+    a same-base-name-adjacent pair (`metal_trim`/`metal_trim_2` — the
+    create-node dedupe picker, which must land a third same-named create
+    on `metal_trim_3`); a `png_painter{file textures/waterbump.png}`
+    node (the file-slot picker flow, vs. a chunk-reference picker); a
+    `ggx_material` (`mat_unspelled`) with its optional `rs` slot left
+    unbound (the unspelled/unbound-slot bind flow). Film 800×600, 4
+    samples.
+  - `panel_stress_params.RISEscene` — 12 Painter/Material chunks (7
+    painters + 5 materials), 9 edges, the property-panel +
+    `PainterPreview` load test: three `expression_painter` nodes
+    (`panel_terrain_field` 12 params/6 defs, `panel_organic_field` 10
+    params/5 defs, `panel_metal_field` 11 params/5 defs), each with
+    fully-annotated (`min`/`max`/`step`/`label`) params and a strictly
+    sequential def chain (the def-stage thumbnail strip); a 12-stop
+    `ramp_painter`; two `scalar_painter{expression}` nodes with a
+    `vec3`-typed body — genuine per-channel R≠G≠B scalars, not a
+    broadcast (`panel_scalar_dispersion` drives a `dielectric_material`'s
+    dispersive `ior`, `panel_scalar_roughness_rgb` drives a
+    `ggx_material`'s `alphax`/`alphay`, confirming those slots accept a
+    per-channel scalar painter without a `requireSingle`-style refusal).
+    Film 800×600, 4 samples.
+
+  Golden manifest (`tests/data/cst_derive_golden.txt`) regenerated after
+  `git add`-ing the three new scenes (the ls-files coverage-sweep lesson):
+  diff is +3 lines only, 0 drift on any of the other 401 entries — verify
+  moved from 401 MATCH/408 corpus/0 UNCOVERED to 404 MATCH/411 corpus/0
+  UNCOVERED. `scenes/Tests/README.md`'s `GUI/` entry rewritten to describe
+  all five files (the two reattach probes plus the three new stress
+  scenes) and why they live there.
+
+**Sequencing:** S11 strictly first (everything reads its graph). S12/S13 can overlap S11's review. S14 after S11. S15 after S12+S13+S14; S16 can trail S15 indefinitely (explicitly non-blocking). S17 can overlap S15's review (independent subsystem). S18→S19→S20 strictly ordered (each is a precondition for the next's REFUSE/cycle logic to have something real to guard). S21 after S15+S17+S18+S19+S20. S22 trails S21 (same non-blocking posture as S16). S23 last.
+
+**Total new cost, S11–S23:** roughly 2×S + 6×M + 5×L across 13 slices — consistent with doc 88 calling this Phase 3 "the heavy lift" (`MATERIAL_EDITOR.md:82` "C2 — Node graph (heavy lift, gated 'Advanced')"); the read-only half (S11–S17, minus the owed S16) is the cheap, immediately-useful slice a reviewer could ship and re-measure adoption/usefulness on before committing to S18–S22's genuinely new persistence surface — the same "re-measure before widening" discipline doc 88's own §5 phase gates already modeled.
+
+---
+
+### Sibling Canvas: `ObjectGraphCanvas` (Objects + Geometry + CSG / Instancing)
+
+Alongside the Material & Painter `NodeGraphCanvas`, both desktop shells ship a
+sibling **`ObjectGraphCanvas`** built on the same `GraphLayout` /
+`GraphLayoutSidecar` / C-ABI bulk-snapshot architecture:
+
+- **Shared C++:** `SceneEditController::ReadObjectGraphLaidOutFocused`
+  (`src/Library/SceneEditor/SceneEditController.{h,cpp}`) assembles the DAG of
+  `Object` and `Geometry` chunks plus CSG (`csg_object` left/right children) and
+  instancing/geometry reference wires, laid out via `GraphLayout` and persisted
+  in `<scene>.risegraph.json`.
+- **Desktop shells:** `ObjectGraphCanvas.swift` on macOS
+  (`build/XCode/rise/RISE-GUI/App/ObjectGraphCanvas.swift`) and
+  `ObjectGraphCanvas.{h,cpp}` on Windows (`build/VS2022/RISE-GUI/`), reusing the
+  same pan/zoom/selection/focus conventions as `NodeGraphCanvas`.
+
+---
+
+### Critical Files for Implementation
+
+- `src/Library/Cst/Cst.h` (`ReferenceGraph`/`ReferenceUse`/`BuildReferenceGraph`/`DocInsertItem` — the edge and insertion primitives every slice builds on)
+- `src/Library/SceneEditor/SceneEditController.cpp` (`BuildAuthoredTree`/`RefreshTreeSnapshot_` and `ReadPainterMaterialGraphLaidOut*` / `ReadObjectGraphLaidOutFocused`)
+- `src/Library/SceneEditor/PainterIntrospection.h` (the painter edge/param source S11's `ReferenceGraph` wraps, and the editability contract Phase B's edits must match)
+- `src/Library/SceneEditor/PainterPreview.{h,cpp}` (2D painter/stage/ramp thumbnail engine reused by S15/S21/S22)
+- `src/Library/SceneEditor/MaterialPreview.{h,cpp}` (Slice 5 deterministic 3D studio shaderball engine driving 40×40 Material-node thumbnails on both desktop graph canvases)
+- `docs/gui/MATERIAL_EDITOR.md` (§3/§3.7/§3.7a/§3.8 — the design this doc's Phase-B slices (S18-S20) implement almost line-for-line; keep both docs cross-referenced, not forked)

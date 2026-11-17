@@ -348,6 +348,7 @@ static void TestSMSConfigHints()
 	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_photon_count",     to_hint( d.photonCount ) );
 	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_two_stage",        to_hint( d.twoStage ) );
 	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_target_bounces",   to_hint( d.targetBounces ) );
+	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_extended",         to_hint( d.extended ) );
 }
 
 static void TestProgressiveHints()

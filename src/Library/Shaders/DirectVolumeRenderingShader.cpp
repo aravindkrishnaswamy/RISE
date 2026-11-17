@@ -220,7 +220,7 @@ void DirectVolumeRenderingShader::Shade(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [out] RISEPel value at the point
-	const IORStack& ior_stack				///< [in/out] Index of refraction stack
+	const IORStack& ior_stack				///< [in] Index of refraction stack
 	) const
 {
 	const IScene* pScene = caster.GetAttachedScene();
@@ -241,7 +241,15 @@ void DirectVolumeRenderingShader::Shade(
 	// Entering vs leaving is a face-orientation query — use the
 	// GEOMETRIC normal (PBRT 4e §10.1.1) so the test is unaffected by
 	// any future bump/normal-mapped volume box.
-	const Scalar cosine = -Vector3Ops::Dot(ri.geometric.vGeomNormal, ri.geometric.ray.Dir());
+	//
+	// DL-70: the TRUE, ray-INDEPENDENT one.  A double-sided volume-box
+	// mesh reports a `vGeomNormal` that opposes the ray at every
+	// crossing, so `cosine` was unconditionally POSITIVE, the "we are
+	// leaving" branch never fired, and the volume was never shaded at
+	// all.  `TrueGeomFacing` undoes the flip and is a no-op on every
+	// geometry that does not set it (a `box_geometry` volume container,
+	// the usual case, is unaffected).
+	const Scalar cosine = -ri.geometric.TrueGeomFacing( ri.geometric.ray.Dir() );
 	if( cosine < NEARZERO ) {
 		// We are coming from the inside of the object, hence we are leaving
 		// We need to do the volume shading now
@@ -379,7 +387,7 @@ Scalar DirectVolumeRenderingShader::ShadeNM(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack& ior_stack				///< [in/out] Index of refraction stack
+	const IORStack& ior_stack				///< [in] Index of refraction stack
 	) const
 {
 	const IScene* pScene = caster.GetAttachedScene();
@@ -402,7 +410,15 @@ Scalar DirectVolumeRenderingShader::ShadeNM(
 	// Entering vs leaving is a face-orientation query — use the
 	// GEOMETRIC normal (PBRT 4e §10.1.1) so the test is unaffected by
 	// any future bump/normal-mapped volume box.
-	const Scalar cosine = -Vector3Ops::Dot(ri.geometric.vGeomNormal, ri.geometric.ray.Dir());
+	//
+	// DL-70: the TRUE, ray-INDEPENDENT one.  A double-sided volume-box
+	// mesh reports a `vGeomNormal` that opposes the ray at every
+	// crossing, so `cosine` was unconditionally POSITIVE, the "we are
+	// leaving" branch never fired, and the volume was never shaded at
+	// all.  `TrueGeomFacing` undoes the flip and is a no-op on every
+	// geometry that does not set it (a `box_geometry` volume container,
+	// the usual case, is unaffected).
+	const Scalar cosine = -ri.geometric.TrueGeomFacing( ri.geometric.ray.Dir() );
 	if( cosine < NEARZERO ) {
 		// We are coming from the inside of the object, hence we are leaving
 		// We need to do the volume shading now

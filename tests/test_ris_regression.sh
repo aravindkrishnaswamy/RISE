@@ -51,12 +51,9 @@ standard_shader
 	shaderop	pt
 }
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		6
 	samples				64
-	lum_samples			1
-	ior_stack			TRUE
 	pathguiding			true
 	pathguiding_iterations	3
 	pathguiding_spp			2

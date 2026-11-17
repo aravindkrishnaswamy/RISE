@@ -20,13 +20,18 @@
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IFrameEncoder.h"
 #include "../Interfaces/ILog.h"
+#include "../Utilities/DiskFileWriteBuffer.h"
 
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <cctype>
+#include <cstdio>
 #include <mutex>
 #include <optional>
+#include <memory>
+#include <exception>
+#include <filesystem>
 #include <shared_mutex>
 
 using namespace RISE;
@@ -55,6 +60,18 @@ namespace RISE
 				T* ptr_;
 			};
 
+			// A non-fire artifact just replaced the destination; a fire
+			// provenance sidecar left beside it would describe the wrong
+			// bytes, so retire it.
+			void RetireStaleProvenanceSidecar( const std::string& path )
+			{
+				const std::string sidecar = path + ".provenance.cbor";
+				std::error_code ec;
+				if( std::filesystem::is_regular_file( sidecar, ec ) ) {
+					std::remove( sidecar.c_str() );
+				}
+			}
+
 			bool EncoderAcceptsPath( const IFrameEncoder& encoder,
 				const std::string& path )
 			{
@@ -76,6 +93,64 @@ namespace RISE
 				}
 				return false;
 			}
+			class CheckedWriteBuffer : public IWriteBuffer, public Reference
+			{
+			public:
+				explicit CheckedWriteBuffer( IWriteBuffer& target ) : target_( target ) {}
+
+				unsigned int HowFarToEnd() const override { return target_.HowFarToEnd(); }
+				unsigned int Size() const override { return target_.Size(); }
+				bool EndOfBuffer() const override { return target_.EndOfBuffer(); }
+				bool seek( eSeek origin, int offset ) override { return Record( target_.seek( origin, offset ), false ); }
+				unsigned int getCurPos() const override { return target_.getCurPos(); }
+				bool setChar( char v ) override { return Record( target_.setChar( v ) ); }
+				bool setUChar( unsigned char v ) override { return Record( target_.setUChar( v ) ); }
+				bool setWord( short v ) override { return Record( target_.setWord( v ) ); }
+				bool setUWord( unsigned short v ) override { return Record( target_.setUWord( v ) ); }
+				bool setInt( int v ) override { return Record( target_.setInt( v ) ); }
+				bool setUInt( unsigned int v ) override { return Record( target_.setUInt( v ) ); }
+				bool setFloat( float v ) override { return Record( target_.setFloat( v ) ); }
+				bool setDouble( double v ) override { return Record( target_.setDouble( v ) ); }
+				bool setBytes( const void* bytes, unsigned int size ) override
+				{
+					return Record( target_.setBytes( bytes, size ), size != 0 );
+				}
+				void Clear() override { target_.Clear(); written_ = false; }
+				// Encoders use resize as a capacity hint. Disk/borrowed buffers can
+				// decline it while successfully accepting all subsequent writes.
+				bool Resize( unsigned int size, bool force ) override { return target_.Resize( size, force ); }
+				bool ResizeForMore( unsigned int size ) override { return target_.ResizeForMore( size ); }
+				bool Succeeded() const { return written_ && !failed_; }
+
+			protected:
+				bool Record( bool ok, bool wrote = true )
+				{
+					failed_ |= !ok;
+					written_ |= ok && wrote;
+					return ok;
+				}
+			private:
+				IWriteBuffer& target_;
+				bool written_ = false;
+				bool failed_ = false;
+			};
+
+			// Preserve the optional extension only when the destination really
+			// supports it. Legacy destinations retain their original interface.
+			class WideCheckedWriteBuffer final : public CheckedWriteBuffer, public IBuffer64
+			{
+			public:
+				WideCheckedWriteBuffer( IWriteBuffer& target, IBuffer64& wide )
+					: CheckedWriteBuffer( target ), wide_( wide ) {}
+				std::uint64_t Size64() const override { return wide_.Size64(); }
+				std::uint64_t getCurPos64() const override { return wide_.getCurPos64(); }
+				bool seek64( IBuffer::eSeek origin, std::int64_t offset ) override
+				{
+					return Record( wide_.seek64( origin, offset ), false );
+				}
+			private:
+				IBuffer64& wide_;
+			};
 		}
 
 		// ─────────────────────────────────────────────────────────────
@@ -655,7 +730,7 @@ namespace RISE
 			}
 			RetainedReference<FrameStore> snap(
 				SnapshotFrameStore( chainMutex_, framestore_ ) );
-			if ( !snap ) return false;
+			if ( !snap || snap->Width() == 0 || snap->Height() == 0 ) return false;
 
 			EncodeOpts transactionOpts = opts;
 			bool artifactMetadataLeased = false;
@@ -679,22 +754,47 @@ namespace RISE
 			transactionOpts.frame = transactionOpts.metadataSnapshot.frame;
 			transactionOpts.denoisedDerivative =
 				transactionOpts.metadataSnapshot.denoisedContent;
-			std::string error;
-			bool success = false;
+
+			// Fire output publishes artifact + provenance sidecar as one
+			// fail-closed transaction.
+			if( !transactionOpts.metadataSnapshot.renderFidelityStatus.empty() ) {
+				std::string error;
+				bool success = false;
+				{
+					FireMetadataLease fireMetadataLease { snap.get(),artifactMetadataLeased };
+					success = EncodeFrameStoreFileTransaction(
+						*snap,*encoder,transactionOpts,path,error );
+				}
+				if( !success ) {
+					GlobalLog()->PrintEx( eLog_Error,
+						"ViewportFrameStore::SaveAs: output_provenance_unavailable for '%s': %s",
+						path.c_str(),error.c_str() );
+					return false;
+				}
+				GlobalLog()->PrintEx( eLog_Event,
+					"ViewportFrameStore::SaveAs: written to '%s'", path.c_str() );
+				return true;
+			}
+
+			bool written = false;
 			{
-				FireMetadataLease fireMetadataLease { snap.get(),artifactMetadataLeased };
-				success = EncodeFrameStoreFileTransaction(
-					*snap,*encoder,transactionOpts,path,error );
+				FireMetadataLease metadataLease { snap.get(),artifactMetadataLeased };
+				written = DiskFileWriteBuffer::WriteAtomically( path,
+					[&]( DiskFileWriteBuffer& buffer ) {
+						encoder->Encode( *snap, buffer, transactionOpts );
+						return true;
+					}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace );
 			}
-			if( !success ) {
-				GlobalLog()->PrintEx( eLog_Error,
-					"ViewportFrameStore::SaveAs: output_provenance_unavailable for '%s': %s",
-					path.c_str(),error.c_str() );
-				return false;
+
+			if( written ) {
+				RetireStaleProvenanceSidecar( path );
+				GlobalLog()->PrintEx( eLog_Event,
+					"ViewportFrameStore::SaveAs: written to '%s'", path.c_str() );
+			} else {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"ViewportFrameStore::SaveAs: failed to write '%s'", path.c_str() );
 			}
-			GlobalLog()->PrintEx( eLog_Event,
-				"ViewportFrameStore::SaveAs: written to '%s'", path.c_str() );
-			return true;
+			return written;
 		}
 
 		bool ViewportFrameStore::SaveTo(
@@ -705,7 +805,7 @@ namespace RISE
 			if ( !encoder ) return false;
 			RetainedReference<FrameStore> snap(
 				SnapshotFrameStore( chainMutex_, framestore_ ) );
-			if ( !snap ) return false;
+			if ( !snap || snap->Width() == 0 || snap->Height() == 0 ) return false;
 			FrameStoreOutput::Metadata metadataSnapshot;
 			bool artifactMetadataLeased = false;
 			if( !snap->AcquireExternalArtifactMetadataSnapshot(
@@ -728,8 +828,22 @@ namespace RISE
 					"ViewportFrameStore::SaveTo: fire output requires a provenance-capable sink" );
 				return false;
 			}
-			encoder->Encode( *snap, dst, opts );
-			return true;
+			const auto encode = [&]( CheckedWriteBuffer& checked ) {
+				try {
+					encoder->Encode( *snap, checked, opts );
+				} catch( const std::exception& failure ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"ViewportFrameStore::SaveTo: encoding failed: %s", failure.what() );
+					return false;
+				}
+				return checked.Succeeded();
+			};
+			if( auto* wide = dynamic_cast<IBuffer64*>( &dst ) ) {
+				WideCheckedWriteBuffer checked( dst, *wide );
+				return encode( checked );
+			}
+			CheckedWriteBuffer checked( dst );
+			return encode( checked );
 		}
 
 		// ─────────────────────────────────────────────────────────────
@@ -785,9 +899,8 @@ namespace RISE
 			// (per IRasterizerOutput.h:33-36).
 			//
 			// We convert to exclusive bounds (rExc{Right,Bottom}
-			// = pRegion->{right,bottom} + 1, clamped to image
-			// size) before the tile-coverage math below — that
-			// math (`(rExcRight + te - 1) / te`) is the standard
+			// = min(pRegion->{right,bottom}, size-1) + 1) before
+			// the tile-coverage math below — that math (`(rExcRight + te - 1) / te`) is the standard
 			// half-open ceiling division for a [0, end) range.
 			// Without the conversion, single-pixel regions sitting
 			// exactly on a tile boundary (e.g. Rect(32, 32, 32, 32)
@@ -795,11 +908,15 @@ namespace RISE
 			// callbacks.  See L4 round-3 P2.
 			const unsigned int rTop      = pRegion ? pRegion->top  : 0;
 			const unsigned int rLeft     = pRegion ? pRegion->left : 0;
+			// Clamp the INCLUSIVE endpoint to the image first and only
+			// then convert to exclusive: `bottom + 1` on an unclamped
+			// endpoint wraps UINT_MAX ("to the edge") to 0, which read
+			// as an empty region and copied nothing.
 			const unsigned int rExcBottom = pRegion
-				? std::min<unsigned int>( pRegion->bottom + 1u, srcH )
+				? ( pRegion->bottom >= srcH ? srcH : pRegion->bottom + 1u )
 				: srcH;
 			const unsigned int rExcRight  = pRegion
-				? std::min<unsigned int>( pRegion->right  + 1u, srcW )
+				? ( pRegion->right >= srcW ? srcW : pRegion->right + 1u )
 				: srcW;
 
 			// Iterate FrameStore tiles overlapping the region;
@@ -807,11 +924,23 @@ namespace RISE
 			// per-tile write in BeginTile/EndTile, which fires
 			// OnTileComplete for that tile.  The rasterizer's
 			// just-rendered region may not align with the
-			// FrameStore's tile grid; we copy the WHOLE FrameStore
-			// tile for any tile that overlaps, which incidentally
-			// re-reads pixels outside the rendered region (those
-			// pixels are still present in the rasterizer's image
-			// from previous-state, so the copy is correct).
+			// FrameStore's tile grid; the copy is CLIPPED to the
+			// region so pixels of an overlapping FrameStore tile
+			// outside it keep their previous content.  The source
+			// must not be read outside the region: per the
+			// GetIntermediateOutputImage contract only the region's
+			// pixels are valid, and another worker may be composing
+			// a neighbouring region into the same scratch image.
+			// Inclusive copy clip in source == destination pixels (the
+			// chain is sized to the source image by EnsureChain).
+			const Rect clip( rTop, rLeft,
+				rExcBottom > 0 ? rExcBottom - 1u : 0u,
+				rExcRight  > 0 ? rExcRight  - 1u : 0u );
+			if ( pRegion && ( rExcBottom == 0 || rExcRight == 0 ||
+			                  rTop >= rExcBottom || rLeft >= rExcRight ) ) {
+				return;	// RetainedReference releases the snapshot.
+			}
+
 			const size_t te  = snap->TileEdge();
 			const size_t tcX = snap->TileCountX();
 			const size_t tcY = snap->TileCountY();
@@ -833,7 +962,8 @@ namespace RISE
 						std::min( ( ty + 1 ) * te,
 						          static_cast<size_t>( snap->Height() ) ) );
 					const Rect srcRect( dstY0, dstX0, dstY1, dstX1 );
-					snap->CopyTileFromRasterImage( tx, ty, pImage, srcRect );
+					snap->CopyTileFromRasterImage( tx, ty, pImage, srcRect,
+						pRegion ? &clip : nullptr );
 				}
 			}
 

@@ -1,0 +1,23 @@
+ply
+format ascii 1.0
+comment DL-36: two parallel blades belonging to one luminary
+comment Blade separation 0.001 is within the normal probe standoff
+element vertex 8
+property float x
+property float y
+property float z
+element face 4
+property list uchar uint vertex_indices
+end_header
+-1 -1 0
+1 -1 0
+1 1 0
+-1 1 0
+-1 -1 0.001
+1 -1 0.001
+1 1 0.001
+-1 1 0.001
+3 0 1 2
+3 0 2 3
+3 4 5 6
+3 4 6 7

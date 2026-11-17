@@ -60,6 +60,17 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
 
+			//! IGeometry::DistanceToSurface -- EXACT: the disk is a flat two-sided sheet, so the
+			//! answer is the axial offset inside the rim and a rim-relative
+			//! hypotenuse outside it
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
+			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const;
+			//! (No `override` keyword: no other member of this class carries
+			//! one, and adding the first would make clang's
+			//! -Winconsistent-missing-override fire on every OTHER member.
+			//! Matching the file's own convention is the fix; annotating the
+			//! whole class is a separate, unrelated change.)
+
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
 			void SetIntermediateValue( const IKeyframeParameter& val );

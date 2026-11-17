@@ -167,6 +167,13 @@ namespace RISE
 				const Scalar&	a = h.alpha;
 				const Scalar&	b = h.beta;
 
+                // Native primitive provenance is independent of shading-signal
+                // support. No provider/bake is advertised by this mesh.
+                ri.signals.pProvider = nullptr;
+                ri.signals.primId = static_cast<int>(elem-polygons.data());
+                ri.signals.baryA = a;
+                ri.signals.baryB = b;
+
 				ri.vNormal = thisTri.normals[0]+
 					(thisTri.normals[1]-thisTri.normals[0])*a+
 					(thisTri.normals[2]-thisTri.normals[0])*b;
@@ -297,22 +304,71 @@ namespace RISE
 					(dNraw_dv.y - shadingNormal.y * dv_dot_n) * invLen,
 					(dNraw_dv.z - shadingNormal.z * dv_dot_n) * invLen );
 
+				// THE CHART MAP (docs/GEOMETRY_DERIVATIVES.md "The texcoord
+				// chart map").  On the useUVJacobian path dpdu/dpdv ARE the
+				// derivatives with respect to the stored per-vertex texture
+				// coordinate that ri.ptCoord interpolates, so the map is the
+				// identity -- this is the one geometry family for which the
+				// two charts coincide, and why the mesh path was correct
+				// before the map existed.  On the barycentric-edge FALLBACK
+				// (degenerate or absent UV triangle) dpdu/dpdv are edge
+				// vectors with no relation to ptCoord at all, so the map is
+				// left INVALID and SolveFootprintUV declines rather than
+				// publishing an edge-chart Jacobian as a texcoord one.
+				ri.derivatives.dsdu = 1.0; ri.derivatives.dsdv = 0.0;
+				ri.derivatives.dtdu = 0.0; ri.derivatives.dtdv = 1.0;
+				ri.derivatives.texChartValid = useUVJacobian;
+
 				// Enforce right-handedness against shading normal.
 				const Vector3 cross = Vector3Ops::Cross( dpdu, dpdv );
-				if( Vector3Ops::Dot( cross, shadingNormal ) < 0.0 ) {
+				const bool bMirroredUV = ( Vector3Ops::Dot( cross, shadingNormal ) < 0.0 );
+				if( bMirroredUV ) {
 					dpdv = Vector3( -dpdv.x, -dpdv.y, -dpdv.z );
 					dndv = Vector3( -dndv.x, -dndv.y, -dndv.z );
+					// dpdv now points down -d/dv, so the chart map must say so:
+					// t decreases as the derivative parameter increases.  Mip
+					// LOD squares and would not notice; the finite-difference
+					// oracle in tests/TextureFootprintTest.cpp does.
+					ri.derivatives.dtdv = -1.0;
 				}
 				ri.derivatives.dpdu = dpdu;
 				ri.derivatives.dpdv = dpdv;
 				ri.derivatives.dndu = dndu;
 				ri.derivatives.dndv = dndv;
 				ri.derivatives.valid = true;
-
-				// Project ray differentials onto the surface UV plane
-				// and store the texture-space footprint.  No-op when
-				// ray.hasDifferentials = false.
-				ComputeTextureFootprint( ri, ri.ray );
+				// docs/CLOTH_FABRIC_DESIGN.md 9.1: hand the shading ONB a
+				// COHERENT, UV-derived tangent instead of the arbitrary
+				// per-triangle-discontinuous axis CreateFromW would pick.
+				// Non-indexed meshes have no TANGENT accessor, so this is
+				// useUVJacobian-only (no bHasTangent branch -- see the
+				// indexed specialization for that).  When the UV Jacobian
+				// is degenerate (useUVJacobian false), dpdu is the
+				// discontinuous edge-frame fallback above -- writing THAT
+				// into vShadingTangent would be worse than doing nothing,
+				// so we deliberately write nothing and Object::IntersectRay
+				// falls through to CreateFromW, byte-identical to before
+				// this fix existed.
+				if( useUVJacobian ) {
+					ri.bShadingTangentFromGeometry = true;
+					ri.vShadingTangent             = dpdu;	// object space
+					const Scalar sign              = bMirroredUV ? -1.0 : 1.0;
+					ri.shadingBitangentSign        = sign;
+					ri.bitangentSign               = sign;
+					ri.bHasShadingTangent          = true;
+				}
+				// Phase-1 geometry-derived shading signals
+				// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.2): the
+				// characteristic length that makes the expression VM's
+				// dimensionless `curv` scale-free -- this mesh's own BVH root
+				// box, read through the shared bbox-diagonal convention.  GATED:
+				// nothing but `curv` reads scaleHint, and this is a (cheap, but
+				// not free) sqrt on the per-hit path.  Object::IntersectRay folds
+				// the object's world scale in afterward, which is what makes
+				// `curv` per-INSTANCE correct across two instances of this one
+				// shared geometry placed at different world scales.
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
 			}
 		}
 	}

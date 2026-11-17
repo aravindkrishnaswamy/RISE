@@ -231,19 +231,35 @@ destructor barrier has no dedicated cross-thread regression test
 - All three are coherent today (pre-flight + gated dirty marks); migration
   deletes their bespoke sequences and buys undo, as it did for Rasterizer.
 
-## 3. Document-first phase 4 (deferred until inverse-op pain recurs)
+## 3. Document-state undo vs. exact-byte undo — **RESOLVED (2026-10-17, `e74ed91e3`..`a699e7415`)**
 
-Document-state undo (N retained heads; undo = swap head + re-derive),
-retiring the per-op inverse machinery.  Needs the gesture-coalescing design
-first.  See ADR §4.
+Exact-byte CST undo shipped via `Cst::DocReplaceChunkIfText` plus the per-object
+gizmo spelling journal (`SceneEditController` / `SceneEditor`), covered by
+`tests/AgentChunkCrudTest.cpp` (BR24). Undoing an agent or GUI parameter/chunk
+edit or gizmo transform restores the exact pre-edit chunk bytes (including
+comments, whitespace, and original numeric spellings) rather than canonicalized
+re-formatting, resolving ADR §4 Phase 4 without retaining full-Document head
+clones.
 
 ## 4. Other known follow-ups on this branch's arcs
 
 - **Bridge enum translation switches** are still convention-guarded — the
   remaining class-C mirror; candidate for the same manifest treatment as
-  `tests/IJobVtableManifest.txt` (SourceHygieneTest).
+  `tests/IJobVtableManifest.txt` (SourceHygieneTest) or `tools/gen_bridge_enums.py`.
 - **Windows shell**: all branch work is code-complete + review-verified
   only; needs a real Windows build/run pass before or at merge.
+- ~~**Windows `NamedViewsPanel` Qt widget gap**~~ (**CLOSED:** shipped in
+  `build/VS2022/RISE-GUI/NamedViewsPanel.{h,cpp}`, wired in `MainWindow.{h,cpp}`
+  between `EnvironmentPanel` and `ViewportProperties`, matching macOS
+  `NamedViewsPanel.swift`; code-complete and review-verified on macOS, gated on
+  a Windows MSVC/Qt6 compile/runtime pass per the Windows shell bullet above).
+- ~~**Windows `ChatPanel` API-key persistence gap**~~ (**CLOSED:** shipped in
+  `build/VS2022/RISE-GUI/CredentialStore.{h,cpp}` via `<wincred.h>`
+  `CredWriteW`/`CredReadW`/`CredDeleteW` under `"RISE Agent Chat/<provider>"`
+  with write-only `m_apiKeyEdit` in `ChatPanel.{h,cpp}`; code-complete and
+  review-verified on macOS, gated on a Windows MSVC/Qt6 compile/runtime pass;
+  shared C++ `ICredentialStore` abstraction remains an optional future
+  consolidation).
 - **Standalone geometry creation templates** (`TemplatesFor(Geometry)`
   empty) — ENTITY_CREATION.md §4.2's import/primitive-set design.
 - **Shader / Modifier UI categories** — no `IJob` enumeration surface yet;

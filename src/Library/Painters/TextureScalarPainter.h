@@ -76,6 +76,15 @@ namespace RISE
 				if( pRIA ) pRIA->addref();
 			}
 
+			//! Structural introspection: channel/scale/bias + the backing
+			//! accessor's raster dims (a cheap proxy for "which file" --
+			//! the accessor does not retain a filename, see
+			//! IRasterImageAccessor.h).
+			Channel GetChannel() const { return channel; }
+			Scalar GetScale() const { return scale; }
+			Scalar GetBias() const { return bias; }
+			IRasterImageAccessor* GetAccessor() const { return pRIA; }
+
 			ScalarTriple GetValuesAt(
 				const RayIntersectionGeometric& ri
 				) const override

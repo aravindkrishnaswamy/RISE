@@ -15,11 +15,9 @@
 #include "pch.h"
 #include "TriangleMeshGeometry.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
-#include "../Intersection/TextureFootprintCompute.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "GeometryUtilities.h"
-#include "../Utilities/stl_utils.h"
 // BSPTreeSAH / Octree headers are still needed in the .cpp because v2/v3
 // .risemesh files have BSP/octree byte blocks that we read into local
 // temporaries during Deserialize so the byte stream advances correctly,
@@ -29,6 +27,7 @@
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
 #include <cmath>
+#include <mutex>
 
 inline unsigned int VoidPtrToUInt( const void* v )
 {
@@ -38,6 +37,7 @@ inline unsigned int VoidPtrToUInt( const void* v )
 using namespace RISE;
 using namespace RISE::Implementation;
 
+#include "../Utilities/SurfaceCurvature.h"	// scaleHint stamping in the specializations below
 #include "TriangleMeshGeometrySpecializations.h"
 
 TriangleMeshGeometry::TriangleMeshGeometry(
@@ -95,6 +95,18 @@ void TriangleMeshGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 		// Flip the normal if we must
 		if( Vector3Ops::Dot(ri.vNormal, ri.ray.Dir()) > 0 ) {
 			ri.vNormal = -ri.vNormal;
+			// Sibling of CSGObject.cpp's P1-1 fix: `ri.derivatives.dndu/dndv`
+			// (set above, inside pPolygonsBVH->IntersectRay, per-vertex-
+			// normal-interpolation derivatives -- direction-independent, a
+			// pure function of surface position) are derivatives of the
+			// UN-flipped normal.  The flip just above changes which normal
+			// FIELD `ri.vNormal` reports; its derivative must flip with it
+			// or a back-facing hit on a double-sided mesh ships curvature
+			// for the wrong-signed normal.
+			if( ri.derivatives.valid ) {
+				ri.derivatives.dndu = -ri.derivatives.dndu;
+				ri.derivatives.dndv = -ri.derivatives.dndv;
+			}
 		}
 		// Mirror the flip for the geometric (face) normal so the side-
 		// tests using `ri.vGeomNormal` agree with the post-flip shading
@@ -116,6 +128,16 @@ void TriangleMeshGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 			ri.vGeomNormal = -ri.vGeomNormal;
 		}
 		ri.bGeomNormalOrientedToRay = bFlipGeomNormal;
+		// DL-96: this (non-indexed) mesh class has no watertightness
+		// certification at all (that is `TriangleMeshGeometryIndexed`'s
+		// DL-143 mechanism only), so every double-sided hit here is
+		// treated as an open sheet -- see
+		// RayIntersectionGeometric::bOpenSheet's doc comment.
+		ri.bOpenSheet = true;
+	}
+	// DL-382: see TriangleMeshGeometryIndexed::IntersectRay.
+	if( ri.bHit && m_bProvablyOpenSheet ) {
+		ri.bProvablyNoInterior = true;
 	}
 }
 
@@ -148,6 +170,14 @@ Scalar TriangleMeshGeometry::GetArea( ) const
 
 void TriangleMeshGeometry::BeginTriangles( )
 {
+    smsUncertainNormalOrientation=true;
+    m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+    m_bOpenSignedVolumeNegative=false;
+	m_topologicalOpenness.store( -2, std::memory_order_release );
+	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
 	safe_release( pPolygonsBVH );
 	areas.clear();
 	areasCDF.clear();
@@ -155,6 +185,13 @@ void TriangleMeshGeometry::BeginTriangles( )
 
 void TriangleMeshGeometry::AddTriangle( const Triangle& tri )
 {
+    smsUncertainNormalOrientation=true;
+    m_bProvablyOpenSheet=false;
+    m_bZeroVolumeSheet=false;
+    m_bShapeOpenSheet=false;
+	m_topologicalOpenness.store( -2, std::memory_order_release );
+	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
 	// Add the triangle, precompute the stuff that needs to be precompute
 	polygons.push_back( tri );
 }
@@ -169,6 +206,9 @@ void TriangleMeshGeometry::ComputeAreas()
 	areas.clear();
 	areasCDF.clear();
 	totalArea = 0;
+    smsUncertainNormalOrientation = polygons.empty();
+    ++smsOrientationAudits;
+    smsOrientationTriangleVisits += polygons.size();
 
 	// Compute triangle areas
 	{
@@ -177,7 +217,12 @@ void TriangleMeshGeometry::ComputeAreas()
 			const Triangle& thisTri = (*i);
 			Vector3 vEdgeA = Vector3Ops::mkVector3( thisTri.vertices[1], thisTri.vertices[0] );
 			Vector3 vEdgeB = Vector3Ops::mkVector3( thisTri.vertices[2], thisTri.vertices[0] );
-			const Scalar thisArea = (Vector3Ops::Magnitude(Vector3Ops::Cross(vEdgeA,vEdgeB))) * 0.5;
+			const Vector3 face=Vector3Ops::Cross(vEdgeA,vEdgeB);
+            for(unsigned k=0;k<3;++k) {
+                const Scalar orientation=Vector3Ops::Dot(face,thisTri.normals[k]);
+                if(!std::isfinite(orientation) || orientation<0) smsUncertainNormalOrientation=true;
+            }
+            const Scalar thisArea = Vector3Ops::Magnitude(face) * 0.5;
 			totalArea += thisArea;
 			areas.push_back( thisArea );
 		}
@@ -193,6 +238,57 @@ void TriangleMeshGeometry::ComputeAreas()
 			areasCDF.push_back( sum );
 		}
 	}
+
+    // Raw meshes recompute the shape proof on every ComputeAreas call.
+    // Authored-normal agreement is also re-audited above.
+    {
+        ++openCertificateAudits;
+        m_bZeroVolumeSheet = GeometricUtilities::IsPlanarConsistentlyWoundSheet(
+            polygons.size(), [this](size_t t, int k) -> const Point3& { return polygons[t].vertices[k]; });
+        m_bShapeOpenSheet = m_bZeroVolumeSheet;
+        m_bOpenSignedVolumeNegative = false;
+        if(!m_bZeroVolumeSheet) {
+            std::vector<Point3> corners;
+            corners.reserve(polygons.size()*3);
+            for(size_t t=0;t<polygons.size();++t)
+                for(int k=0;k<3;++k) corners.push_back(polygons[t].vertices[k]);
+            const auto cert=GeometricUtilities::IsEmbeddedOpenOrientedSurface(corners);
+            m_bShapeOpenSheet=cert.certified;
+            m_bOpenSignedVolumeNegative=cert.certified && cert.signedVolumeAboutCentre<0;
+        }
+    }
+    m_bProvablyOpenSheet = m_bShapeOpenSheet && !smsUncertainNormalOrientation;
+	m_topologicalOpenness.store( -2, std::memory_order_release );
+	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
+}
+
+int TriangleMeshGeometry::TopologicalOpenness() const
+{
+	const int cached = m_topologicalOpenness.load( std::memory_order_acquire );
+	if( cached >= -1 ) {
+		return cached;
+	}
+	// One build, however many threads ask at once: `CSGObject` caches the
+	// role at preparation, but a first query from render threads must not
+	// have every one of them copy and weld the whole mesh.  Process-wide,
+	// since the build runs once per mesh per edit.
+	static std::mutex s_buildMutex;
+	std::lock_guard<std::mutex> lock( s_buildMutex );
+	const int recheck = m_topologicalOpenness.load( std::memory_order_acquire );
+	if( recheck >= -1 ) {
+		return recheck;
+	}
+	std::vector<Point3> corners;
+	corners.reserve( polygons.size() * 3 );
+	for( std::size_t t = 0; t < polygons.size(); ++t ) {
+		for( int k = 0; k < 3; ++k ) {
+			corners.push_back( polygons[t].vertices[k] );
+		}
+	}
+	const int open = GeometricUtilities::TriangleMeshOpenness( corners );
+	m_topologicalOpenness.store( open, std::memory_order_release );
+	return open;
 }
 
 void TriangleMeshGeometry::DoneTriangles( )
@@ -671,4 +767,12 @@ SurfaceDerivatives TriangleMeshGeometry::ComputeSurfaceDerivatives( const Point3
 	}
 
 	return TMComputeTriangleDerivatives( *bestTri, objSpaceNormal, bestU, bestV );
+}
+
+Scalar TriangleMeshGeometry::NativeTriangleEdgeDistance(const RayIntersectionGeometric& hit) const
+{
+    const auto& signal=hit.signals;
+    if(signal.pProvider || signal.primId<0 || static_cast<std::size_t>(signal.primId)>=polygons.size()
+        || !std::isfinite(signal.baryA) || !std::isfinite(signal.baryB)) return 0;
+    return std::min({signal.baryA,signal.baryB,1-signal.baryA-signal.baryB});
 }

@@ -22,11 +22,10 @@ standard_shader
 	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		4
 	samples				128
-	lum_samples			1
 }
 
 file_rasterizeroutput
@@ -263,15 +262,23 @@ perlin2d_painter
 }
 
 ##################################################
-# Bump Map Modifier
+# Relief Modifier (migrated by tools/migrate_scenes_relief.py from the
+# `bumpmap_modifier` chunk, which was removed 2026-09-06)
 ##################################################
 
-bumpmap_modifier
+scalar_painter
 {
-	name				clay_bump
-	function			pnt_clay_bump
-	scale				0.5
-	windowsize			0.005
+	name	clay_bump__height
+	function2d	pnt_clay_bump
+}
+
+relief_modifier
+{
+	name	clay_bump
+	height	clay_bump__height
+	domain	uv
+	step	0.005
+	scale	-0.005
 }
 
 ##################################################
@@ -294,22 +301,34 @@ orennayar_material
 }
 
 # Polished marble pedestal
-polished_material
+# Legacy phase 2 slice B2: substrate of `polished_marble` (was polished_material reflectance).
+lambertian_material
+{
+	name				polished_marble_base
+	reflectance			pnt_cream
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `polished_marble_base`; coat_weight = tau 0.95 0.92 0.85 (Rec.709 luminance; the tint is dropped), coat_ior 1.5, coat_roughness 1/sqrt(2*50+1) = 0.0995 (SCENE_CONVENTIONS 11.5).
+coated_material
 {
 	name				polished_marble
-	reflectance			pnt_cream
-	tau			0.95 0.92 0.85
-	ior					1.5
-	scattering			50.0
+	base				polished_marble_base
+	coat_weight			0.9213
+	coat_ior			1.5
+	coat_roughness		0.0995
 }
 
 # Metallic tools - isotropic phong
-isotropic_phong_material
+# Legacy phase 2 slice B2: was isotropic_phong_material; isotropic_phong N 64 -> alpha 1/sqrt(2N+1) = 0.08805, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				pewter
 	rd					pnt_pewter
 	rs					color_white
-	N					64.0
+	alphax				0.088045
+	alphay				0.088045
+	fresnel_mode		schlick_f0
 }
 
 # Wooden table
@@ -470,7 +489,7 @@ standard_object
 	material			wood
 }
 
-# Clay teapot sculpture (center of table) with bump map for clay texture
+# Clay teapot sculpture (center of table) with relief_modifier for clay texture
 standard_object
 {
 	name				teapot
@@ -556,6 +575,7 @@ spot_light
 	position			-4 8 6
 	target				0 0 0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	power				180.0
 	inner				20
 	outer				45
@@ -568,6 +588,7 @@ spot_light
 	position			5 6 4
 	target				0 0 0
 	color				0.85 0.9 1.0
+	colorspace			sRGB
 	power				1200.0
 	inner				25
 	outer				50
@@ -579,6 +600,7 @@ omni_light
 	name				fill_omni
 	power				300.0
 	color				0.9 0.9 1.0
+	colorspace			sRGB
 	position			5 4 5
 }
 
@@ -589,6 +611,7 @@ spot_light
 	position			-2 5 2
 	target				-1.8 1.5 -0.3
 	color				1.0 1.0 0.9
+	colorspace			sRGB
 	power				1800.0
 	inner				10
 	outer				25

@@ -14,6 +14,9 @@
 #include "pch.h"
 #include "../Utilities/Transformable.h"
 #include "CameraCommon.h"
+#include <limits>
+#include <string_view>
+#include "../Utilities/FiniteMath.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Interfaces/ILog.h"
 
@@ -73,53 +76,39 @@ static const unsigned int PHI_ID   = 2009;   // target_orientation.y (azimuth, a
 
 IKeyframeParameter* CameraCommon::KeyframeFromParameters( const String& name, const String& value )
 {
-	IKeyframeParameter* p = 0;
-
-	// Check the name and see if its something we recognize
-	if( name == "location" ) {
-		Point3 v;
-		if( sscanf( value.c_str(), "%lf %lf %lf", &v.x, &v.y, &v.z ) == 3 ) {
-			p = new Point3Keyframe( v, LOCATION_ID );
+	IKeyframeParameter* p = nullptr;
+	const std::string_view field( name.c_str() );
+	if( field == "location" || field == "lookat" || field == "up" || field == "orientation" ) {
+		double components[3];
+		if( !ParseStrictVec3( value, components ) ) return nullptr;
+		if( field == "location" || field == "lookat" ) {
+			p = new Point3Keyframe( Point3(components[0], components[1], components[2]),
+				field == "location" ? LOCATION_ID : LOOKAT_ID );
+		} else {
+			Vector3 vector( components[0], components[1], components[2] );
+			if( field == "orientation" ) vector = vector * DEG_TO_RAD;
+			p = new Vector3Keyframe( vector, field == "up" ? UP_ID : ORIENTATION_ID );
 		}
-	} else if( name == "lookat" ) {
-		Point3 v;
-		if( sscanf( value.c_str(), "%lf %lf %lf", &v.x, &v.y, &v.z ) == 3 ) {
-			p = new Point3Keyframe( v, LOOKAT_ID );
-		}
-	} else if( name == "up" ) {
-		Vector3 v;
-		if( sscanf( value.c_str(), "%lf %lf %lf", &v.x, &v.y, &v.z ) == 3 ) {
-			p = new Vector3Keyframe( v, UP_ID );
-		}
-	} else if( name == "orientation" ) {
-		Vector3 v;
-		if( sscanf( value.c_str(), "%lf %lf %lf", &v.x, &v.y, &v.z ) == 3 ) {
-			v.x *= DEG_TO_RAD;
-			v.y *= DEG_TO_RAD;
-			v.z *= DEG_TO_RAD;
-			p = new Vector3Keyframe( v, ORIENTATION_ID );
-		}
-	} else if( name == "target_orientation" ) {
-		Vector2 v;
-		if( sscanf( value.c_str(), "%lf %lf", &v.x, &v.y ) == 2 ) {
-			v.x *= DEG_TO_RAD;
-			v.y *= DEG_TO_RAD;
-			p = new Parameter<Vector2>( v, TARGET_ORIENTATION_ID );
-		}
-	} else if( name == "theta" || name == "elevation" ) {
-		// Elevation orbit angle about screen-right (target_orientation.x); deg -> rad.
-		p = new Parameter<Scalar>( value.toDouble() * DEG_TO_RAD, THETA_ID );
-	} else if( name == "phi" || name == "azimuth" ) {
-		// Azimuth orbit angle about world-up (target_orientation.y); deg -> rad.
-		p = new Parameter<Scalar>( value.toDouble() * DEG_TO_RAD, PHI_ID );
-	} else if( name == "exposure" ) {
-		p = new Parameter<Scalar>( value.toDouble(), EXPOSURE_ID );
-	} else if( name == "width" ) {
-		p = new Parameter<Scalar>( value.toDouble(), WIDTH_ID );
-	} else if( name == "height" ) {
-		p = new Parameter<Scalar>( value.toDouble(), HEIGHT_ID );
+	} else if( field == "target_orientation" ) {
+		double components[2];
+		if( !ParseStrictVec2( value, components ) ) return nullptr;
+		p = new Parameter<Vector2>( Vector2(components[0] * DEG_TO_RAD, components[1] * DEG_TO_RAD),
+			TARGET_ORIENTATION_ID );
 	} else {
-		return 0;
+		Scalar parsed;
+		if( !ParseStrictScalar( value, parsed ) ) return nullptr;
+		if( field == "theta" || field == "elevation" ) {
+			p = new Parameter<Scalar>( parsed * DEG_TO_RAD, THETA_ID );
+		} else if( field == "phi" || field == "azimuth" ) {
+			p = new Parameter<Scalar>( parsed * DEG_TO_RAD, PHI_ID );
+		} else if( field == "exposure" ) {
+			p = new Parameter<Scalar>( parsed, EXPOSURE_ID );
+		} else if( field == "width" || field == "height" ) {
+			if( parsed < 1 || parsed > std::numeric_limits<unsigned int>::max() ) return nullptr;
+			p = new Parameter<Scalar>( parsed, field == "width" ? WIDTH_ID : HEIGHT_ID );
+		} else {
+			return nullptr;
+		}
 	}
 
 	GlobalLog()->PrintNew( p, __FILE__, __LINE__, "keyframe parameter" );
@@ -173,12 +162,16 @@ void CameraCommon::SetIntermediateValue( const IKeyframeParameter& val )
 		break;
 	case WIDTH_ID:
 		{
-			frame.SetDimensions( (unsigned int)*(Scalar*)val.getValue(), frame.GetHeight() );
+			const Scalar dimension = *static_cast<const Scalar*>( val.getValue() );
+			if( IsFiniteDouble(dimension) && dimension >= 1 && dimension <= std::numeric_limits<unsigned int>::max() )
+				frame.SetDimensions( static_cast<unsigned int>(dimension), frame.GetHeight() );
 		}
 		break;
 	case HEIGHT_ID:
 		{
-			frame.SetDimensions( frame.GetWidth(), (unsigned int)*(Scalar*)val.getValue() );
+			const Scalar dimension = *static_cast<const Scalar*>( val.getValue() );
+			if( IsFiniteDouble(dimension) && dimension >= 1 && dimension <= std::numeric_limits<unsigned int>::max() )
+				frame.SetDimensions( frame.GetWidth(), static_cast<unsigned int>(dimension) );
 		}
 		break;
 	}

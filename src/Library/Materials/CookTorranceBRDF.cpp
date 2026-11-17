@@ -18,6 +18,7 @@
 #include "../Utilities/math_utils.h"
 #include "../Utilities/MicrofacetUtils.h"
 #include "../Utilities/MicrofacetEnergyLUT.h"
+#include "../Interfaces/ISPF.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -92,7 +93,19 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 	// FlipW (same condition), so value() agrees with Scatter()/Pdf() on
 	// back-face hits.
 	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
-	const ScalarTriple alphaT = pMasking->GetValuesAt(ri);
+	ScalarTriple alphaT = pMasking->GetValuesAt(ri);
+
+	// DL-65 (sibling of DL-62): widen by the same glossy-filter amount
+	// CookTorranceSPF::Scatter/ScatterNM/Pdf already apply to their
+	// sampling/density roughness -- NEE evaluation and BSDF-sampled
+	// continuation must agree on which surface roughness is being
+	// rendered at this hit.
+	if( ri.glossyFilterWidth > 0 ) {
+		for( int ch = 0; ch < 3; ch++ ) {
+			alphaT.v[ch] = r_min( alphaT.v[ch] + ri.glossyFilterWidth, Scalar(1.0) );
+		}
+	}
+
 	const RISEPel alphaColor( alphaT.v[0], alphaT.v[1], alphaT.v[2] );
 	const Scalar scalarAlpha = alphaT.v[0];
 
@@ -118,7 +131,7 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 
 	const RISEPel factor = ComputeFactor<RISEPel>( vLightIn, ri, n, alphaColor );
 
-	const RISEPel specColor = pSpecular->GetColor(ri);
+	const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
 	const ScalarTriple iorT = pIOR->GetValuesAt(ri);
 	const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 	const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
@@ -127,7 +140,13 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 	RISEPel specular(0,0,0);
 
 	if( ColorMath::MinValue(factor) > 0 ) {
-		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>( ri.ray.Dir(), n, RISEPel(1,1,1), ior, ext );
+		// DL-290: the incident index is the live exterior (`ri.ambientIOR`,
+		// the IOR-stack top every integrator stamps; 1.0 = air, where this is
+		// bit-identical to the old literal) -- the same G6 plumbing GGX's
+		// conductor Fresnel reads.  The conductor Fresnel depends only on the
+		// RELATIVE complex index (n/n_e, k/n_e), so a conductor seen through
+		// water or glass now prices that interface instead of air.
+		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>( ri.ray.Dir(), n, RISEPel( CookTorranceBRDF::AmbientIOR( ri ) ), ior, ext );
 		specular = specColor * fresnel * factor;
 	}
 
@@ -143,7 +162,7 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 			const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, scalarAlpha );
 			const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
-			const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
+			const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel( CookTorranceBRDF::AmbientIOR( ri ) ), ior, ext );	// DL-290
 			// specColor INSIDE the average: the tinted per-bounce reflectance specColor*F_avg
 			// compounds across bounces (matches the single-scatter lobe specColor*fresnel).
 			// Pulling it outside the nonlinear Fms over-brightens tinted rough metals.
@@ -152,15 +171,21 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 		}
 	}
 
-	return pDiffuse->GetColor(ri)*INV_PI + specular;
+	return ReflectanceColor( *pDiffuse, ri )*INV_PI + specular;
 }
 
 Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	// Same ray-facing flip as value() above.
 	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
-	const Scalar alpha = pMasking->GetValueAtNM(ri,nm);
-	const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+	Scalar alpha = pMasking->GetValueAtNM(ri,nm);
+
+	// DL-65: same glossy-filter widening as value() above.
+	if( ri.glossyFilterWidth > 0 ) {
+		alpha = r_min( alpha + ri.glossyFilterWidth, Scalar(1.0) );
+	}
+
+	const Scalar specColor = ReflectanceColorNM( *pSpecular, ri, nm );
 	const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 	const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 
@@ -180,7 +205,7 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 
 	const Scalar factor = ComputeFactor<Scalar>( vLightIn, ri, n, alpha );
 	if( factor > 0 ) {
-		const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), n, 1.0, iorVal, extVal );
+		const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), n, CookTorranceBRDF::AmbientIOR( ri ), iorVal, extVal );	// DL-290
 		if( fresnel > 0 ) {
 			specular = specColor * fresnel * factor;
 		}
@@ -198,7 +223,7 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 			const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
 			const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
-			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
+			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, CookTorranceBRDF::AmbientIOR( ri ), iorVal, extVal );	// DL-290
 			// specColor INSIDE the average: the tinted per-bounce reflectance specColor*F_avg
 			// compounds across bounces (matches the single-scatter lobe specColor*fresnel).
 			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
@@ -206,7 +231,180 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 		}
 	}
 
-	return pDiffuse->GetColorNM(ri,nm)*INV_PI + specular;
+	return ReflectanceColorNM( *pDiffuse, ri, nm )*INV_PI + specular;
+}
+
+
+// DL-481: a verbatim copy of ComputeFactor for SingleScatterRGB / NM alone
+// (a second caller changed how LTO inlines it into value(), moving cap-free
+// renders by ~1e-15).
+template< class T >
+static T CTComputeFactorSplit( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Vector3& n, const T& alpha )
+{
+	Vector3 v = Vector3Ops::Normalize(vLightIn); // light vector
+	Vector3 r = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
+
+	Scalar nr = Vector3Ops::Dot(n,r);
+	Scalar nv = Vector3Ops::Dot(n,v);
+
+	if( (nr >= NEARZERO) && (nv >= NEARZERO) ) {
+		const Vector3 h = Vector3Ops::Normalize(v+r);
+		const Scalar hn = Vector3Ops::Dot(n,h);
+
+		// GGX NDF (templated for per-channel roughness)
+		const T D = MicrofacetUtils::GGX_D<T>( alpha, hn );
+
+		// Smith masking-shadowing (scalar, geometry-only)
+		const Scalar scalarAlpha = ToScalarAlpha( alpha );
+		const Scalar G = MicrofacetUtils::GGX_G( scalarAlpha, nv, nr );
+
+		return D * G / (4.0 * nr * nv);
+	}
+
+	return 0.0;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-481: the connection value split by CookTorranceSPF's lobe labels
+// (the single-scatter specular lobe eRayReflection; the Rd/pi lobe and
+// the Kulla-Conty multiscatter lobe eRayDiffuse, each with its own
+// f cos / (p pSelect) weight).  The single-scatter term below is
+// value()'s own code, copied rather than shared so value() itself is
+// untouched (cap-free renders stay bit-identical).
+//////////////////////////////////////////////////////////////////////
+
+bool CookTorranceBRDF::SingleScatterRGB( const Vector3& vLightIn, const RayIntersectionGeometric& ri, RISEPel& singleOut ) const
+{
+	// Flip to the ray-facing frame, mirroring CookTorranceSPF::Scatter's
+	// FlipW (same condition), so value() agrees with Scatter()/Pdf() on
+	// back-face hits.
+	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
+	ScalarTriple alphaT = pMasking->GetValuesAt(ri);
+
+	// DL-65 (sibling of DL-62): widen by the same glossy-filter amount
+	// CookTorranceSPF::Scatter/ScatterNM/Pdf already apply to their
+	// sampling/density roughness -- NEE evaluation and BSDF-sampled
+	// continuation must agree on which surface roughness is being
+	// rendered at this hit.
+	if( ri.glossyFilterWidth > 0 ) {
+		for( int ch = 0; ch < 3; ch++ ) {
+			alphaT.v[ch] = r_min( alphaT.v[ch] + ri.glossyFilterWidth, Scalar(1.0) );
+		}
+	}
+
+	const RISEPel alphaColor( alphaT.v[0], alphaT.v[1], alphaT.v[2] );
+
+	const Vector3 vDirCheck = Vector3Ops::Normalize( vLightIn );
+	const Vector3 rDirCheck = Vector3Ops::Normalize( -ri.ray.Dir() );
+
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so light/view directions that validate
+	// against the (tilted) shading normal can still be below the geometric
+	// surface.  This is a DEFENSIVE check (a valid exterior hit already
+	// satisfies it) rather than a sampler-consistency one -- NEE's light
+	// direction isn't sampler-drawn -- but it guards against the same tilt
+	// pathology.
+	// (rDirCheck is tautologically inside this gate: rDirCheck = -ri.ray.Dir()
+	// and geomN is anchored to ri.ray.Dir(), so Dot(rDirCheck,geomN) > 0 always
+	// holds -- only vDirCheck, the light half, can actually reject.)
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( vDirCheck, geomN ) <= 0 || Vector3Ops::Dot( rDirCheck, geomN ) <= 0 ) {
+		return false;
+	}
+
+	const RISEPel factor = CTComputeFactorSplit<RISEPel>( vLightIn, ri, n, alphaColor );
+
+	const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
+	const ScalarTriple iorT = pIOR->GetValuesAt(ri);
+	const ScalarTriple extT = pExtinction->GetValuesAt(ri);
+	const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
+	const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
+
+	RISEPel specular(0,0,0);
+
+	if( ColorMath::MinValue(factor) > 0 ) {
+		// DL-290: the incident index is the live exterior (`ri.ambientIOR`,
+		// the IOR-stack top every integrator stamps; 1.0 = air, where this is
+		// bit-identical to the old literal) -- the same G6 plumbing GGX's
+		// conductor Fresnel reads.  The conductor Fresnel depends only on the
+		// RELATIVE complex index (n/n_e, k/n_e), so a conductor seen through
+		// water or glass now prices that interface instead of air.
+		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>( ri.ray.Dir(), n, RISEPel( CookTorranceBRDF::AmbientIOR( ri ) ), ior, ext );
+		specular = specColor * fresnel * factor;
+	}
+
+	singleOut = specular;
+	return true;
+}
+
+bool CookTorranceBRDF::SingleScatterNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, Scalar& singleOut ) const
+{
+	// Same ray-facing flip as value() above.
+	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
+	Scalar alpha = pMasking->GetValueAtNM(ri,nm);
+
+	// DL-65: same glossy-filter widening as value() above.
+	if( ri.glossyFilterWidth > 0 ) {
+		alpha = r_min( alpha + ri.glossyFilterWidth, Scalar(1.0) );
+	}
+
+	const Scalar specColor = ReflectanceColorNM( *pSpecular, ri, nm );
+	const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
+	const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
+
+	const Vector3 vDirCheck = Vector3Ops::Normalize( vLightIn );
+	const Vector3 rDirCheck = Vector3Ops::Normalize( -ri.ray.Dir() );
+
+	// Geometric-horizon gate (mirrors value()'s gate above).
+	// rDirCheck is tautologically inside the gate here too (see value()'s note).
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : n;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	if( Vector3Ops::Dot( vDirCheck, geomN ) <= 0 || Vector3Ops::Dot( rDirCheck, geomN ) <= 0 ) {
+		return false;
+	}
+
+	Scalar specular = 0;
+
+	const Scalar factor = CTComputeFactorSplit<Scalar>( vLightIn, ri, n, alpha );
+	if( factor > 0 ) {
+		const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), n, CookTorranceBRDF::AmbientIOR( ri ), iorVal, extVal );	// DL-290
+		if( fresnel > 0 ) {
+			specular = specColor * fresnel * factor;
+		}
+	}
+
+	singleOut = specular;
+	return true;
+}
+
+bool CookTorranceBRDF::valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* /*pIORStack*/, RISEPel out[5] ) const
+{
+	for( int k = 0; k < 5; k++ ) out[k] = RISEPel( 0, 0, 0 );
+	RISEPel single( 0, 0, 0 );
+	if( !SingleScatterRGB( vLightIn, ri, single ) ) {
+		return true;	// value() is 0 here too
+	}
+	const RISEPel total = value( vLightIn, ri );
+	out[ScatteredRay::eRayReflection] = single;
+	out[ScatteredRay::eRayDiffuse] = RISEPel( r_max( Scalar(0), total[0] - single[0] ),
+		r_max( Scalar(0), total[1] - single[1] ), r_max( Scalar(0), total[2] - single[2] ) );
+	return true;
+}
+
+bool CookTorranceBRDF::valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* /*pIORStack*/, Scalar out[5] ) const
+{
+	for( int k = 0; k < 5; k++ ) out[k] = 0;
+	Scalar single = 0;
+	if( !SingleScatterNM( vLightIn, ri, nm, single ) ) {
+		return true;
+	}
+	const Scalar total = valueNM( vLightIn, ri, nm );
+	out[ScatteredRay::eRayReflection] = single;
+	out[ScatteredRay::eRayDiffuse] = r_max( Scalar(0), total - single );
+	return true;
 }
 
 RISEPel CookTorranceBRDF::albedo( const RayIntersectionGeometric& ri ) const
@@ -221,6 +419,6 @@ RISEPel CookTorranceBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 	const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 	const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
-		ri.ray.Dir(), n, RISEPel( 1, 1, 1 ), ior, ext );
-	return pDiffuse->GetColor( ri ) + pSpecular->GetColor( ri ) * fresnel;
+		ri.ray.Dir(), n, RISEPel( CookTorranceBRDF::AmbientIOR( ri ) ), ior, ext );	// DL-290: live exterior, as value()
+	return ReflectanceColor( *pDiffuse, ri ) + ReflectanceColor( *pSpecular, ri ) * fresnel;
 }

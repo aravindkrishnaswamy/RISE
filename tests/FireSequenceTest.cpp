@@ -1,3 +1,10 @@
+// DL-632: POSIX setenv/unsetenv are shimmed to the CRT equivalents under _WIN32
+// (this file and the fixtures it includes call them directly).
+#if defined(_WIN32)
+#define setenv(name,value,overwrite) _putenv_s(name,value)
+#define unsetenv(name) _putenv_s(name,"")
+#endif
+
 #include "../src/Library/Utilities/FireSequence.h"
 #include "../src/Library/Utilities/FireCase.h"
 #include "../src/Library/Cameras/PinholeCamera.h"
@@ -1429,7 +1436,8 @@ namespace
 		FrozenPainterProbe(const IPainter& a,const IPainter& b) :
 			Perlin3DPainter(0.5,3,a,b,Vector3(1,1,1),Vector3(0,0,0)) {}
 		Vector3 Scale() const { return vScale; }
-		const void* Function() const { return pFunc; }
+		// master removed the cached noise function; the painter itself is the stable identity now
+		const void* Function() const { return this; }
 		~FrozenPainterProbe() override=default;
 	};
 	class FrozenUniformProbe final : public UniformColorPainter
@@ -16572,7 +16580,7 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture(const bool boundaryOnly=fa
 				argument=static_cast<double>(logInputs[sample][0])+
 				static_cast<double>(logInputs[sample][1]),
 				residual=std::fabs(std::log(argument)-center),
-				ratio=bound>0.0?residual/bound:std::numeric_limits<double>::infinity();
+				ratio=bound>0.0?residual/bound:std::numeric_limits<double>::infinity(); // HYGIENE-OK: intentional +inf bound; compiled with -fno-fast-math (build/make/rise/Makefile fire test rules)
 			if(ratio>maximumLogRatio){maximumLogRatio=ratio;
 				worstLogIndex=first+sample;}
 			logEnclosure=std::isfinite(bound)&&bound>0.0&&residual<=bound;
@@ -21006,7 +21014,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 						transportTemperatureBounds,cell,
 						priorTargetBounds[cell],enclosureValid);currentTargetBounds[cell]=targetBound;
 					const double targetRatio=targetBound>0.0?targetResidual/targetBound:
-						(targetResidual==0.0?0.0:std::numeric_limits<double>::infinity());
+						(targetResidual==0.0?0.0:std::numeric_limits<double>::infinity()); // HYGIENE-OK: intentional +inf bound; compiled with -fno-fast-math (build/make/rise/Makefile fire test rules)
 					targetMaximumResidual=std::max(targetMaximumResidual,targetResidual);
 					targetMaximumBound=std::max(targetMaximumBound,targetBound);
 					if(targetRatio>targetWorstRatio){targetWorstRatio=targetRatio;targetWorstCell=cell;}
@@ -21431,7 +21439,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 					maximumEnthalpyMagnitude*std::fabs(mirror.physicalMassFluxKGPerM2S[
 						component*allFaces+face]);}
 				const double bound=traceGamma4096*scale,
-					ratio=bound>0.0?residual/bound:std::numeric_limits<double>::infinity();
+					ratio=bound>0.0?residual/bound:std::numeric_limits<double>::infinity(); // HYGIENE-OK: intentional +inf bound; compiled with -fno-fast-math (build/make/rise/Makefile fire test rules)
 				if(residual>sealedClassEnergyResidual)sealedClassEnergyResidual=residual;
 				if(ratio>sealedClassEnergyWorstRatio){sealedClassEnergyWorstRatio=ratio;
 					sealedClassEnergyBound=bound;}}
@@ -21460,7 +21468,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 					2u,mutated,mirror,mutatedMassBounds,mutatedEnergyBounds,
 					mutatedStateBounds,mutatedTemperatureBounds,cell,
 					bootstrapBounds[cell],enclosureValid),ratio=
-					bound>0.0?residual/bound:std::numeric_limits<double>::infinity();
+					bound>0.0?residual/bound:std::numeric_limits<double>::infinity(); // HYGIENE-OK: intentional +inf bound; compiled with -fno-fast-math (build/make/rise/Makefile fire test rules)
 				if(residual>sealedClassTargetResidual)sealedClassTargetResidual=residual;
 				if(ratio>sealedClassTargetWorstRatio){sealedClassTargetWorstRatio=ratio;
 					sealedClassTargetBound=bound;}}

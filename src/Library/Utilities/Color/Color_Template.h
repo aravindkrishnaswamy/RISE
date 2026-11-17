@@ -20,6 +20,7 @@
 
 #include "Color.h"
 #include "../PEL.h"
+#include "../FiniteMath.h"
 
 namespace RISE
 {
@@ -110,7 +111,8 @@ namespace RISE
 			return( c.base==base && c.a==a );
 		}
 
-		// Utility function for the Get/Set functions below
+		// Raw scaling utility: callers must ensure every scaled RGB/alpha
+		// product is representable in T (finite and in range for integral T).
 		template< class T, class SrcT >
 		inline RGBA_T<T> ScaleRGBPelValuesAndIncludeAlpha( SrcT& pel, double scale ) const
 		{
@@ -125,12 +127,26 @@ namespace RISE
 		//
 		// Integerizating of values
 		//
+		// Alpha-only normalized output: max_value must be finite, nonnegative
+		// and representable in T, as for Integerize's full RGBA conversion.
+		template< class T >
+		inline T IntegerizeAlpha( const double& max_value ) const
+		{
+			return QuantizeNormalizedChannel<T>(a,max_value);
+		}
+
 		template< class TCSPACE, class T >
 		inline RGBA_T<T> Integerize( const double& max_value ) const
 		{
 			TCSPACE conv( base );
-			ColorMath::Clamp(conv,0.0,1.0);
-			return ScaleRGBPelValuesAndIncludeAlpha< T, TCSPACE >( conv, max_value );
+			// Normalized output saturates every channel before conversion.
+			// max_value must itself be finite, nonnegative and representable in T.
+			RGBA_T<T> ret;
+			ret.r = QuantizeNormalizedChannel<T>(conv.r,max_value);
+			ret.g = QuantizeNormalizedChannel<T>(conv.g,max_value);
+			ret.b = QuantizeNormalizedChannel<T>(conv.b,max_value);
+			ret.a = IntegerizeAlpha<T>(max_value);
+			return ret;
 		}
 
 		template< class TCSPACE, class T >
@@ -140,6 +156,17 @@ namespace RISE
 			TCSPACE conv( rgba.r*OVMax, rgba.g*OVMax, rgba.b*OVMax );
 			base = ColorBase( conv );
 			a = rgba.a*OVMax;
+		}
+
+	private:
+		template< class T >
+		static T QuantizeNormalizedChannel( double value, double max_value )
+		{
+			if( !IsFiniteDouble(value) )
+				return IsPositiveInfinityDouble(value) ? static_cast<T>(max_value) : T(0);
+			if( value <= 0 ) return T(0);
+			if( value >= 1 ) return static_cast<T>(max_value);
+			return static_cast<T>(value * max_value);
 		}
 	};
 

@@ -1,9 +1,18 @@
 # RISE Agentic Redesign — Decision Record (review rounds 1–6)
 
-> **Status:** **RATIFIED DESIGN RECORD.** Many core decisions now have shipped
-> implementations, but this file is not a claim that D1–D51 are all complete;
-> source, tests, and the current facet headers are implementation truth. Within
-> the design package it remains authoritative: r1 → **D1–D10**; r2 →
+> **Status (2026-11):** **RATIFIED DESIGN RECORD (PARTIALLY SHIPPED, PARTIALLY TARGET).**
+> Across D1–D51, the implementation split as of 2026-11 is:
+> - **Shipped (in whole or CST-adapted hybrid form):** **D3–D10, D13–D15, D17–D20, D24–D25,
+>   D27–D28, D35–D37, D39–D40, D42–D44, D47–D48, D50** (with D10/D18's `instance_array`
+>   later superseded by doc 87 step 3d's `standard_object` `source` + `count_u`/`count_v`,
+>   and D37's `watch_dial` day/night variants subsequently shipped via `variant` chunks in doc 63).
+> - **Unimplemented target design:** **D1, D11–D12, D16, D21–D23, D26, D29–D34, D38, D41,
+>   D45–D46, D49, D51** (plus D2's shared red-green green-node representation, which
+>   `src/Library/Cst/Cst.h` simplified to `std::vector<DocItem>` with embedded `NodeId`s;
+>   see `10-scene-language-and-cst.md` and `30-edit-model-and-history.md`).
+>
+> Source, tests, and the current facet headers remain implementation truth. Within
+> the design package this record is authoritative: r1 → **D1–D10**; r2 →
 > **D11–D20**; r3 → **D21–D28**; r4 → **D29–D37**;
 > r5 → **D38–D44**; r6 → **D45–D51**. Later decisions *amend* earlier ones (r2: D11/D12 amend D1, D14
 > amends D9, D15/D16 amend D2, D17 amends D5/D6, D18 amends D10, D20 amends D4; r3: D21/D22 amend D12,
@@ -265,7 +274,7 @@ F6 §identity open-decision → resolved here; F4 binds widgets to NodeId (addre
 3. **`+ standard_object`** (the geom+material+object **three-node chain**) — cross-node references,
    **rename** integrity (D9), the dependency graph (D4) end-to-end.
 4. **`+ expr(...)`** on one `Double` param — the expression sublanguage + traced-input invalidation.
-5. **`+ instance_array`** replacing a nested `FOR` (migrated `loops.RISEscene`) — generators.
+5. **`+ instance_array`** replacing a nested `FOR` (migrated `loops.RISEscene`) — generators. *(Superseded in doc 87 step 3d by `standard_object` `source` + `count_u`/`count_v`.)*
 
 **Shared gates (every phase must pass all that apply):**
 - **G1 Round-trip identity:** `parse → serialize` is **byte-for-byte identical** on a hand-formatted
@@ -463,7 +472,7 @@ asset-backed node.
 3. `+ standard_object { geometry <sphere>  material <lambertian> }` — the real
    **geometry→material→object** chain; exercises rename integrity (D14) across refs.
 4. `+ expr(...)` on one `Double` param — expression sublanguage + traced-input invalidation.
-5. `+ instance_array` replacing a nested `FOR`.
+5. `+ instance_array` replacing a nested `FOR`. *(Superseded in doc 87 step 3d by `standard_object` `source` + `count_u`/`count_v`.)*
 6. **`+ image_painter` (or a mesh-backed geometry)** — an **asset-backed node** so **G5**
    (AssetManifest fingerprint invalidation, D17) and the external-file-conflict path (D6/D17) are
    actually testable.
@@ -854,7 +863,8 @@ equivalence.**
 
 **Decision:**
 - **The active corpus has ZERO `> modify` commands.** D27's `> modify`-folding is **moot for the
-  current corpus** (nothing active to fold).
+  current corpus** (nothing active to fold). *(Follow-up: `watch_dial`'s day/night alternatives were
+  later promoted to first-class declarative `variant` chunks in [`63-scene-variants-feature-spec.md`](63-scene-variants-feature-spec.md).)*
 - **The migrator MUST be comment/token-aware** — it operates on the **parsed token stream / CST**,
   never a raw line/grep scan, so it never activates a commented-out command (and preserves `/* */`
   blocks verbatim as CST comment nodes). D27's `> set`→param and (if ever active) `> modify`→fold

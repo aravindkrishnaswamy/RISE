@@ -42,6 +42,10 @@ namespace RISE
 				if( pChild ) pChild->addref();
 			}
 
+			//! Structural introspection: child + scale.
+			const IScalarPainter* GetChild() const { return pChild; }
+			Scalar GetScale() const { return scale; }
+
 			ScalarTriple GetValuesAt(
 				const RayIntersectionGeometric& ri
 				) const override
@@ -62,6 +66,56 @@ namespace RISE
 			bool HasPerChannelVariation() const override
 			{
 				return pChild ? pChild->HasPerChannelVariation() : false;
+			}
+
+			//! DL-292: `base * scale` of a world-position field is one (and
+			//! varies with position unless the scale is 0).  Before DL-292
+			//! this composite did not forward the question, so a graded
+			//! `ior` written as a scaled field kept the pre-DL-09 accounting.
+			bool IsWorldPositionField() const override
+			{
+				return scale != Scalar( 0 ) && CompositeIsWorldPositionField( pChild, 0, HasPerChannelVariation() );
+			}
+			bool IsPositionIndependent() const override
+			{
+				return scale == Scalar( 0 ) || CompositeIsPositionIndependent( pChild, 0 );
+			}
+			bool ReadsWorldPosition() const override { return CompositeReadsWorldPosition( pChild, 0 ); }
+
+			//! DL-09/precision-slice P2-1: forward the single-scalar-slot
+			//! view through the composite instead of losing it. Before
+			//! this, `scalar_painter { base <spectral curve> scale 1 }`
+			//! bound to a `requireSingle` slot (e.g. `coated_material`'s
+			//! `coat_ior`) hard-failed at derive time even though the
+			//! SAME curve bound directly (no `scale` wrapper) resolved
+			//! fine via `MakeSingleScalarSlotView` -- `HasPerChannelVariation`
+			//! was already forwarded from `pChild` above, but nothing
+			//! forwarded the view that makes a `requireSingle` binding
+			//! survive it.
+			//!
+			//! Builds a view of the CHILD (only if the child itself is
+			//! per-channel-varying -- if it already isn't, it needs no
+			//! view and is used as-is) and wraps that in a fresh
+			//! `ScaledScalarPainter` applying the same `scale`. Returns
+			//! `nullptr` -- no view available -- when the child DOES
+			//! vary per-channel but has no view of its own (an authored
+			//! `values` triple, or a vec3-result `expression`): a
+			//! composite cannot manufacture a single-scalar reading out
+			//! of a channel triple that was independently AUTHORED
+			//! rather than sampled from one curve.
+			IScalarPainter* MakeSingleScalarSlotView() const override
+			{
+				if( !pChild ) return nullptr;
+				IScalarPainter* childView = pChild;
+				bool ownsChildView = false;
+				if( pChild->HasPerChannelVariation() ) {
+					childView = pChild->MakeSingleScalarSlotView();
+					if( !childView ) return nullptr;
+					ownsChildView = true;
+				}
+				IScalarPainter* view = new ScaledScalarPainter( childView, scale );
+				if( ownsChildView ) childView->release();
+				return view;
 			}
 		};
 	}

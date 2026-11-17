@@ -66,7 +66,8 @@ namespace RISE
 		virtual void RadianceEstimate( 
 			RISEPel&						rad,						///< [out] Radiance at the surface
 			const RayIntersectionGeometric&	ri,							///< [in] Ray-surface intersection information
-			const IBSDF&					brdf						///< [in] BRDF of the surface to estimate irradiance from
+			const IBSDF&					brdf,						///< [in] BRDF of the surface to estimate irradiance from
+			const IORStack*					pIorStack = 0				///< [in] Current IOR stack, if available
 			) const = 0;
 
 		//! Counts the number of photons at the particular location
@@ -94,6 +95,12 @@ namespace RISE
 		virtual ~ISpectralPhotonMap(){};
 
 	public:
+        //! Declare the producer's uniform [begin,end) wavelength law before
+        //! insertion. count<10000 selects its finite grid, otherwise continuous.
+        //! Existing external implementations may decline this new capability.
+        virtual bool ConfigureWavelengthSampling(Scalar,Scalar,unsigned) { return false; }
+        virtual bool GetWavelengthSampling(Scalar&,Scalar&,unsigned&) const { return false; }
+
 		//! Sets gather parameters
 		virtual void SetGatherParamsNM( 
 			const Scalar radius,									///< [in] Gather radius
@@ -118,7 +125,8 @@ namespace RISE
 			const Scalar					nm,						///< [in] Wavelength for the estimate
 			Scalar&							rad,					///< [out] Returned radiance for the particular wavelength
 			const RayIntersectionGeometric&	ri,						///< [in] Ray-surface intersection information
-			const IBSDF&					brdf					///< [in] BRDF of the surface to estimate irradiance from
+			const IBSDF&					brdf,					///< [in] BRDF of the surface to estimate irradiance from
+			const IORStack*					pIorStack = 0				///< [in] Current IOR stack, if available
 			) const = 0;		
 
 	};

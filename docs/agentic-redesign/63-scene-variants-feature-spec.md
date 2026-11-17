@@ -157,8 +157,9 @@ removed once the corpus is converted (P5 Slice 6).
 Named-animation-paths established the pattern this mirrors: **named chunks, one active, a GUI accordion** (and
 today, selection via `> modify animation <name>`). Light/scene variants reuse that shape (a "Variants"
 accordion beside "Animation"). Since `> modify animation` is itself a `> modify` form, deprecating `> modify`
-also moves **animation selection** to a stored `active_animation <name>` field — tracked here for completeness;
-the animation feature owns that field.
+would also move **animation selection** to a stored `active_animation <name>` field — tracked here for completeness;
+the animation feature owns that field *(status through 2026-11: `active_animation` remains unimplemented; no corpus
+scene required `> modify animation` at v7 cutover)*.
 
 ## 8. Phasing
 
@@ -228,10 +229,10 @@ baked DURING the CST derive so objects bind to the active material by name from 
 trickiest parts of the re-point design — no object iteration, no `const`-callback, no light-gen bump, no
 override store, no per-material Job rewire. "Derive the right scene," not "mutate a built one."
 
-**(a) Chunks** (`AsciiSceneParser.cpp`, mirror `AnimationAsciiChunkParser:9666`): `scene_variant { name <REQUIRED>
+**(a) Chunks** ([`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp), formerly `AsciiSceneParser.cpp`, mirroring `AnimationAsciiChunkParser`): `scene_variant { name <REQUIRED>
 active_camera <opt, ValueKind::Reference{Camera}> }` → Finalize `DeclareSceneVariant(name, camera)` (empty name ⇒
 return false). `active_scene_variant { name <opt> }` → Finalize `SetActiveSceneVariant(name)` (""/"none"/absent ⇒
-base default). Register after `:9909`.
+base default). Register in `CreateAllChunkParsers()`.
 
 **(b) `variant` descriptor tag** — a shared `AddVariantTagParam(cd)` (optional `variant` String) called in each of
 the 25 material `Describe()` IIFEs (so `variant` parses; descriptor=accepted-set invariant holds). The material
@@ -263,8 +264,8 @@ loop (guard `diags.empty()`): `pJob.SetActiveCamera(activeCamera)` if set. No re
 build from correctly-bound objects). **Authoring constraint: only the override's PAINTERS need precede the base
 (standard painters-before-materials); the override material chunk itself is position-free.**
 
-**(e) Legacy path** (`AsciiSceneParser ParseChunk`, 1 central site) — a streaming reader can't pre-scan and
-scene_variant is CST-native, so legacy renders the BASE: SKIP a material chunk's `Finalize` iff it carries a
+**(e) Legacy path (historical — deleted in P5 Slice 6 with `AsciiSceneParser`)** — a streaming reader couldn't pre-scan and
+scene_variant is CST-native, so during the dual-path transition legacy rendered the BASE: SKIP a material chunk's `Finalize` iff it carries a
 `variant` tag (`variant none` is the no-variant sentinel — an ordinary base, not skipped; the lookup is gated
 behind the material category so it never trips the descriptor diagnostic on non-material chunks). The
 `scene_variant`/`active_scene_variant` chunks Finalize normally (record only). No material/camera bake in legacy.

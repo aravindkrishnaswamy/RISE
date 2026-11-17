@@ -48,6 +48,7 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
 #include "../Utilities/Color/ColorMath.h"
+#include "../Utilities/Color/RGBSpectra.h"
 
 namespace RISE
 {
@@ -64,6 +65,16 @@ namespace RISE
 		RISEPel m_sigma_s;					///< Scattering coefficient [1/m]
 		RISEPel m_sigma_t;					///< Extinction = sigma_a + sigma_s
 		RISEPel m_emission;					///< Volumetric emission (usually zero)
+		/// `m_emission` uplifted as the reference ILLUMINANT (Stage C
+		/// slice 2), rebuilt wherever `m_emission` is written.  Volume
+		/// emission is a SOURCE term, so on the NM path it must carry
+		/// the D65 shape every other source in the engine now carries;
+		/// it used to be projected with `ColorMath::Luminance`, i.e. one
+		/// flat scalar reused at every wavelength, which resolves to
+		/// (1.205, 0.948, 0.909) on this film and rendered a coloured
+		/// emissive medium GREY.  Cached rather than uplifted per call:
+		/// `GetCoefficientsNM` runs per medium interaction per sample.
+		RGBIlluminantSpectrum m_emissionSpectrum;
 		Scalar m_sigma_t_max;				///< Max channel of sigma_t (for sampling)
 
 		const IPhaseFunction* m_pPhase;		///< Phase function (ref-counted)

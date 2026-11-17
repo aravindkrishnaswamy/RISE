@@ -35,6 +35,7 @@
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/ICamera.h"
 #include "../Utilities/SobolSampler.h"
+#include "../Cameras/CameraUtilities.h"
 #include "../Utilities/MortonCode.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Shaders/BDPTIntegrator.h"
@@ -128,13 +129,14 @@ void VCMSpectralRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
 	}
 
-	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+	const bool bMultiSample = sampling && rc.UsesPixelSampling();
+	const unsigned int batchSize = bMultiSample ? sampling->GetNumSamples() : 1;
 
 	// Adaptive sampling: when enabled, the per-pixel loop can take up
 	// to adaptiveConfig.maxSamples and uses Welford-based convergence
@@ -255,7 +257,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 	{
 		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 		} else {
 			samples.push_back( Point2( 0, 0 ) );
 		}
@@ -271,16 +273,14 @@ void VCMSpectralRasterizer::IntegratePixel(
 			// BDPTPelRasterizer::IntegratePixel for the rationale
 			// (filter.warp causes severe blur with wide kernels).
 			if( bMultiSample ) {
-				ptOnScreen = Point2(
-					static_cast<Scalar>(x) + (*m).x - 0.5,
-					static_cast<Scalar>(height - y) + (*m).y - 0.5 );
+				ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 			} else {
-				ptOnScreen = Point2( x, height - y );
+				ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 			}
 			weightsAccrued += weight;
 
 			if( temporal_samples && !pScene.FireTemporalHold() ) {
-				pScene.GetAnimator()->EvaluateAtTime(
+				AnimateSceneToSampleTime( pScene,
 					temporal_start + ( rc.random.CanonicalRandom() * temporal_exposure ) );
 			}
 
@@ -288,6 +288,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 			// each either HWSS (hero + companions sharing the path)
 			// or a single independent-wavelength evaluation.
 			XYZPel spectralSum( 0, 0, 0 );
+			XYZPel spectralMerge( 0, 0, 0 );
 			unsigned int totalActive = 0;
 
 			for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
@@ -305,7 +306,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 				SampledWavelengths swl;
 				if( bUseHWSS ) {
 					const Scalar u = rc.random.CanonicalRandom();
-					swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
+					swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end, num_wavelengths );
 					heroNM = swl.HeroLambda();
 				} else {
 					heroNM = ( num_wavelengths < 10000 )
@@ -348,6 +349,16 @@ void VCMSpectralRasterizer::IntegratePixel(
 						pScene, *pCaster, sampler, localLightVerts, localLightSubpathStartsNM, heroNM, rc.random, pSwlHWSSPass );
 				}
 
+				// Debt 28: the point on the camera's entrance APERTURE that the t=1
+				// splats from this light subpath land on.  Its own sampler stream so
+				// it stays stratified across pixels.  A camera whose aperture is a
+				// point consumes NOTHING here (see DrawApertureSample); for a thin
+				// lens this is what gives the splat layer the depth of field the eye
+				// layer has.
+				const Point2 cameraLensSample =
+					BDPTCameraUtilities::DrawApertureSample( *pCamera, sampler,
+						BDPTCameraUtilities::APERTURE_DEDICATED_STREAM );
+
 				eyeVerts.clear();
 				static thread_local std::vector<uint32_t> eyeSubpathStartsNM;
 				PixelAOV primaryAOV;
@@ -374,6 +385,67 @@ void VCMSpectralRasterizer::IntegratePixel(
 				// Single subpath each (no branching) — branching at multi-
 				// lobe delta vertices was excised in 2026-05.
 
+				// DL-126 P1.  See BDPTSpectralRasterizer.cpp's twin
+				// comment: a null-BSDF continuation vertex gives
+				// RecomputeSubpathThroughputNM no companion/hero ratio to
+				// compute, wavelength-independently, so terminate
+				// secondaries here too rather than let those always-zero
+				// companions dilute the bundle mean.
+				//
+				// DL-201: both termination checks run BEFORE the hero
+				// block (they read only the two vertex arrays and the
+				// bundle's wavelengths, all of which already exist and
+				// none of which the hero block writes), because the
+				// hero's own t=1 SPLAT below needs `splatLaneScale`.
+				// Guarded on `bUseHWSS` because `swl` is only populated
+				// on that path -- the non-HWSS branch `continue`s past
+				// the companion loop below and leaves `splatLaneScale`
+				// at its neutral 1.0.
+				// DL-217: the two SplatLightSubpathToCameraNM calls below
+				// additionally multiply by `mYNormalization`, the
+				// `(lambda_end - lambda_begin) / k_y` INTEGRAL scale the
+				// non-splat `spectralSum` already carries at the bottom of
+				// this loop.  `SplatFilm::Resolve`'s own divisor is a
+				// SAMPLE COUNT and nothing more, so without it every
+				// spectral t==1 deposit was ~3.74x too dim relative to the
+				// same render's non-splat layer.  See
+				// BDPTSpectralRasterizer.cpp's twin comment.
+				Scalar splatLaneScale = 1.0;
+				if( bUseHWSS )
+				{
+					if( BDPTIntegrator::HasNullBSDFContinuationVertex( localLightVerts ) ||
+						BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) ||
+						BDPTIntegrator::HasRandomWalkSSSEntryVertex( localLightVerts ) ||	// DL-357
+						BDPTIntegrator::HasRandomWalkSSSEntryVertex( eyeVerts ) )
+					{
+						swl.TerminateSecondary();
+					}
+
+					// HWSS: re-evaluate companion wavelengths on the same
+					// geometric path.  If any vertex along the hero path is
+					// dispersive (wavelength-dependent IOR) the companions
+					// cannot share the geometry and are terminated.
+					for( unsigned int w = 1; w < SampledWavelengths::N && !swl.SecondaryTerminated(); w++ )
+					{
+						if( BDPTIntegrator::HasDispersiveDeltaVertex( localLightVerts, heroNM, swl.lambda[w] ) ||
+						    BDPTIntegrator::HasDispersiveDeltaVertex( eyeVerts,        heroNM, swl.lambda[w] ) )
+						{
+							swl.TerminateSecondary();
+							break;
+						}
+					}
+
+					// DL-201.  The splat film's global denominator assumes
+					// all N lanes of every bundle deposited; renormalize a
+					// terminated bundle's deposits so the numerator matches.
+					// See BDPTSpectralRasterizer.cpp's twin comment for the
+					// full derivation, including why a per-pixel weight
+					// accumulator in SplatFilm is the WRONG layer.
+					splatLaneScale =
+						static_cast<Scalar>( SampledWavelengths::N ) /
+						static_cast<Scalar>( swl.NumActive() );
+				}
+
 				Scalar heroValue = 0;
 
 				// Single light + eye subpath (no branching).  Convert
@@ -387,12 +459,14 @@ void VCMSpectralRasterizer::IntegratePixel(
 				if( mVCMNormalization.mEnableVC ) {
 					VCMIntegrator::ConvertLightSubpath(
 						localLightVerts, mVCMNormalization,
-						lightStoreScratchSp, &lightMisSp );
+						lightStoreScratchSp, &lightMisSp,
+						VCMIntegrator::SeeThroughLive( *pCaster ) );
 					if( pSplatFilm && !localLightVerts.empty() && !lightMisSp.empty() ) {
 						pIntegrator->SplatLightSubpathToCameraNM(
 							localLightVerts, lightMisSp,
-							pScene, *pCaster, *pCamera, *pSplatFilm,
-							mVCMNormalization, heroNM, pPixelFilter );
+							pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
+							mVCMNormalization, heroNM, pPixelFilter,
+							splatLaneScale * mYNormalization, &sampler );
 					}
 				}
 
@@ -418,13 +492,15 @@ void VCMSpectralRasterizer::IntegratePixel(
 							pScene, *pCaster,
 							localLightVerts, lightMisSp,
 							eyeVerts, eyeMis,
-							mVCMNormalization, heroNM );
+							mVCMNormalization, heroNM, &sampler );
 					}
 				}
 
+				Scalar heroMerge = 0;
 				if( pLightVertexStore && mVCMNormalization.mEnableVM ) {
-					heroValue += pIntegrator->EvaluateMergesNM(
+					heroMerge = pIntegrator->EvaluateMergesNM(
 						eyeVerts, eyeMis, *pLightVertexStore, mVCMNormalization, heroNM );
+					heroValue += heroMerge;
 				}
 
 				{
@@ -438,25 +514,12 @@ void VCMSpectralRasterizer::IntegratePixel(
 				XYZPel heroXYZ( 0, 0, 0 );
 				if( ColorUtils::XYZFromNM( heroXYZ, heroNM ) ) {
 					spectralSum = spectralSum + heroXYZ * heroValue;
+					spectralMerge = spectralMerge + heroXYZ * heroMerge;
 					totalActive++;
 				}
 
 				if( !bUseHWSS ) {
 					continue;
-				}
-
-				// HWSS: re-evaluate companion wavelengths on the same
-				// geometric path.  If any vertex along the hero path is
-				// dispersive (wavelength-dependent IOR) the companions
-				// cannot share the geometry and are terminated.
-				for( unsigned int w = 1; w < SampledWavelengths::N && !swl.SecondaryTerminated(); w++ )
-				{
-					if( BDPTIntegrator::HasDispersiveDeltaVertex( localLightVerts, heroNM, swl.lambda[w] ) ||
-					    BDPTIntegrator::HasDispersiveDeltaVertex( eyeVerts,        heroNM, swl.lambda[w] ) )
-					{
-						swl.TerminateSecondary();
-						break;
-					}
 				}
 
 				for( unsigned int w = 1; w < SampledWavelengths::N; w++ )
@@ -496,12 +559,14 @@ void VCMSpectralRasterizer::IntegratePixel(
 					if( mVCMNormalization.mEnableVC ) {
 						VCMIntegrator::ConvertLightSubpath(
 							compLight, mVCMNormalization,
-							compLightStoreScratch, &compLightMis );
+							compLightStoreScratch, &compLightMis,
+							VCMIntegrator::SeeThroughLive( *pCaster ) );
 						if( pSplatFilm && !compLight.empty() && !compLightMis.empty() ) {
 							pIntegrator->SplatLightSubpathToCameraNM(
 								compLight, compLightMis,
-								pScene, *pCaster, *pCamera, *pSplatFilm,
-								mVCMNormalization, companionNM, pPixelFilter );
+								pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
+								mVCMNormalization, companionNM, pPixelFilter,
+								splatLaneScale * mYNormalization, &sampler );
 						}
 					}
 
@@ -524,13 +589,15 @@ void VCMSpectralRasterizer::IntegratePixel(
 								pScene, *pCaster,
 								compLight, compLightMis,
 								compEye, eyeMis,
-								mVCMNormalization, companionNM );
+								mVCMNormalization, companionNM, &sampler );
 						}
 					}
 
+					Scalar compMerge = 0;
 					if( pLightVertexStore && mVCMNormalization.mEnableVM ) {
-						compValue += pIntegrator->EvaluateMergesNM(
+						compMerge = pIntegrator->EvaluateMergesNM(
 							compEye, eyeMis, *pLightVertexStore, mVCMNormalization, companionNM );
+						compValue += compMerge;
 					}
 
 					{
@@ -544,6 +611,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 					XYZPel compXYZ( 0, 0, 0 );
 					if( ColorUtils::XYZFromNM( compXYZ, companionNM ) ) {
 						spectralSum = spectralSum + compXYZ * compValue;
+						spectralMerge = spectralMerge + compXYZ * compMerge;
 						totalActive++;
 					}
 				}
@@ -554,8 +622,12 @@ void VCMSpectralRasterizer::IntegratePixel(
 				// scale into a properly-normalized integral (white = 1).
 				// Inherited mYNormalization = (b-a)/k_y; uniform scale =>
 				// chromaticity preserved.
-				spectralSum = spectralSum * ( mYNormalization / Scalar( totalActive ) );
+				const Scalar normScale = mYNormalization / Scalar( totalActive );
+				spectralSum = spectralSum * normScale;
+				spectralMerge = spectralMerge * normScale;
 			}
+
+			AccumulateSampleFlux( spectralSum.Y, spectralMerge.Y );
 
 			// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
 			// now accumulates XYZ; no per-sample chromaticity clip.
@@ -623,16 +695,8 @@ void VCMSpectralRasterizer::IntegratePixel(
 		px.converged = converged;
 	}
 
-	// Track total samples for splat film normalization.  In adaptive
-	// mode add the live delta (samples rendered THIS pass); otherwise
-	// every pixel takes the full configured SPP each pass since
-	// convergence-based skip is gated on `adaptive` only — see Welford
-	// comment above.  Mirrors VCMPelRasterizer.
-	if( adaptive ) {
-		AddAdaptiveSamples( pixelSampleIndex - passStartSampleIndex );
-	} else {
-		AddAdaptiveSamples( batchSize );
-	}
+	// Track actual completed samples this pass for splat film normalization.
+	AddAdaptiveSamples( pixelSampleIndex - passStartSampleIndex );
 
 	if( pAOVBuffers && alphasAccrued > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphasAccrued );

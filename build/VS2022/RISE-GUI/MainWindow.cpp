@@ -22,6 +22,9 @@
 #include "ViewportProperties.h"
 #include "OutlinerWidget.h"
 #include "EnvironmentPanel.h"
+#include "NamedViewsPanel.h"
+#include "NodeGraphCanvas.h"
+#include "ObjectGraphCanvas.h"
 #include "StartWidget.h"
 #include "Theme.h"
 
@@ -47,6 +50,7 @@
 #include <QSettings>
 #include <QPalette>
 #include <QEvent>
+#include <QCloseEvent>
 #include <QSlider>
 #include <QStackedWidget>
 #include <QSplitter>
@@ -335,6 +339,14 @@ MainWindow::~MainWindow()
     if (m_engine) {
         m_engine->cancelAndJoinInFlightWork();
     }
+    // Durable document snapshots: write the trajectory's final
+    // "session_end" snapshot + summary under an honest "app_quit" status
+    // BEFORE teardownViewport() severs m_chatPanel from m_viewportBridge
+    // (mirrors macOS ChatViewModel's NSApplication.willTerminateNotification
+    // handler -- see ChatPanel::finishTrajectoryOnQuit's doc).
+    if (m_chatPanel) {
+        m_chatPanel->finishTrajectoryOnQuit();
+    }
     teardownViewport();
 }
 
@@ -390,24 +402,61 @@ QWidget* MainWindow::buildLeftPanel()
 
     m_agentTabBtn = makeTabButton(QStringLiteral("Agent"));
     m_sceneTabBtn = makeTabButton(QStringLiteral("Scene file"));
+    // doc-88 Phase 3 S16+S22: third tab -- see MainWindow.h's
+    // m_nodeGraphCanvas doc comment for why this lives here rather than
+    // as a center-column mode (mirrors NodeGraphCanvas.swift's own
+    // "ENTRY POINT" rationale). Label RENAMED to "Material Graph" (was
+    // the generic "Graph") once the Object Graph tab shipped as a
+    // sibling, S3 -- display string only.
+    m_graphTabBtn = makeTabButton(QStringLiteral("Material Graph"));
+    // S3 (Qt carry): fourth tab, "Object Graph" -- see MainWindow.h's
+    // m_objectGraphCanvas doc comment.
+    m_objectGraphTabBtn = makeTabButton(QStringLiteral("Object Graph"));
 
     auto* tabGroup = new QButtonGroup(tabStrip);
     tabGroup->setExclusive(true);
     tabGroup->addButton(m_agentTabBtn);
     tabGroup->addButton(m_sceneTabBtn);
+    tabGroup->addButton(m_graphTabBtn);
+    tabGroup->addButton(m_objectGraphTabBtn);
 
     tabStripLayout->addWidget(m_agentTabBtn);
     tabStripLayout->addWidget(m_sceneTabBtn);
+    tabStripLayout->addWidget(m_graphTabBtn);
+    tabStripLayout->addWidget(m_objectGraphTabBtn);
     tabStripLayout->addStretch(1);
     layout->addWidget(tabStrip);
 
+    m_nodeGraphCanvas = new NodeGraphCanvas(panel);
+    // A pick on the canvas doesn't itself touch the interactive
+    // rasterizer, so there's no imageUpdated to ride -- follow it
+    // explicitly, the SAME division of labor as the outliner's
+    // selectionActivated connect in buildRightPanel. m_nodeGraphCanvas
+    // is persistent (built once here), so this connects once.
+    connect(m_nodeGraphCanvas, &NodeGraphCanvas::selectionActivated, this, [this]() {
+        if (m_viewportProps)  m_viewportProps->refresh();
+        if (m_outlinerWidget) m_outlinerWidget->refresh();
+    });
+
+    // S3: same construction + "connect once" reasoning as m_nodeGraphCanvas
+    // just above.
+    m_objectGraphCanvas = new ObjectGraphCanvas(panel);
+    connect(m_objectGraphCanvas, &ObjectGraphCanvas::selectionActivated, this, [this]() {
+        if (m_viewportProps)  m_viewportProps->refresh();
+        if (m_outlinerWidget) m_outlinerWidget->refresh();
+    });
+
     m_leftPanelStack = new QStackedWidget(panel);
-    m_leftPanelStack->addWidget(m_chatPanel);     // index 0 — Agent
-    m_leftPanelStack->addWidget(m_sceneEditor);   // index 1 — Scene file
+    m_leftPanelStack->addWidget(m_chatPanel);          // index 0 — Agent
+    m_leftPanelStack->addWidget(m_sceneEditor);         // index 1 — Scene file
+    m_leftPanelStack->addWidget(m_nodeGraphCanvas);     // index 2 — Material Graph
+    m_leftPanelStack->addWidget(m_objectGraphCanvas);   // index 3 — Object Graph
     layout->addWidget(m_leftPanelStack, 1);
 
     connect(m_agentTabBtn, &QToolButton::clicked, this, [this]() { setLeftTab(0); });
     connect(m_sceneTabBtn, &QToolButton::clicked, this, [this]() { setLeftTab(1); });
+    connect(m_graphTabBtn, &QToolButton::clicked, this, [this]() { setLeftTab(2); });
+    connect(m_objectGraphTabBtn, &QToolButton::clicked, this, [this]() { setLeftTab(3); });
 
     setLeftTab(0);   // Agent tab is active on launch
 
@@ -419,38 +468,52 @@ void MainWindow::setLeftTab(int index)
     if (!m_leftPanelStack) return;
     m_leftPanelStack->setCurrentIndex(index);
 
-    const bool agentActive = (index == 0);
-    m_agentTabBtn->setChecked(agentActive);
-    m_sceneTabBtn->setChecked(!agentActive);
+    m_agentTabBtn->setChecked(index == 0);
+    m_sceneTabBtn->setChecked(index == 1);
+    m_graphTabBtn->setChecked(index == 2);
+    m_objectGraphTabBtn->setChecked(index == 3);
     updateTabButtonStyles();
 
     // Matches the pre-redesign Edit-toggle behavior: switching into
     // the Scene file tab (re-)loads the current file from disk.
-    if (!agentActive && m_engine && !m_engine->loadedFilePath().isEmpty()) {
+    if (index == 1 && m_engine && !m_engine->loadedFilePath().isEmpty()) {
         m_sceneEditor->loadFile(m_engine->loadedFilePath());
+    }
+    // Switching into the Material Graph tab pulls a fresh snapshot
+    // immediately rather than waiting for the next imageUpdated frame --
+    // mirrors the Scene-file tab's own "switching in re-reads" behavior
+    // just above, and NodeGraphCanvas.swift's
+    // `.onAppear { scheduleReload(...) }`.
+    if (index == 2 && m_nodeGraphCanvas) {
+        m_nodeGraphCanvas->refresh();
+    }
+    // S3: same "switching in re-reads immediately" behavior for the
+    // Object Graph tab.
+    if (index == 3 && m_objectGraphCanvas) {
+        m_objectGraphCanvas->refresh();
     }
 }
 
 void MainWindow::updateTabButtonStyles()
 {
-    if (!m_agentTabBtn || !m_sceneTabBtn) return;
+    if (!m_agentTabBtn || !m_sceneTabBtn || !m_graphTabBtn || !m_objectGraphTabBtn) return;
 
     // Reads whichever button is CURRENTLY checked -- setLeftTab() sets
     // that before calling this, and a theme switch (restyleTheme()) just
     // wants to re-paint whatever's already active without touching
     // which tab is selected.
-    const bool agentActive = m_agentTabBtn->isChecked();
-    m_agentTabBtn->setFont(Theme::sans(12, agentActive ? QFont::DemiBold : QFont::Normal));
-    m_sceneTabBtn->setFont(Theme::sans(12, !agentActive ? QFont::DemiBold : QFont::Normal));
-
     const QString activeStyle = QStringLiteral(
         "QToolButton { color: %1; border: none; border-bottom: 2px solid %2; background: transparent; }")
         .arg(Theme::hex(Theme::textPrimary), Theme::hex(Theme::accent));
     const QString inactiveStyle = QStringLiteral(
         "QToolButton { color: %1; border: none; border-bottom: 2px solid transparent; background: transparent; }")
         .arg(Theme::hex(Theme::textFaint));
-    m_agentTabBtn->setStyleSheet(agentActive ? activeStyle : inactiveStyle);
-    m_sceneTabBtn->setStyleSheet(!agentActive ? activeStyle : inactiveStyle);
+
+    for (QToolButton* btn : { m_agentTabBtn, m_sceneTabBtn, m_graphTabBtn, m_objectGraphTabBtn }) {
+        const bool active = btn->isChecked();
+        btn->setFont(Theme::sans(12, active ? QFont::DemiBold : QFont::Normal));
+        btn->setStyleSheet(active ? activeStyle : inactiveStyle);
+    }
 }
 
 QWidget* MainWindow::buildCenterColumn()
@@ -530,6 +593,37 @@ QWidget* MainWindow::buildRightPanel()
                 revealEntityInSceneText(static_cast<int>(category), name);
             });
 
+    // Object-pick spotlight (review-round P1 fix): same "connect once"
+    // reasoning as revealRequested just above -- m_outlinerWidget AND
+    // m_nodeGraphCanvas are BOTH persistent (the latter built once in
+    // buildLeftPanel(), which runs before this function -- see
+    // MainWindow's constructor ordering), so connecting them here, exactly
+    // once, is correct. This was previously (wrongly) connected inside
+    // rebuildViewportForLoadedScene(), which runs on every scene (re)load
+    // -- since neither endpoint is ever destroyed/recreated between loads,
+    // that accumulated one more duplicate connection per reload, exactly
+    // the hazard this comment block already warns against for
+    // revealRequested/addEntityRequested/etc. A pick in the outliner
+    // doesn't itself touch the interactive rasterizer, so there's no
+    // imageUpdated to ride -- follow it explicitly so the node-graph
+    // canvas's spotlight (NodeGraphCanvas::refreshSpotlight, reached via
+    // refresh()'s tail) updates immediately rather than waiting for the
+    // next render frame.
+    if (m_nodeGraphCanvas) {
+        connect(m_outlinerWidget, &OutlinerWidget::selectionActivated,
+                m_nodeGraphCanvas, &NodeGraphCanvas::refresh);
+    }
+    // S3: same "connect once, here" reasoning as m_nodeGraphCanvas just
+    // above -- m_objectGraphCanvas is ALSO persistent (built once in
+    // buildLeftPanel, which runs before this function). Without this, a
+    // viewport/outliner Object pick with no render in flight would never
+    // update the Object Graph canvas's own spotlight until the next
+    // preview frame happened to arrive.
+    if (m_objectGraphCanvas) {
+        connect(m_outlinerWidget, &OutlinerWidget::selectionActivated,
+                m_objectGraphCanvas, &ObjectGraphCanvas::refresh);
+    }
+
     // Entity-creation slice: same "connect once, adapt the enum to a raw
     // int" pattern as revealRequested above -- m_outlinerWidget is
     // persistent, `this` is not recreated per scene load.
@@ -564,6 +658,18 @@ QWidget* MainWindow::buildRightPanel()
     connect(m_environmentPanel, &EnvironmentPanel::environmentEdited,
             m_outlinerWidget, &OutlinerWidget::refresh);
 
+    // doc-88 Phase 3 S16+S22: an environment edit can add/remove Painter
+    // nodes (a radiance_map painter binding) -- follow it so the graph
+    // tab stays in sync. Connected ONCE here (both m_environmentPanel and
+    // m_nodeGraphCanvas are persistent, built once, unlike the per-scene
+    // m_viewportProps/m_outlinerWidget-style connects elsewhere) --
+    // m_nodeGraphCanvas already exists at this point (buildLeftPanel runs
+    // before buildRightPanel in the constructor).
+    if (m_nodeGraphCanvas) {
+        connect(m_environmentPanel, &EnvironmentPanel::environmentEdited,
+                m_nodeGraphCanvas, &NodeGraphCanvas::refreshForce);
+    }
+
     // Source traceability: a per-row reveal from the Environment section
     // resolves the backing param's exact span (the HDRI file on the bound
     // painter; radiance_* on the active rasterizer).  m_environmentPanel is
@@ -573,6 +679,19 @@ QWidget* MainWindow::buildRightPanel()
             [this](int category, const QString& name, const QString& param) {
                 revealSourceSpan(category, name, param, 0);
             });
+
+    // Named Views section, between EnvironmentPanel and the per-scene
+    // ViewportProperties (mirrors macOS ContentView.swift:854-859).
+    // Persistent like OutlinerWidget / EnvironmentPanel; hides itself
+    // while no bridge is attached.
+    m_namedViewsPanel = new NamedViewsPanel(panel);
+    m_rightPanelLayout->addWidget(m_namedViewsPanel);
+
+    // Promoting a named view creates and activates a scene camera --
+    // refresh the outliner immediately (m_viewportProps is per-scene and
+    // connects in rebuildViewportForLoadedScene).
+    connect(m_namedViewsPanel, &NamedViewsPanel::cameraPromoted,
+            m_outlinerWidget, &OutlinerWidget::refresh);
 
     return panel;
 }
@@ -683,6 +802,8 @@ void MainWindow::createMenuBar()
     connect(m_undoAction, &QAction::triggered, this, [this]() {
         if (!canUseSceneTransport()) return;
         m_viewportBridge->undo();
+        const QString notice = m_viewportBridge->consumeHistoryNotice();   // a refused step explains itself
+        if (!notice.isEmpty()) QMessageBox::warning(this, "Undo/Redo Refused", notice);
     });
 
     m_redoAction = editMenu->addAction("Redo");
@@ -690,6 +811,8 @@ void MainWindow::createMenuBar()
     connect(m_redoAction, &QAction::triggered, this, [this]() {
         if (!canUseSceneTransport()) return;
         m_viewportBridge->redo();
+        const QString notice = m_viewportBridge->consumeHistoryNotice();   // a refused step explains itself
+        if (!notice.isEmpty()) QMessageBox::warning(this, "Undo/Redo Refused", notice);
     });
 
     editMenu->addSeparator();
@@ -938,10 +1061,21 @@ void MainWindow::updateMenuActionStates()
     // chat-driven render can never be wedged against by either affordance.
     if (m_viewportProps)  m_viewportProps->setSceneEditable(bridgeInteractingEnabled);
     if (m_outlinerWidget) m_outlinerWidget->setSceneEditable(bridgeInteractingEnabled);
+    // doc-88 Phase 3 S16+S22: the graph canvas's "+", drag-to-wire commit,
+    // and delete/duplicate verbs all take the SAME commit mutex -- gate
+    // on the IDENTICAL term (mirrors the outliner/props gates immediately
+    // above).
+    if (m_nodeGraphCanvas) m_nodeGraphCanvas->setSceneEditable(bridgeInteractingEnabled);
+    // S3: wired at the SAME call site for lifecycle-wiring consistency
+    // with its sibling canvas, though this phase has no mutation
+    // affordance that actually reads the flag -- see ObjectGraphCanvas::
+    // setSceneEditable's own comment.
+    if (m_objectGraphCanvas) m_objectGraphCanvas->setSceneEditable(bridgeInteractingEnabled);
     // Environment section's mutating controls gate on the IDENTICAL term:
     // each ViewportBridge setEnvironment* call takes the controller's
     // commit mutex a production / chat-driven render owns.
     if (m_environmentPanel) m_environmentPanel->setSceneEditable(bridgeInteractingEnabled);
+    if (m_namedViewsPanel)  m_namedViewsPanel->setSceneEditable(bridgeInteractingEnabled);
     // The viewport's nav axis-ball reads isFreeFlyActive()/hasHomeView() and
     // its pointer* calls all take the controller commit mutex; gate them on the
     // SAME chat-inclusive term.  onStateChanged's setEnabled(interacting) is
@@ -1187,6 +1321,23 @@ void MainWindow::changeEvent(QEvent* e)
     if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
         restyleTheme();
     }
+}
+
+// Quit-time unsaved-work prompt -- mirrors macOS AppDelegate.
+// applicationShouldTerminate (RISEApp.swift).  The window close box and
+// File > Exit (exitAction -> QWidget::close()) both post a QCloseEvent
+// here.  Reuses the SAME gate Close Scene / load-over already run --
+// Save/Discard/Cancel, untitled-scene Save-As, the both-dirty scene+editor
+// case.  Cancel/a refused save ignores the event (quit aborted, same as a
+// cancelled Close Scene); accepting it lets ~MainWindow()'s existing
+// cancel-and-join-then-flush-trajectory ordering run unchanged.
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    if (!promptToSaveUnsavedWork(tr("quitting"))) {
+        event->ignore();
+        return;
+    }
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::restyleTheme()
@@ -2511,6 +2662,17 @@ void MainWindow::rebuildViewportForLoadedScene()
         // single-entity inspector below updates immediately.
         connect(m_outlinerWidget, &OutlinerWidget::selectionActivated,
                 m_viewportProps, &ViewportProperties::refresh);
+        // The node-graph canvas's OWN follow of this same signal is
+        // connected ONCE in buildRightPanel() (review-round P1 fix), not
+        // here: m_nodeGraphCanvas is a PERSISTENT receiver (built once in
+        // buildLeftPanel, like m_outlinerWidget itself), unlike
+        // m_viewportProps just above, which IS per-scene (a fresh instance
+        // every rebuildViewportForLoadedScene call, so ITS connect must be
+        // redone here every time). Connecting a persistent-to-persistent
+        // pair inside this per-scene-reload function would accumulate one
+        // more duplicate connection on every load -- exactly the hazard
+        // this file's own "Reveal in scene file" comment in
+        // buildRightPanel() already warns against.
     }
 
     if (m_environmentPanel) {
@@ -2523,6 +2685,19 @@ void MainWindow::rebuildViewportForLoadedScene()
         // recreated per load so this reconnects fresh each time).
         connect(m_environmentPanel, &EnvironmentPanel::environmentEdited,
                 m_viewportProps, &ViewportProperties::refresh);
+    }
+
+    if (m_namedViewsPanel) {
+        m_namedViewsPanel->setBridge(m_viewportBridge);
+        connect(m_namedViewsPanel, &NamedViewsPanel::cameraPromoted,
+                m_viewportProps, &ViewportProperties::refresh);
+    }
+
+    if (m_nodeGraphCanvas) {
+        m_nodeGraphCanvas->setBridge(m_viewportBridge);
+    }
+    if (m_objectGraphCanvas) {
+        m_objectGraphCanvas->setBridge(m_viewportBridge);
     }
 
     // The scene's named animations are surfaced by the ViewportProperties
@@ -2569,11 +2744,15 @@ void MainWindow::rebuildViewportForLoadedScene()
             this, [this]() {
                 if (!canUseSceneTransport()) return;
                 m_viewportBridge->undo();
+                const QString notice = m_viewportBridge->consumeHistoryNotice();
+                if (!notice.isEmpty()) QMessageBox::warning(this, "Undo/Redo Refused", notice);
             });
     connect(m_viewportToolbar,  &ViewportToolbar::redoClicked,
             this, [this]() {
                 if (!canUseSceneTransport()) return;
                 m_viewportBridge->redo();
+                const QString notice = m_viewportBridge->consumeHistoryNotice();
+                if (!notice.isEmpty()) QMessageBox::warning(this, "Undo/Redo Refused", notice);
             });
 
     connect(m_viewportTimeline, &ViewportTimeline::scrubBegin,
@@ -2618,6 +2797,21 @@ void MainWindow::rebuildViewportForLoadedScene()
         connect(m_viewportBridge, &ViewportBridge::imageUpdated,
                 m_outlinerWidget, &OutlinerWidget::refresh);
     }
+    if (m_nodeGraphCanvas) {
+        // Epoch-gated cheap compare on every frame -- the SAME cadence
+        // OutlinerWidget::refresh rides (see NodeGraphCanvas::refresh's
+        // own doc comment for why this file does not also carry a
+        // separate debounce timer).
+        connect(m_viewportBridge, &ViewportBridge::imageUpdated,
+                m_nodeGraphCanvas, &NodeGraphCanvas::refresh);
+    }
+    if (m_objectGraphCanvas) {
+        // S3: same per-frame epoch-gated cadence as m_nodeGraphCanvas
+        // just above -- this IS the "Qt-only per-frame invariant" every
+        // cheap-gate in ObjectGraphCanvas exists to guard against.
+        connect(m_viewportBridge, &ViewportBridge::imageUpdated,
+                m_objectGraphCanvas, &ObjectGraphCanvas::refresh);
+    }
     if (m_environmentPanel) {
         // Rides every preview frame like the outliner so a scene load /
         // active-rasterizer change / undone edit re-reads environmentInfo
@@ -2625,6 +2819,11 @@ void MainWindow::rebuildViewportForLoadedScene()
         // frame can't blow away an in-progress edit).
         connect(m_viewportBridge, &ViewportBridge::imageUpdated,
                 m_environmentPanel, &EnvironmentPanel::reload);
+    }
+    if (m_namedViewsPanel) {
+        // Cheap diff against cached m_names; never touches m_captureEdit.
+        connect(m_viewportBridge, &ViewportBridge::imageUpdated,
+                m_namedViewsPanel, &NamedViewsPanel::reload);
     }
 
     // Round-trip save success: pull the just-written bytes into the
@@ -2691,6 +2890,21 @@ void MainWindow::teardownViewport()
         // false with no controller).  m_environmentPanel is persistent, so
         // it is NOT deleted here -- only its bridge borrow is cleared.
         m_environmentPanel->setBridge(nullptr);
+    }
+    if (m_namedViewsPanel) {
+        m_namedViewsPanel->setBridge(nullptr);
+    }
+    if (m_nodeGraphCanvas) {
+        // Same persistent-borrow-clear discipline as the outliner/
+        // environment panel just above -- m_nodeGraphCanvas is NOT
+        // deleted, only its bridge borrow is cleared (setBridge(nullptr)
+        // clears the canvas's own snapshot immediately).
+        m_nodeGraphCanvas->setBridge(nullptr);
+    }
+    if (m_objectGraphCanvas) {
+        // S3: same persistent-borrow-clear discipline as m_nodeGraphCanvas
+        // just above.
+        m_objectGraphCanvas->setBridge(nullptr);
     }
 
     // Close any looping preview-play (and its open scrub bracket) through the

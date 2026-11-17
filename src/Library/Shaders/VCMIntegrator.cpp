@@ -20,6 +20,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <cstring>
+#include "../Utilities/IndependentSampler.h"
 #include "VCMIntegrator.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): zero the s=0 competing light pdf for non-NEE-sampleable emitters
 #include "BDPTIntegrator.h"
@@ -30,15 +32,22 @@
 #include "../Interfaces/IEmitter.h"
 #include "../Interfaces/ILight.h"
 #include "../Interfaces/IObject.h"
+#include "../Interfaces/IObjectManager.h"
+#include "../Geometry/SphereGeometry.h"
+#include "../Geometry/BoxGeometry.h"
 #include "../Lights/LightSampler.h"
 #include "../Rendering/LuminaryManager.h"
 #include "../Utilities/PathVertexEval.h"
 #include "../Utilities/PathValueOps.h"
 #include "../Utilities/Color/SpectralValueTraits.h"
+#include "../Utilities/Color/RGBSpectra.h"		// Stage C slice 2: light-subpath throughput uplift
+#include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/BDPTUtilities.h"
 #include "../Interfaces/ICamera.h"
 #include "../Cameras/CameraUtilities.h"
 #include "../Rendering/SplatFilm.h"
+#include "../Rendering/RayCaster.h"
+#include "../Utilities/GradedIndexMedium.h"
 
 
 using namespace RISE;
@@ -47,10 +56,208 @@ using RISE::SpectralDispatch::PelTag;
 using RISE::SpectralDispatch::NMTag;
 using RISE::SpectralDispatch::SpectralValueTraits;
 
+namespace {
+    // DL-474: an upper Riemann sum for the decreasing positive-octant
+    // sphere height. A fixed 16x16 grid uses 256 height evaluations.
+    Scalar CornerStripUpper(Scalar a, Scalar b, Scalar cap=Scalar(1)) {
+        constexpr unsigned cells=16;
+        Scalar sum=0;
+        for(unsigned i=0;i<cells;++i) for(unsigned j=0;j<cells;++j) {
+            const Scalar x=a*Scalar(i)/cells, y=b*Scalar(j)/cells;
+            const Scalar h=std::sqrt(std::max(Scalar(0),Scalar(1)-x*x-y*y));
+            sum+=std::min(cap,h);
+        }
+        return sum*(a*b/Scalar(cells*cells));
+    }
+    Scalar BoxCornerFractionUpper(const Scalar* a,unsigned count) {
+        Scalar fraction=count==2 ? Scalar(.25) : Scalar(.125);
+        const Scalar slab=count==2 ? Scalar(3)/8 : Scalar(3)/16;
+        for(unsigned i=0;i<count;++i) fraction+=slab*(a[i]-a[i]*a[i]*a[i]/3);
+        const Scalar pair=count==2 ? Scalar(3)/(2*PI) : Scalar(3)/(4*PI);
+        for(unsigned i=0;i<count;++i) for(unsigned j=i+1;j<count;++j)
+            fraction+=pair*CornerStripUpper(a[i],a[j]);
+        if(count==3) fraction+=Scalar(3)/(4*PI)*CornerStripUpper(a[0],a[1],a[2]);
+        // Retained mass cannot exceed a full ball. Clamping the conservative
+        // upper sum to this geometric bound preserves its upper-bound property.
+        return std::min(Scalar(1),fraction);
+    }
+}
+
+// Correct one certified object cut of the volume ball. Keeping its radius
+// avoids the arbitrarily small kernels and unbounded boundary variance of a
+// distance clamp. Own-box corners use a conservative retained-volume upper
+// bound; multiple-object/unknown cuts keep the legacy kernel (DL-474 residual).
+VCMNormalization VCMIntegrator::BoundaryVolumeNormalization(
+    const VCMNormalization& norm, const BDPTVertex& vertex )
+{
+    if (vertex.type != BDPTVertex::MEDIUM || !norm.mVolumeObjects ||
+        !(norm.mVolumeMergeRadius > 0)) return norm;
+    struct Fraction final : IEnumCallback<IObject> {
+        const BDPTVertex& v;
+        const Scalar r;
+        Scalar fraction = 1;
+        unsigned cuts = 0;
+        bool certified = true;
+        bool ownSeen;
+        Fraction(const BDPTVertex& vv, Scalar radius) : v(vv), r(radius), ownSeen(!vv.pMediumObject) {}
+        bool operator()(const IObject& object) override {
+            if (!object.IsWorldVisible()) return true;
+            const bool own = &object == v.pMediumObject;
+            if (own) ownSeen = true;
+            const BoundingBox bounds = object.getBoundingBox();
+            const Scalar dx=std::max(std::max(bounds.ll.x-v.position.x, v.position.x-bounds.ur.x), Scalar(0));
+            const Scalar dy=std::max(std::max(bounds.ll.y-v.position.y, v.position.y-bounds.ur.y), Scalar(0));
+            const Scalar dz=std::max(std::max(bounds.ll.z-v.position.z, v.position.z-bounds.ur.z), Scalar(0));
+            const Scalar boxDistance=std::sqrt(dx*dx+dy*dy+dz*dz);
+            if (!own && boxDistance >= r) return true;
+            Scalar d=0;
+            bool exact=false;
+            const bool signedKnown=object.SignedDistanceLower(v.position,r,d,exact) && std::isfinite(d) && d!=0;
+            if (own && (!signedKnown || !(d<0))) { certified=false; return true; }
+            if (signedKnown && std::fabs(d) >= r) return true;
+            // Zero carries no information (notably at CSG seams). A lower
+            // bound can reject a cut, but only an exact primitive can price it.
+            if (!signedKnown || !exact || (own && !(d<0))) { certified=false; return true; }
+            const IGeometry* geometry=object.GetGeometry();
+            if (!geometry) { certified=false; return true; }
+            const Matrix4 world=object.GetFinalTransformMatrix();
+            const Scalar scale=Vector3Ops::Magnitude(Vector3Ops::Transform(world,Vector3(1,0,0)));
+            if (!(scale>0) || !std::isfinite(scale)) { certified=false; return true; }
+            Scalar phi=1;
+            if (typeid(*geometry)==typeid(BoxGeometry)) {
+                const BoundingBox local=geometry->GenerateBoundingBox();
+                const Point3 p=Point3Ops::Transform(object.GetFinalInverseTransformMatrix(),v.position);
+                const Scalar distances[6]={(p.x-local.ll.x)*scale,(local.ur.x-p.x)*scale,
+                    (p.y-local.ll.y)*scale,(local.ur.y-p.y)*scale,
+                    (p.z-local.ll.z)*scale,(local.ur.z-p.z)*scale};
+                unsigned faces=0, face=0;
+                for(unsigned j=0;j<6;++j) if(std::fabs(distances[j])<r) { ++faces; face=j; }
+                if(own && faces>=2 && faces<=3) {
+                    Scalar clearances[3]; unsigned count=0;
+                    for(unsigned axis=0;axis<3;++axis) {
+                        const bool low=distances[2*axis]<r, high=distances[2*axis+1]<r;
+                        if(low && high) { certified=false; return true; }
+                        if(low || high) {
+                            const Scalar clearance=distances[2*axis+(high?1:0)];
+                            if(!(clearance>0)) { certified=false; return true; }
+                            clearances[count++]=clearance/r;
+                        }
+                    }
+                    if(count!=faces) { certified=false; return true; }
+                    phi=BoxCornerFractionUpper(clearances,count);
+                    if(!std::isfinite(phi) || !(phi>=Scalar(.125)) || !(phi<=Scalar(1))) { certified=false; return true; }
+                    ++cuts; fraction=phi; return true;
+                }
+                if(faces!=1) { certified=false; return true; }
+                for(unsigned j=0;j<6;++j) if(j!=face && !(distances[j]>=r)) { certified=false; return true; }
+                // The current medium is inside its box. Another box must be
+                // opaque or a different explicit medium; its excluded side is
+                // inside, so the eye point must be outside it.
+                if ((!own && (!(d>0) || (object.GetMaterial() && object.GetMaterial()->CouldLightPassThrough() && !object.GetInteriorMedium()))) ||
+                    (own && !(distances[face]>0))) { certified=false; return true; }
+                const Scalar a=std::fabs(distances[face])/r;
+                phi=Scalar(.5)+Scalar(.75)*a-Scalar(.25)*a*a*a;
+            } else if (typeid(*geometry)==typeid(SphereGeometry) && !own && d>0 &&
+                (!object.GetMaterial() || !object.GetMaterial()->CouldLightPassThrough() || object.GetInteriorMedium())) {
+                Point3 center;
+                Scalar localRadius=0;
+                geometry->GenerateBoundingSphere(center,localRadius);
+                const Scalar R=localRadius*scale;
+                if (!(R>0) || !std::isfinite(R)) { certified=false; return true; }
+                Scalar excluded=0;
+                if(r>=Scalar(2)*R+d) {
+                    const Scalar a=R/r;
+                    excluded=a*a*a;
+                } else {
+                    // Two spherical caps; factor the heights to avoid
+                    // subtracting nearly equal squared radii at a large R/r.
+                    const Scalar hR=(r-d)*(r+d)/(Scalar(2)*(R+d));
+                    const Scalar hr=(r-d)*(Scalar(2)*R+d-r)/(Scalar(2)*(R+d));
+                    const Scalar a=hr/r, b=hR/r;
+                    excluded=Scalar(.75)*(a*a*(Scalar(1)-a/Scalar(3))+
+                        b*b*(R/r-b/Scalar(3)));
+                }
+                // For an outside centre, a convex sphere excludes at most
+                // half of the ball. This is a geometric bound, not an epsilon.
+                if (!std::isfinite(excluded)) { certified=false; return true; }
+                phi=Scalar(1)-std::max(Scalar(0),std::min(Scalar(.5),excluded));
+            } else { certified=false; return true; }
+            if (!(phi>=Scalar(.5)) || !(phi<=Scalar(1)) || !std::isfinite(phi)) { certified=false; return true; }
+            ++cuts;
+            fraction=phi;
+            return true;
+        }
+    } f(vertex,norm.mVolumeMergeRadius);
+    norm.mVolumeObjects->EnumerateObjects(f);
+    if (!f.certified || !f.ownSeen || f.cuts!=1 || f.fraction==Scalar(1)) return norm;
+    VCMNormalization local=norm;
+    local.mVolumeNormalization /= f.fraction;
+    local.mMisVolumeWeightFactor *= f.fraction;
+    return local;
+}
+
 static inline Scalar AreaToSolidAngleFactor(
 	const BDPTVertex& v,
 	const Vector3& dirFromAdjacent
 	);
+
+//////////////////////////////////////////////////////////////////
+// RGB → wavelength projection for a stored LIGHT-SUBPATH
+// throughput (Stage C slice 2).
+//
+// The light pass runs on RGB and is NOT wavelength-matched to the
+// eye pass: a light vertex is deposited once and then merged
+// against eye vertices carrying arbitrary, per-sample wavelengths,
+// so there is no single `nm` the store could have evaluated the
+// subpath at.  Storing a `throughputNM` alongside the Pel one
+// would therefore require running (or re-tracing) the light pass
+// per hero wavelength -- a structural change to the two-pass VCM
+// architecture, not a field addition.  Hence the projection here.
+//
+// It is an ILLUMINANT uplift, not a Rec.709 luma scalar.  The
+// leading factor of a light-subpath throughput is the emitted Le,
+// and since Stage C slice 2 every other source term in the engine
+// (ILight::emittedRadianceNM, IEmitter::emittedRadianceNM,
+// IPainter::GetRadianceNM, the radiance maps) emits the D65-shaped
+// reference illuminant.  A luma scalar reused at every wavelength
+// is FLAT, and a flat spectrum resolves to (1.205, 0.948, 0.909)
+// on this film -- so the VM (merge) strategies would have landed
+// on a different chroma than the VC (connect) strategies that share
+// the same MIS partition, and a coloured light would merge grey.
+//
+// Exactness: the uplift round-trips to the stored RGB exactly for a
+// grey/white light with no coloured bounce along the subpath.  With
+// a coloured light, or after coloured reflectances multiply into
+// the throughput, the product of reflectance spectra is
+// approximated by the illuminant uplift of its RGB projection --
+// the same chroma-preserving approximation FinalGatherShaderOp and
+// the SSS ops make for a COMPUTED radiance.
+//
+// THE single place that builds the spectrum -- LightThroughputRadianceNM
+// below just evaluates it.  `lv.throughput` is fixed once a LightVertex
+// is deposited (ConvertLightSubpath) or rescaled (ClampOutlierThroughputs),
+// so both call sites cache the returned RGBIlluminantSpectrum on the
+// vertex (`LightVertex::throughputSpectrum`) instead of paying a fresh
+// JH LUT lookup per merge CANDIDATE inside the per-eye-vertex candidate
+// loop (EvaluateMerges).  sizeof(RGBIlluminantSpectrum) is 4 Scalars (a
+// 3-coefficient RGBSigmoidPolynomial + a scale) -- 32 bytes/vertex on a
+// build with Scalar==double, i.e. the same order as the existing
+// RISEPel throughput field it sits beside.
+RGBIlluminantSpectrum VCMIntegrator::LightThroughputSpectrum( const RISEPel& p )
+{
+	RISEPel c = p;
+	// FromRGB takes the max channel as its scale, so a single
+	// negative component flips the scale and corrupts every
+	// wavelength (FinalGatherShaderOp guards the same boundary).
+	ColorMath::EnsurePositve( c );
+	return RGBIlluminantSpectrum::FromRGB( c );
+}
+
+Scalar VCMIntegrator::LightThroughputRadianceNM( const RISEPel& p, const Scalar nm )
+{
+	return LightThroughputSpectrum( p ).Eval( nm );
+}
+
 
 namespace
 {
@@ -60,77 +267,592 @@ namespace
 
 	// Local helper: unoccluded segment test.  Mirrors
 	// BDPTIntegrator::IsVisible so VCM doesn't touch BDPT.
-	inline bool VCMIsVisible( const IRayCaster& caster, const Point3& p1, const Point3& p2 )
+	inline bool VCMIsVisible( const IRayCaster& caster, const Point3& p1, const Point3& p2, ISampler& sampler, MediumBoundaryHits* boundaries )
 	{
 		Vector3 d = Vector3Ops::mkVector3( p2, p1 );
 		const Scalar dist = Vector3Ops::Magnitude( d );
-		if( dist < VCM_RAY_EPSILON ) {
+		if( dist <= 0 || (!boundaries && dist < VCM_RAY_EPSILON) ) {
 			return true;
 		}
 		d = d * ( Scalar( 1 ) / dist );
 		Ray shadowRay( p1, d );
-		shadowRay.Advance( VCM_RAY_EPSILON );
-		return !caster.CastShadowRay( shadowRay, dist - 2.0 * VCM_RAY_EPSILON );
+		// The original ray covers both endpoint tails for medium records.
+		return !caster.CastShadowRaySampled( shadowRay, dist - VCM_RAY_EPSILON, sampler, boundaries, dist, VCM_RAY_EPSILON );
 	}
 
-	inline VCMMisQuantities ApplyBSSRDFEntryAreaUpdate(
-		const BDPTVertex& v
-		)
+	//////////////////////////////////////////////////////////////////
+	// DL-317: the BSSRDF / random-walk jump is a BARRIER in VCM's MIS.
+	//
+	// A subsurface event relocates the path from the hit where it went
+	// in (`x_o`, which the generator marks delta) to a sampled ENTRY
+	// vertex `x_i` (`isBSSRDFEntry`).  That relocation is not an edge:
+	// nothing can connect x_o to x_i, and the reverse density of the
+	// jump (sampling x_o from x_i) is never evaluated -- for a random
+	// walk it has no closed form at all.  So the strategies that can
+	// produce a path through the jump are exactly the ones that split
+	// it on the FAR side of the subpath that SAMPLED the jump:
+	//
+	//   eye-sampled jump (eye subpath ... x_o, x_i, w1 ...):
+	//     at x_i: NEE, a connection to a light vertex, and a merge with
+	//       a photon ARRIVING at x_i -- every entry is connectible since
+	//       DL-375 (a random-walk entry prices Sw with the exact
+	//       dielectric transmission, RandomWalkEntryBSDF; before it a
+	//       random-walk entry admitted none of these);
+	//     at w1 and beyond: every ordinary strategy.
+	//     NOT: anything that makes the light cover x_i and x_o (connect
+	//       x_o--x_i, merge at x_o through the jump, or deeper).
+	//   light-sampled jump: the same coverage problem mirrored, and no
+	//     reverse jump density with which to MIS it against the eye-
+	//     sampled one.  Both families estimate the SAME integral, so
+	//     keeping both with each partition-of-unity closed over itself
+	//     counts the path twice.  The partition is therefore by PATH:
+	//     a path belongs to the EYE-sampled family whenever that family
+	//     has at least one strategy for it, and to the LIGHT-sampled
+	//     family only when it has none -- e.g. a point light reaching
+	//     the jump only through a delta interface (index-matched glass
+	//     around it), which no NEE / connection / merge at the entry can
+	//     cross and BSDF sampling onward can never hit.  (Before DL-375
+	//     a point light feeding a random-walk entry directly was such a
+	//     class too; a connectible random-walk entry covers it.)  Whether it has
+	//     one depends on the light-side segment between the jump and
+	//     the light (or the previous kept jump) -- which strategies the
+	//     eye family has there, BDPTUtilities::LightSegmentEyeWitness --
+	//     and (DL-380) on whether the eye walk's depth caps let it
+	//     generate the covering subpath, which depends on the eye part
+	//     of the path too: BDPTUtilities::LightJumpPartition, per
+	//     strategy.
+	//
+	// The running quantities follow directly.  At x_i, (dVCM, dVC, dVM)
+	// = 0: every term they carry reserves mass for a strategy in which
+	// the light covers x_i AND what lies behind it, i.e. one that splits
+	// across the jump.  (The pre-DL-317 dVCM = 1/pdfSurface reserved the
+	// connection x_o--x_i.)  The onward update from x_i is the ordinary
+	// non-specular one applied to that zero state -- dVCM' = 1/p_w (NEE
+	// and connections at x_i), dVC' = (cos/p_w) * eta_VM and dVM' =
+	// cos/p_w (the merge at x_i) -- WHEN x_i is connectible (every entry
+	// since DL-375); a non-connectible entry would support none of those,
+	// so all three would stay 0.  (Pre-DL-317 it took the non-specular
+	// update regardless, reserving a phantom NEE at the then
+	// non-connectible random-walk entry: DL-126's pattern.)
+	//////////////////////////////////////////////////////////////////
+
+	/// Running quantities AT a BSSRDF / random-walk entry vertex: nothing
+	/// on the far side of the jump is a strategy, so nothing is reserved.
+	inline VCMMisQuantities BSSRDFEntryVertexState()
 	{
-		VCMMisQuantities r;
-		if( v.pdfFwd > NEARZERO ) {
-			// BSSRDF entry sampling gives an area-density directly; there is
-			// no edge Jacobian to invert.  The VC MIS state at the entry
-			// therefore carries the reciprocal area PDF, so NEE/interior
-			// connections compete with the sampled BSSRDF transport.
-			r.dVCM = Scalar( 1 ) / v.pdfFwd;
-		}
-		return r;
+		return VCMMisQuantities();
 	}
 
+	/// Running quantities for the vertex AFTER a BSSRDF / random-walk
+	/// entry `verts[i]` (whose own state is BSSRDFEntryVertexState()).
 	inline VCMMisQuantities ApplyBSSRDFEntryOnwardUpdate(
-		const VCMMisQuantities& mis,
 		const std::vector<BDPTVertex>& verts,
 		const std::size_t i,
 		const VCMNormalization& norm
 		)
 	{
+		const VCMMisQuantities zero = BSSRDFEntryVertexState();
 		if( i + 1 >= verts.size() ) {
-			return mis;
+			return zero;
 		}
 
 		const BDPTVertex& v = verts[i];
+		// A non-connectible entry: no NEE, connection or merge can use
+		// it, so the vertex after it reserves nothing.  (Random-walk
+		// entries were the case until DL-375 made them connectible.)
+		if( !v.isConnectible ) {
+			return zero;
+		}
+
 		const BDPTVertex& next = verts[i + 1];
 		if( next.pdfFwd <= 0 ) {
-			return mis;
+			return zero;
 		}
 
 		const Vector3 nextStep = Vector3Ops::mkVector3( next.position, v.position );
 		const Scalar nextDistSq = Vector3Ops::SquaredModulus( nextStep );
 		if( nextDistSq <= 0 ) {
-			return mis;
+			return zero;
 		}
 		const Scalar nextDist = std::sqrt( nextDistSq );
 		const Vector3 wo = nextStep * ( Scalar( 1 ) / nextDist );
 		const Scalar nextFactor = AreaToSolidAngleFactor( next, -wo );
 		if( nextFactor <= 0 ) {
-			return mis;
+			return zero;
 		}
 
-		const Scalar cosThetaOut = fabs( Vector3Ops::Dot( v.normal, wo ) );
-		const Scalar bsdfDirPdfW = next.pdfFwd * nextDistSq / nextFactor;
+		// The recurrence tracks geometric area densities. The BSDF PDF
+		// already contains its shading-frame sampling distribution.
+		const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
+		const Scalar bsdfDirPdfW = next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor;
 		return ApplyBsdfSamplingUpdate(
-			mis, cosThetaOut, bsdfDirPdfW, Scalar( 0 ), false, norm );
+			zero, cosThetaOut, bsdfDirPdfW, Scalar( 0 ), false, norm );
 	}
 
-	// Luminance approximation for ILight sources that only expose a
-	// Pel API.  For wavelength-accurate rendering the scene should
-	// use mesh luminaries with spectral emitters.  This proxy is
-	// applied in the NM path whenever we need a scalar radiance
-	// from an ILight (point / spot / directional).
-	inline Scalar RISEPelToNMProxy( const RISEPel& p )
+	/// DL-317: merging is a live strategy (mirrors EvaluateMerges' gate).
+	inline bool MergingActive( const VCMNormalization& norm )
 	{
-		return Scalar( 0.2126 ) * p.r + Scalar( 0.7152 ) * p.g + Scalar( 0.0722 ) * p.b;
+		return norm.mEnableVM && norm.mMergeRadiusSq > 0 && norm.mVmNormalization > 0;
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// DL-469: volume merging.
+	//
+	// VCM used to merge on SURFACES only, while its MIS recurrence
+	// (ApplyBsdfSamplingUpdate at a medium vertex, and the endpoint
+	// weights of NEE / splat / connections) counted a merge at every
+	// MEDIUM vertex too, with the surface factor.  Two defects followed:
+	//   - that phantom strategy took MIS mass from the strategies that
+	//     do run (multiple scattering in fog read ~5 % low whenever a
+	//     mergeable surface turned surface merging on), and
+	//   - a path whose only connectible vertex is a medium scatter
+	//     sandwiched between delta surfaces -- L  S...S  M  S...S  E with
+	//     a delta-position light, e.g. fog behind an index-matched glass
+	//     wall lit by a point light and seen through it -- had NO
+	//     strategy at all (fog box: VCM 0.80 of PT, the deficit equal to
+	//     PT's single-scatter share; BDPT loses it too).
+	// Both close by making the counted strategy real: a merge at medium
+	// vertices (eye vertex M_e, stored light vertex M_l, |M_l - M_e| < r_v,
+	// uniform 3-D ball kernel), whose MIS factor eta_v = N 4/3 pi r_v^3
+	// enters the recurrence in place of the surface factor at medium
+	// vertices (VertexMergeFactorVC / VM).  Its weight is SmallVCM's merge
+	// weight with eta_v: dVM == dVC / eta_s, so
+	//     wLight = ( dVCM_l + dVC_l * p_eye(M -> l) ) / eta_v
+	//     wCamera = ( dVCM_e + dVC_e * p_l(M -> e) ) / eta_v
+	// For the sandwiched class every other strategy is absent, the
+	// running quantities are 0 behind the delta surfaces, and the weight
+	// is 1.
+	//
+	// Both stored throughputs carry the scattering coefficient at their
+	// own vertex (BDPTIntegrator's ComputeMediumScatterWeight), and the
+	// path has it once, so the estimate divides it out at the eye vertex:
+	//     T_e * p(wi, wo) / sigma_s(M_e) * T_l / eta_v  * w
+	// Memory: medium light vertices are stored with probability q
+	// (VolumeStoreAccepted; the rasterizer picks q per render from a
+	// stored-vertex budget) and carry T_l / q, so the merge stays
+	// unbiased and its sampling density is q times the unthinned one:
+	// the MIS factor is q eta_v (mMisVolumeWeightFactor) everywhere it
+	// appears -- the recurrence, every endpoint weight and the merge
+	// weight above (read "/ eta_v" in the weights as "/ (q eta_v)").
+	// A merge only pairs vertices of the same medium object.
+	// The radius is sized by the rasterizer (VCMRasterizerBase,
+	// "volume-merge radius") and shrinks per pass.
+	//////////////////////////////////////////////////////////////////
+
+	/// DL-469: the medium-vertex thinning draw, Bernoulli(q).  A hash of
+	/// the vertex position, its index i along the light subpath and the
+	/// pass seed: the
+	/// position is itself a continuous random variable of the light
+	/// walk, so the hashed uniform is independent of the integrand.
+	inline bool VolumeStoreAccepted( const Point3& p, const unsigned int index, const VCMNormalization& norm )
+	{
+		const Scalar q = norm.mVolumeStoreProbability;
+		if( !( q < 1 ) ) {
+			return true;
+		}
+		uint64_t h = 0x9E3779B97F4A7C15ull ^ ( static_cast<uint64_t>( norm.mVolumeThinSeed ) << 32 ) ^ index;
+		const double c[3] = { p.x, p.y, p.z };
+		for( int k = 0; k < 3; k++ ) {
+			uint64_t bits = 0;
+			std::memcpy( &bits, &c[k], sizeof( bits ) );
+			h ^= bits + 0x9E3779B97F4A7C15ull + ( h << 6 ) + ( h >> 2 );
+			// splitmix64 finalizer
+			h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ull;
+			h ^= h >> 27; h *= 0x94D049BB133111EBull;
+			h ^= h >> 31;
+		}
+		const Scalar u = static_cast<Scalar>( h >> 11 ) * ( Scalar( 1 ) / Scalar( 9007199254740992.0 ) );
+		return u < q;
+	}
+
+	/// 1 / sigma_s at a medium vertex (per channel; 0 where sigma_s is 0,
+	/// where both stored throughputs are 0 too).
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type
+	InverseScatteringAt( const BDPTVertex& v, const Tag& tag );
+
+	template<>
+	inline RISEPel InverseScatteringAt<PelTag>( const BDPTVertex& v, const PelTag& )
+	{
+		RISEPel inv( 0, 0, 0 );
+		if( v.pMediumVol ) {
+			const MediumCoefficients c = v.pMediumVol->GetCoefficients( v.position );
+			for( int k = 0; k < 3; k++ ) {
+				inv[k] = c.sigma_s[k] > 0 ? Scalar( 1 ) / c.sigma_s[k] : Scalar( 0 );
+			}
+		}
+		return inv;
+	}
+
+	template<>
+	inline Scalar InverseScatteringAt<NMTag>( const BDPTVertex& v, const NMTag& tag )
+	{
+		if( !v.pMediumVol ) {
+			return 0;
+		}
+		const MediumCoefficientsNM c = v.pMediumVol->GetCoefficientsNM( v.position, tag.nm );
+		return c.sigma_s > 0 ? Scalar( 1 ) / c.sigma_s : Scalar( 0 );
+	}
+
+	/// DL-317 / DL-380: whether the LIGHT family keeps a strategy whose
+	/// light part ends at lightVerts[k] -- i.e. whether the EYE family has
+	/// no strategy for that path within the eye walk's depth caps
+	/// (`BDPTUtilities::LightJumpPartition`, shared with BDPT/MLT).
+	/// `eyeSurface` is the eye part's own eye-walk surface count.
+	inline BDPTUtilities::EyeWalkCaps VCMEyeWalkCaps( const BDPTIntegrator& bdpt )
+	{
+		return BDPTUtilities::MakeEyeWalkCaps(
+			bdpt.GetMaxEyeDepth(), bdpt.GetStabilityConfig().maxVolumeBounce );
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// DL-467: the depth-cap window on the recurrence MIS.
+	//
+	// VCM's weight for a strategy is 1 / (1 + wLight + wCamera), and the
+	// running quantities make wLight a sum over the strategies that hand
+	// the light subpath's trailing vertices to the EYE (wCamera the
+	// mirror: eye vertices handed to the LIGHT), each term paired with
+	// the merge at the deepest vertex handed over.  Grouped by LEVEL m =
+	// how many vertices change hands, the terms of level m in wLight at
+	// light vertex y_k are the connection whose eye part covers
+	// y_k..y_{k-m+1} and the merge at y_{k-m+1}; both need the EYE walk
+	// to generate those vertices on top of its own, so both exist iff
+	// that walk stays within max_eye_depth / its iteration budget (the
+	// LIGHT walk only gets shorter).  Mirrored for wCamera.  Before
+	// DL-467 every level was reserved whatever the caps -- a strategy
+	// that cannot be generated kept density in the denominator and the
+	// strategies that do exist lost it (closed Lambertian box at
+	// max_eye_depth 1 / max_light_depth 1: VCM 0.0643 against BDPT's
+	// cap-invariant 0.0839; BDPT was fixed the same way in DL-351).
+	//
+	// The walk counts are DL-380's (BDPTUtilities::CountsAsSurfaceHit:
+	// a light root joining the EYE part is the eye's hit on the emitter,
+	// or its escape for an environment root; the light walk never counts
+	// its root).  The counts grow with m, so the existing levels are a
+	// prefix 1..m*; levels past m* are removed by replaying the stamped
+	// affine (dVC, dVM) steps (VCMMisQuantities::xf / xg*) from the
+	// record j = e - m* + 1 with its dVC and dVM zeroed -- dVCM_j is the
+	// level-m* connection, dVC_j / dVM_j hold every deeper level.  When
+	// no level is cut the record is returned untouched, so a render
+	// whose caps never bind is bit-identical.  A subsurface ENTRY ends
+	// the scan: the recurrence already zeroes everything at and past it
+	// (DL-317), so no cut is needed there.
+	//////////////////////////////////////////////////////////////////
+
+	/// Both walks' caps.
+	struct VCMDepthCaps
+	{
+		BDPTUtilities::EyeWalkCaps eye;
+		long long lightSurface;		///< max_light_depth
+		long long lightIterations;	///< WalkIterationBudget( max_light_depth, max_volume_bounce )
+	};
+
+	inline VCMDepthCaps MakeVCMDepthCaps( const BDPTIntegrator& bdpt )
+	{
+		VCMDepthCaps c;
+		c.eye = BDPTUtilities::MakeEyeWalkCaps(
+			bdpt.GetMaxEyeDepth(), bdpt.GetStabilityConfig().maxVolumeBounce );
+		c.lightSurface = static_cast<long long>( bdpt.GetMaxLightDepth() );
+		c.lightIterations = static_cast<long long>( BDPTUtilities::WalkIterationBudget(
+			bdpt.GetMaxLightDepth(), bdpt.GetStabilityConfig().maxVolumeBounce ) );
+		return c;
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// DL-471: the per-type bounce caps, applied per PATH at every strategy
+	// (BDPTUtilities::JoinedTypeCapStatus / MergeTypeCapStatus; see the
+	// contract there).  A counted connection endpoint whose material
+	// has more than one possible lobe type, one of them capped
+	// (IMaterial::ConnectionScatterTypes), is priced -- since DL-481 -- by
+	// the sum over its ALLOWED lobe labels when the material splits its
+	// value by label (JoinedTypeCapPlan / MergeTypeCapPlan +
+	// AllowedTypeProduct at the splat, connection and surface-merge sites
+	// below; the recurrence's densities are the aggregate ones and stay
+	// untouched).  Only a material with NO split cannot price the path.
+	// BDPT's MISWeight drops exactly
+	// those strategies; VCM's recurrence weights are running sums that
+	// cannot drop one strategy (DL-502), so a path that HAS such a vertex
+	// at a counted position (BDPTUtilities::AnyNeedsTypeSplit -- a
+	// property of the path, so every strategy agrees) is estimated by the
+	// s = 0 (emitter hit) and s = 1 (NEE) strategies alone, weighted
+	// against each other only: every other strategy skips it, S0 keeps
+	// only the NEE term of wCamera, NEE drops wCamera.  Neither strategy
+	// ever has a counted endpoint, so the weights still partition the
+	// strategies that remain -- but a path S0 / NEE cannot reach (a
+	// point-light caustic onto such a receiver) is LOST under a cap that
+	// can bind (DL-502).  Inert unless some cap can bind
+	// (BDPTUtilities::MakeBounceTypeCaps).
+	//////////////////////////////////////////////////////////////////
+	inline BDPTUtilities::BounceTypeCaps VCMBounceTypeCaps( const BDPTIntegrator& bdpt )
+	{
+		const StabilityConfig& c = bdpt.GetStabilityConfig();
+		return BDPTUtilities::MakeBounceTypeCaps(
+			c.maxDiffuseBounce, c.maxGlossyBounce, c.maxTransmissionBounce, c.maxTranslucentBounce,
+			bdpt.GetMaxEyeDepth(), bdpt.GetMaxLightDepth() );
+	}
+
+	/// A walk's counts toward its caps.
+	struct VCMWalkCount
+	{
+		long long surface;
+		long long volume;
+		bool escape;
+		VCMWalkCount() : surface( 0 ), volume( 0 ), escape( false ) {}
+	};
+
+	/// out[j] = the eye walk's counts for eyeVerts[1..j], for every j.
+	inline void EyePrefixCounts( const std::vector<BDPTVertex>& eyeVerts, std::vector<VCMWalkCount>& out )
+	{
+		out.assign( eyeVerts.size(), VCMWalkCount() );
+		for( std::size_t q = 1; q < eyeVerts.size(); q++ ) {
+			out[q] = out[q - 1];
+			if( BDPTUtilities::CountsAsSurfaceHit( eyeVerts[q] ) ) out[q].surface++;
+			else if( eyeVerts[q].type == BDPTVertex::MEDIUM ) out[q].volume++;
+			else if( eyeVerts[q].type == BDPTVertex::LIGHT ) out[q].escape = true;
+		}
+	}
+
+	/// The light walk's counts for lightVerts[1..k] (the root never counts).
+	inline VCMWalkCount LightPrefixCount( const std::vector<BDPTVertex>& lightVerts, const std::size_t k )
+	{
+		VCMWalkCount c;
+		for( std::size_t q = 1; q <= k && q < lightVerts.size(); q++ ) {
+			if( BDPTUtilities::CountsAsSurfaceHit( lightVerts[q] ) ) c.surface++;
+			else if( lightVerts[q].type == BDPTVertex::MEDIUM ) c.volume++;
+		}
+		return c;
+	}
+
+	/// What the eye walk would count for lightVerts[0..k] (DL-380: an
+	/// environment root is an escape, any other root a surface hit), less
+	/// lightVerts[k] when `firstFree`.  Feeds LightSideWindow's fast exit.
+	inline VCMWalkCount LightHandedCount(
+		const std::vector<BDPTVertex>& lightVerts,
+		const VCMWalkCount& lightPrefix,	///< LightPrefixCount( lightVerts, k )
+		const std::size_t k,
+		const bool firstFree
+		)
+	{
+		VCMWalkCount c = lightPrefix;
+		const BDPTVertex& root = lightVerts[0];
+		if( root.type == BDPTVertex::LIGHT && root.pEnvLight ) c.escape = true;
+		else c.surface++;
+		if( firstFree && k > 0 ) {
+			if( BDPTUtilities::CountsAsSurfaceHit( lightVerts[k] ) ) c.surface--;
+			else if( lightVerts[k].type == BDPTVertex::MEDIUM ) c.volume--;
+		}
+		return c;
+	}
+
+	/// The light walk would count eyeVerts[1..e] (eyePrefix[e]) less
+	/// eyeVerts[e] when `firstFree` -- the other side's fast-exit input.
+	inline VCMWalkCount EyeHandedCount(
+		const std::vector<VCMWalkCount>& eyePrefix,
+		const std::size_t e,
+		const bool firstFree
+		)
+	{
+		return firstFree ? eyePrefix[e - 1] : eyePrefix[e];
+	}
+
+	inline bool LightWalkCanGenerate( const VCMWalkCount& c, const VCMDepthCaps& caps )
+	{
+		return c.surface <= caps.lightSurface && c.surface + c.volume <= caps.lightIterations;
+	}
+
+	/// The record at `e` with every level past `kept` removed (kept >= 1).
+	inline VCMMisQuantities ReplayWindow(
+		const std::vector<VCMMisQuantities>& mis,
+		const std::size_t e,
+		const std::size_t kept
+		)
+	{
+		const std::size_t j = e + 1 - kept;
+		VCMMisQuantities s = mis[j];
+		s.dVC = 0;
+		s.dVM = 0;
+		for( std::size_t i = j + 1; i <= e; i++ ) {
+			s.dVC = mis[i].xf * s.dVC + mis[i].xgVC;
+			s.dVM = mis[i].xf * s.dVM + mis[i].xgVM;
+		}
+		s.dVCM = mis[e].dVCM;
+		return s;
+	}
+
+	/// Result of a window query: `none` means not even level 1 exists
+	/// (the caller's whole w term is 0); otherwise `mis` is the record to
+	/// use in place of the stored one.
+	struct VCMWindowed
+	{
+		bool none;
+		VCMMisQuantities mis;
+	};
+
+	/// wLight's window at light record `k`: levels hand lightVerts[k],
+	/// [k-1], ..., [0] to an eye walk that already has `eyeBase`.
+	/// `firstFree`: level 1's vertex is already in eyeBase (a merge AT
+	/// lightVerts[k]).
+	inline VCMWindowed LightSideWindow(
+		const std::vector<BDPTVertex>& lightVerts,
+		const std::vector<VCMMisQuantities>& lightMis,
+		const std::size_t k,
+		VCMWalkCount eyeBase,
+		const bool firstFree,
+		const VCMDepthCaps& caps,
+		const VCMWalkCount& handed
+		)
+	{
+		VCMWindowed r;
+		r.none = false;
+		r.mis = lightMis[k];
+		// Fast exit: handing over EVERY vertex the levels can reach
+		// (`handed`: the eye-walk counts of lightVerts[0..k], root included,
+		// less lightVerts[k] when firstFree) stays within the eye walk's
+		// caps, so no level is cut.
+		if( BDPTUtilities::EyeWalkCanGenerate( eyeBase.surface + handed.surface,
+				eyeBase.volume + handed.volume, eyeBase.escape || handed.escape, caps.eye ) ) {
+			return r;
+		}
+		for( std::size_t m = 1; m <= k + 1; m++ ) {
+			const std::size_t idx = k + 1 - m;
+			const BDPTVertex& v = lightVerts[idx];
+			if( v.isBSSRDFEntry ) {
+				return r;
+			}
+			if( !( m == 1 && firstFree ) ) {
+				if( idx == 0 ) {
+					if( v.type == BDPTVertex::LIGHT && v.pEnvLight ) eyeBase.escape = true;
+					else eyeBase.surface++;
+				} else if( BDPTUtilities::CountsAsSurfaceHit( v ) ) {
+					eyeBase.surface++;
+				} else if( v.type == BDPTVertex::MEDIUM ) {
+					eyeBase.volume++;
+				}
+			}
+			if( !BDPTUtilities::EyeWalkCanGenerate( eyeBase.surface, eyeBase.volume, eyeBase.escape, caps.eye ) ) {
+				if( m == 1 ) {
+					r.none = true;
+				} else {
+					r.mis = ReplayWindow( lightMis, k, m - 1 );
+				}
+				return r;
+			}
+		}
+		return r;
+	}
+
+	/// wCamera's window at eye record `e`: levels hand eyeVerts[e], [e-1],
+	/// ..., [1] to a light walk that already has `lightBase`.
+	/// `firstFree`: level 1's vertex is already in lightBase (a merge at
+	/// eyeVerts[e]) or is the light root (an emitter hit, s == 0).
+	inline VCMWindowed EyeSideWindow(
+		const std::vector<BDPTVertex>& eyeVerts,
+		const std::vector<VCMMisQuantities>& eyeMis,
+		const std::size_t e,
+		VCMWalkCount lightBase,
+		const bool firstFree,
+		const VCMDepthCaps& caps,
+		const VCMWalkCount& handed
+		)
+	{
+		VCMWindowed r;
+		r.none = false;
+		r.mis = eyeMis[e];
+		// Fast exit: handing over EVERY vertex the levels can reach
+		// (`handed`: the light-walk counts of eyeVerts[1..e], less
+		// eyeVerts[e] when firstFree) stays within the light walk's caps.
+		{
+			VCMWalkCount all = lightBase;
+			all.surface += handed.surface;
+			all.volume += handed.volume;
+			if( LightWalkCanGenerate( all, caps ) ) {
+				return r;
+			}
+		}
+		for( std::size_t m = 1; m <= e; m++ ) {
+			const std::size_t idx = e + 1 - m;
+			const BDPTVertex& v = eyeVerts[idx];
+			if( v.isBSSRDFEntry ) {
+				return r;
+			}
+			if( !( m == 1 && firstFree ) ) {
+				if( BDPTUtilities::CountsAsSurfaceHit( v ) ) {
+					lightBase.surface++;
+				} else if( v.type == BDPTVertex::MEDIUM ) {
+					lightBase.volume++;
+				}
+			}
+			if( !LightWalkCanGenerate( lightBase, caps ) ) {
+				if( m == 1 ) {
+					r.none = true;
+				} else {
+					r.mis = ReplayWindow( eyeMis, e, m - 1 );
+				}
+				return r;
+			}
+		}
+		return r;
+	}
+
+	/// DL-470: wLight's window for a merge AT the stored light vertex
+	/// `lv` (level 1 is free: the merging eye walk already holds the
+	/// merge point), read from the store's step pool -- LightSideWindow
+	/// with firstFree, without the subpath array.  `eyeBase` is the
+	/// merging eye prefix's count (merge vertex included).  Returns the
+	/// (dVC, dVM) to use in place of lv.mis's; dVCM (level 1) is never
+	/// cut.  No cut -> lv.mis's values verbatim.
+	inline void MergeLightSideWindow(
+		const LightVertex& lv,
+		const VCMStep* steps,		///< LightVertexStore::StepsOf( lv )
+		VCMWalkCount eyeBase,
+		const VCMDepthCaps& caps,
+		Scalar& dVC,
+		Scalar& dVM
+		)
+	{
+		dVC = lv.mis.dVC;
+		dVM = lv.mis.dVM;
+		if( !steps ) {
+			return;
+		}
+		const std::size_t k = lv.pathLength;
+		// Fast exit: the levels hand at most the k vertices y_0..y_{k-1},
+		// each adding at most one to the eye walk's surface count and one
+		// to its iteration count (the merging prefix has not escaped).
+		if( BDPTUtilities::EyeWalkCanGenerate( eyeBase.surface + static_cast<long long>( k ),
+				eyeBase.volume, false, caps.eye ) ) {
+			return;
+		}
+		for( std::size_t m = 2; m <= k + 1; m++ ) {
+			const unsigned char kind = steps[k + 1 - m].kind;
+			if( kind & kVCMStepEntry ) {
+				return;
+			}
+			if( kind & kVCMStepSurface ) eyeBase.surface++;
+			else if( kind & kVCMStepMedium ) eyeBase.volume++;
+			else if( kind & kVCMStepEscape ) eyeBase.escape = true;
+			if( !BDPTUtilities::EyeWalkCanGenerate( eyeBase.surface, eyeBase.volume, eyeBase.escape, caps.eye ) ) {
+				ReplayStepWindow( steps, k, m - 1, dVC, dVM );
+				return;
+			}
+		}
+	}
+
+	/// DL-317: running quantities for the vertex AFTER a KEPT light-side
+	/// entry `verts[i]` (whose own state is zero).  Only the connection
+	/// with the light ending AT the entry exists (a connectible diffusion
+	/// entry); a merge there does not -- entry vertices are never stored
+	/// for merging -- so dVC and dVM stay 0.
+	inline VCMMisQuantities ApplyLightEntryOnwardUpdate(
+		const std::vector<BDPTVertex>& verts,
+		const std::size_t i,
+		const VCMNormalization& norm
+		)
+	{
+		VCMMisQuantities r = ApplyBSSRDFEntryOnwardUpdate( verts, i, norm );
+		r.dVC = 0;
+		r.dVM = 0;
+		return r;
 	}
 
 	//////////////////////////////////////////////////////////////////
@@ -191,10 +913,12 @@ namespace
 		return emitter.emittedRadianceNM( ri, outDir, normal, tag.nm );
 	}
 
-	/// ILight::emittedRadiance dispatcher.  ILight has ONLY a Pel
-	/// API; the NM path applies the RISEPelToNMProxy luminance
-	/// projection to preserve v1 behavior.  See comment at the
-	/// "SPECTRAL (NM) VARIANTS" block below for rationale.
+	/// ILight::emittedRadiance dispatcher.  Pel takes the RGB virtual;
+	/// NM takes `ILight::emittedRadianceNM`, which evaluates the light's
+	/// own illuminant spectrum at the wavelength (Stage C slice 2).  It
+	/// used to apply a Rec.709 luma scalar reused at every wavelength,
+	/// which rendered coloured point / spot / directional lights
+	/// spectrally grey.
 	template<class Tag>
 	inline typename SpectralValueTraits<Tag>::value_type
 	EvalLightRadiance( const ILight& light, const Vector3& dir, const Tag& tag );
@@ -208,9 +932,9 @@ namespace
 
 	template<>
 	inline Scalar EvalLightRadiance<NMTag>(
-		const ILight& light, const Vector3& dir, const NMTag& )
+		const ILight& light, const Vector3& dir, const NMTag& tag )
 	{
-		return RISEPelToNMProxy( light.emittedRadiance( dir ) );
+		return light.emittedRadianceNM( dir, tag.nm );
 	}
 
 	/// IRadianceMap::GetRadiance dispatcher (env-IBL).  Used when a
@@ -257,11 +981,13 @@ namespace
 	inline Scalar PositiveMagnitude( const RISEPel& v ) { return ColorMath::MaxValue( v ); }
 	inline Scalar PositiveMagnitude( const Scalar  v ) { return v; }
 
-	/// LightVertex throughput field picker with v1 NM proxy.  The
-	/// LightVertexStore holds Pel throughputs only (populated from
-	/// the hero pass); the NM merge path uses RISEPelToNMProxy
-	/// to project to scalar.  This preserves the v1 behavior
-	/// documented at the EvaluateMergesNM comment block.
+	/// LightVertex throughput field picker.  The LightVertexStore holds
+	/// Pel throughputs only -- the light pass is not wavelength-matched
+	/// to the eye pass, so there is no single `nm` it could have been
+	/// traced at.  The NM merge path projects with
+	/// `VCMIntegrator::LightThroughputRadianceNM` (illuminant uplift); see its
+	/// comment block for why that is the right projection and where it
+	/// is exact.
 	template<class Tag>
 	inline typename SpectralValueTraits<Tag>::value_type
 	LightVertexThroughput( const LightVertex& lv, const Tag& tag );
@@ -273,9 +999,14 @@ namespace
 	}
 
 	template<>
-	inline Scalar LightVertexThroughput<NMTag>( const LightVertex& lv, const NMTag& )
+	inline Scalar LightVertexThroughput<NMTag>( const LightVertex& lv, const NMTag& tag )
 	{
-		return RISEPelToNMProxy( lv.throughput );
+		// Perf: lv.throughputSpectrum is built ONCE at deposit /
+		// rescale time (VCMIntegrator::LightThroughputSpectrum); this
+		// used to call LightThroughputRadianceNM (a fresh JH LUT
+		// lookup) once per merge CANDIDATE inside EvaluateMerges'
+		// candidate loop.  Bit-identical result, just cached.
+		return lv.throughputSpectrum.Eval( tag.nm );
 	}
 
 	/// Convert a contribution to an RGB splat value for writing to
@@ -303,13 +1034,12 @@ namespace
 			return std::make_pair( false, RISEPel( 0, 0, 0 ) );
 		}
 		xyz = xyz * v;
-		// Proper XYZ → RISEPel via implicit RISEPel(XYZPel)
-		// constructor (ColorUtils::XYZtoRec709RGB post Stage B —
-		// D65→D65, matrix-only).  Replaces the channel-relabel
-		// "RISEPel(xyz.X, xyz.Y, xyz.Z)" hack which bypassed the
-		// matrix multiply, treating CIE XYZ tristimulus as if it
-		// were RGB channels.
-		return std::make_pair( true, RISEPel( xyz ) );
+		// DL-215: Use genuine matrix-only conversion (ColorUtils::XYZtoRec709RGBMatrixOnly)
+		// rather than gamut-mapping ColorUtils::XYZtoRec709RGB.  Monochromatic
+		// single-wavelength contributions lie on the spectral locus outside the
+		// Rec.709 gamut triangle; gamut-mapping each wavelength independently
+		// destroys linear superposition and biases the splat layer by ~7-10%.
+		return std::make_pair( true, ColorUtils::XYZtoRec709RGBMatrixOnly( xyz ) );
 	}
 
 	/// Tag-dispatched media-aware connection transmittance.  Borrows
@@ -331,7 +1061,7 @@ namespace
 		const Point3& p1, const Point3& p2,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const Tag& tag );
+		const Tag& tag, const MediumBoundaryHits* boundaries );
 
 	template<>
 	inline RISEPel EvalConnectionTr<PelTag>(
@@ -339,11 +1069,11 @@ namespace
 		const Point3& p1, const Point3& p2,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const PelTag& )
+		const PelTag&, const MediumBoundaryHits* boundaries )
 	{
 		return bdpt.EvalConnectionTransmittance(
 			p1, p2, scene, caster,
-			pStartMediumObject, pStartMedium );
+			pStartMediumObject, pStartMedium, boundaries );
 	}
 
 	template<>
@@ -352,11 +1082,11 @@ namespace
 		const Point3& p1, const Point3& p2,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const NMTag& tag )
+		const NMTag& tag, const MediumBoundaryHits* boundaries )
 	{
 		return bdpt.EvalConnectionTransmittanceNM(
 			p1, p2, scene, caster, tag.nm,
-			pStartMediumObject, pStartMedium );
+			pStartMediumObject, pStartMedium, boundaries );
 	}
 
 	template<class Tag>
@@ -366,7 +1096,7 @@ namespace
 		const Ray& connectionRay, const Scalar maxDist,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const Tag& tag );
+		const Tag& tag, const MediumBoundaryHits* boundaries );
 
 	template<>
 	inline RISEPel EvalConnectionTrRay<PelTag>(
@@ -374,11 +1104,11 @@ namespace
 		const Ray& connectionRay, const Scalar maxDist,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const PelTag& )
+		const PelTag&, const MediumBoundaryHits* boundaries )
 	{
 		return bdpt.EvalConnectionTransmittance(
 			connectionRay, maxDist, scene, caster,
-			pStartMediumObject, pStartMedium );
+			pStartMediumObject, pStartMedium, boundaries );
 	}
 
 	template<>
@@ -387,11 +1117,11 @@ namespace
 		const Ray& connectionRay, const Scalar maxDist,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const NMTag& tag )
+		const NMTag& tag, const MediumBoundaryHits* boundaries )
 	{
 		return bdpt.EvalConnectionTransmittanceNM(
 			connectionRay, maxDist, scene, caster, tag.nm,
-			pStartMediumObject, pStartMedium );
+			pStartMediumObject, pStartMedium, boundaries );
 	}
 }
 
@@ -450,7 +1180,7 @@ static inline Scalar AreaToSolidAngleFactor(
 	if( v.type == BDPTVertex::MEDIUM ) {
 		return v.sigma_t_scalar;
 	}
-	if( v.type == BDPTVertex::CAMERA ) {
+	if( v.type == BDPTVertex::CAMERA || v.pEnvLight ) {
 		return Scalar( 1 );
 	}
 	// SURFACE, LIGHT, or anything else with a normal.
@@ -488,13 +1218,7 @@ static inline Scalar AreaToSolidAngleFactor(
 // One special case: the first bounce from a light.  SmallVCM's
 // geometric update gates on "pathLength > 1 || isFiniteLight", i.e.
 // the distance^2 factor is SKIPPED when the light is infinite
-// (environment / directional).  RISE doesn't currently distinguish
-// finite vs infinite at the BDPTVertex level, so we approximate:
-// LIGHT vertices with finite pdfPosition are finite; delta-direction
-// lights (sun / spot) are technically both finite and infinite at
-// once.  We treat any BDPTVertex marked type==LIGHT as finite; the
-// infinite case is covered when VCM adds environment-map support in
-// a later step.
+// (environment). IsInfiniteLight() records that endpoint measure.
 //
 // Vertex types handled:
 //
@@ -509,28 +1233,53 @@ static inline Scalar AreaToSolidAngleFactor(
 //                        plan's "medium support deferred" note.
 //   v[i] = CAMERA     -> never appears on a light subpath
 //
-// BSSRDF re-entry vertices carry their spatial sampling density in
-// area measure directly.  They skip the ordinary edge-Jacobian
-// inversion, are excluded from the merge store, and still populate the
-// parallel MIS array with dVCM = 1/pdfFwd so VC connections through SSS
-// compete with the sampled BSSRDF transport.
+// BSSRDF re-entry vertices (DL-317): a path through a subsurface jump
+// is owned by the EYE-sampled jump whenever the eye walk can generate a
+// strategy for it, and that depends on the eye walk's depth caps and the
+// eye part of the path (DL-380).  So every vertex past a light-side
+// entry is converted and stored, carrying the jump's cover
+// (kLVF_JumpCover), and the splat / connection / merge sites decide per
+// strategy through BDPTUtilities::LightJumpPartition.
 //////////////////////////////////////////////////////////////////////
+bool VCMIntegrator::SeeThroughLive( const IRayCaster& caster )
+{
+	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
+	return pRC && pRC->DeltaPassThroughShadowsActive();
+}
+
 void VCMIntegrator::ConvertLightSubpath(
 	const std::vector<BDPTVertex>& verts,
 	const VCMNormalization& norm,
 	std::vector<LightVertex>& out,
-	std::vector<VCMMisQuantities>* outMis
+	std::vector<VCMMisQuantities>* outMisArg,
+	const bool seeThroughLive,
+	std::vector<VCMStep>* outSteps,
+	const BDPTIntegrator* pTypeCapSource
 	)
 {
+	// DL-471: the merge data for per-type caps, stamped only when a cap can
+	// bind (it is O(k) per stored vertex).
+	const BDPTUtilities::BounceTypeCaps typeCaps = pTypeCapSource ?
+		VCMBounceTypeCaps( *pTypeCapSource ) : BDPTUtilities::BounceTypeCaps();
 	const std::size_t n = verts.size();
 	if( n == 0 ) {
 		return;
 	}
+	// DL-470: the step records are read from the per-record array, so
+	// keep one even when the caller did not ask for it.
+	static thread_local std::vector<VCMMisQuantities> stepScratchMis;
+	std::vector<VCMMisQuantities>* outMis = outMisArg ? outMisArg : ( outSteps ? &stepScratchMis : 0 );
+	const std::size_t outStart = out.size();
 	if( outMis ) {
 		outMis->assign( n, VCMMisQuantities() );
 	}
 
 	VCMMisQuantities mis;
+	VCMTransfer xfer;	// DL-467: (dVC, dVM) step since the previous record
+	// DL-380: the light-side jump covers, stamped on every stored vertex
+	// so a merge can decide the partition against its own eye part.
+	static thread_local BDPTUtilities::LightJumpPartition partition;
+	partition.Build( verts, MergingActive( norm ), seeThroughLive );
 
 	for( std::size_t i = 0; i < n; i++ )
 	{
@@ -547,24 +1296,18 @@ void VCMIntegrator::ConvertLightSubpath(
 				return;
 			}
 
-			// directPdfA = v[0].pdfFwd (BDPT stores
-			// pdfSelect * pdfPosition here).  emissionPdfW
-			// is the combined area*solid-angle product.
-			// pdfSelect is stored separately on the vertex
-			// (post 2026-05-29 continuous-PMF follow-up) so
-			// InitLight can extract the geometric emissionPdfW
-			// for the SmallVCM-correct dVC formula — see
-			// VCMRecurrence::InitLight comments + BDPTVertex.h
-			// `pdfSelect` doc.
-			const bool isFinite = true;	// conservative: see comment block above
+			// Root marginal and joint emission use the same selected
+			// light measure. Infinite roots use angular direct density;
+			// their conditional first target is a parallel projection.
+			const bool isFinite = !v.pEnvLight;
 			mis = InitLight(
 				v.pdfFwd,
 				v.emissionPdfW,
 				v.cosAtGen,
 				isFinite,
 				v.isDelta,
-				norm,
-				v.pdfSelect );
+				norm );
+			xfer.StampAndRestart( mis );
 			if( outMis ) (*outMis)[0] = mis;
 			continue;
 		}
@@ -574,16 +1317,21 @@ void VCMIntegrator::ConvertLightSubpath(
 		// isn't the tail vertex, a BSDF-sampling update.
 		//
 
-		// BSSRDF re-entry vertices carry their spatial sampling PDF
-		// directly in area measure.  They do not go through the ordinary
-		// edge Jacobian path below, but VC MIS still needs the reciprocal
-		// area PDF at the entry so connections through SSS compete with
-		// the sampled BSSRDF transport instead of receiving weight ~1.
+		// BSSRDF re-entry vertex (DL-317, see the barrier comment near
+		// the top of this file): zero state at the entry (never stored
+		// for merging), then the light-entry onward update.  DL-380:
+		// whether the light family keeps a path through this jump
+		// depends on the eye walk's depth caps AND on the eye part of the
+		// path, so it is decided per strategy (splat / connection /
+		// merge) through `partition`; everything past the entry is
+		// converted and stored with the jump's cover stamped on it.
 		if( v.isBSSRDFEntry ) {
-			mis = ApplyBSSRDFEntryAreaUpdate( v );
+			mis = BSSRDFEntryVertexState();
+			xfer.Reset( mis );
+			xfer.StampAndRestart( mis );
 			if( outMis ) (*outMis)[i] = mis;
-			mis = ApplyBSSRDFEntryOnwardUpdate(
-				mis, verts, i, norm );
+			mis = ApplyLightEntryOnwardUpdate( verts, i, norm );
+			xfer.Reset( mis );
 			continue;
 		}
 
@@ -593,8 +1341,8 @@ void VCMIntegrator::ConvertLightSubpath(
 		// MEDIUM vertices ARE propagated through both the geometric
 		// update (using sigma_t_scalar in place of |cos|) and the
 		// phase-function sampling update (using AreaToSolidAngleFactor
-		// on adjacent vertices for pdf inversion).  They are NOT
-		// stored in the light vertex store (surface-only merging).
+		// on adjacent vertices for pdf inversion).  Since DL-469 they
+		// are stored (flagged kLVF_IsMedium) for the volume merge.
 		//
 		// IMPORTANT: we DO NOT skip on `pdfFwd <= 0`.  BDPT sets
 		// `pdfFwd = 0` as the Veach "delta transparency" marker on
@@ -611,6 +1359,7 @@ void VCMIntegrator::ConvertLightSubpath(
 		// Both must be positive for the geometric update.
 		const Scalar cosFix = isMedium ? v.sigma_t_scalar : v.cosAtGen;
 		if( skipRecurrence || cosFix <= 0 ) {
+			xfer.StampAndRestart( mis );
 			if( outMis ) (*outMis)[i] = mis;
 			continue;
 		}
@@ -628,26 +1377,98 @@ void VCMIntegrator::ConvertLightSubpath(
 		const Vector3 step = Vector3Ops::mkVector3( v.position, prev.position );
 		const Scalar distSq = Vector3Ops::SquaredModulus( step );
 		if( distSq <= 0 ) {
+			xfer.StampAndRestart( mis );
 			if( outMis ) (*outMis)[i] = mis;
 			continue;
 		}
 
-		// Geometric update.  For the first bounce from the light
-		// (i==1) the distance-squared gate should be skipped for
-		// infinite lights.  All RISE lights currently routed
-		// through GenerateLightSubpath vertex 0 are treated as
-		// finite; keep the gate on for every bounce.
-		const bool applyDistSqToDVCM = true;
+		// A parallel environment emission has no first-edge r² factor.
+		const bool applyDistSqToDVCM = !(i == 1 && prev.pEnvLight);
 		mis = ApplyGeometricUpdate( mis, distSq, cosFix, applyDistSqToDVCM );
+		xfer.ComposeGeometric( cosFix );
 
+		// DL-424: the first vertex D past a straight chain of thin-weave
+		// gap draws S1..Sk from a delta-position light L is also reached
+		// by the see-through NEE from the eye (EvaluateNEEImpl).  The
+		// specular update at each gap zeroed dVCM -- the NEE term -- so
+		// it is rebuilt here as if the light had emitted straight to D
+		// with its direction density scaled by the gaps' pseudo-
+		// probabilities (BDPTVertex::passThroughProb; the NEE side scales
+		// its own emission density by the shadow walk's identical
+		// product):  dVCM = (directPdfA / (emissionPdfW * prod P)) *
+		// |L - D|^2 / cos_D,  InitLight followed by the geometric update
+		// over the whole segment.  dVC and dVM stay 0 (delta root).  The
+		// recurrence carries the term to every later vertex, so splats,
+		// interior connections and merges all count the see-through.
+		if( seeThroughLive && i >= 2 && verts[0].type == BDPTVertex::LIGHT && verts[0].isDelta &&
+			verts[0].pLight && !verts[0].pEnvLight && verts[0].emissionPdfW > 0 &&
+			BDPTUtilities::DeltaPassThroughChainToRoot( verts, i ) )
+		{
+			Scalar prob = 1;
+			for( std::size_t q = 1; q < i; q++ ) {
+				prob *= verts[q].passThroughProb;
+			}
+			const Scalar distLDSq = Vector3Ops::SquaredModulus(
+				Vector3Ops::mkVector3( v.position, verts[0].position ) );
+			if( prob > 0 && distLDSq > 0 ) {
+				mis.dVCM = ( verts[0].pdfFwd / ( verts[0].emissionPdfW * prob ) ) * distLDSq / cosFix;
+			}
+		}
+
+		xfer.StampAndRestart( mis );
 		if( outMis ) (*outMis)[i] = mis;
 
-		// Medium vertices: geometric update applied above.
-		// Skip store append (surface-only merging) but DO apply
-		// the phase-function sampling update so dVCM/dVC/dVM are
-		// correct at the next vertex.  Phase functions are never
-		// delta, so we always use the non-specular branch.
+		// Medium vertices: geometric update applied above.  Store for
+		// the volume merge (DL-469) and apply the phase-function
+		// sampling update so dVCM/dVC/dVM are correct at the next
+		// vertex.  Phase functions are never delta, so we always use
+		// the non-specular branch.
 		if( isMedium ) {
+			// DL-469: stored for the volume merge (no other merge reads it),
+			// with probability q (memory bound; throughput / q below, and
+			// the MIS factor carries q -- VCMNormalization).
+			if( norm.mVolumeNormalization > 0 && v.isConnectible &&
+				VolumeStoreAccepted( v.position, static_cast<unsigned int>( i ), norm ) )
+			{
+				LightVertex lv;
+				lv.ptPosition = v.position;
+				lv.plane      = 0;
+				lv.flags      = kLVF_IsConnectible | kLVF_IsMedium;
+				lv.pathLength = static_cast<unsigned short>( i );
+				if( typeCaps.active ) {	// DL-471
+					BDPTUtilities::LightPrefixTypeCounts( verts.data(), static_cast<unsigned int>( i ), lv.capCounts );
+					if( BDPTUtilities::LightPrefixNeedsTypeSplit( verts.data(), static_cast<unsigned int>( i ), typeCaps ) ) {
+						lv.flags |= kLVF_TypeSplitPrefix;
+					}
+				}
+				lv.volumeBounces = v.volumeBounces;
+				{
+					const unsigned int ls = partition.SurfaceCount( i );
+					lv.lightSurface = static_cast<unsigned short>( ls > 65535u ? 65535u : ls );
+				}
+				{
+					// DL-380: as at a surface vertex (below).
+					const BDPTUtilities::LightJumpCover& c = partition.Cover( i );
+					if( c.exists ) {
+						lv.flags |= kLVF_JumpCover;
+						if( c.escape ) lv.flags |= kLVF_JumpCoverEscape;
+						const long long need = static_cast<long long>( partition.SurfaceCount( i ) ) - 1 - c.surfaceBefore;
+						lv.jumpCoverSurface = static_cast<unsigned short>( need < 0 ? 0 : ( need > 65535 ? 65535 : need ) );
+						const unsigned int vol = v.volumeBounces >= c.volumeBefore ? v.volumeBounces - c.volumeBefore : 0u;
+						lv.jumpCoverVolume = static_cast<unsigned short>( vol > 65535u ? 65535u : vol );
+					}
+				}
+				lv.normal     = v.normal;
+				lv.geomNormal = v.geomNormal;
+				lv.wi = step * ( Scalar( 1 ) / std::sqrt( distSq ) );
+				lv.pMaterial  = 0;
+				lv.pObject    = v.pMediumObject;
+				lv.throughput = v.throughput * ( Scalar( 1 ) / norm.mVolumeStoreProbability );
+				lv.throughputSpectrum = LightThroughputSpectrum( lv.throughput );
+				lv.vColor     = RISEPel( 0, 0, 0 );
+				lv.mis        = mis;
+				out.push_back( lv );
+			}
 			if( i + 1 < n )
 			{
 				const BDPTVertex& next = verts[i + 1];
@@ -661,17 +1482,20 @@ void VCMIntegrator::ConvertLightSubpath(
 
 					const Scalar nextFactor = AreaToSolidAngleFactor( next, -wo );
 					const Scalar bsdfDirPdfW = ( nextFactor > 0 )
-						? next.pdfFwd * nextDistSq / nextFactor : Scalar( 0 );
+						? next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor : Scalar( 0 );
 
 					const Scalar invDist = ( distSq > 0 ) ? ( Scalar( 1 ) / std::sqrt( distSq ) ) : Scalar( 0 );
 					const Vector3 dirPrevToCur = step * invDist;
 					const Scalar prevFactor = AreaToSolidAngleFactor( prev, dirPrevToCur );
 					const Scalar bsdfRevPdfW = ( prev.pdfRev > 0 && prevFactor > 0 )
-						? prev.pdfRev * distSq / prevFactor : Scalar( 0 );
+						? prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor : Scalar( 0 );
 
+					// DL-469: the merge at a medium vertex is the volume merge.
+					const VCMNormalization localNorm = VCMIntegrator::BoundaryVolumeNormalization(norm, v);
+					xfer.ComposeBsdf( mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW, false, localNorm, true );
 					mis = ApplyBsdfSamplingUpdate(
 						mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW,
-						false, norm );
+						false, localNorm, true );
 				}
 			}
 			continue;
@@ -707,6 +1531,31 @@ void VCMIntegrator::ConvertLightSubpath(
 			if( v.isBSSRDFEntry    ) lv.flags |= kLVF_IsBSSRDFEntry;
 			if( v.bHasVertexColor  ) lv.flags |= kLVF_HasVertexColor;
 			lv.pathLength = static_cast<unsigned short>( i );
+			if( typeCaps.active ) {	// DL-471
+				BDPTUtilities::LightPrefixTypeCounts( verts.data(), static_cast<unsigned int>( i ), lv.capCounts );
+				if( BDPTUtilities::LightPrefixNeedsTypeSplit( verts.data(), static_cast<unsigned int>( i ), typeCaps ) ) {
+					lv.flags |= kLVF_TypeSplitPrefix;
+				}
+			}
+			lv.volumeBounces = v.volumeBounces;
+			{
+				const unsigned int ls = partition.SurfaceCount( i );
+				lv.lightSurface = static_cast<unsigned short>( ls > 65535u ? 65535u : ls );
+			}
+			{
+				// DL-380: a merge AT verts[i] has D = S_eye + L(i) - 1
+				// (the shared vertex counts once); store what the eye
+				// walk would need beyond its own S_eye.
+				const BDPTUtilities::LightJumpCover& c = partition.Cover( i );
+				if( c.exists ) {
+					lv.flags |= kLVF_JumpCover;
+					if( c.escape ) lv.flags |= kLVF_JumpCoverEscape;
+					const long long need = static_cast<long long>( partition.SurfaceCount( i ) ) - 1 - c.surfaceBefore;
+					lv.jumpCoverSurface = static_cast<unsigned short>( need < 0 ? 0 : ( need > 65535 ? 65535 : need ) );
+					const unsigned int vol = v.volumeBounces >= c.volumeBefore ? v.volumeBounces - c.volumeBefore : 0u;
+					lv.jumpCoverVolume = static_cast<unsigned short>( vol > 65535u ? 65535u : vol );
+				}
+			}
 			lv.normal     = v.normal;
 			lv.geomNormal = v.geomNormal;
 			// Direction FROM the previous vertex TO this one.
@@ -722,6 +1571,16 @@ void VCMIntegrator::ConvertLightSubpath(
 			lv.pMaterial  = v.pMaterial;
 			lv.pObject    = v.pObject;
 			lv.throughput = v.throughput;
+            // The camera endpoint already realizes surface coverage. The
+            // photon store estimates incident flux CONDITIONED on that endpoint,
+            // so undo only this photon's deposit-acceptance probability. The
+            // continuing light subpath and shared MIS partition remain unchanged.
+            lv.throughput = lv.throughput * (1 / v.acceptedAlphaCoverage);
+			// Cache the NM-merge spectrum at deposit time -- see
+			// LightVertex::throughputSpectrum's comment
+			// (VCMLightVertex.h) and LightThroughputSpectrum's comment
+			// above.
+			lv.throughputSpectrum = LightThroughputSpectrum( lv.throughput );
 			lv.vColor     = v.vColor;
 			lv.mis        = mis;
 			out.push_back( lv );
@@ -741,19 +1600,46 @@ void VCMIntegrator::ConvertLightSubpath(
 			}
 			const Scalar nextDist = std::sqrt( nextDistSq );
 			const Vector3 wo = nextStep * ( Scalar( 1 ) / nextDist );
-			const Scalar cosThetaOut = fabs( Vector3Ops::Dot( v.normal, wo ) );
+			// The recurrence tracks geometric area densities. The BSDF PDF
+		// already contains its shading-frame sampling distribution.
+		const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
 
-			if( v.isDelta ) {
-				// Specular scatter at this vertex.  The SmallVCM
-				// specular branch of ApplyBsdfSamplingUpdate needs
-				// ONLY cosThetaOut — it ignores bsdfDirPdfW /
-				// bsdfRevPdfW because those are Dirac distributions
-				// that don't contribute finite solid-angle pdfs.
-				// Crucially, we MUST still apply this update so that
-				// dVCM is zeroed (the SmallVCM specular transparency
-				// convention), otherwise the downstream merge/
-				// connection weights at post-specular vertices are
-				// wildly overestimated.
+			// DL-126.  `v.isDelta` used to be the sole gate here, but a
+			// vertex can also have NO finite solid-angle density for an
+			// entirely different reason: its material has no BSDF at all
+			// (`!v.isConnectible` -- `biospec_skin_material` /
+			// `generic_human_tissue_material`, whose SPFs report an
+			// already-integrated `kray` and never populate `.pdf`, so
+			// `next.pdfFwd` downstream is the Veach "delta transparency"
+			// marker 0 regardless of how this branch is taken -- see
+			// `BDPTIntegrator.cpp`'s `nullBSDFContinuation`).  Before this
+			// fix such a vertex fell into the NON-specular branch below,
+			// which reads `next.pdfFwd` and silently `continue`s (no
+			// update at all) once it finds that zero -- leaving `mis`
+			// frozen at its PRE-vertex state instead of reflecting the
+			// propagation through this vertex, which starves the
+			// downstream S0/S1 formulas of the `cosThetaOut` factor and
+			// under-weights the only strategy such a vertex can support
+			// (measured: VCM read 1.6% of PT's mean on a
+			// `biospec_skin_material` receiver + mesh emitter scene,
+			// `tests/VCMStrategyBalanceTest.cpp`'s DL-126 topology).
+			// Treat it exactly like a delta lobe: no finite SA density to
+			// reserve MIS mass with, but the running dVC/dVM chain must
+			// still propagate through the `cosThetaOut` factor so a LATER
+			// connectible vertex's weight is computed correctly.
+			if( v.isDelta || !v.isConnectible ) {
+				// Specular scatter (or a null-BSDF opaque continuation) at
+				// this vertex.  The SmallVCM specular branch of
+				// ApplyBsdfSamplingUpdate needs ONLY cosThetaOut — it
+				// ignores bsdfDirPdfW / bsdfRevPdfW because those are
+				// either Dirac distributions or, here, densities this
+				// material simply does not track, neither of which
+				// contribute a finite solid-angle pdf.  Crucially, we
+				// MUST still apply this update so that dVCM is zeroed
+				// (the SmallVCM specular transparency convention),
+				// otherwise the downstream merge/connection weights at
+				// post-specular vertices are wildly overestimated.
+				xfer.ComposeBsdf( mis, cosThetaOut, Scalar( 0 ), Scalar( 0 ), true, norm );
 				mis = ApplyBsdfSamplingUpdate(
 					mis,
 					cosThetaOut,
@@ -779,7 +1665,7 @@ void VCMIntegrator::ConvertLightSubpath(
 			if( nextFactor <= 0 ) {
 				continue;
 			}
-			const Scalar bsdfDirPdfW_out = next.pdfFwd * nextDistSq / nextFactor;
+			const Scalar bsdfDirPdfW_out = next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor;
 
 			// Reverse bsdf pdf at THIS vertex for the direction
 			// back toward 'prev'.  prev.pdfRev is in area measure
@@ -791,9 +1677,10 @@ void VCMIntegrator::ConvertLightSubpath(
 
 			Scalar bsdfRevPdfW_out = 0;
 			if( prev.pdfRev > 0 && prevFactor > 0 ) {
-				bsdfRevPdfW_out = prev.pdfRev * distSq / prevFactor;
+				bsdfRevPdfW_out = prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor;
 			}
 
+			xfer.ComposeBsdf( mis, cosThetaOut, bsdfDirPdfW_out, bsdfRevPdfW_out, false, norm );
 			mis = ApplyBsdfSamplingUpdate(
 				mis,
 				cosThetaOut,
@@ -801,6 +1688,47 @@ void VCMIntegrator::ConvertLightSubpath(
 				bsdfRevPdfW_out,
 				false,
 				norm );
+		}
+	}
+
+	// DL-470: keep the subpath's records 0..kmax (kmax = the deepest
+	// vertex stored from it) for the merge's light-side window
+	// (EvaluateMergesImpl, MergeLightSideWindow).
+	if( outSteps && outMis && outMis->size() == n && out.size() > outStart ) {
+		std::size_t kmax = 0;
+		for( std::size_t q = outStart; q < out.size(); q++ ) {
+			kmax = std::max<std::size_t>( kmax, out[q].pathLength );
+		}
+		const std::size_t base = outSteps->size();
+		bool representable = kmax < n && base < static_cast<std::size_t>( kLightVertexNoSteps );
+		for( std::size_t q = 0; representable && q <= kmax; q++ ) {
+			const VCMMisQuantities& r = (*outMis)[q];
+			representable = VCMStepRepresentable( r.xf ) && VCMStepRepresentable( r.xgVC ) &&
+				VCMStepRepresentable( r.xgVM );
+		}
+		if( representable ) {
+			for( std::size_t q = 0; q <= kmax; q++ ) {
+				VCMStep st;
+				st.xf = static_cast<float>( (*outMis)[q].xf );
+				st.xgVC = static_cast<float>( (*outMis)[q].xgVC );
+				st.xgVM = static_cast<float>( (*outMis)[q].xgVM );
+				const BDPTVertex& vq = verts[q];
+				if( q == 0 ) {
+					st.kind = ( vq.type == BDPTVertex::LIGHT && vq.pEnvLight )
+						? static_cast<unsigned char>( kVCMStepEscape ) : static_cast<unsigned char>( kVCMStepSurface );
+				} else if( BDPTUtilities::CountsAsSurfaceHit( vq ) ) {
+					st.kind = kVCMStepSurface;
+				} else if( vq.type == BDPTVertex::MEDIUM ) {
+					st.kind = kVCMStepMedium;
+				}
+				if( q > 0 && vq.isBSSRDFEntry ) {
+					st.kind |= kVCMStepEntry;
+				}
+				outSteps->push_back( st );
+			}
+			for( std::size_t q = outStart; q < out.size(); q++ ) {
+				out[q].stepBase = static_cast<unsigned int>( base );
+			}
 		}
 	}
 }
@@ -841,6 +1769,7 @@ namespace
 {
 	template<class Tag>
 	typename SpectralValueTraits<Tag>::value_type EvaluateS0Impl(
+		const BDPTIntegrator& bdpt,
 		const IScene& scene,
 		const IRayCaster& caster,
 		const std::vector<BDPTVertex>& eyeVerts,
@@ -867,9 +1796,32 @@ namespace
 			? const_cast<LuminaryManager*>( pLumManager )->getLuminaries()
 			: emptyList;
 
+		const unsigned int maxVolumeBounce = bdpt.GetStabilityConfig().maxVolumeBounce;
+		const VCMDepthCaps depthCaps = MakeVCMDepthCaps( bdpt );	// DL-467
+		static thread_local std::vector<VCMWalkCount> s0EyeCount;
+		EyePrefixCounts( eyeVerts, s0EyeCount );
+		const BDPTUtilities::BounceTypeCaps typeCaps = VCMBounceTypeCaps( bdpt );	// DL-471
+
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
 			const BDPTVertex& v = eyeVerts[i];
+			if( v.volumeBounces > maxVolumeBounce ) {
+				continue;
+			}
+			// DL-471: the eye prefix must be within the per-path per-type
+			// caps (the vertex before the emitter is the free x_K), and a
+			// path with an undeclared-type vertex at a counted position
+			// keeps only the NEE term of wCamera (see "DL-471" above).
+			if( typeCaps.active && BDPTUtilities::JoinedTypeCapStatus(
+					nullptr, eyeVerts.data(), 0, static_cast<unsigned int>( i + 1 ), typeCaps ) !=
+					BDPTUtilities::eTypeCapOK ) {
+				continue;
+			}
+			// (A separate branch below, not a 0/1 factor: under -ffast-math a
+			// factor changes the FMA contraction of the unrestricted
+			// expression, and a cap-free render must stay bit-identical.)
+			const bool s0OnlyNEE = i >= 3 && BDPTUtilities::AnyNeedsTypeSplit(
+				eyeVerts.data(), 1, static_cast<unsigned int>( i - 2 ), typeCaps );
 
 			// Env-light escape vertex (Path B, VCM side).  Shares
 			// BDPT's GenerateEyeSubpath so the synthetic env vertex
@@ -901,32 +1853,11 @@ namespace
 					continue;
 				}
 
-				// SmallVCM-style MIS weight for env-escape.  Mirrors
-				// the explicit-emitter weight formula at the bottom
-				// of this loop (lines ~847-853):
-				//   directPdfA  = envSelProb / discArea     [area on disc]
-				//   emissionPdfW = directPdfA * pdf_env_sa  [joint joint]
-				//   wCamera     = directPdfA * dVCM
-				//               + emissionPdfW * dVC
-				//   weight      = 1 / (VCMMis(1) + VCMMis(wCamera))
-				// When envSelProb = 0 (env not in alias table) both
-				// directPdfA and emissionPdfW are 0 → wCamera = 0 →
-				// weight = 1.  When envSelProb > 0 (env-only scene)
-				// the formula reduces to the same balance against
-				// NEE that EvaluateNEE applies on the other side, so
-				// the two strategies sum to ~1 unbiased.
-				// SmallVCM-style MIS weight for env-escape — mirrors
-				// the explicit-emitter formula at the bottom of this
-				// loop.  Keeping the SmallVCM weight family is
-				// necessary for composition with the rest of VCM's
-				// MIS strategies; a PT-style power-2 override was
-				// tested broken on spectral BDPT.
-				//   directPdfA  = envSelProb / discArea     [area on disc]
-				//   emissionPdfW = directPdfA * pdf_env_sa  [joint]
-				//   wCamera     = directPdfA * dVCM + emissionPdfW * dVC
-				//   weight      = 1 / (VCMMis(1) + VCMMis(wCamera))
+				// Root angular density and joint angular/disc emission density
+				// are the same selected-light densities used by NEE and LT.
+				// Direct camera visibility has no competing root connection.
 				Scalar weightEnv = Scalar( 1 );
-				{
+				if( i > 1 ) {
 					const Scalar envSelProb = pLS->EnvSelectProbability();
 					const Scalar sceneRadius = pLS->GetCachedSceneRadius();
 					const Scalar discArea = ( sceneRadius > 0 ) ?
@@ -934,19 +1865,18 @@ namespace
 					const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
 					const Scalar pdfEnvSA = ( pES ) ? pES->Pdf( wiSkyEnv ) : Scalar( 0 );
 					const Scalar directPdfA = ( discArea > 0 ) ?
-						( envSelProb / discArea ) : Scalar( 0 );
-					const Scalar emissionPdfW = directPdfA * pdfEnvSA;
-					// Geometric-emissionPdfW divide (matches mesh-emitter
-					// branch ~30 lines below and VCMRecurrence::InitLight's
-					// dVC fix).  pdfSelect for env is `envSelProb`.
-					// Δ5 bisect confirmed this divide is no-op in test
-					// scenes (envSelProb ≈ 1.0 for env-dominant); kept
-					// for consistency with mesh branch.
-					const Scalar wCameraEnvJoint =
-						directPdfA * eyeMis[i].dVCM +
-						emissionPdfW * eyeMis[i].dVC;
+						( envSelProb * pdfEnvSA ) : Scalar( 0 );
+					const Scalar emissionPdfW = discArea > 0 ? envSelProb * pdfEnvSA / discArea : Scalar(0);
+					// DL-467: the emitter hit is the light root (free);
+					// deeper levels hand eye vertices to the light walk.
+					const VCMWindowed envWin = EyeSideWindow( eyeVerts, eyeMis, i, VCMWalkCount(), true, depthCaps,
+						EyeHandedCount( s0EyeCount, i, true ) );
+					const Scalar wCameraEnvJoint = s0OnlyNEE ?
+						directPdfA * envWin.mis.dVCM :
+						directPdfA * envWin.mis.dVCM +
+						emissionPdfW * envWin.mis.dVC;
 					const Scalar wCameraEnv = ( envSelProb > 0 ) ?
-						( wCameraEnvJoint / envSelProb ) : Scalar( 0 );
+						wCameraEnvJoint : Scalar( 0 );
 					weightEnv = Scalar( 1 ) /
 						( VCMMis( Scalar( 1 ) ) + VCMMis( wCameraEnv ) );
 				}
@@ -1025,10 +1955,14 @@ namespace
 			// Emission pdf area-Jacobian uses GEOMETRIC normal — the
 			// Lambertian emitter's directional pdf is `cosThetaG / PI`
 			// where cosThetaG is measured against the actual face.
-			const Scalar cosAtEmitter = Vector3Ops::Dot( v.geomNormal, woFromEmitter );
-			const Scalar emissionDirPdfSA = ( cosAtEmitter > 0 )
-				? ( cosAtEmitter * INV_PI )
-				: Scalar( 0 );
+			//
+			// DL-320: `LightSampler::SampleLight` emits a double-sided
+			// emitter's light subpaths from either face with probability 1/2,
+			// so its directional density is |cos|/(2 pi); `v.geomNormal` is
+			// the ray-facing normal here, and the one-sided expression would
+			// claim twice that for the back face.
+			const Scalar emissionDirPdfSA = EmitterSides::CosineEmissionPdf(
+				LightSampler::LuminaryIsTwoSided( v.pObject ), v.geomNormal, woFromEmitter );
 			const Scalar emissionPdfW = directPdfA * emissionDirPdfSA;
 
 			// SmallVCM: path length 1 (eye ray directly hits emitter) has
@@ -1049,25 +1983,17 @@ namespace
 			if( i == 1 ) {
 				weight = Scalar( 1 );
 			} else {
-				// SmallVCM partition-of-unity requires wCamera be
-				// expressed against the GEOMETRIC emission pdfs
-				// (no pdfSelect multiplier).  RISE's local
-				// `directPdfA = pdfSelect × pdfPosition` and
-				// `emissionPdfW = pdfSelect × pdfPosition ×
-				// emissionDirPdfSA` are JOINT — divide the
-				// composed wCamera by `pdfSelect` to extract the
-				// geometric value.  Mirrors the dVC fix at
-				// `VCMRecurrence::InitLight`; under continuous-PMF
-				// `pdfSelect` varies per sample (env-rooted vs
-				// alias-rooted) and the missing divide caused VCM
-				// env+mesh to over-count by ~27 % vs PT (2026-05-29
-				// follow-up to Session 9 continuous-PMF fix).
-				// Empirically verified by Δ4 bisect (reverting this
-				// divide moved env+mesh VCM from 0.780 → 0.807).
-				const Scalar wCameraJoint =
-					directPdfA * eyeMis[i].dVCM + emissionPdfW * eyeMis[i].dVC;
+				// NEE and LT sample the selected light; the eye-hit strategy
+				// does not. Dividing these joint densities by selection
+				// would reserve mass for the wrong alternative path density.
+				// DL-467: see the environment branch above.
+				const VCMWindowed s0Win = EyeSideWindow( eyeVerts, eyeMis, i, VCMWalkCount(), true, depthCaps,
+					EyeHandedCount( s0EyeCount, i, true ) );
+				const Scalar wCameraJoint = s0OnlyNEE ?
+					directPdfA * s0Win.mis.dVCM :
+					directPdfA * s0Win.mis.dVCM + emissionPdfW * s0Win.mis.dVC;
 				const Scalar wCamera = ( pdfSelect > 0 ) ?
-					( wCameraJoint / pdfSelect ) : Scalar( 0 );
+					wCameraJoint : Scalar( 0 );
 				weight = Scalar( 1 ) / ( VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
 			}
 
@@ -1086,7 +2012,7 @@ RISEPel VCMIntegrator::EvaluateS0(
 	const VCMNormalization& /*norm*/
 	) const
 {
-	return EvaluateS0Impl<PelTag>( scene, caster, eyeVerts, eyeMis, PelTag{} );
+	return EvaluateS0Impl<PelTag>( *pGenerator, scene, caster, eyeVerts, eyeMis, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1114,7 +2040,8 @@ RISEPel VCMIntegrator::EvaluateS0(
 // EvaluateNEEImpl — templated body shared by EvaluateNEE and
 // EvaluateNEENM.  See EvaluateNEE documentation above for the
 // algorithm.  The only Pel/NM differences resolved by Tag dispatch
-// are (a) Le from ILight (Pel direct, NM via RISEPelToNMProxy),
+// are (a) Le from ILight (Pel via emittedRadiance, NM via the
+// wavelength-aware emittedRadianceNM -- Stage C slice 2),
 // (b) Le from IEmitter (Pel/NM via virtuals), (c) BSDF evaluation at
 // the eye vertex, and (d) throughput field selection.
 //////////////////////////////////////////////////////////////////////
@@ -1132,6 +2059,8 @@ namespace
 		const Tag& tag
 		)
 	{
+        MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 		using Traits = SpectralValueTraits<Tag>;
 		typename Traits::value_type total = Traits::zero();
 
@@ -1150,18 +2079,54 @@ namespace
 		const LuminaryManager::LuminariesList& luminaries = pLumManager
 			? const_cast<LuminaryManager*>( pLumManager )->getLuminaries()
 			: emptyList;
+		const bool seeThroughLive = VCMIntegrator::SeeThroughLive( caster );	// DL-424
+		const VCMDepthCaps depthCaps = MakeVCMDepthCaps( bdpt );	// DL-467
+		static thread_local std::vector<VCMWalkCount> neeEyeCount;	// eye-walk counts of eyeVerts[1..i]
+		EyePrefixCounts( eyeVerts, neeEyeCount );
+		const BDPTUtilities::BounceTypeCaps typeCaps = VCMBounceTypeCaps( bdpt );	// DL-471
 
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
 			const BDPTVertex& v = eyeVerts[i];
-			if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
+			if( v.contactCovered ) {
+				continue;	// DL-408: a contact-covered SSS exit's connections are occluded (BDPTVertex::contactCovered).
+			}
+			if( v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
+				continue;
+			}
+			// DL-471: s = 1, the eye endpoint is the free x_K.  A path with
+			// an undeclared-type vertex at a counted position competes
+			// with the emitter hit only (wCamera, including the merge at
+			// this vertex, dropped; see "DL-471").
+			if( typeCaps.active && BDPTUtilities::JoinedTypeCapStatus(
+					nullptr, eyeVerts.data(), 1, static_cast<unsigned int>( i + 1 ), typeCaps ) !=
+					BDPTUtilities::eTypeCapOK ) {
+				continue;
+			}
+			const bool neeDropCamera = i >= 2 && BDPTUtilities::AnyNeedsTypeSplit(
+				eyeVerts.data(), 1, static_cast<unsigned int>( i - 1 ), typeCaps );
+			if( v.type != BDPTVertex::SURFACE && v.type != BDPTVertex::MEDIUM ) {
+				continue;
+			}
+			if( v.type == BDPTVertex::SURFACE && !v.pMaterial ) {
 				continue;
 			}
 			if( !v.isConnectible ) {
 				continue;
 			}
 
+			const bool eyeIsMedium_vcm = ( v.type == BDPTVertex::MEDIUM );
+
 			sampler.StartStream( 48 + static_cast<unsigned int>( i ) );
+
+			Scalar seeThroughProb = 1;	// DL-424: 1 = an ordinary visible connection
+			unsigned int seeThroughGaps = 0;	// DL-467: the gaps are light-walk surface hits
+			typename Traits::value_type seeThroughTr = Traits::zero();
+			if constexpr( Traits::is_pel ) {
+				seeThroughTr = RISEPel( 1, 1, 1 );
+			} else {
+				seeThroughTr = 1;
+			}
 
 			LightSample ls;
 			if( !pLS->SampleLight( scene, luminaries, sampler, ls ) ) {
@@ -1194,8 +2159,35 @@ namespace
 						v.position.y + wiVis.y * kVisFar,
 						v.position.z + wiVis.z * kVisFar );
 				}
-				if( !VCMIsVisible( caster, v.position, visTargetVCM ) ) {
-					continue;
+				if( !VCMIsVisible( caster, v.position, visTargetVCM, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
+					// DL-424: a delta light behind thin-weave delta
+					// pass-throughs only -- BDPT's DL-330/425 see-through
+					// connection.  MIS-weighted below with the emission
+					// density scaled by the gaps' pseudo-probability
+					// product, ConvertLightSubpath's twin.
+					const RayCaster* pRCst = dynamic_cast<const RayCaster*>( &caster );
+					if( ls.pEnvLight || !ls.isDelta || !ls.pLight || !seeThroughLive || !pRCst ) {
+						continue;
+					}
+					Scalar walkNM = 0;
+					if constexpr( Traits::is_nm ) {
+						walkNM = tag.nm;
+					}
+					RISEPel walkT( 1, 1, 1 );
+					unsigned int kGaps = 0;
+					Scalar walkProb = 1;
+					if( pRCst->CastShadowRayAutoSampled( Ray( v.position, dirToLight ), dist - VCM_RAY_EPSILON,
+							Traits::is_nm, walkNM, walkT, true, sampler, (sceneAlpha ? &boundaryHits : nullptr),
+							dist, VCM_RAY_EPSILON, 0, 0, false, &kGaps, &walkProb ) || kGaps == 0 || !( walkProb > 0 ) ) {
+						continue;
+					}
+					seeThroughProb = walkProb;
+					seeThroughGaps = kGaps;
+					if constexpr( Traits::is_pel ) {
+						seeThroughTr = walkT;
+					} else {
+						seeThroughTr = walkT[0];
+					}
 				}
 			}
 
@@ -1233,13 +2225,33 @@ namespace
 				const IEmitter* pEmitter = ls.pLuminary->GetMaterial()->GetEmitter();
 				if( pEmitter ) {
 					RayIntersectionGeometric rig( Ray( ls.position, -dirToLight ), nullRasterizerState );
-					rig.bHit = true;
-					rig.ptIntersection = ls.position;
-					rig.vNormal = ls.normal;
-					// ls.normal is geometric on luminary meshes (no Phong/
-					// bump on emitters); mirror for downstream consumers.
-					rig.vGeomNormal = ls.normal;
-					Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, -dirToLight, ls.normal, tag );
+					// DL-298: the ONE shared emitter-record fill (world
+					// position, normals, `onb`, UV, `Po`) -- the same function
+					// `SampleLight`'s RGB record, both PT NEE arms, BDPT's NM
+					// hero / HWSS rebuilds and the photon tracers use.  DL-44:
+					// the UV is the sampled emitter UV; this function is
+					// templated over `Tag`, so one call fixes both
+					// `EvaluateNEE` (Pel) and `EvaluateNEENM`.  `Po` is
+					// ungated and ray-free (`LightSampler::EmitterObjectPoint`).
+					LightSampler::FillEmitterRecord( rig, ls.position, ls.normal, ls.ptCoord, ls.ptObjIntersec );
+					// THE FOURTH `ApplyEmitterSurface` consumer of
+					// `SampleLight`'s one probed payload (slice S3,
+					// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5): VCM's
+					// light-vertex NEE record.  A no-op when the probe was
+					// gated off or refused.
+					LightSampler::ApplyEmitterSurface( rig, ls.surface );
+					// DL-320: `ls.normal` is the face `SampleLight` picked for
+					// the light subpath's own continuation; this record looks
+					// toward the eye vertex instead, which a double-sided
+					// emitter lights from whichever face faces it.
+					const Vector3 lsFace = EmitterSides::FaceToward(
+						LightSampler::LuminaryIsTwoSided( ls.pLuminary ), ls.normal, -dirToLight );
+					if( Vector3Ops::Dot( lsFace, ls.normal ) < 0 ) {
+						rig.vNormal = lsFace;
+						rig.vGeomNormal = lsFace;
+						rig.onb.CreateFromW( lsFace );
+					}
+					Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, -dirToLight, lsFace, tag );
 				}
 			} else if( envCaseVCM ) {
 				// Env-light NEE: look up radiance at the actually-
@@ -1255,7 +2267,7 @@ namespace
 
 			// BSDF eval in sampled wi (env) or dirToLight (explicit).
 			const typename Traits::value_type fEye =
-				RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, wiForLight_vcm, woAtEye, tag );
+				RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiForLight_vcm, woAtEye, tag );
 			if( PositiveMagnitude( fEye ) <= 0 ) {
 				continue;
 			}
@@ -1274,34 +2286,50 @@ namespace
 
 			// Geometry-term cosines use the GEOMETRIC normal — the
 			// solid-angle <-> area Jacobian depends on actual face
-			// orientation (Veach §8.2.2 / PBRT 4e §13.6.4).  ls.normal
-			// is supplied by LightSampler::UniformRandomPoint, which
-			// already returns the geometric face normal, so it is used
-			// as-is on the light side.
-			const Scalar cosAtEye = fabs( Vector3Ops::Dot( v.geomNormal, dirForMIS_vcm ) );
+			// orientation (Veach §8.2.2 / PBRT 4e §13.6.4).  On the light
+			// side the only normal available is `ls.normal`, which
+			// `IObject::UniformRandomPoint` supplies: on a mesh luminary
+			// that is the INTERPOLATED VERTEX normal where the mesh has
+			// per-vertex normals and the face normal where it does not
+			// (`GeometricUtilities::PointOnTriangle` averages `t.normals[]`
+			// and only cross-products as a fallback).  It is used as-is
+			// because it is the sampler's own normal and therefore the one
+			// `pdfPosition` was expressed against; on a smooth-shaded mesh
+			// emitter it is a shading normal, and that inherited
+			// approximation is pre-existing and out of this slice's scope
+			// (an earlier comment here asserted it was geometric).
+			// Medium vertices have no surface normal; eye-side cosine is omitted.
+			const Scalar cosAtEye = eyeIsMedium_vcm
+				? Scalar( 1.0 )
+				: fabs( Vector3Ops::Dot( v.geomNormal, dirForMIS_vcm ) );
 			Scalar cosAtLight = 0;
 			Scalar G = 0;
 			if( ls.isDelta ) {
 				cosAtLight = 1;
-				G = cosAtEye / distSq;
+				G = eyeIsMedium_vcm ? ( Scalar( 1.0 ) / distSq ) : ( cosAtEye / distSq );
 			} else {
 				cosAtLight = fabs( Vector3Ops::Dot( ls.normal, -dirForMIS_vcm ) );
-				G = ( cosAtEye * cosAtLight ) / distSq;
+				G = eyeIsMedium_vcm ? BDPTUtilities::GeometricTermSurfaceMedium( ls.position, ls.normal, v.position )
+				                    : ( ( cosAtEye * cosAtLight ) / distSq );
 			}
-			if( cosAtEye <= 0 || G <= 0 ) {
+			if( ( !eyeIsMedium_vcm && cosAtEye <= 0 ) || G <= 0 ) {
 				continue;
 			}
 
 			const Scalar directPdfW = ls.isDelta
 				? Scalar( 1 )
-				: ( ls.pdfPosition * distSq / cosAtLight );
+				: envCaseVCM ? ls.pdfDirection : ( ls.pdfPosition * distSq / cosAtLight );
 
 			Scalar emissionDirPdfSA = 0;
 			if( ls.pLuminary ) {
-				const Scalar c = Vector3Ops::Dot( ls.normal, -dirToLight );
-				emissionDirPdfSA = ( c > 0 ) ? ( c * INV_PI ) : Scalar( 0 );
+				// DL-320: the two-faced density for a double-sided emitter,
+				// the same function `SampleLight` draws from.
+				emissionDirPdfSA = EmitterSides::CosineEmissionPdf(
+					LightSampler::LuminaryIsTwoSided( ls.pLuminary ), ls.normal, -dirToLight );
 			} else if( ls.pLight ) {
-				emissionDirPdfSA = ls.pLight->pdfDirection( -dirToLight );
+				// DL-424: through gaps, the light side reaches v only via
+				// their draws (seeThroughProb == 1 otherwise).
+				emissionDirPdfSA = ls.pLight->pdfDirection( -dirToLight ) * seeThroughProb;
 			} else if( envCaseVCM ) {
 				// Env emission: query at the actually-sampled wi to
 				// match the wi used for Le and BSDF eval above.
@@ -1310,8 +2338,6 @@ namespace
 					emissionDirPdfSA = pEnvSamp->Pdf( wiForLight_vcm );
 				}
 			}
-			const Scalar emissionPdfW = ls.pdfSelect * ls.pdfPosition * emissionDirPdfSA;
-
 			const Scalar lightPickProb = ls.pdfSelect;
 
 			// wLight = relative pdf of the "BSDF-sampling at the eye
@@ -1327,32 +2353,97 @@ namespace
 			// dilutes NEE in the MIS sum and biases the rendered
 			// image low (~27% on a delta-omni-lit Lambertian scene
 			// under the balance heuristic).  Skip the alternative for
-			// delta lights — NEE is the only strategy that can sample
-			// the path through a delta vertex.
-			const Scalar wLight = ls.isDelta
+			// delta lights.
+			//
+			// This applies to wLight ONLY.  The symmetric-looking
+			// conclusion for wCamera — "NEE is the only strategy that
+			// can sample a path through a delta vertex" — is FALSE and
+			// was an over-correction; see the wCamera block below.
+			Scalar wLight = ls.isDelta
 				? Scalar( 0 )
 				: bsdfDirPdfW / ( lightPickProb * directPdfW );
+			// DL-467: wLight's one term is the eye hitting the light (s =
+			// 0) -- an eye-walk surface hit on an area light, an escape
+			// for an environment -- which exists only within the eye
+			// walk's caps.
+			if( wLight > 0 ) {
+				VCMWalkCount eyeHit = neeEyeCount[i];
+				if( ls.pEnvLight ) eyeHit.escape = true;
+				else eyeHit.surface++;
+				if( !BDPTUtilities::EyeWalkCanGenerate( eyeHit.surface, eyeHit.volume, eyeHit.escape, depthCaps.eye ) ) {
+					wLight = 0;
+				}
+			}
+
+			// wCamera = relative pdf of the strategies that reach this
+			// same path from the LIGHT side: the t=1 light-tracing
+			// splat, the s>=2 interior connections, and (when VM is
+			// on) vertex merging.  Unlike wLight, these do NOT have to
+			// "land on" the light vertex by chance — they START there
+			// and sample an EMISSION DIRECTION, which has a perfectly
+			// ordinary solid-angle density even when the light's
+			// POSITION is a Dirac delta.  So wCamera must be computed
+			// for delta-position lights too (2026-09-04).  Gating it
+			// on `!ls.isDelta` (as this site used to) left NEE at
+			// weight 1 while `SplatLightSubpathToCameraImpl` still
+			// contributed its own 1/(1+wLight) share of the SAME
+			// path — a partition-of-unity violation whose size is
+			// exactly the splat's share of the two-strategy split, so
+			// it is geometry-dependent and cannot be bounded by a
+			// constant: measured +2.96 % on a 2.8-unit quad 3 units
+			// from an omni light, +0.8 % on VCMStrategyBalanceTest's
+			// topology A, 0 % on any area light.  See
+			// docs/CLOTH_FABRIC_DESIGN.md §15 debt 24.
+			//
+			// camFactor is the AREA-measure density of generating this
+			// eye vertex by sampling an emission direction at the
+			// light, i.e. p_emit_dir->A(x) = pdfDir * cos_x / dist^2.
+			// It is written in that form deliberately: the SmallVCM
+			// spelling `(emissionPdfW_geom * cosAtEye) / (directPdfW *
+			// cosAtLight)` is ALGEBRAICALLY THE SAME NUMBER whenever
+			// directPdfW is the honest area->solid-angle conversion
+			// `pdfPosition * dist^2 / cosAtLight` (the pdfPosition and
+			// cosAtLight factors cancel), but it divides by two
+			// quantities that are placeholders for a delta light
+			// (directPdfW := 1, cosAtLight := 1) and so silently
+			// produces the wrong value there.  The p_emit_dir->A form
+			// never touches either, needs no isDelta branch, and is
+			// the quantity the balance heuristic actually calls for:
+			// with dVCM_eye = N / p_cam->A(x), `camFactor * dVCM_eye`
+			// is exactly the reciprocal of the splat's own
+			// `wLight = (p_cam->A / N) * (vmFactor + dVCM_light)`, so
+			// NEE + splat (+ merge) sum to 1 by construction.
+			//
+			// Lights with no emission-direction sampling at all
+			// (DirectionalLight, AmbientLight — both return
+			// pdfDirection() == 0, and VCM never emits photons from
+			// them) fall out with camFactor = 0, hence wCamera = 0 and
+			// NEE at full weight, which is correct: there is no
+			// competing light-side strategy to share with.  Note the
+			// arithmetic is vacuous today -- VCM does not sample
+			// directional or ambient lights AT ALL (a directional-lit
+			// Lambertian quad renders 0 under VCM where PT and BDPT
+			// agree; docs/SUBMERGED_CAMERA_IOR_SEEDING.md records the
+			// gap) -- so this branch documents the weight the path
+			// WILL take once that sampling exists, not a path that
+			// renders now.
 			Scalar wCamera = 0;
-			if( !ls.isDelta && directPdfW > 0 && cosAtLight > 0 ) {
-				// Same reasoning as wLight: for delta lights, the
-				// path can't be re-generated by alternative light-
-				// tracing or VM strategies that "land" on the delta
-				// vertex.  wCamera = 0 keeps NEE at full weight.
-				//
-				// camFactor uses the SmallVCM-GEOMETRIC emissionPdfW
-				// (no light-selection multiplier).  Δ6 bisect confirmed
-				// this divide is a no-op in test scenes (lightPickProb
-				// = ls.pdfSelect cancels symmetrically against dVC's
-				// pdfSelect factor); kept for SmallVCM convention
-				// consistency.
-				const Scalar emissionPdfW_geom = ( lightPickProb > 0 ) ?
-					( emissionPdfW / lightPickProb ) : Scalar( 0 );
+			// DL-467: the light walk behind the light-side strategies
+			// starts at the root (plus the gaps of a see-through).
+			VCMWalkCount neeLightBase;
+			neeLightBase.surface = seeThroughGaps;
+			const VCMWindowed neeEyeWin = EyeSideWindow( eyeVerts, eyeMis, i, neeLightBase, false, depthCaps,
+				EyeHandedCount( neeEyeCount, i, false ) );
+			if( emissionDirPdfSA > 0 && distSq > 0 && !neeEyeWin.none ) {
 				const Scalar camFactor =
-					( emissionPdfW_geom * cosAtEye ) / ( directPdfW * cosAtLight );
+					( (envCaseVCM ? ls.pdfPosition : emissionDirPdfSA / distSq) * ( eyeIsMedium_vcm ? v.sigma_t_scalar : cosAtEye ) );
 				wCamera = camFactor * (
-					norm.mMisVmWeightFactor
-					+ eyeMis[i].dVCM
-					+ eyeMis[i].dVC * bsdfRevPdfW );
+					VertexMergeFactorVC( VCMIntegrator::BoundaryVolumeNormalization(norm, v), eyeIsMedium_vcm )	// DL-469
+					+ neeEyeWin.mis.dVCM
+					+ neeEyeWin.mis.dVC * bsdfRevPdfW );
+			}
+			if( neeDropCamera ) {
+				wCamera = 0;
 			}
 			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
 
@@ -1389,8 +2480,9 @@ namespace
 				if( !pEnvSamp ) continue;
 				const Scalar pdfSA = pEnvSamp->Pdf( wiForLight_vcm );
 				if( pdfSA <= 0 ) continue;
-				const Scalar cosEyeWi =
-					fabs( Vector3Ops::Dot( v.geomNormal, wiForLight_vcm ) );
+				const Scalar cosEyeWi = eyeIsMedium_vcm
+					? Scalar( 1.0 )
+					: fabs( Vector3Ops::Dot( v.geomNormal, wiForLight_vcm ) );
 				// Continuous-PMF env-NEE rescale — see BDPT twin
 				// (BDPTIntegrator.cpp ~line 3965) for the full
 				// rationale.  ls.pdfSelect equals
@@ -1407,7 +2499,7 @@ namespace
 					EvalConnectionTrRay<Tag>(
 						bdpt, envRayVCM, RISE_INFINITY,
 						scene, caster,
-						v.pMediumObject, v.pMediumVol, tag );
+						v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 				const typename Traits::value_type contribution =
 					VertexThroughput<Tag>( v, tag ) * fEye * Le * Tr_conn_env *
 					( cosEyeWi / pdfSA ) * weight * invLightSelect;
@@ -1419,9 +2511,15 @@ namespace
 				EvalConnectionTr<Tag>(
 					bdpt, v.position, ls.position,
 					scene, caster,
-					v.pMediumObject, v.pMediumVol, tag );
+					v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
+			// DL-09: the NEE connection segment's graded-index factor
+			// (n_eye/n_light)^2 when both ends lie in one graded medium
+			// (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)); exactly 1
+			// otherwise.  Throughput only -- no pdf above reads it.
+			const Scalar gradedScale = GradedIndexMedium::ConnectionScaleToPoint(
+				v.pGradedMedium, v.gradedIOR, ls.position );
 			const typename Traits::value_type contribution =
-				VertexThroughput<Tag>( v, tag ) * fEye * Le * Tr_conn_nee * ( G / invLightPdfArea ) * weight;
+				VertexThroughput<Tag>( v, tag ) * fEye * Le * Tr_conn_nee * seeThroughTr * ( G / invLightPdfArea ) * ( weight * gradedScale );
 			total = total + contribution;
 		}
 
@@ -1484,14 +2582,18 @@ namespace
 		const IRayCaster& caster,
 		const BDPTIntegrator& bdpt,
 		const ICamera& camera,
+		const Point2& cameraLensSample,
 		const unsigned int filmWidth,
 		const unsigned int filmHeight,
 		SplatFilm& splatFilm,
 		const VCMNormalization& norm,
 		const IPixelFilter* pixelFilter,
-		const Tag& tag
+		const Scalar splatScale,
+		const Tag& tag, ISampler& sampler
 		)
 	{
+        MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 		using Traits = SpectralValueTraits<Tag>;
 
 		if( lightVerts.size() != lightMis.size() || lightVerts.empty() ) {
@@ -1501,11 +2603,72 @@ namespace
 			return;
 		}
 
-		const Point3 camPos = camera.GetLocation();
+		// Delta-DIRECTION camera (orthographic): the light-tracing
+		// strategy cannot scatter a non-specular light vertex into the
+		// camera's single parallel direction -- that density is zero --
+		// so the whole splat pass is skipped, exactly as
+		// `BDPTIntegrator`'s t==1 branch has always done.  Without this
+		// the splat both misdirects energy (`Rasterize` on an ortho
+		// camera answers for a DIFFERENT camera vertex than the one the
+		// eye subpath used, since every pixel has its own ray origin)
+		// and takes MIS mass that `wLight` never reserves for it.
+		if( BDPTCameraUtilities::IsDeltaDirection( camera ) ) {
+			return;
+		}
 
+		// Debt 28 -- FINITE-APERTURE cameras.  The camera end of every
+		// t=1 splat on this subpath is a point drawn from the entrance
+		// APERTURE with the primary rays' own shape and density, not
+		// the lens centre.  For a pinhole / fisheye it IS the lens
+		// centre and nothing below changes; for a thin lens it is a
+		// sampled lens point, which is what gives the splat layer the
+		// same depth of field the eye layer has.  `Importance` folds in
+		// 1 / (its area density) and the aperture cosine, so the
+		// contribution needs no extra factor; `cameraPdfA` below is
+		// unchanged because the aperture-positional density is common
+		// to every strategy and cancels out of the SmallVCM weight
+		// ratio (see CameraUtilities.h).
+		//
+		// ONE sample for the whole subpath, not one per vertex: the
+		// splats from a single light subpath are already correlated
+		// through their shared vertices, there are W*H subpaths per
+		// iteration so the aperture is densely covered across the
+		// film, and re-drawing per vertex would need a sampler this
+		// function does not take.
+		const BDPTCameraUtilities::ApertureSample apertureSample =
+			BDPTCameraUtilities::SampleAperture( camera, cameraLensSample );
+		const Point3 camPos = apertureSample.point;
+
+		// DL-317 / DL-380: the by-path subsurface partition, per vertex.
+		static thread_local BDPTUtilities::LightJumpPartition partition;
+		partition.Build( lightVerts, MergingActive( norm ), VCMIntegrator::SeeThroughLive( caster ) );	// DL-424: the see-through NEE is an eye-family witness
+		const BDPTUtilities::EyeWalkCaps eyeCaps = VCMEyeWalkCaps( bdpt );
+		const VCMDepthCaps depthCaps = MakeVCMDepthCaps( bdpt );	// DL-467
+		const BDPTUtilities::BounceTypeCaps typeCaps = VCMBounceTypeCaps( bdpt );	// DL-471
 		for( std::size_t i = 0; i < lightVerts.size(); i++ )
 		{
+			// DL-471: t = 1, light endpoint lightVerts[i]; a path with an
+			// undeclared-type vertex at a counted position is S0 / NEE's.
+			// DL-481: a counted endpoint with a split is priced by its
+			// allowed lobe types (splatPlan, applied below).
+			BDPTUtilities::TypeCapPlan splatPlan;
+			if( typeCaps.active && ( !BDPTUtilities::TypeCapAdmits( BDPTUtilities::JoinedTypeCapPlan(
+					lightVerts.data(), nullptr, static_cast<unsigned int>( i + 1 ), 1, typeCaps, splatPlan ) ) ||
+				( i >= 2 && BDPTUtilities::AnyNeedsTypeSplit( lightVerts.data(), 2, static_cast<unsigned int>( i ), typeCaps ) ) ) ) {
+				continue;
+			}
 			const BDPTVertex& v = lightVerts[i];
+			if( v.contactCovered ) {
+				continue;	// DL-408: a contact-covered SSS exit's connections are occluded (BDPTVertex::contactCovered).
+			}
+
+			if( v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
+				continue;
+			}
+			// The camera vertex counts no surface hit (eye part S = 0).
+			if( !partition.Keeps( i, 0u, v.volumeBounces, eyeCaps ) ) {
+				continue;
+			}
 
 			if( !v.isConnectible ) {
 				continue;
@@ -1522,16 +2685,18 @@ namespace
 			if( i == 0 || v.type == BDPTVertex::LIGHT ) {
 				continue;
 			}
-			if( v.type != BDPTVertex::SURFACE ) {
+			if( v.type != BDPTVertex::SURFACE && v.type != BDPTVertex::MEDIUM ) {
 				continue;
 			}
+			const bool lightIsMedium_t1 = ( v.type == BDPTVertex::MEDIUM );
 
 			Point2 rasterPos;
-			if( !BDPTCameraUtilities::Rasterize( camera, v.position, rasterPos ) ) {
+			if( !BDPTCameraUtilities::RasterizeThrough(
+					camera, v.position, apertureSample, rasterPos ) ) {
 				continue;
 			}
 
-			if( !VCMIsVisible( caster, v.position, camPos ) ) {
+			if( !VCMIsVisible( caster, v.position, camPos, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 				continue;
 			}
 
@@ -1552,8 +2717,11 @@ namespace
 			// Light-tracing connection cosine: GEOMETRIC normal at the
 			// light-vertex hit; this is the area-element Jacobian for
 			// the camera connection (Veach §8.2.2).
-			const Scalar cosAtLight = fabs( Vector3Ops::Dot( v.geomNormal, dirToCam ) );
-			if( cosAtLight <= 0 ) {
+			// Medium vertices have no surface normal; omit cosine (use 1.0).
+			const Scalar cosAtLight = lightIsMedium_t1
+				? Scalar( 1.0 )
+				: fabs( Vector3Ops::Dot( v.geomNormal, dirToCam ) );
+			if( !lightIsMedium_t1 && cosAtLight <= 0 ) {
 				continue;
 			}
 			const Scalar G = cosAtLight / distSq;
@@ -1562,7 +2730,9 @@ namespace
 			if( camPdfDirSA <= 0 ) {
 				continue;
 			}
-			const Scalar cameraPdfA = camPdfDirSA * cosAtLight / distSq;
+			const Scalar cameraPdfA = lightIsMedium_t1
+				? BDPTUtilities::SolidAngleToAreaMedium( camPdfDirSA, v.sigma_t_scalar, distSq )
+				: ( camPdfDirSA * cosAtLight / distSq );
 
 			typename Traits::value_type contribution = Traits::zero();
 			Scalar bsdfRevPdfW = 0;
@@ -1594,7 +2764,7 @@ namespace
 			}
 			else
 			{
-				if( !v.pMaterial ) {
+				if( v.type == BDPTVertex::SURFACE && !v.pMaterial ) {
 					continue;
 				}
 				if( i < 1 ) {
@@ -1608,10 +2778,25 @@ namespace
 				}
 				wiAtLight = wiAtLight * ( Scalar( 1 ) / wiDist );
 
-				const typename Traits::value_type fLight =
-					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
+				// DL-317: a kept light-side entry re-emits with Sw in the
+				// direction it LEAVES toward the camera; the arrival
+				// "direction" from the hit where the light went in is the
+				// jump, not a ray, so it must not be the Sw argument.
+				typename Traits::value_type fLight =
+					RISE::PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
+				}
+				// DL-481: only the lobe types the per-type caps allow.
+				if( splatPlan.splitLight ) {
+					typename Traits::value_type fl[5];
+					if( !RISE::PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( v, wiAtLight, dirToCam, tag, fl ) ) {
+						continue;
+					}
+					fLight = BDPTUtilities::AllowedTypeProduct<typename Traits::value_type>( splatPlan, typeCaps, fl, fl );
+					if( PositiveMagnitude( fLight ) <= 0 ) {
+						continue;
+					}
 				}
 
 				bsdfRevPdfW =
@@ -1620,9 +2805,28 @@ namespace
 				contribution = VertexThroughput<Tag>( v, tag ) * fLight * ( G * We );
 			}
 
-			const Scalar wLight =
+			// DL-09: the splat segment's graded-index factor
+			// (n_camera/n_light)^2 when camera and light vertex lie in one
+			// graded medium (a camera seeded inside it); exactly 1 otherwise.
+			{
+				const Scalar gradedScale = GradedIndexMedium::ConnectionScaleFromPoint(
+					camPos, v.pGradedMedium, v.gradedIOR );
+				if( gradedScale != Scalar( 1 ) ) {
+					contribution = contribution * gradedScale;
+				}
+			}
+
+			// DL-317: at a kept light-side entry the eye family has no
+			// strategy (nothing connects or merges across the jump, and
+			// entries are never stored for merging), so wLight is 0.
+			// DL-467: the eye-side strategies need an eye walk from the
+			// bare camera to cover lightVerts[i], [i-1], ...
+			const VCMWindowed splatWin = LightSideWindow( lightVerts, lightMis, i, VCMWalkCount(), false, depthCaps,
+				LightHandedCount( lightVerts, LightPrefixCount( lightVerts, i ), i, false ) );
+			const Scalar wLight = ( v.isBSSRDFEntry || splatWin.none ) ? Scalar( 0 ) :
 				( cameraPdfA / norm.mLightSubPathCount ) *
-				( norm.mMisVmWeightFactor + lightMis[i].dVCM + lightMis[i].dVC * bsdfRevPdfW );
+				( VertexMergeFactorVC( VCMIntegrator::BoundaryVolumeNormalization(norm, v), lightIsMedium_t1 )	// DL-469
+				  + splatWin.mis.dVCM + splatWin.mis.dVC * bsdfRevPdfW );
 			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) );
 
 			// Media-aware connection transmittance — Pre-Phase-1
@@ -1634,7 +2838,7 @@ namespace
 				EvalConnectionTr<Tag>(
 					bdpt, v.position, camPos,
 					scene, caster,
-					v.pMediumObject, v.pMediumVol, tag );
+					v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 			const typename Traits::value_type weighted = contribution * Tr_conn_splat * weight;
 
@@ -1657,18 +2861,19 @@ namespace
 			const Scalar fx = rasterPos.x;
 			const Scalar fy = static_cast<Scalar>( filmHeight ) - rasterPos.y;
 
+			// DL-201: `splatScale` renormalizes an HWSS bundle whose
+			// companion wavelengths were terminated, so the deposit
+			// matches the lanes that actually ran rather than the N the
+			// splat film's global denominator assumes.  Exactly 1.0 on
+			// the Pel path and on any bundle that terminated nothing.
+			const RISEPel deposit = rgb.second * splatScale;
+
 			if( pixelFilter ) {
-				splatFilm.SplatFiltered( fx, fy, rgb.second, *pixelFilter );
+				splatFilm.SplatFiltered( fx, fy, deposit, *pixelFilter );
 			} else {
-				const Scalar rx = fx + Scalar( 0.5 );
-				const Scalar ry = fy + Scalar( 0.5 );
-				if( rx < 0 || ry < 0 ) continue;
-				const int sx = static_cast<int>( rx );
-				const int sy = static_cast<int>( ry );
-				if( sx < 0 || sy < 0 ||
-				    static_cast<unsigned int>( sx ) >= filmWidth ||
-				    static_cast<unsigned int>( sy ) >= filmHeight ) continue;
-				splatFilm.Splat( sx, sy, rgb.second );
+				unsigned int sx = 0, sy = 0;
+				if( !SplatFilm::NearestPixel( fx, fy, filmWidth, filmHeight, sx, sy ) ) continue;
+				splatFilm.Splat( sx, sy, deposit );
 			}
 		}
 	}
@@ -1680,16 +2885,19 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
+	const Point2& cameraLensSample,
 	SplatFilm& splatFilm,
 	const VCMNormalization& norm,
-	const IPixelFilter* pixelFilter
+	const IPixelFilter* pixelFilter, ISampler* alphaSampler
 	) const
 {
+    FallbackSampler alphaFallback( alphaSampler );
+    ISampler& sampler = alphaFallback.Get();
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<PelTag>(
-		lightVerts, lightMis, scene, caster, *pGenerator, camera,
+		lightVerts, lightMis, scene, caster, *pGenerator, camera, cameraLensSample,
 		pFilm->GetWidth(), pFilm->GetHeight(),
-		splatFilm, norm, pixelFilter, PelTag{} );
+		splatFilm, norm, pixelFilter, 1.0, PelTag{}, sampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1742,9 +2950,11 @@ namespace
 		const std::vector<BDPTVertex>& eyeVerts,
 		const std::vector<VCMMisQuantities>& eyeMis,
 		const VCMNormalization& norm,
-		const Tag& tag
+		const Tag& tag, ISampler& sampler
 		)
 	{
+        MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 		using Traits = SpectralValueTraits<Tag>;
 		typename Traits::value_type total = Traits::zero();
 
@@ -1752,15 +2962,37 @@ namespace
 			return total;
 		}
 
+		// DL-317 / DL-380: the by-path subsurface partition, per strategy.
+		static thread_local BDPTUtilities::LightJumpPartition partition;
+		partition.Build( lightVerts, MergingActive( norm ), VCMIntegrator::SeeThroughLive( caster ) );	// DL-424: the see-through NEE is an eye-family witness
+		const BDPTUtilities::EyeWalkCaps eyeCaps = VCMEyeWalkCaps( bdpt );
+		static thread_local std::vector<unsigned int> eyeSurface;	// eye-walk surface count of eyeVerts[0..j]
+		eyeSurface.assign( eyeVerts.size(), 0u );
+		for( std::size_t j = 1; j < eyeVerts.size(); j++ ) {
+			eyeSurface[j] = eyeSurface[j - 1] + ( BDPTUtilities::CountsAsSurfaceHit( eyeVerts[j] ) ? 1u : 0u );
+		}
+		const VCMDepthCaps depthCaps = MakeVCMDepthCaps( bdpt );	// DL-467
+		static thread_local std::vector<VCMWalkCount> eyeCount;	// eye-walk counts of eyeVerts[1..j]
+		EyePrefixCounts( eyeVerts, eyeCount );
+		const BDPTUtilities::BounceTypeCaps typeCaps = VCMBounceTypeCaps( bdpt );	// DL-471
 		for( std::size_t i = 1; i < lightVerts.size(); i++ )
 		{
 			const BDPTVertex& lv = lightVerts[i];
-			if( lv.type != BDPTVertex::SURFACE || !lv.pMaterial ) {
+			if( lv.contactCovered ) {
+				continue;	// DL-408: a contact-covered SSS exit's connections are occluded (BDPTVertex::contactCovered).
+			}
+			const VCMWalkCount lightCount = LightPrefixCount( lightVerts, i );	// DL-467
+			const VCMWalkCount lightHanded = LightHandedCount( lightVerts, lightCount, i, false );
+			if( lv.type != BDPTVertex::SURFACE && lv.type != BDPTVertex::MEDIUM ) {
+				continue;
+			}
+			if( lv.type == BDPTVertex::SURFACE && !lv.pMaterial ) {
 				continue;
 			}
 			if( !lv.isConnectible ) {
 				continue;
 			}
+			const bool lightIsMedium = ( lv.type == BDPTVertex::MEDIUM );
 
 			const BDPTVertex& lvPrev = lightVerts[i - 1];
 			Vector3 wiAtLight = Vector3Ops::mkVector3( lvPrev.position, lv.position );
@@ -1773,12 +3005,37 @@ namespace
 			for( std::size_t j = 1; j < eyeVerts.size(); j++ )
 			{
 				const BDPTVertex& ev = eyeVerts[j];
-				if( ev.type != BDPTVertex::SURFACE || !ev.pMaterial ) {
+				if( ev.contactCovered ) {
+					continue;	// DL-408: a contact-covered SSS exit's connections are occluded (BDPTVertex::contactCovered).
+				}
+				if( ev.type != BDPTVertex::SURFACE && ev.type != BDPTVertex::MEDIUM ) {
+					continue;
+				}
+				if( ev.type == BDPTVertex::SURFACE && !ev.pMaterial ) {
 					continue;
 				}
 				if( !ev.isConnectible ) {
 					continue;
 				}
+
+				if( lv.volumeBounces + ev.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
+					continue;
+				}
+				if( !partition.Keeps( i, eyeSurface[j], lv.volumeBounces + ev.volumeBounces, eyeCaps ) ) {
+					continue;
+				}
+				// DL-471: per-path per-type caps of strategy (i+1, j+1); a
+				// path with an undeclared-type vertex at a counted position is
+				// S0 / NEE's.
+				BDPTUtilities::TypeCapPlan connPlan;	// DL-481: split endpoints, applied below
+				if( typeCaps.active && ( !BDPTUtilities::TypeCapAdmits( BDPTUtilities::JoinedTypeCapPlan(
+						lightVerts.data(), eyeVerts.data(), static_cast<unsigned int>( i + 1 ),
+						static_cast<unsigned int>( j + 1 ), typeCaps, connPlan ) ) ||
+					( i >= 2 && BDPTUtilities::AnyNeedsTypeSplit( lightVerts.data(), 2, static_cast<unsigned int>( i ), typeCaps ) ) ||
+					BDPTUtilities::AnyNeedsTypeSplit( eyeVerts.data(), 1, static_cast<unsigned int>( j ), typeCaps ) ) ) {
+					continue;
+				}
+				const bool eyeIsMedium = ( ev.type == BDPTVertex::MEDIUM );
 
 				const BDPTVertex& evPrev = eyeVerts[j - 1];
 				Vector3 woAtEye = Vector3Ops::mkVector3( evPrev.position, ev.position );
@@ -1796,30 +3053,72 @@ namespace
 				lightToEye = lightToEye * ( Scalar( 1 ) / dist );
 				const Scalar distSq = dist * dist;
 
-				if( !VCMIsVisible( caster, lv.position, ev.position ) ) {
+				if( !VCMIsVisible( caster, lv.position, ev.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 					continue;
 				}
 
-				const typename Traits::value_type fLight =
-					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
+				// DL-317: Sw at a kept light-side entry is evaluated in the
+				// direction it leaves toward the eye (see the splat twin).
+				typename Traits::value_type fLight =
+					RISE::PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
 				}
-				const typename Traits::value_type fEye =
-					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( ev, -lightToEye, woAtEye, tag );
+				typename Traits::value_type fEye =
+					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( ev, -lightToEye, woAtEye, tag );
 				if( PositiveMagnitude( fEye ) <= 0 ) {
 					continue;
+				}
+				// DL-481: only the lobe types the per-type caps allow at a
+				// split endpoint.
+				if( connPlan.splitLight || connPlan.splitEye ) {
+					typedef typename Traits::value_type VV;
+					VV fl[5], fe[5];
+					if( connPlan.splitLight &&
+						!RISE::PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( lv, wiAtLight, lightToEye, tag, fl ) ) {
+						continue;
+					}
+					if( connPlan.splitEye &&
+						!RISE::PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( ev, -lightToEye, woAtEye, tag, fe ) ) {
+						continue;
+					}
+					const VV P = BDPTUtilities::AllowedTypeProduct<VV>( connPlan, typeCaps, fl, fe );
+					if( PositiveMagnitude( P ) <= 0 ) {
+						continue;
+					}
+					if( connPlan.splitLight ) {
+						fLight = P;
+						if( connPlan.splitEye ) {
+							fEye = VV( 1 );
+						}
+					} else {
+						fEye = P;
+					}
 				}
 
 				// Merge geometry term: GEOMETRIC normals on both sides
 				// (the area-pdf <-> solid-angle Jacobian uses the actual
 				// surface element, not the BSDF-frame shading normal).
-				const Scalar cosAtLight = fabs( Vector3Ops::Dot( lv.geomNormal, lightToEye ) );
-				const Scalar cosAtEye   = fabs( Vector3Ops::Dot( ev.geomNormal, -lightToEye ) );
-				if( cosAtLight <= 0 || cosAtEye <= 0 ) {
+				// Medium vertices have no surface normal; omit cosine (use 1.0).
+				const Scalar cosAtLight = lightIsMedium ? Scalar( 1.0 ) : fabs( Vector3Ops::Dot( lv.geomNormal, lightToEye ) );
+				const Scalar cosAtEye   = eyeIsMedium   ? Scalar( 1.0 ) : fabs( Vector3Ops::Dot( ev.geomNormal, -lightToEye ) );
+				if( ( !lightIsMedium && cosAtLight <= 0 ) || ( !eyeIsMedium && cosAtEye <= 0 ) ) {
 					continue;
 				}
-				const Scalar G = ( cosAtLight * cosAtEye ) / distSq;
+
+				Scalar G = 0;
+				if( lightIsMedium && eyeIsMedium ) {
+					G = BDPTUtilities::GeometricTermMediumMedium( lv.position, ev.position );
+				} else if( lightIsMedium ) {
+					G = BDPTUtilities::GeometricTermSurfaceMedium( ev.position, ev.geomNormal, lv.position );
+				} else if( eyeIsMedium ) {
+					G = BDPTUtilities::GeometricTermSurfaceMedium( lv.position, lv.geomNormal, ev.position );
+				} else {
+					G = BDPTUtilities::GeometricTerm( lv.position, lv.geomNormal, ev.position, ev.geomNormal );
+				}
+				if( G <= 0 ) {
+					continue;
+				}
 
 				const Scalar lightBsdfDirPdfW =
 					RISE::PathValueOps::EvalPdfAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
@@ -1831,19 +3130,30 @@ namespace
 				const Scalar cameraBsdfRevPdfW =
 					RISE::PathValueOps::EvalPdfAtVertex<Tag>( ev, -lightToEye, woAtEye, tag );
 
-				const Scalar cameraBsdfDirPdfA =
-					BDPTUtilities::SolidAngleToArea( cameraBsdfDirPdfW, cosAtLight, distSq );
-				const Scalar lightBsdfDirPdfA =
-					BDPTUtilities::SolidAngleToArea( lightBsdfDirPdfW, cosAtEye, distSq );
+				const Scalar cameraBsdfDirPdfA = lightIsMedium
+					? BDPTUtilities::SolidAngleToAreaMedium( cameraBsdfDirPdfW, lv.sigma_t_scalar, distSq )
+					: BDPTUtilities::SolidAngleToArea( cameraBsdfDirPdfW, cosAtLight, distSq );
+				const Scalar lightBsdfDirPdfA = eyeIsMedium
+					? BDPTUtilities::SolidAngleToAreaMedium( lightBsdfDirPdfW, ev.sigma_t_scalar, distSq )
+					: BDPTUtilities::SolidAngleToArea( lightBsdfDirPdfW, cosAtEye, distSq );
 
-				const Scalar wLight = cameraBsdfDirPdfA
-					* ( norm.mMisVmWeightFactor
-					    + lightMis[i].dVCM
-					    + lightMis[i].dVC * lightBsdfRevPdfW );
-				const Scalar wCamera = lightBsdfDirPdfA
-					* ( norm.mMisVmWeightFactor
-					    + eyeMis[j].dVCM
-					    + eyeMis[j].dVC * cameraBsdfRevPdfW );
+				// DL-317: zero at a kept light-side entry (see the splat twin).
+				// DL-467: each side's levels exist only within the OTHER
+				// walk's depth caps (see "the depth-cap window" above).
+				const VCMWindowed lightWin = LightSideWindow(
+					lightVerts, lightMis, i, eyeCount[j], false, depthCaps, lightHanded );
+				const VCMWindowed eyeWin = EyeSideWindow(
+					eyeVerts, eyeMis, j, lightCount, false, depthCaps,
+					EyeHandedCount( eyeCount, j, false ) );
+				// DL-469: a medium endpoint's merge is the volume merge.
+				const Scalar wLight = ( lv.isBSSRDFEntry || lightWin.none ) ? Scalar( 0 ) : cameraBsdfDirPdfA
+					* ( VertexMergeFactorVC( VCMIntegrator::BoundaryVolumeNormalization(norm, lv), lightIsMedium )
+					    + lightWin.mis.dVCM
+					    + lightWin.mis.dVC * lightBsdfRevPdfW );
+				const Scalar wCamera = eyeWin.none ? Scalar( 0 ) : lightBsdfDirPdfA
+					* ( VertexMergeFactorVC( VCMIntegrator::BoundaryVolumeNormalization(norm, ev), eyeIsMedium )
+					    + eyeWin.mis.dVCM
+					    + eyeWin.mis.dVC * cameraBsdfRevPdfW );
 				const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
 
 				// Media-aware connection transmittance — Pre-Phase-1
@@ -1856,10 +3166,13 @@ namespace
 					EvalConnectionTr<Tag>(
 						bdpt, ev.position, lv.position,
 						scene, caster,
-						ev.pMediumObject, ev.pMediumVol, tag );
+						ev.pMediumObject, ev.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
+				// DL-09: the connection segment's graded-index factor.
+				const Scalar gradedScale = GradedIndexMedium::ConnectionScale(
+					ev.pGradedMedium, ev.gradedIOR, lv.pGradedMedium, lv.gradedIOR );
 				const typename Traits::value_type contrib =
-					VertexThroughput<Tag>( lv, tag ) * fLight * ( G * weight ) * Tr_conn_int * fEye
+					VertexThroughput<Tag>( lv, tag ) * fLight * ( G * ( weight * gradedScale ) ) * Tr_conn_int * fEye
 					* VertexThroughput<Tag>( ev, tag );
 				total = total + contrib;
 			}
@@ -1876,11 +3189,13 @@ RISEPel VCMIntegrator::EvaluateInteriorConnections(
 	const std::vector<VCMMisQuantities>& lightMis,
 	const std::vector<BDPTVertex>& eyeVerts,
 	const std::vector<VCMMisQuantities>& eyeMis,
-	const VCMNormalization& norm
+	const VCMNormalization& norm, ISampler* alphaSampler
 	) const
 {
+    FallbackSampler alphaFallback( alphaSampler );
+    ISampler& sampler = alphaFallback.Get();
 	return EvaluateInteriorConnectionsImpl<PelTag>(
-		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, PelTag{} );
+		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, PelTag{}, sampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1916,6 +3231,7 @@ void VCMIntegrator::ConvertEyeSubpath(
 	outMis.resize( n );
 
 	VCMMisQuantities mis;
+	VCMTransfer xfer;	// DL-467: (dVC, dVM) step since the previous record
 
 	for( std::size_t i = 0; i < n; i++ )
 	{
@@ -1932,6 +3248,7 @@ void VCMIntegrator::ConvertEyeSubpath(
 				return;
 			}
 			mis = InitCamera( v.emissionPdfW, norm );
+			xfer.StampAndRestart( mis );
 			outMis[0] = mis;
 			continue;
 		}
@@ -1941,15 +3258,18 @@ void VCMIntegrator::ConvertEyeSubpath(
 		// isn't the tail vertex, a BSDF-sampling update.
 		//
 
-		// Mirror of ConvertLightSubpath's BSSRDF handling: the entry
-		// vertex supplies an area-density directly, so record its
-		// reciprocal for VC MIS and skip the ordinary edge-Jacobian path.
+		// BSSRDF / random-walk entry vertex: the jump the EYE sampled.
+		// Its area density needs no edge Jacobian; the MIS state restarts
+		// at the barrier (DL-317, see the comment near the top of this
+		// file).
 		if( v.isBSSRDFEntry ) {
-			mis = ApplyBSSRDFEntryAreaUpdate( v );
+			// DL-317: the jump is a barrier -- see BSSRDFEntryVertexState.
+			mis = BSSRDFEntryVertexState();
+			xfer.Reset( mis );
+			xfer.StampAndRestart( mis );
 			outMis[i] = mis;
-			// Eye side ungated — see comment at top of ConvertEyeSubpath.
-			mis = ApplyBSSRDFEntryOnwardUpdate(
-				mis, verts, i, norm );
+			mis = ApplyBSSRDFEntryOnwardUpdate( verts, i, norm );
+			xfer.Reset( mis );
 			continue;
 		}
 
@@ -1963,6 +3283,7 @@ void VCMIntegrator::ConvertEyeSubpath(
 
 		const Scalar cosFix = isMedium ? v.sigma_t_scalar : v.cosAtGen;
 		if( skipRecurrence || cosFix <= 0 ) {
+			xfer.StampAndRestart( mis );
 			outMis[i] = mis;
 			continue;
 		}
@@ -1971,6 +3292,7 @@ void VCMIntegrator::ConvertEyeSubpath(
 		const Vector3 step = Vector3Ops::mkVector3( v.position, prev.position );
 		const Scalar distSq = Vector3Ops::SquaredModulus( step );
 		if( distSq <= 0 ) {
+			xfer.StampAndRestart( mis );
 			outMis[i] = mis;
 			continue;
 		}
@@ -1978,7 +3300,9 @@ void VCMIntegrator::ConvertEyeSubpath(
 		// Eye-path geometric update always applies the
 		// distance-squared term to dVCM (the camera is finite).
 		mis = ApplyGeometricUpdate( mis, distSq, cosFix, /*applyDistSqToDVCM*/ true );
+		xfer.ComposeGeometric( cosFix );
 
+		xfer.StampAndRestart( mis );
 		outMis[i] = mis;
 
 		// Medium vertices: geometric update applied above.
@@ -1997,18 +3321,21 @@ void VCMIntegrator::ConvertEyeSubpath(
 
 					const Scalar nextFactor = AreaToSolidAngleFactor( next, -wo );
 					const Scalar bsdfDirPdfW = ( nextFactor > 0 )
-						? next.pdfFwd * nextDistSq / nextFactor : Scalar( 0 );
+						? next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor : Scalar( 0 );
 
 					const Scalar invDist = ( distSq > 0 ) ? ( Scalar( 1 ) / std::sqrt( distSq ) ) : Scalar( 0 );
 					const Vector3 dirPrevToCur = step * invDist;
 					const Scalar prevFactor = AreaToSolidAngleFactor( prev, dirPrevToCur );
 					const Scalar bsdfRevPdfW = ( prev.pdfRev > 0 && prevFactor > 0 )
-						? prev.pdfRev * distSq / prevFactor : Scalar( 0 );
+						? prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor : Scalar( 0 );
 
 					// Eye side ungated — see top-of-function comment.
+					// DL-469: the merge at a medium vertex is the volume merge.
+					const VCMNormalization localNorm = VCMIntegrator::BoundaryVolumeNormalization(norm, v);
+					xfer.ComposeBsdf( mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW, false, localNorm, true );
 					mis = ApplyBsdfSamplingUpdate(
 						mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW,
-						false, norm );
+						false, localNorm, true );
 				}
 			}
 			continue;
@@ -2025,9 +3352,15 @@ void VCMIntegrator::ConvertEyeSubpath(
 			}
 			const Scalar nextDist = std::sqrt( nextDistSq );
 			const Vector3 wo = nextStep * ( Scalar( 1 ) / nextDist );
-			const Scalar cosThetaOut = fabs( Vector3Ops::Dot( v.normal, wo ) );
+			// The recurrence tracks geometric area densities. The BSDF PDF
+		// already contains its shading-frame sampling distribution.
+		const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
 
-			if( v.isDelta ) {
+			// DL-126: also treat a null-BSDF, non-connectible vertex as
+			// opaque here -- see the light-subpath twin's comment above
+			// for the derivation.
+			if( v.isDelta || !v.isConnectible ) {
+				xfer.ComposeBsdf( mis, cosThetaOut, Scalar( 0 ), Scalar( 0 ), true, norm );
 				mis = ApplyBsdfSamplingUpdate(
 					mis, cosThetaOut,
 					Scalar( 0 ), Scalar( 0 ),
@@ -2043,7 +3376,7 @@ void VCMIntegrator::ConvertEyeSubpath(
 			if( nextFactor <= 0 ) {
 				continue;
 			}
-			const Scalar bsdfDirPdfW_out = next.pdfFwd * nextDistSq / nextFactor;
+			const Scalar bsdfDirPdfW_out = next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor;
 
 			const Scalar invDist = ( distSq > 0 ) ? ( Scalar( 1 ) / std::sqrt( distSq ) ) : Scalar( 0 );
 			const Vector3 dirPrevToCur = step * invDist;
@@ -2051,10 +3384,11 @@ void VCMIntegrator::ConvertEyeSubpath(
 
 			Scalar bsdfRevPdfW_out = 0;
 			if( prev.pdfRev > 0 && prevFactor > 0 ) {
-				bsdfRevPdfW_out = prev.pdfRev * distSq / prevFactor;
+				bsdfRevPdfW_out = prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor;
 			}
 
 			// Eye side ungated — see top-of-function comment.
+			xfer.ComposeBsdf( mis, cosThetaOut, bsdfDirPdfW_out, bsdfRevPdfW_out, false, norm );
 			mis = ApplyBsdfSamplingUpdate(
 				mis, cosThetaOut,
 				bsdfDirPdfW_out, bsdfRevPdfW_out,
@@ -2079,13 +3413,17 @@ void VCMIntegrator::ConvertEyeSubpath(
 //////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////
 // EvaluateMergesImpl — templated body shared by Pel and NM variants.
-// For NM, LightVertexThroughput<NMTag> applies the RISEPelToNMProxy
-// luminance projection since the store holds Pel only (v1 behavior).
+// For NM, LightVertexThroughput<NMTag> projects the store's Pel
+// throughput with an illuminant uplift at the eye sample's wavelength;
+// the store holds Pel only because the light pass is not
+// wavelength-matched to the eye pass (see
+// VCMIntegrator::LightThroughputRadianceNM).
 //////////////////////////////////////////////////////////////////////
 namespace
 {
 	template<class Tag>
 	typename SpectralValueTraits<Tag>::value_type EvaluateMergesImpl(
+		const BDPTIntegrator& bdpt,
 		const std::vector<BDPTVertex>& eyeVerts,
 		const std::vector<VCMMisQuantities>& eyeMis,
 		const LightVertexStore& store,
@@ -2096,7 +3434,9 @@ namespace
 		using Traits = SpectralValueTraits<Tag>;
 		typename Traits::value_type total = Traits::zero();
 
-		if( !norm.mEnableVM || norm.mMergeRadiusSq <= 0 || norm.mVmNormalization <= 0 ) {
+		const bool surfaceMerging = MergingActive( norm );
+		const bool volumeMerging = norm.mVolumeNormalization > 0;	// DL-469
+		if( !surfaceMerging && !volumeMerging ) {
 			return total;
 		}
 		if( eyeVerts.size() != eyeMis.size() || eyeVerts.size() < 2 ) {
@@ -2111,10 +3451,104 @@ namespace
 			candidates.reserve( 256 );
 		}
 
+		// DL-380: eye-walk surface count of eyeVerts[0..i] (merge vertex
+		// included) and the eye walk's caps, for the per-merge partition.
+		const BDPTUtilities::EyeWalkCaps eyeCaps = VCMEyeWalkCaps( bdpt );
+		const VCMDepthCaps depthCaps = MakeVCMDepthCaps( bdpt );	// DL-467
+		static thread_local std::vector<VCMWalkCount> mergeEyeCount;
+		EyePrefixCounts( eyeVerts, mergeEyeCount );
+		const BDPTUtilities::BounceTypeCaps typeCaps = VCMBounceTypeCaps( bdpt );	// DL-471
+		static thread_local std::vector<unsigned int> eyeSurface;
+		eyeSurface.assign( eyeVerts.size(), 0u );
+		for( std::size_t j = 1; j < eyeVerts.size(); j++ ) {
+			eyeSurface[j] = eyeSurface[j - 1] + ( BDPTUtilities::CountsAsSurfaceHit( eyeVerts[j] ) ? 1u : 0u );
+		}
+
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
 			const BDPTVertex& v = eyeVerts[i];
-			if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
+
+			// DL-469: volume merge at a medium eye vertex (see "volume
+			// merging" near the top of this file).
+			if( v.type == BDPTVertex::MEDIUM ) {
+				if( !volumeMerging || !v.pPhaseFunc || !v.isConnectible ) {
+					continue;
+				}
+				Vector3 woM = Vector3Ops::mkVector3( eyeVerts[i - 1].position, v.position );
+				const Scalar woMDist = Vector3Ops::Magnitude( woM );
+				if( woMDist < VCM_RAY_EPSILON ) {
+					continue;
+				}
+				woM = woM * ( Scalar( 1 ) / woMDist );
+				candidates.clear();
+				const VCMNormalization localNorm = VCMIntegrator::BoundaryVolumeNormalization(norm, v);
+				store.Query( v.position, localNorm.mVolumeMergeRadiusSq, candidates );
+				if( candidates.empty() ) {
+					continue;
+				}
+				const Scalar kernel = localNorm.mVolumeNormalization;			// 1 / (eta_v phi)
+				const Scalar invMisV = Scalar( 1 ) / localNorm.mMisVolumeWeightFactor;	// 1 / (q eta_v phi)
+				typename Traits::value_type volumeMerge = Traits::zero();
+				for( std::size_t k = 0; k < candidates.size(); k++ )
+				{
+					const LightVertex& lv = candidates[k];
+					if( ( lv.flags & kLVF_IsMedium ) == 0 ) {
+						continue;
+					}
+					// Never merge across media (a light vertex in another
+					// medium inside the ball is a different volume).
+					if( lv.pObject != v.pMediumObject ) {
+						continue;
+					}
+					// M is counted by both walks.
+					if( lv.volumeBounces + v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce + 1 ) {
+						continue;
+					}
+					// DL-471: per-path per-type caps (the medium merge point
+					// counts no type); a path with an undeclared-type vertex at a
+					// counted position is S0 / NEE's.
+					if( typeCaps.active && ( !BDPTUtilities::TypeCapAdmits( BDPTUtilities::MergeTypeCapStatus( eyeVerts.data(),
+							static_cast<unsigned int>( i ), lv.capCounts, lv.pathLength, typeCaps ) ) ||
+							( lv.flags & kLVF_TypeSplitPrefix ) ||
+						( i >= 2 && BDPTUtilities::AnyNeedsTypeSplit( eyeVerts.data(), 1, static_cast<unsigned int>( i - 1 ), typeCaps ) ) ) ) {
+						continue;
+					}
+					// DL-317 / DL-380: as for a surface merge (below).
+					if( ( lv.flags & kLVF_JumpCover ) &&
+						BDPTUtilities::EyeWalkCanGenerate(
+							static_cast<long long>( eyeSurface[i] ) + lv.jumpCoverSurface,
+							static_cast<long long>( v.volumeBounces ) + lv.jumpCoverVolume,
+							( lv.flags & kLVF_JumpCoverEscape ) != 0, eyeCaps ) )
+					{
+						continue;
+					}
+					const Vector3 wiAtEye = -lv.wi;
+					const typename Traits::value_type phase =
+						RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiAtEye, woM, tag );
+					if( PositiveMagnitude( phase ) <= 0 ) {
+						continue;
+					}
+					const Scalar phaseDirPdfW = RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, woM, wiAtEye, tag );
+					const Scalar phaseRevPdfW = RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, wiAtEye, woM, tag );
+					VCMWalkCount lightBase;
+					lightBase.surface = lv.lightSurface;
+					lightBase.volume = lv.volumeBounces;
+					const VCMWindowed eyeWin = EyeSideWindow( eyeVerts, eyeMis, i, lightBase, true, depthCaps,
+						EyeHandedCount( mergeEyeCount, i, true ) );
+					// DL-470: wLight's levels past the eye walk's caps removed.
+					VCMMisCore lvMis = lv.mis;
+					MergeLightSideWindow( lv, store.StepsOf( lv ), mergeEyeCount[i], depthCaps, lvMis.dVC, lvMis.dVM );
+					const Scalar wLight = ( lvMis.dVCM + lvMis.dVC * phaseDirPdfW ) * invMisV;
+					const Scalar wCamera = ( eyeWin.mis.dVCM + eyeWin.mis.dVC * phaseRevPdfW ) * invMisV;
+					const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
+					volumeMerge = volumeMerge + phase * LightVertexThroughput<Tag>( lv, tag ) * weight;
+				}
+				total = total + VertexThroughput<Tag>( v, tag ) * InverseScatteringAt<Tag>( v, tag ) *
+					volumeMerge * kernel;
+				continue;
+			}
+
+			if( !surfaceMerging || v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
 				continue;
 			}
 			if( !v.isConnectible ) {
@@ -2141,28 +3575,87 @@ namespace
 			{
 				const LightVertex& lv = candidates[k];
 
-				if( ( lv.flags & kLVF_IsConnectible ) == 0 ) {
+				if( ( lv.flags & kLVF_IsConnectible ) == 0 || ( lv.flags & kLVF_IsMedium ) ) {
+					continue;
+				}
+
+				if( lv.volumeBounces + v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
+					continue;
+				}
+				// DL-471: per-path per-type caps (the merge point is priced
+				// by the eye vertex's BSDF and counts its type unless it is
+				// the free x_K, i.e. lv.pathLength == 1).
+				// A path with an undeclared-type vertex at a counted position
+				// (the merge point counts when lv.pathLength >= 2) is S0 / NEE's.
+				BDPTUtilities::TypeCapPlan mergePlan;	// DL-481: a split merge point, applied below
+				if( typeCaps.active && ( !BDPTUtilities::TypeCapAdmits( BDPTUtilities::MergeTypeCapPlan( eyeVerts.data(),
+						static_cast<unsigned int>( i ), lv.capCounts, lv.pathLength, typeCaps, mergePlan ) ) ||
+					( lv.flags & kLVF_TypeSplitPrefix ) ||
+					( lv.pathLength >= 2 && BDPTUtilities::EndpointNeedsTypeSplit( v, typeCaps ) ) ||
+					( i >= 2 && BDPTUtilities::AnyNeedsTypeSplit( eyeVerts.data(), 1, static_cast<unsigned int>( i - 1 ), typeCaps ) ) ) ) {
+					continue;
+				}
+				// DL-317 / DL-380: a light vertex past an eye-coverable
+				// light-side jump merges only when the eye walk cannot
+				// generate the covering subpath (the light family then owns
+				// the path).  The covering walk needs this eye subpath's own
+				// surface hits plus `jumpCoverSurface` more.
+				if( ( lv.flags & kLVF_JumpCover ) &&
+					BDPTUtilities::EyeWalkCanGenerate(
+						static_cast<long long>( eyeSurface[i] ) + lv.jumpCoverSurface,
+						static_cast<long long>( v.volumeBounces ) + lv.jumpCoverVolume,
+						( lv.flags & kLVF_JumpCoverEscape ) != 0, eyeCaps ) )
+				{
 					continue;
 				}
 
 				const Vector3 wiAtEye = -lv.wi;
 
-				const typename Traits::value_type cameraBsdf =
-					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, wiAtEye, woAtEye, tag );
+				typename Traits::value_type cameraBsdf =
+					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiAtEye, woAtEye, tag );
 				if( PositiveMagnitude( cameraBsdf ) <= 0 ) {
 					continue;
+				}
+				// DL-481: the merge point keeps only the lobe types the
+				// per-type caps allow.
+				if( mergePlan.splitEye ) {
+					typename Traits::value_type fe[5];
+					if( !RISE::PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( v, wiAtEye, woAtEye, tag, fe ) ) {
+						continue;
+					}
+					cameraBsdf = BDPTUtilities::AllowedTypeProduct<typename Traits::value_type>( mergePlan, typeCaps, fe, fe );
+					if( PositiveMagnitude( cameraBsdf ) <= 0 ) {
+						continue;
+					}
 				}
 				const Scalar cameraBsdfDirPdfW =
 					RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, woAtEye, wiAtEye, tag );
 				const Scalar cameraBsdfRevPdfW =
 					RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, wiAtEye, woAtEye, tag );
 
+				// DL-470: wLight's deeper levels (the eye walk covering the
+				// light subpath behind the merge) exist only while that walk
+				// stays within its caps; the stored vertex's step records
+				// (store.StepsOf) window them like LightSideWindow.
+				// (Read through a VCMMisCore copy, the form the weight had
+				// before DL-470: a render where no window cuts stays
+				// bit-identical -- the code generation of the multiply-add
+				// otherwise moved one sample by an ulp under -ffast-math.)
+				VCMMisCore lvMis = lv.mis;
+				MergeLightSideWindow( lv, store.StepsOf( lv ), mergeEyeCount[i], depthCaps, lvMis.dVC, lvMis.dVM );
 				const Scalar wLight =
-					lv.mis.dVCM * norm.mMisVcWeightFactor
-					+ lv.mis.dVM * cameraBsdfDirPdfW;
+					lvMis.dVCM * norm.mMisVcWeightFactor
+					+ lvMis.dVM * cameraBsdfDirPdfW;
+				// DL-467: the light walk already reached the merge vertex
+				// (level 1 is free); deeper levels hand eye vertices to it.
+				VCMWalkCount mergeLightBase;
+				mergeLightBase.surface = lv.lightSurface;
+				mergeLightBase.volume = lv.volumeBounces;
+				const VCMWindowed mergeEyeWin = EyeSideWindow( eyeVerts, eyeMis, i, mergeLightBase, true, depthCaps,
+					EyeHandedCount( mergeEyeCount, i, true ) );
 				const Scalar wCamera =
-					eyeMis[i].dVCM * norm.mMisVcWeightFactor
-					+ eyeMis[i].dVM * cameraBsdfRevPdfW;
+					mergeEyeWin.mis.dVCM * norm.mMisVcWeightFactor
+					+ mergeEyeWin.mis.dVM * cameraBsdfRevPdfW;
 				const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
 
 				pixelMerge = pixelMerge + cameraBsdf * LightVertexThroughput<Tag>( lv, tag ) * weight;
@@ -2182,7 +3675,7 @@ RISEPel VCMIntegrator::EvaluateMerges(
 	const VCMNormalization& norm
 	) const
 {
-	return EvaluateMergesImpl<PelTag>( eyeVerts, eyeMis, store, norm, PelTag{} );
+	return EvaluateMergesImpl<PelTag>( *pGenerator, eyeVerts, eyeMis, store, norm, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2193,11 +3686,19 @@ RISEPel VCMIntegrator::EvaluateMerges(
 // ConvertEyeSubpath) is wavelength-independent and is reused from the
 // Pel side — the NM variants read the SAME VCMMisQuantities arrays.
 //
-// Implementation note: the light sources (ILight) only have a Pel
-// emittedRadiance API, so when a vertex has v.pLight we evaluate the
-// Pel radiance and convert to XYZ.Y as the NM-channel proxy.  For
-// mesh luminaries (v.pLuminary->GetMaterial()->GetEmitter()) we call
-// IEmitter::emittedRadianceNM directly, which IS wavelength-aware.
+// Implementation note (updated Stage C slice 2): every SOURCE term is
+// wavelength-aware.  `ILight::emittedRadianceNM` evaluates the light's
+// own illuminant spectrum (EvalLightRadiance<NMTag>), and mesh
+// luminaries (v.pLuminary->GetMaterial()->GetEmitter()) go through
+// `IEmitter::emittedRadianceNM` (EvalEmitterRadiance<NMTag>).  The old
+// "ILight is Pel-only, project to XYZ.Y" note is obsolete.
+//
+// The ONE remaining RGB → nm projection is the stored light-subpath
+// throughput consumed by the merge estimator — the light pass is not
+// wavelength-matched to the eye pass, so it cannot be traced per
+// wavelength.  It is uplifted as an ILLUMINANT (not a luma scalar) so
+// the VM strategies land on the same chroma as the VC ones; see
+// `VCMIntegrator::LightThroughputRadianceNM` near the top of this file.
 //////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////
@@ -2215,7 +3716,7 @@ Scalar VCMIntegrator::EvaluateS0NM(
 	const Scalar nm
 	) const
 {
-	return EvaluateS0Impl<NMTag>( scene, caster, eyeVerts, eyeMis, NMTag( nm ) );
+	return EvaluateS0Impl<NMTag>( *pGenerator, scene, caster, eyeVerts, eyeMis, NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2246,17 +3747,21 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
+	const Point2& cameraLensSample,
 	SplatFilm& splatFilm,
 	const VCMNormalization& norm,
 	const Scalar nm,
-	const IPixelFilter* pixelFilter
+	const IPixelFilter* pixelFilter,
+	const Scalar splatScale, ISampler* alphaSampler
 	) const
 {
+    FallbackSampler alphaFallback( alphaSampler );
+    ISampler& sampler = alphaFallback.Get();
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<NMTag>(
-		lightVerts, lightMis, scene, caster, *pGenerator, camera,
+		lightVerts, lightMis, scene, caster, *pGenerator, camera, cameraLensSample,
 		pFilm->GetWidth(), pFilm->GetHeight(),
-		splatFilm, norm, pixelFilter, NMTag( nm ) );
+		splatFilm, norm, pixelFilter, splatScale, NMTag( nm ), sampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2271,11 +3776,13 @@ Scalar VCMIntegrator::EvaluateInteriorConnectionsNM(
 	const std::vector<BDPTVertex>& eyeVerts,
 	const std::vector<VCMMisQuantities>& eyeMis,
 	const VCMNormalization& norm,
-	const Scalar nm
+	const Scalar nm, ISampler* alphaSampler
 	) const
 {
+    FallbackSampler alphaFallback( alphaSampler );
+    ISampler& sampler = alphaFallback.Get();
 	return EvaluateInteriorConnectionsImpl<NMTag>(
-		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, NMTag( nm ) );
+		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, NMTag( nm ), sampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2300,5 +3807,5 @@ Scalar VCMIntegrator::EvaluateMergesNM(
 	const Scalar nm
 	) const
 {
-	return EvaluateMergesImpl<NMTag>( eyeVerts, eyeMis, store, norm, NMTag( nm ) );
+	return EvaluateMergesImpl<NMTag>( *pGenerator, eyeVerts, eyeMis, store, norm, NMTag( nm ) );
 }

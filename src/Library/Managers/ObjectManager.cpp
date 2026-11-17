@@ -13,16 +13,276 @@
 
 #include "pch.h"
 #include "ObjectManager.h"
+#include "../Utilities/ExpressionMemo.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Log/Log.h"
 #include "../Utilities/Profiling.h"
+#include "../Objects/Object.h"      // DL-448 per-frame world-area prune
+#include "../Objects/CSGObject.h"   // telling a CSG operand from a container node (both are hidden)
+#include "../Interfaces/ISurfaceSignalProvider.h"	// ProximityDemand: the snapshot's cost gate
+#include "../Materials/CompositeMaterial.h"
+#include "../Materials/LambertianLuminaireMaterial.h"
+#include "../Materials/PhongLuminaireMaterial.h"
+#include "../Materials/CoatedMaterial.h"
+#include "../Materials/FabricMaterial.h"
+#include "../Utilities/ManifoldSolver.h"
+#include "../Utilities/BSSRDFSampling.h"
+#include "../Materials/DielectricMaterial.h"
+#include "../Materials/PerfectRefractorMaterial.h"
+#include "../Materials/Material.h"
+#include "../Materials/LambertianMaterial.h"
+#include "../Materials/PerfectReflectorMaterial.h"
+#include "../Materials/PolishedMaterial.h"
+#include "../Geometry/TriangleMeshGeometry.h"
+#include "../Geometry/TriangleMeshGeometryIndexed.h"
+#include "../Geometry/DisplacedGeometry.h"
+#include "../Geometry/BezierPatchGeometry.h"
+#include "../Geometry/BilinearPatchGeometry.h"
+#include "../Geometry/ClippedPlaneGeometry.h"
+#include "../Materials/WeaveMaterial.h"
+#include "../Materials/OrenNayarMaterial.h"
+#include "../Materials/CookTorranceMaterial.h"
+#include <unordered_map>
+#include <unordered_set>
+#include "../Materials/IsotropicPhongMaterial.h"
+#include "../Materials/AshikminShirleyAnisotropicPhongMaterial.h"
+#include "../Materials/SchlickMaterial.h"
+#include "../Materials/WardIsotropicGaussianMaterial.h"
+#include "../Materials/WardAnisotropicEllipticalGaussianMaterial.h"
+#include "../Materials/TranslucentMaterial.h"
+#include "../Materials/HairMaterial.h"
+#include "../Materials/DataDrivenMaterial.h"
+#include "../Materials/DonnerJensenSkinBSSRDFMaterial.h"
+#include "../Materials/SubSurfaceScatteringMaterial.h"
+#include "../Materials/RandomWalkSSSMaterial.h"
+#include "../Materials/GenericHumanTissueMaterial.h"
+#include "../Materials/BioSpecSkinMaterial.h"
+#include "../Materials/GGXMaterial.h"
+#include "../Materials/SheenMaterial.h"
 #include <atomic>
+#include "../Utilities/ISampler.h"
+#include <cmath>
+#include <typeinfo>	// LogDistanceRefusal names the refusing geometry's kind
 #include <cstdint>
+#include <vector>
+#include <algorithm>
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
 namespace {
+
+// Inspect authored material graphs, never sampled specular metadata. A
+// composite nested under a luminaire or another wrapper remains unsupported.
+bool WrapsComposite(const IMaterial* material)
+{
+    if(!material) return false;
+    if(dynamic_cast<const CompositeMaterial*>(material)
+        || dynamic_cast<const CompositeSPF*>(material->GetSPF())) return true;
+    if(const auto* m = dynamic_cast<const LambertianLuminaireMaterial*>(material))
+        return WrapsComposite(&m->GetBaseMaterial());
+    if(const auto* m = dynamic_cast<const PhongLuminaireMaterial*>(material))
+        return WrapsComposite(&m->GetBaseMaterial());
+    if(const auto* m = dynamic_cast<const CoatedMaterial*>(material))
+        return WrapsComposite(&m->GetBase());
+    if(const auto* m = dynamic_cast<const FabricMaterial*>(material))
+        return WrapsComposite(&m->GetBase());
+    return false;
+}
+// Optional transmission hints do not certify an extension's metadata. Only
+// exact audited native types can establish absence of an unsupported clear
+// interface. Unknown providers conservatively make anchors ineligible.
+bool AuditedMaterialGraph(const IMaterial& material)
+{
+    const std::type_info& type=typeid(material);
+    if(type==typeid(LambertianLuminaireMaterial))
+        return AuditedMaterialGraph(dynamic_cast<const LambertianLuminaireMaterial&>(material).GetBaseMaterial());
+    if(type==typeid(PhongLuminaireMaterial))
+        return AuditedMaterialGraph(dynamic_cast<const PhongLuminaireMaterial&>(material).GetBaseMaterial());
+    if(type==typeid(CoatedMaterial))
+        return AuditedMaterialGraph(dynamic_cast<const CoatedMaterial&>(material).GetBase());
+    if(type==typeid(FabricMaterial))
+        return AuditedMaterialGraph(dynamic_cast<const FabricMaterial&>(material).GetBase());
+    return type==typeid(NullMaterial)
+        || type==typeid(LambertianMaterial)
+        || type==typeid(PerfectReflectorMaterial)
+        || type==typeid(PerfectRefractorMaterial)
+        || type==typeid(DielectricMaterial)
+        || type==typeid(PolishedMaterial)
+        || type==typeid(CompositeMaterial)
+        || type==typeid(LambertianLuminaireMaterial)
+        || type==typeid(PhongLuminaireMaterial)
+        || type==typeid(CoatedMaterial)
+        || type==typeid(FabricMaterial)
+        || type==typeid(WeaveMaterial)
+        || type==typeid(OrenNayarMaterial)
+        || type==typeid(CookTorranceMaterial)
+        || type==typeid(IsotropicPhongMaterial)
+        || type==typeid(AshikminShirleyAnisotropicPhongMaterial)
+        || type==typeid(SchlickMaterial)
+        || type==typeid(WardIsotropicGaussianMaterial)
+        || type==typeid(WardAnisotropicEllipticalGaussianMaterial)
+        || type==typeid(TranslucentMaterial)
+        || type==typeid(HairMaterial)
+        || type==typeid(DataDrivenMaterial)
+        || type==typeid(DonnerJensenSkinBSSRDFMaterial)
+        || type==typeid(SubSurfaceScatteringMaterial)
+        || type==typeid(RandomWalkSSSMaterial)
+        || type==typeid(GenericHumanTissueMaterial)
+        || type==typeid(BioSpecSkinMaterial)
+        || type==typeid(GGXMaterial)
+        || type==typeid(SheenMaterial);
+}
+// The delta-shadow gate covers clear transmission through every caster,
+// so a transmissive interface outside the proposal domain makes an anchor
+// ineligible. A remote supported caster cannot repair that missing coverage.
+// This is distinct from composite mode selection: rejection keeps PT and
+// disables SMS at the anchor; composites retain the entire legacy mode.
+bool ObjectHasClearTransmissionMemo(const IObject& object, std::unordered_map<const CSGObject*, bool>& memo)
+{
+    const IMaterial* material = object.GetMaterial();
+    if(material && !AuditedMaterialGraph(*material)) return true;
+    const ISPF* spf = material ? material->GetSPF() : nullptr;
+    if(dynamic_cast<const DielectricSPF*>(spf) || dynamic_cast<const PerfectRefractorSPF*>(spf)
+        || (material && (material->CouldLightPassThrough() || material->HasDeltaPassThrough()))) return true;
+    if(const auto* csg = dynamic_cast<const CSGObject*>(&object)) {
+        const auto it = memo.find(csg);
+        if(it != memo.end()) return it->second;
+        memo.emplace(csg, false);
+        const bool res = (csg->GetOperandA() && ObjectHasClearTransmissionMemo(*csg->GetOperandA(), memo))
+            || (csg->GetOperandB() && ObjectHasClearTransmissionMemo(*csg->GetOperandB(), memo));
+        memo[csg] = res;
+        return res;
+    }
+    return false;
+}
+bool ObjectHasRejectedTransmissiveCaster(const IObject& object, std::unordered_map<const CSGObject*, bool>& clearTransMemo)
+{
+    const IMaterial* material = object.GetMaterial();
+    if(material && !AuditedMaterialGraph(*material)) return true;
+    const ISPF* spf = material ? material->GetSPF() : nullptr;
+    const bool nativeClear = dynamic_cast<const DielectricSPF*>(spf)
+        || dynamic_cast<const PerfectRefractorSPF*>(spf);
+    const bool transmissive = material && (nativeClear
+        || (material->CouldLightPassThrough() || material->HasDeltaPassThrough()));
+    if(transmissive && (!SMSDomainReplay::PotentialCaster(*material)
+        || object.GetInteriorMedium() || !object.GetGeometry()
+        || !object.GetGeometry()->CanBeAreaLight())) return true;
+    // A partial HG interface has no supported delta-limit query. Its
+    // scattering declaration must certify independence before a value can
+    // establish eligibility for the whole interface.
+    if(const auto* dielectric = dynamic_cast<const DielectricMaterial*>(material))
+        if(dielectric->GetHG() && !dielectric->GetScattering().IsPositionIndependent()) return true;
+    // A CSG hit can inherit a clear operand's material while the container
+    // itself has no material. Its complete surface has no uniform-sampling
+    // API, so even individually supported operands cannot give the required
+    // positive proposal mass for that effective caster.
+    if(dynamic_cast<const CSGObject*>(&object) && ObjectHasClearTransmissionMemo(object, clearTransMemo)) return true;
+    return false;
+}
+// Native mesh intersections may orient their geometric normal to authored
+// shading normals before recording the ray-facing flip. Opposing corners
+// therefore cannot certify winding-derived medium membership. Mesh finalization
+// and mutation own the audit; preparation reads it without copying triangles.
+bool ObjectHasUncertainSMSNormalOrientation(const IObject& object)
+{
+    const IGeometry* geometry=object.GetGeometry();
+    if(!geometry || !object.GetMaterial() || !SMSDomainReplay::PotentialCaster(*object.GetMaterial())) return false;
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry))
+        return mesh->HasUncertainSMSNormalOrientation();
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(geometry))
+        return mesh->HasUncertainSMSNormalOrientation();
+    if(const auto* mesh=dynamic_cast<const DisplacedGeometry*>(geometry))
+        return mesh->HasUncertainSMSNormalOrientation();
+    return false;
+}
+// DL-382: a clear transmissive surface whose geometry is neither certified
+// closed nor certified open (a non-planar open mesh, a slab authored as one
+// open mesh, a mesh with stray boundary edges) is crossed by the IOR-stack
+// rule, which is non-reciprocal on genuinely open sheets (DL-345).
+// Kind 1: failed indexed/displaced certificate; 2: raw mesh with no closed
+// certificate; 3: patches/CSG with no sound open-versus-closed certificate;
+// 4: certified open mesh with the negative signed-volume winding risk.
+// An uncertainty warning must never confer an open-sheet transport flag.
+bool IsClearTransmissiveMaterial(const IMaterial* material, bool& outBroadProof)
+{
+    outBroadProof=false;
+    const ISPF* spf=material ? material->GetSPF() : nullptr;
+    if(!dynamic_cast<const DielectricSPF*>(spf) && !dynamic_cast<const PerfectRefractorSPF*>(spf)) return false;
+    const IMaterial* proofMaterial=material;
+    while(proofMaterial) {
+        if(const auto* lum=dynamic_cast<const LambertianLuminaireMaterial*>(proofMaterial))
+            proofMaterial=&lum->GetBaseMaterial();
+        else if(const auto* lum=dynamic_cast<const PhongLuminaireMaterial*>(proofMaterial))
+            proofMaterial=&lum->GetBaseMaterial();
+        else break;
+    }
+    outBroadProof=dynamic_cast<const DielectricMaterial*>(proofMaterial)
+        || dynamic_cast<const PerfectRefractorMaterial*>(proofMaterial);
+    return true;
+}
+void CollectCSGClearMaterials(const CSGObject& csg, bool& anyClear, bool& allBroadProof)
+{
+    struct ClearMatScan : public IEnumCallback<IMaterial>
+    {
+        bool& anyClearRef;
+        bool& allBroadRef;
+        ClearMatScan(bool& a_, bool& b_) : anyClearRef(a_), allBroadRef(b_) {}
+        bool operator()(const IMaterial& mat) override
+        {
+            bool broad = false;
+            if(IsClearTransmissiveMaterial(&mat, broad)) {
+                anyClearRef = true;
+                if(!broad) allBroadRef = false;
+            }
+            return true;
+        }
+    } scan(anyClear, allBroadProof);
+    csg.EnumerateEffectiveMaterials(scan);
+}
+int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
+{
+    if(const auto* csg=dynamic_cast<const CSGObject*>(&object)) {
+        bool anyClear=false, allBroadProof=true;
+        CollectCSGClearMaterials(*csg,anyClear,allBroadProof);
+        if(!anyClear) return 0;
+        if(csg->IsCertifiedWatertight()) return 0;
+        if(allBroadProof && csg->IsProvablyOpenSheet(true))
+            return csg->HasNegativeOpenSignedVolume() ? 4 : 0;
+        return 3;
+    }
+    bool broadProof=false;
+    if(!IsClearTransmissiveMaterial(object.GetMaterial(),broadProof)) return 0;
+    const IGeometry* geometry = object.GetGeometry();
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry))
+        return broadProof && mesh->IsProvablyOpenSheet() && mesh->HasNegativeOpenSignedVolume() ? 4 :
+            ((!mesh->IsCertifiedWatertight() && !(broadProof ? mesh->IsProvablyOpenSheet() : mesh->IsZeroVolumeSheet())) ? 1 : 0);
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(geometry))
+        return (broadProof ? mesh->IsProvablyOpenSheet() : mesh->IsZeroVolumeSheet())
+            ? (broadProof && mesh->HasNegativeOpenSignedVolume() ? 4 : 0) : 2;
+    if(const auto* displaced=dynamic_cast<const DisplacedGeometry*>(geometry))
+        return broadProof && displaced->HasNegativeOpenSignedVolume() ? 4
+            : (displaced->HasUncertifiedOpenness(broadProof) ? 1 : 0);
+    if(const auto* bezier=dynamic_cast<const BezierPatchGeometry*>(geometry))
+        return broadProof && bezier->IsProvablyOpenSheet() && bezier->HasNegativeOpenSignedVolume() ? 4 :
+            ((!bezier->IsCertifiedWatertight() && !(broadProof ? bezier->IsProvablyOpenSheet() : false)) ? 3 : 0);
+    if(const auto* bilinear=dynamic_cast<const BilinearPatchGeometry*>(geometry))
+        return broadProof && bilinear->IsProvablyOpenSheet() && bilinear->HasNegativeOpenSignedVolume() ? 4 :
+            ((!bilinear->IsCertifiedWatertight() && !(broadProof ? bilinear->IsProvablyOpenSheet() : false)) ? 3 : 0);
+    if(const auto* plane=dynamic_cast<const ClippedPlaneGeometry*>(geometry)) return plane->IsPlanarConvexQuad() ? 0 : 3;
+    return 0;
+}
+bool ObjectWrapsCompositeImpl(const IObject& object, std::unordered_set<const CSGObject*>& visited)
+{
+    if(WrapsComposite(object.GetMaterial())) return true;
+    if(const auto* csg = dynamic_cast<const CSGObject*>(&object)) {
+        if(!visited.insert(csg).second) return false;
+        return (csg->GetOperandA() && ObjectWrapsCompositeImpl(*csg->GetOperandA(), visited))
+            || (csg->GetOperandB() && ObjectWrapsCompositeImpl(*csg->GetOperandB(), visited));
+    }
+    return false;
+}
 
 // Process-wide monotonic source for spatial-structure generation values.
 // Each ObjectManager seeds its generation here at construction and draws
@@ -36,11 +296,172 @@ namespace {
 // ("advanced every time InvalidateSpatialStructure() runs", equality
 // stable across non-spatial edits) is preserved -- consumers compare for
 // equality/inequality, never arithmetic.
+//! A hidden node is either a 87 CONTAINER (a pure transform: no geometry, no
+//! operands) or a CSG OPERAND (hidden by its composite).  Only the first is a
+//! scene-graph node.  A CSGObject also has null geometry -- its shape comes
+//! from its operands, and nested CSG makes an inner composite a legitimate
+//! operand -- so "no geometry" alone does not identify a container.
+bool IsContainerNode_( const IObjectPriv* obj )
+{
+	if( !obj || obj->GetGeometry() ) return false;
+	return dynamic_cast<const Implementation::CSGObject*>( obj ) == 0;
+}
+
+//! DL-05: the IntersectShadowRay gate plus "the object's own material has
+//! no delta pass-through" -- see IObjectManager::IntersectShadowRayOpaque.
+inline bool OpaqueShadowCaster_( const IObjectPriv* obj )
+{
+	if( !obj->IsWorldVisible() || !obj->DoesCastShadows() ) {
+		return false;
+	}
+	const IMaterial* pMat = obj->GetMaterial();
+	return !( pMat && pMat->HasDeltaPassThrough() );
+}
+
 unsigned long long NextSpatialGeneration()
 {
 	static std::atomic<unsigned long long> sCounter{ 0 };
 	return sCounter.fetch_add( 1, std::memory_order_relaxed ) + 1;
 }
+
+//! DL-05: OcclusionElementProcessor's twin for IntersectShadowRayOpaque --
+//! identical forwarding, except the any-hit gate is OpaqueShadowCaster_.
+//! Same lifetime rules as OcclusionElementProcessor below (stack-owned,
+//! never addref'd by the tree).
+class OpaqueShadowElementProcessor : public RISE::TreeElementProcessor<const IObjectPriv*>
+{
+public:
+	explicit OpaqueShadowElementProcessor( const ObjectManager& mgr_ ) : mgr( mgr_ ) {}
+
+	void RayElementIntersection( RayIntersectionGeometric& ri, const IObjectPriv* elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override
+	{
+		mgr.RayElementIntersection( ri, elem, bHitFrontFaces, bHitBackFaces );
+	}
+
+	void RayElementIntersection( RayIntersection& ri, const IObjectPriv* elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override
+	{
+		mgr.RayElementIntersection( ri, elem, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+	}
+
+	bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const IObjectPriv* elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override
+	{
+		if( OpaqueShadowCaster_( elem ) ) {
+			return elem->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
+		}
+		return false;
+	}
+
+	BoundingBox GetElementBoundingBox( const IObjectPriv* elem ) const override
+	{
+		return mgr.GetElementBoundingBox( elem );
+	}
+
+	bool ElementBoxIntersection( const IObjectPriv* elem, const BoundingBox& bbox ) const override
+	{
+		return mgr.ElementBoxIntersection( elem, bbox );
+	}
+
+	char WhichSideofPlaneIsElement( const IObjectPriv* elem, const Plane& plane ) const override
+	{
+		return mgr.WhichSideofPlaneIsElement( elem, plane );
+	}
+
+	void SerializeElement( IWriteBuffer& buffer, const IObjectPriv* elem ) const override
+	{
+		mgr.SerializeElement( buffer, elem );
+	}
+
+	void DeserializeElement( IReadBuffer& buffer, const IObjectPriv*& elem ) const override
+	{
+		mgr.DeserializeElement( buffer, elem );
+	}
+
+	void addref() const override {}
+	bool release() const override { return false; }
+	unsigned int refcount() const override { return 1; }
+
+private:
+	const ObjectManager& mgr;
+};
+
+//! GEOMETRY-PRESENCE sibling of ObjectManager's own TreeElementProcessor
+//! implementation.  Forwards every method to the real ObjectManager
+//! UNCHANGED except RayElementIntersection_IntersectionOnly, which drops
+//! the DoesCastShadows() gate that ObjectManager::RayElementIntersection_
+//! IntersectionOnly applies -- see IObjectManager::IntersectOcclusionRay's
+//! contract comment (Interfaces/IObjectManager.h) for why.
+//!
+//! This lets ObjectManager::IntersectOcclusionRay traverse the SAME
+//! already-built top-level BVH/octree the shadow-ray path uses, via the
+//! `epOverride` parameter added to BVH<>::IntersectRay_IntersectionOnly /
+//! Octree<>::IntersectRay_IntersectionOnly, rather than building a second
+//! tree or duplicating either traversal -- the shadow-ray hot loop (NEE)
+//! is untouched.
+//!
+//! Constructed on the stack per call and handed to the tree by reference,
+//! never addref'd/stored: BVH<>'s `ep` / Octree<>'s `ep` are plain C++
+//! references, not Reference<T>, and the traversal never calls
+//! addref/release/refcount on them (confirmed by inspection of BVH<>'s
+//! and Octree<>'s constructors).  Those three IReference methods below
+//! are therefore unreachable no-op stubs, present only because
+//! TreeElementProcessor<T> inherits IReference.
+class OcclusionElementProcessor : public RISE::TreeElementProcessor<const IObjectPriv*>
+{
+public:
+	explicit OcclusionElementProcessor( const ObjectManager& mgr_ ) : mgr( mgr_ ) {}
+
+	void RayElementIntersection( RayIntersectionGeometric& ri, const IObjectPriv* elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override
+	{
+		mgr.RayElementIntersection( ri, elem, bHitFrontFaces, bHitBackFaces );
+	}
+
+	void RayElementIntersection( RayIntersection& ri, const IObjectPriv* elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override
+	{
+		mgr.RayElementIntersection( ri, elem, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+	}
+
+	//! The ONE line that differs from ObjectManager::RayElementIntersection_
+	//! IntersectionOnly: IsWorldVisible() only, no DoesCastShadows() gate.
+	bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const IObjectPriv* elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override
+	{
+		if( elem->IsWorldVisible() ) {
+			return elem->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
+		}
+		return false;
+	}
+
+	BoundingBox GetElementBoundingBox( const IObjectPriv* elem ) const override
+	{
+		return mgr.GetElementBoundingBox( elem );
+	}
+
+	bool ElementBoxIntersection( const IObjectPriv* elem, const BoundingBox& bbox ) const override
+	{
+		return mgr.ElementBoxIntersection( elem, bbox );
+	}
+
+	char WhichSideofPlaneIsElement( const IObjectPriv* elem, const Plane& plane ) const override
+	{
+		return mgr.WhichSideofPlaneIsElement( elem, plane );
+	}
+
+	void SerializeElement( IWriteBuffer& buffer, const IObjectPriv* elem ) const override
+	{
+		mgr.SerializeElement( buffer, elem );
+	}
+
+	void DeserializeElement( IReadBuffer& buffer, const IObjectPriv*& elem ) const override
+	{
+		mgr.DeserializeElement( buffer, elem );
+	}
+
+	void addref() const override {}
+	bool release() const override { return false; }
+	unsigned int refcount() const override { return 1; }
+
+private:
+	const ObjectManager& mgr;
+};
 
 }
 
@@ -52,17 +473,242 @@ unsigned long long NextSpatialGeneration()
 
 bool ObjectManager::ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const
 {
-	return bbox.DoIntersect( elem->getBoundingBox() );
+	return bbox.DoIntersect( ElementBounds( elem ) );
 }
 
 BoundingBox ObjectManager::GetElementBoundingBox( const MYOBJ elem ) const
 {
-	return elem->getBoundingBox();
+	return ElementBounds( elem );
 }
 
 char ObjectManager::WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const
 {
-	return GeometricUtilities::WhichSideOfPlane( plane, elem->getBoundingBox() );
+	return GeometricUtilities::WhichSideOfPlane( plane, ElementBounds( elem ) );
+}
+
+BoundingBox ObjectManager::ElementBounds( const IObjectPriv* elem ) const
+{
+	if( !motionBounds.empty() ) {
+		const std::map<const IObjectPriv*, MotionBox>::const_iterator it = motionBounds.find( elem );
+		if( it != motionBounds.end() ) {
+			const MotionBox& m = it->second;
+			const Scalar mll[3] = { m.box.ll.x, m.box.ll.y, m.box.ll.z };
+			const Scalar mur[3] = { m.box.ur.x, m.box.ur.y, m.box.ur.z };
+			const Scalar pad[3] = { m.pad.x, m.pad.y, m.pad.z };
+			Scalar ll[3], ur[3];
+			for( int a = 0; a < 3; a++ ) {
+				if( m.axisFinite[a] ) {
+					ll[a] = mll[a] - 0.5*pad[a];
+					ur[a] = mur[a] + 0.5*pad[a];
+				} else {
+					// Non-finite (or near-overflow) in SOME shutter sample:
+					// the full extent, not the nominal box, which may be
+					// finite at the nominal pose and still under-cover.
+					ll[a] = -RISE_INFINITY;
+					ur[a] = RISE_INFINITY;
+				}
+			}
+			return BoundingBox( Point3( ll[0], ll[1], ll[2] ), Point3( ur[0], ur[1], ur[2] ) );
+		}
+	}
+	return elem->getBoundingBox();
+}
+
+void ObjectManager::ClearMotionBounds() const
+{
+	motionBounds.clear();
+	motionSweepActive = false;
+	recomposePerSample = true;
+	motionSweepMovedNames.clear();
+	recomposeList.clear();
+}
+
+void ObjectManager::BeginMotionSweep() const
+{
+	motionBounds.clear();
+	motionSweepActive = true;
+	motionSweepSamples = 0;
+	motionSweepMovedHierarchy = false;
+	motionSweepMovedNames.clear();
+	recomposeList.clear();
+}
+
+void ObjectManager::EndMotionSweep() const
+{
+	motionSweepActive = false;
+	recomposePerSample = motionSweepMovedHierarchy;
+	recomposeList.clear();
+	if( recomposePerSample ) {
+		BuildRecomposeList();
+	}
+	motionSweepMovedNames.clear();
+}
+
+void ObjectManager::BuildRecomposeList() const
+{
+	// DL-463 (d): the roots of the hierarchies the sweep saw move.  Climb
+	// each moved node's parent links to the top (bounded: a cycle that
+	// evaded SetObjectParent's guard stops the climb at its first repeat).
+	std::set<String> roots;
+	for( std::set<String>::const_iterator m = motionSweepMovedNames.begin(); m != motionSweepMovedNames.end(); ++m ) {
+		String cur = *m;
+		std::set<String> seen;
+		while( seen.insert( cur ).second ) {
+			const std::map<String,String>::const_iterator link = parentByName.find( cur );
+			if( link == parentByName.end() || items.find( std::string_view(link->second.c_str()) ) == items.end() ) {
+				break;
+			}
+			cur = link->second;
+		}
+		roots.insert( cur );
+	}
+	if( roots.empty() ) {
+		return;
+	}
+
+	// Children in registration-serial order, as RebakeHierarchy walks them.
+	std::map<String, std::vector<std::pair<unsigned long long, String> > > childrenOf;
+	for( std::map<String,String>::const_iterator it = parentByName.begin(); it != parentByName.end(); ++it ) {
+		if( items.find( std::string_view(it->first.c_str()) ) == items.end() || items.find( std::string_view(it->second.c_str()) ) == items.end() ) {
+			continue;
+		}
+		childrenOf[it->second].push_back( std::make_pair( GetItemSerial( it->first.c_str() ), it->first ) );
+	}
+	for( std::map<String, std::vector<std::pair<unsigned long long, String> > >::iterator c = childrenOf.begin();
+		c != childrenOf.end(); ++c ) {
+		std::sort( c->second.begin(), c->second.end() );
+	}
+
+	std::vector<String> stack( roots.rbegin(), roots.rend() );
+	std::set<String> visited;
+	while( !stack.empty() ) {
+		const String name = stack.back();
+		stack.pop_back();
+		if( !visited.insert( name ).second ) continue;
+		const GenericManager<IObjectPriv>::ItemListType::const_iterator ni = items.find( std::string_view(name.c_str()) );
+		if( ni == items.end() || !ni->second.first ) continue;
+		IObjectPriv* parent = 0;
+		const std::map<String,String>::const_iterator link = parentByName.find( name );
+		if( link != parentByName.end() ) {
+			const GenericManager<IObjectPriv>::ItemListType::const_iterator pi = items.find( std::string_view(link->second.c_str()) );
+			if( pi != items.end() ) parent = pi->second.first;
+		}
+		recomposeList.push_back( std::make_pair( ni->second.first, parent ) );
+		const std::map<String, std::vector<std::pair<unsigned long long, String> > >::const_iterator kids = childrenOf.find( name );
+		if( kids != childrenOf.end() ) {
+			for( std::vector<std::pair<unsigned long long, String> >::const_reverse_iterator k = kids->second.rbegin();
+				k != kids->second.rend(); ++k ) {
+				stack.push_back( k->second );
+			}
+		}
+	}
+}
+
+void ObjectManager::AccumulateMotionBounds() const
+{
+	// Every registered object (world-invisible ones included: a build skips
+	// them anyway, and recording them costs one box).
+	GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
+	for( i=items.begin(), e=items.end(); i!=e; ++i ) {
+		const IObjectPriv* o = i->second.first;
+		const BoundingBox b = o->getBoundingBox();
+		const Scalar bll[3] = { b.ll.x, b.ll.y, b.ll.z };
+		const Scalar bur[3] = { b.ur.x, b.ur.y, b.ur.z };
+		bool finite[3];
+		for( int a = 0; a < 3; a++ ) {
+			// |v| >= DBL_MAX/4 counts as non-finite too: a finite axis then
+			// has |coordinate| < DBL_MAX/4 and |pad| < DBL_MAX/2, so the
+			// padded box ElementBounds forms cannot overflow to +-inf.
+			finite[a] = std::isfinite( bll[a] ) && std::isfinite( bur[a] ) &&
+				std::fabs( bll[a] ) < RISE_INFINITY*0.25 && std::fabs( bur[a] ) < RISE_INFINITY*0.25;
+		}
+		std::map<const IObjectPriv*, MotionBox>::iterator it = motionBounds.find( o );
+		if( it == motionBounds.end() ) {
+			MotionBox m;
+			m.box = b;
+			m.last = b;
+			m.pad = Vector3( 0, 0, 0 );
+			for( int a = 0; a < 3; a++ ) m.axisFinite[a] = finite[a];
+			motionBounds[o] = m;
+			continue;
+		}
+		MotionBox& m = it->second;
+		for( int a = 0; a < 3; a++ ) m.axisFinite[a] = m.axisFinite[a] && finite[a];
+		m.box.Include( b.ll );
+		m.box.Include( b.ur );
+		const Scalar lll[3] = { m.last.ll.x, m.last.ll.y, m.last.ll.z };
+		const Scalar lur[3] = { m.last.ur.x, m.last.ur.y, m.last.ur.z };
+		Scalar pad[3] = { m.pad.x, m.pad.y, m.pad.z };
+		for( int a = 0; a < 3; a++ ) {
+			if( m.axisFinite[a] ) {
+				pad[a] = r_max( pad[a], r_max( std::fabs( bll[a] - lll[a] ), std::fabs( bur[a] - lur[a] ) ) );
+			}
+		}
+		m.pad = Vector3( pad[0], pad[1], pad[2] );
+		m.last = b;
+	}
+	if( motionSweepActive ) {
+		motionSweepSamples++;
+	}
+}
+
+void ObjectManager::RecomposeAnimatedHierarchy() const
+{
+	// RebakeHierarchy moves only parented objects, and returns immediately
+	// when there are no links.  Unlike PrepareForRendering it must NOT
+	// invalidate the spatial structure here: this runs per motion-blur
+	// sample, against a structure built from swept (shutter) bounds that
+	// already contain every pose the walk can produce.
+	if( motionSweepActive ) {
+		// The first sample's walk also undoes whatever pose the scene was
+		// left in before the sweep, so only later samples count as motion.
+		const bool moved = RebakeHierarchy( motionSweepSamples > 0 ? &motionSweepMovedNames : 0 );
+		if( moved && motionSweepSamples > 0 ) {
+			motionSweepMovedHierarchy = true;
+		}
+		return;
+	}
+	if( !recomposePerSample ) {
+		return;
+	}
+	if( recomposeList.empty() ) {
+		RebakeHierarchy();
+		return;
+	}
+	// DL-463 (d): only the subtrees the sweep saw move.  Every other node
+	// keeps the composed transform the sweep's last (nominal) walk left,
+	// which no per-sample animator evaluation changes (that is what "the
+	// sweep saw it not move" means).  Same per-node work as RebakeHierarchy.
+	for( std::size_t k = 0; k < recomposeList.size(); k++ ) {
+		IObjectPriv* node = recomposeList[k].first;
+		const Matrix4 parentWorld = recomposeList[k].second ?
+			recomposeList[k].second->GetFinalTransformMatrix() : Matrix4Ops::Identity();
+		const Matrix4 before = node->GetFinalTransformMatrix();
+		node->FinalizeTransformations( parentWorld );
+		const Matrix4 after = node->GetFinalTransformMatrix();
+		const Scalar* b = &before._00;
+		const Scalar* a2 = &after._00;
+		for( int j = 0; j < 16; ++j ) {
+			if( b[j] != a2[j] ) {
+				node->ResetRuntimeData();
+				break;
+			}
+		}
+	}
+}
+
+bool ObjectManager::GetPerSampleRecomposePlan( std::vector< std::pair<IObjectPriv*, IObjectPriv*> >& out ) const
+{
+	// Mirrors RecomposeAnimatedHierarchy's non-sweep branches exactly.
+	out.clear();
+	if( !recomposePerSample ) {
+		return true;
+	}
+	if( recomposeList.empty() ) {
+		return false;
+	}
+	out = recomposeList;
+	return true;
 }
 
 void ObjectManager::RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
@@ -165,11 +811,18 @@ ObjectManager::ObjectManager(
   pBVH( 0 ),
   pOctree( 0 ),
   mSpatialGen( NextSpatialGeneration() ),
+  motionSweepActive( false ),
+  motionSweepSamples( 0 ),
+  motionSweepMovedHierarchy( false ),
+  recomposePerSample( true ),
   bUseBSPtree( bUseBSPtree_ ),
   bUseOctree( bUseOctree_ ),
   nMaxObjectsPerNode( nMaxObjectsPerNode_ ),
   nMaxTreeDepth( nMaxTreeDepth_ ),
-  shadowCache( new ShadowCacheSlot[kShadowCacheSlots]() )
+  anyComposedAgainstParent( false ),
+  rebakeIncompleteWarned( false ),
+  shadowCache( new ShadowCacheSlot[kShadowCacheSlots]() ),
+  pBoxes( 0 )
 {
 	if( bUseBSPtree && bUseOctree ) {
 		GlobalLog()->PrintEasyWarning( "ObjectManager::ObjectManager:: Can't use both Octrees and BVH at the same time!" );
@@ -187,8 +840,33 @@ ObjectManager::ObjectManager(
 
 ObjectManager::~ObjectManager( )
 {
-	safe_release( pBVH );
+	// NO MUTEX HERE, unlike InvalidateSpatialStructure's identical cleanup of
+	// `retiredBoxes` -- and that is not an oversight, it is the destructor
+	// contract: by the time this body runs the object is being torn down,
+	// which requires every other party (every render thread, every caller
+	// that might reach EnsureBoxSnapshot) to already be done with it. A
+	// concurrent `EnsureBoxSnapshot().push_back()` racing a destructor is a
+	// use-after-free of the ObjectManager ITSELF, independent of whether
+	// this loop takes `treeCreationMutex` -- locking here would silence
+	// nothing, and would risk locking a mutex mid-destruction that a
+	// stalled other thread still holds. `pBVH`/`pOctree`/`pBoxes` right
+	// above follow the same convention for the same reason.
+	{
+		// `pBVH` is now `std::atomic<T*>`, which `safe_release`'s `T*&`
+		// parameter cannot bind to directly -- relaxed load/store here
+		// matches the "no mutex, nothing else can be racing" contract this
+		// destructor already states for `pOctree` / `pBoxes` beside it.
+		BVH<const IObjectPriv*>* localBVH = pBVH.load( std::memory_order_relaxed );
+		safe_release( localBVH );
+		pBVH.store( localBVH, std::memory_order_relaxed );
+	}
 	safe_release( pOctree );
+	delete pBoxes.load( std::memory_order_relaxed );
+	pBoxes.store( 0, std::memory_order_relaxed );
+	for( std::size_t k = 0; k < retiredBoxes.size(); ++k ) {
+		delete retiredBoxes[k];
+	}
+	retiredBoxes.clear();
 	delete [] shadowCache;
 }
 
@@ -210,8 +888,13 @@ void ObjectManager::CreateBVH() const
 {
 	treeCreationMutex.lock();
 
-	// Check again if we need to create it
-	if( pBVH ) {
+	// Check again if we need to create it.  Relaxed: `treeCreationMutex`
+	// already serializes every WRITER against every other writer (this
+	// function is the only one that stores a non-null `pBVH`), so this
+	// re-check only needs to see this thread's own prior work, never a
+	// concurrent one's -- the ordering that matters for UNLOCKED readers is
+	// the release store below, not this guard.
+	if( pBVH.load( std::memory_order_relaxed ) ) {
 		treeCreationMutex.unlock();
 		return;
 	}
@@ -228,7 +911,9 @@ void ObjectManager::CreateBVH() const
 	GenericManager<IObjectPriv>::ItemListType::const_iterator		i, e;
 	for( i=items.begin(), e=items.end(); i!=e; i++ ) {
 		if( i->second.first->IsWorldVisible() ) {
-			bbox.Include( i->second.first->getBoundingBox() );
+			const BoundingBox b = ElementBounds( i->second.first );
+			bbox.Include( b.ll );
+			bbox.Include( b.ur );
 			elements.push_back( i->second.first );
 		}
 	}
@@ -250,7 +935,12 @@ void ObjectManager::CreateBVH() const
 
 	BVH<MYOBJ>* newpBVH = new BVH<MYOBJ>( *this, elements, bbox, cfg );
 	GlobalLog()->PrintNew( newpBVH, __FILE__, __LINE__, "top-level bvh" );
-	pBVH = newpBVH;
+	// RELEASE: publishes the fully-built `BVH` -- every write the
+	// constructor above made -- before the pointer becomes visible to an
+	// unlocked reader's `memory_order_acquire` load.  This is the half of
+	// the double-checked-locking fix that actually matters; the relaxed
+	// re-check above only protects this function against itself.
+	pBVH.store( newpBVH, std::memory_order_release );
 
 	treeCreationMutex.unlock();
 }
@@ -276,7 +966,9 @@ void ObjectManager::CreateOctree() const
 	GenericManager<IObjectPriv>::ItemListType::const_iterator		i, e;
 	for( i=items.begin(), e=items.end(); i!=e; i++ ) {
 		if( i->second.first->IsWorldVisible() ) {
-			bbox.Include( i->second.first->getBoundingBox() );
+			const BoundingBox b = ElementBounds( i->second.first );
+			bbox.Include( b.ll );
+			bbox.Include( b.ur );
 			elements.push_back( i->second.first );
 		}
 	}
@@ -289,15 +981,659 @@ void ObjectManager::CreateOctree() const
 	treeCreationMutex.unlock();
 }
 
+void ObjectManager::EnsureBoxSnapshot() const
+{
+	// A COUNT CHECK BESIDE THE NULL CHECK, and it closes a hazard this
+	// snapshot has that `pBVH` does not.
+	//
+	// The manager's contract is "InvalidateSpatialStructure, then
+	// PrepareForRendering, after any structural change", and `pBVH` relies
+	// on it entirely.  But `pBVH` is only BUILT when
+	// `items.size() > nMaxObjectsPerNode`; below that threshold
+	// IntersectRay walks `items` LIVE, so the contract has never actually
+	// been load-bearing for a small scene.  This snapshot IS built there --
+	// it has to be, since a four-object scene needs its boxes as much as a
+	// four-hundred-object one -- which would make a small scene the first
+	// place a missed invalidate produces a wrong answer rather than a
+	// stale one: an object added after Prepare would RENDER (the linear
+	// loop sees it) and be INVISIBLE to every proximity query (the
+	// snapshot would not).
+	//
+	// So the entry count is compared as well.  IT EXISTS FOR ADDS, and
+	// that is the honest scope: `Job::AddObject` on a scene of four or
+	// fewer objects neither builds a TLAS nor invalidates anything, so
+	// without this check the added object would render and be invisible to
+	// every proximity query.  A REMOVAL is caught only incidentally -- in
+	// this tree every removal path calls `InvalidateSpatialStructure`,
+	// which drops the snapshot outright and makes the count check
+	// redundant there.  It does NOT catch an add and a removal in the same
+	// gap (the count is unchanged), and it does not pretend to; for that,
+	// and for anything that MOVES an object, the invalidate contract is
+	// still the mechanism.  One `size()` compare on a std::map is O(1) and
+	// sits beside a null check that was already there.
+	{
+		const ObjectBoxSnapshot* const cur = pBoxes.load( std::memory_order_acquire );
+		if( cur && cur->entries.size() == items.size() ) {
+			return;
+		}
+	}
+
+	treeCreationMutex.lock();
+	{
+		const ObjectBoxSnapshot* const cur = pBoxes.load( std::memory_order_acquire );
+		if( cur && cur->entries.size() == items.size() ) {
+			treeCreationMutex.unlock();
+			return;
+		}
+	}
+	// A stale-by-count snapshot is RETIRED, never deleted here.  This
+	// function is reachable from IntersectRay, so another render thread may
+	// be mid-scan of the very object being replaced -- freeing it would be
+	// a use-after-free, and a strictly worse hazard than the staleness the
+	// count check exists to fix.  The retired set is freed in
+	// InvalidateSpatialStructure and the destructor, which already carry
+	// the "never during a pass" contract that makes freeing safe.  See the
+	// field's doc comment in ObjectManager.h.
+	//
+	// WHAT RETIRING DOES *NOT* PROTECT, stated so nobody reads more into it
+	// than it carries: it keeps the ARRAY alive, not the objects the array
+	// points at.  The entries hold raw `const IObjectPriv*`, un-addrefed, so
+	// a snapshot that outlives a removed object still names it.  In this
+	// tree that gap is closed by the removal paths themselves, every one of
+	// which calls InvalidateSpatialStructure -- which frees the retired set
+	// too, under the same "never during a pass" contract.  Retiring buys
+	// safety for the ADD case above, where nothing invalidates.
+	// Realize deferred geometry first, exactly as CreateBVH does: an
+	// unrealized DisplacedGeometry reports a ZERO bounding box, and a
+	// snapshot built from it would exclude that object from every proximity
+	// query for the life of the snapshot.
+	RealizeAllObjects();
+
+	ObjectBoxSnapshot* snap = new ObjectBoxSnapshot();
+	snap->entries.reserve( items.size() );
+
+	// EVERY registered object, world-invisible ones included -- the query
+	// applies the visibility and emitter filters, so nothing about a
+	// filtering decision is baked into a structure that can outlive the
+	// pass that built it.  `getBoundingBox()` is the expensive call this
+	// whole snapshot exists to hoist out of the per-query loop.
+	GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
+	for( i = items.begin(), e = items.end(); i != e; ++i ) {
+		ObjectBoxSnapshot::Entry entry;
+		entry.pObj = i->second.first;
+		entry.box  = ElementBounds( entry.pObj );	// DL-457: swept over the shutter under motion blur
+		snap->entries.push_back( entry );
+	}
+
+	// PUBLISHED WHOLE, behind one pointer, and never touched again -- see
+	// the field's doc comment in ObjectManager.h for why that is the entire
+	// thread-safety argument.
+	//
+	// THE SWAP HAPPENS LAST, after the new snapshot is complete, and the
+	// old one is only RETIRED (not freed) here.  Both halves of that
+	// matter: clearing `pBoxes` before the build would leave a concurrent
+	// reader holding null for the duration and reading its neutral -- a
+	// transient under-paint for no reason -- and freeing the old object
+	// would be a use-after-free for a reader still scanning it.  So the
+	// old snapshot stays published and valid right up to this single
+	// store, and stays alive past it.
+	//
+	// The store is a RELEASE and every read is an ACQUIRE, which is what
+	// makes "published whole" true at the memory model and not merely in
+	// this comment: without the pair, a reader is free to observe the
+	// pointer before the vector writes that filled it.
+	{
+		const ObjectBoxSnapshot* const old = pBoxes.load( std::memory_order_relaxed );
+		if( old ) {
+			retiredBoxes.push_back( old );
+		}
+	}
+	pBoxes.store( snap, std::memory_order_release );
+
+	treeCreationMutex.unlock();
+}
+
+void ObjectManager::LogDistanceRefusal( const IObjectPriv* obj ) const
+{
+	if( !obj ) {
+		return;
+	}
+
+	// THE REVERSE NAME LOOKUP.  O(n) over the item map, and affordable
+	// exactly because the caller has already won the object's one-shot
+	// latch: this runs at most once per object, ever, and never again on
+	// the per-candidate path.  The manager owns this map, which is why the
+	// printing lives here and the latch lives on the object.
+	const char* name = "(unnamed)";
+	GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
+	for( i = items.begin(), e = items.end(); i != e; ++i ) {
+		if( i->second.first == obj ) {
+			name = i->first.c_str();
+			break;
+		}
+	}
+
+	// AND THE KIND, because "which chunk" and "why" are different
+	// questions and an author needs both.  ASKED OF THE OBJECT
+	// (`IObject::DescribeKind`) rather than taken from
+	// `typeid(*obj->GetGeometry())` as it used to be: a CSG COMPOSITE
+	// reaches this log as an `IObjectPriv*` with NO geometry, so the old
+	// form named it "(no geometry)" -- and since Phase 3 gave composites
+	// their own queries (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.6) a
+	// composite is one of the kinds most likely to appear here, and the
+	// one whose OPERATION is the thing an author has to act on.  An
+	// `Object` still answers its geometry's `typeid` name, which is a
+	// mangled string on this toolchain but has the class name legible
+	// inside it -- "SDFGeometry", "BezierPatchGeometry" -- and that is all
+	// a diagnostic needs.
+	const char* kind = obj->DescribeKind();
+
+	GlobalLog()->PrintEx( eLog_Info,
+		"ObjectManager::NearestOtherSurface:: object `%s` (kind %s) could not answer a "
+		"distance query at one queried point even with the search radius removed, so it "
+		"contributed nothing to proximity() there and is treated as FAR (under-paints contact, "
+		"never invents it).  Reported once per object.  This may be a per-point solver failure "
+		"(an SDF or composite bracket that did not close) rather than a family that never "
+		"answers -- the families that never answer are listed in "
+		"docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2.",
+		name, kind );
+}
+
+//! See the header.  ONE place for the three exclusion rules, shared by
+//! both cross-object queries so a rule cannot drift between them.
+bool ObjectManager::ProximityCandidateCounts( const IObjectPriv* obj, const IObject* self )
+{
+	// SELF, by identity.  Two INSTANCED COPIES of one geometry are
+	// different objects and do count against each other, which is the
+	// behaviour the design wants and a name- or geometry-keyed test
+	// would get wrong.
+	if( obj == self ) {
+		return false;
+	}
+	// The same filter IntersectOcclusionRay uses -- and what excludes
+	// CSG operands, which ARE registered here; only the composite is
+	// world-visible.  `casts_shadows FALSE` is deliberately NOT
+	// consulted: this is geometry presence, not light visibility.
+	//
+	// It is asked LIVE rather than trusted from the TLAS's build-time
+	// membership, so an object that became invisible after the tree was
+	// built stops counting immediately.  (The reverse -- one that became
+	// visible -- is not in the tree at all, and is the staleness the
+	// caller's comment discloses.)
+	if( !obj->IsWorldVisible() ) {
+		return false;
+	}
+	// EMITTERS never count: a light panel parked millimetres off a wall
+	// must not paint grime on it.  Same predicate LuminaryManager uses
+	// to decide what NEE samples, so "is a light" means one thing in
+	// the engine.
+	const IMaterial* const mat = obj->GetMaterial();
+	if( mat && mat->GetEmitter() ) {
+		return false;
+	}
+	return true;
+}
+
+//! See the header for the contract.  This is every rule the design states
+//! about WHICH neighbours count, in one place, so the flat scan and the
+//! TLAS point query cannot drift apart on any of them.
+Scalar ObjectManager::ProximityCandidateDistance(
+	const IObjectPriv* obj, const IObject* self,
+	const Point3& ptWorld, const Scalar budget ) const
+{
+	if( !ProximityCandidateCounts( obj, self ) ) {
+		return RISE_INFINITY;
+	}
+
+	Scalar d = Scalar( 0 );
+	if( obj->DistanceToSurface( ptWorld, budget, d ) ) {
+		return d;
+	}
+
+	// THE PROMISED LINE.  The design's 2 says a neighbour that cannot
+	// answer "says so once in the log", and until Phase 1 nothing printed
+	// it -- three surfaces claimed a diagnostic that did not exist.  The
+	// latch lives on the object (so this is one relaxed load per candidate
+	// per hit after the first refusal) and the printing lives in the
+	// manager (so it can name the chunk, which an Object cannot).  That
+	// promise is honest for the families that never answer (5.2); for an
+	// SDF it is BEST-EFFORT ONLY -- see the confirm below, which removes
+	// the radius-dependent false positives but cannot tell a genuine "this
+	// family never answers" refusal apart from a one-off per-point solver
+	// failure (an unclosed bracket, a stalled descent, a fabricated
+	// (0,1,0) gradient at a flat blend seam).  An SDF's one-shot latch is
+	// very often spent on exactly that kind of per-point failure, not on
+	// family membership.
+	//
+	// AND IT IS CONFIRMED BEFORE IT IS PRINTED, because `false` above does
+	// NOT only mean "I cannot answer".  `SDFGeometry`'s step-1 lower-bound
+	// early-out (`Map(p) > maxDist` proves the true distance is past the
+	// radius) also returns false, and that is a perfectly healthy outcome
+	// that happens at the far corners of every SDF's expanded box.
+	// Printing "this object cannot answer" there would be a false
+	// statement about a geometry that answers fine.  The MESH family added
+	// in Phase 2 refuses the same benign way -- nothing within the radius
+	// -- so this confirm is what keeps every mesh in Sponza out of the log.
+	//
+	// So: take the one-shot latch first (cheap, and it bounds everything
+	// below to once per object for the life of the object), then ask the
+	// SAME object again with an UNBOUNDED radius.  A family with no closed
+	// form -- a patch, a RAW mesh, a heightfield SDF, a degenerate
+	// transform -- refuses that too, immediately and in O(1).  A
+	// non-heightfield SDF is NOT O(1) here: the confirm re-runs the full
+	// bracket search (descent + doubling probe, ~80 `Map()` evaluations x
+	// O(parts), 5.2) at unbounded radius, once per object, and can still
+	// return false for a healthy field that merely hit its solver budget or
+	// landed on a degenerate gradient -- which is exactly the
+	// per-point-failure case the message states explicitly rather than
+	// branding the object as a member of a family that never answers.  An
+	// SDF that was merely out of range answers it, and says nothing.  An
+	// indexed MESH is not O(1) either: the confirm re-runs
+	// `BVH::ClosestPointDistance` unbounded (`maxDist = RISE_INFINITY`),
+	// once per mesh, ever (the one-shot latch above).  REASONED BOUND, not
+	// measured (the `RISE_PROX_FORCE` hook that would make a fresh Sponza
+	// number cheap was removed with the rest of that measurement's
+	// instrumentation -- see docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §8.3):
+	// an earlier draft of this comment claimed the unbounded call "visits
+	// the whole tree", which OVERSTATES it.  `ClosestPointDistance` starts
+	// `best` at `maxDist` and prunes any subtree whose box-to-point
+	// distance is `>= best`; with `best` seeded at infinity the FIRST leaf
+	// primitive the nearest-first descent reaches collapses `best` to a
+	// real, finite number (any primitive's true distance is finite), and
+	// every node visited after that is pruned exactly as a normally-bounded
+	// query would prune it.  So the unbounded confirm costs about the same
+	// as one ORDINARY closest-point query against that mesh -- not a
+	// full-tree scan -- unless the tree's own build quality is degenerate
+	// enough that the nearest-first ordering fails to reach a good
+	// candidate quickly, which is a BVH-quality question, not a property of
+	// this being an unbounded call.
+	//
+	// AND SINCE PHASE 3, A CSG COMPOSITE IS A THIRD NON-O(1) CASE.  An
+	// INTERSECTION or a SUBTRACTION re-runs its whole bracket here
+	// (descent + doubling probe over the composed field, each evaluation
+	// recursing into both operands), once per composite, ever.  The
+	// truthfulness caveat above extends to it VERBATIM: the confirm
+	// cannot tell "this composite never answers" (a sheet operand, a
+	// heightfield-SDF operand) from a per-POINT failure (a bracket that
+	// found no admitted landing in budget, a seam gradient below 1e-12),
+	// so the printed sentence is best-effort for composites too -- and
+	// the one-shot latch is spent by the first such point.  A UNION is
+	// O(1)-ish here in the same sense its operands are.
+	//
+	// WHAT THIS DELIBERATELY GIVES UP: if an object's FIRST refusal is the
+	// benign far one, the latch is spent and a later bracket-budget failure
+	// on the same object stays silent.  That is the right trade -- the
+	// design's promise is about neighbours that CANNOT answer, and this one
+	// can; the budget failure is separately disclosed as a residual (10).
+	if( obj->NoteDistanceRefusal() ) {
+		Scalar confirm = Scalar( 0 );
+		if( !obj->DistanceToSurface( ptWorld, RISE_INFINITY, confirm ) ) {
+			LogDistanceRefusal( obj );
+		}
+	}
+	return RISE_INFINITY;
+}
+
+bool ObjectManager::NearestOtherSurface(
+	const Point3& ptWorld, const IObject* self, const Scalar maxDistWorld, Scalar& outDist,
+	std::size_t* outNodesVisited, std::size_t* outCandidatesVisited ) const
+{
+	// A non-finite point or an unusable radius is a refusal, not a
+	// zero-distance answer: `proximity` reads a refusal as its neutral 0
+	// (paint nothing), which is the honest answer to a nonsense query.
+	if( !RISE::IsFiniteDouble( (double)ptWorld.x )
+	 || !RISE::IsFiniteDouble( (double)ptWorld.y )
+	 || !RISE::IsFiniteDouble( (double)ptWorld.z ) ) {
+		return false;
+	}
+	if( !( maxDistWorld > Scalar( 0 ) ) || !RISE::IsFiniteDouble( (double)maxDistWorld ) ) {
+		return false;
+	}
+
+	// UNCONDITIONAL, even though `snap` below is read ONLY by the flat-scan
+	// branch further down and never by the TLAS branch (review round 1,
+	// item 6d) -- on a TLAS-backed scene this call's `snap` result is
+	// simply discarded a few lines later.  Kept anyway because
+	// `EnsureBoxSnapshot` is the SOLE writer of `pBoxes`, and every one of
+	// its writes realizes deferred geometry first (`RealizeAllObjects()`,
+	// see its own comment) before building -- so a non-null `pBoxes` is
+	// itself the proof that a realize pass has already run over the object
+	// set that snapshot was built from.  NOT true of the fast early-return
+	// above `EnsureBoxSnapshot`'s own body: a call whose count check already
+	// matches returns before touching `RealizeAllObjects()` at all, and
+	// still needs to have been called at least once to have gotten a
+	// `pBoxes` in the first place.  That is what this call, here, on EITHER
+	// path (TLAS or flat-scan) is actually buying: a query reached through
+	// the lazy `IntersectRay` self-heal (no prior `PrepareForRendering`)
+	// must not ask a still-unrealized `DisplacedGeometry` for its distance,
+	// exactly the hazard `CreateBVH` guards against for its own path, and
+	// this is the call that establishes the "already realized" invariant
+	// the very first time through.  `Realize()` is idempotent and one-shot
+	// per geometry, so calling it here when the TLAS build already did is a
+	// cheap no-op, not double work.
+	EnsureBoxSnapshot();
+	// ONE copy of the pointer, then a lock-free read of an immutable
+	// object.  Re-reading `pBoxes` inside the loop would reintroduce
+	// exactly the race the immutability buys away.
+	const ObjectBoxSnapshot* const snap = pBoxes.load( std::memory_order_acquire );
+	if( !snap ) {
+		return false;
+	}
+
+	Scalar best = maxDistWorld;
+	bool found = false;
+
+	// THE CANDIDATE SOURCE, and the ONE decision this function makes.
+	//
+	// The TOP-LEVEL BVH, when the manager has one, is walked as a POINT
+	// query: the same bounded closest-point traversal the mesh family uses
+	// on its own triangles, one level up, with "the primitive's distance"
+	// being the whole per-object query below.  It visits the two children
+	// of each node nearest-box-first and prunes any subtree whose box is
+	// already further than the running best, so a query at 4 cm touches a
+	// handful of nodes instead of every object in the scene.
+	//
+	// The FLAT SCAN over the AABB snapshot is the fallback, and it is not
+	// vestigial: the manager builds no TLAS at all for a scene of
+	// `nMaxObjectsPerNode` (4) objects or fewer, nor when `bUseBSPtree` is
+	// off, and those scenes -- every fixture in `ProximitySignalTest`
+	// included -- still have to answer.
+	//
+	// WHAT CHANGES WITH THE TLAS, said plainly because it is a contract
+	// shift and not only a speed-up.  The snapshot carries a COUNT CHECK
+	// (see EnsureBoxSnapshot) that rebuilds it when an object was ADDED
+	// without an invalidate; the TLAS has no such check, so on a
+	// TLAS-backed scene a proximity query is now exactly as stale as the
+	// RENDER is -- `ObjectManager::IntersectRay` walks that same tree, so
+	// an object invisible to this query is equally invisible to the
+	// picture.  Consistent, and strictly closer to "the signal measures the
+	// scene you are looking at" than the previous state, where proximity
+	// could see a neighbour the frame did not.  The case §8.1's count check
+	// was actually written for -- an add on a scene of four or fewer
+	// objects, where the linear IntersectRay loop WOULD render the new
+	// object -- keeps the flat scan and keeps the check.  Pinned by
+	// `ProximitySignalTest`'s `TestTLASStalenessViaJobAddObject` (g2):
+	// a 7th object added via `Job::AddObject` on a 6-object (TLAS-backed)
+	// scene is invisible to BOTH `NearestOtherSurface` and `IntersectRay`
+	// until `InvalidateSpatialStructure` + a rebuild, never one before the
+	// other.
+	// ACQUIRE: pairs with CreateBVH's / InvalidateSpatialStructure's release
+	// stores -- this is the read half of the fix, and unlike IntersectRay's
+	// reader below, this one has NO self-heal (a null read here is a
+	// legitimate "no TLAS at this object count" case, not a "build one
+	// lazily" case).
+	const BVH<const IObjectPriv*>* const tlas =
+		( bUseBSPtree && items.size() > nMaxObjectsPerNode )
+			? pBVH.load( std::memory_order_acquire ) : 0;
+
+	if( tlas && tlas->numPrims() > 0 ) {
+		// The traversal owns `best`; this mirror exists only to hand the
+		// running budget down as each geometry's search radius, which is
+		// what lets a close neighbour found early prune the expensive
+		// families.  It sees every leaf evaluation in the same order, so it
+		// tracks the traversal's own value exactly.
+		Scalar budget = maxDistWorld;
+		Scalar d = Scalar( 0 );
+		const bool ok = tlas->ClosestPointDistance(
+			ptWorld, maxDistWorld,
+			[&]( const IObjectPriv* obj, const Point3& p ) -> Scalar {
+				const Scalar dist = ProximityCandidateDistance( obj, self, p, budget );
+				if( dist < budget ) budget = dist;
+				return dist;
+			},
+			d,
+			// useElementBoxTest = TRUE: a TLAS leaf's `primDist` is the WHOLE
+			// per-object query above, which for a mesh object recurses into
+			// that mesh's own inner BVH -- worth one object-box test to skip
+			// (see BVH.h ClosestPointDistance's doc comment; measured on
+			// Sponza, docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §8.3).
+			true,
+			// DL-33 diagnostic counters, forwarded verbatim -- null on every
+			// production call site, so this costs one pointer compare per
+			// node/candidate beyond what the line above already pays.
+			outNodesVisited, outCandidatesVisited );
+		if( ok ) {
+			best  = d;
+			found = true;
+		}
+	} else {
+		for( std::size_t k = 0; k < snap->entries.size(); ++k ) {
+			const ObjectBoxSnapshot::Entry& entry = snap->entries[k];
+			const IObjectPriv* const obj = entry.pObj;
+
+			// BOX REJECTION, against the RUNNING best rather than the
+			// original radius, so a close neighbour found early prunes the
+			// rest.
+			//
+			// ORDINARY CONTAINMENT, and it must stay ordinary: an infinite
+			// plane's box is +/-RISE_INFINITY (= DBL_MAX, which
+			// IsFiniteDouble reports FINITE), and under a rotation some
+			// axes overflow to +/-inf.  Either way the expanded box
+			// contains every point and the plane is admitted by the same
+			// test as everything else.  DO NOT add a "skip non-finite
+			// boxes" guard to dodge NaN -- it would make every infinite
+			// plane in the scene invisible to this query.  A NaN bound
+			// (reachable from an inf*0 in a rotated corner transform) makes
+			// both comparisons false and so ADMITS the candidate, which is
+			// the safe direction: the geometry is then asked, and answers
+			// correctly or refuses.
+			const Point3& ll = entry.box.ll;
+			const Point3& ur = entry.box.ur;
+			if( ptWorld.x < ll.x - best || ptWorld.x > ur.x + best ) continue;
+			if( ptWorld.y < ll.y - best || ptWorld.y > ur.y + best ) continue;
+			if( ptWorld.z < ll.z - best || ptWorld.z > ur.z + best ) continue;
+
+			const Scalar d = ProximityCandidateDistance( obj, self, ptWorld, best );
+			if( d < best ) {
+				best = d;
+				found = true;
+				if( best <= Scalar( 0 ) ) {
+					// Touching or interpenetrating: nothing can beat 0, and
+					// the remaining candidates cannot change the answer.
+					break;
+				}
+			}
+		}
+	}
+
+	if( !found ) {
+		return false;
+	}
+	outDist = best;
+	return true;
+}
+
+bool ObjectManager::DeepestOtherContainment(
+	const Point3& ptWorld, const IObject* self, const Scalar maxDepthWorld, Scalar& outDepth,
+	std::size_t* outNodesVisited, std::size_t* outCandidatesVisited ) const
+{
+	// Same refusals as the unsigned query, and for the same reason:
+	// `interior` reads a refusal as its neutral 0, which is the honest
+	// answer to a nonsense query.
+	if( !RISE::IsFiniteDouble( (double)ptWorld.x )
+	 || !RISE::IsFiniteDouble( (double)ptWorld.y )
+	 || !RISE::IsFiniteDouble( (double)ptWorld.z ) ) {
+		return false;
+	}
+	if( !( maxDepthWorld > Scalar( 0 ) ) || !RISE::IsFiniteDouble( (double)maxDepthWorld ) ) {
+		return false;
+	}
+
+	EnsureBoxSnapshot();
+	const ObjectBoxSnapshot* const snap = pBoxes.load( std::memory_order_acquire );
+	if( !snap ) {
+		return false;
+	}
+
+	Scalar best = Scalar( 0 );
+	bool found = false;
+
+	// THE CANDIDATE SOURCE, now shared with `NearestOtherSurface` (§5.6
+	// item 1 of the review-round-3 follow-up): before this fix,
+	// `interior()` always scanned the count-checked AABB SNAPSHOT while
+	// `proximity()` walked the TLAS on a TLAS-backed scene, so a 7th
+	// object added via `Job::AddObject` WITHOUT an invalidate was
+	// invisible to `proximity()` (the snapshot's count check rebuilds it)
+	// but VISIBLE to `interior()` at the very same instant -- two signals
+	// on the same channel, two different staleness contracts. Now both
+	// consult the TLAS on the identical gate `NearestOtherSurface` uses,
+	// and only fall back to the flat snapshot scan on a scene too small to
+	// have one (`nMaxObjectsPerNode` (4) objects or fewer, or
+	// `bUseBSPtree` off) -- see `ProximitySignalTest`'s (g2) extension,
+	// which now asserts the 7th object is invisible to ALL THREE queries
+	// (`IntersectRay`, `NearestOtherSurface`, `DeepestOtherContainment`)
+	// until `InvalidateSpatialStructure` + a rebuild, and visible to all
+	// three afterward.
+	//
+	// A running MAXIMUM still has no "subtree already worse than best"
+	// prune to offer a NEAREST-point traversal's stack discipline -- that
+	// residual, stated in §10, is unchanged: `ForEachContainingPoint`
+	// descends every node whose box contains `ptWorld`, which on a
+	// TLAS-backed scene is still linear in the number of objects whose
+	// box happens to straddle this point (usually a handful, never
+	// pruned smaller by depth). What changes is only the STALENESS
+	// contract, not the asymptotic cost class named in §10.
+	const BVH<const IObjectPriv*>* const tlas =
+		( bUseBSPtree && items.size() > nMaxObjectsPerNode )
+			? pBVH.load( std::memory_order_acquire ) : 0;
+
+	if( tlas && tlas->numPrims() > 0 ) {
+		tlas->ForEachContainingPoint(
+			ptWorld,
+			[&]( const IObjectPriv* obj, const Point3& pt ) {
+				if( !ProximityCandidateCounts( obj, self ) ) {
+					return;
+				}
+				// NO REFUSAL DIAGNOSTIC HERE, as the flat-scan fallback
+				// below: every sheet family refuses containment at every
+				// point by design, so a shared latch would print the
+				// proximity message for every mesh and every plane in the
+				// scene. Silent, and disclosed in the design's §10.
+				Scalar f = Scalar( 0 );
+				bool exact = false;
+				if( !obj->SignedDistanceLower( pt, maxDepthWorld, f, exact ) ) {
+					return;
+				}
+				// ONLY A NEGATIVE ANSWER COUNTS. A positive one says the
+				// point is outside that candidate, which is the ordinary
+				// case and not an error.
+				if( !( f < Scalar( 0 ) ) ) {
+					return;
+				}
+				const Scalar depth = -f;
+				if( !RISE::IsFiniteDouble( (double)depth ) ) {
+					return;
+				}
+				// A RUNNING MAXIMUM, and no distance prune: leaving the
+				// UNION of every solid the point is inside needs at least
+				// the largest of the individual depths, so the max is
+				// still a lower bound -- the under-paint direction.
+				if( !found || depth > best ) {
+					best = depth;
+					found = true;
+				}
+			},
+			// useElementBoxTest = TRUE, matching `NearestOtherSurface`'s
+			// TLAS walk: a leaf holds up to 4 objects behind one shared
+			// node box, and an object's own (tighter) box is worth one
+			// `getBoundingBox()` call to skip `ProximityCandidateCounts` +
+			// `SignedDistanceLower` on an object `ptWorld` cannot possibly
+			// be inside.
+			true,
+			// DL-33 diagnostic counters, forwarded verbatim -- null on every
+			// production call site; see `NearestOtherSurface`'s identical
+			// comment above.
+			outNodesVisited, outCandidatesVisited );
+	} else {
+		// THE FLAT SCAN, the fallback for a scene too small to have a
+		// TLAS at all (`nMaxObjectsPerNode` (4) objects or fewer, or
+		// `bUseBSPtree` off) -- every fixture in `ProximitySignalTest`'s
+		// small scenes included. The AABB snapshot with an ordinary
+		// containment test is the right structure for this question on
+		// such a scene, and the cost is linear in object count exactly as
+		// it is for `NearestOtherSurface`'s own flat-scan fallback.
+		for( std::size_t k = 0; k < snap->entries.size(); ++k ) {
+			const ObjectBoxSnapshot::Entry& entry = snap->entries[k];
+			const IObjectPriv* const obj = entry.pObj;
+
+			if( !ProximityCandidateCounts( obj, self ) ) {
+				continue;
+			}
+
+			// ORDINARY CONTAINMENT, with NO radius expansion -- unlike the
+			// proximity scan, which widens each box by the running best
+			// because a neighbour OUTSIDE its box can still be within the
+			// radius.  A candidate whose box does not contain the point
+			// cannot CONTAIN the point, so this test loses nothing.
+			//
+			// The same NaN note the proximity scan carries applies: an
+			// infinite plane's box is +-RISE_INFINITY and a rotated corner
+			// can overflow to a NaN bound, which makes both comparisons
+			// false and ADMITS the candidate -- the safe direction, since the
+			// geometry is then asked and a plane refuses the signed query
+			// anyway.
+			const Point3& ll = entry.box.ll;
+			const Point3& ur = entry.box.ur;
+			if( ptWorld.x < ll.x || ptWorld.x > ur.x ) continue;
+			if( ptWorld.y < ll.y || ptWorld.y > ur.y ) continue;
+			if( ptWorld.z < ll.z || ptWorld.z > ur.z ) continue;
+
+			// NO REFUSAL DIAGNOSTIC HERE.  Every sheet family refuses
+			// containment at every point by design, so a shared latch would
+			// print the proximity message for every mesh and every plane in
+			// the scene.  Silent, and disclosed in the design's §10.
+			Scalar f = Scalar( 0 );
+			bool exact = false;
+			if( !obj->SignedDistanceLower( ptWorld, maxDepthWorld, f, exact ) ) {
+				continue;
+			}
+			// ONLY A NEGATIVE ANSWER COUNTS.  A positive one says the point
+			// is outside that candidate, which is the ordinary case and not
+			// an error.
+			if( !( f < Scalar( 0 ) ) ) {
+				continue;
+			}
+			const Scalar depth = -f;
+			if( !RISE::IsFiniteDouble( (double)depth ) ) {
+				continue;
+			}
+			// A RUNNING MAXIMUM, and no distance prune: leaving the UNION of
+			// every solid the point is inside needs at least the largest of
+			// the individual depths, so the max is still a lower bound -- the
+			// under-paint direction.
+			if( !found || depth > best ) {
+				best = depth;
+				found = true;
+			}
+		}
+	}
+
+	if( !found ) {
+		return false;
+	}
+	outDepth = best;
+	return true;
+}
+
 void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
+    SMSRecordSceneIntersection();
 	RISE_PROFILE_PHASE(GeomPrimary);
 	RISE_PROFILE_INC(nPrimaryRays);
 
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
-		if( !pBVH ) {
+		// ACQUIRE, re-loaded after a self-heal build: this is the DCLP
+		// reader half -- see pBVH's declaration comment in ObjectManager.h.
+		// The local copy (not a second bare `pBVH->...` after the guard) is
+		// what keeps this call correct if a concurrent thread's
+		// InvalidateSpatialStructure runs between the guard and the use;
+		// it does not, on its own, extend that BVH's lifetime past a
+		// concurrent release (same residual the header comment states).
+		BVH<const IObjectPriv*>* localBVH = pBVH.load( std::memory_order_acquire );
+		if( !localBVH ) {
 			GlobalLog()->PrintEasyWarning( "ObjectManager: BVH built lazily during IntersectRay; call PrepareForRendering() before rendering" );
 			CreateBVH();
+			localBVH = pBVH.load( std::memory_order_acquire );
 		}
 
 		ri.geometric.bHit = false;
@@ -306,7 +1642,7 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 		// BVH<>::IntersectRay auto-routes to BVH4 SIMD traversal when
 		// the post-build collapse populated the wide nodes (the common
 		// case for any non-degenerate scene).
-		pBVH->IntersectRay( ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+		localBVH->IntersectRay( ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
 		if( !pOctree ) {
 			GlobalLog()->PrintEasyWarning( "ObjectManager: Octree built lazily during IntersectRay; call PrepareForRendering() before rendering" );
@@ -344,9 +1680,71 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 		}
 	}
 
+	// DL-408 round 4: an SSS entry that ties with a coincident partner face
+	// (a sheet emitter under the body, a closed room's floor) yields to it.
+	BSSRDFSampling::ResolveCoincidentEntry( *this, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+
+    CompleteShadingSignals(ri.geometric,ri.pObject);
+
 	if( !ri.geometric.bHit ) {
 		RISE_PROFILE_INC(nMisses);
 	}
+}
+
+void ObjectManager::CompleteShadingSignals(RayIntersectionGeometric& geometry,const IObject* object) const
+{
+	// THE CROSS-OBJECT SIGNAL STAMP (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+	// §5.1). ONE shared completion site: traversal passes its winning hit,
+	// and extended SMS passes a freshly intersected direct-object hit. All three
+	// branches above (BVH4, octree, linear) fall through to here, and the
+	// per-candidate `myRI` copy-back happens INSIDE traversal, so nothing
+	// downstream can overwrite what is written here. The caller passes the
+	// current hit object as `pSelf` rather than recomputing its identity:
+	// `Object::IntersectRay` and `CSGObject::IntersectRay` both set
+	// `pObject` to themselves, so a CSG hit names the COMPOSITE and an operand
+	// -- never reached by the manager -- can never be `pSelf`.
+	//
+	// Written unconditionally, miss included: on a miss `pObject` is null and
+	// `ptIntersection` is whatever the record was constructed with, and a
+	// consumer of a missed record has nothing to read anyway.  Unconditional
+	// keeps this off the branch-predictor and matches the way the record's own
+	// per-hit signal payload is stamped (SurfaceSignalInfo's doc comment: a
+	// pointer plus a few scalars is cheaper to always write than to gate).
+	//
+	// `signals.time` is NOT stamped here -- the manager does not know an
+	// evaluating painter's time.  ExpressionPainter::BuildContext stamps it on
+	// its own copy; see the field's doc comment.
+	//
+	// THE SNAPSHOT THE STAMP PROMISES.  Stamping `pScene` publishes this
+	// manager to a painter that may call `proximity()`, so the AABB snapshot
+	// that query scans has to exist by then.  PrepareForRendering builds it
+	// eagerly; this covers the callers that skip PrepareForRendering
+	// entirely -- the same population the lazy `CreateBVH()` above exists
+	// for, plus the <=4-object linear branch, which has no lazy build of its
+	// own and is exactly what a small test scene uses.  One predictable
+	// not-null branch per primary ray after the first, against a traversal
+	// that just walked a BVH.  (NearestOtherSurface calls it again, and that
+	// belt-and-braces is deliberate: an out-of-tree caller could reach the
+	// query through a hit record this function never produced.)
+	//
+	// GATED ON DEMAND, and that gate is the point of the call being here at
+	// all being affordable.  Unconditionally this was a load, a compare and
+	// a heap indirection on EVERY primary and secondary ray, charged to
+	// every scene in the tree including the overwhelming majority that
+	// never mention `proximity()`.  `ProximityDemand::Any()` is one relaxed
+	// atomic load and answers "does any live compiled painter call the
+	// builtin"; when it does not, no snapshot is needed and none is kept
+	// alive.  Correctness does not rest on the counter -- with the eager
+	// and the per-ray build both skipped, `NearestOtherSurface` still
+	// builds lazily under the tree mutex on its first call.
+	if( ProximityDemand::Any() ) {
+		EnsureBoxSnapshot();
+	}
+
+	geometry.signals.pScene  = this;
+	geometry.signals.pSelf   = object;
+	geometry.signals.ptWorld = geometry.ptIntersection;
+
 }
 
 bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
@@ -355,10 +1753,14 @@ bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, co
 	RISE_PROFILE_INC(nShadowRays);
 
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
-		if( !pBVH ) {
+		// Same DCLP-correct acquire/self-heal/re-load pattern as
+		// IntersectRay above; see pBVH's declaration comment.
+		BVH<const IObjectPriv*>* localBVH = pBVH.load( std::memory_order_acquire );
+		if( !localBVH ) {
 			CreateBVH();
+			localBVH = pBVH.load( std::memory_order_acquire );
 		}
-		return pBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
+		return localBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
 		if( !pOctree ) {
 			CreateOctree();
@@ -405,6 +1807,262 @@ bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, co
 	}
 }
 
+//! See IObjectManager::IntersectOcclusionRay's contract comment
+//! (Interfaces/IObjectManager.h): geometry-presence any-hit, filtered on
+//! IsWorldVisible() only -- no DoesCastShadows() gate, unlike
+//! IntersectShadowRay above.
+//!
+//! Same three-path traversal as IntersectShadowRay (BVH / octree /
+//! linear), sharing the SAME already-built tree via `OcclusionElement-
+//! Processor` + the `epOverride` parameter on BVH<>:: / Octree<>::
+//! IntersectRay_IntersectionOnly, so this does not build a second tree.
+//! The linear-loop fallback path deliberately has NO shadow cache: AO-
+//! style occlusion queries are lower call volume than NEE shadow rays and
+//! a second cache (with its own staleness-on-flag-flip bookkeeping) is
+//! not worth it for that traffic.
+bool ObjectManager::IntersectOcclusionRay( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
+{
+	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
+		// Same DCLP-correct acquire/self-heal/re-load pattern as
+		// IntersectRay above; see pBVH's declaration comment.
+		BVH<const IObjectPriv*>* localBVH = pBVH.load( std::memory_order_acquire );
+		if( !localBVH ) {
+			CreateBVH();
+			localBVH = pBVH.load( std::memory_order_acquire );
+		}
+		const OcclusionElementProcessor occlusionEp( *this );
+		return localBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces, &occlusionEp );
+	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
+		if( !pOctree ) {
+			CreateOctree();
+		}
+		const OcclusionElementProcessor occlusionEp( *this );
+		return pOctree->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces, &occlusionEp );
+	} else {
+		GenericManager<IObjectPriv>::ItemListType::const_iterator		i, e;
+		for( i=items.begin(), e=items.end(); i!=e; i++ ) {
+			const IObjectPriv* obj = i->second.first;
+			if( obj->IsWorldVisible() ) {
+				if( obj->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces ) ) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+}
+
+//! DL-370: does a ray from `pt` along `dir` cross `obj` (alone) an ODD
+//! number of times?  False on any hit with no interior to be in, and on a
+//! runaway count.  See RandomWalkObjectContaining.
+static bool OddCrossings( const IObjectPriv* obj, const Point3& pt, const Vector3& dir )
+{
+	static const int kMaxCrossings = 64;
+	const Scalar kStep = Scalar( 1e-9 );
+	Point3 origin = pt;
+	int crossings = 0;
+	for( int iter = 0; iter < kMaxCrossings; ++iter ) {
+		RayIntersection probe( Ray( origin, dir ), nullRasterizerState );
+		obj->IntersectRay( probe, RISE_INFINITY, true, true, false );
+		if( !probe.geometric.bHit ) {
+			return ( crossings % 2 ) == 1;
+		}
+		if( probe.geometric.bProvablyNoInterior || !probe.geometric.HasTrueGeomSide() ||
+			!( probe.geometric.range >= Scalar( 0 ) ) || !RISE::IsFiniteDouble( (double)probe.geometric.range ) ) {
+			return false;
+		}
+		++crossings;
+		origin = Point3Ops::mkPoint3( origin, dir * ( probe.geometric.range + kStep ) );
+	}
+	return false;
+}
+
+const IObject* ObjectManager::RandomWalkObjectContaining( const Point3& ptWorld, const Vector3& probeDir, const IObject* self ) const
+{
+	return ObjectContaining_( ptWorld, probeDir, self, true );
+}
+
+unsigned int ObjectManager::ObjectsNearPoint( const Point3& ptWorld, const Scalar radius, const IObject* self, const IObject** out, const unsigned int maxOut ) const
+{
+	unsigned int n = 0;
+	auto take = [&]( const IObjectPriv* obj ) {
+		if( n >= maxOut || !obj || obj == self || !obj->IsWorldVisible() || !obj->GetMaterial() ) {
+			return;
+		}
+		out[n++] = obj;
+	};
+	EnsureBoxSnapshot();
+	const ObjectBoxSnapshot* const snap = pBoxes.load( std::memory_order_acquire );
+	if( !snap ) {
+		return 0;
+	}
+	const BVH<const IObjectPriv*>* const tlas =
+		( bUseBSPtree && items.size() > nMaxObjectsPerNode )
+			? pBVH.load( std::memory_order_acquire ) : 0;
+	if( tlas && tlas->numPrims() > 0 ) {
+		tlas->ForEachNearPoint(
+			ptWorld, radius,
+			[&]( const IObjectPriv* obj, const Point3& ) { take( obj ); },
+			true );
+		return n;
+	}
+	for( std::size_t k = 0; k < snap->entries.size() && n < maxOut; ++k ) {
+		const ObjectBoxSnapshot::Entry& entry = snap->entries[k];
+		const Point3& ll = entry.box.ll;
+		const Point3& ur = entry.box.ur;
+		const Scalar dx = ( ptWorld.x < ll.x ) ? ( ll.x - ptWorld.x ) : ( ( ptWorld.x > ur.x ) ? ( ptWorld.x - ur.x ) : Scalar( 0 ) );
+		const Scalar dy = ( ptWorld.y < ll.y ) ? ( ll.y - ptWorld.y ) : ( ( ptWorld.y > ur.y ) ? ( ptWorld.y - ur.y ) : Scalar( 0 ) );
+		const Scalar dz = ( ptWorld.z < ll.z ) ? ( ll.z - ptWorld.z ) : ( ( ptWorld.z > ur.z ) ? ( ptWorld.z - ur.z ) : Scalar( 0 ) );
+		if( dx*dx + dy*dy + dz*dz > radius * radius ) continue;
+		take( entry.pObj );
+	}
+	return n;
+}
+
+//! DL-370 / DL-408: the per-candidate containment rule; see the lambda in
+//! ObjectContaining_ for the derivation.
+static bool CandidateContainsPoint( const IObject* obj, const Point3& ptWorld, const Vector3& probeDir )
+{
+	Scalar f = 0;
+	bool exact = false;
+	if( obj->SignedDistanceLower( ptWorld, Scalar( 1e-3 ), f, exact ) ) {
+		return f < 0;
+	}
+	const IObjectPriv* priv = dynamic_cast<const IObjectPriv*>( obj );
+	if( !priv ) {
+		return false;
+	}
+	return OddCrossings( priv, ptWorld, probeDir ) && OddCrossings( priv, ptWorld, -probeDir );
+}
+
+bool ObjectManager::ObjectContainsPoint( const IObject* pObject, const Point3& ptWorld, const Vector3& probeDir ) const
+{
+	return pObject ? CandidateContainsPoint( pObject, ptWorld, probeDir ) : false;
+}
+
+void ObjectManager::IntersectSingleObject( RayIntersection& ri, const IObject* pObject, const Scalar dHowFar ) const
+{
+	ri.geometric.bHit = false;
+	ri.geometric.range = RISE_INFINITY;
+	if( !pObject ) {
+		return;
+	}
+	pObject->IntersectRay( ri, dHowFar, true, true, false );
+	if( !ri.geometric.bHit ) {
+		return;
+	}
+	CompleteShadingSignals( ri.geometric, ri.pObject );
+}
+
+const IObject* ObjectManager::ObjectContaining_( const Point3& ptWorld, const Vector3& probeDir, const IObject* self, const bool bRandomWalkOnly ) const
+{
+	// DL-370; see the interface comment.  The box walk is the cheap gate
+	// (a point no other candidate box contains costs no ray at all);
+	// the per-object ray decides containment.  DL-408 shares it without
+	// the random-walk filter.
+	const IObject* found = 0;
+	auto test = [&]( const IObjectPriv* obj ) {
+		if( found || !obj || obj == self || !obj->IsWorldVisible() ) {
+			return;
+		}
+		const IMaterial* pMat = obj->GetMaterial();
+		if( !pMat || ( bRandomWalkOnly && !pMat->GetRandomWalkSSSParams() ) ) {
+			return;
+		}
+		// (1) A body that can sign a distance answers containment exactly
+		// and WINDING-INDEPENDENTLY: an analytic solid in closed form, a
+		// certified-watertight mesh by a parity count of every crossing
+		// (TriangleMeshGeometryIndexed::RayParityInsideTest), a CSG
+		// composite by its composed field.  Only the sign is read; 0 is
+		// "no information" (a CSG seam) and is not containment.  The
+		// budget is an effort hint, never a range refusal.
+		Scalar f = 0;
+		bool exact = false;
+		if( obj->SignedDistanceLower( ptWorld, Scalar( 1e-3 ), f, exact ) ) {
+			if( f < 0 ) {
+				found = obj;
+			}
+			return;
+		}
+		// (2) A body that cannot sign (an open or uncertified mesh, a sheet
+		// family) has no certified inside, and its winding is not
+		// trustworthy (round 3's facing test read an inward-wound one
+		// inside-out: 0.9989 -> 0.8225).  It is asked by the PARITY of its
+		// own crossings along BOTH the probe direction and its reverse,
+		// counted on that one candidate: a point inside a closed body sees
+		// an odd count each way, a point outside sees an even count in at
+		// least one direction, whatever the winding.  Both must be odd.  An
+		// open sheet (one crossing on one side, none on the other) and a
+		// point in a non-convex body's notch (two crossings each way) fail;
+		// a hole or crack the ray slips through fails conservatively.  A
+		// hit with no interior to be in (`bProvablyNoInterior`, a
+		// ray-derived normal) refuses the candidate.  Each crossing is
+		// stepped past by a tiny world advance, which also merges a
+		// duplicated coincident face into one crossing.
+		if( OddCrossings( obj, ptWorld, probeDir ) && OddCrossings( obj, ptWorld, -probeDir ) ) {
+			found = obj;
+		}
+	};
+
+	EnsureBoxSnapshot();
+	const ObjectBoxSnapshot* const snap = pBoxes.load( std::memory_order_acquire );
+	if( !snap ) {
+		return 0;
+	}
+	const BVH<const IObjectPriv*>* const tlas =
+		( bUseBSPtree && items.size() > nMaxObjectsPerNode )
+			? pBVH.load( std::memory_order_acquire ) : 0;
+	if( tlas && tlas->numPrims() > 0 ) {
+		tlas->ForEachContainingPoint(
+			ptWorld,
+			[&]( const IObjectPriv* obj, const Point3& ) { test( obj ); },
+			true );
+		return found;
+	}
+	for( std::size_t k = 0; k < snap->entries.size() && !found; ++k ) {
+		const ObjectBoxSnapshot::Entry& entry = snap->entries[k];
+		const Point3& ll = entry.box.ll;
+		const Point3& ur = entry.box.ur;
+		if( ptWorld.x < ll.x || ptWorld.x > ur.x ) continue;
+		if( ptWorld.y < ll.y || ptWorld.y > ur.y ) continue;
+		if( ptWorld.z < ll.z || ptWorld.z > ur.z ) continue;
+		test( entry.pObj );
+	}
+	return found;
+}
+
+bool ObjectManager::IntersectShadowRayOpaque( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
+{
+	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
+		// Same DCLP-correct acquire/self-heal/re-load pattern as
+		// IntersectRay above; see pBVH's declaration comment.
+		BVH<const IObjectPriv*>* localBVH = pBVH.load( std::memory_order_acquire );
+		if( !localBVH ) {
+			CreateBVH();
+			localBVH = pBVH.load( std::memory_order_acquire );
+		}
+		const OpaqueShadowElementProcessor opaqueEp( *this );
+		return localBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces, &opaqueEp );
+	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
+		if( !pOctree ) {
+			CreateOctree();
+		}
+		const OpaqueShadowElementProcessor opaqueEp( *this );
+		return pOctree->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces, &opaqueEp );
+	} else {
+		GenericManager<IObjectPriv>::ItemListType::const_iterator		i, e;
+		for( i=items.begin(), e=items.end(); i!=e; i++ ) {
+			const IObjectPriv* obj = i->second.first;
+			if( OpaqueShadowCaster_( obj ) ) {
+				if( obj->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces ) ) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+}
+
 void ObjectManager::EnumerateObjects( IEnumCallback<IObject>& pFunc ) const
 {
 	GenericManager<IObjectPriv>::ItemListType::const_iterator		i, e;
@@ -433,9 +2091,572 @@ void ObjectManager::ResetRuntimeData() const
 	}
 }
 
+bool ObjectManager::SetObjectParent( const char* child, const char* parent )
+{
+	if( !child || !child[0] ) {
+		GlobalLog()->PrintEasyError( "ObjectManager::SetObjectParent:: child name is empty" );
+		return false;
+	}
+	const String childName( child );
+	if( !GetItem( child ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"ObjectManager::SetObjectParent:: `%s` is not a registered object", child );
+		return false;
+	}
+
+	// Detach.  Re-compose IMMEDIATELY, and with the FULL walk -- this is the one
+	// mutation the per-frame RebakeHierarchy structurally cannot repair.  The
+	// ex-child has just left `parentByName`, so the narrow walk can no longer
+	// SEE it, while its `m_mxParentWorld` still holds the parent it just left:
+	// it would render at its ex-parent's composed pose forever.  Measured
+	// exactly that way through `IJob::SetObjectParent( name, 0 )`, whose own doc
+	// advertises detach as a public operation and says nothing about owing a
+	// compose afterwards.
+	//
+	// Doing it here rather than asking callers makes the manager
+	// self-consistent: RemoveItem already composes for the same reason (its
+	// orphans also leave the map), and the ADD direction needs no help because a
+	// new link IS visible to the narrow walk.  A detach is a structural edit, so
+	// paying one full walk for it is not a per-frame cost.
+	if( !parent || !parent[0] ) {
+		const bool had = ( parentByName.erase( childName ) > 0 );
+		if( had && ComposeWorldTransforms() ) {
+			// AND INVALIDATE.  Composing here CONSUMES the "moved" signal: the
+			// caller's own ComposeObjectHierarchy now correctly answers "nothing
+			// changed", and RebakeHierarchy cannot see the ex-child either, so
+			// without this line NOTHING invalidates -- the object keeps a stale
+			// TLAS leaf at its old world position and becomes unhittable and
+			// unpickable for the rest of the session.  Measured exactly that
+			// way.  RemoveItem's Job-layer caller compensates for the same
+			// swallowed signal with an unconditional invalidate; this path had
+			// no such compensation, so it does it itself.
+			InvalidateSpatialStructure();
+		}
+		return true;
+	}
+
+	// A CSG OPERAND is not a scene-graph node.  CSGObject::IntersectRay
+	// transforms the world ray into ITS frame and only then hands it to each
+	// operand, so an operand's `m_mxFinalTrans` is CSG-LOCAL, not world.
+	// Parenting TO one would place the child as if the CSG's own transform were
+	// identity; parenting one would bake a world matrix into a slot the CSG
+	// re-interprets as local, silently pushing the ancestor's translation
+	// through the CSG's transform.  Neither is what anyone means.  An operand
+	// is identifiable without a back-pointer: it is the one node that is hidden
+	// yet HAS geometry (a container is hidden and has none).
+	//
+	// Parenting to the csg_object ITSELF is fine and is NOT refused here -- a
+	// CSG composite is world-visible and its final matrix really is its world
+	// transform.
+	{
+		const IObjectPriv* childObj = GetItem( child );
+		if( childObj && !childObj->IsWorldVisible() && !IsContainerNode_( childObj ) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"ObjectManager::SetObjectParent:: `%s` is a CSG operand, whose transform is interpreted in "
+				"its csg_object's frame, not the world's; it cannot take a `parent`.  Parent the csg_object "
+				"instead.", child );
+			return false;
+		}
+	}
+
+	const String parentName( parent );
+	if( parentName == childName ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"ObjectManager::SetObjectParent:: `%s` cannot be its own parent", child );
+		return false;
+	}
+	{
+		const IObjectPriv* parentObj = GetItem( parent );
+		if( parentObj && !parentObj->IsWorldVisible() && !IsContainerNode_( parentObj ) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"ObjectManager::SetObjectParent:: `%s` is a CSG operand -- its transform is interpreted in "
+				"its csg_object's frame, not the world's, so anything parented to it would be placed as if "
+				"that csg_object had no transform.  Parent to the csg_object instead.", parent );
+			return false;
+		}
+	}
+	if( !GetItem( parent ) ) {
+		// Declare-before-use.  At parse time this IS the cycle guard: a cycle
+		// needs a link back to something not yet declared, and a reference the
+		// engine has not registered yet cannot resolve.  The ancestor walk
+		// below is the guard for a RUNTIME reparent, where both endpoints
+		// already exist.
+		GlobalLog()->PrintEx( eLog_Error,
+			"ObjectManager::SetObjectParent:: parent `%s` of `%s` is not a registered OBJECT "
+			"-- a `parent` must name an object (not a material, painter, geometry, ...) and it must "
+			"be DECLARED BEFORE the object that names it", parent, child );
+		return false;
+	}
+
+	// Cycle guard: walk up from the PROPOSED parent.  If we reach the child,
+	// the link would close a loop and ComposeWorldTransforms would never
+	// terminate (or, with the reachability fallback, would silently drop the
+	// whole loop to root).  Bounded by the link count, so a pre-existing loop
+	// in the map cannot hang this walk either.
+	{
+		String cursor = parentName;
+		size_t guard = parentByName.size() + 1;
+		while( guard-- > 0 ) {
+			if( cursor == childName ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"ObjectManager::SetObjectParent:: parenting `%s` to `%s` would close a cycle "
+					"(`%s` is already a descendant of `%s`); link refused", child, parent, parent, child );
+				return false;
+			}
+			const std::map<String,String>::const_iterator up = parentByName.find( cursor );
+			if( up == parentByName.end() ) break;   // reached a root: no cycle
+			cursor = up->second;
+		}
+	}
+
+	parentByName[childName] = parentName;
+	return true;
+}
+
+bool ObjectManager::HasChildren( const char* parent ) const
+{
+	if( !parent || !parent[0] ) return false;
+	const String parentName( parent );
+	for( std::map<String,String>::const_iterator i = parentByName.begin(); i != parentByName.end(); ++i ) {
+		if( i->second == parentName ) return true;
+	}
+	return false;
+}
+
+bool ObjectManager::SetObjectProvenance( const char* entry, const char* instancingChunk, const char* sourceNode )
+{
+	if( !entry || !entry[0] ) return false;
+	provenanceByName[ String( entry ) ] =
+		std::make_pair( String( instancingChunk ? instancingChunk : "" ), String( sourceNode ? sourceNode : "" ) );
+	return true;
+}
+
+bool ObjectManager::GetObjectProvenance( const char* entry, const char** outInstancingChunk, const char** outSourceNode ) const
+{
+	if( !entry || !entry[0] ) return false;
+	const std::map<String, std::pair<String,String> >::const_iterator i = provenanceByName.find( String( entry ) );
+	if( i == provenanceByName.end() ) return false;
+	if( outInstancingChunk ) *outInstancingChunk = i->second.first.c_str();
+	if( outSourceNode )      *outSourceNode      = i->second.second.c_str();
+	return true;
+}
+
+void ObjectManager::Shutdown()
+{
+	parentByName.clear();
+	provenanceByName.clear();
+	danglingParentWarned.clear();
+	anyComposedAgainstParent = false;
+	// The latch used to live INSIDE danglingParentWarned and was cleared for
+	// free; moving it out of that keyspace lost the reset, so restore it here.
+	rebakeIncompleteWarned = false;
+	// `pBoxes` / `retiredBoxes` name the very objects `GenericManager::Shutdown`
+	// (below) is about to release -- raw `const IObjectPriv*` entries, un-
+	// addrefed, exactly as the snapshot's own doc comment already says for
+	// the object-removal case.  Left uncleared here they hold dangling
+	// pointers into freed objects, the same lifecycle gap this function
+	// exists to close for `parentByName` above; a future "clear the scene in
+	// place" caller (this function's own doc comment) would resurrect stale
+	// boxes the moment a name were re-added, exactly as it would resurrect
+	// stale parenting without the clears above.  Guarded by the same mutex
+	// EnsureBoxSnapshot/InvalidateSpatialStructure use for this state.
+	//
+	// `pBVH` is dropped here too, for the identical reason: `Shutdown` is
+	// about to hand every registered object back to `GenericManager` for
+	// release, and a `pBVH` left pointing at a tree built over those same
+	// objects becomes a live dangling reference the instant that happens.
+	// The risk is NOT the lazy `CreateBVH()` self-heal -- a stale non-null
+	// `pBVH` means the self-heal never even fires, since it only builds on a
+	// null read -- the risk is any unlocked reader (`IntersectRay` et al.)
+	// that dereferences the stale pointer directly after `Shutdown` has
+	// freed what it points into.  `mSpatialGen` is bumped alongside,
+	// matching `InvalidateSpatialStructure`'s contract that every spatial
+	// teardown advances the generation counter.
+	treeCreationMutex.lock();
+	{
+		BVH<const IObjectPriv*>* localBVH = pBVH.exchange( nullptr, std::memory_order_release );
+		if( localBVH ) {
+			safe_release( localBVH );
+		}
+		// The octree sibling gets the same null-then-free: the rationale
+		// above (every registered object is about to be handed back for
+		// release, and `IntersectRay`'s `if( !pOctree ) CreateOctree()`
+		// self-heal is defeated by a stale non-null pointer) applies to it
+		// verbatim.  Still a plain pointer -- this is the between-passes
+		// writer side only, as in `InvalidateSpatialStructure`.
+		if( pOctree ) {
+			Octree<const IObjectPriv*>* localOctree = pOctree;
+			pOctree = 0;
+			safe_release( localOctree );
+		}
+	}
+	mSpatialGen = NextSpatialGeneration();
+	delete pBoxes.load( std::memory_order_relaxed );
+	pBoxes.store( 0, std::memory_order_relaxed );
+	for( std::size_t k = 0; k < retiredBoxes.size(); ++k ) {
+		delete retiredBoxes[k];
+	}
+	retiredBoxes.clear();
+	treeCreationMutex.unlock();
+	GenericManager<IObjectPriv>::Shutdown();
+}
+
+bool ObjectManager::RemoveItem( const char* szName )
+{
+	const bool ok = GenericManager<IObjectPriv>::RemoveItem( szName );
+	if( !ok || !szName ) return ok;
+
+	const String gone( szName );
+	parentByName.erase( gone );
+	provenanceByName.erase( gone );   // 87 step 3: the entry is gone, so is the record of where it came from
+	danglingParentWarned.erase( gone );
+
+	// Re-root the orphans.  Their world transforms change (they lose the
+	// removed node's contribution), which is the only possible answer once the
+	// parent is gone -- but say so once, because the alternative reading is
+	// that they moved for no reason.
+	unsigned int orphans = 0;
+	for( std::map<String,String>::iterator i = parentByName.begin(); i != parentByName.end(); ) {
+		if( i->second == gone ) { parentByName.erase( i++ ); ++orphans; }
+		else                    { ++i; }
+	}
+	if( orphans ) {
+		// RE-COMPOSE, do not merely re-book.  Erasing the links above changes
+		// only `parentByName`; each orphan's world matrix, inverse, and all
+		// three Object caches still hold the composition against the object
+		// that was just deleted.  Nothing else would fix it on this path --
+		// Job::RemoveObject does not compose, and the per-frame re-bake is 87
+		// step 2 -- so `remove object` from the console would leave the
+		// orphans rendering at their old pose indefinitely.  This makes the
+		// log line below true rather than aspirational.
+		ComposeWorldTransforms();
+		GlobalLog()->PrintEx( eLog_Info,
+			"ObjectManager::RemoveItem:: `%s` was the parent of %u object(s); they are now roots "
+			"and no longer carry its transform", szName, orphans );
+	}
+	return ok;
+}
+
+const char* ObjectManager::GetObjectParent( const char* child ) const
+{
+	if( !child ) return "";
+	const std::map<String,String>::const_iterator i = parentByName.find( String( child ) );
+	return ( i == parentByName.end() ) ? "" : i->second.c_str();
+}
+
+bool ObjectManager::RebakeHierarchy( std::set<String>* pChangedNames ) const
+{
+	// See the header for why this exists next to ComposeWorldTransforms.
+	if( parentByName.empty() ) return false;
+
+	// Both containers are sized by the LINK count, not the object count.
+	std::map<String, std::vector<std::pair<unsigned long long, String> > > childrenOf;
+	std::set<String> isChild;
+	std::map<String, IObjectPriv*> members;
+
+	for( std::map<String,String>::const_iterator it = parentByName.begin(); it != parentByName.end(); ++it ) {
+		const GenericManager<IObjectPriv>::ItemListType::const_iterator ci = items.find( std::string_view(it->first.c_str()) );
+		if( ci == items.end() ) continue;   // the child itself is gone; the structural path owns that
+		const GenericManager<IObjectPriv>::ItemListType::const_iterator pi = items.find( std::string_view(it->second.c_str()) );
+		if( pi == items.end() ) {
+			// Dangling parent.  Warned once per name -- the same dedupe the full
+			// walk uses, and for the same reason: this runs every frame.
+			if( danglingParentWarned.insert( it->first ).second ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"ObjectManager::RebakeHierarchy:: object `%s` names parent `%s`, which is no longer a "
+					"registered object; it is composed as a root", it->first.c_str(), it->second.c_str() );
+			}
+			// COMPOSE IT ANYWAY, against identity, exactly as the full walk does
+			// -- do not `continue`.  Its m_mxParentWorld still holds the parent
+			// that vanished, and nothing else will clear it; skipping here on
+			// the grounds that "its own finalize already put it on identity"
+			// would be the same false assumption that made a detached ex-child
+			// render at its ex-parent's pose.  It is a member with no link, so
+			// the seeding loop below treats it as a root.
+			members[it->first] = ci->second.first;
+			continue;
+		}
+		childrenOf[it->second].push_back( std::make_pair( GetItemSerial( it->first.c_str() ), it->first ) );
+		isChild.insert( it->first );
+		members[it->first]  = ci->second.first;
+		members[it->second] = pi->second.first;
+	}
+	// NOT `childrenOf.empty()`: a scene whose ONLY link is a dangling one has no
+	// parent->child edges at all, and returning here would discard the very node
+	// the dangling branch above just added to `members` -- the case that branch
+	// exists for.
+	if( members.empty() ) return false;
+	for( std::map<String, std::vector<std::pair<unsigned long long, String> > >::iterator c = childrenOf.begin();
+		c != childrenOf.end(); ++c ) {
+		std::sort( c->second.begin(), c->second.end() );
+	}
+
+	// Seed from the hierarchy's own roots -- members that are nobody's child.
+	std::vector<String> stack;
+	for( std::map<String, IObjectPriv*>::const_iterator m = members.begin(); m != members.end(); ++m ) {
+		if( isChild.find( m->first ) == isChild.end() ) stack.push_back( m->first );
+	}
+	std::reverse( stack.begin(), stack.end() );   // pop in name order, matching the full walk's determinism
+
+	std::set<String> visited;
+	bool anyChanged = false;
+	size_t composed = 0;
+	while( !stack.empty() ) {
+		const String name = stack.back();
+		stack.pop_back();
+		if( !visited.insert( name ).second ) continue;   // cycle bound, same as the full walk
+		const std::map<String, IObjectPriv*>::const_iterator mi = members.find( name );
+		if( mi == members.end() || !mi->second ) continue;
+		IObjectPriv* node = mi->second;
+
+		Matrix4 parentWorld = Matrix4Ops::Identity();
+		const std::map<String,String>::const_iterator link = parentByName.find( name );
+		if( link != parentByName.end() ) {
+			const GenericManager<IObjectPriv>::ItemListType::const_iterator p = items.find( std::string_view(link->second.c_str()) );
+			if( p != items.end() ) parentWorld = p->second.first->GetFinalTransformMatrix();
+		}
+
+		// EXACT compare -- the caller decides whether to throw away the TLAS on
+		// this answer, and a tolerance would let a genuine sub-epsilon move keep
+		// a stale acceleration structure.
+		const Matrix4 before = node->GetFinalTransformMatrix();
+		node->FinalizeTransformations( parentWorld );
+		const Matrix4 after = node->GetFinalTransformMatrix();
+		const Scalar* b = &before._00;
+		const Scalar* a2 = &after._00;
+		for( int k = 0; k < 16; ++k ) {
+			if( b[k] != a2[k] ) {
+				anyChanged = true;
+				node->ResetRuntimeData();   // the caches this node's new matrix invalidates
+				if( pChangedNames ) pChangedNames->insert( name );   // DL-463 (d)
+				break;
+			}
+		}
+		++composed;
+
+		// Children are held BY NAME, so pushing them is a copy -- this walk is
+		// name-keyed throughout, which is also what lets `visited` bound a cycle
+		// without a second pointer-keyed map.  Reversed so the LIFO stack pops
+		// them in registration-serial order, matching the full walk.
+		const std::map<String, std::vector<std::pair<unsigned long long, String> > >::const_iterator kids =
+			childrenOf.find( name );
+		if( kids != childrenOf.end() ) {
+			for( std::vector<std::pair<unsigned long long, String> >::const_reverse_iterator k = kids->second.rbegin();
+				k != kids->second.rend(); ++k ) {
+				stack.push_back( k->second );
+			}
+		}
+	}
+
+	if( composed != members.size() ) {
+		// Only reachable through a cycle that evaded SetObjectParent's guard.
+		// Deduped by the SAME set the dangling-parent warning uses -- this runs
+		// once per frame, and the full walk's equivalent diagnostic is not
+		// deduped, which would write one line per frame for a whole animation.
+		if( !rebakeIncompleteWarned ) {
+			rebakeIncompleteWarned = true;
+			GlobalLog()->PrintEx( eLog_Error,
+				"ObjectManager::RebakeHierarchy:: composed %u of %u hierarchy nodes -- a cycle in the "
+				"link map is the expected cause; the unreached nodes keep the world transform they last had",
+				static_cast<unsigned int>( composed ), static_cast<unsigned int>( members.size() ) );
+		}
+	}
+
+	if( anyChanged ) anyComposedAgainstParent = true;
+	return anyChanged;
+}
+
+bool ObjectManager::ComposeWorldTransforms() const
+{
+	// FAST PATH: a flat scene is the overwhelmingly common case and must cost
+	// nothing -- every object's parent is identity, which is what its last
+	// finalize already used, so there is nothing to re-bake.  The second term
+	// is load-bearing: "no links" is only equivalent to "nothing to do" once a
+	// walk has actually PUT every node back on identity.  Detaching the last
+	// child, or removing its parent, empties the map while the ex-child is
+	// still carrying its old composed parent matrix.
+	if( parentByName.empty() && !anyComposedAgainstParent ) {
+		return false;
+	}
+
+	// Children lists, ordered by REGISTRATION SERIAL.  On a full derive that IS
+	// document order, i.e. 87's "child order for display comes from declaration
+	// order"; after an INCREMENTAL apply it is not, because a re-pointed object
+	// keeps its old serial while an inserted one gets a fresh serial at the
+	// end, so a child inserted mid-file sorts last among its siblings until the
+	// next full derive.  Composition is indifferent to sibling order -- each
+	// child composes against its parent alone -- so this matters only to the
+	// tree UI (87 section 5 step 4), which should read order from the CST
+	// document if it needs to be exact across a reload.  A stable, meaningful
+	// order is still what a tree UI needs, and deriving it here means the UI
+	// does not have to keep a parallel index.
+	std::map<String, std::vector<std::pair<unsigned long long, IObjectPriv*> > > childrenOf;
+	std::vector<IObjectPriv*> roots;
+	std::map<const IObjectPriv*, String> nameOf;
+
+	GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
+	for( i=items.begin(), e=items.end(); i!=e; ++i ) {
+		IObjectPriv* obj = i->second.first;
+		String& name = nameOf[obj];
+		name.assign( i->first.c_str(), i->first.c_str() + i->first.size() + 1 );
+		const std::map<String,String>::const_iterator link = parentByName.find( name );
+		if( link == parentByName.end() ) {
+			roots.push_back( obj );
+			continue;
+		}
+		if( items.find( std::string_view(link->second.c_str()) ) == items.end() ) {
+			// The recorded parent is gone (removed from the manager after the
+			// link was made).  Treat the child as a root rather than dropping
+			// it from the render list -- it is still a real object -- and warn
+			// once per name so a per-frame compose cannot flood the log.
+			if( danglingParentWarned.insert( name ).second ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"ObjectManager::ComposeWorldTransforms:: object `%s` names parent `%s`, which is "
+					"no longer a registered object; treating `%s` as a root",
+					i->first.c_str(), link->second.c_str(), i->first.c_str() );
+			}
+			roots.push_back( obj );
+			continue;
+		}
+		childrenOf[link->second].push_back( std::make_pair( GetItemSerial( i->first.c_str() ), obj ) );
+	}
+	for( std::map<String, std::vector<std::pair<unsigned long long, IObjectPriv*> > >::iterator c = childrenOf.begin();
+		c != childrenOf.end(); ++c ) {
+		std::sort( c->second.begin(), c->second.end() );
+	}
+
+	// Iterative parent-before-child walk.  `visited` also bounds the walk
+	// against a cycle that somehow evaded SetObjectParent's guard (e.g. links
+	// recorded through a future path that forgets to call it): a node is
+	// composed at most once, so a loop terminates instead of hanging.
+	std::set<const IObjectPriv*> visited;
+	std::vector<IObjectPriv*> stack( roots.rbegin(), roots.rend() );
+	size_t composed = 0;
+	bool anyChanged = false;
+	bool sawParented = false;
+	while( !stack.empty() ) {
+		IObjectPriv* node = stack.back();
+		stack.pop_back();
+		if( !visited.insert( node ).second ) continue;
+
+		// A root composes against identity -- byte-identical to the pre-
+		// hierarchy behaviour.  A child composes against its parent's ALREADY
+		// FINAL world matrix, which the parent-before-child order guarantees
+		// is current.
+		const std::map<const IObjectPriv*, String>::const_iterator nm = nameOf.find( node );
+		const std::map<String,String>::const_iterator link =
+			( nm == nameOf.end() ) ? parentByName.end() : parentByName.find( nm->second );
+		Matrix4 parentWorld = Matrix4Ops::Identity();
+		if( link != parentByName.end() ) {
+			const GenericManager<IObjectPriv>::ItemListType::const_iterator p = items.find( std::string_view(link->second.c_str()) );
+			if( p != items.end() ) parentWorld = p->second.first->GetFinalTransformMatrix();
+		}
+		// EXACT comparison, deliberately: the caller uses this to decide
+		// whether to throw away the TLAS, and a tolerance would let a genuine
+		// sub-epsilon move keep a stale acceleration structure.  Same rule as
+		// the incremental apply's own BBoxEqual gate.
+		const Matrix4 before = node->GetFinalTransformMatrix();
+		if( link != parentByName.end() ) sawParented = true;
+		node->FinalizeTransformations( parentWorld );
+		{
+			const Matrix4 after = node->GetFinalTransformMatrix();
+			const Scalar* b = &before._00;
+			const Scalar* a2 = &after._00;
+			bool moved = false;
+			for( int k = 0; k < 16; ++k ) { if( b[k] != a2[k] ) { moved = true; break; } }
+			if( moved ) {
+				anyChanged = true;
+				// A node the walk MOVED needs its per-object runtime caches
+				// dropped, exactly as the edited node does in
+				// SceneEditor::RunObjectInvariantChain.  The editor only knows
+				// about the node it was handed; the descendants it moved
+				// through this walk are ours to reset.
+				node->ResetRuntimeData();
+			}
+		}
+		++composed;
+
+		if( nm != nameOf.end() ) {
+			const std::map<String, std::vector<std::pair<unsigned long long, IObjectPriv*> > >::const_iterator kids =
+				childrenOf.find( nm->second );
+			if( kids != childrenOf.end() ) {
+				// Pushed in reverse so the LIFO stack pops them in declaration order.
+				for( std::vector<std::pair<unsigned long long, IObjectPriv*> >::const_reverse_iterator k = kids->second.rbegin();
+					k != kids->second.rend(); ++k ) {
+					stack.push_back( k->second );
+				}
+			}
+		}
+	}
+
+	if( composed != items.size() ) {
+		// A cycle in the link map is the expected cause -- SetObjectParent
+		// refuses those, so this guards a future writer that bypasses it.  The
+		// count can also fall short if one object were ever registered under
+		// two names (the walk visits by POINTER, the count is over NAMES), so
+		// the message reports the observed fact and names the likely cause
+		// rather than asserting it.  Either way the unreached nodes keep
+		// whatever world transform they last had, which is worth saying loudly.
+		GlobalLog()->PrintEx( eLog_Error,
+			"ObjectManager::ComposeWorldTransforms:: composed %u of %u registered objects -- the "
+			"remainder were not reached from any root, so their world transforms are STALE.  The usual "
+			"cause is a cycle in the parent links; a single object registered under two names would "
+			"also do it.",
+			(unsigned int)composed, (unsigned int)items.size() );
+	}
+
+	anyComposedAgainstParent = sawParented;
+	return anyChanged;
+}
+
 void ObjectManager::PrepareForRendering() const
 {
 	RISE_PROFILE_PHASE(AccelBuild);
+
+	// EXPRESSION MEMO (Utilities/ExpressionMemo.h), the FIRST of two bumps
+	// around this function; the TAIL one is the load-bearing half and
+	// carries the argument for the pair.
+	//
+	// THIS ONE IS DEFENCE IN DEPTH.  It used to be justified by "the
+	// realize pass below evaluates painters, and a displacement painter
+	// can be an expression that reads geometry signals" -- but that
+	// mechanism cannot reach a stale entry.  Realize-time displacement has
+	// exactly two evaluators, and neither can: GeometryUtilities.cpp's
+	// ApplyScalarHeightToObject builds its hit record with `ri.signals`
+	// DEFAULT-constructed (its own comment spells out that the builtins
+	// therefore read their neutral fallback), as does HairGenerator's
+	// MakeRootRi; and ApplyDisplacementMapToObject takes an IFunction2D
+	// and calls `Evaluate(u,v)`, which has no hit record at all.  So none
+	// of them ever keys an L1 entry against a provider; what they can read
+	// is the null-provider NEUTRAL, a constant.  L2 cannot be stale for
+	// them either: `m_time` is in the key, and a painter's `param`s are
+	// compile-time constants folded into a program whose id is minted
+	// fresh by every Finalize.  Kept anyway
+	// -- one atomic increment at a seam that is about to rebuild a TLAS,
+	// and cover for a future realize-time consumer that DOES carry a
+	// provider -- but nothing today depends on it.  (ExpressionMemo.h's
+	// Invalidate() comment is the single account.)
+	ExpressionMemo::Invalidate();
+	// DL-618: every thread's open-sheet catalog (IORStackSeeding::OpenSheetsOf)
+	// rebuilds on its next use, so a material-only edit is seen.
+	IORStackSeeding::InvalidateOpenSheetCatalogs();
+
+	// EXPRESSION MEMO, the SECOND bump, and the reason there are two.
+	// Objects are about to be realized and the hierarchy re-baked, so any
+	// geometry a memo entry was keyed against may move or be rebuilt by
+	// the work below.  The bump above covers the mutation that happened
+	// BEFORE we were called; this one covers the mutation this function
+	// IS, and closes the window in which another thread adopts the top
+	// bump's generation, misses, reads a geometry mid-realize, and stamps
+	// that answer with a generation nothing will ever drop.
+	//
+	// A SCOPE GUARD rather than a trailing statement, because the work
+	// between here and the end can THROW -- the realize pass runs arbitrary
+	// geometry build code and CreateBVH allocates -- and an exception would
+	// skip a trailing `Invalidate();`, leaving exactly the state the
+	// argument above says must not exist.  RayCaster::AttachScene and
+	// Scene::SetSceneTime use the same guard for the same reason.
+	const ExpressionMemo::DropOnScopeExit memoDropOnExit;
 
 	// Realize deferred geometry BEFORE building the TLAS from object bounding
 	// boxes (an unrealized DisplacedGeometry reports a ZERO bbox, and the BVH
@@ -444,8 +2665,156 @@ void ObjectManager::PrepareForRendering() const
 	// picking paths) reach PrepareForRendering before RayCaster::AttachScene's
 	// realize pass, and this is the funnel they share.  Idempotent.
 	RealizeAllObjects();
+	// DL-448: retire world-area sampling entries that no longer describe
+	// an object's pose (once per frame, no render in flight; each object
+	// frees the PREVIOUS frame's retirees only).
+	{
+		GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
+		for( i=items.begin(), e=items.end(); i!=e; ++i ) {
+			if( const Object* o = dynamic_cast<const Object*>( i->second.first ) ) {
+				o->PruneWorldAreaSampling();
+			}
+		}
+	}
 
-	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) && !pBVH ) {
+    // One decision per preparation, including hidden CSG operands. No probes
+    // or IOR history can certify their absence under DL-407.
+    smsHasComposite = false;
+    smsFirstCompositeObject.clear();
+    {
+        std::unordered_set<const CSGObject*> compositeVisited;
+        for(const auto& item : items) {
+            if(ObjectWrapsCompositeImpl(*item.second.first, compositeVisited)) {
+                smsHasComposite = true;
+                smsFirstCompositeObject = item.first.c_str();
+                break;
+            }
+        }
+    }
+    smsHasObjectMedium = false;
+    smsFirstMediumObject.clear();
+    for(const auto& item : items) {
+        if(item.second.first->IsWorldVisible() && item.second.first->GetInteriorMedium()) {
+            smsHasObjectMedium = true;
+            smsFirstMediumObject = item.first.c_str();
+            break;
+        }
+    }
+    smsPolicyPrepared = true;
+    smsExtendedCasters.clear();
+    smsRejectedTransmissiveCaster = false;
+    smsUncertainNormalOrientation = false;
+    if(!smsHasComposite) {
+        std::unordered_map<const CSGObject*, bool> clearTransMemo;
+        for(const auto& item : items) {
+            const IObject* object = item.second.first;
+            if(object->IsWorldVisible() && ObjectHasUncertainSMSNormalOrientation(*object))
+                smsUncertainNormalOrientation = true;
+            if(object->IsWorldVisible() && ObjectHasRejectedTransmissiveCaster(*object, clearTransMemo))
+                smsRejectedTransmissiveCaster = true;
+            if(object->IsWorldVisible() && object->GetGeometry()
+                && object->GetGeometry()->CanBeAreaLight() && object->GetMaterial()
+                && SMSDomainReplay::PotentialCaster(*object->GetMaterial()))
+                smsExtendedCasters.push_back(object);
+        }
+    }
+    if(smsHasComposite) {
+        GlobalLog()->PrintEx(eLog_Warning,
+            "Extended SMS is inert for this prepared scene: composite object '%s'; using legacy SMS and suppression.",
+            smsFirstCompositeObject.c_str());
+    }
+    else if(smsHasObjectMedium) {
+        // DL-419: extended SMS has no participating-medium segment laws;
+        // legacy SMS prices the chain's medium transmittance.
+        GlobalLog()->PrintEx(eLog_Warning,
+            "Extended SMS is inert for this prepared scene: object '%s' has an interior medium; using legacy SMS and suppression.",
+            smsFirstMediumObject.c_str());
+    }
+    // DL-382: warn ONCE per scene (this manager), not per preparation --
+    // an animation prepares every frame.  Re-armed only when the set of
+    // offending objects changes (an edit added or fixed one).
+    {
+        unsigned int n[5] = { 0, 0, 0, 0, 0 };
+        std::string first[5];
+        std::string key;
+        for(const auto& item : items) {
+            if(!item.second.first->IsWorldVisible()) continue;
+            const int kind = ObjectUncertifiedOpenTransmissiveMesh(*item.second.first);
+            if(kind == 0) continue;
+            if(first[kind].empty()) first[kind] = item.first.c_str();
+            ++n[kind];
+            key += item.first.c_str();
+            key += "|" + std::to_string(kind) + ";";
+        }
+        if(key != openMeshWarningKey) {
+            openMeshWarningKey = key;
+            if(n[4]) {
+                GlobalLog()->PrintEx(eLog_Warning,
+                    "ObjectManager: %u certified open glass mesh object(s) (first '%s') have negative open signed volume (DL-382). "
+                    "The face rule follows authored winding; an inward-wound cracked solid will invert its outside and inside indices. "
+                    "Check winding or author a certified closed solid.", n[4], first[4].c_str());
+            }
+            if(n[1]) {
+                GlobalLog()->PrintEx(eLog_Warning,
+                    "ObjectManager: %u transmissive mesh object(s) (first '%s') are neither certified watertight nor a certified open sheet; "
+                    "they are refracted by the IOR-stack rule, which is right for a closed solid with stray boundary edges but not reciprocal on a genuinely OPEN surface (PT/BDPT/VCM can disagree). "
+                    "Author glass as a closed solid, or each open sheet as one certified open mesh / clipped plane (docs/SCENE_CONVENTIONS.md, DL-382).",
+                    n[1], first[1].c_str());
+            }
+            if(n[3]) {
+                GlobalLog()->PrintEx(eLog_Warning,
+                    "ObjectManager: %u transmissive patch / uncertified-plane / CSG object(s) (first '%s') have no sound open-sheet or closed-volume certificate. "
+                    "They retain the IOR-stack rule; genuinely OPEN sheets can refract non-reciprocally. A boundary loop alone does not prove that a surface cannot enclose a volume. "
+                    "Author each sheet as a planar consistently wound mesh / convex clipped plane, or use a certified closed solid (docs/SCENE_CONVENTIONS.md, DL-382).",
+                    n[3], first[3].c_str());
+            }
+            if(n[2]) {
+                GlobalLog()->PrintEx(eLog_Info,
+                    "ObjectManager: %u transmissive rawmesh object(s) (first '%s') are not certified open sheets; that mesh class has no watertightness check, "
+                    "so they use the IOR-stack rule -- correct if they are closed solids, not reciprocal if they are OPEN sheets (docs/SCENE_CONVENTIONS.md, DL-382).",
+                    n[2], first[2].c_str());
+            }
+        }
+    }
+
+	// 87 step 2: RE-BAKE the hierarchy, every frame.  This is the whole of
+	// hierarchical animation.  On the animation path EvaluateAtTime runs
+	// immediately before every call to this function, moving whatever this
+	// frame's keyframes drive; each of those nodes finalized against the parent
+	// world it was LAST handed, which is the PREVIOUS frame's.  Re-walking here
+	// recomposes every child against its parent's CURRENT world, so a timeline
+	// on a parent carries its whole subtree with no animation code of its own --
+	// `Transformable` already implements IKeyframable, so a container node is
+	// keyframable for free.
+	//
+	// It also stops the stored parent world being a LATCH.  Under step 1 an
+	// interactive edit while the user was parked at an animated t=T wrote
+	// parentWorld(T) into every child and left it there, so scrubbing back
+	// displaced the subtree for the rest of the session.  Recomputing it every
+	// frame is the fix, and it is why no narrower one was worth having.
+	//
+	// NOT a structural re-flatten, per 87 §5 step 2: the object list and the
+	// name map are untouched.  This walks into already-allocated entries.
+	//
+	// A scene with no `parent` links pays one predicate for this --
+	// ComposeWorldTransforms' fast path returns immediately unless a link has
+	// actually been composed against.  A scene WITH links pays a full walk per
+	// frame; that is bounded by the TLAS rebuild happening a few lines below,
+	// which is strictly more expensive.
+	if( RebakeHierarchy() ) {
+		// The walk MOVED something, so any acceleration structure built from
+		// the old bounding boxes is stale.  The animation loop invalidates
+		// before calling us and has usually done this already; repeating it
+		// makes the postcondition -- "on return, the spatial structure matches
+		// the world transforms" -- true for EVERY caller, including the GUI
+		// production-render and picking paths that arrive here directly.  It
+		// costs nothing when nothing moved: the walk's change test is an exact
+		// 16-word matrix compare, so a static parented scene answers false on
+		// every frame after the first.
+		InvalidateSpatialStructure();
+	}
+
+	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) && !pBVH.load( std::memory_order_acquire ) ) {
 		CreateBVH();
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) && !pOctree ) {
 		CreateOctree();
@@ -454,21 +2823,225 @@ void ObjectManager::PrepareForRendering() const
 	if( !shadowCache ) {
 		shadowCache = new ShadowCacheSlot[kShadowCacheSlots]();
 	}
+
+	// THE WORLD-AABB SNAPSHOT for the cross-object proximity query
+	// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2), built LAST and GATED ON
+	// DEMAND -- see below for why it is neither unconditional nor keyed to
+	// the TLAS's own `items.size()` gate.
+	//
+	// LAST because everything above it can move an object: the re-bake
+	// composes hierarchy transforms and, when it changes anything, calls
+	// InvalidateSpatialStructure -- which drops this snapshot along with
+	// pBVH.  Building before that would publish boxes from the PREVIOUS
+	// frame's poses and then have them thrown away, or worse, kept.
+	//
+	// UNCONDITIONALLY, unlike the TLAS build above it, because its
+	// `items.size() > nMaxObjectsPerNode` gate is a property of the TLAS
+	// and not of this: a four-object scene has no top-level BVH and still
+	// needs its boxes.
+	//
+	// GATED ON DEMAND, though -- see the call in IntersectRay for the full
+	// argument.  A scene with no live `proximity()` consumer builds no
+	// snapshot at all, which is observable (and observed:
+	// `ForTest_HasBoxSnapshot` stays false after a render), and costs it
+	// nothing but one relaxed atomic load per pass.
+	if( ProximityDemand::Any() ) {
+		EnsureBoxSnapshot();
+	}
+
+	// EXPRESSION MEMO: the trailing bump is taken by `memoDropOnExit`,
+	// declared at the top of this function -- see its comment for why it
+	// is a scope guard and not a statement here.
 }
 
 void ObjectManager::InvalidateSpatialStructure() const
 {
+	// THE WHOLE BODY -- the generation bump, the tree teardown and the
+	// snapshot cleanup -- runs under `treeCreationMutex` now, not only the
+	// `pBoxes`/`retiredBoxes` cleanup that always did; only the trailing
+	// shadow-cache reset sits outside it (a plain memset on a per-manager
+	// array no builder touches).  `mSpatialGen` is a plain non-atomic
+	// counter read cross-thread by `GetSpatialStructureGeneration()`, so
+	// bumping it inside the lock, as `Shutdown()` does, keeps the two sites
+	// consistent (both inside the same critical section; `Shutdown()` bumps
+	// after its tree teardown, this function before -- either order is
+	// serialized, and the unlocked reader compares for equality only).  Without that, an
+	// invalidate can be LOST against a concurrent lazy self-heal: a render
+	// thread's unlocked `pBVH` read comes back null (no prior
+	// `PrepareForRendering`) and calls `CreateBVH()`, which takes the mutex
+	// and starts building from the CURRENT (pre-edit) object set; if this
+	// call's exchange-to-null lands after `CreateBVH`'s re-check but before
+	// its publish, nothing here observes a live tree to tear down, and
+	// `CreateBVH` goes on to publish a tree holding a raw pointer into an
+	// object another thread is mid-`Job::RemoveObject` on.  Taking the same
+	// mutex `CreateBVH` holds for its whole body serializes the two: this
+	// call's exchange now happens strictly before `CreateBVH`'s re-check
+	// (which then rebuilds fresh) or strictly after its publish (which this
+	// call then tears down) -- never in the gap that dropped the invalidate.
+	treeCreationMutex.lock();
 	mSpatialGen = NextSpatialGeneration();   // observable: a non-spatial incremental edit must NOT reach here (slice 3 closure gate)
-	if( pBVH ) {
-		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying top-level BVH for rebuild" );
-		safe_release( pBVH );
+	{
+		// EXCHANGE TO NULL FIRST, `safe_release` the OLD pointer SECOND.
+		// A concurrent unlocked reader (`IntersectRay` et al., outside this
+		// mutex by design -- see pBVH's declaration comment) must never be
+		// able to observe a pointer that is mid-free through `pBVH`;
+		// publishing null before the release means the worst such a reader
+		// sees is null, the documented self-heal trigger, never a pointer
+		// into an object currently being destroyed.  The prior ordering
+		// released the old tree FIRST and only stored null into `pBVH`
+		// afterwards (as a side effect of `safe_release` nulling its local
+		// out-parameter), which left the about-to-be-freed pointer published
+		// through the atomic for the full duration of the free.
+		BVH<const IObjectPriv*>* localBVH = pBVH.exchange( nullptr, std::memory_order_release );
+		if( localBVH ) {
+			safe_release( localBVH );
+			GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying top-level BVH for rebuild" );
+		}
 	}
 	if( pOctree ) {
+		// NULL FIRST, free SECOND -- same ordering discipline as `pBVH`
+		// above, kept even though `pOctree` stays a plain pointer (out of
+		// scope to make atomic here): its unlocked readers in `IntersectRay`
+		// et al. already carry the same "never during a pass" contract the
+		// rest of this function documents, so this at least avoids widening
+		// the window during which a stale pointer is visible.
+		Octree<const IObjectPriv*>* localOctree = pOctree;
+		pOctree = 0;
+		safe_release( localOctree );
 		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying octree for rebuild" );
-		safe_release( pOctree );
 	}
+	// The proximity query's world-AABB snapshot dies here beside pBVH,
+	// under the same "never during a pass" contract those already carry --
+	// it is derived from exactly the world transforms this call is
+	// declaring stale.  A plain delete, not safe_release: the snapshot is
+	// an owned POD, not a refcounted engine object.
+	//
+	// BOTH the live pointer and the retired set are handled UNDER
+	// treeCreationMutex, which now covers the whole function (see above),
+	// and the scope has to cover both: EnsureBoxSnapshot (the sole other
+	// writer) loads the live pointer, pushes it onto `retiredBoxes` and
+	// publishes its replacement inside ONE critical section, so an unlocked
+	// delete-and-clear here could interleave with that -- free the pointer
+	// EnsureBoxSnapshot has just loaded, watch it push the dangling value
+	// onto the retired set and re-publish a fresh snapshot over the null
+	// this call wrote (resurrecting a snapshot after an invalidate), and
+	// then free the same pointer a second time from the retired set below.
+	// "Never during a pass" bounds WHEN this runs, not what serializes it
+	// against a same-instant EnsureBoxSnapshot at a pass boundary; the mutex
+	// is what rules that out.  `retiredBoxes` is a plain `std::vector` with
+	// no thread-safety story of its own, which is the second reason the
+	// lock is needed.  This is the ONE place, besides the destructor (which
+	// runs after every thread is gone and so takes no lock -- see
+	// ~ObjectManager) and Shutdown(), where a snapshot is actually freed.
+	{
+		const ObjectBoxSnapshot* const cur = pBoxes.load( std::memory_order_relaxed );
+		if( cur ) {
+			delete cur;
+			pBoxes.store( 0, std::memory_order_relaxed );
+		}
+	}
+	for( std::size_t k = 0; k < retiredBoxes.size(); ++k ) {
+		delete retiredBoxes[k];
+	}
+	retiredBoxes.clear();
+	// DL-457: swept boxes describe the shutter of the structure they were
+	// accumulated for.  Dropping them here makes every OTHER rebuild path
+	// (an edit, MLT's per-frame driver) build from current boxes; the
+	// motion-blur frame driver invalidates first and accumulates after.
+	motionBounds.clear();
+	motionSweepActive = false;
+	recomposePerSample = true;
+	recomposeList.clear();
+	treeCreationMutex.unlock();
 	// Shadow cache slots are reset but not freed — the array persists.
 	if( shadowCache ) {
 		memset( shadowCache, 0, sizeof(ShadowCacheSlot) * kShadowCacheSlots );
 	}
+}
+
+void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
+    bool front, bool back, bool exit, Scalar maxDistance, bool shadows, MediumBoundaryHits* boundaries, bool boundariesOnly, Scalar occlusionEnd, Scalar occlusionStart, Scalar startDistance) const
+{
+    if (!boundariesOnly && !IMaterial::AnyAlphaMaterials() && !shadows && maxDistance == RISE_INFINITY) {
+        IntersectRay(ri, front, back, exit); return;
+    }
+    const Ray original = ri.geometric.ray;
+    const RasterizerState rast = ri.geometric.rast;
+    const RayIntersectionGeometric castInputs = ri.geometric;
+    Scalar offset = startDistance;
+    const auto advanceRay = [&](Scalar parameter) {
+        Ray shifted = original;
+        shifted.Advance(parameter);
+        if (shifted.hasDifferentials) {
+            shifted.diffs.rxOrigin = shifted.diffs.rxOrigin + shifted.diffs.rxDir * parameter;
+            shifted.diffs.ryOrigin = shifted.diffs.ryOrigin + shifted.diffs.ryDir * parameter;
+        }
+        ri = RayIntersection(shifted, rast);
+        ri.geometric.PropagateCastInputs(castInputs);
+    };
+    if (offset > 0) advanceRay(offset);
+    for (;;) {
+        IntersectRay(ri, front, back, exit);
+        const Scalar localBoundary = ri.hasBoundaryRange ? ri.boundaryRange : ri.geometric.range;
+        if (!ri.geometric.bHit || localBoundary >= maxDistance - offset) {
+            ri.geometric.bHit = false;
+            ri.geometric.ray = original;
+            return;
+        }
+        // Coverage painters see the same ray/range context as an unobstructed
+        // full-segment hit. Keep the local distance only for recast progress.
+        ri.geometric.range += offset;
+        if (ri.hasBoundaryRange) ri.boundaryRange += offset;
+        if (ri.hasBoundaryRange2) ri.boundaryRange2 += offset;
+        if (exit) ri.geometric.range2 += offset;
+        ri.geometric.ray = original;
+        const bool mediumBoundary = ri.pObject && ri.pObject->GetInteriorMedium();
+        // Physical membership does not depend on requesting boundary records.
+        // Keep the published shading range/context unchanged for painters.
+        const Scalar physicalRange = offset + localBoundary;
+        const bool inOcclusionInterval = physicalRange >= occlusionStart && physicalRange < occlusionEnd;
+        const bool casts = !boundariesOnly && inOcclusionInterval && (!shadows || !ri.pObject || ri.pObject->DoesCastShadows());
+        // Outside visibility's endpoint exclusions only medium events matter.
+        const bool needsCoverage = casts || (boundaries && mediumBoundary) || (!shadows && !boundariesOnly);
+        const Scalar coverage = ri.pMaterial && needsCoverage ? ri.pMaterial->AlphaCoverage(ri.geometric) : 1;
+        const bool accepted = coverage >= 1 || (coverage > 0 && sampler.GetAlpha1D() < coverage);
+        ri.acceptedAlphaCoverage = coverage;
+        if (accepted && boundaries && mediumBoundary) {
+            boundaries->push_back(ri);
+        }
+        if (casts && accepted) return;
+        // Resume beyond the true boundary when available, so a published
+        // shading backoff cannot cause another alpha decision at this event.
+        // Advance by one representable segment parameter to ensure progress,
+        // rather than skipping a world-space epsilon-sized slab of geometry.
+        offset = std::nextafter(offset + localBoundary, RISE_INFINITY);
+        if (!(offset < maxDistance)) {
+            ri.geometric.bHit = false;
+            ri.geometric.ray = original;
+            return;
+        }
+        advanceRay(offset);
+    }
+}
+
+bool IObjectManager::IntersectShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart) const
+{
+    if (boundaries) boundaries->clear();
+    if (!IMaterial::AnyAlphaMaterials() && !boundaries) {
+        Ray shifted=ray; shifted.Advance(occlusionStart);
+        return IntersectShadowRay(shifted, distance-occlusionStart, true, true);
+    }
+    RasterizerState rast = {0};
+    RayIntersection ri(ray, rast);
+    const Scalar physicalEnd = boundaries && physicalDistance >= 0 ? physicalDistance : distance;
+    IntersectRaySampled(ri, sampler, true, true, false, physicalEnd, true, boundaries, false, distance, occlusionStart);
+    return ri.geometric.bHit;
+}
+
+void IObjectManager::CollectMediumBoundaryHitsSampled(const Ray& ray, Scalar distance,
+    ISampler& sampler, MediumBoundaryHits& boundaries) const
+{
+    boundaries.clear();
+    RayIntersection ri(ray, nullRasterizerState);
+    IntersectRaySampled(ri, sampler, true, true, false, distance, false, &boundaries, true);
 }

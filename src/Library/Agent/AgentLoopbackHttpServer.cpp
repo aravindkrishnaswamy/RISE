@@ -279,8 +279,9 @@ namespace
 	//! True iff `body` is an MCP `tools/call` request naming one of the
 	//! mutating verbs this rate limiter counts against
 	//! (propose_patch/propose_patches/insert_chunk/insert_chunks/
-	//! insert_material_scaffold/insert_geometry_scaffold/remove_chunk/
-	//! resolve_proposal). This
+	//! insert_material_scaffold/insert_geometry_scaffold/
+	//! replace_geometry_scaffold/remove_chunk/
+	//! remove_chunks/resolve_proposal). This
 	//! server only ever fronts AgentMcpAdapter (see the class doc), so
 	//! every request body it ever dispatches is MCP-shaped: the actual
 	//! verb name for a tool invocation always lives at params.name (see
@@ -330,10 +331,94 @@ namespace
 		    // Arc-75 slice S3b: insert_geometry_scaffold is the geometry
 		    // sibling, SAME InsertChunks path, SAME rate-limit membership.
 		    name == "insert_geometry_scaffold" ||
-		    name == "remove_chunk"   || name == "resolve_proposal" ) {
+		    // R2 (2026-08-10): replace_geometry_scaffold expands a chunk graph
+		    // AND rewrites the whole document in one call -- at least as much
+		    // per-call leverage as its insert sibling, same membership.
+		    name == "replace_geometry_scaffold" ||
+		    // 88 step 2 (2026-08-19): collapse_to_instances rewrites the whole
+		    // document in one call, exactly like replace_geometry_scaffold --
+		    // same per-call leverage, same rate-limit membership.  It counts
+		    // even though the rewrite is a no-op on the RENDERED scene: what
+		    // this limiter meters is document mutations per unit time, and one
+		    // of these replaces N chunks with one.
+		    name == "collapse_to_instances" ||
+		    // 88 S5 (2026-08-20): vary_material rewrites the whole document in one
+		    // call, exactly like collapse_to_instances -- same per-call leverage,
+		    // same rate-limit membership.
+		    name == "vary_material" ||
+		    // Cat plan item 1 (2026-08-25): fix_blend_scale rewrites the whole
+		    // document in one call, exactly like vary_material -- same per-call
+		    // leverage, same rate-limit membership.
+		    name == "fix_blend_scale" ||
+		    // GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): add_wear rewrites
+		    // the whole document in one call, exactly like vary_material --
+		    // same per-call leverage, same rate-limit membership.
+		    name == "add_wear" ||
+		    // WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): add_wetness rewrites
+		    // the whole document in one call, exactly like add_wear -- same
+		    // per-call leverage, same rate-limit membership.
+		    name == "add_wetness" ||
+		    // CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): make_fabric rewrites
+		    // the whole document in one call, exactly like add_wetness --
+		    // same per-call leverage, same rate-limit membership.
+		    name == "make_fabric" ||
+		    // CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): add_fuzz rewrites
+		    // the whole document in one call, exactly like make_fabric --
+		    // same per-call leverage, same rate-limit membership.
+		    name == "add_fuzz" ||
+		    // Doc 90 slice R2 (2026-08-23): revert_to_revision replaces the
+		    // whole document in one call, exactly like the three swaps above --
+		    // same per-call leverage, same rate-limit membership.  Metering the
+		    // way back does not strand a client the way metering an unblock
+		    // verb would: a revert is never the only route out of a state (the
+		    // ordinary edit verbs, metered alongside it, reach the same
+		    // documents), and a client that has spent its mutation budget is by
+		    // definition not mid-edit-burst.
+		    name == "revert_to_revision" ||
+		    name == "remove_chunk"   ||
+		    // R1a (2026-08-09): remove_chunks removes N chunks per call --
+		    // strictly MORE per-call leverage than the singular verb, so it
+		    // is unambiguously in the rate limiter's membership.
+		    name == "remove_chunks"  || name == "resolve_proposal" ) {
 			outToolName = name;
 			return true;
 		}
+		// G2 (2026-08-10): file_build_plan is DELIBERATELY not on this list.
+		// It changes nothing in the document (no chunk, no param, no head
+		// bump), so it carries none of the leverage this limiter meters --
+		// and it is the ONLY way to disarm the build-plan gate, so rate-
+		// limiting it could leave a client that hit its mutation budget
+		// unable to unblock itself.  Read-safe here, exactly as in
+		// AgentRpc.cpp's IsReadSafeVerb.
+		//
+		// S1 (2026-08-11): `finish_element` and `reopen_element` are
+		// likewise DELIBERATELY not on this list, on the same three counts.
+		// Neither changes anything in the document (they move per-session
+		// phase state; finish_element additionally RENDERS, and `render` is
+		// not metered here either); reopen_element is the ONLY escape from
+		// the compose phase's creation refusal, so metering it could strand a
+		// client that spent its mutation budget; and both are read-safe in
+		// IsReadSafeVerb for those same reasons.
+		//
+		// Arc 77 Phase 2 (2026-08-11): `imagine_scene` is likewise
+		// DELIBERATELY not on this list, on the same three counts.  It
+		// changes nothing in the document; on a capable provider it is the
+		// OTHER way to disarm the build-plan gate, so metering it could
+		// strand a client that spent its mutation budget; and it is
+		// read-safe in IsReadSafeVerb for those same two reasons.  Its own
+		// cost -- one provider round trip per call -- is bounded by the
+		// caller's own turn budget, not by this limiter, whose job is to
+		// meter DOCUMENT mutations.
+		//
+		// Doc 90 slice R1 (2026-08-22): `set_render_anchor` is likewise
+		// DELIBERATELY not on this list.  It changes nothing in the document,
+		// so it carries none of the leverage this limiter meters; it costs
+		// nothing beyond a bounded copy of the PNG bytes the session is
+		// already holding (SetRenderAnchor's `mRenderAnchor = mRenderAnchorLatest`
+		// -- a vector copy capped by kRenderAnchorMaxPngBytes, not a pointer
+		// swap); and it is read-safe in IsReadSafeVerb.  Unlike the three
+		// verbs above it unblocks no gate, so there is no stranding argument
+		// -- the first count alone keeps it off.
 		return false;
 	}
 
@@ -996,8 +1081,10 @@ void AgentLoopbackHttpServer::Serve()
 		// AgentRpcDispatcher it wraps -- documented NOT thread-safe) is
 		// never entered from two connections at once: there is only ever
 		// ONE connection alive in this loop's body at a time. A second
-		// client's SYN queues in the OS listen backlog (16 deep, set in
-		// Bind()) and is accepted on the NEXT loop iteration.
+		// client's SYN queues in the OS listen backlog (8 deep, set in
+		// Bind() -- exactly fits AgentLoopbackHttpTest.cpp's kN=8
+		// serialization burst, so raise BOTH together) and is accepted on
+		// the NEXT loop iteration.
 		ServeOneConnection( client );
 		CloseSock( client );
 	}

@@ -91,7 +91,9 @@ static int CountOcc( const std::string& hay, const std::string& needle )
 // Load a scene STRING via the CST path (writes it to `path`, loads into a fresh Job).
 static Job* LoadString( const char* path, const std::string& scene )
 {
-	{ std::ofstream o( path ); o << scene; }
+	// binary: text-mode would write CRLF on Windows, breaking the byte-exact
+	// serialization comparisons below (the CST read side is already binary).
+	{ std::ofstream o( path, std::ios::binary ); o << scene; }
 	Job* j = new Job();
 	if( !j->LoadAsciiSceneViaCst( path ) ) { j->release(); return 0; }
 	return j;
@@ -124,7 +126,7 @@ int main()
 			Check( CountOcc( s, "film {" ) == 1 || CountOcc( s, "film\n{" ) == 1, "CDEL-A: film chunk intact" );
 			Check( CountOcc( s, "sphere_geometry" ) == 1, "CDEL-A: sphere_geometry chunk intact" );
 			// Reload: the pruned Document is a valid loadable scene.
-			{ std::ofstream o( tf ); o << s; }
+			{ std::ofstream o( tf, std::ios::binary ); o << s; }
 			Job* jr = new Job();
 			Check( jr->LoadAsciiSceneViaCst( tf ), "CDEL-A: the pruned Document RELOADS via CST" );
 			jr->release();
@@ -163,7 +165,7 @@ int main()
 			// Minimality: the pruned text is BYTE-IDENTICAL to the same scene authored without camB
 			// (exactly one "\n\n" separator between film and sphere -- NO extra blank line accumulated).
 			Check( s == sceneNoCam, "CDEL-B: pruned text == scene-authored-without-camB (minimal, exactly one separator)" );
-			{ std::ofstream o( tf ); o << s; }
+			{ std::ofstream o( tf, std::ios::binary ); o << s; }
 			Job* jr = new Job();
 			Check( jr->LoadAsciiSceneViaCst( tf ), "CDEL-B: the pruned Document RELOADS via CST" );
 			jr->release();
@@ -193,7 +195,7 @@ int main()
 			Check( CountOcc( s, "film" ) == 1 && CountOcc( s, "sphere_geometry" ) == 1, "CDEL-C: film + sphere chunks intact" );
 			// The document keeps its final newline (the LAST-chunk collapse tidies nothing).
 			Check( !s.empty() && s.back() == '\n', "CDEL-C: the pruned Document keeps its final newline" );
-			{ std::ofstream o( tf ); o << s; }
+			{ std::ofstream o( tf, std::ios::binary ); o << s; }
 			Job* jr = new Job();
 			Check( jr->LoadAsciiSceneViaCst( tf ), "CDEL-C: the pruned Document RELOADS via CST" );
 			jr->release();
@@ -219,7 +221,7 @@ int main()
 			Check( NoRBraceGlue( s ), "CDEL-D: NO `}<keyword>` glue on a no-trailing-newline doc" );
 			Check( !HasCamera( *j, "camD" ), "CDEL-D: camD is GONE from the Document" );
 			Check( CountOcc( s, "film" ) == 1 && CountOcc( s, "sphere_geometry" ) == 1, "CDEL-D: film + sphere chunks intact" );
-			{ std::ofstream o( tf ); o << s; }
+			{ std::ofstream o( tf, std::ios::binary ); o << s; }
 			Job* jr = new Job();
 			Check( jr->LoadAsciiSceneViaCst( tf ), "CDEL-D: the pruned Document RELOADS via CST" );
 			jr->release();
@@ -250,7 +252,7 @@ int main()
 			Check( HasCamera( *j, "camY" ), "CDEL-E: camY SURVIVES" );
 			Check( CountOcc( s, "pinhole_camera" ) == 1, "CDEL-E: exactly one camera chunk remains" );
 			Check( s.find( "camY" ) != std::string::npos, "CDEL-E: camY's chunk text is intact" );
-			{ std::ofstream o( tf ); o << s; }
+			{ std::ofstream o( tf, std::ios::binary ); o << s; }
 			Job* jr = new Job();
 			Check( jr->LoadAsciiSceneViaCst( tf ), "CDEL-E: the pruned Document RELOADS via CST" );
 			Check( RISE::Cst::DocFindByNameAnyRole( *jr->GetCstDocument(), "camY", nullptr, "camera", false ) != 0,

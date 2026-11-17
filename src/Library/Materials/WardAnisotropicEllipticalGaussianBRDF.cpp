@@ -12,8 +12,10 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Interfaces/ISPF.h"
 #include "WardAnisotropicEllipticalGaussianBRDF.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "WardSelectionQuadrature.h"
 #include "../Interfaces/ILog.h"
 
 using namespace RISE;
@@ -57,8 +59,10 @@ static void ComputeFactors(
 	const RayIntersectionGeometric& ri,
 	const Vector3& n,
 	const Vector3& u,
+	const Vector3& v,
 	const T& alphax,
-	const T& alphay
+	const T& alphay,
+	const T& rs
 	)
 {
 	Vector3 l = Vector3Ops::Normalize(vLightIn); // light vector
@@ -86,19 +90,12 @@ static void ComputeFactors(
 
 		diffuse = INV_PI;
 
-		const Vector3 h = Vector3Ops::Normalize(l+r);
+		const Vector3 h = WardSelection::ReconstructHalf(l+r);
 		const Scalar nh = Vector3Ops::Dot(n,h);
 
-		const Scalar phi = acos(Vector3Ops::Dot(u,Vector3Ops::Normalize(h-(nh*n))));
-
-		const Scalar first = 1.0 / (sqrt(nr*nl));
-		const Scalar tanh = tan(acos(nh));
-
-		const T inside = (cos(phi)*cos(phi))/(alphax*alphax) + (sin(phi)*sin(phi))/(alphay*alphay);
-		const T second = exp( -(tanh*tanh)*inside );
-		const T third = 1.0 / (FOUR_PI*alphax*alphay);
-
-		specular = first*second*third;
+        const Scalar hu = Vector3Ops::Dot(h,u);
+        const Scalar hv = Vector3Ops::Dot(h,v);
+        specular = WardSelection::SpecularKernel(hu,hv,nh,Vector3Ops::Dot(h,r),alphax,alphay,rs);
 	}
 }
 
@@ -114,16 +111,21 @@ RISEPel WardAnisotropicEllipticalGaussianBRDF::value( const Vector3& vLightIn, c
 	// WardAnisotropicEllipticalGaussianSPF's FlipW (same condition), so
 	// value() agrees with Scatter()/Pdf() on back-face hits.  FlipW negates
 	// both W and U (OrthonormalBasis3D::FlipW), so both are re-derived here
-	// even though ComputeFactors' phi term happens to be U-sign-invariant
-	// (acos()/squared usage) -- match the SPF's frame convention exactly
+	// even though the squared frame slopes are U-sign-invariant -- match the SPF's frame convention exactly
 	// rather than relying on that invariance.
 	OrthonormalBasis3D myonb = ri.onb;
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	ComputeFactors<RISEPel>( d, s, vLightIn, ri, myonb.w(), myonb.u(), ax, ay );
+	const RISEPel rs = ReflectanceColor( *pSpecular, ri );
+	ComputeFactors<RISEPel>( d, s, vLightIn, ri, myonb.w(), myonb.u(), myonb.v(), ax, ay, rs );
 
-	return d*pDiffuse->GetColor(ri) + s*pSpecular->GetColor(ri);
+	// DL-310: the diffuse term is coupled to the specular lobe's albedo
+	// bound -- see WardSelection::CoupledDiffuse.
+	const RISEPel rd = ReflectanceColor( *pDiffuse, ri );
+	const RISEPel rdCoupled( WardSelection::CoupledDiffuse( rd[0], rs[0] ),
+		WardSelection::CoupledDiffuse( rd[1], rs[1] ), WardSelection::CoupledDiffuse( rd[2], rs[2] ) );
+	return d*rdCoupled + s;
 }
 
 Scalar WardAnisotropicEllipticalGaussianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
@@ -135,15 +137,119 @@ Scalar WardAnisotropicEllipticalGaussianBRDF::valueNM( const Vector3& vLightIn, 
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	ComputeFactors<Scalar>( d, s, vLightIn, ri, myonb.w(), myonb.u(), pAlphaX->GetValueAtNM(ri,nm), pAlphaY->GetValueAtNM(ri,nm) );
+	const Scalar rsNM = ReflectanceColorNM(*pSpecular,ri,nm);
+	ComputeFactors<Scalar>( d, s, vLightIn, ri, myonb.w(), myonb.u(), myonb.v(), pAlphaX->GetValueAtNM(ri,nm), pAlphaY->GetValueAtNM(ri,nm), rsNM );
 
-	return d*pDiffuse->GetColorNM(ri,nm) + s*pSpecular->GetColorNM(ri,nm);
+	return d*WardSelection::CoupledDiffuse( ReflectanceColorNM( *pDiffuse, ri, nm ), rsNM ) + s;
 }
 
 RISEPel WardAnisotropicEllipticalGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
-	// Same energy argument as the isotropic variant: Ward's anisotropic
-	// elliptical Gaussian normalization makes the spec lobe integrate
-	// to ≈ Rs, so total reflectance ≈ Rd + Rs.
-	return pDiffuse->GetColor( ri ) + pSpecular->GetColor( ri );
+	// Conservative approximation: the bounded specular variant integrates
+	// to at most Rs. Saturate only this OIDN AOV, whose contract is [0,1];
+	// additive authored reflectances remain unchanged in transport.
+	// DL-310: the coupled diffuse min(Rd, 1 - Rs) plus the specular bound.
+	const RISEPel rd=ReflectanceColor( *pDiffuse, ri ), rs=ReflectanceColor( *pSpecular, ri );
+	RISEPel result=rs;
+	for(int ch=0;ch<3;++ch) result[ch]+=WardSelection::CoupledDiffuse(rd[ch],rs[ch]);
+	for(int ch=0;ch<3;++ch) result[ch]=r_max(Scalar(0),r_min(Scalar(1),result[ch]));
+	return result;
+}
+
+
+// DL-481: a verbatim copy of ComputeFactors for valueByScatterType alone.
+// Calling ComputeFactors from a second function changed how LTO inlines
+// it into value(), moving cap-free renders by ~1e-15; with its own copy
+// value()'s code generation is the pre-DL-481 one.
+template< class T >
+static void ComputeFactorsSplit(
+    T& diffuse,
+	T& specular,
+	const Vector3& vLightIn,
+	const RayIntersectionGeometric& ri,
+	const Vector3& n,
+	const Vector3& u,
+	const Vector3& v,
+	const T& alphax,
+	const T& alphay,
+	const T& rs
+	)
+{
+	Vector3 l = Vector3Ops::Normalize(vLightIn); // light vector
+	Vector3 r = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
+
+	const Scalar nr = Vector3Ops::Dot(n,r);
+	const Scalar nl = Vector3Ops::Dot(n,l);	
+
+	if( (nr >= 0) && (nl >= 0) ) {
+		// Geometric-horizon gate: a GlintModifier-tilted shading normal can
+		// validate light/view directions that are still below the true
+		// geometric surface.  This is a DEFENSIVE check (a valid exterior hit
+		// already satisfies it) rather than a literal sampler-consistency one
+		// -- NEE's light direction isn't sampler-drawn -- but it guards
+		// against the same tilt pathology.  Degenerate vGeomNormal falls
+		// back to the shading normal (gate is a no-op).
+		// (r is tautologically inside the gate: r = -ri.ray.Dir() and geomN is
+		// ray-anchored, so Dot(r,geomN) > 0 always holds -- see LambertianBRDF.cpp:57-60.)
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( l, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+			return;
+		}
+
+		diffuse = INV_PI;
+
+		const Vector3 h = WardSelection::ReconstructHalf(l+r);
+		const Scalar nh = Vector3Ops::Dot(n,h);
+
+        const Scalar hu = Vector3Ops::Dot(h,u);
+        const Scalar hv = Vector3Ops::Dot(h,v);
+        specular = WardSelection::SpecularKernel(hu,hv,nh,Vector3Ops::Dot(h,r),alphax,alphay,rs);
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-481 (IBSDF::valueByScatterType): the connection value split by the
+// SPF's lobe labels -- the diffuse lobe eRayDiffuse, the glossy lobe
+// eRayReflection, each priced by its own f cos / p weight in the SPF.
+// value() is left untouched (its code generation is what cap-free
+// renders are bit-identical to); this re-evaluates the same two terms.
+//////////////////////////////////////////////////////////////////////
+
+bool WardAnisotropicEllipticalGaussianBRDF::valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* /*pIORStack*/, RISEPel out[5] ) const
+{
+	for( int k = 0; k < 5; k++ ) out[k] = RISEPel( 0, 0, 0 );
+	RISEPel d, s;
+	const ScalarTriple axt = pAlphaX->GetValuesAt(ri);
+	const ScalarTriple ayt = pAlphaY->GetValuesAt(ri);
+	const RISEPel ax( axt.v[0], axt.v[1], axt.v[2] );
+	const RISEPel ay( ayt.v[0], ayt.v[1], ayt.v[2] );
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	const RISEPel rs = ReflectanceColor( *pSpecular, ri );
+	ComputeFactorsSplit<RISEPel>( d, s, vLightIn, ri, myonb.w(), myonb.u(), myonb.v(), ax, ay, rs );
+	const RISEPel rd = ReflectanceColor( *pDiffuse, ri );
+	const RISEPel rdCoupled( WardSelection::CoupledDiffuse( rd[0], rs[0] ),
+		WardSelection::CoupledDiffuse( rd[1], rs[1] ), WardSelection::CoupledDiffuse( rd[2], rs[2] ) );
+	out[ScatteredRay::eRayDiffuse] = d*rdCoupled;
+	out[ScatteredRay::eRayReflection] = s;
+	return true;
+}
+
+bool WardAnisotropicEllipticalGaussianBRDF::valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* /*pIORStack*/, Scalar out[5] ) const
+{
+	for( int k = 0; k < 5; k++ ) out[k] = 0;
+	Scalar d=0, s=0;
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	const Scalar rsNM = ReflectanceColorNM(*pSpecular,ri,nm);
+	ComputeFactorsSplit<Scalar>( d, s, vLightIn, ri, myonb.w(), myonb.u(), myonb.v(), pAlphaX->GetValueAtNM(ri,nm), pAlphaY->GetValueAtNM(ri,nm), rsNM );
+	out[ScatteredRay::eRayDiffuse] = d*WardSelection::CoupledDiffuse( ReflectanceColorNM( *pDiffuse, ri, nm ), rsNM );
+	out[ScatteredRay::eRayReflection] = s;
+	return true;
 }

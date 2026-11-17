@@ -8,14 +8,20 @@
 //    * initialize handshake -> protocolVersion/capabilities/serverInfo.
 //    * notifications/initialized -> RED-PROVED silent (empty response).
 //    * tools/list -> every dispatcher verb present (the count tracks the
-//      verb surface; see kExpectedNames below); spot-check 3 schemas' required
+//      verb surface; see kExpectedNames below); spot-check 4 schemas' required
 //      fields + a description contains a known AgentRpc.h gotcha string.
-//    * tools/call happy path: read_document, render (sync), read_image
-//      (an MCP image content block with valid base64 PNG).
+//    * tools/call happy path: read_document, render (sync), read_image,
+//      and a plain render{imageMaxEdge} (each an MCP image content block
+//      with valid base64 PNG, since the 2026-08-11 unification onto the
+//      shared ChatToolResultCarriesImage predicate).
 //    * tools/call tool-execution error: propose_patch on a nonexistent
 //      entity -> isError:true, NOT a protocol error -- RED-PROVED against
 //      a naive "always protocol error" implementation.
 //    * tools/call protocol error: unknown tool name -> JSON-RPC error.
+//    * tools/call STRUCTURAL: every name tools/list advertises is a name
+//      tools/call routes (no -32601) -- the invariant coupling the adapter's
+//      two independent tool lists, added 2026-08-19 after build_element and
+//      place_element were found advertised but unroutable.
 //    * malformed line -> -32700.
 //    * batch (array) envelope -> a clean rejection, not a crash.
 //
@@ -39,6 +45,7 @@
 	#include <unistd.h>			// getpid()
 #endif
 #include <vector>
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -68,8 +75,7 @@ static const char* const kScene =
 
 static std::string WriteTemp( const char* name, const std::string& text )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
@@ -128,6 +134,13 @@ static JsonValue ParseResponse( const std::string& line, double expectId )
 
 int main()
 {
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentMcpAdapterTest (Secure-MCP slice 1: MCP envelope adapter) ===\n" );
 
 	const std::string scenePath = WriteTemp( "rise_mcp_adapter_slice1.RISEscene", kScene );
@@ -136,6 +149,39 @@ int main()
 	std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
 	Check( session != nullptr, "AgentSession::LoadFromFile loads the native-v7 scene" );
 	if( !session ) { std::printf( "cannot continue without a session\n" ); return 1; }
+
+	// Arc 77 Phase 2 (2026-08-11): install the HOST half of imagine_scene, the
+	// same seam AgentEvalRunner fills from the live transport -- so the MCP
+	// path below drives the identical session code a real provider does, with
+	// no network and no key.  The canned image is minted as a real, decodable
+	// PNG from a throwaway session's build-plan sketch composite (256x256),
+	// which avoids adding a PNG encoder to this test.
+	{
+		std::vector<unsigned char> cannedPng;
+		{
+			std::unique_ptr<AgentSession> minter = AgentSession::LoadFromFile( scenePath );
+			if( minter ) {
+				std::vector<AgentSession::AgentBuildPlanEntry> parts;
+				AgentSession::AgentBuildPlanEntry e;
+				e.element = "canned"; e.construction.push_back( "primitive" ); e.outline = "0 0; 1 0; 1 1; 0 1";
+				e.pieces.push_back( "piece" );
+				parts.push_back( e );
+				cannedPng = minter->FileBuildPlan( parts ).compositePng;
+			}
+		}
+		Check( !cannedPng.empty(), "minted a canned target PNG for the imagine_scene MCP test" );
+		AgentSession::AgentImageGenerator gen;
+		gen.supported    = true;
+		gen.providerName = "gemini";
+		gen.modelId      = "test-image-model";
+		gen.generate = [cannedPng]( const std::string& ) {
+			AgentSession::AgentImageGenOutcome o;
+			o.ok = true; o.bytes = cannedPng; o.mimeType = "image/png";
+			return o;
+		};
+		session->SetImageGenerator( std::move( gen ) );
+	}
+
 	AgentMcpAdapter mcp( std::move( session ) );
 
 	//----------------------------------------------------------------------
@@ -216,7 +262,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 21, "id:null tools/list result carries all 21 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 43, "id:null tools/list result carries all 43 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -290,15 +336,36 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 21, "tools/list returns EXACTLY the 21 agent verbs" );
+		Check( toolsList.size() == 43, "tools/list returns EXACTLY the 43 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
+			// S1 (2026-08-11): the two staged-build-protocol verbs.
+			"finish_element", "reopen_element",
+			// S2 (2026-08-11): the two CLEAN-ROOM construction verbs.  Being
+			// listed here only proves they are ADVERTISED; the structural
+			// sweep further below is what proves they are also ROUTABLE.
+			"build_element", "place_element",
 			"read_document", "read_schema", "read_skill", "validate",
 			"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
-			"insert_material_scaffold", "insert_geometry_scaffold", "remove_chunk",
+			"insert_material_scaffold", "insert_geometry_scaffold",
+			"replace_geometry_scaffold",   // R2 (2026-08-10): one-call form revision
+			"remove_chunk",
+			"remove_chunks",   // R1a (2026-08-09): the ATOMIC batch remove
+			"collapse_to_instances",   // 88 step 2 (2026-08-19): the condition-C rewrite verb
+			"vary_material",           // 88 S5 (2026-08-20): the condition-D rewrite verb
+			"add_wear",                // GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): the condition-L rewrite verb
+			"add_wetness",             // WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): the condition-P rewrite verb
+			"make_fabric",             // CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): the fabric conversion verb
+			"add_fuzz",                // CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): the fuzz-shell verb
 			"render", "render_status", "render_wait", "render_cancel",
 			"read_image", "read_viewport", "query_object_at",
+			"scene_inventory",   // Arc 80 (2026-08-12): the FORWARD "where is everything" inventory
+			"light_scene",       // Arc 81 (2026-08-12): the clean-room lighting pass
+			"populate_scene",    // Arc 82 (2026-08-12): the clean-room population pass
 			"compare_to_reference",
+			"imagine_scene",   // Arc 77 Phase 2 (2026-08-11): the whole-scene imagined target
+			"set_render_anchor",   // Doc 90 slice R1 (2026-08-22): the iteration ratchet's verb
+			"revert_to_revision",  // Doc 90 slice R2 (2026-08-23): the ratchet's way back (MUTATING)
 			"list_proposals", "resolve_proposal"
 		};
 		for( const char* expected : kExpectedNames ) {
@@ -355,6 +422,45 @@ int main()
 			       "validate description leads with the no-argument current-scene form" );
 		}
 
+		// Spot-check 2b (R1a, 2026-08-09): remove_chunks declares a REQUIRED
+		// string-ARRAY `targets` (never a singular `target`), plus the shared
+		// optional baseHeadVersion -- and its description teaches the four
+		// contract clauses a model cannot infer from the schema: prefer ONE
+		// batched call, all-or-nothing, intra-batch references resolve in any
+		// order, and there is no per-target `kind`.
+		{
+			JsonValue tool = FindTool( "remove_chunks" );
+			Check( tool.isObject(), "found remove_chunks tool" );
+			const JsonValue& schema = tool.get( "inputSchema" );
+			Check( schema.get( "type" ).asString() == "object", "remove_chunks inputSchema.type == \"object\"" );
+			const JsonValue& required = schema.get( "required" );
+			Check( required.isArray() && required.size() == 1 && required.at( 0 ).asString() == "targets",
+			       "remove_chunks inputSchema.required == [\"targets\"]" );
+			const JsonValue& props = schema.get( "properties" );
+			Check( props.get( "targets" ).get( "type" ).asString() == "array" &&
+			       props.get( "targets" ).get( "items" ).get( "type" ).asString() == "string",
+			       "remove_chunks `targets` is an ARRAY OF STRINGS (not a singular string)" );
+			Check( !props.has( "target" ), "remove_chunks declares NO singular `target` property" );
+			Check( !props.has( "kind" ),
+			       "remove_chunks declares NO per-target `kind` -- that disambiguator stays exclusive to the "
+			       "singular remove_chunk (including the unnamed-camera case)" );
+			Check( props.get( "baseHeadVersion" ).isObject(),
+			       "remove_chunks takes the shared optional baseHeadVersion precondition" );
+			const std::string desc = tool.get( "description" ).asString();
+			Check( desc.find( "ALL-OR-NOTHING" ) != std::string::npos,
+			       "remove_chunks description states the ALL-OR-NOTHING contract" );
+			Check( desc.find( "Prefer ONE remove_chunks call" ) != std::string::npos,
+			       "remove_chunks description states the cost fact (prefer one batched call)" );
+			Check( desc.find( "ONE undo step" ) != std::string::npos,
+			       "remove_chunks description states the one-bump / one-undo-step property" );
+			Check( desc.find( "SAME BATCH" ) != std::string::npos && desc.find( "ANY order" ) != std::string::npos,
+			       "remove_chunks description teaches that intra-batch references resolve in any order" );
+			Check( desc.find( "deduped" ) != std::string::npos,
+			       "remove_chunks description states the dedupe behaviour" );
+			Check( desc.find( "singular remove_chunk with `kind`" ) != std::string::npos,
+			       "remove_chunks description names the singular verb as the escape hatch for kind/camera" );
+		}
+
 		// Spot-check 3: render_status requires renderJobId.
 		{
 			JsonValue tool = FindTool( "render_status" );
@@ -397,6 +503,83 @@ int main()
 			Check( desc.find( "image content block" ) != std::string::npos,
 			       "read_image description documents the MCP image content block mapping" );
 		}
+		// G3a (2026-08-10): the build-plan schema v2 on the MCP surface.
+		// `outline` REQUIRED with no opt-out is the mechanism itself, so an
+		// adapter that shipped it optional would turn the slice off for every
+		// MCP client while the chat codecs still enforced it.
+		{
+			JsonValue tool = FindTool( "file_build_plan" );
+			const JsonValue& items = tool.get( "inputSchema" ).get( "properties" )
+			                             .get( "elements" ).get( "items" );
+			const JsonValue& req = items.get( "required" );
+			bool hasOutline = false, hasView = false;
+			for( std::size_t i = 0; i < req.size(); ++i ) {
+				if( req.at( i ).asString() == "outline" ) hasOutline = true;
+				if( req.at( i ).asString() == "view" )    hasView = true;
+			}
+			Check( hasOutline, "G3a: the MCP file_build_plan schema marks `outline` REQUIRED" );
+			// S1 (2026-08-11): `pieces` is REQUIRED with minItems 1, on the
+			// same force-level argument -- the decomposition IS the artifact,
+			// so an adapter that shipped it optional would turn the slice off
+			// for every MCP client while the chat codecs still enforced it.
+			{
+				bool hasPieces = false;
+				for( std::size_t i = 0; i < req.size(); ++i )
+					if( req.at( i ).asString() == "pieces" ) hasPieces = true;
+				Check( hasPieces, "S1: the MCP file_build_plan schema marks `pieces` REQUIRED" );
+				const JsonValue& pp = items.get( "properties" ).get( "pieces" );
+				Check( pp.get( "type" ).asString() == "array" && pp.get( "minItems" ).asNumber( -1 ) == 1.0,
+				       "S1: `pieces` is an array with minItems 1" );
+			}
+			{
+				bool hasElement = false;
+				for( std::size_t i = 0; i < req.size(); ++i )
+					if( req.at( i ).asString() == "element" ) hasElement = true;
+				Check( hasElement, "S1: and `element` (the renamed `part`) is REQUIRED" );
+			}
+			Check( !hasView,   "G3a: and leaves `view` OPTIONAL (it defaults to front)" );
+			const JsonValue& viewEnum = items.get( "properties" ).get( "view" ).get( "enum" );
+			Check( viewEnum.isArray() && viewEnum.size() == 3 && viewEnum.at( 0 ).asString() == "front",
+			       "G3a: `view` carries the closed front|side|top enum, derived from "
+			       "kBuildPlanViewValues so it cannot drift" );
+			Check( items.get( "properties" ).get( "outline" ).get( "description" )
+			            .asString().find( "at least 3" ) != std::string::npos,
+			       "G3a: and the outline description states the 3-point minimum the dispatcher enforces" );
+		}
+		// G3b (2026-08-10): the CONSUMING half of the same artifact -- an MCP
+		// client that is told how to file a sketch and not how to consult it
+		// has the target filed and never used, a named stop-rule condition in
+		// the design doc (sec 11).  SourceHygieneTest pins the description's
+		// six load-bearing facts against the chat codec's; this pins that the
+		// property EXISTS on the generated schema at all.
+		{
+			JsonValue tool = FindTool( "render" );
+			const JsonValue& props = tool.get( "inputSchema" ).get( "properties" );
+			Check( props.has( "target" ), "G3b: the MCP render schema declares the `target` property" );
+			Check( props.get( "target" ).get( "type" ).asString() == "string",
+			       "G3b: and types it as a string" );
+		}
+		// Arc 77 Phase 2 (2026-08-11): imagine_scene must EXIST on the MCP
+		// surface with its one required param.  SourceHygieneTest pins the
+		// description's load-bearing sentences against the chat codec's
+		// canonical copy; this pins that the tool and its schema are here at
+		// all -- an MCP client told nothing about it cannot use the mechanism.
+		{
+			JsonValue tool = FindTool( "imagine_scene" );
+			Check( tool.isObject(), "Arc77: tools/list declares imagine_scene" );
+			const JsonValue& schema = tool.get( "inputSchema" );
+			Check( schema.get( "properties" ).has( "description" ),
+			       "Arc77: its schema declares the `description` property" );
+			Check( schema.get( "properties" ).get( "description" ).get( "type" ).asString() == "string",
+			       "Arc77: typed as a string" );
+			const JsonValue& req = schema.get( "required" );
+			bool requiresDescription = false;
+			for( std::size_t i = 0; i < req.size(); ++i )
+				if( req.at( i ).asString() == "description" ) requiresDescription = true;
+			Check( requiresDescription,
+			       "Arc77: and marks it REQUIRED -- an absent one is a -32602, so a schema that "
+			       "left it optional would cost every MCP client a round trip to discover" );
+		}
 	}
 
 	//----------------------------------------------------------------------
@@ -416,6 +599,20 @@ int main()
 		       "tools/call(read_document) text content carries the expected 'sphere_geometry' chunk keyword" );
 		Check( content.at( 0 ).get( "type" ).asString() == "text",
 		       "tools/call(read_document) content block type == \"text\"" );
+		// The BEHAVIOURAL half of the 2026-08-11 unification pin (the other
+		// half is SourceHygieneTest's source-text parity check): a verb that
+		// carries no pixels must emit NO image content block, whatever the
+		// image branch is implemented with.  Scanning the WHOLE array, not
+		// just block 0, is the point -- a predicate that wrongly admitted
+		// read_document would append the image AHEAD of this text block and
+		// the type check above would go red for the wrong reason, or behind
+		// it and go unnoticed entirely.
+		bool foundImage = false;
+		for( std::size_t i = 0; i < content.size(); ++i )
+			if( content.at( i ).get( "type" ).asString() == "image" ) foundImage = true;
+		Check( !foundImage,
+		       "tools/call(read_document) emits NO image content block -- a non-image verb never "
+		       "acquires one, however the shared image predicate is rewritten" );
 	}
 
 	//----------------------------------------------------------------------
@@ -468,6 +665,321 @@ int main()
 			}
 		}
 		Check( foundImageBlock, "tools/call(read_image) content includes a {type:\"image\"} block" );
+	}
+
+	//----------------------------------------------------------------------
+	// G3a (2026-08-10): tools/call(file_build_plan) -- the composite SKETCH
+	// PNG must ride back as a real MCP image content block, not merely as a
+	// base64 string buried in the text block.  The whole point of the echo is
+	// that the model SEES what it sketched; on this transport "sees" means an
+	// image block, and a client is not required to know that some field of
+	// some verb's JSON happens to be a picture.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] G3a file_build_plan -> MCP image content block (the sketch composite)\n" );
+	{
+		JsonValue entry = JsonValue::MakeObject();
+		entry.set( "element",      JsonValue::MakeString( "wing" ) );
+		// S1 (2026-08-11): `pieces` is a REQUIRED build-plan field.
+		{
+			JsonValue piecesArr = JsonValue::MakeArray();
+			piecesArr.push_back( JsonValue::MakeString( "piece" ) );
+			entry.set( "pieces", piecesArr );
+		}
+		entry.set( "construction", JsonValue::MakeString( "sweep" ) );
+		entry.set( "outline",      JsonValue::MakeString( "0 0; 3 1; 2 2; -1 1.4" ) );
+		JsonValue arr = JsonValue::MakeArray();
+		arr.push_back( entry );
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "elements", arr );
+
+		const std::string resp = mcp.HandleLine( ReqToolCall( 23, "file_build_plan", args ) );
+		JsonValue env = ParseResponse( resp, 23 );
+		Check( !env.has( "error" ), "tools/call(file_build_plan) is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ), "tools/call(file_build_plan) isError == false" );
+		const JsonValue& content = result.get( "content" );
+		bool foundImage = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			if( block.get( "type" ).asString() != "image" ) continue;
+			foundImage = true;
+			std::vector<unsigned char> png;
+			Check( Base64Decode( block.get( "data" ).asString(), png ) && png.size() >= 8 &&
+			       png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
+			       "G3a: the sketch composite decodes to the \\x89PNG signature" );
+		}
+		Check( foundImage,
+		       "G3a MONEY ASSERTION: tools/call(file_build_plan) content includes a {type:\"image\"} "
+		       "block -- the model SEES its own sketch on the MCP transport too" );
+	}
+
+	//----------------------------------------------------------------------
+	// G3b (2026-08-10): tools/call(render {isolate, target}) -- the
+	// [sketch | silhouette | overlay] composite must ALSO arrive as a real
+	// MCP image content block, for exactly the reason the sketch does: the
+	// composite is how the filed sketch re-enters the model's context at
+	// consultation time (design doc sec 4.3), and a base64 field buried in a
+	// text block is not something a client is required to recognize as a
+	// picture.  Relies on the file_build_plan call above having filed "wing".
+	//
+	// The presence half is asserted here; the SCOPE half -- what a plain
+	// `render` (no target) does and does not return -- is asserted just below
+	// this block, now that the 2026-08-11 follow-up has landed and the scope
+	// has flipped from "still excluded" to "now covered".
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] G3b render{isolate,target} -> MCP image content block (the comparison composite)\n" );
+	{
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "isolate", JsonValue::MakeString( "obj_sph" ) );
+		args.set( "target",  JsonValue::MakeString( "wing" ) );
+		args.set( "mode",    JsonValue::MakeString( "objectmap" ) );
+
+		const std::string resp = mcp.HandleLine( ReqToolCall( 24, "render", args ) );
+		JsonValue env = ParseResponse( resp, 24 );
+		Check( !env.has( "error" ), "tools/call(render{target}) is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ), "tools/call(render{target}) isError == false" );
+		const JsonValue& content = result.get( "content" );
+		bool foundImage = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			if( block.get( "type" ).asString() != "image" ) continue;
+			foundImage = true;
+			std::vector<unsigned char> png;
+			Check( Base64Decode( block.get( "data" ).asString(), png ) && png.size() >= 8 &&
+			       png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
+			       "G3b: the comparison composite decodes to the \\x89PNG signature" );
+		}
+		Check( foundImage,
+		       "G3b MONEY ASSERTION: tools/call(render{isolate,target}) content includes a "
+		       "{type:\"image\"} block -- the composite is the point of the call, so it cannot "
+		       "arrive as text only" );
+	}
+
+	//----------------------------------------------------------------------
+	// 2026-08-11: the tools/call image branch now routes through the SAME
+	// ChatToolResultCarriesImage predicate the chat transports use (see
+	// AgentMcpAdapter.cpp), rather than a private hardcoded verb list --
+	// closing the gap where a plain render{imageMaxEdge} reached MCP
+	// clients only as base64 text buried inside the serialized JSON.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] plain render{imageMaxEdge} -> MCP image content block (the 2026-08-11 gap closure)\n" );
+	{
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "imageMaxEdge", JsonValue::MakeNumber( 32 ) );
+		const std::string resp = mcp.HandleLine( ReqToolCall( 25, "render", args ) );
+		JsonValue env = ParseResponse( resp, 25 );
+		Check( !env.has( "error" ), "tools/call(render{imageMaxEdge}) is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ), "tools/call(render{imageMaxEdge}) isError == false" );
+		const JsonValue& content = result.get( "content" );
+		bool foundImage = false, foundStats = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			const std::string type = block.get( "type" ).asString();
+			if( type == "image" ) {
+				foundImage = true;
+				std::vector<unsigned char> png;
+				Check( Base64Decode( block.get( "data" ).asString(), png ) && png.size() >= 8 &&
+				       png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G' &&
+				       png[4] == 0x0D && png[5] == 0x0A && png[6] == 0x1A && png[7] == 0x0A,
+				       "plain render{imageMaxEdge}: image content block decodes to the \\x89PNG signature" );
+			} else if( type == "text" ) {
+				const std::string text = block.get( "text" ).asString();
+				if( text.find( "byteLength" ) != std::string::npos ||
+				    text.find( "imageWidth" ) != std::string::npos )
+					foundStats = true;
+			}
+		}
+		Check( foundImage,
+		       "MONEY ASSERTION: tools/call(render{imageMaxEdge}) content includes a {type:\"image\"} "
+		       "block -- the pre-existing render/MCP gap is closed, and this is the most-called verb "
+		       "on the transport so it matters most" );
+		Check( foundStats,
+		       "tools/call(render{imageMaxEdge}) still carries a {type:\"text\"} block with the "
+		       "render statistics (byteLength/imageWidth/...) alongside the image block" );
+	}
+	// Doc 91 V2 (2026-10-17): render{zoom} over the MCP transport -- the param
+	// reaches the session, the `zoom` result block comes back in the text content,
+	// and the conflict with `isolate` is a clean error, not a render.
+	std::printf( "[tools/call] V2 render{zoom} -> the zoom block rides back; zoom+isolate is refused\n" );
+	{
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "zoom", JsonValue::MakeString( "obj_sph" ) );
+		args.set( "imageMaxEdge", JsonValue::MakeNumber( 32 ) );
+		const std::string resp = mcp.HandleLine( ReqToolCall( 9101, "render", args ) );
+		JsonValue env = ParseResponse( resp, 9101 );
+		Check( !env.has( "error" ), "tools/call(render{zoom}) is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ), "tools/call(render{zoom}) isError == false" );
+		const JsonValue& content = result.get( "content" );
+		bool sawZoom = false, sawImage = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			const std::string type = block.get( "type" ).asString();
+			if( type == "image" ) sawImage = true;
+			if( type == "text" && block.get( "text" ).asString().find( "\"zoom\"" ) != std::string::npos &&
+			    block.get( "text" ).asString().find( "\"fovDegrees\"" ) != std::string::npos )
+				sawZoom = true;
+		}
+		Check( sawZoom, "V2 the MCP text content carries the nested `zoom` object (fovDegrees ...)" );
+		Check( sawImage, "V2 and the zoomed frame rides back as an image block" );
+
+		JsonValue bad = JsonValue::MakeObject();
+		bad.set( "zoom", JsonValue::MakeString( "obj_sph" ) );
+		bad.set( "isolate", JsonValue::MakeString( "obj_sph" ) );
+		const std::string badResp = mcp.HandleLine( ReqToolCall( 9102, "render", bad ) );
+		JsonValue badEnv = ParseResponse( badResp, 9102 );
+		const bool refused = badEnv.has( "error" ) || badEnv.get( "result" ).get( "isError" ).asBool( false );
+		Check( refused, "V2 tools/call(render{zoom, isolate}) is refused (isError / JSON-RPC error), not rendered" );
+	}
+	std::printf( "[tools/call] a render WITHOUT imageMaxEdge still returns no image content block\n" );
+	{
+		// Pins that the unification did not WIDEN the statistics-only
+		// render's response shape -- no imageMaxEdge means no png_base64 in
+		// the inner result, so the shared predicate is false and this stays
+		// a text-only reply, exactly as before 2026-08-11.
+		const std::string resp = mcp.HandleLine( ReqToolCall( 28, "render", JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 28 );
+		// Assert the SUCCESS first.  Without this the check below passes
+		// vacuously on a render that failed outright: JsonValue::get on a
+		// missing key returns a null value, `content` would be empty, the
+		// loop would not execute, and "no image block" would read GREEN over
+		// a broken verb.
+		Check( !env.has( "error" ), "tools/call(render) with no imageMaxEdge is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ),
+		       "tools/call(render) with no imageMaxEdge isError == false" );
+		const JsonValue& content = result.get( "content" );
+		Check( content.isArray() && content.size() >= 1,
+		       "tools/call(render) with no imageMaxEdge still returns a non-empty content array" );
+		bool foundImage = false;
+		for( std::size_t i = 0; i < content.size(); ++i )
+			if( content.at( i ).get( "type" ).asString() == "image" ) foundImage = true;
+		Check( !foundImage,
+		       "tools/call(render) with no imageMaxEdge still returns no image content block -- "
+		       "the statistics-only response shape is unchanged" );
+		// ORDERING NOTE (Arc 77 Phase 2, 2026-08-11): this assertion was once
+		// order-sensitive -- Phase 2 made a plain render carry the strip
+		// unconditionally once a target existed.  Phase 2b sizes the composite
+		// by `imageMaxEdge`, so "no imageMaxEdge means no image block" now
+		// holds with or without a target, and the Phase 2b block further down
+		// asserts exactly that on a session that HAS one.
+	}
+
+	//----------------------------------------------------------------------
+	// Arc 77 Phase 2 (2026-08-11): tools/call(imagine_scene) -- the generated
+	// scene target must arrive as a real MCP image content block, for the
+	// same reason the sketch echo does: the model has to SEE its own
+	// imagination for the loop to close at all.  And exactly ONE image block:
+	// the adapter routes through the shared ChatToolResultCarriesImage
+	// predicate over a single png_base64 field, so a second image here would
+	// mean a duplicate key had been serialized upstream.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] Arc77 imagine_scene -> MCP image content block (the generated target)\n" );
+	{
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "description",
+			JsonValue::MakeString( "a single grey sphere on a dark floor, lit from the front" ) );
+		const std::string resp = mcp.HandleLine( ReqToolCall( 26, "imagine_scene", args ) );
+		JsonValue env = ParseResponse( resp, 26 );
+		Check( !env.has( "error" ), "tools/call(imagine_scene) is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ), "tools/call(imagine_scene) isError == false" );
+		const JsonValue& content = result.get( "content" );
+		int imageBlocks = 0;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			if( block.get( "type" ).asString() != "image" ) continue;
+			++imageBlocks;
+			std::vector<unsigned char> png;
+			Check( Base64Decode( block.get( "data" ).asString(), png ) && png.size() >= 8 &&
+			       png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
+			       "Arc77: the generated scene target decodes to the \\x89PNG signature" );
+		}
+		Check( imageBlocks == 1,
+		       "Arc77 MONEY ASSERTION: tools/call(imagine_scene) returns EXACTLY ONE "
+		       "{type:\"image\"} block -- the model sees its own imagination, and the "
+		       "exactly-one-png_base64 discipline holds through the MCP transport" );
+	}
+
+	//----------------------------------------------------------------------
+	// Arc 77 Phase 2: and the render that FOLLOWS it carries the whole-scene
+	// target -- the target-above-render composite, again exactly one image
+	// block, plus the factual sceneTarget block in the text block.
+	//
+	// Phase 2b (2026-08-11): the composite is now sized by `imageMaxEdge`
+	// (its render half is exactly the frame the same call would otherwise
+	// have returned), so it rides only when an inline image was asked for --
+	// both halves of that are asserted below.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] Arc77 render after imagine -> the target-above-render composite\n" );
+	{
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "imageMaxEdge", JsonValue::MakeNumber( 192 ) );
+		const std::string resp = mcp.HandleLine( ReqToolCall( 27, "render", args ) );
+		JsonValue env = ParseResponse( resp, 27 );
+		Check( !env.has( "error" ), "tools/call(render) after an imagine is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ), "isError == false" );
+		const JsonValue& content = result.get( "content" );
+		int imageBlocks = 0;
+		bool sawSceneTargetFacts = false;
+		bool sawAnyScore = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			if( block.get( "type" ).asString() == "image" ) ++imageBlocks;
+			if( block.get( "type" ).asString() == "text" ) {
+				const std::string text = block.get( "text" ).asString();
+				if( text.find( "\"sceneTarget\"" ) != std::string::npos ) sawSceneTargetFacts = true;
+				if( text.find( "\"rmse\"" ) != std::string::npos ||
+				    text.find( "renderMean" ) != std::string::npos ||
+				    text.find( "targetMean" ) != std::string::npos )
+					sawAnyScore = true;
+			}
+		}
+		Check( imageBlocks == 1,
+		       "Arc77 MONEY ASSERTION: a render{imageMaxEdge} on a session with a scene target "
+		       "returns EXACTLY ONE image block -- the composite REPLACES the frame, never rides "
+		       "alongside it" );
+		Check( sawSceneTargetFacts,
+		       "Arc77: and the serialized result carries the factual sceneTarget block" );
+		Check( !sawAnyScore,
+		       "Arc77 Phase 2b MONEY ASSERTION: and that block carries NO similarity score and no "
+		       "per-channel means -- an RMSE over the full frame is a tone metric, and the live "
+		       "run that shipped it measured the model answering with emissive_scale 25.0 and "
+		       "light power 80.  The composite IMAGE is the comparison." );
+	}
+
+	//----------------------------------------------------------------------
+	// Phase 2b: and the SAME render with no `imageMaxEdge` returns the facts
+	// and NO image -- the composite is sized by that bound, so a call that
+	// asked for no picture is not handed one (which is also exactly what a
+	// pre-scene-target session did).
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] Arc77 Phase 2b render with NO imageMaxEdge -> facts, no image\n" );
+	{
+		const std::string resp = mcp.HandleLine(
+			ReqToolCall( 28, "render", JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 28 );
+		Check( !env.has( "error" ), "tools/call(render) with no imageMaxEdge is a JSON-RPC success" );
+		const JsonValue& content = env.get( "result" ).get( "content" );
+		int imageBlocks = 0;
+		bool sawSceneTargetFacts = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			if( block.get( "type" ).asString() == "image" ) ++imageBlocks;
+			if( block.get( "type" ).asString() == "text" &&
+			    block.get( "text" ).asString().find( "\"sceneTarget\"" ) != std::string::npos )
+				sawSceneTargetFacts = true;
+		}
+		Check( imageBlocks == 0,
+		       "Arc77 Phase 2b: no inline image was requested, so none is returned -- the render "
+		       "is never shown smaller (or larger) than the caller asked for because a target "
+		       "exists" );
+		Check( sawSceneTargetFacts,
+		       "Arc77 Phase 2b: the sceneTarget facts still ride, so the model knows a target is "
+		       "held even on a call it asked no picture of" );
 	}
 
 	//----------------------------------------------------------------------
@@ -554,6 +1066,96 @@ int main()
 		Check( env.get( "error" ).get( "code" ).asNumber() == -32601.0,
 		       "tools/call(unknown tool name) -> error.code == -32601 (method not found)" );
 	}
+
+	//----------------------------------------------------------------------
+	// STRUCTURAL INVARIANT: ADVERTISED IMPLIES ROUTABLE.
+	//
+	// Every name tools/list hands a client must be a name tools/call will
+	// route.  The adapter keeps two independent lists -- BuildToolsList's
+	// MakeTool calls and IsKnownToolName's kNames array -- and nothing but
+	// this check couples them, so a verb can land advertised-but-unroutable
+	// and no name-by-name test notices.  That is exactly what happened to
+	// build_element and place_element, the two CLEAN-ROOM construction
+	// verbs at the core of the staged build protocol: advertised from the
+	// day they landed, absent from kNames, so every MCP client that listed
+	// the tools and then called one got -32601 Unknown tool (found and
+	// fixed 2026-08-19).  This loop is the structural guarantee that
+	// replaces spotting it by eye -- it would have failed the day the
+	// omission was introduced, and it fails for the NEXT such verb too.
+	//
+	// Driven against a NULL-session adapter at Read autonomy on purpose:
+	// a mutating verb is refused by AgentRpc's autonomy gate and a
+	// head-backed verb by its no-head guard, both BEFORE any execution, so
+	// this sweep cannot render, hit a provider, or touch a document.  The
+	// only thing under test is the name lookup: -32601 means the adapter
+	// disowns a tool it just advertised, and EVERY other outcome (a
+	// success, an isError:true tool error, an invalid-params error) proves
+	// the name was recognized and dispatched.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] STRUCTURAL: every advertised tool is routable (no -32601)\n" );
+	{
+		std::unique_ptr<AgentSession> nullSession;
+		AgentMcpAdapter probe( std::move( nullSession ), AgentAutonomy::Read );
+
+		JsonValue listEnv; std::string listErr;
+		Check( JsonParse( probe.HandleLine( Req( 900, "tools/list", JsonValue::MakeObject() ) ),
+		                  listEnv, listErr ),
+		       "structural sweep: tools/list response parses" );
+		const JsonValue advertised = listEnv.get( "result" ).get( "tools" );
+		Check( advertised.isArray() && advertised.size() > 0,
+		       "structural sweep: tools/list advertised a non-empty tool array (the sweep is not vacuous)" );
+
+		std::size_t unroutable = 0;
+		for( std::size_t i = 0; i < advertised.size(); ++i ) {
+			const std::string name = advertised.at( i ).get( "name" ).asString();
+
+			JsonValue env; std::string err;
+			if( !JsonParse( probe.HandleLine(
+			        ReqToolCall( 901.0 + static_cast<double>( i ), name, JsonValue::MakeObject() ) ),
+			    env, err ) ) {
+				++unroutable;
+				Check( false, "advertised tool '" + name + "' returned an unparseable response" );
+				continue;
+			}
+
+			// -32601 from tools/call can only come from IsKnownToolName
+			// rejecting the name -- the method itself ("tools/call") was
+			// recognized to get this far.
+			const bool disowned = env.has( "error" ) &&
+			                      env.get( "error" ).get( "code" ).asNumber( 0 ) == -32601.0;
+			if( disowned ) ++unroutable;
+			Check( !disowned,
+			       "advertised tool '" + name + "' is ROUTABLE by tools/call (not -32601 Unknown tool)" );
+		}
+		Check( unroutable == 0,
+		       "structural sweep: EVERY advertised tool is routable" );
+	}
+
+	//----------------------------------------------------------------------
+	// The two CLEAN-ROOM construction verbs by name, so the regression that
+	// motivated the sweep above is also pinned explicitly: a reader
+	// grepping for build_element finds a test, not just a loop.  This one
+	// runs against the LIVE session-backed adapter, which the sweep above
+	// deliberately does not -- proving the names route on a real head too.
+	// Safe and cheap regardless: both verbs validate their required params
+	// (build_element needs element+height, place_element element+position)
+	// and return -32602 BEFORE they reach AgentSession, so an empty
+	// arguments object cannot start a provider request or touch a document.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] build_element / place_element route (not -32601)\n" );
+	{
+		const char* const kCleanRoom[] = { "build_element", "place_element" };
+		double id = 950;
+		for( const char* verb : kCleanRoom ) {
+			const std::string resp = mcp.HandleLine( ReqToolCall( id, verb, JsonValue::MakeObject() ) );
+			JsonValue env = ParseResponse( resp, id );
+			id += 1;
+			const bool disowned = env.has( "error" ) &&
+			                      env.get( "error" ).get( "code" ).asNumber( 0 ) == -32601.0;
+			Check( !disowned,
+			       std::string( "tools/call('" ) + verb + "') is NOT -32601 (the name is known to the adapter)" );
+		}
+	}
 	{
 		// Missing 'name' entirely -> -32602 Invalid params (still a
 		// protocol-layer failure, before we even get to a tool lookup).
@@ -630,7 +1232,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 21, "no-head tools/list still lists all 21 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 43, "no-head tools/list still lists all 43 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

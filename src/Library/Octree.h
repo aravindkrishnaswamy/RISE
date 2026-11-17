@@ -80,14 +80,20 @@ namespace RISE
 			}
 		}
 
-		bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
+		// `epOverride`: nullptr (every existing call site) uses the bound
+		// `ep` -- unchanged behaviour.  A non-null override traverses
+		// this SAME tree under a different TreeElementProcessor for one
+		// call -- see ObjectManager::IntersectOcclusionRay, which reuses
+		// the shadow-ray octree with a processor that drops the
+		// DoesCastShadows() filter, mirroring the BVH override above.
+		bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const TreeElementProcessor<Element>* epOverride = nullptr ) const
 		{
 			// Pass the request to the root
 			BOX_HIT	h;
 			root.IntersectRayBB( bbox, 99, ray, h );
 
 			if( h.bHit && h.dRange < dHowFar ) {
-				return root.IntersectRay_IntersectionOnly( ep, ray, dHowFar, bHitFrontFaces, bHitBackFaces, bbox, 99 );
+				return root.IntersectRay_IntersectionOnly( epOverride ? *epOverride : ep, ray, dHowFar, bHitFrontFaces, bHitBackFaces, bbox, 99 );
 			}
 
 			return false;
@@ -98,11 +104,10 @@ namespace RISE
 		bool AddElements( const std::vector<Element>& elements, const unsigned char max_recursion_level )
 		{
 			GlobalLog()->PrintEx( eLog_Info, "Octree:: Generating tree for %d elements, Max Recursion: %d, Max Elements/node: %d", elements.size(), max_recursion_level, maxPerNode );
-			Timer	t;
-			t.start();
+			const auto tStart = std::chrono::steady_clock::now();
 			bool	bRet = root.AddElements( ep, elements, maxPerNode, bbox, 99, max_recursion_level );
-			t.stop();
-			GlobalLog()->PrintEx( eLog_Info, "Octree:: Time to generate Octree %d seconds, %d ms", t.getInterval()/1000, t.getInterval()%1000 );
+			const auto tEnd = std::chrono::steady_clock::now();
+			GlobalLog()->PrintEx( eLog_Info, "Octree:: Time to generate Octree %d seconds, %d ms", ElapsedMilliseconds(tStart, tEnd)/1000, ElapsedMilliseconds(tStart, tEnd)%1000 );
 			return bRet;
 		}
 

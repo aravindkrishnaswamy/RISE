@@ -54,6 +54,10 @@ namespace RISE
 			/// \return The SPF for this material.  NULL If there is no SPF
 			inline ISPF* GetSPF() const override {			return pSPF; };
 
+			//! DL-471: every lobe is the diffuse one (IMaterial::ConnectionScatterTypes).
+			inline unsigned int ConnectionScatterTypes() const override { return 1u << ScatteredRay::eRayDiffuse; }
+
+
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const override {	return 0; };
 
@@ -63,7 +67,7 @@ namespace RISE
 				const ContinuationPathState& pathState ) const override
 			{
 				return CreateLambertianContinuationClosurePel(
-					ri,pBRDF->GetReflectance().GetColor(ri),pathState);
+					ri,ReflectanceColor(pBRDF->GetReflectance(),ri),pathState);
 			}
 
 			const IContinuationClosureNM* MakeContinuationClosureNM(
@@ -72,7 +76,7 @@ namespace RISE
 				const ContinuationPathState& pathState ) const override
 			{
 				return CreateLambertianContinuationClosureNM(
-					ri,pBRDF->GetReflectance().GetColorNM(ri,nm),pathState);
+					ri,ReflectanceColorNM(pBRDF->GetReflectance(),ri,nm),pathState);
 			}
 
 			//! Read-back accessor for the interactive editor's

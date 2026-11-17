@@ -2,6 +2,7 @@
 // FireCase.cpp - Canonical fire-case-v1 record and r54 derivations
 //////////////////////////////////////////////////////////////////////
 
+#include "pch.h"
 #include "FireCase.h"
 #include "FireProductionForce.h"
 #include "FireSimulationRecords.h"

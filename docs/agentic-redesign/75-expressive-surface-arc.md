@@ -1,9 +1,10 @@
 # Expressive-Surface Adoption via Authoring-Surface Structure — Arc 75 Design (2026-07-31)
 
-> **Status:** design APPROVED by the user 2026-07-31 (sequencing confirmed;
-> preset composite materials REJECTED — monoculture worry — and replaced by
-> the §3 expanding-scaffold design; the 74-log false-fact correction landed
-> as `435df037`).  S0 (instrument phase) in flight.  Successor to
+> **Status: ARC CLOSED (2026-08-04); Post-arc E1–E4, R1–R2, G1–G2 SHIPPED (`file_part_plan` superseded by `file_build_plan` in [doc 78](78-staged-build-protocol.md)).**
+> Originally approved 2026-07-31 (preset composite materials REJECTED — monoculture worry — and
+> replaced by the §3 expanding-scaffold design; the 74-log false-fact correction landed as
+> `435df037`); execution log in [76-expressive-surface-arc-log.md](76-expressive-surface-arc-log.md).
+> Successor to
 > [74-creative-richness-arc-log.md](74-creative-richness-arc-log.md) /
 > [73-creative-richness-design.md](73-creative-richness-design.md); builds
 > on every settled result there and re-litigates exactly one — on new
@@ -310,6 +311,321 @@ shows what dishonest gates teach.  **Pre-committed stop rule**: if
 future trajectories show reflexive escape-param spam (habituation
 transplanted), the gate reverts to Warning; watched passively via the
 standing trajectory record (grep allow_non_sampling_emitter).
+
+**POST-ARC E2 (2026-08-06, `0a8d14bb`): the triage intake stops
+pre-abstracting subjects.**  The dreamscape census traced the build
+model's "headless tube named dragon" partly to OUR intake restatement
+("a stylized, abstract figure...") — and baseline testing showed the
+bug is the prompt's, not the provider's (qwen reproduced "abstract"
+1/3).  New triage prompt: subjects restated by physical parts, five
+abstraction words banned, a "Must read clearly in frame" manifest for
+multi-subject briefs, empty augmentation for trivial edits.  Protocol:
+iterated locally against qwen at $0 (v1 0/3 on the dragons case → v4
+24/24, ask-side guard 6/6, JSON 100% — the 2-question bracket
+flakiness fixed by WORKED EXAMPLES where prose reminders failed, the
+law at micro scale), then verified 10/10 on gemini, then shipped.
+Verdict schema and Swift parser untouched.  Next live dragons-prompt
+GUI run is the E2 measurement; E3 (figure scaffolds) remains the
+heavier lever for the decomposition gap itself.
+
+**POST-ARC E3 (2026-08-06/07, `28182f40`) — "slice E3": the
+construction-grammar families.**  Designed from the post-E2 dreamscape
+census's sculptural-defect taxonomy (cheapest-primitive parts,
+assembly-by-overlap, unswirlable uniform volumes) under an explicit
+anti-overfit mandate from the user: no family may encode a subject.
+`blended_chain` (model-authored path — the creative act the census
+proved models CAN do — with taper/radii/smin continuity guaranteed by
+the scaffold: per-joint k floored at 2.5× the realized surface gap
+per the sminP bridging derivation k ≥ 2·(spacing−r₁−r₂), plus a
+node-density uplift; the shipped first version's 0.6×-center-spacing
+floor was refuted analytically by one reviewer and rendered
+fracturing into seven blobs by the other — the round's showcase of
+independent-perspective verification) and `volume_bank` (true
+painter-heterogeneous density — the engine already supported it —
+with the world-space-bbox coupling forcing the one graph-only
+deviation: the family emits its own object).  E2's manifest is the
+decomposition lever; E3 is the sculpture lever; the objectmap
+pixel-coverage fact remains the cheap presence check (E4-lite,
+unbuilt).  **Pre-committed measurement: a THREE-SUBJECT GUI battery**
+(the dragons prompt + two deliberately different figurative subjects,
+e.g. an organic/humanoid and an artifact/structure) censused per
+subject — a win that moves only dragons is overfit by definition.
+Stop-rule shape transplanted from S2: per-subject adoption + a
+chain-quality read (are chains used for figure parts, do endpoints
+attach), habituation watch on nothing (no escape params here).
+
+**POST-ARC E4 (2026-08-07, `3de94b68`): the render-cadence gate — and
+the strongest datapoint the mechanism law will ever get.**  A live
+mermaid-battery run died mid-build: the blind-edit nudge (advice,
+injected as a synthetic user message) fired for the FIRST time and the
+model echoed a synthesis of the guidance back as its final text — the
+advice form of render-cadence didn't just fail, it killed the run.
+Replaced by the sequencing gate (72-log item 6, at last): 10 blind
+mutations → mutations refused (retriable, actionable) until one cheap
+look; resets on looks and user turns; refusals never self-count.  All
+three host loops intercept (review caught Windows silently losing even
+its old transcript-carried protection — the nudge's one virtue);
+MCP scope boundary documented; empty-turn retry ported GUI-side;
+document-untouched-on-refusal pinned through the REAL eval loop;
+byte-identity guarded across all 5 codecs.  Nine fixtures gained the
+draft-render check-in real models must now perform.  **INSTRUMENT
+CHANGE**: post-E4 runs are not turn-structure-comparable to earlier
+batches — blind-batching now meets a wall, which is the point.
+Follow-up recorded: failed-render still counts as a look (inherited;
+the gate makes it newly load-bearing).  The echo-turn text-pattern
+detector remains deliberately unbuilt (the echo was a synthesis;
+removing the in-band trigger was the fix).
+
+**POST-ARC E4 LIVE MEASUREMENT + BENCHMARK #2 (2026-08-07/08,
+`12ff5e08`): the gate's first live firing was textbook, and the
+remaining gap is now a LOOKING gap, not a building gap.**  The
+re-run of the exact prompt that died by echo-turn
+(20260807T175527Z-31c3007e.jsonl, 80 records) completed cleanly with
+ONE gate refusal: the model's very next turn was `render{draft}`, it
+`read_document`ed when the look came back empty (nothing placed yet
+— a sensible orientation), retried the refused scaffold verbatim,
+and finished on a clean STOP.  Second-order effect: post-gate the
+model switched from one-scaffold-per-call to batched multi-chunk
+inserts — the gate reshapes call granularity, not just cadence.  E3
+in live use: 7 `blended_chain` + 2 `volume_bank` calls, every chain
+endpoint attached, ZERO floating parts — the "amateurish
+disconnected shapes" defect class is closed.  Nuance datapoint for
+the mechanism law: `volume_bank`'s factual bbox note in its RESULT
+payload was acted on (bboxes updated on reposition) — task-specific
+facts in a just-requested tool result behave like blocking facts,
+not like ambient advice.  Battery: mermaid/organic-humanoid slot =
+borderline pass (figure reads at a glance; arms don't; half the
+coral census occluded); the artifact/structure subject remains
+unrun.  Honest weaknesses, unchanged by E1–E4: the render→judgment
+loop never fires (buried corals plainly visible in render 2, not
+fixed — model re-rendered bigger and declared victory), scalar pipe
+still zero, caustics unattempted, final summary oversells.  Named
+next lever (recorded, not scheduled): the objectmap pixel-coverage
+presence check ("E4-lite") — turns per-part visibility into a
+blocking fact, the only currency the law says works.  Also carried
+forward, still unbuilt: the reflectance>1 fake-glow diagnostic
+(models simulate emission by overdriving reflectance; a Warn-tier
+diagnostic would make the physical error a fact) and E3 family
+breadth.
+**Benchmark #2**: a Fable subagent authored "The Coral Queen's Hour"
+([scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene](../../scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene),
+committed `12ff5e08` with provenance header; CST golden 376→377;
+scenes/README.md gained the Benchmarks/ taxonomy entry).  The
+diagnostic behaviour, beyond the picture itself: the subagent
+rendered its own full frame (3h16m), zoomed in, judged the arm/hair
+inadequate, edited geometry, and preview-iterated three times before
+a final re-render — the looking-driven-revision loop harness models
+lack.  Verdict on the two full renders (user concurred 2026-08-08):
+v1 is the better PICTURE (full reef tableau), v2 the better MERMAID —
+so v1 HOLDS the benchmark and v2 is kept as the detail-pass variant
+(`_v2` file).  v1's scene state had been overwritten on disk by the
+agent's detail pass; it was reconstructed by inverting the agent's
+two recorded edit scripts from its transcript (17/17 substantive
+inversions; only the already-normalized preview-settings flips
+no-oped) and verified against the v1 full render by re-render —
+subagent transcripts double as an edit journal.  Render
+times not comparable (v1 3h16m; v2 7h39m overnight under contention).
+Process: the benchmark agent was watchdog-killed twice (yield, then
+a >10-min foreground block) — hour-scale jobs are supervisor-owned
+`run_in_background` Bash, and a watchdog kill is recoverable from
+disk state (outputs + logs) without the dead context; recorded in
+the process memory alongside the yield-law occurrences.
+
+**POST-ARC R1 (2026-08-09, `e666f72d`): the harness stops charging
+the model for teardown, and stops letting it buy an hour-long
+render.**  Trajectory forensic first (the arc's own discipline):
+`20260809T210034Z-79026660` (gemini-3.6-flash, psychedelic
+dragon+wizard) spent **20 sequential `remove_chunk` calls — 40 of 93
+records** — tearing down and rebuilding the wizard and the dragon
+piece by piece, each call a full LLM roundtrip against an ~83k-token
+prompt, then ended by issuing `render {imageMaxEdge:512}`.  Both are
+HARNESS affordances, not model error: `remove_chunk` took one target
+while its siblings (`insert_chunks`, `propose_patches`) were plural,
+and `imageMaxEdge` only downscaled the returned PNG — it never
+bounded render cost, so the omitted width/height rendered at authored
+film resolution and authored spp.  **A clean mechanism-law datapoint
+fell out of the same trajectory**: the render tool's description
+ALREADY told the model to use `quality:"draft"` for cheap looks
+(AgentChatCodecs.cpp) — measured **0/5** in this run, all five
+renders production.  Our own tool docs are advice; the law does not
+exempt them.  Three slices shipped:
+**R1a `remove_chunks`** — batched, all-or-nothing, ONE head bump /
+history entry / undo step / E4-gate mutation.  The plural NAME is
+half the mechanism (E4 already showed this model batches the moment
+the tool allows it).  Atomicity is delivered at the Job layer
+(resolve-all-then-erase-descending-then-one-re-derive), which makes
+intra-batch references need no dependency sort at all.
+**R1b render caps** — 256px long edge / 16 spp on agent-surface
+production beauty renders, with the absent-dims default (the actual
+trajectory failure) scaled to the cap rather than film res.  Eval
+grading renders keep full fidelity **structurally** (they construct
+params in C++ and never enter the RPC path), so no bypass flag
+exists to be misused.
+**R1c rasterizer allowlist** — a mid-slice user directive ("agents
+should never touch MLT; PT and VCM only") became a blocking gate at
+all eight agent-reachable paths to activating a rasterizer, pure
+allowlist (a NEW rasterizer kind is blocked by default AND fails a
+coverage test), state-vs-delta per E1 so user-authored MLT/BDPT/auto
+scenes stay editable and renderable, and **no escape parameter** —
+E1 shipped one because glow-only is a legitimate intent; this
+directive is categorical, and a flag is the habituation surface E1's
+stop rule watches.
+**INSTRUMENT CHANGE**: post-R1 trajectories are not comparable to
+earlier batches on removal-heavy or render-heavy sessions — teardown
+now costs one call instead of N, and no agent render can cost more
+than a bounded frame.  Turn counts and wall-clock both move.
+**Review record (three rounds, the loop working as designed):**
+round 1 (3 orthogonal lenses) found ONE P1 — the sample cap silently
+never fired on rasterizers reporting an unknown count (`-1 > 16` is
+false), so the entire honesty apparatus stayed mute on exactly the
+rasterizers that cannot be capped; every test fixture had used a
+PT-family rasterizer, so nothing caught it.  The lesson generalizes:
+verify a predicate is TOTAL, not merely correct.  Round 2 (2 fresh
+lenses) found no P1s but caught a **supervisor error**: a
+misdiagnosis that `AutoRasterizer` forwards the sample-count override
+(it does not — zero references to the pair) had propagated from a log
+line into a worker brief and then into a code comment as fact; the
+real cause of that test failure was a one-word assertion mismatch
+(`"could NOT be applied"` is not a substring of the unknown case's
+`"could NOT be verified or applied"`).  Fresh-reviewer discipline
+caught a false claim that had already been written down twice.
+Round 2 also found a TOCTOU in the integrator pin, replaced by a
+stateless allowlist.  A `propose_patch` **value-splice** bypass (chunk
+smuggled as raw bytes inside a param value, structurally invisible
+until serialize+reparse) was found by the R1c implementer against its
+own first draft and closed with a round-trip comparison.
+**Residuals, recorded not hidden:** on a non-cappable rasterizer the
+sample/mutation axis stays unbounded (resolution still capped, and
+the payload says so honestly); `compare_to_reference`'s render
+resolution is intentionally uncapped because RMSE requires matching
+dims and the reference is host-registered, never model-chosen;
+`auto_rasterizer`'s `probe TRUE` stays ungated (the dispatcher's own
+runtime choice on a user-authored chunk is not the agent selecting an
+integrator); and the widened verb-count scanner does not cover
+`tests/`, where one further stale count was found by hand.
+**Named next lever, unchanged and now the priority:** the E4-lite
+objectmap pixel-coverage presence check — the looking gap is still
+the gap, and R1 only removed the friction around it.
+**Named follow-on arc (user, 2026-08-09): creative lighting, with
+area lights as the centre of gravity** — sequenced AFTER E4-lite.
+
+**POST-ARC G-SERIES + THE ARC-77 PIVOT (2026-08-10, `9693cc2d`,
+`61c71eec`, `199b8aaa`, `67ea79b7`): from measuring the gap to
+closing the loop.**  Four slices in one day, ending in a DIRECTION
+CHANGE that gets its own design doc
+([77-imagination-target-design.md](77-imagination-target-design.md)).
+**G1 `render{isolate}`** — look at ONE part, auto-framed (0.22% →
+27.95% of frame, 127×); four review P1s, the worst a poisoning of
+`auto_rasterizer`'s once-only integrator resolution that would have
+silently degraded the USER's own renders for a whole session.
+**G2 `file_part_plan`** — the long-designed S4 plan gate, shipped
+with refuse-until-filed capped at 3; its review found the
+value-splice bypass R1c had ALREADY documented and defended — the
+third transplanted-idiom failure, now a standing review question
+("what does the neighbouring gate defend against, and why?").
+**Then the pivot**: the user judged the G2 battery not worth running
+("it will only show what I can intuit") and reframed the problem —
+the model needs an IMAGINED TARGET to iterate toward, like a human
+sketching before modelling.  Arc 77: the plan gains a REQUIRED
+outline polygon per part (G3a — deterministic 256² masks, echoed
+back as an image at filing) and every isolated look can measure
+IoU against the sketch (G3b — declared-view vantages, the
+[sketch|silhouette|overlay] composite as the retention re-surfacing
+path, numbers reported never characterized).  Measured values match
+ANALYTIC derivations (sphere vs square = π/4).  G3b's review found
+a real data race (async worker thread reading session sketch state;
+fixed by submission-time snapshot, red-proved by observing
+superseded-plan facts) and the SECOND codec-drops-caveats instance
+(now: codec text is canonical, MCP mirrors it, facts hygiene-pinned
+on both).
+**INSTRUMENT CHANGE**: post-G2 sessions carry the plan gate
+(+sketches); trajectories are not turn-comparable to earlier
+batches on any geometry-creating session.
+**The composed loop, complete in-tree:** imagine (G3a) → build
+(scaffolds/R1a) → look (E4 cadence, G1 isolate, R1b caps) → measure
+(G3b) → fix (R2) → look again.  The battery's headline question is
+pre-committed in 77 §11: does a self-authored target move
+geometry-revisions-after-a-look off its thrice-measured zero.
+**Recorded, unbuilt:** Phase 2 (provider image generation as the
+whole-scene target — approved in principle, capability-gated,
+deferred); the scene-level region layout CUT with it (took the
+E4-lite presence-check windfall along; returns as its own lever if
+built-but-invisible persists); multi-object isolate.  The MCP
+plain-render image-block gap was spun off here and is now **CLOSED
+(2026-08-11)**: the adapter's tools/call handler routes through the
+shared `ChatToolResultCarriesImage` predicate instead of a private
+verb list, so a plain `render{imageMaxEdge}` reaches MCP clients as a
+real image content block.  SourceHygieneTest's MCP image-branch
+parity pin stops that private list from re-growing.
+
+**POST-ARC R2 (2026-08-10, `4b9da97c`): the shapes-vs-textures
+asymmetry, and one-call form revision.**  User observation on the
+first post-R1 run ("creative with textures, the shapes are very
+sadly simple") — confirmed by census of
+`20260810T025245Z-58d17373` (gemini-3.5-flash) and by LOOKING at the
+render, which the supervisor did by decoding the trajectory's own
+`png_base64`.  Materials: worley3d + perlin3d painters, 4
+pbr_metallic_roughness, dielectric, luminaires.  Geometry: **9 of 12
+authored chunks are bare primitives**; the 3 `sdf_geometry` chunks
+are 1–2 real parts each plus an identical boilerplate `box subtract`
+ground-clip, so the wizard's robe is ONE roundcone and renders as a
+traffic cone.  "Bat-like wings" → `box 0.6 × 0.01 × 0.4`; the intake
+manifest's "**faceted** crystal" → a smooth ellipsoid (the one
+adjective in the brief that specifies FORM is the one dropped).
+**The decisive datapoint is the revision histogram.**  R1's cheap
+renders bought REAL iteration — 4 renders, exposure climbing meanR
+0.069 → 0.337, corrections between each; the looking loop the mermaid
+run never ran.  But every revision was **13 position, 10 power, 6
+color, 2 metallic, 2 roughness, 2 orientation, 1 width, 1 depth —
+and ZERO geometry replacements**.  The model revises what a
+ONE-PARAMETER PATCH can revise.  A rich material is one chunk bound
+to a slot; a rich shape was a multi-chunk composition — so form was
+never revisited.  This is the mechanism law at a NEW site: not "does
+the model know better" but "what does revision cost".
+**Second finding — scaffold retrieval is NAME-TRIGGERED.**
+`blended_chain` was used exactly once, for the *tail* — the part
+whose noun maps onto the family concept.  Wings, neck, robe, beard
+are all equally chain-able and got primitives.  E3's measured
+boundary was family COVERAGE; this is different and new —
+*retrieval*: the family existed and fit, the words didn't line up.
+**Shipped (R2):** `replace_geometry_scaffold` — expand a family
+through the SAME generator, rebind the object's `geometry` slot,
+remove the orphaned old geometry, in ONE atomic commit (one head
+bump / undo step / E4 mutation).  The object's TRANSFORM is
+preserved, so placement earned by looking survives a form change.
+Orphan policy is tri-state and honest (removed / retained+referrers /
+deeper-orphans reported, never silently deleted).  `volume_bank`
+refused (owns its object); External authority refused (no proposal
+kind fits a whole-document swap) — a recorded capability gap.
+**A membrane/faceted FAMILY was proposed and DECLINED by the user as
+too scene-specific** — correctly: it would have encoded a subject,
+which the E3 anti-overfit mandate forbids.  Family breadth needs
+evidence from more than one scene.
+**Review record:** round 1 found a P1 — the handler collapsed every
+commit-stage outcome (conflict / diagnosed / transient-retriable)
+into `MakeError(kInvalidParams)`.  The idiom was copied from
+`insert_geometry_scaffold`, where it is CORRECT because that verb's
+`ok` only means "bad request"; R2's `ok` also gated the commit.
+**This is the second defect in two slices born of a correct-looking
+pattern transplanted across a boundary where its precondition did not
+hold** (the first: R1b's sample cap, correct for every value except
+the `-1` sentinel).  Worth a standing review question: *what
+invariant does this idiom depend on, and does it hold here?*  Round 2
+(fresh) found no P1 and confirmed the riskiest part safe (the
+redefined `ok` on a struct shared with `insert_geometry_scaffold`
+never escapes two TUs), but caught the same clearing-bug one site
+further on.
+**MEASUREMENT PENDING — stop rules pre-committed before any result:**
+(a) *fires and helps* — ≥1 post-render geometry replacement in a
+majority of runs AND the primitive share of figure parts drops →
+bank; (b) *fires but doesn't help* — replacements happen but parts
+stay primitive-equivalent → the boundary is family FIT, and a
+membrane-type family becomes evidence-justified rather than
+scene-specific; (c) *never fires* → call cost was never the binding
+constraint on REVISION, and the next lever is making the form defect
+a FACT the model receives — never a better-worded description, which
+the law prices at zero.  Counterweight `build_ambiguous_scene` in the
+batch; more than one subject, so a win is not a dragons artifact.
 
 **S3a VERDICT (2026-08-04): DEAD by its own rule — 0/6 both models.**
 qwen: advanced_geometry 0.00 in all six build runs (no census needed —
@@ -716,6 +1032,7 @@ main checkout after any worktree agent.  Runs: gemini via
   wall-time than pp=0 (A longer in 6/8 contexts, up to 2.0×).
   Probe: scratchpad ppab_probe.py; data ppab_full_run1.jsonl (session
   scratch, regenerable).
+- **2026-07-31 — the `gallery` "silent failure" claim was FALSE; no bug,
   and a third first-party confirmation of the mechanism law.**  A
   worktree-isolated investigation traced the insert path
   (`AgentSession::InsertChunk` → `Job::ApplyCstInsertChunk` →

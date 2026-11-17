@@ -18,6 +18,22 @@
 
 using namespace RISE;
 
+namespace
+{
+	// Volume emission is a SOURCE term (Stage C slice 2): uplift it as
+	// the reference illuminant so the NM path carries the same D65 shape
+	// every emitter / light / radiance map now carries.  EnsurePositve
+	// first -- FromRGB scales by the max channel, so a negative
+	// component (an author typo) would flip the scale and corrupt every
+	// wavelength.
+	inline RGBIlluminantSpectrum MakeEmissionSpectrum( const RISEPel& emission )
+	{
+		RISEPel c = emission;
+		ColorMath::EnsurePositve( c );
+		return RGBIlluminantSpectrum::FromRGB( c );
+	}
+}
+
 HomogeneousMedium::HomogeneousMedium(
 	const RISEPel& sigma_a,
 	const RISEPel& sigma_s,
@@ -27,6 +43,7 @@ HomogeneousMedium::HomogeneousMedium(
   m_sigma_s( sigma_s ),
   m_sigma_t( sigma_a + sigma_s ),
   m_emission( 0, 0, 0 ),
+  m_emissionSpectrum( MakeEmissionSpectrum( RISEPel( 0, 0, 0 ) ) ),
   m_sigma_t_max( ColorMath::MaxValue( sigma_a + sigma_s ) ),
   m_pPhase( &phase )
 {
@@ -43,6 +60,7 @@ HomogeneousMedium::HomogeneousMedium(
   m_sigma_s( sigma_s ),
   m_sigma_t( sigma_a + sigma_s ),
   m_emission( emission ),
+  m_emissionSpectrum( MakeEmissionSpectrum( emission ) ),
   m_sigma_t_max( ColorMath::MaxValue( sigma_a + sigma_s ) ),
   m_pPhase( &phase )
 {
@@ -61,6 +79,7 @@ HomogeneousMedium::HomogeneousMedium(
   m_sigma_s( sigma_s ),
   m_sigma_t( sigma_a + sigma_s ),
   m_emission( emission ),
+  m_emissionSpectrum( MakeEmissionSpectrum( emission ) ),
   m_sigma_t_max( ColorMath::MaxValue( sigma_a + sigma_s ) ),
   m_pPhase( &phase ),
   m_sigma_a_spectral( sigma_a_spectral ),
@@ -95,9 +114,12 @@ void HomogeneousMedium::SetScattering( const RISEPel& v )
 void HomogeneousMedium::SetEmission( const RISEPel& v )
 {
 	// Emission doesn't feed sigma_t / sigma_t_max — sigma_t controls
-	// distance sampling, emission contributes radiance.  No derived
-	// state refresh needed.
+	// distance sampling, emission contributes radiance.
 	m_emission = v;
+	// It DOES feed the cached NM source spectrum: this is the only
+	// emission write path, so the uplift must be rebuilt here or the
+	// spectral render keeps emitting the constructed colour.
+	m_emissionSpectrum = MakeEmissionSpectrum( v );
 }
 
 MediumCoefficients HomogeneousMedium::GetCoefficients(
@@ -139,9 +161,15 @@ MediumCoefficientsNM HomogeneousMedium::GetCoefficientsNM(
 		c.sigma_t = ColorMath::Luminance( m_sigma_t );
 		c.sigma_s = ColorMath::Luminance( m_sigma_s );
 	}
-	// Emission is not yet spectrally authored; use its luminance in both
-	// paths (unchanged from pre-G1).
-	c.emission = ColorMath::Luminance( m_emission );
+	// Emission is not per-wavelength AUTHORED (no emission curve
+	// analogous to m_sigma_a_spectral), but it IS a source term, so the
+	// RGB it was authored with is uplifted as the reference illuminant
+	// and evaluated at `nm` -- cached at construction / SetEmission, see
+	// m_emissionSpectrum.  This used to be `ColorMath::Luminance`, one
+	// flat scalar at every wavelength, which made a coloured emissive
+	// medium spectrally grey and tinted even a white one by the
+	// flat-spectrum chromaticity (1.20, 0.95, 0.91).
+	c.emission = m_emissionSpectrum.Eval( nm );
 	return c;
 }
 

@@ -19,6 +19,7 @@
 #include "Geometry.h"
 #include "../Acceleration/BVH.h"
 #include "../Acceleration/AccelerationConfig.h"
+#include <atomic>
 #include <vector>
 
 namespace RISE
@@ -58,10 +59,32 @@ namespace RISE
 			TriangleAreasList		areasCDF;			// Cumulative density function of the triangle areas
 			Scalar					totalArea;			// Total area
 
+            // Intrinsic winding audit, refreshed with the area cache on real
+            // mesh mutation. Shared instances/preparation only read it.
+            bool smsUncertainNormalOrientation = true;
+            unsigned long long smsOrientationAudits = 0, smsOrientationTriangleVisits = 0;
+            // Face-rule proof and planar zero-volume proof are distinct.
+            // A cracked solid can pass the former, never the latter.
+            bool m_bProvablyOpenSheet = false;
+            bool m_bZeroVolumeSheet = false;
+            bool m_bOpenSignedVolumeNegative = false;
+            bool m_bShapeOpenSheet = false;
+            unsigned long long openCertificateAudits = 0;
+			mutable std::atomic<int> m_topologicalOpenness{ -2 };
+
 			//! Computes the triangle areas and the CDF
 			void ComputeAreas();
 
 		public:
+            bool HasUncertainSMSNormalOrientation() const {return smsUncertainNormalOrientation;}
+            bool IsProvablyOpenSheet() const {return m_bProvablyOpenSheet;}
+            bool IsZeroVolumeSheet() const {return m_bZeroVolumeSheet && !smsUncertainNormalOrientation;}
+            unsigned long long OpenCertificateAudits() const {return openCertificateAudits;}
+            bool HasNegativeOpenSignedVolume() const {return m_bOpenSignedVolumeNegative;}
+            //! DL-621(a): topological openness (see GeometricUtilities::TriangleMeshOpenness).
+            int TopologicalOpenness() const;
+            unsigned long long SMSOrientationAudits() const {return smsOrientationAudits;}
+            unsigned long long SMSOrientationTriangleVisits() const {return smsOrientationTriangleVisits;}
 			TriangleMeshGeometry(
 				const bool bDoubleSided_
 				);
@@ -83,8 +106,28 @@ namespace RISE
 
 			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
 			Scalar GetArea() const override;
+			//! DL-320: a back-face hit reports a ray-facing normal (see IGeometry).
+			bool IsDoubleSided() const override { return bDoubleSided; }
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
+
+			//! IGeometry::SelfHitRootFloor -- RayTriangleIntersection's gate,
+			//! `NEARZERO * (1 + |origin|_1 + max vertex |.|_1)`, is per
+			//! TRIANGLE and the query names only a point, so bound every
+			//! triangle at once via Geometry::BoundingBoxRootFloor (see its
+			//! note).  Direction-independent.
+			//!
+			//! No in-tree caller needs this today -- CSGObject's exit-face
+			//! probe is the only consumer and a mesh operand never reaches it
+			//! (a mesh publishes an infinite `range2`, which the probe's own
+			//! guard rejects up front) -- but the DEFAULT would under-state
+			//! the gate by the whole vertex term, so leaving it unreported
+			//! would be a live trap for the next caller.
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override
+			{
+				(void)localDir; (void)localNormal;
+				return Geometry::BoundingBoxRootFloor( GenerateBoundingBox(), localOrigin );
+			}
 
 			// Functions special to this class
 
@@ -94,6 +137,9 @@ namespace RISE
 			void DoneTriangles( ) override;						// I'm done feeding you a bunch of triangles
 
 			const MyTriangleList	getTriangles() const{ return polygons; }
+            // Extended SMS only: constant-time edge classification from the
+            // actual primitive/barycentrics stamped by the intersector.
+            Scalar NativeTriangleEdgeDistance(const RayIntersectionGeometric& hit) const;
 
 			// From TreeElementProcessor
 			typedef const Triangle*	MYOBJ;

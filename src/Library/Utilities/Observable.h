@@ -57,6 +57,9 @@ namespace RISE
 			typedef std::function<void()> Callback;
 			typedef unsigned int          Token;
 
+            // Read during frame preparation, before any worker/notification.
+            bool HasObservers() const { return !m_observers.empty(); }
+
 			// Register a callback to fire on every NotifyObservers() call.
 			// Returns an opaque token used by Detach().  Callable on a const
 			// Observable* because the observer list is mutable — subjects

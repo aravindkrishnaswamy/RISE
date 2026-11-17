@@ -1,0 +1,1094 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           plank_closeup.RISEscene                                                                 #
+#   Description:    Textures showcase 4/4 -- a 0.33 m close-up of the corner of a rough-sawn softwood       #
+#                   plank with a hand-forged nail resting on it.                                            #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-09-06                                                                              #
+#                                                                                                           #
+#############################################################################################################
+#
+#   THESIS.  Showcases 1-3 answer "does the painter graph work".  This one answers the standing
+#   criticism of the results: that they "look very artificial -- obviously a generated texture rather
+#   than something organic".  The claim it makes is that organic-looking procedural surface is not a
+#   matter of finding a better noise.  It is a matter of AUTHORING ORDER, and the seven rules below are
+#   that order.  Each was arrived at by rendering, looking, and being wrong -- the record of what was
+#   wrong is kept at the bottom, because several of the failures are ones the toolbox invites.
+#
+#   ------------------------------------------------------------------------------------------------
+#   DOCTRINE
+#   ------------------------------------------------------------------------------------------------
+#
+#   1. CAMERA FIRST, THEN FEATURE SIZES IN WORLD UNITS.  The camera is authored before any texture and
+#      every feature size is derived from its pixel footprint.  Predicted: `fov` is VERTICAL, so
+#      2 * 0.33 m * tan(20 deg) / 480 = 0.50 mm face-on.  MEASURED, by painting `fw` itself onto the
+#      plank and reading the pixels back: 0.40 mm (p50) across the whole top face (the near half of
+#      the board is closer than the lookat, and the footprint follows the local distance).  Sizes then follow: growth rings 4-7 mm ON THE FACE
+#      (10-17 px), the ring-edge warp 2.5 mm across the grain, fine fibre 1.2 mm (3 px) -- and the
+#      sub-millimetre pore texture, at 0.5 mm, goes ONLY into roughness (`sp_pore`), never into colour
+#      and never into relief, because at ~1 px it can carry no shape and would read as exactly the
+#      dirty noise that gives a render away.
+#
+#      Note "ON THE FACE".  The ring spacing an author sets is RADIAL (`ring_m`), but the surface cuts
+#      the ring cylinders at a shallow angle, so face spacing is `ring_m / sin(theta)` and runs 2-4x
+#      the radial figure -- with the pith 75 mm down, `ring_m 0.005` measured ~10-20 mm on the face and
+#      read as wallpaper.  `ring_m 0.0024` is what puts the FACE spacing in the band doctrine 1 asks
+#      for.  Set the number you can see, not the number you typed.
+#
+#   2. STRUCTURE BEFORE NOISE.  Wood is not noise with a wood-coloured ramp; it is RINGS AROUND A PITH.
+#      `expr_plank` builds the ring phase from the distance to a pith AXIS lying 58-92 mm BELOW the
+#      board and tilted 3.1 deg out of its long axis.  That tilt is the whole cathedral figure: the
+#      arch of ring radius R closes where the local pith depth reaches R, and the depth varies along
+#      the board precisely because the axis is tilted.  Early/late wood is an ASYMMETRIC SAWTOOTH of
+#      ring phase -- a flat pale plateau, a narrower dark band, and the abrupt snap back a real ring
+#      boundary has -- never a sine.
+#
+#      The variation is structured too.  `cellhash(phase)` floors internally, so it yields ONE
+#      pseudo-random number PER RING, constant across that ring: `rstr` and `rlw` give each ring its
+#      own late-wood darkness and band width, the way each growing season does.  Without it every ring
+#      is a carbon copy of its neighbour, and no amount of added noise repairs that.
+#
+#      Noise enters in three places only, all of them anisotropic, none of them isotropic: a fine
+#      ring-edge warp (2.5 mm across x 29 mm along, 12:1, amplitude held under a quarter ring so it
+#      ragged the ring EDGES without dissolving them), a COARSE grain wander (90 mm, several
+#      millimetres deep -- legitimate at that amplitude precisely BECAUSE it is coarser than the ring
+#      spacing and therefore moves neighbouring rings together), and along-grain streak/fibre at 14:1
+#      and 20:1.
+#
+#   3. PROCESS TIES VARIATION TO GEOMETRY.  `occlusion(0.03)` fills the end check with dirt,
+#      `convexity(0.006)` polishes the eased arris a hand would rub, `abs(N.x)` darkens the end
+#      grain, `clamp(N.y,0,1)` sun-bleaches the top face against the sides.  None is a texture;
+#      each is the surface answering a question about its own geometry.  The first two PARTITION
+#      ONE QUESTION -- how open is the surface at the given radius, against what a FLAT surface
+#      would read -- with occlusion reporting how much LESS open than flat and convexity how much
+#      MORE.  So both are used RAW, with no threshold to keep the dirt out of the arris or the
+#      polish out of the crack.  Their radii differ by 5x because the features do: 18.6 mm to see
+#      a 2.6 mm slot as enclosed, 3.7 mm to keep the polish on a 1.5 mm eased edge.
+#
+#      AND SINCE 2026-09-08 A THIRD SIGNAL, WHICH ASKS ABOUT THE REST OF THE SCENE.  Those two are
+#      SELF questions -- they see only this object's own field -- so neither can put dirt where the
+#      NAIL touches the board, and that seam is the only piece of process in this scene that is not
+#      about the plank alone.  `proximity(0.002)` closes it: shortest distance from the hit to any
+#      OTHER object's surface, 1 at touching and 0 at the radius, and its radius is a WORLD LENGTH
+#      (2 mm here) rather than the per-object fraction the other two take.  It drives colour and
+#      roughness; it CANNOT drive relief (`relief_modifier` holds the signal channel fixed across
+#      its four taps by design, so a proximity-driven height has zero gradient) and it never sees
+#      emissive objects, so the key panel 0.57 m away could not paint grime even if it were close.
+#      The radius is set from measured gaps, not taste -- see the geometry section for the five
+#      numbers and how they were measured.
+#
+#   4. RARE EVENTS, NOT UNIFORM TEXTURE.  One knot, hand-placed, with the rings SWEEPING around it
+#      (`knot_pull` deflects the radial coordinate -- the sweep, not the dark disc, is what sells it);
+#      one end check; a few resin lines thresholded off the top of a low-frequency field.  Quiet
+#      everywhere else.  Uniform busy-ness is the other half of "obviously generated".
+#
+#   5. ONE FIELD DRIVES COLOUR, ROUGHNESS AND RELIEF.  (Refinement from weathered_workbench, 2026-09-10:
+#      a term about the surface's HISTORY -- dirt, wear, stains -- is not a term about its SHAPE; bind the
+#      shape channel raw to relief and keep history terms in colour/roughness, or the relief carves dirt.)  `expr_plank` is the only wood field.
+#      `ramp_plank` colours it, `sp_plank_rough` bridges it to GGX roughness (plus `sp_pore`'s
+#      zero-mean detail through `scalar_painter { add }`), `sp_plank_relief` bridges it raw into
+#      `relief_modifier`.  Ridge, dark band and dull sheen are the SAME feature seen three ways,
+#      which is what a real surface does and what a graph of independent noises cannot fake.
+#
+#   6. LIGHTING THAT REVEALS RELIEF.  A 0.17 x 0.12 m panel at 28 deg elevation, throwing mostly along
+#      +Z (it sits behind the plank at z = -0.5 and faces the camera side) while the grain runs along X,
+#      so it rakes ACROSS the rings.  Panel SIZE turned out to matter
+#      as much as angle: the first key was 0.45 x 0.30 m, and a source that broad washes out the
+#      shading of a 0.2 mm ridge -- shrinking it (exitance raised to match) bought as much fine-detail
+#      contrast as the entire relief-amplitude sweep did.  `exitance` is then set so the early-wood
+#      PLATEAU lands at 0.75-0.85 display (it measures 0.77): a plateau at display white has no room
+#      left for the fibre texture, and the fix for that is the light, never a darker ramp.  A sky fill
+#      keeps the shadow side off the floor of the range -- but see the ramp's comment, because that
+#      fill is COOL and the wood albedo has to be pre-corrected for it.
+#
+#   7. THE IRON ANSWERS THE SAME DOCTRINE.  The nail is not a box wearing a noise cloud (which is what
+#      weathered_workbench's "iron vise" WAS until 2026-09-06 -- two `box_geometry` under an isotropic
+#      Worley field, a shape that said nothing about what it was; it is now a fifteen-part cast bench
+#      vise built to this rule).  Its SILHOUETTE says hand-forged nail: a round cone
+#      squared off by an INTERSECTING box into a tapered rectangular shank, plus an off-axis hammered
+#      head.  Its surface is a 3 mm forge undulation, pits at 1 mm thresholded to a few per cent
+#      coverage, forge scale as smoother lighter patches, rust concentrated by `occlusion(0.10)` in
+#      the head-to-shank crevice and by `-N.y` underneath, black oxide held on the struck ridges by
+#      `convexity(0.02)`.
+#
+#   ------------------------------------------------------------------------------------------------
+#   WHAT WAS TRIED AND WAS WRONG.  Most of these are traps the toolbox sets; they cost most of the
+#   iterations on this scene and none of them announces itself as an error.  Two of them -- the clamp
+#   eating the detail, and the field spending the ramp's reserved stops -- are the SAME failure seen
+#   from the two ends of a clamped sum, and both were found only by probing the field and reading the
+#   percentiles back.  Probe the field.
+#   ------------------------------------------------------------------------------------------------
+#
+#   -- THE CLAMP EATS THE DETAIL.  `clamp(expr, 0, 1)` on a field whose terms sum near zero pins a
+#      large area at exactly 0, and every fine term added there becomes INVISIBLE -- not attenuated,
+#      gone.  The fine fibre was authored, correct, and completely absent from the render for six
+#      iterations for this reason.  A field probe (paint the field on a lambertian under a flat white
+#      environment and read the percentiles back) showed p25 = 0.000 across a quarter of the top face.
+#      `floor` is the fix, and the ramp stops are then set AGAINST THE MEASURED PERCENTILES rather than
+#      against the [0,1] the expression nominally spans.  The same bug pinned the whole nail: `curv` on
+#      a 3 mm shank measures ~14 (mean curvature 1/(2r) times the nail's 82 mm bbox diagonal), so
+#      `clamp(curv*1.4,0,1)` saturated everywhere and drove the iron field to 0 over the entire
+#      shank.  `curv` is normalised by the object's bbox diagonal, so its useful thresholds are
+#      per-object -- on the nail the plain shank sits near 14 and the struck ridges start near 25
+#      and run toward 70, not near 1.  BOTH the nail's edge term and the plank's are now written
+#      with `convexity(radius)` instead, whose values are fixed geometric facts (0.5 IS a 90-degree
+#      arris, 0.75 IS a three-face corner) on any object at any scale -- so the threshold is chosen
+#      from the feature you want, not from a probe render of this particular object.  `curv` is
+#      still the right signal when you want the SIGNED differential bending at no particular scale;
+#      it is the wrong one for "wear the edges about r across".
+#
+#   -- `step 0` WAS NOT THE RIGHT DEFAULT AT MILLIMETRE SCALE -- until the 2026-09-06 footprint-
+#      deferral fix (docs/RELIEF_MODIFIER_DESIGN.md 3.3 addendum).  `relief_modifier`'s automatic step
+#      used to be `max(1e-3, fw/2)` UNCONDITIONALLY, and the 1e-3 FLOOR is 1 mm -- wider than this
+#      scene's ~0.8 mm late-wood ramp, so the 1e-3 floor always won here (`fw`/2 measures ~0.20 mm, far
+#      below it) and the relief was differenced across a 2 mm stencil, coming back as a soft smear.
+#      Setting `step 0.00022` (just above the measured `fw`/2) is what made the ring boundaries crisp.
+#      Post-fix, the 1e-3 floor applies only on a hit with NO pixel footprint -- this scene's primary
+#      hits all have one, so `step 0` now resolves to `fw`/2 on its own and would render the same
+#      crisp ring boundaries without the explicit value.  The explicit `step 0.00022` is KEPT here
+#      regardless, as documentation of the measured footprint at this camera distance, and because it
+#      is a legitimate floor above whatever `fw`/2 happens to be if the camera moves closer still.
+#
+#   -- A SMOOTH COLOUR GRADIENT ACROSS EACH RING READS AS A ROW OF RODS.  Ramping the early wood
+#      steadily from pale to mid across the ring gives every ring the tonal signature of a shaded
+#      cylinder, and the plank turns into corrugated sheet.  This was diagnosed only by rendering the
+#      relief-OFF control, which looked identically fluted and so proved the fluting was COLOUR.  Early
+#      wood must be a nearly flat plateau; the ramp stops have to hold one colour across the field
+#      range the plateau occupies.
+#
+#   -- 18:1 EARLY-TO-LATE CONTRAST.  Real pine is nearer 2.5:1.  Over-contrasty texture is itself a
+#      "generated" tell, and it drowns relief -- which is the cue that actually reads as carved.  The
+#      shipped ramp is 0.403 on the plateau -> 0.15 at the late-wood stop (0.13 at the measured p90) in
+#      luminance, about 2.7-3.1:1, with the darkest stops RESERVED for the knot, the dirt and the check.
+#
+#   -- THE FIELD SPENT THE RAMP'S RESERVED STOPS, AND THE RAMP COMMENT DID NOT NOTICE.  The most
+#      expensive bug on this scene, because both halves of it were individually defensible.  The ramp
+#      reserved its two darkest stops for the knot / dirt / check and SAID SO in its comment.  But the
+#      field wrote `ring = early + (1 - early_max)*late*rstr` with `rstr` running to 1.17, so a
+#      maximum-`rstr` late-wood band reached ~1.15 on its own, before `floor`, the streak term and the
+#      fibre term were added -- ordinary late wood therefore landed in the stops reserved for the rare
+#      events and CLAMPED there.  Re-probed: 27 % of the top face sat above field 0.82 and 4.8 % was
+#      pinned at exactly 1.0.  The board rendered CHARRED -- black-brown bands on chalk-white early
+#      wood, an effective 9.2:1 in the render against the 2.8:1 the comment claimed.
+#
+#      The lesson is not "the ramp was wrong".  It is that A RAMP CANNOT RESERVE A RANGE THE FIELD IS
+#      FREE TO WRITE INTO: a reservation is a claim about the FIELD, so it has to be enforced where the
+#      field is summed and then MEASURED, not asserted in the ramp's comment.  `late_reach` is that
+#      enforcement, and the probe percentiles below are the measurement.  The same trap is waiting in
+#      any expression that adds a normalised term to a clamped sum -- which is every field in this file.
+#
+#   -- OVER-WIDE LATE WOOD.  `late_frac` was 0.36, so the dark band was better than a third of the ring.
+#      In softwood the late band is the THIN part -- the tree spends most of the season laying down
+#      early wood.  0.26 puts it at 2.7-4.5 px against the 10-17 px ring, which is thin enough to read
+#      as a band and wide enough to survive the pixel footprint.
+#
+#   -- AUTHORING THE ALBEDO AT THE COLOUR YOU WANT TO SEE.  Under this scene's cool fill that renders
+#      chalk-grey; the ramp has to be pre-corrected against the measured irradiance ratio.  The full
+#      measurement is in the ramp's own comment.
+#
+#   -- `box_geometry` for the plank.  Rejected: `curv` is 0 on a planar primitive and `occlusion()`
+#      returns its neutral 1 on EVERY analytic primitive, so doctrine 3 is simply unavailable there.
+#      Only the SDF family and indexed meshes answer those two.  It is also why the end check is a real
+#      subtracted crevice and not a painted line: a painted crack cannot be found by `occlusion()`, and
+#      a crack that dirt does not collect in reads as a decal.
+#
+#   -- CROSS-OBJECT AMBIENT OCCLUSION for the contact seam under the nail.  This was the obvious
+#      route -- extend `occlusion()` to see the whole scene -- and it was prototyped twice and
+#      DECLINED on measurement, twice (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 8.1, 2026-09-07).
+#      The reason is geometric and no sampler fixes it: a thin object lying on a plane subtends
+#      only GRAZING directions, where a cosine-weighted hemisphere's weight goes to zero.  Probed
+#      on this scene, cosine-weighted cross-object AO read 0.65 in the 1-px silhouette band, 0.96
+#      at 4 px and 0.97 at 10 px -- a two-to-three-pixel smudge, not a seam.  A horizon-biased
+#      sampler (0.5-20 deg above the tangent plane) widened it to ~10 px at 0.61 / 0.81 / 0.90,
+#      cost 1.93x, and took 44 % off the NAIL's own rust gain, because the low rays that see the
+#      nail from the plank are the same low rays that see the plank from the nail.  The seam is
+#      not a visibility quantity: it is the set of points within a millimetre or two of another
+#      surface, which is what `proximity()` reports and what no ray fan can.  A `Prepare`-time
+#      BAKE was priced in the same round and is worse for this scene specifically: the end check
+#      is 2.6 mm across and the nail's pits ~1 mm, so a dense grid needs G >= 175 for the plank
+#      alone (21 MB, more rays than all of Sponza) and G >= 230 for the nail.
+#
+#   -- A pith axis PARALLEL to the plank (parallel stripes, no arches), and a sine ring profile
+#      (symmetric, reads as corduroy).  Wood's asymmetry is most of the read.
+#
+#############################################################################################################
+
+##################################################
+# Renderer
+##################################################
+
+# A workshop sky: the panel below is the key, this is the fill that keeps
+# the shadow side of the grain off the floor of the range (doctrine 6).
+uniformcolor_painter
+{
+	name			pnt_sky
+	color			0.34 0.38 0.45
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					48
+	oidn_denoise			TRUE
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/plank_closeup
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Camera -- DOCTRINE 1: this chunk is authored FIRST and every
+# feature size in the scene is derived from it.
+#
+#   distance to the subject          0.33 m  (|location - lookat|)
+#   vertical field at the subject     2 * 0.33 * tan(20 deg) = 0.239 m  (`fov` is vertical)
+#   horizontal field at the subject   0.239 * 640 / 480       = 0.319 m
+#   pixel footprint, PREDICTED        0.239 / 480             = 0.50 mm  (face-on, at the lookat)
+#   pixel footprint, MEASURED         0.40 mm (p50 over the top face; most of it is nearer
+#                                     than the lookat, and the footprint follows distance)
+#
+# The measurement is worth making rather than trusting the arithmetic: paint
+# `clamp(fw*2000,0,1)` onto the plank as a lambertian under a flat white
+# environment, write linear, and read the pixels back.  `fw` is real on every
+# geometry on a PRIMARY hit (docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md), so it
+# is the same number `relief_modifier`'s automatic step rule sees.
+#
+# The plank's top face is the world plane y = 0; the camera sits 30 deg
+# above it (a low three-quarter), which fills the frame with the top face
+# while keeping the +X end-grain face in shot.
+##################################################
+
+film
+{
+	width			640
+	height			480
+}
+
+pinhole_camera
+{
+	location		0.340 0.160 0.220
+	lookat			0.160 -0.005 0.000
+	up				0 1 0
+	fov				40.0
+}
+
+##################################################
+# THE WOOD FIELD -- doctrine 2, 3 and 4 live in this one chunk.
+#
+# World frame: grain runs along X, the board is 0.60 (X) x 0.03 (Y) x 0.15 (Z),
+# its top face is y = 0.  The pith axis passes 75 mm BELOW the top face and is
+# tilted out of X, so the local pith depth runs 58 mm -> 92 mm along the board
+# and the ring of radius R closes its arch where the depth reaches R.  That is
+# the whole cathedral figure; nothing about it is noise.
+##################################################
+
+expression_painter
+{
+	name			expr_plank
+	param			pith_y -0.075 min -0.30 max -0.02 step 0.005 label "Pith depth below top face"
+	param			pith_z -0.020 min -0.10 max 0.10 step 0.005 label "Pith offset across board"
+	param			tilt_y 0.055 min -0.20 max 0.20 step 0.005 label "Pith tilt (vertical)"
+	param			tilt_z 0.030 min -0.20 max 0.20 step 0.005 label "Pith tilt (lateral)"
+	param			ring_m 0.0024 min 0.001 max 0.012 step 0.0002 label "Ring spacing (m)"
+	param			ring_var 0.55 min 0.0 max 2.0 step 0.05 label "Year-to-year spacing variation"
+	param			late_frac 0.26 min 0.05 max 0.6 step 0.01 label "Late-wood fraction of ring"
+	param			late_reach 0.40 min 0.05 max 1.0 step 0.02 label "Late-wood field reach (tops of the ramp stay reserved)"
+	param			early_max 0.13 min 0.0 max 0.8 step 0.02 label "Early-wood darkening"
+	param			warp_m 0.0005 min 0.0 max 0.004 step 0.0001 label "Ring-edge warp, fine (m)"
+	param			wander_m 0.0035 min 0.0 max 0.02 step 0.0005 label "Grain wander, coarse (m)"
+	param			floor 0.20 min 0.0 max 0.5 step 0.01 label "Field floor (keeps early wood off the clamp)"
+	param			streak 0.11 min 0.0 max 0.5 step 0.01 label "Along-grain streak (broad)"
+	param			fibre 0.200 min 0.0 max 0.3 step 0.005 label "Along-grain fibre (fine)"
+	param			resin 0.30 min 0.0 max 0.8 step 0.02 label "Resin-line darkness"
+	param			knot_x -0.030 min -0.30 max 0.30 step 0.005 label "Knot position (along board)"
+	param			knot_z 0.012 min -0.075 max 0.075 step 0.005 label "Knot position (across board)"
+	param			knot_r 0.0135 min 0.004 max 0.04 step 0.001 label "Knot radius (m)"
+	param			knot_pull 0.0075 min 0.0 max 0.03 step 0.001 label "Ring sweep around knot (m)"
+	param			dirt 0.62 min 0.0 max 1.0 step 0.05 label "Crevice dirt"
+	param			grime 0.85 min 0.0 max 1.5 step 0.05 label "Contact grime (where the nail touches)"
+	param			polish 0.30 min 0.0 max 1.0 step 0.05 label "Arris handling wear"
+	param			endgrain 0.12 min 0.0 max 0.6 step 0.02 label "End-grain darkening"
+	param			bleach 0.07 min 0.0 max 0.5 step 0.02 label "Top-face sun bleaching"
+	seed			3.0
+
+	# --- DOCTRINE 2, step 1: the radial coordinate about the pith axis.
+	def				D normalize(vec3(1.0, tilt_y, tilt_z))
+	def				rel P - vec3(0.0, pith_y, pith_z)
+	def				r0 length(rel - dot(rel, D)*D)
+
+	# --- step 2: warp the ring coordinate by well under a quarter ring
+	# (~0.25 mm rms, ~0.5 mm peak, against a 2.4 mm ring), anisotropically --
+	# 29 mm along the grain against 2.5 mm across it, 12:1.  This one exists to
+	# make the ring EDGES ragged: without it the band boundaries are perfect
+	# mathematical curves, which is one of the loudest generated-texture tells.
+	def				wf fbm(vec3(P.x*34.0, P.y*400.0, P.z*400.0) + vec3(seed*3.1, seed*1.7, seed*2.9), 3, 0.5, 2.0)
+	# ...and a COHERENT low-frequency wander (grain wander in the log): a long
+	# 90 mm wavelength displacement of several millimetres, which bends the whole
+	# family of arches together instead of chopping individual rings up.  This is
+	# the distinction that matters: a warp finer than the ring spacing must stay
+	# under a quarter ring or it destroys the rings; a warp COARSER than the ring
+	# spacing may be many rings deep, because it moves neighbours together.
+	def				wander fbm(vec3(P.x*11.0, P.y*26.0, P.z*26.0) + vec3(19.0, 5.0, 3.0), 2, 0.5, 2.0)
+	def				rw r0 + warp_m*2.5*wf + wander_m*2.5*wander
+
+	# --- DOCTRINE 4: the knot.  Hand-placed, and the rings SWEEP around it:
+	# the radial coordinate is pulled by up to `knot_pull` (~3 rings) inside
+	# a Gaussian two knot-radii wide.  Deflected rings are what makes a knot
+	# read as grown rather than stamped on.
+	def				kd length(vec3(P.x - knot_x, 0.0, P.z - knot_z))
+	def				kg exp(-(kd*kd)/(2.6*knot_r*knot_r))
+	def				rk rw - knot_pull*kg
+
+	# --- step 3: ring phase, with year-to-year spacing variation.  A slow
+	# 1-D noise IN THE RADIAL COORDINATE (period ~18 mm, i.e. every 7-8 rings)
+	# distorts the phase, so radial spacing breathes about +/-15% around
+	# `ring_m` -- 4-7 mm once projected onto the FACE, i.e. 10-17 px at the
+	# measured 0.40 mm footprint, which is doctrine 1's resolvable band.
+	def				yv fbm(vec3(rk*55.0, 11.3, 4.7), 2, 0.5, 2.0)
+	def				phase rk/ring_m + ring_var*2.5*yv
+	def				t frac(phase)
+
+	# --- step 4: the ASYMMETRIC sawtooth, PER RING.  Early wood is a nearly
+	# flat pale plateau (`early_max` is small on purpose -- see the rejected
+	# list: a steady ramp across the ring gives every ring the tonal signature
+	# of a shaded cylinder and the board turns into corrugated sheet); late
+	# wood then climbs over the narrow band `rlw` and SNAPS back at the ring
+	# boundary.  That snap is the crisp ring line of real timber and is
+	# deliberately left as a step; `relief_plank`'s `max_slope` is what keeps
+	# its unbounded difference quotient in hand.
+	#
+	# `late_reach` IS A BUDGET, NOT A GAIN, and it is the fix for the worst
+	# bug this scene had (see the rejected list, "the field spent the ramp's
+	# reserved stops").  The ring term is only one of six things summed into
+	# `expr`, so late wood cannot be allowed to climb to 1 on its own: at
+	# `late_reach 0.40` a maximum-`rstr` ring adds at most 0.40*1.17 = 0.47,
+	# which lands the darkest late wood near field 0.83 (measured p95) and
+	# leaves the top of the range for the knot, the crevice dirt and the
+	# check.  MEASURED against the probe: with the ring term switched off
+	# entirely, 0.36 % of the top face is above field 0.95; with it on, 0.48 %
+	# -- i.e. the near-black end of the ramp is still essentially all
+	# doctrine-4 rare events, which is the whole point of reserving it.
+	#
+	# PER-RING variation.  `cellhash` floors its argument internally, so
+	# cellhash(phase) is one pseudo-random number PER RING and is constant
+	# across that ring's whole width -- a growing season, not a noise sample.
+	# Real timber's rings differ from one another in how dark the late wood
+	# went (a dry summer) and how wide the band is; without this every ring
+	# is a carbon copy of its neighbour, which is the single most mechanical
+	# thing a ring texture can do.  This is doctrine 2 -- structure, with its
+	# variation also structured -- not doctrine 4's rare events.
+	def				rstr 0.45 + 0.72*cellhash(phase)
+	def				rlw late_frac*(0.62 + 0.80*cellhash(phase + 37.0))
+	def				early smoothstep(0.0, 1.0 - rlw, t)*early_max
+	def				late smoothstep(1.0 - rlw, 1.0 - rlw*0.45, t)
+	def				ring early + late_reach*late*rstr
+
+	# --- along-grain structure at three scales, all strongly anisotropic:
+	#   sf  broad tonal streak   111 mm along x 7.7 mm across   14:1
+	#   ff  fine fibre            25 mm along x 1.2 mm across   20:1  (3 px --
+	#       ABOVE the footprint, so it is legitimate in colour; anything finer
+	#       would be, and would only ever read as dirt)
+	#   rf  resin lines          167 mm along x 6.2 mm across   27:1, then
+	#       thresholded so only the top of the field survives (doctrine 4)
+	def				sf fbm(vec3(P.x*9.0, P.y*130.0, P.z*130.0) + vec3(seed*5.5, 2.0, 8.0), 3, 0.5, 2.0)
+	def				ff fbm(vec3(P.x*40.0, P.y*820.0, P.z*820.0) + vec3(seed*7.3, 4.0, 1.0), 2, 0.5, 2.0)
+	def				rf fbm(vec3(P.x*6.0, P.y*160.0, P.z*160.0) + vec3(31.0, 7.0, 13.0), 2, 0.5, 2.0)
+	def				rl smoothstep(0.28, 0.40, rf)
+
+	# --- the knot core itself: dark, with a soft rim.
+	def				kc smoothstep(knot_r*1.30, knot_r*0.70, kd)
+
+	# --- DOCTRINE 3: the geometry signals.  `occlusion` is a real cavity
+	# measure and only answers on the SDF family, which is why the plank is
+	# an sdf_geometry and the end check is a subtracted crevice: dirt
+	# collects in the check because the check is really there.
+	#
+	# BOTH TERMS ARE RAW SIGNALS, NOT THRESHOLDED SIGNALS, and that is the
+	# whole point of the pairing.  `occlusion` and `convexity` partition one
+	# question -- how open is the surface at the given radius, against what a
+	# FLAT surface would read -- with occlusion reporting how much LESS open
+	# than flat and convexity how much MORE.  A flat face and a convex arris
+	# both read occlusion EXACTLY 1, so `1 - occ` is already a crevice mask
+	# with nothing on the arrises; a flat face and every cavity read
+	# convexity exactly 0.  See the entries in the WRONG list for what this
+	# replaced.
+	#
+	# RADII.  The check is ~2.6 mm wide, so `occlusion(0.03)` (18.6 mm on
+	# this board) reads it as a genuinely enclosed slot -- 0.17 on the floor,
+	# so `1 - occ` puts 0.83 of `dirt` there -- while the top face 2.5 mm to
+	# either side still reads exactly 1.  The arris wants a much smaller
+	# ball: the eased edge is 1.5 mm, and `convexity(0.006)` (3.7 mm)
+	# measures 0.33 on the arris and 0.001 four millimetres in from it, so
+	# the polish band is as narrow as the edge a hand actually rubs.  At
+	# `0.03` the same term would smear polish 18 mm across the face.
+	#
+	# THE THIRD SIGNAL IS CROSS-OBJECT.  `occlusion` and `convexity` are both
+	# SELF questions -- they see only this object's own field -- so neither can
+	# put dirt where the NAIL touches the board, which is the one contact seam
+	# this scene actually has.  `proximity(r)` answers the other question:
+	# how far is the nearest surface belonging to some OTHER object, `1` at
+	# touching and `0` at `r` and beyond.  Its radius is a WORLD LENGTH (unlike
+	# `occlusion`'s per-object fraction), so `proximity(0.002)` means two
+	# millimetres and nothing else, on this board or any other.
+	#
+	# THE RADIUS IS SET FROM THE MEASURED GAPS, not from taste.  See the
+	# geometry section below for the numbers: the head rim clears the board by
+	# 0.15 mm, the shank lifts from 3.5 mm at the head to 1.3 mm mid-way, and
+	# the last ~9.5 mm of the shank is BURIED up to 0.55 mm.  A 2 mm radius is
+	# the one that draws all three at once -- saturating under the rim and the
+	# buried tip, fading through the middle of the shank (0.35 at the
+	# mid-point), and reading exactly 0 at the head end, where the shank is
+	# too high off the board for grime to bridge.  That fade is the whole
+	# reason this is a distance and not an ambient occlusion: an AO reads the
+	# nail's SHADOW as contact all along the shank (measured: 0.65 in the
+	# 1-px silhouette band and 0.96 four pixels out, no seam at all --
+	# docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 8.1), where the distance reads
+	# the gap and stops.
+	#
+	# RAW, AND BROKEN UP.  Like the other two the signal is used raw -- a
+	# threshold here would pin the fade to 0 or 1 and throw away the only
+	# thing that distinguishes it from a painted line.  What it does need is
+	# BREAKUP: a contact seam that follows the geometry exactly, at full
+	# strength along its whole length, is a decal.  `cgb` is the same kind of
+	# anisotropic fbm the streak terms use (3.3 mm along the grain x 1.1 mm
+	# across, 3:1, comfortably above the 0.40 mm footprint).
+	#
+	# NOTE THE CENTRE, 0.85, AND WHY IT IS NOT 0.45.  `fbm` here is SIGNED and
+	# ZERO-MEAN (ProceduralNoiseCore's Fbm3D sums signed Perlin octaves and
+	# does NOT normalise to [0,1]) -- roughly +-0.4 at three octaves.  A
+	# multiplier written `0.45 + 1.35*cgb` therefore averages 0.45, not the
+	# ~0.9 it reads like, and the first draft of this term lost 55 % of its
+	# weight to exactly that: probed, `cg` came back at mean 0.339 where the
+	# proximity signal itself was 0.745.  Centre the multiplier on the value
+	# you want and let the noise swing about it: `0.85 + 1.5*cgb` averages
+	# 0.85 and runs ~0.25 to 1.0 (the outer clamp takes the top), which is
+	# grime that thins out in patches rather than grime at half strength
+	# everywhere.  Probe every multiplier built on `fbm`; the sign convention
+	# is not what the arithmetic looks like.
+	#
+	# AND THE WEIGHT IS LARGE ON PURPOSE.  `grime 0.85` looks out of scale
+	# beside `dirt 0.62` until you probe where the seam pixels START: their
+	# field sits at p50 0.195 (they are early-wood plateau in the nail's
+	# shadow, with `crev` at 0 because the board has no cavity there), while
+	# the check's pixels are already elevated by `dirt*crev` before anything
+	# else lands.  The ramp reserves 0.86-1.00 for the knot, the dirt and the
+	# check -- doctrine 4's rare events, which a contact seam is -- so the
+	# weight has to carry 0.195 to about 0.9.  Anything smaller lands the seam
+	# in the ramp's flat pale PLATEAU (0.00-0.32), where colour barely moves:
+	# at `grime 0.45` the whole term was worth -6.9 % luma on 93 pixels and
+	# read as nothing at all.
+	def				occ occlusion(0.03)
+	def				crev clamp(1.0 - occ, 0, 1)
+	def				contact proximity(0.002)
+	def				cgb fbm(vec3(P.x*300.0, P.y*900.0, P.z*900.0) + vec3(seed*2.7, 13.0, 6.0), 3, 0.5, 2.0)
+	def				cg clamp(contact*(0.85 + 1.5*cgb), 0, 1)
+	def				edge smoothstep(0.05, 0.30, convexity(0.006))
+	def				endg abs(N.x)
+	def				upf clamp(N.y, 0, 1)
+
+	expr			clamp(floor + ring + streak*2.5*sf + fibre*2.5*ff + resin*rl + 0.92*kc + dirt*crev + grime*cg + endgrain*endg - bleach*upf - polish*edge, 0, 1)
+}
+
+# CONSUMER 1 -- colour.  Every colour decision in the wood is in these six
+# stops and nowhere else (the composition boundary): the field is a pure
+# scalar and the ramp is the only thing that knows what colour wood is.
+#
+# THE STOP POSITIONS ARE SET AGAINST THE FIELD'S MEASURED PERCENTILES, not
+# against the nominal [0,1].  The probe: bind `expr_plank` straight to a
+# `lambertian_material`, light it with a flat white environment and nothing
+# else, write Rec709RGB_Linear, and read the pixels back -- then DIVIDE by a
+# second probe rendered identically with `clamp(N.y,0,1)` as the reflectance,
+# which both masks to the top face and cancels the ambient-occlusion factor
+# the environment leaves behind (without that division every percentile reads
+# ~10 % low).  Over 114 171 top-face pixels:
+#
+#      p10 0.111   p25 0.262   p50 0.432   p75 0.613   p90 0.772   p95 0.834
+#
+# So 0.00-0.32 is the flat pale plateau where the early wood actually lives,
+# the descent runs 0.32-0.72 (which is where the fibre and streak terms put
+# most of the face), the late-wood bands land 0.72-0.86, and 0.86-1.00 is
+# RESERVED for the knot core, the crevice dirt and the check.
+#
+# CONTRAST.  Early-to-late is 0.403 -> 0.15 in luminance (the plateau
+# against the 0.72 late-wood stop; 0.13 at the measured p90, where the ramp
+# is already interpolating toward the 0.86 stop), about 2.7-3.1:1, which is
+# what pine measures.  In the RENDER, luma p10/p90 over the board is 2.76:1 and there
+# are 28 near-black pixels (< luma 12) per 90 000 in the mid-board crop, of
+# which 25 are already there with relief switched off.
+#
+# HUE, AND WHY THE ALBEDO IS WARMER THAN THE WOOD LOOKS.  The fill here is
+# deliberately cool -- a 0.34/0.38/0.45 sky plus a 0.72/0.80/1.00 bounce card
+# -- and the GGX `rs` adds a near-neutral grazing sheen on top, so an albedo
+# authored at the colour you want to SEE renders CHALKY.  Measured on this
+# scene, at the same exposure: a plateau albedo of 1:0.80:0.55 came back at
+# 1:0.90:0.72 on the top face, and 1:0.64:0.32 comes back at 1:0.80:0.48.
+# The B/R ratio is lifted by roughly 1.3-1.5x and G/R by 1.12-1.24x (it is not
+# a clean multiplier because the sheen is additive, so it desaturates the
+# darks more than the plateau).  These stops are pre-corrected against that
+# measurement, which is why they look too orange read as numbers.  Judge the
+# RENDERED colour, never the ramp.
+ramp_painter
+{
+	name			ramp_plank
+	input			expr_plank
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.580 0.372 0.187
+	stop			0.32  0.545 0.343 0.166
+	stop			0.52  0.435 0.245 0.106
+	stop			0.72  0.272 0.126 0.047
+	stop			0.86  0.150 0.064 0.022
+	stop			1.00  0.048 0.021 0.009
+	color_space		Rec709RGB_Linear
+}
+
+# CONSUMER 2a -- roughness from the SAME field: dense late wood is smoother
+# (0.36-0.39 over the late-wood band, 0.33 only at the field ceiling the knot
+# and dirt occupy), porous early wood rougher (0.52 at the plateau) --
+# rough-sawn softwood, doctrine 6's ggx band.  Note the NEGATIVE scale: the
+# field's high end is the dark late wood, which is the smooth end.
+scalar_painter
+{
+	name			sp_ring_rough
+	painter			expr_plank
+	channel			R
+	scale			-0.19
+	bias			0.52
+}
+
+# ...layered onto it by the only sub-millimetre feature in the scene.
+# DOCTRINE 1: tracheid pores are 0.5 mm across, barely one pixel, so they can
+# carry no shape -- they go into ROUGHNESS ONLY, where a sub-pixel field
+# legitimately reads as a broadening of the specular lobe rather than as
+# noise.  5:1 anisotropic, because pores run along the grain.  ZERO-MEAN
+# by construction (`- 0.5`): this field is a pure ADDITIVE detail term, not
+# a multiplicative modulator, so it plugs directly into `sp_wood_rough`'s
+# `add` below without dragging the base roughness's own range through it.
+scalar_painter
+{
+	name			sp_pore
+	param			pore_across 2000.0 min 500 max 4000 step 50 label "Pore frequency (across grain)"
+	param			pore_along 400.0 min 100 max 1500 step 25 label "Pore frequency (along grain)"
+	param			pore_depth 0.30 min 0.0 max 0.8 step 0.02 label "Pore roughness modulation"
+	def				f1 worley_f1(vec3(P.x*pore_along, P.y*pore_across, P.z*pore_across), 1.0)
+	expression		pore_depth*(clamp(f1, 0, 1) - 0.5)
+}
+
+# sp_wood_rough = sp_ring_rough + weight_b*sp_pore (scalar_painter's `add`
+# form, multiply's additive sibling; sp_plank_rough further down is
+# sp_wood_rough + sp_contact_rough).  sp_pore ranges +-pore_depth/2 =
+# +-0.15 at the default pore_depth; weight_b 0.5 halves that to +-0.075,
+# which is what keeps the COMBINED range close to what the old multiplicative
+# modulation gave (+-15% of a 0.33-0.52 base is +-0.05 to +-0.08 in absolute
+# roughness) -- so the final range is still ~0.26-0.60, same porous-early/
+# smooth-late read as before, but now the pore contribution is a flat +-0.075
+# swing rather than a fraction of the local ring roughness.  Doctrine 1's
+# "goes ONLY into roughness, never colour, never relief" is unchanged --
+# `add` is a different way to COMBINE fields, not a different place to put
+# one.
+scalar_painter
+{
+	name			sp_wood_rough
+	add				sp_ring_rough sp_pore
+	weight_a		1.0
+	weight_b		0.5
+}
+
+# CONSUMER 2c -- the contact seam's roughness, and THE ONE PLACE DOCTRINE 5
+# NEEDS AN EXPLICIT EXCEPTION, stated rather than quietly broken.
+#
+# Doctrine 5 says one field drives colour, roughness and relief, and the
+# roughness bridge above carries a NEGATIVE scale because the wood field's
+# high end is the dense late wood, which is the SMOOTH end.  Contact grime is
+# the opposite kind of high end: it is loose powder in a seam, and it must
+# read ROUGHER, not smoother.  A single bridge cannot give one field two
+# signs, so the contact term gets its own additive scalar exactly the way
+# `sp_pore` does -- the composition boundary is untouched (colour still lives
+# in the ramp, roughness still lives in the bridges), and `contact` is still
+# ONE definition; it is the SIGN of the bridge that forks, not the field.
+#
+# The magnitude is +0.14 at a saturated seam against the 0.26-0.60 wood band,
+# so the grime reads as a distinctly duller patch without leaving the GGX
+# range the rest of the board occupies.  The breakup field is deliberately
+# the SAME `cgb` construction as the colour term's (same frequencies, same
+# seed offsets), so the dull patches and the dark patches coincide -- which
+# is what a single deposit of dirt does, and what two independent noises
+# would destroy.
+scalar_painter
+{
+	name			sp_contact_rough
+	param			grime_rough 0.14 min 0.0 max 0.4 step 0.01 label "Contact-grime roughening"
+	seed			3.0
+	def				contact proximity(0.002)
+	def				cgb fbm(vec3(P.x*300.0, P.y*900.0, P.z*900.0) + vec3(seed*2.7, 13.0, 6.0), 3, 0.5, 2.0)
+	expression		grime_rough*clamp(contact*(0.85 + 1.5*cgb), 0, 1)
+}
+
+scalar_painter
+{
+	name			sp_plank_rough
+	add				sp_wood_rough sp_contact_rough
+	weight_a		1.0
+	weight_b		1.0
+}
+
+# CONSUMER 3 -- relief, the same field bridged RAW (the amplitude lives in
+# relief_modifier's own `scale`).
+#
+# SIGN.  The field's high end is the dense late wood, and `scale` is
+# POSITIVE, so late wood stands PROUD -- which is what weathering does to
+# rough-sawn softwood: the soft early wood erodes and the hard late-wood
+# bands are left as ridges you can feel.  (weathered_workbench binds the
+# same kind of field with the opposite intent and says so in its own
+# comment; the two scenes do not disagree, they depict different surfaces.)
+#
+# STEP.  `step 0.00022`, kept explicit even though it is now redundant.  At
+# the time this scene was authored the automatic rule maxed the 1e-3 FLOOR
+# (1 mm, wider than this scene's ~0.8 mm late-wood ramp) against fw/2
+# UNCONDITIONALLY, so `step 0` differenced the field across a 2 mm stencil
+# and returned a soft smear; 0.00022 (just above the measured fw/2 = 0.20 mm)
+# was the fix.  Since the 2026-09-06 footprint-deferral fix
+# (docs/RELIEF_MODIFIER_DESIGN.md 3.3 addendum) the 1e-3 floor applies only
+# when a hit has NO pixel footprint, so `step 0` now resolves to fw/2 = 0.20
+# mm on its own here and would render the same result.  0.00022 is left in
+# place as documentation of the measured footprint at this camera distance
+# (an explicit step below fw/2 is still silently raised to fw/2, so it
+# remains a harmless floor, not an override).
+#
+# AMPLITUDE + CLAMP, chosen by sweep (scale x max_slope, 3x3 plus controls,
+# measured on a 94%-wood crop of the top face against a `scale 0` control):
+# max_slope 0.40 beat 0.60 on every row -- more darks for less detail at 0.60,
+# since a tilt past the grazing horizon is what the clamp exists to stop -- and
+# detail rose monotonically with `scale`.  0.0025 was legible but, seen on the
+# FULL frame rather than the sweep crop, over-embossed the tight-ring regions
+# into a fluted washboard; 0.0008 keeps the carved read where the rings are
+# open and stays quiet where they crowd.
+#
+# What this scene does NOT need is the thing showcase 1/4 needed most.  The
+# workbench's grain is a 5-octave fbm whose slope is O(10) and BELOW its own
+# pixel, so it had no usable amplitude at all and had to be clamped to 0.30 to
+# stop it shading black -- 976 near-black pixels per 10 000 at scale 0.25
+# unclamped.  Here the field is resolvable by construction (doctrine 1), and
+# relief adds 3 near-black pixels per 90 000 over its own control (28 against
+# 25 at `scale 0`), and lifts high-frequency RMS on that crop from 8.91 to
+# 12.14 -- a 36 % gain in detail contrast for essentially no shading floor:
+# A field sized to the camera does not need rescuing.
+scalar_painter
+{
+	name			sp_plank_relief
+	painter			expr_plank
+	channel			R
+}
+
+relief_modifier
+{
+	name			relief_plank
+	height			sp_plank_relief
+	domain			surface
+	scale			0.0008
+	step			0.00022
+	max_slope		0.40
+}
+
+uniformcolor_painter
+{
+	name			pnt_plank_spec
+	color			0.30 0.28 0.25
+}
+
+ggx_material
+{
+	name			mat_plank
+	rd				ramp_plank
+	rs				pnt_plank_spec
+	alphax			sp_plank_rough
+	alphay			sp_plank_rough
+	ior				1.50
+	extinction		0.0
+}
+
+##################################################
+# THE IRON FIELD -- doctrine 7.  Same construction as the wood: one scalar
+# field, three consumers, every term either a sized surface process or a
+# geometry signal.  Nothing here is an isotropic cloud.
+##################################################
+
+expression_painter
+{
+	name			expr_iron
+	param			forge_freq 320.0 min 50 max 1200 step 10 label "Forge undulation frequency"
+	param			pit_freq 1000.0 min 300 max 4000 step 50 label "Pit frequency"
+	param			pit_cov 0.16 min 0.02 max 0.5 step 0.01 label "Pit coverage threshold"
+	param			scale_freq 350.0 min 20 max 900 step 5 label "Forge-scale patch frequency"
+	param			rust_base 0.34 min 0.0 max 1.0 step 0.02 label "Base corrosion (also the field floor)"
+	param			rust_crev 0.85 min 0.0 max 2.0 step 0.05 label "Rust in crevices"
+	param			rust_down 0.50 min 0.0 max 1.5 step 0.05 label "Rust on the underside"
+	param			oxide_edge 0.32 min 0.0 max 1.5 step 0.05 label "Black oxide held on ridges"
+	seed			11.0
+
+	# 3.1 mm undulation -- the low-frequency waviness a forged or sand-cast
+	# surface has, sized to be 6 px across and therefore visible as SHAPE.
+	def				und fbm(P*forge_freq + vec3(seed, seed*2.0, seed*3.0), 3, 0.5, 2.0)
+
+	# 1 mm pits, thresholded hard so they cover a few per cent -- SPARSE, not a
+	# texture (doctrine 4 applies to metal too).  1 mm is the TOP of doctrine
+	# 7's 0.3-1 mm range and is chosen for the same reason as everything else
+	# here: at 0.40 mm/px a 0.3 mm pit is sub-pixel and can only read as grain.
+	def				pf worley_f1(P*pit_freq, 0.9)
+	def				pit smoothstep(pit_cov, 0.0, pf)
+
+	# forge scale: smoother, lighter patches at 2.9 mm.  This started at 11 mm,
+	# which is wider than the whole nail -- it was therefore CONSTANT over the
+	# object and did nothing but shift the field down.  A patch field has to be
+	# small enough that several of them land on the part.
+	def				sc smoothstep(0.02, 0.30, fbm(P*scale_freq + vec3(9.0, 4.0, 2.0), 3, 0.5, 2.0))
+
+	# geometry signals: the head-to-shank crevice and the underside hold rust;
+	# the struck ridges keep their black oxide.
+	#
+	# THE CREVICE TERM'S RADIUS IS UNCHANGED, but what it measures is not.
+	# `occlusion(0.10)` -- 8.2 mm on this 82 mm nail -- still bottoms out
+	# around 0.67 (it read 0.64 before), so `rust_crev` deposits about the
+	# same amount of rust.  What changed is WHERE: a 200x60 top-down sweep
+	# used to find 267 of 2895 hits below 0.85 with a minimum of 0.639 on
+	# surface that is CONVEX everywhere it is low -- the squared shank's own
+	# arrises, darkened by an estimator that could not tell a convex CSG edge
+	# from a crease (see the WRONG list).  Those now read exactly 1, and the
+	# rust that used to sit on the forged ridges has moved to the
+	# head-to-shank fold it was written for.
+	#
+	# AND THE EDGE TERM NO LONGER NEEDS A PER-OBJECT PROBE.  It used to be
+	# `smoothstep(25, 70, curv)`, and those two numbers were measured on THIS
+	# nail and transfer to nothing: `curv` is a differential quantity
+	# normalised by the bbox diagonal, so a 3 mm-radius shank measures ~14
+	# and the draft before that (`clamp(curv*1.4,0,1)`) saturated at 1 over
+	# the whole shank, subtracted `oxide_edge` everywhere, and pinned the
+	# iron field at the clamp's 0 floor -- the nail rendered as featureless
+	# blued plastic.  `convexity(0.02)` is a [0,1] whose values are fixed
+	# geometric facts on any object (0.5 is a 90-degree arris, 0.75 a
+	# three-face corner); it peaks at 0.53 on this nail's struck ridges and
+	# the squared shank's corners, so smoothstep(0.25, 0.50) picks them out
+	# with thresholds that would mean the same thing on a different object.
+	# THE NAIL DOES NOT GET A `proximity` TERM, AND THAT IS A MEASUREMENT.
+	# The obvious symmetry is to rust the nail's underside where it meets the
+	# board -- and the cross-object AO prototype's ONE genuine gain was
+	# exactly that (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 8.1).  It was
+	# tried here, as `rust_cont 0.45 * clamp(proximity(0.002)*(0.85+1.5*fbm),
+	# 0, 1)`, and it does not read: the nail's contact surfaces are its head
+	# rim's UNDERSIDE, which the head disc itself hides from this camera, and
+	# the buried tip, which the shank hides.  Over the 2539 visible nail
+	# pixels whose proximity exceeds 0.3 the term moved mean luma from 48.75
+	# to 48.96, +0.4 % -- on pixels that are already at luma 49 because they
+	# sit in the contact shadow.  `rust_down` and `occlusion(0.10)` already
+	# carry the underside and the head-to-shank fold.  Removed rather than
+	# kept at a magnitude that would have to be dishonest to show.
+	def				occ occlusion(0.10)
+	def				crev clamp(1.0 - occ, 0, 1)
+	def				down clamp(-N.y, 0, 1)
+	def				edge smoothstep(0.25, 0.50, convexity(0.02))
+
+	expr			clamp(rust_base + rust_crev*crev + rust_down*down + 0.55*und + 0.30*pit - oxide_edge*edge - 0.30*sc, 0, 1)
+}
+
+# CONSUMER 1 -- colour: black forge scale -> dark iron -> rust -> bloom.
+ramp_painter
+{
+	name			ramp_iron
+	input			expr_iron
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.045 0.045 0.050
+	stop			0.28  0.115 0.108 0.100
+	stop			0.55  0.240 0.140 0.075
+	stop			0.80  0.420 0.200 0.085
+	stop			1.00  0.520 0.300 0.160
+	color_space		Rec709RGB_Linear
+}
+
+# CONSUMER 2 -- roughness off the same field: forge scale and sound metal
+# are smooth (0.10), rust is powdery (0.65).
+scalar_painter
+{
+	name			sp_iron_rough
+	painter			expr_iron
+	channel			R
+	scale			0.55
+	bias			0.10
+}
+
+# CONSUMER 3 -- relief.  NEGATIVE scale: the field's high end is pit-and-rust,
+# and a pit is a HOLE, so the high end must sink.  The forge undulation is
+# symmetric noise and does not care about the sign; the pits do.  `step` is set
+# explicitly here for the same reason as on the plank, and smaller (0.12 mm),
+# because the nail's features are finer than the board's -- the 1e-3 default
+# floor is 1 mm, which is the whole width of a pit and a third of a forge
+# ripple's 3.1 mm wavelength.
+scalar_painter
+{
+	name			sp_iron_relief
+	painter			expr_iron
+	channel			R
+}
+
+relief_modifier
+{
+	name			relief_iron
+	height			sp_iron_relief
+	domain			surface
+	scale			-0.00016
+	step			0.00012
+	max_slope		0.60
+}
+
+uniformcolor_painter
+{
+	name			pnt_iron_dark
+	color			0.055 0.050 0.048
+}
+
+ggx_material
+{
+	name			mat_iron
+	rd				ramp_iron
+	rs				pnt_iron_dark
+	alphax			sp_iron_rough
+	alphay			sp_iron_rough
+	ior				2.90
+	extinction		3.40
+}
+
+##################################################
+# Geometry -- the plank.
+#
+# sdf_geometry, not box_geometry, and DELIBERATELY (see the rejected list in
+# the header): `curv` and `occlusion()` both answer live off an SDF's
+# distance field and both return their neutral do-nothing value on an
+# analytic primitive, so doctrine 3 is only available here.
+#
+# Part 1  the board: 0.60 (X, along the grain) x 0.03 (Y) x 0.15 (Z), with a
+#         1.5 mm eased arris -- rough-sawn stock is never knife-edged, and
+#         the eased edge is what `curv` finds for the handling-wear term.
+#         Local origin is the board's centre; the object below puts the top
+#         face on the world plane y = 0.
+# Part 2  the end check: a real drying split, subtracted rather than painted,
+#         which is what lets `occlusion(0.03)` find it and fill it with dirt.
+#         Rotated -9 deg about Z so its inner end lifts clear of the board --
+#         the crack is ~19 mm deep where it opens at the end grain (the box
+#         bottoms out ~11 mm above the board's underside there) and closes to
+#         ~5 mm deep about 90 mm in and simply ends, still ~4 mm deep, at the
+#         box's flat inner cap ~94 mm in (the box is 110 mm long but ~18 mm of
+#         it hangs past the end face in air) -- which is how a check tapers.
+#         3 deg about Y so it does not run exactly with the grain.
+#
+#         `crev` is now a BARE `1 - occ`.  It used to be
+#         `smoothstep(0.62, 0.18, occ)`, on the grounds that the SDF cavity
+#         estimator returned a residual on merely CONVEX edges and the raw
+#         complement therefore painted a dark line down every arris.  That was
+#         a real defect of the estimator -- it read a shortfall in the distance
+#         field's MAGNITUDE, which a CSG `intersect`/`subtract` under-reports
+#         by exactly cos(half-angle) at a convex edge, so a 90-degree arris
+#         returned 0.707 and, worse, so did a concave 90-degree valley.  Since
+#         2026-09-06 occlusion is the fraction of outward directions that
+#         actually escape (docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md): a flat
+#         face and every convex edge read exactly 1, only real cavities darken,
+#         and the threshold is not needed.  Dropping it is not cosmetic -- the
+#         smoothstep also discarded every SHALLOW part of the check, and the
+#         render now shows the crack fading out along its inner 90 mm as it
+#         closes, instead of running full black to a hard stop.
+#
+#         (This board never actually exhibited the arris artefact: it is a
+#         single `roundbox` part, whose field IS exact outside, and a
+#         camera-frame sweep of 146112 hits measured its worst arris at
+#         0.999997.  The nail, which squares its shank with a `box intersect`,
+#         did -- 267 of 2895 top-down hits below 0.85, minimum 0.639, all on
+#         convex surface.  The header's old attribution was to the right
+#         mechanism on the wrong object.)
+##################################################
+
+sdf_geometry
+{
+	name			geo_plank
+	part			roundbox union 0      0 0 0            0 0 0        1 1 1     0.30 0.015 0.075   0.0015
+	part			box subtract 0.0006   0.262 0.012 0.020   0 3 -9     1 1 1     0.055 0.010 0.0013  0
+	maxsteps		192
+}
+
+standard_object
+{
+	name			obj_plank
+	geometry		geo_plank
+	material		mat_plank
+	position		0 -0.015 0
+	modifier		relief_plank
+}
+
+##################################################
+# Geometry -- the nail.  DOCTRINE 7: the silhouette has to say what the
+# object is before any texture is applied.
+#
+# Part 1  roundcone, 4.0 mm radius at the head tapering to 1.0 mm over 68 mm,
+#         rotated -96 deg about Z (-90 lays it along +X, the extra -6 is a
+#         nose-down set) (the head is thicker than the shank, so a nail lying on a flat
+#         surface rests on its buried tip, not along its length -- its head rim comes
+#         close but does not quite touch; see the measurements below).
+#
+#         WHERE IT TOUCHES, MEASURED (2026-09-08).  That sentence was prose until the
+#         cross-object signal gave a way to check it, and the check is worth keeping
+#         because `proximity`'s radius is chosen from these numbers.  METHOD: a harness
+#         linked against the library loads this scene, calls `PrepareForRendering()`, and
+#         asks `IObjectManager::NearestOtherSurface( p, obj_plank, 0.05, d )` from points
+#         on the plank's top plane (world y = 0, the relief modifier stripped so the plane
+#         is the SDF's own surface) -- a 0.5 mm grid over x 90..220 mm, z -55..30 mm,
+#         refined to 0.1 mm around the two contacts.  `d` is then the shortest distance
+#         from that board point to the nail, which is exactly what the signal sees.
+#
+#           head rim   closest approach 0.146 mm, at (x, z) = (147.4, -16.7) mm.  IT DOES
+#                      NOT QUITE TOUCH.  The rim is a 7.5 mm disc tilted ~2 deg off
+#                      vertical, so its tangency with the board is very shallow and the
+#                      near-contact patch is broad rather than a point: d <= 0.20 mm over
+#                      1.7 x 1.6 mm, d <= 0.40 mm over 4.5 x 4.2 mm.
+#           shank      underside gap along the board, from the head end to the tip:
+#                        x = 152.5 mm   3.506 mm      (the shank clears the head)
+#                        x = 167.5 mm   2.186 mm
+#                        x = 181.0 mm   1.307 mm      (mid-shank)
+#                        x = 194.0 mm   0.445 mm
+#                        x = 201.0 mm   0.000 mm      (the shank reaches the board)
+#           tip        BURIED, and not as a spot: the last ~9.5 mm of the shank is below
+#                      y = 0, so the contact there is a furrow, x 200.8..210.3 mm and
+#                      z -45.2..-40.5 mm, about 2.2 mm wide.  Deepest point bracketed
+#                      between y = -0.50 and -0.60 mm by re-running the same query on
+#                      planes below y = 0 (min distance over the furrow footprint at
+#                      each plane): y = -0.4mm  0.000 mm (still inside);
+#                      y = -0.5mm  0.000 mm (still inside); y = -0.6mm  0.050 mm
+#                      (just outside); y = -0.7mm  0.149 mm (outside).
+#
+#         So a 2 mm radius reads: saturated under the rim (0.93 at the closest point) and
+#         along the furrow (1.0), 0.35 at mid-shank, and exactly 0 at the head end of the
+#         shank where the gap is 3.5 mm.  That FADE along the shank is the point -- an
+#         ambient occlusion reads the nail's shadow as contact for the shank's whole
+#         length; a distance reads the gap and stops.  The scene is NOT re-pitched to make
+#         the seam prettier: the geometry is what a nail lying on a board does, and the
+#         signal's job is to report it.
+# Part 2  an intersecting box that squares the round shank off into a
+#         tapered rectangular section -- the cut-nail cross-section.  It has
+#         to come before the head, since `intersect` applies to everything
+#         accumulated so far.
+# Part 3  the hammered head, unioned with a small smin so it swells into the
+#         shank instead of sitting on it, and tilted 6 deg out of the shank
+#         axis (its Euler triple differs from the shank's by 5 deg about X
+#         and 4 deg about Z) because a struck head is never square to it.
+##################################################
+
+sdf_geometry
+{
+	name			geo_nail
+	part			roundcone union 0       0 0 0              0 0 -96     1 1 1    0.0040 0.00098 0.0676  0
+	part			box intersect 0         0.0337 -0.0035 0    0 0 -96     1 1 1    0.0034 0.0390 0.0039   0
+	part			cylinder smin 0.0013   -0.0021 0.00022 0    5 0 -92     1 1 1    0.0075 0.0017 0        0
+	maxsteps		192
+}
+
+standard_object
+{
+	name			obj_nail
+	geometry		geo_nail
+	material		mat_iron
+	position		0.148 0.00748 -0.017
+	orientation		0 24 0
+	modifier		relief_iron
+}
+
+##################################################
+# Geometry -- the bench surface the plank lies on.  Deliberately a flat
+# colour: it is 30 mm below the subject, out of the depth of interest, and
+# a second procedural surface here would only compete with the plank.  (A
+# flat colour on a supporting surface is a considered choice, not the
+# amateur-render signature the skill warns about -- that warning is about
+# HERO surfaces.)
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_bench
+	color			0.115 0.100 0.085
+}
+
+lambertian_material
+{
+	name			mat_bench
+	reflectance		pnt_bench
+}
+
+infiniteplane_geometry
+{
+	name			geo_bench
+	xtile			1.0
+	ytile			1.0
+}
+
+standard_object
+{
+	name			obj_bench
+	geometry		geo_bench
+	material		mat_bench
+	position		0 -0.0301 0
+	orientation		-90 0 0
+}
+
+##################################################
+# Lights -- DOCTRINE 6.
+#
+# One 0.17 x 0.12 m window panel, 0.57 m from the subject at 28 deg elevation.
+# It sits at z = -0.5 facing +Z, so its horizontal throw is mostly +Z while the
+# grain runs along X, and it rakes ACROSS the rings: a late-wood ridge presents its rising flank to the light
+# and its falling flank away from it, which is the only geometry in which a
+# fraction-of-a-millimetre feature reads at all.
+#
+# PANEL SIZE IS A RELIEF PARAMETER, not just an exposure one.  This key began
+# at 0.45 x 0.30 m and the surface looked airbrushed: a source subtending ~40
+# deg integrates away the shading difference between a ridge's two flanks.
+# Shrinking it to 0.17 x 0.12 (with `exitance` raised 6.6x to hold exposure,
+# since exitance is per unit AREA) bought as much fine-detail contrast as the
+# whole relief-amplitude sweep did -- measured, on the same crop: control
+# 21.90 -> 23.01 hf-RMS from the light change alone.
+#
+# Still a panel and not a directional, because (a) the soft contact shadow
+# under the nail head is most of what grounds it, and (b) a conductor needs a
+# source with AREA to show a highlight shape rather than a point.
+##################################################
+
+rect_light
+{
+	name			key_window
+	center			0.10 0.27 -0.50
+	size			0.17 0.12
+	facing			-0.10 -0.27 0.50
+	color			1.00 0.955 0.880
+	exitance		195
+}
+
+# A dim, cool bounce card on the camera side so the near flanks of the ridges,
+# the shaded side of the nail, and the +X end-grain face are not carried by
+# the sky alone -- the end grain faces away from the key entirely.
+rect_light
+{
+	name			fill_card
+	center			0.34 0.20 0.42
+	size			0.50 0.40
+	facing			-0.34 -0.20 -0.42
+	color			0.72 0.80 1.00
+	exitance		6.0
+}

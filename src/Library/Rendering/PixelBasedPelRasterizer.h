@@ -22,6 +22,7 @@
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/StabilityConfig.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "PixelBasedRasterizerHelper.h"
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -45,7 +46,20 @@ namespace RISE
 				RISEPel& c
 				) const
 			{
-				return pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 );
+				// Seed from the camera-ray origin: if the camera sits
+				// inside a dielectric (submerged camera, camera inside a
+				// medium volume), the first boundary crossing must see
+				// bFromInside==true or the DielectricSPF wrong-side test
+				// drops the transmission lobe entirely.  Free-space
+				// cameras: the probe finds no enclosing objects, no-op.
+				// Only caller is PredictTimeToRasterizeScene, which
+				// AttachScene()s the same scene just before sampling.
+				IORStack iorStack( 1.0 );
+				const IScene* pAttachedScene = pCaster->GetAttachedScene();
+				if( pAttachedScene ) {
+					IORStackSeeding::SeedFromPoint( iorStack, ray.origin, *pAttachedScene );
+				}
+				return pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0, iorStack );
 			}
 
 			void IntegratePixel(

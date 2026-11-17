@@ -110,6 +110,13 @@ namespace RISE
 				bool& do_fields,
 				bool& invert_fields
 				) const;
+
+			void CollectKeyframeTimes( const Scalar t0, const Scalar t1, std::vector<Scalar>& out ) const;
+
+			// DL-465: read-only per-thread evaluation (see IAnimator.h).
+			void GetActiveAnimatedElements( std::vector<IKeyframable*>& out ) const;
+			bool GetActiveAnimatedParameters( IKeyframable* element, std::vector<String>& out ) const;
+			bool EvaluateElementAtTimeInto( IKeyframable* element, const Scalar time, IKeyframable& target ) const;
 		};
 	}
 }

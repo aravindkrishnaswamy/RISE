@@ -845,6 +845,7 @@ directional_light
 	name		key
 	power		3.5
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	direction	0.6 0.7 1.0
 }
 
@@ -853,6 +854,7 @@ directional_light
 	name		fill
 	power		1.4
 	color		0.6 0.75 1.0
+	colorspace	sRGB
 	direction	-0.8 -0.2 0.5
 }
 

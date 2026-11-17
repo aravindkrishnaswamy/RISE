@@ -10,26 +10,24 @@ data: drop two more `*.n` / `*.k` files here and reference them from a
 `scalar_painter { file … }` chunk. No source changes (the §1 / §6 generality
 requirement).
 
-## File format (STRICT — the loader is a bare `fscanf`)
+## File format
 
 The parser path for `scalar_painter { file … }`
 ([`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp))
-reads each file with a bare
-
-```c
-while (fscanf(f, "%lf %lf", &nm, &val) == 2) { … }
-```
-
-loop and builds a
+reads each file line-by-line via `ReadDataFileLines` (skipping blank lines and
+`#`-prefixed comment lines) and parses each remaining line with
+`sscanf(line.c_str(), "%lf %lf", &nm, &val) == 2` to build a
 [`PiecewiseLinearScalarPainter`](../../src/Library/Painters/PiecewiseLinearScalarPainter.h).
-Consequences these files obey:
+All shipped `.n` / `.k` files in this directory remain clean, headerless
+two-column numeric tables:
 
 - **Two whitespace-separated numeric columns per line:** `wavelength_nm  value`.
 - **Wavelength in NANOMETRES**, ascending. (refractiveindex.info publishes µm;
   every value here is ×1000 from the source.)
-- **No header line, no comments, no commas, no unit suffixes** — any
-  non-numeric token makes the first `fscanf` at that point return `!= 2` and the
-  loop *silently truncates*. Pure numeric pairs only.
+- **Clean two-column numeric tables** — while `ReadDataFileLines` skips blank
+  and `#`-comment lines (avoiding the old `fscanf` spin/truncation hazard),
+  every shipped file here contains pure numeric pairs only, with no commas or
+  unit suffixes.
 - `n` and `k` are **separate files** (`Ti.n`, `Ti.k`, …). refractiveindex.info
   ships a 3-column `wl n k` block (or two separate `wl n` / `wl k` blocks); each
   was split into two 2-column files here.

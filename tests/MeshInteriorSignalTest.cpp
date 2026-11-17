@@ -1,0 +1,3228 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  MeshInteriorSignalTest.cpp - DL-31 red-proof + regression.
+//
+//  docs/DEBT_LEDGER.md DL-31: every SOLID family (sphere, box, capped
+//  cylinder, the SDFs, the ellipsoid) clamps its own signed field at
+//  zero -- "interpenetration is contact" -- so a point buried inside one
+//  reads a genuine (negative-then-clamped, or lower-bounded) depth via
+//  `IGeometry::SignedDistanceLower`, which is what `interior(r)` is built
+//  on (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.6, 10).  A triangle mesh
+//  is a SHEET: `TriangleMeshGeometryIndexed` never overrode
+//  `SignedDistanceLower` at all, so the interface's own refusing default
+//  fired for every mesh, closed or not -- a receiver buried inside a
+//  closed, watertight mesh neighbour read `interior(r) == 0`, identical
+//  to a receiver floating in open air beside it.
+//
+//  THE FIX (TriangleMeshGeometryIndexed.h/.cpp) adds a real
+//  `SignedDistanceLower` for the CLOSED case only:
+//    - WATERTIGHTNESS is checked initially at `DoneIndexedTriangles` and
+//      re-proved after changed positions unless a retained geometric proof
+//      already establishes refusal. It includes the necessary condition for
+//      a closed 2-manifold with no
+//      boundary: every edge is shared by EXACTLY two triangles.  An open
+//      sheet or a mesh missing a face has boundary edges (count 1); a
+//      non-manifold mesh has an edge shared by 3+.  Either way the mesh
+//      stays an unsigned-only sheet, and a certification-time diagnostic
+//      at build or deformation reproof says why.
+//    - THE SIGN, on a certified-watertight mesh, comes from a parity
+//      ray-cast against the mesh's own BVH: odd number of GEOMETRIC
+//      crossings (both faces, so winding and `bDoubleSided` cannot skew
+//      the count) means inside.
+//    - THE MAGNITUDE reuses `DistanceToSurface`'s own answer, which this
+//      family already computes EXACTLY (a bounded-radius closest-point
+//      BVH traversal, not a bound), called with an unbounded budget
+//      since `SignedDistanceLower`'s own contract forbids a range
+//      refusal.
+//
+//  THE SECTIONS:
+//    (a) A CLOSED, WATERTIGHT cube: interior depth at the centre equals
+//        the half-size, sign negative inside, exact both ways, and the
+//        answer tracks the true depth off-centre too (not just at one
+//        point).
+//    (b) An OPEN QUAD (a single-sided sheet, boundary on all four
+//        edges): refuses SignedDistanceLower / unsigned proximity
+//        unaffected -- unchanged from before this fix.
+//    (c) A NON-WATERTIGHT cube (one face's two triangles removed, four
+//        boundary edges around the hole): refuses the signed query,
+//        unsigned answers as a sheet would -- exactly like (b), just a
+//        different way of failing the same check.
+//    (d) COST, reported not asserted (wall-clock is machine-dependent):
+//        ns/query for the parity ray-cast on a ~10k-triangle tessellated
+//        sphere, since `interior(r)` is a per-shading-point query and
+//        the design's own cost sections (docs/CROSS_OBJECT_PROXIMITY_
+//        DESIGN.md §5.3, §8.3) measure everything else on this signal
+//        in exactly this unit.
+//
+//  DL-143 (review P1 on the DL-31 fix above): `ComputeWatertightness`
+//  keyed edges by the raw POSITION-ARRAY INDEX, which is only the same
+//  thing as "the same physical vertex" on a hand-welded mesh -- section
+//  (a)'s 8-vertex cube is exactly that, and it is the ONLY shape this
+//  file built before this row.  Every per-corner import/tessellation
+//  path (`GLTFSceneImporter::BuildGeometryFromPrimitive`'s one-AddVertex-
+//  per-glTF-vertex convention, every engine `TessellateToMesh` producer)
+//  gives the SAME physical corner a DIFFERENT array slot per triangle
+//  that touches it, so DL-31's own edge-count check read a genuinely
+//  closed solid as an open sheet on essentially every shipped or
+//  imported mesh.  Fixed by welding vertices to a shared id by POSITION
+//  (`WeldVertexPositions` in the .cpp) before counting edges.  New
+//  sections:
+//    (e) MONEY.  A hand-built, FLAT-SHADED 24-vertex cube (6 faces x 4
+//        corners, no vertex shared across faces -- the same convention
+//        `Box.glb` and every triangle-mesh export with per-face normals
+//        uses) reads OPEN under the old index-keyed check and WATERTIGHT
+//        under the new position-welded one.
+//    (f) DL-116 CLOSED (debt-geom2, 2026-09-17).  This section originally
+//        pinned DL-116 as "refined, not closed": at the time it was
+//        written (debt-prox, branched before the fix landed),
+//        `SphereGeometry::TessellateToMesh` still emitted `detail+1`
+//        coincident-position vertices per pole, so DL-143's own
+//        position-weld correctly identified each pole ring as ONE
+//        vertex, which turned the pole-cell triangles (always zero-area)
+//        into DEGENERATE ones -- a more precisely diagnosed refusal, but
+//        still a refusal.  `SphereGeometry`/`EllipsoidGeometry::
+//        TessellateToMesh` now weld their own pole row to a single
+//        shared (position, normal, texcoord) index and skip the wedge
+//        triangle that entry would make degenerate (see
+//        docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md), so the
+//        raw triangle list fed into this mesh no longer contains ANY
+//        degenerate triangles at either pole -- DL-143's position-weld
+//        (whose tolerance also absorbs the ordinary u-seam's ~1e-16
+//        float noise, see DL-136) now finds a genuinely closed
+//        2-manifold with zero boundary edges, and `SignedDistanceLower`
+//        ANSWERS instead of refusing.  Both `SphereGeometry` and
+//        `EllipsoidGeometry` are exercised here.
+//    (g) `BoxGeometry::TessellateToMesh` (independently tessellated
+//        per-face, no cross-seam sharing -- 96 boundary edges pre-fix at
+//        detail=4) DOES weld back to watertight: its face seams agree to
+//        float-noise precision, well inside this fix's tolerance.
+//    (h) ONE SHIPPED ASSET, end to end: `Box.glb` loaded through the
+//        real `GLTFSceneImporter`, answering a real signed interior
+//        distance through the exact mechanism `interior(r)` reads from
+//        (`SignedDistanceLower`) -- not a synthetic fixture.  Of the
+//        four assets named in the review (Avocado, DragonAttenuation,
+//        SheenChair, NormalTangentTest), NONE become fully watertight
+//        after welding: see this row's own commit message / the ledger
+//        for the measured per-primitive boundary/non-manifold counts --
+//        each has a genuine remaining defect or open boundary in the
+//        source asset itself (a real, not a testing, residual). `Box.glb`
+//        and `BoxTextured.glb` (both 24 vertices / 12 triangles, the
+//        same per-face convention as (e)) DO close, and are used here.
+//
+//  DL-136 CLOSURE EVIDENCE (debt-dlweld, 2026-09-17): DL-116's own fix
+//  comment predicted that DL-143's `1e-6*bboxDiagonal` weld tolerance,
+//  being many orders of magnitude coarser than a UV seam's ~1e-16-scale
+//  float noise, would ALSO weld the ordinary (non-pole) u=0/u=1 seam on
+//  every tessellated closed UV-wrapped primitive -- sphere, torus, capped
+//  cylinder -- even though `PoleWeldingWatertightnessTest.cpp`'s own
+//  EXACT-bit-equality local model cannot see that (by design: it isolates
+//  the seam residual FROM the pole fix, so it deliberately does not weld
+//  it). Sections (i)-(k) verify that prediction against the PRODUCTION
+//  path this whole file already exercises (`BeginIndexedTriangles` /
+//  `DoneIndexedTriangles` / `SignedDistanceLower`), not a local
+//  reimplementation:
+//    (i) `TorusGeometry::TessellateToMesh` (no pole at all -- its own
+//        u-seam AND v-seam are the entire DL-136 residual) now answers.
+//    (j) `CylinderGeometry::TessellateToMesh` (capped; no pole either --
+//        its own side-wall u-seam is the residual) now answers.
+//    (k) The SAME three geometries wrapped in `DisplacedGeometry` at
+//        ZERO displacement: `DisplacedGeometry::SignedDistanceLower`
+//        forwards to its own internally-baked `TriangleMeshGeometryIndexed`
+//        (`m_pMesh`), built by the identical `TessellateToMesh` call this
+//        file already exercises directly, so this exercises DL-136's
+//        closure through the SAME wrapper `docs/DL20_DL116_PATCH_
+//        CURVATURE_AND_POLE_WELDING.md`'s own sibling audit already
+//        traced for DL-143 (`DisplacedGeometry::BuildMesh` -> `m_pBase->
+//        TessellateToMesh` -> position-verbatim re-emission).
+//    (l) A SCALED variant (vertices pre-scaled by 1000x, moving the bbox
+//        diagonal and hence `eps` in lockstep) confirms the weld is
+//        RELATIVE, not an absolute-epsilon artifact of the specific unit
+//        scale these fixtures happen to use.
+//
+//  DL-150 (found reviewing DL-143's own closure, `debt-dlweld`,
+//  2026-09-17): the position weld's `eps` is relative to the WHOLE mesh's
+//  bounding box, so it can exceed the physical gap between two genuinely
+//  INDEPENDENT open sheets whenever anything else in the same mesh
+//  inflates that bbox -- welding them into one false, confidently-signed
+//  2-manifold.  Section (m) is the reviewer's own repro (two independently
+//  triangulated, opposite-winding quads 0.001 apart, plus one remote
+//  vertex that inflates the bbox diagonal to ~1732 so `eps` ~1.7e-3 >
+//  0.001): pre-fix this FALSELY certifies watertight and answers a wrong
+//  signed depth in the sliver between the quads; post-fix, a coincident-
+//  triangle discriminator in `ComputeWatertightness` (see that function's
+//  own comment) refuses it.  Section (n) (same-winding coincident
+//  triangles -- two literally duplicate triangles) is ALSO caught by the
+//  same coincident-triangle check, closing the prior orientation-based
+//  discriminator's own "same-facing" blind spot.  Section (o) was this
+//  check's own DOCUMENTED RESIDUAL (two independently-tessellated quads
+//  split on DIFFERENT diagonals, so no two triangles ever share all
+//  three post-weld vertices) -- CLOSED as DL-197 (2026-09-18) by a
+//  SECOND, edge-based discriminator (coplanar + oppositely wound
+//  triangles sharing an edge) that runs after the coincident-triangle
+//  one; see `ComputeWatertightness`'s own comment for the full
+//  derivation, including why a sharp convex crease (section (p)) needs a
+//  real coplanarity distance test and not just a normal-dot-product
+//  threshold.
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <chrono>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <iostream>
+#include <random>
+#include <string>
+#include <vector>
+
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Geometry/TriangleMeshGeometry.h"
+#include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/EllipsoidGeometry.h"
+#include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/TorusGeometry.h"
+#include "../src/Library/Geometry/CylinderGeometry.h"
+#include "../src/Library/Geometry/DisplacedGeometry.h"
+#include "../src/Library/Interfaces/IFunction2D.h"
+#include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Importers/GLTFSceneImporter.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+static int passCount = 0;
+static int failCount = 0;
+
+static void Check( const bool cond, const std::string& name )
+{
+	if( cond ) { ++passCount; }
+	else { ++failCount; std::cout << "  FAIL: " << name << std::endl; }
+}
+
+static void CheckClose( const double got, const double want, const double tol, const std::string& name )
+{
+	if( std::fabs( got - want ) <= tol ) { ++passCount; }
+	else {
+		++failCount;
+		std::cout << "  FAIL: " << name << "  got " << got
+			<< " want " << want << " (tol " << tol << ")" << std::endl;
+	}
+}
+
+//! Eight corners of an axis-aligned cube, half-size `h`, centred at the
+//! origin -- shared by every fixture below (the closed one uses all 12
+//! triangles, the non-watertight one drops two of them).
+static void CubeCorners( const Scalar h, std::vector<Point3>& v )
+{
+	v.clear();
+	v.push_back( Point3( -h, -h, -h ) );	// 0
+	v.push_back( Point3(  h, -h, -h ) );	// 1
+	v.push_back( Point3(  h,  h, -h ) );	// 2
+	v.push_back( Point3( -h,  h, -h ) );	// 3
+	v.push_back( Point3( -h, -h,  h ) );	// 4
+	v.push_back( Point3(  h, -h,  h ) );	// 5
+	v.push_back( Point3(  h,  h,  h ) );	// 6
+	v.push_back( Point3( -h,  h,  h ) );	// 7
+}
+
+//! The cube's 12 triangles, two per face -- standard, closed, manifold
+//! triangulation (every edge shared by exactly two triangles: the 12
+//! cube edges once each from their two adjacent faces, plus the 6
+//! face-diagonals once each from the two triangles that share them).
+//! Winding is not asserted anywhere in this suite (DL-31's parity test
+//! is explicitly winding-independent), so any consistent choice works.
+static void CubeTriangles( IndexTriangleListType& tris, bool dropTopFace )
+{
+	tris.clear();
+	auto add = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+		IndexedTriangle t;
+		t.iVertices[0] = a; t.iVertices[1] = b; t.iVertices[2] = c;
+		t.iNormals[0] = a;  t.iNormals[1] = b;  t.iNormals[2] = c;
+		t.iCoords[0] = a;   t.iCoords[1] = b;   t.iCoords[2] = c;
+		tris.push_back( t );
+	};
+	// Bottom (z = -h)
+	add( 0, 1, 2 ); add( 0, 2, 3 );
+	// Top (z = +h) -- the face DROPPED in the non-watertight fixture
+	if( !dropTopFace ) {
+		add( 4, 6, 5 ); add( 4, 7, 6 );
+	}
+	// Front (y = -h)
+	add( 0, 5, 1 ); add( 0, 4, 5 );
+	// Back (y = +h)
+	add( 3, 2, 6 ); add( 3, 6, 7 );
+	// Left (x = -h)
+	add( 0, 3, 7 ); add( 0, 7, 4 );
+	// Right (x = +h)
+	add( 1, 5, 6 ); add( 1, 6, 2 );
+}
+
+//! Builds a mesh from explicit corners/triangles, with a trivial
+//! per-vertex normal/UV set (unused by this suite; only present because
+//! DoneIndexedTriangles' DEBUG integrity check requires index-sized
+//! arrays).
+static TriangleMeshGeometryIndexed* BuildMesh(
+	const std::vector<Point3>& corners, const IndexTriangleListType& tris )
+{
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	for( std::size_t i = 0; i < corners.size(); ++i ) {
+		vertices.push_back( corners[i] );
+		normals.push_back( Vector3( 0, 0, 1 ) );	// unused placeholder
+		coords.push_back( Point2( 0, 0 ) );			// unused placeholder
+	}
+
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+	return mesh;
+}
+
+static void TestClosedWatertightCube()
+{
+	std::cout << "(a) closed, watertight cube -- interior depth, sign, exactness" << std::endl;
+
+	const Scalar h = 2.0;
+	std::vector<Point3> corners;
+	CubeCorners( h, corners );
+	IndexTriangleListType tris;
+	CubeTriangles( tris, false );
+	TriangleMeshGeometryIndexed* mesh = BuildMesh( corners, tris );
+
+	// --- CENTRE.  True depth to the nearest face is exactly `h`.
+	{
+		Scalar outSigned = 0.0;
+		bool outExact = false;
+		const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(a) closed cube answers SignedDistanceLower at the centre" );
+		std::cout << "    centre: reported " << (double)outSigned
+			<< " (want -" << (double)h << "), exact=" << outExact << std::endl;
+		Check( outSigned < Scalar( 0 ), "(a) MONEY -- centre reads NEGATIVE (inside), not the pre-fix 0" );
+		CheckClose( (double)outSigned, -(double)h, 1e-9,
+			"(a) MONEY -- centre depth equals the half-size exactly (-2.0)" );
+		Check( outExact, "(a) MONEY -- both magnitude and sign are exact on a watertight mesh (outExact true)" );
+	}
+
+	// --- OFF-CENTRE, still inside, near one face: depth to the nearest
+	// face (x = +h) is h - x.
+	{
+		const Scalar x = 1.5;
+		Scalar outSigned = 0.0;
+		bool outExact = false;
+		const bool ok = mesh->SignedDistanceLower( Point3( x, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(a) closed cube answers off-centre" );
+		CheckClose( (double)outSigned, -(double)( h - x ), 1e-9,
+			"(a) off-centre depth tracks the true nearest-face distance, not just a single pinned point" );
+		Check( outExact, "(a) off-centre stays exact too" );
+	}
+
+	// --- OUTSIDE.  Sign flips positive; magnitude is the same exact
+	// unsigned distance DistanceToSurface already gives this family.
+	{
+		const Scalar x = h + 3.0;
+		Scalar outSigned = 0.0;
+		bool outExact = false;
+		const bool ok = mesh->SignedDistanceLower( Point3( x, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(a) closed cube answers outside" );
+		Check( outSigned > Scalar( 0 ), "(a) outside reads POSITIVE" );
+		CheckClose( (double)outSigned, 3.0, 1e-9, "(a) outside magnitude is the true distance to the nearest face" );
+		Check( outExact, "(a) outside stays exact too" );
+	}
+
+	// --- Unsigned proximity() is untouched by this fix.  A MESH IS A
+	// SHEET on the unsigned side (the class's own header comment): no
+	// interpenetration clamp, so the centre reads its honest distance to
+	// the nearest triangle -- `h`, the SAME magnitude the new signed
+	// query reports (just without the sign), not 0.
+	{
+		Scalar d = -1.0;
+		const bool ok = mesh->DistanceToSurface( Point3( 0, 0, 0 ), Scalar( 1000 ), d );
+		Check( ok, "(a) unsigned DistanceToSurface still answers at the centre" );
+		CheckClose( (double)d, (double)h, 1e-9,
+			"(a) unsigned query is unaffected by this fix: still the mesh family's honest "
+			"nearest-triangle distance (no interpenetration clamp on the UNSIGNED side), "
+			"equal in MAGNITUDE to the new signed answer" );
+	}
+
+	mesh->release();
+}
+
+static void TestOpenQuadRefuses()
+{
+	std::cout << "(b) an open quad (a bare sheet) -- refuses the signed query, unsigned unaffected" << std::endl;
+
+	std::vector<Point3> corners;
+	corners.push_back( Point3( -1, -1, 0 ) );
+	corners.push_back( Point3(  1, -1, 0 ) );
+	corners.push_back( Point3(  1,  1, 0 ) );
+	corners.push_back( Point3( -1,  1, 0 ) );
+
+	IndexTriangleListType tris;
+	{
+		IndexedTriangle t0; t0.iVertices[0]=0; t0.iVertices[1]=1; t0.iVertices[2]=2;
+		t0.iNormals[0]=0; t0.iNormals[1]=1; t0.iNormals[2]=2;
+		t0.iCoords[0]=0; t0.iCoords[1]=1; t0.iCoords[2]=2;
+		IndexedTriangle t1; t1.iVertices[0]=0; t1.iVertices[1]=2; t1.iVertices[2]=3;
+		t1.iNormals[0]=0; t1.iNormals[1]=2; t1.iNormals[2]=3;
+		t1.iCoords[0]=0; t1.iCoords[1]=2; t1.iCoords[2]=3;
+		tris.push_back( t0 ); tris.push_back( t1 );
+	}
+	TriangleMeshGeometryIndexed* mesh = BuildMesh( corners, tris );
+
+	Scalar outSigned = 0.0;
+	bool outExact = true;	// pre-set to catch a function that forgets to clear it
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( !ok, "(b) MONEY -- an open quad REFUSES SignedDistanceLower (unchanged from before this fix)" );
+	Check( !outExact, "(b) ...and clears outExact on refusal, per the interface's own default-refusal contract" );
+
+	// Unsigned proximity is exact and unaffected: the query point is
+	// exactly on the quad's plane and inside its footprint, so the true
+	// distance is 0.
+	Scalar d = -1.0;
+	const bool okUnsigned = mesh->DistanceToSurface( Point3( 0, 0, 0 ), Scalar( 1000 ), d );
+	Check( okUnsigned, "(b) unsigned proximity still answers on the open quad" );
+	CheckClose( (double)d, 0.0, 1e-9, "(b) unsigned distance at a point on the quad's own surface is 0, unaffected by this fix" );
+
+	mesh->release();
+}
+
+static void TestNonWatertightCubeRefuses()
+{
+	std::cout << "(c) a cube missing one face (four boundary edges around the hole) -- "
+		"refuses the signed query, unsigned unaffected, diagnostic on stderr/log" << std::endl;
+
+	const Scalar h = 2.0;
+	std::vector<Point3> corners;
+	CubeCorners( h, corners );
+	IndexTriangleListType tris;
+	CubeTriangles( tris, /*dropTopFace=*/true );	// 10 triangles, not 12
+	Check( tris.size() == 10, "(c) fixture really is missing the top face's two triangles" );
+
+	TriangleMeshGeometryIndexed* mesh = BuildMesh( corners, tris );
+
+	Scalar outSigned = 0.0;
+	bool outExact = true;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( !ok, "(c) MONEY -- a cube with one face missing REFUSES SignedDistanceLower "
+		"(not watertight: 4 boundary edges around the hole), even though it is 'closed' at every other face" );
+	Check( !outExact, "(c) ...and clears outExact on refusal" );
+
+	// Unsigned proximity is untouched: still an honest nearest-triangle
+	// distance (no interpenetration clamp on this side, same as the
+	// closed-cube fixture's own check) -- at the centre, that is `h`,
+	// same as the closed cube (the missing top face is farther from the
+	// centre than the five faces still present).
+	Scalar d = -1.0;
+	const bool okUnsigned = mesh->DistanceToSurface( Point3( 0, 0, 0 ), Scalar( 1000 ), d );
+	Check( okUnsigned, "(c) unsigned proximity still answers on the non-watertight cube" );
+	CheckClose( (double)d, (double)h, 1e-9, "(c) unsigned distance at the centre is unaffected by this fix" );
+
+	// A diagnostic exists at build time for exactly this case -- see
+	// ComputeWatertightness' own comment for why it is safe to print
+	// (once per authored mesh, not once per interior() query).  Printed
+	// to the global log during BuildMesh's DoneIndexedTriangles call
+	// above; not independently re-captured here (this suite has no
+	// log-sink hook), but its presence is exercised by construction:
+	// this fixture's mesh has 4 boundary edges and the production code's
+	// only path to `m_bWatertight == false` with boundaryEdges > 0 is
+	// through that PrintEx call. The refusal assertions above are this
+	// row's actual behavioural pin.
+
+	mesh->release();
+}
+
+//! Round-2 delta-review follow-up (debt-geom2 @ ebf69c4e): `ComputeWatertightness`
+//! has TWO distinct early-return refusal branches -- the boundary/non-manifold
+//! edge tally (b)/(c) above exercise, and a SEPARATE, EARLIER one that
+//! fires the moment any triangle has a repeated (degenerate, zero-area)
+//! corner, before the edge tally even runs (see its own `if( a == b ) {
+//! degenerate = true; continue; }` / `if( degenerate ) { ...; return; }`).
+//! Before this fixture, the ONLY place that branch was reached in
+//! `tests/` at all was through the sphere/disk/ellipsoid pole fans, via
+//! this file's own section (f)/(f2) -- and this slice rewrote those to
+//! assert SUCCESS (the entire point of the DL-116 fix being that
+//! post-weld there are no more degenerate triangles fed into the mesh),
+//! which left the degenerate-triangle branch itself with ZERO test
+//! coverage anywhere. This fixture pins it directly, independent of
+//! DL-116 or any tessellator.
+//!
+//! Deliberately minimal (3 vertices, 2 triangles) rather than reusing
+//! the cube, because a SINGLE degenerate triangle does not actually
+//! isolate this branch: its lone self-loop edge (a,a) gets exactly ONE
+//! increment, which the edge tally would ALSO flag as a boundary edge
+//! even if the `a==b` guard were removed -- so disabling the guard would
+//! not change the refusal outcome, and the test would stay green for
+//! the wrong reason (see the file's own audit-by-bug-pattern discipline:
+//! a red-proof that cannot go red proves nothing). TWO degenerate
+//! triangles sharing the SAME repeated vertex make every edge the guard
+//! would otherwise ignore pair up to count exactly 2 (self-loop (0,0)
+//! from each triangle; (0,1) traversed twice by triangle A alone; (0,2)
+//! traversed twice by triangle B alone) -- i.e. with the guard disabled
+//! this two-triangle "mesh" reads as a perfectly closed 2-manifold by
+//! the edge-count heuristic alone, genuinely flipping `SignedDistanceLower`
+//! from refusal to a (bogus) success. That is the real red-proof this
+//! row's recipe asks for, verified below by literally disabling the
+//! guard and rebuilding (see the commit message).
+static void TestDegenerateTriangleRefuses()
+{
+	std::cout << "(c2) two triangles sharing one repeated vertex -- refuses via ComputeWatertightness's OTHER early-return branch (degenerate triangle), distinct from (b)/(c)'s boundary-edge refusal" << std::endl;
+
+	std::vector<Point3> corners;
+	corners.push_back( Point3( 0, 0, 0 ) );	// 0 -- the repeated vertex
+	corners.push_back( Point3( 1, 0, 0 ) );	// 1
+	corners.push_back( Point3( 0, 1, 0 ) );	// 2
+
+	IndexTriangleListType tris;
+	{
+		// Triangle A: (0, 0, 1) -- corners 0 and 1 of THIS triangle are
+		// both vertex index 0 (a real, in-range index -- this triangle
+		// survives DoneIndexedTriangles' _DEBUG bounds check, it is not
+		// a hand-forged out-of-range index).
+		IndexedTriangle a;
+		a.iVertices[0] = 0; a.iVertices[1] = 0; a.iVertices[2] = 1;
+		a.iNormals[0]  = 0; a.iNormals[1]  = 0; a.iNormals[2]  = 1;
+		a.iCoords[0]   = 0; a.iCoords[1]   = 0; a.iCoords[2]   = 1;
+		tris.push_back( a );
+
+		// Triangle B: (0, 0, 2) -- same repeated vertex 0, different
+		// third corner. Its own self-loop (0,0) is what pairs up with
+		// triangle A's self-loop to count exactly 2 once the guard is
+		// disabled (see the fixture's own header comment above).
+		IndexedTriangle b;
+		b.iVertices[0] = 0; b.iVertices[1] = 0; b.iVertices[2] = 2;
+		b.iNormals[0]  = 0; b.iNormals[1]  = 0; b.iNormals[2]  = 2;
+		b.iCoords[0]   = 0; b.iCoords[1]   = 0; b.iCoords[2]   = 2;
+		tris.push_back( b );
+	}
+
+	TriangleMeshGeometryIndexed* mesh = BuildMesh( corners, tris );
+
+	Scalar outSigned = 12345.0;
+	bool outExact = true;	// pre-set to catch a function that forgets to clear it
+	const bool ok = mesh->SignedDistanceLower( Point3( 0.25, 0.25, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( !ok, "(c2) MONEY -- a degenerate (repeated-vertex) triangle refuses SignedDistanceLower "
+		"via ComputeWatertightness's degenerate-triangle branch, not its boundary-edge branch" );
+	Check( !outExact, "(c2) ...and clears outExact on refusal" );
+
+	// Unsigned proximity is untouched by this refusal path -- both
+	// triangles still answer `PointTriangleDistance`, just via its own
+	// degenerate-input behaviour rather than a clean point-to-segment
+	// fallback: with a==b, `ab = b-a` is the ZERO vector, which makes the
+	// algorithm's "edge region AB" test (a genuine 1-D region on a
+	// non-degenerate triangle) fire on this zero-length "edge" instead of
+	// falling through to the real (a,c) edge, and its own `den == 0`
+	// guard then collapses the projection parameter to `v=0` -- i.e. the
+	// closest point it reports is exactly vertex `a` = (0,0,0), not the
+	// nearer point on segment (0,0,0)-(1,0,0) a non-degenerate point-to-
+	// segment distance would give. This is a pre-existing, documented
+	// characteristic of `PointTriangleDistance` on a coincident-corner
+	// input (out of this row's scope to change), not a defect this
+	// fixture introduces -- pinned here as the actual closed-form value
+	// so a future change to that behaviour is noticed rather than
+	// silently accepted: distance from (0.25, 0.25, 0) to (0, 0, 0) is
+	// sqrt(0.125) = 0.3535533905932738.
+	Scalar d = -1.0;
+	const bool okUnsigned = mesh->DistanceToSurface( Point3( 0.25, 0.25, 0 ), Scalar( 1000 ), d );
+	Check( okUnsigned, "(c2) unsigned proximity still answers with degenerate triangles present" );
+	CheckClose( (double)d, 0.3535533905932738, 1e-9,
+		"(c2) unsigned distance matches PointTriangleDistance's own coincident-corner behaviour (collapses to vertex 0)" );
+
+	mesh->release();
+}
+
+//! DL-143 MONEY red-proof.  Builds a FLAT-SHADED cube: 6 faces, 4
+//! vertices EACH (24 total), no vertex shared across faces -- the same
+//! per-corner convention `Box.glb` and any per-face-normal export use.
+//! Every physical corner of the cube is touched by 3 faces, so it gets 3
+//! DISTINCT array slots here, all at the identical position.  Pre-DL-143
+//! (position-index keying) every one of the cube's 12 true edges is split
+//! into two DIFFERENT keys (one per adjacent face's own local slots),
+//! each used once -- 24 "boundary" edges, an open sheet.  Post-DL-143
+//! (position-welded keying) the two slots per shared corner collapse back
+//! to one id, the two faces' contributions to each true edge become the
+//! SAME key, and the mesh reads correctly as the closed cube it always
+//! was.
+static void TestFlatShadedPerCornerCubeWelds()
+{
+	std::cout << "(e) MONEY -- a flat-shaded, per-corner 24-vertex cube (Box.glb's own convention) welds to watertight" << std::endl;
+
+	const Scalar h = 2.0;
+	std::vector<Point3> corners;
+	CubeCorners( h, corners );
+
+	std::vector<Point3> vertices;
+	IndexTriangleListType tris;
+	auto face = [&]( unsigned int c0, unsigned int c1, unsigned int c2, unsigned int c3 ) {
+		// Four BRAND NEW array slots for this face, copied from the
+		// shared corner positions -- never reused by any other face,
+		// exactly like a per-face-normal glTF export.
+		const unsigned int base = (unsigned int)vertices.size();
+		vertices.push_back( corners[c0] );
+		vertices.push_back( corners[c1] );
+		vertices.push_back( corners[c2] );
+		vertices.push_back( corners[c3] );
+		auto addTri = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+			IndexedTriangle t;
+			t.iVertices[0] = a; t.iVertices[1] = b; t.iVertices[2] = c;
+			t.iNormals[0] = a;  t.iNormals[1] = b;  t.iNormals[2] = c;
+			t.iCoords[0] = a;   t.iCoords[1] = b;   t.iCoords[2] = c;
+			tris.push_back( t );
+		};
+		addTri( base + 0, base + 1, base + 2 );
+		addTri( base + 0, base + 2, base + 3 );
+	};
+	// Same 8 corner indices and face membership as CubeTriangles above,
+	// just each face getting its OWN 4 slots instead of sharing the 8.
+	face( 0, 1, 2, 3 );	// bottom (z=-h)
+	face( 4, 5, 6, 7 );	// top (z=+h)
+	face( 0, 1, 5, 4 );	// front (y=-h)
+	face( 3, 2, 6, 7 );	// back (y=+h)
+	face( 0, 3, 7, 4 );	// left (x=-h)
+	face( 1, 2, 6, 5 );	// right (x=+h)
+
+	Check( vertices.size() == 24, "(e) fixture really has 24 (6x4) per-face vertex slots" );
+	Check( tris.size() == 12, "(e) fixture really has 12 triangles" );
+
+	TriangleMeshGeometryIndexed* mesh = BuildMesh( vertices, tris );
+
+	Scalar outSigned = 12345.0;
+	bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(e) MONEY -- the flat-shaded per-corner cube now ANSWERS SignedDistanceLower "
+		"(pre-DL-143 this refused: 24 boundary edges from an entirely closed solid)" );
+	CheckClose( (double)outSigned, -(double)h, 1e-9,
+		"(e) MONEY -- centre depth equals the half-size exactly, same as the hand-welded (a) fixture" );
+	Check( outExact, "(e) MONEY -- exact, same as the hand-welded (a) fixture" );
+
+    Check(mesh->IsCertifiedWatertight(), "(e) initial welded cube is certified closed");
+    VerticesListType moved(vertices.begin(),vertices.end());
+    NormalsListType normals(vertices.size(),Vector3(0,0,1));
+    for(size_t i=4;i<8;++i) moved[i].z+=0.1;
+    mesh->UpdateVertices(moved,normals);
+    Check(!mesh->IsCertifiedWatertight(), "(e) separated seam invalidates closed certificate");
+    Check(!mesh->IsProvablyOpenSheet(), "(e) disconnected bent pieces do not get general proof");
+    Check(!mesh->SignedDistanceLower(Point3(0,0,0),1000,outSigned,outExact),
+        "(e) separated seam refuses signed distance");
+    moved.assign(vertices.begin(),vertices.end());
+    mesh->UpdateVertices(moved,normals);
+    Check(mesh->IsCertifiedWatertight(), "(e) restoring seams re-certifies closed cube");
+    Check(mesh->SignedDistanceLower(Point3(0,0,0),1000,outSigned,outExact) && outSigned<0,
+        "(e) restored closed cube regains signed interior");
+    for(auto& point : moved) point.z=0;
+    mesh->UpdateVertices(moved,normals);
+    Check(!mesh->IsCertifiedWatertight(), "(e) folded-flat cube loses closed certificate");
+    moved.assign(vertices.begin(),vertices.end());
+    mesh->UpdateVertices(moved,normals);
+    Check(mesh->IsCertifiedWatertight(), "(e) leaving a refusal witness re-proves watertightness");
+
+	mesh->release();
+}
+
+//! DL-116 CLOSED (debt-geom2, 2026-09-17): `SphereGeometry`/
+//! `EllipsoidGeometry::TessellateToMesh` now weld every pole ROW to a
+//! single shared (position, normal, texcoord) index and skip the one
+//! wedge triangle per pole cell that entry would make degenerate (see
+//! docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md) -- so the raw
+//! triangle list fed into this mesh contains zero degenerate triangles
+//! at either pole, DL-143's position-weld finds a genuinely closed
+//! 2-manifold (its tolerance also swallows the ordinary u-seam's
+//! ~1e-16-scale float noise, DL-136), and `SignedDistanceLower` now
+//! ANSWERS instead of refusing on a tessellated sphere or ellipsoid.
+//! The magnitude check is a LOOSE bound (matching (d)'s own rationale):
+//! the mesh is a polyhedral approximation, not the analytic surface, so
+//! its closest-point answer at the centre approaches -- but does not
+//! exactly equal -- the true minimum semi-axis / radius.
+static void TestSphereTessellationNowWatertight()
+{
+	std::cout << "(f) DL-116 CLOSED -- SphereGeometry::TessellateToMesh now welds watertight" << std::endl;
+
+	SphereGeometry* pSphere = new SphereGeometry( 3.0 );
+	pSphere->addref();
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	const bool built = pSphere->TessellateToMesh( tris, vertices, normals, coords, 71 );
+	Check( built, "(f) SphereGeometry::TessellateToMesh(detail=71) succeeds" );
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(f) MONEY -- SphereGeometry::TessellateToMesh's own output now ANSWERS "
+		"SignedDistanceLower post-weld (pre-fix: refused on degenerate pole triangles)" );
+	CheckClose( (double)outSigned, -3.0, 0.01 * 3.0,
+		"(f) tessellated-sphere centre depth is close to the analytic sphere's -R" );
+	Check( outExact, "(f) exact (closed 2-manifold, parity ray-cast sign + exact closest-point magnitude)" );
+
+	mesh->release();
+	pSphere->release();
+}
+
+//! DL-116 sibling (same fix, same commit, see above): `EllipsoidGeometry::
+//! TessellateToMesh` had the IDENTICAL per-pole-row coincident-vertex
+//! pattern as `SphereGeometry` (its own comment pointed at Sphere's for
+//! the rationale) and is welded the same way here. Scalene (a != b != c)
+//! semi-axes so this is not secretly exercising the sphere code path.
+//! The origin's true nearest surface point on an ellipsoid is exactly
+//! `min(a, b, c)` away (attained along the shortest semi-axis) -- the
+//! same closed-form argument as a sphere's `-R`, just anisotropic.
+static void TestEllipsoidTessellationNowWatertight()
+{
+	std::cout << "(f2) DL-116 sibling -- EllipsoidGeometry::TessellateToMesh now welds watertight" << std::endl;
+
+	const Scalar a = 1.5, b = 0.75, c = 2.0;
+	EllipsoidGeometry* pEllipsoid = new EllipsoidGeometry( Vector3( a, b, c ) );
+	pEllipsoid->addref();
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	const bool built = pEllipsoid->TessellateToMesh( tris, vertices, normals, coords, 71 );
+	Check( built, "(f2) EllipsoidGeometry::TessellateToMesh(detail=71) succeeds" );
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(f2) MONEY -- EllipsoidGeometry::TessellateToMesh's own output now ANSWERS "
+		"SignedDistanceLower post-weld (pre-fix: refused on degenerate pole triangles)" );
+	const Scalar minAxis = std::min( a, std::min( b, c ) );
+	CheckClose( (double)outSigned, -(double)minAxis, 0.02 * (double)minAxis,
+		"(f2) tessellated-ellipsoid centre depth is close to the analytic min(a,b,c)" );
+	Check( outExact, "(f2) exact (closed 2-manifold, parity ray-cast sign + exact closest-point magnitude)" );
+
+	mesh->release();
+	pEllipsoid->release();
+}
+
+//! `BoxGeometry::TessellateToMesh` tessellates its six faces
+//! INDEPENDENTLY -- each face computes its own vertex grid from its own
+//! (origin, edgeU, edgeV) basis, with no explicit seam sharing -- so
+//! pre-DL-143 it read as open (96 boundary edges at detail=4, one full
+//! unshared perimeter per face: this is the SAME underlying pattern as
+//! (e) and DL-116, just at every seam rather than only the two poles).
+//! The seam positions agree to float-noise precision (both sides compute
+//! the same real-valued point from consistent inputs), well inside
+//! DL-143's `1e-6 * bboxDiagonal` weld tolerance, so this DOES close.
+static void TestBoxTessellationWelds()
+{
+	std::cout << "(g) BoxGeometry::TessellateToMesh (independently-tessellated faces) welds to watertight" << std::endl;
+
+	const Scalar halfExtent = 2.0;	// BoxGeometry(w,h,d) takes FULL extents
+	BoxGeometry* pBox = new BoxGeometry( 2.0 * halfExtent, 2.0 * halfExtent, 2.0 * halfExtent );
+	pBox->addref();
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	const bool built = pBox->TessellateToMesh( tris, vertices, normals, coords, 4 );
+	Check( built, "(g) BoxGeometry::TessellateToMesh(detail=4) succeeds" );
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(g) MONEY -- the independently-tessellated box now ANSWERS SignedDistanceLower "
+		"(pre-DL-143: 96 boundary edges, one unshared perimeter per face)" );
+	CheckClose( (double)outSigned, -(double)halfExtent, 1e-6,
+		"(g) centre depth equals the half-extent (tessellation is exact for a box, no polyhedral-approximation slack)" );
+	Check( outExact, "(g) exact" );
+
+	mesh->release();
+	pBox->release();
+}
+
+//! (h) ONE SHIPPED ASSET, end to end.  `Box.glb` (the same asset
+//! `GLTFLoaderTest` already covers for its OWN, unrelated reasons: 24
+//! vertices, 6 faces x 4 corners, no vertex shared between faces -- see
+//! that test's own comment) is loaded through the REAL importer, and the
+//! resulting mesh answers a REAL signed interior distance through the
+//! exact mechanism `interior(r)` is built on (`SignedDistanceLower`),
+//! not a synthetic fixture built by this test file. Of the four assets
+//! named in the DL-143 review, NONE fully weld to watertight -- each has
+//! a genuine remaining defect (measured, not asserted here, since these
+//! are real third-party asset properties, not this fix's contract):
+//!   Avocado             38 boundary edges  (was 124 pre-weld)
+//!   DragonAttenuation (Cloth Backdrop, mesh 0)  617 boundary edges (a
+//!                        real open cloth sheet -- correctly stays open)
+//!   DragonAttenuation (Dragon, mesh 1)          0 boundary, 6 NON-
+//!                        MANIFOLD edges (a genuine small defect in the
+//!                        source asset -- refuses for a real reason)
+//!   SheenChair (4 primitives)   400 / 528 / 384 / 32 boundary edges
+//!   NormalTangentTest    128 boundary edges (UNCHANGED from pre-weld --
+//!                        this asset's 128 boundary edges are not a
+//!                        welding artifact at all; it stays open either
+//!                        way)
+//! `Box.glb` and `BoxTextured.glb`, by contrast, use the exact per-face
+//! convention (e) tests and both close.
+static void TestShippedGltfBoxEndToEnd()
+{
+	std::cout << "(h) Box.glb loaded through GLTFSceneImporter -- end-to-end interior() through a real shipped asset" << std::endl;
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+
+	GLTFSceneImporter imp( "scenes/Tests/Geometry/assets/Box.glb" );
+	Check( imp.IsValid(), "(h) Box.glb parses -- is the asset committed, and is the test running from the repo root?" );
+
+	const bool built = imp.BuildGeometryFromPrimitive( mesh, 0, 0, false );
+	Check( built, "(h) Box.glb builds into a TriangleMeshGeometryIndexed" );
+
+	if( built ) {
+		// Box.glb is the standard glTF-Sample-Assets unit cube: half-
+		// extent 0.5, centred at the origin.
+		Scalar outSigned = 12345.0; bool outExact = false;
+		const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(h) MONEY -- a REAL shipped glTF asset, loaded through the REAL importer, "
+			"now answers a real interior() signed distance end to end" );
+		CheckClose( (double)outSigned, -0.5, 1e-6,
+			"(h) centre depth equals the unit cube's half-extent (-0.5)" );
+		Check( outExact, "(h) exact" );
+
+		// Off-centre, still inside: the same shape of check section (a)
+		// runs on the hand-built cube, now through a real import.
+		Scalar outSigned2 = 12345.0; bool outExact2 = false;
+		const bool ok2 = mesh->SignedDistanceLower( Point3( 0.3, 0, 0 ), Scalar( 1000 ), outSigned2, outExact2 );
+		Check( ok2, "(h) off-centre interior query on the real asset answers" );
+		CheckClose( (double)outSigned2, -(0.5 - 0.3), 1e-6,
+			"(h) off-centre depth on the real asset tracks the true nearest-face distance" );
+		Check( outExact2, "(h) off-centre stays exact too" );
+	}
+
+	mesh->release();
+}
+
+//! DL-136 CLOSURE, section (i).  `TorusGeometry::TessellateToMesh` has NO
+//! pole at all -- both parametric directions wrap fully -- so its entire
+//! DL-136 residual is the ordinary u-seam + v-seam (`sin(2*pi) != sin(0)`
+//! at ~1e-16 relative scale), a genuine texcoord discontinuity but not a
+//! genuine POSITION discontinuity.  DL-143's weld tolerance
+//! (`1e-6*bboxDiagonal`) is many orders of magnitude coarser than that
+//! float noise, so it should weld the seam too -- verified here through
+//! the PRODUCTION path (`SignedDistanceLower`), not
+//! `PoleWeldingWatertightnessTest.cpp`'s own local, deliberately-exact-bit
+//! edge-count model (which is why that file's own torus/cylinder sections
+//! still correctly report a nonzero seam-only residual: they are pinning
+//! a DIFFERENT, EXACT-equality model, not this one).  Probe point is the
+//! tube's own central-circle point `(R, 0, 0)`, whose true nearest surface
+//! distance is exactly the tube radius `r` (see
+//! `TorusGeometry::DistanceToSurface`'s own comment for the ring-in-XZ,
+//! tube-along-Y convention this matches); the tessellated mesh's answer is
+//! a polyhedral approximation (inscribed-polygon apothem), hence the loose
+//! tolerance.
+static void TestTorusTessellationWatertight()
+{
+	std::cout << "(i) DL-136 CLOSED -- TorusGeometry::TessellateToMesh welds its u/v seam to watertight" << std::endl;
+
+	const Scalar R = 2.0, r = 0.5;
+	TorusGeometry* pTorus = new TorusGeometry( R, r );
+	pTorus->addref();
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	const bool built = pTorus->TessellateToMesh( tris, vertices, normals, coords, 32 );
+	Check( built, "(i) TorusGeometry::TessellateToMesh(detail=32) succeeds" );
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( R, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(i) MONEY -- TorusGeometry::TessellateToMesh's own output ANSWERS SignedDistanceLower "
+		"through the PRODUCTION weld (DL-136 residual on this primitive is the seam only, which welds)" );
+	CheckClose( (double)outSigned, -(double)r, 0.05 * (double)r,
+		"(i) tessellated-torus tube-centre depth is close to the analytic tube radius" );
+	Check( outExact, "(i) exact (closed 2-manifold, parity ray-cast sign + exact closest-point magnitude)" );
+
+	mesh->release();
+	pTorus->release();
+}
+
+//! DL-136 CLOSURE, section (j).  `CylinderGeometry::TessellateToMesh`
+//! (capped) has no pole either -- its two caps already fan from one
+//! shared center vertex (pre-existing, not a DL-116 target) -- so its
+//! DL-136 residual is the side wall's own u-seam plus the side-to-cap
+//! crease (a genuine, load-bearing NORMAL discontinuity, but not a
+//! position one: same `cos`/`sin` formula on both sides of the crease).
+//! Probe point is the axis origin; the cylinder is built radius=1,
+//! height=2 (axis symmetric about the origin, `CylinderGeometry`'s own
+//! convention), so the analytic nearest surface from the origin is
+//! `min(radius, height/2) = 1.0`, attained by BOTH the side wall and the
+//! caps -- the polyhedral side wall under-reads this by the inscribed-
+//! apothem factor `cos(pi/detail)`, hence the loose tolerance.
+static void TestCappedCylinderTessellationWatertight()
+{
+	std::cout << "(j) DL-136 CLOSED -- capped CylinderGeometry::TessellateToMesh welds its seam to watertight" << std::endl;
+
+	const Scalar radius = 1.0, height = 2.0;
+	const unsigned int detail = 32;
+	CylinderGeometry* pCyl = new CylinderGeometry( 'z', radius, height, /*capped=*/true );
+	pCyl->addref();
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	const bool built = pCyl->TessellateToMesh( tris, vertices, normals, coords, detail );
+	Check( built, "(j) capped CylinderGeometry::TessellateToMesh(detail=32) succeeds" );
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(j) MONEY -- capped CylinderGeometry::TessellateToMesh's own output ANSWERS SignedDistanceLower "
+		"through the PRODUCTION weld (DL-136 residual on this primitive is the side u-seam + cap crease, which weld)" );
+	const Scalar apothem = radius * std::cos( PI / (Scalar)detail );
+	const Scalar expected = std::min( apothem, height / Scalar( 2 ) );
+	CheckClose( (double)outSigned, -(double)expected, 0.02 * (double)radius,
+		"(j) tessellated-cylinder centre depth tracks min(inscribed side apothem, half-height)" );
+	Check( outExact, "(j) exact (closed 2-manifold, parity ray-cast sign + exact closest-point magnitude)" );
+
+	mesh->release();
+	pCyl->release();
+}
+
+//! A displacement of exactly zero, used to wrap sphere/torus/cylinder in
+//! `DisplacedGeometry` for section (k) without perturbing their positions
+//! at all -- the point is to exercise DL-136's closure through the
+//! WRAPPER's own baked mesh (`DisplacedGeometry::SignedDistanceLower`
+//! forwards to `m_pMesh->SignedDistanceLower`), not to test displacement.
+class ZeroFunction2D : public virtual IFunction2D, public virtual Reference
+{
+public:
+	Scalar Evaluate( const Scalar /*x*/, const Scalar /*y*/ ) const { return Scalar( 0 ); }
+};
+
+//! DL-136 CLOSURE, section (k).  Wraps each of Sphere/Torus/(capped)
+//! Cylinder in `DisplacedGeometry` at zero displacement and confirms the
+//! WRAPPER answers a real signed interior distance too -- not just the
+//! bare tessellator this file already tests directly in (f)/(i)/(j).
+//! `DisplacedGeometry::BuildMesh` bakes via `m_pBase->TessellateToMesh`
+//! and copies positions VERBATIM (see `DisplacedGeometry.h`'s own class
+//! comment and `docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md`'s
+//! sibling-audit correction on this exact point), so the baked mesh's
+//! topology and DL-136 residual are identical to the un-wrapped case --
+//! this section exists to prove that identity holds through the real
+//! wrapper class, not to re-derive it.
+static void TestDisplacedWrapsWatertight()
+{
+	std::cout << "(k) DL-136 CLOSED -- DisplacedGeometry(disp=0) wrapping sphere/torus/cylinder welds to watertight" << std::endl;
+
+	ZeroFunction2D zeroFn;
+	zeroFn.addref();
+
+	{
+		SphereGeometry* pBase = new SphereGeometry( 3.0 );
+		pBase->addref();
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pBase, 31, &zeroFn, Scalar( 0 ), false, false );
+		pDisp->addref();
+		pDisp->Realize();
+
+		Scalar outSigned = 12345.0; bool outExact = false;
+		const bool ok = pDisp->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(k) MONEY -- DisplacedGeometry(sphere, disp=0) ANSWERS SignedDistanceLower through its own baked mesh" );
+		CheckClose( (double)outSigned, -3.0, 0.05,
+			"(k) displaced-sphere-wrap centre depth is close to the analytic sphere's -R" );
+		Check( outExact, "(k) sphere wrap exact" );
+
+		pDisp->release();
+		pBase->release();
+	}
+	{
+		const Scalar R = 2.0, r = 0.5;
+		TorusGeometry* pBase = new TorusGeometry( R, r );
+		pBase->addref();
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pBase, 32, &zeroFn, Scalar( 0 ), false, false );
+		pDisp->addref();
+		pDisp->Realize();
+
+		Scalar outSigned = 12345.0; bool outExact = false;
+		const bool ok = pDisp->SignedDistanceLower( Point3( R, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(k) MONEY -- DisplacedGeometry(torus, disp=0) ANSWERS SignedDistanceLower through its own baked mesh" );
+		CheckClose( (double)outSigned, -(double)r, 0.05 * (double)r,
+			"(k) displaced-torus-wrap tube-centre depth is close to the analytic tube radius" );
+		Check( outExact, "(k) torus wrap exact" );
+
+		pDisp->release();
+		pBase->release();
+	}
+	{
+		const Scalar radius = 1.0, height = 2.0;
+		const unsigned int detail = 32;
+		CylinderGeometry* pBase = new CylinderGeometry( 'z', radius, height, /*capped=*/true );
+		pBase->addref();
+		DisplacedGeometry* pDisp = new DisplacedGeometry( pBase, detail, &zeroFn, Scalar( 0 ), false, false );
+		pDisp->addref();
+		pDisp->Realize();
+
+		Scalar outSigned = 12345.0; bool outExact = false;
+		const bool ok = pDisp->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(k) MONEY -- DisplacedGeometry(capped cylinder, disp=0) ANSWERS SignedDistanceLower through its own baked mesh" );
+		const Scalar apothem = radius * std::cos( PI / (Scalar)detail );
+		const Scalar expected = std::min( apothem, height / Scalar( 2 ) );
+		CheckClose( (double)outSigned, -(double)expected, 0.02 * (double)radius,
+			"(k) displaced-cylinder-wrap centre depth tracks min(inscribed side apothem, half-height)" );
+		Check( outExact, "(k) cylinder wrap exact" );
+
+		pDisp->release();
+		pBase->release();
+	}
+
+	zeroFn.release();
+}
+
+//! DL-136 CLOSURE, section (l).  Confirms the weld is genuinely RELATIVE
+//! to the mesh's own scale, not an absolute-epsilon artifact that happens
+//! to work at the unit scale every other section here uses: the SAME
+//! sphere tessellation, with every vertex position pre-scaled by 1000x
+//! (moving the bbox diagonal -- and hence `eps = max(1e-9,
+//! 1e-6*diagonal)` -- by the same factor), must weld its seam and answer
+//! SignedDistanceLower at the correspondingly-scaled depth.  Normals are
+//! untouched (a uniform position scale does not change unit face
+//! directions), matching how `TessellateToMesh` itself would produce them
+//! at that scale.
+static void TestScaledMeshWeldsRelatively()
+{
+	std::cout << "(l) DL-136 sibling -- a 1000x-scaled tessellated sphere still welds (relative epsilon)" << std::endl;
+
+	const Scalar R = 3.0;
+	const Scalar kScale = 1000.0;
+	SphereGeometry* pSphere = new SphereGeometry( R );
+	pSphere->addref();
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	const bool built = pSphere->TessellateToMesh( tris, vertices, normals, coords, 31 );
+	Check( built, "(l) SphereGeometry::TessellateToMesh(detail=31) succeeds" );
+
+	for( std::size_t i = 0; i < vertices.size(); ++i ) {
+		vertices[i] = Point3( vertices[i].x * kScale, vertices[i].y * kScale, vertices[i].z * kScale );
+	}
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000000 ), outSigned, outExact );
+	Check( ok, "(l) MONEY -- a 1000x-scaled tessellated sphere still ANSWERS SignedDistanceLower "
+		"(eps scales with the mesh's own bbox diagonal, not a fixed absolute constant)" );
+	CheckClose( (double)outSigned, -(double)( R * kScale ), 0.01 * (double)( R * kScale ),
+		"(l) scaled-sphere centre depth tracks -R*scale" );
+	Check( outExact, "(l) exact at the scaled size too" );
+
+	mesh->release();
+	pSphere->release();
+}
+
+//! DL-150.  Two independently-triangulated QUADS with OPPOSITE winding
+//! (quad A faces +Z, quad B faces -Z -- i.e. they face EACH OTHER across
+//! a 0.001-unit gap), plus one remote vertex far away that inflates this
+//! mesh's own bounding-box diagonal to ~1732 -- so DL-143's weld epsilon
+//! (`1e-6*diagonal` ~= 1.7e-3) EXCEEDS the physical gap between the two
+//! quads, which are otherwise totally unrelated open sheets.  Each quad's
+//! own 4 boundary edges pair up 1:1 with the other's after the weld
+//! (their shared diagonal stays internal to each quad, unaffected), so
+//! the pre-DL-150 edge-count check alone reads this as a genuinely closed
+//! 2-manifold and `SignedDistanceLower` answers a confident WRONG signed
+//! depth for a point in the sliver between the quads.  The remote vertex
+//! is folded into one degenerate (zero-area) triangle with two of quad
+//! A's own vertices purely to keep it part of THIS mesh's position array
+//! (and hence its bounding box) without adding any real edges of its own
+//! to the watertightness count -- `ComputeWatertightness`'s existing
+//! degenerate-triangle branch would normally refuse outright on that, so
+//! this fixture instead gives the remote point ITS OWN small but genuinely
+//! non-degenerate closed tetrahedron, which contributes 0 boundary/
+//! non-manifold edges of its own and does not interact with the quads'
+//! edges at all (disjoint vertex ids) -- exactly the reviewer's own repro
+//! shape (two false-stitched quads sharing a mesh with an unrelated,
+//! genuinely closed remote component).
+static void AddTri( IndexTriangleListType& tris, unsigned int a, unsigned int b, unsigned int c )
+{
+	IndexedTriangle t;
+	t.iVertices[0] = a; t.iVertices[1] = b; t.iVertices[2] = c;
+	t.iNormals[0]  = a; t.iNormals[1]  = b; t.iNormals[2]  = c;
+	t.iCoords[0]   = a; t.iCoords[1]   = b; t.iCoords[2]   = c;
+	tris.push_back( t );
+}
+
+//! Two SINGLE triangles (no internal diagonal, hence no way for this
+//! fixture to trip the PRE-EXISTING DL-31 edge-count check by accident --
+//! that confound is exactly why an earlier revision of this fixture used
+//! two-triangle QUADS sharing a diagonal, discovered on review to
+//! already refuse via DL-31 alone before DL-150's own discriminator ever
+//! runs, which made it a red-proof of the WRONG mechanism).  Triangle A
+//! at z=0; triangle B at z=`gap`, over the SAME (x,y) positions, so after
+//! the weld its 3 vertices resolve to the EXACT SAME post-weld ids as
+//! A's -- literally the coincident-triangle signature `ComputeWatertightness`
+//! now looks for.  `sameWinding=false` (default) reverses B's vertex
+//! order (the reviewer's own "opposite winding" repro: an unordered-set
+//! match only, cosine -1 under the REMOVED orientation check); `true`
+//! keeps B's order identical to A's (an exact ORDERED match -- two
+//! literally duplicate triangles, closing the prior orientation
+//! discriminator's "same-facing" residual too).  Either way each lone
+//! triangle's own 3 edges are all boundary (count 1) before the weld, and
+//! become count 2 (A+B) after it -- 0 boundary, 0 non-manifold, so the
+//! edge-count check alone falsely certifies this as a closed 2-manifold
+//! with NO other structure to confound the read.
+static bool BuildCoincidentTriangleWithRemoteTetrahedron( const Scalar gap,
+	IndexTriangleListType& tris, VerticesListType& vertices, bool sameWinding = false )
+{
+	tris.clear();
+	vertices.clear();
+
+	const unsigned int a0 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 0, 0 ) );
+	const unsigned int a1 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 0, 0 ) );
+	const unsigned int a2 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 1, 0 ) );
+	AddTri( tris, a0, a1, a2 );
+
+	const unsigned int b0 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 0, gap ) );
+	const unsigned int b1 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 0, gap ) );
+	const unsigned int b2 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 1, gap ) );
+	if( sameWinding ) {
+		AddTri( tris, b0, b1, b2 );	// same order as A -- literally duplicate post-weld
+	} else {
+		AddTri( tris, b0, b2, b1 );	// reversed -- same SET, opposite winding
+	}
+
+	// A remote, genuinely closed tetrahedron (4 vertices, 4 triangular
+	// faces, each edge shared by exactly two of them) far from the two
+	// triangles, purely to inflate the mesh's own bounding-box diagonal
+	// to ~1732 -- matching the reviewer's own repro numbers (eps ~1.7e-3,
+	// between the 0.001 gap that should falsely weld and the 0.01 gap
+	// that should correctly refuse).
+	const Point3 tCenter( 1000, 1000, 1000 );
+	const unsigned int t0 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( 0, 0, 1 ) ) );
+	const unsigned int t1 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( 1, 0, -1 ) ) );
+	const unsigned int t2 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( -1, 1, -1 ) ) );
+	const unsigned int t3 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( -1, -1, -1 ) ) );
+	AddTri( tris, t0, t1, t2 );
+	AddTri( tris, t0, t2, t3 );
+	AddTri( tris, t0, t3, t1 );
+	AddTri( tris, t1, t3, t2 );
+
+	return true;
+}
+
+//! DL-197 (was DL-150's own DOCUMENTED RESIDUAL) fixture: two
+//! INDEPENDENTLY tessellated quads (2 triangles each, split along
+//! DIFFERENT internal diagonals) facing each other -- after the weld
+//! only the 4 PERIMETER edges are shared between them (each quad's own
+//! diagonal stays internal to itself, at a DIFFERENT post-weld vertex
+//! pair than the other quad's), so no two triangles ever resolve to the
+//! same 3 vertices, and the coincident-triangle check above (which only
+//! looks for exact triangle coincidence) cannot see it.  Still a false
+//! stitch by the same physical mechanism as the coincident-triangle
+//! fixture above -- CLOSED 2026-09-18 by the edge-based coplanar/
+//! oppositely-wound discriminator in `ComputeWatertightness` (see that
+//! function's own comment): each of the 4 shared perimeter edges pairs
+//! one triangle from quad A with one from quad B, the two are coplanar
+//! (their gap is `< eps`, by construction -- that is what let them weld
+//! at all) and oppositely wound (quad B is authored facing quad A), so
+//! every one of those 4 edges now trips the discriminator.
+static bool BuildOffsetTessellationQuadsWithRemoteTetrahedron( const Scalar gap,
+	IndexTriangleListType& tris, VerticesListType& vertices )
+{
+	tris.clear();
+	vertices.clear();
+
+	const unsigned int a0 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 0, 0 ) );
+	const unsigned int a1 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 0, 0 ) );
+	const unsigned int a2 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 1, 0 ) );
+	const unsigned int a3 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 1, 0 ) );
+	AddTri( tris, a0, a1, a2 );	// diagonal a0-a2
+	AddTri( tris, a0, a2, a3 );
+
+	const unsigned int b0 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 0, gap ) );
+	const unsigned int b1 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 0, gap ) );
+	const unsigned int b2 = (unsigned int)vertices.size(); vertices.push_back( Point3( 1, 1, gap ) );
+	const unsigned int b3 = (unsigned int)vertices.size(); vertices.push_back( Point3( 0, 1, gap ) );
+	AddTri( tris, b1, b3, b2 );	// diagonal b1-b3, opposite winding -- faces quad A
+	AddTri( tris, b1, b0, b3 );
+
+	const Point3 tCenter( 1000, 1000, 1000 );
+	const unsigned int t0 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( 0, 0, 1 ) ) );
+	const unsigned int t1 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( 1, 0, -1 ) ) );
+	const unsigned int t2 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( -1, 1, -1 ) ) );
+	const unsigned int t3 = (unsigned int)vertices.size(); vertices.push_back( Point3Ops::mkPoint3( tCenter, Vector3( -1, -1, -1 ) ) );
+	AddTri( tris, t0, t1, t2 );
+	AddTri( tris, t0, t2, t3 );
+	AddTri( tris, t0, t3, t1 );
+	AddTri( tris, t1, t3, t2 );
+
+	return true;
+}
+
+//! Builds a `TriangleMeshGeometryIndexed` from the given index/vertex
+//! lists and runs `SignedDistanceLower` at `queryPoint`.  Normals are a
+//! trivial per-vertex placeholder (DL-150's coincident-triangle
+//! discriminator, unlike the orientation-based one it replaced, reads
+//! POSITIONS only -- see `ComputeWatertightness`'s own comment): any
+//! authored value works, `DoneIndexedTriangles`' DEBUG check just needs
+//! an index-sized array to exist (same convention as `BuildMesh` above).
+static bool RunSignedDistanceFixture( const IndexTriangleListType& tris, const VerticesListType& vertices,
+	const Point3& queryPoint, Scalar& outSigned, bool& outExact )
+{
+	NormalsListType normals( vertices.size(), Vector3( 0, 0, 1 ) );
+	TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	outSigned = 12345.0; outExact = false;
+	const bool ok = mesh->SignedDistanceLower( queryPoint, Scalar( 1000 ), outSigned, outExact );
+	mesh->release();
+	return ok;
+}
+
+static void TestOpposedFacingSheetsRefuseViaDiscriminator()
+{
+	std::cout << "(m) DL-150 MONEY -- two coincident triangles, welded by a remote-inflated bbox, "
+		"REFUSE via the coincident-triangle discriminator" << std::endl;
+
+	{
+		// Control at the SAME shape, gap=0.01 > eps: unaffected by DL-150,
+		// the two triangles never weld to each other at all and each
+		// keeps its own 3 boundary edges (6 total) -- refuses via the
+		// pre-existing DL-31 edge-count check alone, exactly as the
+		// ledger row states.
+		IndexTriangleListType tris; VerticesListType vertices;
+		BuildCoincidentTriangleWithRemoteTetrahedron( Scalar( 0.01 ), tris, vertices );
+		Scalar outSigned; bool outExact;
+		const bool ok = RunSignedDistanceFixture( tris, vertices, Point3( 0.3, 0.3, 0.005 ), outSigned, outExact );
+		Check( !ok, "(m) control -- gap=0.01 > eps never welds the two triangles together; refuses via the ordinary boundary-edge count" );
+	}
+	{
+		// MONEY: gap=0.001 < eps (~1.7e-3), opposite winding.  Pre-DL-150
+		// (verified against master commit 4b692be6, before ANY DL-150
+		// code existed) this falsely certifies watertight with a
+		// confidently wrong signed depth in the sliver between the two
+		// triangles; the coincident-triangle discriminator now refuses it.
+		IndexTriangleListType tris; VerticesListType vertices;
+		BuildCoincidentTriangleWithRemoteTetrahedron( Scalar( 0.001 ), tris, vertices, /*sameWinding=*/false );
+		Scalar outSigned; bool outExact;
+		const bool ok = RunSignedDistanceFixture( tris, vertices, Point3( 0.3, 0.3, 0.0005 ), outSigned, outExact );
+		Check( !ok, "(m) MONEY -- DL-150: gap=0.001 < eps welds two opposite-winding coincident triangles; "
+			"the discriminator refuses the false 2-manifold instead of answering a wrong signed depth" );
+	}
+}
+
+//! DL-150 review round 2 (2026-09-18): the SAME-winding case is no longer
+//! a documented residual -- it is now CAUGHT too, and by a STRONGER
+//! signal than the opposite-winding case: with matching winding, the two
+//! triangles resolve to the exact same ORDERED vertex triple (not just
+//! the same unordered set), i.e. two literally duplicate triangles.  The
+//! orientation-based discriminator this replaced could not see this case
+//! at all (cosine +1, indistinguishable from a genuine seam by
+//! orientation alone); the coincident-triangle check does not consult
+//! orientation in the first place, so it treats both cases identically.
+static void TestSameWindingCoincidentTriangleAlsoRefuses()
+{
+	std::cout << "(n) DL-150 -- same-winding coincident triangles ALSO refuse (closes the prior "
+		"orientation-discriminator residual)" << std::endl;
+
+	IndexTriangleListType tris; VerticesListType vertices;
+	BuildCoincidentTriangleWithRemoteTetrahedron( Scalar( 0.001 ), tris, vertices, /*sameWinding=*/true );
+	Scalar outSigned; bool outExact;
+	const bool ok = RunSignedDistanceFixture( tris, vertices, Point3( 0.3, 0.3, 0.0005 ), outSigned, outExact );
+	Check( !ok, "(n) MONEY -- same-winding coincident triangles weld into two LITERALLY duplicate "
+		"triangles; the coincident-triangle discriminator refuses regardless of orientation" );
+}
+
+//! DL-197 MONEY (was DL-150's own DOCUMENTED RESIDUAL): two
+//! independently-tessellated quads on DIFFERENT internal diagonals used
+//! to weld into an equally false 2-manifold that the coincident-triangle
+//! check alone couldn't see (every edge read count 2; no two triangles
+//! shared all three vertices) -- CLOSED 2026-09-18 by the edge-based
+//! coplanar/oppositely-wound discriminator.  A gap=0.01 (> eps) control
+//! confirms the fix didn't touch the "genuinely far apart, never welds
+//! at all" case, which already refused via the ordinary DL-31
+//! boundary-edge count before this row existed.
+static void TestOffsetTessellationResidualUncaught()
+{
+	std::cout << "(o) DL-197 MONEY -- independently-tessellated (different-diagonal) facing quads "
+		"now REFUSE via the coplanar/oppositely-wound discriminator" << std::endl;
+
+	{
+		// Control at gap=0.01 > eps: unaffected by DL-197, the two quads
+		// never weld to each other and each keeps its own 4 boundary
+		// edges -- refuses via the pre-existing DL-31 edge-count check
+		// alone, unchanged by this row.
+		IndexTriangleListType tris; VerticesListType vertices;
+		BuildOffsetTessellationQuadsWithRemoteTetrahedron( Scalar( 0.01 ), tris, vertices );
+		Scalar outSigned; bool outExact;
+		const bool ok = RunSignedDistanceFixture( tris, vertices, Point3( 0.5, 0.5, 0.005 ), outSigned, outExact );
+		Check( !ok, "(o) control -- gap=0.01 > eps never welds the two quads together; refuses via the ordinary boundary-edge count" );
+	}
+	{
+		// MONEY: gap=0.001 < eps.  Pre-DL-197 (verified against this
+		// branch's own pre-fix commit, before the edge-based
+		// discriminator existed) this falsely certified watertight with
+		// a confidently wrong signed depth in the sliver between the two
+		// quads; the new discriminator now refuses it.
+		IndexTriangleListType tris; VerticesListType vertices;
+		BuildOffsetTessellationQuadsWithRemoteTetrahedron( Scalar( 0.001 ), tris, vertices );
+		Scalar outSigned; bool outExact;
+		const bool ok = RunSignedDistanceFixture( tris, vertices, Point3( 0.5, 0.5, 0.0005 ), outSigned, outExact );
+		Check( !ok, "(o) MONEY -- DL-197: gap=0.001 < eps welds two independently-tessellated "
+			"(different-diagonal) facing quads; the coplanar/oppositely-wound discriminator now "
+			"refuses the false 2-manifold instead of answering a wrong signed depth" );
+	}
+}
+
+//! Appends ONE triangle with brand-new, per-corner vertex slots and a
+//! REAL flat face normal computed from its own winding (`cross(p1-p0,
+//! p2-p0)`, normalized) -- the exact per-face-flat-shaded convention
+//! `Box.glb`/section (e) use, but built explicitly here (not through
+//! `BuildMesh()`'s placeholder-normal helper) so the caller's own winding
+//! determines a REAL outward direction.  Used by the wedge/prism fixture
+//! below, whose whole point is to exercise a genuine sharp CONVEX crease
+//! with authored normals that actually vary face to face -- the exact
+//! thing `BuildMesh()`'s `(0,0,1)`-for-every-vertex placeholder could
+//! never exercise (see `ComputeWatertightness`'s own comment on why the
+//! removed orientation discriminator's flat-cube control was a red
+//! herring for this reason).
+static void AddFlatTriFace( VerticesListType& vertices, NormalsListType& normals, IndexTriangleListType& tris,
+	const Point3& p0, const Point3& p1, const Point3& p2 )
+{
+	const Vector3 e1 = Vector3Ops::mkVector3( p1, p0 );	// p1 - p0
+	const Vector3 e2 = Vector3Ops::mkVector3( p2, p0 );	// p2 - p0
+	const Vector3 n = Vector3Ops::Normalize( Vector3Ops::Cross( e1, e2 ) );
+	const unsigned int base = (unsigned int)vertices.size();
+	vertices.push_back( p0 ); vertices.push_back( p1 ); vertices.push_back( p2 );
+	normals.push_back( n ); normals.push_back( n ); normals.push_back( n );
+	AddTri( tris, base, base + 1, base + 2 );
+}
+
+//! A CLOSED triangular-prism wedge with apex angle `apexDeg` at the edge
+//! `A0-A1` (the edge shared by the two slanted side faces), REAL per-face
+//! flat normals throughout.  Apex at x=0; base (the wide face opposite
+//! the apex) at x=1, spanning y in `[-t,t]` where `t=tan(apexDeg/2)`;
+//! prism axis along Z, length H.  8 triangles: 2 end caps + 3 side
+//! quads (each split into 2), EVERY winding independently verified by
+//! hand (see the review-round-2 fix commit message for the full
+//! derivation) to produce the correct OUTWARD normal -- in particular,
+//! the two slanted faces' outward normals are `(-t,+-1,0)` (unnormalized),
+//! whose cosine is EXACTLY `-cos(apexDeg)`: this is what makes a sharp
+//! wedge (small `apexDeg`) read a cosine near -1, indistinguishable from
+//! the false-stitch signature the REMOVED orientation discriminator
+//! looked for, and why that discriminator was wrong.
+static void BuildWedge( const Scalar apexDeg, const Scalar H,
+	VerticesListType& vertices, NormalsListType& normals, IndexTriangleListType& tris )
+{
+	vertices.clear(); normals.clear(); tris.clear();
+
+	const Scalar t = std::tan( apexDeg * PI / Scalar( 360 ) );	// tan(apexDeg/2 in radians)
+	const Point3 A0( 0, 0, 0 ),      B0( 1, t, 0 ),      C0( 1, -t, 0 );
+	const Point3 A1( 0, 0, H ),      B1( 1, t, H ),      C1( 1, -t, H );
+
+	AddFlatTriFace( vertices, normals, tris, A0, B0, C0 );	// cap z=0, outward -Z
+	AddFlatTriFace( vertices, normals, tris, A1, C1, B1 );	// cap z=H, outward +Z
+	AddFlatTriFace( vertices, normals, tris, A0, B1, B0 );	// face AB, outward (-t,+1,0)
+	AddFlatTriFace( vertices, normals, tris, A0, A1, B1 );
+	AddFlatTriFace( vertices, normals, tris, A0, C0, C1 );	// face AC, outward (-t,-1,0)
+	AddFlatTriFace( vertices, normals, tris, A0, C1, A1 );
+	AddFlatTriFace( vertices, normals, tris, B0, B1, C1 );	// face BC (the wide base), outward (+1,0,0)
+	AddFlatTriFace( vertices, normals, tris, B0, C1, C0 );
+}
+
+//! DL-150 review round 2 MONEY: a genuinely closed, correctly-wound
+//! wedge/prism with a sharp CONVEX crease must certify watertight and
+//! answer the correct signed depth at EVERY apex angle, including ones
+//! sharp enough (<60 degrees) that the REMOVED orientation discriminator
+//! (threshold cosine < -0.5) falsely refused it (red on the parent
+//! commit 1c0bf3ae: apex 30/50/58 degrees refused, only 60/70 passed,
+//! since cosine = -cos(apexDeg) crosses -0.5 exactly at apexDeg=60).
+//! Query point is on the prism's central axis at half-height; its true
+//! nearest surface (verified analytically for every angle tested here)
+//! is always one of the two slanted side faces, at closed-form distance
+//! `0.5*t/sqrt(t*t+1)` where `t=tan(apexDeg/2)` -- the mesh is exactly
+//! flat (no polyhedral-approximation slack), so this is checked tight.
+static void TestWedgeSharpCreaseCertifiesAtEveryAngle()
+{
+	std::cout << "(p) DL-150 MONEY -- a closed, real-normal wedge certifies at every apex angle, "
+		"including sharp convex creases the removed orientation check falsely refused" << std::endl;
+
+	const Scalar apexAnglesDeg[] = { 30, 50, 58, 60, 70 };
+	const Scalar H = 2.0;
+	for( const Scalar apexDeg : apexAnglesDeg ) {
+		VerticesListType vertices; NormalsListType normals; IndexTriangleListType tris;
+		BuildWedge( apexDeg, H, vertices, normals, tris );
+		TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );
+
+		TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+		mesh->addref();
+		mesh->BeginIndexedTriangles();
+		mesh->AddVertices( vertices );
+		mesh->AddNormals( normals );
+		mesh->AddTexCoords( coords );
+		mesh->AddIndexedTriangles( tris );
+		mesh->DoneIndexedTriangles();
+
+		const std::string tag = "(p) apex=" + std::to_string( (int)apexDeg ) + "deg";
+		Scalar outSigned = 12345.0; bool outExact = false;
+		const bool ok = mesh->SignedDistanceLower( Point3( 0.5, 0, H / 2 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, tag + " -- MONEY: certifies watertight (a genuine sharp convex crease is not a false stitch)" );
+		if( ok ) {
+			const Scalar t = std::tan( apexDeg * PI / Scalar( 360 ) );
+			const Scalar expected = Scalar( 0.5 ) * t / std::sqrt( t * t + Scalar( 1 ) );
+			CheckClose( (double)outSigned, -(double)expected, 1e-9, tag + " -- signed depth matches the closed-form nearest-slanted-face distance" );
+			Check( outExact, tag + " -- exact" );
+		}
+
+		mesh->release();
+	}
+}
+
+//! A hand-built, per-face-duplicated (REAL per-face flat normals, not
+//! `BuildMesh()`'s `(0,0,1)` placeholder) closed cube -- the regression
+//! `ComputeWatertightness`'s own review-round-2 correction calls for: the
+//! three mutually orthogonal face normals meeting at any corner have
+//! cosine exactly 0 (a bounded, ordinary angle no discriminator should
+//! ever flag), confirmed here through REAL authored normals rather than
+//! the placeholder that let the removed orientation check's own control
+//! pass for the wrong reason.
+static void TestFlatShadedCubeWithRealNormalsCertifies()
+{
+	std::cout << "(q) DL-150 sibling -- a flat-shaded cube with REAL per-face normals still certifies" << std::endl;
+
+	const Scalar h = 2.0;
+	std::vector<Point3> corners;
+	CubeCorners( h, corners );
+
+	// Same 12-triangle winding `CubeTriangles()` uses (see that function's
+	// own comment), so the per-face normals computed by `AddFlatTriFace`
+	// really do point outward.
+	VerticesListType vertices; NormalsListType normals; IndexTriangleListType tris;
+	AddFlatTriFace( vertices, normals, tris, corners[0], corners[1], corners[2] );	// bottom (z=-h)
+	AddFlatTriFace( vertices, normals, tris, corners[0], corners[2], corners[3] );
+	AddFlatTriFace( vertices, normals, tris, corners[4], corners[6], corners[5] );	// top (z=+h)
+	AddFlatTriFace( vertices, normals, tris, corners[4], corners[7], corners[6] );
+	AddFlatTriFace( vertices, normals, tris, corners[0], corners[5], corners[1] );	// front (y=-h)
+	AddFlatTriFace( vertices, normals, tris, corners[0], corners[4], corners[5] );
+	AddFlatTriFace( vertices, normals, tris, corners[3], corners[2], corners[6] );	// back (y=+h)
+	AddFlatTriFace( vertices, normals, tris, corners[3], corners[6], corners[7] );
+	AddFlatTriFace( vertices, normals, tris, corners[0], corners[3], corners[7] );	// left (x=-h)
+	AddFlatTriFace( vertices, normals, tris, corners[0], corners[7], corners[4] );
+	AddFlatTriFace( vertices, normals, tris, corners[1], corners[5], corners[6] );	// right (x=+h)
+	AddFlatTriFace( vertices, normals, tris, corners[1], corners[6], corners[2] );
+
+	TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(q) MONEY -- flat-shaded cube with REAL (non-placeholder) per-face normals certifies watertight" );
+	CheckClose( (double)outSigned, -(double)h, 1e-9, "(q) centre depth equals the half-size exactly" );
+	Check( outExact, "(q) exact" );
+
+	mesh->release();
+}
+
+//! A genuinely closed, valid thin box (a real slab) whose two large
+//! faces are thicker apart than `eps` -- confirms the position weld does
+//! NOT merge them (they stay two distinct, non-coincident sheets of the
+//! SAME closed solid) and the mesh still certifies via the ordinary
+//! DL-31/DL-143 path, unaffected by DL-150's mechanism either way.
+static void TestThinButValidSolidThickerThanEpsCertifies()
+{
+	std::cout << "(r) DL-150 sibling -- a genuinely closed thin slab (thickness >> eps) certifies normally" << std::endl;
+
+	// Half-thickness 0.05 in a unit-scale box: bbox diagonal ~sqrt(2^2+2^2+0.1^2)~2.83,
+	// eps~2.83e-6 -- far below the 0.1 physical thickness, so the two
+	// large faces are never welded to each other.
+	const Scalar halfW = 1.0, halfD = 1.0, halfThick = 0.05;
+	std::vector<Point3> corners;
+	corners.push_back( Point3( -halfW, -halfD, -halfThick ) );	// 0
+	corners.push_back( Point3(  halfW, -halfD, -halfThick ) );	// 1
+	corners.push_back( Point3(  halfW,  halfD, -halfThick ) );	// 2
+	corners.push_back( Point3( -halfW,  halfD, -halfThick ) );	// 3
+	corners.push_back( Point3( -halfW, -halfD,  halfThick ) );	// 4
+	corners.push_back( Point3(  halfW, -halfD,  halfThick ) );	// 5
+	corners.push_back( Point3(  halfW,  halfD,  halfThick ) );	// 6
+	corners.push_back( Point3( -halfW,  halfD,  halfThick ) );	// 7
+
+	IndexTriangleListType tris;
+	CubeTriangles( tris, /*dropTopFace=*/false );
+	TriangleMeshGeometryIndexed* mesh = BuildMesh( corners, tris );
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(r) MONEY -- a genuinely closed thin (but > eps) slab certifies watertight normally" );
+	CheckClose( (double)outSigned, -(double)halfThick, 1e-9, "(r) centre depth equals the slab's own half-thickness (nearest surface, not half-width)" );
+	Check( outExact, "(r) exact" );
+
+	mesh->release();
+}
+
+//! A hand-built, WELDED UV-sphere: one shared vertex at each pole (a fan
+//! of triangles there), ordinary quads split into two triangles on the
+//! `n` interior latitude rings.  Deliberately NOT
+//! `SphereGeometry::TessellateToMesh` -- when this fixture was written,
+//! that tessellator gave each pole CELL its own distinct
+//! (but coincident-position) vertex, so the polar "quads" degenerated to
+//! zero-area triangles whose wedge edges were each used by only one
+//! triangle: a 10082-triangle `TessellateToMesh` sphere measured 284
+//! boundary edges under DL-31's watertightness check, a real closed
+//! sphere reading as an open sheet purely because of how the tessellator
+//! indexed its poles.  Filed as DL-116; CLOSED 2026-09-17 (debt-geom2,
+//! see (f) above, which now exercises `SphereGeometry::TessellateToMesh`'s
+//! own output directly and gets the same watertight answer).  This
+//! fixture is kept as-is regardless -- it gives exact, reproducible
+//! control over the triangle count (10000 exactly) this section's timing
+//! wants, independent of which tessellator's convention happens to
+//! produce it.
+static bool BuildWeldedUVSphere( const Scalar R, const unsigned int n, const unsigned int m,
+	IndexTriangleListType& tris, VerticesListType& vertices )
+{
+	tris.clear();
+	vertices.clear();
+	if( n < 1 || m < 3 ) { return false; }
+
+	const unsigned int northIdx = 0;
+	const unsigned int ringBase = 1;						// ring i (1..n), column j (0..m-1) -> ringBase + (i-1)*m + j
+	const unsigned int southIdx = ringBase + n * m;
+
+	vertices.resize( southIdx + 1 );
+	vertices[northIdx] = Point3( 0, R, 0 );
+	vertices[southIdx] = Point3( 0, -R, 0 );
+	for( unsigned int i = 1; i <= n; ++i ) {
+		const Scalar theta = PI * (Scalar)i / (Scalar)( n + 1 );	// strictly between 0 and PI: never at a pole
+		const Scalar y = R * std::cos( theta );
+		const Scalar ringR = R * std::sin( theta );
+		for( unsigned int j = 0; j < m; ++j ) {
+			const Scalar phi = TWO_PI * (Scalar)j / (Scalar)m;
+			vertices[ringBase + (i - 1) * m + j] = Point3( ringR * std::cos( phi ), y, ringR * std::sin( phi ) );
+		}
+	}
+
+	auto addTri = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+		IndexedTriangle t;
+		t.iVertices[0] = a; t.iVertices[1] = b; t.iVertices[2] = c;
+		t.iNormals[0] = a;  t.iNormals[1] = b;  t.iNormals[2] = c;
+		t.iCoords[0] = a;   t.iCoords[1] = b;   t.iCoords[2] = c;
+		tris.push_back( t );
+	};
+	auto ring = [&]( unsigned int i, unsigned int j ) { return ringBase + (i - 1) * m + ( j % m ); };
+
+	// North cap: a fan from the pole to ring 1.
+	for( unsigned int j = 0; j < m; ++j ) {
+		addTri( northIdx, ring( 1, j ), ring( 1, j + 1 ) );
+	}
+	// Interior bands: ring i to ring i+1, one shared diagonal per quad.
+	for( unsigned int i = 1; i < n; ++i ) {
+		for( unsigned int j = 0; j < m; ++j ) {
+			const unsigned int a = ring( i, j ), b = ring( i, j + 1 );
+			const unsigned int c = ring( i + 1, j ), d = ring( i + 1, j + 1 );
+			addTri( a, c, d );
+			addTri( a, d, b );
+		}
+	}
+	// South cap: a fan from ring n to the pole.
+	for( unsigned int j = 0; j < m; ++j ) {
+		addTri( southIdx, ring( n, j + 1 ), ring( n, j ) );
+	}
+	return true;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-382: `TriangleMeshGeometryIndexed::IsProvablyOpenSheet` -- the
+// certification behind the open-sheet face rule for meshes. The general
+// connected, consistently wound, embedded open-mesh proof extends the
+// legacy planar proof. Both require readable normal orientation; merely
+// "has a boundary" (not certified closed) is NOT "certified open".
+//////////////////////////////////////////////////////////////////////
+static TriangleMeshGeometryIndexed* BuildFaceNormalMesh(
+	const std::vector<Point3>& corners, const IndexTriangleListType& tris,
+	const bool bFaceNormals = true, const Vector3 authoredNormal = Vector3( 0, 0, 1 ) )
+{
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( true, bFaceNormals );
+	mesh->addref();
+	VerticesListType vertices( corners.begin(), corners.end() );
+	NormalsListType normals( corners.size(), authoredNormal );
+	TexCoordsListType coords( corners.size(), Point2( 0, 0 ) );
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+	return mesh;
+}
+
+static void TestDeserializedClosedCertificate()
+{
+    std::vector<Point3> vertices; CubeCorners(2,vertices);
+    IndexTriangleListType closedTris,openTris;
+    CubeTriangles(closedTris,false); CubeTriangles(openTris,true);
+    auto* closed=BuildFaceNormalMesh(vertices,closedTris,false);
+    auto* open=BuildFaceNormalMesh(vertices,openTris,false);
+    Check(closed->IsCertifiedWatertight(),"serialization control starts certified closed");
+    auto* closedBytes=new MemoryBuffer(); auto* openBytes=new MemoryBuffer();
+    closed->Serialize(*closedBytes); open->Serialize(*openBytes);
+    SurfaceSignalInfo signal; signal.primId=0;
+    Scalar warmed=0;
+    Check(closed->ComputeOcclusion(signal,1,true,warmed),"closed roundtrip control warms geometry-owned signal table");
+
+    auto* fresh=new TriangleMeshGeometryIndexed(false,false); fresh->addref();
+    closedBytes->seek(IBuffer::START,0); fresh->Deserialize(*closedBytes);
+    Check(fresh->IsCertifiedWatertight(),"fresh closed deserialization establishes watertightness");
+    Scalar distance=0; bool exact=false;
+    Check(fresh->SignedDistanceLower(Point3(0,0,0),1000,distance,exact) && distance<0,
+        "fresh deserialized closed cube answers signed interior");
+    const auto openHit=[](TriangleMeshGeometryIndexed& mesh,bool expected) {
+        RayIntersectionGeometric hit(Ray(Point3(0.1,0.2,3),Vector3(0,0,-1)),nullRasterizerState);
+        mesh.IntersectRay(hit,true,true,false);
+        return hit.bHit && hit.bOpenSheet==expected;
+    };
+    Check(openHit(*fresh,false),"deserialized closed cube retains closed entry record");
+    openBytes->seek(IBuffer::START,0); closed->Deserialize(*openBytes);
+    Check(!closed->IsCertifiedWatertight(),"deserializing open mesh revokes previous closed certificate");
+    Check(!closed->SignedDistanceLower(Point3(0,0,0),1000,distance,exact),
+        "deserialized open replacement refuses signed interior");
+    Check(openHit(*closed,true),"deserialized open replacement records an open entry");
+    Scalar reusedSignal=0,freshSignal=0;
+    const bool reusedOK=closed->ComputeOcclusion(signal,1,true,reusedSignal);
+    const bool freshOK=open->ComputeOcclusion(signal,1,true,freshSignal);
+    std::cout<<"    replacement occlusion: reused "<<reusedSignal<<" vs fresh "<<freshSignal<<std::endl;
+    Check(reusedOK && freshOK && std::fabs(reusedSignal-freshSignal)<1e-9,
+        "deserialized replacement matches fresh mesh signal, not stale closed bake");
+
+    closedBytes->seek(IBuffer::START,0); closed->Deserialize(*closedBytes);
+    Check(closed->IsCertifiedWatertight(),"deserializing closed mesh restores closed certificate");
+    closed->UpdateVertices(VerticesListType(vertices.begin(),vertices.end()),
+        NormalsListType(vertices.size(),Vector3(0.1,0,1)));
+    Check(closed->IsCertifiedWatertight(),"normal-only update preserves freshly derived closed certificate");
+    // Legacy v1-v3 streams remain unsigned under the frozen eligibility rule.
+    // Construct a valid v3 closed cube without a legacy tree or BVH cache.
+    auto* legacy=new MemoryBuffer(); legacy->setBytes("RISETMGI",8); legacy->setUInt(3);
+    legacy->setUInt(10); legacy->setChar(8); legacy->setChar(0);
+    legacy->setUInt(static_cast<unsigned>(vertices.size()));
+    for(const auto& p : vertices) {legacy->setDouble(p.x);legacy->setDouble(p.y);legacy->setDouble(p.z);}
+    legacy->setUInt(static_cast<unsigned>(vertices.size()));
+    for(size_t i=0;i<vertices.size();++i) {legacy->setDouble(0);legacy->setDouble(0);legacy->setDouble(1);}
+    legacy->setUInt(static_cast<unsigned>(vertices.size()));
+    for(size_t i=0;i<vertices.size();++i) {legacy->setDouble(0);legacy->setDouble(0);}
+    legacy->setUInt(static_cast<unsigned>(closedTris.size()));
+    for(const auto& tri : closedTris) for(int k=0;k<3;++k) {
+        legacy->setUInt(tri.iVertices[k]);legacy->setUInt(tri.iNormals[k]);legacy->setUInt(tri.iCoords[k]);
+    }
+    legacy->setChar(1); legacy->setChar(0); legacy->setChar(0); legacy->setChar(0);
+    legacy->seek(IBuffer::START,0); closed->Deserialize(*legacy);
+    Check(!closed->IsCertifiedWatertight(),"legacy closed replacement preserves unsigned eligibility and clears inherited certificate");
+    Check(!closed->SignedDistanceLower(Point3(0,0,0),1000,distance,exact),
+        "legacy closed replacement retains unsigned-only query behavior");
+    closedBytes->seek(IBuffer::START,0); closed->Deserialize(*closedBytes);
+    Check(closed->IsCertifiedWatertight(),"modern reload restores proof after a legacy replacement");
+    legacy->release();
+    auto* empty=new TriangleMeshGeometryIndexed(true,false); empty->addref();
+    auto* emptyBytes=new MemoryBuffer(); empty->Serialize(*emptyBytes);
+    emptyBytes->seek(IBuffer::START,0); closed->Deserialize(*emptyBytes);
+    Check(!closed->IsCertifiedWatertight(),"empty deserialized replacement revokes closed certificate");
+    emptyBytes->release(); empty->release();
+    fresh->release(); closed->release(); open->release(); closedBytes->release(); openBytes->release();
+}
+
+static void TestProvablyOpenSheetCertification()
+{
+	std::cout << "DL-382: provably-open-sheet certification" << std::endl;
+	auto quad = []( std::vector<Point3>& v, IndexTriangleListType& t, Scalar z, bool up, unsigned int base ) {
+		if( up ) {
+			v.push_back( Point3( -1, -1, z ) ); v.push_back( Point3( 1, -1, z ) );
+			v.push_back( Point3( 1, 1, z ) );   v.push_back( Point3( -1, 1, z ) );
+		} else {
+			v.push_back( Point3( -1, 1, z ) );  v.push_back( Point3( 1, 1, z ) );
+			v.push_back( Point3( 1, -1, z ) );  v.push_back( Point3( -1, -1, z ) );
+		}
+		AddTri( t, base + 0, base + 1, base + 2 );
+		AddTri( t, base + 0, base + 2, base + 3 );
+	};
+
+	// (a) one planar quad: certified, and every hit (front and back) is
+	// stamped bProvablyNoInterior.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.5, true, 0 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( m->IsProvablyOpenSheet(), "planar quad (face normals) is certified open" );
+		for( int side = 0; side < 2; ++side ) {
+			RayIntersectionGeometric ri( Ray( Point3( 0.1, 0.2, side ? -3.0 : 3.0 ), Vector3( 0, 0, side ? 1.0 : -1.0 ) ), nullRasterizerState );
+			m->IntersectRay( ri, true, true, false );
+			Check( ri.bHit && ri.bProvablyNoInterior,
+				side ? "planar quad: back-face hit stamped bProvablyNoInterior" : "planar quad: front-face hit stamped bProvablyNoInterior" );
+		}
+		// UpdateVertices: folding one triangle onto the other withdraws certification;
+		// moving it back re-certifies.
+		VerticesListType moved( v.begin(), v.end() );
+		moved[3] = Point3( 0.0, -0.5, 0.5 );
+		m->UpdateVertices( moved, NormalsListType() );
+		Check( !m->IsProvablyOpenSheet(), "quad folded by UpdateVertices loses certification" );
+		moved[3] = Point3( -1, 1, 0.5 );
+		m->UpdateVertices( moved, NormalsListType() );
+		Check( m->IsProvablyOpenSheet(), "quad restored by UpdateVertices re-certifies" );
+		safe_release( m );
+	}
+	// (b) authored vertex normals agreeing with the winding: certified;
+	// opposing it (geometric normal follows the shading normal, so the
+	// face cannot be read off the winding): refused.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.0, true, 0 );
+		TriangleMeshGeometryIndexed* agree = BuildFaceNormalMesh( v, t, false, Vector3( 0, 0, 1 ) );
+		TriangleMeshGeometryIndexed* oppose = BuildFaceNormalMesh( v, t, false, Vector3( 0, 0, -1 ) );
+		Check( agree->IsProvablyOpenSheet(), "planar quad, authored normals agree with winding: certified" );
+		Check( !oppose->IsProvablyOpenSheet(), "planar quad, authored normals oppose winding: refused" );
+		safe_release( agree );
+		safe_release( oppose );
+	}
+	// (c) planar but MIXED winding: no single front side -> refused.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.0, true, 0 );
+		std::swap( t[1].iVertices[1], t[1].iVertices[2] );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( !m->IsProvablyOpenSheet(), "planar quad with one triangle wound the other way: refused" );
+		safe_release( m );
+	}
+	// (d) closed cube (refused: H2 != 0), open cube missing top (CERTIFIED open:
+	// peeling deletes all 5 faces).
+	for( int drop = 0; drop < 2; ++drop ) {
+		std::vector<Point3> v; IndexTriangleListType t;
+		CubeCorners( 1.0, v );
+		CubeTriangles( t, drop == 1 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( drop ? m->IsProvablyOpenSheet() : !m->IsProvablyOpenSheet(),
+			drop ? "open cube (top missing, has boundary): CERTIFIED open" : "closed cube: not certified open" );
+		safe_release( m );
+	}
+	// (e) a slab authored as two open sheets in ONE mesh: a collection of
+	// disconnected components (N sheets can bound a volume) -> refused.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.1, true, 0 );
+		quad( v, t, -0.1, false, 4 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( !m->IsProvablyOpenSheet(), "two parallel sheets in one mesh: refused" );
+		safe_release( m );
+	}
+	// (f) a closed box flattened to 1e-9 of its width (inside the weld
+	// tolerance): its top and bottom are wound opposite ways, so refused.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		CubeCorners( 1.0, v );
+		for( Point3& p : v ) p.z *= 1e-9;
+		CubeTriangles( t, false );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( !m->IsProvablyOpenSheet(), "closed box flattened inside the weld tolerance: refused" );
+		safe_release( m );
+	}
+	// (g) non-planar / bent quads: a corner lifted 1e-3 or 1e-9 is embedded
+	// and manifold -> CERTIFIED open under DL-382.
+	for( int k = 0; k < 2; ++k ) {
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.0, true, 0 );
+		v[2].z = k ? 2e-9 : 2e-3;
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( m->IsProvablyOpenSheet(),
+			k ? "quad with a 1e-9-relative corner lift: certified" : "quad with a 1e-3-relative corner lift: certified" );
+		safe_release( m );
+	}
+	// (h) sphere plus separate disk: sphere has no boundary edge, peeling stalls -> REFUSED.
+	{
+		IndexTriangleListType tris;
+		VerticesListType vertices;
+		BuildWeldedUVSphere( 1.0, 10, 10, tris, vertices );
+		const unsigned int base = (unsigned int)vertices.size();
+		std::vector<Point3> v( vertices.begin(), vertices.end() );
+		quad( v, tris, 3.0, true, base );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, tris );
+		Check( !m->IsProvablyOpenSheet(), "sphere plus separate disk in one mesh: refused" );
+		safe_release( m );
+	}
+	// (i) X-crossing sheets: two quads intersecting along a line -> REFUSED (embedded test fails).
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.0, true, 0 );
+		// Second quad along Y-Z plane crossing X=0
+		v.push_back( Point3( 0, -1, -1 ) ); v.push_back( Point3( 0, 1, -1 ) );
+		v.push_back( Point3( 0, 1, 1 ) );   v.push_back( Point3( 0, -1, 1 ) );
+		AddTri( t, 4, 5, 6 ); AddTri( t, 4, 6, 7 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( !m->IsProvablyOpenSheet(), "X-crossing quads: refused (self-intersection)" );
+		safe_release( m );
+	}
+    // Cached shape proof survives identical positions, while deformation
+    // revalidates geometry and changed normals revalidate readability.
+    {
+        std::vector<Point3> v; IndexTriangleListType t;
+        quad(v,t,0,true,0); v[2].z=0.25;
+        auto* m=BuildFaceNormalMesh(v,t);
+        const auto audits=m->OpenCertificateAudits();
+        const bool before=m->IsProvablyOpenSheet();
+        m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits && m->IsProvablyOpenSheet()==before,
+            "identical positions reuse the shape certificate");
+        v[2].z=0.5; m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits,"height deformation reuses the embedded projection proof");
+        v[2].x+=0.2; m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits+1,"changed projection revalidates embedding");
+        safe_release(m);
+    }
+    // An exact degenerate-triangle witness remains a valid refusal until
+    // its two corners separate, including during non-graph deformation.
+    {
+        std::vector<Point3> v; IndexTriangleListType t;
+        quad(v,t,0,true,0); v[2].z=0.25; v.push_back(v[0]);
+        AddTri(t,0,4,1);
+        auto* m=BuildFaceNormalMesh(v,t);
+        Check(!m->IsProvablyOpenSheet(),"coincident-corner curved surface is uncertified");
+        const auto audits=m->OpenCertificateAudits();
+        v[2].z=0.5; m->UpdateVertices(v,NormalsListType());
+        Check(!m->IsProvablyOpenSheet() && m->OpenCertificateAudits()==audits,
+            "unchanged coincident corners reuse a necessary refusal witness");
+        v[2].z=0; m->UpdateVertices(v,NormalsListType());
+        Check(m->IsZeroVolumeSheet() && m->IsProvablyOpenSheet() && m->OpenCertificateAudits()==audits,
+            "refusal cache still admits the legacy planar proof after flattening");
+        v[2].z=0.5; m->UpdateVertices(v,NormalsListType());
+        Check(!m->IsProvablyOpenSheet() && m->OpenCertificateAudits()==audits,
+            "leaving the plane restores the cached general refusal");
+        v[4].z=0.2; m->UpdateVertices(v,NormalsListType());
+        Check(m->IsProvablyOpenSheet() && m->OpenCertificateAudits()==audits+1,
+            "separating refused corners revalidates and accepts an embedded flap");
+        safe_release(m);
+    }
+    // Unreferenced storage vertices cannot change the signed-volume centre.
+    {
+        std::vector<Point3> v; IndexTriangleListType t;
+        for(int j=0;j<3;++j) for(int i=0;i<3;++i) {
+            const Scalar x=i-1,y=j-1;
+            v.push_back(Point3(x,y,0.2*(x*x+y*y)));
+        }
+        v.push_back(Point3(2,2,-100)); // unused, deliberately outside the surface bounds
+        for(unsigned j=0;j<2;++j) for(unsigned i=0;i<2;++i) {
+            const unsigned a=j*3+i;
+            AddTri(t,a,a+1,a+4); AddTri(t,a,a+4,a+3);
+        }
+        auto* m=BuildFaceNormalMesh(v,t);
+        const auto audits=m->OpenCertificateAudits();
+        Check(m->IsProvablyOpenSheet() && m->HasNegativeOpenSignedVolume(),
+            "inward bowl sign ignores unused vertex on initial certification");
+        for(unsigned i=0;i<9;++i) v[i].z*=1.01;
+        m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits && m->HasNegativeOpenSignedVolume(),
+            "cached graph update keeps referenced-corner signed-volume convention");
+        safe_release(m);
+    }
+    // Exact duplicate projection vertices must keep identical heights.
+    // Tolerance-only welds must not receive the graph deformation shortcut.
+    for(bool nearSeam : {false,true}) {
+        std::vector<Point3> v; IndexTriangleListType t;
+        quad(v,t,0,true,0); v[2].z=0.25;
+        v.push_back(v[0]); v.push_back(v[2]);
+        t.clear(); AddTri(t,0,1,2); AddTri(t,4,5,3);
+        if(nearSeam) v[4].x+=1e-8;
+        auto* m=BuildFaceNormalMesh(v,t);
+        Check(m->IsProvablyOpenSheet(),"split-corner curved sheet initially certifies");
+        const auto audits=m->OpenCertificateAudits();
+        if(nearSeam) for(auto& p : v) p.z*=2;
+        else v[4].z+=0.2;
+        m->UpdateVertices(v,NormalsListType());
+        Check(m->OpenCertificateAudits()==audits+1,
+            nearSeam?"tolerance-only projection seam revalidates":"split coincident heights revalidate");
+        if(!nearSeam) Check(!m->IsProvablyOpenSheet(),"separating the seam revokes the graph certificate");
+        safe_release(m);
+    }
+	// (j) Quad plus perpendicular flap: inconsistent shared-edge winding -> REFUSED.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.0, true, 0 );
+		// Flap on edge (v0, v1)
+		v.push_back( Point3( 0, -1, 1 ) );
+		AddTri( t, 0, 1, 4 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( !m->IsProvablyOpenSheet(), "flap with inconsistent shared-edge winding: refused" );
+		safe_release( m );
+	}
+	// (k) sliver triangle: altitude < eps -> REFUSED.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		v.push_back( Point3( 0, 0, 0 ) );
+		v.push_back( Point3( 1, 0, 0 ) );
+		v.push_back( Point3( 0.5, 1e-12, 0 ) );
+		AddTri( t, 0, 1, 2 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		Check( !m->IsProvablyOpenSheet(), "sliver triangle with near-zero altitude: refused" );
+		safe_release( m );
+	}
+	// (l) the non-indexed mesh class (rawmesh) shares the predicate:
+	// one quad certified, two parallel quads refused.
+	for( int two = 0; two < 2; ++two ) {
+		TriangleMeshGeometry* m = new TriangleMeshGeometry( true );
+		m->addref();
+		m->BeginTriangles();
+		for( int q = 0; q <= two; ++q ) {
+			const Scalar z = q ? -0.1 : 0.1;
+			const Vector3 n = q ? Vector3( 0, 0, -1 ) : Vector3( 0, 0, 1 );
+			const Point3 a( -1, -1, z ), b( 1, -1, z ), c( 1, 1, z ), d( -1, 1, z );
+			Triangle t1, t2;
+			t1.vertices[0] = a; t1.vertices[1] = q ? c : b; t1.vertices[2] = q ? b : c;
+			t2.vertices[0] = a; t2.vertices[1] = q ? d : c; t2.vertices[2] = q ? c : d;
+			for( int k = 0; k < 3; ++k ) { t1.normals[k] = n; t2.normals[k] = n; }
+			m->AddTriangle( t1 );
+			m->AddTriangle( t2 );
+		}
+		m->DoneTriangles();
+		Check( two ? !m->IsProvablyOpenSheet() : m->IsProvablyOpenSheet(),
+			two ? "rawmesh: two parallel quads refused" : "rawmesh: one planar quad certified" );
+		safe_release( m );
+	}
+	// (m) DL-620: topological refusal witness (mixed shared-edge winding / closed surface)
+	// and Step-4 self-intersection pair witness are reused across 3D deformations, while
+	// unfolding the self-intersection revalidates and certifies.
+	{
+		std::vector<Point3> v; IndexTriangleListType t;
+		quad( v, t, 0.0, true, 0 );
+		v.push_back( Point3( 0, -1, 1 ) );
+		AddTri( t, 0, 1, 4 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		const auto audits = m->OpenCertificateAudits();
+		Check( !m->IsProvablyOpenSheet(), "DL-620: mixed-winding flap initially refused" );
+		v[4].x += 0.35;
+		v[2].z += 0.4;
+		m->UpdateVertices( v, NormalsListType() );
+		Check( !m->IsProvablyOpenSheet() && m->OpenCertificateAudits() == audits,
+			"DL-620: topological open refusal witness reused across general 3D deformation" );
+		safe_release( m );
+	}
+	{
+		// Three-triangle ribbon (0,1,2) - (1,3,2) - (2,3,4) where edge (v3,v4) pierces (0,1,2) at (0, -0.25, 0)
+		std::vector<Point3> v = {
+			Point3( -1.0, -1.0,  0.0 ), // 0
+			Point3(  1.0, -1.0,  0.0 ), // 1
+			Point3(  0.0,  1.0,  0.0 ), // 2
+			Point3(  0.8,  0.5,  0.5 ), // 3
+			Point3( -0.8, -1.0, -0.5 )  // 4: midpoint of (v3,v4) is (0, -0.25, 0) inside triangle (0,1,2)
+		};
+		IndexTriangleListType t;
+		AddTri( t, 0, 1, 2 );
+		AddTri( t, 1, 3, 2 );
+		AddTri( t, 2, 3, 4 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		const auto audits = m->OpenCertificateAudits();
+		Check( !m->IsProvablyOpenSheet(), "DL-620: self-intersecting 3-triangle ribbon refused" );
+		v[4].z = -0.6;
+		v[0].x = -1.1;
+		m->UpdateVertices( v, NormalsListType() );
+		Check( !m->IsProvablyOpenSheet() && m->OpenCertificateAudits() == audits,
+			"DL-620: Step-4 intersecting triangle-pair witness reused while pair still intersects" );
+		v[4] = Point3( 0.0, 2.0, 0.2 ); // unfold so ribbon is embedded
+		m->UpdateVertices( v, NormalsListType() );
+		Check( m->IsProvablyOpenSheet() && m->OpenCertificateAudits() == audits + 1,
+			"DL-620: unfolding Step-4 witness pair triggers re-audit and certifies embedded ribbon" );
+		safe_release( m );
+	}
+	{
+		// Closed watertight tetrahedron (4 vertices, 4 outward faces): deformation reuses both
+		// topological open refusal and watertight edge witnesses without re-auditing.
+		std::vector<Point3> v = {
+			Point3(  1.0,  1.0,  1.0 ),
+			Point3(  1.0, -1.0, -1.0 ),
+			Point3( -1.0,  1.0, -1.0 ),
+			Point3( -1.0, -1.0,  1.0 )
+		};
+		IndexTriangleListType t;
+		AddTri( t, 0, 1, 2 );
+		AddTri( t, 0, 3, 1 );
+		AddTri( t, 0, 2, 3 );
+		AddTri( t, 1, 3, 2 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		const auto audits = m->OpenCertificateAudits();
+		Scalar sd = 0; bool exact = false;
+		Check( m->SignedDistanceLower( Point3( 0, 0, 0 ), 10.0, sd, exact ) && sd < 0 && !m->IsProvablyOpenSheet(),
+			"DL-620: closed tetrahedron initially watertight and not open" );
+		for( auto& p : v ) { p.x *= 1.05; p.y *= 0.95; p.z += 0.1; }
+		m->UpdateVertices( v, NormalsListType() );
+		Check( m->SignedDistanceLower( Point3( 0, 0, 0.1 ), 10.0, sd, exact ) && sd < 0 &&
+			!m->IsProvablyOpenSheet() && m->OpenCertificateAudits() == audits,
+			"DL-620: smooth 3D deformation of closed mesh reuses watertight and open-refusal witnesses" );
+		safe_release( m );
+	}
+}
+
+
+//! (d) COST.  A ~10k-triangle watertight sphere, timed over many random
+//! interior/exterior queries.  Reported, not gated -- wall clock is
+//! machine-dependent -- but printed in the same ns/query unit the
+//! design doc's own cost sections use, so a reader can compare directly.
+static void TestParityCost()
+{
+	std::cout << "(d) cost -- parity ray-cast + closest-point on a ~10k-triangle watertight sphere" << std::endl;
+
+	// n=50 interior rings x m=100 columns: 2*100 (cap fans) +
+	// 2*100*49 (interior bands) = 200 + 9800 = 10000 triangles exactly.
+	const unsigned int n = 50, m = 100;
+	const Scalar R = 3.0;
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	const bool built = BuildWeldedUVSphere( R, n, m, tris, vertices );
+	Check( built, "(d) welded UV-sphere construction succeeds" );
+	if( !built ) { return; }
+	std::cout << "    " << tris.size() << " triangles, " << vertices.size() << " vertices" << std::endl;
+
+	NormalsListType normals( vertices.size(), Vector3( 0, 1, 0 ) );	// unused placeholder
+	TexCoordsListType coords( vertices.size(), Point2( 0, 0 ) );		// unused placeholder
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	// A sanity check that this fixture actually exercises the fixed
+	// path, not a silent refusal: pin one interior depth against the
+	// sphere's own closed form before timing.
+	{
+		Scalar outSigned = 0.0; bool outExact = false;
+		const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(d) the tessellated sphere is certified watertight (SignedDistanceLower answers)" );
+		// Tessellation is a polyhedral approximation of the sphere, not
+		// the sphere itself, so this is a loose bound (1% of R), not the
+		// tight tolerances used on the exact cube fixtures above.
+		CheckClose( (double)outSigned, -(double)R, 0.01 * (double)R,
+			"(d) tessellated-sphere centre depth is close to the analytic sphere's -R" );
+	}
+
+	std::mt19937 rng( 12345 );
+	std::uniform_real_distribution<double> unit( -1.0, 1.0 );
+	const int N = 2000;
+	std::vector<Point3> points;
+	points.reserve( N );
+	for( int i = 0; i < N; ++i ) {
+		// A mix of interior and exterior points, spanning roughly [0, 2R]
+		// from the centre so both the parity cast and the closest-point
+		// traversal do real work either way.
+		const Scalar x = (Scalar)( unit( rng ) * 2.0 * (double)R );
+		const Scalar y = (Scalar)( unit( rng ) * 2.0 * (double)R );
+		const Scalar z = (Scalar)( unit( rng ) * 2.0 * (double)R );
+		points.push_back( Point3( x, y, z ) );
+	}
+
+	const auto t0 = std::chrono::steady_clock::now();
+	long long sink = 0;
+	for( int i = 0; i < N; ++i ) {
+		Scalar outSigned = 0.0; bool outExact = false;
+		if( mesh->SignedDistanceLower( points[i], Scalar( 1000 ), outSigned, outExact ) ) {
+			sink += outSigned < Scalar( 0 ) ? 1 : 0;
+		}
+	}
+	const auto t1 = std::chrono::steady_clock::now();
+	const double ns = std::chrono::duration<double, std::nano>( t1 - t0 ).count();
+	const double nsPerQuery = ns / (double)N;
+	std::cout << "    " << N << " SignedDistanceLower queries (parity + closest-point): "
+		<< nsPerQuery << " ns/query (interior hits counted: " << sink << " of " << N << ")" << std::endl;
+
+	// Decomposed: the unsigned closest-point half ALONE (the same
+	// traversal `proximity()` already paid before this row), so the
+	// parity ray-cast's own marginal cost is visible rather than folded
+	// into one number.
+	{
+		const auto u0 = std::chrono::steady_clock::now();
+		long long sink2 = 0;
+		for( int i = 0; i < N; ++i ) {
+			Scalar d = 0.0;
+			if( mesh->DistanceToSurface( points[i], Scalar( 1000 ), d ) ) { sink2 += 1; }
+		}
+		const auto u1 = std::chrono::steady_clock::now();
+		const double nsUnsigned = std::chrono::duration<double, std::nano>( u1 - u0 ).count() / (double)N;
+		std::cout << "    " << N << " DistanceToSurface (unsigned, pre-existing) queries: "
+			<< nsUnsigned << " ns/query (answered " << sink2 << " of " << N << "); "
+			<< "parity ray-cast's own marginal cost ~= " << ( nsPerQuery - nsUnsigned ) << " ns/query" << std::endl;
+	}
+
+	mesh->release();
+}
+
+#include "../src/Library/Utilities/GeometricUtilities.h"
+
+static void TestPatchSetCertification()
+{
+	std::cout << "DL-616: Bezier and bilinear patch-set certification" << std::endl;
+
+	// 1. Single embedded bilinear patch -> certified open sheet
+	{
+		std::vector<BilinearPatch> patches( 1 );
+		patches[0].pts[0] = Point3( 0, 0, 0 );
+		patches[0].pts[1] = Point3( 1, 0, 0 );
+		patches[0].pts[2] = Point3( 0, 1, 0 );
+		patches[0].pts[3] = Point3( 1, 1, 0.25 );
+		bool wt = false, open = false, neg = false;
+		GeometricUtilities::CertifyBilinearPatchSet( patches, wt, open, neg );
+		Check( open && !wt && !neg,
+			"DL-616: single embedded bilinear patch is certified open sheet" );
+	}
+
+	// 2. Two connected bilinear patches with consistent seam winding -> certified open sheet;
+	//    with opposing seam winding -> refused!
+	{
+		std::vector<BilinearPatch> consistent( 2 ), opposing( 2 );
+		consistent[0].pts[0] = Point3( 0, 0, 0 );
+		consistent[0].pts[1] = Point3( 1, 0, 0 );
+		consistent[0].pts[2] = Point3( 0, 1, 0 );
+		consistent[0].pts[3] = Point3( 1, 1, 0 );
+		consistent[1].pts[0] = Point3( 1, 0, 0 );
+		consistent[1].pts[1] = Point3( 2, 0, 0.3 );
+		consistent[1].pts[2] = Point3( 1, 1, 0 );
+		consistent[1].pts[3] = Point3( 2, 1, 0.3 );
+		bool wt = false, open = false, neg = false;
+		GeometricUtilities::CertifyBilinearPatchSet( consistent, wt, open, neg );
+		Check( open && !wt,
+			"DL-616: two connected bilinear patches with consistent seam winding certify as open sheet" );
+
+		opposing = consistent;
+		std::swap( opposing[1].pts[0], opposing[1].pts[2] );
+		std::swap( opposing[1].pts[1], opposing[1].pts[3] );
+		GeometricUtilities::CertifyBilinearPatchSet( opposing, wt, open, neg );
+		Check( !open && !wt,
+			"DL-616: two connected bilinear patches with opposing seam winding refuse certification" );
+	}
+
+	// 3. Closed 6-patch bilinear cube -> certified watertight; removing 1 face -> open sheet
+	//    (positive volume when outward-wound, negative volume when inward-wound).
+	{
+		auto makeCube = []( bool outward ) {
+			std::vector<BilinearPatch> p( 6 );
+			// BilinearPatchNormalAt is Cross(pts[2]-pts[0], pts[1]-pts[0]).
+			// -Z face (outward normal -Z): pts0=(0,0,0), pts1=(1,0,0), pts2=(0,1,0), pts3=(1,1,0)
+			p[0] = { { Point3(0,0,0), Point3(1,0,0), Point3(0,1,0), Point3(1,1,0) } };
+			// +Z face (outward normal +Z): pts0=(0,0,1), pts1=(0,1,1), pts2=(1,0,1), pts3=(1,1,1)
+			p[1] = { { Point3(0,0,1), Point3(0,1,1), Point3(1,0,1), Point3(1,1,1) } };
+			// -Y face (outward normal -Y): pts0=(0,0,0), pts1=(0,0,1), pts2=(1,0,0), pts3=(1,0,1)
+			p[2] = { { Point3(0,0,0), Point3(0,0,1), Point3(1,0,0), Point3(1,0,1) } };
+			// +Y face (outward normal +Y): pts0=(0,1,0), pts1=(1,1,0), pts2=(0,1,1), pts3=(1,1,1)
+			p[3] = { { Point3(0,1,0), Point3(1,1,0), Point3(0,1,1), Point3(1,1,1) } };
+			// -X face (outward normal -X): pts0=(0,0,0), pts1=(0,1,0), pts2=(0,0,1), pts3=(0,1,1)
+			p[4] = { { Point3(0,0,0), Point3(0,1,0), Point3(0,0,1), Point3(0,1,1) } };
+			// +X face (outward normal +X): pts0=(1,0,0), pts1=(1,0,1), pts2=(1,1,0), pts3=(1,1,1)
+			p[5] = { { Point3(1,0,0), Point3(1,0,1), Point3(1,1,0), Point3(1,1,1) } };
+			if( !outward ) {
+				for( auto& patch : p ) {
+					std::swap( patch.pts[1], patch.pts[2] );
+				}
+			}
+			return p;
+		};
+		const auto closedCube = makeCube( true );
+		bool wt = false, open = false, neg = false;
+		GeometricUtilities::CertifyBilinearPatchSet( closedCube, wt, open, neg );
+		Check( wt && !open,
+			"DL-616: 6-patch closed bilinear cube is certified watertight" );
+
+		std::vector<BilinearPatch> openOutward( closedCube.begin(), closedCube.begin() + 5 );
+		GeometricUtilities::CertifyBilinearPatchSet( openOutward, wt, open, neg );
+		Check( open && !wt && !neg,
+			"DL-616: 5-patch outward open bilinear cube is certified open without negative-volume flag" );
+
+		const auto inwardCube = makeCube( false );
+		std::vector<BilinearPatch> openInward( inwardCube.begin(), inwardCube.begin() + 5 );
+		GeometricUtilities::CertifyBilinearPatchSet( openInward, wt, open, neg );
+		Check( open && !wt && neg,
+			"DL-616: 5-patch inward open bilinear cube is certified open with negative-volume flag" );
+	}
+
+	// 4. Bezier patches: single curved patch certifies; self-intersecting patch refuses;
+	//    2 connected patches sharing a degree-elevated cubic seam certify.
+	{
+		BezierPatchesListType single( 1 );
+		for( int i = 0; i < 4; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				single[0].c[i].pts[j] = Point3( Scalar( i ), Scalar( j ), Scalar( 0.1 * i * j ) );
+			}
+		}
+		bool wt = false, open = false, neg = false;
+		GeometricUtilities::CertifyBezierPatchSet( single, wt, open, neg );
+		Check( open && !wt,
+			"DL-616: single embedded bicubic Bezier patch is certified open sheet" );
+
+		BezierPatchesListType selfCross( 1 );
+		// Fold the patch across itself in X so non-adjacent subpatches cross.
+		const Scalar xs[4] = { 0.0, 2.0, -2.0, 0.0 };
+		const Scalar zs[4] = { 0.0, 1.0, -1.0, 0.0 };
+		for( int i = 0; i < 4; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				selfCross[0].c[i].pts[j] = Point3( xs[i], Scalar( j ), zs[i] );
+			}
+		}
+		GeometricUtilities::CertifyBezierPatchSet( selfCross, wt, open, neg );
+		Check( !open && !wt,
+			"DL-616: self-intersecting bicubic Bezier patch refuses certification" );
+	}
+}
+
+//! DL-620 review.  Reference model of WeldVertexPositions' documented
+//! partition: visit in order, join the nearest earlier representative
+//! within `eps` (ties: lowest id), else found a new one.  Brute force,
+//! no grid -- so it cannot share a cell-boundary or scan-order defect
+//! with the implementation.  Also reports the documented transitivity.
+static void ReferenceWeld( const std::vector<Point3>& pts, const Scalar eps,
+	std::vector<unsigned int>& outId, bool& outTransitive )
+{
+	std::vector<Point3> reps;
+	outId.assign( pts.size(), 0u );
+	outTransitive = true;
+	const Scalar epsSq = eps * eps;
+	for( std::size_t i = 0; i < pts.size(); ++i ) {
+		const Point3& p = pts[i];
+		unsigned int best = 0xFFFFFFFFu;
+		Scalar bestSq = 0;
+		unsigned int within = 0;
+		for( unsigned int r = 0; r < reps.size(); ++r ) {
+			const Scalar dSq = Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( reps[r], p ) );
+			if( dSq <= epsSq ) {
+				++within;
+				if( best == 0xFFFFFFFFu || dSq < bestSq ) { best = r; bestSq = dSq; }
+			} else if( dSq <= Scalar( 2.25 ) * epsSq ) {
+				outTransitive = false;
+			}
+		}
+		if( within > 1 || ( within == 1 && bestSq > Scalar( 0.25 ) * epsSq ) ) {
+			outTransitive = false;
+		}
+		if( best == 0xFFFFFFFFu ) {
+			best = (unsigned int)reps.size();
+			reps.push_back( p );
+		}
+		outId[i] = best;
+	}
+}
+
+//! Ambiguous cluster cloud: points jittered within ~1.2 eps of cluster
+//! centres so many points see two representatives within eps, plus two
+//! fixed corners that pin the bounding box (diagonal ~sqrt(3)), all
+//! translated by `shift`.
+static std::vector<Point3> AmbiguousWeldCloud( const Scalar shift, const unsigned int seed )
+{
+	std::mt19937_64 rng( seed );
+	std::uniform_real_distribution<double> u01( 0.0, 1.0 );
+	const Scalar eps = Scalar( 1e-6 ) * std::sqrt( Scalar( 3 ) );
+	std::vector<Point3> pts;
+	pts.push_back( Point3( shift, shift, shift ) );
+	pts.push_back( Point3( shift + 1, shift + 1, shift + 1 ) );
+	for( int c = 0; c < 300; ++c ) {
+		const Point3 centre( shift + 0.1 + 0.8 * u01( rng ), shift + 0.1 + 0.8 * u01( rng ), shift + 0.1 + 0.8 * u01( rng ) );
+		for( int k = 0; k < 8; ++k ) {
+			pts.push_back( Point3(
+				centre.x + ( 2 * u01( rng ) - 1 ) * 1.2 * eps,
+				centre.y + ( 2 * u01( rng ) - 1 ) * 1.2 * eps,
+				centre.z + ( 2 * u01( rng ) - 1 ) * 1.2 * eps ) );
+		}
+	}
+	return pts;
+}
+
+static void TestDL620ReviewFindings()
+{
+	std::cout << "DL-620 review: open/watertight exclusivity, weld partition, far coordinates, Step-4 range" << std::endl;
+
+	// P2-1.  A closed cube whose corner 6 is split: the top face uses a
+	// copy offset 1e-4 outward.  At the open certificate's tolerance (eps
+	// from the USED corners, ~3.5e-6) that is a crack; at the closed
+	// proof's (eps from ALL vertices, ~1.7e-3 because of one far UNUSED
+	// vertex) it welds shut.  The mesh must not be both provably open and
+	// watertight, and a 1-ulp move of the unused vertex must not change
+	// either answer (pre-fix: open AND watertight at build, then the
+	// deformation silently dropped watertight).
+	{
+		std::vector<Point3> v;
+		CubeCorners( 1, v );
+		const Scalar d = Scalar( 1e-4 ) / std::sqrt( Scalar( 3 ) );
+		v.push_back( Point3( 1 + d, 1 + d, 1 + d ) );	// 8: split copy of corner 6
+		v.push_back( Point3( 1000, 1000, 1000 ) );		// 9: far, referenced by no triangle
+		IndexTriangleListType t;
+		AddTri( t, 0, 1, 2 ); AddTri( t, 0, 2, 3 );
+		AddTri( t, 4, 8, 5 ); AddTri( t, 4, 7, 8 );	// top face uses the split copy
+		AddTri( t, 0, 5, 1 ); AddTri( t, 0, 4, 5 );
+		AddTri( t, 3, 2, 6 ); AddTri( t, 3, 6, 7 );
+		AddTri( t, 0, 3, 7 ); AddTri( t, 0, 7, 4 );
+		AddTri( t, 1, 5, 6 ); AddTri( t, 1, 6, 2 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		const bool open0 = m->IsProvablyOpenSheet();
+		const bool wt0 = m->IsCertifiedWatertight();
+		std::cout << "    cracked cube + far unused vertex at build: open=" << open0 << " watertight=" << wt0 << std::endl;
+		Check( open0, "P2-1: cracked cube (crack 1e-4 >> used-corner eps) certifies provably open" );
+		Check( !( open0 && wt0 ), "P2-1: a mesh is never both provably open and certified watertight at build" );
+		Scalar sd = 0; bool exact = false;
+		Check( !m->SignedDistanceLower( Point3( 0, 0, 0 ), 10.0, sd, exact ),
+			"P2-1: the cracked cube answers no signed interior() at build" );
+		v[9].x = std::nextafter( v[9].x, Scalar( 2000 ) );
+		m->UpdateVertices( v, NormalsListType() );
+		Check( m->IsProvablyOpenSheet() == open0 && m->IsCertifiedWatertight() == wt0,
+			"P2-1: a 1-ulp move of an unused vertex changes neither answer (build and deformation agree)" );
+		v[2].z += Scalar( 1e-3 );	// a genuine non-graph deformation of a used vertex
+		m->UpdateVertices( v, NormalsListType() );
+		Check( !( m->IsProvablyOpenSheet() && m->IsCertifiedWatertight() ),
+			"P2-1: never both open and watertight after a used-vertex deformation either" );
+		safe_release( m );
+
+		// Control: the same cube with the corner NOT split stays a watertight
+		// closed solid with the far unused vertex present.
+		std::vector<Point3> c;
+		CubeCorners( 1, c );
+		c.push_back( Point3( 1000, 1000, 1000 ) );
+		IndexTriangleListType ct;
+		CubeTriangles( ct, false );
+		TriangleMeshGeometryIndexed* closed = BuildFaceNormalMesh( c, ct );
+		Check( closed->IsCertifiedWatertight() && !closed->IsProvablyOpenSheet(),
+			"P2-1 control: unsplit cube with a far unused vertex stays watertight, not open" );
+		c[8].x = std::nextafter( c[8].x, Scalar( 2000 ) );
+		closed->UpdateVertices( c, NormalsListType() );
+		Check( closed->IsCertifiedWatertight() && !closed->IsProvablyOpenSheet(),
+			"P2-1 control: and stays so after a 1-ulp move of the unused vertex" );
+		safe_release( closed );
+	}
+
+	// P2-2.  A retained Step-4 refusal witness is reused across deformations
+	// that change the bounding box, as long as the pair still intersects.
+	// Pre-fix the reuse gate compared two independently computed weld
+	// epsilons bit for bit, which -ffast-math contraction made fail by an
+	// ulp on some boxes and silently re-ran the full certificate.
+	{
+		std::vector<Point3> v = {
+			Point3( -1.0, -1.0,  0.0 ), Point3(  1.0, -1.0,  0.0 ), Point3(  0.0,  1.0,  0.0 ),
+			Point3(  0.8,  0.5,  0.5 ), Point3( -0.8, -1.0, -0.5 ) };
+		IndexTriangleListType t;
+		AddTri( t, 0, 1, 2 );
+		AddTri( t, 1, 3, 2 );
+		AddTri( t, 2, 3, 4 );
+		TriangleMeshGeometryIndexed* m = BuildFaceNormalMesh( v, t );
+		const auto audits = m->OpenCertificateAudits();
+		unsigned int reAudits = 0, refused = 0;
+		for( int k = 1; k <= 200; ++k ) {
+			v[0].x = -1.0 - 0.00137 * k;	// widens the box: the weld epsilon changes every step
+			v[4].z = -0.5 - 0.000731 * k;
+			v[3].y = 0.5 + 0.00071 * k;
+			m->UpdateVertices( v, NormalsListType() );
+			if( !m->IsProvablyOpenSheet() ) { ++refused; }
+		}
+		reAudits = (unsigned int)( m->OpenCertificateAudits() - audits );
+		std::cout << "    self-intersecting ribbon, 200 box-changing deformations: " << refused
+			<< " refused, " << reAudits << " full re-audits" << std::endl;
+		Check( refused == 200 && reAudits == 0,
+			"P2-2: Step-4 refusal witness reused across 200 box-changing deformations (no full re-audit)" );
+		safe_release( m );
+	}
+
+	// P3-2 / P3-4.  The weld's partition is a pure function of the input
+	// sequence -- nearest earlier representative within eps, ties lowest id
+	// -- independent of grid layout, and no point within eps of an earlier
+	// representative ever founds a new class, however far the cloud is
+	// translated.  Each cloud is checked exactly against the brute-force
+	// reference model above.
+	{
+		const Scalar shifts[] = { 0, 1e3, 1e6, 1e9, 3e9, 7e9, 8.5e9, 1.2e10 };
+		unsigned int exactMismatches = 0, missedMerges = 0, transitiveMismatches = 0, clouds = 0;
+		for( const Scalar shift : shifts ) {
+			for( unsigned int seed = 1; seed <= 4; ++seed ) {
+				const std::vector<Point3> pts = AmbiguousWeldCloud( shift, seed + 17u * (unsigned int)clouds );
+				std::vector<unsigned int> id;
+				Scalar eps = 0; bool transitive = false;
+				if( !GeometricUtilities::WeldVertexPositions( pts, id, &eps, Scalar( 0 ), &transitive ) ) {
+					++exactMismatches;
+					continue;
+				}
+				++clouds;
+				std::vector<unsigned int> ref; bool refTransitive = false;
+				ReferenceWeld( pts, eps, ref, refTransitive );
+				if( id != ref ) { ++exactMismatches; }
+				if( transitive != refTransitive ) { ++transitiveMismatches; }
+				// Missed merge, judged against the implementation's OWN
+				// representatives: a new id founded while an earlier
+				// representative lies within eps.
+				std::vector<Point3> reps;
+				for( std::size_t i = 0; i < pts.size(); ++i ) {
+					if( id[i] == reps.size() ) {
+						for( const Point3& r : reps ) {
+							if( Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( r, pts[i] ) ) <= eps * eps ) {
+								++missedMerges;
+								break;
+							}
+						}
+						reps.push_back( pts[i] );
+					}
+				}
+			}
+		}
+		std::cout << "    " << clouds << " ambiguous clouds: " << exactMismatches << " partition mismatches vs reference, "
+			<< transitiveMismatches << " transitivity mismatches, " << missedMerges << " missed merges" << std::endl;
+		Check( exactMismatches == 0, "P3-2: weld partition equals the nearest-representative reference on every cloud" );
+		Check( transitiveMismatches == 0, "P3-2: weld transitivity report equals the reference on every cloud" );
+		Check( missedMerges == 0, "P3-4: no point within eps of an earlier representative founds a new class, at any translation" );
+
+		// Determinism: re-running gives identical labels.
+		const std::vector<Point3> pts = AmbiguousWeldCloud( 3e9, 99u );
+		std::vector<unsigned int> a, b;
+		GeometricUtilities::WeldVertexPositions( pts, a );
+		GeometricUtilities::WeldVertexPositions( pts, b );
+		Check( a == b, "P3-2: the weld is deterministic run to run" );
+	}
+
+	// P3-4 targeted: pairs straddling a grid cell boundary at a large
+	// translation, the second point within eps of the first, must weld.
+	{
+		const Scalar eps = Scalar( 1e-6 ) * std::sqrt( Scalar( 3 ) );
+		unsigned int missed = 0, trials = 0;
+		std::mt19937_64 rng( 2024 );
+		std::uniform_real_distribution<double> u01( 0.0, 1.0 );
+		for( const Scalar shift : { Scalar( 1e9 ), Scalar( 4e9 ), Scalar( 8e9 ), Scalar( 1.6e10 ) } ) {
+			for( int k = 0; k < 4000; ++k ) {
+				std::vector<Point3> pts;
+				pts.push_back( Point3( shift, shift, shift ) );
+				pts.push_back( Point3( shift + 1, shift + 1, shift + 1 ) );
+				const Point3 a( shift + 0.5 * u01( rng ), shift + 0.5 * u01( rng ), shift + 0.5 * u01( rng ) );
+				const Point3 b( std::nextafter( a.x + ( 2 * u01( rng ) - 1 ) * eps, a.x ), a.y, a.z );
+				pts.push_back( a );
+				pts.push_back( b );
+				std::vector<unsigned int> id; Scalar e = 0;
+				if( !GeometricUtilities::WeldVertexPositions( pts, id, &e ) ) { ++missed; continue; }
+				if( Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( a, b ) ) > e * e ) { continue; }
+				++trials;
+				if( id[2] != id[3] ) { ++missed; }
+			}
+		}
+		std::cout << "    " << trials << " within-eps pairs at translations 1e9..1.6e10: " << missed << " failed to weld" << std::endl;
+		Check( trials > 0 && missed == 0, "P3-4: within-eps pairs weld at translations up to 1.6e10 x the mesh size" );
+	}
+
+	// P3-5.  Step 4's grid indices must stay in int64 range and the
+	// insertion budget must hold.  A caller-supplied weld that joins a
+	// triangle 1e30 away to a ribbon (topology valid, so Steps 1-3 pass)
+	// used to cast ~6e29 to int64 -- undefined behaviour (UBSan
+	// float-cast-overflow aborts there; an -O3 arm64 build happened to
+	// survive it).  Genuinely welded input can never span more than
+	// nTris cells, so such input is now refused, not gridded.
+	{
+		std::vector<Point3> corners = {
+			Point3( -1.0, -1.0, 0.0 ), Point3( 1.0, -1.0, 0.0 ), Point3( 0.0, 1.0, 0.0 ),
+			Point3( 1.0, -1.0, 0.0 ), Point3( 0.8, 0.5, 0.5 ), Point3( 0.0, 1.0, 0.0 ),
+			Point3( 0.0, 1.0, 0.0 ), Point3( 0.8, 0.5, 0.5 ), Point3( 0.0, 2.0, 0.2 ),
+			Point3( 1e30, 0.0, 0.0 ), Point3( 1e30, 1.0, 0.0 ), Point3( 1e30, 0.0, 1.0 ) };
+		const std::vector<unsigned int> weld = { 0, 1, 2,  1, 3, 2,  2, 3, 4,  4, 3, 5 };
+		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
+		Check( !cert.certified && !cert.topologicalRefusal,
+			"P3-5: an embedded ribbon joined by its weld labels to a triangle 1e30 away is refused, not gridded" );
+
+		// Control: the same labels with the fourth triangle placed where the
+		// labels say it is (sharing the ribbon's edge) certify normally.
+		std::vector<Point3> near = corners;
+		near[9] = corners[8]; near[10] = corners[7]; near[11] = Point3( 1.2, 1.8, 0.4 );
+		Check( GeometricUtilities::IsEmbeddedOpenOrientedSurface( near, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) ).certified,
+			"P3-5 control: the same weld with the fourth triangle in place certifies" );
+
+		// Non-finite and overflowing input is refused outright.
+		std::vector<Point3> bad = corners;
+		bad[9] = Point3( std::numeric_limits<Scalar>::infinity(), 0.0, 0.0 );
+		Check( !GeometricUtilities::IsEmbeddedOpenOrientedSurface( bad, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) ).certified,
+			"P3-5: an infinite coordinate is refused" );
+		bad = corners;
+		bad[9] = Point3( std::numeric_limits<Scalar>::quiet_NaN(), 0.0, 0.0 );
+		Check( !GeometricUtilities::IsEmbeddedOpenOrientedSurface( bad, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) ).certified,
+			"P3-5: a NaN coordinate is refused" );
+		bad = corners;
+		bad[9] = Point3( 1.7e308, 0.0, 0.0 ); bad[10] = Point3( 1.7e308, 1.0, 0.0 ); bad[11] = Point3( 1.7e308, 0.0, 1.0 );
+		Check( !GeometricUtilities::IsEmbeddedOpenOrientedSurface( bad, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) ).certified,
+			"P3-5: a triangle at the edge of the double range is refused" );
+	}
+
+	// Round 2, P2.  Weld cost in the DL-150 regime: a dense grid whose
+	// epsilon a single far vertex has inflated to just below the grid
+	// spacing, so every grid vertex is its own representative barely more
+	// than eps from its neighbours.  With 32-eps cells each lookup scanned
+	// ~1,000 representatives.  Compared as a RATIO against welding the same
+	// grid without the far vertex (machine-load independent); the partition
+	// must also match the brute-force reference on a smaller copy.
+	{
+		const int N = 500;
+		std::vector<Point3> grid;
+		for( int j = 0; j <= N; ++j ) for( int i = 0; i <= N; ++i ) {
+			const double x = -1 + 2.0 * i / N, y = -1 + 2.0 * j / N;
+			grid.push_back( Point3( x, y, 0.2 * ( x * x + y * y ) ) );
+		}
+		std::vector<Point3> dense = grid;
+		dense.push_back( Point3( -1 + ( 2.0 / N ) / 1.2e-6, -1, 0 ) );
+		const auto timeWeld = []( const std::vector<Point3>& pts, Scalar& eps, unsigned int& classes ) {
+			std::vector<unsigned int> id;
+			double best = 1e30;
+			for( int r = 0; r < 3; ++r ) {
+				const auto t0 = std::chrono::steady_clock::now();
+				GeometricUtilities::WeldVertexPositions( pts, id, &eps );
+				const auto t1 = std::chrono::steady_clock::now();
+				best = std::min( best, std::chrono::duration<double, std::milli>( t1 - t0 ).count() );
+			}
+			classes = 0;
+			for( const unsigned int k : id ) { classes = std::max( classes, k + 1 ); }
+			return best;
+		};
+		Scalar epsPlain = 0, epsDense = 0; unsigned int cPlain = 0, cDense = 0;
+		const double msPlain = timeWeld( grid, epsPlain, cPlain );
+		const double msDense = timeWeld( dense, epsDense, cDense );
+		std::cout << "    dense-grid weld: " << msDense << " ms with a far vertex (eps = spacing/"
+			<< ( 2.0 / N ) / epsDense << ", " << cDense << " classes) vs " << msPlain << " ms without" << std::endl;
+		Check( cDense == dense.size() && cPlain == grid.size(),
+			"Round 2 P2: dense grid with a far vertex keeps every vertex distinct (fixture is in the eps..2eps regime)" );
+		Check( msDense < 10.0 * msPlain + 5.0,
+			"Round 2 P2: weld in the DL-150 dense regime costs within 10x of the ordinary weld" );
+	}
+
+	// Round 2, P3-b + DL-623 (1).  A huge triangle attached to a fine sheet
+	// previously forced the Step-4 cell to grow until the whole sheet shared
+	// one or two cells; DL-623 (1) keeps the fine sheet in its typicalExtent
+	// grid and recursively subdivides the huge flap against gridBoxLo..gridBoxHi,
+	// so the embedded fine sheet + 1e5 flap now certifies promptly, while a
+	// genuinely quadratic single-cell stack of uniform-extent triangles still
+	// trips pairBudget and refuses with budgetRefusal.
+	{
+		const int N = 300;
+		std::vector<Point3> pts;
+		for( int j = 0; j <= N; ++j ) for( int i = 0; i <= N; ++i ) {
+			pts.push_back( Point3( double( i ) / N, double( j ) / N, 0 ) );
+		}
+		const unsigned int apex = (unsigned int)pts.size();
+		pts.push_back( Point3( 1e5, 0.5, 1e5 ) );
+		std::vector<Point3> corners;
+		std::vector<unsigned int> weld;
+		const auto add = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+			corners.push_back( pts[a] ); corners.push_back( pts[b] ); corners.push_back( pts[c] );
+			weld.push_back( a ); weld.push_back( b ); weld.push_back( c );
+		};
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( N + 1 ) + i ); };
+		for( int j = 0; j < N; ++j ) for( int i = 0; i < N; ++i ) {
+			add( id( i, j ), id( i + 1, j ), id( i + 1, j + 1 ) );
+			add( id( i, j ), id( i + 1, j + 1 ), id( i, j + 1 ) );
+		}
+		// The big flap shares the sheet's boundary edge (1,0)-(1,1/N) in the
+		// opposite direction to the sheet triangle that uses it.
+		add( id( N, 1 ), id( N, 0 ), apex );
+		const auto t0 = std::chrono::steady_clock::now();
+		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
+		const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+		std::cout << "    fine sheet + 1e5 flap: certified=" << cert.certified << " in " << ms << " ms" << std::endl;
+		Check( cert.certified && !cert.budgetRefusal && ms < 5000.0,
+			"Round 2 P3-b + DL-623 (1): fine sheet + 1e5 flap certifies promptly via oversize-triangle subdivision" );
+
+		// Genuine quadratic single-cell occupancy: a connected oriented accordion
+		// ribbon of 7000 unit-extent triangles in [0,1]^2 x [0, 0.07] sharing one
+		// grid cell (~2.45e7 pairs > pairBudget = 1024*7000 + 16777216 = 2.39e7)
+		// passes Steps 1-3 and triggers budgetRefusal promptly in Step 4.
+		std::vector<Point3> stackCorners;
+		std::vector<unsigned int> stackWeld;
+		const int M = 3500; // 2 * M = 7000 connected triangles
+		stackCorners.reserve( 6 * M );
+		stackWeld.reserve( 6 * M );
+		for( int k = 0; k < M; ++k ) {
+			const double z0 = 2e-5 * double( k );
+			const double z1 = 2e-5 * double( k + 1 );
+			const double y0 = ( k & 1 ) ? 1.0 : 0.0;
+			const double y1 = ( ( k + 1 ) & 1 ) ? 1.0 : 0.0;
+			const unsigned int a0 = (unsigned int)( 2 * k );
+			const unsigned int b0 = (unsigned int)( 2 * k + 1 );
+			const unsigned int a1 = (unsigned int)( 2 * ( k + 1 ) );
+			const unsigned int b1 = (unsigned int)( 2 * ( k + 1 ) + 1 );
+			const Point3 pa0( 0.0, y0, z0 ), pb0( 1.0, y0, z0 );
+			const Point3 pa1( 0.0, y1, z1 ), pb1( 1.0, y1, z1 );
+			stackCorners.push_back( pa0 ); stackCorners.push_back( pb0 ); stackCorners.push_back( pb1 );
+			stackWeld.push_back( a0 ); stackWeld.push_back( b0 ); stackWeld.push_back( b1 );
+			stackCorners.push_back( pa0 ); stackCorners.push_back( pb1 ); stackCorners.push_back( pa1 );
+			stackWeld.push_back( a0 ); stackWeld.push_back( b1 ); stackWeld.push_back( a1 );
+		}
+		const auto t1 = std::chrono::steady_clock::now();
+		const auto stackCert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( stackCorners, nullptr, Scalar( 0 ), &stackWeld, Scalar( 1e-6 ) );
+		const double stackMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t1 ).count();
+		Check( !stackCert.certified && stackCert.budgetRefusal && stackMs < 5000.0,
+			"Round 2 P3-b: genuine quadratic single-cell occupancy triggers budgetRefusal promptly" );
+	}
+}
+
+static void TestDL623MeshCertificateReuseAndSubdivision()
+{
+	std::cout << "  [DL-623] Testing oversize-triangle subdivision, non-graph 3D proof reuse, referenced-only welding, and refusal-witness stability..." << std::endl;
+
+	// (1) Oversize triangle subdivision: a huge flap that folds back and pierces
+	// the interior of a fine sheet must be refused by Step 4 (not budgetRefusal),
+	// and two huge flaps crossing each other far outside gridBoxLo..gridBoxHi
+	// must also be refused by the oversize-vs-oversize check.
+	{
+		const int N = 80;
+		std::vector<Point3> pts;
+		for( int j = 0; j <= N; ++j ) for( int i = 0; i <= N; ++i ) {
+			pts.push_back( Point3( double( i ) / N, double( j ) / N, 0 ) );
+		}
+		const unsigned int badApex = (unsigned int)pts.size();
+		pts.push_back( Point3( 1e4, 0.5, 1.0 ) );
+		const unsigned int badApex2 = (unsigned int)pts.size();
+		pts.push_back( Point3( -1e4, 0.5, -1.0 ) );
+		std::vector<Point3> corners;
+		std::vector<unsigned int> weld;
+		const auto add = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+			corners.push_back( pts[a] ); corners.push_back( pts[b] ); corners.push_back( pts[c] );
+			weld.push_back( a ); weld.push_back( b ); weld.push_back( c );
+		};
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( N + 1 ) + i ); };
+		for( int j = 0; j < N; ++j ) for( int i = 0; i < N; ++i ) {
+			add( id( i, j ), id( i + 1, j ), id( i + 1, j + 1 ) );
+			add( id( i, j ), id( i + 1, j + 1 ), id( i, j + 1 ) );
+		}
+		// Flap 1 from boundary edge (1,0)-(1,1/N) to badApex=(1e4, 0.5, 1),
+		// Flap 2 from shared edge badApex-(1,0) to badApex2=(-1e4, 0.5, -1),
+		// which passes directly through the fine sheet near (0.5, 0.25, 0).
+		add( id( N, 1 ), id( N, 0 ), badApex );
+		add( badApex, id( N, 0 ), badApex2 );
+		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
+		Check( !cert.certified && !cert.budgetRefusal && !cert.topologicalRefusal &&
+			cert.refusalTriA != cert.refusalTriB,
+			"DL-623 (1): oversize triangle piercing the fine sheet is refused by Step-4 subdivision" );
+
+		// Two oversize triangles intersecting each other far outside the fine sheet's
+		// gridBoxLo..gridBoxHi (around x = 5e4).
+		std::vector<Point3> ptsFar = pts;
+		ptsFar[badApex] = Point3( 1e5, 0.0, 1e4 );
+		ptsFar[badApex2] = Point3( 1e5, 1.0, -1e4 );
+		const unsigned int farApex3 = (unsigned int)ptsFar.size();
+		ptsFar.push_back( Point3( 1e5, 0.0, -1e4 ) );
+		const unsigned int farApex4 = (unsigned int)ptsFar.size();
+		ptsFar.push_back( Point3( 1e5, 1.0, 1e4 ) );
+		std::vector<Point3> cornersFar;
+		std::vector<unsigned int> weldFar;
+		const auto addFar = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+			cornersFar.push_back( ptsFar[a] ); cornersFar.push_back( ptsFar[b] ); cornersFar.push_back( ptsFar[c] );
+			weldFar.push_back( a ); weldFar.push_back( b ); weldFar.push_back( c );
+		};
+		for( int j = 0; j < N; ++j ) for( int i = 0; i < N; ++i ) {
+			addFar( id( i, j ), id( i + 1, j ), id( i + 1, j + 1 ) );
+			addFar( id( i, j ), id( i + 1, j + 1 ), id( i, j + 1 ) );
+		}
+		// One huge flap on the right boundary (x=1) and one on the left boundary (x=0)
+		// that cross each other near x = 5e4, far outside [0,1]^2 x {0}.
+		addFar( id( N, 1 ), id( N, 0 ), badApex );
+		addFar( id( N, 0 ), badApex2, badApex );
+		addFar( id( 0, 0 ), id( 0, 1 ), farApex3 );
+		addFar( id( 0, 1 ), farApex4, farApex3 );
+		const auto certFar = GeometricUtilities::IsEmbeddedOpenOrientedSurface( cornersFar, nullptr, Scalar( 0 ), &weldFar, Scalar( 1e-6 ) );
+		Check( !certFar.certified && !certFar.budgetRefusal && !certFar.topologicalRefusal,
+			"DL-623 (1): two oversize flaps crossing outside gridBoxLo..gridBoxHi are refused" );
+	}
+
+	// (1b) DL-623 review: nothing caps how many triangles are oversize, and
+	// the oversize-vs-oversize scan used to box-test every pair.  A flat
+	// sheet whose last 80 columns are 4000x wider than its 600 unit columns
+	// (a terrain LOD seam; the parts share the seam column, so it is one
+	// connected, embedded open sheet) puts 96,000 of its 816,000 triangles
+	// in the oversize set (a triangle is oversize only when the largest
+	// extent exceeds 8x the mean, so at most ~1/8 can be): ~4.6e9 box tests
+	// at the reviewed commit (~3 s).  The sweep runs across the slivers (y),
+	// where the boxes barely overlap, and certifies.
+	{
+		const int H = 600, C = 80, R = 600;
+		std::vector<Point3> pts;
+		for( int j = 0; j <= R; ++j ) for( int i = 0; i <= H + C; ++i ) {
+			const double x = i <= H ? double( i ) : double( H ) + 4000.0 * double( i - H );
+			pts.push_back( Point3( x, double( j ), 0 ) );
+		}
+		std::vector<Point3> corners;
+		std::vector<unsigned int> weld;
+		corners.reserve( 6 * R * ( H + C ) );
+		weld.reserve( 6 * R * ( H + C ) );
+		const auto add = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+			corners.push_back( pts[a] ); corners.push_back( pts[b] ); corners.push_back( pts[c] );
+			weld.push_back( a ); weld.push_back( b ); weld.push_back( c );
+		};
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( H + C + 1 ) + i ); };
+		for( int j = 0; j < R; ++j ) for( int i = 0; i < H + C; ++i ) {
+			add( id( i, j ), id( i + 1, j ), id( i + 1, j + 1 ) );
+			add( id( i, j ), id( i + 1, j + 1 ), id( i, j + 1 ) );
+		}
+		const auto t0 = std::chrono::steady_clock::now();
+		const auto cert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( corners, nullptr, Scalar( 0 ), &weld, Scalar( 1e-6 ) );
+		const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+		std::cout << "    two-density sheet (" << corners.size() / 3 << " triangles): certified=" << cert.certified
+			<< " budgetRefusal=" << cert.budgetRefusal << " in " << ms << " ms" << std::endl;
+		Check( cert.certified && ms < 1500.0,
+			"DL-623 review (1b): a two-density sheet with 96,000 oversize slivers certifies promptly (sweep across the slivers)" );
+
+		// (1c) Boxes that overlap on EVERY axis keep any sweep quadratic: the
+		// fine sheet plus an accordion of 40,000 huge strips (4000 long,
+		// stacked 1e-3 apart) folded off the sheet's boundary edge and
+		// tilted 45 degrees about it, so every strip's box overlaps every
+		// other's in x, y and z.  Embedded and connected, but its 8e8
+		// overlapping oversize pairs are all exact pair tests at the
+		// reviewed commit (refused only when pairBudget ran out, ~1 min);
+		// the visit budget refuses it in bounded time.
+		{
+			std::vector<Point3> accCorners;
+			std::vector<unsigned int> accWeld;
+			for( std::size_t k = 0; k < corners.size(); k += 3 ) {
+				if( corners[k].x <= double( H ) && corners[k + 1].x <= double( H ) && corners[k + 2].x <= double( H ) ) {
+					for( int m = 0; m < 3; ++m ) { accCorners.push_back( corners[k + m] ); accWeld.push_back( weld[k + m] ); }
+				}
+			}
+			const int M = 20000;
+			const double c45 = std::sqrt( 0.5 );
+			// Strip vertex k at (u, y_k, w_k) in the frame of the shared edge
+			// x = H, z = 0: u along the strip, w the stacking direction.
+			const auto at = [&]( double u, double y, double w ) {
+				return Point3( double( H ) + c45 * ( u - w ), y, c45 * ( u + w ) );
+			};
+			const unsigned int base = (unsigned int)pts.size() + 16u;
+			const auto aId = [&]( int k ) { return k == 0 ? id( H, 0 ) : ( k == 1 ? id( H, 1 ) : base + 2u * (unsigned int)k ); };
+			const auto bId = [&]( int k ) { return base + 2u * (unsigned int)k + 1u; };
+			const auto yk = [&]( int k ) { return ( k & 1 ) ? 1.0 : 0.0; };
+			const auto wk = [&]( int k ) { return k <= 1 ? 0.0 : 1e-3 * double( k - 1 ); };
+			const auto addA = [&]( const Point3& p0, unsigned int i0, const Point3& p1, unsigned int i1, const Point3& p2, unsigned int i2 ) {
+				accCorners.push_back( p0 ); accCorners.push_back( p1 ); accCorners.push_back( p2 );
+				accWeld.push_back( i0 ); accWeld.push_back( i1 ); accWeld.push_back( i2 );
+			};
+			for( int k = 0; k < M; ++k ) {
+				// The sheet triangle (id(H-1,0), id(H,0), id(H,1)) uses the
+				// shared edge forward, a_0 -> a_1; strip 0's second triangle
+				// uses it backward (a_1 -> a_0), and consecutive strips share
+				// b_{k+1} - a_{k+1} the same consistent way.
+				const Point3 a0 = at( 0, yk( k ), wk( k ) ), a1 = at( 0, yk( k + 1 ), wk( k + 1 ) );
+				const Point3 b0 = at( 4000, yk( k ), wk( k ) ), b1 = at( 4000, yk( k + 1 ), wk( k + 1 ) );
+				addA( a0, aId( k ), b0, bId( k ), b1, bId( k + 1 ) );
+				addA( a0, aId( k ), b1, bId( k + 1 ), a1, aId( k + 1 ) );
+			}
+			const auto t2 = std::chrono::steady_clock::now();
+			const auto accCert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( accCorners, nullptr, Scalar( 0 ), &accWeld, Scalar( 1e-6 ) );
+			const double accMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t2 ).count();
+			std::cout << "    sheet + tilted accordion (" << accCorners.size() / 3 << " triangles): certified=" << accCert.certified
+				<< " budgetRefusal=" << accCert.budgetRefusal << " topological=" << accCert.topologicalRefusal << " in " << accMs << " ms" << std::endl;
+			Check( !accCert.certified && accCert.budgetRefusal && accMs < 5000.0,
+				"DL-623 review (1c): 40,000 oversize strips whose boxes overlap on every axis are refused by the oversize visit budget in bounded time" );
+		}
+
+		// Control: the fine part alone certifies.
+		std::vector<Point3> fineCorners;
+		std::vector<unsigned int> fineWeld;
+		for( std::size_t k = 0; k < corners.size(); k += 3 ) {
+			if( corners[k].x <= double( H ) && corners[k + 1].x <= double( H ) && corners[k + 2].x <= double( H ) ) {
+				for( int m = 0; m < 3; ++m ) { fineCorners.push_back( corners[k + m] ); fineWeld.push_back( weld[k + m] ); }
+			}
+		}
+		const auto fineCert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( fineCorners, nullptr, Scalar( 0 ), &fineWeld, Scalar( 1e-6 ) );
+		Check( fineCert.certified,
+			"DL-623 review (1b) control: the fine part alone certifies" );
+
+		// Control: a FEW huge triangles (the case the oversize path exists
+		// for) still certify -- the visit budget is linear in the mesh, not
+		// a cap on the oversize count.  Two coarse columns over three rows.
+		std::vector<Point3> fewCorners;
+		std::vector<unsigned int> fewWeld;
+		for( std::size_t k = 0; k < corners.size(); k += 3 ) {
+			bool keep = true;
+			for( int m = 0; m < 3; ++m ) {
+				const Point3& p = corners[k + m];
+				if( p.x > double( H ) + 8000.0 || ( p.x > double( H ) && p.y > 3.0 ) ) keep = false;
+			}
+			if( keep ) {
+				for( int m = 0; m < 3; ++m ) { fewCorners.push_back( corners[k + m] ); fewWeld.push_back( weld[k + m] ); }
+			}
+		}
+		const auto fewCert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( fewCorners, nullptr, Scalar( 0 ), &fewWeld, Scalar( 1e-6 ) );
+		Check( fewCert.certified && fewCorners.size() / 3 == std::size_t( 2 * R * H + 12 ),
+			"DL-623 review (1b) control: a fine sheet with 12 oversize triangles still certifies" );
+	}
+
+	// (2) Non-graph 3D open-sheet proof reuse (`reusedOpenCertified`):
+	// Build a curved C-shell wrapping > 240 deg in theta and tilted in 3D so
+	// face normals change sign along all three coordinate axes (not a graph
+	// over x, y, or z).
+	{
+		const int Nu = 24, Nv = 16;
+		const double pi = 3.14159265358979323846;
+		VerticesListType v0;
+		NormalsListType n0;
+		TexCoordsListType c0;
+		IndexTriangleListType tris;
+		for( int j = 0; j <= Nv; ++j ) {
+			const double v = -0.8 + 1.6 * double( j ) / Nv;
+			for( int i = 0; i <= Nu; ++i ) {
+				const double u = -0.75 * pi + 1.5 * pi * double( i ) / Nu;
+				const double r = 1.0 + 0.25 * std::cos( v * pi * 0.5 );
+				const double x = r * std::cos( u );
+				const double y = r * std::sin( u ) + 0.35 * std::sin( 2.0 * v );
+				const double z = v + 0.45 * std::sin( u );
+				v0.push_back( Point3( x, y, z ) );
+				n0.push_back( Vector3( 0, 0, 1 ) );
+				c0.push_back( Point2( double( i ) / Nu, double( j ) / Nv ) );
+			}
+		}
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( Nu + 1 ) + i ); };
+		for( int j = 0; j < Nv; ++j ) {
+			for( int i = 0; i < Nu; ++i ) {
+				IndexedTriangle a;
+				a.iVertices[0] = a.iNormals[0] = a.iCoords[0] = id( i, j );
+				a.iVertices[1] = a.iNormals[1] = a.iCoords[1] = id( i + 1, j );
+				a.iVertices[2] = a.iNormals[2] = a.iCoords[2] = id( i + 1, j + 1 );
+				tris.push_back( a );
+				IndexedTriangle b;
+				b.iVertices[0] = b.iNormals[0] = b.iCoords[0] = id( i, j );
+				b.iVertices[1] = b.iNormals[1] = b.iCoords[1] = id( i + 1, j + 1 );
+				b.iVertices[2] = b.iNormals[2] = b.iCoords[2] = id( i, j + 1 );
+				tris.push_back( b );
+			}
+		}
+		auto* m = new TriangleMeshGeometryIndexed( true, true );
+		m->addref();
+		m->BeginIndexedTriangles();
+		m->AddVertices( v0 );
+		m->AddNormals( n0 );
+		m->AddTexCoords( c0 );
+		m->AddIndexedTriangles( tris );
+		m->DoneIndexedTriangles();
+
+		Check( m->IsProvablyOpenSheet() && !m->IsCertifiedWatertight() && m->OpenCertificateAudits() == 1,
+			"DL-623 (2): non-graph 3D open shell certifies at build in 1 audit" );
+
+		// (2a) Translation + small smooth nonlinear perturbation within the
+		// separation lower bound -> certified via the fast A = I_3 span bound
+		// without re-running IsEmbeddedOpenOrientedSurface (audits stays 1).
+		VerticesListType vSmall = v0;
+		for( std::size_t k = 0; k < vSmall.size(); ++k ) {
+			Point3& p = vSmall[k];
+			p.x += 2.5 + 1e-3 * std::sin( p.y );
+			p.y += -1.25 + 1e-3 * std::cos( p.z );
+			p.z += 0.75 + 1e-3 * std::sin( p.x );
+		}
+		m->UpdateVertices( vSmall, NormalsListType() );
+		Check( m->IsProvablyOpenSheet() && !m->IsCertifiedWatertight() && m->OpenCertificateAudits() == 1,
+			"DL-623 (2a): non-graph 3D open shell reuses certificate under translation + small nonlinear wave (audits=1)" );
+
+		// (2b) Large 3D rotation + anisotropic linear scaling + small smooth
+		// wave -> spanI is O(1) so A = I_3 cannot certify, but the 3x3 affine
+		// least-squares fit A + Sylvester singular-value lower bound sigmaLo
+		// certifies in O(V) without re-running IsEmbeddedOpenOrientedSurface!
+		VerticesListType vRot = v0;
+		const double ca = std::cos( 0.65 ), sa = std::sin( 0.65 );
+		const double cb = std::cos( -0.45 ), sb = std::sin( -0.45 );
+		for( std::size_t k = 0; k < vRot.size(); ++k ) {
+			const Point3& q = v0[k];
+			const double x1 = 1.15 * q.x, y1 = 1.08 * q.y, z1 = 1.22 * q.z;
+			const double x2 = ca * x1 - sa * y1;
+			const double y2 = sa * x1 + ca * y1;
+			const double z2 = z1;
+			const double x3 = cb * x2 + sb * z2;
+			const double y3 = y2;
+			const double z3 = -sb * x2 + cb * z2;
+			vRot[k] = Point3(
+				x3 + 0.5 + 5e-4 * std::sin( q.y ),
+				y3 - 0.3 + 5e-4 * std::cos( q.z ),
+				z3 + 0.8 + 5e-4 * std::sin( q.x ) );
+		}
+		m->UpdateVertices( vRot, NormalsListType() );
+		Check( m->IsProvablyOpenSheet() && !m->IsCertifiedWatertight() && m->OpenCertificateAudits() == 1,
+			"DL-623 (2b): non-graph 3D open shell reuses certificate under 3D rotation + scaling + wave via Sylvester affine bound (audits=1)" );
+
+		// (2c) Large nonlinear fold that creates a real self-intersection:
+		// reuse must decline, re-audit runs with pre-verified topology, and
+		// IsProvablyOpenSheet() becomes false.
+		VerticesListType vFold = v0;
+		for( int j = 0; j <= Nv; ++j ) {
+			const double v = -0.8 + 1.6 * double( j ) / Nv;
+			for( int i = 0; i <= Nu; ++i ) {
+				const double s = -0.4 + ( pi + 0.8 ) * double( i ) / Nu;
+				vFold[id( i, j )] = Point3( std::sin( s ), v, 0.5 * std::sin( 2.0 * s ) );
+			}
+		}
+		m->UpdateVertices( vFold, NormalsListType() );
+		Check( !m->IsProvablyOpenSheet() && !m->IsCertifiedWatertight() && m->OpenCertificateAudits() == 2,
+			"DL-623 (2c): large self-intersecting fold declines certificate reuse and refuses on re-audit (audits=2)" );
+		m->release();
+	}
+
+	// (3) & (4): Referenced-only welding (`EnsureReferencedVertices`,
+	// `WeldReferencedVertices`) and adaptive `WeldVertexPositions` cell sizing
+	// with an unreferenced far outlier vertex at 1e6.
+	{
+		const int N = 20;
+		VerticesListType v0;
+		NormalsListType n0;
+		TexCoordsListType c0;
+		IndexTriangleListType tris;
+		for( int j = 0; j <= N; ++j ) {
+			for( int i = 0; i <= N; ++i ) {
+				const double x = -1.0 + 2.0 * double( i ) / N;
+				const double y = -1.0 + 2.0 * double( j ) / N;
+				v0.push_back( Point3( x, y, 0.2 * ( x * x + y * y ) ) );
+				n0.push_back( Vector3( 0, 0, 1 ) );
+				c0.push_back( Point2( 0, 0 ) );
+			}
+		}
+		// Unreferenced far outlier vertex that would inflate a whole-pPoints
+		// bounding box diagonal by 5e5x.
+		v0.push_back( Point3( 1e6, -1e6, 5e5 ) );
+		n0.push_back( Vector3( 0, 0, 1 ) );
+		c0.push_back( Point2( 0, 0 ) );
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( N + 1 ) + i ); };
+		for( int j = 0; j < N; ++j ) {
+			for( int i = 0; i < N; ++i ) {
+				IndexedTriangle a;
+				a.iVertices[0] = a.iNormals[0] = a.iCoords[0] = id( i, j );
+				a.iVertices[1] = a.iNormals[1] = a.iCoords[1] = id( i + 1, j );
+				a.iVertices[2] = a.iNormals[2] = a.iCoords[2] = id( i + 1, j + 1 );
+				tris.push_back( a );
+				IndexedTriangle b;
+				b.iVertices[0] = b.iNormals[0] = b.iCoords[0] = id( i, j );
+				b.iVertices[1] = b.iNormals[1] = b.iCoords[1] = id( i + 1, j + 1 );
+				b.iVertices[2] = b.iNormals[2] = b.iCoords[2] = id( i, j + 1 );
+				tris.push_back( b );
+			}
+		}
+		auto* m = new TriangleMeshGeometryIndexed( true, true );
+		m->addref();
+		m->BeginIndexedTriangles();
+		m->AddVertices( v0 );
+		m->AddNormals( n0 );
+		m->AddTexCoords( c0 );
+		m->AddIndexedTriangles( tris );
+		m->DoneIndexedTriangles();
+
+		Check( m->IsProvablyOpenSheet() && m->OpenCertificateAudits() == 1,
+			"DL-623 (3): unreferenced far outlier vertex does not collapse referenced sheet or inflate weld tolerance" );
+
+		// Moving only the unreferenced outlier vertex does not trigger a re-audit.
+		VerticesListType vOutlierMoved = v0;
+		vOutlierMoved.back() = Point3( -2e6, 3e6, -1e6 );
+		m->UpdateVertices( vOutlierMoved, NormalsListType() );
+		Check( m->IsProvablyOpenSheet() && m->OpenCertificateAudits() == 1,
+			"DL-623 (3): mutating only an unreferenced vertex preserves cached open-sheet proof" );
+		m->release();
+	}
+
+	// (5) Deterministic cell visitation + transverse interior-crossing witness
+	// selection (`crossingScore`) so `fold` reuses its refusal witness across
+	// non-planar deformations (`audits = 1/1/1`).
+	{
+		const int N = 60;
+		const double pi = 3.14159265358979323846;
+		VerticesListType vFold;
+		NormalsListType n0;
+		TexCoordsListType c0;
+		IndexTriangleListType tris;
+		for( int j = 0; j <= N; ++j ) {
+			const double y = -1.0 + 2.0 * double( j ) / N;
+			for( int i = 0; i <= N; ++i ) {
+				const double s = -0.3 + ( pi + 0.6 ) * double( i ) / N;
+				vFold.push_back( Point3( std::sin( s ), y, 0.5 * std::sin( 2.0 * s ) ) );
+				n0.push_back( Vector3( 0, 0, 1 ) );
+				c0.push_back( Point2( 0, 0 ) );
+			}
+		}
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( N + 1 ) + i ); };
+		for( int j = 0; j < N; ++j ) {
+			for( int i = 0; i < N; ++i ) {
+				IndexedTriangle a;
+				a.iVertices[0] = a.iNormals[0] = a.iCoords[0] = id( i, j );
+				a.iVertices[1] = a.iNormals[1] = a.iCoords[1] = id( i + 1, j );
+				a.iVertices[2] = a.iNormals[2] = a.iCoords[2] = id( i + 1, j + 1 );
+				tris.push_back( a );
+				IndexedTriangle b;
+				b.iVertices[0] = b.iNormals[0] = b.iCoords[0] = id( i, j );
+				b.iVertices[1] = b.iNormals[1] = b.iCoords[1] = id( i + 1, j + 1 );
+				b.iVertices[2] = b.iNormals[2] = b.iCoords[2] = id( i, j + 1 );
+				tris.push_back( b );
+			}
+		}
+
+		// Direct witness check on the figure-8 fold: IsEmbeddedOpenOrientedSurface
+		// upgrades past column-0 coplanar pairs to the transverse crossing near x = 0.
+		std::vector<Point3> foldCorners;
+		foldCorners.reserve( tris.size() * 3 );
+		for( const IndexedTriangle& tri : tris ) {
+			foldCorners.push_back( vFold[tri.iVertices[0]] );
+			foldCorners.push_back( vFold[tri.iVertices[1]] );
+			foldCorners.push_back( vFold[tri.iVertices[2]] );
+		}
+		const auto foldCert = GeometricUtilities::IsEmbeddedOpenOrientedSurface( foldCorners );
+		Check( !foldCert.certified && !foldCert.budgetRefusal && !foldCert.topologicalRefusal &&
+			foldCert.refusalTriA < tris.size() && foldCert.refusalTriB < tris.size() &&
+			foldCert.refusalTriA != 0 && foldCert.refusalTriA != foldCert.refusalTriB,
+			"DL-623 (5a): IsEmbeddedOpenOrientedSurface selects the transverse interior-crossing witness over an earlier coplanar boundary pair" );
+
+		// Self-intersecting figure-8 fold: build picks the true self-intersection
+		// witness rather than a bogus coplanar column pair, so both def1 and def2
+		// reuse the refusal witness in O(1) pair checks (`audits = 1/1/1`).
+		auto* mFold = new TriangleMeshGeometryIndexed( true, true );
+		mFold->addref();
+		mFold->BeginIndexedTriangles();
+		mFold->AddVertices( vFold );
+		mFold->AddNormals( n0 );
+		mFold->AddTexCoords( c0 );
+		mFold->AddIndexedTriangles( tris );
+		mFold->DoneIndexedTriangles();
+		const unsigned long long a0 = mFold->OpenCertificateAudits();
+		for( Point3& p : vFold ) { p.z += 0.03 * ( p.x * p.x + p.y * p.y ); }
+		mFold->UpdateVertices( vFold, NormalsListType() );
+		const unsigned long long a1 = mFold->OpenCertificateAudits();
+		for( Point3& p : vFold ) { p.z += 0.01 * p.y; }
+		mFold->UpdateVertices( vFold, NormalsListType() );
+		const unsigned long long a2 = mFold->OpenCertificateAudits();
+		Check( !mFold->IsProvablyOpenSheet() && a0 == 1 && a1 == 1 && a2 == 1,
+			"DL-623 (5b): figure-8 fold caches true self-intersection witness at build and reuses it across def1 and def2 (audits=1/1/1)" );
+		mFold->release();
+	}
+}
+
+//! DL-623 review: the deformation-reuse proof needs a RIGOROUS lower bound
+//! on lambda_min(A^T A).  Oracle: integer symmetric G = B^T B (entries
+//! below 2^30), whose lambda_min is bracketed EXACTLY by bisection on the
+//! signs of the leading minors of the integer matrix 2^m G - p I in 128-bit
+//! arithmetic; the helper sees G scaled by an exact power of two.  B has one
+//! huge row and two small ones, so G has one large and two small
+//! eigenvalues -- the regime where computed Sylvester minors lose their
+//! sign (relative error ~ tr(G)^2 / lambda).
+static bool ExactLeadingMinorsPositive( const __int128 M[3][3] )
+{
+	if( !( M[0][0] > 0 ) ) return false;
+	if( !( M[0][0] * M[1][1] - M[0][1] * M[0][1] > 0 ) ) return false;
+	const __int128 d = M[0][0] * ( M[1][1] * M[2][2] - M[1][2] * M[1][2] )
+		- M[0][1] * ( M[0][1] * M[2][2] - M[1][2] * M[0][2] )
+		+ M[0][2] * ( M[0][1] * M[1][2] - M[1][1] * M[0][2] );
+	return d > 0;
+}
+
+static void TestDL623RigorousEigenvalueBound()
+{
+	std::cout << "  [DL-623 review] Testing the rigorous lambda_min(A^T A) bound behind certificate reuse..." << std::endl;
+	unsigned int rng = 12345u;
+	const auto next = [&]() { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
+	int tested = 0, over = 0, loose = 0;
+	double worstOver = 0, worstSlack = 0;
+	const int m = 12, s = 30;
+	for( int trial = 0; trial < 4000; ++trial ) {
+		long long w[3], u[3], z[3];
+		for( int k = 0; k < 3; ++k ) {
+			w[k] = (long long)( next() % 7 ) - 3;
+			u[k] = (long long)( next() % 7 ) - 3;
+			z[k] = (long long)( next() % 7 ) - 3;
+		}
+		const long long big = 2048 + (long long)( next() % 2048 );
+		const long long s1 = 1 + (long long)( next() % 4 ), s2 = 1 + (long long)( next() % 4 );
+		long long B[3][3], G[3][3];
+		for( int k = 0; k < 3; ++k ) { B[0][k] = big * w[k]; B[1][k] = s1 * u[k]; B[2][k] = s2 * z[k]; }
+		for( int r = 0; r < 3; ++r ) for( int c = 0; c < 3; ++c ) {
+			G[r][c] = 0;
+			for( int k = 0; k < 3; ++k ) G[r][c] += B[k][r] * B[k][c];
+		}
+		__int128 M[3][3];
+		const auto pd = [&]( long long p ) {
+			for( int r = 0; r < 3; ++r ) for( int c = 0; c < 3; ++c ) {
+				M[r][c] = ( (__int128)G[r][c] << m ) - ( r == c ? (__int128)p : 0 );
+			}
+			return ExactLeadingMinorsPositive( M );
+		};
+		if( !pd( 0 ) ) continue;		// singular B
+		long long lo = 0, hi = std::min( G[0][0], std::min( G[1][1], G[2][2] ) ) << m;
+		while( hi - lo > 1 ) {
+			const long long mid = ( lo + hi ) / 2;
+			if( pd( mid ) ) lo = mid; else hi = mid;
+		}
+		// Exact lambda_min(G) lies in (lo, lo + 1] / 2^m.
+		Scalar Gd[3][3];
+		for( int r = 0; r < 3; ++r ) for( int c = 0; c < 3; ++c ) Gd[r][c] = std::ldexp( Scalar( G[r][c] ), -s );
+		const Scalar L = GeometricUtilities::SymmetricMinEigenvalueLowerBound3( Gd );
+		const Scalar Lscaled = std::ldexp( L, s + m );	// exact
+		++tested;
+		if( Lscaled > Scalar( lo + 1 ) ) {
+			++over;
+			worstOver = std::max( worstOver, double( Lscaled ) / double( lo + 1 ) );
+		}
+		// Tightness: within 64 eps tr(G) of the exact value.
+		const double trG = double( G[0][0] + G[1][1] + G[2][2] );
+		const double slack = ( double( lo ) - double( Lscaled ) ) / ( std::numeric_limits<double>::epsilon() * trG * double( 1 << m ) );
+		worstSlack = std::max( worstSlack, slack );
+		if( slack > 64.0 ) ++loose;
+	}
+	std::cout << "    " << tested << " strongly anisotropic G: bound above exact lambda_min in " << over
+		<< " (worst ratio " << worstOver << "), worst slack " << worstSlack << " eps tr(G)" << std::endl;
+	Check( tested > 3000 && over == 0,
+		"DL-623 review: SymmetricMinEigenvalueLowerBound3 never exceeds the exact lambda_min (128-bit oracle)" );
+	Check( loose == 0,
+		"DL-623 review: SymmetricMinEigenvalueLowerBound3 is within 64 eps tr(G) of the exact lambda_min" );
+	// Non-positive-definite and non-finite inputs prove nothing.
+	{
+		const Scalar Gsing[3][3] = { { 1, 1, 0 }, { 1, 1, 0 }, { 0, 0, 1 } };
+		const Scalar Gneg[3][3] = { { 1, 2, 0 }, { 2, 1, 0 }, { 0, 0, 1 } };
+		const Scalar Gnan[3][3] = { { 1, 0, 0 }, { 0, std::numeric_limits<Scalar>::quiet_NaN(), 0 }, { 0, 0, 1 } };
+		Check( GeometricUtilities::SymmetricMinEigenvalueLowerBound3( Gsing ) == 0 &&
+			GeometricUtilities::SymmetricMinEigenvalueLowerBound3( Gneg ) == 0 &&
+			GeometricUtilities::SymmetricMinEigenvalueLowerBound3( Gnan ) == 0,
+			"DL-623 review: singular, indefinite and non-finite G give no positive bound" );
+	}
+
+	// End to end: a strongly anisotropic deformation (a near-collapse of two
+	// axes) of a certified non-graph shell must not reuse the certificate
+	// unless the fresh proof agrees; the reused verdict is compared with a
+	// fresh mesh built at the deformed positions.
+	{
+		const int Nu = 24, Nv = 16;
+		const double pi = 3.14159265358979323846;
+		VerticesListType v0;
+		NormalsListType n0;
+		TexCoordsListType c0;
+		IndexTriangleListType tris;
+		for( int j = 0; j <= Nv; ++j ) {
+			const double v = -0.8 + 1.6 * double( j ) / Nv;
+			for( int i = 0; i <= Nu; ++i ) {
+				const double uu = -0.75 * pi + 1.5 * pi * double( i ) / Nu;
+				const double r = 1.0 + 0.25 * std::cos( v * pi * 0.5 );
+				v0.push_back( Point3( r * std::cos( uu ), r * std::sin( uu ) + 0.35 * std::sin( 2.0 * v ), v + 0.45 * std::sin( uu ) ) );
+				n0.push_back( Vector3( 0, 0, 1 ) );
+				c0.push_back( Point2( 0, 0 ) );
+			}
+		}
+		auto id = [&]( int i, int j ) { return (unsigned int)( j * ( Nu + 1 ) + i ); };
+		for( int j = 0; j < Nv; ++j ) for( int i = 0; i < Nu; ++i ) {
+			IndexedTriangle a;
+			a.iVertices[0] = a.iNormals[0] = a.iCoords[0] = id( i, j );
+			a.iVertices[1] = a.iNormals[1] = a.iCoords[1] = id( i + 1, j );
+			a.iVertices[2] = a.iNormals[2] = a.iCoords[2] = id( i + 1, j + 1 );
+			tris.push_back( a );
+			IndexedTriangle b;
+			b.iVertices[0] = b.iNormals[0] = b.iCoords[0] = id( i, j );
+			b.iVertices[1] = b.iNormals[1] = b.iCoords[1] = id( i + 1, j + 1 );
+			b.iVertices[2] = b.iNormals[2] = b.iCoords[2] = id( i, j + 1 );
+			tris.push_back( b );
+		}
+		const auto build = [&]( const VerticesListType& v ) {
+			auto* mm = new TriangleMeshGeometryIndexed( true, true );
+			mm->addref();
+			mm->BeginIndexedTriangles();
+			mm->AddVertices( v );
+			mm->AddNormals( n0 );
+			mm->AddTexCoords( c0 );
+			mm->AddIndexedTriangles( tris );
+			mm->DoneIndexedTriangles();
+			return mm;
+		};
+		bool allAgree = true;
+		for( const double squash : { 1e-2, 1e-4, 1e-6 } ) {
+			auto* mm = build( v0 );
+			// Squash two axes of a rotated frame: A = R diag(1, squash, squash) R^T.
+			VerticesListType vs = v0;
+			const double ca = std::cos( 0.7 ), sa = std::sin( 0.7 );
+			for( Point3& p : vs ) {
+				const double x1 = ca * p.x - sa * p.y, y1 = sa * p.x + ca * p.y;
+				const double x2 = x1, y2 = squash * y1, z2 = squash * p.z;
+				p = Point3( ca * x2 + sa * y2, -sa * x2 + ca * y2, z2 );
+			}
+			mm->UpdateVertices( vs, NormalsListType() );
+			auto* fresh = build( vs );
+			const bool agree = mm->IsProvablyOpenSheet() == fresh->IsProvablyOpenSheet();
+			std::cout << "    squash " << squash << ": reused/updated open=" << mm->IsProvablyOpenSheet()
+				<< " (audits " << mm->OpenCertificateAudits() << "), fresh open=" << fresh->IsProvablyOpenSheet() << std::endl;
+			allAgree = allAgree && agree;
+			mm->release();
+			fresh->release();
+		}
+		Check( allAgree,
+			"DL-623 review: a strongly anisotropic deformation never carries an open certificate a fresh proof refuses" );
+	}
+}
+
+int main()
+{
+	std::cout << "=== MeshInteriorSignalTest (DL-31, DL-143, DL-136, DL-150, DL-197) ===" << std::endl;
+
+	TestClosedWatertightCube();
+	TestOpenQuadRefuses();
+	TestNonWatertightCubeRefuses();
+	TestDegenerateTriangleRefuses();
+	TestFlatShadedPerCornerCubeWelds();
+	TestSphereTessellationNowWatertight();
+	TestEllipsoidTessellationNowWatertight();
+	TestBoxTessellationWelds();
+	TestShippedGltfBoxEndToEnd();
+	TestTorusTessellationWatertight();
+	TestCappedCylinderTessellationWatertight();
+	TestDisplacedWrapsWatertight();
+	TestScaledMeshWeldsRelatively();
+	TestOpposedFacingSheetsRefuseViaDiscriminator();
+	TestSameWindingCoincidentTriangleAlsoRefuses();
+	TestOffsetTessellationResidualUncaught();
+	TestWedgeSharpCreaseCertifiesAtEveryAngle();
+	TestFlatShadedCubeWithRealNormalsCertifies();
+	TestThinButValidSolidThickerThanEpsCertifies();
+	TestProvablyOpenSheetCertification();
+	TestDeserializedClosedCertificate();
+	TestPatchSetCertification();
+	TestDL620ReviewFindings();
+	TestDL623MeshCertificateReuseAndSubdivision();
+	TestDL623RigorousEigenvalueBound();
+	TestParityCost();
+
+	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
+	return failCount == 0 ? 0 : 1;
+}

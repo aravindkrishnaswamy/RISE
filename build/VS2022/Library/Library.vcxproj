@@ -83,6 +83,7 @@
       <ProgramDataBaseFileName>.\Release/</ProgramDataBaseFileName>
       <BrowseInformation>false</BrowseInformation>
       <WarningLevel>Level3</WarningLevel>
+      <AdditionalOptions>/Zc:__cplusplus /permissive- /utf-8 %(AdditionalOptions)</AdditionalOptions>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <DebugInformationFormat />
       <CompileAs>Default</CompileAs>
@@ -118,6 +119,7 @@
       <ProgramDataBaseFileName>.\Debug/</ProgramDataBaseFileName>
       <BrowseInformation>false</BrowseInformation>
       <WarningLevel>Level3</WarningLevel>
+      <AdditionalOptions>/Zc:__cplusplus /permissive- /utf-8 %(AdditionalOptions)</AdditionalOptions>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <CompileAs>Default</CompileAs>
@@ -190,7 +192,10 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\EllipsoidGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\Geometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\GeometryUtilities.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Geometry\HairGenerator.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Geometry\HairGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Geometry\MeshSignalBake.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\SDFGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\SphereGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\SphericalUVGenerator.cpp" />
@@ -199,6 +204,7 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexed.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.cpp" />
     <ClCompile Include="..\..\..\src\Library\Importers\GLTFSceneImporter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Importers\HairFileLoader.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPSurf.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW.cpp" />
@@ -212,7 +218,6 @@
     <ClCompile Include="..\..\..\src\Library\Intersection\RaySphereIntersection.cpp" />
     <ClCompile Include="..\..\..\src\Library\Intersection\RayTorusIntersection.cpp" />
     <ClCompile Include="..\..\..\src\Library\Intersection\RayTriangleIntersection.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Intersection\RayTriangleIntersectionWithDisplacement.cpp" />
     <ClCompile Include="..\..\..\src\Library\Job.cpp" />
     <ClCompile Include="..\..\..\src\Library\Lights\DirectionalLight.cpp" />
     <ClCompile Include="..\..\..\src\Library\Lights\LightBVH.cpp" />
@@ -226,17 +231,31 @@
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPFHelpers.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\BurleyNormalizedDiffusionProfile.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\CoatedBRDF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\CoatedSPF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\FabricBRDF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\WeaveBRDF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\WeaveSPF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\FabricSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeEmitter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CookTorranceBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CookTorranceSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\DataDrivenBSDF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\DataDrivenSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\DielectricSPF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\RoughDielectricMaterial.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\DonnerJensenSkinDiffusionProfile.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GGXBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GGXSPF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\HairBSDF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\HairMedullaProfile.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\HairMedullaProfile_LUTData.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\SheenBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\SheenSPF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo_LUTData.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\SchlickDirectionalAlbedo_LUTData.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GenericHumanTissueSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HeterogeneousMedium.cpp" />
@@ -255,6 +274,7 @@
     <ClCompile Include="..\..\..\src\Library\Materials\PerfectReflectorSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\PerfectRefractorSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\PhongEmitter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\PolishedBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\PolishedSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\ScatteredRayContainer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\SchlickBRDF.cpp" />
@@ -267,9 +287,10 @@
     <ClCompile Include="..\..\..\src\Library\Materials\WardAnisotropicEllipticalGaussianSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\WardIsotropicGaussianBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\WardIsotropicGaussianSPF.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Modifiers\BumpMap.cpp" />
     <ClCompile Include="..\..\..\src\Library\Modifiers\GlintModifier.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Modifiers\ModifierStack.cpp" />
     <ClCompile Include="..\..\..\src\Library\Modifiers\NormalMap.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Modifiers\ReliefModifier.cpp" />
     <ClCompile Include="..\..\..\src\Library\Noise\InterpolatedNoise.cpp" />
     <ClCompile Include="..\..\..\src\Library\Noise\PerlinNoise1D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Noise\PerlinNoise2D.cpp" />
@@ -299,6 +320,11 @@
     <ClCompile Include="..\..\..\src\Library\Painters\CompositeFunction2DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\PolynomialFunction2DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\GerstnerWavePainter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Painters\ExpressionPainter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Painters\RampPainter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Painters\MappingPainter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Painters\StochasticTilePainter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Painters\ScatterPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Perlin3DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Turbulence3DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Worley3DPainter.cpp" />
@@ -317,7 +343,6 @@
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiCommandParser.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiScriptParser.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.cpp" />
     <ClCompile Include="..\..\..\src\Library\pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
@@ -378,6 +403,7 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\PathTracingSpectralRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedRasterizerHelper.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Rendering\TimeIndexedMotionBlur.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizerRGB.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
@@ -401,6 +427,9 @@
     <ClCompile Include="..\..\..\src\Library\Sampling\RandomSampling2D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Sampling\SincPixelFilter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Sampling\StratifiedSampling2D.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Sampling\SobolDirectionNumbers.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Sampling\SobolSampling2D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Sampling\UniformSampling1D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Sampling\UniformSampling2D.cpp" />
@@ -425,7 +454,15 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\DirtyTracker.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\SaveEngine.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\CstIntrospection.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\PainterIntrospection.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\PainterPreview.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\MaterialPreview.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\EntityTemplates.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\ReferenceGraph.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\ConnectionLegality.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\OwnershipClosure.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\GraphLayout.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\GraphLayoutSidecar.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.cpp" />
@@ -454,7 +491,6 @@
     <ClCompile Include="..\..\..\src\Library\Shaders\TranslucentPelPhotonMapShaderOp.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\TransparencyShaderOp.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AlphaTestShaderOp.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Utilities\BitField.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\Color.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\ColorUtils.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable.cpp" />
@@ -471,11 +507,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\RenderParallelScope.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Utilities\DynamicProperties.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\GeometricUtilities.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\BSSRDFSampling.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\CompletePathGuide.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Utilities\LoadLibraryWin32.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Log\Log.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Log\MemoryTracker.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Log\StreamPrinter.cpp" />
@@ -523,6 +557,7 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\PathGuidingField.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Primes.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Profiling.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PSSMLTSampler.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\RandomWalkSSS.cpp" />
@@ -559,6 +594,7 @@
     <ClInclude Include="..\..\..\src\Library\Animation\KeyframableHelper.h" />
     <ClInclude Include="..\..\..\src\Library\Animation\Keyframe.h" />
     <ClInclude Include="..\..\..\src\Library\Animation\Timeline.h" />
+    <ClInclude Include="..\..\..\src\Library\Animation\TimeIndexedView.h" />
     <ClInclude Include="..\..\..\src\Library\BSPTree.h" />
     <ClInclude Include="..\..\..\src\Library\BSPTreeNode.h" />
     <ClInclude Include="..\..\..\src\Library\Agent\AgentDiagnostic.h" />
@@ -610,7 +646,10 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\EllipsoidGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\Geometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\GeometryUtilities.h" />
+    <ClInclude Include="..\..\..\src\Library\Geometry\HairGenerator.h" />
+    <ClInclude Include="..\..\..\src\Library\Geometry\HairGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.h" />
+    <ClInclude Include="..\..\..\src\Library\Geometry\MeshSignalBake.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\SDFGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\SphereGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\SphericalUVGenerator.h" />
@@ -621,6 +660,7 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometrySpecializations.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.h" />
     <ClInclude Include="..\..\..\src\Library\Importers\GLTFSceneImporter.h" />
+    <ClInclude Include="..\..\..\src\Library\Importers\HairFileLoader.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ChannelPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\UVTransformPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\TexCoord1Painter.h" />
@@ -677,6 +717,8 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IPainterManager.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ISurfaceSignalProvider.h" />
+    <ClInclude Include="..\..\..\src\Library\Interfaces\SurfaceSignalProximity.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainterManager.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IParametricSurface.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IPhotonMap.h" />
@@ -752,6 +794,19 @@
     <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinData.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedBRDF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedLayer.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedSPF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricBRDF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricPresets.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\FibreLobeMath.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\WeaveBRDF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\WeaveMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\WeavePresets.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\WeaveSPF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CookTorranceBRDF.h" />
@@ -759,8 +814,10 @@
     <ClInclude Include="..\..\..\src\Library\Materials\CookTorranceSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\DataDrivenBSDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\DataDrivenMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\DataDrivenSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\DielectricMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\DielectricSPF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\RoughDielectricMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\GenericHumanTissueMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\GenericHumanTissueSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\IsotropicPhongBRDF.h" />
@@ -784,8 +841,11 @@
     <ClInclude Include="..\..\..\src\Library\Materials\PhongEmitter.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\PhongLuminaireMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\PolishedBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickBRDF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickMasking.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickDirectionalAlbedo.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\TranslucentBSDF.h" />
@@ -797,9 +857,12 @@
     <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianSPF.h" />
-    <ClInclude Include="..\..\..\src\Library\Modifiers\BumpMap.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\WardSelectionQuadrature.h" />
     <ClInclude Include="..\..\..\src\Library\Modifiers\GlintModifier.h" />
+    <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierFrame.h" />
+    <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierStack.h" />
     <ClInclude Include="..\..\..\src\Library\Modifiers\NormalMap.h" />
+    <ClInclude Include="..\..\..\src\Library\Modifiers\ReliefModifier.h" />
     <ClInclude Include="..\..\..\src\Library\Noise\InterpolatedNoise.h" />
     <ClInclude Include="..\..\..\src\Library\Noise\Noise.h" />
     <ClInclude Include="..\..\..\src\Library\Noise\NoiseUtils.h" />
@@ -842,8 +905,17 @@
     <ClInclude Include="..\..\..\src\Library\Painters\Function2DColorPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionEval.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionFunction2DPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionParamSpec.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\RampPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\MappingPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\StochasticTilePainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ScatterPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\PainterChannelScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\MultiplyScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\AddScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\Atan2ScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\VertexColorPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Voronoi2DPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Voronoi3DPainter.h" />
@@ -852,7 +924,6 @@
     <ClInclude Include="..\..\..\src\Library\Parsers\ChunkDescriptor.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\IAsciiChunkParser.h" />
-    <ClInclude Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\StdOutProgress.h" />
     <ClInclude Include="..\..\..\src\Library\pch.h" />
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\CausticPelPhotonMap.h" />
@@ -903,6 +974,7 @@
     <ClInclude Include="..\..\..\src\Library\Rendering\LuminaryManager.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedRasterizerHelper.h" />
+    <ClInclude Include="..\..\..\src\Library\Rendering\TimeIndexedMotionBlur.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\RadianceMap.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\RasterizeDispatchers.h" />
@@ -960,7 +1032,15 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditor\DirtyTracker.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\SaveEngine.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\CstIntrospection.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\PainterIntrospection.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\PainterPreview.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\MaterialPreview.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\EntityTemplates.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\ReferenceGraph.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\ConnectionLegality.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\OwnershipClosure.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\GraphLayout.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\GraphLayoutSidecar.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShader.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.h" />
@@ -986,8 +1066,8 @@
     <ClInclude Include="..\..\..\src\Library\Shaders\TranslucentPelPhotonMapShaderOp.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\TransparencyShaderOp.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AlphaTestShaderOp.h" />
+    <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShaderWiring.h" />
     <ClInclude Include="..\..\..\src\Library\TreeElementProcessor.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\BitField.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\BoundingBox.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\CIE_xyY.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\CIE_XYZ.h" />
@@ -1012,11 +1092,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\AP1RGB.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ScaleColorOperator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ShiftColorOperator.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\Color\SmartColor.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\SpectralPacket.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\SpectralPacket_Template.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\sRGB.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\Color\WardToneMappingOperator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Communications\ClientSocketCommunicator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Communications\Message.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Communications\ServerSocketCommunicator.h" />
@@ -1025,16 +1103,17 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\CPU.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\CubicInterpolator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskBuffer.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\LittleEndian.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RenderParallelScope.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\DynamicProperties.h" />
 	<ClInclude Include="..\..\..\src\Library\Utilities\FiniteMath.h" />
+	<ClInclude Include="..\..\..\src\Library\Utilities\CheckedSize.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\GeometricUtilities.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\HermiteInterpolator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\IORStack.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\IORStackSeeding.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\LoadLibrary.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\GradedIndexMedium.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Log\Log.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Log\LogEvent.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Log\MemoryTracker.h" />
@@ -1055,7 +1134,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\MediaPathLocator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MemoryBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MersenneTwister.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\MRUCache.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.hpp" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RISECBOR64.h" />
@@ -1078,6 +1156,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Plane.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Primes.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\SurfaceCurvature.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\ExpressionMemo.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomNumbers.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Ray.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RayDifferentials.h" />
@@ -1087,8 +1168,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\RTime.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RuntimeContext.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\SimpleInterpolators.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\SimpleNotification.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\stl_utils.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Threads\Threads.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Transformable.h" />
     <ClInclude Include="..\..\..\src\Library\Version.h" />
@@ -1130,9 +1209,13 @@
     <ClInclude Include="..\..\..\src\Library\Materials\GGXBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\GGXMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\GGXSPF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\HairBSDF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\HairMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\HairMedullaProfile.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SheenBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SheenMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SheenSPF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HeterogeneousMedium.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HomogeneousMedium.h" />
@@ -1212,10 +1295,10 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\AliasTable.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\BDPTUtilities.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\BSSRDFSampling.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\ExteriorIndexCache.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGB.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\SampledWavelengths.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\CompletePathGuide.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\CoreUtils.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\EquiangularSampler.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\HankelTransform.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ISampler.h" />
@@ -1231,7 +1314,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\MicrofacetUtils.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ThinFilm.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MortonCode.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\NullScatteringTracker.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\OidnConfig.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\OptimalMISAccumulator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PSSMLTSampler.h" />

@@ -16,6 +16,7 @@
 
 #include <QWidget>
 #include <QHash>
+#include <QSet>
 #include <QJsonObject>
 #include <QMap>
 #include <QDateTime>
@@ -57,6 +58,22 @@ public:
     ~ChatPanel() override;
 
     void setViewportBridge(ViewportBridge* bridge);
+
+    //! Durable document snapshots: called by MainWindow's destructor
+    //! BEFORE teardownViewport() (mirrors macOS ChatViewModel's
+    //! NSApplication.willTerminateNotification handler) so the
+    //! trajectory's final "session_end" document_snapshot + summary are
+    //! written while `m_bridge`/the viewport bridge's session are still
+    //! alive -- teardownViewport() -> setViewportBridge(nullptr) runs
+    //! AFTER this and would otherwise take that close under status
+    //! "reset" instead of the more honest "app_quit" (see
+    //! AgentChatLoop::CloseTrajectorySession's dedupe: whichever close
+    //! runs first writes the snapshot; a second close this soon after
+    //! finds nothing new and is a harmless no-op).  No-op if no
+    //! trajectory session is active.
+    //! Defined in the .cpp: AgentChatLoop is only forward-declared here,
+    //! and MSVC rejects member calls through the incomplete type.
+    void finishTrajectoryOnQuit();
 
     //! Review-round P2 (E1): the scene path is the trajectory<->document
     //! correlator; MainWindow sets it at scene load, clears it at teardown.
@@ -110,8 +127,9 @@ public:
     // (providerRequiresApiKey(m_appliedProvider) && key empty) rather than
     // inventing a second source of truth -- a keyless provider (Local/
     // Ollama) is always configured; every other provider needs a
-    // resolvable key (Keychain-equivalent: in-memory/env-var on this
-    // platform).  Reads the APPLIED provider/key (not necessarily what
+    // resolvable key (draft input, Windows Credential Manager, or
+    // environment fallback).  Reads the APPLIED provider/key (not
+    // necessarily what
     // the combo is mid-editing to -- see applyProviderChangeWithConfirmation),
     // matching what an actual send would do right now.
     bool agentConfigured() const;
@@ -172,6 +190,8 @@ private slots:
     void sendMessage();
     void providerChanged(int index);
     void modelEditingFinished();
+    void saveApiKeyClicked();
+    void clearApiKeyClicked();
     void networkFinished();
     void retryLastRequest();
 
@@ -223,6 +243,17 @@ private:
     Provider currentProvider() const;
     QString defaultModelFor(Provider provider) const;
     QString envKeyFor(Provider provider) const;
+    void ensureCredentialLoaded(Provider provider) const;
+    bool hasStoredCredential(Provider provider) const;
+    QString resolveApiKey(Provider provider) const;
+    static QString envVarHintFor(Provider provider);
+    void updateKeyControls();
+    /// The lowercase wire-provider name Arc 77 Phase 2's image-generator
+    /// wiring expects ("anthropic"/"gemini"/"openai"/"xai"/"local") --
+    /// the SAME spelling OpenAIChatCodec::Config::providerName already
+    /// uses for XAI/Local in defaultModelFor(). See
+    /// ViewportBridge::agentSetImageGenerator's doc.
+    static QString agentProviderName(Provider provider);
 
     // ---- Agent autonomy selector (2026-07 GUI composer chips) -------
     QPushButton* makeAutonomyChip(const QString& title, AutonomyLevel level, const QString& help);
@@ -466,6 +497,11 @@ private:
     QComboBox* m_providerCombo = nullptr;
     QLineEdit* m_modelEdit = nullptr;
     QLineEdit* m_apiKeyEdit = nullptr;
+    QPushButton* m_saveKeyBtn = nullptr;
+    QPushButton* m_clearKeyBtn = nullptr;
+    QLabel* m_keySourceLabel = nullptr;
+    QString m_keySaveNotice;
+    bool m_keySaveNoticeIsWarning = false;
 
     // ---- Agent autonomy selector (2026-07 GUI composer chips) -------
     // Default Apply -- matches today's actual behaviour byte-for-byte
@@ -533,14 +569,13 @@ private:
     bool m_sceneEditable = false;
     int m_nextRpcId = 1;
 
-    // P1-1: per-provider in-memory API key storage (never persisted to
-    // disk).  Keyed by static_cast<int>(Provider).  On a provider switch,
-    // applyProviderToLoop() stashes the field's current text under the
-    // OLD provider's slot before repopulating the field from the NEW
-    // provider's slot (falling back to its env var) -- a key typed for
-    // one provider must never be sent under another provider's auth
-    // header.
-    QHash<int, QString> m_keysByProvider;
+    // Per-provider Credential Manager cache (in-memory for process lifetime,
+    // mirroring macOS ChatViewModel.cachedApiKeys).  Each provider's stored
+    // secret is read from Windows Credential Manager at most once per process
+    // (tracked by m_credLoadedProviders), never written to QSettings, never
+    // echoed back into m_apiKeyEdit, and scrubbed on Clear Key / ~ChatPanel().
+    mutable QHash<int, QString> m_keysByProvider;
+    mutable QSet<int> m_credLoadedProviders;
     // The provider/model the loop is CURRENTLY configured for (as of the
     // last applyProviderToLoop() call) -- distinct from whatever the combo
     // / model field widgets are showing mid-edit.  Used by

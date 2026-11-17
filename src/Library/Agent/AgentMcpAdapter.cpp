@@ -7,6 +7,7 @@
 #include "pch.h"
 #include "AgentMcpAdapter.h"
 
+#include "AgentChatCodecs.h"
 #include "AgentRpc.h"
 #include "AgentSession.h"
 #include "Json.h"
@@ -123,9 +124,9 @@ namespace RISE
 				return o;
 			}
 
-			//! The `baseHeadVersion` object shared by all 5 mutating tools
+			//! The `baseHeadVersion` object shared by all 6 mutating tools
 			//! (propose_patch/propose_patches/insert_chunk/insert_chunks/
-			//! remove_chunk) -- optional optimistic-concurrency precondition,
+			//! remove_chunk/remove_chunks) -- optional optimistic-concurrency precondition,
 			//! {uuid,revision} both numeric.  The BATCH forms take it too:
 			//! the precondition is on the HEAD the batch starts from, not on
 			//! any one element.
@@ -229,8 +230,8 @@ namespace RISE
 				"--agent-autonomy=commit to enable it)] ";
 
 			//! Secure-MCP slice 5b fix round (P2-1): the sibling annotation for
-			//! the same 5 mutating tools (propose_patch/propose_patches/
-			//! insert_chunk/insert_chunks/remove_chunk) under
+			//! the same 6 mutating tools (propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk/remove_chunks) under
 			//! AgentAutonomy::Propose specifically.  Under Propose those
 			//! tools REACH the session (unlike Read, where kAutonomyReadNote's
 			//! tool is refused before dispatch) -- but for an External-
@@ -267,7 +268,9 @@ namespace RISE
 
 			//! Arc-75 slice S2.1: insert_material_scaffold's OWN annotation
 			//! under AgentAutonomy::Propose SPECIFICALLY.  It is a mutating
-			//! tool, but -- unlike the 5 tools kAutonomyProposeNote covers
+			//! tool, but -- unlike the 6 tools kAutonomyProposeNote covers
+			//! (R2 fix-round, 2026-08-10: recounted at the 6 actual use sites
+			//! -- the count had drifted to "5" since remove_chunks landed)
 			//! -- it is DELIBERATELY excluded from AgentRpc.cpp's
 			//! IsProposeSafeVerb (the ripple across dozens of "N mutating
 			//! verbs" prose restatements plus the two GUI client-side
@@ -305,24 +308,208 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
-			//! Build the `tools/list` result: the 21 existing AgentRpc verbs,
+			//! R2 (2026-08-10): replace_geometry_scaffold's OWN annotation
+			//! under AgentAutonomy::Propose SPECIFICALLY -- the third sibling
+			//! of the two notes above, same rationale (deliberately excluded
+			//! from IsProposeSafeVerb; refused under Propose exactly like
+			//! Read; deliberately contains neither magic substring the
+			//! per-note counters key on).
+			const std::string kReplaceGeometryScaffoldProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: replace_geometry_scaffold is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! S2 (2026-08-11): the two CLEAN-ROOM verbs' own annotations under
+			//! AgentAutonomy::Propose SPECIFICALLY -- the fourth and fifth
+			//! siblings of the three scaffold notes above, same rationale
+			//! (both mutate; both deliberately excluded from
+			//! AgentRpc.cpp's IsProposeSafeVerb rather than pay the "N mutating
+			//! verbs" prose ripple SourceHygieneTest's verb-parity scan pins;
+			//! refused under Propose exactly like Read; deliberately contains
+			//! neither magic substring the per-note counters key on).
+			//! 88 step 2 (2026-08-19): collapse_to_instances' own annotation
+			//! under AgentAutonomy::Propose SPECIFICALLY -- the same rationale
+			//! as kReplaceGeometryScaffoldProposeRefusedNote above (it mutates;
+			//! deliberately excluded from AgentRpc.cpp's IsProposeSafeVerb
+			//! rather than pay the "N mutating verbs" prose ripple
+			//! SourceHygieneTest's verb-parity scan pins; refused under Propose
+			//! exactly like Read; deliberately contains neither magic substring
+			//! the per-note counters key on).
+			const std::string kCollapseToInstancesProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: collapse_to_instances is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! 88 S5 (2026-08-20): vary_material's own annotation under
+			//! AgentAutonomy::Propose SPECIFICALLY -- same rationale as
+			//! kCollapseToInstancesProposeRefusedNote above (it mutates through one
+			//! composite whole-document swap; deliberately excluded from
+			//! AgentRpc.cpp's IsProposeSafeVerb rather than pay the "N mutating
+			//! verbs" prose ripple SourceHygieneTest's verb-parity scan pins;
+			//! refused under Propose exactly like Read; deliberately contains
+			//! neither magic substring the per-note counters key on).
+			const std::string kVaryMaterialProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: vary_material is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! Doc 90 slice R2 (2026-08-23): revert_to_revision's own annotation
+			//! under AgentAutonomy::Propose SPECIFICALLY -- same rationale as
+			//! kCollapseToInstancesProposeRefusedNote / kVaryMaterialProposeRefusedNote
+			//! above (it mutates through one composite whole-document swap;
+			//! deliberately excluded from AgentRpc.cpp's IsProposeSafeVerb
+			//! rather than pay the "N mutating verbs" prose ripple
+			//! SourceHygieneTest's verb-parity scan pins; refused under Propose
+			//! exactly like Read; deliberately contains neither magic substring
+			//! the per-note counters key on).
+			const std::string kRevertToRevisionProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: revert_to_revision is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! Cat plan item 1 (2026-08-25): fix_blend_scale's own annotation
+			//! under AgentAutonomy::Propose SPECIFICALLY -- same rationale as
+			//! kVaryMaterialProposeRefusedNote above (it mutates through one
+			//! composite whole-document swap, potentially across multiple
+			//! sdf_geometry chunks; deliberately excluded from AgentRpc.cpp's
+			//! IsProposeSafeVerb rather than pay the "N mutating verbs" prose
+			//! ripple SourceHygieneTest's verb-parity scan pins; refused
+			//! under Propose exactly like Read; deliberately contains
+			//! neither magic substring the per-note counters key on).
+			const std::string kFixBlendScaleProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: fix_blend_scale is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): add_wear's own
+			//! annotation under AgentAutonomy::Propose SPECIFICALLY -- same
+			//! rationale as kVaryMaterialProposeRefusedNote above (it mutates
+			//! through one composite whole-document swap, splicing one or two
+			//! painters and repointing the material's slots; deliberately
+			//! excluded from AgentRpc.cpp's IsProposeSafeVerb rather than pay
+			//! the "N mutating verbs" prose ripple SourceHygieneTest's
+			//! verb-parity scan pins; refused under Propose exactly like Read;
+			//! deliberately contains neither magic substring the per-note
+			//! counters key on).
+			const std::string kAddWearProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: add_wear is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! WETNESS_COAT_DESIGN sec 6/13 (2026-08-31, item 8 2026-09-01):
+			//! add_wetness's own annotation under AgentAutonomy::Propose
+			//! SPECIFICALLY -- the SAME rationale as kAddWearProposeRefusedNote
+			//! above (it mutates through one composite whole-document swap: a
+			//! Lambertian base is WRAPPED in a new `coated_material` chunk and
+			//! every bound object rebound to it, a GGX/PBR base gets one or
+			//! more field chunks spliced plus its slots repointed; deliberately
+			//! excluded from AgentRpc.cpp's IsProposeSafeVerb rather than pay
+			//! the "N mutating verbs" prose ripple SourceHygieneTest's
+			//! verb-parity scan pins; refused under Propose exactly like Read;
+			//! deliberately contains neither magic substring the per-note
+			//! counters key on).
+			const std::string kAddWetnessProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: add_wetness is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): make_fabric's own
+			//! annotation under AgentAutonomy::Propose SPECIFICALLY -- the
+			//! SAME rationale as kAddWetnessProposeRefusedNote above (it
+			//! mutates through one composite whole-document swap: up to four
+			//! minted chunks -- a dielectric-F0 painter, a substrate of the
+			//! preset's class, a weave painter and the `fabric_material`
+			//! itself -- plus every bound object's `material` reference moved
+			//! onto the wrapper; deliberately excluded from AgentRpc.cpp's
+			//! IsProposeSafeVerb rather than pay the counted-verb prose ripple
+			//! SourceHygieneTest's verb-parity scan pins; refused under
+			//! Propose exactly like Read; deliberately contains neither magic
+			//! substring the per-note counters key on).
+			const std::string kMakeFabricProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: make_fabric is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): add_fuzz's own
+			//! annotation under AgentAutonomy::Propose SPECIFICALLY -- the
+			//! SAME rationale as kMakeFabricProposeRefusedNote above (it
+			//! mutates through one composite whole-document swap: a
+			//! hair_geometry/hair_material/standard_object triad per bound
+			//! object; deliberately excluded from AgentRpc.cpp's
+			//! IsProposeSafeVerb rather than pay the counted-verb prose
+			//! ripple SourceHygieneTest's verb-parity scan pins; refused
+			//! under Propose exactly like Read; deliberately contains
+			//! neither magic substring the per-note counters key on).
+			const std::string kAddFuzzProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: add_fuzz is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			const std::string kBuildElementProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: build_element is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+			const std::string kPlaceElementProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: place_element is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! Arc 81 (2026-08-12): the clean-room LIGHTING verb's own
+			//! annotation under AgentAutonomy::Propose SPECIFICALLY -- the
+			//! sixth sibling of the notes above, same rationale (it mutates;
+			//! deliberately excluded from AgentRpc.cpp's IsProposeSafeVerb
+			//! rather than pay the "N mutating verbs" prose ripple
+			//! SourceHygieneTest's verb-parity scan pins; refused under
+			//! Propose exactly like Read; deliberately contains neither magic
+			//! substring the per-note counters key on).
+			const std::string kLightSceneProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: light_scene is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! Arc 82 (2026-08-12): the SEVENTH sibling, same rationale and
+			//! same shape -- populate_scene mutates (it inserts the
+			//! standard_object chunks its pass returned) and is deliberately
+			//! excluded from AgentRpc.cpp's IsProposeSafeVerb.
+			const std::string kPopulateSceneProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: populate_scene is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! Arc 83 slices 5 and 6 (2026-08-13): the EIGHTH and NINTH
+			//! siblings, same rationale and same shape.  environment_scene
+			//! mutates (it inserts painter / function / medium chunks and
+			//! appends the rasterizer chunk that carries its dome binding);
+			//! frame_scene mutates (it patches or replaces the camera chunk).
+			//! Both are deliberately excluded from AgentRpc.cpp's
+			//! IsProposeSafeVerb.
+			const std::string kEnvironmentSceneProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: environment_scene is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+			const std::string kFrameSceneProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: frame_scene is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! Build the `tools/list` result: the 41 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
 			//! width/height, camera vector shapes, the async-refused-headless
 			//! note, pinned semantics, samples clamp, the ODD/EVEN id-space
 			//! split, the baseHeadVersion conflict protocol, retriable).
-			//! Secure-MCP slice 2: under AgentAutonomy::Read, the 5
+			//! Secure-MCP slice 2: under AgentAutonomy::Read, the 6
 			//! mutating tools' descriptions are ANNOTATED (prefixed with
 			//! kAutonomyReadNote) rather than hidden -- see the note's doc.
 			//! Secure-MCP slice 5b: resolve_proposal is annotated (with the
 			//! DISTINCT kResolveProposalOwnerOnlyNote) under BOTH Read and
 			//! Propose -- it is refused at the dispatcher under either posture
-			//! (see AgentRpc.h); the 5 mutating tools' kAutonomyReadNote
+			//! (see AgentRpc.h); the 6 mutating tools' kAutonomyReadNote
 			//! annotation, by contrast, applies ONLY under Read (Propose lets
 			//! them reach the session, which stages rather than refuses).
 			//! Secure-MCP slice 5b fix round (P2-1): under AgentAutonomy::
-			//! Propose, the SAME 5 mutating tools instead get the DISTINCT
+			//! Propose, the SAME 6 mutating tools instead get the DISTINCT
 			//! kAutonomyProposeNote -- they are not refused (readOnly is
 			//! false), but they no longer commit directly either, so leaving
 			//! their description bare (Commit-identical) would hide that from
@@ -348,8 +535,8 @@ namespace RISE
 					"optimistic-concurrency headVersion {uuid,revision}. Works with NO scene "
 					"loaded (hasDocument:false, headVersion {0,0}) -- an agent starting from "
 					"scratch calls this first. Pass the returned headVersion back as "
-					"baseHeadVersion on any of the 5 mutating tools "
-					"(propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk) "
+					"baseHeadVersion on any of the 6 mutating tools "
+					"(propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks) "
 					"to guard against editing a stale head.",
 					ObjectProp( "", JsonValue::MakeObject(), std::vector<std::string>() ) ) );
 
@@ -415,16 +602,23 @@ namespace RISE
 					props.set( "kind",   StringProp( "OPTIONAL entity KIND keyword (e.g. \"material\", \"sphere_geometry\", \"camera\") to disambiguate a cross-category name clash." ) );
 					props.set( "param",  StringProp( "The parameter role to set (e.g. \"radius\", \"reflectance\", \"location\")." ) );
 					props.set( "value",  StringProp( "The new value, as a string (parsed per the parameter's declared kind by the derive layer)." ) );
+					props.set( "occurrence", NumberProp( "OPTIONAL 0-based index of WHICH occurrence to edit when `param` is a REPEATABLE line on the target chunk (e.g. skeleton_geometry's `joint`, sdf_geometry's `part` -- read_document lists them in document order, so \"the 5th joint line\" is occurrence 4). Omit for a param that occurs at most once. Out-of-range is refused, not clamped." ) );
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required;
 					required.push_back( "target" ); required.push_back( "param" ); required.push_back( "value" );
 					const std::string desc = ( readOnly ? kAutonomyReadNote : proposeOnly ? kAutonomyProposeNote : std::string() ) + std::string(
 						"Set one parameter on one named entity in the retained scene document. "
+						"To edit ONE line of a REPEATABLE param (skeleton_geometry's `joint`, "
+						"sdf_geometry's `part`), pass `occurrence` (0-based, document order) "
+						"naming which one -- without it every patch targets occurrence 0 "
+						"regardless of intent. "
 						"REQUIRES a scene to be loaded. Returns {applied,rawCode,status,retriable,"
-						"headVersion,message}: applied is true ONLY for a clean apply; status is "
+						"headVersion,message}: applied is true ONLY for a clean apply (except batch siblings -- see "
+						"propose_patches: a landed sibling of a diagnosed batch element is applied with rawCode 3); status is "
 						"the authoritative gate, one of \"applied\" (clean success), \"rejected\" "
 						"(refused, head byte-identical), \"diagnosed\" (the document WAS mutated but "
-						"the full re-derive emitted diagnostics -- treat as FAILURE, not success), "
+						"the full re-derive emitted diagnostics -- treat as FAILURE, not success; in a "
+						"propose_patches batch see that tool for how a shared re-derive's diagnostics are attributed), "
 						"\"conflict\" (a stale baseHeadVersion precondition -- head untouched; "
 						"re-read read_document and retry against the new headVersion), or \"staged\" "
 						"(this session's authority does not commit directly -- the edit was queued "
@@ -448,7 +642,13 @@ namespace RISE
 						"outside an Enum's declared set; `message` then lists the allowed values). An "
 						"EMPTY or ABSENT `issues` on a rejection does not mean the patch was fine; it "
 						"means this pass could not statically pin the cause, and `message` still "
-						"carries the engine's own diagnostic." );
+						"carries the engine's own diagnostic. "
+						"A rasterizer chunk's own parameters are freely editable through this verb -- "
+						"including on a bdpt/mlt/auto rasterizer the USER authored -- with exactly one "
+						"exception: pinning an `auto_rasterizer`'s or `auto_spectral_rasterizer`'s "
+						"`integrator` to `bdpt` is refused, because that IS selecting BDPT (`pt`, "
+						"`vcm` and `auto` are all fine). See insert_chunk for the rasterizer "
+						"allowlist this belongs to." );
 					tools.push_back( MakeTool( "propose_patch", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -459,11 +659,12 @@ namespace RISE
 					itemProps.set( "kind",   StringProp( "OPTIONAL entity KIND keyword to disambiguate a name clash." ) );
 					itemProps.set( "param",  StringProp( "The parameter role to set." ) );
 					itemProps.set( "value",  StringProp( "The new value string." ) );
+					itemProps.set( "occurrence", NumberProp( "OPTIONAL 0-based occurrence index for a REPEATABLE param -- same meaning as propose_patch's own `occurrence`." ) );
 					std::vector<std::string> itemRequired;
 					itemRequired.push_back( "target" ); itemRequired.push_back( "param" ); itemRequired.push_back( "value" );
 
 					JsonValue props = JsonValue::MakeObject();
-					JsonValue itemSchema = ObjectProp( "A single patch edit ({target,param,value,kind?}).", itemProps, itemRequired );
+					JsonValue itemSchema = ObjectProp( "A single patch edit ({target,param,value,kind?,occurrence?}).", itemProps, itemRequired );
 					JsonValue patchesArrSchema = JsonValue::MakeObject();
 					patchesArrSchema.set( "type", JsonValue::MakeString( "array" ) );
 					patchesArrSchema.set( "items", itemSchema );
@@ -480,7 +681,11 @@ namespace RISE
 						"does NOT stop the batch -- every remaining element is still attempted in order. `baseHeadVersion`, when given, "
 						"is checked against the FIRST element only; if it is STALE the whole batch stops with every element "
 						"status=\"conflict\" and nothing applied (re-read the document and resubmit). Returns {applied,total,results:[...]}: `total` is patches.size(), "
-						"`applied` is how many results have applied=true, and each `results[i]` is the EXACT same shape propose_patch returns." );
+						"`applied` is how many results have applied=true, and each `results[i]` is the EXACT same shape propose_patch returns. "
+						"The whole batch is realized by ONE re-derive, so every result carries the same headVersion; if that re-derive "
+						"emits diagnostics, the element a diagnostic names is status=\"diagnosed\" and the other landed elements are "
+						"applied=true with rawCode 3 and the diagnostics in `message` (every landed element is \"diagnosed\" when no "
+						"diagnostic names one) -- a diagnosed element IS in the document, so do not resubmit it." );
 					tools.push_back( MakeTool( "propose_patches", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -514,7 +719,19 @@ namespace RISE
 						"in detail (`suggestions` lists near-miss candidate names, best match "
 						"first) -- but an EMPTY `issues` on a rejection does not mean the chunk was "
 						"fine; it means this pass could not statically pin the cause, and `message` "
-						"still carries the engine's own diagnostic." );
+						"still carries the engine's own diagnostic. "
+						"A rasterizer chunk inserted this way becomes the ACTIVE integrator, and "
+						"RASTERIZER SELECTION IS ALLOWLISTED on this surface: you may insert "
+						"`pathtracing_pel_rasterizer`, `pathtracing_spectral_rasterizer`, "
+						"`vcm_pel_rasterizer` or `vcm_spectral_rasterizer` -- PT for general scenes, "
+						"VCM for caustic/refractive/dispersive transport. `bdpt_pel_rasterizer`, "
+						"`bdpt_spectral_rasterizer`, `mlt_rasterizer`, `mlt_spectral_rasterizer`, "
+						"`auto_rasterizer` and `auto_spectral_rasterizer` are SPECIALIZED and are "
+						"refused, with no override parameter -- only the USER selects those (in the "
+						"GUI, or by authoring the chunk into the scene file). The frozen legacy rasterizers "
+						"`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer` are refused "
+						"too (material alpha works under PT and VCM). A scene that ALREADY contains a blocked rasterizer stays fully "
+						"editable, including that chunk's own parameters." );
 					tools.push_back( MakeTool( "insert_chunk", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -529,10 +746,10 @@ namespace RISE
 						"the given array order. USE THIS instead of many separate insert_chunk calls "
 						"when adding a coherent group of chunks -- e.g. a painter plus the material "
 						"that references it, a geometry, and the object that binds them together, or "
-						"a whole lighting rig -- it is ONE round-trip instead of N. Each chunk is "
-						"realized via the SAME dry-run-guarded full re-derive insert_chunk uses (a "
-						"failed dry-run for one element leaves the document AND the live scene byte-"
-						"identical for THAT element -- no half-applied state for it). Order matters: "
+						"a whole lighting rig -- it is ONE round-trip instead of N. The whole batch is "
+						"realized by ONE dry-run-guarded full re-derive (an element that would not derive "
+						"is refused on its own and the rest still land -- no half-applied state for it). "
+						"Order matters: "
 						"a chunk that is referenced by a later one in this array must appear BEFORE "
 						"it, same rule as across separate insert_chunk calls -- e.g. a painter chunk "
 						"at index 0 followed by a material chunk at index 1 that names it resolves "
@@ -545,14 +762,23 @@ namespace RISE
 						"against the FIRST element only -- later elements apply against the head as "
 						"this batch has evolved it so far. Returns {applied,total,results:[...]}: "
 						"`total` is chunks.size(), `applied` is how many of `results` have "
-						"applied=true, and each `results[i]` is the EXACT same shape insert_chunk "
+						"applied=true (a status=\"diagnosed\" element is ALSO in the document -- the "
+						"batch is realized by ONE re-derive, whose diagnostics mark the element they "
+						"name, or every landed element when they name none; do not resubmit it), and each `results[i]` is the shape insert_chunk "
 						"returns for `chunks[i]` -- {applied,rawCode,status,retriable,headVersion,"
-						"message,name,kind,issues?} -- including insert_chunk's `issues` reasons "
+						"message,name,kind,issues?}, except that a CLEAN success (status applied, no "
+						"issues, nothing to report beyond the standard insert) carries only "
+						"{applied,status,headVersion,name,kind,element?}; any element with something to report "
+						"keeps every field -- including insert_chunk's `issues` reasons "
 						"(\"unresolved_reference\", \"unknown_param\", \"numeric_in_reference_slot\", "
 						"\"unknown_chunk_type\") and its forward-reference-warning-on-success "
 						"behaviour. Check every element's own status; do not assume the whole batch "
 						"succeeded just because the call itself returned. REQUIRES a scene to be "
-						"loaded; `chunks` must be a non-empty array of strings." );
+						"loaded; `chunks` must be a non-empty array of strings. "
+						"The rasterizer allowlist insert_chunk documents applies here too, and it is "
+						"the ONE refusal that is NOT best-effort: a blocked rasterizer anywhere in "
+						"the array refuses the WHOLE batch atomically -- nothing is inserted and the "
+						"head version does not move." );
 					tools.push_back( MakeTool( "insert_chunks", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -583,11 +809,11 @@ namespace RISE
 						"Expand ONE of five material-family templates into a small wired painter graph "
 						"(2-4 painters + 1 material) added to the scene in one call. Families: "
 						"\"weathered_wood\" (pbr_metallic_roughness, base_color AND roughness both bound to a "
-						"domainwarp3d wood-grain painter), \"rough_stone\" (cooktorrance, rd bound to a worley3d "
-						"pebble field, facets bound to a spatially-varying scalar field), \"brushed_metal\" "
-						"(ward_anisotropic, alphax/alphay both bound to a spatially-varying scalar field at "
-						"different scale for the anisotropic groove), \"aged_bronze\" (cooktorrance, rd bound to "
-						"a reactiondiffusion3d oxidation-patina field, facets bound to a spatially-varying "
+						"domainwarp3d wood-grain painter), \"rough_stone\" (ggx with fresnel_mode schlick_f0 and a 0.04 dielectric F0 tint, rd bound to a worley3d "
+						"pebble field, alphax/alphay both bound to a spatially-varying scalar field), \"brushed_metal\" "
+						"(ggx with fresnel_mode schlick_f0, alphax/alphay both bound to a spatially-varying scalar field at "
+						"different scale for the anisotropic groove), \"aged_bronze\" (ggx conductor, rd bound to "
+						"a reactiondiffusion3d oxidation-patina field, alphax/alphay both bound to a spatially-varying "
 						"scalar field), \"glazed_ceramic\" (ggx with fresnel_mode schlick_f0, alphax/alphay both "
 						"bound to a LOW-amplitude spatially-varying scalar field). Every family binds AT LEAST "
 						"ONE microsurface parameter to a real painter chunk. ALL FIVE params are REQUIRED, no "
@@ -606,53 +832,1459 @@ namespace RISE
 					tools.push_back( MakeTool( "insert_material_scaffold", desc, ObjectProp( "", props, required ) ) );
 				}
 
-				// insert_geometry_scaffold (Arc-75 slice S3b)
+				// file_build_plan (G2, 2026-08-10; S1 schema v3, 2026-08-11) --
+				// READ-SAFE (no autonomy note of any kind: it is on
+				// IsReadSafeVerb, so it dispatches under Read and Propose
+				// exactly as under Commit).
+				{
+					JsonValue entryProps = JsonValue::MakeObject();
+					entryProps.set( "element", StringProp(
+						"Required. The name of this element, in your own words (e.g. \"wizard\", \"terrain\")." ) );
+					// S1 (2026-08-11): the REQUIRED piece list.  Declarative --
+					// nothing validates, gates or scores the names; finish_element
+					// reports which of them appear in a created chunk's NAME.
+					{
+						JsonValue piecesProp = JsonValue::MakeObject();
+						piecesProp.set( "type", JsonValue::MakeString( "array" ) );
+						piecesProp.set( "minItems", JsonValue::MakeNumber( 1.0 ) );
+						piecesProp.set( "maxItems", JsonValue::MakeNumber(
+							static_cast<double>( AgentSession::kBuildPlanMaxPiecesPerElement ) ) );
+						piecesProp.set( "items", StringProp( "" ) );
+						piecesProp.set( "description", JsonValue::MakeString(
+							"Required, at least one -- the pieces this element breaks down into, in your own "
+							"words (e.g. [\"robe\",\"hat\",\"beard\",\"staff\"]). Any names are accepted and "
+							"nothing checks what they say. They are a declaration, not a commitment: nothing "
+							"requires a chunk per piece and no piece is separately gated." ) );
+						entryProps.set( "pieces", piecesProp );
+					}
+					// C4 (2026-08-19): an ARRAY of one or two methods.  The
+					// enum, the count and the cap are all DERIVED from
+					// AgentSession's constants, so this surface cannot drift
+					// from what the dispatcher enforces -- the chat codec's
+					// hand-authored twin can only state them verbatim, which
+					// is what SourceHygieneTest's parity scan pins.
+					JsonValue construction = JsonValue::MakeObject();
+					construction.set( "type", JsonValue::MakeString( "array" ) );
+					construction.set( "minItems", JsonValue::MakeNumber( 1.0 ) );
+					construction.set( "maxItems", JsonValue::MakeNumber(
+						static_cast<double>( AgentSession::kBuildPlanMaxConstructionMethods ) ) );
+					{
+						JsonValue items = StringProp( "" );
+						JsonValue enumArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < AgentSession::kBuildPlanConstructionCount; ++i )
+							enumArr.push_back( JsonValue::MakeString( AgentSession::kBuildPlanConstructionValues[i] ) );
+						items.set( "enum", enumArr );
+						construction.set( "items", items );
+					}
+					construction.set( "description", JsonValue::MakeString(
+						"Required. An array of 1 to " +
+						std::to_string( AgentSession::kBuildPlanMaxConstructionMethods ) + " of: " +
+						AgentSession::BuildPlanConstructionList() + " -- no repeats. Name two when the "
+						"element really is built two ways (e.g. [\"lathe\",\"sweep\"] for a turned "
+						"vessel with a coiled pipe); you then get the grammar for both. A single "
+						"method may also be sent as a plain string instead of a one-item array." ) );
+					entryProps.set( "construction", construction );
+					// G3a (2026-08-10): the REQUIRED outline and the OPTIONAL
+					// view.  Kept semantically identical to the chat codec's
+					// hand-authored copy of the same contract
+					// (AgentChatCodecs.cpp kToolDefs) -- SourceHygieneTest's
+					// G2/G3a parity scan is what pins the two together.
+					entryProps.set( "outline", StringProp(
+						"Required. A closed 2D outline of this element as semicolon-separated \"x y\" points, "
+						"at least 3 of them -- e.g. \"0 0; 3 0.4; 4 1.6; 1.2 2.1; -0.3 1.1\". The last point "
+						"joins back to the first automatically. Units and origin are yours; the shape is "
+						"scaled to fit its own bounding box. Self-intersecting outlines are allowed (filled "
+						"by the even-odd rule). Rejected only if it has fewer than 3 points, a point that is "
+						"not two finite numbers, or all points on one horizontal or vertical line." ) );
+					JsonValue view = StringProp(
+						"Optional, default \"front\". Which axis-aligned direction this outline is drawn from." );
+					{
+						JsonValue viewEnum = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < AgentSession::kBuildPlanViewCount; ++i )
+							viewEnum.push_back( JsonValue::MakeString( AgentSession::kBuildPlanViewValues[i] ) );
+						view.set( "enum", viewEnum );
+					}
+					entryProps.set( "view", view );
+					entryProps.set( "note", StringProp( "Optional free text about this element." ) );
+					std::vector<std::string> entryRequired;
+					entryRequired.push_back( "element" ); entryRequired.push_back( "pieces" );
+					entryRequired.push_back( "construction" ); entryRequired.push_back( "outline" );
+
+					JsonValue elementsProp = JsonValue::MakeObject();
+					elementsProp.set( "type", JsonValue::MakeString( "array" ) );
+					elementsProp.set( "minItems", JsonValue::MakeNumber( 1.0 ) );
+					// G3a: the resource bound, machine-readable rather than
+					// only enforced at the dispatcher.
+					elementsProp.set( "maxItems", JsonValue::MakeNumber(
+						static_cast<double>( AgentSession::kBuildPlanMaxElements ) ) );
+					elementsProp.set( "items", ObjectProp( "", entryProps, entryRequired ) );
+					elementsProp.set( "description", JsonValue::MakeString(
+						"Required, at least one entry -- the elements of the scene you are about to build." ) );
+
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "elements", elementsProp );
+					std::vector<std::string> required;
+					required.push_back( "elements" );
+
+					const std::string desc =
+						"File the build plan for the scene you are building: one entry per ELEMENT, each broken "
+						"into named PIECES, each naming how it will be constructed AND carrying a 2D outline "
+						"sketch of it. On a session "
+						"that has not filed one, EVERY call that "
+						"creates geometry (insert_chunk/insert_chunks carrying a geometry chunk, "
+						"insert_geometry_scaffold, replace_geometry_scaffold) is refused and names this "
+						"tool -- up to 3 refusals; the 4th such call is let through and the gate stops "
+						"intercepting for the rest of the session. `pieces` is REQUIRED per element: at least "
+						"one name, in your own words; any names are accepted and nothing checks them. "
+						"`construction` is REQUIRED per element: an ARRAY of one or two methods (a single "
+						"method may also be written as a plain string, e.g. \"lathe\" instead of "
+						"[\"lathe\"] -- both are accepted). Name TWO when the element genuinely needs "
+						"two, e.g. [\"lathe\",\"sweep\"] for a copper still whose pot is a solid of "
+						"revolution and whose condenser is a coiled tube: you are then given the grammar "
+						"and a worked example for BOTH, and hand-approximating one of them is what "
+						"naming only one leads to. At most 2 per element and no repeats -- each method "
+						"you name adds its own grammar to what the builder reads, and an element needing "
+						"three methods is two elements. Every entry "
+						"must be one of exactly: \"primitive\" (a single built-in shape chunk -- balls, "
+						"crates, poles, rings; the blockout default), \"csg\" (a csg_object or an "
+						"sdf_geometry combining shapes with boolean ops -- union/subtract/intersect: drilled "
+						"bores, clipped tapers, lenses), \"sweep\" (a sweep_geometry profile swept along a "
+						"path -- tentacles, stems, handles; taper and closed loops), \"lathe\" (a "
+						"lathe_geometry: an open `profile_point <r> <h>` silhouette spun about an axis -- "
+						"vases, bottles, goblets, turned legs, finials, any solid of revolution), \"chain\" "
+						"(a skeleton_geometry joint graph, or sdf_geometry parts blended with smin, into "
+						"one continuous form -- creature bodies, limbs, spines, necks, vessel bodies; a "
+						"chunk mixing smin AND booleans is \"chain\" -- the blend characterises the form, "
+						"booleans are trim), \"displaced\" (a "
+						"displaced_geometry driven by a painter -- terrain, bark, rock faces), \"mesh\" (a "
+						"triangle-mesh chunk -- imported "
+						"or authored assets). Only `sweep`, `chain` and `lathe` summon their chunk's schema "
+						"and a worked example into the builder prompt; every other value (`primitive`, "
+						"`csg`, `displaced`, `mesh`) adds nothing beyond the always-present basics and "
+						"costs one of the two method slots -- declare those alone for a simple element, "
+						"never beside a richer method; a creature is typically `chain` + `sweep`. "
+						"`outline` is REQUIRED per element: a closed 2D polygon of at "
+						"least 3 \"x y\" "
+						"points separated by semicolons, in any units you like (it is scaled to fit its own "
+						"bounding box). Any shape is accepted, a rough blob included. Each outline is drawn "
+						"into a 256x256 silhouette and returned to you as one tiled image alongside its point "
+						"count, filled-area fraction and aspect ratio, so you can see what you sketched. Any "
+						"construction answer is accepted, including \"primitive\" for every element. The plan "
+						"is NOT binding: declaring one construction and then authoring a different chunk "
+						"kind is allowed and is never refused, and no piece has to become a chunk. "
+						"FILING STARTS THE BUILD: the session enters the PIECES phase with the FIRST element "
+						"active, every chunk created while an element is active is recorded against it, "
+						"finish_element closes it and moves to the next, and after the last one the session "
+						"enters the COMPOSE phase. An edit aimed at a chunk recorded against a DIFFERENT "
+						"element is refused (up to 3 times, then the phase rules stop intercepting); chunks "
+						"with no element recorded against them, and light, camera, film, rasterizer, "
+						"rasterizer-output, material and painter chunks, are editable in every phase. "
+						"Filing does not change the document -- no chunk, no head "
+						"version, no undo step -- so there is no baseHeadVersion and no conflict outcome. "
+						"Returns {filed,replacedPreviousPlan,elementCount,elements:[{element,pieces,"
+						"construction,note,outline,view,pointCount,areaFraction,aspect}],phase,activeElement,"
+						"png_base64,compositeWidth,compositeHeight,message} "
+						"-- the composite sketch image also rides back as an MCP image content block. "
+						"Calling it again replaces the previous plan, every sketch filed with it, and every "
+						"chunk-to-element record, and makes the first element of the new plan active.";
+					tools.push_back( MakeTool( "file_build_plan", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// finish_element / reopen_element (S1, 2026-08-11) -- READ-SAFE
+				// (both on IsReadSafeVerb; no autonomy note).  THE CODEC TEXT IS
+				// CANONICAL AND THIS MIRRORS IT, for the drift-class reason
+				// recorded on file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					std::vector<std::string> required;
+					const std::string desc =
+						"Close the element you are working on and move to the next one. Takes no arguments -- "
+						"it closes whichever element is currently active. Returns the facts of that element: "
+						"the chunks recorded against it, which of its declared pieces have a chunk whose NAME "
+						"contains that piece name (a case-insensitive substring check on names only -- it says "
+						"nothing about what was built or how well), the phase the session is now in, and the "
+						"next active element. It also returns TWO ISOLATE RENDERS of the element side by side "
+						"-- the object recorded against it, alone in the frame and auto-framed AT CLOSE RANGE; "
+						"when several objects were recorded, the one with the most authored parts (an "
+						"sdf_geometry's part lines, say), ties going to the larger bounding box and then the "
+						"name; the message says which, and finishing again with no change to the shape shows "
+						"the next one. LEFT is a DRAFT (studio-preview shading: the material's own BSDF "
+						"shaded under a crude fixed rig, so form, proportion and coarse colour are visible but "
+						"there is no true light response -- no shadows, reflection/refraction, or emission); "
+						"RIGHT is the same object's MATERIALS under a fixed studio light rig that "
+						"replaces the scene's own lighting for that render only. The message asks you to "
+						"reopen_element if detail you authored is missing or melted, and to fix the material if "
+						"a surface reads as one flat colour or something meant to be glass or membrane reads "
+						"opaque. After the "
+						"LAST element it enters the COMPOSE phase, where arrangement, lighting, camera, "
+						"materials and edits to any element's chunks are allowed and creating new geometry is "
+						"refused. Nothing is required of an element before you finish it, and nothing is "
+						"scored. It changes nothing in the document -- no chunk, no head version, no undo "
+						"step. ok:false means the call did nothing (no build plan filed, or every element is "
+						"already finished) and message says which. Returns {ok,element,phase,nextElement,"
+						"chunks,piecesNamed,piecesNotNamed,isolate,isolateCandidates,rendered,png_base64,"
+						"message} -- the isolate render also rides back as an MCP image content block.";
+					tools.push_back( MakeTool( "finish_element", desc, ObjectProp( "", props, required ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "element", StringProp(
+						"Required. The name of an element in the filed build plan, exactly as you filed it." ) );
+					std::vector<std::string> required;
+					required.push_back( "element" );
+					const std::string desc =
+						"Go back to an element you already finished, or switch to a different one. The named "
+						"element becomes active, the session returns to the PIECES phase, and chunks you "
+						"create from then on are recorded against it. Legal from any phase, including "
+						"compose; it is never refused and never counts against any refusal cap. It is the "
+						"way out of the compose phase's refusal to create new geometry. It changes nothing in the "
+						"document -- no chunk, no head version, no undo step. ok:false means the call did "
+						"nothing (no build plan filed, or that name is not in it, in which case the message "
+						"lists the names that are). Returns {ok,element,phase,previousPhase,chunks,"
+						"unfinished,message}.";
+					tools.push_back( MakeTool( "reopen_element", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// build_element / place_element (S2, 2026-08-11) -- the two
+				// CLEAN-ROOM verbs.  Both MUTATE (build_element inserts what the
+				// builder returned; place_element submits one patch batch), so
+				// neither is read-safe; both are additionally excluded from
+				// AgentRpc's Propose-autonomy allowlist, exactly like the three
+				// scaffold verbs, and carry the same kScaffoldProposeRefusedNote
+				// caveat on this surface.  THE CODEC TEXT IS CANONICAL AND THIS
+				// MIRRORS IT, for the drift-class reason recorded on
+				// file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "element", StringProp(
+						"Required. The name of the ACTIVE element, exactly as filed in file_build_plan. "
+						"A name that is not the active element does nothing and says which element is "
+						"active." ) );
+					JsonValue heightProp = JsonValue::MakeObject();
+					heightProp.set( "type", JsonValue::MakeString( "number" ) );
+					heightProp.set( "description", JsonValue::MakeString(
+						"Required. How tall the element should be in world units (its Y extent). Must "
+						"be greater than 0. A request, not a limit -- the realised bounding box comes "
+						"back in the result and nothing is refused for missing it." ) );
+					props.set( "height", heightProp );
+					props.set( "notes", StringProp(
+						"Optional free text passed to the builder alongside the pieces and the outline "
+						"-- anything about this element the plan does not already say. Nothing checks "
+						"what it says." ) );
+					std::vector<std::string> required;
+					required.push_back( "element" );
+					required.push_back( "height" );
+
+					// readOnly and proposeOnly are BOTH refusals for this verb,
+					// with different truthful wording (see
+					// kBuildElementProposeRefusedNote's doc).
+					const std::string desc =
+						( readOnly ? kAutonomyReadNote
+						            : proposeOnly ? kBuildElementProposeRefusedNote
+						                          : std::string() ) +
+						std::string(
+						"Build the ACTIVE element in one go: this call asks the session's provider, in "
+						"a FRESH context that contains nothing but the scene-language grammar for the "
+						"chunk kinds involved, the pieces declared for this element, the outline "
+						"sketched for it, the requested height and a fixed local-frame contract, to "
+						"construct the whole element on its own. What comes back is split into chunks, "
+						"checked, and inserted here. It is the way the FIRST geometry for an element "
+						"gets made: while the active element has no chunk recorded against it, "
+						"insert_chunk and insert_chunks carrying a geometry chunk are refused and name "
+						"this tool -- up to 3 refusals shared with the other build-phase rules, after "
+						"which they stop intercepting. Once the element has any chunk recorded against "
+						"it, authoring geometry for it by hand is allowed and is never refused again. "
+						"Only geometry chunks are ever refused this way; materials, painters and "
+						"standard_objects never are. THE ELEMENT IS BUILT AT THE ORIGIN, NOT IN PLACE: "
+						"the contract sent to the builder puts the element's base-centre at (0,0,0) "
+						"with +Y up, facing +Z -- place_element is what moves it into the scene "
+						"afterwards. `height` is a REQUEST, not a limit: the realised bounding box is "
+						"measured and reported back, and nothing is refused for missing it. EVERY "
+						"CHUNK NAME MUST BEGIN with the element's prefix (the element name lowercased, "
+						"non-alphanumerics collapsed to underscores, plus a trailing underscore -- "
+						"\"wizard\" gives \"wizard_\"); a chunk whose name does not begin with the "
+						"required prefix is rejected and is NOT renamed, because renaming would break "
+						"the references between the builder's own chunks. If anything is rejected, ONE "
+						"repair retry runs automatically with the exact rejection text -- one, then it "
+						"stops, and whatever landed stays landed. Nothing is ever dropped silently: a "
+						"chunk that came back unclosed, unnamed, wrongly prefixed or rejected by "
+						"insertion is reported with its reason. Everything that lands is recorded "
+						"against the active element exactly as if it had been inserted directly. The "
+						"element's FIRST object also mints its ROOT NODE -- a geometry-less "
+						"`standard_object` container named \"<prefix>element_root\" that every object "
+						"of this element is parented to, so the element is one subtree in the scene "
+						"graph and place_element moves it with a single transform. You may parent "
+						"objects to each other inside the element to build real internal hierarchy; "
+						"a `parent` you write yourself is never overruled. On a "
+						"provider that cannot run a separate completion this returns ok:false with a "
+						"plain statement, nothing else changes, and authoring by hand is not blocked. "
+						"Returns {ok,element,provider,model,chunksExtracted,landed,"
+						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
+						"sdfPartCount,bbox:{min,max,height},message}; landed names every chunk that "
+						"went in (landedKinds gives each one's kind, landedAttempts the attempt -- 1, or 2 for the "
+						"repair retry -- that landed it; each rejected entry carries its attempt too), and "
+						"chunkResults details only the "
+						"chunks that did not insert cleanly or carry a notice." );
+					tools.push_back( MakeTool( "build_element", desc, ObjectProp( "", props, required ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "element", StringProp(
+						"Required. The name of an element in the filed build plan, exactly as you "
+						"filed it." ) );
+					// S2 fix-round (2026-08-11, P2): this SHORT line used to say only
+					// "where the base-centre goes", which reads as an absolute world
+					// coordinate; the OFFSET/compose semantics were stated only in the
+					// fuller tool description below.  Now unmistakable here too --
+					// mirrors AgentChatCodecs.cpp's identical fix verbatim.
+					props.set( "position", StringProp(
+						"Required. Where the element's base-centre goes in WORLD space, as \"x y z\". "
+						"ABSOLUTE, not an offset: it is written to the element's root node, so calling "
+						"again with the same value changes nothing. Each object's own position inside "
+						"the element is scaled, rotated and then added to it, so the internal "
+						"arrangement is unchanged." ) );
+					JsonValue scaleProp = JsonValue::MakeObject();
+					scaleProp.set( "type", JsonValue::MakeString( "string" ) );
+					scaleProp.set( "description", JsonValue::MakeString(
+						"Optional, default \"1\". ONE uniform factor (\"2\") or THREE per-axis factors "
+						"(\"sx sy sz\"). Every component must be finite and greater than 0 -- a zero "
+						"makes the element's composed transform singular for every object under it. "
+						"Scaling is about the element's own origin." ) );
+					props.set( "scale", scaleProp );
+					props.set( "orientation", StringProp(
+						"Optional, default \"0 0 0\". Euler degrees about the element's own origin, as "
+						"\"ex ey ez\"." ) );
+					std::vector<std::string> required;
+					required.push_back( "element" );
+					required.push_back( "position" );
+
+					const std::string desc =
+						( readOnly ? kAutonomyReadNote
+						            : proposeOnly ? kPlaceElementProposeRefusedNote
+						                          : std::string() ) +
+						std::string(
+						"Move an element into the scene: ONE local transform written to the "
+						"element's ROOT NODE -- a container object every chunk the element created is "
+						"parented to -- so an element built at the origin ends up where you want it "
+						"without patching each object. `position` is where the element's base-centre "
+						"goes; each object's own position inside the element is scaled, rotated and "
+						"then added to it by the engine's `world = parent.world * local` composition, "
+						"so the objects keep their arrangement relative to one another. `scale` is one "
+						"uniform factor or three per-axis factors about that same origin. "
+						"`orientation` is Euler degrees about it. Rotation and scale are EXACT for "
+						"every object under the root, including objects that carry a rotation of "
+						"their own and objects authored with `quaternion` or `matrix` -- a child's "
+						"transform is its LOCAL one and composes as a matrix. The objects' own "
+						"authored values are NEVER rewritten, and the placement is ABSOLUTE: calling "
+						"again with the same arguments changes nothing, so you can re-place freely. "
+						"Legal in the pieces phase and in the compose phase. The whole placement is "
+						"ONE batch, so ONE head version bump and ONE undo step. `skipped` names any "
+						"object recorded against the element that the root does not carry (it was "
+						"authored with a `parent` of its own pointing outside the element, or it is a "
+						"CSG operand, which cannot be parented). ok:false means nothing was submitted "
+						"(no build plan, an element that is not in it, or an element with no root node "
+						"-- the root is created with the element's FIRST object) and the document is "
+						"unchanged. Returns {ok,element,root,objects,skipped:[{object,reason}],"
+						"patchResults,patchesApplied,patchesRejected,bbox:{min,max},message}." );
+					tools.push_back( MakeTool( "place_element", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// light_scene (Arc 81, 2026-08-12) -- the clean-room LIGHTING
+				// verb.  It MUTATES (it inserts what its pass returned), so it
+				// is not read-safe, and it is additionally excluded from
+				// AgentRpc's Propose-autonomy allowlist exactly like the two
+				// clean-room verbs above, carrying the matching note.  THE
+				// CODEC TEXT IS CANONICAL AND THIS MIRRORS IT, for the
+				// drift-class reason recorded on file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "notes", StringProp(
+						"Optional free text passed to the lighting pass alongside the inventory and "
+						"the camera -- anything about the mood or the look this scene's own state does "
+						"not already say. Nothing checks what it says." ) );
+					const std::vector<std::string> required;   // no required params
+
+					const std::string desc =
+						( readOnly ? kAutonomyReadNote
+						            : proposeOnly ? kLightSceneProposeRefusedNote
+						                          : std::string() ) +
+						std::string(
+						"Design the whole scene's lighting: this call first answers WHAT IN THIS WORLD "
+						"PHYSICALLY EMITS LIGHT for this scene in one request -- the sun or sky, an "
+						"opening light arrives through, a fixture or lamp, or something that itself "
+						"glows; things in the world, never a renderer light kind -- then authors the "
+						"chunks for ALL of those sources together in one further request. Both requests "
+						"run in their own separate FRESH context that contains nothing but this scene's "
+						"object inventory (every object, its screen footprint and its world position), "
+						"the camera, the scene's world bounds, the imagined description if the session has "
+						"one, and the lights that already exist; the second request additionally gets "
+						"the light palette with its grammar. At most 16 sources; a longer enumeration is "
+						"cut to its first 16 and the result says so. For the model this is still ONE call "
+						"and ONE result: both requests run here, so its turn count does not grow with "
+						"the lighting. What comes "
+						"back is split into chunks, checked, and inserted here. THE PALETTE LEADS "
+						"WITH AREA LIGHTING and is the only entry carrying a complete worked "
+						"example. A rectangular area light is ONE chunk, rect_light, taking center, "
+						"size, facing, color and exitance. A glowing SOLID is also ONE chunk, "
+						"shape_light, taking shape (sphere, ellipsoid, box or cylinder), center, "
+						"size, orientation, color and exitance -- a closed solid emits outward in "
+						"every direction, so it needs no facing. The parser expands either into the "
+						"general form, which is what any other shape of emitter needs -- an "
+						"ordinary object wearing an emissive lambertian_luminaire_material, which is "
+						"a painter plus that material plus a geometry plus a standard_object -- and "
+						"being an ordinary object, it is rendered like one: the camera sees its "
+						"surface, so it is both a light and a thing the picture shows. Then "
+						"hosek_wilkie_skylight (a physically based analytic sun-and-sky). Then "
+						"omni_light, spot_light and directional_light with their parameters and no "
+						"example -- they are zero-area idealizations whose shadows have no penumbra, "
+						"for special cases. Each request to insert one is refused once with the facts "
+						"and the alternatives, and the identical request after that refusal is applied. "
+						"shape_light, rect_light, an emissive object and hosek_wilkie_skylight are "
+						"never subject to this at all. ambient_light is NOT offered and is REFUSED on every "
+						"path that could create one, in every phase and with the build protocol off: "
+						"it contributes the same color * power at every shading point, has no "
+						"position or direction, and casts no shadow ray, so it can produce neither a "
+						"shadow nor any falloff. It is the way the FIRST lighting for a "
+						"composed scene gets made: in the COMPOSE phase, while light_scene has not "
+						"run, insert_chunk and insert_chunks carrying a light chunk are refused and "
+						"name this tool -- up to 3 refusals shared with the other build-phase rules, "
+						"after which they stop intercepting. Once light_scene has run, authoring "
+						"lights by hand is allowed and is never refused again; editing a light that "
+						"already exists is never refused at all, and lights created inside an element "
+						"window in the pieces phase are not affected by any of this. THERE IS NO NAME "
+						"PREFIX -- lights are scene-global and belong to no element -- but a name "
+						"already used in the scene is rejected and NOT renamed, because renaming would "
+						"break the references between the pass's own chunks. This call only ADDS: it "
+						"never removes a light, and it will not accept a camera, a film, a rasterizer "
+						"or a shader op, nor geometry unless the same answer defines an emissive "
+						"material to put on it. If the build's answer rejects anything, ONE repair "
+						"retry runs automatically with the exact rejection text over the WHOLE build, "
+						"then it stops, and "
+						"whatever landed stays landed. Nothing is ever dropped silently. The result "
+						"then reports WHAT EACH LIGHT ACTUALLY DOES: every light, emissive object and "
+						"environment in the scene is rendered ALONE at a small size and its frame's "
+						"mean luma reported, against the same frame with all of them lit. That "
+						"measurement is capped and the message says so when the cap applies; the "
+						"figures do not sum to the all-lights frame, because light transport through "
+						"this renderer is not additive. On a provider that cannot run a separate "
+						"completion this returns ok:false with a plain statement, nothing else "
+						"changes, and authoring lights by hand is not blocked. Returns "
+						"{ok,provider,model,chunksExtracted,landed,rejected:[{name,kind,reason}],"
+						"chunkResults,retryRan,retrySucceeded,soloableLights,soloed,"
+						"allLightsMeanLuma,contributions:[{name,kind,soloed,meanLuma,share,reason}],"
+						"sourcesPlanned,sourcesReturned,sourcesTruncated,completions,"
+						"areaLights,zeroAreaLights,skyLights,otherLights,"
+						"sources:[string],"
+						"message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds." );
+					tools.push_back( MakeTool( "light_scene", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// populate_scene (Arc 82, 2026-08-12) -- the clean-room
+				// POPULATION verb.  It MUTATES (it inserts the standard_object
+				// chunks its pass returned), so it is not read-safe, and it is
+				// additionally excluded from AgentRpc's Propose-autonomy
+				// allowlist exactly like light_scene, carrying the matching
+				// note.  THE CODEC TEXT IS CANONICAL AND THIS MIRRORS IT, for
+				// the drift-class reason recorded on file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "notes", StringProp(
+						"Optional free text passed to the population pass alongside the inventory and "
+						"the camera -- anything about what this scene is that its own state does not "
+						"already say. Nothing checks what it says." ) );
+					const std::vector<std::string> required;   // no required params
+
+					const std::string desc =
+						( readOnly ? kAutonomyReadNote
+						            : proposeOnly ? kPopulateSceneProposeRefusedNote
+						                          : std::string() ) +
+						std::string(
+						"Populate the scene: this call asks the session's provider, in a FRESH context "
+						"that contains nothing but this scene's object inventory (every object, its "
+						"screen footprint and its world position), the camera, the scene's world bounds, "
+						"the imagined description if the session has one, and A LIST OF THE GEOMETRIES "
+						"AND MATERIALS THIS SCENE ALREADY HAS with the objects currently using each, to "
+						"place more objects. What comes back is split into chunks, checked, and inserted "
+						"here. IT CREATES standard_object CHUNKS AND NOTHING ELSE: no geometry, no "
+						"material, no painter, no light, no camera. "
+						"Each chunk must do one of two things. "
+						"Either it must name a geometry and a material THAT ALREADY EXIST. "
+						"Or it clones an existing object with `source <object>`. "
+						"A clone keeps its source's geometry and material, so omit `material` there. "
+						"A clone may add count_u / count_v and expr(...) positions. "
+						"Counts must be positive integer literals (no expr, let names or decimals), and count_v needs count_u. "
+						"The source must already exist in the scene: not declared in the same call, "
+						"not itself carrying counts, and not given new children in the same call. "
+						"A chunk may not repeat a parameter such as count_u or parent. "
+						"One chunk may make at most 256 objects, counting the source's whole subtree. "
+						"One call may make at most 1024 objects in total. "
+						"The reported object counts are upper bounds (exact for ordinary objects). "
+						"A chunk naming an unknown geometry, material or source is rejected with that reason, "
+						"and a chunk of any other kind is rejected too. "
+						"Making new form is build_element's job, not this one's. The prompt carries ONE "
+						"worked example, built from this scene's own geometry and material names so it "
+						"is literally insertable here. It is the way the FIRST compose-phase render gets "
+						"earned: in the COMPOSE phase, while populate_scene has not run, the first "
+						"full-scene render is refused ONCE and names this tool -- one refusal, shared "
+						"with the other build-phase rules and capped with them, after which every render "
+						"proceeds whether or not this ran; renders in the pieces phase are never "
+						"refused, and neither is a render with `isolate` or `zoom`. A name already used in the "
+						"scene is rejected and NOT renamed. If anything is rejected, ONE repair retry "
+						"runs automatically with the exact rejection text -- one, then it stops, and "
+						"whatever landed stays landed. Nothing is ever dropped silently. The result "
+						"reports which objects were created and what geometry and material each one "
+						"repeats, what was rejected and why, and the scene's object count before and "
+						"after. On a provider that cannot run a separate completion this returns "
+						"ok:false with a plain statement, nothing else changes, and authoring "
+						"standard_object chunks by hand is not blocked. A scene with no standard_object "
+						"naming both a geometry and a material has nothing to repeat, and this returns "
+						"ok:false saying so without calling the provider. Returns {ok,provider,model,"
+						"chunksExtracted,created:[{name,geometry,material}],"
+						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
+						"objectsBefore,objectsAfter,message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in created, with its kind." );
+					tools.push_back( MakeTool( "populate_scene", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// environment_scene (Arc 83 slice 5, 2026-08-13) -- the
+				// clean-room ENVIRONMENT verb.  It MUTATES (it inserts painter /
+				// function / medium chunks and appends the rasterizer chunk
+				// carrying its dome binding), so it is not read-safe, and it is
+				// additionally excluded from AgentRpc's Propose-autonomy
+				// allowlist exactly like light_scene, carrying the matching
+				// note.  THE CODEC TEXT IS CANONICAL AND THIS MIRRORS IT, for
+				// the drift-class reason recorded on file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "notes", StringProp(
+						"Optional free text passed to the environment pass alongside the inventory and "
+						"the camera -- anything about the place or the weather this scene's own state "
+						"does not already say. Nothing checks what it says." ) );
+					const std::vector<std::string> required;   // no required params
+
+					const std::string desc =
+						( readOnly ? kAutonomyReadNote
+						            : proposeOnly ? kEnvironmentSceneProposeRefusedNote
+						                          : std::string() ) +
+						std::string(
+						"Author the scene's SURROUND: what fills the frame where no object is, and the "
+						"medium light travels through. This call asks the session's provider, in a "
+						"FRESH context that contains nothing but this scene's object inventory (every "
+						"object, its screen footprint and its world position), the camera, the scene's "
+						"world bounds, the lights that already exist, the imagined description if the "
+						"session has one, and WHAT ENVIRONMENT THIS SCENE ALREADY HAS, to write the "
+						"environment. It is ONE request, because there is one environment. What comes "
+						"back is split into chunks, checked, and inserted here. THE PALETTE IS TWO "
+						"FAMILIES. THE DOME is a PAINTER -- there is no environment chunk in this "
+						"language -- evaluated at a u,v derived from the ray direction, and a graded "
+						"one is two colours plus an expression_function2d ramp plus a blend_painter "
+						"mixing them, while a noise painter gives cloud or foam structure and an "
+						"hdr_painter or exr_painter names an image file. THE MEDIUM is a "
+						"homogeneous_medium (absorption, scattering, and phase on one line as either "
+						"`isotropic` or `hg <g>`) or a painter_heterogeneous_medium, plus a "
+						"global_medium chunk naming it, which is how this renderer spells fog, haze, "
+						"underwater depth falloff and shafts of light. THE BINDING IS MADE FOR THE "
+						"MODEL: the LAST painter the answer lands is bound as the scene's radiance map "
+						"with the camera background on, by a rasterizer chunk this call appends "
+						"carrying every parameter the previous one had -- so any painter written "
+						"before it is an input that one is built from, and the document ends with two "
+						"rasterizer chunks of which the last is live. IT ACCEPTS painter, function and "
+						"medium chunks and NOTHING ELSE: a geometry or a standard_object is rejected "
+						"by name, because a backdrop plane or a sky dome built as a shape is FORM and "
+						"making new form is build_element's job, not this one's; a camera, a film, a "
+						"rasterizer and a shader op are rejected too; and hosek_wilkie_skylight is "
+						"rejected because it is a light chunk that installs a dome itself and belongs "
+						"to light_scene -- on a scene that already carries one, this pass authors no "
+						"dome at all and writes only the medium. It is HALF of the way the FIRST "
+						"compose-phase render gets earned: in the COMPOSE phase the first full-scene "
+						"render is refused ONCE and names whichever of populate_scene and "
+						"environment_scene have not yet run -- one refusal for the whole checklist, "
+						"shared with the other build-phase rules and capped with them, after which "
+						"every render proceeds whether or not either ran; renders in the pieces phase "
+						"are never refused, and neither is a render with `isolate`. A name already "
+						"used in the scene is rejected and NOT renamed. If anything is rejected, ONE "
+						"repair retry runs automatically with the exact rejection text -- one, then it "
+						"stops, and whatever landed stays landed. Nothing is ever dropped silently. "
+						"The result reports what landed, what was bound, whether the scene has a dome "
+						"and a global medium before and after, and the frame's TONAL DISTRIBUTION "
+						"measured before and after -- a mean, a spread and two percentiles of the same "
+						"small internal render, compared to nothing. On a provider that cannot run a "
+						"separate completion this returns ok:false with a plain statement, nothing "
+						"else changes, and authoring painter and medium chunks by hand is not blocked. "
+						"Returns {ok,provider,model,chunksExtracted,landed,"
+						"rejected:[{name,kind,reason}],chunkResults,patchResults,retryRan,"
+						"retrySucceeded,"
+						"completions,painters,media,boundPainter,bindingApplied,bindingReason,"
+						"rasterizer,radianceMapBefore,radianceMapAfter,globalMediumBefore,"
+						"globalMediumAfter,toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},"
+						"toneAfter:{...},message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds." );
+					tools.push_back( MakeTool( "environment_scene", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// frame_scene (Arc 83 slice 6, 2026-08-13) -- the clean-room
+				// FRAMING verb.  It MUTATES (it patches or replaces the camera
+				// chunk), so it is not read-safe, and it is additionally
+				// excluded from AgentRpc's Propose-autonomy allowlist exactly
+				// like light_scene, carrying the matching note.  THE CODEC TEXT
+				// IS CANONICAL AND THIS MIRRORS IT.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "notes", StringProp(
+						"Optional free text passed to the framing pass alongside the inventory and the "
+						"current camera -- anything about the shot that this scene's own state does "
+						"not already say. Nothing checks what it says." ) );
+					const std::vector<std::string> required;   // no required params
+
+					const std::string desc =
+						( readOnly ? kAutonomyReadNote
+						            : proposeOnly ? kFrameSceneProposeRefusedNote
+						                          : std::string() ) +
+						std::string(
+						"Frame the scene: decide where the camera goes and what it looks at. This call "
+						"asks the session's provider, in a FRESH context that contains nothing but THE "
+						"FULL INVENTORY OF THIS SCENE -- every object, its screen footprint, where it "
+						"sits in the frame and, for the ones covering no pixels, WHY (its bounding box "
+						"is behind the camera, or projects entirely off-frame in a named direction, or "
+						"crosses the camera plane) -- plus the current camera chunk VERBATIM and its "
+						"resolved pose, the scene's world bounds, the frame's measured tone, the "
+						"imagined description if the session has one, and the camera palette with each "
+						"kind's own parameters. It is ONE request, because there is one camera. IT "
+						"RETURNS CAMERA PARAMETERS ONLY: exactly ONE camera chunk is accepted, a "
+						"second is rejected with that reason, and a geometry, a light, a material or a "
+						"`film` chunk is rejected by name -- film carries width, height and pixelAR, "
+						"which is raster-size policy rather than framing, and this call never changes "
+						"them. If the camera it writes is the SAME KIND the scene already has, each "
+						"parameter it names is applied to that chunk as one patch batch -- one head "
+						"bump, one undo step -- and any parameter it leaves out keeps the value it "
+						"has; a DIFFERENT kind is inserted and the previous camera chunk then removed, "
+						"in that order so a failed insert can never leave the scene with no camera. "
+						"THE RESULT IS MEASURED, NOT ASSERTED: the same object-coverage pass runs "
+						"through the camera before the edit and again through the camera after it, and "
+						"the result states how many objects covered at least one pixel on each side, "
+						"naming the ones brought into the picture and the ones no longer in it. If the "
+						"new camera covers FEWER objects that is stated plainly and NOTHING is "
+						"reverted -- a closer view of fewer things is a framing decision, not an "
+						"error. It is the way the FIRST framing of a composed scene gets made: in the "
+						"COMPOSE phase, while frame_scene has not run, the first camera-authoring edit "
+						"-- an insert or a patch of a camera chunk -- is refused ONCE and names this "
+						"tool; one refusal, shared with the other build-phase rules and capped with "
+						"them, after which every camera edit proceeds whether or not this ran. Camera "
+						"edits in the pieces phase are never refused. THIS CALL ITSELF IS ORDERED, too: "
+						"frame_scene frames what the scene CONTAINS, and in the COMPOSE phase, while "
+						"populate_scene has not yet reached the provider, frame_scene is refused ONCE "
+						"and names populate_scene -- the same shared refusal, capped with the others, "
+						"after which every frame_scene call proceeds whether or not populate_scene ran. "
+						"If anything is rejected, ONE repair retry runs automatically with the exact "
+						"rejection text -- one, then it "
+						"stops. Nothing is ever dropped silently. On a provider that cannot run a "
+						"separate completion this returns ok:false with a plain statement, nothing "
+						"else changes, and editing the camera by hand is not blocked. Returns {ok,"
+						"provider,model,chunksExtracted,action,cameraKindBefore,cameraNameBefore,"
+						"cameraKindAfter,cameraNameAfter,paramsApplied,rejected:[{name,kind,reason}],"
+						"patchResults,chunkResults,retryRan,retrySucceeded,completions,objectsBefore,"
+						"coveredBefore,objectsAfter,coveredAfter,broughtIntoFrame,pushedOutOfFrame,"
+						"message}." );
+					tools.push_back( MakeTool( "frame_scene", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// imagine_scene (Arc 77 Phase 2, 2026-08-11) -- READ-SAFE (on
+				// IsReadSafeVerb, so it dispatches under Read and Propose
+				// exactly as under Commit; no autonomy note).
+				//
+				// THE CODEC TEXT IS CANONICAL AND THIS MIRRORS IT.  Every
+				// contract sentence below is kept semantically identical to
+				// AgentChatCodecs.cpp's kToolDefs entry for the same tool, for
+				// the drift-class reason recorded on file_build_plan above: a
+				// caveat that lives on only one of the two hand-authored
+				// surfaces silently changes the mechanism for whichever
+				// transport reads the other one.  SourceHygieneTest's
+				// build-plan/imagination parity scan pins the sentences.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "description", StringProp(
+						"Required. Your own words for what the finished scene should look like -- what is in "
+						"it, how it is arranged, how it is lit, what it feels like. Write it as you would "
+						"describe a picture to someone who will draw it." ) );
+					std::vector<std::string> required;
+					required.push_back( "description" );
+
+					const std::string desc =
+						"Imagine the finished scene before you build it: write your own visual description of "
+						"what it should look like -- subject, composition, lighting, mood, colour -- and this "
+						"call asks your provider to generate one image from exactly that text, returns it to "
+						"you, and holds it as this session's SCENE TARGET. `description` is REQUIRED and is "
+						"free text; nothing checks what it says, and no wording is preferred. Writing the "
+						"description IS the imagining -- the image is what lets you check yourself against it "
+						"afterwards. Your words are the SUBJECT; the image is requested in a simple, "
+						"flat-shaded 3D-render style so it is something this renderer can actually approach, "
+						"rather than concept art it cannot. Once a target exists, every full-frame production "
+						"render (not draft, not a mode: render, not an isolate or zoom render) also carries a "
+						"`sceneTarget` block -- {imagined, targetWidth, targetHeight, composite, "
+						"compositeWidth, compositeHeight} -- and any such render you ask an image of shows "
+						"that target ABOVE your render in one picture, separated by a grey rule, in place of "
+						"the rendered frame on its own. The render half is exactly the size the frame alone "
+						"would have been, so looking at the target costs you no resolution. THERE IS NO SCORE "
+						"and there is deliberately no similarity number: comparing the two pictures is your "
+						"job, not a metric's, and nothing is gated on the target, no reproduction is expected, "
+						"and the target is a reminder of what you set out to make rather than a "
+						"specification. Calling it again replaces "
+						"this session's scene target. On a provider that does not generate images this returns "
+						"ok:false with a plain statement and nothing else changes -- no call is blocked by the "
+						"absence of a target. It changes nothing in the document -- no chunk, no head version, "
+						"no undo step -- so there is no baseHeadVersion and no conflict outcome. Returns "
+						"{ok,imagined,replacedPreviousTarget,provider,model,width,height,png_base64,message} "
+						"-- the generated image also rides back as an MCP image content block.";
+					tools.push_back( MakeTool( "imagine_scene", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// set_render_anchor (doc 90 slice R1, 2026-08-22) -- READ-SAFE
+				// (on IsReadSafeVerb, so it dispatches under Read and Propose
+				// exactly as under Commit; no autonomy note).
+				//
+				// THE CODEC TEXT IS CANONICAL AND THIS MIRRORS IT, for the
+				// drift-class reason recorded on file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					std::vector<std::string> required;
+
+					const std::string desc =
+						"Keep the render you are looking at as this session's ANCHOR -- the picture every "
+						"later render is shown beside. Call it the moment a render is better than the one "
+						"you have been comparing against; it takes NO arguments and pins your MOST RECENT "
+						"full-frame production render. WHY IT EXISTS: without an anchor you only ever see "
+						"the newest frame, so an edit that made the scene worse looks exactly like one that "
+						"made it better, and a long refinement pass can walk a good scene downhill with "
+						"nothing noticing. From the first full-frame production render after you finish your "
+						"last element (or, in a session with no build plan, your first full-frame render), "
+						"every such render you ask an image of comes back as ONE picture -- the anchor "
+						"ABOVE, this render BELOW, each pane labelled with the head revision it was rendered "
+						"at -- and the result carries an `anchor` block: {anchored, established, "
+						"anchorRevision, currentRevision, composite, compositeWidth, compositeHeight}. THERE "
+						"IS NO SCORE and there is deliberately no similarity number: which of the two "
+						"pictures is better is your judgment, nothing is gated on it, and no particular "
+						"answer is expected. The render that BECAME the anchor carries no composite -- there "
+						"is nothing yet to set it beside. Draft renders, mode: renders, isolate renders and zoom renders "
+						"are never anchored and never compared, because a difference against one of those "
+						"would be a render setting rather than a change to the scene. It changes nothing in "
+						"the document -- no chunk, no head version, no undo step -- so there is no "
+						"baseHeadVersion and no conflict outcome. Returns "
+						"{ok,pinned,anchorRevision,previousAnchorRevision,message}; ok:false means only that "
+						"no full-frame production render has completed in this session yet.";
+					tools.push_back( MakeTool( "set_render_anchor", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// revert_to_revision (doc 90 slice R2, 2026-08-23) -- the OTHER
+				// half of the ratchet, and MUTATING: commit-only, for the SAME
+				// reason collapse_to_instances is (one composite whole-document
+				// swap is no AgentProposalKind an Owner could approve
+				// card-by-card, so an External-authority session cannot stage
+				// it either).
+				//
+				// THE CODEC TEXT IS CANONICAL AND THIS MIRRORS IT, for the
+				// drift-class reason recorded on file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "revision", NumberProp(
+						"REQUIRED. The head revision to restore the document to -- a number this session has "
+						"already reported to you (a render's anchorRevision, or the headVersion.revision of an "
+						"earlier edit result). NOT the current head: that is refused, because there would be "
+						"nothing to restore." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;
+					required.push_back( "revision" );
+
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kRevertToRevisionProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"PUT THE WHOLE DOCUMENT BACK to what it was at an earlier head revision of this "
+						"session. Call it the moment you can see that the scene got worse -- most often "
+						"straight after a render whose anchor pane looks better than the render below it, "
+						"passing the anchor's revision. Every render and every edit result you have received "
+						"carries the head revision it belongs to; those are the numbers this takes. WHAT IT "
+						"DOES: the restore is ONE NEW EDIT producing a NEW head revision whose contents equal "
+						"the old one's. Nothing is rewound and no history is rewritten -- the revision you are "
+						"leaving stays available, so you can revert the revert if the older scene turns out to "
+						"be worse after all, and one undo in the app undoes the restore like any other edit. It "
+						"is a WHOLE-DOCUMENT restore: everything goes back together, including chunks you "
+						"added since. It REFUSES, changing nothing, when the revision is the CURRENT head "
+						"(there is nothing to restore), is higher than the head (it does not exist yet), or is "
+						"one this session no longer holds -- it keeps the recent revisions its own edits and "
+						"renders passed through, and a refusal names the oldest one still available. Returns "
+						"{ok,applied,rawCode,status,retriable,headVersion,requestedRevision,previousRevision,"
+						"oldestAvailableRevision,droppedAttributions?,restoredAttributions?,message}; "
+						"`previousRevision` is the head you just left, which "
+						"is the number to pass to undo this restore, and a PRE-COMMIT refusal is ok=false with "
+						"an EMPTY status, so branch on `applied`. Always pass the headVersion you last read as "
+						"baseHeadVersion." );
+					tools.push_back( MakeTool( "revert_to_revision", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// insert_geometry_scaffold (Arc-75 slice S3b; extended by slice E3
+				// with blended_chain, volume_bank)
 				{
 					JsonValue props = JsonValue::MakeObject();
 					props.set( "family", StringProp(
-						"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column." ) );
+						"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, "
+						"volume_bank, quadruped (alias: creature)." ) );
 					props.set( "name", StringProp(
 						"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated "
 						"chunk is named tmpl_<name>_<role>, e.g. tmpl_rail1_rail." ) );
-					props.set( "size", NumberProp( "Overall scale, > 0." ) );
+					props.set( "size", NumberProp( "Overall scale, > 0 (for blended_chain: base radius at the FIRST point)." ) );
 					props.set( "detail", NumberProp(
-						"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation, per family." ) );
-					props.set( "aspect", NumberProp( "Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form)." ) );
+						"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation / "
+						"node density / density-field swirl, per family.  NOT used by quadruped (omit it there)." ) );
+					props.set( "aspect", NumberProp(
+						"Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form). Required for "
+						"every family EXCEPT blended_chain and quadruped (omit it for those two)." ) );
+					props.set( "points", StringProp(
+						"blended_chain ONLY, REQUIRED: 2-6 semicolon-separated \"x y z\" triplets, e.g. "
+						"\"0 0 0; 0.5 1.2 -0.3; 1 3 0\" -- the spine path; the first/last node lands exactly on "
+						"the first/last triplet." ) );
+					props.set( "taper", NumberProp(
+						"blended_chain ONLY, REQUIRED: 0..1, end-to-end radius falloff from the first point to the last." ) );
+					props.set( "tone", StringProp(
+						"volume_bank ONLY, REQUIRED: \"r g b\", each 0..1 -- the medium's scatter tint." ) );
+					props.set( "build", StringProp(
+						"quadruped ONLY, optional (default \"average\"): \"lean\" / \"average\" / \"stocky\" -- a "
+						"stance preset that rescales leg length/girth and body girth together." ) );
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required;
 					required.push_back( "family" ); required.push_back( "name" ); required.push_back( "size" );
-					required.push_back( "detail" ); required.push_back( "aspect" );
+					// `detail` is NOT in the unconditional required set --
+					// like `aspect`/`points`/`taper`/`tone`, whether it is
+					// actually needed DIFFERS BY FAMILY (see the
+					// description's own per-family table); quadruped is
+					// the first family that needs it not at all.
 					// insert_geometry_scaffold is Commit-only, the SAME
 					// posture as insert_material_scaffold (see
 					// kGeometryScaffoldProposeRefusedNote's doc).
 					const std::string desc = ( readOnly ? kAutonomyReadNote
 					                          : proposeOnly ? kGeometryScaffoldProposeRefusedNote
 					                          : std::string() ) + std::string(
-						"Expand ONE of four geometry-family templates into a small GEOMETRY-ONLY chunk graph "
-						"(1-3 chunks) added to the scene in one call. Families: \"displaced_slab\" (a box "
-						"tessellated + bumped by a perlin2d noise source via displaced_geometry), \"sweep_rail\" "
-						"(a compact closed polygon profile swept along a short bowed path with a taper, via "
-						"sweep_geometry), \"blended_vessel\" (a base/belly/rim roundcone chain smoothly blended "
-						"into a vessel or bowl silhouette, via sdf_geometry), \"sdf_column\" (a base/shaft/"
-						"capital roundcone chain into a turned-column silhouette, via sdf_geometry). Unlike "
-						"insert_material_scaffold, this tool NEVER emits a material or a standard_object -- YOU "
-						"wire the standard_object (and any material) yourself, referencing the returned "
-						"`geometry.name`. Families cover common forms; anything else is hand-authored alongside "
-						"using the ordinary geometry chunks -- this tool composes with hand authoring, it does "
-						"not replace it. ALL THREE params are REQUIRED, no defaults -- a missing one is a "
-						"blocking error naming it. Internal graph constants are jittered deterministically from "
-						"`name`: the SAME name reproduces byte-identical chunks, a DIFFERENT name visibly "
-						"differs. Every generated chunk is an ORDINARY, EDITABLE document chunk named "
-						"tmpl_<name>_<role> -- read_document shows them, and propose_patch/remove_chunk work on "
-						"them exactly like any hand-authored chunk. Applied IN ORDER through the SAME batch "
-						"machinery insert_chunks uses (SEQUENTIAL, BEST-EFFORT). Returns "
-						"{applied,total,results:[...]} -- the EXACT insert_chunk per-element shape -- plus "
-						"`geometry` ({name,kind} of the one geometry chunk to bind into a "
-						"standard_object.geometry slot). Check every element's own status. A missing/invalid "
-						"param, an unrecognized family, or a NAME COLLISION refuses the WHOLE call before any "
-						"chunk is generated (document unchanged) -- reported as a tool error, not a partial "
-						"result. Always pass the headVersion you last read as baseHeadVersion." );
+						"Expand ONE of SEVEN geometry-family templates into a small chunk graph added to the scene "
+						"in one call. Families: \"displaced_slab\" (a box tessellated + bumped by a perlin2d "
+						"noise source via displaced_geometry), \"sweep_rail\" (a compact closed polygon profile "
+						"swept along a short bowed path with a taper, via sweep_geometry), \"blended_vessel\" "
+						"(a base/belly/rim roundcone chain smoothly blended into a vessel or bowl silhouette, via "
+						"sdf_geometry), \"sdf_column\" (a base/shaft/capital roundcone chain into a turned-column "
+						"silhouette, via sdf_geometry), \"blended_chain\" (a smin-blended chain of spheres swept "
+						"along a path YOU author with `points` -- a continuous, tapered limb/branch/tendril), "
+						"\"volume_bank\" (an elongated atmospheric volume -- container + near-invisible "
+						"dielectric shell + a swirling painter-driven heterogeneous medium, fully wired), "
+						"\"quadruped\" (alias \"creature\": a generic four-legged animal SKELETON via "
+						"skeleton_geometry -- spine, neck, head, muzzle, two proportioned ears, a tapering tail, "
+						"and four upper/lower/paw legs, ~18-24 joints, ready to rename/reposition/re-radius. THE "
+						"START-FROM-RIGHT ANSWER for a creature body: skeleton_geometry's blend radius is "
+						"per-bone and self-scaling, so it structurally cannot fall into the fixed-k trap the "
+						"DESIGN_SDF_BLEND_SCALE advisory catches on hand-authored sdf_geometry -- reach for this "
+						"family FIRST for any mammal-like body, and hand-author skeleton_geometry directly only "
+						"when the generic topology is the wrong starting shape). The FIRST SIX families emit "
+						"GEOMETRY ONLY -- YOU wire the standard_object (and any material) yourself, referencing "
+						"the returned `geometry.name`. volume_bank is the SOLE exception -- it ALSO emits a "
+						"dielectric material, a medium, and a standard_object (a bare volume graph does nothing "
+						"until an object binds it, and the medium's density-field bbox must match that object's "
+						"placement -- the returned `message` on success carries the one wiring caveat this "
+						"implies if you reposition it). Families cover common forms; anything else is "
+						"hand-authored alongside using the ordinary geometry chunks -- this tool composes with "
+						"hand authoring, it does not replace it. REQUIRED params DIFFER BY FAMILY, no defaults "
+						"-- a missing one for the resolved family is a blocking error naming it: `family`/`name`/"
+						"`size` always; displaced_slab/sweep_rail/blended_vessel/sdf_column ALSO need `detail`/"
+						"`aspect`; blended_chain ALSO needs `points`/`taper`/`detail` (NO `aspect`); volume_bank "
+						"ALSO needs `aspect`/`detail`/`tone` (NO `points`/`taper`); quadruped needs NEITHER "
+						"`detail` NOR `aspect` -- only the optional `build` (default \"average\"). Internal graph "
+						"constants are jittered deterministically from `name`: the SAME name (and other params) "
+						"reproduces byte-identical chunks, a DIFFERENT name visibly differs. Every generated "
+						"chunk is an ORDINARY, EDITABLE document chunk named tmpl_<name>_<role> -- read_document "
+						"shows them, and propose_patch/remove_chunk work on them exactly like any hand-authored "
+						"chunk. Applied IN ORDER through the SAME batch machinery insert_chunks uses (SEQUENTIAL, "
+						"BEST-EFFORT). Returns {applied,total,results:[...]} -- the EXACT insert_chunk "
+						"per-element shape -- plus `geometry` ({name,kind} of the one geometry chunk to bind "
+						"into a standard_object.geometry slot) and, for volume_bank only, `material`/`medium`/"
+						"`object` ({name,kind} each) plus a factual `message`. Check every element's own status. "
+						"A missing/invalid param, an unrecognized family, or a NAME COLLISION refuses the WHOLE "
+						"call before any chunk is generated (document unchanged) -- reported as a tool error, "
+						"not a partial result. Always pass the headVersion you last read as baseHeadVersion." );
 					tools.push_back( MakeTool( "insert_geometry_scaffold", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// replace_geometry_scaffold (R2, 2026-08-10)
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "target", StringProp(
+						"The NAME of the standard_object whose geometry to replace -- the OBJECT, not the "
+						"geometry chunk." ) );
+					props.set( "family", StringProp(
+						"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, "
+						"quadruped (alias: creature). (volume_bank is NOT available here -- it emits its own "
+						"standard_object.)" ) );
+					props.set( "name", StringProp(
+						"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated "
+						"chunk is named tmpl_<name>_<role>, e.g. tmpl_rail1_rail." ) );
+					props.set( "size", NumberProp( "Overall scale, > 0 (for blended_chain: base radius at the FIRST point)." ) );
+					props.set( "detail", NumberProp(
+						"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation / "
+						"node density, per family.  NOT used by quadruped (omit it there)." ) );
+					props.set( "aspect", NumberProp(
+						"Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form). Required for "
+						"every family EXCEPT blended_chain and quadruped (omit it for those two)." ) );
+					props.set( "points", StringProp(
+						"blended_chain ONLY, REQUIRED: 2-6 semicolon-separated \"x y z\" triplets, e.g. "
+						"\"0 0 0; 0.5 1.2 -0.3; 1 3 0\" -- the spine path; the first/last node lands exactly on "
+						"the first/last triplet." ) );
+					props.set( "taper", NumberProp(
+						"blended_chain ONLY, REQUIRED: 0..1, end-to-end radius falloff from the first point to the last." ) );
+					props.set( "build", StringProp(
+						"quadruped ONLY, optional (default \"average\"): \"lean\" / \"average\" / \"stocky\"." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;
+					required.push_back( "target" ); required.push_back( "family" ); required.push_back( "name" );
+					required.push_back( "size" );
+					// `detail` is NOT unconditionally required -- see
+					// insert_geometry_scaffold's own identical note; quadruped
+					// needs neither `detail` nor `aspect`.
+					// replace_geometry_scaffold is Commit-only, the SAME posture
+					// as its two scaffold siblings (see
+					// kReplaceGeometryScaffoldProposeRefusedNote's doc) -- and,
+					// unlike them, an External-authority session cannot stage it
+					// either (it is one composite document swap, not a chunk edit
+					// an Owner approves card-by-card).
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kReplaceGeometryScaffoldProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"REPLACE THE FORM of a part already in the scene: expand a geometry family template exactly "
+						"as insert_geometry_scaffold does, and rebind an EXISTING object's geometry to it, in ONE "
+						"call. Reach for this whenever a rendered shape reads as too plain or the wrong form -- it "
+						"costs the same single call a colour tweak costs. `target` names the standard_object (NOT "
+						"the geometry chunk -- passing a geometry name is refused with the names of the objects "
+						"that use it). The object's position, orientation, scale, material and every other "
+						"parameter are PRESERVED byte-for-byte; only `geometry` changes, so placement stays put "
+						"across a form change. Families and their per-family required params are IDENTICAL to "
+						"insert_geometry_scaffold's (including \"quadruped\"/\"creature\", the self-scaling "
+						"skeleton_geometry family), with ONE exception: \"volume_bank\" is not available here "
+						"(it emits its own standard_object -- use insert_geometry_scaffold for it). The old "
+						"geometry chunk is REMOVED when nothing else references it; when something does, it is "
+						"RETAINED and the referrers are named in the result. Chunks left unreferenced one hop "
+						"deeper (e.g. the noise source that only fed the old displaced geometry) are REPORTED in "
+						"`orphans` for removal with remove_chunks -- never deleted silently. ATOMIC: one head "
+						"version bump, one undo step, and on ANY refusal (unknown or ambiguous target, name "
+						"collision, a stale baseHeadVersion conflict, a candidate that would not derive, or a "
+						"transient busy/in-progress reject) NOTHING changes -- check `status`: \"applied\" is "
+						"the only outcome where anything landed. The ONE exception is \"diagnosed\": the "
+						"Document WAS mutated (the new geometry landed and the object's slot was rebound) but "
+						"the re-derive still emitted diagnostics, so `previousGeometry`/`orphans` describe "
+						"something real, not a discarded plan -- look at the log before touching this part "
+						"again. Returns {applied,total,results:[...],status,retriable,headVersion,target,"
+						"geometry:{name,kind},previousGeometry:{name,kind,removed,referrers},orphans,message} "
+						"-- every `results` element carries the SAME verdict, because the call is ONE mutation, "
+						"not a batch. Always pass the headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "replace_geometry_scaffold", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// collapse_to_instances (88 step 2, 2026-08-19) -- the VERB half of design-note
+				// condition C.  Hand-authored HERE and semantically identical to the chat-codec
+				// definition in AgentChatCodecs.cpp's kToolDefs (two texts, one verb -- a semantic
+				// change to either must land in both).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "target", StringProp(
+						"OPTIONAL. The name of ANY ONE standard_object in the run of copies to collapse. Omit it "
+						"to take the LARGEST run of hand-authored copies in the document -- which is what a "
+						"DESIGN NOTE about repeated copies is pointing at, so the no-argument call is the usual "
+						"one." ) );
+					props.set( "name", StringProp(
+						"OPTIONAL. The name for the instancing chunk. Omit for <source>_array. A grid also mints "
+						"<name>_row0 for the remainder of the first row." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason replace_geometry_scaffold is: this
+					// verb commits ONE composite whole-document swap, which is no
+					// AgentProposalKind an Owner could approve card-by-card, so an
+					// External-authority session cannot stage it either.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kCollapseToInstancesProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"REWRITE a run of hand-authored copies as ONE instancing chunk. Call this the moment you "
+						"notice (or are told) that several standard_objects share one geometry and differ only in "
+						"where they sit -- five bottles along a shelf, a grid of books, a row of fence posts. It "
+						"keeps the FIRST copy, replaces the others with a `source` + `count_u` chunk whose "
+						"`position expr(...)` reproduces exactly the positions they already had, and does the "
+						"whole thing in ONE call, ONE headVersion bump and ONE undo step. THE RENDERED SCENE IS "
+						"UNCHANGED -- this is a re-expression, not a redesign: nothing moves and nothing "
+						"disappears, because `source` COPIES rather than moves or hides (which is why `count_u` "
+						"is one LESS than the number of copies -- the kept one is still there). Pass NO ARGUMENTS "
+						"to collapse the largest such run. It REFUSES, changing nothing and costing only this "
+						"call, whenever it cannot prove the rewrite is exact: copies that are not on a regular "
+						"line or grid, copies that differ in orientation/quaternion/scale as well as position, "
+						"any copy carrying a `matrix` (which overrides position), or any copy NAMED by another "
+						"chunk (a `parent` link, an override_object, a CSG operand -- and a child of the kept "
+						"copy would be cloned into every minted copy, since `source` copies a whole SUBTREE). A "
+						"refusal is a real answer with the reason in `message`: read it and leave the objects "
+						"alone rather than retrying with hand-written chunks. A GRID takes TWO instancing chunks "
+						"rather than one, because the kept copy already occupies the first cell and there is no "
+						"way to skip a cell. Returns {ok,applied,rawCode,status,retriable,headVersion,message,"
+						"source,geometry,collapsed,countU,countV,instanceChunks,removedObjects}; a PRE-COMMIT "
+						"refusal is ok=false with an EMPTY status, so branch on `applied`. Always pass the "
+						"headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "collapse_to_instances", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// vary_material (88 S5, 2026-08-20) -- the VERB half of design-note
+				// condition D.  Hand-authored HERE and semantically identical to the
+				// chat-codec definition in AgentChatCodecs.cpp's kToolDefs (two texts,
+				// one verb -- a semantic change to either must land in both).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "material", StringProp(
+						"OPTIONAL. The name of the material to vary. Omit it to take the MOST PROMINENT "
+						"material whose microsurface is still a bare number -- which is what a DESIGN NOTE "
+						"about constant microsurface is pointing at, so the no-argument call is the usual "
+						"one. Mutually exclusive with `all`." ) );
+					props.set( "all", BoolProp(
+						"OPTIONAL, default false. Materials-realism item 2: fix EVERY currently-flagged "
+						"material in this ONE call instead of the most prominent one -- the coverage-per-"
+						"call fix for a scene with many flagged materials (a DESIGN NOTE reporting \"N of M "
+						"materials vary\" is exactly when this is the right call). Applies the SAME per-"
+						"material idiom as the single-material form, most-referenced-first, capped at 24 "
+						"per call; the response's `remaining` count says how many are left -- call again "
+						"with `all:true` to continue. Mutually exclusive with `material`." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason collapse_to_instances is:
+					// this verb commits ONE composite whole-document swap, which is no
+					// AgentProposalKind an Owner could approve card-by-card, so an
+					// External-authority session cannot stage it either.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kVaryMaterialProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"MAKE ONE MATERIAL'S ROUGHNESS VARY ACROSS THE SURFACE, in one call. Call this the "
+						"moment you notice (or are told) that a scene's materials all carry a bare number in "
+						"their microsurface slot -- `roughness 0.3`, `alphax 0.1`, `facets 0.05`. Real "
+						"surfaces are not uniformly polished, and a scene where every roughness is one "
+						"constant reads as untextured geometry no matter how good the lighting is. It adds "
+						"ONE `scalar_painter { expression ... }` chunk holding an fbm wear field BANDED "
+						"AROUND THE NUMBER THAT IS ALREADY THERE (roughly 0.7x .. 1.4x of it, or 0.7x .. 1.15x "
+						"once that number is already above 1, so the band always keeps headroom) and rebinds the "
+						"material's roughness slot(s) to it -- ONE headVersion bump, ONE undo step. The "
+						"material stays the material you authored: only the microsurface stops being flat. "
+						"Pass NO ARGUMENTS to take the most prominent qualifying material. Pass `material` to "
+						"name a different one, or `all:true` to fix EVERY currently-flagged material in ONE "
+						"call (capped at 24; the response names how many remain -- call again to continue). "
+						"Every knob it writes is a named `param` carrying min/max/step/"
+						"label (rough_lo, rough_hi, field_scale, field_contrast) plus a `seed`, so retuning it "
+						"afterwards is one propose_patch on a named line rather than an edit to expression "
+						"text -- and that is the idiom to COPY when you author varying scalars by hand. It "
+						"REFUSES, changing nothing and costing only this call, when no material's microsurface "
+						"is a readable constant (already varying, absent, a per-channel triple, or a "
+						"deliberate mirror-specular zero). Roughness only -- it never repaints colour. Returns "
+						"{ok,applied,rawCode,status,retriable,headVersion,message,material,materialKind,"
+						"painter,slots,previousRoughness,qualifying,objects} for the single-material form, or "
+						"{ok,qualifying,applied,refused,remaining,message,perMaterial} for `all:true`. A "
+						"PRE-COMMIT refusal is ok=false with an EMPTY status, so branch on `applied`. Always "
+						"pass the headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "vary_material", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// fix_blend_scale (cat plan item 1, 2026-08-25) -- the VERB half of
+				// design-note condition J (the blend-scale law).  Hand-authored HERE
+				// and semantically identical to the chat-codec definition in
+				// AgentChatCodecs.cpp's kToolDefs (two texts, one verb -- a semantic
+				// change to either must land in both).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "target", StringProp(
+						"OPTIONAL. The name of one sdf_geometry chunk to scope the fix to. Omit it to fix "
+						"every offending joint in the whole document -- which is what a DESIGN NOTE about a "
+						"blend-scale joint is pointing at, so the no-argument call is the usual one." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason vary_material is: this
+					// verb commits ONE composite whole-document swap, which is no
+					// AgentProposalKind an Owner could approve card-by-card, so an
+					// External-authority session cannot stage it either.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kFixBlendScaleProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"CLAMP AN SDF `smin` BLEND THAT IS TOO WIDE, in one call. Call this the moment you "
+						"notice (or are told) that an sdf_geometry joint's blend radius (k) is comparable to "
+						"the size of the part it joins -- a wide k dissolves a small feature (a limb, an ear, "
+						"a fin) into its neighbour instead of blending it. It finds EVERY offending smin joint "
+						"in scope (the SAME scan a DESIGN NOTE about a blend-scale joint reads) and rewrites "
+						"just its `k` value down to the safe bound for that joint, leaving position/"
+						"orientation/scale/shape untouched -- ONE headVersion bump, ONE undo step, no matter "
+						"how many joints it fixes. Pass NO ARGUMENTS to fix every offending joint in the whole "
+						"document. Pass `target` (the name of one sdf_geometry chunk) to scope the fix to just "
+						"that chunk. It REFUSES, changing nothing and costing only this call, when no joint in "
+						"scope is currently offending (a clean, honest \"nothing to fix\"). NOTE: if the "
+						"response names a proportion problem on a joint (the part is much smaller than what it "
+						"joins), narrowing k alone will not make that part readable -- the part itself needs "
+						"enlarging toward proportion, or the body needs rebuilding with skeleton_geometry; this "
+						"verb still clamps that joint's k (it is not wrong to do), it just cannot fix size on "
+						"its own. Returns {ok,applied,rawCode,status,retriable,headVersion,message,"
+						"offendersFound,fixed,remaining,perJoint}. A PRE-COMMIT refusal is ok=false with an "
+						"EMPTY status, so branch on `applied`. Always pass the headVersion you last read as "
+						"baseHeadVersion." );
+					tools.push_back( MakeTool( "fix_blend_scale", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// add_wear (GEOMETRY_SHADING_SIGNALS sec 11 / sec 13 Phase 4,
+				// 2026-08-30) -- the VERB half of design-note condition L.
+				// Hand-authored HERE and semantically identical to the chat-codec
+				// definition in AgentChatCodecs.cpp's kToolDefs (two texts, one
+				// verb -- a semantic change to either must land in both).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "material", StringProp(
+						"OPTIONAL. The name of the material to wear. Omit it to take the MOST PROMINENT "
+						"material that is still one flat colour on curved geometry -- which is what a "
+						"DESIGN NOTE about unworn materials is pointing at, so the no-argument call is the "
+						"usual one." ) );
+					props.set( "contact_radius", NumberProp(
+						"OPTIONAL, a WORLD LENGTH; default 0 = off. Above 0 this ALSO grimes the CONTACT "
+						"SEAM -- where this material's surface comes within that distance of ANOTHER "
+						"object -- using proximity(), and it lets a FLAT receiver qualify at all: a plank "
+						"lying on a plane, a flange bolted to a box. Those are refused without it, because "
+						"curvature alone has nothing to key on there. YOU choose the number from the "
+						"scene's own feature sizes and units: 0.002 is two millimetres in a metre-scale "
+						"scene, which suits a nail resting on a board; a 2 cm radius (0.02) suits a bench "
+						"foot on a floor. Too large and the seam becomes a wash." ) );
+					props.set( "contact_grime", NumberProp(
+						"OPTIONAL, 0..1, default 0.5. How strongly the contact seam grimes, relative to "
+						"the curvature crevices. Only read when contact_radius > 0." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason vary_material is: this
+					// verb commits ONE composite whole-document swap, which is no
+					// AgentProposalKind an Owner could approve card-by-card, so an
+					// External-authority session cannot stage it either.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kAddWearProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"WEAR ONE MATERIAL ALONG ITS OWN FORM -- edges rubbed, crevices grimed -- in one "
+						"call. Call this the moment a surface is meant to read as USED: weathered, "
+						"tarnished, aged, dusty, chipped, mossy, salt-crusted, or simply not factory-new. "
+						"The failure it exists to prevent is a mask built from a WORLD AXIS: a `P.z` "
+						"threshold paints a band of dirt at a fixed altitude no matter what the object's "
+						"shape is, and reads as a stripe. Real wear follows CURVATURE -- `curv` is positive "
+						"on a convex edge, negative in a concave crease, 0 on a flat -- and that is what "
+						"this writes. It adds ONE `expression_painter` whose edge mask is "
+						"`clamp(curv*k + noise, 0, 1)` and whose crevice mask is "
+						"`clamp(-curv*k + noise, 0, 1)` deepened by `occlusion()` (inert on legacy "
+						"`rawmesh_geometry`, whose non-indexed loader publishes no occlusion signal -- the "
+						"curv half still works there), mixes a lightened "
+						"edge tint and a darkened patina tint BANDED AROUND THE COLOUR THAT IS ALREADY "
+						"THERE (both tints derived from that colour, so this suits wood, stone and painted "
+						"steel as much as bronze), and rebinds the material's colour slot to it. Where the "
+						"material also carries a constant roughness it adds a SECOND chunk reading the SAME "
+						"masks -- polished on the rubbed edges, rougher in the crevices -- so the two "
+						"agree. ONE headVersion bump, ONE undo step. Pass NO ARGUMENTS to take the most "
+						"prominent qualifying material. Pass `material` to name a different one. Every knob "
+						"is a named `param` carrying min/max/step/label (edge_wear, crevice_grime, "
+						"cavity_gain, breakup_amp, base_r/g/b and the tint knobs) plus a `seed`, so "
+						"retuning it is one propose_patch on a named line -- and that is the idiom to COPY "
+						"when you author wear by hand. It REFUSES, changing nothing and costing only this "
+						"call, when no material is a readable flat colour, when the material is already "
+						"worn (its slots already read curv/occlusion), when every object bound to it "
+						"sits on planar geometry, where `curv` is 0 everywhere and the mask would "
+						"render the flat colour it started from, or when it collides with `add_wetness`'s own "
+						"composition (a WET material's colour slot is already bound to an expression_painter, "
+						"never a plain uniformcolor_painter -- the two verbs cannot currently be combined on "
+						"one material; whichever ran first locks the other out). THE FLAT-RECEIVER REFUSAL "
+						"IS LIFTED BY `contact_radius`: with it set, a material whose every object sits on "
+						"planar geometry becomes a candidate, and the body it gets is the CONTACT "
+						"recipe -- proximity() alone, no curv and no occlusion, since neither would say "
+						"anything on a flat face. Returns {ok,applied,rawCode,status,"
+						"retriable,headVersion,message,material,materialKind,colorSlot,painter,roughPainter,"
+						"roughSlots,previousRoughness,baseColor,geometry,qualifying,objects}. A PRE-COMMIT "
+						"refusal is ok=false with an EMPTY status, so branch on `applied`. Always pass the "
+						"headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "add_wear", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// add_wetness (WETNESS_COAT_DESIGN sec 6/13, 2026-08-31) -- the
+				// VERB half of design-note condition P.  Hand-authored HERE and
+				// semantically identical to the chat-codec definition in
+				// AgentChatCodecs.cpp's kToolDefs (two texts, one verb -- a
+				// semantic change to either must land in both).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "material", StringProp(
+						"OPTIONAL. The name of the material to make wet. Omit it to take the MOST "
+						"PROMINENT non-metallic material that is still a flat, readable colour on a bound "
+						"object -- which is what a DESIGN NOTE about a dry rain scene is pointing at, so the "
+						"no-argument call is the usual one. Name a METALLIC material explicitly to give it "
+						"the coat/gloss only (no darkening -- a wet metal has no subsurface to darken)." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason add_wear is: this
+					// verb commits ONE composite whole-document swap, which is
+					// no AgentProposalKind an Owner could approve card-by-card,
+					// so an External-authority session cannot stage it either.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kAddWetnessProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"MAKE ONE MATERIAL WET -- darkened/saturated reflectance in the damp, a coat/gloss "
+						"where it pools -- in one call. Call this the moment a surface is meant to read RAIN-"
+						"SLICKED, DAMP, or STANDING IN WATER: a wet street, a rained-on wall, a damp cave "
+						"floor. The physics: wetting a porous substrate darkens and saturates it (index-"
+						"matching plus internal-reflection recycling at the water/air interface -- Lekner & "
+						"Dorf 1988), and only WATER DEEP ENOUGH TO POOL lies flat and mirror-smooth -- a "
+						"merely-damp film still shows the substrate's own relief, sharpened but not mirrored. "
+						"This writes a shared `damp`/`wet` mask pair (`damp` drives darkening; `wet = "
+						"clamp(damp*film_amount, 0, damp)` drives the coat, so `wet` can never exceed `damp` "
+						"by construction) keyed on `curv` (dry ridges), `occlusion()` (pooling cavities, "
+						"gated by an up-facing term so water never pools on ceilings) and `fbm` (breakup). A "
+						"Lambertian base is WRAPPED, not rewritten: the original chunk is left byte-for-byte "
+						"untouched, a new `coated_material` chunk is minted (`base` naming the original, "
+						"`coat_weight` = coat coverage under `wet`, `coat_roughness` = a GGX gloss keyed on "
+						"POOLING so damp-but-unpooled regions stay broad-lobed rather than instantly mirror-"
+						"flat), and every bound object's `material` reference is moved to the new chunk. There "
+						"is no separate darkening painter on this branch -- `coated_material`'s own layered "
+						"transport performs the recycling-driven darkening, so a `pow(base,k)` painter on top "
+						"would double-count it. A GGX/PBR base is left as its own kind and modulated IN PLACE (reflectance "
+						"darkened the same way; roughness driven toward a wet floor under `wet` -- an "
+						"approximation of a film, not a real second layer, so it sharpens the base's OWN "
+						"tinted lobe and can flatten an authored anisotropy where it bites). An Oren-Nayar "
+						"base gets DARKENING ONLY, no coat (its retroreflective lobe has no film analogue). The "
+						"gravity gate (keeps pooling off ceilings/undersides) assumes +Y UP -- "
+						"`dot(N, vec3(0,1,0))` in the emitted `up_facing`/`gravity` lines -- a Z-up scene "
+						"needs that axis vector hand-edited. A "
+						"single `dryness` param sweeps the whole thing back to bone-dry. ONE headVersion "
+						"bump, ONE undo step. Pass NO ARGUMENTS to take the most prominent qualifying "
+						"material. Pass `material` to name a different one, including a metallic material "
+						"(coat/gloss only). Every knob is a named `param` carrying min/max/step/label "
+						"(dryness, base_wetness, pool_gain, ridge_shed, gravity_bias, film_amount, "
+						"film_gloss_lo, breakup_amp/scale, plus the darkening `k`/`base_r/g/b` where "
+						"present) plus a `seed`, so retuning it is one propose_patch on a named line. It "
+						"REFUSES, changing nothing and costing only this call, when nothing qualifies, when "
+						"the material is already wet, when its colour is a painter this cannot classify as "
+						"either a flat constant or a genuinely textured/procedural field (a blackbody/"
+						"spectral painter, a non-default `colorspace`, or an unresolvable reference -- there "
+						"is no base to darken from), or when it collides with `add_wear`'s own composition on a "
+						"NON-Lambertian material (GGX/PBR/Oren-Nayar's in-place darkening needs the SAME colour "
+						"slot `add_wear` already rewrote, so those kinds cannot currently be combined with "
+						"`add_wear` -- each verb's refusal names the other). A `lambertian_material` `add_wear` "
+						"already wore IS combinable: this verb's coat-WRAP branch never reads or rewrites the "
+						"substrate's own colour slot at all, so calling `add_wetness` on an already-worn "
+						"Lambertian wraps the worn result in a new `coated_material` -- wet grime settling over "
+						"a worn surface. The reverse order (this verb first, then `add_wear` on the same "
+						"material) still refuses; `add_wear` names the reason. "
+						"A TEXTURED/PROCEDURAL albedo (a png_painter, a checker_painter, a plain "
+						"expression_painter not already worn) now darkens PER-TEXEL via the expression VM's "
+						"sample(name) builtin (DL-25) instead of being refused -- `reflectancePainter`'s "
+						"expression reads `sample(<the substrate>)` in a `def` instead of copying out three "
+						"literal `base_r/g/b` constants; `texturedAlbedo` in the result says which happened. "
+						"Returns {ok,applied,rawCode,status,retriable,headVersion,message,material,"
+						"materialKind,wrappedInCoat,coatedMaterial,coatWeightPainter,coatRoughnessPainter,"
+						"rebindObjectCount,reflectanceSlot,reflectancePainter,texturedAlbedo,scatteringSlots,"
+						"scatteringPainters,baseColor (OMITTED when texturedAlbedo is true, or on a "
+						"metallic-named material: neither has a literal base triple, and the darkening "
+						"samples the substrate instead),geometry,geometryUniform,"
+						"isMetallic,isOrenNayar,qualifying,objects}. A PRE-COMMIT refusal is ok=false with "
+						"an EMPTY status, so branch on `applied`. Always pass the headVersion you last read "
+						"as baseHeadVersion." );
+					tools.push_back( MakeTool( "add_wetness", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// make_fabric (CLOTH_FABRIC_DESIGN 9.7, 2026-09-02).
+				// Hand-authored HERE and semantically identical to the
+				// chat-codec definition in AgentChatCodecs.cpp's kToolDefs
+				// (two texts, one verb -- a semantic change to either must
+				// land in both).
+				//
+				// TWO DELIBERATE DEVIATIONS from the two verbs above, both
+				// from 9.7: this is the FIRST verb carrying an ENUM-typed
+				// argument (a closed value list surfaces in the schema and
+				// constrains the model toward a preset that exists, where a
+				// free string invites "crushed burgundy velour" and a
+				// refusal), and it MINTS a substrate rather than performing
+				// add_wetness's pure wrap (9.3: a preset cannot configure the
+				// substrate, so wrapping a Lambertian in `fabric satin` is
+				// chalk with a faint sheen).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "material", StringProp(
+						"OPTIONAL. The name of the material to convert into cloth. Omit it to take the "
+						"MOST PROMINENT convertible material bound to an object -- the no-argument call is "
+						"the intended one." ) );
+					{
+						// The ENUM, read off AgentSession's published array
+						// rather than restated here -- kBuildPlanConstructionValues'
+						// anti-drift arrangement.  9.7's rule is that the
+						// verb's list and the chunk's list must not diverge,
+						// since the argument seeds the chunk's slot.
+						JsonValue fab = StringProp( "" );
+						JsonValue vals = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < AgentSession::kMakeFabricPresetCount; ++i )
+							vals.push_back( JsonValue::MakeString( AgentSession::kMakeFabricPresetValues[i] ) );
+						fab.set( "enum", vals );
+						fab.set( "description", JsonValue::MakeString(
+							"OPTIONAL. Which fabric. This picks BOTH the fabric_material's own slots AND "
+							"the substrate class and parameters the verb mints -- it is the one place a "
+							"preset gets to configure the substrate, because this verb, unlike the chunk, "
+							"can create chunks. cotton/linen/wool mint an orennayar_material (sigma 0.4 / "
+							"0.5 / 0.6); denim/silk/satin mint a `weave_material` -- the structured "
+							"two-thread-family cloth BSDF -- carrying that fabric's own draft (denim a 3/1 "
+							"twill wale, silk and satin a 5-harness satin float), because for those three "
+							"the PATTERN is the fabric and a single anisotropic lobe cannot make one; "
+							"velvet mints a lambertian_material and no direction at all (it is a pile, not "
+							"a weave). Omit it to infer the fabric from the object's own name where that "
+							"is unambiguous (`denim_jacket` -> denim; `cushion` names no fabric, so it "
+							"falls back to cotton and the message SAYS so). `custom` is "
+							"deliberately absent: it has no recommended substrate to mint." ) );
+						props.set( "fabric", fab );
+					}
+					// Round 9 (reviewer P2.4): OPTIONAL, and it only has
+					// somewhere to land on the MINT half of the weave
+					// branch (denim/silk/satin, no reused weave base) --
+					// see AgentSession::MakeFabric's own doc for the three
+					// refusals that guard it.
+					props.set( "weft_color", StringProp(
+						"OPTIONAL, and only meaningful when this call MINTS a weave_material substrate "
+						"(the denim/silk/satin presets, and only when the bound base is not already one). "
+						"`\"match\"` binds the minted substrate's `weft_color` to the SAME painter "
+						"`warp_color` just took, for a single uniform dye across both thread families "
+						"instead of the preset's own two-tone weft. Otherwise, name an existing painter "
+						"chunk in this document to bind THAT painter instead. Omit it entirely to leave "
+						"`weft_color` unwritten, so the chunk seeds it from the preset's own weft dye -- "
+						"the no-argument path, unchanged. Refused, changing nothing, when the preset does "
+						"not mint a weave (cotton/linen/wool/velvet); when the bound base is already a "
+						"weave_material and is therefore REUSED rather than minted (set `weft_color` on "
+						"that existing chunk directly instead); or when the named value is neither "
+						"`match` nor an existing painter chunk." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason add_wetness is:
+					// one composite whole-document swap is no
+					// AgentProposalKind an Owner could approve card-by-card.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kMakeFabricProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"TURN ONE MATERIAL INTO CLOTH in one call. Call this the moment a surface is meant "
+						"to read as FABRIC: a cushion, a curtain, a jacket, upholstery, a tablecloth, a "
+						"banner, bedding. What makes cloth look like cloth is a SHEEN LOBE -- a bright "
+						"grazing halo at the silhouette, from light scattering off the fuzz and the fibre "
+						"ends -- sitting over a substrate whose own highlight follows the WEAVE. A plain "
+						"lambertian_material with a cloth-coloured albedo has neither, and reads as "
+						"painted cardboard no matter how good the colour is. This writes the whole "
+						"composition: a `fabric_material` (an energy-compensated Charlie sheen over a "
+						"restricted substrate -- it SUBTRACTS the sheen's energy from the base, so a white "
+						"fabric never returns more light than it receives at grazing) wrapping a substrate "
+						"of the class the preset was calibrated for. WHEN THE BOUND BASE IS NOT THAT "
+						"CLASS IT MINTS ONE, re-homing the colour painter that is already there so your "
+						"dye, texture or expression graph survives the conversion untouched. That mint is "
+						"the point: a preset CANNOT configure a substrate it merely references, so "
+						"wrapping a Lambertian in `fabric satin` gives chalk with a faint sheen -- the "
+						"tight, directional, anisotropic highlight that IS satin lives in the substrate. A "
+						"minted ggx substrate also gets `fresnel_mode schlick_f0` and an `rs` bound to a "
+						"0.04 dielectric-F0 painter this call mints too, because `rs` resolves BY NAME and "
+						"an unset one is the BLACK `none` painter under conductor Fresnel -- i.e. no "
+						"highlight at all, the single most likely way to hand-author a silent black "
+						"satin. For the anisotropic presets it also mints a `weave_rotation` "
+						"scalar_painter at a constant 0: a no-op today, but the SLOT is then wired, so "
+						"making the twill wale or the satin float direction follow the yarn (including "
+						"across a seam) is one propose_patch. `sheen_color` and `sheen_roughness` are "
+						"left unwritten on purpose so the chunk seeds them from the same preset table. "
+						"THE ORIGINAL CHUNK IS NEVER EDITED -- but after a mint NOTHING REFERENCES IT ANY "
+						"MORE (every bound object moved to the wrapper), which the result reports as "
+						"`originalNowUnreferenced`; when the base already matches the preset's class it "
+						"does the pure wrap instead and says so. ONE headVersion bump, ONE undo step. "
+						"Pass NO ARGUMENTS to take the most prominent convertible material and infer the "
+						"fabric from the object's own name. It REFUSES, changing nothing and costing only "
+						"this call, when nothing qualifies; when the material is already a "
+						"`fabric_material` (or already the substrate of one); when every bound object is "
+						"PLANAR and the preset's look is a tight grazing halo that a constant normal "
+						"field cannot show (velvet/satin/silk -- cotton, linen, denim and wool read fine "
+						"on a flat); when the base cannot become an allowlisted substrate -- a "
+						"dielectric, an emissive/luminaire, a hair material, a BSSRDF/subsurface "
+						"material, an existing coated/composite stack, or a material carrying none of "
+						"`reflectance`/`base_color`/`rd` to re-home; and when it collides with an "
+						"`add_wetness` coat on the same material (wet fabric is a legitimate composition, "
+						"but it needs coated_material to accept a fabric substrate, which is a separate "
+						"slice); and, when `weft_color` was passed, when the preset does not mint a weave, "
+						"when the weave base was REUSED rather than minted, or when the named value is "
+						"neither `match` nor an existing painter chunk. Returns "
+						"{ok,applied,rawCode,status,retriable,headVersion,message,"
+						"material,materialKind,fabricPreset,fabricMaterial,baseMaterial,mintedSubstrate,"
+						"mintedSubstrateKind,substrateWasReused,originalNowUnreferenced,weavePainter,"
+						"rotationPainter,weftColorPainter,rebindObjectCount,geometry,geometryUniform,"
+						"qualifying,objects}. "
+						"A PRE-COMMIT refusal is ok=false with an EMPTY status, so branch on `applied`. "
+						"Always pass the headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "make_fabric", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// add_fuzz (CLOTH_FABRIC_DESIGN Phase 3, 2026-09-03).
+				// Hand-authored HERE and semantically identical to the
+				// chat-codec definition in AgentChatCodecs.cpp's kToolDefs
+				// (two texts, one verb -- a semantic change to either must
+				// land in both).
+				//
+				// NEVER edits or rebinds the target material or its bound
+				// objects -- unlike every verb above, it only ADDS new
+				// sibling chunks (a hair_geometry/hair_material/
+				// standard_object triad per bound object).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "material", StringProp(
+						"OPTIONAL. The name of the fabric_material or weave_material to grow a fuzz shell "
+						"over. Omit it to take the MOST PROMINENT fabric_material/weave_material bound to "
+						"an object -- the no-argument call is the intended one. Name a plain diffuse "
+						"material (orennayar_material / lambertian_material) explicitly to fuzz it too -- "
+						"a bare call never reaches one on its own." ) );
+					{
+						JsonValue amt = StringProp( "" );
+						JsonValue vals = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < AgentSession::kAddFuzzAmountCount; ++i )
+							vals.push_back( JsonValue::MakeString( AgentSession::kAddFuzzAmountValues[i] ) );
+						amt.set( "enum", vals );
+						amt.set( "description", JsonValue::MakeString(
+							"OPTIONAL. How dense/long the fuzz shell is. `medium` (the default) reproduces "
+							"the Phase 3 evaluation's own tuned recipe unscaled; `light` is half the density "
+							"and shorter/thinner strands; `heavy` is double the density and longer/thicker "
+							"strands. All three scale with the target object's own bounding box, so the same "
+							"`amount` looks the same fuzz on a small object and a large one." ) );
+						props.set( "amount", amt );
+					}
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason make_fabric is:
+					// one composite whole-document swap is no
+					// AgentProposalKind an Owner could approve card-by-card.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kAddFuzzProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"GROW A SILHOUETTE FUZZ SHELL over a fabric -- a sparse hair_geometry/hair_material "
+						"pair added alongside a fabric_material/weave_material's own object(s), giving the "
+						"silhouette a fibrous fringe no BSDF term can produce (the fringe extends PAST the "
+						"analytic edge; measured 3.7 px extension and 14.6x more edge non-monotonicity than "
+						"the bare material). Call this the moment a fabric's edge should read as fuzzy rather "
+						"than a mathematically perfect curve: a wool throw, a felted cushion, a chenille "
+						"blanket, anything whose fibre ends should be visible at the silhouette. This ADDS "
+						"chunks; it NEVER edits or rebinds the target material or its bound objects. For "
+						"EVERY object bound to the picked material it mints a hair_geometry (`<obj>_fuzz`) "
+						"grown on that object's own geometry, a hair_material (`<obj>_fuzz_material`) whose "
+						"`color` is the fabric's own dye copied VERBATIM (name or inline literal alike, "
+						"never re-resolved), and a standard_object (`<obj>_fuzz_object`) binding the two "
+						"with `parent <obj>` and no transform of its own, so it exactly tracks the target's "
+						"placement including any LATER edit to it. Density/length/width scale with each "
+						"object's own live bounding box off a tuned baseline recipe, so `amount` looks "
+						"consistent across differently-sized objects. `segments`/`base_detail`/`frizz` stay "
+						"at the tuned recipe's constants regardless of `amount`; no comb/clump/gravity/curl "
+						"is written -- the cheapest groom that measurably produces the fringe. It REFUSES, "
+						"changing nothing and costing only this call, when nothing qualifies (no fabric/"
+						"weave material bound to an object, and no explicitly-named diffuse either); when a "
+						"`<obj>_fuzz`/`<obj>_fuzz_material`/`<obj>_fuzz_object` name already exists for a "
+						"bound object (an existing fuzz shell); when a bound object's own geometry cannot "
+						"host a groom (an infiniteplane_geometry, another hair_geometry, or no resolvable "
+						"geometry); or when the picked material resolves to the `silk` or `satin` fabric "
+						"preset (their tight, glossy structural sheen reads wrong with a fibrous fringe). A "
+						"scene with fewer than two non-ambient lights is NOT refused -- the message WARNS instead, "
+						"because the shell mints correctly either way and only its LOOK needs a rim/back "
+						"light to glow rather than read dark. Returns {ok,applied,rawCode,status,retriable,"
+						"headVersion,message,material,materialKind,amount,fuzzGeometry,fuzzMaterial,"
+						"fuzzObject,strandCount,mintedObjectCount,boundObjects,qualifying}. A PRE-COMMIT "
+						"refusal is ok=false with an EMPTY status, so branch on `applied`. Always pass the "
+						"headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "add_fuzz", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// remove_chunk
@@ -683,24 +2315,70 @@ namespace RISE
 					tools.push_back( MakeTool( "remove_chunk", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// remove_chunks (R1a, 2026-08-09) -- the ATOMIC batch form.  This description is
+				// hand-authored HERE and must stay semantically identical to the chat-codec tool
+				// definition in AgentChatCodecs.cpp's kToolDefs (the two texts are separate by design --
+				// this one is MCP-facing -- but they describe ONE verb, so a semantic change to either
+				// must land in both).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "targets", StringArrayProp( "The bare NAMES of the chunks to remove, 1 or more. Order does not matter -- chunks that reference each other WITHIN the batch are removed together regardless of listed order." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required; required.push_back( "targets" );
+					const std::string desc = ( readOnly ? kAutonomyReadNote : proposeOnly ? kAutonomyProposeNote : std::string() ) + std::string(
+						"Remove SEVERAL chunks in ONE call, ATOMICALLY. Prefer ONE remove_chunks call over "
+						"repeated remove_chunk calls whenever you delete more than one chunk: each separate "
+						"remove_chunk costs a full round-trip and a separate undo step, while one "
+						"remove_chunks call is one round-trip, ONE headVersion bump, and ONE undo step. "
+						"REQUIRES a scene to be loaded. ALL-OR-NOTHING -- unlike insert_chunks, which applies "
+						"what it can: if ANY target fails (unknown name, ambiguous name, or still referenced "
+						"from outside the batch) then NOTHING is removed and the head is byte-identical, so "
+						"you fix the one offender and resend. A chunk referenced ONLY by other chunks IN THE "
+						"SAME BATCH is removable, in ANY order -- list a painter and the material that uses it "
+						"together and both go; there is no need to order the list by dependency. "
+						"\"still_referenced\" is therefore reported only for referrers OUTSIDE the batch, and "
+						"`suggestions` NAMES them. Duplicate names are deduped, not refused: the chunk is "
+						"removed once and `note` says which names were listed more than once. There is NO "
+						"per-target `kind` -- targets are bare names only; for an ambiguous name, or the "
+						"sole-unnamed-camera case, use the singular remove_chunk with `kind` for that one "
+						"chunk. Same result gating as propose_patch (including the \"staged\" status -- an "
+						"External-authority session stages the WHOLE batch as ONE proposal, never N). The "
+						"result carries `applied` (a BOOL -- all or nothing), `removed`/`total`, an optional "
+						"`note`, and `results`: one entry per UNIQUE target in first-occurrence order (match "
+						"by `name`, not index), each with the same {param,value,reason,suggestions} `issues` "
+						"shape remove_chunk returns, localizing exactly which target blocked the batch." );
+					tools.push_back( MakeTool( "remove_chunks", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// render
 				{
 					JsonValue props = JsonValue::MakeObject();
-					props.set( "samples", NumberProp( "OPTIONAL sample-count override, CLAMPED to [1,65536] (out-of-range values are clamped, not rejected). Omit for the scene-authored sample count. Only honoured by rasterizers that support a sample-count override (the pixel-based family: PT, spectral PT, BDPT, VCM) -- see the result's `samplesOverridden`/`effectiveSamples` fields; on an unsupported rasterizer (MLT, photon-map-only, Auto's outer wrapper) the override is honestly reported as NOT applied, never silently ignored." ) );
-					props.set( "width",  NumberProp( "OPTIONAL transient film-width override in pixels, CLAMPED to [16,512]. Must be paired with `height` -- supplying only one is ignored (ambiguous aspect ratio), not applied. NEVER mutates the scene document; restored after the render." ) );
-					props.set( "height", NumberProp( "OPTIONAL transient film-height override in pixels, CLAMPED to [16,512]. Must be paired with `width`." ) );
+					props.set( "samples", NumberProp( "OPTIONAL sample-count override, CLAMPED to [1,16] -- an agent-surface cap (out-of-range values are clamped, not rejected; see this tool's own description). Omit for the scene-authored sample count, UNLESS that count exceeds 16, in which case it is likewise capped to 16 (check the result's `agentRenderCap.samplesCapped` / `effectiveSamples`). Only honoured by rasterizers that support a sample-count override (the pixel-based family: PT, spectral PT, BDPT, VCM) -- see the result's `samplesOverridden`/`effectiveSamples` fields; on an unsupported rasterizer (MLT, photon-map-only, Auto's outer wrapper) the override -- or the implicit cap when none was requested -- is honestly reported as NOT applied, never silently ignored." ) );
+					props.set( "width",  NumberProp( "OPTIONAL transient film-width override in pixels, CLAMPED to [16,256] -- an agent-surface cap (see this tool's own description). Must be paired with `height` -- supplying only one is ignored (ambiguous aspect ratio), not applied. Omitting BOTH renders at the scene's own aspect ratio scaled to fit the 256px cap, never the full authored resolution -- check `previewWidth`/`previewHeight` or `agentRenderCap.filmWidth`/`filmHeight` for the actual/uncapped dims. NEVER mutates the scene document; restored after the render." ) );
+					props.set( "height", NumberProp( "OPTIONAL transient film-height override in pixels, CLAMPED to [16,256] -- an agent-surface cap (see this tool's own description). Must be paired with `width`." ) );
 					props.set( "camera", CameraOverrideSchema() );
 					props.set( "pinned", BoolProp( "OPTIONAL, default false. When true, this render cannot be silently superseded by a later render submission while it is in flight (it still responds to an explicit cancel or teardown) -- meaningful only against a live in-app GUI session's controller; has no effect in headless `rise --agent-stdio`." ) );
-					props.set( "quality", StringProp( "OPTIONAL, \"draft\" or \"production\" (default \"production\" -- today's exact behaviour). \"draft\" renders through a wholly SEPARATE, cheap studio-preview pipeline (the SAME fixed preview shader the GUI's live interactive editor uses) that IGNORES the scene's authored materials and lighting entirely -- geometry, composition, and camera framing are representative; materials, lighting, exposure, and colour are NOT. NEVER judge materials/lighting/exposure/colour from a draft image -- use quality:\"production\" (or read_viewport) for that. A draft render CAPS samples at 4 regardless of the requested `samples` value. Check the result's `renderMode` field (\"production\"/\"draft\") to see which pipeline actually ran -- `integrator` always names the head's active PRODUCTION rasterizer regardless of `quality`, so it is NOT the field to check for this." ) );
+					props.set( "quality", StringProp( "OPTIONAL, \"draft\" or \"production\" (default \"production\" -- today's exact behaviour). \"draft\" renders through a wholly SEPARATE, cheap studio-preview pipeline (the SAME fixed preview shader the GUI's live interactive editor uses) that IGNORES the scene's authored LIGHTING entirely -- a fixed synthetic studio rig (three hardcoded key/fill/top lights) stands in for it, with no shadows and no GI, so lighting, exposure, and colour balance are NOT representative. It DOES shade each hit with the material's own BSDF -- full colour/roughness response evaluated under that fixed rig, times a geometry-only ambient-occlusion term, plus a fixed view-angle rim highlight (studio-lit BSDF x AO + rim) -- so an expression-driven painter -- including one that queries `proximity`/`occlusion` -- DOES run, and any relief/bump/normal modifier on the object DOES apply to the shading normal. It does NOT show emission (a directly-visible emitter is hidden to background), transmission/refraction, or subsurface scattering -- those material kinds are only used to shrink the AO weight, never traced. Composition and camera framing are representative. NEVER judge lighting/exposure/shadows/GI, or a material's emission/transmission/subsurface behaviour, from a draft image -- use quality:\"production\" (or read_viewport) for that; coarse colour/roughness/texture CAN be judged from it. A draft render CAPS samples at 4 regardless of the requested `samples` value. Check the result's `renderMode` field (\"production\"/\"draft\") to see which pipeline actually ran -- `integrator` always names the head's active PRODUCTION rasterizer regardless of `quality`, so it is NOT the field to check for this." ) );
 					props.set( "mode", StringProp( std::string(
 						"OPTIONAL, \"beauty\" (default), \"objectmap\", or one of the view-mode names below. "
 						"\"objectmap\" renders a flat per-object IDENTITY segmentation -- each scene object painted a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about WHICH object is at WHICH pixel and how much of the frame each covers (occlusion, placement, framing). IMPORTANT: read the objectmap image at NATIVE size -- do NOT pass read_image's maxEdge, since box-downscaling blends the identity colours and corrupts colorHex matching. "
 						"The view-mode names (no `legend`, unlike objectmap): " ) + DescribeViewModes() + std::string(
-						". Two KINDS of view mode: \"normals\"/\"depth\"/\"facets\"/\"wireframe\" are single-pass FALSE-COLOUR diagnostics (exactly 1 sample/pixel, no scene lighting); \"deep_reflect\"/\"direct\"/\"indirect\"/\"clay_lights\" are REAL production-class path-traced renders (BeautyVariant modes) at a FIXED reduced resolution and a FIXED higher sample count (deep_reflect: quarter-res, 16 spp, 24 bounces -- use it to see what reflections/refractions in glass/metal/water actually resolve to; direct: half-res, 8 spp, direct lighting only, no indirect bounces -- use it to check whether the LIGHTING alone looks right independent of indirect bounce; indirect: half-res, 12 spp, 16 bounces, INDIRECT light only -- the direct/emission contribution at the camera-visible vertex is suppressed, so use it to see what bounce light alone contributes; clay_lights: half-res, 12 spp, 12 bounces, every surface's reflectance substituted for a shared neutral clay material while real lights/GI stay untouched -- use it to check whether the LIGHTING is right independent of materials/texture). `quality` and `samples` are IGNORED under objectmap or ANY view mode (each has a FIXED fidelity, diagnostic or production) -- check the result's `effectiveSamples` field for the actual spp used. Check the result's `renderMode` field to confirm which one actually ran -- it echoes back the exact mode name (e.g. \"normals\", \"deep_reflect\"), distinguishing it from \"objectmap\"/\"draft\"/\"production\". Orthogonal to `quality`: these modes are about geometry/segmentation/transport, draft is about cheap studio shading. Known limitation (wireframe): triangle-mesh edges only -- analytic primitives (sphere/box/SDF) and unmeshed geometry render as dim facet shading with no lines, which is correct behaviour, not a bug. Known limitation (depth): brightness is normalized PER RENDER to the VISIBLE hit-distance range in that frame (auto-calibrated -- a wide shot and a close-up of the same scene use DIFFERENT brightness scales, so never compare depth renders across two different camera framings as if they shared a scale), self-calibrating within a single render call, falling back to the scene's bounding-box diagonal only for a degenerate/empty scene. INSTANCE NAMES (objectmap only): a generator-synthesized legend name (e.g. \"grid[0,1]\" from an instance_array) identifies the instance in the map but is NOT a CST chunk -- to EDIT it, target the GENERATOR chunk (strip the \"[i,j]\" suffix, e.g. \"grid\"), since propose_patch/remove_chunk on the instance name will fail." ) ) );
+						". Two KINDS of view mode: \"normals\"/\"depth\"/\"facets\"/\"wireframe\" are single-pass FALSE-COLOUR diagnostics (exactly 1 sample/pixel, no scene lighting); \"deep_reflect\"/\"direct\"/\"indirect\"/\"clay_lights\" are REAL production-class path-traced renders (BeautyVariant modes) at a FIXED reduced resolution and a FIXED higher sample count (deep_reflect: quarter-res, 16 spp, 24 bounces -- use it to see what reflections/refractions in glass/metal/water actually resolve to; direct: half-res, 8 spp, direct lighting only, no indirect bounces -- use it to check whether the LIGHTING alone looks right independent of indirect bounce; indirect: half-res, 12 spp, 16 bounces, INDIRECT light only -- the direct/emission contribution at the camera-visible vertex is suppressed, so use it to see what bounce light alone contributes; clay_lights: half-res, 12 spp, 12 bounces, every surface's reflectance substituted for a shared neutral clay material while real lights/GI stay untouched -- use it to check whether the LIGHTING is right independent of materials/texture). `quality` and `samples` are IGNORED under objectmap or ANY view mode (each has a FIXED fidelity, diagnostic or production) -- check the result's `effectiveSamples` field for the actual spp used. Check the result's `renderMode` field to confirm which one actually ran -- it echoes back the exact mode name (e.g. \"normals\", \"deep_reflect\"), distinguishing it from \"objectmap\"/\"draft\"/\"production\". Orthogonal to `quality`: these modes are about geometry/segmentation/transport, draft is about cheap studio shading. Known limitation (wireframe): triangle-mesh edges only -- analytic primitives (sphere/box/SDF) and unmeshed geometry render as dim facet shading with no lines, which is correct behaviour, not a bug. Known limitation (depth): brightness is normalized PER RENDER to the VISIBLE hit-distance range in that frame (auto-calibrated -- a wide shot and a close-up of the same scene use DIFFERENT brightness scales, so never compare depth renders across two different camera framings as if they shared a scale), self-calibrating within a single render call, falling back to the scene's bounding-box diagonal only for a degenerate/empty scene. INSTANCE NAMES (objectmap only): a synthesized legend name (e.g. \"grid[0,1]\" from a `source` chunk carrying count_u/count_v) identifies one repetition in the map but is NOT a CST chunk -- to EDIT it, target the INSTANCING chunk (strip the \"[i,j]\" suffix, e.g. \"grid\"), since propose_patch/remove_chunk on the instance name will fail." ) ) );
 					props.set( "xray", BoolProp(
 						"OPTIONAL, default FALSE. ONLY meaningful when `mode` is one of the FALSE-COLOUR diagnostics (normals/depth/facets/wireframe) -- when true, resolves the ray THROUGH transmissive (glass-like) surfaces to the first OPAQUE hit, following a STRAIGHT LINE with NO refraction bending (deliberately an x-ray, not an optics simulation), up to 16 surfaces skipped. By default the transmissive surface itself is shown. Pass xray:true to inspect opaque geometry underneath/inside it. If the ray never reaches an opaque surface after 16 skips, the LAST transmissive surface is shown instead of a black hole -- an honest partial answer. Silently IGNORED (honestly noted) under mode:\"beauty\"/\"objectmap\" or any production-transport BeautyVariant view mode (deep_reflect/direct/indirect/clay_lights -- skipping through glass would defeat their whole purpose)." ) );
 					props.set( "view", StringProp(
 						"OPTIONAL name of a saved viewport bookmark (a live in-app GUI session's Named Views) or, headless, a scene CAMERA name -- renders from that vantage for THIS call only, composing with EVERY `mode` above. Equivalent to transferring the full shared pose (location, lookat, up, Euler orientation, target orientation) plus a pinhole FOV, by name instead of raw numbers -- if both are supplied, `view` wins. PINHOLE-ONLY: the override cannot re-type the active camera, so a view naming a thin-lens/fisheye/orthographic camera FAILS the render (`ok:false`) naming the unsupported type rather than silently rendering with the active camera's optics. An ONB-style active camera that cannot round-trip this pose also fails loudly. An unresolvable name likewise FAILS with the available-name list in `message`. Use this to compare the SAME render mode from several saved angles without re-deriving camera math each time." ) );
+					props.set( "zoom", StringProp(
+						"Optional name of ONE standard_object to look at CLOSE UP from the SCENE camera's own position: the camera keeps its location, aims at that object and narrows its field of view until the object fills ~85% of the frame (never wider than the scene's own fov; if the object already fills the frame the fov is kept and the result says so). Unlike `isolate`, NOTHING is hidden -- every other object, every light and the environment stay exactly as they are, so you see what a viewer of THIS scene would see of that object, occlusion included, at a size where its material and fine detail (fur, weave, grain, small parts) can actually be judged. Use it when the full frame shows an object too small to judge (a ~20-pixel cat tells you nothing about its fur). Composes with quality and mode. Mutually exclusive with `isolate`, `view` and `camera` (a clean error). Needs a pinhole active camera. On success (ok:true) the result adds a `zoom` object {object, eye, fovDegrees, sceneFovDegrees, keptSceneFov, coverage?, fitBasis}; `coverage` is the fraction of the frame covered by the projected bounds of the object's surface points (an UPPER BOUND on its silhouette); `fitBasis` is surface when the fit used points on the object's real surface, bbox when it fell back to the bounding box. An unknown name, a generator name covering several instances, or a CSG operand FAILS the render (ok:false) with the available names in message. A zoom render carries no inventory, anchor, sceneTarget or tonal fact (its camera is not the scene camera's full frame). Zoom also FAILS (ok:false, no zoom block) when the object is NOT IN VIEW of the scene camera (behind it, or its surface centre more than ~10% past the frame edge -- use isolate or camera for those), when any part of its surface lies on or behind the plane through the camera (the camera is inside or beside it, e.g. a floor or room around the camera), or when its extent is degenerate or unbounded." ) );
+					props.set( "isolate", StringProp(
+						"OPTIONAL name of ONE standard_object to render BY ITSELF, with the camera AUTO-FRAMED on that object's surface (points on its real geometry; its bounding box only where it has none -- a fixed three-quarter vantage at the distance that fills ~85% of the frame). Every OTHER object is transiently hidden for this one render -- hit by no camera, secondary, or shadow ray -- and nothing is written to the document, the viewport, or the user's camera. Use it to actually LOOK AT a part you just built when it is small, dark, or occluded in the full frame: a 20-pixel wing in a wide night shot tells you nothing about its shape, and a form you never evaluated is a form you cannot fix. mode:\"normals\" and mode:\"facets\" read FORM best here (surface direction / raw tessellation, with no material or lighting confounding the read); mode:\"beauty\" composes too, but a hidden emissive OBJECT also stops acting as a light, so a scene lit ONLY by other objects' emissive materials isolates DARK -- explicit light chunks and the environment are unaffected. Composes with EVERY `mode` and with quality:\"draft\" (object visibility is Scene state, not rasterizer state), so unlike `light` it is never silently ignored. If `camera` or `view` is ALSO supplied, THAT camera wins and no auto-framing happens -- the result's `isolate.autoFramed` says which. A successful isolate render (ok:true) adds an `isolate` object to the result: {object, bboxMin[3]?, bboxMax[3]?, longestEdge?, autoFramed, bboxCoverage?} -- bboxMin/bboxMax/longestEdge are OMITTED if the object's bounding box turned out degenerate/unbounded (only reachable when you also supplied `camera`/`view`, since that case otherwise fails the render outright). `bboxCoverage` is the fraction of the frame covered by the projected screen bounds of points on the object's real surface (its bounding box only when it has none, e.g. a CSG composite -- isolate.fitBasis says which; an upper bound on its silhouette; a camera-and-geometry calculation, not a pixel count, so identical across modes -- it can OVERSTATE a thin or diagonal silhouette by a large factor, e.g. a wing seen edge-on; for an EXACT per-pixel count use mode:\"objectmap\" and read the legend's pixelCount). `bboxCoverage` is OMITTED (not an approximation) whenever the ACTIVE camera is not a pinhole -- the projected-bbox formula assumes a pinhole's tan(fov/2) projection, which does not apply to thin-lens/fisheye/orthographic; `message` says so when it happens. An unknown name, a GENERATOR name covering several instances (isolate one instance's full name instead), a CSG operand (isolate the composite the message names), or an object whose bounding box is degenerate/unbounded with NO caller-supplied camera FAILS the render (ok:false) with the available object names in `message`. The fit and bboxCoverage use points on the object's real surface (isolate.fitBasis = surface) or, where it has none (a CSG composite, an infinite plane), its bounding box (bbox)." ) );
+					// G3b fix-round (2026-08-10) FIX 2: this text MIRRORS AgentChatCodecs.cpp's
+					// `target` description, which is the CANONICAL one -- change that first, then
+					// mirror here, keeping the sentences literally identical.  SourceHygieneTest
+					// pins the load-bearing sentences on BOTH files, so a caveat added to only one
+					// of them fails the build.
+					props.set( "target", StringProp(
+						"OPTIONAL name of an ELEMENT in the build plan filed with file_build_plan -- compares that element's SKETCH against the silhouette the isolated object actually renders as. REQUIRES `isolate` (the plan-element-to-object join is made HERE, by you, at comparison time); `target` without `isolate` is a clean -32602 stating the requirement. VANTAGE: with no `camera`/`view` of your own, the render uses the AXIS-ALIGNED vantage the sketch declared -- front = looking along -Z (world +X right, world +Y up), side = looking along -X (world -Z right, world +Y up), top = looking straight down (world +X right, world -Z up in frame) -- instead of the three-quarter one `isolate` uses alone. A caller-supplied `camera`/`view` still WINS, and `target.vantage` then reads \"caller-camera\" rather than a view name. The comparison costs ONE extra internal identity render at the same pose and dims, so the measured silhouette is exact and independent of `mode`, `quality`, lighting and materials. On success (ok:true) the result gains a `target` object: {element, view, vantage, iou, mirroredIou, sketchAreaFraction, silhouetteAreaFraction, sketchAspect, silhouetteAspect?, thinnestAxisRatio?, compositeWidth, compositeHeight}. `iou` is intersection-over-union in [0,1] of the two masks after BOTH are cropped to their own bounding box and fitted onto the same 256x256 canvas by the same transform -- so it measures SHAPE ONLY, not position and not size (it is invariant to where the element sits and how big it is); `mirroredIou` is the same measurement with the rendered silhouette flipped in X. `sketchAreaFraction`/`silhouetteAreaFraction` are each mask's filled fraction OF THAT SHARED CANVAS (not of the frame -- `isolate.bboxCoverage` is the frame measurement). `silhouetteAspect` is OMITTED when no pixel of the object landed in the frame; `thinnestAxisRatio` (the object's smallest 3D bounding-box extent over its largest -- 1.0 for a cube, near 0 for a flat plane) is OMITTED when the bounding box is unusable. These are MEASUREMENTS, not scores: nothing is gated on them and no particular value is required. IMAGE: the result carries a [sketch | silhouette | overlay] composite -- three 256x256 tiles: the filed sketch, the rendered silhouette, and both together with sketch-only RED, silhouette-only CYAN, overlap WHITE, neither BLACK (each tile carries its own black background, so the strip reads the same on a light or a dark page). That composite rides back as this call's image WITHOUT `imageMaxEdge`, and REPLACES the rendered frame when `imageMaxEdge` is also supplied -- re-render without `target`, or call read_image, to get the frame itself. An unknown element name, or no filed build plan at all, FAILS the render (ok:false) with the filed element names in `message`." ) );
 					props.set( "light", StringProp(
 						"OPTIONAL name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting (not a dim/approximate preview of it). Valid with mode:\"beauty\" (the default) and the four production-transport BeautyVariant view modes (deep_reflect/direct/indirect/clay_lights); silently IGNORED (honestly noted in `message`) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:\"draft\" -- none of those evaluate scene lighting at all. An unresolvable name FAILS the render (`ok:false`) with the available-name list in `message`, same contract as an unresolvable `view`. Use this to check one light's contribution in isolation (shadow shape, colour, falloff) without the others visually competing for attention." ) );
 					props.set( "perception", BoolProp(
@@ -711,10 +2389,21 @@ namespace RISE
 						"Render the current scene head SYNCHRONOUSLY and return {ok,width,height,"
 						"meanR,meanG,meanB,integrator,previewWidth,previewHeight,cameraOverridden,"
 						"message,renderJobId,samplesOverridden,effectiveSamples,renderMode} (plus a "
-						"per-object `legend` when mode:\"objectmap\"). Returns NO image bytes by "
-						"default; pass `imageMaxEdge` (e.g. 192) to get the rendered PNG back inline "
-						"in this same result, which is the one-call form to prefer for an ordinary "
-						"look. A separate read_image is still the way to re-read a render you already "
+						"per-object `legend` when mode:\"objectmap\", an `isolate` object when "
+						"`isolate` was applied, a `zoom` object when `zoom` was applied, a `target` object with the measured sketch "
+						"comparison when `target` was applied, an `inventory` object on every "
+						"full-scene beauty render -- see below -- and an `agentRenderCap` object "
+						"when the agent-surface cap described next actually reduced this render). "
+						"AGENT RENDERS ARE CAPPED at 256px on the long edge and 16 samples/pixel -- "
+						"omitted width/height/samples still render, just at or under those caps "
+						"(never the scene's full authored resolution/sample count); an explicit value "
+						"above the cap is silently clamped, never rejected. This is a fixed property "
+						"of the agent surface -- the user's own full-frame, full-sample renders happen "
+						"from the GUI, a separate path this cap does not touch. Returns NO image content "
+						"block by default; pass `imageMaxEdge` (e.g. 192) to get the rendered PNG back "
+						"as a real MCP image content block in this same result, which is the one-call "
+						"form to prefer for an ordinary look. A separate read_image is still the way to "
+						"re-read a render you already "
 						"have at a different bound, to read an objectmap at native size, and to fetch "
 						"representation:\"perception\". "
 						"`integrator` is the active rasterizer's scene-file chunk keyword (e.g. "
@@ -745,7 +2434,22 @@ namespace RISE
 						"an adapter whose session IS controller-attached, so `pinned` is honoured "
 						"and a render really can queue behind (or be refused by) another render "
 						"-- see read_viewport's `render_in_progress` note below for what that "
-						"means in practice.",
+						"means in practice. "
+						"EVERY FULL-SCENE BEAUTY RENDER (production or draft, no `isolate`, no `zoom`, no "
+						"`mode`) also carries an `inventory` object: {objects, covered, passWidth, "
+						"passHeight, notAreaSampled, text}. `text` is one line per object saying how "
+						"much of the frame it covers and where it is -- in the frame for the ones that "
+						"appeared, and in the world plus which way it lies (behind the camera, "
+						"off-frame left, overlapping the frame but covering nothing, ...) for the "
+						"ones that did not. It is measured in a small one-ray-per-pixel identity "
+						"pass through this render's camera, at the passWidth x passHeight it "
+						"reports, so a footprint under one pass pixel reads as 0. Read it before "
+						"concluding anything about an empty-looking frame: an object that covered "
+						"no pixels is still there, and the block says where. `notAreaSampled` is an "
+						"array of {name,reason} for emissive objects this render measured as not "
+						"selected by light sampling (their emission still shows on direct view and "
+						"BSDF hits); omitted when empty. The `scene_inventory` "
+						"tool returns the same measurement on demand.",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
@@ -919,13 +2623,54 @@ namespace RISE
 						ObjectProp( "", props, required ) ) );
 				}
 
+				// scene_inventory (Arc 80, 2026-08-12) -- the FORWARD
+				// counterpart to query_object_at.  Its text MIRRORS
+				// AgentChatCodecs.cpp's entry sentence for sentence, per this
+				// file's canonical-codec convention.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					tools.push_back( MakeTool( "scene_inventory",
+						"Ask WHERE EVERYTHING IS: one line per object in the scene, saying how much "
+						"of the frame it covers and where it sits. Takes no arguments -- it "
+						"inventories the ACTIVE camera's view. This is the FORWARD question; "
+						"query_object_at is the inverse one (\"what is at this pixel\"), which can "
+						"only answer about a spot you already guessed, and whose \"no object at this "
+						"pixel\" tells you nothing about where anything actually is. An object that "
+						"covered pixels is reported with its pixel count, its share of the frame, and "
+						"its position in the frame as fractions from the left and from the top. An "
+						"object that covered none is reported with its world bounding-box centre and "
+						"where it lies relative to the view: entirely behind the camera, entirely "
+						"off-frame (with the direction), overlapping the frame but covering no pixels "
+						"(occluded, or smaller than one pass pixel -- this does not distinguish "
+						"those), or crossing the camera plane. Positions are measured in a small "
+						"one-ray-per-pixel identity pass, so a footprint under one pass pixel reads "
+						"as 0, and the pass's dimensions are reported. An object that is part of an "
+						"assembly also carries the name of its `parent` node, and a repetition of an "
+						"instancing chunk (`grid[3,1]`) carries `instancedFrom` -- the chunk you can "
+						"actually EDIT, since a repetition is not a chunk of its own. Both are "
+						"omitted for an ordinary top-level object. Where an object lies relative "
+						"to the view is NOT computed -- and says so -- when the active camera is not "
+						"a pinhole, or the render was taken from a named view or an orientation-only "
+						"camera override. YOU USUALLY DO NOT NEED TO CALL THIS: the same inventory "
+						"comes back automatically, in the same words, on every full-scene "
+						"beauty render's result under `inventory`. Returns "
+						"{ok,objects,covered,passWidth,passHeight,framePositionComputed,"
+						"framePositionNote,entries,notAreaSampled,text,message}. `notAreaSampled` is "
+						"an array of {name,reason} for emissive objects this render measured as not "
+						"selected by light sampling (their emission still shows on direct view and "
+						"BSDF hits); omitted when empty. It renders internally (one cheap "
+						"identity pass), changes nothing in the document, and does not replace the "
+						"image read_image returns.",
+						ObjectProp( "", props, std::vector<std::string>() ) ) );
+				}
+
 				// compare_to_reference (the reconstruction feedback instrument)
 				{
 					JsonValue props = JsonValue::MakeObject();
 					props.set( "reference", StringProp( "REQUIRED. The name of a HOST-registered reference image (e.g. the eval harness's \"view1\", \"view2\", ... prompt-attachment naming contract, in prompt-then-attachment order). An unknown name is an error listing every registered reference name -- there is no way to compare against an arbitrary path; only images the host explicitly registered are reachable." ) );
 					props.set( "camera", CameraOverrideSchema() );
 					props.set( "visual", BoolProp( "OPTIONAL, default true. When true, ALSO returns a composite [render | reference | abs-diff heatmap] side-by-side PNG (3x the reference's width) as a real image content block, using the SAME mechanism read_image uses. Set false once you only need the numeric feedback (rmse/channelDelta/grid) -- saves the encode cost and the response's token footprint." ) );
-					props.set( "samples", NumberProp( "OPTIONAL sample-count override, CLAMPED to [1,65536]. IMPORTANT QUALITY TRADEOFF: omit this (the default) and the comparison renders at quality:\"draft\" -- cheap, but the draft pipeline IGNORES the scene's authored materials and lighting entirely, so a low draft-mode RMSE only confirms geometry/composition/camera alignment, NOT colour or material match. Supplying `samples` switches the comparison to quality:\"production\" at that sample count -- the real, grader-equivalent RMSE reading, and materially more expensive. Recommended workflow: iterate cheaply under the draft default while getting composition/placement right, then pass `samples` (e.g. 16-64) for the real measurement once composition looks plausible." ) );
+					props.set( "samples", NumberProp( "OPTIONAL sample-count override, CLAMPED to [1,16] -- an agent-surface cap, same as the render tool's own samples cap. IMPORTANT QUALITY TRADEOFF: omit this (the default) and the comparison renders at quality:\"draft\" -- cheap, but the draft pipeline IGNORES the scene's authored LIGHTING (a fixed synthetic studio rig stands in for it, no shadows/GI) and shades each hit with the material's own BSDF (colour/roughness, not just albedo) under that rig at 1 spp, so a low draft-mode RMSE only confirms geometry/composition/camera alignment and coarse material colour, NOT true lighting/exposure/colour match (a texture-driven expression, e.g. one that queries `proximity`/`occlusion`, DOES run and contributes to the draft image; emission/transmission/subsurface do NOT show). Supplying `samples` switches the comparison to quality:\"production\" at that sample count -- the real, grader-equivalent RMSE reading, and materially more expensive. Recommended workflow: iterate cheaply under the draft default while getting composition/placement right, then pass `samples` (e.g. 8-16) for the real measurement once composition looks plausible. A requested value above 16 is silently clamped -- the result's `agentRenderCap` object names the cap when it fires." ) );
 					props.set( "split", BoolProp( "OPTIONAL, default false. When true, ALSO returns split:{objectRmse,backgroundRmse,objectPixelFraction,ok,note} -- an object-vs-background RMSE breakdown built from a SECOND, ephemeral mode:\"objectmap\" render of your OWN candidate (an extra render, so it costs more). Use it once your overall `rmse` plateaus across iterations: a high `backgroundRmse` means your staging (ground/environment/lighting) is still the biggest lever; a low `backgroundRmse` with a high `objectRmse` means staging is DONE -- stop tuning it and spend remaining iterations on the object's silhouette/proportions instead. HONESTY CAVEAT: the object mask comes from YOUR candidate only (the reference is a plain PNG with no objectmap of its own) -- it answers \"on the pixels where my object is, how wrong am I\" and \"on my background pixels, how wrong am I\", not \"how wrong is the reference's object region\". A badly misplaced object still shows up: high objectRmse on the candidate's (wrong) object pixels, AND the reference's actual object pixels raise backgroundRmse too, since your candidate has no object there. Both figures sentinel to -1 when their bucket is EMPTY -- objectRmse is -1 when no object pixels are visible (camera pointed away, object off-frame), backgroundRmse is -1 when registered objects cover the ENTIRE frame -- so ALWAYS check for >= 0 before trusting either; -1 means \"not measured\", NOT \"perfect match\". IMPORTANT CAVEAT ABOUT WHAT COUNTS AS \"OBJECT\": without `splitObjects` (below), EVERY registered object counts as OBJECT -- including a ground plane, backdrop, or any other staging geometry you built as a real scene object. That means an unscoped split measures \"geometry vs. environment\", not \"hero object vs. staging\": a scene with a modeled ground plane can show a huge OBJECT bucket (observed averaging 86% of the frame in practice) that is mostly stage, not your hero object. Pass `splitObjects` naming just your hero object to get a true hero-vs-staging reading." ) );
 					props.set( "splitObjects", StringArrayProp( "OPTIONAL array of object names, only meaningful alongside `split:true`. When non-empty, SCOPES the OBJECT bucket to ONLY the named registered object(s) -- every other pixel, INCLUDING other registered geometry like a ground plane or backdrop, falls into BACKGROUND instead. Use this to get a true hero-object-vs-staging reading: without it, a ground plane/backdrop you modeled as a scene object counts as OBJECT too (see the `split` parameter's own caveat), which inflates the OBJECT bucket and starves BACKGROUND down to just the sky/environment. Names are matched against the candidate's own objectmap legend; a name not found there is dropped from the mask (never a hard failure) and is instead surfaced in split.note, along with every name that IS available, so a typo doesn't silently shrink your mask unnoticed. If NONE of the requested names match, objectRmse comes back -1 with a note explicitly saying the named object(s) don't exist in this scene -- distinct from the ordinary \"object off-frame\" -1 case." ) );
 					std::vector<std::string> required; required.push_back( "reference" );
@@ -965,7 +2710,8 @@ namespace RISE
 						"resolved -- resolved entries stay for audit). Returns "
 						"{proposals:[{id,kind,target,entityKind,param,value,chunkText,baseVersion,"
 						"sessionLabel,status},...]}: `kind` is one of \"param_edit\"/\"insert_chunk\"/"
-						"\"remove_chunk\"; `status` is \"pending\"/\"applied\"/\"rejected\"/\"conflict\". "
+						"\"remove_chunk\"/\"remove_chunks\" (the batch remove stages as ONE entry); "
+						"`status` is \"pending\"/\"applied\"/\"rejected\"/\"conflict\". "
 						"READ-ONLY and available regardless of this session's autonomy posture -- "
 						"listing the queue is not a mutation. Requires a scene to be loaded with a live "
 						"controller attached (a headless CLI session with no in-app GUI owner returns "
@@ -1044,16 +2790,49 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 21 tool names this adapter recognizes --
+			//! The list of the 41 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
 				static const char* const kNames[] = {
 					"read_document", "read_schema", "read_skill", "validate",
+					"file_build_plan",   // G2 (2026-08-10): read-safe, the build-plan gate's unblock
+					"finish_element",   // S1 (2026-08-11): read-safe, closes the active element (renders)
+					"reopen_element",   // S1 (2026-08-11): read-safe, re-enters an element's window
+					// S2 (2026-08-11): the two CLEAN-ROOM construction verbs, the core
+					// of the staged build protocol.  Both MUTATE.  They were advertised
+					// by tools/list from the day they landed but were omitted HERE, so
+					// every tools/call for them answered -32601 (fixed 2026-08-19; the
+					// advertised-implies-routable invariant is now pinned by
+					// AgentMcpAdapterTest so no future verb can land half-wired).
+					"build_element", "place_element",
+					"imagine_scene",    // Arc 77 Phase 2 (2026-08-11): read-safe, the gate's OTHER unblock
+					// Doc 90 slice R1 (2026-08-22): read-safe -- it re-points a
+					// per-session bookmark (which completed render the next
+					// render is shown beside) and touches the Document not at
+					// all.  Unlike the two above it unblocks no gate; it is
+					// here on the read-safe test alone.
+					"set_render_anchor",
 					"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
-					"insert_material_scaffold", "insert_geometry_scaffold", "remove_chunk",
+					"insert_material_scaffold", "insert_geometry_scaffold",
+					"replace_geometry_scaffold",   // R2 (2026-08-10): one-call form revision
+					"remove_chunk",
+					"remove_chunks",
+					"collapse_to_instances",   // 88 step 2 (2026-08-19): MUTATING, the condition-C rewrite verb
+					"vary_material",           // 88 S5 (2026-08-20): MUTATING, the condition-D rewrite verb
+					"fix_blend_scale",         // cat plan item 1 (2026-08-25): MUTATING, the condition-J rewrite verb
+					"add_wear",                // GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): MUTATING, the condition-L rewrite verb
+					"add_wetness",             // WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): MUTATING, the condition-P rewrite verb
+					"make_fabric",             // CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): MUTATING, the fabric conversion verb
+					"add_fuzz",                // CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): MUTATING, the fuzz-shell verb
+					"revert_to_revision",      // doc 90 R2 (2026-08-23): MUTATING, the ratchet's way back
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
+					"scene_inventory",   // Arc 80 (2026-08-12): read-safe, the FORWARD "where is everything" inventory
+					"light_scene",       // Arc 81 (2026-08-12): MUTATING, the clean-room lighting pass
+					"populate_scene",    // Arc 82 (2026-08-12): MUTATING, the clean-room population pass
+					"environment_scene", // Arc 83 slice 5 (2026-08-13): MUTATING, the clean-room environment pass
+					"frame_scene",       // Arc 83 slice 6 (2026-08-13): MUTATING, the clean-room framing pass
 					"compare_to_reference",
 					"list_proposals", "resolve_proposal"
 				};
@@ -1200,7 +2979,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 19 verbs as MCP tools.
+				// tools/list -> the 41 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();
@@ -1266,34 +3045,54 @@ namespace RISE
 
 					const JsonValue& innerResult = innerEnv.get( "result" );
 
-					// read_image / read_viewport get special treatment:
-					// surface the PNG as a real MCP image content block (so a
-					// vision-capable client sees the frame inline) ALONGSIDE a
-					// text block with the metadata fields -- a real win over a
-					// bare base64 string the client would otherwise have to
-					// know to decode and reinterpret itself.  read_viewport's
-					// result carries the SAME png_base64 field when
-					// available:true; when available:false the field is "" and
-					// the image block is simply skipped (the text block still
-					// carries {available,reason,...} so the client learns why).
-					// compare_to_reference joins this set too: when visual
-					// (the default) was requested, its result carries the
-					// SAME "png_base64" field name read_image does (the
-					// composite [render|reference|heatmap] diff PNG) --
-					// deliberately, so this one image-surfacing branch
-					// covers it without a separate case. When visual:false
-					// was requested there is no png_base64 field at all, so
-					// the `!b64.empty()` guard below simply skips the image
-					// block and only the text block (rmse/grid/summary/...)
-					// is returned -- no special-casing needed here.
-					if( toolName == "read_image" || toolName == "read_viewport" ||
-					    toolName == "compare_to_reference" )
+					// Whether this result carries an image is DELEGATED to
+					// ChatToolResultCarriesImage (AgentChatCodecs.h) -- the
+					// ONE predicate every transport shares, so the verb set
+					// (read_image, read_viewport, compare_to_reference,
+					// file_build_plan, render) and the "png_base64 must be
+					// non-empty" field test live in exactly one place and
+					// cannot drift back into a private list here.  Before
+					// this unification the adapter kept its own hardcoded
+					// verb list, and it HAD drifted: it omitted a plain
+					// `render{imageMaxEdge}` (see the 2026-08-11 note below).
+					//
+					// A vision-capable MCP client seeing a real image content
+					// block, instead of a base64 string it would have to know
+					// to find inside the serialized JSON and decode itself,
+					// is the whole reason this branch exists.  read_viewport's
+					// available:false and compare_to_reference's visual:false
+					// results simply have no (or an empty) png_base64 field,
+					// so the predicate's field test naturally excludes them --
+					// no special-casing needed.  G3a's file_build_plan result
+					// carries the composite SKETCH PNG under the same field
+					// name (the point of the echo is that the model SEES what
+					// it sketched); G3b's render{target} result carries the
+					// [sketch | silhouette | overlay] comparison composite the
+					// same way.
+					//
+					// 2026-08-11: the follow-up spun off during the G3a review
+					// landed -- a plain `render{imageMaxEdge}` PNG now rides
+					// back as a real image content block too, closing the gap
+					// where it reached MCP clients only as base64 text buried
+					// inside the serialized JSON.
+					//
+					// `probe.name` is the only field ChatToolResultCarriesImage
+					// reads off the call; the id/argsJson/idSynthesized fields
+					// are chat-transport bookkeeping this adapter has no
+					// analogue for, so they stay default.  `internalResp` is
+					// the SAME raw JSON-RPC response line already parsed into
+					// innerEnv above -- the predicate re-parses it, which is
+					// fine here (this is not a hot loop).
+					ChatToolCall probe;
+					probe.name = toolName;
+					if( ChatToolResultCarriesImage( probe, internalResp ) )
 					{
 						JsonValue content = JsonValue::MakeArray();
-						const std::string b64 = innerResult.get( "png_base64" ).asString();
-						if( !b64.empty() ) {
-							content.push_back( ImageBlock( b64, "image/png" ) );
-						}
+						// The predicate already proved png_base64 is
+						// non-empty, so no `!b64.empty()` guard is needed
+						// here (unlike the old hand-rolled condition).
+						content.push_back( ImageBlock(
+							innerResult.get( "png_base64" ).asString(), "image/png" ) );
 						// Metadata as text (byteLength/width/height), and the
 						// base64 too (for a client that wants the raw field
 						// rather than to decode the image block).
@@ -1301,8 +3100,14 @@ namespace RISE
 						return MakeSuccess( idValue, MakeCallToolResult( content, /*isError=*/false ) );
 					}
 
-					// Every other verb: the result JSON, serialized, as a
-					// single text block.
+					// Every other verb -- and every image-capable verb's
+					// non-image result (a false from the predicate above) --
+					// takes this same path: the result JSON, serialized, as a
+					// single text block.  That's what makes the unification
+					// behavior-preserving for a non-image result: this branch
+					// and the one above build the IDENTICAL single TextBlock,
+					// so a call the predicate excludes (or never covered) is
+					// byte-for-byte what it always returned.
 					JsonValue content = JsonValue::MakeArray();
 					content.push_back( TextBlock( JsonSerialize( innerResult ) ) );
 					return MakeSuccess( idValue, MakeCallToolResult( content, /*isError=*/false ) );

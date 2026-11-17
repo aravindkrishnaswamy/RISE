@@ -234,6 +234,7 @@ omni_light
 	name		light_01
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 100
 }
 
@@ -242,6 +243,7 @@ omni_light
 	name		light_02
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 300
 }
 
@@ -250,6 +252,7 @@ omni_light
 	name		light_03
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 500
 }
 
@@ -258,6 +261,7 @@ omni_light
 	name		light_04
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 700
 }
 
@@ -266,6 +270,7 @@ omni_light
 	name		light_05
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 900
 }
 
@@ -274,6 +279,7 @@ omni_light
 	name		light_06
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 1100
 }
 
@@ -282,6 +288,7 @@ omni_light
 	name		light_07
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 1300
 }
 
@@ -290,6 +297,7 @@ omni_light
 	name		light_08
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 1500
 }
 
@@ -298,6 +306,7 @@ omni_light
 	name		light_09
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 1700
 }
 
@@ -306,6 +315,7 @@ omni_light
 	name		light_10
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 1900
 }
 
@@ -314,6 +324,7 @@ omni_light
 	name		light_11
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 2100
 }
 
@@ -322,6 +333,7 @@ omni_light
 	name		light_12
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 2300
 }
 
@@ -330,6 +342,7 @@ omni_light
 	name		light_13
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 2500
 }
 
@@ -338,6 +351,7 @@ omni_light
 	name		light_14
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 2700
 }
 
@@ -346,6 +360,7 @@ omni_light
 	name		light_15
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 2900
 }
 
@@ -354,6 +369,7 @@ omni_light
 	name		light_16
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 3100
 }
 
@@ -362,6 +378,7 @@ omni_light
 	name		light_17
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 3300
 }
 
@@ -370,6 +387,7 @@ omni_light
 	name		light_18
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 3500
 }
 
@@ -378,6 +396,7 @@ omni_light
 	name		light_19
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 3700
 }
 
@@ -386,6 +405,7 @@ omni_light
 	name		light_20
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 3900
 }
 

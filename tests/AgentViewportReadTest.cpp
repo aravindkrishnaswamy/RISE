@@ -69,6 +69,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "TestTempDir.h"
 // Round-8 review P2: per-process temp filenames -- see WriteTemp below.
 #ifdef _WIN32
 	#include <process.h>
@@ -123,7 +124,7 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	// a bogus "the test is flaky / there is a race" failure -- that already
 	// cost a reviewer hours once.  The pid prefix makes the path unique per
 	// process.
-	const std::filesystem::path path = std::filesystem::temp_directory_path() /
+	const std::filesystem::path path = std::filesystem::path( RISE::TestSupport::ScratchBaseDir() ) /
 		( std::to_string( static_cast<long>( getpid() ) ) + "_" + name );
 	std::ofstream f( path, std::ios::binary );
 	if( !f ) return std::string();
@@ -849,8 +850,10 @@ static void RunDisplayTransformOrdering()
 //      floor, then recolor the sphere's material and confirm the rmse
 //      rises far beyond that floor with channelDelta signs pointing in
 //      the recolor's direction (production quality is REQUIRED for this
-//      -- draft ignores materials/lighting entirely, so a recolor is
-//      invisible to a draft-mode comparison by design).
+//      -- draft renders under a fixed studio rig, not the scene's own
+//      lighting/exposure, so it would register the recolor too but
+//      would not give the scene-accurate, grader-equivalent reading
+//      this assertion needs).
 //////////////////////////////////////////////////////////////////////
 static void RunCompareToReference()
 {
@@ -1895,6 +1898,13 @@ static void RunFireViewportProvenanceRejection()
 
 int main()
 {
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentViewportReadTest ===\n" );
 
 	RunFireViewportProvenanceRejection();

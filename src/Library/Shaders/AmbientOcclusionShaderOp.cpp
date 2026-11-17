@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "AmbientOcclusionShaderOp.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Utilities/GeometricUtilities.h"
 
 using namespace RISE;
@@ -41,10 +42,17 @@ void AmbientOcclusionShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
+    IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
+    auto alphaOccluded = [&](const Ray& ray, Scalar distance) {
+        RayIntersection hit(ray, ri.geometric.rast);
+        caster.GetAttachedScene()->GetObjects()->IntersectRaySampled(hit, alphaSampler, true, true, false, distance);
+        return hit.geometric.bHit;
+    };
 	c = RISEPel(0.0);
 
 	// Only do stuff on a normal pass or on final gather
@@ -132,11 +140,11 @@ void AmbientOcclusionShaderOp::PerformOperation(
 
 					if( bUseIrradianceCache && pCache ) {
 						RayIntersection	newri( ray, ri.geometric.rast );
-						caster.GetAttachedScene()->GetObjects()->IntersectRay( newri, true, true, false );
+						caster.GetAttachedScene()->GetObjects()->IntersectRaySampled( newri, alphaSampler );
 						if( !newri.geometric.bHit ) {
 							// Accumulate
 							if( pBRDF && bMultiplyBRDF ) {
-								accum = accum + pBRDF->value( dir, ri.geometric ) * (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
+								accum = accum + pBRDF->valueStateful( dir, ri.geometric, &ior_stack ) * (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
 							} else if( !bMultiplyBRDF ) {
 								accum = accum + (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
 							}
@@ -145,10 +153,14 @@ void AmbientOcclusionShaderOp::PerformOperation(
 							hits++;
 						}
 					} else {
-						if( !caster.CastShadowRay( ray, RISE_INFINITY ) ) {
+						// Geometry-presence query, not light-visibility: an
+						// occluder with `casts_shadows FALSE` must still
+						// occlude here (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+						// section 8.1) -- CastOcclusionRay, not CastShadowRay.
+						if( !alphaOccluded( ray, RISE_INFINITY ) ) {
 							// Accumulate
 							if( pBRDF && bMultiplyBRDF ) {
-								accum = accum + pBRDF->value( dir, ri.geometric ) * (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
+								accum = accum + pBRDF->valueStateful( dir, ri.geometric, &ior_stack ) * (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
 							} else if( !bMultiplyBRDF ) {
 								accum = accum + (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
 							}
@@ -193,10 +205,17 @@ Scalar AmbientOcclusionShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
+    IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
+    auto alphaOccluded = [&](const Ray& ray, Scalar distance) {
+        RayIntersection hit(ray, ri.geometric.rast);
+        caster.GetAttachedScene()->GetObjects()->IntersectRaySampled(hit, alphaSampler, true, true, false, distance);
+        return hit.geometric.bHit;
+    };
 	Scalar c=0;
 
 	// Only do stuff on a normal pass or on final gather
@@ -239,10 +258,12 @@ Scalar AmbientOcclusionShaderOp::PerformOperationNM(
 					);
 
 				Ray const ray(ri.geometric.ptIntersection, dir);
-				if( !caster.CastShadowRay( ray, RISE_INFINITY ) ) {
+				// Geometry-presence query, not light-visibility -- see the
+				// RGB path's comment above.
+				if( !alphaOccluded( ray, RISE_INFINITY ) ) {
 					// Accumulate
 					if( pBRDF && bMultiplyBRDF ) {
-						accum += pBRDF->valueNM( dir, ri.geometric, nm ) * (pRadianceMap?pRadianceMap->GetRadianceNM(ray,ri.geometric.rast,nm) : 1.0);
+						accum += pBRDF->valueStatefulNM( dir, ri.geometric, nm, &ior_stack ) * (pRadianceMap?pRadianceMap->GetRadianceNM(ray,ri.geometric.rast,nm) : 1.0);
 					} else if( !bMultiplyBRDF ) {
 						accum += (pRadianceMap?pRadianceMap->GetRadianceNM(ray,ri.geometric.rast,nm) : 1.0);
 					}

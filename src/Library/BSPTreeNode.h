@@ -254,7 +254,7 @@ public:
 						GlobalLog()->PrintNew( pElements, __FILE__, __LINE__, "Elements list" );
 						std::copy( both_elements.begin(), both_elements.end(), pElements->begin() );
 
-						stl_utils::container_erase_all(both_elements);
+						ElementListType().swap( both_elements );
 					}
 				}
 

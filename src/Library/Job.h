@@ -74,6 +74,7 @@ namespace RISE
 			std::vector<unsigned char>& bytes );
 	}
 
+	namespace Implementation { class CallbackRasterizerOutputDispatch; }   // Job.cpp-local; see mCallbackOutputs
 	namespace Cst { struct Document; typedef std::int64_t NodeId; }   // P5 (save-as-CST): the retained canonical CST; fwd-decl keeps Cst.h out of Job.h (NodeId == Cst.h's, a legal typedef redeclaration)
 
 	//! Job - This is used to simplify the creation of a job, all things can be
@@ -392,6 +393,23 @@ namespace RISE
 			const std::vector<unsigned char>& authoredParameterRecord,
 			const IFunction1D* const chemSPDs[3] );
 
+		//! Named `hair_guides` sets, flattened exactly as
+		//! HairGuidesDescriptor carries them (all guides' xyz triples
+		//! concatenated, plus a per-guide POINT count).  Job-side rather
+		//! than manager-backed for the reason IJob::AddHairGuides records:
+		//! a guide set is data a `hair_geometry` reads, never a scene
+		//! entity, so it follows the manager-less `mediaMap` precedent.
+		//! std::map's node stability is load-bearing -- the CST derive's
+		//! production/resolution sinks key the dependency graph on the
+		//! address of the entry, which must not move as later guide sets
+		//! are added.
+		struct HairGuideStore
+		{
+			std::vector<double>			points;
+			std::vector<unsigned int>	counts;
+		};
+		std::map<String, HairGuideStore>			hairGuidesMap;			// Named hair guide-strand sets
+
 		// Materials registered via a composing factory
 		// (`AddPBRMetallicRoughnessMaterial`, `AddGGXEmissiveMaterial`)
 		// rather than a direct `Add*Material` call.  The interactive
@@ -480,6 +498,31 @@ namespace RISE
 		// Model-B F2 slice S2a fix round 2 (P2-A): read-only accessor for pGlobalProgress -- see
 		// IJobPriv::GetProgress's doc.  Inline, no-`override` convention like the other getters.
 		IProgressCallback*			GetProgress() const					{ return pGlobalProgress.load( std::memory_order_acquire ); }
+		// 87 step 4a round-4 P1-A: the container-rebuild counter -- see IJobPriv::GetContainerRebuildCount
+		// and the m_containerRebuildCount member doc.  Inline, no-`override` convention like the others.
+		unsigned long long			GetContainerRebuildCount() const	{ return m_containerRebuildCount; }
+		// Batched agent edits (2026-10-16): see the IJobPriv virtuals' docs.  No `override`, Job's convention.
+		int							ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<CstBatchOutcome>& outcomes,
+		                                               int maxIsolationDryRuns = -1 );
+		int							ApplyCstBatchElement( RISE::Cst::Document& doc, const CstBatchEdit& edit, CstBatchOutcome& outcome );
+		bool						CopyCstDocument( RISE::Cst::Document& out ) const;
+		int							ApplyCstReplaceDocument( const RISE::Cst::Document& doc, bool restoreActiveRasterizer,
+		                                                     char* outDiag, unsigned int diagMax, const char* diagContext );
+		bool						CstTargetIsContainerObject( const RISE::Cst::Document& doc, const char* entityName, const char* entityKind ) const;
+		// Undo fidelity (2026-10-17): see the IJobPriv virtuals' docs.  No `override`, Job's convention.
+		bool						CstParamEditOwnerChunkText( const char* entityName, const char* entityKind, const char* role, std::string& out ) const;
+		int							ApplyCstParamEditOwnerRestore( const char* entityName, const char* entityKind, const char* role,
+		                                                           const std::string& expectText, const std::string& newText,
+		                                                           bool requireFullDerivability = true );
+		//! Test hook (2026-10-16): how many validate-before-destroy DRY-RUN derives (into a throwaway staging Job)
+		//! the CST edit paths have run on this Job.  Monotonic; not part of IJobPriv.
+		unsigned long long			GetCstDryRunCount() const			{ return mCstDryRunCount; }
+		//! Test seam (2026-10-16): make the NEXT full live re-derive report `diag` as a diagnostic (code 3),
+		//! so the "dry-run clean, live re-derive diagnosed" path can be exercised.  Not part of IJobPriv.
+		void						ForTest_InjectNextLiveDeriveDiagnostic( const std::string& diag ) { mForTestInjectLiveDeriveDiag = diag; }
+		//! Test seam (2026-10-16): override ApplyCstEditBatch's DEFAULT isolation dry-run budget (-1 = no override).
+		void						ForTest_SetCstBatchIsolationBudget( int budget ) { mForTestBatchBudget = budget; }
+		// Fire render preflight for controller-owned rasterizers (see the IJobPriv virtuals' docs).
 		bool PrepareFireRenderForExternalRasterizer(
 			IRasterizer* rasterizer,
 			const char* rasterizerKind,
@@ -777,6 +820,102 @@ namespace RISE
 									const double dispersionSpeed,
 									const unsigned int seed,
 									const double time
+									);
+
+		//! Adds an expression_painter (doc 88 P1, S2) -- see IJob.h for
+		//! the full parameter doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddExpressionPainter(
+									const char* name,
+									const char* expr,
+									const char* const* params,
+									const unsigned int numParams,
+									const char* const* defs,
+									const unsigned int numDefs,
+									const double seed,
+									const double time
+									);
+
+		//! Adds a ramp_painter (doc 88 P2.2, S3) -- see IJob.h for the
+		//! full parameter doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddRampPainter(
+									const char* name,
+									const char* input,
+									const unsigned int channel,
+									const unsigned int interpolation,
+									const double* stopPositions,
+									const double* stopColors,
+									const unsigned int numStops,
+									const char* colorSpace
+									);
+
+		//! Adds a mapping_painter (doc 88 P2.3) -- see IJob.h for the
+		//! full parameter doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddMappingPainter(
+									const char* name,
+									const char* source,
+									const unsigned int projection,
+									const double scale[3],
+									const double rotateDeg[3],
+									const double translate[3],
+									const double blendSharpness
+									);
+
+		//! P1-A fix (S7 review round 1): new tail-appended virtual, see
+		//! IJob.h for the ABI rationale.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddVoronoi3DPainterWithSpace(
+									const char* name,
+									const double pt_x[],
+									const double pt_y[],
+									const double pt_z[],
+									const char** painters,
+									const unsigned int count,
+									const char* border,
+									const double bsize,
+									const bool worldSpace
+									);
+
+		//! P1-A fix (S7 review round 1): new tail-appended virtual, see
+		//! IJob.h for the ABI rationale.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddBlendPainterWithMode(
+									const char* name,
+									const char* pa,
+									const char* pb,
+									const char* mask,
+									const unsigned int mode
+									);
+
+		//! Adds a stochastic_tile_painter (doc 88 P3.1, S8) -- see IJob.h
+		//! for the full parameter doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddStochasticTilePainter(
+									const char* name,
+									const char* source,
+									const double tileScale,
+									const unsigned int seed,
+									const double mean[3],
+									const double blendGamma,
+									const char* colorSpace
+									);
+
+		//! Adds a scatter_painter (doc 88 P3.2, S8) -- see IJob.h for the
+		//! full parameter doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddScatterPainter(
+									const char* name,
+									const char* source,
+									const char* background,
+									const double cellScale,
+									const double stampScale,
+									const double jitterPosition,
+									const double jitterRotationDeg,
+									const double jitterScale,
+									const double probability,
+									const unsigned int seed
 									);
 
 		//! Adds a 2D perlin noise painter
@@ -1185,6 +1324,97 @@ namespace RISE
 									const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
 									);
 
+		bool AddCoatedMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* base,				///< [in] Name of the substrate material (allowlisted)
+									const char* coat_weight,		///< [in] [0,1] coat coverage (physical scalar)
+									const char* coat_ior,			///< [in] Coat index of refraction (physical scalar)
+									const char* coat_roughness,		///< [in] Coat GGX alpha (physical scalar)
+									const char* coat_thickness,		///< [in] Coat thickness, world length (physical scalar)
+									const char* coat_absorption,	///< [in] Coat absorption, 1/length (physical scalar)
+									const char* coat_tint			///< [in] Coat transmission colour (colour painter)
+									);
+
+		//! DL-192: see IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+        bool AddIndexedTriangleMeshGeometryWithTangents(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents);
+        bool AddIndexedTriangleMeshGeometryWithShaderDirections(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents);
+        bool SetMaterialAlpha(const char* material, const char* alpha, const char* mode, const double cutoff);
+
+		bool AddCoatedMaterialEx(
+									const char* name,
+									const char* base,
+									const char* coat_weight,
+									const char* coat_ior,
+									const char* coat_roughness,
+									const char* coat_thickness,
+									const char* coat_absorption,
+									const char* coat_tint,
+									const char* coat_normal,
+									const double coat_normal_scale
+									);
+
+		bool AddFabricMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* fabric,				///< [in] Preset name (see FabricPresets.h)
+									const char* base,				///< [in] Name of the substrate material (allowlisted)
+									const char* sheen_color,		///< [in] Sheen / dye tint (colour painter; empty or `none` = preset colour, else white)
+									const char* sheen_roughness,	///< [in] Charlie alpha (physical scalar)
+									const char* weave_rotation		///< [in] Weave angle in radians (physical scalar)
+									);
+
+		//! Adds a Weave material -- the structured two-thread-family
+		//! cloth BSDF.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddWeaveMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* weave,				///< [in] Draft name; empty = the preset's
+									const char* fabric,				///< [in] Preset name (see WeavePresets.h)
+									const char* transmission,		///< [in] P2-B: `none`/`thin`; empty = the preset's
+									const char* weave_scale,		///< [in] Cells per UV unit (physical scalar)
+									const char* weave_rotation,		///< [in] Warp direction in radians (physical scalar)
+									const char* weft_skew,			///< [in] Weft offset from perpendicular, radians (physical scalar)
+									const char* coverage,			///< [in] `custom` draft only: warp-coverage field (physical scalar)
+									const char* gap,				///< [in] Uncovered fraction; P2-B: also the `thin` delta lobe's aperture (physical scalar); `sheer` is an accepted alias
+									const char* warp_color,			///< [in] Warp dye (colour painter)
+									const char* weft_color,			///< [in] Weft dye (colour painter)
+									const char* warp_ior,			///< [in] Warp fibre IOR (physical scalar)
+									const char* weft_ior,			///< [in] Weft fibre IOR (physical scalar)
+									const char* warp_width,			///< [in] Warp longitudinal width, radians (physical scalar)
+									const char* weft_width,			///< [in] Weft longitudinal width, radians (physical scalar)
+									const char* warp_azimuth,		///< [in] Warp azimuthal width, radians (physical scalar)
+									const char* weft_azimuth,		///< [in] Weft azimuthal width, radians (physical scalar)
+									const char* warp_kd,			///< [in] Warp isotropic volume-scattering fraction (physical scalar)
+									const char* weft_kd,			///< [in] Weft isotropic volume-scattering fraction (physical scalar)
+									const char* warp_tilt,			///< [in] Warp float tilt, radians (physical scalar)
+									const char* weft_tilt,			///< [in] Weft float tilt, radians (physical scalar)
+									const char* warp_transmit,		///< [in] P2-B: warp's diffuse-transmission share, [0,1] (physical scalar)
+									const char* weft_transmit		///< [in] P2-B: weft's diffuse-transmission share, [0,1] (physical scalar)
+									);
+
+		//! Adds a channel-extraction SCALAR painter.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddPainterChannelScalarPainter(
+									const char* name,				///< [in] Name of the scalar painter
+									const char* source,				///< [in] Source colour painter (already registered)
+									const char  channel,			///< [in] 0=R, 1=G, 2=B, 3=A
+									const double scale,				///< [in] Multiplier on extracted channel
+									const double bias				///< [in] Additive offset after scale
+									);
+
+		bool AddRoughDielectricMaterial(const char* name, const char* ior,
+			const char* alphaX, const char* alphaY);
+
 		//! Creates a Dielectric material
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddDielectricMaterial(
@@ -1327,13 +1557,13 @@ namespace RISE
 			const char* name,											///< [in] Name of the material
 			const char* top,											///< [in] Name of material on top
 			const char* bottom,											///< [in] Name of material on bottom
-			const unsigned int max_recur,								///< [in] Maximum recursion level in the random walk process
-			const unsigned int max_reflection_recursion,				///< [in] Maximum level of reflection recursion
-			const unsigned int max_refraction_recursion,				///< [in] Maximum level of refraction recursion
-			const unsigned int max_diffuse_recursion,					///< [in] Maximum level of diffuse recursion
-			const unsigned int max_translucent_recursion,				///< [in] Maximum level of translucent recursion
+			const unsigned int max_recur,								///< [in] Russian-roulette onset (total walk events) for the inter-layer walk; since DL-24 not a truncation
+			const unsigned int max_reflection_recursion,				///< [in] Russian-roulette onset for reflection events (DL-24: not a truncation)
+			const unsigned int max_refraction_recursion,				///< [in] Russian-roulette onset for refraction events (DL-24: not a truncation)
+			const unsigned int max_diffuse_recursion,					///< [in] Russian-roulette onset for diffuse events (DL-24: not a truncation)
+			const unsigned int max_translucent_recursion,				///< [in] Russian-roulette onset for translucent events (DL-24: not a truncation)
 			const double thickness,										///< [in] Thickness between the materials
-			const char* extinction										///< [in] Extinction painter name
+			const char* extinction										///< [in] Extinction: a scalar_painter name, or an inline `r g b` / single scalar (physical SCALAR slot -- a colour painter does not bind here)
 			);
 
 		//! Adds Ward's isotropic gaussian material
@@ -1462,6 +1692,24 @@ namespace RISE
 			const char* mat,											///< [in] Material to use for all non emmission properties
 			const char* N,												///< [in] Phong exponent function
 			const double scale											///< [in] Value to scale radiant exitance by
+			);
+
+		//! Creates a hair material.  See IJob::AddHairMaterial for the
+		//! colour-tier exclusivity contract.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddHairMaterial(
+			const char* name,
+			const char* color,
+			const char* sigma_a,
+			const char* eumelanin,
+			const char* pheomelanin,
+			const char* beta_m = "0.3",
+			const char* beta_n = "0.3",
+			const char* alpha = "2.0",
+			const char* ior = "1.55",
+			const char* medulla_ratio = "0",
+			const char* medulla_scatter = "0.5",
+			const char* medulla_g = "0.4"
 			);
 
 
@@ -1665,7 +1913,7 @@ namespace RISE
 		bool AddSDFHeightfieldGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const char* heightfieldFunction,		///< [in] Named IFunction2D giving f(u,v)
-					const double radius,					///< [in] Half-extent of the square domain
+					const double radius,					///< [in] Radius of the disk domain, centred at the origin in local XY
 					const double scale,						///< [in] World amplitude
 					const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
 					const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
@@ -1677,6 +1925,36 @@ namespace RISE
 		bool AddSweepGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const SweepDescriptor& desc				///< [in] Profile + path + taper + cap parameters
+					);
+
+		//! Creates a surface of revolution / lathe (see IJob)
+		bool AddLatheGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const LatheDescriptor& desc				///< [in] Profile + axis + sweep + resolution parameters
+					);
+
+		//! Creates a ruled / billowed skin between two rails (see IJob)
+		bool AddSkinGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const SkinDescriptor& desc				///< [in] Rails + tessellation + billow parameters
+					);
+
+		//! Creates a painter-driven hair groom on a named base geometry (see IJob)
+		bool AddHairGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const HairGroomDescriptor& desc			///< [in] Base + painters + numeric groom parameters
+					);
+
+		//! Registers an authored hair guide-strand set (see IJob)
+		bool AddHairGuides(
+					const char* name,						///< [in] Name of the guide set
+					const HairGuidesDescriptor& desc		///< [in] The authored guide polylines
+					);
+
+		//! Creates a hair groom imported from a Cem Yuksel .hair file (see IJob)
+		bool AddHairGeometryFromFile(
+					const char* name,						///< [in] Name of the geometry
+					const HairFileGroomDescriptor& desc		///< [in] File path + the two width multipliers
 					);
 
 		//! Creates along-path instances of a named template geometry (see IJob)
@@ -1722,16 +2000,34 @@ namespace RISE
 							const bool          face_normals,
 					const bool          seam_fold = true );
 
+		//! Creates a displaced geometry from EITHER an IFunction2D `displacement`
+		//! or an IScalarPainter `height` (see IJob.h).  AddDisplacedGeometry
+		//! forwards here with a null `height`.
+		bool AddDisplacedGeometryWithHeight(
+							const char*         name,
+							const char*         base_geometry_name,
+							const unsigned int  detail,
+							const char*         displacement,
+							const char*         height,
+							const Scalar        disp_scale,
+							const bool          double_sided,
+							const bool          face_normals,
+							const bool          seam_fold );
+
 		//
 		// Adds lights
 		//
+		// `color` is LINEAR by default; `colorspace` (null =
+		// "Rec709RGB_Linear") names the interpretation.  See IJob.h's
+		// "COLOUR CONVENTION (2026-09-02)" note for the history.
 
 		//! Creates a infinite point omni light, located at the origin
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddPointOmniLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			const double pos[3],									///< [in] Position of the light
 			const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 			);
@@ -1741,7 +2037,8 @@ namespace RISE
 		bool AddPointSpotLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			const double foc[3],									///< [in] Point the center of the light is focussing on
 			const double inner,										///< [in] Angle of the inner cone in radians
 			const double outer,										///< [in] Angle of the outer cone in radians
@@ -1754,7 +2051,8 @@ namespace RISE
 		bool AddAmbientLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3]									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			);
 
 		//! Adds an infinite directional light, shining in a particular direction
@@ -1762,7 +2060,8 @@ namespace RISE
 		bool AddDirectionalLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			const double dir[3]										///< [in] Direction of the light
 			);
 
@@ -1978,6 +2277,13 @@ namespace RISE
 			IEnumCallback<const char*>& cb
 			) const;
 
+		//! Enumerate registered `hair_guides` set names; see IJob.h.
+		//! (Declared here beside its `mediaMap` twin even though IJob's own
+		//! declaration is at that interface's append-only tail.)
+		void EnumerateHairGuideNames(
+			IEnumCallback<const char*>& cb
+			) const;
+
 		//! Return a registered geometry by name; see IJob.h.
 		const IGeometry* GetGeometry(
 			const char* name
@@ -1999,7 +2305,9 @@ namespace RISE
 		// Adds modifiers
 		//
 
-		//! Creates a bump map
+		//! Creates a bump map -- LEGACY SHIM (docs/RELIEF_MODIFIER_DESIGN.md 7.5);
+		//! the `bumpmap_modifier` chunk and the `BumpMap` class were REMOVED
+		//! 2026-09-06.  See IJob.h for the doc.
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddBumpMapModifier(
 			const char* name,										///< [in] Name of the modifiers
@@ -2029,6 +2337,46 @@ namespace RISE
 			const double scale[3],									///< [in] anisotropic cell stretch
 			const double shift[3],									///< [in] cell-space offset
 			const unsigned int seed									///< [in] hash seed
+			);
+
+		//! Creates a painter-driven micro-relief modifier.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddReliefModifier(
+			const char* name,										///< [in] Name of the modifier
+			const char* height,										///< [in] Height field (scalar_painter name or inline numeric)
+			const double scale,										///< [in] Amplitude
+			const char* domain,										///< [in] "surface" (default) or "uv"
+			const double step										///< [in] Central-difference half-step; <= 0 = auto
+			);
+
+		//! Creates a painter-driven micro-relief modifier with the optional
+		//! slope clamp.  `AddReliefModifier` above forwards here with
+		//! `maxSlope` 0.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddReliefModifierEx(
+			const char* name,										///< [in] Name of the modifier
+			const char* height,										///< [in] Height field (scalar_painter name or inline numeric)
+			const double scale,										///< [in] Amplitude
+			const char* domain,										///< [in] "surface" (default) or "uv"
+			const double step,										///< [in] Central-difference half-step; <= 0 = auto
+			const double maxSlope									///< [in] Tilt bound as a slope; 0 = unclamped, negative refused
+			);
+
+		//! Adds an atan2-combinator scalar painter.  See IJob.h for the DL-17 doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddAtan2ScalarPainter(
+			const char* name,										///< [in] Name of the new scalar painter
+			const char* y,											///< [in] Name of a registered IScalarPainter (Y operand)
+			const char* x,											///< [in] Name of a registered IScalarPainter (X operand)
+			const double offset									///< [in] Additive constant in radians
+			);
+
+		//! Creates an ordered composition of previously-registered modifiers.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddModifierStack(
+			const char* name,										///< [in] Name of the modifier stack
+			const char** modifierNames,								///< [in] Names of the member modifiers, in authored (application) order
+			const unsigned int count								///< [in] Number of members; 0 is rejected
 			);
 
 		//
@@ -2104,7 +2452,9 @@ namespace RISE
 			const double pos[3],									///< [in] Position of the object
 			const double orient[3],									///< [in] Orientation of the object
 			const bool bCastsShadows,								///< [in] Does the object cast shadows?
-			const bool bReceivesShadows								///< [in] Does the object receive shadows?
+			const bool bReceivesShadows,							///< [in] Does the object receive shadows?
+			const bool bAllowTransformedOperands					///< [in] Acknowledges an intentional operand-rebase; suppresses the
+																	///<      operand-rebase advisory
 			);
 
 		//
@@ -2356,7 +2706,7 @@ namespace RISE
 			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
@@ -2384,7 +2734,7 @@ namespace RISE
 			const double rgb_spd_g[],								///< [in] Array that contains the RGB SPD amplitudes for green
 			const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
@@ -2400,7 +2750,7 @@ namespace RISE
 			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
@@ -2422,7 +2772,7 @@ namespace RISE
 			const bool enableVC,									///< [in] Enable vertex connection strategies
 			const bool enableVM,									///< [in] Enable vertex merging strategy
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising
-			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
@@ -2445,7 +2795,7 @@ namespace RISE
 			const bool enableVC,									///< [in] Enable vertex connection strategies
 			const bool enableVM,									///< [in] Enable vertex merging strategy
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising
-			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
@@ -2465,7 +2815,7 @@ namespace RISE
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
@@ -2573,7 +2923,7 @@ namespace RISE
 			const char* shader,										///< [in] The default shader
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
@@ -2591,7 +2941,7 @@ namespace RISE
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
@@ -3099,6 +3449,11 @@ namespace RISE
 		bool HasRetainedCstDocument() const { return pCstDocument != nullptr; }
 		int ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue );
 
+		//! Light-colour composite (2026-09-02 round 2): the ATOMIC multi-param form -- see the IJob virtual doc
+		//! for the contract.  All pairs validated against the pristine Document, written into ONE copy, ONE derive.
+		int ApplyCstParamEdits( const char* entityName, const char* entityKind,
+		                        const std::vector< std::pair< std::string, std::string > >& edits );
+
 		//! Model-B F5 slice S2 round 2 (P1-A root gate): ApplyCstParamEdit PLUS a full-derivability
 		//! pre-commit dry-run for AGENT-originated edits -- same signature and 0/1/2/3 contract, but
 		//! additionally returns 0 (head + live scene untouched) when the edited Document would no longer
@@ -3112,7 +3467,8 @@ namespace RISE
 		//! occurrence would delete other edits a repeatable param accumulated after the agent's insert.
 		int ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role, int occ );
 
-		//! P5 Slice 3 expansion (object transform): commit an object's NET world transform to the retained CST as
+		//! P5 Slice 3 expansion (object transform): commit an object's LOCAL transform -- what its chunk authors;
+		//! 87 re-composes a parented object's world matrix from it on every derive -- to the retained CST as
 		//! the authoritative `matrix` param (16 col-major doubles), stripping the dead component params.  Same
 		//! 0/1/2/3 contract as ApplyCstParamEdit (2/3 => Scene+managers REPLACED, caller MUST rebind).
 		int ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 );
@@ -3186,6 +3542,24 @@ namespace RISE
 		                         char* outKeyword, unsigned int keywordMax,
 		                         char* outDiag, unsigned int diagMax );
 
+		//! R1a (2026-08-09, batched remove_chunks): ATOMIC batch form of ApplyCstRemoveChunk -- resolve every
+		//! target first (shared resolver, so resolution can never drift from the singular verb), refuse the
+		//! WHOLE batch if any target fails, else erase all resolved indices in ONE Document mutation and
+		//! realize them with ONE dry-run-guarded full re-derive (ONE head-version bump).  Full contract,
+		//! including the intra-batch-reference and duplicate rules, documented on the IJob virtual.  Returns
+		//! 2/3 (replaced; rebind) / 0 (would-not-derive) / -1 (a target not found) / -2 (a target ambiguous).
+		int ApplyCstRemoveChunks( const char* const* targets, const char* const* kinds, int count,
+		                         char* outKeywords, unsigned int keywordsMax,
+		                         char* outDiag, unsigned int diagMax,
+		                         int* outFailIndex = nullptr );
+
+		//! R1a (2026-08-09, batched remove_chunks -- UNDO): replace the whole retained Document with `fullText`
+		//! and realize it through the shared dry-run-guarded full re-derive tail.  Contract documented on the
+		//! IJob virtual.  Returns 2/3 (replaced; rebind) / 0 (refused; nothing changed).  Never 1.
+		int ApplyCstReplaceDocumentText( const char* fullText, bool restoreActiveRasterizer,
+		                                 char* outDiag, unsigned int diagMax,
+		                                 const char* diagContext = nullptr );
+
 		//! Shared-undo U2: EXACT-POSITION inverse of ApplyCstRemoveChunk (an agent AgentRemoveChunk op's Undo).
 		//! Splices `bytesInOrder` back verbatim at top-level index `atIndex` (GLUE-SAFE per round-1 P1-B: a
 		//! synthesized "\n" lead item is inserted first when the left neighbour at a shifted `atIndex` does not
@@ -3203,6 +3577,20 @@ namespace RISE
 		//! byte-mismatch).  Never 1.
 		int ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax,
 		                           const char* expectedChunkBytes = nullptr );
+
+		//! 87 recursive scene graph: record a parent link / bake world transforms.
+		//! Contracts documented on the IJob virtuals.
+		// NB: no `override` keyword.  Job.h predates the convention and marks
+		// none of its ~650 IJob implementations; adding it to just these two
+		// would trip -Winconsistent-missing-override across the whole class.
+		// The IJob vtable is pinned mechanically instead, by
+		// tests/IJobVtableManifest.txt (SourceHygieneTest).
+		bool SetObjectParent( const char* child, const char* parent );
+		bool ComposeObjectHierarchy( );
+
+		//! doc 89 slice C: set / clear an object's LOCAL mirror axis.  Contract on
+		//! the IJob virtual.  (No `override` keyword -- see the note above.)
+		bool SetObjectMirror( const char* object_name, const char* axis );
 
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
@@ -3385,6 +3773,53 @@ namespace RISE
 									);
 
 	private:
+		//! Callback-output render scope (2026-11-14).  Every
+		//! CallbackRasterizerOutputDispatch this Job creates through
+		//! AddCallbackRasterizerOutput is registered here (one counted
+		//! reference each), so every Job render entry point can release the
+		//! dispatchers' frame-sized conversion buffers when the render ends,
+		//! however it ends (receiver or other-output throw, cancellation,
+		//! cancelled animation, early return), and before it starts.  The
+		//! dispatcher otherwise frees them only after a final OutputImage.
+		//! A render that calls the rasterizer directly instead of a Job
+		//! entry point (SceneEditController's legacy production render)
+		//! is not bracketed; the next Job-entry render releases on entry.
+		//! Each entry records the rasterizer the dispatcher was attached to
+		//! (no output is ever replayed onto another rasterizer), and the
+		//! entry is dropped exactly where that rasterizer's outputs go away:
+		//! RemoveRasterizerOutputs (active rasterizer only), the replacement
+		//! of a registered rasterizer, DestroyContainers (ClearAll, reload,
+		//! variant switch, edit re-derive) and ~Job.
+		//! Guarded by mCallbackOutputsMutex; never held across a render.
+		//! A receiver (IJobRasterizerOutput) must not call Job render or
+		//! output-management entry points from inside its callback: the
+		//! dispatcher holds its non-recursive dispatchMutex across the
+		//! receiver call, and those entry points take it (self-deadlock).
+		class CallbackOutputRenderScope;
+		friend class CallbackOutputRenderScope;
+		struct CallbackOutputEntry
+		{
+			Implementation::CallbackRasterizerOutputDispatch*	dispatch;	///< one counted reference
+			const IRasterizer*									owner;		///< identity only, never dereferenced
+		};
+		std::vector<CallbackOutputEntry> mCallbackOutputs;
+		std::mutex mCallbackOutputsMutex;
+		void ReleaseCallbackOutputRenderBuffers_() noexcept;
+		//! Drops the entries attached to `owner`, or all entries when
+		//! `owner` is null.  Call BEFORE the owner's outputs are released.
+		void DropCallbackOutputRegistry_( const IRasterizer* owner = nullptr ) noexcept;
+	public:
+		//! Test seam (2026-11-14): number of registered callback dispatchers.
+		//! Not part of IJobPriv.
+		size_t						ForTest_CallbackOutputRegistrySize();
+	private:
+
+        bool AddIndexedMeshDirections(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents, const bool shader_direction);
 		//! P5 Slice 3 expansion: shared incremental + D2 re-derive tail for an already-edited CST Document
 		//! (closure anchored at `closureAnchorId`).  Activation-preserving D2 fallback.  Returns the 0/1/2/3
 		//! contract.  `entityName`/`role` are diagnostic-only.  Used by ApplyCstParamEdit + ApplyCstObjectMatrixEdit.
@@ -3395,6 +3830,13 @@ namespace RISE
 		//! Shared body of ApplyCstParamEdit (ungated -- GUI panel/gizmo route) and ApplyCstParamEditChecked
 		//! (agent route -- full-derivability gate on).
 		int ApplyCstParamEditImpl_( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue, bool requireFullDerivability );
+		//! Light-colour composite (2026-09-02 round 2): the REAL body -- resolves the entity ONCE, runs the owner
+		//! walk + duplicate-occurrence refusal for EVERY pair against the PRISTINE Document, and only then writes
+		//! them all into ONE Document copy and derives ONCE.  `ApplyCstParamEditImpl_` is a one-pair wrapper over
+		//! this, so the single- and multi-param routes cannot drift on resolution or validation.
+		int ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind,
+		                             const std::vector< std::pair< std::string, std::string > >& edits,
+		                             int occ, bool requireFullDerivability );
 		//! Model-B F5 slice S2: the SHARED D2 tail factored out of DeriveEditedCstDocument_ -- validate-before-
 		//! destroy dry-run into a throwaway Job, then the real ClearAll + full re-derive of `editedDoc`, forcing
 		//! the active variant and PRESERVING the active camera/rasterizer/animation + the cached viewport fit.
@@ -3406,6 +3848,48 @@ namespace RISE
 		//! `restoreActiveRasterizer` (F5 S2 round 2, P1-B): ApplyCstInsertChunk passes false when the inserted
 		//! chunk IS a rasterizer so the derive's last-wins activation (the insert) stands -- live matches reload.
 		int RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer = true );
+		int RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer, bool skipDryRun );
+		//! Batched agent edits (2026-10-16): a full DeriveToJob of `doc` into a throwaway staging Job (the
+		//! active variant forced).  True iff it derived with NO diagnostic; else `outFirstDiag` (if non-null)
+		//! receives the first one.  Mutates nothing on this Job.
+		bool DryRunCstDocument_( const RISE::Cst::Document& doc, std::string* outFirstDiag );
+		//! Batched agent edits (2026-10-16): the parse/refusal half of ApplyCstInsertChunk, against an
+		//! ARBITRARY base document (the retained head for the single verb, the batch's evolving document for
+		//! ApplyCstEditBatch) -- one copy of every refusal rule so the two can never drift.  Returns 1 when
+		//! the chunk may be spliced (outChunk/outIsRasterizer/outAt/outEndAt filled: `outAt` = the declaration-
+		//! tier position, `outEndAt` = append-at-end), else the single verb's -1 / -2 / 0 with `outDiag` set.
+		//! `keyword`/`name` are echoed as soon as the chunk parses.
+		//! `logRefusals` = false silences the refusal warnings (a batch re-validates an element many times
+		//! while isolating; it logs each final verdict once instead).
+		int PrepareCstInsert_( const RISE::Cst::Document& base, const char* chunkText,
+		                       std::string& keyword, std::string& name, std::string& outDiag,
+		                       RISE::Cst::NodeRef& outChunk, bool& outIsRasterizer, int& outAt, int& outEndAt,
+		                       bool logRefusals );
+		//! Batched agent edits (2026-10-16): splice [leadSep][chunk][trailSep] into `doc` at `at`.
+		static RISE::Cst::Document SpliceCstInsert_( const RISE::Cst::Document& doc, const RISE::Cst::NodeRef& chunk, int at );
+		//! Undo fidelity (2026-10-17): the chunk a param edit addressed as (entityName, entityKind, role) LANDS on in
+		//! `doc` -- PlanCstParamEdits_'s own resolution (DocFindByNameAnyRole + DocTransformOwnerId), factored so the
+		//! owner-text capture and the verbatim restore cannot resolve differently from the write.  0 = no match.
+		RISE::Cst::NodeId ResolveCstParamEditOwner_( const RISE::Cst::Document& doc, const char* entityName,
+		                                             const char* entityKind, const std::string& role ) const;
+		//! Batched agent edits (2026-10-16): the resolve/validate/write half of ApplyCstParamEditsImpl_
+		//! against an ARBITRARY base document.  1 = every pair planned and written into `outDoc` (anchor =
+		//! the owner chunk, roleDiag = "role[+role...]"), 0 = refused (logged; `outDoc` untouched).
+		int PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entityName, const char* entityKind,
+		                        const std::vector< std::pair< std::string, std::string > >& edits, int occ,
+		                        RISE::Cst::Document& outDoc, RISE::Cst::NodeId& outAnchor, std::string& outRoleDiag,
+		                        bool logRefusals, CstBatchUndoOp* outUndo = nullptr );
+		//! Batched agent edits (2026-10-16): apply ONE batch element to `doc` (positioned insert, or the
+		//! param write, after the optional container gate).  Returns 1 = written (outcome.insertedAt /
+		//! isRasterizer set for an insert), else the element's refusal code with outcome.diag set.
+		//! `appendAtEnd` places an insert at the document end instead of its declaration tier.
+		int ApplyCstBatchElement_( RISE::Cst::Document& doc, const CstBatchEdit& e, CstBatchOutcome& outcome,
+		                           bool appendAtEnd, bool logRefusals );
+		//! Batched agent edits (2026-10-16): the failure-isolation state + recursion behind ApplyCstEditBatch --
+		//! see the .cpp.
+		struct CstBatchIsolation_;
+		bool IsolateCstBatch_( CstBatchIsolation_& st, const std::vector<int>& idxs, bool knownFailing );
+		bool TryLandCstBatchElement_( CstBatchIsolation_& st, int i, bool allowAppend );
 		//! Facet 5 slice 1a: bump the retained CST head's revision (leaving uuid), called at EVERY site that
 		//! successfully mutates the retained pCstDocument content.  The invariant: revision changes IFF the
 		//! retained Document content changed -- so a NO-CHANGE code path (a rejected edit) must NOT call this.
@@ -3437,6 +3921,31 @@ namespace RISE
 		//! Count of override_object chunks that modified an object in place this derive
 		//! (see IJob::NoteObjectOverride).  The CST incremental apply refuses when > 0.
 		unsigned int m_objectOverrideCount;
+
+		//! 87 step 4a (round-4 P1-A): how many times the container set has been
+		//! BUILT.  TWO sites bump it, not one: InitializeContainers (construction,
+		//! and once more per ClearAll) and SetPrimaryAcceleration, which releases
+		//! and recreates the ObjectManager by itself.  Round 5 caught the second --
+		//! this comment used to say InitializeContainers was the sole funnel, and a
+		//! fresh ObjectManager restarts its serials at 0 just the same, so the miss
+		//! reopened the very hole the counter exists to close.  NOT reset by
+		//! InitializeContainers (that would defeat it) and NOT touched by
+		//! DestroyContainers.  A future manager swap MUST bump it.
+		//!
+		//! Exists because a registration SERIAL is not a cross-rebuild identity:
+		//! GenericManager::m_nNextSerial is per-manager-instance and starts over on
+		//! construction, so a ClearAll + re-derive that re-registers the same
+		//! document in the same order reproduces BYTE-IDENTICAL serials for
+		//! genuinely new instances.  Anything caching per-entity identity across a
+		//! possible rebuild must compose this counter with the serial.  See
+		//! SceneEditController::AuthoredTree::rebuildCount, its sole consumer.
+		unsigned long long m_containerRebuildCount = 0;
+		// 2026-10-16: see GetCstDryRunCount.
+		unsigned long long mCstDryRunCount = 0;
+		// 2026-10-16: the first diagnostic of the last full live re-derive ("" when clean), and the test seam.
+		std::string mLastCstLiveDeriveDiag;
+		std::string mForTestInjectLiveDeriveDiag;
+		int mForTestBatchBudget = -1;
 
 		//! `gltf_import` name_prefix values already consumed THIS derive (reset in
 		//! InitializeContainers, so a fresh Job -- or a ClearAll'd one -- starts empty).

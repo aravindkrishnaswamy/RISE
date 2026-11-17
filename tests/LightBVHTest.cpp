@@ -71,9 +71,18 @@ public:
 	Vector3 emissionDirection() const { return vDir; }
 	Scalar emissionConeHalfAngle() const { return dHalfAngle; }
 
+	// NOTE: deliberately NOT marked `override`, matching the rest of this
+	// mock's ILightPriv surface.  That means a signature drift here does
+	// NOT produce an error at THIS declaration -- it leaves the class
+	// abstract and the failure surfaces far away at the `new MockSpotLight`
+	// site.  Whenever ILight::ComputeDirectLighting{,NM} gains a parameter,
+	// this is the site to update.
 	void ComputeDirectLighting(
 		const RayIntersectionGeometric&, const IRayCaster&,
-		const IBSDF&, const bool, RISEPel& amount ) const
+		const IBSDF&, const bool, RISEPel& amount,
+		const bool /*bFullSphereReceiver*/,
+		const bool /*bVolumeReceiver*/,
+		const IORStack* /*pIORStack*/ ) const      // DL-157 P2-3 added this
 	{
 		amount = RISEPel( 0, 0, 0 );
 	}
@@ -88,6 +97,12 @@ public:
 	void FinalizeTransformations() {}
 	Matrix4 const GetFinalTransformMatrix() const { return Matrix4(); }
 	Matrix4 const GetFinalInverseTransformMatrix() const { return Matrix4(); }
+	// 87 recursive scene graph: mock carries no transform -- identity / pass-through.
+	void FinalizeTransformations( const Matrix4& ) {}
+	Matrix4 const GetLocalTransformMatrix() const { return Matrix4(); }
+	Matrix4 const GetParentWorldTransformMatrix() const { return Matrix4Ops::Identity(); }
+	bool IsParentWorldInvertible() const { return true; }
+	Matrix4 const WorldToLocal( const Matrix4& m ) const { return m; }
 	void TranslateObject( const Vector3& ) {}
 	void SetPosition( const Point3& ) {}
 

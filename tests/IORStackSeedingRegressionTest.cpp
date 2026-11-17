@@ -104,6 +104,10 @@
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
+#include "TestTempDir.h"
+
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -237,9 +241,9 @@ static bool ChannelsAgree(
 //////////////////////////////////////////////////////////////////////
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/ior_seed_regression_%s_%d.RISEscene",
+		"%s/ior_seed_regression_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
@@ -270,6 +274,7 @@ static CapturingRasterizerOutput* RenderAndCapture( const char* scenePath )
 	pCap->addref();
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	std::srand( g_renderSeed++ );
 	const bool bRendered = pJob->Rasterize();
 	safe_release( pJob );
 
@@ -314,6 +319,7 @@ static const char* kUnitSceneText =
 	"pathtracing_pel_rasterizer\n"
 	"{\n"
 	"\tsamples 1\n"
+	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"scalar_painter\n"
@@ -581,14 +587,15 @@ static const char* kRasterizerPT =
 	"{\n"
 	"\tsamples 64\n"
 	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/ior_seed_regression_pt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/ior_seed_regression_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerBDPT =
@@ -604,14 +611,15 @@ static const char* kRasterizerBDPT =
 	"\tmax_light_depth 6\n"
 	"\tsamples 64\n"
 	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/ior_seed_regression_bdpt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/ior_seed_regression_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static void RunCameraSideRenderTest()
@@ -865,14 +873,15 @@ static const char* kRasterizerPT_LightTest =
 	"{\n"
 	"\tsamples 128\n"
 	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/ior_seed_regression_light_pt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/ior_seed_regression_light_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kRasterizerBDPT_LightTest =
@@ -888,14 +897,15 @@ static const char* kRasterizerBDPT_LightTest =
 	"\tmax_light_depth 6\n"
 	"\tsamples 128\n"
 	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/ior_seed_regression_light_bdpt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/ior_seed_regression_light_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static void RunLightSideRenderTest()

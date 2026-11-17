@@ -44,6 +44,124 @@
 //                                            '\\', ".." -> -32602; unknown or not in
 //                                            the index (the fetchable set IS the
 //                                            listed set) -> -32602.)
+//      file_build_plan {elements:[{element,pieces,construction:[..]|"..",outline,view?,note?},...]}
+//                                        -> {filed:true,replacedPreviousPlan:bool,elementCount:number,
+//                                            elements:[{element,pieces,construction,note,outline,view,
+//                                                    pointCount,areaFraction,aspect},...],
+//                                            phase,activeElement?,
+//                                            png_base64?,byteLength?,compositeWidth?,
+//                                            compositeHeight?,sketchCanvas?,message}
+//                                           (G2, 2026-08-10; S1 schema v3, 2026-08-11:
+//                                            file the session's BUILD PLAN -- the elements
+//                                            of the subject being built, each broken into
+//                                            named `pieces` and carrying a `construction`
+//                                            list of 1..2 values from the CLOSED enum
+//                                            primitive|csg|sweep|lathe|chain|displaced|mesh
+//                                            (a single value may be sent as a bare string;
+//                                            the echo is always an array).  C4 2026-08-19.
+//                                            Filing also enters the PIECES phase with the
+//                                            first element active -- see finish_element.
+//                                            READ-SAFE: it records a per-session
+//                                            declaration and touches the retained
+//                                            Document not at all -- no head bump, no
+//                                            conflict, no staging, no authority branch --
+//                                            so it is available under EVERY autonomy
+//                                            posture, which it must be: it is the only
+//                                            way to disarm the build-plan gate, and that
+//                                            gate can fire under Propose.  ANY plan is
+//                                            accepted (all-`primitive` included); the
+//                                            declaration is NON-BINDING and constrains
+//                                            no later authoring.  Re-filing REPLACES the
+//                                            previous plan and is never refused.  A
+//                                            missing/empty `parts`, a missing `part`, or
+//                                            a `construction` outside the enum is a clean
+//                                            -32602 naming the accepted values.  See
+//                                            AgentSession.h's block above FileBuildPlan
+//                                            for the gate itself.
+//                                            G3a, 2026-08-10 -- SCHEMA v2: each part also
+//                                            carries a REQUIRED `outline` (a closed 2D
+//                                            polygon "x y; x y; ...", >= 3 points, no
+//                                            opt-out value) and an OPTIONAL `view`
+//                                            (front|side|top, default front).  Each
+//                                            outline is rasterized HOST-SIDE into a
+//                                            deterministic 256x256 silhouette kept as a
+//                                            session-lifetime target, and the result
+//                                            echoes the whole set back as per-part facts
+//                                            plus ONE composite PNG under the same
+//                                            `png_base64` field name read_image /
+//                                            render{imageMaxEdge} / compare_to_reference
+//                                            use.  A malformed outline or an unknown view
+//                                            is a clean -32602 naming the part INDEX --
+//                                            and, being a schema error, it never touches
+//                                            the gate's refusal counter.  Re-filing
+//                                            REPLACES the target set wholesale, exactly
+//                                            like the plan.)
+//      finish_element {}                 -> {ok,element?,phase,nextElement?,chunks?,
+//                                            piecesNamed?,piecesNotNamed?,isolate?,
+//                                            isolateCandidates?,rendered?,png_base64?,
+//                                            byteLength?,imageWidth?,imageHeight?,message}
+//                                           (S1, 2026-08-11: close the ACTIVE element and
+//                                            advance -- to the next element with no finish
+//                                            recorded, or to the COMPOSE phase after the
+//                                            last one.  Reports what was recorded against
+//                                            the element, which declared piece names appear
+//                                            in an attributed chunk NAME, and returns an
+//                                            ISOLATE RENDER of the element.  READ-SAFE: it
+//                                            changes session phase state and renders; the
+//                                            Document is untouched.  ok:false means the call
+//                                            did nothing and `message` says why.)
+//      reopen_element {element}          -> {ok,element?,phase,previousPhase,chunks?,
+//                                            unfinished?,message}
+//                                           (S1, 2026-08-11: re-enter an element's window
+//                                            from ANY phase, including compose.  Never
+//                                            gated, never counted against any cap -- it is
+//                                            the escape the compose-phase creation refusal
+//                                            names.  READ-SAFE; the Document is untouched.)
+//      imagine_scene {description}       -> {ok,imagined,replacedPreviousTarget,
+//                                            provider?,model?,capabilityAvailable?,
+//                                            requirementDisarmed?,width?,height?,
+//                                            png_base64?,byteLength?,imageWidth?,
+//                                            imageHeight?,message}
+//                                           (Arc 77 Phase 2, 2026-08-11: the WHOLE-SCENE
+//                                            imagined target.  The model writes its own
+//                                            visual description of the finished scene; the
+//                                            HOST asks the session's provider to generate
+//                                            ONE image from exactly that text, holds it
+//                                            session-side as THE scene target, and returns
+//                                            it inline under the same `png_base64` field
+//                                            name every other image-bearing verb uses.
+//                                            READ-SAFE for file_build_plan's two reasons
+//                                            (it touches the Document not at all, and on a
+//                                            capable provider it is one of the TWO ways to
+//                                            disarm the build-plan gate).  From then on
+//                                            every FULL-FRAME PRODUCTION BEAUTY render --
+//                                            not draft, not mode:, not isolate -- gains a
+//                                            `sceneTarget` block {imagined,targetWidth,
+//                                            targetHeight,composite,compositeWidth?,
+//                                            compositeHeight?} and, when that render asked
+//                                            for an inline image, returns the target ABOVE
+//                                            the render in place of the frame alone.
+//                                            Phase 2b (2026-08-11): there is NO similarity
+//                                            score in that block and none may be added --
+//                                            the shipped RMSE was a TONE metric and drove
+//                                            measurable exposure/emissive cranking; the
+//                                            composite IMAGE is the comparison.  The render
+//                                            half of it is the size the plain frame would
+//                                            have been, so a target never costs resolution.
+//                                            The host also appends a fixed flat-shaded
+//                                            3D-render STYLE directive to the description
+//                                            so the generated target is reachable.
+//                                            CAPABILITY-CONDITIONAL: a provider
+//                                            with no image generation answers ok:false
+//                                            with an honest statement, and the gate is
+//                                            then exactly the shipped plan-only gate.
+//                                            ANTI-STRANDING: a PROVIDER failure (HTTP
+//                                            error, quota, missing key, timeout) drops the
+//                                            imagine requirement for the session and says
+//                                            so; a missing `description` is a -32602 and
+//                                            disarms NOTHING.  Re-imagining REPLACES the
+//                                            target.  Nothing is ever gated on the target,
+//                                            and no reproduction is ever expected.)
 //      validate     {text?}              -> {diagnostics:[{severity,code,message,offset,length}],
 //                                            validated:"head"|"text"}
 //                                           (TWO forms, both read-only.  WITH `text`:
@@ -71,7 +189,7 @@
 //                                            `text` -> -32602 rather than a false
 //                                            "clean" verdict about a document that
 //                                            does not exist.)
-//    DRIVER-INJECTED KEY, on the five mutating verbs below ONLY.  The two GUI
+//    DRIVER-INJECTED KEY, on the six mutating verbs below ONLY.  The two GUI
 //    chat drivers (build/XCode/rise/RISE-GUI/App/ChatViewModel.swift's
 //    stampDriverRetry and build/VS2022/RISE-GUI/ChatPanel.cpp's, "FIX 2") may
 //    ADD one key the dispatcher never emits:
@@ -121,11 +239,20 @@
 //                                        -> {applied:number,total:number,results:[<insert_chunk result>,...]}
 //                                           (BATCH form of insert_chunk: N chunks in ONE
 //                                            call, applied in array order.  SEQUENTIAL and
-//                                            BEST-EFFORT throughout -- a rejected element,
-//                                            INCLUDING a stale-base conflict, does not stop
-//                                            the batch, because an insert is ADDITIVE and
-//                                            racing a co-editor merely interleaves new
-//                                            entities.  Contrast propose_patches above.)
+//                                            BEST-EFFORT for ordinary per-element authoring
+//                                            failures -- a rejected element, INCLUDING a
+//                                            stale-base conflict, does not stop the batch,
+//                                            because an insert is ADDITIVE and racing a
+//                                            co-editor merely interleaves new entities.
+//                                            Contrast propose_patches above.  CARVE-OUT
+//                                            (R1c, 2026-08-09): a rasterizer-allowlist POLICY
+//                                            refusal (an element that would introduce a
+//                                            BLOCKED rasterizer kind -- see
+//                                            CheckRasterizerAllowlistGateForInsert in
+//                                            AgentSession.h) is NOT sequential/best-effort --
+//                                            it rejects the WHOLE batch atomically, nothing
+//                                            inserted, because a policy refusal is not an
+//                                            authoring failure a co-editor could race around.)
 //      insert_material_scaffold {family,name,tone,wear,scale,baseHeadVersion?}
 //                                        -> {applied:number,total:number,results:[<insert_chunk result>,...],
 //                                            family,name,material:{name,kind},boundSlots:[{param,painter},...]}
@@ -158,36 +285,98 @@
 //                                            hardcoded "read") -- see AgentSession.h's
 //                                            InsertMaterialScaffold doc for the full
 //                                            autonomy-vs-authority caveat.)
-//      insert_geometry_scaffold {family,name,size,detail,aspect,baseHeadVersion?}
+//      insert_geometry_scaffold {family,name,size,detail,aspect,points?,taper?,tone?,
+//                                 baseHeadVersion?}
 //                                        -> {applied:number,total:number,results:[<insert_chunk result>,...],
-//                                            family,name,geometry:{name,kind}}
-//                                           (Arc-75 slice S3b: the geometry sibling of
-//                                            insert_material_scaffold -- expand ONE of
-//                                            FOUR geometry-family templates --
-//                                            displaced_slab/sweep_rail/blended_vessel/
-//                                            sdf_column -- into a small GEOMETRY-ONLY
-//                                            chunk graph (1-3 chunks, every chunk named
-//                                            tmpl_<name>_<role>; displaced_slab bolts a
-//                                            perlin2d_painter noise source onto a
-//                                            displaced_geometry, the other three families
-//                                            are each a single sdf_geometry/sweep_geometry
-//                                            chunk), submitted through the SAME batch
-//                                            machinery insert_chunks uses.  ALL THREE
-//                                            params are REQUIRED, no defaults -- a
-//                                            missing one, an unrecognized family, or a
-//                                            NAME COLLISION refuses the WHOLE call
-//                                            BEFORE any chunk is generated (document
-//                                            unchanged), reported as a tool ERROR, not a
-//                                            partial result.  `geometry` names the ONE
+//                                            family,name,geometry:{name,kind},
+//                                            material?:{name,kind},medium?:{name,kind},
+//                                            object?:{name,kind},message?}
+//                                           (Arc-75 slice S3b + slice E3: the geometry
+//                                            sibling of insert_material_scaffold --
+//                                            expand ONE of SIX geometry-family
+//                                            templates into a chunk graph (every chunk
+//                                            named tmpl_<name>_<role>), submitted
+//                                            through the SAME batch machinery
+//                                            insert_chunks uses.  REQUIRED params
+//                                            DIFFER BY FAMILY (`family`/`name` always;
+//                                            a missing one for the RESOLVED family, an
+//                                            unrecognized family, or a NAME COLLISION
+//                                            refuses the WHOLE call BEFORE any chunk is
+//                                            generated (document unchanged), reported
+//                                            as a tool ERROR, not a partial result --
+//                                            `family` is validated against the known
+//                                            list FIRST, before any other param is
+//                                            checked, so an unrecognized family always
+//                                            gets the "unknown family" message, never a
+//                                            misleading "param X is required"):
+//                                              - displaced_slab/sweep_rail/
+//                                                blended_vessel/sdf_column: ALSO need
+//                                                `size` (>0)/`detail` (0..1)/`aspect`
+//                                                (>0).  GEOMETRY ONLY (displaced_slab
+//                                                bolts a perlin2d_painter noise source
+//                                                onto a displaced_geometry; the other
+//                                                three are each a single sdf_geometry/
+//                                                sweep_geometry chunk) -- the model
+//                                                wires the standard_object (and any
+//                                                material) itself, mirroring the
+//                                                material scaffold's own proven
+//                                                division; `points`/`taper`/`tone` are
+//                                                accepted but IGNORED for these four.
+//                                              - blended_chain (E3): ALSO needs
+//                                                `points` (2-6 semicolon-separated
+//                                                "x y z" triplets, each coordinate
+//                                                |v|<=1e6 -- the spine path; the FIRST/
+//                                                LAST emitted node lands EXACTLY on the
+//                                                first/last triplet), `size` (>0: base
+//                                                radius at the first point), `taper`
+//                                                (0..1: end-to-end radius falloff),
+//                                                `detail` (0..1: node density) --
+//                                                `aspect` is IGNORED.  ONE sdf_geometry
+//                                                chunk (a smin-blended sphere chain);
+//                                                every joint's smin `k` is floored at
+//                                                the EXACT bridging threshold derived
+//                                                from the realized post-jitter radii/
+//                                                spacing (not a coarse spacing-only
+//                                                guess), so the chain cannot fracture
+//                                                regardless of size/taper/detail --
+//                                                see AgentSession.cpp's
+//                                                BuildBlendedChain for the sminP
+//                                                derivation.
+//                                              - volume_bank (E3): ALSO needs `size`
+//                                                (>0), `aspect` (>0: elongation),
+//                                                `detail` (0..1: density-field swirl),
+//                                                `tone` ("r g b" each 0..1: scatter
+//                                                tint) -- `points`/`taper` are IGNORED.
+//                                                THE ONE FAMILY THAT ALSO EMITS a
+//                                                dielectric_material, a
+//                                                painter_heterogeneous_medium (density
+//                                                driven by a domain-warped noise
+//                                                painter -- a genuinely swirling
+//                                                volume, not a flat uniform haze), and
+//                                                a standard_object binding all three --
+//                                                a bare volume graph does nothing until
+//                                                an object binds it, and the medium's
+//                                                `bbox_min`/`bbox_max` are WORLD-SPACE
+//                                                and fixed at creation time, so this
+//                                                scaffold places the object itself
+//                                                (identity transform) to keep the
+//                                                bbox aligned; result carries non-empty
+//                                                `material`/`medium`/`object`
+//                                                ({name,kind} each) plus a FACTUAL
+//                                                `message` reminding a caller who
+//                                                repositions the object to also update
+//                                                the medium's bbox.  See
+//                                                AgentSession.h's InsertGeometryScaffold
+//                                                doc for the full per-family param
+//                                                table and BuildVolumeBank's own
+//                                                comment for the bbox-coupling
+//                                                rationale.
+//                                            `geometry` (every family) names the ONE
 //                                            geometry chunk a model should bind into a
-//                                            `standard_object.geometry` slot -- unlike
-//                                            insert_material_scaffold, this verb never
-//                                            emits a material or a standard_object
-//                                            itself (the model wires those, mirroring
-//                                            the material scaffold's own proven
-//                                            division).  Internal graph constants are
-//                                            jittered DETERMINISTICALLY from `name` (no
-//                                            RNG, no clock).  DELIBERATELY excluded from
+//                                            `standard_object.geometry` slot.  Internal
+//                                            graph constants are jittered
+//                                            DETERMINISTICALLY from `name` (no RNG, no
+//                                            clock).  DELIBERATELY excluded from
 //                                            IsProposeSafeVerb, for the SAME reason
 //                                            insert_material_scaffold is -- refused
 //                                            under BOTH Read AND Propose autonomy, with
@@ -197,6 +386,40 @@
 //                                            truthful -- see AgentSession.h's
 //                                            InsertGeometryScaffold doc for the full
 //                                            autonomy-vs-authority caveat.)
+//      replace_geometry_scaffold {target,family,name,size,detail,aspect?,points?,taper?,baseHeadVersion?}
+//                                        -> {applied,total,results:[...],family,name,target,
+//                                            geometry:{name,kind},
+//                                            previousGeometry:{name,kind,removed,referrers?},
+//                                            orphans?:[...],message}
+//                                           (R2 (2026-08-10): the SAME expansion
+//                                            insert_geometry_scaffold performs, but it
+//                                            REBINDS the `geometry` slot of the EXISTING
+//                                            `standard_object` named `target` to the new
+//                                            chunk instead of leaving the wiring to the
+//                                            model -- so revising a part's FORM costs ONE
+//                                            call, the same as revising its colour.  The
+//                                            object's transform and every other param are
+//                                            preserved byte-identically; the previous
+//                                            geometry chunk is removed IF nothing else
+//                                            references it (else RETAINED, with the
+//                                            referrers named), and chunks left
+//                                            unreferenced one hop deeper are REPORTED in
+//                                            `orphans`, never removed.  ONE call = ONE
+//                                            head bump = ONE undo step; ALL-OR-NOTHING on
+//                                            any refusal.  `family` volume_bank is
+//                                            refused (it emits its OWN standard_object).
+//                                            DELIBERATELY excluded from IsProposeSafeVerb
+//                                            for the SAME reason its two scaffold
+//                                            siblings are, with the SAME dedicated
+//                                            Propose-specific message shape -- and, for
+//                                            this one, additionally because a composite
+//                                            whole-document swap has no AgentProposalKind
+//                                            an Owner could approve card-by-card, which
+//                                            is also why an External-authority session is
+//                                            refused rather than staged.  See
+//                                            AgentSession.h's ReplaceGeometryScaffold doc
+//                                            for the resolution rules, the orphan policy,
+//                                            and the candidate-document gate evaluation.)
 //      remove_chunk {target,kind?,baseHeadVersion?}
 //                                        -> {applied,rawCode,status,retriable,headVersion,message,name,kind}
 //                                           (Model-B F5 slice S2: REMOVE the chunk
@@ -207,12 +430,30 @@
 //                                            disambiguation hint; a still-referenced
 //                                            target fails the dry-run -> rejected with
 //                                            the diagnostic, head byte-identical.)
+//      remove_chunks {targets:[string,...],baseHeadVersion?}
+//                                        -> {applied,rawCode,status,retriable,headVersion,message,
+//                                            removed,total,note?,results:[{...ChunkResultJson},...]}
+//                                           (R1a (2026-08-09): the ATOMIC BATCH form of
+//                                            remove_chunk -- N chunks, ONE call, ONE head
+//                                            bump, ONE undo step.  DELIBERATELY UNLIKE
+//                                            insert_chunks' sequential/best-effort shape:
+//                                            ALL-OR-NOTHING, so a refusal removes NOTHING
+//                                            and leaves the head byte-identical.  A chunk
+//                                            referenced only from INSIDE the batch is
+//                                            removable in any order; `still_referenced`
+//                                            names only referrers OUTSIDE it.  Duplicates
+//                                            deduped (reported in `note`), not refused.
+//                                            NO per-target `kind` -- bare names only, so
+//                                            the unnamed-camera case stays exclusive to
+//                                            the singular verb.  `results` is one entry
+//                                            per UNIQUE target, first-occurrence order.)
 //      render       {samples?,width?,height?,camera?,pinned?,quality?,mode?,xray?,view?,
-//                    imageMaxEdge?}
+//                    light?,isolate?,target?,imageMaxEdge?}
 //                                        -> {ok,width,height,meanR,meanG,meanB,integrator,
 //                                            previewWidth,previewHeight,cameraOverridden,message,
 //                                            renderJobId,samplesOverridden,effectiveSamples,renderMode,
-//                                            legend?,png_base64?,byteLength?,imageWidth?,imageHeight?}
+//                                            legend?,isolate?,target?,png_base64?,byteLength?,
+//                                            imageWidth?,imageHeight?}
 //                                           (`imageMaxEdge` (OPTIONAL number,
 //                                            clamped [16,1024]) returns the
 //                                            rendered PNG INLINE so an ordinary
@@ -258,11 +499,11 @@
 //                                            box-downscale blends identity colours
 //                                            and breaks legend matching.  `legend`
 //                                            is present ONLY for an objectmap
-//                                            render.  A generator-synthesized legend
-//                                            name (e.g. "grid[0,1]" from an
-//                                            instance_array) identifies the instance
+//                                            render.  A synthesized legend name (e.g.
+//                                            "grid[0,1]" from a `source` chunk with
+//                                            count_u / count_v) identifies the instance
 //                                            in the map but is NOT a CST chunk -- to
-//                                            EDIT it, target the GENERATOR chunk
+//                                            EDIT it, target the INSTANCING chunk
 //                                            (strip the "[i,j]" suffix: "grid"), not
 //                                            the instance name.
 //                                           (GUI render modes P1 (docs/gui/
@@ -299,7 +540,88 @@
 //                                            THIS render only, composing with EVERY
 //                                            mode -- see AgentSession::
 //                                            AgentRenderParams::view's doc for the
-//                                            resolution order.)
+//                                            resolution order.
+//                                            G1 (2026-08-10) adds `isolate` (OPTIONAL
+//                                            string): render ONE named
+//                                            standard_object alone, with the camera
+//                                            auto-framed on its bounding box (a
+//                                            caller-supplied `camera`/`view` wins).
+//                                            Every other object is transiently
+//                                            world-hidden, so it contributes to no
+//                                            camera/secondary/shadow ray and -- being
+//                                            invisible to the luminary collector --
+//                                            stops acting as a light too; explicit
+//                                            lights and the environment are
+//                                            untouched.  Composes with EVERY mode and
+//                                            with quality:"draft" (object visibility
+//                                            is Scene state, never rasterizer state),
+//                                            so unlike `light` it is never silently
+//                                            ignored.  Unresolvable / ambiguous
+//                                            (a generator prefix) / non-renderable
+//                                            (a CSG operand) / un-auto-framable-
+//                                            without-a-caller-camera (degenerate or
+//                                            unbounded bbox) names FAIL the render
+//                                            with the available-name list, matching
+//                                            `view`/`light`.  A SUCCESSFUL isolate
+//                                            render (rr.ok == true) adds a nested
+//                                            `isolate` result object
+//                                            {object,bboxMin[3]?,bboxMax[3]?,
+//                                            longestEdge?,autoFramed,bboxCoverage?}
+//                                            -- see AgentSession::AgentRenderResult's
+//                                            isolate* fields for exactly what
+//                                            `bboxCoverage` measures and why it (and,
+//                                            separately, bboxMin/bboxMax/longestEdge)
+//                                            can be OMITTED even on a successful
+//                                            isolate render (G1 fix-round,
+//                                            2026-08-10: a degenerate/unbounded bbox
+//                                            reached via a caller-supplied camera
+//                                            omits the bbox trio; a non-pinhole
+//                                            active camera omits bboxCoverage).)
+//                                           (G3b (2026-08-10) adds `target` (OPTIONAL
+//                                            string): the name of an ELEMENT in the
+//                                            CURRENTLY FILED build plan (file_build_plan),
+//                                            whose rasterized sketch this render's
+//                                            isolated object is measured against.
+//                                            REQUIRES `isolate` -- the plan-element-to-
+//                                            object join is made by the CALLER, here;
+//                                            the missing pairing (and a non-string
+//                                            value) is a clean -32602, while an
+//                                            unknown element name or an unfiled plan
+//                                            FAILS the render with the filed element
+//                                            names in `message`, matching
+//                                            `view`/`light`/`isolate`.  With no
+//                                            caller camera the auto-frame uses the
+//                                            AXIS-ALIGNED vantage the sketch declared
+//                                            (front/side/top) rather than G1's
+//                                            three-quarter one; a caller camera still
+//                                            wins and `target.vantage` then reads
+//                                            "caller-camera".  Costs ONE extra
+//                                            internal objectmap identity render at the
+//                                            same pose and effective dims, so the
+//                                            compared silhouette is exact and
+//                                            independent of mode/quality/lighting; it
+//                                            is cache-guarded and never displaces the
+//                                            caller's own last render.  A SUCCESSFUL
+//                                            comparison (rr.ok) adds a nested `target`
+//                                            result object {element,view,vantage,iou,
+//                                            mirroredIou,sketchAreaFraction,
+//                                            silhouetteAreaFraction,sketchAspect,
+//                                            silhouetteAspect?,thinnestAxisRatio?,
+//                                            compositeWidth,compositeHeight} -- see
+//                                            AgentSession::AgentRenderResult's target*
+//                                            fields for what each measures and for the
+//                                            two -1.0-means-omitted sentinels.  It
+//                                            ALSO returns the
+//                                            [sketch|silhouette|overlay] composite
+//                                            under `png_base64` WITHOUT `imageMaxEdge`,
+//                                            REPLACING the rendered frame when
+//                                            `imageMaxEdge` is supplied -- the
+//                                            composite is how the filed sketch
+//                                            re-enters the model's context at
+//                                            consultation time (design doc
+//                                            docs/agentic-redesign/
+//                                            77-imagination-target-design.md sec 4.3).
+//                                            NOTHING is gated on any of the numbers.)
 //                                           (`integrator` is the ACTIVE rasterizer's
 //                                            registered type name = its scene-file
 //                                            chunk keyword, e.g.
@@ -383,12 +705,29 @@
 //                                            fixed studio-preview shader the
 //                                            GUI's live interactive editor
 //                                            uses) that IGNORES the scene's
-//                                            authored materials and
-//                                            lighting entirely -- geometry,
+//                                            authored LIGHTING entirely (a
+//                                            fixed synthetic studio rig of
+//                                            three hardcoded lights stands
+//                                            in for it, with no shadows and
+//                                            no GI) -- geometry,
 //                                            composition, and camera framing
-//                                            are representative; materials,
+//                                            are representative; true
 //                                            lighting, exposure, and colour
-//                                            are NOT.  NEVER judge those
+//                                            balance are NOT.  It DOES shade
+//                                            each hit with the material's
+//                                            own BSDF (colour/roughness
+//                                            response, not just albedo)
+//                                            under that fixed rig, plus a
+//                                            geometry-only AO term and a
+//                                            fixed rim highlight, so an
+//                                            expression-driven painter
+//                                            (e.g. one querying
+//                                            proximity/occlusion) still
+//                                            runs; it does NOT show
+//                                            emission, transmission/
+//                                            refraction, or subsurface
+//                                            scattering.  NEVER judge true
+//                                            lighting/exposure/colour
 //                                            from a draft image -- render at
 //                                            quality:"production" (or read
 //                                            the LIVE viewport via
@@ -557,6 +896,281 @@
 //                                            READ-SAFE: available under every
 //                                            autonomy posture, including Read (a pure
 //                                            read, exactly like render itself).)
+//      scene_inventory {}                -> {ok,objects,covered,passWidth,passHeight,
+//                                            framePositionComputed,
+//                                            framePositionNote?,
+//                                            entries:[{name,pixelCount,frameFraction,
+//                                                      onScreen,frameX?,frameY?,
+//                                                      worldCentre?,placement,
+//                                                      offFrameDirection?,
+//                                                      parent?,instancedFrom?}],
+//                                            text,message}
+//                                           (87 step 5 (2026-08-18): `parent` and
+//                                            `instancedFrom` are the AUTHORED-TREE
+//                                            half.  Everything else here is measured
+//                                            off the flat render list, which carries
+//                                            no structure by design; `parent` says
+//                                            which rows are one assembly, and
+//                                            `instancedFrom` names the chunk to EDIT
+//                                            for a synthesized repetition like
+//                                            `grid[3,1]`, which is not a chunk.  Both
+//                                            omitted for a root, authored object.)
+//                                           (Arc 80 (2026-08-12): "WHERE IS
+//                                            EVERYTHING?" -- the FORWARD counterpart
+//                                            to query_object_at's inverse
+//                                            pixel->object probe.  Reports EVERY
+//                                            world-visible object: its footprint in a
+//                                            small one-ray-per-pixel identity pass
+//                                            through the ACTIVE camera, plus where it
+//                                            is -- in the frame (`frameX`/`frameY`,
+//                                            fractions from the left and from the top,
+//                                            read from the pass's own pixels, so
+//                                            available under any camera) for anything
+//                                            that covered pixels; in the world
+//                                            (`worldCentre`) plus a `placement` of
+//                                            behind / offframe (+`offFrameDirection`)
+//                                            / overlaps / straddles for anything that
+//                                            did not.  `placement` is "unknown" and
+//                                            `framePositionComputed` false when the
+//                                            pose cannot be reconstructed exactly (a
+//                                            named view, an orientation-only override)
+//                                            or the active camera is not a PINHOLE --
+//                                            SUPPRESSED, never approximated, the same
+//                                            rule isolate.bboxCoverage follows.
+//                                            TAKES NO PARAMS.  The SAME measurement
+//                                            (same code path) rides every full-scene
+//                                            beauty render's result as `inventory`
+//                                            without being asked for, which is where
+//                                            the mechanism actually lives -- every
+//                                            voluntary consultation surface this
+//                                            workstream shipped measured 0/64 uses.
+//                                            Never mutates the retained Document and
+//                                            never displaces the last render in the
+//                                            image cache (the identity pass is
+//                                            ephemeral, exactly like
+//                                            query_object_at's).  READ-SAFE under
+//                                            every autonomy posture.)
+//      light_scene {notes?}              -> {ok,capabilityRefusal?,provider,model,
+//                                            chunksExtracted,landed,
+//                                            rejected:[{name?,kind?,reason}],
+//                                            chunkResults,retryRan,retrySucceeded,
+//                                            soloableLights,soloed,
+//                                            allLightsMeanLuma?,
+//                                            contributions:[{name,kind,soloed,
+//                                                            meanLuma?,share?,
+//                                                            reason?}],
+//                                            sourcesPlanned,sourcesReturned,
+//                                            sourcesTruncated,
+//                                            completions,areaLights,zeroAreaLights,
+//                                            skyLights?,otherLights?,
+//                                            sources:[string],
+//                                            message}
+//                                           (Arc 81 (2026-08-12): the CLEAN-ROOM
+//                                            LIGHTING pass -- arc 79's build_element
+//                                            pattern applied to lighting.  ARC 83
+//                                            SLICE 2 (2026-08-12), the owner's direct
+//                                            redesign: ONE call is exactly TWO
+//                                            completions on the happy path.  First,
+//                                            THE SOURCE ENUMERATION -- WHAT IN THIS
+//                                            WORLD PHYSICALLY EMITS LIGHT, bounded at
+//                                            6 sources, forbidden from naming a
+//                                            renderer light kind (the sun/sky, an
+//                                            opening, a fixture, or something that
+//                                            itself glows -- things, not studio
+//                                            instruments; slice 1's per-intent
+//                                            "lighting intents" question native to
+//                                            key/fill/rim vocabulary produced ZERO
+//                                            area lights and is retired).  Second, THE
+//                                            BUILD -- given that source list verbatim,
+//                                            write the chunks for ALL of it in ONE
+//                                            answer; the one-light-per-answer cap
+//                                            slice 1 enforced is gone with the
+//                                            per-intent loop it belonged to.  The
+//                                            model still makes ONE call and reads ONE
+//                                            result.  Each completion is fresh and
+//                                            minimal through the session's own
+//                                            provider, given the arc-80 scene
+//                                            inventory, the camera, the world bounds,
+//                                            the session's imagined subject if it has
+//                                            one, and the lights that already exist;
+//                                            the build additionally gets the light
+//                                            palette it can author -- area-via-
+//                                            emissive-material FIRST and carrying the
+//                                            ONLY worked example, then hosek_wilkie
+//                                            skylight, then omni / spot / directional
+//                                            as zero-area idealizations with the
+//                                            registry's grammar and NO example.
+//                                            `ambient_light` is NOT in the palette and
+//                                            is refused on every path that could
+//                                            create one, in every phase and with the
+//                                            build protocol off.  That asymmetry --
+//                                            one worked example, for the physical
+//                                            light -- IS the encoded policy (81 §8),
+//                                            not an omission.  Validated-inserted
+//                                            through the ordinary InsertChunks path
+//                                            with ONE repair retry over the WHOLE
+//                                            build answer; nothing is ever dropped
+//                                            silently.  `contributions` reports what
+//                                            each light ACTUALLY does, measured by
+//                                            SOLOING it in a small render --
+//                                            affordable because this verb runs once
+//                                            per scene, not once per render -- capped,
+//                                            with the cap stated.  There is no name
+//                                            prefix (lights are scene-global and
+//                                            belong to no element); the real
+//                                            constraint is uniqueness, which
+//                                            InsertChunks already enforces.  MUTATING:
+//                                            not read-safe, and deliberately not on
+//                                            the Propose allowlist either, exactly
+//                                            like build_element.  TAKES NO REQUIRED
+//                                            PARAMS; the only -32602 is a non-string
+//                                            `notes`.)
+//      populate_scene {notes?}           -> {ok,capabilityRefusal?,provider,model,
+//                                            chunksExtracted,
+//                                            created:[{name,kind?,geometry?,material?,
+//                                                      source?,objects?}],
+//                                            rejected:[{name?,kind?,reason}],
+//                                            chunkResults,retryRan,retrySucceeded,
+//                                            objectsBefore,objectsAfter,message}
+//                                           (Arc 82 (2026-08-12): the CLEAN-ROOM
+//                                            POPULATION pass -- the same pattern
+//                                            applied to placement.  ONE fresh minimal
+//                                            completion through the session's own
+//                                            provider, given the arc-80 scene
+//                                            inventory, the camera, the world bounds,
+//                                            the session's imagined subject if it has
+//                                            one, and an explicit list of the
+//                                            geometries and materials the scene
+//                                            already has with the objects using each,
+//                                            plus ONE worked example built from this
+//                                            scene's own names.  HARD CONTRACT: it
+//                                            may create `standard_object` chunks and
+//                                            nothing else -- either naming an
+//                                            existing `geometry` and `material`, or
+//                                            cloning an existing object via `source`
+//                                            (preserving its geometry, material, and
+//                                            child subtree, optionally repeating via
+//                                            integer-literal `count_u`/`count_v` and
+//                                            `expr(...)` positions up to 256 objects
+//                                            per chunk and 1024 per call; `created`
+//                                            emits `source` and `objects` for clones).
+//                                            New form belongs to build_element, and a
+//                                            chunk naming an unknown geometry,
+//                                            material, or source is rejected with
+//                                            that reason.  Validated-inserted through
+//                                            the ordinary InsertChunks path with ONE
+//                                            repair retry; nothing is ever dropped
+//                                            silently.  It forces its own first use
+//                                            by refusing the FIRST compose-phase
+//                                            `render` (once per session, sharing the
+//                                            build-phase refusal cap; pieces-phase
+//                                            renders are never refused).  MUTATING:
+//                                            not read-safe, and deliberately not on
+//                                            the Propose allowlist either, exactly
+//                                            like light_scene.  TAKES NO REQUIRED
+//                                            PARAMS; the only -32602 is a non-string
+//                                            `notes`.)
+//      environment_scene {notes?}        -> {ok,capabilityRefusal?,provider,model,
+//                                            chunksExtracted,landed:[string],
+//                                            rejected:[{name?,kind?,reason}],
+//                                            chunkResults,patchResults,retryRan,
+//                                            retrySucceeded,completions,painters,media,
+//                                            boundPainter?,bindingApplied,
+//                                            bindingReason?,rasterizer?,
+//                                            radianceMapBefore,radianceMapAfter,
+//                                            globalMediumBefore,globalMediumAfter,
+//                                            toneBefore?:{lumaMean,lumaStdDev,
+//                                            lumaP1,lumaP99},toneAfter?:{...},message}
+//                                           (Arc 83 slice 5 (2026-08-13): the
+//                                            CLEAN-ROOM ENVIRONMENT pass -- the
+//                                            scene's SURROUND, which is what fills
+//                                            the frame where no object is plus the
+//                                            medium light travels through.  ONE fresh
+//                                            minimal completion (plus at most one
+//                                            repair retry), given the arc-80 scene
+//                                            inventory, the camera, the world bounds,
+//                                            the lights that already exist, whatever
+//                                            environment state the scene already has,
+//                                            and a palette of two families: the DOME
+//                                            (a painter -- a graded expression_function2d
+//                                            + blend_painter ramp, a noise field, or an
+//                                            hdr_painter / exr_painter image) and the
+//                                            MEDIUM (homogeneous_medium /
+//                                            painter_heterogeneous_medium plus
+//                                            global_medium).  HARD CONTRACT: painter,
+//                                            function and medium chunks only -- a
+//                                            geometry or standard_object is refused by
+//                                            name (a backdrop plane is FORM and belongs
+//                                            to build_element), and so is
+//                                            hosek_wilkie_skylight, which is a light
+//                                            chunk light_scene owns; on a scene that
+//                                            already carries one, this pass authors no
+//                                            dome at all.  THE BINDING IS THE HARNESS'S:
+//                                            there is no `environment` chunk, so after
+//                                            the insert this call appends a rasterizer
+//                                            chunk carrying `radiance_map` naming the
+//                                            LAST painter the answer landed (an APPEND,
+//                                            not a patch -- a patched earlier rasterizer
+//                                            naming a later painter derives to a SILENT
+//                                            no-dome).  It reports the frame's tonal
+//                                            distribution before and after, measured.
+//                                            It is one HALF of the before-you-judge
+//                                            checklist the FIRST compose-phase `render`
+//                                            is refused on (once per session, shared
+//                                            with populate_scene and with the
+//                                            build-phase refusal cap).  MUTATING: not
+//                                            read-safe, and deliberately not on the
+//                                            Propose allowlist either, exactly like
+//                                            light_scene.  TAKES NO REQUIRED PARAMS;
+//                                            the only -32602 is a non-string `notes`.)
+//      frame_scene {notes?}              -> {ok,capabilityRefusal?,provider,model,
+//                                            chunksExtracted,action,
+//                                            cameraKindBefore?,cameraNameBefore?,
+//                                            cameraKindAfter?,cameraNameAfter?,
+//                                            paramsApplied:[string],
+//                                            rejected:[{name?,kind?,reason}],
+//                                            patchResults,chunkResults,retryRan,
+//                                            retrySucceeded,completions,
+//                                            objectsBefore?,coveredBefore?,
+//                                            objectsAfter?,coveredAfter?,
+//                                            broughtIntoFrame:[string],
+//                                            pushedOutOfFrame:[string],message}
+//                                           (Arc 83 slice 6 (2026-08-13): the CLEAN-ROOM
+//                                            FRAMING pass.  ONE fresh minimal completion
+//                                            (plus at most one repair retry), given the
+//                                            FULL arc-80 inventory -- every object, its
+//                                            footprint, its position in the frame and,
+//                                            for the ones covering nothing, WHY (behind
+//                                            the camera, off-frame in a named direction,
+//                                            straddling the camera plane) -- plus the
+//                                            current camera chunk VERBATIM, its resolved
+//                                            pose, the world bounds, the frame's tonal
+//                                            fact and the camera palette.  IT RETURNS
+//                                            CAMERA PARAMETERS ONLY: exactly ONE camera
+//                                            chunk is admissible, a second is rejected,
+//                                            and geometry / lights / `film` are refused
+//                                            by name (film is raster-size policy, not
+//                                            framing).  Applied as a PATCH of the
+//                                            existing camera chunk when the kind matches
+//                                            (one batch, one head bump, one undo step,
+//                                            unnamed parameters untouched) and as an
+//                                            insert-then-remove REPLACEMENT when it does
+//                                            not.  The inventory is measured on BOTH
+//                                            sides, so the payload states how many
+//                                            objects the reframe really brought into the
+//                                            picture -- and states it plainly when the
+//                                            new camera covers FEWER, which is never
+//                                            auto-reverted (a close-up covers fewer
+//                                            objects on purpose).  It forces its own
+//                                            first use by refusing the FIRST
+//                                            camera-authoring edit in COMPOSE (once per
+//                                            session, sharing the build-phase refusal
+//                                            cap; pieces-phase camera edits are never
+//                                            refused).  MUTATING: not read-safe, and
+//                                            deliberately not on the Propose allowlist
+//                                            either, exactly like light_scene.  TAKES NO
+//                                            REQUIRED PARAMS; the only -32602 is a
+//                                            non-string `notes`.)
 //      compare_to_reference {reference,camera?,visual?,samples?}
 //                                        -> {ok,error?,badReference?,rmse,
 //                                            channelDelta:{r,g,b},
@@ -586,9 +1200,16 @@
 //                                            override (ephemeral, captured+restored).
 //                                            QUALITY TRADEOFF: absent `samples`
 //                                            (default), renders quality:"draft" --
-//                                            cheap, but IGNORES materials/lighting
-//                                            (good for composition/geometry
-//                                            iteration only); `samples` (>=1)
+//                                            cheap, but IGNORES the scene's
+//                                            authored LIGHTING (a fixed rig
+//                                            stands in for it, no shadows/GI) --
+//                                            it DOES shade with the material's
+//                                            own BSDF (colour/roughness) under
+//                                            that rig
+//                                            (good for composition/geometry/
+//                                            coarse-colour iteration only,
+//                                            NOT emission/transmission/
+//                                            subsurface); `samples` (>=1)
 //                                            switches to quality:"production" at
 //                                            that SPP for a real grader-equivalent
 //                                            reading.  `rmse` is
@@ -752,13 +1373,16 @@
 //    DENY-BY-DEFAULT: `Read` allows ONLY the read-safe allowlist
 //    (read_document, read_schema, read_skill, validate, render,
 //    render_status, render_wait, render_cancel, read_image,
-//    list_proposals, read_viewport, query_object_at, compare_to_reference --
+//    list_proposals, read_viewport, query_object_at, scene_inventory,
+//    compare_to_reference,
+//    file_build_plan, finish_element, reopen_element, imagine_scene,
+//    set_render_anchor --
 //    IsReadSafeVerb in
 //    AgentRpc.cpp, the single source of truth for membership; keep this
 //    enumeration in sync when a verb is added) and refuses EVERYTHING else,
-//    including the 5 known-
+//    including the 6 known-
 //    mutating verbs (propose_patch, propose_patches, insert_chunk,
-//    insert_chunks, remove_chunk), any
+//    insert_chunks, remove_chunk, remove_chunks), any
 //    unrecognized/typo'd method name, and any FUTURE verb added to the
 //    dispatch below without also being added to the read-safe list.  This
 //    is a deliberate polarity flip from the pre-hardening design (an
@@ -787,7 +1411,7 @@
 //    RESOURCE/BACKPRESSURE refusal rather than a policy or scene-state
 //    outcome: kProposalQueueFull (-32012, AgentRpc.cpp) when
 //    any mutating verb (propose_patch/propose_patches/insert_chunk/
-//    insert_chunks/remove_chunk) would stage past
+//    insert_chunks/remove_chunk/remove_chunks) would stage past
 //    SceneEditController::kMaxPendingProposals; kMutatingRateLimitExceeded
 //    (-32013, AgentLoopbackHttpServer.cpp -- enforced at the HTTP
 //    TRANSPORT layer, before a request reaches this dispatcher, so it is
@@ -797,9 +1421,9 @@
 //    Secure-MCP slice 5b (`Propose` autonomy): a THIRD posture, between
 //    Read and Commit.  Under `Propose`, the read-safe allowlist
 //    (IsReadSafeVerb -- includes list_proposals, read-safe under every
-//    posture, see below) still passes (same as Read) PLUS the 5 mutating
+//    posture, see below) still passes (same as Read) PLUS the 6 mutating
 //    verbs (propose_patch, propose_patches, insert_chunk, insert_chunks,
-//    remove_chunk) are let THROUGH
+//    remove_chunk/remove_chunks) are let THROUGH
 //    to the wrapped
 //    AgentSession rather than refused at this dispatcher's choke point --
 //    see IsProposeSafeVerb in AgentRpc.cpp.  Crucially, this dispatcher-
@@ -869,16 +1493,26 @@ namespace RISE
 	namespace Agent
 	{
 		class AgentSession;
+		struct AgentChunkResult;
+
+		//! Doc 91 slice L1 (review round 1): the wire's clean-chunk-success
+		//! classifier and the insert_chunks per-element serializer, exposed
+		//! as a TEST SEAM so a success carrying a real notice (an auto-parent
+		//! disclosure, a batch's rawCode-3 cross-element note) can be proved
+		//! to keep its full entry without staging the session state that
+		//! produces one.  Production callers use the dispatcher.
+		bool        AgentRpcIsCleanChunkSuccess( const AgentChunkResult& cr );
+		std::string AgentRpcBatchChunkResultJsonText( const AgentChunkResult& cr, const std::string& element );
 
 		//! Secure-MCP slice 2: the launch-time autonomy posture a headless
 		//! (or embedding) session runs with.  See the file header above for
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference) dispatches; every other method, including the 5 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk), resolve_proposal, and any future unclassified verb, is refused.
-			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 5 mutating
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/scene_inventory/compare_to_reference/file_build_plan/finish_element/reopen_element/imagine_scene/set_render_anchor) dispatches; every other method, including the 6 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks), resolve_proposal, and any future unclassified verb, is refused.
+			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 6 mutating
 			//! verbs (propose_patch/propose_patches/insert_chunk/
-			//! insert_chunks/remove_chunk) dispatch -- but
+			//! insert_chunks/remove_chunk/remove_chunks) dispatch -- but
 			//! dispatching only reaches AgentSession, whose OWN Owner/External
 			//! authority decides staging-vs-commit (see the file header's
 			//! Propose-autonomy doc).  resolve_proposal is deliberately NOT
@@ -920,7 +1554,7 @@ namespace RISE
 			//! part of this set).  Secure-MCP slice 2 hardening: under
 			//! AgentAutonomy::Read, any method NOT on the read-safe
 			//! allowlist (IsReadSafeVerb, the single source of truth for
-			//! membership) -- the 5 mutating verbs, an
+			//! membership) -- the 6 mutating verbs, an
 			//! unrecognized method, or any future verb not yet classified --
 			//! returns kAutonomyRefused (-32011) instead of dispatching; see
 			//! the file header's policy-refusal doc.

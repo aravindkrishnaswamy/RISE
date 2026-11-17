@@ -51,6 +51,8 @@
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/Color/Color.h"
+#include "../Intersection/RayIntersectionGeometric.h"	// SurfaceDerivativesInfo / TextureFootprint, and (transitively) SurfaceSignalInfo
+#include "../Interfaces/ISPF.h"						// ScatteredRay::ScatRayType (DL-125, `scatterType` below)
 
 namespace RISE
 {
@@ -92,8 +94,10 @@ namespace RISE
 		// ---------------------------------------------------------------
 		// Surface state mirrored from RayIntersectionGeometric — the fields
 		// in this block PLUS the per-vertex-color block below (vColor,
-		// bHasVertexColor).  When adding any new mirrored field, also
-		// update PathVertexEval::PopulateRIGFromVertex AND extend
+		// bHasVertexColor) AND the shading-input block after it
+		// (derivatives, signals, txFootprint).  When adding any new
+		// mirrored field, also update
+		// PathVertexEval::PopulateRIGFromVertex AND extend
 		// tests/BDPTVertexRIGRebuildTest.cpp with a sentinel assertion.
 		// See the contract block above PopulateRIGFromVertex for the
 		// failure mode this protocol prevents.
@@ -101,13 +105,16 @@ namespace RISE
 		Point3					position;
 		Vector3					normal;			///< Shading normal (Phong-interpolated, possibly bump/normal-mapped).
 												///< Use for BSDF eval / sample / pdf and the BSDF cosine factor.
-		Vector3					geomNormal;		///< Geometric flat-face normal, independent of Phong / bump.
-												///< Use for side-of-surface tests (entering/exiting, front/back),
-												///< medium-stack push/pop, solid-angle->area Jacobian cosines, and
-												///< any rebuilt RayIntersectionGeometric that downstream code asks
-												///< "which side of the actual surface is this?".
-												///< On analytical primitives equals `normal` by construction.
+		Vector3					geomNormal;		///< Reported geometric normal, independent of Phong / bump.
+												///< May be ray-facing (DL-70), deliberately retained for emitters;
+												///< it is NOT an outward-normal entry/exit certificate.
+												///< Geometric-area density Jacobians use its absolute cosine.
+												///< Area BSDF responses convert the shading measure separately
+												///< (DL-224). Even an analytic primitive differs from `normal`
+												///< after a relief, glint or normal-map modifier.
 		OrthonormalBasis3D		onb;
+		OrthonormalBasis3D		coatDecodeOnb;	///< DL-302: frame the coat normal decodes in (the independent shader-direction UV frame, else the pre-modifier frame); valid iff bHasCoatDecodeOnb
+		bool					bHasCoatDecodeOnb;
 		Point2					ptCoord;		///< Texture coordinate at intersection (for painter evaluation)
 		Point2					ptCoord1;		///< Secondary texture coordinate (TEXCOORD_1 from glTF; mirrors RayIntersectionGeometric::ptCoord1)
 		bool					bHasTexCoord1;	///< True iff this vertex came from a mesh that carried a TEXCOORD_1 array (gates TexCoord1Painter)
@@ -126,17 +133,50 @@ namespace RISE
 		RISEPel					vColor;
 		bool					bHasVertexColor;
 
+		// ---------------------------------------------------------------
+		// SHADING-INPUT STATE mirrored from RayIntersectionGeometric.
+		// Unlike the block above (which a BSDF reads for geometry), these
+		// three are what a PAINTER reads: the expression VM's `curv` /
+		// `curvR` come from `derivatives`, its `occlusion(r)` /
+		// `thickness(r)` / `convexity(r)` / `proximity(r)` / `interior(r)`
+		// from `signals`, and its `fw` / `fwo` footprint-fade from
+		// `txFootprint`.
+		//
+		// They are carried because BDPT / VCM / MLT **sample** the
+		// continuation direction against the live record the object
+		// manager stamped and then **price** that same sample — forward
+		// throughput, every (s,t) connection, every MIS reverse pdf,
+		// every VCM merge at the eye vertex — against the record
+		// `PathVertexEval::PopulateRIGFromVertex` rebuilds from this
+		// vertex.  Without them one material was sampled with its true
+		// roughness and weighted with the neutral one, which is a bias,
+		// not a flat mask (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md
+		// §1 and §3).
+		//
+		// Populated ONLY at the two surface-from-intersection vertex
+		// sites (the eye and light subpath generators), straight from
+		// `ri.geometric` after `ri.pModifier->Modify`.  Camera, light,
+		// env and medium vertices keep the defaults — an honest "no
+		// surface".  BSSRDF entry vertices keep them too (design §10
+		// residual: PT builds its entry record by hand the same way, so
+		// that one is integrator-consistent).
+		// ---------------------------------------------------------------
+		SurfaceDerivativesInfo	derivatives;	///< dpdu/dpdv/dndu/dndv + scaleHint + the direct SDF curvature + the texcoord chart map
+		SurfaceSignalInfo		signals;		///< the geometry-signal channel: own-surface half (provider, primId, barycentrics) AND cross-object half (pScene/pSelf/ptWorld)
+		TextureFootprint		txFootprint;	///< pixel footprint (DL-14, docs/DL14_BIDIRECTIONAL_RAY_DIFFERENTIALS.md): non-zero on the depth-0 EYE vertex, because `ICamera::GenerateRay` unconditionally stamps Igehy differentials onto the camera ray every rasterizer shares, and zero everywhere else -- identical to PT's own footprint, which likewise only ever reaches the primary hit (no ray carries differentials after a scattering bounce, in ANY integrator). An earlier revision of this comment claimed the field was always zero here ("they emit no ray differentials"); that was never true of the depth-0 vertex and was refuted by direct render measurement -- see the doc for the numbers
+
 		RISEPel					throughput;		///< Cumulative throughput from subpath origin (alpha_i)
 		Scalar					throughputNM;	///< Spectral throughput for a single wavelength
-		Scalar					pdfFwd;			///< Forward PDF in area measure
-		Scalar					pdfRev;			///< Reverse PDF in area measure (filled during MIS weight computation)
+		Scalar					pdfFwd;			///< Forward PDF in the vertex's canonical measure: surface area, collision volume, or sky solid angle
+		Scalar					pdfRev;			///< Reverse PDF in the same canonical measure (filled during MIS weight computation)
 
-		/// Solid-angle emission / importance PDF at path endpoints, consumed
+		/// Joint emission / directional importance PDF at path endpoints, consumed
 		/// by the VCM post-pass when it recovers per-vertex dVCM/dVC/dVM
-		/// running quantities from this vertex's area-measure pdfFwd.
+		/// running quantities from this vertex's canonical-measure pdfFwd.
 		/// - Light endpoint (vertex 0 on a light subpath): pdfSelect *
-		///   pdfPosition * pdfDirection — the full emission solid-angle
-		///   direction PDF on the light.
+		///   pdfPosition * pdfDirection — the joint emission density.
+		///   For environment lights this is q * pSky * pDisc, while
+		///   pdfFwd is the marginal q * pSky.
 		/// - Camera endpoint (vertex 0 on an eye subpath): pdfCamDir — the
 		///   camera's directional importance PDF in solid-angle measure.
 		/// - All other vertices: unused; leave at zero.
@@ -168,18 +208,9 @@ namespace RISE
 		/// invariance on non-light vertices and on integrators that don't
 		/// thread selection probability through.
 		///
-		/// Consumed by `VCMIntegrator::ConvertLightSubpath` to extract
-		/// the geometric `emissionPdfW = pdfPos × pdfDir` from the
-		/// joint-storage `v.emissionPdfW = pdfSelect × pdfPos × pdfDir`
-		/// before computing `dVC = cosLight / emissionPdfW_geometric`.
-		/// Without this extraction `dVC` carries an implicit `1/pdfSelect`
-		/// inflation that propagates through `ApplyBsdfSamplingUpdate` and
-		/// over-weights mesh-NEE in VCM's SmallVCM `1/(wLight + 1 +
-		/// wCamera)` MIS formulas — invisible in master (where pdfSelect
-		/// was effectively constant per light-type) but causes env+mesh
-		/// VCM to over-count by ~27 % vs PT post the 2026-05-29
-		/// continuous-PMF fix.  See `VCMRecurrence::InitLight` for the
-		/// algebraic derivation.
+		/// The selection probability is already included in root and
+		/// joint emission densities. VCM keeps those joint densities:
+		/// an eye-generated alternative never selects this light.
 		Scalar					pdfSelect;
 
 		/// TRUE iff this vertex's `pdfRev` is a GENUINE zero -- "the
@@ -227,13 +258,126 @@ namespace RISE
 		/// weights elsewhere are untouched because the flag is never set on
 		/// any vertex other than the (s=0) eye end.  Consumed by
 		/// `BDPTIntegrator::MISWeight`'s eye-side walk.
+		///
+		/// DL-430: a zero `pdfRev` generated by a non-delta, connectible
+		/// neighbour VERTEX is recognised by `MISWeight` from that
+		/// generator itself and needs no flag; this flag remains because
+		/// the (s=0) eye end's `pdfRev` is generated by the light-sampling
+		/// process, not by a vertex.  That break assumes an SPF's aggregate
+		/// `Pdf` support equals its sampler's support (see `MISWeight`'s
+		/// "EXACTNESS PREMISE" note): `pdfFwd` has a per-lobe fallback where
+		/// the aggregate reads ~0, `pdfRev` has none.
 		bool					lightSamplingStrategyAbsent;
+		unsigned int			volumeBounces;	///< Cumulative volume scatter bounces along subpath up to this vertex (default 0)
 
 		bool					isDelta;		///< True if the sampled interaction at this vertex is a delta distribution
+		/// DL-125.  WHICH LOBE the sampler actually selected at this vertex
+		/// (`ScatteredRay::type` of the chosen `ScatteredRay`), or
+		/// `eRayUnknown` where no scatter was recorded (endpoints, medium
+		/// vertices, the last vertex of a walk).
+		///
+		/// A SAMPLING RECORD, not surface state: `PathVertexEval::
+		/// PopulateRIGFromVertex` deliberately does NOT copy it (there is
+		/// no `RayIntersectionGeometric` field for it), so the
+		/// BDPTVertex/RIG field-parity contract above does not apply and
+		/// `tests/BDPTVertexRIGRebuildTest.cpp` needs no sentinel for it.
+		///
+		/// Consumed by `BDPTIntegrator::RecomputeSubpathThroughputNM`,
+		/// which needs it to ask `ISPF::EvaluateKrayNM` for the SELECTED
+		/// lobe's own companion-wavelength weight instead of forming a
+		/// ratio of the material's AGGREGATE BSDF. Those ratios need not
+		/// have the same wavelength dependence at a multi-lobe SPF;
+		/// common spectral dependence can also make them coincide.
+		ScatteredRay::ScatRayType	scatterType;
+
+		/// DL-471: the scatter type this vertex's own continuation was
+		/// COUNTED as by its walk's per-type bounce cap
+		/// (`max_diffuse_bounce` & co., PathTransportUtilities::
+		/// ExceedsBounceLimitForType); `eRayUnknown` when the walk counted
+		/// nothing here (an endpoint, a medium vertex, a subsurface jump,
+		/// the light walk's FREE first vertex -- see BDPTUtilities::
+		/// JoinedTypeCapStatus).  It is `pScat->type` at the walk's cap
+		/// check: the selected lobe's type, or -- when guiding SUBSTITUTED
+		/// the direction -- the guide placeholder's `eRayDiffuse` (the walk
+		/// continues on `guideTemplateRay`), which is how PT counts a guide
+		/// draw too (DL-483 item 2).  `scatterType` instead records
+		/// `eRayUnknown` there.  Read only by the per-path per-type cap
+		/// check; no RayIntersectionGeometric counterpart.
+		ScatteredRay::ScatRayType	capType;
+
+		/// Sampler-input distance from the live ray origin to this hit,
+		/// including the generators' ray advance. Used ONLY by companion
+		/// throughput replay (DL-222), not connection BSDF reconstruction
+		/// (DL-223). Endpoints, media and BSSRDF entries do not consume it.
+		Scalar scatterIncomingDistance;
+		bool isLightSubpathVertex;
 		bool					isConnectible;	///< True if material has at least one non-delta BxDF component
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
+		/// DL-408 (review rounds 2-3): on an SSS exit vertex whose
+		/// continuation is a CONTACT launch against an opaque, shadow-casting
+		/// body (`BSSRDFSampling::ContactCovers`), the whole outward
+		/// hemisphere is covered by that body's surface at zero distance, so
+		/// every CONNECTION with this vertex as an endpoint is occluded (as
+		/// the gap twin's is, by the body's near face); its other hemisphere
+		/// carries Sw = 0.  The exit's own offset position can lie past that
+		/// surface (1e-6 below the inside floor of a closed room), where a
+		/// visibility ray would wrongly see past it; the connection
+		/// strategies read this flag instead.  Emission at a contact hit
+		/// (s = 0) is not a connection and is never gated.  The MIS structure
+		/// is untouched (the vertex stays connectible).  Contact HITS are not
+		/// flagged: their launching predecessor is moved to the contact ray's
+		/// origin, so a direction rebuilt from positions faces the right way.
+		/// No RayIntersectionGeometric counterpart.
+		bool					contactCovered;
+		/// DL-357: on a DIFFUSION-profile BSSRDF entry vertex, the jump's
+		/// exit-to-entry distance and exit cosine (BSSRDFSampling::
+		/// SampleResult::jumpDistance / exitCos).  The exit hit is the
+		/// PREVIOUS vertex.  Read only by RecomputeSubpathThroughputNM to
+		/// re-price Rd(r) * Ft(exit) at an HWSS companion wavelength; no
+		/// RayIntersectionGeometric counterpart, so the field-parity
+		/// contract above does not apply.  0 elsewhere.
+		Scalar					bssrdfJumpDistance;
+		Scalar					bssrdfExitCos;
+		/// DL-424/425: on a LIGHT-subpath vertex where the walk drew a
+		/// thin-weave delta PASS-THROUGH (the undeviated gap ray), the
+		/// gap's MIS pseudo-probability: the per-crossing factor
+		/// `RayCaster::CastShadowRayAutoSampled` accumulates into its
+		/// pass-through probability product (MaxValue of
+		/// ISPF::DeltaPassThroughTransmittance in RGB, the NM value at the
+		/// hero wavelength in spectral) -- the true gap draw probability
+		/// for a bare weave.  BDPT's see-through s = 1 connection and the
+		/// light-tracing strategies sharing its path MIS-weight against
+		/// each other through it (BDPTIntegrator::MISWeight).  0 elsewhere.
+		Scalar					passThroughProb;
 		Scalar					mediumIOR;		///< Top-of-stack IOR seen at this vertex before scattering
 		bool					insideObject;	///< True if the current object was already in the IOR stack
+		/// DL-341 review round 2 (2026-10-02): the hit's SURFACE-IDENTITY
+		/// flags (RayIntersectionGeometric's own docs), mirrored so that
+		/// PopulateRIGFromVertex rebuilds the record a connection-time BSDF
+		/// / Pdf query sees with the same flags the live hit had.  Without
+		/// them a rebuilt record's `UnflippedGeomNormal()` silently became
+		/// the reported (ray-facing) normal on a double-sided mesh, and a
+		/// material whose frame depends on the true side (`composite_material`
+		/// unflips a closed double-sided record) priced the connection in a
+		/// different frame than its Scatter used -- the DL-100 frame trap.
+		bool					bGeomNormalOrientedToRay;
+		bool					bGeomNormalRayDerived;
+		bool					bOpenSheet;
+		bool					bProvablyNoInterior;
+		/// DL-341 review round 6: whether the reported `geomNormal` opposed
+		/// the ray that arrived at this vertex.  Replayed as
+		/// RayIntersectionGeometric::arrivalGeomFacing, because a rebuilt
+		/// record's ray is aimed per query and is not that arrival.
+		bool					bGeomNormalOpposesArrival;
+		/// DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md): the graded-index
+		/// medium the walk was travelling in when it produced this vertex
+		/// (null if that medium is not a world-position `ior` field) and the
+		/// walk's TRACKED index there (its IOR stack top, which telescopes
+		/// with this vertex's throughput).  A connection between an eye and
+		/// a light vertex recorded in the same graded medium carries
+		/// (n_eye/n_light)^2 (GradedIndexMedium::ConnectionScale).
+		const IObject*			pGradedMedium;
+		Scalar					gradedIOR;
 
 		// Medium scatter data (valid only for type == MEDIUM)
 		const IMedium*			pMediumVol;		///< The participating medium at this scatter vertex
@@ -279,11 +423,16 @@ namespace RISE
 		/// light endpoint.  When true, pdfFwd / pdfRev are in
 		/// solid-angle measure (sr^-1); the area-Jacobian is skipped
 		/// at the env-vertex boundary by `BDPTUtilities::ConvertDensity`.
-		/// All other vertex types store area-measure pdfs as before.
+		/// Finite targets store surface-area or collision-volume pdfs.
+		/// The first target of an environment emission uses parallel
+		/// projected-disc density, with no inverse-distance Jacobian.
 		bool IsInfiniteLight() const { return pEnvLight != 0; }
+
+        Scalar acceptedAlphaCoverage = 1;
 
 		BDPTVertex() :
 		type( SURFACE ),
+		bHasCoatDecodeOnb( false ),
 		ptCoord( Point2( 0, 0 ) ),
 		ptCoord1( Point2( 0, 0 ) ),
 		bHasTexCoord1( false ),
@@ -292,6 +441,16 @@ namespace RISE
 		pObject( 0 ),
 		vColor( RISEPel( 0, 0, 0 ) ),
 		bHasVertexColor( false ),
+		// Listed explicitly although each of the three has a
+		// user-provided default constructor that would run anyway: the
+		// point of the list is that a reader auditing "does every
+		// construction site zero-initialise the new fields?" can answer
+		// yes from here.  Their own defaults ARE the honest absence —
+		// `valid` / `curvatureValid` / `texChartValid` false, `scaleHint`
+		// 1.0, a null `pProvider` / `pScene`, an invalid footprint.
+		derivatives(),
+		signals(),
+		txFootprint(),
 		throughput( RISEPel( 0, 0, 0 ) ),
 		throughputNM( 0 ),
 		pdfFwd( 0 ),
@@ -300,12 +459,28 @@ namespace RISE
 		cosAtGen( 0 ),
 		pdfSelect( 1.0 ),	///< Default 1.0: SmallVCM-invariance on non-light vertices and master back-compat
 		lightSamplingStrategyAbsent( false ),
+		volumeBounces( 0 ),
 
 		isDelta( false ),
+		scatterType( ScatteredRay::eRayUnknown ),
+		capType( ScatteredRay::eRayUnknown ),
+		scatterIncomingDistance( 0 ),
+		isLightSubpathVertex( false ),
 		isConnectible( true ),
 		isBSSRDFEntry( false ),
+		contactCovered( false ),
+		bssrdfJumpDistance( 0 ),
+		bssrdfExitCos( 0 ),
+		passThroughProb( 0 ),
 		mediumIOR( 1.0 ),
 		insideObject( false ),
+		bGeomNormalOrientedToRay( false ),
+		bGeomNormalRayDerived( false ),
+		bOpenSheet( false ),
+		bProvablyNoInterior( false ),
+		bGeomNormalOpposesArrival( false ),
+		pGradedMedium( 0 ),
+		gradedIOR( 0 ),
 		pMediumVol( 0 ),
 		pPhaseFunc( 0 ),
 		pMediumObject( 0 ),

@@ -25,6 +25,7 @@
 #include <fstream>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <thread>
 #include <vector>
 #include "../Library/RISE_API.h"
@@ -46,6 +47,7 @@
 #include "../Library/Parsers/StdOutProgress.h"
 #include "../Library/Rendering/ViewportFrameStore.h"
 #include "../Library/Rendering/FrameStore.h"
+#include "CliOptions.h"
 
 //
 // Windows version has a windows window that shows the render progress
@@ -76,7 +78,15 @@ double DoPerformanceRating()
 {
 	IJobPriv* pJob = 0;
 	RISE_CreateJobPriv( &pJob );
-	pJob->LoadAsciiSceneAuto( "scenes/pr.RISEscene" );   // Slice 6c-3a: via Auto (CST-only -- native-v7 -> CST, else hard-fail)
+	if( !pJob->LoadAsciiSceneAuto( "scenes/pr.RISEscene" ) ) {   // Slice 6c-3a: via Auto (CST-only -- native-v7 -> CST, else hard-fail)
+		// bug-fix wave (2026-08-28, fix 4): unlike the interactive-console loads (see the
+		// loud PARTIAL SCENE banners below), a partial `scenes/pr.RISEscene` is not useful
+		// debugging material here -- a performance rating measures render throughput, and
+		// rasterizing a scene missing some objects/materials/lights would report a bogus
+		// number that LOOKS like a valid PR score.  Abort instead of computing one.
+		std::cerr << "ERROR: DoPerformanceRating: failed to load scenes/pr.RISEscene -- see the log for the derive diagnostics.\n";
+		std::exit( 1 );
+	}
 
 	unsigned int		actual_time = 1;
 	pJob->PredictRasterizationTime( 10000, 0, &actual_time );
@@ -701,6 +711,59 @@ int main( int argc, char** argv )
 	//                           LAUNCH-TIME ONLY: nothing reachable from
 	//                           stdin (a request parameter, a scene file) can
 	//                           change it.
+	//   --agent-part-plan-gate=on|off
+	//                           (G2, 2026-08-10) the build-plan gate: on a
+	//                           session that has not filed a build plan, EVERY
+	//                           geometry-creating call is refused and told to
+	//                           call file_build_plan -- up to 3 refusals, after
+	//                           which the gate GIVES UP (the 4th such call is
+	//                           let through, carrying a factual give-up notice
+	//                           in its result, and the gate disarms for that
+	//                           session).  Filing a plan at any point clears it
+	//                           immediately and permanently.  The cap exists
+	//                           because -- unlike E4's render-cadence gate,
+	//                           which any cheap render satisfies -- clearing
+	//                           this one needs a NEW tool call with a valid
+	//                           schema, so an uncapped form could strand a
+	//                           session that cannot form it. DEFAULT
+	//                           (flag omitted) is `on`. `off` disables it
+	//                           entirely for every session this process
+	//                           creates -- the misfire off-ramp and the
+	//                           gate-off measurement arm. Same contract as
+	//                           --agent-autonomy: LAUNCH-TIME ONLY, and any
+	//                           value but exactly "on"/"off" (including a
+	//                           missing `=value`) is a loud failure.
+	//                           (Arc 77 Phase 2, 2026-08-11) This ONE switch
+	//                           governs BOTH halves of the gate. On a provider
+	//                           that can generate images the gate also requires
+	//                           an imagined scene target (imagine_scene) before
+	//                           it clears -- same shared 3-refusal counter, same
+	//                           give-up, no second flag -- so `off` disables the
+	//                           imagine requirement along with the plan one. A
+	//                           provider without image generation sees exactly
+	//                           the plan-only gate described above.
+	//   --agent-build-protocol=on|off
+	//                           (S1, 2026-08-11) the STAGED BUILD PROTOCOL:
+	//                           filing a build plan enters the PIECES phase with
+	//                           the first element active; every chunk created
+	//                           while an element is active is recorded against
+	//                           it; an edit aimed at a chunk recorded against a
+	//                           DIFFERENT element is refused (up to 3 refusals,
+	//                           then the phase rules give up for that session,
+	//                           carrying a factual notice in the result of the
+	//                           call that tripped it); finish_element advances
+	//                           and, after the last element, enters the COMPOSE
+	//                           phase, where creating new geometry is refused and
+	//                           reopen_element re-enters an element's window.
+	//                           DEFAULT (flag omitted) is `on`.  Same contract as
+	//                           --agent-part-plan-gate in every respect:
+	//                           LAUNCH-TIME ONLY, and any value but exactly
+	//                           "on"/"off" (including a missing `=value`) is a
+	//                           loud failure.  BOTH switches are respected: the
+	//                           phase machinery needs this one AND
+	//                           --agent-part-plan-gate, so turning the gate off
+	//                           turns the phases off with it (the phases are
+	//                           defined by the plan the gate produces).
 	// Values are applied AFTER LoadAsciiScene returns, so they replace
 	// whatever the scene file authored.  This is how agents render test
 	// scenes at lower resolution without editing scene files.
@@ -708,10 +771,10 @@ int main( int argc, char** argv )
 	// Validation: each numeric flag's value must parse as a strictly
 	// positive number.  `--width foo` (non-numeric) and `--width -5`
 	// (negative) fail loudly rather than silently consuming the next
-	// argv as a malformed override.
-	int  cliFilmWidth   = 0;	// 0 = no override
-	int  cliFilmHeight  = 0;
-	double cliFilmPixelAR = 0.0;
+	// argv as a malformed override.  `--denoise` / `--no-denoise` and
+	// `--camera <name>` (or `--camera=<name>`) are parsed and applied
+	// post-load via `RISE::Cli::PostLoadCliOverrides` (CliOptions.h).
+	RISE::Cli::PostLoadCliOverrides cliOverrides;
 	bool cliArgError = false;
 	bool cliAgentStdio = false;	// Facet 5 slice 0c: JSON-RPC stdio transport
 	bool cliMcp = false;	// Secure-MCP slice 1: speak MCP (not raw JSON-RPC) over that same transport
@@ -746,35 +809,51 @@ int main( int argc, char** argv )
 	RISE::Agent::AgentAutonomy cliAutonomy = RISE::Agent::AgentAutonomy::Read;
 	const char* kAutonomyFlagPrefix = "--agent-autonomy=";
 	const std::size_t kAutonomyFlagPrefixLen = strlen( kAutonomyFlagPrefix );
+	// G2 (2026-08-10): `--agent-part-plan-gate=on|off` -- the OFF-RAMP for
+	// the build-plan gate (AgentSession.h's block above FileBuildPlan).  ON by
+	// default, matching AgentSession's own process default; `off` disables it
+	// completely for every session this process creates, which is both the
+	// misfire escape hatch and the gate-off arm of the behavioural
+	// measurement.  Parsed and VALIDATED here, then applied once below --
+	// BEFORE any session is constructed and therefore before anything can be
+	// dispatched.  LAUNCH-TIME ONLY, exactly like --agent-autonomy: nothing
+	// reachable from the wire (a request parameter, an MCP tools/call, a
+	// scene file) can reach it -- AgentRpc exposes no verb that touches it.
+	// Any value but exactly "on" or "off" is a loud launch-time failure,
+	// never a silent default, matching this flag family's contract.
+	// Arc 77 Phase 2 (2026-08-11): this remains the ONLY switch -- the
+	// imagine half of the gate is gated on the same
+	// SetBuildPlanGateDefaultEnabled value (see AgentSession.h's
+	// ImagineRequirementActive_), so `off` turns off both halves and no
+	// second flag was added.
+	bool cliBuildPlanGate = true;
+	const char* kBuildPlanGateFlagPrefix = "--agent-part-plan-gate=";
+	const std::size_t kBuildPlanGateFlagPrefixLen = strlen( kBuildPlanGateFlagPrefix );
+	// S1 (2026-08-11): `--agent-build-protocol=on|off` -- the OFF-RAMP for the
+	// staged build protocol (AgentSession.h's block above FinishElement).  ON
+	// by default, matching AgentSession's own process default; `off` disables
+	// the phase machinery for every session this process creates, which is both
+	// the misfire escape hatch and the protocol-off arm of the behavioural
+	// measurement.  Parsed, VALIDATED and applied EXACTLY like the gate flag
+	// above -- same `=value`-only form, same loud-never-silent contract, same
+	// LAUNCH-TIME-ONLY reach (nothing on the wire touches it).  Deliberately a
+	// SECOND flag rather than a widening of the first: the gate and the phases
+	// are separately measurable arms, and the design needs the plan-gate-on /
+	// phases-off cell.
+	bool cliBuildProtocol = true;
+	const char* kBuildProtocolFlagPrefix = "--agent-build-protocol=";
+	const std::size_t kBuildProtocolFlagPrefixLen = strlen( kBuildProtocolFlagPrefix );
 	const char* sceneArg = 0;
 	for( int ai = 1; ai < argc; ai++ ) {
 		const char* a = argv[ai];
-		auto consumeIntFlag = [&]( const char* name, int& dst ) -> bool {
-			if( ai+1 >= argc ) {
-				std::cerr << "ERROR: " << name << " requires a positive integer; got end-of-args.\n";
-				cliArgError = true; return false;
-			}
-			char* endp = nullptr;
-			const long v = strtol( argv[ai+1], &endp, 10 );
-			if( endp == argv[ai+1] || *endp != '\0' || v <= 0 ) {
-				std::cerr << "ERROR: " << name << " requires a positive integer; got `" << argv[ai+1] << "`.\n";
-				cliArgError = true; return false;
-			}
-			dst = (int)v; ++ai; return true;
-		};
-		auto consumeDoubleFlag = [&]( const char* name, double& dst ) -> bool {
-			if( ai+1 >= argc ) {
-				std::cerr << "ERROR: " << name << " requires a positive float; got end-of-args.\n";
-				cliArgError = true; return false;
-			}
-			char* endp = nullptr;
-			const double v = strtod( argv[ai+1], &endp );
-			if( endp == argv[ai+1] || *endp != '\0' || v <= 0.0 ) {
-				std::cerr << "ERROR: " << name << " requires a positive float; got `" << argv[ai+1] << "`.\n";
-				cliArgError = true; return false;
-			}
-			dst = v; ++ai; return true;
-		};
+		const RISE::Cli::FlagMatch postLoadMatch =
+			RISE::Cli::TryConsumePostLoadCliFlag( argc, argv, ai, cliOverrides, std::cerr );
+		if( postLoadMatch == RISE::Cli::FlagMatch::MatchedOk ) {
+			continue;
+		} else if( postLoadMatch == RISE::Cli::FlagMatch::MatchedError ) {
+			cliArgError = true;
+			continue;
+		}
 
 		if( strcmp(a, "--agent-stdio") == 0 ) {
 			cliAgentStdio = true;
@@ -832,6 +911,44 @@ int main( int argc, char** argv )
 				std::cerr << "ERROR: --agent-autonomy requires 'read', 'propose', or 'commit'; got `" << val << "`.\n";
 				cliArgError = true;
 			}
+		} else if( strncmp( a, kBuildPlanGateFlagPrefix, kBuildPlanGateFlagPrefixLen ) == 0 ) {
+			const std::string val = a + kBuildPlanGateFlagPrefixLen;
+			if( val == "on" ) {
+				cliBuildPlanGate = true;
+			} else if( val == "off" ) {
+				cliBuildPlanGate = false;
+			} else {
+				std::cerr << "ERROR: --agent-part-plan-gate requires 'on' or 'off'; got `" << val << "`.\n";
+				cliArgError = true;
+			}
+		} else if( strncmp( a, kBuildProtocolFlagPrefix, kBuildProtocolFlagPrefixLen ) == 0 ) {
+			const std::string val = a + kBuildProtocolFlagPrefixLen;
+			if( val == "on" ) {
+				cliBuildProtocol = true;
+			} else if( val == "off" ) {
+				cliBuildProtocol = false;
+			} else {
+				std::cerr << "ERROR: --agent-build-protocol requires 'on' or 'off'; got `" << val << "`.\n";
+				cliArgError = true;
+			}
+		} else if( strcmp( a, "--agent-build-protocol" ) == 0 ) {
+			// The bare token with no `=value`: loud, for exactly the reason the
+			// gate flag's own bare-token branch below is loud -- the SPACE form
+			// would otherwise have its value silently swallowed as the
+			// positional scene argument.  Exact strcmp, same reasoning.
+			std::cerr << "ERROR: --agent-build-protocol requires the form "
+			             "`--agent-build-protocol=on` or `--agent-build-protocol=off`; got `" << a << "`.\n";
+			cliArgError = true;
+		} else if( strcmp( a, "--agent-part-plan-gate" ) == 0 ) {
+			// The bare token with no `=value`: loud, for exactly the reason
+			// --agent-autonomy's own bare-token branch below is loud -- the
+			// SPACE form `--agent-part-plan-gate off` would otherwise have
+			// its value silently swallowed as the positional scene argument.
+			// Exact strcmp (not a prefix match) so a longer future flag
+			// sharing this prefix falls through to its own branch.
+			std::cerr << "ERROR: --agent-part-plan-gate requires the form "
+			             "`--agent-part-plan-gate=on` or `--agent-part-plan-gate=off`; got `" << a << "`.\n";
+			cliArgError = true;
 		} else if( strcmp( a, "--agent-autonomy" ) == 0 ) {
 			// Hardening (loud-never-silent): this catches the BARE
 			// `--agent-autonomy` token with no `=value` at all -- the SPACE
@@ -862,12 +979,6 @@ int main( int argc, char** argv )
 			std::cerr << "ERROR: --agent-autonomy requires the form `--agent-autonomy=read`, "
 			             "`--agent-autonomy=propose`, or `--agent-autonomy=commit`; got `" << a << "`.\n";
 			cliArgError = true;
-		} else if( strcmp(a, "--width") == 0 ) {
-			consumeIntFlag( "--width", cliFilmWidth );
-		} else if( strcmp(a, "--height") == 0 ) {
-			consumeIntFlag( "--height", cliFilmHeight );
-		} else if( strcmp(a, "--pixel-ar") == 0 ) {
-			consumeDoubleFlag( "--pixel-ar", cliFilmPixelAR );
 		} else if( a[0] != '-' && !sceneArg ) {
 			sceneArg = a;	// First non-flag positional = scene file
 		}
@@ -875,6 +986,17 @@ int main( int argc, char** argv )
 	if( cliArgError ) {
 		return 1;	// Fail fast — don't render with a malformed override.
 	}
+	// G2 (2026-08-10): apply the build-plan-gate posture ONCE, here -- after
+	// the whole command line has been validated (so a malformed flag has
+	// already exited above) and BEFORE any transport dispatch below
+	// constructs an AgentSession.  Every session snapshots this at
+	// construction; nothing changes it afterwards.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( cliBuildPlanGate );
+	// S1 (2026-08-11): the staged build protocol's posture, applied at the same
+	// moment and on the same terms.  Both are snapshotted together by every
+	// session's constructor, so applying them one line apart here cannot
+	// produce a session that saw one and not the other.
+	RISE::Agent::AgentSession::SetBuildProtocolDefaultEnabled( cliBuildProtocol );
 	// Eval-harness slice E4: `--agent-eval` is a batch runner, not a live
 	// transport -- reject it combined with either live transport LOUDLY and
 	// BEFORE the transport dispatch below (otherwise the stdio/http branch
@@ -905,6 +1027,11 @@ int main( int argc, char** argv )
 	// (LoadFromFile), so it does not use the `pJob` created above -- release
 	// that here and hand control to the stdio loop, which owns its lifetime.
 	// EOF on stdin -> clean exit 0.
+	if( cliOverrides.HasAnyOverride() && ( cliAgentStdio || cliAgentHttp || cliAgentEval ) ) {
+		std::cerr << "WARNING: --width / --height / --pixel-ar / --denoise / --no-denoise / --camera "
+		             "have no effect with --agent-stdio / --mcp / --agent-http / --agent-eval.\n";
+	}
+
 	// Secure-MCP slice 1: `--mcp` (only meaningful alongside `--agent-stdio`)
 	// swaps the raw-JSON-RPC loop for the MCP-envelope loop over the SAME
 	// stdin/stdout transport -- same session construction, same stdout
@@ -937,19 +1064,25 @@ int main( int argc, char** argv )
 		return rc;
 	}
 
-	const bool haveCliFilmOverride =
-		( cliFilmWidth > 0 ) || ( cliFilmHeight > 0 ) || ( cliFilmPixelAR > 0.0 );
+	const bool havePostLoadOverride = cliOverrides.HasAnyOverride();
 
 	// Detect mutually-exclusive flag combos: the perf-rating shortcuts
-	// (-pr / -highperf / -highperf2) ignore Film overrides, and a user
+	// (-pr / -highperf / -highperf2) ignore post-load overrides, and a user
 	// who passed both probably misunderstood the CLI.
-	if( haveCliFilmOverride && argc > 1 ) {
+	if( havePostLoadOverride && argc > 1 ) {
 		const char* a1 = argv[1];
 		if( strcmp(a1,"-pr")==0 || strcmp(a1,"-highperf")==0 || strcmp(a1,"-highperf2")==0 ) {
-			std::cerr << "WARNING: --width / --height / --pixel-ar have no effect with "
-			          << a1 << " (the perf-rating path uses a fixed scene).\n";
+			std::cerr << "WARNING: --width / --height / --pixel-ar / --denoise / --no-denoise / --camera "
+			             "have no effect with " << a1 << " (the perf-rating path uses a fixed scene).\n";
+		} else if( !sceneArg ) {
+			std::cerr << "WARNING: post-load CLI overrides (--width / --height / --pixel-ar / --denoise / "
+			             "--no-denoise / --camera) apply only when a scene file is given on the command line.\n";
 		}
 	}
+
+	// A later successful command or quit must not hide an earlier failure.
+	bool consoleFailed = false;
+	bool postLoadOverrideFailed = false;
 
 	// If there was a file specified in the arguments, then assume its an
 	// ascii scene file and load it
@@ -984,36 +1117,43 @@ int main( int argc, char** argv )
 			StdOutProgress progress( "Parsing scene: " );
 			pJob->SetProgress( &progress );
 			if( LoadScenePerEnv( pJob, sceneArg ) ) {
-				// CLI Film overrides — applied AFTER scene parse so they
-				// replace whatever the scene file's `film` chunk (or
-				// camera-chunk auto-sync) installed.  Partial overrides
-				// (only --width or only --height) preserve the
-				// non-overridden axes from the current Film.
-				if( haveCliFilmOverride ) {
-					const IFilm* curFilm = pJob->GetScene()->GetFilm();
-					const unsigned int w   = ( cliFilmWidth   > 0 ) ? (unsigned)cliFilmWidth   : ( curFilm ? curFilm->GetWidth()   : 960 );
-					const unsigned int h   = ( cliFilmHeight  > 0 ) ? (unsigned)cliFilmHeight  : ( curFilm ? curFilm->GetHeight()  : 540 );
-					const double       pAR = ( cliFilmPixelAR > 0 ) ? cliFilmPixelAR           : ( curFilm ? curFilm->GetPixelAR() : 1.0 );
-					if( !pJob->SetFilm( w, h, pAR ) ) {
-						GlobalLog()->PrintEasyError(
-							"CLI Film override failed (invalid width/height/pixelAR); using scene-file values." );
+				// Post-load CLI overrides (--camera, --width/--height/--pixel-ar,
+				// --denoise/--no-denoise) — applied AFTER scene parse and BEFORE
+				// Win32 window creation so the preview window reflects any
+				// overridden camera and film dimensions.
+				if( !RISE::Cli::ApplyPostLoadCliOverrides( pJob, cliOverrides, std::cerr ) ) {
+					consoleFailed = true;
+					postLoadOverrideFailed = true;
+				} else {
+					const ICamera* pCamera = pJob->GetScene()->GetCamera();
+					if( pCamera ) {
+
+						// Don't do this if it is disabled in the options file
+						if( !GlobalOptions().ReadBool( "no_windowed_rasterizer_output", false ) ) {
+							const IFilm* pFilm = pJob->GetScene()->GetFilm();
+							IRasterizerOutput* pWinRO = new Implementation::Win32WindowRasterizerOutput(
+								pFilm->GetWidth(), pFilm->GetHeight(),
+								50, 50, "R.I.S.E. Render Window" );
+
+							GlobalLog()->PrintNew( pWinRO, __FILE__, __LINE__, "window RO" );
+							pJob->GetRasterizer()->AddRasterizerOutput( pWinRO );
+							safe_release( pWinRO );
+						}
 					}
 				}
-				const ICamera* pCamera = pJob->GetScene()->GetCamera();
-				if( pCamera ) {
-
-					// Don't do this if it is disabled in the options file
-					if( !GlobalOptions().ReadBool( "no_windowed_rasterizer_output", false ) ) {
-						const IFilm* pFilm = pJob->GetScene()->GetFilm();
-						IRasterizerOutput* pWinRO = new Implementation::Win32WindowRasterizerOutput(
-							pFilm->GetWidth(), pFilm->GetHeight(),
-							50, 50, "R.I.S.E. Render Window" );
-
-						GlobalLog()->PrintNew( pWinRO, __FILE__, __LINE__, "window RO" );
-						pJob->GetRasterizer()->AddRasterizerOutput( pWinRO );
-						safe_release( pWinRO );
-					}
-				}
+			} else {
+				// bug-fix wave (2026-08-28, fix 4): a `false` here means DeriveToJob's PASS-2
+				// left SOME chunks applied to `pJob` (continue-past-failure) but the load as a
+				// whole is diagnosed-failed -- LoadAsciiSceneViaCst's per-diagnostic log lines
+				// already recorded WHY, but this path deliberately falls through to the
+				// interactive console loop instead of aborting (rendering a partial scene is
+				// legitimate author debugging -- continuation makes the partial MORE useful).
+				// Make that loud so it is not mistaken for a clean load.
+				consoleFailed = true;
+				std::cerr << "=====================================================================\n"
+				             "PARTIAL SCENE: derive reported failures -- see the log; 'render' will\n"
+				             "render the PARTIAL scene\n"
+				             "=====================================================================\n";
 			}
 
 			// Detach the block-scoped StdOutProgress above -- it exists only for the parse.
@@ -1030,15 +1170,29 @@ int main( int argc, char** argv )
 #else
 			std::cout << "Loading ascii scene file: " << sceneArg << std::endl;
 			if( LoadScenePerEnv( pJob, sceneArg ) ) {
-				if( haveCliFilmOverride ) {
-					const IFilm* curFilm = pJob->GetScene()->GetFilm();
-					const unsigned int w   = ( cliFilmWidth   > 0 ) ? (unsigned)cliFilmWidth   : ( curFilm ? curFilm->GetWidth()   : 960 );
-					const unsigned int h   = ( cliFilmHeight  > 0 ) ? (unsigned)cliFilmHeight  : ( curFilm ? curFilm->GetHeight()  : 540 );
-					const double       pAR = ( cliFilmPixelAR > 0 ) ? cliFilmPixelAR           : ( curFilm ? curFilm->GetPixelAR() : 1.0 );
-					pJob->SetFilm( w, h, pAR );
+				if( !RISE::Cli::ApplyPostLoadCliOverrides( pJob, cliOverrides, std::cerr ) ) {
+					consoleFailed = true;
+					postLoadOverrideFailed = true;
 				}
+			} else {
+				// See the matching `else` in the Windows branch above (bug-fix wave 2026-08-28,
+				// fix 4) -- same deliberate loud-fall-through, same reason.
+				consoleFailed = true;
+				std::cerr << "=====================================================================\n"
+				             "PARTIAL SCENE: derive reported failures -- see the log; 'render' will\n"
+				             "render the PARTIAL scene\n"
+				             "=====================================================================\n";
 			}
 #endif
+			if( postLoadOverrideFailed ) {
+				// Fail fast when an explicit post-load CLI override (such as
+				// `--camera <unknown>`) could not be honored, rather than
+				// entering the console loop and rendering from the wrong camera
+				// or denoise setting.
+				safe_release( pJob );
+				GlobalLogCleanupAndShutdown();
+				return 1;
+			}
 		}
 	}
 
@@ -1157,17 +1311,24 @@ int main( int argc, char** argv )
 		std::cin.getline( line, 8192 );
 
 		if( std::cin.fail() ) {
+			// EOF with no pending command is a normal end of a script.
+			// Bad input or an overlong line is a failed command acquisition.
+			if( std::cin.bad() || !std::cin.eof() ) consoleFailed = true;
 			break;
 		}
 
-		if( strcmp( line, "quit" ) == 0 ||
-			strcmp( line, "exit" ) == 0 ||
-			strcmp( line, "bye" ) == 0 ) {
+		// Match the parser's first-token command dispatch, including padded
+		// quit, before its legacy quit handler can exit without our cleanup.
+		std::istringstream commandLine( line );
+		std::string commandVerb;
+		commandLine >> commandVerb;
+		if( commandVerb == "quit" || commandVerb == "exit" || commandVerb == "bye" ) {
 			std::cout << "Bye!" << std::endl;
 			break;
 		}
 
 		if( !commandParser->ParseCommand( line, *pJob ) ) {
+			consoleFailed = true;
 			std::cout << "\"" << line << "\"" << " Unknown command or command failure" << std::endl;
 		}
 	}
@@ -1191,6 +1352,6 @@ int main( int argc, char** argv )
 	GlobalLogCleanupAndShutdown();
 
 
-	return 1;
+	return consoleFailed ? 1 : 0;
 }
 

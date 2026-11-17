@@ -45,7 +45,7 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
   PixelBasedPelRasterizer( pCaster_, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol_ , frameStore),
   pIntegrator( 0 ),
 	  mHasVariantTransportConfig( false ),
-	  mVariantMaxPathDepth( 128 ),
+	  mVariantMaxPathDepth( kDefaultPathTracingMaxDepth ),
 	  mVariantIndirectOnly( false ),
 	  mVariantClayOverride( false ),
 	  mInteractiveDenoiseSuppressed( false ),
@@ -53,7 +53,6 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 	  pDirectCompanionImage( 0 ),
 	  pDirectCompanionRawImage( 0 ),
 	  mDirectCompanionDenoised( false ),
-	  mDirectCompanionRenderSeconds( 0.0 ),
 	  mDirectCompanionHasRegion( false ),
 	  mDirectCompanionRegion( 0, 0, 0, 0 ),
 	  pSMSPhotonMap( 0 ),
@@ -72,17 +71,13 @@ bool PathTracingPelRasterizer::ShouldDenoise() const
 		&& PixelBasedPelRasterizer::ShouldDenoise();
 }
 
-void PathTracingPelRasterizer::OnBeforeDenoise(
-	double renderElapsedSeconds ) const
-{
-	mDirectCompanionRenderSeconds = renderElapsedSeconds;
-}
+
 #endif
 
 void PathTracingPelRasterizer::SetMaxPathDepth( unsigned int n )
 {
 	mHasVariantTransportConfig = true;
-	mVariantMaxPathDepth = n ? n : 128;
+	mVariantMaxPathDepth = n ? n : kDefaultPathTracingMaxDepth;
 	if( pIntegrator ) {
 		pIntegrator->SetMaxPathDepth( n );
 	}
@@ -109,6 +104,8 @@ void PathTracingPelRasterizer::SetClayOverride( bool b )
 void PathTracingPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 {
 	PixelBasedPelRasterizer::PrepareRuntimeContext( rc );
+	rc.pNativePTSubsurfaceBounceCap = rc.pStabilityConfig ?
+		&rc.pStabilityConfig->maxTranslucentBounce : nullptr;
 	if( mHasVariantTransportConfig ) {
 		rc.hasPathTracingVariantConfig = true;
 		rc.pathTracingMaxDepth = mVariantMaxPathDepth;
@@ -150,7 +147,6 @@ void PathTracingPelRasterizer::PreRenderSetup(
 	PixelBasedPelRasterizer::PreRenderSetup( pScene, pRect );
 	safe_release( pDirectCompanionRawImage );
 	mDirectCompanionDenoised = false;
-	mDirectCompanionRenderSeconds = 0.0;
 	mDirectCompanionHasRegion = pRect != 0;
 	if( pRect ) {
 		mDirectCompanionRegion = *pRect;
@@ -273,6 +269,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
@@ -282,9 +279,9 @@ void PathTracingPelRasterizer::IntegratePixel(
 
 	const IRadianceMap* pRadianceMap = pScene.GetGlobalRadianceMap();
 
-	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
+	const bool bMultiSample = sampling && rc.UsesPixelSampling();
 	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+	const unsigned int batchSize = bMultiSample ? sampling->GetNumSamples() : 1;
 	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
@@ -354,7 +351,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		colAccrued = px.colorSum;
+		colAccrued = px.LoadPelPassInit();
 		weights = px.weightSum;
 		alphas = px.alphaSum;
 		wMean = px.wMean;
@@ -376,7 +373,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 	{
 		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 		} else {
 			samples.push_back( Point2( 0, 0 ) );
 		}
@@ -390,23 +387,21 @@ void PathTracingPelRasterizer::IntegratePixel(
 			if( bMultiSample ) {
 				const bool filmMode = (pFilteredFilm != 0);
 				if( filmMode ) {
-					ptOnScreen = Point2(
-						static_cast<Scalar>(x) + (*m).x - 0.5,
-						static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+					ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 					weight = 1.0;
 				} else if( pPixelFilter ) {
-					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-1-y );
 				} else {
-					ptOnScreen = Point2( x, height-y );
+					ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 					weight = 1.0;
 				}
 			} else {
-				ptOnScreen = Point2( x, height-y );
+				ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 			}
 			weights += weight;
 
 			if( temporal_samples && !pScene.FireTemporalHold() ) {
-				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+				AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 			}
 
 			// For ZSobol, remap the sample index via Morton code for
@@ -497,7 +492,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		px.colorSum = colAccrued;
+		colAccrued = px.StorePelPassDelta( colAccrued );
 		px.weightSum = weights;
 		px.alphaSum = alphas;
 		px.wMean = wMean;
@@ -556,13 +551,13 @@ void PathTracingPelRasterizer::PostRenderCleanup() const
 				mDirectCompanionRegion.left, mDirectCompanionRegion.top,
 				mDirectCompanionRegion.right, mDirectCompanionRegion.bottom,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				mDirectCompanionRenderSeconds );
+				EstimateDenoiseWorkPerMegapixel() );
 		} else {
 			mDenoiser->ApplyDenoise(
 				*pDirectCompanionImage, *pAOVBuffers,
 				pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight(),
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				mDirectCompanionRenderSeconds );
+				EstimateDenoiseWorkPerMegapixel() );
 		}
 		mDirectCompanionDenoised = true;
 	}

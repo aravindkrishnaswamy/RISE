@@ -21,6 +21,43 @@
 
 namespace RISE
 {
+	//! DL-368: THE pixel <-> screen convention, shared by every rasterizer
+	//! (eye-ray sample placement), every film that reconstructs a sample at
+	//! a fractional position (FilteredFilm::Splat, SplatFilm::SplatFiltered
+	//! and SplatFilm::NearestPixel) and every camera (whose film mapping
+	//! translates screen space by -W/2, -H/2).  Screen space is the
+	//! camera's nominal film: x in [0, W), y in [0, H) with y UP.  Pixel
+	//! (x, image row `row`, row 0 at the TOP) covers screen
+	//! [x, x+1) x [H-1-row, H-row), so its centre is (x + 0.5, H - row - 0.5)
+	//! -- PBRT's convention.  In FILM coordinates (fx, fy = H - screen y,
+	//! rows from the top) the same pixel covers [x, x+1) x (row, row+1]
+	//! and its centre is (x + 0.5, row + 0.5).
+	//!
+	//! Before DL-368 the rasterizers placed pixel (x, row) at
+	//! (x + u - 0.5, H - row + v - 0.5) while the cameras' film was
+	//! [0, W) x [0, H): every image sat half a pixel off its own camera.
+	namespace RasterConvention
+	{
+		//! A pixel centre's offset from its left / lower edge.
+		static const Scalar kPixelCentre = 0.5;
+
+		//! Screen position of the sub-pixel sample (u, v) in [0,1)^2 of
+		//! pixel (x, row) on a film `height` rows tall.
+		inline Point2 PixelToScreen( const unsigned int x, const unsigned int row,
+			const unsigned int height, const Scalar u, const Scalar v )
+		{
+			return Point2( static_cast<Scalar>( x ) + u,
+				static_cast<Scalar>( height ) - static_cast<Scalar>( row ) - Scalar( 1 ) + v );
+		}
+
+		//! Screen position of the centre of pixel (x, row).
+		inline Point2 PixelCentreToScreen( const unsigned int x, const unsigned int row,
+			const unsigned int height )
+		{
+			return PixelToScreen( x, row, height, kPixelCentre, kPixelCentre );
+		}
+	}
+
 	//! A Camera is the viewer is located in the scene.  It also is what
 	//! generates rays from a virtual screen
 	class ICamera : 
@@ -32,7 +69,9 @@ namespace RISE
 		virtual ~ICamera( ){};
 
 	public:
-		//! Given two Scalars x and y in [0..1], generate a ray to fire
+		//! Generate the ray through screen point @a ptOnScreen (the
+		//! camera's nominal film, x in [0, W), y in [0, H), y up -- see
+		//! RasterConvention above for where a pixel sits on it).
 		/// \return TRUE if a ray exists, FALSE otherwise
 		virtual bool GenerateRay(
 			const RuntimeContext& rc,					///< [in] Runtime context

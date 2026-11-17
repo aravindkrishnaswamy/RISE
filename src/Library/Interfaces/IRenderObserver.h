@@ -13,16 +13,15 @@
 //  Callbacks fire from the rasterizer's worker thread (today) or
 //  from FrameStore::EndTile / MarkFrameComplete (Phase 2).  They
 //  carry NO pixel data — observers consume the FrameStore directly.
-//  This means:
-//    - callbacks are synchronous and serialized; tile observers should
-//      enqueue expensive UI/network work, while frame observers may perform
-//      the intentional end-of-frame file transaction;
-//    - the relevant tile lock is released before notification, so callbacks
-//      may read completed pixels; a slow callback still back-pressures the
-//      publishing worker.
-//  Each platform's GUI bridge marshals from the render thread to the
-//  UI thread via Qt signals / dispatch_async / Compose
-//  LaunchedEffect; observers don't need to do that internally.
+//  Notifications run synchronously on the producing thread. Observers
+//  should return promptly and marshal UI or lengthy work to their own queue;
+//  the exception is a frame observer performing the intentional
+//  end-of-frame file transaction (a slow callback back-pressures the
+//  publishing worker).
+//  FrameStore::Render takes shared tile locks for a consistent read; the
+//  producer releases all tiles owned by its bracket before notification.
+//  Raw beauty-view access still needs external synchronization. Platform
+//  bridges marshal UI delivery through their platform's queue mechanism.
 //
 //  Author: design landing L1
 //  License: see LICENSE.TXT

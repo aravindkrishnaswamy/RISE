@@ -8,6 +8,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include "pch.h"
 #include "FireProductionAdvection.h"
 #include "../../src/Library/Utilities/RISECBOR64.h"
 

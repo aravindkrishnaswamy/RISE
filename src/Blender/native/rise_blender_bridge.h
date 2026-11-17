@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 8
+#define RISE_BLENDER_API_VERSION 18
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,12 +48,26 @@ enum rise_blender_painter_kind {
 };
 
 enum rise_blender_color_space {
+	// Native working-space linear (`Rec709RGB_Linear`) — bypasses both
+	// gamma decoding and colour-space matrix conversion.  Required for
+	// non-colour scalar data and normal-map painters so RGB-encoded
+	// surface tangents stay bit-exact.
 	RISE_BLENDER_COLOR_LINEAR = 0,
 	RISE_BLENDER_COLOR_SRGB = 1,
-	// ROMM-Linear bypasses both gamma decoding and the
-	// Rec709->ROMM colour matrix — required for normal-map painters
-	// so the RGB-encoded surface tangent stays bit-exact.
+	// Deprecated Stage-A alias for `RISE_BLENDER_COLOR_LINEAR`, retained
+	// for ABI v4+ binary compatibility with older add-on callers that
+	// passed `2` under its documented bit-exact normal-map passthrough
+	// contract (when RISE's internal working space was ROMM RGB).
 	RISE_BLENDER_COLOR_ROMM_LINEAR = 2
+};
+
+// ABI v14 Alpha socket modes bind scalar material coverage (DL-214).
+// OPAQUE ignores alpha, CLIP deterministically applies alpha_threshold,
+// and BLEND (including Blender HASHED) stochastically accepts coverage.
+enum rise_blender_alpha_mode {
+	RISE_BLENDER_ALPHA_OPAQUE = 0,
+	RISE_BLENDER_ALPHA_CLIP = 1,
+	RISE_BLENDER_ALPHA_BLEND = 2
 };
 
 enum rise_blender_modifier_kind {
@@ -65,7 +79,31 @@ enum rise_blender_material_model {
 	RISE_BLENDER_MATERIAL_LAMBERT = 0,
 	RISE_BLENDER_MATERIAL_GGX = 1,
 	RISE_BLENDER_MATERIAL_DIELECTRIC = 2,
-	RISE_BLENDER_MATERIAL_PBR_METALLIC_ROUGHNESS = 3
+	RISE_BLENDER_MATERIAL_PBR_METALLIC_ROUGHNESS = 3,
+	// ABI v13 (DL-186, docs/DEBT_LEDGER.md).  Principled BSDF Subsurface
+	// -> `randomwalk_sss_material`.  A SEPARATE model, not a PBR wrap
+	// (mirrors the pre-existing PBR-vs-DIELECTRIC mutual exclusivity a
+	// few lines below `add_pbr_metallic_roughness_material` in
+	// rise_blender_bridge.cpp: Blender's own Principled BLENDS
+	// diffuse/SSS by weight rather than layering SSS under a separate
+	// specular stack, so RISE models it the same way, one surface
+	// material).  Reads only the `subsurface_*` fields on
+	// `rise_blender_material` below; `sheen_*`/`coat_*` do not apply --
+	// neither has a PBR base to wrap when this model is selected.
+	RISE_BLENDER_MATERIAL_RANDOMWALK_SSS = 4
+};
+
+// Which of `hair_material`'s three mutually-exclusive colour tiers a
+// hair material binds (ABI v9).  RISE's `hair_material` chunk requires
+// EXACTLY ONE, and `IJob::AddHairMaterial` enforces that at call time
+// by taking "none" for every unbound tier -- so this tag selects which
+// of the fields below the bridge reads and which it passes as "none".
+// Mirrors the exporter's `HairMaterialData.tier` string
+// ("melanin" / "sigma_a" / "color").
+enum rise_blender_hair_tier {
+	RISE_BLENDER_HAIR_TIER_MELANIN = 0,	// eumelanin + pheomelanin concentrations (Tier 1)
+	RISE_BLENDER_HAIR_TIER_SIGMA_A = 1,	// direct absorption RGB (Tier 2)
+	RISE_BLENDER_HAIR_TIER_COLOR   = 2	// artist reflectance painter (Tier 3)
 };
 
 enum rise_blender_pixel_filter {
@@ -232,6 +270,19 @@ typedef struct rise_blender_modifier {
 	const char* source_painter_name;
 	float scale;
 	float window;
+	// ABI v11.  RISE_BLENDER_MODIFIER_BUMP only: when non-zero, the bridge
+	// builds the bump through `RISE_API_CreateBumpMapModifierEx`'s
+	// normalizeGradient=true form (`scale' = -scale`) instead of
+	// `IJob::AddBumpMapModifier`'s legacy window-coupled fold
+	// (`scale' = -scale*2*window`).  Without this, `scale` is not a
+	// tilt amplitude on its own -- it is one that couples to `window`,
+	// so lowering `window` (as the fix that shrank the exported Bump
+	// node's half-step from 1.0 to 0.005 did, see exporter.py's
+	// `_build_bump_modifier`) silently shrinks the delivered tilt by the
+	// same factor unless this is set.  Ignored by
+	// RISE_BLENDER_MODIFIER_NORMAL_MAP.  Appended at the end so every
+	// field above keeps its v10 offset.
+	int normalize;
 } rise_blender_modifier;
 
 typedef struct rise_blender_material {
@@ -257,6 +308,197 @@ typedef struct rise_blender_material {
 	const char* anisotropy_factor_painter_name;     // NULL = "0.0"
 	const char* anisotropy_rotation_painter_name;   // NULL = "0.0"
 	double emissive_scale;
+	// ABI v12 (DL-18, docs/DEBT_LEDGER.md; source heading
+	// CLOTH_FABRIC_DESIGN.md §15 item 13).  PBR_METALLIC_ROUGHNESS
+	// ONLY: Principled BSDF's Sheen Weight x Sheen Tint pre-multiplied
+	// into one colour painter (matching how KHR_materials_sheen's own
+	// `sheenColorFactor` already combines both -- see
+	// GLTFSceneImporter.cpp's identical KHR_materials_sheen handling,
+	// which this mapping mirrors).  When set (non-NULL, non-empty), the
+	// bridge registers the PBR material under an INTERMEDIATE name
+	// (`<name>::pbrbase`) and wraps it in a `fabric_material` sheen
+	// layer registered under the requested `name` -- the same
+	// intermediate-name mechanism GLTFSceneImporter.cpp's
+	// `pbrRegisterName` uses.  NULL / empty = no sheen, and the PBR
+	// material registers directly under `name` exactly as it did before
+	// this field existed (bit-identical to a pre-v12 payload).
+	const char* sheen_color_painter_name;
+	// Charlie alpha (`fabric_material`'s `sheen_roughness`, an
+	// IScalarPainter-typed slot -- docs/ISCALARPAINTER_REFACTOR.md --
+	// clamped to [0.04, 1] at render time).  Numeric fallback used
+	// when `sheen_roughness_texture_painter_name` is NULL/empty.
+	// Ignored when `sheen_color_painter_name` is unset.
+	double sheen_roughness;
+	// Set ONLY when Blender's Sheen Roughness input is texture-driven:
+	// the NAME of an already-registered COLOUR painter.  The bridge
+	// wraps it into an IScalarPainter view (channel R) via
+	// RISE_API_CreatePainterChannelScalarPainter before handing it to
+	// AddFabricMaterial -- the same v10 texture-exception pattern
+	// `beta_m_texture_painter_name` / `beta_n_texture_painter_name` /
+	// `ior_texture_painter_name` use above.  NULL/empty = use the
+	// numeric `sheen_roughness` field (the common case).
+	const char* sheen_roughness_texture_painter_name;
+
+	// ABI v13 (DL-186, docs/DEBT_LEDGER.md; source heading DL-151's own
+	// sibling audit).  PBR_METALLIC_ROUGHNESS ONLY: Principled BSDF's
+	// Coat layer -> a `coated_material` wrap, exactly the
+	// `sheen_color_painter_name` gating pattern above.  `coat_weight`
+	// (or its texture) <= 0 (and no texture set) = no coat, bit-
+	// identical to a pre-v13 payload.  `coat_weight`/`coat_roughness`
+	// are numeric fallbacks; the `*_texture_painter_name` fields, when
+	// non-NULL/non-empty, name an ordinary already-registered COLOUR
+	// painter that the bridge wraps into an IScalarPainter channel-R
+	// view via RISE_API_CreatePainterChannelScalarPainter -- the same
+	// v12 texture-exception mechanism `sheen_roughness_texture_-
+	// painter_name` uses (`resolve_material_scalar_slot`).
+	// `coat_roughness` is Blender's PERCEPTUAL roughness [0,1]; the
+	// bridge SQUARES it into a GGX alpha before calling
+	// AddCoatedMaterial, matching GLTFSceneImporter.cpp's
+	// KHR_materials_clearcoat `clearcoat_roughness_factor^2`
+	// convention (`coated_material`'s own `coat_roughness` slot is a
+	// GGX alpha, not a perceptual roughness).  `coat_tint_painter_name`
+	// is a colour painter name; NULL/empty = untinted (AddCoatedMaterial's
+	// own "none" sentinel).  `coat_ior` is a plain numeric IOR (>= 1),
+	// socket-default only -- Blender rarely textures this input and
+	// `coated_material`'s own `coat_ior` slot is not texture-driven.
+	//
+	// LAYERING WITH SHEEN (documented decision --
+	// docs/BLENDER_MATERIAL_TRANSLATION.md "Coat and Subsurface",
+	// UPDATED 2026-09-27): a material with BOTH Coat Weight > 0 and
+	// Sheen contributing COMPOSES the coat OVER the fabric (sheen)
+	// result, exactly as GLTFSceneImporter.cpp's own (also updated)
+	// KHR_materials_clearcoat + KHR_materials_sheen combination now
+	// decides -- DL-23 (docs/DEBT_LEDGER.md, closed 2026-09-14) lifted
+	// `coated_material`'s substrate-allowlist refusal of a
+	// `FabricMaterial`, so the coat DOES wrap on top of sheen now (the
+	// reverse order, coat-under-sheen, is still not attempted).
+	// Neither the native layer nor `exporter.py` warns for this
+	// combination any more.
+	const char* coat_weight_texture_painter_name;
+	double coat_weight;
+	const char* coat_tint_painter_name;
+	const char* coat_roughness_texture_painter_name;
+	double coat_roughness;
+	double coat_ior;
+
+	// ABI v13 (DL-186).  RANDOMWALK_SSS ONLY (see that model's own
+	// comment above `rise_blender_material_model`): Principled BSDF's
+	// Subsurface inputs, already converted by exporter.py into
+	// `randomwalk_sss_material`'s physical-scalar slots.
+	// `subsurface_absorption`/`subsurface_scattering` are ALREADY-
+	// CONVERTED inline "r g b" numeric literals (Job.cpp's
+	// ResolveScalarPainterArg parses a 3-number literal into a per-
+	// channel IScalarPainter with no colourspace/JH-uplift path -- the
+	// physical-scalar pipe, docs/ISCALARPAINTER_REFACTOR.md).
+	// exporter.py performs the Radius/Scale/base-colour -> sigma_a/
+	// sigma_s conversion (a single-scattering-albedo approximation,
+	// NOT PBRT's/Blender's own photon-beam-diffusion inversion --
+	// documented limitation, docs/BLENDER_MATERIAL_TRANSLATION.md
+	// "Subsurface") because it already holds the raw (untextured)
+	// base-colour triple that conversion needs -- a textured base
+	// colour with Subsurface Weight > 0 falls back to the socket's
+	// default colour for THIS conversion only, with a warning (the
+	// RandomWalkSSS surface itself has no base-colour texture slot
+	// regardless).  `subsurface_ior` is a plain numeric IOR for the
+	// walk (Blender's own "Subsurface IOR" socket, default 1.4).
+	// `subsurface_g` is Blender's "Subsurface Anisotropy" socket
+	// (HG asymmetry, default 0).  `subsurface_roughness` reuses the
+	// material's ordinary specular Roughness value for the walk's
+	// boundary Fresnel roughness slot -- Blender has no separate
+	// SSS-boundary-roughness concept.  SIBLING-AUDIT NOTE (ABI v13
+	// review P1, alongside the `coat_roughness` squaring fix): this
+	// field has NO texture-driven counterpart at all in this ABI, so
+	// the numeric-vs-texture divergence that hit `coat_roughness`
+	// cannot occur here -- and unlike that slot, no squaring belongs
+	// on the BRIDGE side regardless, because `SubSurfaceScatteringBSDF`
+	// / `SubSurfaceScatteringSPF` already square this value into a GGX
+	// alpha THEMSELVES, uniformly, for any caller (`alpha =
+	// roughness^2`, see those headers) -- squaring it again here would
+	// be a double-square.  `sheen_roughness_texture_painter_name`
+	// (this struct's v12 sibling, above) was ALSO audited: Charlie
+	// alpha is never squared from a perceptual value on either its
+	// numeric or texture path, so it needed no fix either.  Hair's own
+	// `beta_m`/`beta_n` scalar-texture slots (`resolve_hair_scalar_-
+	// slot`, rise_blender_bridge.cpp) were checked too: the Chiang
+	// hair BCSDF consumes them directly with no squaring anywhere, on
+	// either path.
+	const char* subsurface_absorption;
+	const char* subsurface_scattering;
+	double subsurface_ior;
+	double subsurface_g;
+	double subsurface_roughness;
+
+	// ABI v14 (DL-192, docs/DEBT_LEDGER.md; source heading DL-186's own
+	// sibling audit).  PBR_METALLIC_ROUGHNESS ONLY, and only consumed
+	// in the `hasCoat && !hasSheen` branch (a coat wrap over sheen is
+	// skipped entirely, so its normal has nothing to attach to):
+	// Principled BSDF's "Coat Normal" socket, an already-registered
+	// COLOUR painter (a Normal Map node, textured -- RGB [0,1] encoding
+	// a tangent-space vector, the same `normal_map_modifier` convention
+	// the object-level `modifier_name` field's normal map already
+	// uses).  Applied ONLY to the coat's own GGX reflection lobe --
+	// the substrate keeps its own (possibly separately normal-mapped)
+	// shading normal unchanged.  NULL/empty (the default) = no
+	// perturbation, bit-identical to a pre-v14 payload.
+	// `coat_normal_scale` is the xy multiplier (glTF
+	// `normalTexture.scale`'s analogue; Blender's Normal Map node
+	// "Strength" slider binds here); ignored when
+	// `coat_normal_painter_name` is unset, and -- matching `coat_ior`'s
+	// own `> 0.0 ? : default` convention immediately above -- a
+	// non-positive value falls back to 1.0 rather than the (rare,
+	// legitimately flat) 0.0, since a memset-zero test/exporter struct
+	// cannot distinguish "unset" from a genuine 0.
+	const char* coat_normal_painter_name;
+	double coat_normal_scale;
+
+	// ABI v14: Principled Alpha becomes scalar material coverage (DL-214).
+	// OPAQUE ignores alpha; CLIP is MASK at alpha_threshold; BLEND/HASHED
+	// are stochastic coverage. A registered RGBA painter supplies linear A,
+	// replacing the unlinked numeric Alpha socket value. Legacy and modern transport
+	// share the same intersection-time semantics; ABI layout is unchanged.
+	double alpha;
+	const char* alpha_texture_painter_name;
+	int alpha_mode;
+	double alpha_threshold;
+
+	// ABI v18: Principled "Thin Film Thickness" (nm) / "Thin Film IOR"
+	// (Blender 4.2+).  `thin_film_thickness <= 0` = no film, bit-identical
+	// to a v17 payload; a non-positive thin_film_ior falls back to 1.33
+	// (Blender's socket default).  The exporter drops films at or below
+	// Cycles' 0.1 nm cutoff before they reach this struct.
+	//   PBR_METALLIC_ROUGHNESS: the base is built as a `ggx_material` in
+	//     `thinfilm` Fresnel mode instead of the PBR painter graph:
+	//     - thin_film_conductor == 0: substrate = thin_film_dielectric_ior
+	//       (k = 0; the exporter passes Cycles' Specular-IOR-Level-adjusted
+	//       index); diffuse = base color; the film reflectance is tinted by
+	//       `specular_color_painter_name` (Specular Tint; the EXPORTER
+	//       clamps it to [0, 1] -- a direct caller passing a tint above 1
+	//       makes the interface reflectance exceed 1 at grazing angles).
+	//     - thin_film_conductor != 0: a metal.  For every wavelength the
+	//       bridge uplifts thin_film_metal_f0 (Base Color) and
+	//       thin_film_metal_tint (Specular Tint) to reflectance spectra and
+	//       applies Cycles' Gulbrandsen estimate per wavelength (tint
+	//       clamped to 1, g saturated, as Cycles does), giving n(lambda),
+	//       k(lambda) painters; diffuse black, tint white.  Cycles takes the
+	//       film/substrate reflectance magnitude from its F82 model and only
+	//       the phase from (n, k); RISE uses the exact conductor Fresnel of
+	//       (n, k), so the two agree at normal incidence only.
+	//   DIELECTRIC: a one-layer AR coating (n = thin_film_ior, k = 0).
+	//   Other models ignore the film.
+	double thin_film_thickness;
+	double thin_film_ior;
+	int thin_film_conductor;
+	double thin_film_dielectric_ior;
+	double thin_film_metal_f0[3];
+	double thin_film_metal_tint[3];
+
+	// ABI v18: Principled transmission dispersion (Blender 5.3 / OpenPBR
+	// 1.1.1) as the EFFECTIVE Abbe number V_d = abbe / scale.  DIELECTRIC
+	// only: `ior_painter_name` must then be a numeric literal n_d, which
+	// becomes a Cauchy curve n(lambda) = A + B / lambda^2 with
+	// n(587.6 nm) = n_d and (n_d - 1) / (n(486.1) - n(656.3)) = V_d.
+	// <= 0 = no dispersion.
+	double dispersion_abbe;
 } rise_blender_material;
 
 typedef struct rise_blender_mesh {
@@ -273,6 +515,11 @@ typedef struct rise_blender_mesh {
 	uint32_t num_triangles;
 	int double_sided;
 	int use_face_normals;
+	// ABI v15: xyz/sign per triangle corner, absent = legacy UV basis.
+	const float* tangent_attribute;
+	uint32_t num_tangents;
+	// ABI v16: 0 global UV/Mikk tangent; 1 independent shader direction.
+	uint32_t tangent_is_shader_direction;
 } rise_blender_mesh;
 
 typedef struct rise_blender_object {
@@ -285,6 +532,18 @@ typedef struct rise_blender_object {
 	int visible;
 	const char* modifier_name;
 	const char* interior_medium_name;
+	// ABI v14 (DL-193, docs/DEBT_LEDGER.md): the name of an
+	// already-registered `advanced_shader` (via `IJob::AddAdvancedShader`,
+	// the SAME per-material `[Emission +, DirectLighting +, alpha =]`
+	// chain `GLTFSceneImporter.cpp`'s `WireAlphaShader` builds) to bind to
+	// this object instead of the renderer's default per-rasterizer
+	// shader -- mirrors `IJob::AddObject`'s own `shaderName` parameter,
+	// which the bridge always passed NULL before this row.  NULL/empty
+	// (the default) = no override, bit-identical to a pre-v14 payload.
+	// Set by the exporter per-object from the bound material's resolved
+	// alpha shader name (computed once per material, since the shader
+	// itself is registered at material-add time, not per-object).
+	const char* shader_name;
 } rise_blender_object;
 
 typedef struct rise_blender_light {
@@ -312,6 +571,103 @@ typedef struct rise_blender_medium {
 	float bbox_max[3];
 } rise_blender_medium;
 
+// A Chiang et al. 2016 hair BCSDF (`hair_material`), ABI v10.
+//
+// WHY MOST SCALAR SLOTS ARE NUMBERS AND `color` IS A PAINTER NAME.
+// Every other material struct here references painters BY NAME, because
+// `IJob` has an entry point that registers an `IPainter` under a name
+// (`Add*Painter`) and the material factories resolve those names.  Hair
+// is split: `color` really is an `IPainter` slot, so it keeps the usual
+// painter-name reference and full texture support.  But `sigma_a`,
+// `eumelanin`, `pheomelanin`, `beta_m`, `beta_n`, `alpha` and `ior` are
+// `IScalarPainter` slots (the physical-scalar pipe -- no JH spectral
+// uplift; see docs/ISCALARPAINTER_REFACTOR.md), and passing a
+// bridge-registered `IPainter` name straight into one of them is not
+// "close enough": `Job::AddHairMaterial` diagnoses it as "bound to an
+// IPainter chunk" and fails the material.  Those slots accept an inline
+// numeric literal, which is what the `float` fields below carry.
+//
+// WHAT v10 ADDS.  `Job::AddHairMaterial` resolves each scalar slot by
+// consulting the job's IScalarPainterManager FIRST and only then
+// parsing the string as a number, so a NAME does work there -- provided
+// something is registered under it as an `IScalarPainter`.  v10 lets
+// the bridge register one: the three `*_texture_painter_name` fields
+// below each name an ORDINARY colour painter from
+// `rise_blender_scene.painters`, and `add_hair_material` wraps it in a
+// PainterChannelScalarPainter (channel R, scale 1, bias 0 -- the same
+// wrapper, and the same default channel, that the scene language's
+// `scalar_painter { painter <name> }` chunk builds), registers the
+// wrapper under a derived name, and passes THAT name to
+// `AddHairMaterial`.  A texture-driven Roughness / Radial Roughness /
+// IOR therefore reaches the renderer as a real spatially-varying value.
+// Empty / NULL -- the overwhelmingly common case -- means "use the
+// numeric field", and costs no extra indirection.
+//
+// STILL NUMERIC-ONLY, deliberately: `sigma_a`, `eumelanin`,
+// `pheomelanin` and `alpha_degrees`.  A melanin or absorption image
+// would need a defined concentration-per-texel convention RISE does not
+// have (roughness and IOR maps are already read as literal physical
+// values, which is what makes them safe to wire through), and Blender's
+// `Offset` socket is never texture-sampled by the exporter at all.
+typedef struct rise_blender_hair_material {
+	const char* name;
+	int tier;						// rise_blender_hair_tier -- selects which colour fields below are read
+	// TIER_COLOR only.  A painter registered in rise_blender_scene.painters.
+	const char* color_painter_name;
+	// TIER_SIGMA_A only.  Per-channel absorption; passed as an inline "r g b".
+	float sigma_a[3];
+	// TIER_MELANIN only.  Concentrations, NOT Blender's [0,1] Melanin
+	// slider -- the add-on already applies Cycles' own log remap
+	// (hair_material_math.melanin_to_eumelanin_pheomelanin).
+	float eumelanin;
+	float pheomelanin;
+	// TIER_MELANIN only.  Non-zero applies the bridge's per-pigment
+	// Blender-parity rescale to the two concentrations above; see
+	// kEumelaninBlenderParityScale in rise_blender_bridge.cpp and the
+	// coefficient table in docs/BLENDER_MATERIAL_TRANSLATION.md's hair
+	// section.  The add-on marshals this as 1 (parity is the default).
+	int apply_melanin_parity_rescale;
+	// Shared across all three tiers.  `alpha_degrees` is the cuticle
+	// scale tilt in DEGREES (Blender's Offset socket is radians; the
+	// exporter converts).
+	float beta_m;
+	float beta_n;
+	float alpha_degrees;
+	float ior;
+	// OPTIONAL, APPENDED in v10 (every v9 field keeps its offset).
+	// Each names an ordinary COLOUR painter in
+	// rise_blender_scene.painters whose R channel drives the matching
+	// scalar slot spatially; empty / NULL means "use the numeric field
+	// above".  A name the job cannot resolve is NON-FATAL: the bridge
+	// records a warning and falls back to the number for that ONE slot,
+	// leaving the rest of the material intact.  See add_hair_material().
+	const char* beta_m_texture_painter_name;
+	const char* beta_n_texture_painter_name;
+	const char* ior_texture_painter_name;
+} rise_blender_hair_material;
+
+// One imported groom: a `.hair` file (Cem Yuksel format) plus the same
+// object/transform/material binding a mesh object gets.  The bridge
+// registers the geometry via IJob::AddHairGeometryFromFile and then
+// creates the object through the identical AddObject + transform path
+// `rise_blender_object` takes -- see add_hair_object().
+//
+// NON-FATAL BY DESIGN: a missing / unreadable / corrupt `.hair` file,
+// an unresolvable material, or a non-positive width multiplier skips
+// that ONE groom, reports through rise_blender_render_result.warnings,
+// and lets the rest of the frame render.
+typedef struct rise_blender_hair_object {
+	const char* name;
+	const char* file_path;		// path to the .hair file, resolved against $RISE_MEDIA_PATH by the loader
+	const char* material_name;	// names an entry in rise_blender_scene.hair_materials
+	float transform[16];		// row-major, same convention as rise_blender_object.transform
+	float width_root_scale;		// MULTIPLIER on the file's thickness at each strand's first point; must be > 0
+	float width_tip_scale;		// MULTIPLIER at each strand's last point; must be > 0
+	int casts_shadows;
+	int receives_shadows;
+	int visible;
+} rise_blender_hair_object;
+
 typedef struct rise_blender_render_settings {
 	uint32_t width;
 	uint32_t height;
@@ -336,6 +692,9 @@ typedef struct rise_blender_render_settings {
 	int sms_use_levenberg_marquardt;
 	uint32_t sms_seeding_mode;     // rise_blender_sms_seeding
 	uint32_t sms_target_bounces;
+	// ABI v17: extended SMS (`sms_extended`, SMSConfig::extended).  Non-zero
+	// selects the reference estimators of docs/SMS_EXTENDED_DESIGN.md.
+	int sms_extended;
 
 	// Adaptive sampling
 	uint32_t adaptive_max_samples;
@@ -451,6 +810,13 @@ typedef struct rise_blender_scene {
 	float world_radiance_scale;
 	float world_radiance_orientation[3];    // radians
 	int world_radiance_is_background;
+	// Hair / fur grooms (ABI v9).  APPENDED at the end of the struct on
+	// purpose: every field above keeps its v8 offset.  Materials are
+	// added before objects (an object names one of them).
+	const rise_blender_hair_material* hair_materials;
+	const rise_blender_hair_object* hair_objects;
+	uint32_t num_hair_materials;
+	uint32_t num_hair_objects;
 } rise_blender_scene;
 
 typedef struct rise_blender_capabilities {
@@ -461,6 +827,8 @@ typedef struct rise_blender_capabilities {
 } rise_blender_capabilities;
 
 typedef struct rise_blender_render_result {
+	// RGBA value/byte counts use checked native size_t arithmetic. The ABI
+	// has 32-bit dimensions but no 32-bit cap on the number of channels.
 	float* rgba;
 	uint32_t width;
 	uint32_t height;
@@ -471,6 +839,19 @@ typedef struct rise_blender_render_result {
 	int is_auto;
 	char resolved_integrator[16];
 	char resolve_reason[256];
+	// NON-FATAL diagnostics from a render that otherwise SUCCEEDED
+	// (ABI v9).  Newline-separated, always NUL-terminated, empty when
+	// there is nothing to say.  Before v9 the bridge had exactly one
+	// reporting channel -- `error_message`, read only when
+	// rise_blender_render_scene returns 0 -- so anything that could not
+	// justify killing the whole render had nowhere to go but the RISE
+	// log file.  Hair needs the other half of that: one groom with a
+	// bad `.hair` path must not abort a frame the rest of the scene
+	// rendered fine.  bridge.py surfaces these as Blender WARNING
+	// reports, the same place exporter warnings land.  Truncated (with
+	// a trailing note) rather than grown; this is a report channel, not
+	// a log.
+	char warnings[2048];
 } rise_blender_render_result;
 
 typedef int (*rise_blender_progress_callback)(void* user_data, float progress, const char* title);

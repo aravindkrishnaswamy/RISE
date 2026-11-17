@@ -18,7 +18,7 @@
 //      line count check below accounts for exactly 3 response lines for
 //      4 REQUEST lines sent -- the notification is the one with no
 //      response).
-//    * tools/list lists the 18 tools.
+//    * tools/list lists the 29 tools.
 //    * the tools/call response carries the matching id.
 //    * the child exits 0 on stdin EOF.
 //
@@ -36,6 +36,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -93,8 +94,7 @@ int main()
 
 	std::string scenePath;
 	{
-		const char* base = std::getenv( "TMPDIR" );
-		std::string dir = base ? base : "/tmp";
+		std::string dir = RISE::TestSupport::ScratchBaseDir();
 		if( !dir.empty() && dir.back() != '/' ) dir += '/';
 		scenePath = dir + "rise_agent_mcp_stdio_smoke.RISEscene";
 		std::ofstream f( scenePath.c_str(), std::ios::binary );
@@ -206,8 +206,8 @@ int main()
 		       "SECOND response echoes id==2 (tools/list -- the notification in between produced no line)" );
 		if( ok ) {
 			const JsonValue& tools = env.get( "result" ).get( "tools" );
-			Check( tools.isArray() && tools.size() == 21,
-			       "tools/list response lists exactly the 21 agent verbs" );
+			Check( tools.isArray() && tools.size() == 43,
+			       "tools/list response lists exactly the 43 agent verbs" );   // CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): +add_fuzz
 		}
 	}
 

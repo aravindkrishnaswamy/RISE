@@ -12,7 +12,7 @@
 //  deferred), and §15 (Phase 4 status) for the full picture.  Phase 4
 //  added: KHR_materials_emissive_strength, KHR_materials_unlit, per-
 //  pixel alpha (straight, via IPainter::GetAlpha), alphaMode = BLEND
-//  via transparency_shaderop, the standalone Charlie/Neubelt sheen
+//  via transparency_shaderop, the standalone Charlie sheen
 //  BRDF, and the scalar subset of KHR_materials_transmission + volume
 //  + ior.  Out-of-scope features (animation, skinning, morph targets,
 //  KHR_materials_clearcoat/sheen as a layer over PBR,

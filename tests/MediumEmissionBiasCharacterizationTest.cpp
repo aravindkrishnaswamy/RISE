@@ -262,7 +262,15 @@ namespace
 		const double physical = kEmission * (1.0 - std::exp( -tau )) / sigmaT;
 		const double currentPel = kEmission * (1.0 - std::exp( -2.0 * tau )) /
 			(2.0 * sigmaT);
-		const double oldNM = (kEmission / sigmaT) *
+		// The NM source is the medium's emission AT 500 nm.  RGB-authored
+		// medium emission is uplifted as the reference illuminant (master's
+		// spectral source-term convention, HomogeneousMedium::GetCoefficientsNM),
+		// so a white RGB emission is not flat kEmission per wavelength.  The
+		// NM closed forms therefore use the medium's own NM emission value.
+		const double emissionNM = fixture.job->GetScene()->GetGlobalMedium()->
+			GetCoefficientsNM( Point3( 0, 0, 0 ), 500.0 ).emission;
+		const double physicalNM = emissionNM * (1.0 - std::exp( -tau )) / sigmaT;
+		const double oldNM = (emissionNM / sigmaT) *
 			((1.0 - std::exp( -tau )) - 0.5 * (1.0 - std::exp( -2.0 * tau )));
 
 		std::cout << "    RGB measured=" << measuredPel
@@ -270,11 +278,11 @@ namespace
 			<< "  physical=" << physical << std::endl;
 		std::cout << "    NM  measured=" << measuredNM
 			<< "  old-closed-form=" << oldNM
-			<< "  physical=" << physical << std::endl;
+			<< "  physical=" << physicalNM << std::endl;
 
 		Check( NearRelative( measuredPel, currentPel, 0.01 ),
 			"RGB matches the current double-transmittance closed form" );
-		Check( NearRelative( measuredNM, physical, 1e-12 ),
+		Check( NearRelative( measuredNM, physicalNM, 1e-12 ),
 			"NM additive source matches the exact homogeneous full-segment integral" );
 		Check( !NearRelative( measuredPel, physical, 0.10 ),
 			"RGB baseline is numerically distinct from physical source integration" );

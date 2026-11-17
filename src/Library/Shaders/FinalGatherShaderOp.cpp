@@ -212,13 +212,23 @@ namespace
 			if( tGrad > kMinHitDistance ) {
 				sample.bHit = true;
 				sample.dDistance = tGrad;
-				sample.cIrradiance = lijGrad * brdf.value( wGrad, shading );
+				// DL-38/DL-157 review round 3 (P2-3): the stateful form,
+				// like the primary gather arm below -- the live stack is
+				// already a parameter of this helper, and a translucent
+				// BSDF's side (and therefore its whole lobe set) is a
+				// function of it.
+				sample.cIrradiance = lijGrad * brdf.valueStateful( wGrad, shading, &ior_stack );
 
 				if( tGrad > kMinTranslationalGradientDistance && pScene && pScene->GetObjects() ) {
 					RayIntersection gradRI( fgGradRay, rast );
 					pScene->GetObjects()->IntersectRay( gradRI, true, true, false );
 
-					if( gradRI.geometric.bHit && gradRI.pObject ) {
+					// Classification probe must describe the already sampled hit.
+                    // Alpha may have skipped the nearest geometric surface;
+                    // a mismatch supplies no translational gradient, not a
+                    // second stochastic traversal of the same radiance ray.
+                    if( gradRI.geometric.bHit && gradRI.pObject &&
+                        fabs(gradRI.geometric.range-tGrad) < 1e-5*r_max(Scalar(1),tGrad) ) {
 						sample.bUsableForTranslation = true;
 						sample.pObject = gradRI.pObject;
 						// Translational-gradient normal-similarity test
@@ -314,7 +324,7 @@ void FinalGatherShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -330,12 +340,12 @@ void FinalGatherShaderOp::PerformOperation(
 	if( rs.type == IRayCaster::RAY_STATE::eRayFinalGather ) {
 		if( pBRDF ) {
 			if( pGM ) {
-				pGM->RadianceEstimate( c, ri.geometric, *pBRDF );
+				pGM->RadianceEstimate( c, ri.geometric, *pBRDF, &ior_stack );
 			}
 
 			if( pGSM ) {
 				RISEPel cs;
-				pGSM->RadianceEstimate( cs, ri.geometric, *pBRDF );
+				pGSM->RadianceEstimate( cs, ri.geometric, *pBRDF, &ior_stack );
 				c = c + cs;
 			}
 		} else if( pScat ) {
@@ -355,8 +365,16 @@ void FinalGatherShaderOp::PerformOperation(
 				rs2.considerEmission = false;
 				rs2.type = IRayCaster::RAY_STATE::eRayFinalGather;
 
+				// eta^2 basic-radiance factor (debt 30).  A final-gather ray
+				// is cast FROM the shading point and returns radiance, so
+				// this continuation is radiance mode like any other eye-side
+				// walk.  This branch runs when the hit surface has no BSDF,
+				// i.e. a pure specular / dielectric one, which is exactly
+				// where the factor is not 1.
+				const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack );
+
 				caster.CastRay( rc, ri.geometric.rast, scat.ray, reflectedPixel, rs2, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
-				c = c + (reflectedPixel * scat.kray);
+				c = c + (reflectedPixel * scat.kray * etaScale);
 			}
 		}
 	}
@@ -505,7 +523,7 @@ void FinalGatherShaderOp::PerformOperation(
 								if (t > kMinHitDistance) {
 									rsum += 1.0/t;
 									hits++;
-									sampleIrradiance = lij * pBRDF->value( w, ri.geometric );
+									sampleIrradiance = lij * pBRDF->valueStateful( w, ri.geometric, &ior_stack );
 									c = c + sampleIrradiance;
 								}
 							}
@@ -660,7 +678,8 @@ void FinalGatherShaderOp::PerformOperation(
 							pSPF->Scatter( ri.geometric, scatterSampler, scattered, ior_stack );
 						}
 
-						ScatteredRay* scat = scattered.RandomlySelectDiffuse( rc.random.CanonicalRandom(), false );
+						Scalar selectProb;
+						ScatteredRay* scat = scattered.RandomlySelectDiffuse( rc.random.CanonicalRandom(), false, &selectProb );
 						RISEPel sampleIrradiance( 0, 0, 0 );
 
 						if( scat ) {
@@ -668,11 +687,17 @@ void FinalGatherShaderOp::PerformOperation(
 							Scalar t = 0;
 							scat->ray.Advance( kRayBias );
 
+							// Identically 1 in practice -- RandomlySelectDiffuse
+							// returns a DIFFUSE lobe, which never changes
+							// medium -- but written the same way as every
+							// other radiance-mode consumer so the rule is one
+							// rule rather than a case analysis (debt 30).
+							const Scalar etaScale = RadianceEtaScale( ior_stack, scat->ior_stack );
 							if( caster.CastRay( rc, ri.geometric.rast, scat->ray, cthis, rs2, &t, ri.pRadianceMap, scat->ior_stack ? *scat->ior_stack : ior_stack ) ) {
 								if (t > kMinHitDistance) {
 									rsum += 1.0/t;
 									hits++;
-									sampleIrradiance = cthis * scat->kray;
+									sampleIrradiance = cthis * scat->kray * (etaScale / selectProb);
 									c = c + sampleIrradiance;
 								}
 							}
@@ -727,7 +752,7 @@ Scalar FinalGatherShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -759,13 +784,19 @@ Scalar FinalGatherShaderOp::PerformOperationNM(
 	// translational irradiance gradients, so its non-negativity rests entirely
 	// on those upstream clamps; a refactor dropping one would not be obvious.
 	// And the failure is catastrophic at THIS boundary specifically: a
-	// negative RGB flips RGBUnboundedSpectrum's max-channel scale and corrupts
+	// negative RGB flips the max-channel scale and corrupts
 	// EVERY wavelength -- far worse than the RGB path, where a stray negative
 	// is merely clamped at film resolve.  So clamp at the projection boundary,
-	// where it matters.  RGBUnboundedSpectrum (not Albedo): indirect radiance
-	// is >= 0 and may exceed 1.
+	// where it matters.
+	//
+	// RGBIlluminantSpectrum, NOT Unbounded (Stage C slice 2): `c` is a
+	// COMPUTED RADIANCE leaving this point, not a reflectance-shaped
+	// multiplier.  Unbounded carries no illuminant shape, so the spectral
+	// render's gathered indirect landed on the flat-spectrum chromaticity
+	// (1.20, 0.95, 0.91) instead of on `c`.  Illuminant round-trips: the
+	// film resolves it back to exactly the RGB `c`.
 	RISEPel c;
 	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
 	ColorMath::EnsurePositve( c );
-	return RGBUnboundedSpectrum::FromRGB( c ).Eval( nm );
+	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
 }

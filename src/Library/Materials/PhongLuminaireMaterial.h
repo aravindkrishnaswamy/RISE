@@ -51,15 +51,40 @@ namespace RISE
 				GlobalLog()->PrintNew( pEmitter, __FILE__, __LINE__, "pEmitter" );
 			}
 
+			const IMaterial& GetBaseMaterial() const { return pMaterial; }
+
 			/// \return The BRDF for this material.  NULL If there is no BRDF
 			inline IBSDF* GetBSDF() const override {			return pMaterial.GetBSDF(); };
 
 			/// \return The SPF for this material.  NULL If there is no SPF
 			inline ISPF* GetSPF() const override {			return pMaterial.GetSPF(); };
 
+			//! DL-05: GetSPF() forwards the wrapped material's SPF verbatim,
+			//! so a delta pass-through it emits (a thin weave's gap) is
+			//! emitted here too -- forward the capability with it
+			//! (IMaterial::HasDeltaPassThrough).
+			inline bool HasDeltaPassThrough() const override { return pMaterial.HasDeltaPassThrough(); }
+			//! DL-471: GetBSDF()/GetSPF() forward the base material verbatim.
+			inline unsigned int ConnectionScatterTypes() const override { return pMaterial.ConnectionScatterTypes(); }
+			inline bool HasConnectionTypeSplit() const override { return pMaterial.HasConnectionTypeSplit(); }
+			//! Forward scattering/interior/medium/PDF traits of the wrapped base material
+			//! so refractive, volumetric, SSS, graded-index, and full-sphere luminaires
+			//! participate identically in IORStackSeeding, SMS, NEE, and MIS.
+			inline bool CouldLightPassThrough() const override { return pMaterial.CouldLightPassThrough(); }
+			inline bool IsVolumetric() const override { return pMaterial.IsVolumetric(); }
+			inline ISubSurfaceDiffusionProfile* GetDiffusionProfile() const override { return pMaterial.GetDiffusionProfile(); }
+			inline const RandomWalkSSSParams* GetRandomWalkSSSParams() const override { return pMaterial.GetRandomWalkSSSParams(); }
+			inline bool GetRandomWalkSSSParamsNM( const Scalar nm, RandomWalkSSSParams& params_out ) const override { return pMaterial.GetRandomWalkSSSParamsNM( nm, params_out ); }
+			inline SpecularInfo GetSpecularInfo( const RayIntersectionGeometric& ri, const IORStack& ior_stack ) const override { return pMaterial.GetSpecularInfo( ri, ior_stack ); }
+			inline SpecularInfo GetSpecularInfoNM( const RayIntersectionGeometric& ri, const IORStack& ior_stack, const Scalar nm ) const override { return pMaterial.GetSpecularInfoNM( ri, ior_stack, nm ); }
+			inline const IScalarPainter* GetGradedIORField() const override { return pMaterial.GetGradedIORField(); }
+			inline Scalar Pdf( const Vector3& wo, const RayIntersectionGeometric& ri, const IORStack& ior_stack ) const override { return pMaterial.Pdf( wo, ri, ior_stack ); }
+			inline Scalar PdfNM( const Vector3& wo, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack& ior_stack ) const override { return pMaterial.PdfNM( wo, ri, nm, ior_stack ); }
+			inline bool ScattersFullSphere() const override { return pMaterial.ScattersFullSphere(); }
+
+
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const override {	return pEmitter; };
-			inline const IMaterial& GetBaseMaterial() const { return pMaterial; }
 
 			const IContinuationClosurePel* MakeContinuationClosurePel(
 				const RayIntersectionGeometric& ri,

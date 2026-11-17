@@ -3,7 +3,9 @@
 //  NormalMap.h - Tangent-space normal-map modifier.  Samples a
 //  normal-map painter at the hit's TEXCOORD_0, decodes the
 //  tangent-space normal, transforms it to world space using the
-//  hit's TBN basis, and updates the intersection's normal + ONB.
+//  hit's UV/global tangent TBN basis, and updates normal + ONB.
+//  A separately transported shader direction controls anisotropy only;
+//  UV decode remains independent and its direction is preserved after tilt.
 //
 //  Designed for glTF 2.0 normal maps but works with any source: the
 //  glTF convention (RGB in linear-encoded [0,1] mapping to vector
@@ -53,6 +55,12 @@ namespace RISE
 
 		public:
 			NormalMap( const IPainter& painter, const Scalar scale );
+
+			//! Structural introspection (CstDeriveGoldenTest's DumpJob
+			//! composition digest): the normal-map painter + xy scale.
+			const IPainter& GetPainter() const { return pNormalMap; }
+			Scalar GetScale() const { return dScale; }
+
 			void Modify( RayIntersectionGeometric& ri ) const;
 		};
 	}

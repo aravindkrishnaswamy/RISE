@@ -72,6 +72,27 @@ namespace RISE
 
 		inline	void FlipW() { W = -W; U = -U; }
 
+		//! Negates V ONLY, leaving U and W untouched -- deliberately turns a
+		//! right-handed (U,V,W) triple into a left-handed one.  This is the
+		//! mirrored-instance chirality correction a geometry-supplied tangent
+		//! needs: when a shading tangent is built from an OBJECT-space source
+		//! (dpdu / an imported vTangent) forward-transformed into world space
+		//! while the normal is transformed by the INVERSE-TRANSPOSE, the two
+		//! promotions disagree under a negative-determinant (mirrored) linear
+		//! map -- V = normalize(cross(W,U)) ends up pointing the opposite way
+		//! from the correctly-mirrored bitangent.  Exactly the same asymmetry
+		//! is why NormalMap's cross(N,T)-built bitangent is corrected by
+		//! multiplying `bitangentSign` by `m_tangentFrameSign` -- this method
+		//! lets a caller apply the identical correction directly to an ONB's
+		//! V axis (Object::IntersectRay / CSGObject::IntersectRay's
+		//! bShadingTangentFromGeometry branch).  Unlike FlipW() above, U is
+		//! deliberately NOT touched: it is the promoted tangent direction
+		//! itself (dpdu / vTangent forward-transformed, no sign ambiguity --
+		//! see GeometryShadingTangentTest.cpp's money assertions), and must
+		//! stay exactly that value under mirroring for tangent_rotation's
+		//! base axis to remain correct.
+		inline	void FlipV() { V = -V; }
+
 		// Generates a transformation matrix for this ONB
 		Matrix4	GetBasisToCanonicalMatrix( ) const;
 		Matrix4	GetCanonicalToBasisMatrix( ) const;

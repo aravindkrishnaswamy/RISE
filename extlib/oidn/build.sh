@@ -87,4 +87,4 @@ ls -la "${INSTALL_DIR}/lib" 2>/dev/null || true
 echo
 echo "RISE's build configs (build/make/rise/Makefile etc.) will pick this"
 echo "up automatically.  Verify Metal at render time by looking for:"
-echo "    OIDN: creating Metal device (one-time per rasterizer)"
+echo "    OIDN: creating Metal device (cached while backend request is unchanged)"

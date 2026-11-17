@@ -17,6 +17,7 @@
 #define BOXPIXELFILTER_
 
 #include "../Interfaces/IPixelFilter.h"
+#include "../Interfaces/ICamera.h"
 #include "../Utilities/Reference.h"
 
 //
@@ -53,7 +54,8 @@ namespace RISE
 
 			Scalar warpOnScreen( const RandomNumberGenerator&, const Point2& canonical, Point2& warped, const unsigned int x, const unsigned int y ) const
 			{
-				warped = Point2( canonical.x*dKernelWidth+x-dKernelWidthOV2, canonical.y*dKernelHeight+y-dKernelHeightOV2 );
+				warped = Point2( canonical.x*dKernelWidth+x+RasterConvention::kPixelCentre-dKernelWidthOV2,
+					canonical.y*dKernelHeight+y+RasterConvention::kPixelCentre-dKernelHeightOV2 );
 				return 1.0;
 			}
 

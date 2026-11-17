@@ -31,6 +31,7 @@
 
 #include <cstdint>
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/ColorUtils.h"
 
 namespace RISE
 {

@@ -39,10 +39,11 @@ namespace RISE
 			void DoSingleRGBComponent(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack,							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,							///< [in] Index of refraction stack
 				const int oneofthree,
 				const Scalar newIOR,
-				const Scalar cosine
+				const Scalar cosine,
+				const Scalar nm = 0
 				) const;
 
 		public:
@@ -66,8 +67,9 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
+				info.attenuationAppliesToReflection = false;
 				info.ior = pNt->GetValuesAt( ri ).v[0];
-				info.attenuation = pRefractivity->GetColor( ri );
+				info.attenuation = ReflectanceColor( *pRefractivity, ri );
 				info.valid = true;
 				info.clearTransmission = true;
 				return info;
@@ -82,7 +84,9 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
+				info.attenuationAppliesToReflection = false;
 				info.ior = pNt->GetValueAtNM( ri, nm );
+				info.attenuationNM = ReflectanceColorNM( *pRefractivity, ri, nm );
 				info.valid = true;
 				info.clearTransmission = true;
 				return info;
@@ -94,7 +98,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -105,11 +109,15 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Returns the PDF for sampling the given outgoing direction (always 0 for delta distributions)
 			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack& ior_stack ) const;
+			//! DL-24 review P1-1: the reflect/refract lobe weights are a deterministic
+			//! function of the query (warps keep each lobe on its side; wrong-side
+			//! lobes are re-derived, never dropped at random).
+			bool SelectionMassIsDeterministic( const RayIntersectionGeometric&, const Scalar ) const { return true; }
 
 			//! Returns the spectral PDF for sampling the given outgoing direction (always 0 for delta distributions)
 			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const;

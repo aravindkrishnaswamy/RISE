@@ -16,14 +16,13 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name				global
-	shaderop			DefaultDirectLighting
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				4
-	lum_samples			1
+	samples				64
 
 }
 
@@ -272,21 +271,13 @@ standard_object
 	material			checks
 }
 
-distributiontracing_shaderop
-{
-	name			dt
-	samples			16
-}
-
-# The advanced shader allows us to specify that distributed ray tracing
-# is only to be applied for the first intersection and that all subsequent
-# interactions should just trace the refracted rays, this keeps the ray branching
-# from becoming insane.
-advanced_shader
+# Historically an advanced shader running distribution tracing at the first hit
+# and plain refraction after it; since legacy-deprecation Phase 2 the path tracer
+# samples the glossy glass itself and this chain only serves PT's SSS continuation.
+standard_shader
 {
 	name				adv
-	shaderop			DefaultRefraction			2		100			+
-	shaderop			dt							1		1			+
+	shaderop		DefaultPathTracing
 }
 
 

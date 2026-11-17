@@ -19,7 +19,9 @@
 > derive's own resolution through the recorded graph so the static graph cannot drift from
 > the apply *even in principle* — is candidly scoped in slice 5. This doc maps each slice
 > to the decisions it validates, states its gates, and is candid about what is **not yet
-> proven**.
+> proven**. For post-cutover feature, UI, eval, clean-room construction, recursive scene
+> graph, geometry/texture expressiveness, and lifetime arcs, see [`63-scene-variants-feature-spec.md`](63-scene-variants-feature-spec.md)
+> and docs **`70`–`91`** in this directory.
 
 All four slices are committed on `feature/gui-snapshot-prototype` (unpushed). They are
 self-contained C++ test executables under `tests/`, sharing one prototype CST in
@@ -135,7 +137,7 @@ lives, so it deserves scrutiny:
    `lets/NAME` name-path addressing + per-component expr inside a multi-token tuple slot (the
    §2.6.3 `position 0 0 expr(LZ)` form, for NORMAL chunks) are still deferred.  `instance_array`
    (the grid/linear nested-FOR replacement, §2.6.1; its OWN per-component exprs DO evaluate) DONE (#5
-   slice 4) -- the NEAR-TERM scene-language breadth is COMPLETE.  Still no multi-token DoubleVec3 params
+   slice 4) *(`instance_array` was RETIRED by doc 87 step 3d -- folded into `standard_object` + `source` + `count_u`/`count_v`; the slice-4 entries below are historical)* -- the NEAR-TERM scene-language breadth is COMPLETE.  Still no multi-token DoubleVec3 params
    (they currently parse as separate params); the migrator / front-line-pivot / legacy-drop remain the
    separate far-future workstream.
 6. **Gate G2 wall-clock.** Slice 3 proves O(closure) by **operation count**, not by a <50 ms
@@ -178,7 +180,7 @@ is fixed.
 
 A single narrow vertical that closes the transfer risk, keeping expr/RepeatGroup/instance_array OUT
 until it is green (HISTORICAL: the gate is now green; RepeatGroup + expr's Facet-1 derive-time
-halves have since landed as #5 slices 1-4 (RepeatGroup, expr, let, instance_array), with traced-input invalidation still deferred):
+halves have since landed as #5 slices 1-4 (RepeatGroup, expr, let, instance_array *(`instance_array` was RETIRED by doc 87 step 3d -- folded into `standard_object` + `source` + `count_u`/`count_v`; the slice-4 entries below are historical)*), with traced-input invalidation still deferred):
 
 1. **Build the render-equivalence harness first** (the pre-P0 regression oracle). **✅ DONE** —
    [`tests/CstRenderEquivalence.h`](../../tests/CstRenderEquivalence.h) (`ParseLegacy` drives the
@@ -250,7 +252,7 @@ halves have since landed as #5 slices 1-4 (RepeatGroup, expr, let, instance_arra
      **(d)** the newline aggregate was ungated (zeroing it passed) → `DocNewlineCount` exposed +
      checked exact across parse/replace/insert/erase on LF **and** CRLF. 42→67. ← next: item 4.
 4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the
-   complexity measurement. **✅ DONE (pending re-review)** — kernel `a3cc2a77`; review fixes
+   complexity measurement. **✅ DONE** — kernel `a3cc2a77`; review fixes
    `0b0a25f4`, `955c1962`, `bfc57601`, `a5ba984d`, + the 4th-review fixes. [`tests/CstIdentityTest.cpp`](../../tests/CstIdentityTest.cpp)
    **134 checks**. *(Current shipped state — this entry describes what is in tree now, not the
    intermediate states the review rounds passed through; see the review log at the end.)*
@@ -284,7 +286,7 @@ halves have since landed as #5 slices 1-4 (RepeatGroup, expr, let, instance_arra
    **Disclosed scope / fallbacks:** name-path key is `keyword/name` (category paths like `geometry/s`
    are DEFERRED — item 5 left them out: a CST-navigation nicety, not load-bearing, since the derive
    resolves references through the engine's named managers; see item 5); value-ATOM sub-identity within a multi-atom value, and repeated-param
-   VALUE nodes, are RepeatGroup-era (value-ATOM sub-identity is still deferred; RepeatGroup + expr + let's Facet-1 halves have since landed as #5 slices 1-4 (RepeatGroup, expr, let, instance_array)); **`DocInsertItem` is
+   VALUE nodes, are RepeatGroup-era (value-ATOM sub-identity is still deferred; RepeatGroup + expr + let's Facet-1 halves have since landed as #5 slices 1-4 (RepeatGroup, expr, let, instance_array *(`instance_array` was RETIRED by doc 87 step 3d -- folded into `standard_object` + `source` + `count_u`/`count_v`; the slice-4 entries below are historical)*)); **`DocInsertItem` is
    NOT uniformly O(log N)** — assigning the order-label is O(log N) when a gap is available (the common
    case), but a gap-exhausting insert triggers a **WINDOWED** reflow (`ReflowWindow`). That window is
    tiny in the common/sparse case (`DebugReflowLabelWrites` measures **2** on sparse mid-edits), so it
@@ -329,9 +331,15 @@ halves have since landed as #5 slices 1-4 (RepeatGroup, expr, let, instance_arra
    **Two-tier failure boundary** (per the item-5
    review): VALIDATION-time failures (unknown chunk/param, value-less line, non-finite/non-numeric value)
    are **refuse-all** (validate every chunk via a populated `ParseStateBag`; apply none on any failure);
-   an APPLY-time `Finalize` failure (e.g. an unresolved reference, undetectable pre-apply) matches the
-   legacy parser's **abort-on-first-failure** (stop, emit a diagnostic, leave chunks before it applied —
-   never silently swallowed or continued past; full rollback is later Facet-2 work). Two enabling
+   an APPLY-time `Finalize` failure (e.g. an unresolved reference, undetectable pre-apply)
+   **CONTINUES PAST the failing chunk** (bug-fix wave, 2026-08-28 — previously matched the since-deleted
+   legacy parser's abort-on-first-failure: stop, emit a diagnostic, leave chunks before it applied,
+   never continued past). Every pending chunk still gets its own attempt and its own named diagnostic
+   on failure, so one derive surfaces every independent problem instead of hiding everything after the
+   first; the overall derive is still refused whenever any diagnostic fired. Full apply-atomicity
+   (rollback of the whole derive) remains later Facet-2 work; see `DeriveToJob`'s doc comment in
+   `src/Library/Cst/Cst.h` for the exact current contract, including which callers discard a diagnosed
+   Job outright and which do not. Two enabling
    changes: (a) `ParseChunk` now captures **multi-token param values** (`color 1 0 0`, `position 1 2 3`)
    as several `pvalue` tokens, round-trip-lossless, and the derive feeds each param line **whitespace-
    normalised exactly as the legacy parser normalises it** (`TokenizeString` collapses ` \t\r` runs +
@@ -470,4 +478,4 @@ applies an incremental edit by recreating only the non-object entities while RE-
 (so a non-spatial edit skips the TLAS; apply O(closure·log N), full derive O(N·log N)), and finds an
 edit's closure in O(closure·log N) over a held maintained graph. The
 remaining work is the structural D35 one-resolution-path (so the static graph cannot drift from the apply
-resolution even in principle).  All slice-3 follow-ups LANDED in workstream #3 (CSG re-point needed no object-rollback; an operand-REFERENCE change falls back). (RepeatGroup + expr + let's Facet-1 halves have since LANDED as #5 slices 1-4 (RepeatGroup, expr, let, instance_array); the gate is green.)
+resolution even in principle).  All slice-3 follow-ups LANDED in workstream #3 (CSG re-point needed no object-rollback; an operand-REFERENCE change falls back). (RepeatGroup + expr + let's Facet-1 halves have since LANDED as #5 slices 1-4 (RepeatGroup, expr, let, instance_array *(`instance_array` was RETIRED by doc 87 step 3d -- folded into `standard_object` + `source` + `count_u`/`count_v`; the slice-4 entries below are historical)*); the gate is green.)

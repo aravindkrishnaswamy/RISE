@@ -1408,7 +1408,20 @@ private:
         _viewportController, _viewportControllerRequired,
         _viewportControllerUsers, _viewportControllerMutex,
         _viewportControllerCV );
-    if( !lease.CanProceed() ) return NO;
+    if( !lease.CanProceed() ) {
+        // GUI scene-switch debugging (2026-08-20): this refusal was SILENT --
+        // no log line anywhere, distinct from RunProductionRenderComposed's
+        // logged "busy or stopped" refusal below.  It fires when a viewport
+        // controller is REQUIRED (attachSceneEditController(NULL) ran, e.g.
+        // mid scene-teardown) but none is currently registered -- see
+        // ViewportControllerLease's header doc.  Logging it turns a silent
+        // "Rasterization failed" dialog with zero trace into an attributable
+        // one.
+        GlobalLog()->PrintEx( eLog_Warning,
+            "RISEBridge: -rasterize refused -- no viewport controller registered while one is required "
+            "(likely called between scene-teardown and the next scene's viewport bridge attach)." );
+        return NO;
+    }
     const double sceneTime = lease.Controller()
         ? static_cast<double>(lease.Controller()->LastSceneTime())
         : 0.0;
@@ -1416,14 +1429,23 @@ private:
 }
 
 - (BOOL)rasterizeAtSceneTime:(double)t {
-    if (!_job) return NO;
+    if (!_job) {
+        GlobalLog()->PrintEx( eLog_Warning, "RISEBridge: -rasterizeAtSceneTime: refused -- no Job." );
+        return NO;
+    }
     ProductionRenderLease renderLease(_productionRenderActive);
     if( !renderLease.Acquired() ) return NO;
     ViewportControllerLease lease(
         _viewportController, _viewportControllerRequired,
         _viewportControllerUsers, _viewportControllerMutex,
         _viewportControllerCV );
-    if( !lease.CanProceed() ) return NO;
+    if( !lease.CanProceed() ) {
+        // See -rasterize's matching comment -- same silent-refusal class, same fix.
+        GlobalLog()->PrintEx( eLog_Warning,
+            "RISEBridge: -rasterizeAtSceneTime: refused -- no viewport controller registered while one "
+            "is required (likely called between scene-teardown and the next scene's viewport bridge attach)." );
+        return NO;
+    }
 
     IJobPriv* job = _job;
     const Scalar sceneTime = static_cast<Scalar>(t);
@@ -1457,14 +1479,23 @@ private:
 }
 
 - (BOOL)rasterizeAnimation {
-    if (!_job) return NO;
+    if (!_job) {
+        GlobalLog()->PrintEx( eLog_Warning, "RISEBridge: -rasterizeAnimation refused -- no Job." );
+        return NO;
+    }
     ProductionRenderLease renderLease(_productionRenderActive);
     if( !renderLease.Acquired() ) return NO;
     ViewportControllerLease lease(
         _viewportController, _viewportControllerRequired,
         _viewportControllerUsers, _viewportControllerMutex,
         _viewportControllerCV );
-    if( !lease.CanProceed() ) return NO;
+    if( !lease.CanProceed() ) {
+        // See -rasterize's matching comment -- same silent-refusal class, same fix.
+        GlobalLog()->PrintEx( eLog_Warning,
+            "RISEBridge: -rasterizeAnimation refused -- no viewport controller registered while one "
+            "is required (likely called between scene-teardown and the next scene's viewport bridge attach)." );
+        return NO;
+    }
 
     IJobPriv* job = _job;
     NSString* const videoOutputPath = [_videoOutputPath copy];
@@ -1472,7 +1503,11 @@ private:
         _job, lease.Controller(), String("gui_rasterize_animation"), _progressCallback,
         [self, job, videoOutputPath]() -> BOOL {
             IRasterizer* rasterizer = job->GetRasterizer();
-            if (!rasterizer) return NO;
+            if (!rasterizer) {
+                GlobalLog()->PrintEx( eLog_Error,
+                    "RISEBridge: -rasterizeAnimation:: no active rasterizer -- nothing to render." );
+                return NO;
+            }
 
             // Output topology and movie lifetime are part of the coordinated
             // render operation. No agent render can be iterating this list
@@ -1515,7 +1550,14 @@ private:
         _viewportController, _viewportControllerRequired,
         _viewportControllerUsers, _viewportControllerMutex,
         _viewportControllerCV );
-    if( !lease.CanProceed() ) return NO;
+    if( !lease.CanProceed() ) {
+        // See -rasterize's matching comment -- same silent-refusal class, same fix.
+        GlobalLog()->PrintEx( eLog_Warning,
+            "RISEBridge: -rasterizeRegionLeft:top:right:bottom: refused -- no viewport controller "
+            "registered while one is required (likely called between scene-teardown and the next "
+            "scene's viewport bridge attach)." );
+        return NO;
+    }
 
     const double sceneTime = lease.Controller()
         ? static_cast<double>(lease.Controller()->LastSceneTime())
@@ -1529,14 +1571,25 @@ private:
                       right:(uint32_t)right
                      bottom:(uint32_t)bottom
                 atSceneTime:(double)t {
-    if (!_job) return NO;
+    if (!_job) {
+        GlobalLog()->PrintEx( eLog_Warning,
+            "RISEBridge: -rasterizeRegionLeft:top:right:bottom:atSceneTime: refused -- no Job." );
+        return NO;
+    }
     ProductionRenderLease renderLease(_productionRenderActive);
     if( !renderLease.Acquired() ) return NO;
     ViewportControllerLease lease(
         _viewportController, _viewportControllerRequired,
         _viewportControllerUsers, _viewportControllerMutex,
         _viewportControllerCV );
-    if( !lease.CanProceed() ) return NO;
+    if( !lease.CanProceed() ) {
+        // See -rasterize's matching comment -- same silent-refusal class, same fix.
+        GlobalLog()->PrintEx( eLog_Warning,
+            "RISEBridge: -rasterizeRegionLeft:top:right:bottom:atSceneTime: refused -- no viewport "
+            "controller registered while one is required (likely called between scene-teardown and the "
+            "next scene's viewport bridge attach)." );
+        return NO;
+    }
 
     IJobPriv* job = _job;
     const Scalar sceneTime = static_cast<Scalar>(t);

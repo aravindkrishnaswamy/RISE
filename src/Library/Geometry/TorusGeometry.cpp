@@ -19,6 +19,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Animation/KeyframableHelper.h"
+#include "../Utilities/SurfaceCurvature.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -151,6 +152,44 @@ void TorusGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool /*bHi
 			m_p0,
 			m_p1
 			);
+
+		// PHASE-1 GEOMETRY-DERIVED SHADING SIGNALS
+		// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.4) -- see the identical
+		// block in SphereGeometry::IntersectRay for the full rationale:
+		// publish the closed-form Weingarten map this primitive already knows,
+		// ungated (a few trig calls on data the hit produced); gate only
+		// `scaleHint`, which nothing but the expression VM's `curv` reads.
+		{
+			const SurfaceDerivatives sd = ComputeSurfaceDerivatives( ri.ptIntersection, ri.vNormal );
+			if( sd.valid ) {
+				ri.derivatives.dpdu = sd.dpdu;
+				ri.derivatives.dpdv = sd.dpdv;
+				ri.derivatives.dndu = sd.dndu;
+				ri.derivatives.dndv = sd.dndv;
+				ri.derivatives.valid = true;
+				// The texcoord chart map travels with the derivatives: the
+				// footprint solve needs to know how this primitive's own (u, v)
+				// parameters relate to the (s, t) stamped into ptCoord above.
+				// Without it SolveFootprintUV publishes radians where the
+				// texture sampler expects [0, 1] -- see the chart-map comment on
+				// SurfaceDerivativesInfo.
+				ri.derivatives.dsdu = sd.dsdu;
+				ri.derivatives.dsdv = sd.dsdv;
+				ri.derivatives.dtdu = sd.dtdu;
+				ri.derivatives.dtdv = sd.dtdv;
+				ri.derivatives.texChartValid = sd.texChartValid;
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
+				// docs/CLOTH_FABRIC_DESIGN.md 9.1: this dpdu is a genuine
+				// surface parameterization with no discontinuous fallback
+				// branch (unlike the mesh sites), so hand it to the shading
+				// ONB unconditionally on sd.valid.
+				ri.bShadingTangentFromGeometry = true;
+				ri.vShadingTangent             = sd.dpdu;	// object space
+				ri.bHasShadingTangent          = true;
+			}
+		}
 	}
 }
 
@@ -320,6 +359,23 @@ SurfaceDerivatives TorusGeometry::ComputeSurfaceDerivatives( const Point3& objSp
 	sd.dndv = Vector3( -cosV * sinU, 0.0, cosV * cosU );
 
 	sd.uv = Point2( v, u );  // u,v semantics swapped to match derivative swap
+
+	// THE CHART MAP (docs/GEOMETRY_DERIVATIVES.md "The texcoord chart
+	// map").  GeometricUtilities::TorusTextureCoord emits
+	//     s = U_ring / (2*PI),   t = V_tube / (2*PI)
+	// from the same atan2 recoveries used above (its wrap-to-[0, 2*PI)
+	// only shifts by a constant, so the local Jacobian is unaffected),
+	// whereas the right-handedness swap above makes the DERIVATIVE
+	// parameters (u, v) = (V_tube, U_ring).  So the map is the axis
+	// SWAP times 1/(2*PI) -- the off-diagonal terms are the non-zero
+	// ones, which is why a mis-charted torus was the worst of the four
+	// (2.64 LOD levels): it was both mis-scaled and transposed.
+	sd.dsdu = 0.0;
+	sd.dsdv = 1.0 / TWO_PI;
+	sd.dtdu = 1.0 / TWO_PI;
+	sd.dtdv = 0.0;
+	sd.texChartValid = true;
+
 	sd.valid = true;
 
 	return sd;
@@ -358,11 +414,13 @@ void TorusGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 	case MAJORRADIUS_ID:
 		{
 			m_dMajorRadius = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	case MINORRADIUS_ID:
 		{
 			m_dMinorRadius = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 
@@ -391,4 +449,53 @@ void TorusGeometry::RegenerateData( )
 	m_p1 = m_dMinorRadius;
 	m_sqrP0 = m_p0 * m_p0;
 	m_sqrP1 = m_p1 * m_p1;
+	BumpShapeRevision();
+}
+
+//! IGeometry::DistanceToSurface -- EXACT.
+//!
+//! The torus RISE models has its ring in the XZ plane and its tube offset
+//! along Y -- read off TessellateToMesh's own parameterisation, whose
+//! position is `((R + r cos v) cos u, r sin v, (R + r cos v) sin u)`, so
+//! that is the axis convention this must match and not some other tool's.
+//! The exact field in that convention is
+//! `| length( length(p.xz) - R, p.y ) - r |`: the inner length is the
+//! distance from the point to the ring circle, and subtracting the tube
+//! radius gives the signed distance to the tube surface, which is exact
+//! inside as well as outside.
+bool TorusGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+	const Scalar rho = std::sqrt( ptObject.x*ptObject.x + ptObject.z*ptObject.z ) - m_dMajorRadius;
+	const Scalar q   = std::sqrt( rho*rho + ptObject.y*ptObject.y );
+	// CLAMPED AT ZERO rather than fabs -- a point inside the tube reads 0
+	// ("interpenetration IS contact").
+	const Scalar sgn = q - m_dMinorRadius;
+	const Scalar d   = ( sgn > Scalar( 0 ) ) ? sgn : Scalar( 0 );
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}
+
+//! IGeometry::SignedDistanceLower -- the SAME field as above, UNCLAMPED.
+//! Exact on both sides; a degenerate major or minor radius refuses.
+bool TorusGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+	Scalar& outSigned, bool& outExact ) const
+{
+	(void)maxDistObject;
+	outExact = false;
+	if( !( m_dMinorRadius > Scalar( 0 ) ) || !( m_dMajorRadius > Scalar( 0 ) ) ) {
+		return false;
+	}
+	const Scalar rho = std::sqrt( ptObject.x*ptObject.x + ptObject.z*ptObject.z ) - m_dMajorRadius;
+	const Scalar q   = std::sqrt( rho*rho + ptObject.y*ptObject.y );
+	const Scalar sgn = q - m_dMinorRadius;
+	if( !RISE::IsFiniteDouble( (double)sgn ) ) {
+		return false;
+	}
+	outSigned = sgn;
+	outExact  = true;
+	return true;
 }

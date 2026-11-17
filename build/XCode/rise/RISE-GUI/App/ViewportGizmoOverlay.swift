@@ -63,7 +63,10 @@ enum ViewportLetterbox {
 }
 
 struct ViewportGizmoOverlay: View {
-    let bridge: RISEViewportBridge
+    // Weak: RenderViewModel owns the live bridge for the whole scene
+    // lifetime.  A nil read means the scene was torn down and this
+    // overlay is leaving the tree — drawing nothing is correct.
+    weak var bridge: RISEViewportBridge?
     /// Re-render trigger — the parent bumps this each preview frame
     /// (or on tool / selection change) so the overlay refreshes its
     /// snapshot of the handle array.
@@ -83,7 +86,8 @@ struct ViewportGizmoOverlay: View {
                 // matching ViewportCanvas's letter-box behaviour —
                 // shared with the region-of-interest overlay via
                 // `ViewportLetterbox` (see its doc above).
-                guard let fit = ViewportLetterbox.fit(surface: surface, in: size) else { return }
+                guard let bridge,
+                      let fit = ViewportLetterbox.fit(surface: surface, in: size) else { return }
 
                 // Bridge already returns widget-Y-DOWN positions (the
                 // controller flips around image height inside
@@ -108,10 +112,12 @@ struct ViewportGizmoOverlay: View {
             }
             .allowsHitTesting(false)
             .onChange(of: refreshTrigger) { _, _ in
+                guard let bridge else { return }
                 bridge.refreshGizmoHandles()
                 handles = bridge.gizmoHandles
             }
             .onAppear {
+                guard let bridge else { return }
                 bridge.refreshGizmoHandles()
                 handles = bridge.gizmoHandles
             }

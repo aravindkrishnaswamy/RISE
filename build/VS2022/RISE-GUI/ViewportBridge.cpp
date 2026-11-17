@@ -30,6 +30,8 @@
 #include "Rendering/InteractivePelRasterizer.h"
 #include "Agent/AgentSession.h"
 #include "Agent/AgentRpc.h"
+#include "Agent/AgentChatCodecs.h"    // Arc 77 Phase 2 GUI wiring: MakeChatImageGenerator (imagine_scene)
+#include "Agent/ChatHttpTransport.h"  // Arc 77 Phase 2 GUI wiring: CreateSystemChatHttpTransport
 
 using namespace RISE;
 
@@ -479,16 +481,22 @@ ViewportBridge::~ViewportBridge()
         m_agentToolDispatcherPropose->Session()->AttachController(nullptr);
     }
     m_agentToolDispatcherPropose.reset();
-    if (m_controller) {
+    m_previewShuttingDown.store(true, std::memory_order_release);
+    SceneEditController* controllerToDestroy = nullptr;
+    {
+        std::lock_guard<std::mutex> previewLk(m_previewLifecycleMutex);
+        controllerToDestroy = m_controller;
+        m_controller = nullptr;
+    }
+    if (controllerToDestroy) {
         // Phase 6.5: detach the dirty-changed C callback BEFORE the
         // controller (and its std::function listener) goes away so
         // the trampoline's captured `this` can't fire into a
         // half-deconstructed QObject.  Pair-balances the attach in
         // the constructor.
         RISE_API_SceneEditController_SetDirtyChangedCallback(
-            m_controller, nullptr, nullptr);
-        RISE_API_DestroySceneEditController(m_controller);
-        m_controller = nullptr;
+            controllerToDestroy, nullptr, nullptr);
+        RISE_API_DestroySceneEditController(controllerToDestroy);
     }
     releaseLivePreview();
 }
@@ -1136,6 +1144,166 @@ int ViewportBridge::animationPresence() const
     return hasAnimation ? 1 : 0;
 }
 
+bool ViewportBridge::painterPreview( const QString& painterName, int defIndex,
+                                      unsigned int w, unsigned int h, QByteArray& outRGBA,
+                                      bool* outWasScalar, double* outRangeMin, double* outRangeMax ) const
+{
+    outRGBA.clear();
+    if (painterName.isEmpty() || w == 0 || h == 0) return false;
+    if (m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+    QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
+    const QByteArray nameUtf8 = painterName.toUtf8();
+    bool wasScalar = false;
+    double rangeMin = 0, rangeMax = 0;
+    {
+        std::lock_guard<std::mutex> previewLk(m_previewLifecycleMutex);
+        if (!m_controller || m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+        if (!RISE_API_SceneEditController_PainterPreview(
+                m_controller, nameUtf8.constData(), defIndex, w, h,
+                reinterpret_cast<unsigned char*>( buf.data() ),
+                &wasScalar, &rangeMin, &rangeMax)) {
+            return false;
+        }
+    }
+    outRGBA = buf;
+    if (outWasScalar) *outWasScalar = wasScalar;
+    if (outRangeMin)  *outRangeMin  = rangeMin;
+    if (outRangeMax)  *outRangeMax  = rangeMax;
+    return true;
+}
+
+bool ViewportBridge::rampStripPreview( const QString& painterName,
+                                        unsigned int w, unsigned int h,
+                                        QByteArray& outRGBA ) const
+{
+    outRGBA.clear();
+    if (painterName.isEmpty() || w == 0 || h == 0) return false;
+    if (m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+    QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
+    const QByteArray nameUtf8 = painterName.toUtf8();
+    {
+        std::lock_guard<std::mutex> previewLk(m_previewLifecycleMutex);
+        if (!m_controller || m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+        if (!RISE_API_SceneEditController_RampStripPreview(
+                m_controller, nameUtf8.constData(), w, h,
+                reinterpret_cast<unsigned char*>( buf.data() ))) {
+            return false;
+        }
+    }
+    outRGBA = buf;
+    return true;
+}
+
+bool ViewportBridge::materialPreview( const QString& materialName,
+                                       unsigned int w, unsigned int h,
+                                       QByteArray& outRGBA ) const
+{
+    outRGBA.clear();
+    if (materialName.isEmpty() || w == 0 || h == 0) return false;
+    if (m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+    QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
+    const QByteArray nameUtf8 = materialName.toUtf8();
+    {
+        std::lock_guard<std::mutex> previewLk(m_previewLifecycleMutex);
+        if (!m_controller || m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+        if (!RISE_API_SceneEditController_MaterialPreview(
+                m_controller, nameUtf8.constData(), w, h,
+                reinterpret_cast<unsigned char*>( buf.data() ))) {
+            return false;
+        }
+    }
+    outRGBA = buf;
+    return true;
+}
+
+bool ViewportBridge::thinFilmAngleStrip( const QString& materialName,
+                                         unsigned int w, unsigned int h,
+                                         QByteArray& outRGBA,
+                                         double* outThicknessNm,
+                                         double* outFilmIor ) const
+{
+    outRGBA.clear();
+    if (materialName.isEmpty() || w == 0 || h == 0) return false;
+    if (m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+    QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
+    const QByteArray nameUtf8 = materialName.toUtf8();
+    {
+        std::lock_guard<std::mutex> previewLk(m_previewLifecycleMutex);
+        if (!m_controller || m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+        if (!RISE_API_SceneEditController_ThinFilmAngleStrip(
+                m_controller, nameUtf8.constData(), w, h,
+                reinterpret_cast<unsigned char*>( buf.data() ),
+                outThicknessNm, outFilmIor)) {
+            return false;
+        }
+    }
+    outRGBA = buf;
+    return true;
+}
+
+bool ViewportBridge::evaluateThinFilmAtAngle( const QString& materialName,
+                                              double angleDeg,
+                                              unsigned char outRGBA[4],
+                                              double* outThicknessNm,
+                                              double* outFilmIor ) const
+{
+    if (materialName.isEmpty() || !outRGBA) return false;
+    if (m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+    const QByteArray nameUtf8 = materialName.toUtf8();
+    std::lock_guard<std::mutex> previewLk(m_previewLifecycleMutex);
+    if (!m_controller || m_previewShuttingDown.load(std::memory_order_acquire)) return false;
+    return RISE_API_SceneEditController_EvaluateThinFilmAtAngle(
+        m_controller, nameUtf8.constData(), angleDeg, outRGBA, outThicknessNm, outFilmIor);
+}
+
+bool ViewportBridge::blackbodyKelvinStrip( unsigned int w, unsigned int h,
+                                           double minKelvin, double maxKelvin,
+                                           QByteArray& outRGBA ) const
+{
+    outRGBA.clear();
+    if (w == 0 || h == 0) return false;
+    QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
+    if (!RISE_API_SceneEditController_BlackbodyKelvinStrip(
+            w, h, minKelvin, maxKelvin,
+            reinterpret_cast<unsigned char*>( buf.data() ))) {
+        return false;
+    }
+    outRGBA = buf;
+    return true;
+}
+
+bool ViewportBridge::evaluateBlackbodyKelvin( double kelvin,
+                                              double* outPeakNm,
+                                              unsigned char outRGBA[4] ) const
+{
+    return RISE_API_SceneEditController_EvaluateBlackbodyKelvin( kelvin, outPeakNm, outRGBA );
+}
+
+bool ViewportBridge::evaluateSellmeierMetrics( const QString& sellmeierParamValue,
+                                               double* outNd,
+                                               double* outAbbeVd ) const
+{
+    if (sellmeierParamValue.isEmpty()) return false;
+    const QByteArray utf8 = sellmeierParamValue.toUtf8();
+    return RISE_API_SceneEditController_EvaluateSellmeierMetrics( utf8.constData(), outNd, outAbbeVd );
+}
+
+bool ViewportBridge::measuredMetalPresetSwatch( const QString& presetId,
+                                                unsigned char outRGBA[4] ) const
+{
+    if (presetId.isEmpty() || !outRGBA) return false;
+    const QByteArray utf8 = presetId.toUtf8();
+    return RISE_API_SceneEditController_MeasuredMetalPresetSwatch( utf8.constData(), outRGBA );
+}
+
+bool ViewportBridge::applySpectralPreset( Category cat, const QString& presetId )
+{
+    if (!m_controller || presetId.isEmpty()) return false;
+    const QByteArray utf8 = presetId.toUtf8();
+    return RISE_API_SceneEditController_ApplySpectralPreset(
+        m_controller, static_cast<int>( cat ), utf8.constData() );
+}
+
 // Named animations are now a first-class accordion Category
 // (Category::Animation) — surfaced via the generic categoryEntities() /
 // activeNameForCategory() / setSelection() methods, which pass the raw
@@ -1151,6 +1319,14 @@ void ViewportBridge::endPropertyScrub()   { if (m_controller) RISE_API_SceneEdit
 
 void ViewportBridge::undo() { if (m_controller) RISE_API_SceneEditController_Undo(m_controller); }
 void ViewportBridge::redo() { if (m_controller) RISE_API_SceneEditController_Redo(m_controller); }
+
+QString ViewportBridge::consumeHistoryNotice()
+{
+    if (!m_controller) return QString();
+    char buf[1024] = {0};
+    if (!RISE_API_SceneEditController_ConsumeHistoryNotice(m_controller, buf, sizeof(buf))) return QString();
+    return QString::fromUtf8(buf);
+}
 
 QString ViewportBridge::undoActionLabel() const
 {
@@ -1323,6 +1499,25 @@ QString ViewportBridge::agentHandleLine(const QString& jsonRpcRequest)
     return QString::fromUtf8(response.c_str());
 }
 
+qint64 ViewportBridge::agentHeadVersionRevision() const
+{
+    if (!m_agentDispatcher || !m_agentDispatcher->Session()) return -1;
+    return static_cast<qint64>(m_agentDispatcher->Session()->ReadHeadVersion().revision);
+}
+
+bool ViewportBridge::agentReadDocumentSnapshot(std::string& outText, uint64_t& outUuid,
+                                                uint64_t& outRevision) const
+{
+    if (!m_agentDispatcher || !m_agentDispatcher->Session()) return false;
+    const RISE::Agent::AgentSession::AgentDocumentSnapshot snap =
+        m_agentDispatcher->Session()->ReadDocumentSnapshot();
+    if (!snap.hasDocument) return false;
+    outText = snap.document;
+    outUuid = snap.headVersion.uuid;
+    outRevision = snap.headVersion.revision;
+    return true;
+}
+
 void ViewportBridge::setAgentAutonomyLevel(AgentAutonomyLevel level)
 {
     if (level != AgentAutonomyLevel::Read && level != AgentAutonomyLevel::Propose
@@ -1375,6 +1570,93 @@ QString ViewportBridge::agentHandleToolCall(const QString& jsonRpcRequest,
     return QString::fromUtf8(response.c_str());
 }
 
+void ViewportBridge::agentSetImageGenerator(const QString& providerName, const QString& apiKey)
+{
+    const QByteArray providerUtf8 = providerName.toUtf8();
+    const QByteArray keyUtf8      = apiKey.toUtf8();
+    const std::string provider(providerUtf8.constData(), static_cast<std::size_t>(providerUtf8.size()));
+    const std::string key(keyUtf8.constData(), static_cast<std::size_t>(keyUtf8.size()));
+
+    // ONE system transport, shared by all three sessions' generators
+    // below -- safe because every in-app dispatcher is called only from
+    // the UI thread (mirrors macOS RISEViewportBridge's identical note).
+    // CreateSystemChatHttpTransport never returns null.
+    const std::shared_ptr<Agent::IChatHttpTransport> transport(
+        Agent::CreateSystemChatHttpTransport().release());
+
+    const Agent::ChatImageGenerator wire =
+        Agent::MakeChatImageGenerator(provider, key, transport);
+
+    Agent::AgentSession::AgentImageGenerator gen;
+    gen.providerName = wire.providerName;
+    gen.supported     = wire.supported;
+    gen.modelId       = wire.modelId;
+    if (wire.supported) {
+        const std::function<Agent::ChatImageGenOutcome(const std::string&)> rawGenerate = wire.generate;
+        gen.generate =
+            [rawGenerate](const std::string& description) -> Agent::AgentSession::AgentImageGenOutcome {
+            Agent::AgentSession::AgentImageGenOutcome out;
+            const Agent::ChatImageGenOutcome r = rawGenerate(description);
+            out.ok       = r.ok;
+            out.bytes    = r.bytes;
+            out.mimeType = r.mimeType;
+            out.error    = r.error;
+            return out;
+        };
+    }
+
+    // S2 (2026-08-11): the TEXT sibling -- `build_element`'s builder
+    // completion, from the SAME provider name, key and shared transport,
+    // installed on the SAME three sessions in the SAME loop below, so a
+    // credential change reinstalls both capabilities or neither.  Mirrors
+    // macOS RISEViewportBridge's identical block.
+    const Agent::ChatTextCompleter wireText =
+        Agent::MakeChatTextCompleter(provider, key, transport);
+
+    Agent::AgentSession::AgentTextCompleter comp;
+    comp.providerName = wireText.providerName;
+    comp.supported     = wireText.supported;
+    comp.modelId       = wireText.modelId;
+    if (wireText.supported) {
+        const std::function<Agent::ChatTextCompletionOutcome(const std::string&)> rawComplete =
+            wireText.complete;
+        comp.complete =
+            [rawComplete](const std::string& prompt) -> Agent::AgentSession::AgentTextCompletionOutcome {
+            Agent::AgentSession::AgentTextCompletionOutcome out;
+            const Agent::ChatTextCompletionOutcome r = rawComplete(prompt);
+            out.ok    = r.ok;
+            out.text  = r.text;
+            out.error = r.error;
+            return out;
+        };
+    }
+
+    // Every in-app tool-call-reachable session, mirroring macOS
+    // RISEViewportBridge's identical three-dispatcher loop.
+    Agent::AgentRpcDispatcher* dispatchers[] = {
+        m_agentDispatcher.get(), m_agentToolDispatcherOwner.get(), m_agentToolDispatcherPropose.get()};
+    for (Agent::AgentRpcDispatcher* d : dispatchers) {
+        if (d && d->Session()) {
+            d->Session()->SetImageGenerator(gen);
+            d->Session()->SetTextCompleter(comp);
+        }
+    }
+}
+
+void ViewportBridge::agentNoteFinalAnswer()
+{
+    // The SAME three in-app sessions the generator install above touches,
+    // and for the same reason: they serve one document, so the turn that
+    // just ended is the same turn for all of them.  Idempotent and one-way
+    // (AgentSession.h's block above SessionMode), so calling it on every
+    // final turn is correct and costs nothing.
+    Agent::AgentRpcDispatcher* dispatchers[] = {
+        m_agentDispatcher.get(), m_agentToolDispatcherOwner.get(), m_agentToolDispatcherPropose.get()};
+    for (Agent::AgentRpcDispatcher* d : dispatchers) {
+        if (d && d->Session()) d->Session()->NoteFinalAnswer();
+    }
+}
+
 ViewportBridge::PanelMode ViewportBridge::panelMode() const
 {
     if (!m_controller) return PanelMode::None;
@@ -1402,6 +1684,235 @@ QStringList ViewportBridge::categoryEntities(Category cat) const
         const String name = m_controller->CategoryEntityName(
             static_cast<SceneEditController::Category>(catInt), i);
         out.append(QString::fromUtf8(name.c_str()));
+    }
+    return out;
+}
+
+SceneTree ViewportBridge::categoryTree(Category cat) const
+{
+    SceneTree out;
+    if (!m_controller) return out;
+
+    // ONE TRANSACTIONAL READ.  SceneEditController::ReadTree refreshes once
+    // and then copies the whole published tree out under a single hold of the
+    // snapshot lock, so what lands here cannot be a mixture of two trees --
+    // which a walk built out of the per-node getters CAN be, because each of
+    // those takes the lock on its own and another thread's count call may
+    // republish between two of them.
+    //
+    // That is now an API PROPERTY of ReadTree, not a property of how this
+    // function happens to be written: the Swift shell (4b) reads the same
+    // guarantee off the declaration instead of having to rediscover it.
+    //
+    // The indices in the returned tree are RAW indices into its own node
+    // table -- not the generation-tagged handles the per-node getters hand
+    // out -- because this copy is ours and nothing can republish underneath
+    // it.  They map one-to-one onto SceneTreeNode positions below.
+    SceneEditController::AuthoredTree t;
+    m_controller->ReadTree(static_cast<SceneEditController::Category>(cat), t);
+
+    const int n = static_cast<int>(t.nodes.size());
+    if (n == 0) return out;
+    out.nodes.resize(n);
+
+    for (int i = 0; i < n; ++i) {
+        const SceneEditController::TreeNodeRow& row = t.nodes[static_cast<std::size_t>(i)];
+        SceneTreeNode& node = out.nodes[i];
+        node.name = QString::fromUtf8(row.name.c_str());
+        // kInvalidNodeIndex means ROOT, which the model draws as a top-level
+        // row -- that is what the -1 default already says.
+        if (row.parent != SceneEditController::kInvalidNodeIndex
+         && row.parent < static_cast<unsigned int>(n)) {
+            node.parent = static_cast<int>(row.parent);
+        }
+        node.children.reserve(static_cast<int>(row.childCount));
+        for (unsigned int k = 0; k < row.childCount; ++k) {
+            const std::size_t slot = static_cast<std::size_t>(row.firstChild) + k;
+            if (slot >= t.childIndices.size()) break;
+            const unsigned int child = t.childIndices[slot];
+            if (child < static_cast<unsigned int>(n)) node.children.append(static_cast<int>(child));
+        }
+    }
+
+    // THE ROOT LIST IS COPIED, NOT RE-DERIVED.  Scanning `out.nodes` for
+    // `parent == -1` would agree today, but only because BuildAuthoredTree
+    // emits its table in presentation order -- see SceneTree's doc.  Out-of-
+    // range entries are dropped for the same belt-and-braces reason the
+    // parent/child indices above are range-tested: a shell must never be able
+    // to subscript past the node table.
+    out.roots.reserve(static_cast<int>(t.roots.size()));
+    for (std::size_t r = 0; r < t.roots.size(); ++r) {
+        if (t.roots[r] < static_cast<unsigned int>(n)) {
+            out.roots.append(static_cast<int>(t.roots[r]));
+        }
+    }
+    return out;
+}
+
+// doc-88 Phase 3 S14 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6) -----------
+
+namespace {
+    // Shared body for the outEdges/inEdges conversion loop below -- the
+    // only difference between the two call sites is which
+    // SceneEditController::GraphPort vector is being walked.
+    // ViewportBridge:: qualification required (review-round P1 fix):
+    // PainterGraphPort is now a NESTED member of ViewportBridge, and this
+    // helper is a free function in an anonymous namespace -- outside the
+    // class entirely -- so unqualified lookup would no longer find it.
+    QVector<ViewportBridge::PainterGraphPort> ConvertGraphPorts(
+        const std::vector<SceneEditController::GraphPort>& ports)
+    {
+        QVector<ViewportBridge::PainterGraphPort> out;
+        out.reserve(static_cast<int>(ports.size()));
+        for (const SceneEditController::GraphPort& p : ports) {
+            ViewportBridge::PainterGraphPort pp;
+            pp.paramName = QString::fromUtf8(p.paramName.c_str());
+            pp.occurrence = p.occurrence;
+            pp.portPipe = static_cast<int>(p.portPipe);
+            pp.portColorAlsoAcceptsScalar = p.portColorAlsoAcceptsScalar;
+            pp.otherNodeIndex = (p.otherNode == SceneEditController::kInvalidNodeIndex)
+                ? -1 : static_cast<int>(p.otherNode);
+            pp.otherName = QString::fromUtf8(p.otherName.c_str());
+            out.append(pp);
+        }
+        return out;
+    }
+}
+
+// Shared by painterMaterialGraph()/painterMaterialGraphFocused() AND (S3)
+// objectGraph()/objectGraphFocused() -- ONE conversion, not two (or four)
+// independently maintained copies. TEMPLATE, not a single overload for
+// `SceneEditController::PainterMaterialGraphLaidOut`: `ObjectGraphLaidOut`
+// (S1 core, the Object Graph slice) is a DIFFERENT C++ struct type with
+// the IDENTICAL `{graph, positions}` shape (see `SceneEditController::
+// SceneGraphModel`'s own comment on why the two graphs share every
+// building block but this ONE composed wrapper stayed deliberately
+// distinct on the C++ side) -- template argument deduction lets this one
+// function serve both without a second near-identical copy to keep in
+// sync (mirrors the Mac bridge's identical templated
+// `ConvertLaidOutGraphToRISE`, RISEViewportBridge.mm). Free function, same
+// qualification requirement ConvertGraphPorts documents just above
+// (outside the class, so every nested-type reference needs ViewportBridge::).
+template <typename LaidOutGraphT>
+static ViewportBridge::PainterGraph ConvertLaidOutGraph(const LaidOutGraphT& g)
+{
+    ViewportBridge::PainterGraph out;
+    const std::size_t n = g.graph.nodes.size();
+    out.nodes.resize(static_cast<int>(n));
+    for (std::size_t i = 0; i < n; ++i) {
+        const SceneEditController::GraphNode& gn = g.graph.nodes[i];
+        const SceneEditController::GraphNodePosition& pos = g.positions[i];
+        ViewportBridge::PainterGraphNode& node = out.nodes[static_cast<int>(i)];
+        node.handle       = gn.handle;
+        node.outputPipe = static_cast<int>(gn.outputPipe);
+        node.name         = QString::fromUtf8(gn.name.c_str());
+        node.chunkKeyword = QString::fromUtf8(gn.chunkKeyword.c_str());
+        node.category     = static_cast<int>(gn.category);
+        node.defCount     = gn.defCount;
+        node.repeatCount  = gn.repeatCount;
+        node.x = pos.x;
+        node.y = pos.y;
+        node.outEdges = ConvertGraphPorts(gn.outEdges);
+        node.inEdges  = ConvertGraphPorts(gn.inEdges);
+    }
+    out.generation = g.graph.generation;
+    out.snapshotFresh = g.graph.snapshotFresh;
+    return out;
+}
+
+// Return type qualified with ViewportBridge:: (review-round P1 fix): an
+// out-of-line member function's RETURN TYPE is parsed BEFORE the compiler
+// enters the class's scope (that happens only once it sees
+// `ViewportBridge::painterMaterialGraph`), so a bare `PainterGraph` here
+// -- now a NESTED member, not a global sibling -- would not resolve.
+// Everything inside the function BODY below stays unqualified: a member
+// function's body scope already includes its class.
+ViewportBridge::PainterGraph ViewportBridge::painterMaterialGraph() const
+{
+    if (!m_controller) return PainterGraph();
+
+    // ONE TRANSACTIONAL READ, the SAME discipline categoryTree() documents
+    // above: SceneEditController::ReadPainterMaterialGraphLaidOut composes
+    // S11's graph + S13's saved sidecar positions + S12's auto-layout
+    // fill-in under one snapshot-lock hold (plus one small sidecar file
+    // read -- see that method's own header comment), so what lands here
+    // cannot straddle two different published generations. Called
+    // directly on the C++ controller, not through RISE_API_*: this file
+    // already calls SceneEditController natively (see categoryTree()
+    // above) -- the C ABI's PainterGraph* surface exists for a caller
+    // that cannot see C++ at all, and is per-node -- exactly the
+    // non-transactional shape this method exists to avoid.
+    SceneEditController::PainterMaterialGraphLaidOut g;
+    m_controller->ReadPainterMaterialGraphLaidOut(g);
+    return ConvertLaidOutGraph(g);
+}
+
+// Same return-type qualification requirement as painterMaterialGraph()
+// just above (review-round P1 fix).
+ViewportBridge::PainterGraph ViewportBridge::painterMaterialGraphFocused(int category, const QString& name, bool* degraded) const
+{
+    if (degraded) *degraded = false;
+    if (!m_controller || name.isEmpty()) return PainterGraph();
+    const QByteArray utf8 = name.toUtf8();
+    bool coreDegraded = false;
+    SceneEditController::PainterMaterialGraphLaidOut g;
+    m_controller->ReadPainterMaterialGraphLaidOutFocused(
+        static_cast<RISE::ChunkCategory>(category), RISE::String(utf8.constData()), g, &coreDegraded);
+    if (degraded) *degraded = coreDegraded;
+    if (coreDegraded) return PainterGraph();   // empty on degrade too -- callers distinguish via `degraded`, not graph emptiness
+    return ConvertLaidOutGraph(g);
+}
+
+// S3 Qt carry. Same return-type qualification requirement as
+// painterMaterialGraph() above (review-round P1 fix).
+ViewportBridge::PainterGraph ViewportBridge::objectGraph() const
+{
+    if (!m_controller) return PainterGraph();
+    // ONE TRANSACTIONAL READ -- same discipline painterMaterialGraph()
+    // documents above; ReadObjectGraphLaidOut composes the object graph +
+    // a fresh (never sidecar-backed) auto-layout under one snapshot lock
+    // hold.
+    SceneEditController::ObjectGraphLaidOut g;
+    m_controller->ReadObjectGraphLaidOut(g);
+    return ConvertLaidOutGraph(g);
+}
+
+// Same return-type qualification requirement as painterMaterialGraph()
+// above (review-round P1 fix).
+ViewportBridge::PainterGraph ViewportBridge::objectGraphFocused(const QString& name, bool* degraded) const
+{
+    if (degraded) *degraded = false;
+    if (!m_controller || name.isEmpty()) return PainterGraph();
+    const QByteArray utf8 = name.toUtf8();
+    bool coreDegraded = false;
+    SceneEditController::ObjectGraphLaidOut g;
+    m_controller->ReadObjectGraphLaidOutFocused(RISE::String(utf8.constData()), g, &coreDegraded);
+    if (degraded) *degraded = coreDegraded;
+    if (coreDegraded) return PainterGraph();   // empty on degrade too -- callers distinguish via `degraded`, not graph emptiness
+    return ConvertLaidOutGraph(g);
+}
+
+// Same return-type qualification requirement as painterMaterialGraph()
+// just above (review-round P1 fix).
+QVector<ViewportBridge::AppearanceClosureEntry> ViewportBridge::appearanceClosureForObject(const QString& objectName, bool* degraded) const
+{
+    // Empty (not degraded): a null controller or an empty name is a
+    // genuine, resolved "nothing to show" -- never lock contention -- so
+    // it must not be reported as degraded (see the header comment).
+    if (degraded) *degraded = false;
+    QVector<AppearanceClosureEntry> out;
+    if (!m_controller || objectName.isEmpty()) return out;
+    const QByteArray utf8 = objectName.toUtf8();
+    bool coreDegraded = false;
+    const std::vector<RISE::SceneEditController::AppearanceClosureEntry> closure =
+        m_controller->AppearanceClosureForObject(RISE::String(utf8.constData()), &coreDegraded);
+    if (degraded) *degraded = coreDegraded;
+    out.reserve(static_cast<int>(closure.size()));
+    for (const RISE::SceneEditController::AppearanceClosureEntry& e : closure) {
+        AppearanceClosureEntry qe;
+        qe.category = static_cast<int>(e.category);
+        qe.name = QString::fromUtf8(e.name.c_str());
+        out.append(qe);
     }
     return out;
 }
@@ -1442,6 +1953,16 @@ QString ViewportBridge::selectionName() const
     if (!m_controller) return QString();
     char buf[128] = {0};
     if (!RISE_API_SceneEditController_GetSelectionName(m_controller, buf, sizeof(buf))) {
+        return QString();
+    }
+    return QString::fromUtf8(buf);
+}
+
+QString ViewportBridge::selectionRowName() const
+{
+    if (!m_controller) return QString();
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_GetSelectionRowName(m_controller, buf, sizeof(buf))) {
         return QString();
     }
     return QString::fromUtf8(buf);
@@ -1586,6 +2107,359 @@ bool ViewportBridge::removeEntity(Category category, const QString& name, QStrin
     return applied;
 }
 
+// ---- Node-graph canvas: create node (S18) ---------------------------
+//
+// Carried mirror of the macOS bridge's identically-named section; see
+// the header's STANDING CAVEAT (this half is owed an MSVC build).
+
+QVector<ViewportBridge::ChunkNodeRequirement>
+ViewportBridge::chunkNodeRequirements(const QString& keyword) const
+{
+    QVector<ChunkNodeRequirement> out;
+    if (!m_controller || keyword.isEmpty()) return out;
+    const QByteArray kw = keyword.toUtf8();
+    const unsigned int n = RISE_API_SceneEditController_ChunkNodeRequiredArgCount(
+        m_controller, kw.constData());
+    out.reserve(static_cast<int>(n));
+    for (unsigned int i = 0; i < n; ++i) {
+        char paramBuf[128] = {0};
+        char descBuf[1024] = {0};
+        int isRef = 0;
+        if (!RISE_API_SceneEditController_ChunkNodeRequiredArg(
+                m_controller, kw.constData(), i,
+                paramBuf, sizeof(paramBuf),
+                descBuf, sizeof(descBuf), &isRef)) {
+            continue;
+        }
+        ChunkNodeRequirement r;
+        r.param       = QString::fromUtf8(paramBuf);
+        r.description = QString::fromUtf8(descBuf);
+        r.isReference = (isRef != 0);
+        out.push_back(r);
+    }
+    return out;
+}
+
+bool ViewportBridge::createChunkNode(const QString& keyword, const QString& baseName,
+                                      const QStringList& argParams,
+                                      const QStringList& argValues,
+                                      QString* outName, QString* outMessage)
+{
+    if (!m_controller || keyword.isEmpty()) return false;
+    const QByteArray kw   = keyword.toUtf8();
+    const QByteArray base = baseName.toUtf8();
+
+    // round-1 P2-c: ORDERED parallel lists, not a QMap -- a keyed map can
+    // neither repeat a param (voronoi's repeatable `gen`) nor preserve
+    // caller order (QMap iterates in key-sorted order, not insertion
+    // order), and the C ABI beneath is itself two parallel arrays.  A
+    // count mismatch is a caller bug; clip to the shorter length rather
+    // than reading past either list's end.  The QByteArray temporaries
+    // must outlive the call -- hold them in `keep` and only then take
+    // .constData() pointers into the two parallel arrays the ABI expects.
+    const int n = qMin(argParams.size(), argValues.size());
+    QVector<QByteArray> keep;
+    keep.reserve(n * 2);
+    for (int i = 0; i < n; ++i) {
+        keep.push_back(argParams[i].toUtf8());
+        keep.push_back(argValues[i].toUtf8());
+    }
+    std::vector<const char*> params, values;
+    params.reserve(static_cast<size_t>(n));
+    values.reserve(static_cast<size_t>(n));
+    for (int i = 0; i + 1 < keep.size(); i += 2) {
+        params.push_back(keep[i].constData());
+        values.push_back(keep[i + 1].constData());
+    }
+
+    char nameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[1024] = {0};
+    const bool applied = RISE_API_SceneEditController_CreateChunkNode(
+        m_controller, kw.constData(), base.constData(),
+        params.empty() ? nullptr : params.data(),
+        values.empty() ? nullptr : values.data(),
+        static_cast<unsigned int>(params.size()),
+        nameBuf, sizeof(nameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf));
+    if (outName && nameBuf[0] != '\0')       *outName    = QString::fromUtf8(nameBuf);
+    if (outMessage && messageBuf[0] != '\0') *outMessage = QString::fromUtf8(messageBuf);
+    return applied;
+}
+
+// ---- Node-graph canvas: rewire a connection (S19) --------------------
+//
+// Carried mirror of the macOS bridge's identically-named section; see
+// the header's STANDING CAVEAT (this half is owed an MSVC build).
+
+namespace {
+
+// Split a '\n'-JOINED name list (the C ABI's list convention -- see
+// RISE_API.h's RewireConnection doc) back into a QStringList.  An empty
+// buffer means an EMPTY list, not a list containing one empty string,
+// which a naive QString::split would produce.
+QStringList splitJoinedNames(const char* buf)
+{
+    if (!buf || buf[0] == '\0') return QStringList();
+    return QString::fromUtf8(buf).split(QChar('\n'));
+}
+
+}  // namespace
+
+bool ViewportBridge::insertScalarAdapterAndRewire(int targetCategory, const QString& targetName,
+    const QString& param, int occurrence, int sourceCategory, const QString& sourceName,
+    QString* outAdapterName, QString* outMessage)
+{
+    if (outAdapterName) outAdapterName->clear();
+    if (outMessage) outMessage->clear();
+    if (!m_controller) return false;
+    char name[256] = {0}, status[64] = {0}, message[2048] = {0};
+    const bool applied = RISE_API_SceneEditController_InsertScalarAdapterAndRewire(
+        m_controller, targetCategory, targetName.toUtf8().constData(), param.toUtf8().constData(), occurrence,
+        sourceCategory, sourceName.toUtf8().constData(), name, sizeof(name), status, sizeof(status), message, sizeof(message));
+    if (outAdapterName) *outAdapterName = QString::fromUtf8(name);
+    if (outMessage) *outMessage = QString::fromUtf8(message);
+    return applied;
+}
+
+bool ViewportBridge::rewireConnection(int targetCategory, const QString& targetName,
+                                       const QString& param, int occurrence,
+                                       int newRefCategory, const QString& newRefName,
+                                       RewireOutcome* outOutcome)
+{
+    if (outOutcome) *outOutcome = RewireOutcome();
+    if (!m_controller || targetName.isEmpty() || param.isEmpty()) return false;
+
+    const QByteArray tgt = targetName.toUtf8();
+    const QByteArray prm = param.toUtf8();
+    const QByteArray ref = newRefName.toUtf8();
+
+    int closure = 0, legality = 0, cycle = 0, adapter = 0;
+    char statusBuf[64] = {0};
+    char messageBuf[2048] = {0};
+    char sharedBuf[1024] = {0};
+    char referrersBuf[2048] = {0};
+    char ownersBuf[1024] = {0};
+    char orphanBuf[1024] = {0};
+
+    const bool applied = RISE_API_SceneEditController_RewireConnectionEx(
+        m_controller,
+        targetCategory, tgt.constData(),
+        prm.constData(), occurrence,
+        newRefCategory, ref.constData(),
+        &adapter, &closure, &legality, &cycle,
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf),
+        sharedBuf, sizeof(sharedBuf),
+        referrersBuf, sizeof(referrersBuf),
+        ownersBuf, sizeof(ownersBuf),
+        orphanBuf, sizeof(orphanBuf));
+
+    if (outOutcome) {
+        outOutcome->applied               = applied;
+        outOutcome->status                = QString::fromUtf8(statusBuf);
+        outOutcome->message               = QString::fromUtf8(messageBuf);
+        outOutcome->closure               = static_cast<RewireClosure>(closure);
+        outOutcome->canInsertScalarAdapter = (adapter != 0);
+        outOutcome->legalityRefused       = (legality != 0);
+        outOutcome->cycleRefused          = (cycle != 0);
+        outOutcome->sharedChunks          = splitJoinedNames(sharedBuf);
+        outOutcome->outOfClosureReferrers = splitJoinedNames(referrersBuf);
+        outOutcome->owners                = splitJoinedNames(ownersBuf);
+        outOutcome->nowUnreferenced       = splitJoinedNames(orphanBuf);
+    }
+    return applied;
+}
+
+// ---- Node-graph canvas: reference-safe delete + duplicate (S20) ------
+
+bool ViewportBridge::deleteGraphNode(int category, const QString& name,
+                                      GraphDeleteMode mode,
+                                      DeleteOutcome* outOutcome)
+{
+    if (outOutcome) *outOutcome = DeleteOutcome();
+    if (!m_controller || name.isEmpty()) return false;
+
+    const QByteArray nm = name.toUtf8();
+
+    int closure = 0, refRefused = 0, cascadeRefused = 0;
+    char statusBuf[64] = {0};
+    char messageBuf[2048] = {0};
+    char referrersBuf[2048] = {0};
+    char removedBuf[2048] = {0};
+
+    const bool applied = RISE_API_SceneEditController_DeleteGraphNode(
+        m_controller, category, nm.constData(),
+        (mode == GraphDeleteMode::Cascade) ? 1 : 0,
+        &closure, &refRefused, &cascadeRefused,
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf),
+        referrersBuf, sizeof(referrersBuf),
+        removedBuf, sizeof(removedBuf));
+
+    if (outOutcome) {
+        outOutcome->applied          = applied;
+        outOutcome->status           = QString::fromUtf8(statusBuf);
+        outOutcome->message          = QString::fromUtf8(messageBuf);
+        outOutcome->closure          = static_cast<RewireClosure>(closure);
+        outOutcome->referenceRefused = (refRefused != 0);
+        outOutcome->cascadeRefused   = (cascadeRefused != 0);
+        outOutcome->referrers        = splitJoinedNames(referrersBuf);
+        outOutcome->removed          = splitJoinedNames(removedBuf);
+    }
+    return applied;
+}
+
+bool ViewportBridge::duplicateGraphNode(int category, const QString& name,
+                                         DuplicateOutcome* outOutcome)
+{
+    if (outOutcome) *outOutcome = DuplicateOutcome();
+    if (!m_controller || name.isEmpty()) return false;
+
+    const QByteArray nm = name.toUtf8();
+
+    int closure = 0, originalIndex = -1;
+    char newNameBuf[256] = {0};
+    char statusBuf[64] = {0};
+    char messageBuf[2048] = {0};
+
+    const bool applied = RISE_API_SceneEditController_DuplicateGraphNode(
+        m_controller, category, nm.constData(),
+        &closure, &originalIndex,
+        newNameBuf, sizeof(newNameBuf),
+        statusBuf, sizeof(statusBuf),
+        messageBuf, sizeof(messageBuf));
+
+    if (outOutcome) {
+        outOutcome->applied       = applied;
+        outOutcome->status        = QString::fromUtf8(statusBuf);
+        outOutcome->message       = QString::fromUtf8(messageBuf);
+        outOutcome->closure       = static_cast<RewireClosure>(closure);
+        outOutcome->newName       = QString::fromUtf8(newNameBuf);
+        outOutcome->originalIndex = originalIndex;
+    }
+    return applied;
+}
+
+// ---- Node-graph canvas: drag-to-wire pre-checks + drag-to-reposition -----
+// (S16/S21/S22, docs/gui/NODE_GRAPH_CANVAS.md sect. 6)
+//
+// ADDED IN THIS SLICE (S16/S22's bridge-gap carry -- see the header's own
+// note): the S14 carry stopped at painterMaterialGraph()/categoryTree(),
+// the read-only surface; these five are the S21 EDIT surface the Windows
+// canvas widget needs. Carried mirror of the macOS bridge's identically-
+// named section; see the header's STANDING CAVEAT (this half is owed an
+// MSVC build).
+
+bool ViewportBridge::checkConnection(int targetCategory, const QString& targetName,
+                                      const QString& param,
+                                      int candidateCategory, const QString& candidateName,
+                                      QString* outDiagnostic) const
+{
+    if (!m_controller || targetName.isEmpty() || param.isEmpty() || candidateName.isEmpty()) {
+        return false;
+    }
+    const QByteArray tgt = targetName.toUtf8();
+    const QByteArray prm = param.toUtf8();
+    const QByteArray cand = candidateName.toUtf8();
+    char diagBuf[1024] = {0};
+    const bool legal = RISE_API_SceneEditController_CheckConnection(
+        m_controller,
+        targetCategory, tgt.constData(),
+        prm.constData(),
+        candidateCategory, cand.constData(),
+        diagBuf, sizeof(diagBuf));
+    if (outDiagnostic && diagBuf[0] != '\0') *outDiagnostic = QString::fromUtf8(diagBuf);
+    return legal;
+}
+
+bool ViewportBridge::wouldCycle(int fromCategory, const QString& fromName,
+                                 int toCategory, const QString& toName) const
+{
+    if (!m_controller || fromName.isEmpty() || toName.isEmpty()) return false;
+    const QByteArray from = fromName.toUtf8();
+    const QByteArray to = toName.toUtf8();
+    return RISE_API_SceneEditController_WouldCycle(
+        m_controller, fromCategory, from.constData(), toCategory, to.constData());
+}
+
+bool ViewportBridge::checkConnectionByKeyword(const QString& targetKeyword, const QString& param,
+                                               const QString& candidateKeyword, int candidateCategory,
+                                               QString* outDiagnostic)
+{
+    if (outDiagnostic) *outDiagnostic = QString();
+    if (targetKeyword.isEmpty() || param.isEmpty() || candidateKeyword.isEmpty()) return false;
+    const QByteArray tgt = targetKeyword.toUtf8();
+    const QByteArray prm = param.toUtf8();
+    const QByteArray cand = candidateKeyword.toUtf8();
+    char diagBuf[1024] = {0};
+    // `candidateIsPerChannelValues` (the trailing 0) -- pass "unknown",
+    // the SAME convention the macOS bridge's checkConnectionByKeyword
+    // uses (RISEViewportBridge.mm): the palette candidate picker only
+    // has a keyword string to filter on, not a live chunk it could
+    // introspect for the per-channel `values` authoring form, so it
+    // cannot answer this narrower question either. See
+    // RISE_API_ConnectionLegality_CheckConnectionByKeyword's own comment
+    // for why this is an advisory pre-filter, not the commit-time gate.
+    const bool legal = RISE_API_ConnectionLegality_CheckConnectionByKeyword(
+        tgt.constData(), prm.constData(),
+        cand.constData(), candidateCategory,
+        0,
+        diagBuf, sizeof(diagBuf));
+    if (outDiagnostic && diagBuf[0] != '\0') *outDiagnostic = QString::fromUtf8(diagBuf);
+    return legal;
+}
+
+bool ViewportBridge::writeGraphNodeLayoutPosition(const QString& name, double x, double y,
+                                                    QString* outError)
+{
+    if (outError) *outError = QString();
+    if (!m_controller || name.isEmpty()) return false;
+    const QByteArray nm = name.toUtf8();
+    char errBuf[512] = {0};
+    const bool ok = RISE_API_SceneEditController_WriteGraphNodeLayoutPosition(
+        m_controller, nm.constData(), x, y, errBuf, sizeof(errBuf));
+    if (!ok && outError && errBuf[0] != '\0') *outError = QString::fromUtf8(errBuf);
+    return ok;
+}
+
+// ---- Node-graph canvas: add-node search palette (S16/S21/S22) -----------
+
+QStringList ViewportBridge::paletteKeywords(int category) const
+{
+    QStringList out;
+    if (!m_controller) return out;
+    const unsigned int n = RISE_API_SceneEditController_PaletteKeywordCount(m_controller, category);
+    out.reserve(static_cast<int>(n));
+    for (unsigned int i = 0; i < n; ++i) {
+        char buf[128] = {0};
+        if (!RISE_API_SceneEditController_PaletteKeyword(m_controller, category, i, buf, sizeof(buf))) {
+            continue;
+        }
+        if (buf[0] != '\0') out.append(QString::fromUtf8(buf));
+    }
+    return out;
+}
+
+QString ViewportBridge::paletteDeprecationReplacement(const QString& keyword) const
+{
+    if (!m_controller || keyword.isEmpty()) return QString();
+    char buf[1024] = {0};
+    const QByteArray kw = keyword.toUtf8();
+    if (!RISE_API_SceneEditController_PaletteKeywordDeprecation(m_controller, kw.constData(), buf, sizeof(buf))) {
+        return QString();
+    }
+    return QString::fromUtf8(buf);
+}
+
+bool ViewportBridge::paletteKeywordIsFrozen(const QString& keyword) const
+{
+    if (!m_controller || keyword.isEmpty()) return false;
+    const QByteArray kw = keyword.toUtf8();
+    return RISE_API_SceneEditController_PaletteKeywordFrozen(m_controller, kw.constData());
+}
+
 // ---- Environment / IBL section --------------------------------------
 
 bool ViewportBridge::environmentInfo(EnvironmentInfo* out) const
@@ -1694,7 +2568,7 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshot()
     out.reserve(static_cast<int>(n));
     char nameBuf[128];
     char valBuf[256];
-    char descBuf[512];
+    char descBuf[2048];
     // Generously sized so future descriptors with longer labels
     // (multi-byte UTF-8 for non-ASCII names) can grow without churn.
     // QString::fromUtf8 silently substitutes replacement chars on
@@ -1703,6 +2577,7 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshot()
     char presetLabelBuf[256];
     char presetValueBuf[256];
     char unitLabelBuf[64];
+    char inlinePainterValBuf[256];
     for (unsigned int i = 0; i < n; ++i) {
         RISE_API_SceneEditController_PropertyName(m_controller, i, nameBuf, sizeof(nameBuf));
         RISE_API_SceneEditController_PropertyValue(m_controller, i, valBuf, sizeof(valBuf));
@@ -1735,6 +2610,20 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshot()
             p.unitLabel = QString::fromUtf8(unitLabelBuf);
         }
 
+        // doc 88 S4b — the row's authored numeric range (see ViewportProperty's
+        // own doc for the carried-not-yet-rendered caveat).
+        p.hasRange  = RISE_API_SceneEditController_PropertyHasRange(m_controller, i);
+        p.rangeMin  = RISE_API_SceneEditController_PropertyRangeMin(m_controller, i);
+        p.rangeMax  = RISE_API_SceneEditController_PropertyRangeMax(m_controller, i);
+        p.rangeStep = RISE_API_SceneEditController_PropertyRangeStep(m_controller, i);
+
+        p.targetsPainter        = RISE_API_SceneEditController_PropertyTargetsPainter(m_controller, i) != 0;
+        p.inlinePainterKind     = RISE_API_SceneEditController_PropertyInlinePainterKind(m_controller, i);
+        if (p.inlinePainterKind != 0 && RISE_API_SceneEditController_PropertyInlinePainterValue(m_controller, i, inlinePainterValBuf, sizeof(inlinePainterValBuf))) {
+            p.inlinePainterValue = QString::fromUtf8(inlinePainterValBuf);
+        }
+        p.inlinePainterRefCount = RISE_API_SceneEditController_PropertyInlinePainterRefCount(m_controller, i);
+
         out.append(p);
     }
     return out;
@@ -1762,7 +2651,7 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshotFor(Category cat)
     out.reserve(static_cast<int>(n));
     char nameBuf[128];
     char valBuf[256];
-    char descBuf[512];
+    char descBuf[2048];
     char presetLabelBuf[256];
     char presetValueBuf[256];
     char unitLabelBuf[64];
@@ -1792,6 +2681,22 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshotFor(Category cat)
         if (RISE_API_SceneEditController_PropertyUnitLabelFor(m_controller, catInt, i, unitLabelBuf, sizeof(unitLabelBuf))) {
             p.unitLabel = QString::fromUtf8(unitLabelBuf);
         }
+
+        // doc 88 S4b — same as the selection-scoped snapshot above; this is the
+        // path the properties panel actually reads.
+        p.hasRange  = RISE_API_SceneEditController_PropertyHasRangeFor(m_controller, catInt, i);
+        p.rangeMin  = RISE_API_SceneEditController_PropertyRangeMinFor(m_controller, catInt, i);
+        p.rangeMax  = RISE_API_SceneEditController_PropertyRangeMaxFor(m_controller, catInt, i);
+        p.rangeStep = RISE_API_SceneEditController_PropertyRangeStepFor(m_controller, catInt, i);
+
+        p.targetsPainter = RISE_API_SceneEditController_PropertyTargetsPainterFor(m_controller, catInt, i);
+        p.inlinePainterKind = RISE_API_SceneEditController_PropertyInlinePainterKindFor(m_controller, catInt, i);
+        char inlineValBuf[256];
+        if (p.inlinePainterKind != 0 &&
+            RISE_API_SceneEditController_PropertyInlinePainterValueFor(m_controller, catInt, i, inlineValBuf, sizeof(inlineValBuf))) {
+            p.inlinePainterValue = QString::fromUtf8(inlineValBuf);
+        }
+        p.inlinePainterRefCount = RISE_API_SceneEditController_PropertyInlinePainterRefCountFor(m_controller, catInt, i);
 
         out.append(p);
     }
@@ -1831,6 +2736,28 @@ bool ViewportBridge::setPropertyForCategory(Category cat, const QString& name, c
     return RISE_API_SceneEditController_SetPropertyForCategory(
         m_controller, static_cast<int>(cat),
         name.toUtf8().constData(), value.toUtf8().constData());
+}
+
+bool ViewportBridge::setReferenceSlotPainterValue(Category cat, const QString& slotParam, const QString& value)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetReferenceSlotPainterValue(
+        m_controller, static_cast<int>(cat),
+        slotParam.toUtf8().constData(), value.toUtf8().constData());
+}
+
+bool ViewportBridge::forkReferenceSlotPainter(Category cat, const QString& slotParam, QString* outNewPainterName)
+{
+    if (outNewPainterName) outNewPainterName->clear();
+    if (!m_controller) return false;
+    char newNameBuf[256] = { 0 };
+    const bool ok = RISE_API_SceneEditController_ForkReferenceSlotPainter(
+        m_controller, static_cast<int>(cat),
+        slotParam.toUtf8().constData(), newNameBuf, sizeof(newNameBuf));
+    if (ok && outNewPainterName && newNameBuf[0]) {
+        *outNewPainterName = QString::fromUtf8(newNameBuf);
+    }
+    return ok;
 }
 
 QString ViewportBridge::selectionNameForCategory(Category cat) const

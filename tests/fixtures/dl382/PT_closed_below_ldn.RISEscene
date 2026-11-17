@@ -1,0 +1,134 @@
+RISE ASCII SCENE 7
+standard_shader
+{
+	name global
+	shaderop DefaultPathTracing
+}
+pathtracing_pel_rasterizer
+{
+	samples 256
+	rr_min_depth 8
+	pixel_filter box
+	oidn_denoise FALSE
+	sms_enabled FALSE
+}
+file_rasterizeroutput
+{
+	pattern rendered/zz
+	type EXR
+	bpp 32
+	color_space Rec709RGB_Linear
+}
+film
+{
+	width 16
+	height 16
+}
+pinhole_camera
+{
+	location 0 1 1.2
+	lookat 0 0 0
+	up 0 1 0
+	fov 10.0
+}
+uniformcolor_painter
+{
+	name pr
+	color 0.5 0.5 0.5
+	colorspace Rec709RGB_Linear
+}
+lambertian_material
+{
+	name mr
+	reflectance pr
+}
+clippedplane_geometry
+{
+	name gr
+	pta -1 0 1
+	ptb 1 0 1
+	ptc 1 0 -1
+	ptd -1 0 -1
+	doublesided TRUE
+}
+standard_object
+{
+	name orecv
+	geometry gr
+	material mr
+}
+uniformcolor_painter
+{
+	name pe
+	color 1 1 1
+	colorspace Rec709RGB_Linear
+}
+lambertian_luminaire_material
+{
+	name me
+	exitance pe
+	scale 4.0
+	material none
+}
+clippedplane_geometry
+{
+	name ge
+	pta -2 4 -2
+	ptb 2 4 -2
+	ptc 2 4 2
+	ptd -2 4 2
+	doublesided FALSE
+}
+standard_object
+{
+	name oe
+	geometry ge
+	material me
+}
+uniformcolor_painter
+{
+	name pg
+	color 1 1 1
+	colorspace Rec709RGB_Linear
+}
+perfectrefractor_material
+{
+	name slab
+	refractance pg
+	ior 2.2
+}
+perfectrefractor_material
+{
+	name lone
+	refractance pg
+	ior 1.5
+}
+box_geometry
+{
+	name gbox
+	width 8
+	height 0.4
+	depth 8
+}
+standard_object
+{
+	name obox
+	geometry gbox
+	position 0 2 0
+	material slab
+}
+clippedplane_geometry
+{
+	name gl
+	pta -4 2 -4
+	ptb 4 2 -4
+	ptc 4 2 4
+	ptd -4 2 4
+	doublesided TRUE
+}
+standard_object
+{
+	name ol
+	geometry gl
+	material lone
+}

@@ -49,6 +49,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>   // std::getenv -- IJob vtable manifest regen-mode trigger
 #include <cstring>   // std::strlen -- read_schema batch-cap parity scan
 #include <cctype>
 #include <filesystem>
@@ -99,6 +100,28 @@ static fs::path FindTestsDir()
 		if( fs::exists( p / "SourceHygieneTest.cpp" ) ) { return p; }
 	}
 	return fs::path();
+}
+
+// Fast buffered whole-file reader with CRLF normalization (git text=auto
+// checks working-tree files out with native EOLs on Windows).
+static std::string SlurpFile( const fs::path& f )
+{
+	std::ifstream in( f, std::ios::binary | std::ios::ate );
+	if( !in ) { return std::string(); }
+	const std::streamsize sz = in.tellg();
+	if( sz <= 0 ) { return std::string(); }
+	std::string s( static_cast<std::size_t>( sz ), '\0' );
+	in.seekg( 0, std::ios::beg );
+	in.read( &s[0], sz );
+	if( s.find( '\r' ) != std::string::npos ) {
+		std::string::size_type w = 0;
+		for( std::string::size_type r = 0; r < s.size(); ++r ) {
+			if( s[r] == '\r' && r + 1 < s.size() && s[r + 1] == '\n' ) { continue; }
+			s[w++] = s[r];
+		}
+		s.resize( w );
+	}
+	return s;
 }
 
 // ---- Shared source-text helpers for the agent enumeration guards ----
@@ -158,6 +181,277 @@ static std::string StripCommentsPreservingLayout( const std::string& src )
 			continue;
 		}
 		++i;
+	}
+	return out;
+}
+
+// ---- IJob vtable-manifest extraction (hardened to full signatures) -------
+// IJob is a public abstract interface: its virtual DECLARATION ORDER *and*
+// each virtual's exact parameter list are the vtable ABI.  A name-only diff
+// is blind to a trailing DEFAULTED parameter appended to an EXISTING
+// virtual -- that still changes the caller-visible signature (and, if it
+// were ever a real overload resolution change, the vtable slot's calling
+// convention) without moving its position in the list.  This is not
+// hypothetical: the doc-88 S7 review (2026-08-20) found two IJob virtuals
+// that had grown a trailing defaulted parameter with the name-only manifest
+// staying green throughout.  See docs/VITREOUS_ENAMEL.md:894-899 and
+// docs/gui/RENDER_COORDINATOR.md:1237-1239 for why any pure-virtual
+// signature change on a shipped interface is an ABI event.
+//
+// A single IJob virtual: its NAME (identifier before '(', used for the
+// classified diagnostics below) and its FULL NORMALIZED SIGNATURE (used for
+// the actual equality check).
+struct IJobVirtualDecl
+{
+	std::string name;
+	std::string signature;
+};
+
+// Normalize a raw (possibly multi-line, arbitrarily indented) declaration
+// into one canonical single-line string: collapse every whitespace run to a
+// single space, trim the ends, then delete spaces adjacent to structural
+// punctuation.  This makes the signature comparison invariant to reflow/
+// reindent -- IJob.h writes one parameter per line with a trailing
+// `///< [in] ...` doxygen comment (already blanked by the caller via
+// StripCommentsPreservingLayout), but nothing about the ABI depends on that
+// layout, so the pin must not either.
+static std::string NormalizeDeclSignature( const std::string& raw )
+{
+	std::string collapsed;
+	collapsed.reserve( raw.size() );
+	bool inSpace = false;
+	for( char c : raw ) {
+		if( isspace( (unsigned char)c ) ) {
+			if( !inSpace && !collapsed.empty() ) { collapsed += ' '; }
+			inSpace = true;
+		} else {
+			collapsed += c;
+			inSpace = false;
+		}
+	}
+	while( !collapsed.empty() && collapsed.back() == ' ' ) { collapsed.pop_back(); }
+
+	static const std::string kTight = "()[],=;*&";
+	std::string out;
+	out.reserve( collapsed.size() );
+	for( size_t i = 0; i < collapsed.size(); ++i ) {
+		if( collapsed[i] == ' ' ) {
+			const bool prevTight = !out.empty() && kTight.find( out.back() ) != std::string::npos;
+			const bool nextTight = ( i + 1 < collapsed.size() )
+			                       && kTight.find( collapsed[i + 1] ) != std::string::npos;
+			if( prevTight || nextTight ) { continue; }
+		}
+		out += collapsed[i];
+	}
+	return out;
+}
+
+// Step over a string/char literal starting at s[p] (if any), honoring
+// backslash escapes, and return the index just past its closing quote
+// (clamped to s.size() if unterminated); otherwise return p unchanged.
+// WHY: StripCommentsPreservingLayout deliberately preserves literal
+// CONTENTS (only comments are blanked), so a `)`, `;`, or `{` inside a
+// default-argument string/char literal (e.g. `const char* s = ")print;"`)
+// is a LIVE character to the bracket/terminator scans below -- without
+// stepping over the whole literal atomically, that character desyncs the
+// walk exactly the way an un-skipped comment byte would (round-20's
+// concern, mirrored here one abstraction lower).
+//
+// DISCLOSED RESIDUAL: this helper has no notion of C++14 digit separators
+// (`1'000'000`) -- an ODD count of `'` in a declaration would open a bogus
+// char literal and swallow text up to the next quote elsewhere.  Verified
+// fail-LOUD, never fail-silent (round-2 review harness): the desync grosses
+// out extraction into a count/prefix mismatch or a failed >200 sanity
+// check; it cannot keep the gate green while hiding a change.  IJob.h has
+// no digit separators today.  If one ever lands in a default argument,
+// teach this helper that a `'` following a digit is a separator, not a
+// literal delimiter.
+static size_t SkipLiteral( const std::string& s, size_t p )
+{
+	if( p >= s.size() || ( s[p] != '"' && s[p] != '\'' ) ) { return p; }
+	const char quote = s[p];
+	++p;
+	while( p < s.size() ) {
+		if( s[p] == '\\' ) { p += 2; continue; }
+		if( s[p] == quote ) { return p + 1; }
+		++p;
+	}
+	return s.size();
+}
+
+// Extract the ordered virtual-method declarations from `strippedText`, which
+// must already have comments blanked (StripCommentsPreservingLayout) so a
+// brace or the word `virtual` inside a comment cannot desynchronize the
+// walk (round-20 concern, mirrored here for this parser).
+//
+// Not every IJob virtual is a bare `= 0;` pure virtual -- a substantial
+// minority (the append-only-tail conveniences, e.g. `ExchangeProgress`,
+// `GetCstDocument`, `GetSuppressFileRasterizerOutputs`) carry an inline
+// DEFAULT BODY instead: `virtual T Name( ... ) { return x; }`.  A first
+// version of this parser accumulated raw declaration text up to the FIRST
+// `;` it saw -- which, for a bodied virtual, is the `;` INSIDE `return x;`,
+// truncating the declaration before its closing `}` and corrupting both the
+// name-adjacent text and the normalized signature.  The fix: find the
+// parameter list's own closing `)` by bracket-depth matching (`(`/`)` and
+// `[`/`]` share one counter, so a nested call or an array-size parameter
+// inside a default value doesn't end the list early), then from there scan
+// for the declaration's TRUE terminator -- a bare `;`, or a `{ ... }` body
+// matched by brace depth and its optional trailing `;`.
+static std::vector<IJobVirtualDecl> ExtractVirtualDecls( const std::string& strippedText )
+{
+	std::vector<IJobVirtualDecl> out;
+	const size_t n = strippedText.size();
+
+	// Locate `class IJob`'s body.  Skip a forward declaration (`;` reached
+	// before `{`) and keep searching -- defensive, real headers don't do
+	// this, but it costs nothing to handle.  Brace-match from the opening
+	// `{` to find the body's end.
+	size_t bodyStart = std::string::npos, bodyEnd = std::string::npos;
+	size_t searchFrom = 0;
+	while( searchFrom < n ) {
+		const size_t k = strippedText.find( "class IJob", searchFrom );
+		if( k == std::string::npos ) { break; }
+		const size_t afterName = k + 10;
+		searchFrom = afterName;
+		if( afterName < n && ( isalnum( (unsigned char)strippedText[afterName] )
+		                        || strippedText[afterName] == '_' ) ) {
+			continue;   // e.g. "class IJobFoo" -- not our class
+		}
+		size_t p = afterName;
+		while( p < n && strippedText[p] != '{' && strippedText[p] != ';' ) { ++p; }
+		if( p >= n || strippedText[p] != '{' ) { continue; }   // forward decl; keep looking
+		bodyStart = p;
+		int depth = 0;
+		for( ; p < n; ++p ) {
+			if( strippedText[p] == '"' || strippedText[p] == '\'' ) {
+				p = SkipLiteral( strippedText, p ) - 1;   // -1: the for's ++p resumes just past it
+				continue;
+			}
+			if( strippedText[p] == '{' ) { ++depth; }
+			else if( strippedText[p] == '}' ) { --depth; if( depth == 0 ) { bodyEnd = p; break; } }
+		}
+		break;
+	}
+	if( bodyStart == std::string::npos || bodyEnd == std::string::npos ) { return out; }
+
+	size_t i = bodyStart + 1;
+	while( i < bodyEnd ) {
+		const size_t b = strippedText.find_first_not_of( " \t\r\n", i );
+		if( b == std::string::npos || b >= bodyEnd ) { break; }
+
+		// Match an optional leading `inline` token, then a mandatory
+		// `virtual` token, each followed by ANY whitespace character -- not
+		// just the literal byte ' '.  The original check compared 8 literal
+		// bytes ("virtual "), which silently skipped `virtual\t...` (tab)
+		// and `inline virtual ...` (the `inline` prefix moves `virtual` off
+		// the declaration's first byte).  A skipped virtual today only
+		// fails loudly because dropping a mid-list entry shifts every later
+		// slot -- don't rely on that side effect; match the tokens properly.
+		size_t cursor = b;
+		if( strippedText.compare( cursor, 6, "inline" ) == 0
+		    && cursor + 6 < bodyEnd && isspace( (unsigned char)strippedText[cursor + 6] ) ) {
+			cursor += 6;
+			while( cursor < bodyEnd && isspace( (unsigned char)strippedText[cursor] ) ) { ++cursor; }
+		}
+		if( strippedText.compare( cursor, 7, "virtual" ) != 0
+		    || cursor + 7 >= bodyEnd || !isspace( (unsigned char)strippedText[cursor + 7] ) ) {
+			// Not a declaration start -- skip to the next line so we don't
+			// rescan the same non-virtual content byte by byte.
+			const size_t nl = strippedText.find( '\n', b );
+			i = ( nl == std::string::npos || nl >= bodyEnd ) ? bodyEnd : nl + 1;
+			continue;
+		}
+
+		const size_t paren = strippedText.find( '(', b );
+		if( paren == std::string::npos || paren >= bodyEnd ) { break; }   // malformed tail
+
+		size_t nameEnd = paren;
+		while( nameEnd > b && ( strippedText[nameEnd - 1] == ' ' || strippedText[nameEnd - 1] == '\t' ) ) {
+			--nameEnd;
+		}
+		size_t nameStart = nameEnd;
+		while( nameStart > b && ( isalnum( (unsigned char)strippedText[nameStart - 1] )
+		                          || strippedText[nameStart - 1] == '_' ) ) {
+			--nameStart;
+		}
+
+		// Destructor detection: a `~` DIRECTLY ahead of the extracted name
+		// (whitespace allowed between).  The earlier rule -- "any `~` between
+		// the declaration start and the `(`" -- would also have classified a
+		// hypothetical `virtual X& operator~()` as a destructor and dropped
+		// it silently untracked (round-2 review).  No operator overload
+		// exists on IJob today; if one ever lands, it extracts with an EMPTY
+		// name (an operator's token ends in punctuation, not an identifier
+		// char) but its FULL signature still pins below -- the name only
+		// feeds the classified diagnostics, the gate compares signatures.
+		size_t beforeName = nameStart;
+		while( beforeName > b && ( strippedText[beforeName - 1] == ' '
+		                           || strippedText[beforeName - 1] == '\t' ) ) {
+			--beforeName;
+		}
+		const bool isDtor = ( nameStart < nameEnd )
+		                    && ( beforeName > b && strippedText[beforeName - 1] == '~' );
+
+		// Find the parameter list's matching close paren.  `(`/`)` and
+		// `[`/`]` share one depth counter -- a nested call or an array-size
+		// parameter inside a default value must not end the list early.
+		size_t p = paren;
+		int bracketDepth = 0;
+		for( ; p < bodyEnd; ++p ) {
+			const char c = strippedText[p];
+			if( c == '"' || c == '\'' ) {
+				p = SkipLiteral( strippedText, p ) - 1;   // -1: the for's ++p resumes just past it
+				continue;
+			}
+			if( c == '(' || c == '[' ) { ++bracketDepth; }
+			else if( c == ')' || c == ']' ) {
+				--bracketDepth;
+				if( bracketDepth == 0 ) { ++p; break; }
+			}
+		}
+
+		// From just past the parameter list, find the TRUE terminator: a
+		// bare `;` (the `= 0;` pure-virtual case), or a `{ ... }` body
+		// matched by brace depth, plus its optional trailing `;`.
+		size_t declEnd = std::string::npos;
+		for( ; p < bodyEnd; ++p ) {
+			const char c = strippedText[p];
+			if( c == '"' || c == '\'' ) {
+				p = SkipLiteral( strippedText, p ) - 1;   // -1: the for's ++p resumes just past it
+				continue;
+			}
+			if( c == '{' ) {
+				int braceDepth = 1;
+				++p;
+				for( ; p < bodyEnd; ++p ) {
+					if( strippedText[p] == '"' || strippedText[p] == '\'' ) {
+						p = SkipLiteral( strippedText, p ) - 1;
+						continue;
+					}
+					if( strippedText[p] == '{' ) { ++braceDepth; }
+					else if( strippedText[p] == '}' ) {
+						--braceDepth;
+						if( braceDepth == 0 ) { ++p; break; }
+					}
+				}
+				const size_t q = strippedText.find_first_not_of( " \t\r\n", p );
+				if( q != std::string::npos && q < bodyEnd && strippedText[q] == ';' ) { p = q + 1; }
+				declEnd = p;
+				break;
+			}
+			if( c == ';' ) { declEnd = p + 1; break; }
+		}
+		if( declEnd == std::string::npos || declEnd > bodyEnd ) { break; }   // malformed; stop
+
+		if( !isDtor ) {
+			// An empty name (operator overload) is still PUSHED: its full
+			// signature is what the gate compares, so a change to it cannot
+			// go silently green.
+			const std::string name = strippedText.substr( nameStart, nameEnd - nameStart );
+			out.push_back( IJobVirtualDecl{
+				name, NormalizeDeclSignature( strippedText.substr( b, declEnd - b ) ) } );
+		}
+		i = declEnd;
 	}
 	return out;
 }
@@ -437,40 +731,854 @@ int main()
 
 	std::vector<std::string> offenders;
 	int scanned = 0;
+    // /Yu ignores every #include and declaration before the through-header ("pch.h") on Windows.
+    // Validate EVERY /Yu-compiled <ClCompile> entry in build/VS2022/Library/Library.vcxproj.
+    {
+        const fs::path vcxDir = testsDir.parent_path() / "build/VS2022/Library";
+        std::ifstream vcxIn( vcxDir / "Library.vcxproj" );
+        const std::string vcxAll( ( std::istreambuf_iterator<char>( vcxIn ) ), std::istreambuf_iterator<char>() );
+        Check( !vcxAll.empty(), "Library.vcxproj readable for /Yu PCH audit" );
+        std::vector<std::string> pchViolations;
+        std::size_t pos = 0;
+        while( ( pos = vcxAll.find( "<ClCompile Include=\"", pos ) ) != std::string::npos ) {
+            const std::size_t q1 = pos + 20;
+            const std::size_t q2 = vcxAll.find( '"', q1 );
+            if( q2 == std::string::npos ) break;
+            std::string incRel = vcxAll.substr( q1, q2 - q1 );
+            const std::size_t tagClose = vcxAll.find( '>', q2 );
+            if( tagClose == std::string::npos ) break;
+            std::string blockMeta;
+            if( tagClose > 0 && vcxAll[tagClose - 1] != '/' ) {
+                const std::size_t endTag = vcxAll.find( "</ClCompile>", tagClose );
+                if( endTag != std::string::npos ) {
+                    blockMeta = vcxAll.substr( tagClose + 1, endTag - ( tagClose + 1 ) );
+                    pos = endTag + 12;
+                } else {
+                    pos = tagClose + 1;
+                }
+            } else {
+                pos = tagClose + 1;
+            }
+            // Skip unconditionally excluded TUs and TUs that disable or create PCH across all x64 configs.
+            if( blockMeta.find( "<ExcludedFromBuild>true</ExcludedFromBuild>" ) != std::string::npos ) continue;
+            if( blockMeta.find( "<PrecompiledHeader>NotUsing</PrecompiledHeader>" ) != std::string::npos ) continue;
+            if( blockMeta.find( "<PrecompiledHeader>Create</PrecompiledHeader>" ) != std::string::npos ) continue;
+            if( blockMeta.find( "<PrecompiledHeader Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\">" ) != std::string::npos &&
+                blockMeta.find( "<PrecompiledHeader Condition=\"'$(Configuration)|$(Platform)'=='Release|x64'\">" ) != std::string::npos &&
+                blockMeta.find( ">Use<" ) == std::string::npos ) continue;
+            for( char& ch : incRel ) { if( ch == '\\' ) ch = '/'; }
+            const fs::path tuPath = ( vcxDir / incRel ).lexically_normal();
+            std::ifstream tuIn( tuPath );
+            if( !tuIn ) {
+                pchViolations.push_back( incRel + " (missing on disk)" );
+                continue;
+            }
+            const std::string src( ( std::istreambuf_iterator<char>( tuIn ) ), std::istreambuf_iterator<char>() );
+            // Strip comments while preserving newlines.
+            std::string clean;
+            clean.reserve( src.size() );
+            for( std::size_t i = 0; i < src.size(); ) {
+                if( i + 1 < src.size() && src[i] == '/' && src[i + 1] == '/' ) {
+                    while( i < src.size() && src[i] != '\n' ) ++i;
+                } else if( i + 1 < src.size() && src[i] == '/' && src[i + 1] == '*' ) {
+                    i += 2;
+                    while( i + 1 < src.size() && !( src[i] == '*' && src[i + 1] == '/' ) ) {
+                        if( src[i] == '\n' ) clean.push_back( '\n' );
+                        ++i;
+                    }
+                    if( i + 1 < src.size() ) i += 2;
+                } else {
+                    clean.push_back( src[i++] );
+                }
+            }
+            std::istringstream ls( clean );
+            std::string ln;
+            bool sawPch = false;
+            int ifDepth = 0;
+            while( std::getline( ls, ln ) ) {
+                std::size_t a = 0;
+                while( a < ln.size() && std::isspace( static_cast<unsigned char>( ln[a] ) ) ) ++a;
+                if( a == ln.size() ) continue;
+                const std::string trimmed = ln.substr( a );
+                if( trimmed[0] == '#' ) {
+                    std::size_t d = 1;
+                    while( d < trimmed.size() && std::isspace( static_cast<unsigned char>( trimmed[d] ) ) ) ++d;
+                    const std::string dir = trimmed.substr( d );
+                    if( dir.rfind( "include", 0 ) == 0 ) {
+                        if( dir.find( "\"pch.h\"" ) != std::string::npos ) {
+                            sawPch = true;
+                            break;
+                        }
+                        pchViolations.push_back( incRel + " (#include before pch.h: " + trimmed + ")" );
+                        sawPch = true;
+                        break;
+                    }
+                    // Allow Win32-only file guard (#ifndef _WIN32 / #error / #endif) before pch.h.
+                    if( dir.rfind( "ifndef", 0 ) == 0 || dir.rfind( "ifdef", 0 ) == 0 || dir.rfind( "if ", 0 ) == 0 ) {
+                        ++ifDepth;
+                    } else if( dir.rfind( "endif", 0 ) == 0 && ifDepth > 0 ) {
+                        --ifDepth;
+                    } else if( ifDepth == 0 ) {
+                        pchViolations.push_back( incRel + " (directive before pch.h: " + trimmed + ")" );
+                        sawPch = true;
+                        break;
+                    }
+                } else {
+                    pchViolations.push_back( incRel + " (tokens before pch.h: " + trimmed + ")" );
+                    sawPch = true;
+                    break;
+                }
+            }
+            if( !sawPch ) {
+                pchViolations.push_back( incRel + " (missing #include \"pch.h\")" );
+            }
+        }
+        for( const std::string& v : pchViolations ) {
+            std::cout << "  pch-violation: " << v << std::endl;
+        }
+        Check( pchViolations.empty(),
+               "Library.vcxproj /Yu PCH hygiene: every /Yu ClCompile TU includes \"pch.h\" before any other #include or declaration" );
+    }
 
-	for( const auto& entry : fs::directory_iterator( testsDir ) ) {
+	// ---- Capturing IRasterizerOutput sinks must disable OIDN denoise ----
+	// A CapturingRasterizerOutput-style sink typically overrides only
+	// OutputImage; IRasterizerOutput::OutputDenoisedImage's default
+	// implementation forwards POST-denoise pixels there, and oidn_denoise
+	// defaults TRUE -- so a suite that never sets `oidn_denoise FALSE` is
+	// silently comparing OIDN-denoised images rather than the estimator.
+	// Auto is deterministic since DL-360; filtering still changes means.
+	// See docs/skills/bdpt-vcm-mis-balance.md's "Sibling sweep" addendum.
+	// Opt out with an "OIDN-DENOISED-OK" comment documenting why a suite
+	// is allowed to stay denoised.
+	//
+	// GRANULARITY: this is a PER-FILE substring check, not a per-rasterizer-
+	// chunk one -- a file with `oidn_denoise FALSE` on one rasterizer string
+	// passes even if another of its renders still denoises (a rasterizer
+	// lazily built by name has no chunk text to carry the parameter at all:
+	// PhotonMapDeferralTest's bdpt_pel_rasterizer, which therefore carries
+	// the opt-out token with its reason).  It catches the whole-suite
+	// omission the sweep found seven times; a per-chunk audit stays a
+	// review-time step (docs/skills/bdpt-vcm-mis-balance.md step 0).
+	std::vector<std::string> undenoised;
+	std::vector<std::string> unguardedPosixIncludes;
+	auto stripLiteralsPreservingLayout = []( const std::string& s ) -> std::string {
+		std::string out = s;
+		const std::size_t n = s.size();
+		std::size_t i = 0;
+		while( i < n ) {
+			if( s[i] == 'R' && i + 1 < n && s[i + 1] == '"' ) {
+				const std::size_t openParen = s.find( '(', i + 2 );
+				if( openParen != std::string::npos && openParen - ( i + 2 ) <= 16 ) {
+					const std::string delim = ")" + s.substr( i + 2, openParen - ( i + 2 ) ) + "\"";
+					const std::size_t endRaw = s.find( delim, openParen + 1 );
+					const std::size_t stop = ( endRaw == std::string::npos ) ? n : ( endRaw + delim.size() );
+					for( std::size_t k = i + 2; k < stop; ++k ) {
+						if( out[k] != '\n' ) out[k] = ' ';
+					}
+					i = stop;
+					continue;
+				}
+			}
+			if( s[i] == '"' || s[i] == '\'' ) {
+				const char quote = s[i];
+				++i;
+				while( i < n ) {
+					if( s[i] == '\\' ) {
+						if( out[i] != '\n' ) out[i] = ' ';
+						if( i + 1 < n && out[i + 1] != '\n' ) out[i + 1] = ' ';
+						i += 2;
+						continue;
+					}
+					if( s[i] == quote || s[i] == '\n' ) { ++i; break; }
+					out[i] = ' ';
+					++i;
+				}
+				continue;
+			}
+			++i;
+		}
+		return out;
+	};
+	auto foldLineContinuationsPreservingLineCount = []( const std::string& s ) -> std::string {
+		std::vector<std::string> phys;
+		{
+			std::size_t start = 0;
+			while( start <= s.size() ) {
+				const std::size_t nl = s.find( '\n', start );
+				const std::size_t end = ( nl == std::string::npos ) ? s.size() : nl;
+				std::string ln = s.substr( start, end - start );
+				if( !ln.empty() && ln.back() == '\r' ) ln.pop_back();
+				phys.push_back( std::move( ln ) );
+				if( nl == std::string::npos ) break;
+				start = nl + 1;
+			}
+		}
+		std::vector<std::string> out( phys.size() );
+		for( std::size_t i = 0; i < phys.size(); ) {
+			std::string merged = phys[i];
+			std::size_t j = i;
+			while( !merged.empty() && merged.back() == '\\' && j + 1 < phys.size() ) {
+				merged.pop_back();
+				merged += ' ';
+				++j;
+				merged += phys[j];
+			}
+			out[i] = std::move( merged );
+			i = j + 1;
+		}
+		std::string joined;
+		for( std::size_t i = 0; i < out.size(); ++i ) {
+			if( i > 0 ) joined += '\n';
+			joined += out[i];
+		}
+		return joined;
+	};
+
+	enum class Win32TriVal { False, True, Unknown };
+	struct Win32PpVal { bool known; long long val; };
+	struct Win32MacroDef { std::string name; bool hasIntVal; long long intVal; };
+	struct Win32MacroEnv
+	{
+		bool definesUseMath = false;
+		std::vector<std::string> shimmedFuncs;
+		std::vector<Win32MacroDef> definedMacros;
+	};
+
+	static const char* const kWin32PosixFuncs[] = {
+		"getpid", "setenv", "unsetenv", "popen", "pclose",
+		"mkfifo", "fork", "usleep", "mkstemp", "mkdtemp", "symlink",
+		"waitpid", "pipe", "dup2", "ftruncate", "lstat", "readlink", "realpath",
+		"strcasecmp", "strncasecmp", "localtime_r", "gmtime_r", "strtok_r",
+		"clock_gettime", "gettimeofday"
+	};
+	static const char* const kWin32PosixMathMacros[] = {
+		"M_PI", "M_PI_2", "M_PI_4", "M_1_PI", "M_2_PI", "M_2_SQRTPI",
+		"M_SQRT2", "M_SQRT1_2", "M_E", "M_LOG2E", "M_LOG10E", "M_LN2", "M_LN10"
+	};
+	static const char* const kWin32PosixHeaders[] = {
+		"<unistd.h>", "<sys/wait.h>", "<sys/resource.h>", "<dlfcn.h>", "<pthread.h>",
+		"<sys/time.h>", "<sys/mman.h>", "<dirent.h>", "<strings.h>", "<poll.h>",
+		"<pwd.h>", "<glob.h>", "<fnmatch.h>", "<execinfo.h>"
+	};
+
+	std::function<void(
+		const std::string&,
+		const std::string&,
+		const std::function<std::string( const std::string& )>&,
+		int,
+		bool,
+		Win32MacroEnv&,
+		std::vector<std::string>& )> scanWin32Portability;
+
+	scanWin32Portability = [&](
+		const std::string& fileLabel,
+		const std::string& rawSrc,
+		const std::function<std::string( const std::string& )>& resolveHeader,
+		int includeDepth,
+		bool emitDiagnostics,
+		Win32MacroEnv& env,
+		std::vector<std::string>& diags )
+	{
+		auto triNot = []( Win32TriVal v ) -> Win32TriVal {
+			if( v == Win32TriVal::True ) return Win32TriVal::False;
+			if( v == Win32TriVal::False ) return Win32TriVal::True;
+			return Win32TriVal::Unknown;
+		};
+		auto isFuncShimmed = [&]( const char* fn ) -> bool {
+			for( const std::string& s : env.shimmedFuncs ) {
+				if( s == fn ) return true;
+			}
+			return false;
+		};
+		auto findUserMacro = [&]( const std::string& m ) -> const Win32MacroDef* {
+			for( const Win32MacroDef& d : env.definedMacros ) {
+				if( d.name == m ) return &d;
+			}
+			return nullptr;
+		};
+		auto undefMacro = [&]( const std::string& m ) {
+			if( m == "_USE_MATH_DEFINES" ) env.definesUseMath = false;
+			env.shimmedFuncs.erase(
+				std::remove( env.shimmedFuncs.begin(), env.shimmedFuncs.end(), m ),
+				env.shimmedFuncs.end() );
+			env.definedMacros.erase(
+				std::remove_if( env.definedMacros.begin(), env.definedMacros.end(),
+					[&]( const Win32MacroDef& d ) { return d.name == m; } ),
+				env.definedMacros.end() );
+		};
+		auto defineMacro = [&]( const std::string& m, bool hasIntVal, long long intVal ) {
+			if( m.empty() ) return;
+			undefMacro( m );
+			if( m == "_USE_MATH_DEFINES" ) {
+				env.definesUseMath = true;
+				return;
+			}
+			for( const char* pf : kWin32PosixFuncs ) {
+				if( m == pf ) {
+					env.shimmedFuncs.push_back( m );
+					return;
+				}
+			}
+			env.definedMacros.push_back( { m, hasIntVal, intVal } );
+		};
+		auto evalMacroDefined = [&]( const std::string& id ) -> Win32TriVal {
+			if( id == "_WIN32" || id == "WIN32" || id == "_MSC_VER" || id == "_WIN64" ) return Win32TriVal::True;
+			if( id == "__APPLE__" || id == "__MACH__" || id == "__linux__" || id == "__gnu_linux__" ||
+			    id == "__unix__" || id == "__unix" || id == "__FreeBSD__" || id == "__ANDROID__" ||
+			    id == "__GNUC__" || id == "__clang__" )
+				return Win32TriVal::False;
+			if( id == "_USE_MATH_DEFINES" ) return env.definesUseMath ? Win32TriVal::True : Win32TriVal::False;
+			for( const char* pf : kWin32PosixFuncs ) {
+				if( id == pf ) return isFuncShimmed( pf ) ? Win32TriVal::True : Win32TriVal::False;
+			}
+			for( const char* mm : kWin32PosixMathMacros ) {
+				if( id == mm ) return ( env.definesUseMath || findUserMacro( mm ) != nullptr ) ? Win32TriVal::True : Win32TriVal::False;
+			}
+			if( findUserMacro( id ) != nullptr ) return Win32TriVal::True;
+			return Win32TriVal::Unknown;
+		};
+		auto evalMacroNumeric = [&]( const std::string& id ) -> Win32PpVal {
+			if( id == "_WIN32" || id == "WIN32" || id == "_WIN64" ) return { true, 1 };
+			if( id == "_MSC_VER" ) return { false, 0 };
+			if( id == "__APPLE__" || id == "__MACH__" || id == "__linux__" || id == "__gnu_linux__" ||
+			    id == "__unix__" || id == "__unix" || id == "__FreeBSD__" || id == "__ANDROID__" ||
+			    id == "__GNUC__" || id == "__clang__" )
+				return { true, 0 };
+			if( id == "_USE_MATH_DEFINES" ) return { true, env.definesUseMath ? 1 : 0 };
+			for( const char* pf : kWin32PosixFuncs ) {
+				if( id == pf ) return isFuncShimmed( pf ) ? Win32PpVal{ false, 0 } : Win32PpVal{ true, 0 };
+			}
+			if( const Win32MacroDef* d = findUserMacro( id ) ) {
+				return d->hasIntVal ? Win32PpVal{ true, d->intVal } : Win32PpVal{ false, 0 };
+			}
+			return { false, 0 };
+		};
+		// Fail-closed recursive-descent evaluator for `#if` / `#elif` expressions under `_WIN32`.
+		// Any unrecognized syntax or unconsumed trailing token returns `Win32TriVal::Unknown`,
+		// causing both `#if` and `#else` branches to be conservatively scanned.
+		auto evalWin32Cond = [&]( const std::string& expr ) -> Win32TriVal {
+			std::size_t pos = 0;
+			bool syntaxError = false;
+			auto skipWs = [&]() {
+				while( pos < expr.size() && std::isspace( static_cast<unsigned char>( expr[pos] ) ) ) ++pos;
+			};
+			auto readIdent = [&]() -> std::string {
+				skipWs();
+				const std::size_t start = pos;
+				if( pos < expr.size() &&
+					( std::isalpha( static_cast<unsigned char>( expr[pos] ) ) || expr[pos] == '_' ) ) {
+					++pos;
+					while( pos < expr.size() &&
+						( std::isalnum( static_cast<unsigned char>( expr[pos] ) ) || expr[pos] == '_' ) ) ++pos;
+				}
+				return expr.substr( start, pos - start );
+			};
+			std::function<Win32PpVal()> parseOr;
+			std::function<Win32PpVal()> parseAnd;
+			std::function<Win32PpVal()> parseEq;
+			std::function<Win32PpVal()> parseRel;
+			std::function<Win32PpVal()> parseUnary;
+			parseUnary = [&]() -> Win32PpVal {
+				skipWs();
+				if( syntaxError || pos >= expr.size() ) { syntaxError = true; return { false, 0 }; }
+				if( expr[pos] == '!' && ( pos + 1 >= expr.size() || expr[pos + 1] != '=' ) ) {
+					++pos;
+					const Win32PpVal v = parseUnary();
+					return v.known ? Win32PpVal{ true, v.val == 0 ? 1 : 0 } : Win32PpVal{ false, 0 };
+				}
+				if( expr[pos] == '+' || expr[pos] == '-' ) {
+					const char sign = expr[pos++];
+					const Win32PpVal v = parseUnary();
+					return v.known ? Win32PpVal{ true, sign == '-' ? -v.val : v.val } : Win32PpVal{ false, 0 };
+				}
+				if( expr[pos] == '(' ) {
+					++pos;
+					const Win32PpVal inner = parseOr();
+					skipWs();
+					if( pos >= expr.size() || expr[pos] != ')' ) { syntaxError = true; return { false, 0 }; }
+					++pos;
+					return inner;
+				}
+				if( std::isdigit( static_cast<unsigned char>( expr[pos] ) ) ) {
+					long long num = 0;
+					if( expr[pos] == '0' && pos + 1 < expr.size() && ( expr[pos + 1] == 'x' || expr[pos + 1] == 'X' ) ) {
+						pos += 2;
+						if( pos >= expr.size() || !std::isxdigit( static_cast<unsigned char>( expr[pos] ) ) ) {
+							syntaxError = true; return { false, 0 };
+						}
+						while( pos < expr.size() && std::isxdigit( static_cast<unsigned char>( expr[pos] ) ) ) {
+							const char ch = expr[pos++];
+							const int d = ( ch >= '0' && ch <= '9' ) ? ( ch - '0' )
+								: ( ch >= 'a' && ch <= 'f' ) ? ( 10 + ch - 'a' ) : ( 10 + ch - 'A' );
+							num = num * 16 + d;
+						}
+					} else {
+						while( pos < expr.size() && std::isdigit( static_cast<unsigned char>( expr[pos] ) ) ) {
+							num = num * 10 + static_cast<long long>( expr[pos++] - '0' );
+						}
+					}
+					while( pos < expr.size() && ( expr[pos] == 'u' || expr[pos] == 'U' || expr[pos] == 'l' || expr[pos] == 'L' ) ) ++pos;
+					if( pos < expr.size() && ( std::isalnum( static_cast<unsigned char>( expr[pos] ) ) || expr[pos] == '_' ) ) {
+						syntaxError = true; return { false, 0 };
+					}
+					return { true, num };
+				}
+				const std::string id = readIdent();
+				if( id.empty() ) { syntaxError = true; return { false, 0 }; }
+				if( id == "defined" ) {
+					skipWs();
+					bool paren = false;
+					if( pos < expr.size() && expr[pos] == '(' ) { paren = true; ++pos; }
+					const std::string target = readIdent();
+					if( target.empty() ) { syntaxError = true; return { false, 0 }; }
+					if( paren ) {
+						skipWs();
+						if( pos >= expr.size() || expr[pos] != ')' ) { syntaxError = true; return { false, 0 }; }
+						++pos;
+					}
+					const Win32TriVal d = evalMacroDefined( target );
+					if( d == Win32TriVal::True ) return { true, 1 };
+					if( d == Win32TriVal::False ) return { true, 0 };
+					return { false, 0 };
+				}
+				skipWs();
+				if( pos < expr.size() && expr[pos] == '(' ) {
+					// Function-like macro invocation (e.g. __has_include(...)): fail closed.
+					syntaxError = true;
+					return { false, 0 };
+				}
+				return evalMacroNumeric( id );
+			};
+			parseRel = [&]() -> Win32PpVal {
+				Win32PpVal lhs = parseUnary();
+				for( ;; ) {
+					skipWs();
+					if( syntaxError || pos >= expr.size() ) break;
+					if( pos + 1 < expr.size() && ( expr.compare( pos, 2, "<=" ) == 0 || expr.compare( pos, 2, ">=" ) == 0 ) ) {
+						const bool isLe = ( expr[pos] == '<' );
+						pos += 2;
+						const Win32PpVal rhs = parseUnary();
+						lhs = ( lhs.known && rhs.known )
+							? Win32PpVal{ true, ( isLe ? ( lhs.val <= rhs.val ) : ( lhs.val >= rhs.val ) ) ? 1 : 0 }
+							: Win32PpVal{ false, 0 };
+					} else if( ( expr[pos] == '<' || expr[pos] == '>' ) &&
+						( pos + 1 >= expr.size() || ( expr[pos + 1] != '<' && expr[pos + 1] != '>' && expr[pos + 1] != '=' ) ) ) {
+						const bool isLt = ( expr[pos] == '<' );
+						++pos;
+						const Win32PpVal rhs = parseUnary();
+						lhs = ( lhs.known && rhs.known )
+							? Win32PpVal{ true, ( isLt ? ( lhs.val < rhs.val ) : ( lhs.val > rhs.val ) ) ? 1 : 0 }
+							: Win32PpVal{ false, 0 };
+					} else {
+						break;
+					}
+				}
+				return lhs;
+			};
+			parseEq = [&]() -> Win32PpVal {
+				Win32PpVal lhs = parseRel();
+				for( ;; ) {
+					skipWs();
+					if( syntaxError || pos + 1 >= expr.size() ) break;
+					if( expr.compare( pos, 2, "==" ) == 0 || expr.compare( pos, 2, "!=" ) == 0 ) {
+						const bool isEq = ( expr[pos] == '=' );
+						pos += 2;
+						const Win32PpVal rhs = parseRel();
+						lhs = ( lhs.known && rhs.known )
+							? Win32PpVal{ true, ( isEq ? ( lhs.val == rhs.val ) : ( lhs.val != rhs.val ) ) ? 1 : 0 }
+							: Win32PpVal{ false, 0 };
+					} else {
+						break;
+					}
+				}
+				return lhs;
+			};
+			parseAnd = [&]() -> Win32PpVal {
+				Win32PpVal lhs = parseEq();
+				for( ;; ) {
+					skipWs();
+					if( syntaxError || pos + 1 >= expr.size() ) break;
+					if( expr[pos] == '&' && expr[pos + 1] == '&' ) {
+						pos += 2;
+						const Win32PpVal rhs = parseEq();
+						if( ( lhs.known && lhs.val == 0 ) || ( rhs.known && rhs.val == 0 ) ) lhs = { true, 0 };
+						else if( lhs.known && rhs.known ) lhs = { true, 1 };
+						else lhs = { false, 0 };
+					} else {
+						break;
+					}
+				}
+				return lhs;
+			};
+			parseOr = [&]() -> Win32PpVal {
+				Win32PpVal lhs = parseAnd();
+				for( ;; ) {
+					skipWs();
+					if( syntaxError || pos + 1 >= expr.size() ) break;
+					if( expr[pos] == '|' && expr[pos + 1] == '|' ) {
+						pos += 2;
+						const Win32PpVal rhs = parseAnd();
+						if( ( lhs.known && lhs.val != 0 ) || ( rhs.known && rhs.val != 0 ) ) lhs = { true, 1 };
+						else if( lhs.known && rhs.known ) lhs = { true, 0 };
+						else lhs = { false, 0 };
+					} else {
+						break;
+					}
+				}
+				return lhs;
+			};
+			const Win32PpVal top = parseOr();
+			skipWs();
+			if( syntaxError || pos != expr.size() || !top.known ) return Win32TriVal::Unknown;
+			return top.val != 0 ? Win32TriVal::True : Win32TriVal::False;
+		};
+
+		struct Frame { bool parentActive; bool definitelyTaken; bool active; };
+		std::vector<Frame> stack;
+		const std::string stripped = foldLineContinuationsPreservingLineCount( StripCommentsPreservingLayout( rawSrc ) );
+		const std::string codeNoStrings = stripLiteralsPreservingLayout( stripped );
+		std::istringstream lsRaw( stripped );
+		std::istringstream lsNoStr( codeNoStrings );
+		std::string line, lineNoStr;
+		int lineNo = 0;
+		while( std::getline( lsRaw, line ) && std::getline( lsNoStr, lineNoStr ) ) {
+			++lineNo;
+			const bool curActive = stack.empty() ? true : stack.back().active;
+			std::size_t pHash = 0;
+			while( pHash < lineNoStr.size() && ( lineNoStr[pHash] == ' ' || lineNoStr[pHash] == '\t' ) ) ++pHash;
+			const bool isPreprocLine = ( pHash < lineNoStr.size() && lineNoStr[pHash] == '#' );
+			if( curActive && emitDiagnostics && !isPreprocLine ) {
+				for( const char* pf : kWin32PosixFuncs ) {
+					if( isFuncShimmed( pf ) ) continue;
+					const std::size_t pfLen = std::strlen( pf );
+					std::size_t gp = 0;
+					while( ( gp = lineNoStr.find( pf, gp ) ) != std::string::npos ) {
+						const bool qualifiedScope = ( gp >= 3 ) &&
+							lineNoStr[gp - 1] == ':' && lineNoStr[gp - 2] == ':' &&
+							( std::isalnum( static_cast<unsigned char>( lineNoStr[gp - 3] ) ) ||
+							  lineNoStr[gp - 3] == '_' );
+						const bool isWordStart = !qualifiedScope && ( ( gp == 0 ) ||
+							( !std::isalnum( static_cast<unsigned char>( lineNoStr[gp - 1] ) ) &&
+							  lineNoStr[gp - 1] != '_' && lineNoStr[gp - 1] != '.' && lineNoStr[gp - 1] != '>' ) );
+						std::size_t afterPf = gp + pfLen;
+						const bool isWordEnd = ( afterPf >= lineNoStr.size() ) ||
+							( !std::isalnum( static_cast<unsigned char>( lineNoStr[afterPf] ) ) &&
+							  lineNoStr[afterPf] != '_' );
+						if( isWordStart && isWordEnd ) {
+							while( afterPf < lineNoStr.size() &&
+								( lineNoStr[afterPf] == ' ' || lineNoStr[afterPf] == '\t' ) ) {
+								++afterPf;
+							}
+							if( afterPf < lineNoStr.size() && lineNoStr[afterPf] == '(' ) {
+								diags.push_back(
+									fileLabel + ":" + std::to_string( lineNo ) + " unshimmed " + pf + "()" );
+								break;
+							}
+						}
+						gp += pfLen;
+					}
+				}
+				if( !env.definesUseMath ) {
+					for( const char* mm : kWin32PosixMathMacros ) {
+						if( findUserMacro( mm ) != nullptr ) continue;
+						const std::size_t mLen = std::strlen( mm );
+						std::size_t mp = 0;
+						while( ( mp = lineNoStr.find( mm, mp ) ) != std::string::npos ) {
+							const bool leftOk = ( mp == 0 ) ||
+								( !std::isalnum( static_cast<unsigned char>( lineNoStr[mp - 1] ) ) && lineNoStr[mp - 1] != '_' );
+							const bool rightOk = ( mp + mLen >= lineNoStr.size() ) ||
+								( !std::isalnum( static_cast<unsigned char>( lineNoStr[mp + mLen] ) ) && lineNoStr[mp + mLen] != '_' );
+							if( leftOk && rightOk ) {
+								diags.push_back(
+									fileLabel + ":" + std::to_string( lineNo ) + " unguarded " + mm );
+								break;
+							}
+							mp += mLen;
+						}
+					}
+				}
+				// Check for hardcoded "/tmp" scratch-path string literals active under _WIN32.
+				const std::string tmpTok = std::string( "/" ) + "tmp";
+				std::size_t tp = 0;
+				while( ( tp = line.find( tmpTok, tp ) ) != std::string::npos ) {
+					const bool insideStringLiteral = ( tp < lineNoStr.size() && line[tp] != lineNoStr[tp] );
+					const bool boundaryBefore = ( tp == 0 ) ||
+						line[tp - 1] == '"' || line[tp - 1] == '(' || line[tp - 1] == ' ' ||
+						line[tp - 1] == '\t' || line[tp - 1] == '=' ||
+						( tp >= 8 && line.compare( tp - 8, 8, "/private" ) == 0 );
+					const std::size_t afterIdx = tp + tmpTok.size();
+					const bool boundaryAfter = ( afterIdx >= line.size() ) ||
+						line[afterIdx] == '/' || line[afterIdx] == '"' || line[afterIdx] == ')' ||
+						line[afterIdx] == '\\' || line[afterIdx] == ' ' || line[afterIdx] == '\t';
+					if( insideStringLiteral && boundaryBefore && boundaryAfter ) {
+						diags.push_back(
+							fileLabel + ":" + std::to_string( lineNo ) + " hardcoded /tmp scratch path" );
+						break;
+					}
+					tp += tmpTok.size();
+				}
+			}
+			if( !isPreprocLine ) continue;
+			std::size_t i = 0;
+			while( i < line.size() && ( line[i] == ' ' || line[i] == '\t' ) ) ++i;
+			if( i >= line.size() || line[i] != '#' ) continue;
+			++i;
+			while( i < line.size() && ( line[i] == ' ' || line[i] == '\t' ) ) ++i;
+			std::size_t kwEnd = i;
+			while( kwEnd < line.size() && std::isalpha( static_cast<unsigned char>( line[kwEnd] ) ) ) ++kwEnd;
+			const std::string kw = line.substr( i, kwEnd - i );
+			const std::string rest = line.substr( kwEnd );
+			auto extractIdentAndTail = []( const std::string& s, std::string& tailOut ) -> std::string {
+				std::size_t mStart = 0;
+				while( mStart < s.size() && ( s[mStart] == ' ' || s[mStart] == '\t' ) ) ++mStart;
+				std::size_t mEnd = mStart;
+				while( mEnd < s.size() &&
+					( std::isalnum( static_cast<unsigned char>( s[mEnd] ) ) || s[mEnd] == '_' ) ) ++mEnd;
+				tailOut = ( mEnd < s.size() ) ? s.substr( mEnd ) : std::string();
+				return s.substr( mStart, mEnd - mStart );
+			};
+			std::string macroTail;
+			if( kw == "define" && curActive ) {
+				const std::string mName = extractIdentAndTail( rest, macroTail );
+				// Function-like macro `#define FOO(x) ...` has `(` immediately after name; no scalar int val.
+				bool hasInt = false;
+				long long intVal = 0;
+				if( macroTail.empty() || macroTail[0] != '(' ) {
+					std::size_t tPos = 0;
+					while( tPos < macroTail.size() && std::isspace( static_cast<unsigned char>( macroTail[tPos] ) ) ) ++tPos;
+					if( tPos == macroTail.size() ) {
+						// Object-like `#define FOO` with empty body expands to 1-like defined, 0 if empty? Fail-closed: unknown numeric.
+						hasInt = false;
+					} else {
+						bool neg = false;
+						if( macroTail[tPos] == '+' || macroTail[tPos] == '-' ) {
+							neg = ( macroTail[tPos] == '-' );
+							++tPos;
+						}
+						if( tPos < macroTail.size() && std::isdigit( static_cast<unsigned char>( macroTail[tPos] ) ) ) {
+							long long v = 0;
+							while( tPos < macroTail.size() && std::isdigit( static_cast<unsigned char>( macroTail[tPos] ) ) ) {
+								v = v * 10 + static_cast<long long>( macroTail[tPos++] - '0' );
+							}
+							while( tPos < macroTail.size() && std::isspace( static_cast<unsigned char>( macroTail[tPos] ) ) ) ++tPos;
+							if( tPos == macroTail.size() ) {
+								hasInt = true;
+								intVal = neg ? -v : v;
+							}
+						}
+					}
+				}
+				defineMacro( mName, hasInt, intVal );
+			} else if( kw == "undef" && curActive ) {
+				const std::string mName = extractIdentAndTail( rest, macroTail );
+				if( !mName.empty() ) undefMacro( mName );
+			} else if( kw == "ifdef" ) {
+				const Win32TriVal v = evalMacroDefined( extractIdentAndTail( rest, macroTail ) );
+				const bool mayRun = ( v != Win32TriVal::False );
+				stack.push_back( { curActive, v == Win32TriVal::True, curActive && mayRun } );
+			} else if( kw == "ifndef" ) {
+				const Win32TriVal v = triNot( evalMacroDefined( extractIdentAndTail( rest, macroTail ) ) );
+				const bool mayRun = ( v != Win32TriVal::False );
+				stack.push_back( { curActive, v == Win32TriVal::True, curActive && mayRun } );
+			} else if( kw == "if" ) {
+				const Win32TriVal v = evalWin32Cond( rest );
+				const bool mayRun = ( v != Win32TriVal::False );
+				stack.push_back( { curActive, v == Win32TriVal::True, curActive && mayRun } );
+			} else if( ( kw == "elif" || kw == "elifdef" || kw == "elifndef" ) && !stack.empty() ) {
+				Frame& top = stack.back();
+				if( !top.parentActive || top.definitelyTaken ) {
+					top.active = false;
+				} else {
+					const Win32TriVal v = ( kw == "elif" )
+						? evalWin32Cond( rest )
+						: ( kw == "elifdef" )
+							? evalMacroDefined( extractIdentAndTail( rest, macroTail ) )
+							: triNot( evalMacroDefined( extractIdentAndTail( rest, macroTail ) ) );
+					const bool mayRun = ( v != Win32TriVal::False );
+					if( v == Win32TriVal::True ) top.definitelyTaken = true;
+					top.active = mayRun;
+				}
+			} else if( kw == "else" && !stack.empty() ) {
+				Frame& top = stack.back();
+				top.active = top.parentActive && !top.definitelyTaken;
+				top.definitelyTaken = true;
+			} else if( kw == "endif" && !stack.empty() ) {
+				stack.pop_back();
+			} else if( kw == "include" && curActive ) {
+				if( emitDiagnostics ) {
+					for( const char* ph : kWin32PosixHeaders ) {
+						if( rest.find( ph ) != std::string::npos ) {
+							diags.push_back(
+								fileLabel + ":" + std::to_string( lineNo ) + " " + ph );
+						}
+					}
+				}
+				if( includeDepth < 4 && resolveHeader ) {
+					const std::size_t q1 = rest.find( '"' );
+					const std::size_t q2 = ( q1 == std::string::npos ) ? std::string::npos : rest.find( '"', q1 + 1 );
+					if( q1 != std::string::npos && q2 != std::string::npos ) {
+						const std::string hdrText = resolveHeader( rest.substr( q1 + 1, q2 - q1 - 1 ) );
+						if( !hdrText.empty() ) {
+							scanWin32Portability( fileLabel, hdrText, resolveHeader, includeDepth + 1, false, env, diags );
+						}
+					}
+				}
+			}
+		}
+	};
+
+	// Self-tests for the DL-632 _WIN32 portability scanner (proving comparison operators,
+	// fail-closed unknown expressions, #undef, #elifdef/#elifndef, backslash continuations,
+	// conditional local-header shims, and "/tmp" scratch-path detection).
+	{
+		auto runSnippet = [&]( const std::string& code, const std::string& hdrText = std::string() ) {
+			Win32MacroEnv env;
+			std::vector<std::string> diags;
+			auto resolver = [&]( const std::string& rel ) -> std::string {
+				return ( rel == "mock_shim.h" ) ? hdrText : std::string();
+			};
+			scanWin32Portability( "snippet.cpp", code, resolver, 0, true, env, diags );
+			return diags;
+		};
+		Check( runSnippet( "#if defined(_WIN32) == 0\n#include <unistd.h>\n#endif\n" ).empty(),
+		       "DL-632 scanner self-test: `#if defined(_WIN32) == 0` is inactive under _WIN32" );
+		Check( runSnippet( "#if defined(_WIN32) == 0\n#else\n#include <unistd.h>\n#endif\n" ).size() == 1,
+		       "DL-632 scanner self-test: `#else` of `#if defined(_WIN32) == 0` is active under _WIN32" );
+		Check( runSnippet( "#if (defined(__APPLE__)) == 0\n#include <unistd.h>\n#endif\n" ).size() == 1,
+		       "DL-632 scanner self-test: `#if (defined(__APPLE__)) == 0` is active under _WIN32" );
+		Check( runSnippet( "#if UNKNOWN_CFG ? 0 : 1\n#include <unistd.h>\n#else\n#include <dlfcn.h>\n#endif\n" ).size() == 2,
+		       "DL-632 scanner self-test: unsupported `? :` expression fails closed (both branches scanned)" );
+		Check( runSnippet( "#if defined(_WIN32) TRAIL_GARBAGE\n#else\n#include <unistd.h>\n#endif\n" ).size() == 1,
+		       "DL-632 scanner self-test: unconsumed trailing tokens fail closed" );
+		Check( runSnippet( "#define getpid _getpid\nint a = getpid();\n#undef getpid\nint b = getpid();\n" ).size() == 1,
+		       "DL-632 scanner self-test: `#undef getpid` revokes an earlier `#define getpid` shim" );
+		Check( runSnippet( "#ifdef __APPLE__\n#elifdef _WIN32\n#include <unistd.h>\n#endif\n" ).size() == 1 &&
+		       runSnippet( "#ifdef _WIN32\n#elifndef __APPLE__\n#include <unistd.h>\n#endif\n" ).empty(),
+		       "DL-632 scanner self-test: `#elifdef` and `#elifndef` track branch activity accurately" );
+		{
+			const std::vector<std::string> contDiags = runSnippet(
+				"#if defined(__APPLE__) || \\\n    defined(_WIN32)\n#include <unistd.h>\n#endif\n" );
+			Check( contDiags.size() == 1 && contDiags[0] == "snippet.cpp:3 <unistd.h>",
+			       "DL-632 scanner self-test: backslash-continued `#if` evaluates accurately and preserves physical line numbers" );
+			Check( runSnippet( "#if defined(__APPLE__) || \\\n    defined(__linux__)\n#include <unistd.h>\n#endif\n" ).empty(),
+			       "DL-632 scanner self-test: backslash-continued POSIX-only `#if` stays inactive under _WIN32" );
+		}
+		Check( runSnippet( "#include \"mock_shim.h\"\nint x = getpid();\n",
+		                   "#ifndef _WIN32\n#define getpid fake_pid\n#endif\n" ).size() == 1 &&
+		       runSnippet( "#include \"mock_shim.h\"\nint x = getpid();\n",
+		                   "#ifdef _WIN32\n#define getpid _getpid\n#endif\n" ).empty(),
+		       "DL-632 scanner self-test: local `#include` headers obey _WIN32 conditional branches" );
+		{
+			const std::string slashTmp = std::string( "/" ) + "tmp";
+			Check( runSnippet( "const char* p = \"" + slashTmp + "/foo.RISEscene\";\n" ).size() == 1 &&
+			       runSnippet( "const char* d = \"" + slashTmp + "\";\n" ).size() == 1 &&
+			       runSnippet( "#ifndef _WIN32\nconst char* p = \"" + slashTmp + "/foo\";\n#endif\n" ).empty(),
+			       "DL-632 scanner self-test: hardcoded `/tmp` scratch paths are caught when _WIN32-active and allowed under `#ifndef _WIN32`" );
+		}
+		Check( runSnippet( "int x = getpid ();\nint y = mkfifo\t( \"p\", 0600 );\n" ).size() == 2 &&
+		       runSnippet( "int getpid_helper () { return 0; }\n" ).empty(),
+		       "DL-632 scanner self-test: unshimmed POSIX calls with whitespace before `(` are caught without false positives" );
+	}
+	for( const auto& entry : fs::recursive_directory_iterator( testsDir ) ) {
 		if( !entry.is_regular_file() ) { continue; }
 		const fs::path& f = entry.path();
-		if( f.extension() != ".cpp" ) { continue; }
+		const std::string ext = f.extension().string();
+		if( ext != ".cpp" && ext != ".h" && ext != ".hpp" && ext != ".inl" ) { continue; }
 		if( f.filename() == "SourceHygieneTest.cpp" ) { continue; }   // don't scan ourselves
+		const std::string relLabel = f.lexically_relative( testsDir ).generic_string();
 		++scanned;
 
-		std::ifstream in( f );
-		std::string line;
-		int lineNo = 0;
-		while( std::getline( in, line ) ) {
-			++lineNo;
-			if( line.find( "HYGIENE-OK" ) != std::string::npos ) { continue; }
-			for( const char* tok : kForbidden ) {
-				const size_t tokPos = line.find( tok );
-				if( tokPos == std::string::npos ) { continue; }
-				// Skip comments: a NaN/Inf mentioned in a // comment is fine.
-				const size_t commentPos = line.find( "//" );
-				if( commentPos != std::string::npos && commentPos < tokPos ) { continue; }
-				// The DISEASE is a NaN/Inf RETURNED as a not-found sentinel
-				// (e.g. `if( !l ) return std::nan("");`).  A NaN/Inf used as a
-				// test INPUT (constructed and passed into the code under test)
-				// is legitimate, so only flag a same-line `return ... <tok>`.
-				const size_t retPos = line.find( "return" );
-				if( retPos == std::string::npos || retPos > tokPos ) { continue; }
-				offenders.push_back(
-					f.filename().string() + ":" + std::to_string( lineNo )
-					+ "  ->  return " + tok );
+		const std::string src = SlurpFile( f );
+
+		// (1) Scan for foldable NaN/Inf sentinels (only inspect lines if any
+		// forbidden token appears in the file at all).
+		bool anyForbiddenInFile = false;
+		for( const char* tok : kForbidden ) {
+			if( src.find( tok ) != std::string::npos ) { anyForbiddenInFile = true; break; }
+		}
+		if( anyForbiddenInFile ) {
+			int lineNo = 0;
+			std::size_t lineStart = 0;
+			while( lineStart <= src.size() ) {
+				const std::size_t nl = src.find( '\n', lineStart );
+				const std::size_t lineEnd = ( nl == std::string::npos ) ? src.size() : nl;
+				++lineNo;
+				const std::string line = src.substr( lineStart, lineEnd - lineStart );
+				if( line.find( "HYGIENE-OK" ) == std::string::npos ) {
+					for( const char* tok : kForbidden ) {
+						const size_t tokPos = line.find( tok );
+						if( tokPos == std::string::npos ) { continue; }
+						const size_t commentPos = line.find( "//" );
+						if( commentPos != std::string::npos && commentPos < tokPos ) { continue; }
+						const size_t retPos = line.find( "return" );
+						bool isSentinel = ( retPos != std::string::npos && retPos < tokPos );
+						if( !isSentinel ) {
+							for( size_t cp = line.find( ':' ); cp != std::string::npos && cp < tokPos; cp = line.find( ':', cp + 1 ) ) {
+								const bool prevColon = ( cp > 0 && line[cp - 1] == ':' );
+								const bool nextColon = ( cp + 1 < line.size() && line[cp + 1] == ':' );
+								if( !prevColon && !nextColon && line.find( '?' ) != std::string::npos ) {
+									isSentinel = true;
+									break;
+								}
+							}
+						}
+						if( !isSentinel ) { continue; }
+						offenders.push_back(
+							relLabel + ":" + std::to_string( lineNo )
+							+ "  ->  sentinel " + tok );
+					}
+				}
+				if( nl == std::string::npos ) { break; }
+				lineStart = nl + 1;
 			}
+		}
+
+		// (2) Check capturing IRasterizerOutput sinks for oidn_denoise FALSE
+		// across both .cpp tests and shared test fixture .h headers.
+		if( ext == ".cpp" || ext == ".h" || ext == ".hpp" ) {
+			const bool definesCapturingSink =
+				src.find( "public IRasterizerOutput" ) != std::string::npos
+				|| src.find( "public virtual IRasterizerOutput" ) != std::string::npos;
+			if( definesCapturingSink && src.find( "OIDN-DENOISED-OK" ) == std::string::npos ) {
+				std::string norm = src;
+				std::transform( norm.begin(), norm.end(), norm.begin(),
+					[]( unsigned char c ){ return std::tolower( c ); } );
+				for( size_t p = 0; ( p = norm.find( "\\t", p ) ) != std::string::npos; ) { norm.replace( p, 2, " " ); }
+				if( norm.find( "oidn_denoise false" ) == std::string::npos ) {
+					undenoised.push_back( relLabel );
+				}
+			}
+		}
+
+		// (3) DL-632: build/cmake/rise-tests/CMakeLists.txt compiles every
+		// tests/*.cpp on Windows/MSVC.  Verify no POSIX-only header
+		// (<unistd.h>, <sys/wait.h>, <sys/resource.h>, <dlfcn.h>, <pthread.h>),
+		// unshimmed POSIX function, unguarded M_PI/M_E math macro, or hardcoded
+		// "/tmp" scratch path is active when _WIN32 is defined.
+		{
+			Win32MacroEnv env;
+			auto resolveDiskHeader = [&]( const std::string& rel ) -> std::string {
+				const fs::path hdrPath = f.parent_path() / rel;
+				if( fs::exists( hdrPath ) && fs::is_regular_file( hdrPath ) ) {
+					return SlurpFile( hdrPath );
+				}
+				const fs::path rootHdrPath = testsDir / rel;
+				if( fs::exists( rootHdrPath ) && fs::is_regular_file( rootHdrPath ) ) {
+					return SlurpFile( rootHdrPath );
+				}
+				return std::string();
+			};
+			scanWin32Portability( relLabel, src, resolveDiskHeader, 0, true, env, unguardedPosixIncludes );
 		}
 	}
 
 	Check( scanned > 0, "scanned at least one test file" );
+
+	for( const std::string& o : unguardedPosixIncludes ) {
+		std::cout << "  DL-632 unguarded POSIX header/symbol/path in tests/ (_WIN32 active): " << o << std::endl;
+	}
+	Check( unguardedPosixIncludes.empty(),
+	       "DL-632: no unguarded POSIX-only headers, unshimmed POSIX functions, unguarded M_PI/M_E math macros, or hardcoded /tmp scratch paths active under _WIN32 in tests/" );
 
 	for( const std::string& o : offenders ) {
 		std::cout << "  FORBIDDEN foldable NaN/Inf sentinel: " << o << std::endl;
@@ -867,8 +1975,9 @@ int main()
 				std::string::npos,
 			"extended fire experiments dependency-build their exact binaries before running" );
 		Check(iorStackTest.find("\tassert(") == std::string::npos &&
-			iorStackTest.find("return failCount == 0 ? 0 : 1;") !=
-				std::string::npos,
+			// Master's IORStackTest names its counter gFailCount; both spellings are accepted.
+			(iorStackTest.find("return failCount == 0 ? 0 : 1;") != std::string::npos ||
+			 iorStackTest.find("return gFailCount == 0 ? 0 : 1;") != std::string::npos),
 			"IORStack runtime oracles remain active in Release builds" );
 		Check(fileOutputTest.find("#if defined(_WIN32)") != std::string::npos &&
 			fileOutputTest.find("physicalSegmentLength = 48u") !=
@@ -1182,7 +2291,7 @@ int main()
 				std::string::npos,
 			"macOS public Save As contract matches its production render lease" );
 		Check(crossPlatformArchitecture.find(
-				"## 2. Current state (code-confirmed, 2026-08)") !=
+				"## 2. Historical baseline (2026-06) & shipped shared-core update") !=
 				std::string::npos &&
 			crossPlatformArchitecture.find("SceneEditCategory_*` (0–11)") !=
 				std::string::npos &&
@@ -1680,7 +2789,8 @@ int main()
 			frameStoreDesign.find("Reader spin-yield") == std::string::npos &&
 			renderObserverHeader.find("the seqlock model") == std::string::npos &&
 			frameStoreHeader.find("Observers MUST NOT throw") == std::string::npos &&
-			frameStoreHeader.find("Observer failures are contained") !=
+			// Master re-wrapped this comment ("Observer" / "failures are contained"), so match the wrap-safe tail.
+			frameStoreHeader.find("failures are contained") !=
 				std::string::npos,
 			"FrameStore contracts describe shared tile locks and synchronous contained callbacks" );
 		Check(frameEncoders.find("effectiveTransform.whiteBalance") != std::string::npos &&
@@ -1792,6 +2902,14 @@ int main()
 			"unknown external cameras fail closed instead of sharing an empty projection identity" );
 	}
 
+	for( const std::string& o : undenoised ) {
+		std::cout << "  capturing IRasterizerOutput sink with no `oidn_denoise FALSE` "
+		          << "anywhere: " << o << std::endl;
+	}
+	Check( undenoised.empty(),
+	       "every tests/*.cpp defining a capturing IRasterizerOutput sink sets "
+	       "`oidn_denoise FALSE` somewhere (or opts out with an OIDN-DENOISED-OK comment)" );
+
 	// ---- Start-screen starter-template sync (docs/gui/START_SCREEN.md §5.1)
 	// The canonical scenes/Templates/empty_starter.RISEscene is copied into
 	// each GUI build's resources (Mac: build/XCode/rise/RISE-GUI/Resources/).
@@ -1804,15 +2922,10 @@ int main()
 			repoRoot / "scenes" / "Templates" / "empty_starter.RISEscene";
 		const fs::path macCopy = repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "Resources" / "empty_starter.RISEscene";
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
-		};
-		const std::string canonicalBytes = slurp( canonical );
+		const std::string canonicalBytes = SlurpFile( canonical );
 		Check( !canonicalBytes.empty(),
 		       "canonical starter template exists (scenes/Templates/empty_starter.RISEscene)" );
-		const std::string macBytes = slurp( macCopy );
+		const std::string macBytes = SlurpFile( macCopy );
 		Check( !macBytes.empty(),
 		       "Mac bundle copy of the starter template exists (RISE-GUI/Resources)" );
 		Check( canonicalBytes == macBytes,
@@ -1833,11 +2946,7 @@ int main()
 	// the resolution ladder itself is covered portably by AgentSkillsTest.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		const std::string macApp = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "RISEApp.swift" );
 		const std::string macChat = slurp( repoRoot / "build" / "XCode" / "rise"
@@ -1897,11 +3006,7 @@ int main()
 	// desktop apps different first-reveal behavior.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		const std::string mac = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "MultiPaneViewport.swift" );
 		const std::string win = slurp( repoRoot / "build" / "VS2022"
@@ -1931,11 +3036,7 @@ int main()
 	// the platform GUI builds type-check the code reached by these markers.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		const std::string macModel = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "RenderViewModel.swift" );
 		const std::string macChat = slurp( repoRoot / "build" / "XCode" / "rise"
@@ -2294,6 +3395,1161 @@ int main()
 			       std::to_string( capMentions ) + ")" );
 		}
 
+		// ---- R1c: agent rasterizer allowlist, surface parity --------------
+		// GROUND TRUTH IS THE CODE.  The policy lives in two arrays in
+		// AgentSession.cpp (kAgentAllowedRasterizers_ /
+		// kAgentBlockedRasterizers_; the former ungated-utility set was retired
+		// by legacy-deprecation Phase 1, 2026-10-09) and is
+		// RESTATED, in prose, on the two hand-authored tool-description
+		// surfaces a model actually reads: the shared chat tool defs
+		// (AgentChatCodecs.cpp `kToolDefs`) and the MCP tools/list text
+		// (AgentMcpAdapter.cpp).  Those two are written independently -- there
+		// is no shared string -- so they drift silently, and a model told the
+		// wrong allowlist burns a round trip discovering the real one, which
+		// is precisely the failure the read_schema cap block above exists to
+		// stop.  Neither surface is compiled against the arrays, so nothing
+		// but this scan pins them.
+		//
+		// The rule: EVERY keyword in the allowed set and EVERY keyword in the
+		// known-blocked set must appear verbatim in BOTH files.  Adding a
+		// fifth allowed rasterizer, or blocking a newly added kind, therefore
+		// cannot land without updating both surfaces.  The frozen legacy pixel
+		// rasterizers are in the blocked set, so they are covered by the same
+		// per-keyword rule.
+		{
+			const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
+			const std::string sessionSrc = slurp( agentDir / "AgentSession.cpp" );
+
+			// Pull the quoted keywords out of one of the policy arrays.
+			auto arrayKeywords = [&]( const char* arrayName ) {
+				std::vector<std::string> out;
+				const std::string anchorDecl = std::string( "kAgent" ) + arrayName + "Rasterizers_[] = {";
+				const size_t at = sessionSrc.find( anchorDecl );
+				if( at == std::string::npos ) return out;
+				const size_t end = sessionSrc.find( "};", at );
+				if( end == std::string::npos ) return out;
+				const std::string body = sessionSrc.substr( at + anchorDecl.size(),
+				                                            end - ( at + anchorDecl.size() ) );
+				for( size_t q = body.find( '"' ); q != std::string::npos; q = body.find( '"', q + 1 ) ) {
+					const size_t q2 = body.find( '"', q + 1 );
+					if( q2 == std::string::npos ) break;
+					out.push_back( body.substr( q + 1, q2 - q - 1 ) );
+					q = q2;
+				}
+				return out;
+			};
+
+			const std::vector<std::string> allowedKw = arrayKeywords( "Allowed" );
+			const std::vector<std::string> blockedKw = arrayKeywords( "Blocked" );
+			Check( allowedKw.size() == 4 && blockedKw.size() == 8 &&
+			       sessionSrc.find( "kAgentUngatedUtilityRasterizers_[] = {" ) == std::string::npos,
+			       "R1c allowlist parity: parsed the TWO policy arrays out of AgentSession.cpp, and the "
+			       "retired ungated-utility array is gone "
+			       "(allowed=" + std::to_string( allowedKw.size() ) +
+			       ", blocked=" + std::to_string( blockedKw.size() ) + ")" );
+
+			static const char* const kPolicySurfaces[] = { "AgentChatCodecs.cpp", "AgentMcpAdapter.cpp" };
+			std::vector<std::string> policyProblems;
+			for( const char* fname : kPolicySurfaces ) {
+				const std::string src = slurp( agentDir / fname );
+				for( const std::string& kw : allowedKw )
+					if( src.find( kw ) == std::string::npos )
+						policyProblems.push_back( std::string( fname ) + ": never names the ALLOWED "
+							"rasterizer `" + kw + "` -- a model reading this surface cannot know it "
+							"may select it" );
+				for( const std::string& kw : blockedKw )
+					if( src.find( kw ) == std::string::npos )
+						policyProblems.push_back( std::string( fname ) + ": never names the BLOCKED "
+							"rasterizer `" + kw + "` -- a model reading this surface will try it and "
+							"be refused" );
+			}
+			for( const std::string& p : policyProblems )
+				std::cout << "  R1C ALLOWLIST DRIFT: " << p << std::endl;
+			Check( policyProblems.empty(),
+			       "R1c: both hand-authored tool-description surfaces state the SAME rasterizer "
+			       "allowlist AgentSession.cpp enforces" );
+		}
+
+		// ---- G2: build-plan gate, surface parity --------------------------
+		// GROUND TRUTH IS THE CODE.  The closed `construction` enum lives in
+		// AgentSession.cpp's kBuildPlanConstructionValues, and three facts about
+		// the gate are RESTATED, in prose, on the two hand-authored surfaces a
+		// model actually reads: the shared chat tool defs (AgentChatCodecs.cpp
+		// `kToolDefs` -- the text sent with EVERY API call) and the MCP
+		// tools/list description (AgentMcpAdapter.cpp).  They are written
+		// independently, share no string, and are compiled against nothing, so
+		// only this scan pins them.
+		//
+		// The three facts are load-bearing, not decoration.  (1) The ENUM: a
+		// value outside it is a -32602, so a surface that omits a value costs
+		// the model a round trip discovering it -- and a surface that omits the
+		// enum entirely invites free text into the one required field.  (2)
+		// NON-BINDING: if a model believes the declaration constrains its later
+		// authoring, it will either under-declare defensively or refuse to
+		// deviate -- both of which corrupt the measurement this gate exists to
+		// produce.  (3) CAPPED AT 3 REFUSALS (2026-08-10 refuse-until-filed
+		// redesign, superseding the original once-per-session design): the
+		// refusal asserts the cap, so both surfaces must too, or the model is
+		// reading two different contracts.
+		//
+		// This is the G1 review's finding generalized: a caveat present on the
+		// MCP schema and absent from the chat codec is absent from the text
+		// that ships with every API call.
+		{
+			const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
+			const std::string sessionSrc = slurp( agentDir / "AgentSession.cpp" );
+
+			std::vector<std::string> enumValues;
+			{
+				const std::string anchorDecl = "kBuildPlanConstructionValues[7] =";
+				const size_t at = sessionSrc.find( anchorDecl );
+				const size_t end = at == std::string::npos ? std::string::npos
+				                                           : sessionSrc.find( "};", at );
+				if( end != std::string::npos ) {
+					const std::string body = sessionSrc.substr( at, end - at );
+					for( size_t q = body.find( '"' ); q != std::string::npos; q = body.find( '"', q + 1 ) ) {
+						const size_t q2 = body.find( '"', q + 1 );
+						if( q2 == std::string::npos ) break;
+						enumValues.push_back( body.substr( q + 1, q2 - q - 1 ) );
+						q = q2;
+					}
+				}
+			}
+			// C3 (2026-08-18): SEVEN since `lathe` joined the enum next to
+			// `sweep` -- bump this and the anchor above together whenever the
+			// enum grows, since the anchor's `[N]` is what finds the array.
+			Check( enumValues.size() == 7,
+			       "G2 parity: parsed the closed construction enum out of AgentSession.cpp (got "
+			       + std::to_string( enumValues.size() ) + ")" );
+
+			// Doc 90 R4: the CLOSED SET of construction values whose declaration
+			// summons an extra schema+worked-example block into the builder prompt
+			// -- parsed straight from ComposeBuilderPrompt_'s own gate sites
+			// (HasConstruction( "..." )) rather than hardcoded, so a fourth gate
+			// appearing there makes THIS list grow with it instead of leaving the
+			// two prose surfaces free to keep asserting a stale "only sweep/chain/
+			// lathe summon..." sentence.  (The three occurrences also show up in
+			// this function's own explanatory comments above each real gate, which
+			// is harmless here -- they name the same three methods, so dedup still
+			// lands on the same set.)
+			std::vector<std::string> gatedMethods;
+			{
+				const std::string anchor = "HasConstruction( \"";
+				for( std::size_t at = sessionSrc.find( anchor ); at != std::string::npos;
+				     at = sessionSrc.find( anchor, at + anchor.size() ) ) {
+					const std::size_t start = at + anchor.size();
+					const std::size_t end = sessionSrc.find( '"', start );
+					if( end == std::string::npos ) break;
+					const std::string method = sessionSrc.substr( start, end - start );
+					if( std::find( gatedMethods.begin(), gatedMethods.end(), method ) == gatedMethods.end() )
+						gatedMethods.push_back( method );
+				}
+			}
+			Check( gatedMethods.size() == 3,
+			       "G2 parity: parsed exactly 3 distinct HasConstruction(...) gate names out of "
+			       "AgentSession.cpp (got " + std::to_string( gatedMethods.size() ) + ") -- if a new "
+			       "gate was intentionally added to ComposeBuilderPrompt_, the two prose surfaces' "
+			       "\"only sweep/chain/lathe summon...\" sentence needs a matching update, and this "
+			       "count should be bumped alongside it" );
+
+			static const char* const kPlanSurfaces[] = { "AgentChatCodecs.cpp", "AgentMcpAdapter.cpp" };
+			std::vector<std::string> planProblems;
+			for( const char* fname : kPlanSurfaces ) {
+				const std::string src = slurp( agentDir / fname );
+				if( src.find( "file_build_plan" ) == std::string::npos ) {
+					planProblems.push_back( std::string( fname ) + ": never mentions file_build_plan at all" );
+					continue;
+				}
+				// A surface satisfies the ENUM half either MECHANICALLY (it
+				// builds the list from kBuildPlanConstructionValues, so it
+				// cannot drift) or by naming every value verbatim.  The MCP
+				// adapter takes the first route and the chat codec -- whose
+				// schemas are raw string literals, so it cannot -- takes the
+				// second, with each value spelled inside an ESCAPED JSON
+				// string (\"primitive\") in the C++ source.
+				const bool derivesEnum = src.find( "kBuildPlanConstructionValues" ) != std::string::npos;
+				if( !derivesEnum ) {
+					for( const std::string& v : enumValues )
+						if( src.find( "\\\"" + v + "\\\"" ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": never names the construction "
+								"value `" + v + "` (and does not derive the list from "
+								"kBuildPlanConstructionValues) -- a model reading this surface will not know "
+								"it is legal, and any other value is a -32602" );
+				}
+				if( src.find( "NOT binding" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that the build plan "
+						"is NOT binding -- a model that believes otherwise will under-declare or refuse "
+						"to deviate, corrupting the measurement" );
+				if( src.find( "up to 3 refusals" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that the gate refuses "
+						"up to 3 times before it stops intercepting -- the refusal itself asserts the cap "
+						"(2026-08-10 refuse-until-filed redesign), so this surface would be a second, "
+						"different contract" );
+				// G3a (2026-08-10): three MORE facts, load-bearing for the same
+				// reason the G2 three are.  (4) `outline` is REQUIRED with no
+				// opt-out -- a surface that presents it as optional turns the
+				// whole slice off for whichever provider reads that surface,
+				// silently and per-provider.  (5) The 3-POINT MINIMUM: fewer is
+				// a -32602, so a surface that omits the floor costs a round
+				// trip discovering it.  (6) `view` EXISTS and says what it
+				// means -- it is optional, so a surface that never mentions it
+				// leaves a model unable to declare a side or top sketch at all.
+				if( src.find( "`outline` is REQUIRED per element" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that `outline` is "
+						"REQUIRED per element -- the required-ness IS the G3a mechanism (design decision 2: "
+						"strictly required, no opt-out value), so a surface that presents it as optional "
+						"disables the slice for every model reading that surface" );
+				if( src.find( "at least 3" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state the outline's "
+						"3-point minimum -- fewer points is a -32602, so omitting the floor costs a "
+						"round trip to discover" );
+				if( src.find( "Which axis-aligned direction this outline is drawn from." ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not describe the optional "
+						"`view` field -- a model reading this surface cannot declare a side or top "
+						"sketch, and every outline is then read as a front elevation" );
+				// G3b (2026-08-10): SIX MORE facts (NINE, with the three the
+				// fix round adds at the end of this block), on the CONSUMING side of
+				// the same artifact -- `render {isolate, target}`.  Same test,
+				// same list, because the sketch and the comparison are one
+				// mechanism: a surface that describes the filing but not the
+				// consultation leaves the target filed and never used, which
+				// is a named stop-rule condition in the design doc (sec 11).
+				// Each entry below is a fact a model CANNOT recover by
+				// experiment without burning a call, or one whose absence
+				// makes it misread what it is looking at.
+				if( src.find( "REQUIRES `isolate`" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that `target` "
+						"REQUIRES `isolate` -- the pairing is a -32602, so a surface that omits it "
+						"costs a round trip on the very first comparison" );
+				if( src.find( "looking along -Z" ) == std::string::npos ||
+				    src.find( "looking along -X" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state the AXIS-ALIGNED "
+						"vantages front/side/top resolve to -- a silhouette is uninterpretable "
+						"without knowing which direction produced it" );
+				if( src.find( "measures SHAPE ONLY, not position and not size" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that the IoU is "
+						"bbox-normalized and measures SHAPE only -- a model that reads it as a "
+						"placement score will move objects to chase a number that cannot move" );
+				if( src.find( "REPLACES the rendered frame" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that the "
+						"comparison composite REPLACES the rendered frame as the call's image -- a "
+						"model expecting its beauty frame back would misread the strip it gets" );
+				if( src.find( "sketch-only" ) == std::string::npos ||
+				    src.find( "silhouette-only" ) == std::string::npos ||
+				    src.find( "RED" ) == std::string::npos || src.find( "CYAN" ) == std::string::npos ||
+				    src.find( "WHITE" ) == std::string::npos || src.find( "BLACK" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not give the overlay tile's "
+						"colour legend (sketch-only RED / silhouette-only CYAN / overlap WHITE / "
+						"neither BLACK) -- the third tile is unreadable without it, and the composite "
+						"is the whole point of the call" );
+				if( src.find( "not scores: nothing is gated on them" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that nothing is "
+						"gated on the comparison numbers -- a surface that leaves that open invites "
+						"the model to optimize the metric, which is exactly the Goodhart failure the "
+						"design forbids (sec 5.4/sec 8)" );
+				// G3b fix-round (2026-08-10) FIX 2: THREE MORE, and they exist
+				// because the drift ALREADY HAPPENED -- these three caveats
+				// shipped in the MCP text and were missing from the chat
+				// codec, the SECOND slice running in which the codec surface
+				// lost caveats the MCP text carried (G1's bboxCoverage
+				// upper-bound disclosure was the first).  Pinned on BOTH
+				// surfaces so this particular drift cannot recur for these
+				// facts.  Each is a MISREAD, not merely a gap:
+				//   (7) the two area fractions are OF THE SHARED 256x256
+				//       CANVAS while the neighbouring `isolate.bboxCoverage`
+				//       is OF THE FRAME -- a model that conflates them reads
+				//       a shape statistic as a framing statistic and reframes
+				//       to chase it.
+				//   (8)/(9) `silhouetteAspect` and `thinnestAxisRatio` are
+				//       CONDITIONAL keys.  A surface that lists them as if
+				//       always present teaches a model to expect a key that
+				//       is legitimately absent, which reads as a broken
+				//       result rather than as the documented "not measurable
+				//       here" it actually is.
+				if( src.find( "filled fraction OF THAT SHARED CANVAS" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that "
+						"sketchAreaFraction/silhouetteAreaFraction are fractions of the SHARED 256x256 "
+						"CANVAS rather than of the frame -- the neighbouring isolate.bboxCoverage IS a "
+						"frame fraction, so an unqualified 'area fraction' here is actively misleading" );
+				if( src.find( "OMITTED when no pixel of the object landed in the frame" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that "
+						"`silhouetteAspect` is OMITTED when no pixel of the object landed in the frame "
+						"-- it is a conditional key, and a surface that presents it as always-present "
+						"makes a legitimate omission look like a broken result" );
+				if( src.find( "is OMITTED when the bounding box is unusable" ) == std::string::npos )
+					planProblems.push_back( std::string( fname ) + ": does not state that "
+						"`thinnestAxisRatio` is OMITTED when the bounding box is unusable -- same "
+						"conditional-key contract, same misread if it is presented as always-present" );
+				// Doc 90 R4: the plan-slot guidance.  A model that declares
+				// ["displaced","chain"] loses a slot to `displaced`, which
+				// summons nothing -- exactly the blind spot the latest dragon
+				// run exposed (sweep squeezed out, tail/neck unbuildable).  The
+				// fix restates the guidance as the general, POSITIVE claim: name
+				// every gated method (pinned against ComposeBuilderPrompt_'s own
+				// HasConstruction(...) sites above, not hardcoded here) and every
+				// non-gated enum value, so drift in either direction -- a new
+				// gate the prose doesn't mention, or a value wrongly claimed to
+				// summon something -- fails this check.
+				if( src.find( "summon their chunk's schema" ) == std::string::npos ) {
+					planProblems.push_back( std::string( fname ) + ": does not state which "
+						"construction values summon a schema and worked example into the builder "
+						"prompt -- a surface missing this teaches a model every method is equally "
+						"free, which is the blind spot that squeezed `sweep` out of a "
+						"`displaced`+`chain` plan" );
+				}
+				else {
+					for( const std::string& m : gatedMethods )
+						if( src.find( "`" + m + "`" ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": does not name `" + m +
+								"` among the construction values that summon extra schema, though "
+								"ComposeBuilderPrompt_ gates a schema+example block on "
+								"HasConstruction( \"" + m + "\" )" );
+					for( const std::string& v : enumValues ) {
+						const bool gated = std::find( gatedMethods.begin(), gatedMethods.end(), v )
+							!= gatedMethods.end();
+						if( !gated && src.find( "`" + v + "`" ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": does not name `" + v +
+								"` among the construction values that add nothing beyond the "
+								"always-present basics, though it has no HasConstruction gate in "
+								"ComposeBuilderPrompt_" );
+					}
+				}
+			}
+			// G3a: the parts cap is a real dispatcher rejection, and the chat
+			// codec cannot derive it (its schemas are raw string literals), so
+			// it spells the number.  Pin the literal against the header's
+			// kBuildPlanMaxElements the same way the enum above is pinned against
+			// kBuildPlanConstructionValues -- a bump on one side that silently
+			// left the other behind would advertise a limit the dispatcher
+			// does not enforce, or hide one it does.
+			{
+				const std::string headerSrc = slurp( agentDir / "AgentSession.h" );
+				const std::string anchor = "kBuildPlanMaxElements = ";
+				const size_t at = headerSrc.find( anchor );
+				std::string maxParts;
+				if( at != std::string::npos ) {
+					size_t q = at + anchor.size();
+					while( q < headerSrc.size() && std::isdigit( static_cast<unsigned char>( headerSrc[q] ) ) )
+						maxParts += headerSrc[q++];
+				}
+				Check( !maxParts.empty(),
+				       "G3a parity: parsed kBuildPlanMaxElements out of AgentSession.h" );
+				if( !maxParts.empty() ) {
+					const std::string codecSrc = slurp( agentDir / "AgentChatCodecs.cpp" );
+					if( codecSrc.find( "\\\"maxItems\\\":" + maxParts ) == std::string::npos )
+						planProblems.push_back( "AgentChatCodecs.cpp: its file_build_plan `elements` schema "
+							"does not declare maxItems:" + maxParts + " -- the dispatcher rejects a longer "
+							"list with -32602, so this surface would advertise a contract it does not have" );
+					// The MCP adapter DERIVES the number from the constant, so
+					// it cannot drift -- assert that it still does, rather
+					// than grepping for a literal it deliberately lacks.
+					const std::string mcpSrc = slurp( agentDir / "AgentMcpAdapter.cpp" );
+					if( mcpSrc.find( "kBuildPlanMaxElements" ) == std::string::npos )
+						planProblems.push_back( "AgentMcpAdapter.cpp: no longer derives its `parts` maxItems "
+							"from kBuildPlanMaxElements" );
+				}
+			}
+			// ---- Arc 77 Phase 2 (2026-08-11): the IMAGINE-SCENE surface pins.
+			//
+			// Same test, same problem list, same reason as the G2/G3a/G3b pins
+			// above: `imagine_scene` and the render-time `sceneTarget` block it
+			// switches on are ONE mechanism described by TWO hand-authored
+			// surfaces, and a caveat that lands on only one of them silently
+			// changes the mechanism for whichever transport reads the other.
+			// The codec text is CANONICAL and the MCP text mirrors it (the
+			// recorded drift-class fix); these pins are what make "mirrors"
+			// checkable.
+			//
+			// MATCHED ON THE JOINED SOURCE, not the raw file.  Both surfaces
+			// are C++ string literals wrapped across lines, and the two wrap
+			// at different columns -- so a raw find() would pin the WRAPPING
+			// rather than the sentence, and a harmless reflow would fail the
+			// test while a real deletion could slip through a re-wrap.
+			// Collapsing `" <ws> "` (adjacent-literal concatenation, the only
+			// thing between the halves of a wrapped sentence) makes the pin
+			// about the TEXT.
+			{
+				auto joinLiterals = []( const std::string& src ) {
+					std::string out;
+					out.reserve( src.size() );
+					for( std::size_t i = 0; i < src.size(); ) {
+						if( src[i] == '"' ) {
+							std::size_t j = i + 1;
+							while( j < src.size() &&
+							       ( src[j] == ' ' || src[j] == '\t' || src[j] == '\n' || src[j] == '\r' ) )
+								++j;
+							if( j > i + 1 && j < src.size() && src[j] == '"' ) { i = j + 1; continue; }
+						}
+						out += src[i++];
+					}
+					return out;
+				};
+
+				struct Pin { const char* text; const char* why; };
+				// Each entry is a fact a model CANNOT recover by experiment
+				// without burning a provider round trip, or one whose absence
+				// makes it misread what it is looking at.
+				static const Pin kImaginePins[] = {
+					{ "one image from exactly that text",
+					  "does not state that the provider generates the image from the model's OWN "
+					  "description verbatim -- the whole mechanism is that the model authors the "
+					  "target, and a surface that leaves that vague invites a one-word prompt" },
+					{ "`description` is REQUIRED",
+					  "does not state that `description` is REQUIRED -- an empty/absent one is a "
+					  "-32602, so omitting the requirement costs a round trip to discover" },
+					{ "every full-frame production render",
+					  "does not state WHERE the comparison lands -- the whole design decision is "
+					  "that the target rides the surface models actually visit, and a model that "
+					  "does not know renders carry it will never look for it" },
+					{ "not an isolate or zoom render",
+					  "does not state the exclusions (draft / mode: / isolate / zoom) -- those renders "
+					  "carry NO comparison, and a model expecting one there reads its absence as "
+					  "a broken result" },
+					{ "in place of the rendered frame",
+					  "does not state that the composite REPLACES the frame as the call's "
+					  "image -- a model expecting its beauty frame back would misread the "
+					  "picture it gets" },
+					// ---- Phase 2b (2026-08-11).  Three pins that replace the
+					// shared-canvas/RMSE ones: the mechanism no longer reports
+					// any similarity number, the composite is now conditional
+					// on asking for an image, and the render half of it is
+					// size-guaranteed.  A surface that still promised an RMSE,
+					// or left the size contract unstated, would describe a
+					// mechanism this build does not have.
+					{ "any such render you ask an image of shows",
+					  "does not state that the composite rides only when the render asked for an "
+					  "inline image -- Phase 2b sizes it by imageMaxEdge, so a model told the "
+					  "picture arrives unconditionally would read its absence as a fault" },
+					{ "exactly the size the frame alone would have been",
+					  "does not state the size contract -- the measured Phase 2 failure was the "
+					  "model seeing its own render at HALF width inside a strip, less resolution "
+					  "to spot its own defects than with no target at all" },
+					{ "there is deliberately no similarity number",
+					  "does not state that there is NO score -- Phase 2 shipped an RMSE, a live "
+					  "run showed it is a tone metric that drove emissive/power cranking to a "
+					  "worse picture, and a surface that still advertises a number invites "
+					  "exactly the chase that was removed (sec 5.4/sec 8)" },
+					{ "nothing is gated on the target",
+					  "does not state that nothing is gated on the target -- leaving that open "
+					  "invites treating the imagined image as a reproduction spec, the Goodhart "
+					  "failure the design forbids outright (sec 5.4/sec 8)" },
+					{ "flat-shaded 3D-render style so it is something this renderer can actually approach",
+					  "does not state that the generated image is requested in a simple "
+					  "flat-shaded 3D-render style -- that host-side wrapper is why the target is "
+					  "reachable at all, and a model that believes its description went verbatim "
+					  "cannot reason about the picture it gets back" },
+					{ "Calling it again replaces this session's scene target",
+					  "does not state the re-imagine REPLACE semantics -- a model that believes "
+					  "targets accumulate cannot reason about which one a render measured against" },
+					{ "does not generate images",
+					  "does not state the capability-conditional outcome -- on a provider without "
+					  "image generation the call honestly refuses, and a surface that promises an "
+					  "image unconditionally turns that honest answer into an apparent failure" }
+				};
+
+				// ---- S1 (2026-08-11): the STAGED BUILD PROTOCOL surface pins.
+				//
+				// Same test, same problem list, same reason: the protocol is ONE
+				// mechanism described by TWO hand-authored surfaces, and a rule
+				// that lands on only one of them silently changes what the model
+				// on the other transport believes it may do.  These are the
+				// clauses a model cannot work the protocol without -- what
+				// filing starts, what is refused, what is NOT refused, and both
+				// escapes.  Over-refusal is this design's stated failure mode,
+				// so the "editable in every phase" clause is as load-bearing as
+				// the refusal itself.
+				{
+					struct S1Pin { const char* text; const char* why; };
+					static const S1Pin kS1Pins[] = {
+						{ "finish_element",
+						  "never mentions finish_element -- the verb that advances the protocol; a "
+						  "model that cannot name it cannot leave the first element" },
+						{ "reopen_element",
+						  "never mentions reopen_element -- the ONLY escape from the compose "
+						  "phase's creation refusal; omitting it strands the session" },
+						{ "An edit aimed at a chunk recorded against a DIFFERENT element is refused",
+						  "does not state the cross-element refusal -- a model that meets it "
+						  "without having been told reads it as a bug, not a sequence" },
+						// S1 fix-round (2026-08-11): the exempt set gained
+						// Material and Painter (two elements sharing a skin
+						// material or a fabric painter is ordinary authoring),
+						// and the prose now also names rasterizer-output,
+						// which the code always exempted but neither surface
+						// mentioned.  The pin is the FULL list on purpose: a
+						// surface that names half of it tells the model half
+						// the truth about what it may touch.
+						{ "and light, camera, film, rasterizer, rasterizer-output, material and "
+						  "painter chunks, are editable in every phase",
+						  "does not state what is NOT refused -- over-refusal is the failure mode "
+						  "this design fears (sec 2.3); a model that believes lights are locked "
+						  "cannot light its own isolated element, and one that believes materials "
+						  "are locked cannot put the same skin on a head and a pair of hands" },
+						{ "no piece has to become a chunk",
+						  "does not state that the piece list is declarative -- a model that "
+						  "believes pieces are gated will either under-declare defensively or "
+						  "chase a chunk per piece, both of which corrupt the measurement" },
+						{ "says nothing about what was built or how well",
+						  "does not state that finish_element's piece report is a NAME check -- "
+						  "presented as a verdict it becomes a score, which this arc forbids" }
+					};
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						for( std::size_t k = 0; k < sizeof( kS1Pins ) / sizeof( kS1Pins[0] ); ++k ) {
+							if( joined.find( kS1Pins[k].text ) == std::string::npos )
+								planProblems.push_back( std::string( fname ) + ": " + kS1Pins[k].why );
+						}
+					}
+				}
+
+				// ---- S2 (2026-08-11): the CLEAN-ROOM CONSTRUCTION surface pins.
+				//
+				// Same test, same problem list, same reason as the S1 block
+				// above: two hand-authored surfaces describe ONE mechanism, and
+				// a clause on only one of them silently changes what the model
+				// on the other transport believes.  These are the clauses a
+				// model cannot work the clean room without -- that the builder
+				// works at the ORIGIN (so the element must be placed
+				// afterwards), that the name prefix is ENFORCED and never
+				// silently repaired by renaming, that the height is a request
+				// rather than a limit (or a model will chase a number nothing
+				// is measuring against it), that exactly ONE repair retry runs,
+				// that the hand-authoring refusal exists and what lifts it, and
+				// that place_element's position is an OFFSET (the one sentence
+				// that decides whether an element's internal arrangement
+				// survives placement).
+				{
+					struct S2Pin { const char* text; const char* why; };
+					static const S2Pin kS2Pins[] = {
+						{ "build_element",
+						  "never mentions build_element -- the verb the first-geometry refusal names; "
+						  "a model that cannot name it cannot start an element" },
+						{ "place_element",
+						  "never mentions place_element -- an element built at the origin that is "
+						  "never placed is the interpenetration this arc exists to fix" },
+						{ "THE ELEMENT IS BUILT AT THE ORIGIN, NOT IN PLACE",
+						  "does not state that the builder authors in a LOCAL frame -- a model that "
+						  "expects world placement reads a correct element as a misplaced one" },
+						{ "does not begin with the required prefix is rejected and is NOT renamed",
+						  "does not state that the prefix check rejects rather than renames -- a "
+						  "model told the harness will fix names will not write them" },
+						{ "nothing is refused for missing it",
+						  "does not state that `height` is a request, not a limit -- presented as a "
+						  "gate it becomes a number to satisfy instead of a budget to build within" },
+						{ "ONE repair retry runs automatically",
+						  "does not state that the retry is automatic and singular -- a model that "
+						  "believes it must retry by hand will spend turns re-issuing the call" },
+						{ "while the active element has no chunk recorded against it",
+						  "does not state WHEN hand-authored geometry is refused -- a refusal whose "
+						  "condition is unstated reads as a bug, not a sequence" },
+						{ "authoring geometry for it by hand is allowed and is never refused again",
+						  "does not state what LIFTS the refusal -- construction through the clean "
+						  "room, refinement by hand, is the whole rule and half of it is useless" },
+						{ "is scaled, rotated and then added to it",
+						  "does not state that place_element's position is an OFFSET composed with "
+						  "each object's own -- a model that reads it as a replacement will collapse "
+						  "its element onto one point" }
+					};
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						for( std::size_t k = 0; k < sizeof( kS2Pins ) / sizeof( kS2Pins[0] ); ++k ) {
+							if( joined.find( kS2Pins[k].text ) == std::string::npos )
+								planProblems.push_back( std::string( fname ) + ": " + kS2Pins[k].why );
+						}
+					}
+				}
+
+				// ---- ARC 81 (2026-08-12): the CLEAN-ROOM LIGHTING surface pins.
+				//
+				// Same test, same problem list, same reason as the S1 and S2
+				// blocks above.  These are the clauses a model cannot work
+				// `light_scene` without -- and two of them are load-bearing in
+				// a way the construction pins are not:
+				//
+				//   * THE PALETTE, and (ARC 81 FIX-ROUND, 2026-08-12) its
+				//     PHYSICS ORDER.  Arc 81 shipped six kinds flat and neutral,
+				//     and the first live run reached for ambient_light.  The
+				//     house rule is area lights first, the analytic sky second,
+				//     the zero-area kinds for special cases, and NO ambient light
+				//     at all -- it is refused on every creating path.  A surface
+				//     still presenting the six as equal options would contradict
+				//     what the code does, which is the false-clause class this
+				//     whole test family exists to stop.
+				//   * THE NAMING CONTRACT.  build_element enforces an
+				//     `<element>_` prefix; light_scene deliberately does not,
+				//     because lights are scene-global and belong to no
+				//     element.  A surface that leaves that unstated invites
+				//     the model to assume its sibling's rule.
+				{
+					struct A81Pin { const char* text; const char* why; };
+					static const A81Pin kA81Pins[] = {
+						{ "light_scene",
+						  "never mentions light_scene -- the verb the compose-phase light refusal "
+						  "names; a model that cannot name it cannot light a composed scene" },
+						{ "PALETTE LEADS WITH AREA LIGHTING",
+						  "does not state that the palette LEADS WITH AREA LIGHTING -- the house rule "
+						  "is that a scene's light sources are normally emitting surfaces, and a surface "
+						  "that presents the kinds as a flat list of equals encodes the opposite" },
+						{ "ambient_light is NOT offered and is REFUSED",
+						  "does not state that ambient_light is REFUSED -- it is blocked on every path "
+						  "that could create one, in every phase and with the build protocol off, and a "
+						  "surface that leaves that unsaid lets a model spend a call discovering it" },
+						{ "casts no shadow ray",
+						  "states the ambient_light refusal without the FACT behind it -- no position, no "
+						  "direction and no shadow ray, therefore no shadow and no falloff; a prohibition "
+						  "with no reason reads as an arbitrary rule rather than as physics" },
+						{ "zero-area idealizations",
+						  "does not say what omni/spot/directional ARE -- stated without the zero-area "
+						  "fact they read as peers of an emitting surface rather than as the special-case "
+						  "idealizations they are" },
+						{ "hosek_wilkie_skylight (a physically based analytic sun-and-sky)",
+						  "does not name hosek_wilkie_skylight in the palette -- it is a physically based "
+						  "sky model, it stays in the palette, and a model told the palette is "
+						  "omni/spot/directional will use those three" },
+						{ "emissive lambertian_luminaire_material",
+						  "does not state how AREA lighting is spelled -- there is no `area_light` "
+						  "chunk in this language, so a surface that omits the "
+						  "object-wearing-an-emissive-material form makes area lights undiscoverable" },
+						// ---- ARC 83 SLICE 3 (2026-08-12): the SCENE-LANGUAGE
+						// pin.  docs/agentic-redesign/83-staged-construction-
+						// plan.md sec 9 pre-committed that if the prompt-side
+						// mechanisms failed the fix would move to the scene
+						// language, and all three failed: palette order + sole
+						// worked example, one completion per light, and
+						// source-first enumeration each produced ZERO area
+						// lights.  `rect_light` is the answer -- a
+						// lighting-category chunk that IS an area light, which
+						// the parser expands into the same four-chunk chain.  A
+						// surface that still describes area lighting ONLY as
+						// that chain describes the world as it was before this
+						// slice, which is the false-clause class this test
+						// family exists to stop.  The pin is the FACT that the
+						// one-chunk form exists, not advice to use it.
+						{ "A rectangular area light is ONE chunk, rect_light",
+						  "does not name rect_light -- a rectangular area light is ONE chunk now, and "
+						  "a surface that still presents area lighting only as a four-chunk chain "
+						  "hides the one form a single reach can actually land on" },
+						// ---- ARC 83 SLICE 4 (2026-08-12): the SOLID area light,
+						// and the ZERO-AREA BUDGET.  Sec 11's first live
+						// rect_light run wrote one area light and nine zero-area
+						// ones: the panel form landed, but a glowing creature is
+						// not a rectangle and there was no one-chunk solid to
+						// reach for.  `shape_light` is that chunk, and the budget
+						// is what makes reaching past it cost a turn.  Both pins
+						// are FACTS about what the code does -- a surface that
+						// omits shape_light hides the form, and a surface that
+						// omits the budget lets a model meet an unannounced
+						// refusal and read it as a broken harness.
+						{ "A glowing SOLID is also ONE chunk, shape_light",
+						  "does not name shape_light -- a glowing sphere, ellipsoid, box or cylinder "
+						  "is ONE chunk now, and a surface that offers only the rectangular panel "
+						  "leaves every non-rectangular emitter looking like a four-chunk job" },
+						{ "a closed solid emits outward in every direction, so it needs no facing",
+						  "states shape_light without the one fact that distinguishes it from "
+						  "rect_light -- it has no `facing`, because a closed solid emits outward "
+						  "everywhere; a model that assumes its sibling's parameter set writes a "
+						  "line the parser rejects" },
+						{ "Each request to insert one is refused once with the facts and the "
+						  "alternatives",
+						  "does not state the zero-area light CONFIRMATION -- every omni/spot/"
+						  "directional creation request is refused once, and a model that meets that "
+						  "refusal unannounced will read a documented policy as a broken harness" },
+						{ "the identical request after that refusal is applied",
+						  "states the zero-area budget without its ESCAPE -- the refusal is once per "
+						  "request and the re-issue lands, and a model told only that it was refused "
+						  "will either give up on a light it needs or spend turns arguing" },
+						{ "THERE IS NO NAME PREFIX",
+						  "does not state that light_scene has no prefix rule -- its sibling "
+						  "build_element enforces one, and a model that assumes the same here will "
+						  "write names to satisfy a check that does not exist" },
+						{ "while light_scene has not run",
+						  "does not state WHEN a hand-authored light is refused -- a refusal whose "
+						  "condition is unstated reads as a bug, not a sequence" },
+						{ "authoring lights by hand is allowed and is never refused again",
+						  "does not state what LIFTS the refusal -- construction through the clean "
+						  "room, refinement by hand, is the whole rule and half of it is useless" },
+						{ "not affected by any of this",
+						  "does not state the PIECES-phase seam -- arc 78 sec 2.3 deliberately "
+						  "allows lights inside element windows, and a model told otherwise cannot "
+						  "light a part in order to see it" },
+						{ "ONE repair retry runs automatically",
+						  "does not state that the retry is automatic and singular -- a model that "
+						  "believes it must retry by hand will spend turns re-issuing the call" },
+						{ "rendered ALONE at a small size",
+						  "does not state HOW the per-light contribution is measured -- an "
+						  "unexplained number beside a light name invites reading it as a score" },
+						{ "do not sum to the all-lights frame",
+						  "does not state that the solo figures are NOT additive -- a model that "
+						  "believes they sum will read a correct measurement as a broken one" },
+						// ---- ARC 82 CROSS-PROVIDER FOLLOW-UP (2026-08-12): the
+						// VISIBILITY pin.  docs/agentic-redesign/82-population-arc.md
+						// sec 8 -- gpt-5.6-terra copied the worked area-light example
+						// three times and produced three glowing white slabs directly
+						// in frame, because nothing on this surface said an emitting
+						// object is a visible one.  This is a missing FACT, not a
+						// missing instruction, so the pin checks the fact is stated
+						// (an emissive object is rendered like any other and is
+						// therefore both a light and a thing the picture shows), not
+						// any should/prefer wording -- the advice-vocabulary ban
+						// still applies to this entry.
+						{ "it is both a light and a thing the picture shows",
+						  "does not state that an area light is a VISIBLE object -- an emitting "
+						  "object is rendered like any other object in the scene, and a surface "
+						  "that leaves that unsaid lets a model copy the worked example into a "
+						  "glowing panel sitting in the middle of the shot" },
+						// ---- ARC 83 SLICE 2 (2026-08-12): the OWNER'S REDESIGN
+						// pins.  docs/agentic-redesign/83-staged-construction-
+						// plan.md sec 7 and its correction block.  Slice 1's
+						// per-intent loop asked a cinematography question
+						// ("what lighting intents does this scene need") whose
+						// native vocabulary is key/fill/rim and it produced
+						// ZERO area lights; the owner's question has THINGS as
+						// answers.  A model told nothing about the two-step
+						// shape reads a build-phase rejection (a second light
+						// source rejected because a PRIOR completion already
+						// enumerated a bounded list) as a harness bug rather
+						// than as the documented contract it is.  Neither pin
+						// is advice: both are what the harness does.
+						{ "WHAT IN THIS WORLD PHYSICALLY EMITS LIGHT",
+						  "does not state the question this call actually answers -- WHAT IN THIS "
+						  "WORLD PHYSICALLY EMITS LIGHT -- a model told only 'design the lighting' "
+						  "has no reason to expect its answer is enumerated as physical things "
+						  "before anything is built" },
+						{ "authors the chunks for ALL of those sources together in one further "
+						  "request",
+						  "does not state that the BUILD step authors every enumerated source "
+						  "together in ONE request -- the one-light-per-answer cap arc 83 slice 1 "
+						  "enforced is gone, and a model that still assumes it will split its own "
+						  "answer across imagined separate requests" }
+					};
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						for( std::size_t k = 0; k < sizeof( kA81Pins ) / sizeof( kA81Pins[0] ); ++k ) {
+							if( joined.find( kA81Pins[k].text ) == std::string::npos )
+								planProblems.push_back( std::string( fname ) + ": " + kA81Pins[k].why );
+						}
+					}
+
+					// ARC 83 SLICE 2 PARITY: both surfaces state the source
+					// budget as a LITERAL NUMBER (their text is hand-authored
+					// prose, so neither can derive it), and the harness
+					// enforces kLightSourceBudget.  Pin the literal against
+					// the header the same way the build plan's maxItems is
+					// pinned against kBuildPlanMaxElements -- a bump on one
+					// side that left the other behind would advertise a
+					// budget the enumeration does not have.
+					{
+						const std::string headerSrc = slurp( agentDir / "AgentSession.h" );
+						const std::string anchor = "kLightSourceBudget = ";
+						const size_t at = headerSrc.find( anchor );
+						std::string budget;
+						if( at != std::string::npos ) {
+							size_t q = at + anchor.size();
+							while( q < headerSrc.size() &&
+							       std::isdigit( static_cast<unsigned char>( headerSrc[q] ) ) )
+								budget += headerSrc[q++];
+						}
+						Check( !budget.empty(),
+						       "A83 parity: parsed kLightSourceBudget out of AgentSession.h" );
+						if( !budget.empty() ) {
+							for( const char* fname : kPlanSurfaces ) {
+								const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+								if( joined.find( "At most " + budget + " sources" ) == std::string::npos )
+									planProblems.push_back( std::string( fname ) + ": does not state the "
+										"light-source budget as `At most " + budget + " sources` -- the "
+										"harness cuts a longer enumeration to that number, and a surface "
+										"naming a different one (or none) advertises a contract the "
+										"enumeration does not have" );
+							}
+						}
+					}
+					// ARC 83 SLICE 4 PARITY (2026-08-12, REMOVED 2026-08-13): the
+					// budget-number parity pin that lived here checked both
+					// tool-surface descriptions against `kZeroAreaLightSceneBudget`
+					// in AgentSession.h.  The owner removed the free budget of 2
+					// (docs/agentic-redesign/83-staged-construction-plan.md sec 13)
+					// -- the confirmation now fires unconditionally, so there is no
+					// number left to keep in parity.  The A81Pins block above still
+					// pins the CONFIRMATION wording itself on both surfaces.
+				}
+
+				// ---- ARC 82 (2026-08-12): the CLEAN-ROOM POPULATION surface
+				//      pins.  Two things a model cannot recover by experiment,
+				//      and one it would mis-read without being told:
+				//   * THE HARD CONTRACT.  populate_scene creates
+				//     `standard_object` and NOTHING else, and only naming a
+				//     geometry and a material that already exist.  Its sibling
+				//     build_element creates whole elements from nothing; a
+				//     model that assumes the same here writes a geometry chunk
+				//     and gets it rejected.
+				//   * THE GATE IS ON RENDER, and it fires ONCE.  Every other
+				//     phase rule in this family refuses an EDIT; this one
+				//     refuses a LOOK, which is alarming enough that a model
+				//     told nothing would reasonably read it as a broken
+				//     harness rather than as a sequence.  The one-shot and the
+				//     pieces-phase seam are the two facts that make it safe to
+				//     ignore, and both have to be stated.
+				{
+					struct A82Pin { const char* text; const char* why; };
+					static const A82Pin kA82Pins[] = {
+						{ "populate_scene",
+						  "never mentions populate_scene -- the verb the compose-phase render "
+						  "refusal names; a model that cannot name it cannot lift the refusal" },
+						{ "IT CREATES standard_object CHUNKS AND NOTHING ELSE",
+						  "does not state populate_scene's HARD CONTRACT -- its sibling "
+						  "build_element creates whole elements from nothing, and a model that "
+						  "assumes the same rule here writes geometry and gets it rejected" },
+						{ "must name a geometry and a material THAT ALREADY EXIST",
+						  "does not state that a placement must REFERENCE existing names -- a chunk "
+						  "naming an unknown geometry or material is rejected, and a model told "
+						  "nothing will invent names and spend the repair retry discovering it" },
+						{ "Making new form is build_element's job, not this one's",
+						  "does not say WHERE new form comes from -- a refusal that leaves a model "
+						  "with nothing to do instead is a refusal it will spend turns arguing with" },
+						{ "the first full-scene render is refused ONCE",
+						  "does not state that the compose-phase render refusal fires exactly ONCE "
+						  "-- every other rule in this family refuses repeatedly, and a model that "
+						  "expects to be blind until it complies will behave very differently from "
+						  "one that knows the next render proceeds regardless" },
+						{ "renders in the pieces phase are never refused",
+						  "does not state the PIECES-phase seam -- arc 78 sec 2.3's rule is that a "
+						  "model must always be able to look at the part it is building, and a "
+						  "model told a render can be refused will stop looking" },
+						{ "ONE worked example, built from this scene's own geometry and material "
+						  "names",
+						  "does not state that the example is built from the LIVE scene -- a model "
+						  "that thinks the example is illustrative will substitute names it "
+						  "invented for ones that already work" },
+						{ "the scene's object count before and after",
+						  "does not state that the result reports the object count on both sides -- "
+						  "the one number this pass exists to move, and a model that does not know "
+						  "it is reported cannot read its own result" }
+					};
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						for( std::size_t k = 0; k < sizeof( kA82Pins ) / sizeof( kA82Pins[0] ); ++k ) {
+							if( joined.find( kA82Pins[k].text ) == std::string::npos )
+								planProblems.push_back( std::string( fname ) + ": " + kA82Pins[k].why );
+						}
+					}
+				}
+
+				// ---- ARC 83 SLICE 5 (2026-08-13): the CLEAN-ROOM ENVIRONMENT
+				//      surface pins.  Four things a model cannot recover by
+				//      experiment, and each is a FACT about what the code does
+				//      rather than advice about what to write:
+				//   * THERE IS NO ENVIRONMENT CHUNK.  The dome is a painter,
+				//     and a model that expects `environment { ... }` will
+				//     spend its answer on a keyword this language does not
+				//     have.
+				//   * THE BINDING IS THE HARNESS'S, and it is positional --
+				//     the LAST painter is the dome.  A model not told that
+				//     cannot know which of its painters becomes the sky, and
+				//     the one it meant might end up as the mask.
+				//   * THE HARD CONTRACT, and its boundary case.  A backdrop
+				//     plane is the obvious way to make a background and it is
+				//     exactly what this pass refuses; a model told nothing
+				//     writes one and loses a turn.
+				//   * THE HOSEK DIVISION.  Two verbs can install a dome and
+				//     the last one to derive wins, so which verb owns the sky
+				//     has to be stated on both surfaces.
+				{
+					struct A83EnvPin { const char* text; const char* why; };
+					static const A83EnvPin kA83EnvPins[] = {
+						{ "environment_scene",
+						  "never mentions environment_scene -- one of the two verbs the compose-phase "
+						  "render checklist names; a model that cannot name it cannot lift the refusal" },
+						{ "there is no environment chunk in this language",
+						  "does not state that there IS no environment chunk -- the dome is a PAINTER, "
+						  "and a model that assumes a dedicated keyword will spend its one answer on "
+						  "syntax this parser does not have" },
+						{ "the LAST painter the answer lands is bound as the scene's radiance map",
+						  "does not state the BINDING CONTRACT -- which painter becomes the dome is "
+						  "positional and decided by the harness, and a model that does not know it "
+						  "cannot tell which of its painters will be the sky and which the mask" },
+						{ "a backdrop plane or a sky dome built as a shape is FORM",
+						  "does not state the boundary case this pass REFUSES -- a backdrop plane is "
+						  "the obvious way to make a background, it is form rather than environment, "
+						  "and a model told nothing writes one and loses a turn discovering it" },
+						{ "hosek_wilkie_skylight is rejected because it is a light chunk",
+						  "does not state WHICH verb owns the sun-and-sky -- two passes can install a "
+						  "dome and the last one to derive wins, so a surface that leaves the division "
+						  "unstated invites the scene to silently lose one of them" },
+						{ "how this renderer spells fog, haze, underwater depth falloff and shafts of "
+						  "light",
+						  "does not say what the MEDIUM half is FOR -- `homogeneous_medium` plus "
+						  "`global_medium` reads as bookkeeping unless a surface says those two chunks "
+						  "are the fog, the haze and the visible shaft" },
+						{ "the frame's TONAL DISTRIBUTION measured before and after",
+						  "does not state that the result MEASURES the frame's tone on both sides -- "
+						  "the one figure this slice moves, and a model that does not know it is "
+						  "reported cannot read its own result" }
+					};
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						for( std::size_t k = 0; k < sizeof( kA83EnvPins ) / sizeof( kA83EnvPins[0] ); ++k ) {
+							if( joined.find( kA83EnvPins[k].text ) == std::string::npos )
+								planProblems.push_back( std::string( fname ) + ": " + kA83EnvPins[k].why );
+						}
+					}
+				}
+
+				// ---- ARC 83 SLICE 6 (2026-08-13), EXTENDED BY THE 2026-08-14
+				//      POSTSCRIPT: the CLEAN-ROOM FRAMING surface pins.  The
+				//      framing verb's five unrecoverable facts:
+				//   * WHAT IT RETURNS.  One camera and nothing else -- and
+				//     `film` in particular is refused, which is surprising
+				//     enough (it is where width and height live) that a model
+				//     told nothing will try it.
+				//   * PATCH-OR-REPLACE, and what an omitted parameter does.  A
+				//     model that believes an omitted `fov` resets to a default
+				//     will write every parameter defensively; one that knows it
+				//     is preserved can make a one-line change.
+				//   * THE MEASUREMENT.  Coverage before and after is what this
+				//     slice moves, and it is reported.
+				//   * THE FEWER-OBJECTS CASE.  A model that expects the harness
+				//     to undo a close-up will not author one.
+				//   * THE ORDERING (2026-08-14 postscript).  frame_scene is
+				//     itself refused while populate_scene has not run -- a
+				//     model that does not know this cannot tell why its OWN
+				//     call to frame_scene came back refused, nor what to call
+				//     first.
+				{
+					struct A83FramePin { const char* text; const char* why; };
+					static const A83FramePin kA83FramePins[] = {
+						{ "frame_scene",
+						  "never mentions frame_scene -- the verb the compose-phase camera refusal "
+						  "names; a model that cannot name it cannot lift the refusal" },
+						{ "exactly ONE camera chunk is accepted",
+						  "does not state that this pass authors exactly ONE camera -- a model that "
+						  "writes two gets one of them rejected and has no way to know which" },
+						{ "which is raster-size policy rather than framing",
+						  "does not state that `film` is REFUSED and why -- width and height live "
+						  "there, so a model reframing a shot will reach for it, and a refusal whose "
+						  "reason is unstated reads as a broken harness" },
+						{ "any parameter it leaves out keeps the value it has",
+						  "does not state what an OMITTED parameter does on the patch path -- a model "
+						  "that believes omission resets to a default will rewrite every parameter "
+						  "defensively instead of making the one change it means" },
+						{ "the previous camera chunk then removed, in that order so a failed insert "
+						  "can never leave the scene with no camera",
+						  "does not state the REPLACE mechanism or its ordering -- a model that "
+						  "changes camera kind is entitled to know its old camera goes and that a "
+						  "failure leaves the scene intact" },
+						{ "how many objects covered at least one pixel on each side",
+						  "does not state that object coverage is MEASURED before and after -- the one "
+						  "number this slice moves, and a model that does not know it is reported "
+						  "cannot read its own result" },
+						{ "a closer view of fewer things is a framing decision, not an error",
+						  "does not state that a reframe covering FEWER objects is reported and NOT "
+						  "reverted -- a model that expects the harness to undo a deliberate close-up "
+						  "will not author one" },
+						{ "frame_scene frames what the scene CONTAINS, and in the COMPOSE phase, while "
+						  "populate_scene has not yet reached the provider, frame_scene is refused ONCE "
+						  "and names populate_scene",
+						  "does not state that frame_scene ITSELF is refused while populate_scene has "
+						  "not run -- 2026-08-14 postscript: framing frames what the scene contains, so "
+						  "a model that reframes before populating judges a scene that has not finished "
+						  "changing, and a model not told the ordering cannot read why its own call was "
+						  "refused" }
+					};
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						for( std::size_t k = 0; k < sizeof( kA83FramePins ) / sizeof( kA83FramePins[0] ); ++k ) {
+							if( joined.find( kA83FramePins[k].text ) == std::string::npos )
+								planProblems.push_back( std::string( fname ) + ": " + kA83FramePins[k].why );
+						}
+					}
+				}
+
+				// C4 (2026-08-19): the MULTI-VALUE `construction` contract, on
+				// both surfaces, with the CAP read out of AgentSession.h
+				// rather than spelled here -- ground truth is the code, the
+				// same rule the enum scan above follows.
+				//
+				// Each of these is a fact a model cannot recover without
+				// burning a round trip.  (1) that an ARRAY is accepted at
+				// all: without it a model with a two-method element declares
+				// one and hand-approximates the other, which is the measured
+				// failure this slice exists to remove.  (2) the CAP and the
+				// no-repeat rule: both are -32602s.  (3) that a BARE STRING
+				// still works: the schema says array, so a surface silent on
+				// this makes every pre-existing single-value call look
+				// illegal to the model reading it.
+				{
+					std::string capText;
+					{
+						const std::string hdr = slurp( agentDir / "AgentSession.h" );
+						const std::string anchor = "kBuildPlanMaxConstructionMethods = ";
+						const std::size_t at = hdr.find( anchor );
+						const std::size_t semi = at == std::string::npos ? std::string::npos
+						                                                 : hdr.find( ';', at );
+						if( semi != std::string::npos )
+							capText = hdr.substr( at + anchor.size(), semi - at - anchor.size() );
+					}
+					Check( !capText.empty(),
+					       "C4 parity: parsed kBuildPlanMaxConstructionMethods out of AgentSession.h "
+					       "(got `" + capText + "`)" );
+					const std::string capPin = "At most " + capText + " per element and no repeats";
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						if( joined.find( "an ARRAY of one or two methods" ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": does not state that "
+								"`construction` accepts an ARRAY -- a model with a genuinely "
+								"two-method element (a lathe pot with a sweep coil) will declare one "
+								"and hand-approximate the other, which is the exact failure C4 exists "
+								"to remove" );
+						if( joined.find( capPin ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": does not state the "
+								"construction cap and the no-repeat rule in the form `" + capPin +
+								"` -- both are -32602s, and the number must match "
+								"kBuildPlanMaxConstructionMethods, which this scan reads out of "
+								"AgentSession.h" );
+						if( joined.find( "may also be written as a plain string" ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": does not state that a "
+								"single method may still be sent as a bare STRING -- the schema says "
+								"array, so a surface silent on this makes every single-value call "
+								"look illegal to a model reading it" );
+					}
+				}
+
+				for( const char* fname : kPlanSurfaces ) {
+					const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+					if( joined.find( "imagine_scene" ) == std::string::npos ) {
+						planProblems.push_back( std::string( fname ) +
+							": never mentions imagine_scene at all" );
+						continue;
+					}
+					for( std::size_t k = 0; k < sizeof( kImaginePins ) / sizeof( kImaginePins[0] ); ++k ) {
+						if( joined.find( kImaginePins[k].text ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": " + kImaginePins[k].why );
+					}
+				}
+			}
+
+			for( const std::string& p : planProblems )
+				std::cout << "  G2 PART-PLAN SURFACE DRIFT: " << p << std::endl;
+			Check( planProblems.empty(),
+			       "G2/G3a/G3b: both hand-authored tool-description surfaces state the SAME construction "
+			       "enum, the SAME non-binding / capped-refusal contract, the SAME required-outline "
+			       "/ optional-view schema, and the SAME render{target} comparison contract "
+			       "(isolate pairing, named vantages, shape-only IoU, composite-replaces-frame, "
+			       "overlay legend, nothing-is-gated, canvas-not-frame area fractions, and both "
+			       "omitted-field conditions) -- and, Arc 77 Phase 2/2b, the SAME imagine_scene "
+			       "contract (description-required, generated-from-that-text, the flat-shaded "
+			       "3D-render style wrapper, where the sceneTarget block lands and where it does "
+			       "NOT, composite-replaces-frame and only when an image was asked for, the "
+			       "render-is-never-smaller size contract, NO similarity score, nothing-is-gated, "
+			       "replace-on-re-imagine, and the capability-conditional refusal)" );
+
+			// G3b (2026-08-10): THE FILL-FRACTION AND FIT PINS.
+			//
+			// The comparison's whole validity rests on one invariant: the
+			// sketch mask and the rendered silhouette are normalized by the
+			// SAME transform.  If the two diverge the IoU stops being a
+			// shape match and becomes a comparison of two framings -- a
+			// plausible number, systematically wrong, with nothing failing.
+			// TWO independent pins, because the invariant has two halves:
+			//
+			//  (1) NUMERIC -- AgentSession.h's kElementSketchFillFraction is the
+			//      single source of truth and AgentSession.cpp's kIsolateFrameFill
+			//      is initialized directly from AgentSession::kElementSketchFillFraction.
+			//  (2) STRUCTURAL -- both mask producers go through the one
+			//      SketchFitTransform_ helper.  A shared constant alone is
+			//      not enough: the centering, the letterbox and the
+			//      aspect-preserving max() all have to agree too, and a
+			//      re-inlined formula on one side would pass pin (1) while
+			//      silently breaking the metric.
+			{
+				const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
+				const std::string headerSrc  = slurp( agentDir / "AgentSession.h" );
+				const std::string sessionSrc = slurp( agentDir / "AgentSession.cpp" );
+
+				auto literalAfter = []( const std::string& src, const std::string& anchor ) {
+					const size_t at = src.find( anchor );
+					if( at == std::string::npos ) return std::string();
+					size_t q = at + anchor.size();
+					std::string v;
+					while( q < src.size() &&
+					       ( std::isdigit( static_cast<unsigned char>( src[q] ) ) || src[q] == '.' ) )
+						v += src[q++];
+					return v;
+				};
+				const std::string sketchFill = literalAfter( headerSrc, "kElementSketchFillFraction = " );
+				Check( !sketchFill.empty(),
+				       "G3b parity: parsed kElementSketchFillFraction literal in AgentSession.h" );
+				Check( sessionSrc.find( "kIsolateFrameFill = AgentSession::kElementSketchFillFraction;" ) != std::string::npos,
+				       "G3b: kIsolateFrameFill is initialized directly from AgentSession::kElementSketchFillFraction "
+				       "-- the sketch mask and the isolate render's silhouette are compared by IoU, so they share "
+				       "one compile-time constant" );
+
+				// Both call sites of the shared fit, plus the definition:
+				// three occurrences minimum (RasterizeElementOutline_,
+				// NormalizeSilhouetteToCanvas_, and the function itself).
+				std::size_t fitUses = 0;
+				for( size_t at = sessionSrc.find( "SketchFitTransform_" );
+				     at != std::string::npos;
+				     at = sessionSrc.find( "SketchFitTransform_", at + 1 ) )
+					++fitUses;
+				Check( fitUses >= 3,
+				       "G3b: BOTH mask producers still call the shared SketchFitTransform_ (found " +
+				       std::to_string( fitUses ) + " references; the definition plus the sketch "
+				       "rasterizer plus the silhouette normalizer is 3).  A re-inlined fit on either "
+				       "side would keep the fill fraction equal and still break the IoU." );
+			}
+		}
+
+		// ---- MCP tools/call image branch: no re-grown private verb list ---
+		// AgentMcpAdapter.cpp's tools/call handler used to keep its OWN
+		// hardcoded list of image-capable verbs, separate from
+		// AgentChatCodecs.cpp's IsImageResult -- and it drifted: it omitted
+		// a plain `render{imageMaxEdge}`, so that PNG reached MCP clients
+		// only as base64 text buried inside the serialized JSON, not as a
+		// real image content block, until the 2026-08-11 unification onto
+		// the shared ChatToolResultCarriesImage predicate.  Pin BOTH halves
+		// so the private list cannot silently re-grow: the adapter must
+		// still route through the shared predicate, and it must not carry
+		// a hand-rolled verb check that could drift from it again.
+		{
+			const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
+			const std::string mcpSrc = slurp( agentDir / "AgentMcpAdapter.cpp" );
+			// Match the CALL, not the bare name: the name also appears in
+			// this file's own comments and in the adapter's, so a find() on
+			// the name alone would report a false PASS for a revision that
+			// reverted the routing but kept a comment mentioning it.
+			Check( mcpSrc.find( "ChatToolResultCarriesImage( " ) != std::string::npos,
+			       "MCP image-branch parity: AgentMcpAdapter.cpp's tools/call handler still CALLS "
+			       "the shared ChatToolResultCarriesImage predicate (not merely names it in a comment)" );
+			// The adapter is a pass-through: it translates envelopes and does
+			// not branch on WHICH verb it is forwarding.  So no comparison of
+			// toolName against any image-capable verb name has a legitimate
+			// reason to exist here, in any lexical form -- and each one is a
+			// private list starting to re-grow.  `render` is deliberately NOT
+			// banned: unlike the other four it has non-image reasons to be
+			// named (the async detour), so banning it would fire on unrelated
+			// work.  A re-grown list must still name at least one of these
+			// four to be a list at all.
+			// Arc 77 Phase 2 (2026-08-11): `imagine_scene` joins the ban list
+			// -- it is image-bearing (IsImageResult lists it) and the adapter
+			// must reach it through the shared predicate, exactly like the
+			// other four.
+			// S1 (2026-08-11): `finish_element` joins the ban list -- its
+			// result carries the element's isolate render (IsImageResult
+			// lists it), so the adapter must reach it through the shared
+			// predicate exactly like the other five.
+			static const char* const kImageVerbLiterals[] = {
+				"read_image", "read_viewport", "compare_to_reference", "file_build_plan",
+				"finish_element", "imagine_scene" };
+			for( std::size_t v = 0; v < sizeof( kImageVerbLiterals ) / sizeof( kImageVerbLiterals[0] ); ++v ) {
+				const std::string verb = kImageVerbLiterals[v];
+				Check( mcpSrc.find( "toolName == \"" + verb + "\"" ) == std::string::npos &&
+				       mcpSrc.find( "toolName != \"" + verb + "\"" ) == std::string::npos,
+				       "MCP image-branch parity: AgentMcpAdapter.cpp has not re-grown a hardcoded "
+				       "`toolName == \"" + verb + "\"` verb check -- that private list is exactly "
+				       "what drifted (it omitted plain render) between G3a and the 2026-08-11 "
+				       "unification onto the shared predicate" );
+			}
+		}
+
 		// ---- render{imageMaxEdge} through the drivers' async detour -------
 		// WHY THIS IS GUARDED IN SOURCE.  `render{imageMaxEdge:N}` returns the
 		// PNG inline so an ordinary look costs ONE turn.  The RPC refuses that
@@ -2452,103 +4708,394 @@ int main()
 		       "Windows MainWindow has one ordered shutdown path" );
 	}
 
-	// ---- IJob vtable append-only manifest (round-4 review, 2026-07-22) ----
-	// IJob is a public abstract interface: its virtual DECLARATION ORDER is
-	// the vtable ABI.  The append-only convention lived only in tail comments
-	// and was violated (a new virtual landed mid-vtable next to its semantic
-	// sibling, shifting every later slot).  This makes the convention
-	// MECHANICAL: extract the ordered virtual names from IJob.h and compare
-	// against tests/IJobVtableManifest.txt.  A legal tail append = one new
-	// line at the END of the manifest, same commit.  A mid-insert / reorder /
-	// removal mismatches at some index and fails the suite.
+	// ---- IJob vtable-manifest extractor self-coverage (2026-08-20) -------
+	// Prove ExtractVirtualDecls/NormalizeDeclSignature on synthetic text
+	// BEFORE trusting them against the real header.  Self-test (d) below is
+	// the actual regression guard for the doc-88 S7 blindness: a trailing
+	// defaulted parameter appended to an EXISTING virtual must change the
+	// pinned signature even though the name and position do not move --
+	// exactly what the old name-only manifest could not see.  Self-tests
+	// (g)-(h) guard the QUOTE-UNAWARE-SCAN fix (a `)`, `;`, or `{` inside a
+	// string/char literal default value desynchronizing the walk);
+	// (i)-(j) guard the WHITESPACE/`inline` widening (a literal 8-byte
+	// "virtual " match silently skipping `virtual\t...` and
+	// `inline virtual ...`).  Letters are sequential in FILE ORDER (one per
+	// Check() call, not grouped by fixture) so the prose maps directly to
+	// the call it names.
+	{
+		const std::string synth =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"protected:\n"
+			"\tIJob(){};\n"
+			"\tvirtual ~IJob(){};\n"
+			"public:\n"
+			"\t//! Adds a pinhole camera\n"
+			"\tvirtual bool AddPinholeCamera(\n"
+			"\t\tconst char* name,                          ///< [in] Camera name\n"
+			"\t\tconst double ptLocation[3],                ///< [in] Location\n"
+			"\t\tconst double fstop = 0.0                   ///< [in] F-stop\n"
+			"\t\t) = 0;\n"
+			"\tvirtual std::string GetActiveCameraName() const = 0;\n"
+			"};\n";
+		const std::string kExpectedPinhole =
+			"virtual bool AddPinholeCamera(const char*name,const double ptLocation[3],"
+			"const double fstop=0.0)=0;";
+		const std::string kExpectedActiveCameraName =
+			"virtual std::string GetActiveCameraName()const=0;";
+
+		const std::vector<IJobVirtualDecl> decls =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( synth ) );
+		Check( decls.size() == 2,
+		       "self-test (a): synthetic IJob yields exactly the two pure virtuals "
+		       "(protected ctor and destructor excluded)" );
+		Check( decls.size() >= 1 && decls[0].name == "AddPinholeCamera"
+		       && decls[0].signature == kExpectedPinhole,
+		       "self-test (b): a multi-line decl with ///< trailers and a defaulted "
+		       "param normalizes to the exact expected canonical string" );
+		bool sawDestructorLeak = false;
+		for( const IJobVirtualDecl& d : decls ) { if( d.name == "IJob" ) sawDestructorLeak = true; }
+		Check( decls.size() >= 2 && decls[1].name == "GetActiveCameraName"
+		       && decls[1].signature == kExpectedActiveCameraName && !sawDestructorLeak,
+		       "self-test (c): the destructor is skipped (never leaks in under its "
+		       "'~'-stripped name) and a single-line `const = 0;` decl is extracted" );
+
+		const std::string synthWithTail =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"protected:\n"
+			"\tIJob(){};\n"
+			"\tvirtual ~IJob(){};\n"
+			"public:\n"
+			"\tvirtual bool AddPinholeCamera(\n"
+			"\t\tconst char* name,                          ///< [in] Camera name\n"
+			"\t\tconst double ptLocation[3],                ///< [in] Location\n"
+			"\t\tconst double fstop = 0.0,                  ///< [in] F-stop\n"
+			"\t\tconst double zz = 0.0                      ///< [in] NEW trailing default\n"
+			"\t\t) = 0;\n"
+			"\tvirtual std::string GetActiveCameraName() const = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTail =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( synthWithTail ) );
+		Check( declsTail.size() >= 1 && declsTail[0].name == "AddPinholeCamera"
+		       && declsTail[0].signature != kExpectedPinhole,
+		       "self-test (d, S7 REGRESSION GUARD): a trailing defaulted parameter "
+		       "appended to an EXISTING virtual keeps its name and slot but changes "
+		       "the pinned signature -- the exact mutation a name-only manifest "
+		       "missed in the doc-88 S7 review (2026-08-20)" );
+
+		const std::string reflowed =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"  virtual bool AddPinholeCamera(\n"
+			"      const char*   name,\n"
+			"      const double  ptLocation[3], const double fstop = 0.0 ) = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsReflow =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( reflowed ) );
+		Check( declsReflow.size() == 1 && declsReflow[0].signature == kExpectedPinhole,
+		       "self-test (e): reflowing/reindenting the same declaration normalizes "
+		       "to the IDENTICAL signature string" );
+
+		const std::string withTrickyComment =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\t// a decoy: virtual void Evil() { trap(); } ;\n"
+			"\t/* another decoy -- virtual int AlsoEvil() = 0; { } */\n"
+			"\tvirtual std::string GetActiveCameraName() const = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTricky =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( withTrickyComment ) );
+		bool sawEvil = false;
+		for( const IJobVirtualDecl& d : declsTricky ) {
+			if( d.name == "Evil" || d.name == "AlsoEvil" ) sawEvil = true;
+		}
+		Check( declsTricky.size() == 1 && declsTricky[0].name == "GetActiveCameraName" && !sawEvil,
+		       "self-test (f): a comment containing a brace or the word `virtual` does "
+		       "not desynchronize extraction" );
+
+		const std::string trickyDefault =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\tvirtual bool TrickyDefault(\n"
+			"\t\tconst char* s = \");evil;\",\n"
+			"\t\tconst char c = ';',\n"
+			"\t\tconst double after = 1.0\n"
+			"\t\t) = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTrickyDefault =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( trickyDefault ) );
+		Check( declsTrickyDefault.size() == 1 && declsTrickyDefault[0].name == "TrickyDefault"
+		       && declsTrickyDefault[0].signature.find( "after" ) != std::string::npos,
+		       "self-test (g): a `)`/`;` inside a string or char literal default value "
+		       "does not truncate the declaration -- the trailing `after` parameter is "
+		       "captured in full" );
+
+		const std::string trickyDefaultWithTail =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\tvirtual bool TrickyDefault(\n"
+			"\t\tconst char* s = \");evil;\",\n"
+			"\t\tconst char c = ';',\n"
+			"\t\tconst double after = 1.0,\n"
+			"\t\tconst double zzz = 2.0\n"
+			"\t\t) = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTrickyDefaultTail =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( trickyDefaultWithTail ) );
+		Check( declsTrickyDefaultTail.size() == 1
+		       && declsTrickyDefaultTail[0].name == declsTrickyDefault[0].name
+		       && declsTrickyDefaultTail[0].signature != declsTrickyDefault[0].signature,
+		       "self-test (h): appending a further trailing defaulted parameter past "
+		       "the tricky literals keeps the name equal but changes the captured "
+		       "signature -- proves the earlier capture wasn't accidentally already "
+		       "full-width" );
+
+		const std::string tabAndInline =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\tvirtual\tbool TabDecl( const double x ) = 0;\n"
+			"\tinline virtual bool InlineDecl() = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsTabInline =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( tabAndInline ) );
+		bool sawTabDecl = false, sawInlineDecl = false;
+		std::string inlineDeclSignature, tabDeclSignature;
+		for( const IJobVirtualDecl& d : declsTabInline ) {
+			if( d.name == "TabDecl" ) { sawTabDecl = true; tabDeclSignature = d.signature; }
+			if( d.name == "InlineDecl" ) { sawInlineDecl = true; inlineDeclSignature = d.signature; }
+		}
+		Check( declsTabInline.size() == 2 && sawTabDecl
+		       && tabDeclSignature == "virtual bool TabDecl(const double x)=0;",
+		       "self-test (i): `virtual` followed by a TAB (not just a literal space) "
+		       "is still recognized as a declaration start AND captures the exact "
+		       "normalized signature" );
+		Check( sawInlineDecl && inlineDeclSignature == "inline virtual bool InlineDecl()=0;",
+		       "self-test (j): a leading `inline` token ahead of `virtual` is still "
+		       "recognized as a declaration start, and normalizes with the `inline` "
+		       "prefix intact" );
+
+		const std::string operatorTilde =
+			"class IJob : public virtual IReference\n"
+			"{\n"
+			"public:\n"
+			"\tvirtual ~IJob(){};\n"
+			"\tvirtual IJob& operator~() = 0;\n"
+			"\tvirtual bool Bar() = 0;\n"
+			"};\n";
+		const std::vector<IJobVirtualDecl> declsOpTilde =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( operatorTilde ) );
+		bool opTildePinned = false, dtorLeaked = false;
+		for( const IJobVirtualDecl& d : declsOpTilde ) {
+			if( d.signature == "virtual IJob&operator~()=0;" ) { opTildePinned = true; }
+			if( d.name == "IJob" ) { dtorLeaked = true; }
+		}
+		Check( declsOpTilde.size() == 2 && opTildePinned && !dtorLeaked,
+		       "self-test (k): a `virtual operator~()` overload is NOT mistaken for the "
+		       "destructor -- its full signature pins (empty name) while the real "
+		       "destructor stays skipped" );
+	}
+
+	// ---- IJob vtable append-only + full-signature manifest ---------------
+	// (round-4 review, 2026-07-22; hardened to pin FULL SIGNATURES rather
+	// than names alone, 2026-08-20, per the doc-88 S7 review finding above.)
+	// IJob is a public abstract interface: its virtual DECLARATION ORDER
+	// *and* each virtual's exact parameter list are the vtable ABI.
+	// Extract the ordered (name, normalized-signature) pairs from IJob.h
+	// and compare against tests/IJobVtableManifest.txt (format v2: one full
+	// normalized signature per line).  A legal tail append = one new line
+	// at the END of the manifest, same commit.  A mid-insert / reorder /
+	// rename / removal / in-place signature change (including a merely
+	// APPENDED default parameter) mismatches at some index and fails the
+	// suite with a classified diagnostic.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
 		const fs::path header = repoRoot / "src" / "Library" / "Interfaces" / "IJob.h";
 		const fs::path manifestPath = testsDir / "IJobVtableManifest.txt";
 
-		// Extract the ordered virtual-method names from `class IJob`'s body.
-		// Brace-count CODE only (strip comments first -- doc text contains
-		// braces); skip the destructor (a `~` before the name).  Round 20:
-		// this uses the shared stripper, so a `/* */` block carrying a brace
-		// or a `virtual` cannot desynchronise the walk either.
-		std::vector<std::string> extracted;
-		{
-			std::ifstream raw( header );
-			std::istringstream in( StripCommentsPreservingLayout(
-				std::string( std::istreambuf_iterator<char>( raw ),
-				             std::istreambuf_iterator<char>() ) ) );
-			std::string line;
-			bool inClass = false, started = false;
-			int depth = 0;
-			while( std::getline( in, line ) ) {
-				const std::string& code = line;
-				if( !inClass ) {
-					const size_t k = code.find( "class IJob" );
-					if( k != std::string::npos
-					 && ( code.size() <= k + 10 || !isalnum( (unsigned char)code[k + 10] ) )
-					 && code.find( ';' ) == std::string::npos ) {
-						inClass = true;
-						for( char c : code ) { if( c == '{' ) ++depth; else if( c == '}' ) --depth; }
-						started = depth > 0;
-					}
-					continue;
-				}
-				for( char c : code ) { if( c == '{' ) ++depth; else if( c == '}' ) --depth; }
-				if( !started && depth > 0 ) started = true;
-				if( started && depth <= 0 ) break;
-				// A declaration line: first token after stripping tabs is `virtual`.
-				size_t b = code.find_first_not_of( " \t" );
-				if( b == std::string::npos ) continue;
-				if( code.compare( b, 8, "virtual " ) != 0 ) continue;
-				const size_t paren = code.find( '(', b );
-				if( paren == std::string::npos ) continue;
-				if( code.rfind( '~', paren ) != std::string::npos
-				 && code.rfind( '~', paren ) > b ) continue;   // destructor
-				size_t e = paren;
-				while( e > b && ( code[e-1] == ' ' || code[e-1] == '\t' ) ) --e;
-				size_t s = e;
-				while( s > b && ( isalnum( (unsigned char)code[s-1] ) || code[s-1] == '_' ) ) --s;
-				if( s < e ) extracted.push_back( code.substr( s, e - s ) );
+		const std::vector<IJobVirtualDecl> extracted =
+			ExtractVirtualDecls( StripCommentsPreservingLayout( SlurpFile( header ) ) );
+		Check( extracted.size() > 200,
+		       "IJob.h parsed: extracted the virtual-method order + signatures "
+		       "(sanity: >200 methods)" );
+
+		// The manifest's header comment: rewritten in full by regen mode, so
+		// generator and checker can never drift apart from each other.
+		static const char* const kManifestHeader =
+			"# IJob vtable manifest -- FULL NORMALIZED SIGNATURE per virtual, in\n"
+			"# declaration order (the vtable ABI).  Format v2 (2026-08-20).  Each\n"
+			"# non-comment line below is one entire pure-virtual declaration\n"
+			"# collapsed to a single canonical line by NormalizeDeclSignature in\n"
+			"# tests/SourceHygieneTest.cpp -- NOT just the method name.  The name is\n"
+			"# derivable by parsing the identifier before the first '(', so nothing\n"
+			"# here restates it separately.\n"
+			"#\n"
+			"# WHY FULL SIGNATURES, NOT JUST NAMES.  A name-only manifest cannot see\n"
+			"# a trailing DEFAULTED parameter appended to an EXISTING virtual -- that\n"
+			"# is still a vtable/ABI break: changing a pure virtual's signature on a\n"
+			"# shipped abstract interface changes the vtable layout and breaks\n"
+			"# out-of-tree overriders (docs/VITREOUS_ENAMEL.md:894-899,\n"
+			"# docs/gui/RENDER_COORDINATOR.md:1237-1239).  It is not hypothetical: the\n"
+			"# doc-88 S7 review (2026-08-20) found exactly this -- two IJob virtuals\n"
+			"# had grown a trailing defaulted parameter while the name-only v1\n"
+			"# manifest stayed green throughout.  This file exists so that can never\n"
+			"# happen silently again.\n"
+			"#\n"
+			"# CONSUMED BY: SourceHygieneTest (tests/SourceHygieneTest.cpp, the \"IJob\n"
+			"# vtable append-only + full-signature manifest\" block).  The header's\n"
+			"# virtuals must match this sequence EXACTLY, signature and all.\n"
+			"#\n"
+			"# A LEGAL CHANGE is a tail append: a brand-new virtual goes at the END of\n"
+			"# IJob's class body, and its normalized signature is added as ONE new\n"
+			"# line at the END of this file, in the SAME commit -- a conscious,\n"
+			"# reviewable ABI decision.  A mid-list insert / reorder / rename /\n"
+			"# removal / in-place signature change (including a merely-appended\n"
+			"# default parameter) fails the suite: it moves or changes a vtable slot\n"
+			"# and breaks out-of-tree binaries (see the abi-preserving-api-evolution\n"
+			"# skill).\n"
+			"#\n"
+			"# REGEN PROCEDURE.  After a reviewed, intentional signature migration or\n"
+			"# a legal tail append, regenerate this file mechanically instead of\n"
+			"# hand-editing it -- generator and checker must never drift apart:\n"
+			"#\n"
+			"#     RISE_REGEN_IJOB_VTABLE_MANIFEST=1 ./bin/tests/SourceHygieneTest\n"
+			"#\n"
+			"# This REWRITES the whole file (including this header) from IJob.h's\n"
+			"# CURRENT virtuals, then the same run's comparison passes.  Regen is for\n"
+			"# LEGAL changes ONLY -- a tail append, or a signature edit you have\n"
+			"# already reviewed as an intentional ABI break -- never a shortcut to\n"
+			"# turn a red suite green.  The `git diff` this produces on this file IS\n"
+			"# the ABI review: read every changed/added line before committing it.\n";
+
+		if( const char* regen = std::getenv( "RISE_REGEN_IJOB_VTABLE_MANIFEST" ) ) {
+			// Unset, empty, and the literal string "0" are all OFF -- only a
+			// truthy value (canonically "1", per the manifest's own header
+			// comment) triggers regen.  A bare non-empty check treated
+			// `=0` as ON, which is the opposite of every other env-var
+			// convention in this repo and an easy accidental trigger.
+			const std::string regenStr( regen );
+			if( !regenStr.empty() && regenStr != "0" ) {
+				std::ofstream out( manifestPath, std::ios::trunc );
+				out << kManifestHeader;
+				for( const IJobVirtualDecl& d : extracted ) { out << d.signature << '\n'; }
+				out.close();
+				std::cout << std::endl
+				          << "  ***** REGENERATED tests/IJobVtableManifest.txt from "
+				          << "src/Library/Interfaces/IJob.h (" << extracted.size()
+				          << " signatures). *****" << std::endl
+				          << "  Regen is for a LEGAL tail append or a consciously-reviewed "
+				          << "signature migration ONLY -- never a shortcut to turn a red "
+				          << "suite green.  `git diff tests/IJobVtableManifest.txt` IS the "
+				          << "ABI review: read every changed line before committing it."
+				          << std::endl << std::endl;
 			}
 		}
-		Check( extracted.size() > 200,
-		       "IJob.h parsed: extracted the virtual-method order (sanity: >200 methods)" );
 
-		std::vector<std::string> manifest;
+		// Parse the identifier before a normalized signature's first '(' --
+		// normalization guarantees no space sits between them.
+		auto nameFromSignature = []( const std::string& sig ) -> std::string {
+			const size_t paren = sig.find( '(' );
+			if( paren == std::string::npos ) { return std::string(); }
+			size_t s = paren;
+			while( s > 0 && ( isalnum( (unsigned char)sig[s-1] ) || sig[s-1] == '_' ) ) { --s; }
+			return sig.substr( s, paren - s );
+		};
+
+		std::vector<IJobVirtualDecl> manifest;
 		{
 			std::ifstream in( manifestPath );
 			std::string line;
 			while( std::getline( in, line ) ) {
 				if( line.empty() || line[0] == '#' ) continue;
-				manifest.push_back( line );
+				IJobVirtualDecl d;
+				d.signature = line;
+				d.name = nameFromSignature( line );
+				manifest.push_back( d );
 			}
 		}
 		Check( !manifest.empty(), "tests/IJobVtableManifest.txt loaded" );
 
+		std::vector<std::string> headerNames, manifestNames;
+		for( const IJobVirtualDecl& d : extracted ) { headerNames.push_back( d.name ); }
+		for( const IJobVirtualDecl& d : manifest ) { manifestNames.push_back( d.name ); }
+		auto inList = []( const std::vector<std::string>& v, const std::string& n ) {
+			return std::find( v.begin(), v.end(), n ) != v.end();
+		};
+
 		size_t firstDiff = 0;
 		const size_t common = std::min( extracted.size(), manifest.size() );
-		while( firstDiff < common && extracted[firstDiff] == manifest[firstDiff] ) ++firstDiff;
+		while( firstDiff < common
+		       && extracted[firstDiff].signature == manifest[firstDiff].signature ) { ++firstDiff; }
 		if( firstDiff < common ) {
-			std::cout << "  IJob VTABLE ORDER MISMATCH at slot " << firstDiff
-			          << ": header has `" << extracted[firstDiff]
-			          << "`, manifest has `" << manifest[firstDiff] << "`" << std::endl
-			          << "  A new IJob virtual must be APPENDED at the class tail (append-only"
-			          << " vtable ABI); a rename/removal is an ABI break -- see"
-			          << " abi-preserving-api-evolution." << std::endl;
+			const IJobVirtualDecl& h = extracted[firstDiff];
+			const IJobVirtualDecl& m = manifest[firstDiff];
+			if( h.name == m.name ) {
+				std::cout << "  IJob SIGNATURE CHANGE at slot " << firstDiff << " (`" << h.name
+				          << "`):" << std::endl
+				          << "    header:   " << h.signature << std::endl
+				          << "    manifest: " << m.signature << std::endl
+				          << "  Appending even a trailing DEFAULTED parameter to an EXISTING "
+				          << "IJob virtual is a vtable/ABI break.  If reviewed and intentional, "
+				          << "update this manifest line in the same commit (or regen: "
+				          << "RISE_REGEN_IJOB_VTABLE_MANIFEST=1 ./bin/tests/SourceHygieneTest)."
+				          << std::endl;
+				if( extracted.size() != manifest.size() ) {
+					const long long countDiff =
+						(long long)extracted.size() - (long long)manifest.size();
+					std::cout << "  NOTE: the total virtual count also differs by " << countDiff
+					          << " (header " << extracted.size() << " vs manifest "
+					          << manifest.size() << ") -- this may be an ADDED/REMOVED OVERLOAD "
+					          << "of `" << h.name << "` rather than an in-place signature edit "
+					          << "(deleting one overload shifts a later same-named overload into "
+					          << "this slot, which reads here as a SIGNATURE CHANGE).  Check the "
+					          << "tail-mismatch messages below too." << std::endl;
+				}
+			} else {
+				const bool hInManifest = inList( manifestNames, h.name );
+				const bool mInHeader = inList( headerNames, m.name );
+				if( !hInManifest && mInHeader ) {
+					std::cout << "  IJob MID-VTABLE INSERT at slot " << firstDiff << ": `" << h.name
+					          << "` is new and lands before `" << m.name << "` -- it must be "
+					          << "APPENDED at the class tail instead (append-only vtable ABI)."
+					          << std::endl;
+				} else if( !mInHeader && hInManifest ) {
+					std::cout << "  IJob REMOVAL at slot " << firstDiff << ": manifest's `" << m.name
+					          << "` no longer exists in the header -- removing a shipped virtual "
+					          << "is an ABI break." << std::endl;
+				} else if( !hInManifest && !mInHeader ) {
+					std::cout << "  IJob RENAME at slot " << firstDiff << ": `" << m.name << "` -> `"
+					          << h.name << "` -- an out-of-tree caller/overrider sees this as an "
+					          << "ABI break." << std::endl;
+				} else {
+					std::cout << "  IJob REORDER at slot " << firstDiff << ": header has `" << h.name
+					          << "`, manifest has `" << m.name << "` (both known elsewhere, just "
+					          << "at different positions)." << std::endl;
+				}
+			}
+			std::cout << "  See the abi-preserving-api-evolution skill." << std::endl;
 		}
 		Check( firstDiff == common,
-		       "IJob virtual order matches the manifest prefix (no mid-vtable insert/reorder)" );
+		       "IJob virtual order+signature matches the manifest prefix exactly (no "
+		       "mid-vtable insert/reorder/rename/signature-change)" );
 		if( extracted.size() < manifest.size() ) {
-			std::cout << "  IJob.h is MISSING manifest tail entries (removal = ABI break):"
-			          << " first missing `" << manifest[extracted.size()] << "`" << std::endl;
+			std::cout << "  IJob.h is MISSING manifest tail entries (removal = ABI break): "
+			          << "first missing `" << manifest[extracted.size()].signature << "`"
+			          << std::endl;
 		} else if( extracted.size() > manifest.size() ) {
 			std::cout << "  NEW IJob tail virtual(s) not yet in the manifest -- append `"
-			          << extracted[manifest.size()]
-			          << "` (and any after it) to tests/IJobVtableManifest.txt in this commit."
-			          << std::endl;
+			          << extracted[manifest.size()].signature
+			          << "` (and any after it) to tests/IJobVtableManifest.txt in this commit "
+			          << "(or regen -- RISE_REGEN_IJOB_VTABLE_MANIFEST=1, see the manifest's "
+			          << "own header comment)." << std::endl;
 		}
 		Check( extracted.size() == manifest.size(),
-		       "IJob virtual count matches the manifest (tail appends update the manifest consciously)" );
+		       "IJob virtual count matches the manifest (tail appends update the manifest "
+		       "consciously)" );
 	}
 
 	// ---- Agent verb-set enumeration parity (fix rounds 17, 20) ---------
@@ -2585,7 +5132,11 @@ int main()
 	// restatement should use one of these anchor phrasings so it is covered.
 	//
 	// WHERE IT LOOKS (round 20 widened this; round 17's scanner saw `//`
-	// lines ONLY).  Every prose run in src/Library/Agent/*.{cpp,h}:
+	// lines ONLY; FIX 5b, 2026-08-09, widened it again to the GUI bridge
+	// sources -- see the DISCLOSED RESIDUAL note and the scan below).  Every
+	// prose run in src/Library/Agent/*.{cpp,h} (part (A) ALSO runs, narrowed,
+	// over build/XCode/rise/RISE-GUI/**/*.{swift,h,mm} and
+	// build/VS2022/RISE-GUI/**/*.{h,cpp}):
 	//   * runs of consecutive `//` lines,
 	//   * `/* */` blocks, and
 	//   * runs of adjacent string literals -- the MODEL-FACING tool
@@ -2599,17 +5150,24 @@ int main()
 	// read-safe-allowlist anchor is invisible by design (the anchors are what
 	// keep the many legitimate subsets from false-positiving).  Rephrase such
 	// a restatement into an anchor form to buy coverage.  (2) Files outside
-	// src/Library/Agent -- the GUI bridges, docs and skills restate these sets
-	// too; only the reason-code registry below scans repo-wide.  (3) Raw
-	// string literals (`R"(...)"`) are not decoded; none exist in this tree.
+	// src/Library/Agent -- the GUI bridges' own host-loop/bridge sources
+	// (build/XCode/rise/RISE-GUI/**/*.{swift,h,mm}, build/VS2022/RISE-GUI/**/*.{h,cpp})
+	// are ALSO scanned since FIX 5b (2026-08-09 R1 fix round), but for part (A)'s
+	// counted-mutating-verb claim ONLY -- not part (B)'s read-safe-allowlist
+	// enumeration.  This is CODE-ENFORCED (FIX C, round-3 fix, 2026-08-09):
+	// part (B) is gated on `isAgentFile` inside the scan loop below, not just
+	// documented here -- an earlier draft of this loop ran BOTH parts over
+	// the full agentFiles+guiFiles union with no per-file branch, and did not
+	// false-positive only because existing GUI prose happened to be followed
+	// by capitalized identifiers that parseRun's lowercase-only isVerbChar
+	// rejects, which is luck, not enforcement.  docs and skills restate these
+	// sets too and remain UNSCANNED here; only the reason-code registry below
+	// scans repo-wide.  (3) Raw string literals (`R"(...)"`) are not decoded;
+	// none exist in this tree.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
 		const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		const std::string rpcCpp = slurp( agentDir / "AgentRpc.cpp" );
 		Check( !rpcCpp.empty(), "verb-parity: AgentRpc.cpp read" );
 		// GROUND TRUTH IS CODE, NOT COMMENT TEXT (fix round 20).  These
@@ -2716,14 +5274,68 @@ int main()
 		for( const auto& e : fs::directory_iterator( agentDir ) ) {
 			if( !e.is_regular_file() ) { continue; }
 			const std::string ext = e.path().extension().string();
-			if( ext == ".cpp" || ext == ".h" ) { agentFiles.push_back( e.path() ); }
+			if( ext == ".cpp" || ext == ".h" || ext == ".hpp" ) { agentFiles.push_back( e.path() ); }
 		}
 		std::sort( agentFiles.begin(), agentFiles.end() );
 		Check( agentFiles.size() >= 5,
 		       "verb-parity: found the src/Library/Agent sources to scan (got "
 		       + std::to_string( agentFiles.size() ) + ")" );
 
-		for( const fs::path& f : agentFiles ) {
+		// FIX 5b (P2, 2026-08-09 R1 fix round): the DISCLOSED RESIDUAL above ("Files outside
+		// src/Library/Agent -- the GUI bridges ... restate these sets too") is exactly the gap that let
+		// FIX 4's four stale "5 mutating verbs" GUI sites (RISEViewportBridge.h x2, ViewportBridge.h x2,
+		// ChatPanel.cpp) survive undetected -- extend the SAME anchored counted-claim scan (part (A) above)
+		// to the GUI host-loop/bridge sources that restate this count in prose:
+		// build/XCode/rise/RISE-GUI/**/*.{swift,h,mm} and build/VS2022/RISE-GUI/**/*.{h,cpp}.  Deliberately
+		// NARROWER than the Agent-dir scan: only part (A)'s counted-mutating-verb claim is checked on these
+		// files, not part (B)'s read-safe-allowlist enumeration -- every GUI site found in this arc restates
+		// ONLY the mutating count/list, never the read-safe set, so wiring (B) here would be untested dead
+		// code with no real coverage to show for it; a narrower, provably-live check beats a broader,
+		// unverified one.  (ExtractProseBlocks's generic `//` / `/* */` / string-literal grammar covers
+		// Objective-C++ (.mm) and Swift line/block comments the same way it covers C++; Swift's `///` doc
+		// marker is not specially recognised, but that only folds one extra leading `/` into the prose text,
+		// which the substring/anchor search below does not care about.)
+		std::vector<fs::path> guiFiles;
+		{
+			std::error_code ec;
+			struct GuiRoot { fs::path dir; std::vector<std::string> exts; };
+			const GuiRoot roots[] = {
+				{ repoRoot / "build" / "XCode" / "rise" / "RISE-GUI", { ".swift", ".h", ".mm" } },
+				{ repoRoot / "build" / "VS2022" / "RISE-GUI",         { ".h", ".cpp" } },
+			};
+			for( const GuiRoot& root : roots ) {
+				fs::recursive_directory_iterator it( root.dir, ec ), end;
+				if( ec ) { continue; }
+				for( ; it != end; it.increment( ec ) ) {
+					if( ec ) { break; }
+					if( !it->is_regular_file() ) { continue; }
+					const std::string ext = it->path().extension().string();
+					if( std::find( root.exts.begin(), root.exts.end(), ext ) != root.exts.end() )
+						guiFiles.push_back( it->path() );
+				}
+			}
+		}
+		std::sort( guiFiles.begin(), guiFiles.end() );
+		// Liveness for the GUI extension itself: if the roots above ever get renamed/moved, this silently
+		// degenerating to zero files would silently disable the exact coverage FIX 5b exists to add.
+		Check( guiFiles.size() >= 4,
+		       "verb-parity: found the GUI bridge/host-loop sources to scan (got "
+		       + std::to_string( guiFiles.size() ) + ")" );
+
+		std::vector<fs::path> scanFiles = agentFiles;
+		scanFiles.insert( scanFiles.end(), guiFiles.begin(), guiFiles.end() );
+
+		// FIX C (P2, round-3 fix, 2026-08-09): part (B) below (the read-safe-
+		// allowlist enumeration check) runs ONLY against agentFiles, matching
+		// the DISCLOSED RESIDUAL note above.  A linear membership test against
+		// the (small, single-digit-to-low-double-digit) agentFiles list is
+		// cheap enough not to warrant a set/map here.
+		auto isAgentFile = [&]( const fs::path& f ) {
+			return std::find( agentFiles.begin(), agentFiles.end(), f ) != agentFiles.end();
+		};
+
+		for( const fs::path& f : scanFiles ) {
+			const bool fileIsAgentFile = isAgentFile( f );
 			const std::string name = f.filename().string();
 			for( const ProseBlock& blk : ExtractProseBlocks( slurp( f ) ) ) {
 				const std::string& b = blk.text;
@@ -2785,20 +5397,25 @@ int main()
 					}
 				}
 
-				// (B) "read-safe allowlist (" / "IsReadSafeVerb -- "
-				const char* anchors[] = { "read-safe allowlist", "isreadsafeverb --" };
-				for( int a = 0; a < 2; ++a ) {
-					const std::string anchor = anchors[a];
-					for( size_t p = lb.find( anchor ); p != std::string::npos;
-					     p = lb.find( anchor, p + 1 ) ) {
-						const std::vector<std::string> run =
-							parseRun( b, p + anchor.size(), false );
-						if( run.empty() ) { continue; }
-						++readSafeRunsChecked;
-						if( setOf( run ) != readSorted ) {
-							verbProblems.push_back(
-								where( p ) + ": the read-safe allowlist \"" + join( run )
-								+ "\" is not IsReadSafeVerb's set (" + join( readSorted ) + ")" );
+				// (B) "read-safe allowlist (" / "IsReadSafeVerb -- ".  FIX C
+				// (round-3 fix, 2026-08-09): agentFiles ONLY -- see the
+				// DISCLOSED RESIDUAL note and the `fileIsAgentFile` gate set
+				// up above the outer loop.
+				if( fileIsAgentFile ) {
+					const char* anchors[] = { "read-safe allowlist", "isreadsafeverb --" };
+					for( int a = 0; a < 2; ++a ) {
+						const std::string anchor = anchors[a];
+						for( size_t p = lb.find( anchor ); p != std::string::npos;
+						     p = lb.find( anchor, p + 1 ) ) {
+							const std::vector<std::string> run =
+								parseRun( b, p + anchor.size(), false );
+							if( run.empty() ) { continue; }
+							++readSafeRunsChecked;
+							if( setOf( run ) != readSorted ) {
+								verbProblems.push_back(
+									where( p ) + ": the read-safe allowlist \"" + join( run )
+									+ "\" is not IsReadSafeVerb's set (" + join( readSorted ) + ")" );
+							}
 						}
 					}
 				}
@@ -2936,11 +5553,7 @@ int main()
 	// anywhere in any of the three bodies used to be read as a verb name.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		auto bodyBetween = []( const std::string& src, const char* begin,
 		                       const char* next ) -> std::string {
 			const size_t b = src.find( begin );
@@ -3113,7 +5726,14 @@ int main()
 		       // Post-await re-verification: Stop / cancelled Task / scene
 		       // close / production render starting.
 		       && macRetry.find( "Task.isCancelled || stopRequested" ) != std::string::npos
-		       && macRetry.find( "guard viewportBridge != nil" ) != std::string::npos
+		       // IDENTITY, not mere existence (756e0312 weak-ify): a scene
+		       // switch mid-backoff detaches `viewportBridge` and binds a
+		       // fresh instance, so a bare non-nil check would keep
+		       // re-issuing the edit against the shut-down bridge the retry
+		       // was opened for.  `=== vb` subsumes non-nil (vb is a
+		       // non-optional parameter), so this is STRICTLY stronger than
+		       // the existence guard it replaced, not a weakening.
+		       && macRetry.find( "guard viewportBridge === vb" ) != std::string::npos
 		       && macRetry.find( "guard sceneEditable()" ) != std::string::npos
 		       // HEAD-VERSION GUARD (round 2, C2): a re-issue is admitted only
 		       // while the refusal keeps reporting the head attempt 1 saw.
@@ -3285,11 +5905,7 @@ int main()
 	// the two cannot drift apart or from the header's documented rationale.
 	{
 		const fs::path repoRoot = testsDir.parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		const std::string macBridge = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "Bridge" / "RISEAgentChatBridge.mm" );
 		const std::string winChat = slurp( repoRoot / "build" / "VS2022"
@@ -3411,26 +6027,29 @@ int main()
 		Check( winCode.find( "earlier transcript row(s)" ) != std::string::npos,
 		       "Windows compaction notice reports the same unit" );
 
-		// ...AND the same argument, for the same two shapes, applies to a
-		// note the LOOP injects into the conversation (Role::DriverNote --
-		// today the blind-edit nudge).  The model RECEIVES it and visibly
-		// changes course, so a driver that shows nothing leaves the user
-		// watching an unexplained swerve.  The two remedies differ because
-		// the two drivers differ:
-		//   * Windows renders the wire transcript, so it must handle the
-		//     Role::DriverNote entry itself -- and must not let it fall
-		//     through to the User branch, where it would be painted as the
-		//     user's own chat bubble (a lie about who said it).
-		//   * macOS renders its own display list and never sees the
-		//     transcript, so it polls DriverNoteCount()/LastDriverNoteText().
-		// Comment-stripped, like every check in this block.
+		// Role::DriverNote: its only producer today is the malformed-tool-call
+		// corrective (AgentChatLoop::BuildRequest).  History (E4, 2026-08): the
+		// message it originally existed for -- the blind-edit NUDGE -- was replaced by
+		// the SEQUENCING GATE (a tool-call REFUSAL, delivered as an
+		// ordinary ToolResults entry every driver already renders through
+		// its normal tool-result path; see AgentChatLoop.h's SEQUENCING
+		// GATE block).  Windows renders the wire transcript directly and
+		// its Role switch is exhaustive with no `default` (a compile-time
+		// -Wswitch guard against a silently-unhandled future enumerator --
+		// see ChatPanel.cpp's comment on that switch), so it MUST still
+		// carry a `case Role::DriverNote:` arm (it has one producer, the
+		// malformed-tool-call corrective); check that it still does, so a future removal of the
+		// case (leaving the enumerator behind, or vice versa) is caught
+		// here rather than at the next Windows build.  macOS renders its
+		// OWN display list rather than the wire transcript and had a
+		// polling mirror (driverNoteCount/lastDriverNoteText) for exactly
+		// this note -- retired alongside the nudge, since a SEQUENCING
+		// GATE refusal needs no such mirror (it is a tool result, and the
+		// per-call tool-result row is already generic) -- so there is
+		// nothing left to check on the macOS side.
 		Check( winCode.find( "Role::DriverNote" ) != std::string::npos,
-		       "Windows chat panel renders Role::DriverNote itself (a loop-injected note is "
-		       "not the user's chat bubble, and not invisible either)" );
-		Check( macVm.find( "driverNoteCount" ) != std::string::npos
-		       && macVm.find( "lastDriverNoteText" ) != std::string::npos,
-		       "macOS chat driver surfaces driverNoteCount/lastDriverNoteText (its display "
-		       "mirror would otherwise hide a message the model acted on)" );
+		       "Windows chat panel still handles Role::DriverNote (an exhaustive switch over "
+		       "a still-live enumerator, even with zero producers today)" );
 	}
 
 	// ---- read_viewport reason-code surface registry (fix rounds 17, 20) --
@@ -3484,11 +6103,7 @@ int main()
 		// recursive_directory_iterator over "" yields nothing -- which would
 		// make the unregistered-surface half silently vacuous.
 		const fs::path repoRoot = fs::weakly_canonical( fs::absolute( testsDir ) ).parent_path();
-		auto slurp = []( const fs::path& f ) -> std::string {
-			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
-		};
+		auto slurp = []( const fs::path& f ) -> std::string { return SlurpFile( f ); };
 		// ONE list, used by both the scanner and the registry-path extractor.
 		static const char* kTextExts[] = {
 			".cpp", ".h", ".hpp", ".c", ".mm", ".m", ".swift", ".cs", ".java", ".kt",
@@ -4049,6 +6664,1182 @@ int main()
 			owner.find("[source storageMode]==MTLStorageModePrivate")!=std::string::npos&&
 			owner.find("Copy(transfer,r1->candidate->conservative")!=std::string::npos,
 			"resident projected-Heun owner routes every copy/read through its measured transfer ledger" );
+	}
+
+	// Cache all src/Library/*.{h,cpp} files once so the remaining four checks
+	// (full-sphere NEE claimers, signal writers, painter ri census, and DL-386
+	// reflectance reads) do not re-read src/Library from disk multiple times.
+	struct LibSourceFile
+	{
+		fs::path path;
+		std::string filename;
+		std::string parentDirName;
+		std::string raw;
+	};
+	std::vector<LibSourceFile> libSourceFiles;
+	{
+		const fs::path libDir = testsDir.parent_path() / "src" / "Library";
+		if( fs::exists( libDir ) ) {
+			for( const auto& e : fs::recursive_directory_iterator( libDir ) ) {
+				if( !e.is_regular_file() ) { continue; }
+				const fs::path& f = e.path();
+				if( f.extension() != ".h" && f.extension() != ".cpp" ) { continue; }
+				libSourceFiles.push_back( LibSourceFile{
+					f,
+					f.filename().string(),
+					f.parent_path().filename().string(),
+					SlurpFile( f )
+				} );
+			}
+		}
+	}
+
+	// ---- Full-sphere NEE: the bit-identity guard --------------------------
+	// `IMaterial::ScattersFullSphere()` lets a material (today: only
+	// HairMaterial) ask LightSampler's NEE to evaluate the transmissive
+	// hemisphere, using |cos| in place of the signed surface cosine.  The
+	// whole safety argument for that change is that materials which do NOT
+	// claim the capability are BIT-IDENTICAL, not merely close -- and that
+	// argument is TEXTUAL, not numerical: each site is written
+	//
+	//     const Scalar cosX = bFullSphere ? std::fabs( cosXSigned ) : cosXSigned;
+	//
+	// so with `bFullSphere == false` the value is a plain copy and no
+	// arithmetic runs at all.  A render-level golden CANNOT check this --
+	// RISE's film accumulation is thread-order dependent, so two runs of the
+	// same scene differ in the 5th decimal (verified directly against
+	// EnvLightBalanceTest's own printed means) -- so the guard has to be
+	// structural, and this is it.
+	//
+	// WHAT WOULD BREAK WITHOUT IT.  Someone "simplifies" a site to an
+	// unconditional `std::fabs(...)`, every ordinary BRDF starts getting NEE
+	// samples below its own horizon, and the only symptom is wasted shadow
+	// rays -- until it lands on a material whose value() is wrongly nonzero
+	// there, where it becomes real bias.  EnvLightBalanceTest would not
+	// catch it (Lambertian value() returns 0 below the horizon, so the extra
+	// samples contribute nothing); nothing else would either.
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		const fs::path lsPath = repoRoot / "src" / "Library" / "Lights" / "LightSampler.cpp";
+
+		const std::string src = SlurpFile( lsPath );
+		Check( !src.empty(), "full-sphere NEE: LightSampler.cpp readable" );
+
+		// Exactly six guarded sites: {delta light, mesh area light, env map}
+		// x {RGB, NM}.  What the count actually pins: one of these six
+		// silently DROPPED, or a literal unconditional fabs on a receiver
+		// cosine.  It can NOT see a new receiver-side gate added later
+		// without the guard (a new variable name matches neither literal) --
+		// that reintroduction is caught only by review, not by this census.
+		// Matched against a whitespace-collapsed copy so a reindent or a
+		// line re-wrap does not fail the suite spuriously -- the FORM is what
+		// is being pinned, not the layout.
+		std::string flat;
+		flat.reserve( src.size() );
+		{
+			bool inSpace = false;
+			for( char c : src ) {
+				const bool isSpace = ( c == ' ' || c == '\t' || c == '\n' || c == '\r' );
+				if( isSpace ) { inSpace = true; continue; }
+				if( inSpace && !flat.empty() ) { flat.push_back( ' ' ); }
+				inSpace = false;
+				flat.push_back( c );
+			}
+		}
+
+		const char* kGuarded[] = {
+			"bFullSphere ? std::fabs( cosSurfaceSigned ) : cosSurfaceSigned;",
+			"bFullSphere ? std::fabs( cosEnvSigned ) : cosEnvSigned;",
+		};
+		int guardedSites = 0;
+		for( const char* pat : kGuarded ) {
+			size_t at = 0;
+			const std::string needle( pat );
+			while( ( at = flat.find( needle, at ) ) != std::string::npos ) {
+				++guardedSites;
+				at += needle.size();
+			}
+		}
+
+		// The complement: no site may apply `fabs` to a surface/env cosine
+		// UNCONDITIONALLY.  This is the mutation the guard exists to stop, and
+		// it is invisible to every behavioural test in the tree.
+		const bool unguardedFabs =
+			flat.find( "std::fabs( cosSurfaceSigned );" ) != std::string::npos ||
+			flat.find( "std::fabs( cosEnvSigned );" ) != std::string::npos ||
+			flat.find( "std::fabs( Vector3Ops::Dot( vToLight, ri.vNormal ) )" ) != std::string::npos ||
+			flat.find( "std::fabs( Vector3Ops::Dot( envDir, ri.vNormal ) )" ) != std::string::npos;
+		Check( !unguardedFabs,
+		       "full-sphere NEE: no LightSampler site takes |cos| of the surface/env cosine "
+		       "UNCONDITIONALLY (that would change behaviour for every ordinary BRDF)" );
+		Check( guardedSites == 6,
+		       "full-sphere NEE: all six cosine sites (delta / area / env, RGB + NM) use the "
+		       "guarded `bFullSphere ? std::fabs(X) : X` form -- an unguarded `fabs` would "
+		       "change behaviour for EVERY material, not just full-sphere ones" );
+		if( guardedSites != 6 ) {
+			std::cout << "  full-sphere NEE: found " << guardedSites
+			          << " guarded sites in LightSampler.cpp, expected 6" << std::endl;
+		}
+
+		// And the capability itself stays scarce.  Granting it to a material
+		// whose value() does NOT transmit is a real bias (NEE would light its
+		// back faces at full weight), so it must be a deliberate, reviewed
+		// act -- not something that spreads by copy-paste. The explicit
+		// allowlist below records the audited transmitting materials.
+		// Robust in the direction that matters: the scan is RECURSIVE over
+		// all of src/Library (claimers need not live in Materials/), and it
+		// matches on a whitespace-flattened body so an `override` keyword, a
+		// multi-line definition, or a reindent neither hides a claimer nor
+		// false-fails the census.
+		std::vector<std::string> claimers;
+		for( const LibSourceFile& lf : libSourceFiles ) {
+			const std::string& body = lf.raw;
+			if( body.find( "ScattersFullSphere" ) == std::string::npos ) { continue; }
+			std::string bflat;
+			bflat.reserve( body.size() );
+			bool ws = false;
+			for( char ch : body ) {
+				if( ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ) { ws = true; continue; }
+				if( ws && !bflat.empty() ) { bflat += ' '; }
+				ws = false;
+				bflat += ch;
+			}
+			size_t at = 0;
+			bool claims = false;
+			while( ( at = bflat.find( "ScattersFullSphere() const", at ) ) != std::string::npos ) {
+				const std::string window = bflat.substr( at, 100 );
+				if( window.find( "return true" ) != std::string::npos
+				 || window.find( "eWeaveTransmissionThin" ) != std::string::npos
+				 || window.find( "return pBase->ScattersFullSphere" ) != std::string::npos
+				 || window.find( "return pMaterial.ScattersFullSphere" ) != std::string::npos
+				 || window.find( "return bScattersFullSphere" ) != std::string::npos ) {
+					claims = true; break;
+				}
+				at += 1;
+			}
+			if( claims ) {
+				claimers.push_back( lf.filename );
+			}
+		}
+		std::sort( claimers.begin(), claimers.end() );
+		for( const std::string& c : claimers ) {
+			std::cout << "  full-sphere material: " << c << std::endl;
+		}
+		Check( claimers.size() == 9
+		    && claimers[0] == "CoatedMaterial.h"
+		    && claimers[1] == "CompositeMaterial.h"
+		    && claimers[2] == "FabricMaterial.h"
+		    && claimers[3] == "HairMaterial.h"
+		    && claimers[4] == "LambertianLuminaireMaterial.h"
+		    && claimers[5] == "PhongLuminaireMaterial.h"
+		    && claimers[6] == "RoughDielectricMaterial.h"
+		    && claimers[7] == "TranslucentMaterial.h"
+		    && claimers[8] == "WeaveMaterial.h",
+		       "full-sphere NEE: HairMaterial (unconditional), WeaveMaterial (conditional on "
+		       "`transmission thin`, P2-B), TranslucentMaterial (unconditional, DL-157), "
+		       "CompositeMaterial (DL-157 P2-1, CACHED at construction), FabricMaterial and "
+		       "CoatedMaterial (DELEGATING via `pBase->ScattersFullSphere()`), and "
+		       "RoughDielectricMaterial (unconditional GGX transmission), and "
+		       "LambertianLuminaireMaterial / PhongLuminaireMaterial (DELEGATING via "
+		       "`pMaterial.ScattersFullSphere()`) are the ONLY materials claiming ScattersFullSphere()" );
+	}
+
+	// ---- `signals` is written in a CLOSED set of files, and nowhere else ----
+	// docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1.  The cross-object channel
+	// (`pScene` / `pSelf` / `ptWorld`) is stamped ONCE, at the tail of
+	// ObjectManager::CompleteShadingSignals, called by scene traversal and
+	// extended SMS direct-object context completion -- and the whole
+	// design rests on one invariant: NOTHING assigns `signals` after that
+	// function returns.  A new assignment anywhere else would silently
+	// overwrite the stamp with a default-constructed channel and turn every
+	// `proximity()` in the frame into its neutral 0 -- a mask that quietly
+	// stops painting, which is exactly the expensive kind of failure (it
+	// still renders, it just renders wrong).
+	//
+	// GRANULARITY IS THE FILE, and that is the honest limit of what a text
+	// scan can express: this cannot tell WHICH function inside SDFGeometry.cpp
+	// does the writing, only that no NEW file has joined the set.  That is
+	// still the check that matters, because every hazardous addition would be
+	// in a new file (a new geometry intersector, a new transform layer, a new
+	// painter pipe) rather than smuggled into one of the sanctioned files below.
+	//
+	// RED-PROVED by adding `ri.geometric.signals.primId = 3;` to a scratch
+	// copy of Rendering/RayCaster.cpp: the census reported RayCaster.cpp and
+	// this check went red.  (Done in a scratch copy, never in a tracked file.)
+	{
+		// The needle: a whole-word `signals` -- so `pSignals`, `m_signalCalls`
+		// and `SurfaceSignalInfo` cannot match -- followed either by ` = ` (a
+		// whole-struct assignment) or by `.field = ` (a member assignment).
+		// `==` is excluded so a comparison is not read as a write.
+		struct Scan
+		{
+			static bool IsIdentChar( const char c )
+			{
+				return ( c >= 'a' && c <= 'z' ) || ( c >= 'A' && c <= 'Z' )
+					|| ( c >= '0' && c <= '9' ) || c == '_';
+			}
+			//! Does `flat` contain a write to `signals` at or after `at`?
+			static bool WritesAt( const std::string& flat, const size_t at )
+			{
+				size_t p = at + 7;								// past "signals"
+				if( p < flat.size() && flat[p] == ' ' ) { ++p; }
+				if( p < flat.size() && flat[p] == '.' ) {		// `signals.field ...`
+					++p;
+					const size_t idStart = p;
+					while( p < flat.size() && IsIdentChar( flat[p] ) ) { ++p; }
+					if( p == idStart ) { return false; }
+					if( p < flat.size() && flat[p] == ' ' ) { ++p; }
+				}
+				return p + 1 < flat.size() && flat[p] == '=' && flat[p+1] != '=';
+			}
+		};
+
+		std::vector<std::string> writers;
+		bool nonindexedProvenanceOnly = true;
+		for( const LibSourceFile& lf : libSourceFiles ) {
+			if( lf.raw.find( "signals" ) == std::string::npos ) { continue; }
+			const std::string src = StripCommentsPreservingLayout( lf.raw );
+			std::string flat;
+			flat.reserve( src.size() );
+			bool ws = false;
+			for( char ch : src ) {
+				if( ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ) { ws = true; continue; }
+				if( ws && !flat.empty() ) { flat += ' '; }
+				ws = false;
+				flat += ch;
+			}
+			size_t at = 0;
+			bool writes = false;
+			while( ( at = flat.find( "signals", at ) ) != std::string::npos ) {
+				const bool wholeWord = ( at == 0 || !Scan::IsIdentChar( flat[at-1] ) );
+				if( wholeWord && Scan::WritesAt( flat, at ) ) {
+					writes = true;
+					if( lf.filename == "TriangleMeshGeometrySpecializations.h" ) {
+						size_t member = at + 7;
+						if( member < flat.size() && flat[member] == ' ' ) ++member;
+						const bool qualified = member < flat.size() && flat[member] == '.';
+						if( qualified ) ++member;
+						const size_t begin = member;
+						while( member < flat.size() && Scan::IsIdentChar(flat[member]) ) ++member;
+						const std::string field = flat.substr(begin, member-begin);
+						nonindexedProvenanceOnly = nonindexedProvenanceOnly && qualified
+							&& (field == "pProvider" || field == "primId" || field == "baryA" || field == "baryB");
+					}
+				}
+				at += 1;
+			}
+			if( writes ) { writers.push_back( lf.filename ); }
+		}
+		std::sort( writers.begin(), writers.end() );
+		for( const std::string& w : writers ) {
+			std::cout << "  signals writer: " << w << std::endl;
+		}
+
+		const char* kAllowedSignalWriters[] = {
+			"BDPTIntegrator.cpp",
+			"BSSRDFSampling.cpp",
+			"CSGObject.cpp",
+			"ExpressionEval.h",
+			"ExpressionPainter.cpp",
+			"LightSampler.cpp",
+			"ManifoldSolver.cpp",
+			"ObjectManager.cpp",
+			"PathTracingIntegrator.cpp",
+			"PathVertexEval.h",
+			"RandomWalkSSS.cpp",
+			"RayIntersectionGeometric.h",
+			"SDFGeometry.cpp",
+			"TriangleMeshGeometryIndexedSpecializations.h",
+			"TriangleMeshGeometrySpecializations.h",
+		};
+		const size_t nAllowed = sizeof( kAllowedSignalWriters ) / sizeof( kAllowedSignalWriters[0] );
+		bool setMatches = ( writers.size() == nAllowed );
+		for( size_t i = 0; setMatches && i < nAllowed; ++i ) {
+			setMatches = ( writers[i] == kAllowedSignalWriters[i] );
+		}
+		Check( nonindexedProvenanceOnly,
+		       "nonindexed mesh signal writes contain only primitive provenance, preserving cross-object stamps" );
+		Check( setMatches,
+		       "cross-object signal channel: signal writers match the fifteen sanctioned files in "
+		       "docs/CROSS_OBJECT_PROXIMITY_DESIGN.md section 5.1; new writers require an audited stamp contract" );
+		if( !setMatches ) {
+			std::cout << "  expected exactly:" << std::endl;
+			for( size_t i = 0; i < nAllowed; ++i ) {
+				std::cout << "    " << kAllowedSignalWriters[i] << std::endl;
+			}
+		}
+	}
+
+	// ---- Painter `ri` reads must be a subset of the L2 memo key's cover ----
+	{
+		const char* kKeyedPainterRiFields[] = {
+			"bHasTexCoord1",
+			"bHasVertexColor",
+			"bHit",
+			"derivatives",
+			"ptCoord",
+			"ptCoord1",
+			"ptIntersection",
+			"ptObjIntersec",
+			"ray",
+			"signals",
+			"txFootprint",
+			"vColor",
+			"vNormal",
+		};
+		const size_t nKeyed = sizeof( kKeyedPainterRiFields ) / sizeof( kKeyedPainterRiFields[0] );
+
+		std::vector<std::string> unaccounted;
+		std::vector<std::string> seen;
+		int painterFiles = 0;
+		for( const LibSourceFile& lf : libSourceFiles ) {
+			if( lf.parentDirName != "Painters" ) { continue; }
+			++painterFiles;
+			const std::string src = StripCommentsPreservingLayout( lf.raw );
+
+			// (1) every identifier bound to a RayIntersectionGeometric
+			// reference or pointer in this file.
+			std::vector<std::string> names;
+			const char* kDecl[] = { "RayIntersectionGeometric&", "RayIntersectionGeometric *",
+			                        "RayIntersectionGeometric*", "RayIntersectionGeometric &" };
+			for( const char* d : kDecl ) {
+				size_t at = 0;
+				const size_t dlen = std::strlen( d );
+				while( ( at = src.find( d, at ) ) != std::string::npos ) {
+					size_t p = at + dlen;
+					while( p < src.size() && ( src[p] == ' ' || src[p] == '\t' ) ) { ++p; }
+					const size_t st = p;
+					while( p < src.size() && ( std::isalnum( (unsigned char)src[p] ) || src[p] == '_' ) ) { ++p; }
+					if( p > st ) { names.push_back( src.substr( st, p - st ) ); }
+					at += dlen;
+				}
+			}
+			std::sort( names.begin(), names.end() );
+			names.erase( std::unique( names.begin(), names.end() ), names.end() );
+
+			// (2) every `<name>.<field>` / `<name>-><field>` read.
+			for( const std::string& n : names ) {
+				const char* kOps[] = { ".", "->" };
+				for( const char* op : kOps ) {
+					const std::string needle = n + op;
+					size_t at = 0;
+					while( ( at = src.find( needle, at ) ) != std::string::npos ) {
+						const bool wholeWord = ( at == 0 ||
+							!( std::isalnum( (unsigned char)src[at-1] ) || src[at-1] == '_' ) );
+						size_t p = at + needle.size();
+						const size_t st = p;
+						while( p < src.size() && ( std::isalnum( (unsigned char)src[p] ) || src[p] == '_' ) ) { ++p; }
+						if( wholeWord && p > st ) {
+							const std::string field = src.substr( st, p - st );
+							seen.push_back( field );
+							bool ok = false;
+							for( size_t i = 0; i < nKeyed; ++i ) {
+								if( field == kKeyedPainterRiFields[i] ) { ok = true; break; }
+							}
+							if( !ok ) {
+								unaccounted.push_back( lf.filename + ": " + n + op + field );
+							}
+						}
+						at += needle.size();
+					}
+				}
+			}
+		}
+		std::sort( seen.begin(), seen.end() );
+		seen.erase( std::unique( seen.begin(), seen.end() ), seen.end() );
+		std::sort( unaccounted.begin(), unaccounted.end() );
+		unaccounted.erase( std::unique( unaccounted.begin(), unaccounted.end() ), unaccounted.end() );
+
+		Check( painterFiles > 0, "painter-ri census: found src/Library/Painters to scan" );
+		std::cout << "  painter `ri` fields read (" << seen.size() << "):";
+		for( const std::string& w : seen ) { std::cout << " " << w; }
+		std::cout << std::endl;
+		for( const std::string& u : unaccounted ) {
+			std::cout << "  UNACCOUNTED painter ri read: " << u << std::endl;
+		}
+		Check( unaccounted.empty(),
+		       "painter-ri census: every RayIntersectionGeometric field read in "
+		       "src/Library/Painters is accounted for by ExpressionMemo::ProgramKey -- "
+		       "either as a context value it already compares or in DL-25's "
+		       "PainterSampleHitKey.  A field outside that set makes a sample()-calling "
+		       "expression program's L2 memo entry return one hit's answer at another "
+		       "hit; extend PainterSampleHitKey (and its kFields, Equals and "
+		       "MakeSampleHitKey) together with this list" );
+	}
+
+	// ---- DL-386: material reflectance reads go through ReflectanceColor ----
+	{
+		std::vector<std::string> rawReads;
+		int matFiles = 0;
+		for( const LibSourceFile& lf : libSourceFiles ) {
+			if( lf.parentDirName != "Materials" ) { continue; }
+			++matFiles;
+			const std::string& fname = lf.filename;
+			const std::string code = StripCommentsPreservingLayout( lf.raw );
+			std::istringstream ls( code );
+			std::string line;
+			int lineNo = 0;
+			while( std::getline( ls, line ) ) {
+				++lineNo;
+				const std::string where = fname + ":" + std::to_string( lineNo );
+				if( line.find( "GuardedGetColorNM(" ) != std::string::npos ) {
+					rawReads.push_back( where + "  GuardedGetColorNM (use ReflectanceColorNM)" );
+				}
+				for( size_t p = line.find( "GetColorNM(" ); p != std::string::npos;
+				     p = line.find( "GetColorNM(", p + 1 ) ) {
+					if( p >= 7 && line.compare( p - 7, 7, "Guarded" ) == 0 ) { continue; }
+					if( fname == "CoatedBRDF.cpp" || fname == "FabricBRDF.cpp" ||
+					    fname == "WeaveBRDF.cpp" ) { continue; }
+					rawReads.push_back( where + "  raw GetColorNM" );
+				}
+				for( size_t p = line.find( "GetColor(" ); p != std::string::npos;
+				     p = line.find( "GetColor(", p + 1 ) ) {
+					size_t q = p + 9;
+					while( q < line.size() && ( line[q] == ' ' || line[q] == '\t' ) ) { ++q; }
+					if( q < line.size() && line[q] == ')' ) { continue; }	// accessor `GetColor()`
+					if( fname == "LambertianEmitter.cpp" || fname == "PhongEmitter.cpp" ) { continue; }
+					if( line.find( "pRotation->GetColor(" ) != std::string::npos ) { continue; }
+					if( line.find( "coatNormalPainter.GetColor(" ) != std::string::npos ) { continue; }
+					rawReads.push_back( where + "  raw GetColor(ri)" );
+				}
+			}
+		}
+		Check( matFiles > 0, "DL-386: found src/Library/Materials to scan" );
+		for( const std::string& r : rawReads ) {
+			std::cout << "  DL-386 unclamped reflectance read: " << r << std::endl;
+		}
+		Check( rawReads.empty(),
+		       "DL-386: every material reflectance-colour read goes through "
+		       "ReflectanceColor / ReflectanceColorNM (negative channels -> 0); raw "
+		       "reads only for emitters, the GGX rotation painter and the coat normal map" );
+	}
+
+	// ---- Tier 0 §0.3.1 / §0.3.2: Windows Qt6 NamedViewsPanel & CredentialStore parity ----
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		const fs::path winGuiDir = repoRoot / "build" / "VS2022" / "RISE-GUI";
+		const std::string vcxproj = SlurpFile( winGuiDir / "RISE-GUI.vcxproj" );
+		const std::string mainH = SlurpFile( winGuiDir / "MainWindow.h" );
+		const std::string mainCpp = SlurpFile( winGuiDir / "MainWindow.cpp" );
+		const std::string nvpH = SlurpFile( winGuiDir / "NamedViewsPanel.h" );
+		const std::string nvpCpp = SlurpFile( winGuiDir / "NamedViewsPanel.cpp" );
+		const std::string credH = SlurpFile( winGuiDir / "CredentialStore.h" );
+		const std::string credCpp = SlurpFile( winGuiDir / "CredentialStore.cpp" );
+		const std::string chatH = SlurpFile( winGuiDir / "ChatPanel.h" );
+		const std::string chatCpp = SlurpFile( winGuiDir / "ChatPanel.cpp" );
+		const std::string chatCode = StripCommentsPreservingLayout( chatCpp );
+
+		Check( !nvpH.empty() && !nvpCpp.empty(),
+		       "win-gui-parity: NamedViewsPanel.{h,cpp} exist in build/VS2022/RISE-GUI/" );
+		Check( vcxproj.find( "Include=\"NamedViewsPanel.cpp\"" ) != std::string::npos
+		       && vcxproj.find( "moc_NamedViewsPanel.cpp" ) != std::string::npos
+		       && vcxproj.find( "CustomBuild Include=\"NamedViewsPanel.h\"" ) != std::string::npos,
+		       "win-gui-parity: RISE-GUI.vcxproj compiles NamedViewsPanel.cpp + MOC CustomBuild" );
+		Check( nvpH.find( "m_themeReady" ) != std::string::npos
+		       && nvpH.find( "m_themeEpochSeen" ) != std::string::npos
+		       && nvpCpp.find( "QEvent::PaletteChange" ) != std::string::npos
+		       && nvpCpp.find( "QTimer::singleShot" ) != std::string::npos,
+		       "win-gui-parity: NamedViewsPanel follows Theme.h's LIVE THEME-SWITCH CONTRACT" );
+		Check( nvpCpp.find( "captureNamedView" ) != std::string::npos
+		       && nvpCpp.find( "restoreNamedView" ) != std::string::npos
+		       && nvpCpp.find( "updateNamedView" ) != std::string::npos
+		       && nvpCpp.find( "promoteNamedView" ) != std::string::npos
+		       && nvpCpp.find( "deleteNamedView" ) != std::string::npos,
+		       "win-gui-parity: NamedViewsPanel wires all 5 ViewportBridge NamedView CRUD/promote actions" );
+		Check( mainH.find( "m_namedViewsPanel" ) != std::string::npos
+		       && mainCpp.find( "new NamedViewsPanel" ) != std::string::npos
+		       && mainCpp.find( "m_namedViewsPanel->setSceneEditable(bridgeInteractingEnabled)" ) != std::string::npos
+		       && mainCpp.find( "m_namedViewsPanel->setBridge(m_viewportBridge)" ) != std::string::npos
+		       && mainCpp.find( "m_namedViewsPanel->setBridge(nullptr)" ) != std::string::npos,
+		       "win-gui-parity: MainWindow wires NamedViewsPanel right-panel lifecycle & commit-mutex gate" );
+
+		Check( !credH.empty() && !credCpp.empty(),
+		       "win-gui-parity: CredentialStore.{h,cpp} exist in build/VS2022/RISE-GUI/" );
+		Check( vcxproj.find( "Include=\"CredentialStore.cpp\"" ) != std::string::npos
+		       && vcxproj.find( "Include=\"CredentialStore.h\"" ) != std::string::npos,
+		       "win-gui-parity: RISE-GUI.vcxproj lists CredentialStore.{h,cpp}" );
+		{
+			size_t advCount = 0;
+			for( size_t pos = vcxproj.find( "advapi32.lib" ); pos != std::string::npos;
+			     pos = vcxproj.find( "advapi32.lib", pos + 12 ) ) {
+				++advCount;
+			}
+			Check( advCount >= 2,
+			       "win-gui-parity: RISE-GUI.vcxproj links advapi32.lib in both Debug and Release configs" );
+		}
+		Check( credCpp.find( "CredReadW" ) != std::string::npos
+		       && credCpp.find( "CredWriteW" ) != std::string::npos
+		       && credCpp.find( "CredDeleteW" ) != std::string::npos
+		       && credCpp.find( "CredFree" ) != std::string::npos
+		       && credCpp.find( "SecureZeroMemory" ) != std::string::npos
+		       && credCpp.find( "fromUtf16" ) != std::string::npos
+		       && credCpp.find( "utf16()" ) != std::string::npos,
+		       "win-gui-parity: CredentialStore uses Win32 CredReadW/CredWriteW/CredDeleteW/CredFree + UTF-16LE + SecureZeroMemory" );
+		Check( chatH.find( "resolveApiKey" ) != std::string::npos
+		       && chatCode.find( "CredentialStore::read" ) != std::string::npos
+		       && chatCode.find( "CredentialStore::write" ) != std::string::npos
+		       && chatCode.find( "CredentialStore::remove" ) != std::string::npos
+		       && chatCode.find( "m_apiKeyEdit->setText(" ) == std::string::npos,
+		       "win-gui-parity: ChatPanel resolves/saves/clears via CredentialStore and keeps m_apiKeyEdit write-only (never setText)" );
+
+		// Cross-check every `Theme::<ident>` token/symbol reference across all
+		// `build/VS2022/RISE-GUI/*.{h,cpp}` against `Theme.h` so an undeclared
+		// token (e.g. `Theme::warning` instead of `Theme::warn`) fails on macOS/Linux.
+		{
+			const std::string themeH = SlurpFile( winGuiDir / "Theme.h" );
+			const std::string themeCode = stripLiteralsPreservingLayout( StripCommentsPreservingLayout( themeH ) );
+			std::set<std::string> themeSymbols;
+			const std::size_t nsPos = themeCode.find( "namespace Theme" );
+			if( nsPos != std::string::npos ) {
+				const std::size_t braceOpen = themeCode.find( '{', nsPos );
+				if( braceOpen != std::string::npos ) {
+					int braceDepth = 1;
+					int parenDepth = 0;
+					std::size_t i = braceOpen + 1;
+					while( i < themeCode.size() && braceDepth > 0 ) {
+						const char ch = themeCode[i];
+						if( ch == '{' ) { ++braceDepth; ++i; continue; }
+						if( ch == '}' ) { --braceDepth; ++i; continue; }
+						if( ch == '(' ) { ++parenDepth; ++i; continue; }
+						if( ch == ')' ) { if( parenDepth > 0 ) --parenDepth; ++i; continue; }
+						if( braceDepth == 1 && parenDepth == 0 &&
+						    ( std::isalpha( static_cast<unsigned char>( ch ) ) || ch == '_' ) ) {
+							const std::size_t start = i++;
+							while( i < themeCode.size() &&
+							       ( std::isalnum( static_cast<unsigned char>( themeCode[i] ) ) || themeCode[i] == '_' ) ) {
+								++i;
+							}
+							themeSymbols.insert( themeCode.substr( start, i - start ) );
+						} else {
+							++i;
+						}
+					}
+				}
+			}
+			std::vector<std::string> badThemeRefs;
+			for( const fs::directory_entry& de : fs::directory_iterator( winGuiDir ) ) {
+				if( !de.is_regular_file() ) continue;
+				const std::string ext = de.path().extension().string();
+				if( ext != ".h" && ext != ".cpp" ) continue;
+				const std::string fname = de.path().filename().string();
+				const std::string code = stripLiteralsPreservingLayout(
+					StripCommentsPreservingLayout( SlurpFile( de.path() ) ) );
+				for( std::size_t p = code.find( "Theme::" ); p != std::string::npos;
+				     p = code.find( "Theme::", p + 7 ) ) {
+					if( p > 0 && ( std::isalnum( static_cast<unsigned char>( code[p - 1] ) ) || code[p - 1] == '_' ) ) {
+						continue;
+					}
+					std::size_t q = p + 7;
+					while( q < code.size() && ( std::isalnum( static_cast<unsigned char>( code[q] ) ) || code[q] == '_' ) ) {
+						++q;
+					}
+					if( q > p + 7 ) {
+						const std::string sym = code.substr( p + 7, q - ( p + 7 ) );
+						if( themeSymbols.find( sym ) == themeSymbols.end() ) {
+							badThemeRefs.push_back( fname + ": Theme::" + sym );
+						}
+					}
+				}
+			}
+			for( const std::string& b : badThemeRefs ) {
+				std::cout << "  win-gui-theme-token unknown symbol: " << b << std::endl;
+			}
+			Check( !themeSymbols.empty() && badThemeRefs.empty(),
+			       "win-gui-parity: every Theme::<ident> reference in build/VS2022/RISE-GUI/*.{h,cpp} is declared in Theme.h" );
+		}
+
+		const std::string cmakeTests = SlurpFile( repoRoot / "build" / "cmake" / "rise-tests" / "CMakeLists.txt" );
+		Check( cmakeTests.find( "\"${VCPKG_INCLUDE}/OpenEXR\"" ) != std::string::npos
+		       && cmakeTests.find( "\"${VCPKG_INCLUDE}/Imath\"" ) != std::string::npos
+		       && cmakeTests.find( "/UNDEBUG" ) != std::string::npos
+		       && cmakeTests.find( "/utf-8" ) != std::string::npos,
+		       "win-cmake-tests: build/cmake/rise-tests/CMakeLists.txt includes OpenEXR/Imath vcpkg paths, /utf-8, and /UNDEBUG" );
+
+		// ---- Five-project `src/Library/` parity + MSVC `/utf-8` / ODR flags ----
+		{
+			const fs::path libDir = repoRoot / "src" / "Library";
+			const std::string filelistTxt = SlurpFile( repoRoot / "build" / "make" / "rise" / "Filelist" );
+			const std::string androidCmake = SlurpFile( repoRoot / "build" / "cmake" / "rise-android" / "rise_sources.cmake" );
+			const std::string libVcx = SlurpFile( repoRoot / "build" / "VS2022" / "Library" / "Library.vcxproj" );
+			const std::string libFlt = SlurpFile( repoRoot / "build" / "VS2022" / "Library" / "Library.vcxproj.filters" );
+			const std::string cliVcx = SlurpFile( repoRoot / "build" / "VS2022" / "RISE-CLI" / "RISE-CLI.vcxproj" );
+			const std::string pbxTxt = SlurpFile( repoRoot / "build" / "XCode" / "rise" / "rise.xcodeproj" / "project.pbxproj" );
+
+			Check( libVcx.find( "/utf-8" ) != std::string::npos
+			       && cliVcx.find( "/utf-8" ) != std::string::npos
+			       && vcxproj.find( "/utf-8" ) != std::string::npos
+			       && cliVcx.find( "RISE_ENABLE_OIDN" ) != std::string::npos
+			       && cliVcx.find( "RISE_ENABLE_OPENPGL" ) != std::string::npos
+			       && cliVcx.find( "IMATH_HALF_NO_LOOKUP_TABLE" ) != std::string::npos
+			       && cliVcx.find( "include\\OpenEXR" ) != std::string::npos
+			       && vcxproj.find( "RISE_ENABLE_OIDN" ) != std::string::npos
+			       && vcxproj.find( "RISE_ENABLE_OPENPGL" ) != std::string::npos,
+			       "win-msvc-flags: Library.vcxproj, RISE-CLI.vcxproj, and RISE-GUI.vcxproj enable /utf-8 and match OIDN/OpenPGL/Imath ABI defines" );
+
+			auto parseVcxSet = []( const std::string& xml, const char* tag, std::set<std::string>& out ) {
+				const std::string needle = std::string( "<" ) + tag + " Include=\"";
+				for( std::size_t p = xml.find( needle ); p != std::string::npos;
+				     p = xml.find( needle, p + needle.size() ) ) {
+					const std::size_t s = p + needle.size();
+					const std::size_t e = xml.find( '"', s );
+					if( e == std::string::npos ) break;
+					std::string rel = xml.substr( s, e - s );
+					for( char& ch : rel ) { if( ch == '\\' ) ch = '/'; }
+					const std::size_t lp = rel.find( "src/Library/" );
+					if( lp != std::string::npos ) {
+						out.insert( rel.substr( lp + 12 ) );
+					}
+				}
+			};
+			std::set<std::string> vcxCpp, vcxH, fltCpp, fltH;
+			parseVcxSet( libVcx, "ClCompile", vcxCpp );
+			parseVcxSet( libVcx, "ClInclude", vcxH );
+			parseVcxSet( libFlt, "ClCompile", fltCpp );
+			parseVcxSet( libFlt, "ClInclude", fltH );
+			Check( !vcxCpp.empty() && vcxCpp == fltCpp && !vcxH.empty() && vcxH == fltH,
+			       "five-project-parity: Library.vcxproj and Library.vcxproj.filters match 1-to-1 on ClCompile and ClInclude" );
+
+			// Expand `PATH* = $(PATHLIBRARY)...` in `build/make/rise/Filelist`.
+			std::map<std::string, std::string> pathVars;
+			pathVars["PATHLIBRARY"] = "";
+			{
+				std::size_t ls = 0;
+				while( ls <= filelistTxt.size() ) {
+					const std::size_t nl = filelistTxt.find( '\n', ls );
+					const std::size_t le = ( nl == std::string::npos ) ? filelistTxt.size() : nl;
+					const std::string ln = filelistTxt.substr( ls, le - ls );
+					const std::size_t eq = ln.find( '=' );
+					const std::size_t pl = ln.find( "$(PATHLIBRARY)" );
+					if( eq != std::string::npos && pl != std::string::npos && eq < pl ) {
+						std::string lhs = ln.substr( 0, eq );
+						while( !lhs.empty() && std::isspace( static_cast<unsigned char>( lhs.back() ) ) ) lhs.pop_back();
+						std::size_t a = 0;
+						while( a < lhs.size() && std::isspace( static_cast<unsigned char>( lhs[a] ) ) ) ++a;
+						lhs = lhs.substr( a );
+						std::string rhs = ln.substr( pl + 14 );
+						while( !rhs.empty() && std::isspace( static_cast<unsigned char>( rhs.back() ) ) ) rhs.pop_back();
+						while( !rhs.empty() && rhs.front() == '/' ) rhs.erase( rhs.begin() );
+						if( !rhs.empty() && rhs.back() != '/' ) rhs.push_back( '/' );
+						if( !lhs.empty() ) pathVars[lhs] = rhs;
+					}
+					if( nl == std::string::npos ) break;
+					ls = nl + 1;
+				}
+			}
+			std::set<std::string> flCpp;
+			for( std::size_t p = filelistTxt.find( "$(" ); p != std::string::npos; p = filelistTxt.find( "$(", p + 2 ) ) {
+				const std::size_t rp = filelistTxt.find( ')', p + 2 );
+				if( rp == std::string::npos ) break;
+				const std::string var = filelistTxt.substr( p + 2, rp - ( p + 2 ) );
+				auto it = pathVars.find( var );
+				if( it != pathVars.end() ) {
+					std::size_t q = rp + 1;
+					if( q < filelistTxt.size() && filelistTxt[q] == '/' ) ++q;
+					const std::size_t s = q;
+					while( q < filelistTxt.size() &&
+					       ( std::isalnum( static_cast<unsigned char>( filelistTxt[q] ) ) ||
+					         filelistTxt[q] == '_' || filelistTxt[q] == '/' || filelistTxt[q] == '.' || filelistTxt[q] == '-' ) ) {
+						++q;
+					}
+					const std::string tail = filelistTxt.substr( s, q - s );
+					if( ( tail.size() > 4 && tail.substr( tail.size() - 4 ) == ".cpp" ) ||
+					    ( tail.size() > 3 && tail.substr( tail.size() - 3 ) == ".mm" ) ) {
+						flCpp.insert( it->second + tail );
+					}
+				}
+			}
+
+			std::set<std::string> cmCpp;
+			const std::string cmNeedle = "${RISE_LIB}/";
+			for( std::size_t p = androidCmake.find( cmNeedle ); p != std::string::npos;
+			     p = androidCmake.find( cmNeedle, p + cmNeedle.size() ) ) {
+				std::size_t q = p + cmNeedle.size();
+				const std::size_t s = q;
+				while( q < androidCmake.size() &&
+				       ( std::isalnum( static_cast<unsigned char>( androidCmake[q] ) ) ||
+				         androidCmake[q] == '_' || androidCmake[q] == '/' || androidCmake[q] == '.' || androidCmake[q] == '-' ) ) {
+					++q;
+				}
+				cmCpp.insert( androidCmake.substr( s, q - s ) );
+			}
+
+			auto pbxSection = [&]( const char* secName ) -> std::string {
+				const std::string beg = std::string( "/* Begin " ) + secName + " section */";
+				const std::string end = std::string( "/* End " ) + secName + " section */";
+				const std::size_t b = pbxTxt.find( beg );
+				if( b == std::string::npos ) return std::string();
+				const std::size_t e = pbxTxt.find( end, b );
+				return ( e == std::string::npos ) ? pbxTxt.substr( b ) : pbxTxt.substr( b, e - b );
+			};
+			auto isPbxIdChar = []( char ch ) -> bool {
+				return ( ch >= '0' && ch <= '9' ) || ( ch >= 'A' && ch <= 'Z' );
+			};
+			auto isIdentCont = []( char ch ) -> bool {
+				return std::isalnum( static_cast<unsigned char>( ch ) ) != 0 || ch == '_';
+			};
+			auto isPbxId24 = [&]( const std::string& s, std::size_t pos ) -> bool {
+				if( pos + 24 > s.size() ) return false;
+				if( pos > 0 && isIdentCont( s[pos - 1] ) ) return false;
+				if( pos + 24 < s.size() && isIdentCont( s[pos + 24] ) ) return false;
+				for( std::size_t k = 0; k < 24; ++k ) {
+					if( !isPbxIdChar( s[pos + k] ) ) return false;
+				}
+				return true;
+			};
+			auto stripPbxComments = []( const std::string& s ) -> std::string {
+				std::string out;
+				out.reserve( s.size() );
+				for( std::size_t i = 0; i < s.size(); ) {
+					if( i + 1 < s.size() && s[i] == '/' && s[i + 1] == '*' ) {
+						i += 2;
+						while( i + 1 < s.size() && !( s[i] == '*' && s[i + 1] == '/' ) ) ++i;
+						if( i + 1 < s.size() ) i += 2;
+						out.push_back( ' ' );
+					} else {
+						out.push_back( s[i++] );
+					}
+				}
+				return out;
+			};
+
+			std::set<std::string> pbxBasenames;
+			std::map<std::string, std::string> pbxFileRefToBase;
+			struct PbxRefInfo { std::string path; std::string sourceTree; };
+			std::map<std::string, PbxRefInfo> pbxFileRefs;
+			auto extractPbxProp = []( const std::string& body, const char* key ) -> std::string {
+				const std::size_t kp = body.find( key );
+				if( kp == std::string::npos ) return std::string();
+				std::size_t s = kp + std::strlen( key );
+				while( s < body.size() && std::isspace( static_cast<unsigned char>( body[s] ) ) ) ++s;
+				const std::size_t semi = body.find( ';', s );
+				if( semi == std::string::npos ) return std::string();
+				std::string val = body.substr( s, semi - s );
+				while( !val.empty() && std::isspace( static_cast<unsigned char>( val.back() ) ) ) val.pop_back();
+				if( val.size() >= 2 && val.front() == '"' && val.back() == '"' ) {
+					val = val.substr( 1, val.size() - 2 );
+				}
+				return val;
+			};
+			{
+				const std::string frSec = pbxSection( "PBXFileReference" );
+				std::size_t cur = 0;
+				while( cur < frSec.size() ) {
+					const std::size_t isaPos = frSec.find( "isa = PBXFileReference;", cur );
+					if( isaPos == std::string::npos ) break;
+					const std::size_t blkOpen = frSec.rfind( '{', isaPos );
+					const std::size_t blkClose = frSec.find( "};", isaPos );
+					if( blkOpen == std::string::npos || blkClose == std::string::npos ) break;
+					std::string uuid;
+					std::size_t lineStart = frSec.rfind( '\n', blkOpen );
+					lineStart = ( lineStart == std::string::npos ) ? 0 : ( lineStart + 1 );
+					while( lineStart < blkOpen && std::isspace( static_cast<unsigned char>( frSec[lineStart] ) ) ) ++lineStart;
+					if( isPbxId24( frSec, lineStart ) ) {
+						uuid = frSec.substr( lineStart, 24 );
+					}
+					const std::string body = frSec.substr( blkOpen, blkClose - blkOpen );
+					const std::string val = extractPbxProp( body, "path =" );
+					const std::string st = extractPbxProp( body, "sourceTree =" );
+					if( !val.empty() ) {
+						const std::size_t slash = val.rfind( '/' );
+						const std::string base = ( slash == std::string::npos ) ? val : val.substr( slash + 1 );
+						pbxBasenames.insert( base );
+						if( !uuid.empty() ) {
+							pbxFileRefToBase[uuid] = base;
+							pbxFileRefs[uuid] = PbxRefInfo{ val, st.empty() ? "<group>" : st };
+						}
+					} else if( !uuid.empty() ) {
+						pbxFileRefs[uuid] = PbxRefInfo{ std::string(), st.empty() ? "<group>" : st };
+					}
+					cur = blkClose + 2;
+				}
+			}
+
+			std::map<std::string, std::string> pbxBuildFileToRef;
+			{
+				const std::string bfSec = pbxSection( "PBXBuildFile" );
+				std::size_t cur = 0;
+				while( cur < bfSec.size() ) {
+					const std::size_t isaPos = bfSec.find( "isa = PBXBuildFile;", cur );
+					if( isaPos == std::string::npos ) break;
+					const std::size_t blkOpen = bfSec.rfind( '{', isaPos );
+					const std::size_t blkClose = bfSec.find( "};", isaPos );
+					if( blkOpen == std::string::npos || blkClose == std::string::npos ) break;
+					std::size_t lineStart = bfSec.rfind( '\n', blkOpen );
+					lineStart = ( lineStart == std::string::npos ) ? 0 : ( lineStart + 1 );
+					while( lineStart < blkOpen && std::isspace( static_cast<unsigned char>( bfSec[lineStart] ) ) ) ++lineStart;
+					if( isPbxId24( bfSec, lineStart ) ) {
+						const std::string bfUuid = bfSec.substr( lineStart, 24 );
+						const std::string body = bfSec.substr( blkOpen, blkClose - blkOpen );
+						const std::size_t fp = body.find( "fileRef =" );
+						if( fp != std::string::npos ) {
+							std::size_t s = fp + 9;
+							while( s < body.size() && std::isspace( static_cast<unsigned char>( body[s] ) ) ) ++s;
+							if( isPbxId24( body, s ) ) {
+								pbxBuildFileToRef[bfUuid] = body.substr( s, 24 );
+							}
+						}
+					}
+					cur = blkClose + 2;
+				}
+			}
+
+			std::vector<std::string> danglingPhaseIds;
+			std::vector<std::set<std::string>> pbxSourcesPhases;
+			{
+				const std::string spSec = pbxSection( "PBXSourcesBuildPhase" );
+				std::size_t cur = 0;
+				while( cur < spSec.size() ) {
+					const std::size_t isaPos = spSec.find( "isa = PBXSourcesBuildPhase;", cur );
+					if( isaPos == std::string::npos ) break;
+					const std::size_t blkClose = spSec.find( "};", isaPos );
+					if( blkClose == std::string::npos ) break;
+					const std::string body = spSec.substr( isaPos, blkClose - isaPos );
+					const std::size_t fp = body.find( "files = (" );
+					if( fp != std::string::npos ) {
+						const std::size_t fe = body.find( ");", fp );
+						if( fe != std::string::npos ) {
+							std::set<std::string> phaseBases;
+							const std::string listTxt = stripPbxComments( body.substr( fp + 9, fe - ( fp + 9 ) ) );
+							for( std::size_t i = 0; i + 24 <= listTxt.size(); ) {
+								if( isPbxId24( listTxt, i ) ) {
+									const std::string bfId = listTxt.substr( i, 24 );
+									auto bfIt = pbxBuildFileToRef.find( bfId );
+									if( bfIt == pbxBuildFileToRef.end() ) {
+										danglingPhaseIds.push_back( "project.pbxproj PBXSourcesBuildPhase dangling buildFile ID: " + bfId );
+									} else {
+										auto frIt = pbxFileRefToBase.find( bfIt->second );
+										if( frIt != pbxFileRefToBase.end() ) {
+											phaseBases.insert( frIt->second );
+										} else {
+											danglingPhaseIds.push_back( "project.pbxproj PBXSourcesBuildPhase buildFile missing fileRef: " + bfId );
+										}
+									}
+									i += 24;
+								} else {
+									++i;
+								}
+							}
+							pbxSourcesPhases.push_back( std::move( phaseBases ) );
+						}
+					}
+					cur = blkClose + 2;
+				}
+			}
+			for( const char* otherPhase : { "PBXHeadersBuildPhase", "PBXFrameworksBuildPhase", "PBXResourcesBuildPhase" } ) {
+				const std::string phSec = pbxSection( otherPhase );
+				std::size_t cur = 0;
+				const std::string needle = std::string( "isa = " ) + otherPhase + ";";
+				while( cur < phSec.size() ) {
+					const std::size_t isaPos = phSec.find( needle, cur );
+					if( isaPos == std::string::npos ) break;
+					const std::size_t blkClose = phSec.find( "};", isaPos );
+					if( blkClose == std::string::npos ) break;
+					const std::string body = phSec.substr( isaPos, blkClose - isaPos );
+					const std::size_t fp = body.find( "files = (" );
+					if( fp != std::string::npos ) {
+						const std::size_t fe = body.find( ");", fp );
+						if( fe != std::string::npos ) {
+							const std::string listTxt = stripPbxComments( body.substr( fp + 9, fe - ( fp + 9 ) ) );
+							for( std::size_t i = 0; i + 24 <= listTxt.size(); ) {
+								if( isPbxId24( listTxt, i ) ) {
+									const std::string bfId = listTxt.substr( i, 24 );
+									if( pbxBuildFileToRef.find( bfId ) == pbxBuildFileToRef.end() ) {
+										danglingPhaseIds.push_back( std::string( "project.pbxproj " ) + otherPhase + " dangling buildFile ID: " + bfId );
+									}
+									i += 24;
+								} else {
+									++i;
+								}
+							}
+						}
+					}
+					cur = blkClose + 2;
+				}
+			}
+
+			const std::set<std::string> flExempt = {
+				"Agent/TlsTransportUnsupported.cpp",
+				"Agent/TlsTransportWin.cpp",
+				"DetectorSpheres/AdaptiveDetectorSphere.cpp",
+				"DetectorSpheres/CircularDiskDetector.cpp",
+				"Functions/CubicFunction.cpp",
+				"Functions/KleinBottleParametricFunctions.cpp",
+				"Functions/LinearFunction.cpp",
+				"Functions/ParametricSurface.cpp",
+				"Functions/QuadraticFunction.cpp",
+				"Functions/QuarticFunction.cpp",
+				"Geometry/TriangleMeshLoaderPSurf.cpp",
+				"ManagedJob.cpp",
+				"Rendering/PixelBasedSpectralIntegratingRasterizerRGB.cpp",
+				"Rendering/Win32WindowRasterizerOutput.cpp",
+				"Utilities/Log/Win32Console.cpp",
+				"Utilities/Math3D/Math3D.cpp",
+				"Utilities/Threads/ThreadsWin32.cpp",
+				"pch.cpp"
+			};
+			const std::set<std::string> cmExempt = {
+				"Agent/TlsTransportMac.mm",
+				// Metal-only Apple translation units; non-Apple builds compile the *Unsupported.cpp twins.
+				"Utilities/FireProductionComputeMac.mm",
+				"Utilities/FireProductionForceMac.mm",
+				"Utilities/FireProductionProjectionMac.mm",
+				"Utilities/FireProductionAdvectionMac.mm",
+				"Agent/TlsTransportWin.cpp",
+				"DetectorSpheres/AdaptiveDetectorSphere.cpp",
+				"DetectorSpheres/CircularDiskDetector.cpp",
+				"Functions/CubicFunction.cpp",
+				"Functions/KleinBottleParametricFunctions.cpp",
+				"Functions/LinearFunction.cpp",
+				"Functions/ParametricSurface.cpp",
+				"Functions/QuadraticFunction.cpp",
+				"Functions/QuarticFunction.cpp",
+				"Geometry/TriangleMeshLoaderPSurf.cpp",
+				"ManagedJob.cpp",
+				"Rendering/PixelBasedSpectralIntegratingRasterizerRGB.cpp",
+				"Rendering/Win32WindowRasterizerOutput.cpp",
+				"Utilities/Communications/ClientSocketCommunicator.cpp",
+				"Utilities/Communications/ServerSocketCommunicator.cpp",
+				"Utilities/Communications/SocketCommunications.cpp",
+				"Utilities/Communications/SocketCommunicator.cpp",
+				"Utilities/Log/Win32Console.cpp",
+				"Utilities/Math3D/Math3D.cpp",
+				"Utilities/Threads/ThreadsWin32.cpp",
+				"pch.cpp"
+			};
+			const std::set<std::string> vcxExempt = {
+				"Agent/TlsTransportMac.mm",
+				// Metal-only Apple translation units; non-Apple builds compile the *Unsupported.cpp twins.
+				"Utilities/FireProductionComputeMac.mm",
+				"Utilities/FireProductionForceMac.mm",
+				"Utilities/FireProductionProjectionMac.mm",
+				"Utilities/FireProductionAdvectionMac.mm",
+				"Agent/TlsTransportUnsupported.cpp",
+				"ManagedJob.cpp"
+			};
+			const std::set<std::string> pbxCppExempt = {
+				"Agent/TlsTransportUnsupported.cpp",
+				// Xcode builds the Metal *Mac.mm twins instead of the non-Apple *Unsupported.cpp fallbacks.
+				"Utilities/FireProductionComputeUnsupported.cpp",
+				"Utilities/FireProductionForceUnsupported.cpp",
+				"Utilities/FireProductionProjectionUnsupported.cpp",
+				"Utilities/FireProductionAdvectionUnsupported.cpp",
+				"Agent/TlsTransportWin.cpp",
+				"ManagedJob.cpp",
+				"Rendering/PixelBasedSpectralIntegratingRasterizerRGB.cpp",
+				"Rendering/Win32WindowRasterizerOutput.cpp",
+				"Utilities/Log/Win32Console.cpp",
+				"Utilities/Threads/ThreadsWin32.cpp"
+			};
+			const std::set<std::string> pbxHdrExempt = {
+				"Utilities/Log/Win32Console.h"
+			};
+
+			std::vector<std::string> missingBuildRefs;
+			for( const fs::directory_entry& de : fs::recursive_directory_iterator( libDir ) ) {
+				if( !de.is_regular_file() ) continue;
+				const std::string ext = de.path().extension().string();
+				std::string rel = fs::relative( de.path(), libDir ).generic_string();
+				const std::string base = de.path().filename().string();
+				if( ext == ".cpp" || ext == ".mm" ) {
+					if( flExempt.find( rel ) == flExempt.end() && flCpp.find( rel ) == flCpp.end() ) {
+						missingBuildRefs.push_back( "Filelist missing: " + rel );
+					}
+					if( cmExempt.find( rel ) == cmExempt.end() && cmCpp.find( rel ) == cmCpp.end() ) {
+						missingBuildRefs.push_back( "rise_sources.cmake missing: " + rel );
+					}
+					if( vcxExempt.find( rel ) == vcxExempt.end() && vcxCpp.find( rel ) == vcxCpp.end() ) {
+						missingBuildRefs.push_back( "Library.vcxproj missing: " + rel );
+					}
+					if( pbxCppExempt.find( rel ) == pbxCppExempt.end() ) {
+						if( pbxBasenames.find( base ) == pbxBasenames.end() ) {
+							missingBuildRefs.push_back( "project.pbxproj missing PBXFileReference: " + rel );
+						}
+						for( std::size_t pi = 0; pi < pbxSourcesPhases.size(); ++pi ) {
+							if( pbxSourcesPhases[pi].find( base ) == pbxSourcesPhases[pi].end() ) {
+								missingBuildRefs.push_back( "project.pbxproj PBXSourcesBuildPhase[" + std::to_string( pi ) + "] missing: " + rel );
+							}
+						}
+					}
+				} else if( ext == ".h" ) {
+					if( vcxH.find( rel ) == vcxH.end() ) {
+						missingBuildRefs.push_back( "Library.vcxproj ClInclude missing: " + rel );
+					}
+					if( pbxHdrExempt.find( rel ) == pbxHdrExempt.end() && pbxBasenames.find( base ) == pbxBasenames.end() ) {
+						missingBuildRefs.push_back( "project.pbxproj header missing: " + rel );
+					}
+				}
+			}
+			// Reverse build -> disk checks: catch deleted files left dangling in build manifests.
+			for( const std::string& r : flCpp ) {
+				if( !fs::is_regular_file( libDir / r ) ) {
+					missingBuildRefs.push_back( "Filelist dangling (not on disk): " + r );
+				}
+			}
+			for( const std::string& r : cmCpp ) {
+				if( !fs::is_regular_file( libDir / r ) ) {
+					missingBuildRefs.push_back( "rise_sources.cmake dangling (not on disk): " + r );
+				}
+			}
+			for( const std::string& r : vcxCpp ) {
+				if( !fs::is_regular_file( libDir / r ) ) {
+					missingBuildRefs.push_back( "Library.vcxproj ClCompile dangling (not on disk): " + r );
+				}
+			}
+			for( const std::string& r : vcxH ) {
+				if( !fs::is_regular_file( libDir / r ) ) {
+					missingBuildRefs.push_back( "Library.vcxproj ClInclude dangling (not on disk): " + r );
+				}
+			}
+			if( pbxSourcesPhases.size() < 2 ) {
+				missingBuildRefs.push_back( "project.pbxproj expected >= 2 PBXSourcesBuildPhase blocks" );
+			}
+			for( const std::string& dp : danglingPhaseIds ) {
+				missingBuildRefs.push_back( dp );
+			}
+			// Reverse project.pbxproj -> disk check: verify every PBXBuildFile resolves to a
+			// PBXFileReference and walk mainGroup -> PBXGroup -> PBXFileReference on disk.
+			for( const auto& kv : pbxBuildFileToRef ) {
+				if( pbxFileRefs.find( kv.second ) == pbxFileRefs.end() ) {
+					missingBuildRefs.push_back( "project.pbxproj PBXBuildFile dangling fileRef: " + kv.first + " -> " + kv.second );
+				}
+			}
+			{
+				struct PbxGroupNode { std::string path; std::string sourceTree; std::vector<std::string> children; };
+				std::map<std::string, PbxGroupNode> pbxGroups;
+				const std::string grpSec = pbxSection( "PBXGroup" );
+				std::size_t cur = 0;
+				while( cur < grpSec.size() ) {
+					const std::size_t isaPos = grpSec.find( "isa = PBXGroup;", cur );
+					if( isaPos == std::string::npos ) break;
+					const std::size_t blkOpen = grpSec.rfind( '{', isaPos );
+					const std::size_t blkClose = grpSec.find( "};", isaPos );
+					if( blkOpen == std::string::npos || blkClose == std::string::npos ) break;
+					std::size_t lineStart = grpSec.rfind( '\n', blkOpen );
+					lineStart = ( lineStart == std::string::npos ) ? 0 : ( lineStart + 1 );
+					while( lineStart < blkOpen && std::isspace( static_cast<unsigned char>( grpSec[lineStart] ) ) ) ++lineStart;
+					if( isPbxId24( grpSec, lineStart ) ) {
+						const std::string gid = grpSec.substr( lineStart, 24 );
+						const std::string body = grpSec.substr( blkOpen, blkClose - blkOpen );
+						PbxGroupNode node;
+						node.path = extractPbxProp( body, "path =" );
+						node.sourceTree = extractPbxProp( body, "sourceTree =" );
+						if( node.sourceTree.empty() ) node.sourceTree = "<group>";
+						const std::size_t cp = body.find( "children = (" );
+						if( cp != std::string::npos ) {
+							const std::size_t ce = body.find( ");", cp );
+							if( ce != std::string::npos ) {
+								const std::string cTxt = stripPbxComments( body.substr( cp + 12, ce - ( cp + 12 ) ) );
+								for( std::size_t i = 0; i + 24 <= cTxt.size(); ) {
+									if( isPbxId24( cTxt, i ) ) {
+										node.children.push_back( cTxt.substr( i, 24 ) );
+										i += 24;
+									} else {
+										++i;
+									}
+								}
+							}
+						}
+						pbxGroups[gid] = std::move( node );
+					}
+					cur = blkClose + 2;
+				}
+				std::map<std::string, PbxRefInfo> pbxSyncRootGroups;
+				{
+					const std::string syncSec = pbxSection( "PBXFileSystemSynchronizedRootGroup" );
+					std::size_t scur = 0;
+					while( scur < syncSec.size() ) {
+						const std::size_t isaPos = syncSec.find( "isa = PBXFileSystemSynchronizedRootGroup;", scur );
+						if( isaPos == std::string::npos ) break;
+						const std::size_t blkOpen = syncSec.rfind( '{', isaPos );
+						const std::size_t blkClose = syncSec.find( "};", isaPos );
+						if( blkOpen == std::string::npos || blkClose == std::string::npos ) break;
+						std::size_t lineStart = syncSec.rfind( '\n', blkOpen );
+						lineStart = ( lineStart == std::string::npos ) ? 0 : ( lineStart + 1 );
+						while( lineStart < blkOpen && std::isspace( static_cast<unsigned char>( syncSec[lineStart] ) ) ) ++lineStart;
+						if( isPbxId24( syncSec, lineStart ) ) {
+							const std::string sid = syncSec.substr( lineStart, 24 );
+							const std::string body = syncSec.substr( blkOpen, blkClose - blkOpen );
+							const std::string p = extractPbxProp( body, "path =" );
+							const std::string st = extractPbxProp( body, "sourceTree =" );
+							pbxSyncRootGroups[sid] = PbxRefInfo{ p, st.empty() ? "<group>" : st };
+						}
+						scur = blkClose + 2;
+					}
+				}
+				const std::string projSec = pbxSection( "PBXProject" );
+				const std::string mainGroupProp = stripPbxComments( extractPbxProp( projSec, "mainGroup =" ) );
+				std::size_t mgPos = 0;
+				while( mgPos < mainGroupProp.size() && std::isspace( static_cast<unsigned char>( mainGroupProp[mgPos] ) ) ) ++mgPos;
+				const std::string mainGroupId = isPbxId24( mainGroupProp, mgPos )
+					? mainGroupProp.substr( mgPos, 24 ) : std::string();
+				const fs::path xcodeProjDir = repoRoot / "build/XCode/rise";
+				std::set<std::string> visitedGroups;
+				std::set<std::string> visitedFileRefs;
+				std::function<void( const std::string&, const fs::path& )> walkPbx = [&]( const std::string& id, const fs::path& curDir ) {
+					auto gIt = pbxGroups.find( id );
+					if( gIt != pbxGroups.end() ) {
+						if( !visitedGroups.insert( id ).second ) return;
+						const PbxGroupNode& g = gIt->second;
+						fs::path nextDir = curDir;
+						if( g.sourceTree == "SOURCE_ROOT" ) {
+							nextDir = g.path.empty() ? xcodeProjDir : ( xcodeProjDir / g.path ).lexically_normal();
+						} else if( g.sourceTree == "<group>" ) {
+							if( !g.path.empty() ) nextDir = ( curDir / g.path ).lexically_normal();
+						} else {
+							return;
+						}
+						for( const std::string& ch : g.children ) {
+							walkPbx( ch, nextDir );
+						}
+						return;
+					}
+					auto fIt = pbxFileRefs.find( id );
+					if( fIt != pbxFileRefs.end() ) {
+						visitedFileRefs.insert( id );
+						const PbxRefInfo& fr = fIt->second;
+						fs::path fPath;
+						if( fr.sourceTree == "SOURCE_ROOT" ) {
+							fPath = ( xcodeProjDir / fr.path ).lexically_normal();
+						} else if( fr.sourceTree == "<group>" ) {
+							fPath = ( curDir / fr.path ).lexically_normal();
+						} else {
+							return; // SDKROOT / BUILT_PRODUCTS_DIR
+						}
+						if( !fs::exists( fPath ) ) {
+							missingBuildRefs.push_back( "project.pbxproj PBXFileReference missing on disk: " + fPath.generic_string() );
+						}
+						return;
+					}
+					auto sIt = pbxSyncRootGroups.find( id );
+					if( sIt != pbxSyncRootGroups.end() ) {
+						const PbxRefInfo& sr = sIt->second;
+						const fs::path sPath = ( sr.sourceTree == "SOURCE_ROOT" )
+							? ( xcodeProjDir / sr.path ).lexically_normal()
+							: ( curDir / sr.path ).lexically_normal();
+						if( !fs::is_directory( sPath ) ) {
+							missingBuildRefs.push_back( "project.pbxproj PBXFileSystemSynchronizedRootGroup missing dir: " + sPath.generic_string() );
+						}
+						return;
+					}
+					missingBuildRefs.push_back( "project.pbxproj PBXGroup dangling child ID: " + id );
+				};
+				if( mainGroupId.empty() ) {
+					missingBuildRefs.push_back( "project.pbxproj missing mainGroup ID" );
+				} else {
+					walkPbx( mainGroupId, xcodeProjDir );
+					for( const auto& kv : pbxFileRefs ) {
+						if( visitedFileRefs.find( kv.first ) == visitedFileRefs.end() ) {
+							missingBuildRefs.push_back( "project.pbxproj ungrouped orphan PBXFileReference: " + kv.first + " (" + kv.second.path + ")" );
+						}
+					}
+				}
+			}
+			for( const std::string& m : missingBuildRefs ) {
+				std::cout << "  build-parity: " << m << std::endl;
+			}
+			Check( missingBuildRefs.empty(),
+			       "five-project-parity: every non-exempt src/Library/**/*.{cpp,mm,h} matches disk 1-to-1 across Filelist, rise_sources.cmake, Library.vcxproj, Library.vcxproj.filters, and project.pbxproj (refs + Sources phases)" );
+		}
 	}
 
 	std::cout << std::endl

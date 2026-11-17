@@ -1,9 +1,16 @@
+# Film and channel storage share header-only Utilities/CheckedSize.h.
+# Header-only endian helpers live in Utilities/LittleEndian.h.
+# Ward SPFs share header-only Materials/WardSelectionQuadrature.h.
+# Schlick BRDF/SPF share header-only Materials/SchlickMasking.h (DL-225).
+# Donner-Jensen SSS profile/shader-op share header-only Utilities/ExteriorIndexCache.h (DL-291).
+# Graded-index media share header-only Utilities/GradedIndexMedium.h (DL-09).
+# Time-indexed motion blur shares header-only Animation/TimeIndexedView.h (DL-465).
 # -----------------------------------------------------------------------------
 # rise_sources.cmake
 #
 # Transcribed verbatim from build/make/rise/Filelist (SRCLIB assembly).
 # Do NOT replace with file(GLOB) — globbing would pick up Windows-only files
-# (ThreadsWin32.cpp, LoadLibraryWin32.cpp, Win32Console.cpp,
+# (ThreadsWin32.cpp, Win32Console.cpp,
 # Win32WindowRasterizerOutput.cpp), ManagedJob.cpp (C++/CLI), and the DRISE
 # socket stack, none of which are in SRCLIB and none of which compile under
 # the Android NDK.
@@ -39,7 +46,6 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/DiskFileReadBuffer.cpp"
     "${RISE_LIB}/Utilities/DiskFileWriteBuffer.cpp"
     "${RISE_LIB}/Utilities/RenderParallelScope.cpp"
-    "${RISE_LIB}/Utilities/DynamicProperties.cpp"
     "${RISE_LIB}/Utilities/GeometricUtilities.cpp"
     "${RISE_LIB}/Utilities/MediaPathLocator.cpp"
     "${RISE_LIB}/Utilities/MemoryBuffer.cpp"
@@ -71,6 +77,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/OrthonormalBasis3D.cpp"
     "${RISE_LIB}/Utilities/Primes.cpp"
     "${RISE_LIB}/Utilities/ProbabilityDensityFunction.cpp"
+    "${RISE_LIB}/Utilities/ProceduralNoiseCore.cpp"
     "${RISE_LIB}/Utilities/Reference.cpp"
     "${RISE_LIB}/Utilities/PSSMLTSampler.cpp"
     "${RISE_LIB}/Utilities/Profiling.cpp"
@@ -109,11 +116,17 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Painters/MandelbrotPainter.cpp"
     "${RISE_LIB}/Painters/Painter.cpp"
     "${RISE_LIB}/Importers/GLTFSceneImporter.cpp"
+    "${RISE_LIB}/Importers/HairFileLoader.cpp"
     "${RISE_LIB}/Painters/Perlin2DPainter.cpp"
     "${RISE_LIB}/Painters/ControlledSmoothness2DPainter.cpp"
     "${RISE_LIB}/Painters/CompositeFunction2DPainter.cpp"
     "${RISE_LIB}/Painters/PolynomialFunction2DPainter.cpp"
     "${RISE_LIB}/Painters/GerstnerWavePainter.cpp"
+    "${RISE_LIB}/Painters/ExpressionPainter.cpp"
+    "${RISE_LIB}/Painters/RampPainter.cpp"
+    "${RISE_LIB}/Painters/MappingPainter.cpp"
+    "${RISE_LIB}/Painters/StochasticTilePainter.cpp"
+    "${RISE_LIB}/Painters/ScatterPainter.cpp"
     "${RISE_LIB}/Painters/Perlin3DPainter.cpp"
     "${RISE_LIB}/Painters/Turbulence3DPainter.cpp"
     "${RISE_LIB}/Painters/Worley3DPainter.cpp"
@@ -137,16 +150,30 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/BioSpecSkinSPFHelpers.cpp"
     "${RISE_LIB}/Materials/DonnerJensenSkinDiffusionProfile.cpp"
     "${RISE_LIB}/Materials/MultipoleDiffusion.cpp"
+    "${RISE_LIB}/Materials/CoatedBRDF.cpp"
+    "${RISE_LIB}/Materials/CoatedSPF.cpp"
+    "${RISE_LIB}/Materials/FabricBRDF.cpp"
+    "${RISE_LIB}/Materials/FabricSPF.cpp"
+    "${RISE_LIB}/Materials/WeaveBRDF.cpp"
+    "${RISE_LIB}/Materials/WeaveSPF.cpp"
     "${RISE_LIB}/Materials/CompositeEmitter.cpp"
     "${RISE_LIB}/Materials/CompositeSPF.cpp"
     "${RISE_LIB}/Materials/CookTorranceBRDF.cpp"
     "${RISE_LIB}/Materials/CookTorranceSPF.cpp"
     "${RISE_LIB}/Materials/DataDrivenBSDF.cpp"
+    "${RISE_LIB}/Materials/DataDrivenSPF.cpp"
     "${RISE_LIB}/Materials/DielectricSPF.cpp"
+    "${RISE_LIB}/Materials/RoughDielectricMaterial.cpp"
     "${RISE_LIB}/Materials/GGXBRDF.cpp"
     "${RISE_LIB}/Materials/GGXSPF.cpp"
+    "${RISE_LIB}/Materials/HairBSDF.cpp"
+    "${RISE_LIB}/Materials/HairMedullaProfile.cpp"
+    "${RISE_LIB}/Materials/HairMedullaProfile_LUTData.cpp"
     "${RISE_LIB}/Materials/SheenBRDF.cpp"
     "${RISE_LIB}/Materials/SheenSPF.cpp"
+    "${RISE_LIB}/Materials/SheenDirectionalAlbedo.cpp"
+    "${RISE_LIB}/Materials/SheenDirectionalAlbedo_LUTData.cpp"
+    "${RISE_LIB}/Materials/SchlickDirectionalAlbedo_LUTData.cpp"
     "${RISE_LIB}/Materials/GenericHumanTissueSPF.cpp"
     "${RISE_LIB}/Materials/HenyeyGreensteinPhaseFunction.cpp"
     "${RISE_LIB}/Materials/HeterogeneousMedium.cpp"
@@ -161,6 +188,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/PerfectReflectorSPF.cpp"
     "${RISE_LIB}/Materials/PerfectRefractorSPF.cpp"
     "${RISE_LIB}/Materials/PhongEmitter.cpp"
+    "${RISE_LIB}/Materials/PolishedBRDF.cpp"
     "${RISE_LIB}/Materials/PolishedSPF.cpp"
     "${RISE_LIB}/Materials/ScatteredRayContainer.cpp"
     "${RISE_LIB}/Materials/SchlickBRDF.cpp"
@@ -189,7 +217,10 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Geometry/EllipsoidGeometry.cpp"
     "${RISE_LIB}/Geometry/Geometry.cpp"
     "${RISE_LIB}/Geometry/GeometryUtilities.cpp"
+    "${RISE_LIB}/Geometry/HairGenerator.cpp"
+    "${RISE_LIB}/Geometry/HairGeometry.cpp"
     "${RISE_LIB}/Geometry/InfinitePlaneGeometry.cpp"
+    "${RISE_LIB}/Geometry/MeshSignalBake.cpp"
     "${RISE_LIB}/Geometry/SDFGeometry.cpp"
     "${RISE_LIB}/Geometry/SphereGeometry.cpp"
     "${RISE_LIB}/Geometry/SphericalUVGenerator.cpp"
@@ -229,6 +260,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Sampling/UniformSampling1D.cpp"
     "${RISE_LIB}/Sampling/UniformSampling2D.cpp"
     "${RISE_LIB}/Sampling/SobolSampling2D.cpp"
+    "${RISE_LIB}/Sampling/SobolDirectionNumbers.cpp"
 
     # SRCLIBPHOTONMAPPING
     "${RISE_LIB}/PhotonMapping/CausticPelPhotonMap.cpp"
@@ -277,6 +309,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Rendering/PixelBasedPelRasterizer.cpp"
     "${RISE_LIB}/Rendering/InteractivePelRasterizer.cpp"
     "${RISE_LIB}/Rendering/PixelBasedRasterizerHelper.cpp"
+    "${RISE_LIB}/Rendering/TimeIndexedMotionBlur.cpp"
     "${RISE_LIB}/Rendering/PixelBasedSpectralIntegratingRasterizer.cpp"
     "${RISE_LIB}/Rendering/Rasterizer.cpp"
     "${RISE_LIB}/Rendering/RayCaster.cpp"
@@ -346,9 +379,10 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Shaders/StandardShader.cpp"
 
     # SRCLIBMODIFIERS
-    "${RISE_LIB}/Modifiers/BumpMap.cpp"
     "${RISE_LIB}/Modifiers/GlintModifier.cpp"
+    "${RISE_LIB}/Modifiers/ModifierStack.cpp"
     "${RISE_LIB}/Modifiers/NormalMap.cpp"
+    "${RISE_LIB}/Modifiers/ReliefModifier.cpp"
 
     # SRCLIBRASTERIMAGES
     "${RISE_LIB}/RasterImages/EXRReader.cpp"
@@ -383,7 +417,6 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Parsers/AsciiCommandParser.cpp"
     "${RISE_LIB}/Parsers/ChunkParserRegistry.cpp"
     "${RISE_LIB}/Parsers/AsciiScriptParser.cpp"
-    "${RISE_LIB}/Parsers/MathExpressionEvaluator.cpp"
     "${RISE_LIB}/Options.cpp"
 
     # SRCLIBSCENEEDITORSUGGESTIONS
@@ -409,7 +442,15 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/SceneEditor/DirtyTracker.cpp"
     "${RISE_LIB}/SceneEditor/SaveEngine.cpp"
     "${RISE_LIB}/SceneEditor/CstIntrospection.cpp"
+    "${RISE_LIB}/SceneEditor/PainterIntrospection.cpp"
+    "${RISE_LIB}/SceneEditor/PainterPreview.cpp"
+    "${RISE_LIB}/SceneEditor/MaterialPreview.cpp"
     "${RISE_LIB}/SceneEditor/EntityTemplates.cpp"
+    "${RISE_LIB}/SceneEditor/ReferenceGraph.cpp"
+    "${RISE_LIB}/SceneEditor/ConnectionLegality.cpp"
+    "${RISE_LIB}/SceneEditor/OwnershipClosure.cpp"
+    "${RISE_LIB}/SceneEditor/GraphLayout.cpp"
+    "${RISE_LIB}/SceneEditor/GraphLayoutSidecar.cpp"
 
     # SRCLIBMISC
     "${RISE_LIB}/DetectorSpheres/DetectorSphere.cpp"

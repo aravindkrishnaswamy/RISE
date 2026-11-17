@@ -12,6 +12,9 @@
 > **Status: COMPLETED EXECUTION PLAN.** The corpus migrated to native v7, the
 > CST path became the sole runtime loader, and the legacy streaming parser was
 > deleted. The body preserves the gates and sequence used for the cutover.
+> *(Post-cutover update, [doc 87](87-recursive-scene-graph.md) step 3d: the CST-only
+> `instance_array` chunk referenced in F3 and R-V4 was subsequently retired and replaced by
+> `standard_object` `source` + `count_u` / `count_v`, including in `loops.RISEscene`.)*
 
 ---
 

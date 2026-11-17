@@ -188,11 +188,13 @@ void InfinitePlaneGeometry::SetIntermediateValue( const IKeyframeParameter& val 
 	case XTILE_ID:
 		{
 			xTile = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	case YTILE_ID:
 		{
 			yTile = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	}
@@ -212,4 +214,28 @@ void InfinitePlaneGeometry::RegenerateData( )
 	} else {
 		GlobalLog()->PrintSourceError( "InfinitePlaneGeometry:: yTile <= 0", __FILE__, __LINE__ );
 	}
+	BumpShapeRevision();
+}
+
+
+//! IGeometry::DistanceToSurface -- EXACT.
+//!
+//! This geometry IS the plane z = 0 (IntersectRay hits it against
+//! `Vector3(0,0,1)`, and UniformRandomPoint returns `(x, y, 0)`), and it is
+//! INFINITE in x and y, so no rim case exists and the distance from any
+//! point is simply the magnitude of its z coordinate.
+//!
+//! Deliberately does NOT early-out on `maxDistObject`: the whole
+//! computation is one fabs, so a comparison to skip it would cost as much
+//! as doing it.  Answering past the radius is harmless -- the caller keeps
+//! the minimum and its own bound decides.
+bool InfinitePlaneGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+	const Scalar d = std::fabs( ptObject.z );
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
 }

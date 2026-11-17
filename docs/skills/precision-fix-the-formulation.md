@@ -199,12 +199,191 @@ Why wrong:
   committed to its real-vs-complex verdict, even when another would
   have found real roots.
 
-Right fix: drop the gate.  Always evaluate the identical-α fallback
-when `d3 ≤ 0` (the regime where it produces real roots), compute
-its forward error, pick whichever factorisation has lower error.
-When the primary path was already valid with lower error we keep
-it; when the fallback wins we switch.  Both branches evaluated, no
-threshold guesswork, no missed roots.
+Right fix: evaluate the identical-α alternative whenever `d3 ≤ 0`,
+then compare coefficient reconstruction errors against the **actual**
+primary factorization, including a conjugate-complex primary. Real
+quadratic coefficients do not guarantee real roots: their discriminants
+still decide. DL226 found that assigning the complex primary infinite
+error made the fallback turn `(x²+1)²` into `(x²−1)²`, inventing real
+roots. The existing LDLT reconstruction metric evaluates the complex
+primary without complex arithmetic. Only `d2 == 0`, where no primary
+candidate was constructed, requires unconditional fallback selection.
+
+At exactly equal rounded errors and `d3 == 0`, prefer the coalesced
+quadratic-square alternative: `(x−1)^4` otherwise depended on singular
+Newton refinement to reunite split factors. This tie rule adds no error
+band. Positive-square, near-multiple-positive, repeated-real, scaled-root
+and live torus hit/miss controls are documented in
+[DL226_QUARTIC_FACTORIZATION.md](../DL226_QUARTIC_FACTORIZATION.md).
+Evaluating both candidates preserves the recovery opportunity; it is
+not a guarantee of resolving every ill-conditioned floating-point root.
+
+### Quartic contact and exponent range (DL273–DL275)
+
+Exact torus tangencies require accurate factor coefficients, not a relaxed
+quadratic discriminant. Compensated coefficient residuals let Newton reach
+the exact contact factors when rounded multiply/add residuals prematurely
+look zero. Strictly positive and negative contact perturbations distinguish
+true contact from invented intersections.
+
+Normalize coefficient exponents before dividing by the leading coefficient;
+otherwise finite coefficients can overflow into a broken monic polynomial.
+Scale tiny roots up as well as large roots down. When one binary64 scale
+cannot represent all coefficients, preserve a separate exponent through
+the same factorization, including Vieta recovery, rather than silently
+turning small coefficients into zero. Range extension does not add
+significand precision. See [the derivation, finite boundary oracles and
+renewed gates](../DL273_DL274_DL275_QUARTIC_RANGE.md).
+
+### Bilinear-patch shadow-ray self-shadowing (masqueraded as an MIS bug)
+
+Symptom: a `weave_material` curtain (`transmission thin`,
+`ScattersFullSphere() == true`) lit from behind by a mesh area light
+showed path tracing's transmitted radiance scaling super-linearly in
+the material's `transmit` parameter (`transmit = 1.0` gave ~47x
+`transmit = 0.1`'s response, not the ideal `10x`) while BDPT — sharing
+the identical material code — stayed exactly linear.  Every pointwise
+MIS check came back clean: the `(p_light, p_bsdf)` pair
+`LightSampler::EvaluateDirectLighting` computes for a mesh-luminary NEE
+sample and the `(bsdfPdf, p_nee)` pair `PathTracingIntegrator` computes
+for the matching BSDF-sampled emission hit were numerically identical
+for the same direction, so `PowerHeuristic`'s partition-of-unity held
+exactly, as it algebraically must.
+
+Wrong direction (the one the symptom points at): keep digging in the
+MIS weight code for a subtle pairing mismatch — a plausible-looking
+hypothesis (a full-sphere material's NEE and BSDF-hit sides using
+inconsistent `cosLight` sign conventions) that a `git grep` and careful
+derivation both ruled out.
+
+Right diagnosis: isolate each strategy alone and unweighted (NEE-only:
+force `w = 1`, suppress the competing BSDF-sampled emission; BSDF-only:
+the reverse) and compare their means directly.  Two unbiased estimators
+of the same integral must agree; they didn't — NEE-only read only ~10%
+of BSDF-only's mean, both linear in `transmit` individually.  That
+narrowed the search to "why is NEE's REALIZED value wrong", not "why is
+its WEIGHT wrong" — and instrumenting NEE's shadow ray found the answer
+directly: 93.6% of shadow rays from the curtain toward the light behind
+it were spuriously self-shadowed by the curtain's OWN geometry.
+
+The self-intersection distance is mathematically zero — the shadow
+ray's origin sits exactly on the same `clippedplane_geometry` bilinear
+patch it just scattered from.  `RayBilinearPatchIntersection`'s self-hit
+rejection compared the computed `dRange` against the fixed absolute
+`NEARZERO` (`1e-12`), but `dRange`'s numerator (a difference of two
+~O(1-3)-magnitude world coordinates, one of them reconstructed through a
+quadratic-solved `(u, v)`) carries FP round-off that scales with the
+MAGNITUDE of those coordinates.  Measured directly: self-intersection
+`dRange` values of `1e-12` to `3e-12` at this scene's coordinate scale —
+straddling `NEARZERO`, so roughly half of all self-intersections
+registered as genuine tiny-positive-distance hits.
+
+Why this was invisible as a simple linearity check: the self-shadow
+rate doesn't depend on `transmit` (it's pure geometry), so NEE-only was
+still exactly linear, just deflated by a constant factor.  The
+super-linear SHAPE came from MIS correctly shifting weight share from
+the (deflated) NEE strategy toward the (healthy) BSDF-sampling strategy
+as `transmit` grew and `bsdfPdf` grew with it — a real, correctly-computed
+weight shift, wearing a geometry bug as a costume.
+
+Wrong fix (rejected by inspection, matching the torus example above):
+widen `NEARZERO` inside `ClippedPlaneGeometry::IntersectRay_IntersectionOnly`
+alone.  Same three objections as the torus case — magic multiplier,
+leaves `IntersectRay` (primary/continuation rays) exposed to the
+identical noise, and the threshold lives in a caller of the noisy
+producer rather than in the producer itself.
+
+Right fix: in `RayBilinearPatchIntersection` (the shared producer, whose
+other LIVE caller is `BilinearPatchGeometry` — the `bilinearpatch_geometry`
+chunk area lights use; a dead `RayTriangleIntersectionWithDisplacement`
+stub that also called it was deleted 2026-09-06), compute a scale-relative floor once —
+`tMin = NEARZERO * (1 + coordScale)`, `coordScale` the largest L1
+magnitude among the ray origin and the patch's four corners — and use
+`dRange > tMin` (not `dRange > 0` / `dRange > NEARZERO`) at all three
+of the function's hit-acceptance sites.  Every caller benefits: shadow
+rays, primary rays, and continuation rays after a scatter event.
+
+Full write-up, the MIS-side proof that the weights were never wrong,
+and the regression test: [CLOTH_FABRIC_DESIGN.md §15 debt
+21](../CLOTH_FABRIC_DESIGN.md) and
+[`tests/FabricRenderTest.cpp::TestAreaLitSheerWeave`](../../tests/FabricRenderTest.cpp).
+
+**Sibling audit, closed 2026-09-05 (a8bef210).** The same scale-relative floor —
+computed once at the producer, `tMin = NEARZERO * (1 + coordScale)` —
+now lives in `RaySphereIntersection` (both overloads), `RayQuadricIntersection`,
+`RayPlaneIntersection`, `RayTriangleIntersection`, and both cylinder
+intersection paths, closing the identical bug class each of those
+producers had: a self-hit root at the origin's own published point,
+sized by the SAME coordinates the fixed absolute `NEARZERO` never scaled
+with. The worst measured cases were `RayPlaneIntersection`'s: a
+`circulardisk_geometry` / `infiniteplane_geometry` curtain lit from
+behind by a full-sphere-transmissive `weave_material` read PT at 1/393
+and 1/354 of BDPT before the floor and 1.000 after, at unit scale — no large
+coordinates needed, because a shadow ray that CROSSES a flat surface hits
+this the same way at any scale. `box_geometry` does not take this fix; it
+keeps the per-axis plane-distance band below, because a box's self-hit
+`t` blows up at grazing exit angles in a way no single scale-relative
+range threshold can bound (see the next example). Full sweep across all
+these producers, plus the torus (reverted — did not close) and a
+1000×-coordinate Lambertian regime the crossing-shadow-ray trigger alone
+doesn't reach: [CLOTH_FABRIC_DESIGN.md §15 debt
+25](../CLOTH_FABRIC_DESIGN.md)'s "Sibling audit" sub-block.
+
+### Box self-root: an on-face origin is a plane-distance fact, not a range threshold
+
+Symptom: a closed `box_geometry` carrying a thin-transmissive
+`weave_material` read BDPT/VCM ≈ 0.17× PT with a light behind the box
+and ≈ 2.25× PT with a light inside it, while the same six faces built
+as free-standing `clippedplane_geometry` quads read 1.00 either way
+([CLOTH_FABRIC_DESIGN.md §15 debt 25](../CLOTH_FABRIC_DESIGN.md)).
+
+The self-intersection is the same shape as the torus and bilinear-patch
+examples above: a ray origin published by `Object::IntersectRay` sits
+~1e-12 (`SURFACE_INTERSEC_ERROR`) off the face it just hit, and the
+box's slab test reports that re-crossing as the PRIMARY root, whose `t`
+straddles `NEARZERO`.
+
+Wrong direction: widen the `dRange < NEARZERO` range-reject threshold
+inside `IntersectRay_IntersectionOnly`, or pick a bigger epsilon.  Both
+fail for the same reasons the torus and bilinear-patch fudges do, plus
+a shape-specific one: the self-hit `t` for a box is
+`t_self = δ · |cos θ_in| / |cos θ_out|`, `δ` the ~1e-12 back-off
+applied along the INCOMING ray (so the plane distance is `δ·|cos θ_in|`)
+and `θ_out` the angle between the outgoing ray and the face normal.  A
+grazing
+continuation ray (`θ_out` near 90°) makes `t_self` arbitrarily LARGE —
+there is no single range threshold, however generous, that rejects
+every self-hit and accepts every genuine near hit, because the two
+overlap in `t` for a small enough grazing angle.  A range threshold is
+the wrong KIND of test for a fact that has nothing to do with distance.
+
+Right fix: "the origin is on this face" is a PLANE-DISTANCE fact, not a
+range fact — independent of `θ_out` entirely.
+`BoxGeometry::DropSelfHitRoot` tests, per candidate root's face,
+`|origin.axis − bound| ≤ 4·NEARZERO + 64·DBL_EPSILON · |origin.axis|`
+(PER AXIS: the plane distance is an exact subtraction of two nearby
+numbers, so only THAT coordinate's rounding can move it — a first cut
+that summed all three coordinates and the box's half-extents, on the
+bilinear-patch pattern above, grew with the box's transverse size and
+swallowed the deliberate 1e-12 standoff CSGObject's exit-face probe
+relies on; review round 2 of debt 25) and drops
+that root in favour of the OTHER root when it matches — cancellation-free,
+because it never computes a `t` for the self-hit at all; it asks the one
+question that is actually true regardless of ray direction.  The
+survivor is then treated as an EXIT hit, matching what would have
+happened had the origin been published a hair further along the ray.
+
+This is the same idea `RaySphereIntersection` already applies, just
+spelled as a range threshold instead of a plane-distance test: it skips
+any root `<= NEARZERO` at the origin and returns the NEXT one.  That
+works for a sphere because a sphere has no flat faces for `t_self` to
+blow up against at grazing angles — the same simplification would be
+unsound on a box.
+
+Full write-up: [CLOTH_FABRIC_DESIGN.md §15 debt
+25](../CLOTH_FABRIC_DESIGN.md) and
+[`src/Library/Geometry/BoxGeometry.cpp`](../../src/Library/Geometry/BoxGeometry.cpp)'s
+`DropSelfHitRoot` comment block.
 
 ## Anti-Patterns
 

@@ -15,6 +15,8 @@
 #include <QLabel>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSlider>
+#include <QGuiApplication>
 #include <QFrame>
 #include <QMouseEvent>
 #include <QPainter>
@@ -23,6 +25,7 @@
 #include <QSize>
 #include <QToolButton>
 #include <QComboBox>
+#include <QColorDialog>
 #include <QMenu>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -32,6 +35,7 @@
 #include <QStringList>
 #include <QTimer>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <memory>
@@ -69,12 +73,114 @@ inline double scrubRate(const QString& name, double value)
 
 inline QString formatScrubbed(double v, int kind)
 {
+    if (!std::isfinite(v)) return QStringLiteral("0");
+    if (std::abs(v) < 1e-15) v = 0.0;
     if (kind == 1 /* UInt */) {
-        const long long n = std::max<long long>(
-            0, static_cast<long long>(std::llround(v)));
-        return QString::number(n);
+        const double clamped = std::min(std::max(std::round(v), 0.0), static_cast<double>(UINT32_MAX));
+        return QString::number(static_cast<qulonglong>(clamped));
     }
     return QString::asprintf("%.6g", v);
+}
+
+// doc 88 S4b (Tier-1 param sliders): the first whitespace-delimited token,
+// SKIPPING token 0, that looks and parses as a number, as (its position and
+// length within `line`, its parsed value).  Returns false when the line has
+// no such token -- the caller then has nothing to drive and falls back to
+// the range minimum / skips the commit.  Mirrors PropertiesPanel.swift's
+// private `ParamSliderCell.numericToken` (~line 889).
+//
+// Two deliberate departures from "just try toDouble() on every token":
+//
+// 1. Token 0 is SKIPPED.  `hasRange` (the sole gate that routes a row
+//    through the slider block in buildPropertyRow below, rather than
+//    straight to the plain text well) is set only for an expression
+//    painter's `param[i]` rows.  The row's VALUE line is `<paramName>
+//    <value> [min ... max ... step ... label ...]` -- so token 0 is the
+//    param's OWN NAME (e.g. `wob` or `ring_scale`), never a value the
+//    slider should scrub.  A parameter literally named `4` (or, see point
+//    2, `inf`/`nan`) would otherwise have its name token silently
+//    overwritten by a scrub commit.
+//
+// 2. A token must LOOK numeric (optional leading sign, then a digit or
+//    `.`) before `QString::toDouble()` is even tried.  `toDouble()`
+//    accepts "inf"/"nan"-shaped input in some locales, so without this
+//    guard a param named exactly `inf`/`nan` (rare, but not disallowed by
+//    the scene grammar) could still be misread as a numeric value by a
+//    naive scan -- the token-0 skip above only rules out the FIRST token,
+//    not a same-shaped later one on a multi-token value line.
+//
+//    QChar::isNumber() (not isDigit()) deliberately: Swift's guard is
+//    `Character.isNumber`, which spans Unicode categories Nd+Nl+No, and
+//    QChar::isNumber() matches exactly those -- isDigit() is Nd only.
+//    The category set decides whether a malformed token BAILS the scan
+//    (looks numeric, fails to parse) or is silently skipped, so the two
+//    platforms must classify identically or the same malformed line would
+//    rewrite a DIFFERENT token on Windows than on macOS.
+bool numericToken(const QString& line, int* outPos, int* outLen, double* outValue, bool skipFirstToken = true)
+{
+    auto looksNumeric = [](const QString& tok) {
+        int i = 0;
+        if (i < tok.size() && (tok[i] == QLatin1Char('+') || tok[i] == QLatin1Char('-'))) ++i;
+        if (i + 1 < tok.size() && tok[i] == QLatin1Char('0')
+            && (tok[i + 1] == QLatin1Char('x') || tok[i + 1] == QLatin1Char('X'))) {
+            return false;
+        }
+        if (i >= tok.size()) return false;
+        return tok[i].isNumber() || tok[i] == QLatin1Char('.');
+    };
+
+    const int n = line.size();
+    int i = 0;
+    int tokenIndex = 0;
+    while (i < n) {
+        while (i < n && line[i].isSpace()) ++i;
+        if (i >= n) return false;
+        int j = i;
+        while (j < n && !line[j].isSpace()) ++j;
+        const QString tok = line.mid(i, j - i);
+        if (!skipFirstToken) {
+            if (tokenIndex != 0 || !looksNumeric(tok)) return false;
+            bool ok = false;
+            const double v = tok.toDouble(&ok);
+            if (!ok || !std::isfinite(v)) return false;
+            int k = j;
+            while (k < n && line[k].isSpace()) ++k;
+            if (k != n) return false;
+            if (outPos) *outPos = i;
+            if (outLen) *outLen = j - i;
+            if (outValue) *outValue = v;
+            return true;
+        }
+        if (tokenIndex == 1) {
+            // Token 1 in `<paramName> <value> [min ...]` is strictly the value
+            // token.  If it does not look or parse as a finite decimal number,
+            // bail out with false immediately rather than falling through to
+            // scan later tokens (where `min`'s bound token would otherwise match).
+            if (!looksNumeric(tok)) return false;
+            bool ok = false;
+            const double v = tok.toDouble(&ok);
+            if (!ok || !std::isfinite(v)) return false;
+            if (outPos) *outPos = i;
+            if (outLen) *outLen = j - i;
+            if (outValue) *outValue = v;
+            return true;
+        }
+        tokenIndex += 1;
+        i = j;
+    }
+    return false;
+}
+
+int defStageIndex(const QString& rowName)
+{
+    if (!rowName.startsWith(QLatin1String("def[")) || !rowName.endsWith(QLatin1Char(']'))) {
+        return -1;
+    }
+    const QString inner = rowName.mid(4, rowName.size() - 5);
+    if (inner.isEmpty()) return -1;
+    bool ok = false;
+    const int idx = inner.toInt(&ok);
+    return (ok && idx >= 0) ? idx : -1;
 }
 
 // Shared well chrome (Theme::bgWell fill + hairline border) -- mirrors
@@ -105,6 +211,7 @@ public:
                 CommitFn commit,
                 BracketFn beginBracket,
                 BracketFn endBracket,
+                std::shared_ptr<bool> ownerAlive = nullptr,
                 QWidget* parent = nullptr)
         : QLabel(parent)
         , m_target(target)
@@ -113,6 +220,7 @@ public:
         , m_commit(std::move(commit))
         , m_beginBracket(std::move(beginBracket))
         , m_endBracket(std::move(endBracket))
+        , m_ownerAlive(std::move(ownerAlive))
     {
         // Glyph is painted in paintEvent -- two stacked chevron icons
         // (bundled-SVG "chevron-up"/"chevron-down", Theme::icon), mirroring
@@ -129,13 +237,15 @@ public:
 
     ~ScrubHandle() override
     {
-        if (m_dragging && m_endBracket) m_endBracket();
+        if (m_dragging && m_endBracket && (!m_ownerAlive || *m_ownerAlive)) {
+            m_endBracket();
+        }
     }
 
 protected:
     void mousePressEvent(QMouseEvent* e) override
     {
-        if (e->button() != Qt::LeftButton || !m_target) {
+        if (e->button() != Qt::LeftButton || !m_target || (m_ownerAlive && !*m_ownerAlive)) {
             QLabel::mousePressEvent(e);
             return;
         }
@@ -150,7 +260,7 @@ protected:
 
     void mouseMoveEvent(QMouseEvent* e) override
     {
-        if (!m_dragging) {
+        if (!m_dragging || (m_ownerAlive && !*m_ownerAlive)) {
             QLabel::mouseMoveEvent(e);
             return;
         }
@@ -177,7 +287,7 @@ protected:
     {
         if (m_dragging && e->button() == Qt::LeftButton) {
             m_dragging = false;
-            if (m_endBracket) m_endBracket();
+            if (m_endBracket && (!m_ownerAlive || *m_ownerAlive)) m_endBracket();
             e->accept();
         } else {
             QLabel::mouseReleaseEvent(e);
@@ -206,6 +316,7 @@ private:
     CommitFn   m_commit;
     BracketFn  m_beginBracket;
     BracketFn  m_endBracket;
+    std::shared_ptr<bool> m_ownerAlive;
     double     m_startValue = 0;
     double     m_startY     = 0;
     bool       m_dragging   = false;
@@ -605,6 +716,30 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     refresh();
 }
 
+ViewportProperties::~ViewportProperties()
+{
+    if (m_rowAlive) *m_rowAlive = false;
+    endScrubBracket();
+}
+
+void ViewportProperties::beginScrubBracket()
+{
+    m_scrubbing = true;
+    if (!m_scrubBracketOpen && m_bridge) {
+        m_scrubBracketOpen = true;
+        m_bridge->beginPropertyScrub();
+    }
+}
+
+void ViewportProperties::endScrubBracket()
+{
+    m_scrubbing = false;
+    if (m_scrubBracketOpen) {
+        m_scrubBracketOpen = false;
+        if (m_bridge) m_bridge->endPropertyScrub();
+    }
+}
+
 // ============================================================
 // LIVE THEME-SWITCH CONTRACT (Theme.h)
 // ============================================================
@@ -797,7 +932,7 @@ void ViewportProperties::restyleTheme()
     // rebuildEntityHeader() is cheap regardless -- it only reads already-
     // cached members (m_currentSelectionCat/Name), no bridge call at all.
     QTimer::singleShot(0, this, [this]() {
-        if (m_scrubbing || !m_bridge) return;
+        if (m_scrubbing || m_contextMenuOpen || !m_bridge) return;
         rebuildEntityHeader();
         rebuildPropertyRows(/*pullFreshSnapshot=*/false);
     });
@@ -958,6 +1093,10 @@ void ViewportProperties::rebuildEntityHeader()
 
 void ViewportProperties::clearPropertyRows()
 {
+    if (m_rowAlive) *m_rowAlive = false;
+    m_rowAlive = std::make_shared<bool>(true);
+    endScrubBracket();
+
     auto clearInto = [](QVBoxLayout* layout) {
         if (!layout) return;
         QLayoutItem* item;
@@ -1005,6 +1144,14 @@ void ViewportProperties::rebuildPropertyRows(bool pullFreshSnapshot)
     if (!m_bridge) return;
     clearPropertyRows();
 
+    if (m_sceneEditable) {
+        quint64 uuid = 0, rev = 0;
+        if (m_bridge->getSceneTextVersion(&uuid, &rev) && rev != m_lastSceneRevision) {
+            m_lastSceneRevision = rev;
+            m_painterThumbCache.clear();
+        }
+    }
+
     // Force a refresh so the controller's per-category snapshot for the
     // PRIMARY selection is up to date before we read it -- SKIPPED when
     // `pullFreshSnapshot` is false (see this method's header doc): that
@@ -1016,6 +1163,122 @@ void ViewportProperties::rebuildPropertyRows(bool pullFreshSnapshot)
     }
 
     const QVector<ViewportProperty> props = m_bridge->propertySnapshotFor(m_currentSelectionCat);
+
+    // doc 88 S10: a painter's own preview swatch, at the top of its row
+    // group -- mirrors PropertiesPanel.swift's painterThumbnailHeader.
+    if (m_currentSelectionCat == Category::Painter && !m_currentSelectionName.isEmpty()) {
+        auto* headerWrap = new QWidget;
+        auto* headerCol = new QVBoxLayout(headerWrap);
+        headerCol->setContentsMargins(0, 0, 0, 4);
+        headerCol->setSpacing(6);
+
+        auto* swatchRow = new QWidget;
+        auto* swatchRowLayout = new QHBoxLayout(swatchRow);
+        swatchRowLayout->setContentsMargins(0, 0, 0, 0);
+        swatchRowLayout->setSpacing(10);
+        swatchRowLayout->addWidget(createPainterSwatchLabel(m_currentSelectionName, -1, 56));
+
+        auto* textCol = new QWidget;
+        auto* textColLayout = new QVBoxLayout(textCol);
+        textColLayout->setContentsMargins(0, 0, 0, 0);
+        textColLayout->setSpacing(2);
+        auto* titleLbl = new QLabel(tr("Preview"));
+        titleLbl->setFont(Theme::sans(10, true));
+        titleLbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        auto* subLbl = new QLabel(tr("Evaluated over a synthetic UV/world patch, not a scene render."));
+        subLbl->setFont(Theme::sans(9));
+        subLbl->setWordWrap(true);
+        subLbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        textColLayout->addWidget(titleLbl);
+        textColLayout->addWidget(subLbl);
+        swatchRowLayout->addWidget(textCol, 1);
+        headerCol->addWidget(swatchRow);
+
+        QString chunkType;
+        QString fresnelMode = QStringLiteral("conductor");
+        for (const ViewportProperty& p : props) {
+            if (p.name == QStringLiteral("chunk_type")) chunkType = p.value;
+            else if (p.name == QStringLiteral("fresnel_mode")) fresnelMode = p.value;
+        }
+        if (chunkType == QStringLiteral("ramp_painter")) {
+            auto* gradLbl = new QLabel(tr("Gradient"));
+            gradLbl->setFont(Theme::sans(10, true));
+            gradLbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+            headerCol->addWidget(gradLbl);
+
+            auto* stripLbl = new QLabel;
+            stripLbl->setFixedSize(220, 20);
+            stripLbl->setStyleSheet(QStringLiteral(
+                "background-color: %1; border: 1px solid %2; border-radius: 4px;")
+                .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::borderHairline)));
+            const QPixmap stripPx = fetchRampStripThumbnail(m_currentSelectionName, 220, 20);
+            if (!stripPx.isNull()) {
+                stripLbl->setPixmap(stripPx.scaled(220, 20, Qt::IgnoreAspectRatio, Qt::FastTransformation));
+            }
+            headerCol->addWidget(stripLbl);
+        }
+        if (chunkType == QStringLiteral("blackbody_painter")) {
+            headerCol->addWidget(buildBlackbodyKelvinCard(props));
+        }
+        if (chunkType == QStringLiteral("scalar_painter")) {
+            headerCol->addWidget(buildSellmeierGlassCard(props));
+        }
+
+        m_basicLayout->addWidget(headerWrap);
+    }
+
+    // Material Editor Slice 5 (MATERIAL_EDITOR.md §4): a material's 3D
+    // shaderball preview swatch at the top of its inspector row group --
+    // mirrors PropertiesPanel.swift's materialThumbnailHeader, plus
+    // Slice 6 spectral differentiator cards (D1 Sellmeier, D2 Measured
+    // Metals, D3 Thin-Film Iridescence).
+    if (m_currentSelectionCat == Category::Material && !m_currentSelectionName.isEmpty()) {
+        auto* headerWrap = new QWidget;
+        auto* headerCol = new QVBoxLayout(headerWrap);
+        headerCol->setContentsMargins(0, 0, 0, 4);
+        headerCol->setSpacing(6);
+
+        auto* swatchRow = new QWidget;
+        auto* swatchRowLayout = new QHBoxLayout(swatchRow);
+        swatchRowLayout->setContentsMargins(0, 0, 0, 0);
+        swatchRowLayout->setSpacing(10);
+        swatchRowLayout->addWidget(createMaterialSwatchLabel(m_currentSelectionName, 56));
+
+        auto* textCol = new QWidget;
+        auto* textColLayout = new QVBoxLayout(textCol);
+        textColLayout->setContentsMargins(0, 0, 0, 0);
+        textColLayout->setSpacing(2);
+        auto* titleLbl = new QLabel(tr("Shaderball Preview"));
+        titleLbl->setFont(Theme::sans(10, true));
+        titleLbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        auto* subLbl = new QLabel(tr("Evaluated over a 3D studio sphere with spectral quadrature and checker backdrop."));
+        subLbl->setFont(Theme::sans(9));
+        subLbl->setWordWrap(true);
+        subLbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+        textColLayout->addWidget(titleLbl);
+        textColLayout->addWidget(subLbl);
+        swatchRowLayout->addWidget(textCol, 1);
+        headerCol->addWidget(swatchRow);
+
+        QString chunkType;
+        QString fresnelMode = QStringLiteral("conductor");
+        for (const ViewportProperty& p : props) {
+            if (p.name == QStringLiteral("chunk_type")) chunkType = p.value;
+            else if (p.name == QStringLiteral("fresnel_mode")) fresnelMode = p.value;
+        }
+        if (chunkType == QStringLiteral("ggx_material") &&
+            (fresnelMode == QStringLiteral("conductor") || fresnelMode == QStringLiteral("thinfilm"))) {
+            headerCol->addWidget(buildMeasuredMetalPresetBar());
+        }
+        if (chunkType == QStringLiteral("ggx_material") && fresnelMode == QStringLiteral("thinfilm")) {
+            headerCol->addWidget(buildThinFilmIridescenceCard(m_currentSelectionName));
+        }
+        if (chunkType == QStringLiteral("dielectric_material") || chunkType == QStringLiteral("agx_dielectric")) {
+            headerCol->addWidget(buildSellmeierGlassCard(props));
+        }
+
+        m_basicLayout->addWidget(headerWrap);
+    }
 
     if (props.isEmpty()) {
         QString msg;
@@ -1055,6 +1318,7 @@ void ViewportProperties::rebuildPropertyRows(bool pullFreshSnapshot)
 
 void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout* into)
 {
+    const std::shared_ptr<bool> rowAlive = m_rowAlive;
     auto* row = new QWidget;
     auto* rowLayout = new QHBoxLayout(row);
     rowLayout->setContentsMargins(0, 0, 0, 0);
@@ -1070,17 +1334,39 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
     // selection change, so they always match this row's entity).
     row->setContextMenuPolicy(Qt::CustomContextMenu);
     const QString paramName = p.name;
+    // The synthetic leading identity row ("chunk_type") has no param span of
+    // its own -- it's the chunk's keyword, not a descriptor parameter -- so
+    // reveal the WHOLE chunk (empty param, per ResolveSourceSpan's documented
+    // convention) instead of name-matching "chunk_type" against a real
+    // descriptor param.  Without this, right-clicking the identity row on a
+    // chunk that also declares a genuine `type` parameter (sdf3d_painter,
+    // polynomial_function2d_painter) used to jump to that param's line
+    // instead of the chunk.
+    const bool isIdentityRow = (paramName == QStringLiteral("chunk_type"));
+    const QString revealParamName = isIdentityRow ? QString() : paramName;
     connect(row, &QWidget::customContextMenuRequested, this,
-            [this, row, paramName](const QPoint& pos) {
+            [this, row, paramName, revealParamName, isIdentityRow](const QPoint& pos) {
                 if (!m_sourceLineKnown) return;
                 QMenu menu(this);
-                QAction* reveal = menu.addAction(
-                    tr("Reveal \xE2\x80\x9C%1\xE2\x80\x9D in Scene File").arg(paramName));   // “<param>”
-                connect(reveal, &QAction::triggered, this, [this, paramName]() {
-                    emit revealParamRequested(m_currentSelectionCat, m_currentSelectionName, paramName);
+                // Label matches the action: the identity row reveals the
+                // whole chunk, not a param named "chunk_type".
+                QAction* reveal = menu.addAction(isIdentityRow
+                    ? tr("Reveal chunk in Scene File")
+                    : tr("Reveal \xE2\x80\x9C%1\xE2\x80\x9D in Scene File").arg(paramName));   // “<param>”
+                connect(reveal, &QAction::triggered, this, [this, revealParamName]() {
+                    emit revealParamRequested(m_currentSelectionCat, m_currentSelectionName, revealParamName);
                 });
+                m_contextMenuOpen = true;
                 menu.exec(row->mapToGlobal(pos));
+                m_contextMenuOpen = false;
             });
+
+    if (m_currentSelectionCat == Category::Painter) {
+        const int stageIdx = defStageIndex(p.name);
+        if (stageIdx >= 0 && !m_currentSelectionName.isEmpty()) {
+            rowLayout->addWidget(createPainterSwatchLabel(m_currentSelectionName, stageIdx, 28));
+        }
+    }
 
     auto* label = new QLabel(p.name);
     label->setFont(Theme::sans(11));
@@ -1095,6 +1381,229 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
     cellColLayout->setContentsMargins(0, 0, 0, 0);
     cellColLayout->setSpacing(4);
 
+    // doc 88 S4b (Tier-1 param sliders): a row that carries an authored
+    // numeric range gets a QSlider ABOVE its ordinary value cell -- never
+    // INSTEAD of it.  Mirrors PropertiesPanel.swift's PropertyRowView.valueCell
+    // (~line 758) + ParamSliderCell (~line 806): the range is a presentation
+    // hint, not a validation rule -- the scene language accepts values
+    // outside it, an expression `param` line carries metadata (the param's
+    // own name, `label`, `step`, ...) the slider does not touch, and the
+    // value cell added by the branches below remains the only way to reach
+    // either.  So: slider for the common gesture, field for everything the
+    // slider cannot say.
+    if (p.editable && p.hasRange) {
+        // (S5) `p` is assembled on the GUI bridge from multiple separate
+        // lock acquisitions (doc 88 S4b's snapshot construction), not one
+        // atomic read -- a live scene mutation can swap the underlying
+        // snapshot in between two of them, tearing `rangeMin` from one
+        // snapshot and `rangeMax` from a different (older or newer) one.
+        // Mirrors PropertiesPanel.swift's ParamSliderCell `hasValidRange`
+        // comment (~line 814): compute the validity ONCE, here, into a
+        // local -- never inline the comparison at each use site, where a
+        // second torn re-read could disagree with the first.  Unlike
+        // Swift's `Range` (a hard trap on an inverted bound), QSlider::
+        // setRange won't crash on rangeMax <= rangeMin, but it WILL
+        // silently clamp every position to the same endpoint and produce
+        // an inert slider -- skip the block entirely instead.
+        const bool hasValidRange = p.rangeMax > p.rangeMin;
+        if (hasValidRange) {
+            const double span = p.rangeMax - p.rangeMin;
+
+            // QSlider is integer-only -- map the authored [rangeMin,
+            // rangeMax] onto an integer tick count.  A discrete rangeStep
+            // gets enough ticks to hit every authored step; "continuous"
+            // (rangeStep == 0) gets 1000 subdivisions -- fine enough
+            // granularity that no tick reads as a jump.  DELIBERATE
+            // platform divergence: the Mac ParamSliderCell's continuous
+            // fallback is an absolute 0.0001 step (SwiftUI sliders run on
+            // doubles), which an integer QSlider cannot express for wide
+            // spans (span 1e6 would need 1e10 ticks) -- a span-relative
+            // subdivision is the sanctioned Qt equivalent.
+            // Both bounds and the step are AUTHORED metadata, so `span /
+            // step` is arbitrary -- a step tiny relative to the span
+            // (`min 0 max 1e6 step 0.0001`) would overflow the int tick
+            // cast into a garbage slider range.  Past 100k ticks a step
+            // grid is indistinguishable from continuous anyway, so such
+            // a row falls back to the continuous 1000-subdivision path.
+            int ticks;
+            double step;
+            const double authoredTicks =
+                (p.rangeStep > 0) ? (span / p.rangeStep) : 0.0;
+            if (p.rangeStep > 0 && p.rangeStep <= span && authoredTicks <= 100000.0) {
+                step = p.rangeStep;
+                // ceil, not round: when the step doesn't evenly divide the
+                // span, rounding DOWN would leave rangeMax unreachable from
+                // the slider (min 0 max 10 step 2.9 -> 3 ticks tops out at
+                // 8.7).  An extra tick past the span is fine -- tickToValue
+                // below clamps it, so the top tick lands exactly on
+                // rangeMax.  The 1e-9 slack keeps an evenly-dividing step
+                // from gaining a spurious extra tick to FP error.
+                ticks = std::max(1, static_cast<int>(std::ceil(authoredTicks - 1e-9)));
+            } else {
+                ticks = 1000;
+                step = span / 1000.0;
+            }
+
+            // Tick -> value.  Clamped to rangeMax: a rangeStep that
+            // doesn't divide the span evenly would otherwise let the last
+            // tick overshoot the authored maximum.
+            auto tickToValue = [rangeMin = p.rangeMin, rangeMax = p.rangeMax, step](int t) {
+                return std::min(rangeMin + static_cast<double>(t) * step, rangeMax);
+            };
+
+            // Initial value: the row's own current numeric token, else
+            // rangeMin (mirrors Swift's `.onAppear` fallback).  NOT
+            // clamped -- an out-of-range authored value is displayed
+            // honestly in the label below.  Clamped separately, below,
+            // for the slider's own initial POSITION only.
+            const bool skipFirstToken =
+                p.name == QStringLiteral("param")
+                || p.name.startsWith(QStringLiteral("param["));
+            const int valueKind = p.kind;
+            double initValue = p.rangeMin;
+            {
+                int tokPos = 0, tokLen = 0;
+                double tokValue = 0.0;
+                if (numericToken(p.value, &tokPos, &tokLen, &tokValue, skipFirstToken)) initValue = tokValue;
+            }
+            double clampedInit = initValue;
+            if (clampedInit < p.rangeMin) clampedInit = p.rangeMin;
+            if (clampedInit > p.rangeMax) clampedInit = p.rangeMax;
+            const int initTick = static_cast<int>(std::llround((clampedInit - p.rangeMin) / step));
+
+            auto* sliderRow = new QWidget;
+            auto* sliderRowLayout = new QHBoxLayout(sliderRow);
+            sliderRowLayout->setContentsMargins(0, 0, 0, 0);
+            sliderRowLayout->setSpacing(6);
+
+            auto* slider = new QSlider(Qt::Horizontal);
+            slider->setRange(0, ticks);
+
+            auto* valueLabel = new QLabel(formatScrubbed(initValue, valueKind));
+            valueLabel->setFont(Theme::mono(10));
+            valueLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+            valueLabel->setFixedWidth(46);
+            valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+            // Set the initial position BEFORE connecting any signals below
+            // -- QSlider::setValue() emits valueChanged(), and construction
+            // must not fire a spurious commit.
+            slider->setValue(initTick);
+
+            sliderRowLayout->addWidget(slider, 1);
+            sliderRowLayout->addWidget(valueLabel);
+            cellColLayout->addWidget(sliderRow);
+
+            const QString capturedLine = p.value;
+            const QString capturedName = p.name;
+            auto movedFromInit = std::make_shared<bool>(false);
+
+            // Commit: re-derives the token position from the CAPTURED
+            // original line (not anything mutated since) -- mirrors
+            // PropertiesPanel.swift's ParamSliderCell.commit() (~line
+            // 856).  Guards exactly like that commit(): if the captured
+            // line has no numeric token to drive, there's nothing to
+            // rewrite, so return without touching the scene.  Each commit
+            // is a real CST edit + re-derive + undo entry -- that is why
+            // this fires on release (or a discrete groove-click/keyboard
+            // gesture) and NEVER per `valueChanged` tick during an actual
+            // drag, which would otherwise push one per frame.
+            auto commitTick = [this, rowAlive, slider, capturedLine, capturedName, tickToValue, initTick, initValue, valueLabel, skipFirstToken, valueKind, movedFromInit](int tick) {
+                if (!rowAlive || !*rowAlive) return;
+                // The initial POSITION is a quantized approximation of the
+                // row's actual value (which need not sit on the tick grid,
+                // or even inside the range).  Releasing on that same tick
+                // WITHOUT having moved away during the drag means the user
+                // never moved -- committing would silently snap the authored
+                // value to the grid (actual 10 on a step-2.9 grid would
+                // commit as 8.7).  If the user DID move away and back to
+                // `initTick` when `initValue` was off-grid or out-of-range,
+                // `movedFromInit` is true and we commit the tick's value.
+                if (tick == initTick && !*movedFromInit) {
+                    valueLabel->setText(formatScrubbed(initValue, valueKind));
+                    return;
+                }
+                int tokPos = 0, tokLen = 0;
+                double unused = 0.0;
+                if (!numericToken(capturedLine, &tokPos, &tokLen, &unused, skipFirstToken)) {
+                    valueLabel->setText(formatScrubbed(initValue, valueKind));
+                    *movedFromInit = false;
+                    QSignalBlocker b(slider);
+                    slider->setValue(initTick);
+                    return;
+                }
+                QString newLine = capturedLine;
+                newLine.replace(tokPos, tokLen, formatScrubbed(tickToValue(tick), valueKind));
+                if (newLine == capturedLine) {
+                    // Rewrite is byte-identical -- restore the display and
+                    // thumb to the initial state so the UI stays in sync.
+                    valueLabel->setText(formatScrubbed(initValue, valueKind));
+                    *movedFromInit = false;
+                    QSignalBlocker b(slider);
+                    slider->setValue(initTick);
+                    return;
+                }
+                commitEdit(capturedName, newLine);
+            };
+
+            connect(slider, &QSlider::sliderPressed, this, [this, rowAlive, movedFromInit]() {
+                if (!rowAlive || !*rowAlive) return;
+                // Blocks the per-frame refresh() rebuild that would
+                // deleteLater() this very slider mid-drag -- same guard
+                // ScrubHandle uses (see the beginPropertyScrub bracket in
+                // the ScrubHandle wiring later in this method).
+                // No beginPropertyScrub(): unlike ScrubHandle, there are
+                // no mid-drag commits to coalesce here -- this slider
+                // commits exactly once per gesture, on release.
+                *movedFromInit = false;
+                m_scrubbing = true;
+            });
+
+            connect(slider, &QSlider::valueChanged, this,
+                    [rowAlive, slider, valueLabel, tickToValue, commitTick, initTick, initValue, valueKind, movedFromInit](int tick) {
+                if (!rowAlive || !*rowAlive) return;
+                if (tick != initTick) *movedFromInit = true;
+                valueLabel->setText(formatScrubbed((tick == initTick && !*movedFromInit) ? initValue : tickToValue(tick), valueKind));
+                // A groove-click (page step) or keyboard arrow never sets
+                // isSliderDown() -- treat those as a complete one-shot
+                // gesture and commit right here.  An actual drag also
+                // fires this per tick, but isSliderDown() stays true for
+                // its whole duration, so this branch is skipped until
+                // sliderReleased below.  Relies on the initial setValue()
+                // above running BEFORE this connect() -- otherwise that
+                // very first setValue would land here as a "commit".
+                // A click-and-HELD groove press (or held arrow key) can't
+                // stack auto-repeat commits: the first commit's refresh()
+                // rebuilds the rows, and this slider's deferred delete is
+                // processed on the next event-loop pass -- long before
+                // QAbstractSlider's 500ms repeat timer (or a keyboard
+                // auto-repeat aimed at the now-unfocused replacement)
+                // could fire a second one.
+                if (!slider->isSliderDown()) commitTick(tick);
+            });
+
+            connect(slider, &QSlider::sliderReleased, this, [this, rowAlive, slider, commitTick]() {
+                if (!rowAlive || !*rowAlive) return;
+                m_scrubbing = false;
+                commitTick(slider->value());
+            });
+            // A swallowed release (mouse grab stolen by a modal dialog
+            // mid-drag) would leave m_scrubbing stuck true -- recovered by
+            // the no-button self-heal at the top of refresh(), not here: a
+            // QWidget never sees QEvent::UngrabMouse (that event is a
+            // QGraphicsItem/QQuickItem mechanism), and a destructor net a
+            // la ScrubHandle's can't work for this flag, because a stuck
+            // flag is precisely what blocks the rebuild that would destroy
+            // the slider.  The aborted drag's in-flight value is DROPPED,
+            // deliberately: this slider commits only completed gestures,
+            // and silently landing a half-drag value because a dialog
+            // interrupted it would be worse than reverting.  (ScrubHandle
+            // differs -- it commits per move tick, so its aborted drags
+            // keep the last-dragged value; that's inherent to its design,
+            // not a bar this slider should match.)
+        }
+    }
+
     if (!p.editable) {
         // Read-only well.
         auto* wellWidget = new QWidget;
@@ -1102,6 +1611,19 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
         auto* wellLayout = new QHBoxLayout(wellWidget);
         wellLayout->setContentsMargins(8, 5, 8, 5);
         wellLayout->setSpacing(6);
+
+        if (p.kind == 9 /* Reference */) {
+            if (p.targetsPainter && !p.value.isEmpty() && p.value != QStringLiteral("none")
+                && !p.value.startsWith(QLatin1Char('('))) {
+                wellLayout->addWidget(createPainterSwatchLabel(p.value, -1, 18));
+            } else {
+                auto* dot = new QLabel;
+                dot->setFixedSize(16, 16);
+                dot->setStyleSheet(QStringLiteral(
+                    "background-color: %1; border-radius: 4px;").arg(Theme::rgba(Theme::purple, 0.5)));
+                wellLayout->addWidget(dot);
+            }
+        }
 
         auto* valueLbl = new QLabel(p.value);
         valueLbl->setFont(Theme::mono(11));
@@ -1166,7 +1688,8 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
         }
         const QString name = p.name;
         for (QLineEdit* edit : *edits) {
-            connect(edit, &QLineEdit::editingFinished, this, [this, edits, name]() {
+            connect(edit, &QLineEdit::editingFinished, this, [this, rowAlive, edits, name]() {
+                if (!rowAlive || !*rowAlive) return;
                 QStringList parts;
                 for (QLineEdit* e : *edits) parts << e->text();
                 commitEdit(name, parts.join(QLatin1Char(' ')));
@@ -1223,6 +1746,17 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
                 this, &ViewportProperties::onLineEditFinished);
 
         if (p.kind == 9 /* Reference */) {
+            if (p.targetsPainter && !p.value.isEmpty() && p.value != QStringLiteral("none")
+                && !p.value.startsWith(QLatin1Char('('))) {
+                fieldRowLayout->addWidget(createPainterSwatchLabel(p.value, -1, 18));
+            } else {
+                auto* dot = new QLabel;
+                dot->setFixedSize(16, 16);
+                dot->setStyleSheet(QStringLiteral(
+                    "background-color: %1; border-radius: 4px;").arg(Theme::rgba(Theme::purple, 0.5)));
+                fieldRowLayout->addWidget(dot);
+            }
+
             // Jump-to-definition (GUI redesign 2026-07-22): right-click a
             // reference value -> "Jump to Definition".  Resolution happens
             // at menu-open time against the live managers (bridge->core),
@@ -1239,31 +1773,31 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
                 menu->setParent(this, Qt::Popup);
                 ViewportBridge::Category jumpCat = ViewportBridge::Category::None;
                 QString jumpName;
+                QAction* jump = nullptr;
                 if (m_bridge && m_bridge->propertyJumpTargetFor(
                         m_currentSelectionCat, rowIndex, &jumpCat, &jumpName)) {
                     menu->addSeparator();
-                    QAction* jump = menu->addAction(
+                    jump = menu->addAction(
                         tr("Jump to Definition of \"%1\"").arg(jumpName));
-                    connect(jump, &QAction::triggered, this,
-                            [this, jumpCat, jumpName]() {
-                        if (!m_bridge) return;
-                        if (m_bridge->setSelection(jumpCat, jumpName)) {
-                            refresh();   // panel re-snapshots; the outliner poll follows the selection
-                        }
-                    });
                 }
                 const QPoint global = edit->mapToGlobal(pos);
                 m_contextMenuOpen = true;   // suppress the per-frame rebuild that would delete `edit`
-                menu->exec(global);
+                QAction* chosen = menu->exec(global);
                 m_contextMenuOpen = false;
                 menu->deleteLater();
+                // Run the jump AFTER m_contextMenuOpen is cleared -- QAction::triggered
+                // fires inside menu->exec() while m_contextMenuOpen is still true,
+                // which would otherwise cause refresh() to early-return!
+                if (chosen && chosen == jump && m_bridge && m_bridge->setSelection(jumpCat, jumpName)) {
+                    refresh();
+                }
             });
         }
 
         if (isScrubbableKind(p.kind)) {
             auto* handle = new ScrubHandle(
                 edit, p.name, p.kind,
-                [this](const QString& n, const QString& v) {
+                [this, rowAlive](const QString& n, const QString& v) {
                     // A2: don't gate on the bool return -- a per-drag-
                     // tick callback can't afford a full refresh()
                     // (rebuildPropertyRows() would deleteLater() the
@@ -1276,7 +1810,7 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
                     // drag-end path (endBracket below) does a full
                     // refresh() that re-seeds from the genuinely live
                     // snapshot.
-                    if (!m_bridge) return;
+                    if (!rowAlive || !*rowAlive || !m_bridge) return;
                     m_bridge->setPropertyForCategory(m_currentSelectionCat, n, v);
                     const QVector<ViewportProperty> live =
                         m_bridge->propertySnapshotFor(m_currentSelectionCat);
@@ -1287,15 +1821,16 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
                         }
                     }
                 },
-                [this]() {
-                    m_scrubbing = true;
-                    if (m_bridge) m_bridge->beginPropertyScrub();
+                [this, rowAlive]() {
+                    if (!rowAlive || !*rowAlive) return;
+                    beginScrubBracket();
                 },
-                [this]() {
-                    m_scrubbing = false;
-                    if (m_bridge) m_bridge->endPropertyScrub();
+                [this, rowAlive]() {
+                    if (!rowAlive || !*rowAlive) return;
+                    endScrubBracket();
                     refresh();
-                });
+                },
+                rowAlive);
             fieldRowLayout->addWidget(handle);
         }
         fieldRowLayout->addWidget(edit, 1);
@@ -1356,6 +1891,260 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
         cellColLayout->addWidget(wellWidget);
         m_fields.insert(p.name, edit);
         m_lastValue.insert(p.name, p.value);
+
+        if (p.kind == 9 /* Reference */ && p.editable && p.inlinePainterKind != 0) {
+            const QString slotParam = p.name;
+
+            if (p.inlinePainterRefCount > 1) {
+                auto* sharedRow = new QWidget;
+                auto* sharedLayout = new QHBoxLayout(sharedRow);
+                sharedLayout->setContentsMargins(0, 0, 0, 0);
+                sharedLayout->setSpacing(6);
+
+                auto* sharedBadge = new QLabel(tr("Shared (%1)").arg(p.inlinePainterRefCount));
+                sharedBadge->setFont(Theme::mono(9));
+                sharedBadge->setStyleSheet(QStringLiteral(
+                    "color: %1; background-color: %2; border: 1px solid %3; border-radius: 3px; padding: 1px 5px;")
+                    .arg(Theme::hex(Theme::textDim), Theme::rgba(Theme::textDim, 0.12), Theme::hex(Theme::borderHairline)));
+                sharedBadge->setToolTip(tr("Referenced by %1 slots in the scene. Editing updates all of them unless you Fork first.")
+                    .arg(p.inlinePainterRefCount));
+                sharedLayout->addWidget(sharedBadge);
+
+                auto* forkBtn = new QToolButton;
+                forkBtn->setText(tr("Fork"));
+                forkBtn->setFont(Theme::sans(10, true));
+                forkBtn->setCursor(Qt::PointingHandCursor);
+                forkBtn->setToolTip(tr("Duplicate this constant painter and rebind only this slot to the new copy"));
+                forkBtn->setStyleSheet(QStringLiteral(
+                    "QToolButton { color: %1; background-color: %2; border: 1px solid %3; border-radius: 3px; padding: 1px 6px; }")
+                    .arg(Theme::hex(Theme::accentLight), Theme::rgba(Theme::accent, 0.15), Theme::rgba(Theme::accent, 0.35)));
+                connect(forkBtn, &QToolButton::clicked, this, [this, slotParam]() {
+                    forkInlinePainter(slotParam);
+                });
+                sharedLayout->addWidget(forkBtn);
+                sharedLayout->addStretch(1);
+                cellColLayout->addWidget(sharedRow);
+            }
+
+            if (p.inlinePainterKind == 1 /* UniformColor */) {
+                auto* vecRow = new QWidget;
+                auto* vecLayout = new QHBoxLayout(vecRow);
+                vecLayout->setContentsMargins(0, 0, 0, 0);
+                vecLayout->setSpacing(4);
+
+                QStringList comps = p.inlinePainterValue.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+                while (comps.size() < 3) comps.append(QStringLiteral("0"));
+                const double r0 = std::clamp(comps[0].toDouble(), 0.0, 1.0);
+                const double g0 = std::clamp(comps[1].toDouble(), 0.0, 1.0);
+                const double b0 = std::clamp(comps[2].toDouble(), 0.0, 1.0);
+
+                auto* colorBtn = new QToolButton;
+                colorBtn->setFixedSize(22, 22);
+                colorBtn->setCursor(Qt::PointingHandCursor);
+                colorBtn->setToolTip(tr("Pick colour"));
+                const QColor initColor = QColor::fromRgbF(
+                    static_cast<float>(r0), static_cast<float>(g0), static_cast<float>(b0));
+                colorBtn->setStyleSheet(QStringLiteral(
+                    "QToolButton { background-color: %1; border: 1px solid %2; border-radius: 4px; }")
+                    .arg(Theme::hex(initColor), Theme::hex(Theme::borderLight)));
+                const QColor tint[3] = { Theme::error, Theme::successLight, Theme::accentLight };
+                auto edits = std::make_shared<QVector<QLineEdit*>>();
+                auto lastCommittedColor = std::make_shared<QString>(comps.mid(0, 3).join(QLatin1Char(' ')).trimmed());
+                connect(colorBtn, &QToolButton::clicked, this, [this, slotParam, edits, initColor, lastCommittedColor]() {
+                    QColor seedColor = initColor;
+                    if (edits->size() == 3) {
+                        const double cr = std::clamp((*edits)[0]->text().toDouble(), 0.0, 1.0);
+                        const double cg = std::clamp((*edits)[1]->text().toDouble(), 0.0, 1.0);
+                        const double cb = std::clamp((*edits)[2]->text().toDouble(), 0.0, 1.0);
+                        seedColor = QColor::fromRgbF(
+                            static_cast<float>(cr), static_cast<float>(cg), static_cast<float>(cb));
+                    }
+                    m_contextMenuOpen = true;
+                    const QColor picked = QColorDialog::getColor(seedColor, this, tr("Select Painter Colour"));
+                    m_contextMenuOpen = false;
+                    if (!picked.isValid()) return;
+                    const QString formatted = QStringLiteral("%1 %2 %3")
+                        .arg(formatScrubbed(picked.redF(), 2),
+                             formatScrubbed(picked.greenF(), 2),
+                             formatScrubbed(picked.blueF(), 2));
+                    if (formatted == *lastCommittedColor) return;
+                    *lastCommittedColor = formatted;
+                    commitInlinePainterEdit(slotParam, formatted);
+                });
+                vecLayout->addWidget(colorBtn);
+
+                for (int i = 0; i < 3; ++i) {
+                    auto* subWell = new QWidget;
+                    subWell->setStyleSheet(wellStyleSheet());
+                    auto* subLayout = new QHBoxLayout(subWell);
+                    subLayout->setContentsMargins(6, 3, 6, 3);
+                    auto* subEdit = new QLineEdit(comps.value(i, QStringLiteral("0")));
+                    subEdit->setFont(Theme::mono(11));
+                    subEdit->setFrame(false);
+                    subEdit->setStyleSheet(lineEditStyleSheet(tint[i]));
+                    subLayout->addWidget(subEdit);
+                    vecLayout->addWidget(subWell, 1);
+                    edits->append(subEdit);
+                }
+                for (QLineEdit* subEdit : *edits) {
+                    connect(subEdit, &QLineEdit::editingFinished, this, [this, rowAlive, edits, slotParam, lastCommittedColor]() {
+                        if (!rowAlive || !*rowAlive) return;
+                        QStringList parts;
+                        for (QLineEdit* e : *edits) parts << e->text().trimmed();
+                        const QString joined = parts.join(QLatin1Char(' ')).trimmed();
+                        if (joined.isEmpty() || joined == *lastCommittedColor) return;
+                        *lastCommittedColor = joined;
+                        commitInlinePainterEdit(slotParam, joined);
+                    });
+                }
+                cellColLayout->addWidget(vecRow);
+            } else if (p.inlinePainterKind == 2 /* ScalarValue */) {
+                const bool hasValidRange = (p.rangeMax > p.rangeMin);
+                const double sMin = p.rangeMin;
+                const double sMax = p.rangeMax;
+                const double span = sMax - sMin;
+                bool okInit = false;
+                double initVal = p.inlinePainterValue.trimmed().toDouble(&okInit);
+                if (!okInit || !std::isfinite(initVal)) initVal = hasValidRange ? sMin : 0.0;
+
+                auto* scalarWell = new QWidget;
+                scalarWell->setStyleSheet(wellStyleSheet());
+                auto* scalarLayout = new QHBoxLayout(scalarWell);
+                scalarLayout->setContentsMargins(6, 3, 6, 3);
+                scalarLayout->setSpacing(4);
+
+                const QString initScalarText = p.inlinePainterValue.trimmed();
+                auto lastCommittedScalar = std::make_shared<QString>(initScalarText);
+                auto* scalarEdit = new QLineEdit(initScalarText);
+                scalarEdit->setFont(Theme::mono(11));
+                scalarEdit->setFrame(false);
+                scalarEdit->setStyleSheet(lineEditStyleSheet(Theme::textPrimary));
+
+                QSlider* slider = nullptr;
+                QLabel* valueLabel = nullptr;
+                int ticks = 1000;
+                double step = 0.001;
+
+                if (hasValidRange) {
+                    const double authoredTicks =
+                        (p.rangeStep > 0) ? (span / p.rangeStep) : 0.0;
+                    if (p.rangeStep > 0 && p.rangeStep <= span && authoredTicks <= 100000.0) {
+                        step = p.rangeStep;
+                        ticks = std::max(1, static_cast<int>(std::ceil(authoredTicks - 1e-9)));
+                    } else {
+                        ticks = 1000;
+                        step = span / 1000.0;
+                    }
+                    auto tickToVal = [sMin, sMax, step, ticks](int tick) {
+                        if (tick <= 0) return sMin;
+                        if (tick >= ticks) return sMax;
+                        return std::min(std::max(sMin + static_cast<double>(tick) * step, sMin), sMax);
+                    };
+                    const double clamped = std::min(std::max(initVal, sMin), sMax);
+                    const int initTick = std::min(std::max(
+                        static_cast<int>(std::llround((clamped - sMin) / step)), 0), ticks);
+
+                    auto* sliderRow = new QWidget;
+                    auto* sliderRowLayout = new QHBoxLayout(sliderRow);
+                    sliderRowLayout->setContentsMargins(0, 0, 0, 0);
+                    sliderRowLayout->setSpacing(6);
+
+                    slider = new QSlider(Qt::Horizontal);
+                    slider->setRange(0, ticks);
+                    slider->setValue(initTick);
+
+                    valueLabel = new QLabel(formatScrubbed(initVal, 2));
+                    valueLabel->setFont(Theme::mono(10));
+                    valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                    valueLabel->setMinimumWidth(44);
+                    valueLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
+
+                    sliderRowLayout->addWidget(slider, 1);
+                    sliderRowLayout->addWidget(valueLabel);
+                    cellColLayout->addWidget(sliderRow);
+
+                    auto movedFromInit = std::make_shared<bool>(false);
+                    auto commitTick = [this, rowAlive, slotParam, tickToVal, initTick, initVal, valueLabel, scalarEdit, movedFromInit, lastCommittedScalar](int tick) {
+                        if (!rowAlive || !*rowAlive) return;
+                        if (tick == initTick && !*movedFromInit) {
+                            valueLabel->setText(formatScrubbed(initVal, 2));
+                            return;
+                        }
+                        const QString formatted = formatScrubbed(tickToVal(tick), 2);
+                        scalarEdit->setText(formatted);
+                        if (formatted == *lastCommittedScalar) return;
+                        *lastCommittedScalar = formatted;
+                        commitInlinePainterEdit(slotParam, formatted);
+                    };
+                    connect(slider, &QSlider::sliderPressed, this, [this, rowAlive, movedFromInit]() {
+                        if (!rowAlive || !*rowAlive) return;
+                        *movedFromInit = false;
+                        m_scrubbing = true;
+                    });
+                    connect(slider, &QSlider::valueChanged, this,
+                            [rowAlive, slider, valueLabel, scalarEdit, tickToVal, commitTick, initTick, initVal, movedFromInit](int tick) {
+                        if (!rowAlive || !*rowAlive) return;
+                        if (tick != initTick) *movedFromInit = true;
+                        const QString formatted = formatScrubbed(
+                            (tick == initTick && !*movedFromInit) ? initVal : tickToVal(tick), 2);
+                        valueLabel->setText(formatted);
+                        scalarEdit->setText(formatted);
+                        if (!slider->isSliderDown()) commitTick(tick);
+                    });
+                    connect(slider, &QSlider::sliderReleased, this, [this, rowAlive, slider, commitTick]() {
+                        if (!rowAlive || !*rowAlive) return;
+                        m_scrubbing = false;
+                        commitTick(slider->value());
+                    });
+                }
+
+                const QPointer<QLineEdit> guardedScalarEdit(scalarEdit);
+                auto* handle = new ScrubHandle(
+                    scalarEdit, slotParam, 2 /* Double */,
+                    [rowAlive, slider, valueLabel, sMin, sMax, step, ticks, hasValidRange](const QString&, const QString& v) {
+                        if (!rowAlive || !*rowAlive) return;
+                        if (!hasValidRange || !slider || !valueLabel || step <= 0.0) return;
+                        bool ok = false;
+                        const double dv = v.toDouble(&ok);
+                        if (!ok || !std::isfinite(dv)) return;
+                        valueLabel->setText(v);
+                        const double clamped = std::min(std::max(dv, sMin), sMax);
+                        const int tick = std::min(std::max(
+                            static_cast<int>(std::llround((clamped - sMin) / step)), 0), ticks);
+                        const QSignalBlocker blocker(slider);
+                        slider->setValue(tick);
+                    },
+                    [this, rowAlive]() {
+                        if (!rowAlive || !*rowAlive) return;
+                        beginScrubBracket();
+                    },
+                    [this, rowAlive, guardedScalarEdit, slotParam, lastCommittedScalar]() {
+                        if (!rowAlive || !*rowAlive) return;
+                        endScrubBracket();
+                        const QString val = guardedScalarEdit ? guardedScalarEdit->text().trimmed() : QString();
+                        if (!val.isEmpty() && val != *lastCommittedScalar) {
+                            *lastCommittedScalar = val;
+                            commitInlinePainterEdit(slotParam, val);
+                        } else {
+                            m_painterThumbCache.clear();
+                            refresh();
+                        }
+                    },
+                    rowAlive);
+                scalarLayout->addWidget(handle);
+                scalarLayout->addWidget(scalarEdit, 1);
+
+                connect(scalarEdit, &QLineEdit::editingFinished, this,
+                        [this, rowAlive, scalarEdit, slotParam, lastCommittedScalar]() {
+                    if (!rowAlive || !*rowAlive || m_scrubbing) return;
+                    const QString val = scalarEdit->text().trimmed();
+                    if (val.isEmpty() || val == *lastCommittedScalar) return;
+                    *lastCommittedScalar = val;
+                    commitInlinePainterEdit(slotParam, val);
+                });
+                cellColLayout->addWidget(scalarWell);
+            }
+        }
     }
 
     if (!p.description.isEmpty()) {
@@ -1372,7 +2161,21 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
 
 void ViewportProperties::refresh()
 {
-    if (!m_bridge) return;
+    if (!m_bridge || !m_rowAlive || !*m_rowAlive) return;
+
+    // doc 88 S4b: self-heal a swallowed drag release.  m_scrubbing is set
+    // by a param-slider / ScrubHandle press and normally cleared on
+    // release -- but a mouse grab stolen mid-drag (a modal dialog opening,
+    // e.g. on render completion) can swallow the release event, leaving
+    // the flag stuck true and this panel frozen (the gate below skips
+    // every rebuild) until the next completed scrub gesture.  The flag
+    // being set with NO mouse button held means the gesture is over,
+    // however it ended, so it is safe to resume rebuilding.  A stuck
+    // ScrubHandle's endPropertyScrub bracket is closed by its destructor
+    // net when the rebuild below destroys it.
+    if (m_scrubbing && QGuiApplication::mouseButtons() == Qt::NoButton)
+        m_scrubbing = false;
+
     // While a ScrubHandle drag is in flight, do NOT rebuild the rows --
     // doing so would deleteLater() the handle whose mouseMoveEvent put
     // setProperty() -> imageUpdated -> here on the stack, killing the
@@ -1429,14 +2232,458 @@ void ViewportProperties::commitEdit(const QString& name, const QString& value)
     // `false` does not always mean "nothing happened", so refresh()
     // unconditionally rather than gating on the return value.
     m_bridge->setPropertyForCategory(m_currentSelectionCat, name, value);
+    m_painterThumbCache.clear();
     refresh();
+}
+
+void ViewportProperties::commitInlinePainterEdit(const QString& slotParam, const QString& value)
+{
+    if (!m_bridge) return;
+    m_bridge->setReferenceSlotPainterValue(m_currentSelectionCat, slotParam, value);
+    m_painterThumbCache.clear();
+    refresh();
+}
+
+void ViewportProperties::forkInlinePainter(const QString& slotParam)
+{
+    if (!m_bridge) return;
+    m_bridge->forkReferenceSlotPainter(m_currentSelectionCat, slotParam);
+    m_painterThumbCache.clear();
+    refresh();
+}
+
+QPixmap ViewportProperties::fetchPainterThumbnail(const QString& painterName, int defIndex, int sizePt)
+{
+    if (!m_bridge || painterName.isEmpty()) return QPixmap();
+    const int px = std::max(8, sizePt * 2);
+    const QString key = QStringLiteral("%1|%2|%3x%3|%4")
+        .arg(painterName).arg(defIndex).arg(px).arg(m_lastSceneRevision);
+    const auto it = m_painterThumbCache.constFind(key);
+    if (it != m_painterThumbCache.constEnd()) return it.value();
+
+    QByteArray rgba;
+    if (!m_bridge->painterPreview(painterName, defIndex, static_cast<unsigned int>(px),
+                                   static_cast<unsigned int>(px), rgba)
+        || rgba.size() != px * px * 4) {
+        return QPixmap();
+    }
+    const QImage img(reinterpret_cast<const uchar*>(rgba.constData()), px, px, px * 4, QImage::Format_RGBA8888);
+    const QPixmap pix = QPixmap::fromImage(img.copy());
+    m_painterThumbCache.insert(key, pix);
+    return pix;
+}
+
+QPixmap ViewportProperties::fetchRampStripThumbnail(const QString& painterName, int widthPt, int heightPt)
+{
+    if (!m_bridge || painterName.isEmpty()) return QPixmap();
+    const int pxW = std::max(8, widthPt * 2);
+    const int pxH = std::max(1, heightPt * 2);
+    const QString key = QStringLiteral("%1|-2|%2x%3|%4")
+        .arg(painterName).arg(pxW).arg(pxH).arg(m_lastSceneRevision);
+    const auto it = m_painterThumbCache.constFind(key);
+    if (it != m_painterThumbCache.constEnd()) return it.value();
+
+    QByteArray rgba;
+    if (!m_bridge->rampStripPreview(painterName, static_cast<unsigned int>(pxW),
+                                     static_cast<unsigned int>(pxH), rgba)
+        || rgba.size() != pxW * pxH * 4) {
+        return QPixmap();
+    }
+    const QImage img(reinterpret_cast<const uchar*>(rgba.constData()), pxW, pxH, pxW * 4, QImage::Format_RGBA8888);
+    const QPixmap pix = QPixmap::fromImage(img.copy());
+    m_painterThumbCache.insert(key, pix);
+    return pix;
+}
+
+QPixmap ViewportProperties::fetchMaterialThumbnail(const QString& materialName, int sizePt)
+{
+    if (!m_bridge || materialName.isEmpty()) return QPixmap();
+    const int px = std::max(8, sizePt * 2);
+    const QString key = QStringLiteral("%1|-3|%2x%2|%3")
+        .arg(materialName).arg(px).arg(m_lastSceneRevision);
+    const auto it = m_painterThumbCache.constFind(key);
+    if (it != m_painterThumbCache.constEnd()) return it.value();
+
+    QByteArray rgba;
+    if (!m_bridge->materialPreview(materialName, static_cast<unsigned int>(px),
+                                    static_cast<unsigned int>(px), rgba)
+        || rgba.size() != px * px * 4) {
+        return QPixmap();
+    }
+    const QImage img(reinterpret_cast<const uchar*>(rgba.constData()), px, px, px * 4, QImage::Format_RGBA8888);
+    const QPixmap pix = QPixmap::fromImage(img.copy());
+    m_painterThumbCache.insert(key, pix);
+    return pix;
+}
+
+QLabel* ViewportProperties::createPainterSwatchLabel(const QString& painterName, int defIndex, int sizePt, QWidget* parent)
+{
+    auto* lbl = new QLabel(parent);
+    lbl->setFixedSize(sizePt, sizePt);
+    lbl->setStyleSheet(QStringLiteral(
+        "background-color: %1; border: 1px solid %2; border-radius: 4px;")
+        .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::borderHairline)));
+    const QPixmap px = fetchPainterThumbnail(painterName, defIndex, sizePt);
+    if (!px.isNull()) {
+        lbl->setPixmap(px.scaled(sizePt, sizePt, Qt::IgnoreAspectRatio, Qt::FastTransformation));
+    }
+    return lbl;
+}
+
+QLabel* ViewportProperties::createMaterialSwatchLabel(const QString& materialName, int sizePt, QWidget* parent)
+{
+    auto* lbl = new QLabel(parent);
+    lbl->setFixedSize(sizePt, sizePt);
+    lbl->setStyleSheet(QStringLiteral(
+        "background-color: %1; border: 1px solid %2; border-radius: 4px;")
+        .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::borderHairline)));
+    const QPixmap px = fetchMaterialThumbnail(materialName, sizePt);
+    if (!px.isNull()) {
+        lbl->setPixmap(px.scaled(sizePt, sizePt, Qt::IgnoreAspectRatio, Qt::FastTransformation));
+    }
+    return lbl;
+}
+
+QWidget* ViewportProperties::buildBlackbodyKelvinCard(const QVector<ViewportProperty>& props)
+{
+    const std::shared_ptr<bool> rowAlive = m_rowAlive;
+    auto* card = new QFrame;
+    card->setStyleSheet(QStringLiteral(
+        "QFrame { background-color: %1; border: 1px solid %2; border-radius: 6px; }")
+        .arg(Theme::rgba(Theme::textDim, 0.04), Theme::hex(Theme::borderHairline)));
+    auto* col = new QVBoxLayout(card);
+    col->setContentsMargins(8, 8, 8, 8);
+    col->setSpacing(5);
+
+    double kelvin = 6500.0;
+    for (const ViewportProperty& p : props) {
+        if (p.name == QStringLiteral("temperature")) {
+            bool ok = false;
+            const double v = p.value.trimmed().toDouble(&ok);
+            if (ok && v > 0.0) kelvin = v;
+            break;
+        }
+    }
+
+    double peakNm = 0.0;
+    unsigned char rgba[4] = { 128, 128, 128, 255 };
+    if (m_bridge) {
+        m_bridge->evaluateBlackbodyKelvin(kelvin, &peakNm, rgba);
+    }
+    const QString bandLabel = (peakNm < 380.0) ? QStringLiteral("near-UV")
+                            : (peakNm > 780.0) ? QStringLiteral("near-IR")
+                            : QStringLiteral("visible");
+
+    auto* topRow = new QWidget;
+    topRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* topLayout = new QHBoxLayout(topRow);
+    topLayout->setContentsMargins(0, 0, 0, 0);
+    topLayout->setSpacing(6);
+
+    auto* chip = new QLabel;
+    chip->setFixedSize(12, 12);
+    chip->setStyleSheet(QStringLiteral(
+        "background-color: rgb(%1, %2, %3); border: 1px solid %4; border-radius: 3px;")
+        .arg(rgba[0]).arg(rgba[1]).arg(rgba[2]).arg(Theme::hex(Theme::borderHairline)));
+    topLayout->addWidget(chip);
+
+    auto* titleLbl = new QLabel(tr("Planckian Locus (1000 \xE2\x80\x93 12000 K)"));
+    titleLbl->setFont(Theme::sans(10, true));
+    titleLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
+    topLayout->addWidget(titleLbl);
+    topLayout->addStretch(1);
+
+    if (peakNm > 0.0) {
+        auto* peakLbl = new QLabel(QString::asprintf("\xCE\xBBpeak = %.0f nm (%s)", peakNm, bandLabel.toUtf8().constData()));
+        peakLbl->setFont(Theme::mono(9));
+        peakLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textSecondary)));
+        topLayout->addWidget(peakLbl);
+    }
+    col->addWidget(topRow);
+
+    auto* stripLbl = new QLabel;
+    stripLbl->setFixedSize(220, 16);
+    stripLbl->setStyleSheet(QStringLiteral(
+        "background-color: %1; border: 1px solid %2; border-radius: 4px;")
+        .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::borderHairline)));
+    if (m_bridge) {
+        QByteArray stripBytes;
+        if (m_bridge->blackbodyKelvinStrip(220, 16, 1000.0, 12000.0, stripBytes) && stripBytes.size() == 220 * 16 * 4) {
+            QImage img(reinterpret_cast<const uchar*>(stripBytes.constData()), 220, 16, 220 * 4, QImage::Format_RGBA8888);
+            stripLbl->setPixmap(QPixmap::fromImage(img.copy()));
+        }
+    }
+    col->addWidget(stripLbl);
+
+    auto* btnRow = new QWidget;
+    btnRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* btnLayout = new QHBoxLayout(btnRow);
+    btnLayout->setContentsMargins(0, 0, 0, 0);
+    btnLayout->setSpacing(4);
+    const char* const presets[] = { "1800K", "2700K", "5500K", "6500K", "9500K" };
+    for (const char* preset : presets) {
+        const QString presetStr = QString::fromLatin1(preset);
+        auto* btn = new QToolButton;
+        btn->setText(presetStr);
+        btn->setFont(Theme::mono(9));
+        btn->setStyleSheet(QStringLiteral(
+            "QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 4px; padding: 2px 6px; }")
+            .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::textSecondary), Theme::hex(Theme::borderHairline)));
+        connect(btn, &QToolButton::clicked, this, [this, rowAlive, presetStr]() {
+            if (!rowAlive || !*rowAlive || !m_bridge) return;
+            if (m_bridge->applySpectralPreset(m_currentSelectionCat, presetStr)) {
+                refresh();
+            }
+        });
+        btnLayout->addWidget(btn);
+    }
+    btnLayout->addStretch(1);
+    col->addWidget(btnRow);
+    return card;
+}
+
+QWidget* ViewportProperties::buildSellmeierGlassCard(const QVector<ViewportProperty>& props)
+{
+    const std::shared_ptr<bool> rowAlive = m_rowAlive;
+    auto* card = new QFrame;
+    card->setStyleSheet(QStringLiteral(
+        "QFrame { background-color: %1; border: 1px solid %2; border-radius: 6px; }")
+        .arg(Theme::rgba(Theme::textDim, 0.04), Theme::hex(Theme::borderHairline)));
+    auto* col = new QVBoxLayout(card);
+    col->setContentsMargins(8, 8, 8, 8);
+    col->setSpacing(5);
+
+    QString sellmeierVal;
+    for (const ViewportProperty& p : props) {
+        if (p.name == QStringLiteral("sellmeier")) {
+            sellmeierVal = p.value.trimmed();
+            break;
+        }
+    }
+
+    auto* topRow = new QWidget;
+    topRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* topLayout = new QHBoxLayout(topRow);
+    topLayout->setContentsMargins(0, 0, 0, 0);
+    topLayout->setSpacing(6);
+
+    auto* titleLbl = new QLabel(tr("Sellmeier Optical Glass Presets"));
+    titleLbl->setFont(Theme::sans(10, true));
+    titleLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
+    topLayout->addWidget(titleLbl);
+    topLayout->addStretch(1);
+
+    double nd = 0.0, abbeVd = 0.0;
+    if (!sellmeierVal.isEmpty() && m_bridge && m_bridge->evaluateSellmeierMetrics(sellmeierVal, &nd, &abbeVd)) {
+        auto* metricsLbl = new QLabel(QString::asprintf("nd = %.4f  Vd = %.1f", nd, abbeVd));
+        metricsLbl->setFont(Theme::mono(9));
+        metricsLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textSecondary)));
+        topLayout->addWidget(metricsLbl);
+    }
+    col->addWidget(topRow);
+
+    auto* btnRow = new QWidget;
+    btnRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* btnLayout = new QHBoxLayout(btnRow);
+    btnLayout->setContentsMargins(0, 0, 0, 0);
+    btnLayout->setSpacing(4);
+    struct GlassPreset { const char* label; const char* id; };
+    const GlassPreset presets[] = {
+        { "N-BK7",        "N-BK7" },
+        { "SF11",         "SF11" },
+        { "Diamond",      "Diamond" },
+        { "Fused Silica", "FusedSilica" }
+    };
+    for (const GlassPreset& gp : presets) {
+        const QString labelStr = QString::fromLatin1(gp.label);
+        const QString idStr    = QString::fromLatin1(gp.id);
+        auto* btn = new QToolButton;
+        btn->setText(labelStr);
+        btn->setFont(Theme::mono(9));
+        btn->setStyleSheet(QStringLiteral(
+            "QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 4px; padding: 2px 6px; }")
+            .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::textSecondary), Theme::hex(Theme::borderHairline)));
+        connect(btn, &QToolButton::clicked, this, [this, rowAlive, idStr]() {
+            if (!rowAlive || !*rowAlive || !m_bridge) return;
+            if (m_bridge->applySpectralPreset(m_currentSelectionCat, idStr)) {
+                refresh();
+            }
+        });
+        btnLayout->addWidget(btn);
+    }
+    btnLayout->addStretch(1);
+    col->addWidget(btnRow);
+    return card;
+}
+
+QWidget* ViewportProperties::buildMeasuredMetalPresetBar()
+{
+    const std::shared_ptr<bool> rowAlive = m_rowAlive;
+    auto* card = new QFrame;
+    card->setStyleSheet(QStringLiteral(
+        "QFrame { background-color: %1; border: 1px solid %2; border-radius: 6px; }")
+        .arg(Theme::rgba(Theme::textDim, 0.04), Theme::hex(Theme::borderHairline)));
+    auto* col = new QVBoxLayout(card);
+    col->setContentsMargins(8, 8, 8, 8);
+    col->setSpacing(5);
+
+    auto* titleLbl = new QLabel(tr("Measured Metal (n, k) Presets"));
+    titleLbl->setFont(Theme::sans(10, true));
+    titleLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
+    col->addWidget(titleLbl);
+
+    auto* btnRow = new QWidget;
+    btnRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* btnLayout = new QHBoxLayout(btnRow);
+    btnLayout->setContentsMargins(0, 0, 0, 0);
+    btnLayout->setSpacing(4);
+    struct MetalItem { const char* id; const char* tooltip; };
+    const MetalItem metals[] = {
+        { "Au", "Gold \xE2\x80\x94 Johnson & Christy (1972)" },
+        { "Ag", "Silver \xE2\x80\x94 Johnson & Christy (1972)" },
+        { "Cu", "Copper \xE2\x80\x94 Johnson & Christy (1972)" },
+        { "Al", "Aluminium \xE2\x80\x94 Raki\xC4\x87 (1995)" },
+        { "Cr", "Chromium \xE2\x80\x94 Johnson & Christy (1974)" },
+        { "Ti", "Titanium \xE2\x80\x94 Johnson & Christy (1974)" }
+    };
+    for (const MetalItem& m : metals) {
+        const QString idStr = QString::fromLatin1(m.id);
+        unsigned char swatch[4] = { 180, 180, 180, 255 };
+        if (m_bridge) {
+            m_bridge->measuredMetalPresetSwatch(idStr, swatch);
+        }
+        auto* btn = new QToolButton;
+        btn->setText(idStr);
+        btn->setToolTip(QString::fromUtf8(m.tooltip));
+        btn->setFont(Theme::mono(9));
+        QPixmap swPx(9, 9);
+        swPx.fill(QColor(swatch[0], swatch[1], swatch[2]));
+        btn->setIcon(QIcon(swPx));
+        btn->setIconSize(QSize(9, 9));
+        btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        btn->setStyleSheet(QStringLiteral(
+            "QToolButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 4px; padding: 2px 5px; }")
+            .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::textSecondary), Theme::hex(Theme::borderHairline)));
+        connect(btn, &QToolButton::clicked, this, [this, rowAlive, idStr]() {
+            if (!rowAlive || !*rowAlive || !m_bridge) return;
+            if (m_bridge->applySpectralPreset(m_currentSelectionCat, idStr)) {
+                refresh();
+            }
+        });
+        btnLayout->addWidget(btn);
+    }
+    btnLayout->addStretch(1);
+    col->addWidget(btnRow);
+    return card;
+}
+
+QWidget* ViewportProperties::buildThinFilmIridescenceCard(const QString& materialName)
+{
+    const std::shared_ptr<bool> rowAlive = m_rowAlive;
+    auto* card = new QFrame;
+    card->setStyleSheet(QStringLiteral(
+        "QFrame { background-color: %1; border: 1px solid %2; border-radius: 6px; }")
+        .arg(Theme::rgba(Theme::textDim, 0.04), Theme::hex(Theme::borderHairline)));
+    auto* col = new QVBoxLayout(card);
+    col->setContentsMargins(8, 8, 8, 8);
+    col->setSpacing(6);
+
+    double thicknessNm = 0.0;
+    double filmIor = 1.0;
+    unsigned char chipRGBA[4] = { 128, 128, 128, 255 };
+    if (m_bridge) {
+        m_bridge->evaluateThinFilmAtAngle(materialName, m_thinFilmViewAngleDeg, chipRGBA, &thicknessNm, &filmIor);
+    }
+
+    auto* topRow = new QWidget;
+    topRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* topLayout = new QHBoxLayout(topRow);
+    topLayout->setContentsMargins(0, 0, 0, 0);
+    topLayout->setSpacing(6);
+
+    auto* titleLbl = new QLabel(tr("Thin-Film Iridescence (0\xC2\xB0 \xE2\x80\x93 89\xC2\xB0)"));
+    titleLbl->setFont(Theme::sans(10, true));
+    titleLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
+    topLayout->addWidget(titleLbl);
+    topLayout->addStretch(1);
+
+    auto* metaLbl = new QLabel(QString::asprintf("d = %.0f nm  n = %.2f", thicknessNm, filmIor));
+    metaLbl->setFont(Theme::mono(9));
+    metaLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textSecondary)));
+    topLayout->addWidget(metaLbl);
+    col->addWidget(topRow);
+
+    auto* stripLbl = new QLabel;
+    stripLbl->setFixedSize(220, 18);
+    stripLbl->setStyleSheet(QStringLiteral(
+        "background-color: %1; border: 1px solid %2; border-radius: 4px;")
+        .arg(Theme::rgba(Theme::textDim, 0.08), Theme::hex(Theme::borderHairline)));
+    if (m_bridge) {
+        QByteArray stripBytes;
+        if (m_bridge->thinFilmAngleStrip(materialName, 220, 18, stripBytes, &thicknessNm, &filmIor)
+            && stripBytes.size() == 220 * 18 * 4) {
+            QImage img(reinterpret_cast<const uchar*>(stripBytes.constData()), 220, 18, 220 * 4, QImage::Format_RGBA8888);
+            stripLbl->setPixmap(QPixmap::fromImage(img.copy()));
+        }
+    }
+    col->addWidget(stripLbl);
+
+    auto* ctrlRow = new QWidget;
+    ctrlRow->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+    auto* ctrlLayout = new QHBoxLayout(ctrlRow);
+    ctrlLayout->setContentsMargins(0, 0, 0, 0);
+    ctrlLayout->setSpacing(6);
+
+    auto* chipLbl = new QLabel;
+    chipLbl->setFixedSize(14, 14);
+    chipLbl->setStyleSheet(QStringLiteral(
+        "background-color: rgb(%1, %2, %3); border: 1px solid %4; border-radius: 3px;")
+        .arg(chipRGBA[0]).arg(chipRGBA[1]).arg(chipRGBA[2]).arg(Theme::hex(Theme::borderHairline)));
+    ctrlLayout->addWidget(chipLbl);
+
+    auto* viewAngleTitle = new QLabel(tr("View Angle"));
+    viewAngleTitle->setFont(Theme::sans(10));
+    viewAngleTitle->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
+    ctrlLayout->addWidget(viewAngleTitle);
+
+    auto* slider = new QSlider(Qt::Horizontal);
+    slider->setRange(0, 89);
+    slider->setValue(static_cast<int>(std::round(m_thinFilmViewAngleDeg)));
+    ctrlLayout->addWidget(slider, 1);
+
+    auto* angleReadout = new QLabel(QString::asprintf("\xCE\xB8i = %.0f\xC2\xB0", m_thinFilmViewAngleDeg));
+    angleReadout->setFont(Theme::mono(9));
+    angleReadout->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textSecondary)));
+    angleReadout->setFixedWidth(48);
+    angleReadout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    ctrlLayout->addWidget(angleReadout);
+
+    connect(slider, &QSlider::valueChanged, this,
+            [this, rowAlive, materialName, chipLbl, angleReadout, metaLbl](int val) {
+        if (!rowAlive || !*rowAlive || !m_bridge) return;
+        m_thinFilmViewAngleDeg = static_cast<double>(val);
+        unsigned char c[4] = { 128, 128, 128, 255 };
+        double d = 0.0, n = 1.0;
+        if (m_bridge->evaluateThinFilmAtAngle(materialName, m_thinFilmViewAngleDeg, c, &d, &n)) {
+            chipLbl->setStyleSheet(QStringLiteral(
+                "background-color: rgb(%1, %2, %3); border: 1px solid %4; border-radius: 3px;")
+                .arg(c[0]).arg(c[1]).arg(c[2]).arg(Theme::hex(Theme::borderHairline)));
+            metaLbl->setText(QString::asprintf("d = %.0f nm  n = %.2f", d, n));
+        }
+        angleReadout->setText(QString::asprintf("\xCE\xB8i = %.0f\xC2\xB0", m_thinFilmViewAngleDeg));
+    });
+
+    col->addWidget(ctrlRow);
+    return card;
 }
 
 void ViewportProperties::onLineEditFinished()
 {
+    if (!m_rowAlive || !*m_rowAlive) return;
     auto* edit = qobject_cast<QLineEdit*>(sender());
     if (!edit || !m_bridge) return;
     const QString name = edit->objectName();
+    if (m_fields.value(name) != edit) return;
     const QString val  = edit->text();
     if (val == m_lastValue.value(name)) return;
     commitEdit(name, val);

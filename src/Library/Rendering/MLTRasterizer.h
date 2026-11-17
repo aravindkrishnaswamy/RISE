@@ -82,10 +82,139 @@
 #include "../Interfaces/IRayCaster.h"
 #include "../Utilities/PSSMLTSampler.h"
 
+#include <climits>
+#include <cstdint>
+
 namespace RISE
 {
 	namespace Implementation
 	{
+		//! Mutation budget split shared by MLTRasterizer and
+		//! MLTSpectralRasterizer.  All counts are 64-bit: the budget
+		//! mutations/pixel * width * height exceeds 2^32 for ordinary
+		//! production settings (3840x2160 at 518 mutations/pixel).
+		//!
+		//! Every chain always runs at least one mutation, so for a budget
+		//! smaller than the chain count (or not divisible by it) the work
+		//! actually PERFORMED is perChain * effectiveChains, which differs
+		//! from the requested budget: it is below it by fewer than
+		//! effectiveChains mutations (truncation), or above it by fewer than
+		//! effectiveChains mutations when budget < chains.  Splats are
+		//! therefore normalized by `performed`, never by `budget`, so the
+		//! resolved image is correctly exposed for every accepted budget.
+		struct MLTMutationSchedule
+		{
+			unsigned int	effectiveChains;	///< max(1, nChains)
+			std::uint64_t	budget;				///< mutations/pixel * width * height (saturating)
+			std::uint64_t	perChain;			///< max(1, budget / effectiveChains)
+			std::uint64_t	performed;			///< perChain * effectiveChains
+		};
+
+		//! Saturating 64-bit product (saturates at UINT64_MAX; unreachable
+		//! for 32-bit width/height/mutations unless all three are huge).
+		inline std::uint64_t MLTSaturatingMul( const std::uint64_t a, const std::uint64_t b )
+		{
+			if( a != 0 && b > UINT64_MAX / a ) {
+				return UINT64_MAX;
+			}
+			return a * b;
+		}
+
+		inline MLTMutationSchedule ComputeMLTMutationSchedule(
+			const unsigned int mutationsPerPixel,
+			const unsigned int width,
+			const unsigned int height,
+			const unsigned int nChains
+			)
+		{
+			MLTMutationSchedule s;
+			s.effectiveChains = nChains > 0 ? nChains : 1;
+			s.budget = MLTSaturatingMul(
+				MLTSaturatingMul( mutationsPerPixel, width ), height );
+			const std::uint64_t q = s.budget / s.effectiveChains;
+			s.perChain = q > 0 ? q : 1;
+			// perChain <= UINT64_MAX / effectiveChains whenever q > 0, and
+			// equals 1 otherwise, so this product cannot wrap.
+			s.performed = s.perChain * s.effectiveChains;
+			return s;
+		}
+
+		//! Clamp a desired round count to [1, perChain] so every round has
+		//! at least one mutation per chain.
+		inline std::uint64_t ClampMLTRoundCount( const std::uint64_t desired, const std::uint64_t perChain )
+		{
+			const std::uint64_t pc = perChain > 0 ? perChain : 1;
+			const std::uint64_t r = desired > 0 ? desired : 1;
+			return r < pc ? r : pc;
+		}
+
+		//! Convert a (possibly huge, non-finite or negative) floating-point
+		//! round estimate to a round count without an out-of-range
+		//! float->integer conversion, then clamp to [lo, perChain].
+		inline std::uint64_t MLTRoundCountFromEstimate( const double estimate, const std::uint64_t lo, const std::uint64_t perChain )
+		{
+			std::uint64_t desired = lo;
+			if( estimate >= 18446744073709549568.0 ) {	// largest double below 2^64
+				desired = UINT64_MAX;
+			} else if( estimate > static_cast<double>( lo ) ) {
+				desired = static_cast<std::uint64_t>( estimate );
+			}
+			return ClampMLTRoundCount( desired, perChain );
+		}
+
+		//! Per-chain mutations per round: max(1, perChain / numRounds),
+		//! clamped to UINT_MAX (the chain-segment count is unsigned int).
+		inline unsigned int MLTMutationsPerRound( const std::uint64_t perChain, const std::uint64_t numRounds )
+		{
+			const std::uint64_t q = perChain / ( numRounds > 0 ? numRounds : 1 );
+			if( q == 0 ) {
+				return 1;
+			}
+			return q > UINT_MAX ? UINT_MAX : static_cast<unsigned int>( q );
+		}
+
+		//! Mutations to run this round.  The round loop is driven by the
+		//! remaining per-chain work, so this never exceeds `remaining` and
+		//! never underflows.  The planned last round takes the whole
+		//! remainder (preserving the original cadence, where the final
+		//! round absorbs the perChain % numRounds leftover); any other round
+		//! takes min(perRound, remaining).  Both are clamped to UINT_MAX; a
+		//! clamped round simply leaves work for further rounds.
+		inline unsigned int MLTMutationsThisRound(
+			const std::uint64_t remaining,
+			const unsigned int perRound,
+			const bool plannedLastRound
+			)
+		{
+			std::uint64_t m = plannedLastRound ? remaining
+				: ( remaining < perRound ? remaining : static_cast<std::uint64_t>( perRound ) );
+			return m > UINT_MAX ? UINT_MAX : static_cast<unsigned int>( m );
+		}
+
+		//! Adaptive round resize after round 0: from a desired per-round
+		//! count (floating point, any value) and the remaining per-chain
+		//! work, produce the new per-round count (>= 1, <= UINT_MAX) and
+		//! the new total round count (1 already done + ceil(remaining /
+		//! newPerRound)), computed without overflow.
+		inline void MLTAdaptiveRoundResize(
+			const double desiredMutPerRound,
+			const std::uint64_t remaining,
+			unsigned int& newPerRound,
+			std::uint64_t& newNumRounds
+			)
+		{
+			if( !( desiredMutPerRound >= 1.0 ) ) {
+				newPerRound = 1;
+			} else if( desiredMutPerRound >= static_cast<double>( UINT_MAX ) ) {
+				newPerRound = UINT_MAX;
+			} else {
+				newPerRound = static_cast<unsigned int>( desiredMutPerRound );
+			}
+			const std::uint64_t remainingRounds = remaining / newPerRound +
+				( remaining % newPerRound != 0 ? 1 : 0 );
+			newNumRounds = 1 + remainingRounds;
+		}
+
 		class MLTRasterizer : public virtual Rasterizer
 		{
 		protected:
@@ -278,6 +407,17 @@ namespace RISE
 				IRasterImage*& pImageOut
 				) const;
 
+			/// Explicit per-call progress sink; animation supplies a stack
+			/// frame-slot adapter without changing the authored callback.
+			bool RenderFrameOfMLT(
+				const IScene& pScene,
+				const ICamera& pCamera,
+				const unsigned int width,
+				const unsigned int height,
+				IRasterImage*& pImageOut,
+				IProgressCallback* progress
+				) const;
+
 			/// Run a segment of mutations on an existing chain.  This is
 			/// the inner Metropolis-Hastings loop, identical to the old
 			/// RunChain but operating on externally-owned state so the
@@ -301,6 +441,9 @@ namespace RISE
 				) const;
 
 		public:
+#ifdef RISE_ENABLE_OIDN
+			double EstimateDenoiseWorkPerMegapixel() const { return nMutationsPerPixel * 0.4; }
+#endif
 			MLTRasterizer(
 				IRayCaster* pCaster_,
 				const unsigned int maxEyeDepth,

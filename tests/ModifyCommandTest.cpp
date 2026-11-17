@@ -62,6 +62,7 @@
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 
@@ -162,7 +163,7 @@ static const char* kScene =
 
 static IJobPriv* LoadScene( const char* tag )
 {
-    const std::filesystem::path path = std::filesystem::temp_directory_path() /
+    const std::filesystem::path path = std::filesystem::path( RISE::TestSupport::ScratchBaseDir() ) /
         ( "modify_command_test_" + std::string( tag ) + "_" +
           std::to_string( static_cast<long>( ::getpid() ) ) + ".RISEscene" );
     std::ofstream ofs( path );
@@ -288,6 +289,10 @@ static void TestSetActiveRasterizerRadianceScale()
     IJobPriv* pJob = LoadScene( "set_radiance_scale" );
     Check( pJob != nullptr, "scene parsed" );
     if( !pJob ) return;
+
+    unsigned int estimate = 123;
+    Check( !pJob->PredictRasterizationTime( 0, &estimate, nullptr ) && estimate == 123,
+        "zero-sample prediction fails with a configured rasterizer" );
 
     // The scene authored radiance_scale 2.0, so the map starts at 2.0.
     const IRadianceMap* pRm = pJob->GetScene()->GetGlobalRadianceMap();

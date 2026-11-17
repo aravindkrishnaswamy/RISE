@@ -9,12 +9,13 @@
 > evidence-gated discipline: the baseline decides whether geometry has a
 > deficit before anything ships to change it.
 
-> **Status:** P0 (measurement layer, materials + geometry) SHIPPED 2026-07-29
-> and reviewed to zero P1 over two fresh rounds — four checker ops,
-> metricLabel per-label aggregation, the 11-checkpoint bare-prompt scenario +
-> fixture, runconfig; gate green (make zero-warn, 225/225, xcodebuild).
-> P1 (B1+C1 skills) / P2 (A1 advisory) / P3 (A2 detector) remain design-only
-> pending the baseline run. Originally written to settle the §7 "live design
+> **Status: ARC CLOSED (2026-07-30) — P0, P1, P2, P2.b SHIPPED; P3 (A2 detector) & C3 DEFERRED**
+> (full empirical execution record in [74-creative-richness-arc-log.md](74-creative-richness-arc-log.md);
+> follow-on authoring-surface arc in [75-expressive-surface-arc.md](75-expressive-surface-arc.md)).
+> P0 (measurement layer: four checker ops, `metricLabel` per-label aggregation, 11-checkpoint
+> bare-prompt scenario + fixture), P1 (B1+C1 skill re-anchoring), and P2 / P2.b (A1 flatness
+> advisory plumbing) all shipped and were measured; P3 (A2 collapsed-painter detector) and C3
+> remain deferred. Originally written to settle the §7 "live design
 > question" of `72-agent-turn-efficiency-and-quality-log.md` before any code;
 > every mechanism claim below was file:line-verified by a fresh code audit on
 > 2026-07-29 (advisory pipeline, ask_user, skills, starter scene, checker
@@ -221,10 +222,15 @@ vague-prompt-vs-exact-checkpoint failures):
   unchanged, only configured.
 - The second uses the `kinds`-list filter to express "at least one advanced
   modeling verb" — SDF composition, sweeps, or displacement — which is where
-  RISE's real geometric vocabulary lives (profiles of revolution are
-  `sdf_geometry` roundcone+smin per the §6.1 domain facts; there is no lathe
-  verb). Partial credit, not gating: a legitimate courtyard *can* be mostly
-  primitives.
+  RISE's real geometric vocabulary lives (profiles of revolution were
+  `sdf_geometry` roundcone+smin per the §6.1 domain facts when this was
+  written). Partial credit, not gating: a legitimate courtyard *can* be mostly
+  primitives. **Superseded 2026-08-18:** `lathe_geometry` and
+  `skeleton_geometry` shipped and are now the answers for a profile of
+  revolution and a limbed body respectively, so the `kinds` list above (still
+  the shipped one in `evals/scenarios/`) UNDER-counts a scene that reached for
+  either. Left as-is deliberately — widening it would break comparability with
+  every banked baseline; re-cut the list when the next baseline batch runs.
 - The painter-diversity checkpoint keeps the top weight (2); geometry enters
   at 1.5 + 1. Rebalance only on baseline evidence.
 - **Geometry anti-gaming asymmetry (round-2 review P2, disclosed not

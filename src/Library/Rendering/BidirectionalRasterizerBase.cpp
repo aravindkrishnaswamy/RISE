@@ -18,6 +18,7 @@
 #include "pch.h"
 #include "BidirectionalRasterizerBase.h"
 #include "FilteredFilm.h"
+#include "FrameStore.h"  // FrameStoreBulkBracket RAII guard (Flush* splat composition)
 #include "../RasterImages/RasterImage.h"
 
 using namespace RISE;
@@ -141,19 +142,42 @@ void BidirectionalRasterizerBase::SplatContributionToFilm(
 	{
 		// No filter — round to nearest pixel, still better than the
 		// old truncation which introduced a half-pixel bias.
-		const Scalar rx = fx + Scalar( 0.5 );
-		const Scalar ry = fy + Scalar( 0.5 );
-		if( rx < 0 || ry < 0 ) return;
-		const unsigned int sx = static_cast<unsigned int>( rx );
-		const unsigned int sy = static_cast<unsigned int>( ry );
-		if( sx < imageWidth && sy < imageHeight ) {
+		unsigned int sx = 0, sy = 0;
+		if( SplatFilm::NearestPixel( fx, fy, imageWidth, imageHeight, sx, sy ) ) {
 			pSplatFilm->Splat( sx, sy, contribution );
 		}
 	}
 }
 
+void BidirectionalRasterizerBase::EnsureCompositionScratch(
+	const unsigned int w,
+	const unsigned int h
+	) const
+{
+	// Single-threaded by contract (PreRenderSetup / RasterizeScene, before
+	// any worker pass).  Reallocate only when the dimensions changed, so
+	// the per-pass call keeps one buffer for the whole render.  (L8 round
+	// 10: a stale-dimension scratch used to be written out of bounds.)
+	if( pScratchImage &&
+	    ( pScratchImage->GetWidth()  != w ||
+	      pScratchImage->GetHeight() != h ) )
+	{
+		safe_release( pScratchImage );
+	}
+	if( !pScratchImage && w > 0 && h > 0 ) {
+		pScratchImage = new RISERasterImage( w, h, RISEColor( 0, 0, 0, 0 ) );
+	}
+}
+
+void BidirectionalRasterizerBase::ReleaseRenderScopedPreviewResources() const
+{
+	PixelBasedRasterizerHelper::ReleaseRenderScopedPreviewResources();
+	safe_release( pScratchImage );
+}
+
 IRasterImage& BidirectionalRasterizerBase::GetIntermediateOutputImage(
-	IRasterImage& primary
+	IRasterImage& primary,
+	const Rect* region
 	) const
 {
 	if( !pSplatFilm && !pFilteredFilm ) {
@@ -163,76 +187,201 @@ IRasterImage& BidirectionalRasterizerBase::GetIntermediateOutputImage(
 	const unsigned int w = primary.GetWidth();
 	const unsigned int h = primary.GetHeight();
 
-	// Lazy allocation: only pay the scratch cost once we actually need
-	// to compose splats or filtered film.
-	//
-	// L8 round 10 — also reallocate when the dims have CHANGED since
-	// the previous render.  Pre-fix the dim-check was missing, so a
-	// resize-then-render sequence kept the OLD-dim scratch image
-	// alive and the `SetPEL(x, y, ...)` loop wrote out-of-bounds past
-	// its `RISEColor[oldW * oldH]` buffer.  At smaller-new-dim that's
-	// silent corruption; at larger-new-dim it's a `EXC_BAD_ACCESS`
-	// crash on the first row past `oldH` (the user-reported
-	// segmentation fault on render-after-resize).  `RISERasterImage`
-	// doesn't expose a resize helper, so a discard + re-alloc is the
-	// simplest correct fix; the scratch buffer is short-lived
-	// (one render) so the per-render alloc cost is acceptable.
-	if( pScratchImage &&
-	    ( pScratchImage->GetWidth()  != w ||
-	      pScratchImage->GetHeight() != h ) )
+	// The scratch is prepared single-threaded before any worker pass
+	// (EnsureCompositionScratch); it is never allocated here because
+	// workers call this concurrently for their own finished tiles.
+	if( !pScratchImage ||
+	    pScratchImage->GetWidth()  != w ||
+	    pScratchImage->GetHeight() != h )
 	{
-		safe_release( pScratchImage );
-	}
-	if( !pScratchImage ) {
-		pScratchImage = new RISERasterImage( w, h, RISEColor( 0, 0, 0, 0 ) );
-	}
-
-	// Copy the current primary image into the scratch buffer.
-	for( unsigned int y = 0; y < h; y++ ) {
-		for( unsigned int x = 0; x < w; x++ ) {
-			pScratchImage->SetPEL( x, y, primary.GetPEL( x, y ) );
+		static std::atomic<bool> warned{ false };
+		bool expected = false;
+		if( warned.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"BidirectionalRasterizerBase::GetIntermediateOutputImage:: composition scratch is "
+				"missing or does not match the image; returning the uncomposited image" );
 		}
+		return primary;
 	}
 
-	// Overlay the filter-reconstructed eye-subpath image (approach C)
-	// on top of the per-pixel box accumulation, then add t=1 splats.
-	// Order matters: FilteredFilm::Resolve OVERWRITES pixels where
-	// weightSum > 0, so it must go first; SplatFilm::Resolve ADDs on
-	// top.  Primary is never mutated.
-	if( pFilteredFilm ) {
-		pFilteredFilm->Resolve( *pScratchImage, ActiveSplatRegion() );
+	// Compose only the delivered region.  Copy the primary there, then
+	// overlay the filter-reconstructed eye-subpath image (approach C) and
+	// add the t=1 splats, both limited to the region's intersection with
+	// the active splat region -- the same pixels a full-frame composition
+	// would have produced inside the region.  Order matters:
+	// FilteredFilm::Resolve OVERWRITES pixels where weightSum > 0, so it
+	// goes first; SplatFilm::Resolve ADDs on top.  Primary is never
+	// mutated.
+	Rect composed( 0, 0, 0, 0 );
+	if( !ClampRegionToImage( region, w, h, composed ) ) {
+		return primary;
 	}
-	if( pSplatFilm ) {
-		pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ), ActiveSplatRegion() );
+	CopyRegion( primary, *pScratchImage, composed );
+
+	Rect filmRegion( 0, 0, 0, 0 );
+	if( IntersectRegion( composed, ActiveSplatRegion(), filmRegion ) ) {
+		if( pFilteredFilm ) {
+			pFilteredFilm->Resolve( *pScratchImage, &filmRegion );
+		}
+		if( pSplatFilm ) {
+			pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ), &filmRegion );
+		}
 	}
 
 	return *pScratchImage;
 }
 
-IRasterImage& BidirectionalRasterizerBase::ResolveSplatIntoScratch(
-	const IRasterImage& src
-	) const
+
+// Flush-time splat composition, shared by VCM and (since DL-458) BDPT.
+// Both algorithms create pSplatFilm in PreRenderSetup, which runs once per
+// still render AND once per animation frame, so composing the splats here
+// (rather than inline in a RasterizeScene override) is what makes an
+// animation frame match a still render.
+//
+// L6d-2a — the pSplatFilm splats resolve DIRECTLY into the
+// rasterizer's canonical store (which `img` aliases when the VFS is
+// bound, or the persistent internal RISERasterImage otherwise).  This
+// fixes the L6f-flagged splat-less-canonical regression for direct
+// FrameStore observers (post-L6e-2 bound VFS): once the splat resolve
+// has run on `mFrameStore`, the rasterizer-driven `MarkFrameComplete`
+// (post-L6f, fired inside `PixelBasedRasterizerHelper::FlushToOutputs`)
+// dispatches `OnFrameComplete` to observers reading the splatted
+// final.  CLI file outputs were already correct via the legacy
+// IRasterizerOutput chain (which received the composited scratch);
+// they're now correct AND see the same canonical content the
+// FrameStore observers do.
+//
+// `FlushPreDenoisedToOutputs` (2026-06-10 revision): OIDN's denoise
+// pass runs on `mFrameStore` AFTER `FlushPreDenoisedToOutputs`
+// returns and BEFORE `FlushDenoisedToOutputs` is called, and OIDN
+// must NOT see splats (BDPT's docs/OIDN.md decision: splatted
+// accumulation is incompatible with OIDN's per-pixel-independent-
+// noise assumption).  The original L6d-2a compromise composited
+// splats into a separate scratch image for the legacy
+// IRasterizerOutput chain and accepted a splat-less canonical for
+// `OnPreDenoiseComplete` observers — but post-L8 the CLI file
+// outputs ARE canonical-FrameStore observers (FileEncoderObserver),
+// so the plain (non-_denoised) file silently lost ALL t=1
+// light-tracing energy whenever denoise was enabled (the default).
+// VCM's balance heuristic routes most direct lighting through t=1
+// on many scenes, so plain outputs came out several times too dim
+// (torus-arealight floor at 0.36x of PT).  The revised flush
+// resolves the splat film into the canonical, dispatches the flush
+// (legacy chain AND Mark observers see the complete image), then
+// `SplatFilm::Unresolve`s the identical per-pixel values so OIDN's
+// subsequent input is splat-free again to ~1 ulp.
+//
+// Mutation safety: `pSplatFilm->Resolve(target, spp)` is ADDITIVE.
+// pSplatFilm is reallocated fresh per render in `PreRenderSetup`
+// (VCMRasterizerBase::PreRenderSetup, BDPTRasterizerBase::PreRenderSetup), so accumulated splats don't leak
+// across renders.  For animation: `PreRenderSetup` runs PER FRAME
+// from `RenderFrameOfAnimation`, followed by an inter-frame
+// `pImage->Clear()` in `RasterizeSceneAnimation` that
+// wipes the splat-mutated buffer before the next frame's per-pixel
+// writes start.  Net: per-render Resolve is called exactly once on
+// `mFrameStore` (via either FlushTo or FlushDenoised — the
+// non-OIDN/OIDN paths are mutually exclusive in
+// `PixelBasedRasterizerHelper::RasterizeScene`).  If a future
+// refactor of `RenderFrameOfAnimation`'s setup ordering moves the
+// PreRenderSetup OUT of the per-frame loop, this invariant breaks
+// and splats from frame N would be replayed onto frame N+1.
+//
+// Bracketing: `FrameStoreBulkBracket` (L6e-1.1 RAII) protects
+// concurrent direct readers against torn writes during the
+// per-pixel splat add.  The bracket releases BEFORE the rasterizer's
+// `FlushTo/Denoised` calls `mFrameStore->MarkFrameComplete`
+// (post-L6f), so async observers that wake on the Mark see the
+// splatted final without holding the bracket — no observer-side
+// deadlock risk.
+//
+// Behavioural drift: `GetLastRenderedImage()` (read-back of the
+// rasterizer's persistent buffer) now returns content WITH splats
+// post-render in non-bound mode (was splat-less pre-fix).  No
+// in-tree consumer of `GetLastRenderedImage` for VCM today; flagged
+// here for the next reader who adds one.
+
+void BidirectionalRasterizerBase::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
-	const unsigned int w = src.GetWidth();
-	const unsigned int h = src.GetHeight();
-	// L8 round 10 — sibling of the dim-check fix in
-	// `GetIntermediateOutputImage` above.  Same `pScratchImage`
-	// cached pointer, same `SetPEL(x, y, ...)` loop, same
-	// out-of-bounds-on-resize bug if the dim-check is missing.
-	if( pScratchImage &&
-	    ( pScratchImage->GetWidth()  != w ||
-	      pScratchImage->GetHeight() != h ) )
+	if( !pSplatFilm ) {
+		PixelBasedRasterizerHelper::FlushToOutputs( img, rcRegion, frame );
+		return;
+	}
+	// L6d-2a — splat-resolve into `img` directly.  `img` is the
+	// rasterizer's `*pImage` from `RasterizeScene`'s
+	// `AcquireRenderImage`; in bound mode it IS the FrameStore beauty
+	// view.  Const-cast is honest: the const here is a parameter
+	// declaration — the underlying buffer is the rasterizer's mutable
+	// canonical state.
+	IRasterImage& target = const_cast<IRasterImage&>( img );
+	// Skip splat overlay when show_adaptive_map is on — the
+	// authoritative output is the heatmap from the progressive
+	// resolve.  See PixelBasedRasterizerHelper.h GetAdaptiveShowMap.
+	if( !GetAdaptiveShowMap() ) {
+		const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
+		FrameStoreBulkBracket bracket( mFrameStore, target );
+		pSplatFilm->Resolve( target, splatSpp, ActiveSplatRegion() );
+	}
+	PixelBasedRasterizerHelper::FlushToOutputs( target, rcRegion, frame );
+}
+
+void BidirectionalRasterizerBase::FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
+{
+	if( !pSplatFilm ) {
+		PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( img, rcRegion, frame );
+		return;
+	}
+	// Resolve splats into the canonical for the DURATION of the flush,
+	// then subtract them back out so OIDN's denoise input stays
+	// splat-free.  The previous scratch-composite path (a since-removed
+	// ResolveSplatIntoScratch helper) fed only the legacy IRasterizerOutput
+	// chain — bound-mode FrameStore observers (FileEncoderObserver,
+	// the post-L8 CLI file outputs) read the CANONICAL at
+	// MarkPreDenoiseComplete and wrote the plain (non-_denoised) file
+	// WITHOUT the t=1 light-tracing strategy's energy.  Under VCM's
+	// balance heuristic that strategy carries most direct lighting
+	// (e.g. ~63% of floor-direct on a torus-arealight scene — plain
+	// file at 0.36x of PT, 2026-06-10).  Observer dispatch is
+	// synchronous (FrameStore::DispatchObservers is an in-thread loop
+	// and FileEncoderObserver::WriteFile encodes inside the callback),
+	// so the Unresolve below cannot race a file write.  Resolve and
+	// Unresolve add/subtract the bitwise-identical per-pixel product,
+	// so the canonical returns to its pre-flush content to ~1 ulp.
+	IRasterImage& target = const_cast<IRasterImage&>( img );
+	const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
 	{
-		safe_release( pScratchImage );
+		FrameStoreBulkBracket bracket( mFrameStore, target );
+		pSplatFilm->Resolve( target, splatSpp, ActiveSplatRegion() );
 	}
-	if( !pScratchImage ) {
-		pScratchImage = new RISERasterImage( w, h, RISEColor( 0, 0, 0, 0 ) );
+	PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( target, rcRegion, frame );
+	{
+		FrameStoreBulkBracket bracket( mFrameStore, target );
+		pSplatFilm->Unresolve( target, splatSpp, ActiveSplatRegion() );
 	}
-	for( unsigned int y = 0; y < h; y++ ) {
-		for( unsigned int x = 0; x < w; x++ ) {
-			pScratchImage->SetPEL( x, y, src.GetPEL( x, y ) );
-		}
+}
+
+void BidirectionalRasterizerBase::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
+{
+	// BDPT flow (which we mirror): the incoming image holds only the
+	// DENOISED non-splat contributions; we must add the splat film on
+	// top before writing the final denoised output so it matches what
+	// BDPT produces.
+	if( !pSplatFilm ) {
+		PixelBasedRasterizerHelper::FlushDenoisedToOutputs( img, rcRegion, frame );
+		return;
 	}
-	pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ), ActiveSplatRegion() );
-	return *pScratchImage;
+	// L6d-2a — splat-resolve into `img` directly (same pattern as
+	// FlushToOutputs above).  OIDN denoise has already mutated
+	// `mFrameStore` to the denoised eye-subpath; we now overlay
+	// VCM's t==1 splats ON TOP of the denoised content.
+	IRasterImage& target = const_cast<IRasterImage&>( img );
+	// Defensive: this branch is unreachable when show_adaptive_map is
+	// on (the denoise gate above us short-circuits to FlushToOutputs),
+	// but guard anyway to keep the contract symmetric with the other
+	// two flush methods.
+	if( !GetAdaptiveShowMap() ) {
+		const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
+		FrameStoreBulkBracket bracket( mFrameStore, target );
+		pSplatFilm->Resolve( target, splatSpp, ActiveSplatRegion() );
+	}
+	PixelBasedRasterizerHelper::FlushDenoisedToOutputs( target, rcRegion, frame );
 }

@@ -1,0 +1,12 @@
+{
+  "//": "add_wear verb-effect census (2026-08-30, docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §11 census block + §13 Phase 4). Identical instrument and providers to curv_census_gemini_gpt.json (rich_material_closeup x3 x{gemini-3.5-flash, gpt-5.6-terra}) so the delta is attributable to the one thing that changed: add_wear now exists as a callable verb + design-note condition L (DESIGN_UNWORN_MATERIALS) fires for qualifying constant materials. Pre-verb baseline (evals/runs/curv_census): curv gemini 1/3 / gpt 0/3, occlusion 0/6, delivery 6/6. Measurement is post-hoc over trajectories (add_wear call count, note-L sightings) and final scenes (curv/occlusion refs, position proxies). Precedent: vary_material went 0-for-everything on advice to 3/3 once callable (doc 88 S11 Round 2). Single run, token-lean, per user direction.",
+  "scenarios": [
+    "evals/scenarios/rich_material_closeup.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" },
+    { "provider": "openai", "model": "gpt-5.6-terra", "keyEnvVar": "OPENAI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/addwear_census"
+}

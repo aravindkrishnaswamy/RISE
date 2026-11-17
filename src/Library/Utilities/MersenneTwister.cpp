@@ -76,15 +76,38 @@
 using namespace RISE;
 
 MersenneTwister::MersenneTwister() : 
-	left( 1 ), initf( 0 )
+	left( 1 ), initf( 0 ), next( 0 )
 {
 }
 
 MersenneTwister::MersenneTwister( const unsigned int seed ) : 
-	left( 1 ), initf( 0 )
+	left( 1 ), initf( 0 ), next( 0 )
 {
 	// seed
 	init_genrand( seed );
+}
+
+// DL-536: state is owned, and the cursor must point into the copied state.
+// Before the first draw (or at a block boundary), next is not consumed:
+// genrand_int32 refreshes it through next_state when left reaches zero.
+MersenneTwister::MersenneTwister( const MersenneTwister& other ) :
+    left(1), initf(0), next(0)
+{
+    *this = other;
+}
+
+MersenneTwister& MersenneTwister::operator=( const MersenneTwister& other )
+{
+    if( this == &other ) return *this;
+    left = other.left;
+    initf = other.initf;
+    // An unseeded generator's state is indeterminate; its first draw will
+    // initialize the standard default seed, so do not read that array.
+    if( initf ) {
+        for( unsigned int i=0; i<state_vector_size; ++i ) state[i]=other.state[i];
+    }
+    next = initf && left>1 ? state + (other.next-other.state) : 0;
+    return *this;
 }
 
 MersenneTwister::~MersenneTwister()
@@ -259,14 +282,162 @@ double MersenneTwister::genrand_res53(void)
 
 
 #include "RandomNumbers.h"
+#include <atomic>
+#include <mutex>
+#include <vector>
 
 namespace RISE
 {
+	unsigned int LockedLibcRand()
+	{
+		static std::mutex m;
+		std::lock_guard<std::mutex> lock( m );
+		return static_cast<unsigned int>( rand() );
+	}
+
+	namespace
+	{
+		// The epoch base and the per-thread ticket behind ThreadLocalSeed.
+		// The base is 0 until ReseedThreadLocalSeedEpochForTesting() sets it.
+		std::atomic<unsigned int> s_threadSeedEpoch( 0u );
+		std::atomic<unsigned long long> s_threadSeedTicket( 0ull );
+	}
+
+	void ReseedThreadLocalSeedEpochForTesting()
+	{
+		// One libc read, on the CALLING thread: std::srand pins it.
+		s_threadSeedEpoch.store( LockedLibcRand(), std::memory_order_relaxed );
+		s_threadSeedTicket.store( 0ull, std::memory_order_relaxed );
+	}
+
+	unsigned int ThreadLocalSeed()
+	{
+		// Each thread's stream starts from (epoch base, ticket), never from
+		// a libc read on the worker itself: how many workers make a first
+		// call is scheduling-dependent, and a libc read there would shift
+		// the libc stream that the reproducible seeding sites
+		// (RasterizeBlockDispatcher, the VCM light pass, AOV passes) read
+		// next.
+		static thread_local bool seeded = false;
+		static thread_local unsigned long long state = 0;
+		if( !seeded ) {
+			const unsigned int epoch = s_threadSeedEpoch.load( std::memory_order_relaxed );
+			const unsigned long long k = s_threadSeedTicket.fetch_add( 1, std::memory_order_relaxed );
+			state = ( static_cast<unsigned long long>( DeriveSeed( epoch ^ 0x5EED7105u, k ) ) << 32 ) ^ DeriveSeed( epoch ^ 0x7105EED5u, k );
+			seeded = true;
+		}
+		state += 0x9E3779B97F4A7C15ULL;
+		unsigned long long z = state;
+		z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ULL;
+		z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBULL;
+		z ^= z >> 31;
+		return static_cast<unsigned int>( z ^ ( z >> 32 ) );
+	}
+
 	/// This is just a place to stick the global RNG function
 	RandomNumberGenerator& GlobalRNG()
 	{
 		static RandomNumberGenerator rng;
 		return rng;
+	}
+
+	namespace
+	{
+		struct MediumRngSlot
+		{
+			RandomNumberGenerator pel;
+			RandomNumberGenerator nm;
+			bool initPel;
+			bool initNM;
+
+			MediumRngSlot() : pel( 0u ), nm( 0u ), initPel( false ), initNM( false ) {}
+		};
+
+		struct MediumTileScopeState
+		{
+			static const std::size_t kInlineNested = 4u;
+			unsigned int depth = 0u;
+			unsigned int seed = 0u;
+			MediumRngSlot topSlot;
+			MediumRngSlot inlineNested[kInlineNested];
+			std::vector<MediumRngSlot> overflowNested;
+		};
+
+		thread_local MediumTileScopeState tl_mediumScope;
+
+		MediumRngSlot& CurrentMediumSlot( MediumTileScopeState& st )
+		{
+			if( st.depth <= 1u ) {
+				return st.topSlot;
+			}
+			const std::size_t idx = static_cast<std::size_t>( st.depth - 2u );
+			if( idx < MediumTileScopeState::kInlineNested ) {
+				return st.inlineNested[idx];
+			}
+			const std::size_t ovIdx = idx - MediumTileScopeState::kInlineNested;
+			if( st.overflowNested.size() <= ovIdx ) {
+				st.overflowNested.resize( ovIdx + 1u );
+			}
+			return st.overflowNested[ovIdx];
+		}
+	}
+
+	ScopedMediumTileSeed::ScopedMediumTileSeed( unsigned int tileSeed, bool enable ) noexcept :
+		prevSeed( 0u ),
+		prevDepth( 0u ),
+		enabled( enable )
+	{
+		if( !enabled ) {
+			return;
+		}
+		MediumTileScopeState& st = tl_mediumScope;
+		prevSeed = st.seed;
+		prevDepth = st.depth;
+		st.depth = prevDepth + 1u;
+		st.seed = tileSeed;
+		MediumRngSlot& slot = CurrentMediumSlot( st );
+		slot.initPel = false;
+		slot.initNM = false;
+	}
+
+	ScopedMediumTileSeed::~ScopedMediumTileSeed() noexcept
+	{
+		if( !enabled ) {
+			return;
+		}
+		MediumTileScopeState& st = tl_mediumScope;
+		st.depth = prevDepth;
+		st.seed = prevSeed;
+	}
+
+	RandomNumberGenerator& ActiveMediumRNG()
+	{
+		MediumTileScopeState& st = tl_mediumScope;
+		if( st.depth > 0u ) {
+			MediumRngSlot& slot = CurrentMediumSlot( st );
+			if( !slot.initPel ) {
+				slot.pel.Reseed( DeriveSeed( st.seed, 0x4845544D45445045ULL ) );
+				slot.initPel = true;
+			}
+			return slot.pel;
+		}
+		static thread_local RandomNumberGenerator tl_fallbackPel( ThreadLocalSeed() );
+		return tl_fallbackPel;
+	}
+
+	RandomNumberGenerator& ActiveMediumRNG_NM()
+	{
+		MediumTileScopeState& st = tl_mediumScope;
+		if( st.depth > 0u ) {
+			MediumRngSlot& slot = CurrentMediumSlot( st );
+			if( !slot.initNM ) {
+				slot.nm.Reseed( DeriveSeed( st.seed, 0x4845544D45444E4DULL ) );
+				slot.initNM = true;
+			}
+			return slot.nm;
+		}
+		static thread_local RandomNumberGenerator tl_fallbackNM( ThreadLocalSeed() );
+		return tl_fallbackNM;
 	}
 }
 

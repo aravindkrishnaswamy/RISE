@@ -113,6 +113,35 @@ VCMNormalization RISE::Implementation::ComputeNormalization(
 }
 
 //////////////////////////////////////////////////////////////////////
+// SetVolumeMergeRadius (DL-469)
+//////////////////////////////////////////////////////////////////////
+void RISE::Implementation::SetVolumeMergeRadius(
+	VCMNormalization& n,
+	const Scalar volumeRadius,
+	const Scalar storeProbability,
+	const unsigned int thinSeed
+	)
+{
+	const Scalar q = ( storeProbability > 0 && storeProbability < 1 ) ? storeProbability : Scalar( 1 );
+	n.mVolumeThinSeed = thinSeed;
+	if( volumeRadius > 0 && n.mLightSubPathCount > 0 && n.mEnableVC && n.mEnableVM ) {
+		n.mVolumeMergeRadius = volumeRadius;
+		n.mVolumeMergeRadiusSq = volumeRadius * volumeRadius;
+		const Scalar etaV =
+			n.mLightSubPathCount * ( Scalar( 4 ) / Scalar( 3 ) ) * PI * volumeRadius * n.mVolumeMergeRadiusSq;
+		n.mVolumeNormalization = Scalar( 1 ) / etaV;
+		n.mVolumeStoreProbability = q;
+		n.mMisVolumeWeightFactor = q * etaV;
+	} else {
+		n.mVolumeMergeRadius = 0;
+		n.mVolumeMergeRadiusSq = 0;
+		n.mVolumeNormalization = 0;
+		n.mMisVolumeWeightFactor = 0;
+		n.mVolumeStoreProbability = 1;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // InitLight
 //
 // First vertex on a light subpath.  From SmallVCM GenerateLightSample:
@@ -120,8 +149,8 @@ VCMNormalization RISE::Implementation::ComputeNormalization(
 //   dVC  = !isDelta ? (finite ? cosLight : 1) / emissionPdfW : 0
 //   dVM  = dVC * mMisVcWeightFactor   // NOTE: VC, not VM
 //
-// directPdfA is the AREA-measure pdf of selecting this light position
-// for direct lighting (pdfSelect * pdfPosition).  emissionPdfW is the
+// directPdfA is the selected endpoint marginal: q*pdfPosition for
+// finite lights, q*pdfEnv for environments. emissionPdfW is the
 // SmallVCM "combined area+solid-angle" emission pdf (the same value
 // RISE's BDPT generator stores in BDPTVertex::emissionPdfW).
 //////////////////////////////////////////////////////////////////////
@@ -131,36 +160,22 @@ VCMMisQuantities RISE::Implementation::InitLight(
 	const Scalar cosLight,
 	const bool isFiniteLight,
 	const bool isDelta,
-	const VCMNormalization& norm,
-	const Scalar pdfSelect
+	const VCMNormalization& norm
 	)
 {
 	VCMMisQuantities q;
 
 	if( emissionPdfW > 0 )
 	{
-		// dVCM = directPdfA / emissionPdfW.  In RISE's joint storage
-		// directPdfA = pdfSelect × pdfPos and emissionPdfW =
-		// pdfSelect × pdfPos × pdfDir, so the ratio is 1/pdfDir —
-		// pdfSelect cancels and matches SmallVCM's
-		// `dVCM = pdfPos / (pdfPos × pdfDir) = 1/pdfDir`.  No
-		// adjustment needed.
+		// The endpoint marginal divided by joint emission cancels q.
+		// It is 1/pdfDir for finite lights, 1/pdfDisc for environments.
 		q.dVCM = directPdfA / emissionPdfW;
 		if( !isDelta )
 		{
 			const Scalar usedCosLight = isFiniteLight ? cosLight : Scalar( 1 );
-			// dVC = cosLight / emissionPdfW_geometric where
-			// emissionPdfW_geometric = pdfPos × pdfDir (SmallVCM
-			// convention — no light-selection multiplier).  RISE
-			// stores joint `emissionPdfW = pdfSelect × pdfPos × pdfDir`,
-			// so divide-by-emissionPdfW alone leaves a residual
-			// 1/pdfSelect inflation.  Multiplying the numerator by
-			// pdfSelect extracts the geometric value.  Empirically
-			// no-op in test scenes (max_depth=3, merge_radius=0)
-			// per Δ7 bisect, but algebraically correct per SmallVCM
-			// and load-bearing in deeper paths / active VM.  See
-			// BDPTVertex.h's pdfSelect doc.
-			q.dVC = ( usedCosLight * pdfSelect ) / emissionPdfW;
+			// The eye alternative never selects this light. Retain the
+			// selection factor in the joint emission denominator.
+			q.dVC = usedCosLight / emissionPdfW;
 		}
 		else
 		{
@@ -284,7 +299,8 @@ VCMMisQuantities RISE::Implementation::ApplyBsdfSamplingUpdate(
 	const Scalar bsdfDirPdfW,
 	const Scalar bsdfRevPdfW,
 	const bool specular,
-	const VCMNormalization& norm
+	const VCMNormalization& norm,
+	const bool medium
 	)
 {
 	VCMMisQuantities r;
@@ -315,8 +331,10 @@ VCMMisQuantities RISE::Implementation::ApplyBsdfSamplingUpdate(
 	// Read the old q.dVCM before we overwrite it.
 	const Scalar oldDVCM = q.dVCM;
 
-	r.dVC = factor * ( q.dVC * bsdfRevPdfW + oldDVCM + norm.mMisVmWeightFactor );
-	r.dVM = factor * ( q.dVM * bsdfRevPdfW + oldDVCM * norm.mMisVcWeightFactor + Scalar( 1 ) );
+	// DL-469: the merge at THIS vertex is the volume merge at a medium
+	// vertex (VertexMergeFactorVC / VM).
+	r.dVC = factor * ( q.dVC * bsdfRevPdfW + oldDVCM + VertexMergeFactorVC( norm, medium ) );
+	r.dVM = factor * ( q.dVM * bsdfRevPdfW + oldDVCM * norm.mMisVcWeightFactor + VertexMergeFactorVM( norm, medium ) );
 	r.dVCM = invFwd;
 
 	return r;

@@ -35,7 +35,7 @@ namespace RISE
 			public virtual Reference
 		{
 		protected:
-			virtual ~DielectricSPF( );
+			~DielectricSPF( ) override;
 
 			//! Pointer storage so the interactive editor can rebind
 			//! via Set*.  See LambertianBRDF for pattern.
@@ -78,6 +78,20 @@ namespace RISE
 			static ARStack BuildARStack( const Scalar* n, const Scalar* k,
 			                             const Scalar* t, int nLayers );
 
+			//! DL-406: the (scattering, ior, AR wavelength) Scatter uses for
+			//! the transmission `channel` selects at this record (`nm > 0`:
+			//! the NM pipe, channel ignored; RGB: channel -1 on a top that is
+			//! not per-channel, 0..2 on one that is).  False when no single
+			//! transmission matches the request.
+			bool ResolveWarpChannel(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm,
+				const int channel,
+				Scalar& scat,
+				Scalar& rIndex,
+				Scalar& lam
+				) const;
+
 			Scalar GenerateScatteredRay(
 				ScatteredRay& dielectric,									///< [out] Scattered dielectric ray
 				ScatteredRay& fresnel,										///< [out] Scattered fresnel or reflected ray
@@ -89,14 +103,15 @@ namespace RISE
 				const Scalar scatfunc,
 				const Scalar rIndex,
 				const Scalar nm,
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,								///< [in] Index of refraction stack
+				const bool bAllocateStacks = true						///< [in] false: the caller reads only directions and weights (DL-297's density query), so the scattered rays get no IOR stacks
 				) const;
 
 			void DoSingleRGBComponent(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				const Point2& random,										///< [in] Two canonical random numbers
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack,							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,							///< [in] Index of refraction stack
 				const int oneofthree,
 				const Scalar newIOR,
 				const Scalar scattering,
@@ -134,7 +149,7 @@ namespace RISE
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack
-				) const
+				) const override
 			{
 				SpecularInfo info;
 				info.isSpecular = true;
@@ -142,6 +157,8 @@ namespace RISE
 				info.ior = pRIndex->GetValuesAt( ri ).v[0];
 				const ScalarTriple t = pTau->GetValuesAt( ri );
 				info.attenuation = RISEPel( t.v[0], t.v[1], t.v[2] );
+				info.attenuationIsInteriorTransmittance = true;
+				info.hasCustomSpecularFresnel = arStack.nLayers > 0;
 				info.valid = true;
 				info.clearTransmission = true;
 				return info;
@@ -151,16 +168,41 @@ namespace RISE
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack,
 				const Scalar nm
-				) const
+				) const override
 			{
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
 				info.ior = pRIndex->GetValueAtNM( ri, nm );
+				info.attenuationNM = r_max( Scalar(0), pTau->GetValueAtNM( ri, nm ) );
+				info.attenuationIsInteriorTransmittance = true;
+				info.hasCustomSpecularFresnel = arStack.nLayers > 0;
 				info.valid = true;
 				info.clearTransmission = true;
 				return info;
 			}
+
+			//! DL-297 / DL-406: see ISPF.  The `scattering` warp of the
+			//! delta-tagged transmission: Phong `cos^N`, or Henyey-Greenstein
+			//! (whose draws past 90 deg stay on the axis) when `hg` is set;
+			//! per channel on a dispersive / per-channel RGB top.
+			DeltaTransmissionWarpLaw DeltaTransmissionWarp(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm,
+				const int channel
+				) const override;
+
+			bool DeltaTransmissionWarpIsPerChannel(
+				const RayIntersectionGeometric& ri
+				) const override;
+
+			Scalar DeltaTransmissionWarpPdf(
+				const RayIntersectionGeometric& ri,
+				const Vector3& w,
+				const Scalar nm,
+				const IORStack& ior_stack,
+				const int channel
+				) const override;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.
@@ -168,8 +210,8 @@ namespace RISE
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
-				) const;
+				const IORStack& ior_stack								///< [in] Index of refraction stack
+				) const override;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors which taking into
@@ -179,14 +221,30 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
-				) const;
+				const IORStack& ior_stack								///< [in] Index of refraction stack
+				) const override;
 
 			//! Returns the PDF for sampling the given outgoing direction (always 0 for delta distributions)
-			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack& ior_stack ) const;
+			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack& ior_stack ) const override;
+			//! DL-24 review P1-1 / round-2 P1-A: both lobes are emitted every
+			//! call with deterministic weights, and a wrong-side delta lobe
+			//! is re-derived, never dropped.  The ONE random element is the
+			//! `scattering` warp of the transmitted ray, which is clipped to
+			//! the GEOMETRIC side of the surface -- so under a tilted
+			//! shading normal it can land between the geometric and shading
+			//! planes and read "up".  Deterministic therefore iff the warp
+			//! is off at this query or the shading normal is untilted.
+			bool SelectionMassIsDeterministic( const RayIntersectionGeometric& ri, const Scalar nm ) const override;
 
 			//! Returns the spectral PDF for sampling the given outgoing direction (always 0 for delta distributions)
-			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const;
+			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const override;
+            // Native raw-film query after an actual shading/geometric Snell
+            // calculation succeeded. Does not reclassify raw W cosine as TIR.
+            bool EvaluateSpecularFresnelAfterRefraction(Scalar cosI,Scalar etaI,Scalar etaT,
+                bool exiting,Scalar nm,Scalar& reflectance) const;
+			bool EvaluateSpecularFresnel( Scalar cosI, Scalar etaI, Scalar etaT,
+				bool exiting, Scalar nm, Scalar& reflectance ) const override;
+
 		};
 	}
 }

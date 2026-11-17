@@ -54,6 +54,9 @@
 #include "StabilityConfig.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/ISPF.h"
+#include "../Interfaces/IMaterial.h"
+#include "../Intersection/RayIntersectionGeometric.h"
+#include "../Intersection/RayIntersection.h"
 
 namespace RISE
 {
@@ -76,6 +79,113 @@ namespace RISE
 		{
 			return IsPositiveFiniteDensity(techniqueMass) ?
 				Scalar(1.0)/techniqueMass : Scalar(0.0);
+		}
+
+        // A single-label BSDF keeps that label when the guide replaces its
+        // direction. Mixed-label aggregate guide draws retain the DL-483 pin.
+        inline ScatteredRay::ScatRayType GuidedSingleLabelType(const IMaterial* material)
+        {
+            return material && material->ConnectionScatterTypes() == (1u << ScatteredRay::eRayReflection)
+                ? ScatteredRay::eRayReflection : ScatteredRay::eRayDiffuse;
+        }
+
+		//////////////////////////////////////////////////////////////////////
+		// PTVolumeWalkStream (DL-247; moved here from PathTracingIntegrator.cpp
+		// by DL-283 so SobolDimensionBudgetTest Test G2 enumerates the real
+		// layout instead of a copy of it).
+		//
+		// The sampler stream a PT volumetric random WALK draws scatter event
+		// `scatterIndex` of wavelength lane `lane` from.
+		//
+		// The PT main loops give every vertex its own stream
+		// (`StartStream( 16 + depth )`, and a volume scatter there bumps
+		// `depth`).  The three walks -- IntegrateRayTemplated's camera walk,
+		// IntegrateRayHWSS's camera walk and IntegrateFromHitHWSS's in-loop
+		// walk -- used to run every scatter event, and under HWSS every
+		// wavelength lane, SEQUENTIALLY off one stream.  SobolSampler's
+		// `Get1D` simply increments the dimension, so a walk ran straight
+		// past its stream's `kStreamStride` (32) slots into `16 + depth + 1`,
+		// `+ 2`, ... -- exactly the streams its own surface hand-off
+		// (`IntegrateFromHit*( startDepth = depth + 1 )`) then re-opens.  The
+		// same Sobol dimension then drove two DIFFERENT decisions on ONE path
+		// (a walk's NEE or phase draw and the hand-off's BSDF draw), which is
+		// a correlation inside a single estimator sample and therefore a
+		// bias, not just noise.  With four HWSS lanes at ~6 draws per scatter
+		// the overrun happens on the FIRST scatter: +3.1 % on the absorbing
+		// box of tests/MediumInsideOutsideInvariantTest.cpp (hwss TRUE camera
+		// inside, black floor: 0.2923 vs 0.2820 for per-lane streams, NM and
+		// the camera-outside render).
+		//
+		// Every walk scatter event opens a stream of its own at
+		// `4096 + 1024 * lane + (scatterIndex mod 1024)`, lanes 0..3
+		// (`SampledWavelengths::N`), so [4096, 8192).  A path runs at most
+		// one walk (each ends in a hand-off to the NM/RGB main loop or an
+		// escape) and `scatterIndex` is the path's running volume-bounce
+		// count, so no (lane, scatterIndex) pair repeats within a path.
+		//
+		// CEILINGS (DL-283, previously undocumented):
+		//   - `max_volume_bounce` <= 1024.  Past it, events k and k + 1024 of
+		//     one lane share a stream exactly (the `mod`).
+		//   - PT main-loop depth <= 4080.  `StartStream( 16 + depth )` reaches
+		//     4096 = walk (lane 0, event 0) at depth 4080, and
+		//     `SetMaxPathDepth` is not clamped.  (BDPT's eye walk is a
+		//     different layout -- 16 + d for d < 31, a deep block past
+		//     that, BDPTUtilities::EyeWalkStream (DL-286) -- and never
+		//     shares a sampler with PT's: PT's own loop cap is
+		//     `mMaxPathDepth`, default 128.)
+		// Every stream here is past SobolSampler's 8192-dimension table
+		// (stream 256), so every walk draw is a WRAPPED Get1D: table row
+		// `32 * (event mod 256) + slot`, index Owen-permuted by the wrap
+		// count `16 + 4 * lane + event / 256` (DL-81).  Walk event k
+		// therefore shares its table rows with main-loop stream k -- at a
+		// different index block and value seed (harmless by the 8-spp
+		// per-pixel variance check, DL-81 doc section 9; ParityTest H's
+		// collapse is only a floor).  IndependentSampler ignores streams; PT is never
+		// driven by PSSMLTSampler (MLT runs BDPT).
+		//////////////////////////////////////////////////////////////////////
+		static const int kPTVolumeWalkStreamBase = 4096;
+		static const unsigned int kPTVolumeWalkLaneStride = 1024;
+
+		inline int PTVolumeWalkStream( const unsigned int lane, const unsigned int scatterIndex )
+		{
+			return kPTVolumeWalkStreamBase + static_cast<int>(
+				lane * kPTVolumeWalkLaneStride + ( scatterIndex % kPTVolumeWalkLaneStride ) );
+		}
+
+		//////////////////////////////////////////////////////////////////////
+		// PTSMSLaneStream (sms-ext Phase 4 review; DL-453).
+		//
+		// The sampler stream one HWSS-lane SMS evaluation (light sample
+		// plus the solver's seeds, extended or legacy) draws from at PT
+		// vertex `depth`, wavelength lane / RGB component `lane` (0..3).
+		// PT's vertex stream (`StartStream( 16 + depth )`) holds NEE, SMS
+		// and the PART 3 scatter in order; an HWSS vertex runs NEE and SMS
+		// once per lane, which overran the stream's kStreamStride slots
+		// into the next vertex's (SobolDimensionBudgetTest Test I).  Every
+		// HWSS lane's SMS evaluation therefore draws from a forked sampler
+		// positioned at this stream (SobolSampler::ForkStream) -- extended
+		// since Phase 4, legacy since DL-453 (one bundle is either legacy
+		// or extended, so the two never share a (depth, lane) stream in
+		// one sample).  The RGB and NM bodies run SMS once per vertex and
+		// keep the vertex stream.  (Named PTExtendedSMSStream until
+		// DL-453.)
+		//
+		// [141312, 145408): past BDPT/VCM's fixed-budget deep-walk block
+		// (which ends at 141266; PT never shares a sampler with BDPT, but
+		// the documented map stays collision-free), wrap counts 552..567.
+		// `depth` is taken mod 1024: PT depths >= 1024 (SetMaxPathDepth is
+		// unclamped, default 128) share streams with depth - 1024.
+		//////////////////////////////////////////////////////////////////////
+		static const int kPTSMSLaneStreamBase = 141312;
+		static const unsigned int kPTSMSLanes = 4;
+		static const unsigned int kPTSMSLaneDepthCap = 1024;
+		static const int kPTSMSLaneStreamEnd = kPTSMSLaneStreamBase +
+			static_cast<int>( kPTSMSLanes * kPTSMSLaneDepthCap );
+
+		inline int PTSMSLaneStream( const unsigned int depth, const unsigned int lane )
+		{
+			return kPTSMSLaneStreamBase + static_cast<int>(
+				kPTSMSLanes * ( depth % kPTSMSLaneDepthCap ) + ( lane % kPTSMSLanes ) );
 		}
 
 		//////////////////////////////////////////////////////////////////////
@@ -294,6 +404,58 @@ namespace RISE
 			return pa2 / (pa2 + pb * pb);
 		}
 
+		/// Resolve a replaced direction's medium without changing its proposal.
+		/// A crossing continues on the incoming ray's geometric side and takes
+		/// the selected SPF transition. A reflection keeps the input stack.
+		/// Call only for replacements; ordinary SPF continuations keep their
+		/// original state. Exact RIS candidate-0 reuse also keeps that state.
+		/// The sign test is invariant to ray-oriented normal flips. A missing
+		/// geometric normal falls back to the sampling frame; tangent sides
+		/// cannot establish a transition and retain the input stack.
+		/// Returned pointers are borrowed until the scattered container dies.
+		inline const IORStack* GuidedContinuationIORStack(
+			const ScatteredRay& selected,
+			const IORStack& current,
+			const RayIntersection& ri,
+			const Vector3& direction,
+			IORStack& generatedStack
+			)
+		{
+			if( !selected.ior_stack ) {
+				Vector3 normal = ri.geometric.vGeomNormal;
+				if( Vector3Ops::Dot( normal, normal ) <= NEARZERO ) normal = ri.geometric.onb.w();
+				const Scalar before = Vector3Ops::Dot( ri.geometric.ray.Dir(), normal );
+				const Scalar after = Vector3Ops::Dot( direction, normal );
+				if( (before > 0 && after > 0) || (before < 0 && after < 0) ) {
+					if( ri.pMaterial ) {
+						SpecularInfo info = ri.pMaterial->GetSpecularInfo(ri.geometric, current);
+						if( info.canRefract || info.hasInterior ) {
+							generatedStack = current;
+							generatedStack.SetCurrentObject( ri.pObject );
+							const bool bEntering = !generatedStack.containsCurrent();
+							if( bEntering ) {
+								generatedStack.push( info.canRefract ? info.ior : generatedStack.top() );
+							} else {
+								generatedStack.pop();
+							}
+							return &generatedStack;
+						}
+					}
+				}
+				return &current;
+			}
+			const Vector3& original = selected.ray.Dir();
+			if( direction.x == original.x && direction.y == original.y && direction.z == original.z ) {
+				return selected.ior_stack;
+			}
+			Vector3 normal = ri.geometric.vGeomNormal;
+			if( Vector3Ops::Dot( normal, normal ) <= NEARZERO ) normal = ri.geometric.onb.w();
+			const Scalar before = Vector3Ops::Dot( ri.geometric.ray.Dir(), normal );
+			const Scalar after = Vector3Ops::Dot( direction, normal );
+			return ((before > 0 && after > 0) || (before < 0 && after < 0))
+				? selected.ior_stack : &current;
+		}
+
 #ifdef RISE_ENABLE_OPENPGL
 		//////////////////////////////////////////////////////////////////////
 		// Path Guiding MIS Helpers
@@ -346,6 +508,97 @@ namespace RISE
 			const Scalar mixturePdf = GuidingCombinedPdf( alpha, guidePdf, phasePdf );
 			return IsPositiveFiniteDensity( mixturePdf )
 				? mixturePdf : 0;
+		}
+
+		//////////////////////////////////////////////////////////////////////
+		// DL-67: the ONE partition a guided continuation is built on
+		// (docs/DL67_GUIDED_GENERATING_DENSITY.md).
+		//
+		// A guided vertex runs two techniques on the same integral
+		// `integral f(w) cos(w) L(w) dw`: the BSDF technique (Scatter +
+		// RandomlySelect, lobe `I` drawn with realized probability `q_I`)
+		// and the guide technique (a direction drawn from the trained
+		// field `g`).  The choice between them is made with a probability
+		// `a` that does NOT depend on the Scatter realization, and they
+		// are combined through one deterministic partition of directions
+		//
+		//   W_g(w) = a g(w) / (a g(w) + (1 - a) p_agg(w)),  W_b = 1 - W_g
+		//
+		// with `p_agg` the material's AGGREGATE `ISPF::Pdf()`.  Each
+		// technique prices its own UNWEIGHTED estimator times its weight
+		// over the probability it fired (`kray_I/q_I * W_b/(1-a)`,
+		// `f cos/g * W_g/a`).  Unbiased for any deterministic W under
+		// four premises (doc §2): (1) the technique choice is
+		// realization-independent; (2) `IBSDF::value` and the SPF's kray
+		// describe ONE function (`polished_material` violated it until
+		// DL-285's PolishedBRDF, 2026-09-28);
+		// (3) 0 < a < 1 wherever the BSDF technique owns mass the guide
+		// cannot reach (delta lobes) -- `GuidingOneSampleProbability`;
+		// (4) the continuation state after the choice does not depend on
+		// which technique chose the direction -- NOT met under a per-type
+		// bounce cap (a guide draw continues as `eRayDiffuse`), a
+		// documented limitation.
+		//////////////////////////////////////////////////////////////////////
+
+		/// The guide technique's partition weight `W_g(w)`.  Zero when the
+		/// guide has no density there (the guide cannot produce that
+		/// direction, so the BSDF side must own it).
+		inline Scalar GuidingPartitionGuideWeight(
+			const Scalar mixA,
+			const Scalar guidePdf,
+			const Scalar aggregatePdf
+			)
+		{
+			const Scalar num = mixA * ( guidePdf > 0 ? guidePdf : Scalar( 0 ) );
+			const Scalar den = num + ( 1.0 - mixA ) * ( aggregatePdf > 0 ? aggregatePdf : Scalar( 0 ) );
+			return den > 0 ? num / den : Scalar( 0 );
+		}
+
+		/// The BSDF technique's partition weight `W_b(w) = 1 - W_g(w)` at a
+		/// direction a NON-DELTA lobe generated.  Returns 1 where the
+		/// aggregate density reads zero there: the aggregate does not
+		/// describe that lobe (DL-103's guard -- no known production
+		/// inhabitant since DL-41 closed), so the lobe is priced
+		/// un-partitioned exactly as it is with guiding off.
+		inline Scalar GuidingPartitionBsdfWeight(
+			const Scalar mixA,
+			const Scalar guidePdf,
+			const Scalar aggregatePdf
+			)
+		{
+			if( aggregatePdf <= 0 ) {
+				return 1;
+			}
+			const Scalar num = ( 1.0 - mixA ) * aggregatePdf;
+			const Scalar den = num + mixA * ( guidePdf > 0 ? guidePdf : Scalar( 0 ) );
+			return den > 0 ? num / den : Scalar( 1 );
+		}
+
+		/// DL-67 round 3 (docs/DL67_GUIDED_GENERATING_DENSITY.md §2,
+		/// premise 3): the one-sample guide technique's firing probability
+		/// `a` must satisfy 0 < a < 1 wherever the BSDF technique owns mass
+		/// the guide cannot reach.  A DELTA lobe is such mass (the guide
+		/// cannot produce a delta direction, so W_b = 1 there): it is
+		/// priced `kray/q/(1 - a)` and is LOST outright at a = 1 -- a
+		/// smooth `subsurfacescattering_material` read exactly 0 under
+		/// one-sample alpha 1.0, which PT's learned alpha reached for any
+		/// `pathguiding_alpha` above ~0.5 in a saturated cell.  The same
+		/// clamp keeps a configured alpha above 1 from making the mixture
+		/// density `a g + (1-a) p_agg` negative.  The ceiling also bounds
+		/// the delta lobe's amplification `1/(1 - a)` (and hence its
+		/// variance factor) at 10; the guide's own share barely moves
+		/// between 0.9 and 1 because `p_agg` is small wherever it matters.
+		static const Scalar kGuidingMaxOneSampleProbability = 0.9;
+
+		/// The clamped one-sample firing probability: 0 for a non-positive
+		/// (or NaN) alpha, `kGuidingMaxOneSampleProbability` above it.
+		inline Scalar GuidingOneSampleProbability( const Scalar alpha )
+		{
+			if( !( alpha > 0 ) ) {
+				return 0;
+			}
+			return alpha < kGuidingMaxOneSampleProbability ?
+				alpha : kGuidingMaxOneSampleProbability;
 		}
 
 		/// Determines whether to sample from the guiding distribution

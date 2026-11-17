@@ -344,7 +344,10 @@ void AccumulateRoot(
 	const Ray& ray,
 	const Scalar u,
 	const Scalar v,
-	const BezierPatch& patch )
+	const BezierPatch& patch,
+	const bool checkSides,
+	const bool bHitFrontFaces,
+	const bool bHitBackFaces )
 {
 	// Evaluate surface point at (u,v) and project onto the ray to get t.
 	const Point3 P  = GeometricUtilities::EvaluateBezierPatchAt( patch, u, v );
@@ -361,6 +364,20 @@ void AccumulateRoot(
 	const Scalar dz = P.z - onRay.z;
 	if( dx*dx + dy*dy + dz*dz > 1e-6 ) return;
 
+	if( checkSides ) {
+		// Reject degenerate-normal roots (e.g. a grazing root at a collapsed
+		// polar edge where du P = 0) and face-culled roots BEFORE updating
+		// `hit.dRange`, so a closer invalid/culled lobe on a multi-root bicubic
+		// patch never masks a farther valid root on the same patch.
+		const Vector3 N = GeometricUtilities::BezierPatchNormalAt( patch, u, v );
+		const Scalar nLen = Vector3Ops::Magnitude( N );
+		if( nLen < Scalar( 1e-20 ) ) return;
+		const Vector3 nUnit = N * ( Scalar( 1.0 ) / nLen );
+		const bool bRawFront = ( Vector3Ops::Dot( nUnit, ray.Dir() ) < Scalar( 0.0 ) );
+		if(  bRawFront && !bHitFrontFaces ) return;
+		if( !bRawFront && !bHitBackFaces  ) return;
+	}
+
 	hit.bHit   = true;
 	hit.dRange = t;
 	hit.u      = u;
@@ -376,7 +393,10 @@ void AccumulateRoot(
 void Intersect_Resultant(
 	const Ray& ray,
 	BEZIER_HIT& hit,
-	const BezierPatch& patch
+	const BezierPatch& patch,
+	const bool checkSides,
+	const bool bHitFrontFaces,
+	const bool bHitBackFaces
 	)
 {
 	hit.bHit   = false;
@@ -506,10 +526,9 @@ void Intersect_Resultant(
 		const SmallPolynomial fV = F1( u );
 
 		// Pack as a monic-ready quartic (RISE coefficient convention:
-		// coeff[0] leading, coeff[4] constant).  With coeff[0]=0 the OQS
-		// SolveQuartic dispatches to the OQS-stabilised cubic path,
-		// which shares the numerics (Vieta-stable quadratic, Newton polish)
-		// that made the torus rewrite worthwhile.
+		// coeff[0] leading, coeff[4] constant). With coeff[0]=0,
+		// SolveQuartic dispatches to the separate classical SolveCubic;
+		// its OQS quartic factorisation is not used for these v seeds.
 		const Scalar quartCoeff[5] = {
 			0.0,
 			fV.coef[3],
@@ -559,7 +578,7 @@ void Intersect_Resultant(
 		}
 
 		// Track polished roots we've already accepted so we don't multi-count.
-		Scalar acceptedV[16];
+		Scalar acceptedU[16], acceptedV[16];
 		int nAccepted = 0;
 
 		for( int s = 0; s < nseeds; s++ ) {
@@ -579,12 +598,17 @@ void Intersect_Resultant(
 			// skip.  Newton attracts multiple seeds to the same basin.
 			bool dup = false;
 			for( int a = 0; a < nAccepted; a++ ) {
-				if( fabs( acceptedV[a] - vPol ) < 1e-5 ) { dup = true; break; }
+				if( fabs( acceptedU[a] - uPol ) < 1e-5 &&
+				    fabs( acceptedV[a] - vPol ) < 1e-5 ) { dup = true; break; }
 			}
 			if( dup ) continue;
-			acceptedV[nAccepted++] = vPol;
+			if( nAccepted < 16 ) {
+				acceptedU[nAccepted] = uPol;
+				acceptedV[nAccepted] = vPol;
+				++nAccepted;
+			}
 
-			AccumulateRoot( hit, ray, uPol, vPol, patch );
+			AccumulateRoot( hit, ray, uPol, vPol, patch, checkSides, bHitFrontFaces, bHitBackFaces );
 		}
 	}
 }
@@ -728,7 +752,10 @@ void ClipRecursive(
 void Intersect_Clipping(
 	const Ray& ray,
 	BEZIER_HIT& hit,
-	const BezierPatch& patch
+	const BezierPatch& patch,
+	const bool checkSides,
+	const bool bHitFrontFaces,
+	const bool bHitBackFaces
 	)
 {
 	hit.bHit = false;
@@ -797,7 +824,7 @@ void Intersect_Clipping(
 		acceptedV[nAccepted] = v;
 		++nAccepted;
 
-		AccumulateRoot( hit, ray, u, v, patch );
+		AccumulateRoot( hit, ray, u, v, patch, checkSides, bHitFrontFaces, bHitBackFaces );
 	}
 }
 
@@ -832,7 +859,7 @@ const BezierAlgo g_bezierAlgo = ResolveBezierAlgoFromEnv();
 
 namespace RISE {
 
-// Public entry point.  Dispatches between Intersect_Clipping (Phase 2+) and
+// Public entry points.  Dispatch between Intersect_Clipping (Phase 2+) and
 // Intersect_Resultant (the original resultant-based path).  Selection is
 // driven by the RISE_BEZIER_ALGO environment variable; see the selector
 // comment above for details.
@@ -843,9 +870,28 @@ void RayBezierPatchIntersection(
 	)
 {
 	if( g_bezierAlgo == kAlgoClipping ) {
-		Intersect_Clipping( ray, hit, patch );
+		Intersect_Clipping( ray, hit, patch, false, true, true );
 	} else {
-		Intersect_Resultant( ray, hit, patch );
+		Intersect_Resultant( ray, hit, patch, false, true, true );
+	}
+}
+
+void RayBezierPatchIntersection(
+	const Ray& ray,
+	BEZIER_HIT& hit,
+	const BezierPatch& patch,
+	const bool bHitFrontFaces,
+	const bool bHitBackFaces
+	)
+{
+	if( !bHitFrontFaces && !bHitBackFaces ) {
+		hit.bHit = false;
+		return;
+	}
+	if( g_bezierAlgo == kAlgoClipping ) {
+		Intersect_Clipping( ray, hit, patch, true, bHitFrontFaces, bHitBackFaces );
+	} else {
+		Intersect_Resultant( ray, hit, patch, true, bHitFrontFaces, bHitBackFaces );
 	}
 }
 

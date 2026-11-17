@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "GlintModifier.h"
+#include "ModifierFrame.h"
 #include "../Utilities/math_utils.h"
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/FiniteMath.h"
@@ -189,6 +190,7 @@ void GlintModifier::Modify( RayIntersectionGeometric& ri ) const
 	if( !facet.found ) {
 		return;
 	}
+	ModifierFrame::RecordPreModifierFrame( ri );	// DL-302
 
 	// Express the facet tilt in the hit's smooth shading frame.  The
 	// tilt angles are frame-independent facet properties; the frame
@@ -229,19 +231,24 @@ void GlintModifier::Modify( RayIntersectionGeometric& ri ) const
 
 	// Replace the shading normal and rebuild the ONB about it,
 	// PRESERVING the tangent direction (project the old u onto the new
-	// tangent plane) rather than CreateFromW's canonical-axis pick —
+	// tangent plane) rather than CreateFromW's canonical-axis pick --
 	// keeps geometry-defined tangents (bShadingTangentFromGeometry,
-	// anisotropic tangent_rotation consumers) coherent across facets.
-	const Vector3 oldU = ri.onb.u();
-	ri.vNormal = newN;
-
-	const Vector3 uProj = oldU - newN * Vector3Ops::Dot( oldU, newN );
-	if( Vector3Ops::SquaredModulus( uProj ) > Scalar(1e-12) ) {
-		ri.onb.CreateFromWU( newN, uProj );
-	} else {
-		// Degenerate only if the tilt swung the normal onto the old
-		// tangent — impossible under the 60-degree ceiling, but guard
-		// the fallback anyway.
-		ri.onb.CreateFromW( newN );
-	}
+	// anisotropic tangent_rotation consumers) coherent across facets --
+	// and restoring the incoming handedness so this modifier composes
+	// with the mirrored-instance FlipV fix instead of undoing it.  Both
+	// corrections, and why the degenerate CreateFromW fallback does NOT
+	// restore handedness, are documented on the shared helper.
+	//
+	// UNCONDITIONAL here, unlike NormalMap / ReliefModifier
+	// (which gate the projection on ModifierFrame::HasCoherentTangent).
+	// On a hit that HAS a coherent tangent the two policies agree
+	// exactly; they differ only on a tangent-less hit, and there this
+	// modifier's choice is deliberate and long-standing: a glint field
+	// perturbs the normal per-FACET, so letting the rebuild fall back to
+	// CreateFromW's canonical-axis pick on a hit with no supplied
+	// tangent would make the u/v axes jump discontinuously from facet to
+	// facet, which an anisotropic material would render as jitter.
+	// Projecting the previous u -- even an arbitrary one -- keeps the
+	// frame continuous across the field.
+	ModifierFrame::RebuildPreservingTangent( ri, newN );
 }

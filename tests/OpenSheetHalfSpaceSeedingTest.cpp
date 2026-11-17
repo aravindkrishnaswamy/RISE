@@ -1,0 +1,3880 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  OpenSheetHalfSpaceSeedingTest.cpp - DL-618 / DL-619 review fixes.
+//
+//  DL-618: a certified OPEN refractive sheet's medium (its back side,
+//  DL-345) holds a seed point iff the ray from the point along the
+//  sheet's OWN normal reaches the sheet's back face with nothing but
+//  other media in between (IORStackSeeding.h, the convention above
+//  `ClassifyMembershipHit`).  The first-pass rule seeded the sheet when
+//  ANY of six axis probes met its back face ANYWHERE along an unbounded
+//  line, walking through opaque geometry: a camera in a closed opaque
+//  room below a glass pane was seeded in glass, the result depended on
+//  which axis happened to see the sheet (not rotation invariant), and a
+//  point beside a tilted pane was seeded.
+//
+//  Part A (structural, SeedFromPoint / OpenSheetEnclosesCrossing /
+//  SMSDomainReplay::Capture on CST-loaded scenes):
+//    A1  opaque room under a pane: NOT seeded (pane-only control: seeded)
+//    A2  tilted pane: a point inside its normal prism is seeded, a point
+//        beside it whose +Y probe still meets its back face is not
+//    A3  rotating pane + points together does not change the answer
+//    A4  nested lone sheets of two materials: both, outer first
+//    A5  sibling sheets (a wedge): one entry for one material, none
+//        (declined) for two materials
+//    A6  a closed glass sphere between point and pane is transparent;
+//        a point inside it seeds [pane, sphere]
+//    A7  probe budget: 1 walk with no sheet (the pre-DL-618 cost), +1
+//        per open sheet in the scene
+//    A8  OpenSheetEnclosesCrossing: a CLOSED object sharing the sheet's
+//        material neither vetoes nor approves; an opaque room around the
+//        crossing makes the sheet's medium not continue
+//    A9  SMSDomainReplay::Capture declines a stale CLOSED key no axis
+//        ray reaches, keeps an open-sheet key off the axes
+//
+//  Part B (renders, single worker, Sobol'-salted repeats):
+//    B1  camera under a lone glass pane, a glass sphere below it: PT,
+//        BDPT and VCM agree, and PT matches the same scene with the pane
+//        replaced by a closed glass box (the half-space it models)
+//    B2  opaque room under a pane: the image equals the room without the
+//        pane, per integrator
+//    B3  DL-619 fixture (closed 2.2 box sliced by a down-facing 1.5
+//        sheet): PT+SMS == PT
+//    B5  DL-622 review: an unpushed exit off a sheet's normal prism is
+//        priced by the crossing, not the walk's history: PT == BDPT
+//    B6  DL-622 Gap 1: a camera under a rock under a pane is seeded via
+//        the free-space detour (matches the closed-box reference)
+//    B7  DL-622: HWSS companion lanes re-indexed from a hero stack
+//        holding an open sheet match independent wavelengths
+//    B8  DL-622 review: no open sheet -- HWSS companion lanes seeded as
+//        before DL-622 match independent wavelengths
+//
+//  HALF_SPACE_ONLY_NEW (env): Part B rows B5..B8 only.
+//
+//  argv[1]: seed base (default 2000).  HALF_SPACE_N (env): repeats
+//  (default 4).  HALF_SPACE_UNIT_ONLY (env): Part A only.
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <cstdio>
+#include <cstdlib>
+#include <cmath>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>
+#endif
+
+#include "../src/Library/Interfaces/IJob.h"
+#include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IScene.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/IRasterizer.h"
+#include "../src/Library/Interfaces/IRasterizerOutput.h"
+#include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Utilities/IORStack.h"
+#include "../src/Library/Utilities/IORStackSeeding.h"
+#include "../src/Library/Utilities/ManifoldSolver.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Utilities/Color/Color_Template.h"
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Rendering/RayCaster.h"
+#include "TestTempDir.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+namespace RISE
+{
+	bool RISE_CreateJobPriv( IJobPriv** ppi );
+}
+
+static int passCount = 0;
+static int failCount = 0;
+
+static void Check( bool condition, const std::string& testName )
+{
+	if( condition ) {
+		passCount++;
+	} else {
+		failCount++;
+		std::cout << "  FAIL: " << testName << std::endl;
+	}
+}
+
+static unsigned int g_seedBase = 2000;
+static unsigned int g_renderIndex = 0;
+static unsigned int g_sceneIndex = 0;
+static char g_optPath[1024];
+
+static std::string TempDir()
+{
+	return RISE::TestSupport::ScratchBaseDir();
+}
+
+static std::string TempPath( const char* tag )
+{
+	char leaf[128];
+	std::snprintf( leaf, sizeof(leaf), "/half_space_%s_%d_%u.RISEscene", tag, static_cast<int>( ::getpid() ), g_sceneIndex++ );
+	return TempDir() + leaf;
+}
+
+//////////////////////////////////////////////////////////////////////
+// Scene pieces (y up).
+//////////////////////////////////////////////////////////////////////
+static std::string HeaderBody()
+{
+	return
+		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"uniformcolor_painter\n{\n\tname grey\n\tcolor 0.5 0.5 0.5\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"uniformcolor_painter\n{\n\tname black\n\tcolor 0 0 0\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"lambertian_material\n{\n\tname matte\n\treflectance grey\n}\n\n"
+		"lambertian_material\n{\n\tname soot\n\treflectance black\n}\n\n"
+		"perfectrefractor_material\n{\n\tname glass15\n\trefractance white\n\tior 1.5\n}\n\n"
+		"perfectrefractor_material\n{\n\tname glass18\n\trefractance white\n\tior 1.8\n}\n\n"
+		"perfectrefractor_material\n{\n\tname glass133\n\trefractance white\n\tior 1.33\n}\n\n"
+		"perfectrefractor_material\n{\n\tname glass20\n\trefractance white\n\tior 2.0\n}\n\n";
+}
+
+static std::string Header()
+{
+	return "RISE ASCII SCENE 7\n" + HeaderBody();
+}
+
+//! A clipped plane with corners a, b, c, d (normal (b-a) x (c-a)).
+static std::string SheetQuad( const char* name, const double a[3], const double b[3], const double c[3], const double d[3] )
+{
+	std::ostringstream ss;
+	ss << "clippedplane_geometry\n{\n\tname " << name << "\n"
+	   << "\tpta " << a[0] << " " << a[1] << " " << a[2] << "\n"
+	   << "\tptb " << b[0] << " " << b[1] << " " << b[2] << "\n"
+	   << "\tptc " << c[0] << " " << c[1] << " " << c[2] << "\n"
+	   << "\tptd " << d[0] << " " << d[1] << " " << d[2] << "\n"
+	   << "\tdoublesided TRUE\n}\n\n";
+	return ss.str();
+}
+
+//! Horizontal half-extent `h` sheet at height `y`; `up` = normal +y.
+static std::string HSheet( const char* name, double y, double h, bool up )
+{
+	const double a[3] = { -h, y, up ? h : -h }, b[3] = { h, y, up ? h : -h };
+	const double c[3] = { h, y, up ? -h : h }, d[3] = { -h, y, up ? -h : h };
+	return SheetQuad( name, a, b, c, d );
+}
+
+//! Point (x, y) rotated by `deg` about z.
+static void RotZ( double deg, double& x, double& y )
+{
+	const double t = deg * 3.14159265358979323846 / 180.0;
+	const double nx = x * std::cos( t ) - y * std::sin( t );
+	const double ny = x * std::sin( t ) + y * std::cos( t );
+	x = nx; y = ny;
+}
+
+//! An up-facing horizontal sheet of half-extent `h` at height `y`,
+//! rotated by `deg` about the z axis through the origin.
+static std::string RotatedSheet( const char* name, double y, double h, double deg )
+{
+	double p[4][3] = { { -h, y, h }, { h, y, h }, { h, y, -h }, { -h, y, -h } };
+	for( auto& q : p ) RotZ( deg, q[0], q[1] );
+	return SheetQuad( name, p[0], p[1], p[2], p[3] );
+}
+
+static std::string Obj( const char* name, const char* geo, const char* mat, const char* position = 0 )
+{
+	std::string s = std::string( "standard_object\n{\n\tname " ) + name + "\n\tgeometry " + geo + "\n";
+	if( position ) s += std::string( "\tposition " ) + position + "\n";
+	return s + "\tmaterial " + mat + "\n}\n\n";
+}
+
+struct Loaded
+{
+	IJobPriv* job;
+	bool ok;
+	std::string path;
+	explicit Loaded( const std::string& text ) : job( 0 ), ok( false )
+	{
+		path = TempPath( "unit" );
+		{
+			std::ofstream ofs( path.c_str() );
+			ofs << text;
+		}
+		ok = RISE_CreateJobPriv( &job ) && job && job->LoadAsciiSceneViaCst( path.c_str() );
+		if( ok ) job->GetScene()->GetObjects()->PrepareForRendering();
+	}
+	~Loaded() { safe_release( job ); std::remove( path.c_str() ); }
+	const IScene& Scene() const { return *job->GetScene(); }
+	const IObject* O( const char* name ) const { return job->GetScene()->GetObjects()->GetItem( name ); }
+	IORStack Seed( const Point3& p ) const
+	{
+		IORStack s( 1.0 );
+		IORStackSeeding::SeedFromPoint( s, p, Scene() );
+		return s;
+	}
+};
+
+static bool Close( double a, double b ) { return std::fabs( a - b ) < 1e-12; }
+
+//! The index of stack entry @a i (0 = environment) through public pop/top
+//! only, so the file also builds against DL-622's parent for red-proofs.
+static Scalar IorAt( const IORStack& st, std::size_t i )
+{
+	IORStack c( st );
+	while( c.Depth() > i + 1 ) {
+		c.SetCurrentObject( c.topObject() );
+		c.pop();
+	}
+	return c.top();
+}
+
+//////////////////////////////////////////////////////////////////////
+// Part A
+//////////////////////////////////////////////////////////////////////
+static void PartA()
+{
+	std::cout << "Part A: sheet-normal membership convention" << std::endl;
+
+	// A1: a closed opaque room (y -1 .. 3) below an up-facing glass pane
+	// at y 10.  The camera inside the room cannot see the pane.
+	{
+		Loaded room( Header() + HSheet( "g_pane", 10, 3, true ) + Obj( "pane", "g_pane", "glass15" )
+			+ "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 4\n\tdepth 4\n}\n\n"
+			+ Obj( "room", "g_room", "matte", "0 1 0" ) );
+		Loaded open( Header() + HSheet( "g_pane", 10, 3, true ) + Obj( "pane", "g_pane", "glass15" ) );
+		Check( room.ok && open.ok, "A1 scenes load" );
+		if( room.ok && open.ok ) {
+			const IORStack inRoom = room.Seed( Point3( 0, 0, 0 ) );
+			Check( inRoom.Depth() == 1 && Close( inRoom.top(), 1.0 ),
+				"A1: a point in a closed opaque room below a glass pane is NOT seeded into the pane's medium" );
+			const IORStack free = open.Seed( Point3( 0, 0, 0 ) );
+			Check( free.Depth() == 2 && free.topObject() == open.O( "pane" ) && free.topIsOpenSheet() && Close( free.top(), 1.5 ),
+				"A1 control: the same point with no room is seeded 1.5" );
+		}
+	}
+
+	// A2: an up-facing pane (half-extent 1) at height 2, tilted -40 deg
+	// about z (normal (sin 40, cos 40, 0)).  (-0.5, 0, 0) projects inside
+	// it along its normal; (0.5, 0, 0) projects outside (in-plane
+	// coordinate 1.67) although its +Y probe meets the pane's back face.
+	{
+		double cx = 0, cy = 2;
+		std::string text = Header();
+		{
+			double p[4][3] = { { -1, 0, 1 }, { 1, 0, 1 }, { 1, 0, -1 }, { -1, 0, -1 } };
+			for( auto& q : p ) { RotZ( -40, q[0], q[1] ); q[0] += cx; q[1] += cy; }
+			text += SheetQuad( "g_tilt", p[0], p[1], p[2], p[3] );
+		}
+		Loaded tilt( text + Obj( "tilt", "g_tilt", "glass15" ) );
+		Check( tilt.ok, "A2 scene loads" );
+		if( tilt.ok ) {
+			const IORStack in = tilt.Seed( Point3( -0.5, 0, 0 ) );
+			const IORStack out = tilt.Seed( Point3( 0.5, 0, 0 ) );
+			Check( in.Depth() == 2 && Close( in.top(), 1.5 ), "A2: a point inside a tilted pane's normal prism is seeded" );
+			Check( out.Depth() == 1, "A2: a point outside the prism is not seeded even though its +Y probe meets the back face" );
+		}
+	}
+
+	// A3: rotation invariance.  The same pane (half-extent 3 at height 2)
+	// + points, unrotated and rotated -40 deg about z together.  Point 3
+	// lies outside the prism; rotated, its +Y probe meets the pane's back
+	// face (the first-pass any-axis rule seeded it there and not
+	// unrotated).
+	{
+		Loaded flat( Header() + RotatedSheet( "g_s", 2, 3, 0 ) + Obj( "s", "g_s", "glass15" ) );
+		Loaded rot( Header() + RotatedSheet( "g_s", 2, 3, -40 ) + Obj( "s", "g_s", "glass15" ) );
+		Check( flat.ok && rot.ok, "A3 scenes load" );
+		if( flat.ok && rot.ok ) {
+			const double pts[3][2] = { { 0.2, 0.0 }, { 2.5, 0.5 }, { 3.4, 0.0 } };
+			const bool expectIn[3] = { true, true, false };
+			for( int i = 0; i < 3; i++ ) {
+				double x = pts[i][0], y = pts[i][1];
+				const bool a = flat.Seed( Point3( x, y, 0.1 ) ).Depth() == 2;
+				RotZ( -40, x, y );
+				const bool b = rot.Seed( Point3( x, y, 0.1 ) ).Depth() == 2;
+				char label[160];
+				std::snprintf( label, sizeof(label), "A3: point %d seeded %d unrotated, %d rotated, expected %d",
+					i, int( a ), int( b ), int( expectIn[i] ) );
+				Check( a == expectIn[i] && b == expectIn[i], label );
+			}
+		}
+		// A small pane (half-extent 1 at height 2, tilted 40 deg) holds
+		// (0.2, 0) in its prism, but no axis probe from that point meets it
+		// (each misses the pane by up to sqrt(2) x the distance to its
+		// plane): per-seed axis DISCOVERY never proposed it and the answer
+		// depended on the scene's orientation.  The catalog lists every
+		// sheet, so it is seeded in both frames.
+		Loaded smallFlat( Header() + RotatedSheet( "g_s", 2, 1, 0 ) + Obj( "s", "g_s", "glass15" ) );
+		Loaded smallRot( Header() + RotatedSheet( "g_s", 2, 1, -40 ) + Obj( "s", "g_s", "glass15" ) );
+		if( smallFlat.ok && smallRot.ok ) {
+			double x = 0.2, y = 0.0;
+			const bool a = smallFlat.Seed( Point3( x, y, 0.1 ) ).Depth() == 2;
+			RotZ( -40, x, y );
+			const bool b = smallRot.Seed( Point3( x, y, 0.1 ) ).Depth() == 2;
+			Check( a && b, "A3: a small tilted pane off every probe axis is still seeded inside its prism" );
+		}
+	}
+
+	// A4: nested lone sheets of two materials, both up-facing above the
+	// point: the outer (higher) one first, the inner on top.
+	{
+		Loaded nest( Header() + HSheet( "g_hi", 4, 5, true ) + HSheet( "g_lo", 2, 5, true )
+			+ Obj( "hi", "g_hi", "glass133" ) + Obj( "lo", "g_lo", "glass15" ) );
+		Check( nest.ok, "A4 scene loads" );
+		if( nest.ok ) {
+			const IORStack s = nest.Seed( Point3( 0, 0, 0 ) );
+			Check( s.Depth() == 3 && s.ObjectAt( 1 ) == nest.O( "hi" ) && s.topObject() == nest.O( "lo" ) && Close( s.top(), 1.5 ),
+				"A4: nested lone sheets seed [outer 1.33, inner 1.5]" );
+			const IORStack between = nest.Seed( Point3( 0, 3, 0 ) );
+			Check( between.Depth() == 2 && between.topObject() == nest.O( "hi" ),
+				"A4: a point between them is in the outer sheet only" );
+		}
+	}
+
+	// A5: siblings -- an up-facing sheet above and a vertical sheet
+	// facing +x beside the point; neither is on the other's normal ray.
+	{
+		const double a[3] = { 2, -3, -3 }, b[3] = { 2, 3, -3 }, c[3] = { 2, 3, 3 }, d[3] = { 2, -3, 3 };
+		const std::string wall = SheetQuad( "g_wall", a, b, c, d );
+		Loaded same( Header() + HSheet( "g_roof", 2, 3, true ) + wall
+			+ Obj( "roof", "g_roof", "glass15" ) + Obj( "wall", "g_wall", "glass15" ) );
+		Loaded diff( Header() + HSheet( "g_roof", 2, 3, true ) + wall
+			+ Obj( "roof", "g_roof", "glass15" ) + Obj( "wall", "g_wall", "glass18" ) );
+		Check( same.ok && diff.ok, "A5 scenes load" );
+		if( same.ok && diff.ok ) {
+			const IORStack s = same.Seed( Point3( 0, 0, 0 ) );
+			Check( s.Depth() == 2 && Close( s.top(), 1.5 ), "A5: same-material sibling sheets seed ONE entry" );
+			const IORStack t = diff.Seed( Point3( 0, 0, 0 ) );
+			Check( t.Depth() == 1, "A5: different-material sibling sheets (walk-history-dependent interior) decline" );
+		}
+	}
+
+	// A6: a closed glass sphere between the point and the pane is a medium
+	// inside the pane's half-space, not a boundary of it.
+	{
+		Loaded sph( Header() + HSheet( "g_pane", 3, 3, true ) + Obj( "pane", "g_pane", "glass15" )
+			+ "sphere_geometry\n{\n\tname g_ball\n\tradius 0.5\n}\n\n" + Obj( "ball", "g_ball", "glass20", "0 1 0" ) );
+		Check( sph.ok, "A6 scene loads" );
+		if( sph.ok ) {
+			const IORStack below = sph.Seed( Point3( 0, 0, 0 ) );
+			Check( below.Depth() == 2 && below.topObject() == sph.O( "pane" ),
+				"A6: a glass sphere between the point and the pane does not block membership" );
+			const IORStack inside = sph.Seed( Point3( 0.1, 1, 0.05 ) );
+			Check( inside.Depth() == 3 && inside.ObjectAt( 1 ) == sph.O( "pane" ) && inside.topObject() == sph.O( "ball" ) && Close( inside.top(), 2.0 ),
+				"A6: a point inside the sphere seeds [pane, sphere]" );
+		}
+	}
+
+	// A7: probe budget (DL-618 review P2-1 + DL-631 opaque zero-ray skip).
+	{
+		Loaded none( Header() + HSheet( "g_floor", -1, 3, true ) + Obj( "floor", "g_floor", "matte" ) );
+		Loaded closedOnly( Header() + "sphere_geometry\n{\n\tname g_ball\n\tradius 0.5\n}\n\n" + Obj( "ball", "g_ball", "glass15", "0 -5 0" ) );
+		Loaded one( Header() + HSheet( "g_pane", 2, 3, true ) + Obj( "pane", "g_pane", "glass15" ) );
+		Check( none.ok && closedOnly.ok && one.ok, "A7 scenes load" );
+		if( none.ok && closedOnly.ok && one.ok ) {
+			IORStackSeeding::DebugResetProbeTraceCount();
+			none.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t c0 = IORStackSeeding::DebugGetProbeTraceCount();
+			IORStackSeeding::DebugResetProbeTraceCount();
+			closedOnly.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t cClosed = IORStackSeeding::DebugGetProbeTraceCount();
+			IORStackSeeding::DebugResetProbeTraceCount();
+			one.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t c1 = IORStackSeeding::DebugGetProbeTraceCount();
+			char label[200];
+			std::snprintf( label, sizeof(label),
+				"A7: probe walks: %zu opaque-only (want 0, DL-631), %zu closed-only (want 1, pre-DL-618), %zu with one open sheet (want 2)",
+				c0, cClosed, c1 );
+			Check( c0 == 0 && cClosed == 1 && c1 == 2, label );
+		}
+	}
+
+	// A8: OpenSheetEnclosesCrossing (DL-618 review P2-2).  Y = an
+	// up-facing glass pane at y 2; the walk leaves a vertical sheet of
+	// another material at the origin travelling +x.
+	{
+		const double a[3] = { 0, -1, -1 }, b[3] = { 0, -1, 1 }, c[3] = { 0, 1, 1 }, d[3] = { 0, 1, -1 };
+		const std::string vert = SheetQuad( "g_v", a, b, c, d );
+		Loaded sharing( Header() + HSheet( "g_pane", 2, 6, true ) + Obj( "pane", "g_pane", "glass15" ) + vert + Obj( "v", "g_v", "glass18" )
+			+ "sphere_geometry\n{\n\tname g_ball\n\tradius 0.5\n}\n\n" + Obj( "ball", "g_ball", "glass15", "3 0 0" ) );
+		Loaded roomed( Header() + HSheet( "g_pane", 8, 6, true ) + Obj( "pane", "g_pane", "glass15" ) + vert + Obj( "v", "g_v", "glass18" )
+			+ "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 4\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte" ) );
+		Check( sharing.ok && roomed.ok, "A8 scenes load" );
+		if( sharing.ok && roomed.ok ) {
+			Check( IORStackSeeding::OpenSheetEnclosesCrossing( sharing.O( "pane" ), sharing.O( "v" ), &sharing.Scene(),
+					Point3( 0, 0, 0 ), Vector3( 1, 0, 0 ) ),
+				"A8: a closed sphere of the pane's material ahead of the walk does not veto the pane's medium" );
+			Check( !IORStackSeeding::OpenSheetEnclosesCrossing( roomed.O( "pane" ), roomed.O( "v" ), &roomed.Scene(),
+					Point3( 0, 0, 0 ), Vector3( 1, 0, 0 ) ),
+				"A8: inside a closed opaque room the pane's medium does not continue" );
+		}
+	}
+
+	// A9: SMSDomainReplay::Capture's bounds-centre fallback (DL-618 review
+	// P3-b) applies to open-sheet keys only.
+	{
+		Loaded cap( Header() + "sphere_geometry\n{\n\tname g_ball\n\tradius 0.5\n}\n\n" + Obj( "ball", "g_ball", "glass15", "5 5 5" )
+			+ HSheet( "g_card", 0, 0.5, true ) + "standard_object\n{\n\tname card\n\tgeometry g_card\n\tposition 5 5 5\n\tmaterial glass15\n}\n\n" );
+		Check( cap.ok, "A9 scene loads" );
+		if( cap.ok ) {
+			IORStack staleClosed( 1.0 );
+			staleClosed.SetCurrentObject( cap.O( "ball" ) );
+			staleClosed.push( 1.5 );
+			SMSStartingMedia media;
+			Check( !SMSDomainReplay::Capture( cap.Scene(), Point3( 0, 0, 0 ), staleClosed, media ),
+				"A9: a CLOSED key no axis ray from the anchor reaches is stale membership and declines" );
+			IORStack sheetKey( 1.0 );
+			sheetKey.SetCurrentObject( cap.O( "card" ) );
+			sheetKey.pushOpenSheet( 1.5 );
+			SMSStartingMedia sheetMedia;
+			Check( SMSDomainReplay::Capture( cap.Scene(), Point3( 0, 0, 0 ), sheetKey, sheetMedia ) && sheetMedia.enclosing.size() == 1,
+				"A9: an OPEN-SHEET key off every axis is captured toward its bounds" );
+		}
+	}
+
+	// A10 (round 2, P2-1): a displaced (Gerstner) sea surface.  Its
+	// representative normal must be the surface's, not a flank's, and every
+	// submerged point must be seeded.
+	{
+		const std::string sea =
+			"uniformcolor_painter\n{\n\tname pnt_lo\n\tcolor 0 0 0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_hi\n\tcolor 1 1 1\n}\n\n"
+			"gerstnerwave_painter\n{\n\tname pnt_waves\n\tcolora pnt_lo\n\tcolorb pnt_hi\n\tnum_waves 6\n\tmedian_wavelength 1.0\n"
+			"\twavelength_range 2.0\n\tmedian_amplitude 0.3\n\tamplitude_power 0.8\n\twind_dir 1.0 0.35\n\tdirectional_spread 1.6\n"
+			"\tdispersion_speed 1.0\n\tseed 9\n\ttime 0.0\n}\n\n"
+			"clippedplane_geometry\n{\n\tname g_base\n\tpta -6 0 -6\n\tptb -6 0 6\n\tptc 6 0 6\n\tptd 6 0 -6\n}\n\n"
+			"displaced_geometry\n{\n\tname g_sea\n\tbase_geometry g_base\n\tdetail 64\n\tdisplacement pnt_waves\n\tdisp_scale 0.6\n\tuv_seam_fold FALSE\n}\n\n";
+		Loaded wavy( Header() + sea + Obj( "sea", "g_sea", "glass133", "0 3 0" ) );
+		Check( wavy.ok, "A10 scene loads" );
+		if( wavy.ok ) {
+			IORStackSeeding::OpenSheetCatalogEntry entry;
+			const bool found = IORStackSeeding::FindOpenSheet( wavy.Scene().GetObjects(), wavy.O( "sea" ), entry );
+			char label[200];
+			std::snprintf( label, sizeof(label), "A10: the displaced sea is catalogued with a near-vertical normal (%.4f, %.4f, %.4f)",
+				found ? entry.normal.x : -2.0, found ? entry.normal.y : -2.0, found ? entry.normal.z : -2.0 );
+			if( std::getenv( "HALF_SPACE_DEBUG" ) ) std::printf( "  debug: %s\n", label );
+			Check( found && entry.normal.y > 0.95, label );
+			{
+				const BoundingBox b = wavy.O( "sea" )->getBoundingBox();
+				const Point3 c = b.GetCenter();
+				RayIntersection xr( Ray( Point3( c.x - 20, c.y, c.z ), Vector3( 1, 0, 0 ) ), nullRasterizerState );
+				wavy.O( "sea" )->IntersectRay( xr, RISE_INFINITY, true, true, false );
+				std::printf( "  [recorded] first X-ray hit normal of the sea (the round-1 catalog normal): (%.3f, %.3f, %.3f)\n",
+					xr.geometric.bHit ? xr.geometric.UnflippedGeomNormal().x : 0.0,
+					xr.geometric.bHit ? xr.geometric.UnflippedGeomNormal().y : 0.0,
+					xr.geometric.bHit ? xr.geometric.UnflippedGeomNormal().z : 0.0 );
+			}
+			int seeded = 0, total = 0;
+			// Includes points near the sheet's edges, where a normal tilted
+			// toward a flank leaves the sheet before reaching it.
+			for( int ix = -4; ix <= 4; ix += 2 ) {
+				for( int iz = -4; iz <= 4; iz += 2 ) {
+					total++;
+					const IORStack st = wavy.Seed( Point3( 0.7 * ix, 1.0, 0.7 * iz ) );
+					if( st.Depth() == 2 && Close( st.top(), 1.33 ) ) seeded++;
+					else if( std::getenv( "HALF_SPACE_DEBUG" ) ) std::printf( "  debug: A10 miss at (%g, %g)\n", 0.7 * ix, 0.7 * iz );
+				}
+			}
+			std::snprintf( label, sizeof(label), "A10: %d of %d submerged points under the displaced sea are seeded", seeded, total );
+			Check( seeded == total, label );
+		}
+	}
+
+	// A10b (round 2, P2-1): a curved open mesh -- a symmetric tent (ridge
+	// along z at x = 0, height 1.5 over a half-width of 4).  An X ray toward
+	// the centre meets a flank (normal tilted ~21 deg toward -x); the
+	// sheet's large-scale normal is vertical.  Points under the far -x side,
+	// 3 units down, leave the sheet along the flank normal.
+	{
+		const std::string tent =
+			"indexedmesh_geometry\n{\n\tname g_tent\n"
+			"\tvertex -4 0 4\n\tvertex 0 1.5 4\n\tvertex 4 0 4\n\tvertex -4 0 -4\n\tvertex 0 1.5 -4\n\tvertex 4 0 -4\n"
+			"\ttriangle 0 1 4\n\ttriangle 0 4 3\n\ttriangle 1 2 5\n\ttriangle 1 5 4\n\tdouble_sided TRUE\n}\n\n";
+		Loaded tentScene( Header() + tent + Obj( "tent", "g_tent", "glass15", "0 3 0" ) );
+		Check( tentScene.ok, "A10b scene loads" );
+		if( tentScene.ok ) {
+			int seeded = 0, total = 0;
+			for( int iz = -2; iz <= 2; iz++ ) {
+				for( double x : { -3.6, -3.2, 3.2, 3.6 } ) {
+					total++;
+					if( tentScene.Seed( Point3( x, 0.0, 1.2 * iz ) ).Depth() == 2 ) seeded++;
+				}
+			}
+			char label[160];
+			std::snprintf( label, sizeof(label), "A10b: %d of %d points under a curved (tent) open mesh are seeded", seeded, total );
+			Check( seeded == total, label );
+		}
+	}
+
+	// A11 (round 2, P2-2): a narrow strip (width 0.2) tilted 45 deg; the
+	// point lies 1 unit behind its centre along its normal, so no axis ray
+	// from the point meets the strip.  The walk's exit resolution
+	// (PointInOpenSheetMedium) must agree with SeedFromPoint.
+	{
+		double p[4][3] = { { -0.1, 0, 3 }, { 0.1, 0, 3 }, { 0.1, 0, -3 }, { -0.1, 0, -3 } };
+		for( auto& q : p ) { RotZ( -45, q[0], q[1] ); q[1] += 2; }
+		Loaded strip( Header() + SheetQuad( "g_strip", p[0], p[1], p[2], p[3] ) + Obj( "strip", "g_strip", "glass15" ) );
+		Check( strip.ok, "A11 scene loads" );
+		if( strip.ok ) {
+			const double s45 = std::sqrt( 0.5 );
+			const Point3 behind( -s45, 2 - s45, 0 );
+			Check( strip.Seed( behind ).Depth() == 2, "A11: SeedFromPoint seeds a point behind a narrow tilted strip" );
+			Check( IORStackSeeding::PointInOpenSheetMedium( strip.O( "strip" ), strip.Scene().GetObjects(), behind ),
+				"A11: PointInOpenSheetMedium agrees with SeedFromPoint (catalog normal, not the nearest axis hit)" );
+		}
+	}
+
+	// A12 (round 2, P2-3): an opaque sphere luminaire under a sea sheet.  A
+	// BDPT light root lies ON the sphere; from its lower half the normal ray
+	// meets the sphere's own upper half from inside, which must not block.
+	{
+		Loaded lamp( Header() + HSheet( "g_sea", 4, 6, true ) + Obj( "sea", "g_sea", "glass133" )
+			+ "lambertian_luminaire_material\n{\n\tname m_lamp\n\texitance white\n\tscale 1\n\tmaterial matte\n}\n\n"
+			+ "sphere_geometry\n{\n\tname g_lamp\n\tradius 0.5\n}\n\n" + Obj( "lamp", "g_lamp", "m_lamp", "0 1 0" )
+			+ "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 2\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "6 1 0" ) );
+		Check( lamp.ok, "A12 scene loads" );
+		if( lamp.ok ) {
+			RayIntersection hit( Ray( Point3( 0.1, -2, 0.05 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			lamp.O( "lamp" )->IntersectRay( hit, RISE_INFINITY, true, true, false );
+			Check( hit.geometric.bHit, "A12: probe meets the lamp's lower half" );
+			if( hit.geometric.bHit ) {
+				// A light root passes its luminary (BDPTIntegrator, photon
+				// tracers); the geometric guess alone is recorded below.
+				IORStack low( 1.0 );
+				IORStackSeeding::SeedFromPoint( low, hit.geometric.ptIntersection, lamp.Scene(), 0, true, lamp.O( "lamp" ) );
+				std::printf( "  [recorded] A12 without the luminary (geometric guess): depth %zu\n",
+					lamp.Seed( hit.geometric.ptIntersection ).Depth() );
+				Check( low.Depth() == 2 && Close( low.top(), 1.33 ),
+					"A12: a point on the lower half of an opaque luminaire under the sea is seeded" );
+			}
+			const IORStack inRoom = lamp.Seed( Point3( 6, 1, 0 ) );
+			Check( inRoom.Depth() == 1, "A12 control: a point strictly inside a closed opaque box is still blocked" );
+		}
+	}
+
+	// A13 (round 2, P2-5): the walk is in the sea (Y, up-facing at 5) and
+	// leaves an underwater pane of another material through its back face
+	// below an opaque rock overhang.  The sea's back face lies beyond the
+	// rock: the sea's medium continues.
+	{
+		Loaded reef( Header() + HSheet( "g_sea", 5, 6, true ) + Obj( "sea", "g_sea", "glass133" )
+			+ HSheet( "g_pane", 1, 1, true ) + Obj( "pane", "g_pane", "glass15" )
+			+ "box_geometry\n{\n\tname g_rock\n\twidth 2\n\theight 1\n\tdepth 2\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 2.5 0" ) );
+		Check( reef.ok, "A13 scene loads" );
+		if( reef.ok ) {
+			Check( IORStackSeeding::OpenSheetEnclosesCrossing( reef.O( "sea" ), reef.O( "pane" ), &reef.Scene(),
+					Point3( 0.2, 1, 0.1 ), Vector3( 0, 1, 0 ) ),
+				"A13: an opaque overhang between the crossing and the sea's back face does not pop the sea" );
+		}
+	}
+
+	// A14 (round 2, P3-a; updated by DL-622 (3)): dynamic open-sheet vector
+	// orders arbitrary numbers of nested sheets without an 8-sheet cap.
+	{
+		std::string many = Header(), few = Header();
+		for( int k = 1; k <= 9; k++ ) {
+			char g[16], o[16];
+			std::snprintf( g, sizeof(g), "g_s%d", k );
+			std::snprintf( o, sizeof(o), "s%d", k );
+			many += HSheet( g, k, 5, true ) + Obj( o, g, "glass15" );
+			if( k <= 3 ) few += HSheet( g, k, 5, true ) + Obj( o, g, "glass15" );
+		}
+		Loaded l9( many ), l3( few );
+		Check( l9.ok && l3.ok, "A14 scenes load" );
+		if( l9.ok && l3.ok ) {
+			Check( l3.Seed( Point3( 0, 0, 0 ) ).Depth() == 4, "A14 control: three nested sheets seed three entries" );
+			const IORStack st9 = l9.Seed( Point3( 0, 0, 0 ) );
+			bool order9 = ( st9.Depth() == 10 );
+			for( int k = 1; order9 && k <= 9; k++ ) {
+				char o[16];
+				std::snprintf( o, sizeof(o), "s%d", k );
+				order9 = ( st9.ObjectAt( std::size_t( 10 - k ) ) == l9.O( o ) );
+			}
+			Check( order9, "A14: nine nested sheets are ordered s9..s1 and seeded (DL-622 (3))" );
+		}
+	}
+
+	// A16 (round 3): a material-only edit (opaque -> glass) does not move the
+	// spatial generation; the next PrepareForRendering must rebuild the
+	// open-sheet catalog.
+	{
+		Loaded edit( Header() + HSheet( "g_pane", 2, 3, true ) + Obj( "pane", "g_pane", "matte" ) );
+		Check( edit.ok, "A16 scene loads" );
+		if( edit.ok ) {
+			Check( edit.Seed( Point3( 0, 0, 0 ) ).Depth() == 1, "A16 control: an opaque pane is not an open sheet" );
+			IObjectPriv* pane = edit.job->GetObjects()->GetItem( "pane" );
+			const IMaterial* glass = edit.job->GetMaterials()->GetItem( "glass15" );
+			Check( pane && glass, "A16: pane and glass found" );
+			if( pane && glass ) pane->AssignMaterial( *glass );   // returns false by contract (Object::AssignMaterial)
+			edit.job->GetScene()->GetObjects()->PrepareForRendering();
+			const IORStack after = edit.Seed( Point3( 0, 0, 0 ) );
+			Check( after.Depth() == 2 && Close( after.top(), 1.5 ),
+				"A16: after PrepareForRendering the swapped-in glass pane seeds the point under it" );
+		}
+	}
+
+	// A17 (round 3, P3-c): an HWSS companion lane delegating the first
+	// segment.  The camera (0.9, 0, 0) is inside a pane's normal prism
+	// (pane half-extent 1 at height 2); the segment's midpoint toward a wall
+	// at x 5 is outside it.  The lane must follow the hero's seed.
+	{
+		Loaded prism( Header() + HSheet( "g_pane", 2, 1, true ) + Obj( "pane", "g_pane", "glass15" ) );
+		Check( prism.ok, "A17 scene loads" );
+		if( prism.ok ) {
+			const Point3 origin( 0.9, 0, 0 ), midpoint( 2.95, 0, 0 );
+			const IORStack hero = prism.Seed( origin );
+			IORStack lane( 1.0 );
+			IORStackSeeding::SeedCompanionLane( lane, hero, origin, midpoint, prism.Scene(), 550 );
+			const IORStack atMid = prism.Seed( midpoint );
+			char label[200];
+			std::snprintf( label, sizeof(label), "A17: hero depth %zu, companion lane depth %zu (midpoint seed alone: %zu)",
+				hero.Depth(), lane.Depth(), atMid.Depth() );
+			Check( hero.Depth() == 2 && lane.Depth() == 2 && lane.topObject() == hero.topObject() && atMid.Depth() == 1, label );
+		}
+	}
+
+	// A18 (round 3, P3-1): a point on the inside of a standing opaque ring
+	// (a torus, axis along z), at the bottom of its hole.  The normal ray up
+	// crosses the hole and ENTERS the same ring at the top before reaching a
+	// pond sheet above: the ring blocks.  Only the ray's first exit from the
+	// seed's own body is skipped (A12).
+	{
+		Loaded ring( Header() + HSheet( "g_pond", 4, 5, true ) + Obj( "pond", "g_pond", "glass133" )
+			+ "torus_geometry\n{\n\tname g_ring\n\tmajorradius 1.0\n\tminorratio 0.3\n}\n\n"
+			+ "standard_object\n{\n\tname ring\n\tgeometry g_ring\n\tposition 0 1.5 0\n\torientation 90 0 0\n\tmaterial matte\n}\n\n" );
+		Check( ring.ok, "A18 scene loads" );
+		if( ring.ok ) {
+			RayIntersection hit( Ray( Point3( 0.02, 1.5, 0.01 ), Vector3( 0, -1, 0 ) ), nullRasterizerState );
+			ring.O( "ring" )->IntersectRay( hit, RISE_INFINITY, true, true, false );
+			Check( hit.geometric.bHit && std::fabs( hit.geometric.ptIntersection.y - 0.8 ) < 0.05,
+				"A18: probe meets the ring's inner surface at the bottom of its hole" );
+			if( hit.geometric.bHit ) {
+				Check( ring.Seed( hit.geometric.ptIntersection ).Depth() == 1,
+					"A18: the seed's own object blocks once the normal ray re-enters it" );
+			}
+		}
+	}
+
+	// A19 (round 3 review, P2-a): a TESSELLATED sphere luminaire (a mesh,
+	// whose intersector may report the point's own facet at t ~ 0) under a
+	// sea sheet.  A near-origin self-hit must not consume the own-body
+	// exemption that the later exit through the sphere's top needs.
+	{
+		Loaded mesh( Header() + HSheet( "g_sea", 4, 6, true ) + Obj( "sea", "g_sea", "glass133" )
+			+ "lambertian_luminaire_material\n{\n\tname m_lamp\n\texitance white\n\tscale 1\n\tmaterial matte\n}\n\n"
+			+ "uniformcolor_painter\n{\n\tname pnt_zero\n\tcolor 0 0 0\n}\n\n"
+			+ "sphere_geometry\n{\n\tname g_ball\n\tradius 0.5\n}\n\n"
+			+ "displaced_geometry\n{\n\tname g_mesh\n\tbase_geometry g_ball\n\tdetail 24\n\tdisplacement pnt_zero\n\tdisp_scale 0.0\n}\n\n"
+			+ "sdf_geometry\n{\n\tname g_sdf\n\tpart sphere union 0 0 0 0 0 0 0 1 1 1 0.5 0 0 0\n\tsampling_detail 64\n}\n\n"
+			+ Obj( "lamp", "g_mesh", "m_lamp", "0 1 0" ) + Obj( "sdflamp", "g_sdf", "m_lamp", "3 1 0" ) );
+		Check( mesh.ok, "A19 scene loads" );
+		if( mesh.ok ) {
+			int seeded = 0, total = 0;
+			for( int k = 0; k < 12; k++ ) {
+				const bool sdf = k >= 6;
+				const double ox = sdf ? 3.0 : 0.0;
+				RayIntersection hit( Ray( Point3( ox + 0.05 * ( k % 6 ) - 0.12, -2, 0.03 * ( k % 6 ) - 0.07 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+				mesh.O( sdf ? "sdflamp" : "lamp" )->IntersectRay( hit, RISE_INFINITY, true, true, false );
+				if( !hit.geometric.bHit ) continue;
+				total++;
+				IORStack st( 1.0 );
+				IORStackSeeding::SeedFromPoint( st, hit.geometric.ptIntersection, mesh.Scene(), 0, true, mesh.O( sdf ? "sdflamp" : "lamp" ) );
+				if( st.Depth() == 2 && Close( st.top(), 1.33 ) ) seeded++;
+			}
+			char label[160];
+			std::snprintf( label, sizeof(label), "A19: %d of %d points on the lower halves of a tessellated and an SDF luminaire are seeded", seeded, total );
+			Check( total > 0 && seeded == total, label );
+		}
+	}
+
+	// A20 (round 3 review, P2-b): keyframed clipped-plane corners move a
+	// sheet without moving its transform, outside any time-indexed pass.
+	// PosedOpenSheet must re-describe it.
+	{
+		Loaded kf( Header() + HSheet( "g_pane", 2, 1, true ) + Obj( "pane", "g_pane", "glass15" ) );
+		Check( kf.ok, "A20 scene loads" );
+		if( kf.ok ) {
+			IORStackSeeding::OpenSheetCatalogEntry before;
+			const bool found = IORStackSeeding::FindOpenSheet( kf.Scene().GetObjects(), kf.O( "pane" ), before );
+			IKeyframable* geom = dynamic_cast<IKeyframable*>( kf.job->GetGeometries()->GetItem( "g_pane" ) );
+			Check( found && geom, "A20: pane catalogued and keyframable" );
+			if( found && geom ) {
+				// Tilt the pane 40 deg about z by moving its corners.
+				double p[4][3] = { { -1, 0, 1 }, { 1, 0, 1 }, { 1, 0, -1 }, { -1, 0, -1 } };
+				const char* names[4] = { "pta", "ptb", "ptc", "ptd" };
+				for( int c = 0; c < 4; c++ ) {
+					RotZ( -40, p[c][0], p[c][1] );
+					p[c][1] += 2;
+					char value[96];
+					std::snprintf( value, sizeof(value), "%g %g %g", p[c][0], p[c][1], p[c][2] );
+					IKeyframeParameter* kp = geom->KeyframeFromParameters( names[c], value );
+					if( kp ) { geom->SetIntermediateValue( *kp ); kp->release(); }
+				}
+				geom->RegenerateData();
+				IORStackSeeding::OpenSheetCatalogEntry after;
+				Check( IORStackSeeding::PosedOpenSheet( before, after ), "A20: re-posed sheet present" );
+				char label[200];
+				std::snprintf( label, sizeof(label), "A20: re-posed normal (%.3f, %.3f, %.3f), expected (0.643, 0.766, 0)",
+					after.normal.x, after.normal.y, after.normal.z );
+				Check( std::fabs( after.normal.x - 0.6428 ) < 0.01 && std::fabs( after.normal.y - 0.7660 ) < 0.01, label );
+			}
+		}
+	}
+
+	// A21 (round 3 review, P3-1): an emitter quad lying 1e-3 above
+	// the floor of a closed opaque room, a pond sheet above the room.  The
+	// room's ceiling is the normal ray's first opaque event, an exit; the
+	// room's floor passes within the back probe's reach but not through the
+	// seed point, so the room is not the seed's own body and blocks.
+	{
+		Loaded flush( Header() + HSheet( "g_pond", 6, 6, true ) + Obj( "pond", "g_pond", "glass133" )
+			+ "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "0 1.5 0" )
+			+ "lambertian_luminaire_material\n{\n\tname m_lamp\n\texitance white\n\tscale 1\n\tmaterial matte\n}\n\n"
+			+ HSheet( "g_lamp", 0.001, 0.5, true ) + Obj( "lamp", "g_lamp", "m_lamp" ) );
+		Check( flush.ok, "A21 scene loads" );
+		if( flush.ok ) {
+			RayIntersection hit( Ray( Point3( 0.1, 1, 0.05 ), Vector3( 0, -1, 0 ) ), nullRasterizerState );
+			flush.O( "lamp" )->IntersectRay( hit, RISE_INFINITY, true, true, false );
+			Check( hit.geometric.bHit, "A21: probe meets the flush emitter" );
+			if( hit.geometric.bHit ) {
+				Check( flush.Seed( hit.geometric.ptIntersection ).Depth() == 1,
+					"A21: a flush emitter inside a closed room is not seeded into the pond above the room" );
+			}
+		}
+	}
+
+	// A22 (round 3 final, P3-1; updated by DL-622 (4)): an emitter quad 5e-5
+	// above the floor of a closed opaque room, a pond above the room.  With
+	// the geometric own-body guess removed (DL-622 (4)), both the explicit
+	// pSeedObject call and the no-seed-object call reject the room's ceiling,
+	// while an SDF luminaire's lower half under the pond is still seeded when
+	// pSeedObject is passed.
+	{
+		Loaded flush( Header() + HSheet( "g_pond", 6, 6, true ) + Obj( "pond", "g_pond", "glass133" )
+			+ "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "0 1.5 0" )
+			+ "lambertian_luminaire_material\n{\n\tname m_lamp\n\texitance white\n\tscale 1\n\tmaterial matte\n}\n\n"
+			+ HSheet( "g_lamp", 0.00005, 0.5, true ) + Obj( "lamp", "g_lamp", "m_lamp" )
+			+ "sdf_geometry\n{\n\tname g_sdf\n\tpart sphere union 0 0 0 0 0 0 0 1 1 1 0.5 0 0 0\n\tsampling_detail 64\n}\n\n"
+			+ Obj( "sdflamp", "g_sdf", "m_lamp", "3.5 1 0" ) );
+		Check( flush.ok, "A22 scene loads" );
+		if( flush.ok ) {
+			RayIntersection hit( Ray( Point3( 0.1, 1, 0.05 ), Vector3( 0, -1, 0 ) ), nullRasterizerState );
+			flush.O( "lamp" )->IntersectRay( hit, RISE_INFINITY, true, true, false );
+			Check( hit.geometric.bHit, "A22: probe meets the flush emitter" );
+			if( hit.geometric.bHit ) {
+				IORStack withObject( 1.0 );
+				IORStackSeeding::SeedFromPoint( withObject, hit.geometric.ptIntersection, flush.Scene(), 0, true, flush.O( "lamp" ) );
+				Check( withObject.Depth() == 1,
+					"A22: with the luminary passed, an emitter 5e-5 above a closed room's floor is not seeded into the pond" );
+				const IORStack noObject = flush.Seed( hit.geometric.ptIntersection );
+				Check( noObject.Depth() == 1,
+					"A22 (DL-622 (4)): without pSeedObject, the geometric own-body guess is gone and the point is also not seeded" );
+			}
+			RayIntersection sdfHit( Ray( Point3( 3.48, -2, -0.07 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			flush.O( "sdflamp" )->IntersectRay( sdfHit, RISE_INFINITY, true, true, false );
+			if( sdfHit.geometric.bHit ) {
+				IORStack sdfSeed( 1.0 );
+				IORStackSeeding::SeedFromPoint( sdfSeed, sdfHit.geometric.ptIntersection, flush.Scene(), 0, true, flush.O( "sdflamp" ) );
+				Check( sdfSeed.Depth() == 2 && Close( sdfSeed.top(), 1.33 ),
+					"A22: an SDF luminaire's lower half under the pond is seeded with the luminary passed" );
+			}
+		}
+	}
+
+	// A23 (round 3 review, P2-1): a camera inside a closed room built from
+	// SEPARATE outward-wound clipped-plane quads, a pond above.  A quad is an
+	// open surface: an exit through it never makes the seed "on its body",
+	// so the ceiling blocks.
+	{
+		std::string room = Header() + HSheet( "g_pond", 5, 6, true ) + Obj( "pond", "g_pond", "glass133" );
+		// Six quads of the box x,z in [-2,2], y in [0,3], normals outward.
+		const double faces[6][4][3] = {
+			{ { -2, 3, 2 }, { 2, 3, 2 }, { 2, 3, -2 }, { -2, 3, -2 } },		// ceiling, +y
+			{ { -2, 0, -2 }, { 2, 0, -2 }, { 2, 0, 2 }, { -2, 0, 2 } },		// floor, -y
+			{ { 2, 0, -2 }, { 2, 3, -2 }, { 2, 3, 2 }, { 2, 0, 2 } },		// +x
+			{ { -2, 0, 2 }, { -2, 3, 2 }, { -2, 3, -2 }, { -2, 0, -2 } },	// -x
+			{ { -2, 0, 2 }, { 2, 0, 2 }, { 2, 3, 2 }, { -2, 3, 2 } },		// +z
+			{ { 2, 0, -2 }, { -2, 0, -2 }, { -2, 3, -2 }, { 2, 3, -2 } }		// -z
+		};
+		for( int f = 0; f < 6; f++ ) {
+			char g[16], o[16];
+			std::snprintf( g, sizeof(g), "g_wall%d", f );
+			std::snprintf( o, sizeof(o), "wall%d", f );
+			room += SheetQuad( g, faces[f][0], faces[f][1], faces[f][2], faces[f][3] ) + Obj( o, g, "matte" );
+		}
+		// A24 (round 3 review, P1): the same room in a scene that also holds
+		// an infinite plane (unbounded bounds must not inflate the self-hit
+		// tolerance into one that skips the ceiling).
+		{
+			Loaded withPlane( room + "infiniteplane_geometry\n{\n\tname g_inf\n\txtile 1\n\tytile 1\n}\n\n"
+				+ Obj( "inf", "g_inf", "matte", "0 -10 -50" ) );
+			Check( withPlane.ok, "A24 scene loads" );
+			if( withPlane.ok ) {
+				Check( withPlane.Seed( Point3( 0.1, 1, 0.05 ) ).Depth() == 1,
+					"A24: with an infinite plane in the scene, the camera in the quad room is still not seeded" );
+			}
+		}
+		Loaded quads( room );
+		Check( quads.ok, "A23 scene loads" );
+		if( quads.ok ) {
+			RayIntersection up( Ray( Point3( 0.1, 1, 0.05 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			quads.O( "wall0" )->IntersectRay( up, RISE_INFINITY, true, true, false );
+			Check( up.geometric.bHit && up.geometric.TrueGeomFacing( Vector3( 0, 1, 0 ) ) > 0,
+				"A23 fixture: the ceiling quad's true normal points up (outward)" );
+			Check( quads.Seed( Point3( 0.1, 1, 0.05 ) ).Depth() == 1,
+				"A23: a camera inside a room of outward-wound quads is not seeded into the pond above" );
+		}
+	}
+
+	// A25 (round 3 review, P2): a camera 0.05 below the ceiling of a closed
+	// opaque room in a scene ~7000 units across, a pond above the room.  The
+	// self-hit tolerance must not grow with the scene's size into a length
+	// that skips the ceiling.
+	{
+		Loaded big( Header() + HSheet( "g_pond", 6, 8, true ) + Obj( "pond", "g_pond", "glass133" )
+			+ "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "0 1.5 0" )
+			+ "sphere_geometry\n{\n\tname g_far\n\tradius 1\n}\n\n" + Obj( "far", "g_far", "matte", "7000 0 0" ) );
+		Check( big.ok, "A25 scene loads" );
+		if( big.ok ) {
+			Check( big.Seed( Point3( 0.1, 2.95, 0.05 ) ).Depth() == 1,
+				"A25: a camera 0.05 below a closed room's ceiling in a 7000-unit scene is not seeded into the pond" );
+		}
+	}
+
+	// A26 (round 3 review): the infinite-bounds filter on the scene size.
+	// A small scene FAR from the origin (x = 1e6) holding an infinite plane:
+	// the scene diagonal must be the bounded objects' (finite), so the
+	// self-hit cap (1e-5 x diagonal ~ 2e-4) binds instead of 1e-7 x 1e6 =
+	// 0.1, which would step over a closed room's ceiling 0.05 above the
+	// camera and seed it into the pond above the room.
+	{
+		Loaded farScene( Header() + HSheet( "g_pond", 6, 8, true ) + Obj( "pond", "g_pond", "glass133", "1000000 0 0" )
+			+ "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "1000000 1.5 0" )
+			+ "infiniteplane_geometry\n{\n\tname g_inf\n\txtile 1\n\tytile 1\n}\n\n" + Obj( "inf", "g_inf", "matte", "1000000 -10 -50" ) );
+		Check( farScene.ok, "A26 scene loads" );
+		if( farScene.ok ) {
+			const Scalar diag = IORStackSeeding::SceneLengthScale( farScene.Scene().GetObjects() );
+			char label[200];
+			std::snprintf( label, sizeof(label), "A26: scene diagonal %g is the bounded objects' (finite, < 100)", diag );
+			Check( std::isfinite( diag ) && diag > 1 && diag < 100, label );
+			Check( farScene.Seed( Point3( 1000000.1, 2.95, 0.05 ) ).Depth() == 1,
+				"A26: a camera 0.05 below the ceiling of a room at x = 1e6 (infinite plane in the scene) is not seeded" );
+		}
+	}
+
+	// A15 (round 2, P2-4): a point on a sheet's FRONT side is rejected
+	// without a scene walk.
+	{
+		Loaded above( Header() + HSheet( "g_pane", -1, 3, true ) + Obj( "pane", "g_pane", "glass15" ) );
+		if( above.ok ) {
+			IORStackSeeding::DebugResetProbeTraceCount();
+			above.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t c = IORStackSeeding::DebugGetProbeTraceCount();
+			char label[160];
+			std::snprintf( label, sizeof(label), "A15: probe walks above a sheet: %zu (want 1, no normal-ray walk)", c );
+			Check( c == 1, label );
+		}
+	}
+
+	// A27 (DL-622 (1)): a point in free water under a submerged opaque rock
+	// (closed box) or under a submerged open opaque canopy (clipped plane)
+	// inside an open sea sheet's half-space is seeded via HasFreeSpaceDetourToSheet;
+	// and a walk that entered `sea` and moved laterally outside `sea`'s
+	// normal prism keeps `sea` on `ResolveUnpushedExit` when crossing a
+	// different-material sheet `pane`.
+	{
+		Loaded sub( Header()
+			+ HSheet( "g_sea", 5, 6, true ) + Obj( "sea", "g_sea", "glass133" )
+			+ "box_geometry\n{\n\tname g_rock\n\twidth 2\n\theight 1\n\tdepth 2\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 2.5 0" )
+			+ HSheet( "g_canopy", 2.5, 1.0, true ) + Obj( "canopy", "g_canopy", "matte", "3.5 0 0" )
+			+ HSheet( "g_pane", 1, 1, true ) + Obj( "pane", "g_pane", "glass15", "12 0 0" ) );
+		Check( sub.ok, "A27 scene loads" );
+		if( sub.ok ) {
+			const IORStack underRock = sub.Seed( Point3( 0, 0, 0 ) );
+			Check( underRock.Depth() == 2 && underRock.topObject() == sub.O( "sea" ) && Close( underRock.top(), 1.33 ),
+				"A27: a point under a submerged closed opaque rock is seeded into the sea via lateral detour" );
+			const IORStack inRock = sub.Seed( Point3( 0, 2.5, 0 ) );
+			Check( inRock.Depth() == 1,
+				"A27 control: a point strictly inside the submerged opaque rock is NOT seeded" );
+			const IORStack underCanopy = sub.Seed( Point3( 3.5, 0, 0 ) );
+			Check( underCanopy.Depth() == 2 && underCanopy.topObject() == sub.O( "sea" ) && Close( underCanopy.top(), 1.33 ),
+				"A27: a point under a submerged open opaque canopy is seeded into the sea via lateral detour" );
+
+			// DL-622 review: an unpushed exit is resolved by the CROSSING, not
+			// by the walk's history.  Two walks that entered the sea at
+			// different points (above the rock; above the canopy) cross an
+			// unrelated pane's back face at x = 12, outside the sea's normal
+			// prism: both leave the sea there, exactly as a seed just past
+			// the crossing is not in it (the eye walk, a light walk and a
+			// seed must price one point with one index).
+			const Point3 pAfter( 12, 1.001, 0 );
+			const IORStack seedAfter = sub.Seed( pAfter );
+			Check( seedAfter.Depth() == 1, "A27 fixture: a seed just above the off-prism pane is not in the sea" );
+			const IORStack histories[2] = { underRock, underCanopy };
+			for( int h = 0; h < 2; h++ ) {
+				IORStack walkStack = histories[h];
+				walkStack.SetMediumProbeScene( &sub.Scene() );
+				walkStack.SetCurrentObject( sub.O( "pane" ) );
+				RayIntersection exitHit( Ray( Point3( 12, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+				sub.O( "pane" )->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
+				Check( exitHit.geometric.bHit, "A27: probe hits off-prism underwater pane" );
+				if( exitHit.geometric.bHit ) {
+					const IORStackSeeding::OpenSheetCrossing cross =
+						IORStackSeeding::ResolveOpenSheetCrossing( exitHit.geometric, 1.5, walkStack );
+					Check( !cross.bEntering && walkStack.Depth() == seedAfter.Depth() && Close( cross.etaTo, seedAfter.top() ),
+						h == 0 ? "A27: an unpushed exit off the sea's prism agrees with a seed past it (walk entered above the rock)"
+							: "A27: an unpushed exit off the sea's prism agrees with a seed past it (walk entered above the canopy)" );
+				}
+			}
+		}
+		// Nested narrower inner sheet (y=1.5, half-width 0.5) below two stacked
+		// submerged opaque rocks (y=2.5 width 2, y=3.8 width 3.2) under sea (y=5):
+		Loaded subNested( Header()
+			+ HSheet( "g_sea", 5, 6, true ) + Obj( "sea", "g_sea", "glass133" )
+			+ HSheet( "g_inner", 1.5, 0.5, true ) + Obj( "inner", "g_inner", "glass15" )
+			+ "box_geometry\n{\n\tname g_rock1\n\twidth 2\n\theight 0.6\n\tdepth 2\n}\n\n" + Obj( "rock1", "g_rock1", "matte", "0 2.5 0" )
+			+ "box_geometry\n{\n\tname g_rock2\n\twidth 3.2\n\theight 0.6\n\tdepth 3.2\n}\n\n" + Obj( "rock2", "g_rock2", "matte", "0 3.8 0" ) );
+		Check( subNested.ok, "A27 nested-detour scene loads" );
+		if( subNested.ok ) {
+			const IORStack stNested = subNested.Seed( Point3( 0, 0, 0 ) );
+			Check( stNested.Depth() == 3 &&
+				stNested.ObjectAt( 1 ) == subNested.O( "sea" ) && Close( IorAt( stNested, 1 ), 1.33 ) &&
+				stNested.ObjectAt( 2 ) == subNested.O( "inner" ) && Close( IorAt( stNested, 2 ), 1.5 ),
+				"A27: detour around stacked obstacles preserves pre-obstacle inner sheet in passedSheets ordering" );
+		}
+	}
+
+	// A28 (DL-622 (2)): folded and overhanging open sheets:
+	//  (a) an L-folded open mesh (horizontal roof y=3, x in [-3,0] with +y
+	//      normal; vertical wall x=0, y in [0,3] with +x normal) seeds points
+	//      under the roof including (-2.8, 2.5, 0), which lies outside the
+	//      global least-squares normal prism;
+	//  (b) a 3-pleat S-folded open mesh (y=1 +y, y=2 -y, y=3 +y) seeds a point
+	//      below all three pleats (2 back, 1 front -> signed parity +1 > 0),
+	//      while a 2-pleat C-folded air tube (y=1 -y, y=2 +y) does NOT seed
+	//      a point below both pleats (1 front, 1 back -> signed parity 0).
+	{
+		const std::string lFold =
+			"indexedmesh_geometry\n{\n\tname g_lfold\n\tdouble_sided TRUE\n\tface_normals TRUE\n"
+			"\tvertex -3 3  3\n\tvertex  0 3  3\n\tvertex  0 3 -3\n\tvertex -3 3 -3\n"
+			"\tvertex  0 0  3\n\tvertex  0 0 -3\n"
+			"\tuv 0 0\n\tuv 1 0\n\tuv 1 1\n\tuv 0 1\n\tuv 0 0\n\tuv 1 1\n"
+			"\ttriangle 0 1 2\n\ttriangle 0 2 3\n"
+			"\ttriangle 4 5 2\n\ttriangle 4 2 1\n"
+			"}\n\n";
+		const std::string sFoldAccordion =
+			"indexedmesh_geometry\n{\n\tname g_sacc\n\tdouble_sided TRUE\n\tface_normals TRUE\n"
+			"\tvertex -3 1  3\n\tvertex  3 1  3\n\tvertex  3 1 -3\n\tvertex -3 1 -3\n"
+			"\tvertex -3 2  3\n\tvertex -3 2 -3\n"
+			"\tvertex  3 3  3\n\tvertex  3 3 -3\n"
+			"\tuv 0 0\n\tuv 1 0\n\tuv 1 1\n\tuv 0 1\n\tuv 0 0\n\tuv 1 0\n\tuv 1 1\n\tuv 0 1\n"
+			"\ttriangle 0 1 2\n\ttriangle 0 2 3\n"	// bottom pleat (-3..3, y=1), normal +y
+			"\ttriangle 1 4 5\n\ttriangle 1 5 2\n"	// middle pleat (3->-3, y=1..2), normal (-1/sqrt(37), -6/sqrt(37), 0) -> -y
+			"\ttriangle 4 6 7\n\ttriangle 4 7 5\n"	// top pleat (-3->3, y=2..3), normal (-1/sqrt(37), +6/sqrt(37), 0) -> +y
+			"}\n\n";
+		const std::string cFoldTube =
+			"indexedmesh_geometry\n{\n\tname g_ctube\n\tdouble_sided TRUE\n\tface_normals TRUE\n"
+			"\tvertex -3 1  3\n\tvertex  3 1  3\n\tvertex  3 1 -3\n\tvertex -3 1 -3\n"
+			"\tvertex -3 2  3\n\tvertex -3 2 -3\n"
+			"\tuv 0 0\n\tuv 1 0\n\tuv 1 1\n\tuv 0 1\n\tuv 0 0\n\tuv 1 1\n"
+			"\ttriangle 0 3 2\n\ttriangle 0 2 1\n"	// bottom pleat (-3..3, y=1), normal -y (front hit from below!)
+			"\ttriangle 1 2 5\n\ttriangle 1 5 4\n"	// top pleat (3->-3, y=1..2), normal +y (back hit from below!)
+			"}\n\n";
+		Loaded lf( Header() + lFold + Obj( "lfold", "g_lfold", "glass15" ) );
+		Loaded sf( Header() + sFoldAccordion + Obj( "sacc", "g_sacc", "glass15" ) );
+		Loaded cf( Header() + cFoldTube + Obj( "ctube", "g_ctube", "glass15" ) );
+		Check( lf.ok && sf.ok && cf.ok, "A28 scenes load" );
+		if( lf.ok && sf.ok && cf.ok ) {
+			const IORStack stCorner = lf.Seed( Point3( -2.8, 2.5, 0 ) );
+			Check( stCorner.Depth() == 2 && Close( stCorner.top(), 1.5 ),
+				"A28a: L-folded overhanging sheet seeds a point under its horizontal lip outside the global normal prism" );
+			const IORStack stInner = lf.Seed( Point3( -1.5, 1.5, 0 ) );
+			Check( stInner.Depth() == 2 && Close( stInner.top(), 1.5 ),
+				"A28a: L-folded sheet seeds an interior point in the corner of both facets" );
+			const IORStack stOut = lf.Seed( Point3( 1.0, 2.5, 0 ) );
+			Check( stOut.Depth() == 1,
+				"A28a control: L-folded sheet declines a point outside both facets' normal prisms" );
+			const IORStack stS = sf.Seed( Point3( 0, 0, 0 ) );
+			Check( stS.Depth() == 2 && Close( stS.top(), 1.5 ),
+				"A28b: 3-pleat S-folded sheet (2 back, 1 front along normal) seeds a point below all pleats" );
+			const IORStack stC = cf.Seed( Point3( 0, 0, 0 ) );
+			Check( stC.Depth() == 1,
+				"A28b control: 2-pleat C-folded air tube (1 front, 1 back along normal) does NOT seed a point below it" );
+		}
+	}
+
+	// A29 (DL-622 (1)/(2)): SeedCompanionLane re-indexes a walk-carried
+	// dispersive stack in 0 scene ray walks, preserving membership under an
+	// opaque rock and outside an open sheet's normal prism.
+	{
+		const std::string dispHeader = Header()
+			+ "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n";
+		Loaded disp( dispHeader + HSheet( "g_pane", 2, 1, true ) + Obj( "pane", "g_pane", "glass_disp" ) );
+		Check( disp.ok, "A29 scene loads" );
+		if( disp.ok ) {
+			IORStack hero( 1.0 );
+			IORStackSeeding::SeedFromPoint( hero, Point3( 0, 0, 0 ), disp.Scene(), 550 );
+			Check( hero.Depth() == 2, "A29: hero seeded at (0,0,0)" );
+			// Walk moves laterally to (10, 0, 0), far outside the pane's [-1, 1] prism:
+			const Point3 farOrigin( 10, 0, 0 ), farMid( 12, 0, 0 );
+			IORStackSeeding::DebugResetProbeTraceCount();
+			IORStack lane450( 1.0 ), lane650( 1.0 );
+			IORStackSeeding::SeedCompanionLane( lane450, hero, farOrigin, farMid, disp.Scene(), 450 );
+			IORStackSeeding::SeedCompanionLane( lane650, hero, farOrigin, farMid, disp.Scene(), 650 );
+			const std::size_t walks = IORStackSeeding::DebugGetProbeTraceCount();
+			Check( walks == 0 && lane450.Depth() == 2 && lane650.Depth() == 2 && lane450.top() != lane650.top(),
+				"A29: SeedCompanionLane re-indexes dispersive open-sheet membership outside the normal prism in 0 ray walks" );
+		}
+	}
+
+	// A30 (DL-622 (3)): 12 nested open sheets at a point are all seeded in
+	// exact outer-to-inner order without any 8-sheet truncation or decline.
+	{
+		std::string s12 = Header();
+		const char* mats[3] = { "glass133", "glass15", "glass20" };
+		const double iors[3] = { 1.33, 1.5, 2.0 };
+		for( int k = 1; k <= 12; k++ ) {
+			char g[16], o[16];
+			std::snprintf( g, sizeof(g), "g_n%d", k );
+			std::snprintf( o, sizeof(o), "n%d", k );
+			s12 += HSheet( g, k, 6, true ) + Obj( o, g, mats[k % 3] );
+		}
+		Loaded l12( s12 );
+		Check( l12.ok, "A30 scene loads" );
+		if( l12.ok ) {
+			const IORStack st = l12.Seed( Point3( 0, 0, 0 ) );
+			bool orderOk = ( st.Depth() == 13 );
+			// Outer sheet (y = 12, k = 12) is pushed first (index 1); innermost
+			// sheet (y = 1, k = 1) is pushed last (index 12, top of stack).
+			for( int k = 1; orderOk && k <= 12; k++ ) {
+				char o[16];
+				std::snprintf( o, sizeof(o), "n%d", k );
+				const std::size_t slot = std::size_t( 13 - k );
+				orderOk = ( st.ObjectAt( slot ) == l12.O( o ) ) && Close( IorAt( st, slot ), iors[k % 3] );
+			}
+			Check( orderOk, "A30: 12 nested open sheets seed all 12 entries in outer-to-inner order" );
+		}
+	}
+
+	// A31 (DL-622 (6)): a hollow glass picture frame (an open mesh in
+	// [-4,4]^2 \ [-3.6,3.6]^2 at y = 2, missed by all 15 Stage-1 centre and
+	// quarter-point probes at 0 and +/-2) is catalogued by Stage 2 of
+	// DescribeOpenSheet and seeds a point behind its border.
+	{
+		const std::string hollowFrame =
+			"indexedmesh_geometry\n{\n\tname g_frame\n\tdouble_sided TRUE\n\tface_normals TRUE\n"
+			"\tvertex -4.0 2  4.0\n\tvertex  4.0 2  4.0\n\tvertex  4.0 2 -4.0\n\tvertex -4.0 2 -4.0\n"
+			"\tvertex -3.6 2  3.6\n\tvertex  3.6 2  3.6\n\tvertex  3.6 2 -3.6\n\tvertex -3.6 2 -3.6\n"
+			"\tuv 0 0\n\tuv 1 0\n\tuv 1 1\n\tuv 0 1\n\tuv 0 0\n\tuv 1 0\n\tuv 1 1\n\tuv 0 1\n"
+			"\ttriangle 0 1 5\n\ttriangle 0 5 4\n"
+			"\ttriangle 1 2 6\n\ttriangle 1 6 5\n"
+			"\ttriangle 2 3 7\n\ttriangle 2 7 6\n"
+			"\ttriangle 3 0 4\n\ttriangle 3 4 7\n"
+			"}\n\n";
+		Loaded frame( Header() + hollowFrame + Obj( "frame", "g_frame", "glass15" ) );
+		Check( frame.ok, "A31 scene loads" );
+		if( frame.ok ) {
+			IORStackSeeding::OpenSheetCatalogEntry entry;
+			const bool catOk = IORStackSeeding::FindOpenSheet( frame.Scene().GetObjects(), frame.O( "frame" ), entry );
+			Check( catOk && std::fabs( entry.normal.y - 1.0 ) < 1e-5,
+				"A31: hollow picture frame missed by all 15 Stage-1 rays is catalogued by Stage 2" );
+			const IORStack behindBorder = frame.Seed( Point3( 3.8, 0, 0 ) );
+			Check( behindBorder.Depth() == 2 && behindBorder.topObject() == frame.O( "frame" ) && Close( behindBorder.top(), 1.5 ),
+				"A31: a point behind the hollow picture frame's border is seeded" );
+			const IORStack inHole = frame.Seed( Point3( 0, 0, 0 ) );
+			Check( inHole.Depth() == 1,
+				"A31 control: a point below the empty centre hole of the picture frame is not seeded" );
+		}
+	}
+
+	// A32 (DL-622 (5)): 50 stacked coplanar-normal glass panes (y = 1..50)
+	// share one normal-group ray walk via ConfirmSharedNormalRay (2 total
+	// ray walks instead of 51) and seed all 50 panes.
+	{
+		std::string s50 = Header();
+		for( int k = 1; k <= 50; k++ ) {
+			char g[16], o[16];
+			std::snprintf( g, sizeof(g), "g_p%d", k );
+			std::snprintf( o, sizeof(o), "p%d", k );
+			s50 += HSheet( g, k, 5, true ) + Obj( o, g, "glass15" );
+		}
+		Loaded l50( s50 );
+		Check( l50.ok, "A32 scene loads" );
+		if( l50.ok ) {
+			IORStackSeeding::DebugResetProbeTraceCount();
+			const IORStack st = l50.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t walks = IORStackSeeding::DebugGetProbeTraceCount();
+			char label[200];
+			std::snprintf( label, sizeof(label), "A32: 50 stacked glass panes seeded (depth %zu, want 51) in %zu ray walks (want 2)",
+				st.Depth(), walks );
+			Check( st.Depth() == 51 && walks == 2, label );
+		}
+	}
+
+	// A33 (DL-622 (7)): RefreshLegacySeedFallbackNM and ReindexStackForWavelength
+	// re-index a dispersive starting stack entry whose object (`card_off` at
+	// (5,5,5)) is off all 6 principal axes from `start = (0,0,0)` (both with
+	// walk-carried EntryContext and with a bare synthetic stack), and
+	// RefreshLegacySeedFallbackNM resolves an unpushed open-sheet exit along
+	// the chain via ResolveUnpushedExit.
+	{
+		const std::string smsSceneText = Header()
+			+ "homogeneous_medium\n{\n\tname vacuum_med\n\tabsorption 0 0 0\n\tscattering 0 0 0\n\tphase isotropic\n}\n\n"
+			+ "global_medium\n{\n\tmedium vacuum_med\n}\n\n"
+			+ "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n"
+			+ HSheet( "g_card_off", 0, 0.5, true )
+			+ "standard_object\n{\n\tname card_off\n\tgeometry g_card_off\n\tposition 5 5 5\n\tmaterial glass_disp\n}\n\n"
+			+ HSheet( "g_slab_top", 2, 4, true ) + Obj( "slab_top", "g_slab_top", "glass_disp" );
+		Loaded smsL( smsSceneText );
+		Check( smsL.ok, "A33 scene loads" );
+		if( smsL.ok ) {
+			const IObject* cardOff = smsL.O( "card_off" );
+			const IObject* slabTop = smsL.O( "slab_top" );
+			Check( cardOff && slabTop, "A33 objects found" );
+			if( cardOff && slabTop ) {
+				// Evaluate expected dispersive index of glass_disp at 400nm and 700nm
+				RayIntersection dummyHit( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+				slabTop->IntersectRay( dummyHit, RISE_INFINITY, true, true, false );
+				IORStack emptySt( 1.0 );
+				const Scalar ior400 = cardOff->GetMaterial()->GetSpecularInfoNM( dummyHit.geometric, emptySt, 400 ).ior;
+				const Scalar ior700 = cardOff->GetMaterial()->GetSpecularInfoNM( dummyHit.geometric, emptySt, 700 ).ior;
+
+				std::vector<IShaderOp*> ops;
+				IShader* shader = nullptr;
+				RISE_API_CreateStandardShader( &shader, ops );
+				RayCaster* caster = new RayCaster( false, 16, *shader, true );
+				caster->AttachScene( &smsL.Scene() );
+				ManifoldSolverConfig cfg;
+				cfg.enabled = true;
+				ManifoldSolver* solver = new ManifoldSolver( cfg );
+
+				// Manually constructed stack (no EntryContext) holding `card_off` at hero IOR 1.5,
+				// off all 6 principal axes from pos = (0,0,0):
+				IORStack manualStart( 1.0 );
+				manualStart.SetMediumProbeScene( &smsL.Scene() );
+				manualStart.SetCurrentObject( cardOff );
+				manualStart.pushOpenSheet( 1.5 );
+
+				// Ray from (0,0,0) to light at (0,4,0) crosses `slab_top` (y=2, normal +y)
+				// from behind -> unpushed open-sheet exit of the `card_off`+`slab_top` slab!
+				std::vector<ManifoldVertex> chain400, chain700;
+				solver->BuildSnellBaseSeed(
+					Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), Point3( 0, 4, 0 ),
+					smsL.Scene(), *caster, chain400, &manualStart, nullptr, 400 );
+				solver->BuildSnellBaseSeed(
+					Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), Point3( 0, 4, 0 ),
+					smsL.Scene(), *caster, chain700, &manualStart, nullptr, 700 );
+
+				Check( chain400.size() == 1 && chain700.size() == 1,
+					"A33: BuildSnellBaseSeed builds 1-vertex chain across slab_top" );
+				if( chain400.size() == 1 && chain700.size() == 1 ) {
+					Check( Close( chain400[0].etaI, ior400 ) && Close( chain700[0].etaI, ior700 ) && ior400 != ior700,
+						"A33: dispersive index refreshed at 400nm and 700nm" );
+					Check( Close( chain400[0].etaT, 1.0 ) && Close( chain700[0].etaT, 1.0 ),
+						"A33: RefreshLegacySeedFallbackNM pops sibling card_off on unpushed exit through slab_top (etaT == 1.0)" );
+				}
+
+				// From pos = (0, 3, 0) toward light = (0, 0, 0), the ray hits `slab_top` (y=2, normal +y)
+				// on its FRONT face (entry), so chain[0].etaI is `card_off`'s refreshed index on `manualStart`!
+				std::vector<ManifoldVertex> enter400, enter700;
+				solver->BuildSnellBaseSeed(
+					Point3( 0, 3, 0 ), Vector3( 0, -1, 0 ), Point3( 0, 0, 0 ),
+					smsL.Scene(), *caster, enter400, &manualStart, nullptr, 400 );
+				solver->BuildSnellBaseSeed(
+					Point3( 0, 3, 0 ), Vector3( 0, -1, 0 ), Point3( 0, 0, 0 ),
+					smsL.Scene(), *caster, enter700, &manualStart, nullptr, 700 );
+				Check( enter400.size() == 1 && enter700.size() == 1 &&
+					Close( enter400[0].etaI, ior400 ) && Close( enter700[0].etaI, ior700 ),
+					"A33: RefreshLegacySeedFallbackNM re-indexes off-axis bare starting stack entry card_off (etaI == ior(nm), not hero 1.5)" );
+
+				// Also verify walk-carried EntryContext on `ctxStart` (seeded under `card_off` at (5, 4, 5)):
+				const IORStack ctxStart = smsL.Seed( Point3( 5, 4, 5 ) );
+				std::vector<ManifoldVertex> ctxEnter400, ctxEnter700;
+				solver->BuildSnellBaseSeed(
+					Point3( 0, 3, 0 ), Vector3( 0, -1, 0 ), Point3( 0, 0, 0 ),
+					smsL.Scene(), *caster, ctxEnter400, &ctxStart, nullptr, 400 );
+				solver->BuildSnellBaseSeed(
+					Point3( 0, 3, 0 ), Vector3( 0, -1, 0 ), Point3( 0, 0, 0 ),
+					smsL.Scene(), *caster, ctxEnter700, &ctxStart, nullptr, 700 );
+				Check( ctxEnter400.size() == 1 && ctxEnter700.size() == 1 &&
+					Close( ctxEnter400[0].etaI, ior400 ) && Close( ctxEnter700[0].etaI, ior700 ),
+					"A33: RefreshLegacySeedFallbackNM re-indexes walk-carried EntryContext for off-axis card_off at 400nm and 700nm" );
+
+				solver->release();
+				caster->release();
+				shader->release();
+			}
+		}
+	}
+
+	// A34 (DL-622 review, P2): the free-space detour's lateral leg must be
+	// FREE space.  A camera in a sealed habitat -- opaque roof slab, opaque
+	// walls, one wall a closed GLASS box (a window) -- under a sea sheet:
+	// its normal ray meets the roof (an entry face, so the detour runs), and
+	// the only waypoint not behind an opaque wall lies beyond the window.
+	// Crossing the window does not carry the sea's index into the habitat.
+	// Control: the same habitat with no +x wall at all is open water, and
+	// the detour seeds it.
+	{
+		const std::string boxes =
+			"box_geometry\n{\n\tname g_roof\n\twidth 4.4\n\theight 0.2\n\tdepth 4.4\n}\n\n"
+			"box_geometry\n{\n\tname g_wallx\n\twidth 0.2\n\theight 3.2\n\tdepth 4.4\n}\n\n"
+			"box_geometry\n{\n\tname g_wallz\n\twidth 4.0\n\theight 3.2\n\tdepth 0.2\n}\n\n";
+		const std::string shell = Header()
+			+ HSheet( "g_sea", 6, 12, true ) + Obj( "sea", "g_sea", "glass133" ) + boxes
+			+ Obj( "roof", "g_roof", "matte", "0 3.1 0" )
+			+ Obj( "wallmx", "g_wallx", "matte", "-2.1 1.6 0" )
+			+ Obj( "wallpz", "g_wallz", "matte", "0 1.6 2.1" )
+			+ Obj( "wallmz", "g_wallz", "matte", "0 1.6 -2.1" );
+		Loaded sealed( shell + Obj( "window", "g_wallx", "glass15", "2.1 1.6 0" ) );
+		Loaded opened( shell );
+		Check( sealed.ok && opened.ok, "A34 scenes load" );
+		if( sealed.ok && opened.ok ) {
+			const IORStack inSealed = sealed.Seed( Point3( 0, 1, 0 ) );
+			Check( inSealed.Depth() == 1,
+				"A34: a camera in a sealed habitat (glass window wall) under a sea is NOT seeded into the sea" );
+			const IORStack inOpened = opened.Seed( Point3( 0, 1, 0 ) );
+			Check( inOpened.Depth() == 2 && inOpened.topObject() == opened.O( "sea" ) && Close( inOpened.top(), 1.33 ),
+				"A34 control: the same habitat with its +x side open is seeded into the sea by the detour" );
+		}
+	}
+
+	// A35 (DL-622 review, P2): the detour certificate's cost is bounded.
+	// 50 co-normal glass panes over a submerged rock: every pane's normal
+	// ray from the seed meets the rock.  One certificate per pane walks the
+	// pane column again and again (measured at the DL-622 commit: 2652 scene
+	// rays per seed, every camera sample); the group certificate
+	// (HasFreeSpaceDetourToSheets) walks it once and seeds all 50 panes, and
+	// each pane's answer is the one its own certificate gives
+	// (PointInOpenSheetMedium, which runs the single-sheet certificate).
+	{
+		auto stacked = []( int count, bool rock ) {
+			std::string t = Header();
+			for( int k = 1; k <= count; k++ ) {
+				char g[16], o[16];
+				std::snprintf( g, sizeof(g), "g_p%d", k );
+				std::snprintf( o, sizeof(o), "p%d", k );
+				t += HSheet( g, 2 + k, 5, true ) + Obj( o, g, "glass15" );
+			}
+			if( rock ) {
+				t += "box_geometry\n{\n\tname g_rock\n\twidth 2\n\theight 0.5\n\tdepth 2\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 1.5 0" );
+			}
+			return t;
+		};
+		Loaded deep( stacked( 50, true ) );
+		Loaded shallow( stacked( 3, true ) );
+		Check( deep.ok && shallow.ok, "A35 scenes load" );
+		if( deep.ok && shallow.ok ) {
+			deep.Seed( Point3( 0, 0, 0 ) );	// warm the catalog
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			const IORStack stDeep = deep.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+			char label[240];
+			std::snprintf( label, sizeof(label),
+				"A35: 50 panes over a rock: %zu scene rays per seed (bound 300), depth %zu (want 51, p1 innermost)",
+				rays, stDeep.Depth() );
+			std::cout << "  [recorded] " << label << std::endl;
+			Check( rays <= 300 && stDeep.Depth() == 51 && stDeep.topObject() == deep.O( "p1" ), label );
+			bool agree = true;
+			for( int k = 1; k <= 50; k += 7 ) {
+				char o[16];
+				std::snprintf( o, sizeof(o), "p%d", k );
+				bool inSeed = false;
+				for( std::size_t i = 1; i < stDeep.Depth(); i++ ) {
+					if( stDeep.ObjectAt( i ) == deep.O( o ) ) inSeed = true;
+				}
+				agree = agree && ( inSeed == IORStackSeeding::PointInOpenSheetMedium(
+					deep.O( o ), deep.Scene().GetObjects(), Point3( 0, 0, 0 ) ) );
+			}
+			Check( agree, "A35: each pane's group-certificate answer equals its own certificate's (PointInOpenSheetMedium)" );
+
+			// A48 (DL-622 review round 3): when the group certificate's ray
+			// budget runs out, the panes it has not confirmed are refused --
+			// and an unpushed-exit resolution at the same point refuses the
+			// same panes (both go through ConfirmOpenSheetsAt).  Budget forced
+			// down to 10 rays beyond the column walk (a waypoint's normal walk
+			// up the 50-pane stack alone needs ~50).
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = 10;
+			const IORStack st60 = deep.Seed( Point3( 0, 0, 0 ) );
+			bool same = true;
+			for( int k = 1; k <= 50; k++ ) {
+				char o[16];
+				std::snprintf( o, sizeof(o), "p%d", k );
+				bool inSeed = false;
+				for( std::size_t i = 1; i < st60.Depth(); i++ ) {
+					if( st60.ObjectAt( i ) == deep.O( o ) ) inSeed = true;
+				}
+				const bool kept = IORStackSeeding::OpenSheetEnclosesCrossing( deep.O( o ), 0, &deep.Scene(),
+					Point3( -1e-5, 0, 0 ), Vector3( 1, 0, 0 ), &st60 );
+				same = same && ( inSeed == kept );
+			}
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = IORStackSeeding::kGroupDetourRayBudget;
+			char label2[200];
+			std::snprintf( label2, sizeof(label2),
+				"A48: a spent group budget refuses panes (depth %zu of 51) and an exit resolution there refuses the same ones",
+				st60.Depth() );
+			Check( st60.Depth() > 1 && st60.Depth() < 51 && same, label2 );
+			const IORStack stShallow = shallow.Seed( Point3( 0, 0, 0 ) );
+			Check( stShallow.Depth() == 4 && stShallow.topObject() == shallow.O( "p1" ),
+				"A35 control: 3 panes over the same rock are seeded through the detour (depth 4, p1 innermost)" );
+		}
+	}
+
+	// A36 (DL-622 review, P2): a companion lane's re-index keeps a GRADED
+	// enclosing medium at the value the walk tracked (DL-335's
+	// RecordEnclosingAt), not the index at the point it was entered: the
+	// field is wavelength-independent and the walk's value is the one its
+	// next exit refracts into.  Fixture: a graded box (ior 1.2 + 0.05 z)
+	// enclosing a dispersive open pane, the walk moved to z = 3.
+	{
+		Loaded graded( Header()
+			+ "scalar_painter\n{\n\tname ior_ramp\n\texpression 1.2+0.05*P.z\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_graded\n\trefractance white\n\tior ior_ramp\n}\n\n"
+			+ "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n"
+			+ "box_geometry\n{\n\tname g_tank\n\twidth 12\n\theight 12\n\tdepth 12\n}\n\n" + Obj( "tank", "g_tank", "glass_graded" )
+			+ HSheet( "g_pane", 2, 4, true ) + Obj( "pane", "g_pane", "glass_disp" ) );
+		Check( graded.ok, "A36 scene loads" );
+		if( graded.ok ) {
+			IORStack hero( 1.0 );
+			IORStackSeeding::SeedFromPoint( hero, Point3( 0, 0, 0 ), graded.Scene(), 550 );
+			Check( hero.Depth() == 3 && hero.ObjectAt( 1 ) == graded.O( "tank" ) && hero.ObjectAt( 2 ) == graded.O( "pane" ),
+				"A36 fixture: hero seeded [tank, pane]" );
+			if( hero.Depth() == 3 ) {
+				GradedIndexMedium::RecordEnclosingAt( hero, Point3( 0, 0, 3 ) );
+				const Scalar tracked = IorAt( hero, 1 );
+				Check( Close( tracked, 1.35 ), "A36 fixture: the walk's tracked tank index is n(z = 3) = 1.35" );
+				IORStack lane( 1.0 );
+				IORStackSeeding::SeedCompanionLane( lane, hero, Point3( 0, 0, 3 ), Point3( 0, 0.5, 3 ), graded.Scene(), 450, false );
+				char label[200];
+				std::snprintf( label, sizeof(label), "A36: companion lane keeps the graded tank at the tracked %.4f (got %.4f)",
+					tracked, lane.Depth() == 3 ? IorAt( lane, 1 ) : -1.0 );
+				Check( lane.Depth() == 3 && lane.ObjectAt( 1 ) == graded.O( "tank" ) && Close( IorAt( lane, 1 ), tracked ), label );
+			}
+		}
+	}
+
+	// A37 (DL-622 review, P2): a companion lane for a stack with NO open-
+	// sheet entry keeps the pre-DL-622 rule (seed at the segment's point),
+	// so HWSS output on closed-medium scenes is unchanged.  A stale hero
+	// stack holding a glass box the walk is not in: the lane follows the
+	// seed (air), not the hero's membership.
+	{
+		Loaded box( Header() + "box_geometry\n{\n\tname g_box\n\twidth 2\n\theight 2\n\tdepth 2\n}\n\n" + Obj( "box", "g_box", "glass15" ) );
+		Check( box.ok, "A37 scene loads" );
+		if( box.ok ) {
+			IORStack hero( 1.0 );
+			hero.SetMediumProbeScene( &box.Scene() );
+			hero.SetCurrentObject( box.O( "box" ) );
+			hero.push( 1.5 );
+			IORStack lane( 1.0 );
+			IORStackSeeding::SeedCompanionLane( lane, hero, Point3( 5, 0, 0 ), Point3( 6, 0, 0 ), box.Scene(), 450, false );
+			Check( lane.Depth() == 1,
+				"A37: a closed-medium hero stack's companion lane is re-seeded at the segment point (pre-DL-622 rule)" );
+		}
+	}
+
+	// A38 (DL-622 review, P1): re-generating a clipped plane (every
+	// keyframed pose under time-indexed motion blur) does not invalidate
+	// every thread's open-sheet catalog; a re-posed sheet is re-described
+	// per thread (PosedOpenSheet) at the pose it is used.
+	{
+		const Point3 pts[4] = { Point3( -1, 0, 1 ), Point3( 1, 0, 1 ), Point3( 1, 0, -1 ), Point3( -1, 0, -1 ) };
+		IGeometry* pGeom = 0;
+		const unsigned long long before = IORStackSeeding::OpenSheetCatalogEpoch().load();
+		const bool made = RISE_API_CreateClippedPlaneGeometry( &pGeom, pts, true ) && pGeom;
+		if( made ) {
+			pGeom->RegenerateData();
+			pGeom->RegenerateData();
+		}
+		const unsigned long long after = IORStackSeeding::OpenSheetCatalogEpoch().load();
+		Check( made && before == after,
+			"A38: ClippedPlaneGeometry::RegenerateData leaves the open-sheet catalog epoch unchanged" );
+		safe_release( pGeom );
+	}
+
+	// A40 (DL-622 review round 2, P2-1): a sheet confirmed by a CLEAR normal
+	// ray never depends on another sheet's detour.  An underwater camera
+	// sees a tilted sea's back face along the sea's own normal; a stack of
+	// co-normal panes above it is blocked by a small rock (a detour).  The
+	// shared ray budget of the previous round ran out on the panes and
+	// declined EVERY sheet, the sea included (the camera seeded in air).
+	// And a seed and an exit resolution must agree sheet by sheet.
+	{
+		std::string t = Header();
+		{
+			const double h = 20;
+			double p[4][3] = { { -h, 30, h }, { h, 30, h }, { h, 30, -h }, { -h, 30, -h } };
+			for( auto& q : p ) RotZ( -30, q[0], q[1] );
+			t += SheetQuad( "g_sea", p[0], p[1], p[2], p[3] ) + Obj( "sea", "g_sea", "glass133" );
+		}
+		for( int k = 1; k <= 50; k++ ) {
+			char g[16], o[16];
+			std::snprintf( g, sizeof(g), "g_p%d", k );
+			std::snprintf( o, sizeof(o), "p%d", k );
+			t += HSheet( g, 2 + 0.2 * k, 10, true ) + Obj( o, g, "glass15" );
+		}
+		t += "box_geometry\n{\n\tname g_rock\n\twidth 0.6\n\theight 0.4\n\tdepth 0.6\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 1.2 0" );
+		Loaded mix( t );
+		Check( mix.ok, "A40 scene loads" );
+		if( mix.ok ) {
+			const IObjectManager* objs = mix.Scene().GetObjects();
+			const IORStack st = mix.Seed( Point3( 0, 0, 0 ) );
+			bool seaIn = false;
+			for( std::size_t i = 1; i < st.Depth(); i++ ) {
+				if( st.ObjectAt( i ) == mix.O( "sea" ) ) seaIn = true;
+			}
+			Check( IORStackSeeding::PointInOpenSheetMedium( mix.O( "sea" ), objs, Point3( 0, 0, 0 ) ),
+				"A40 fixture: the sea's normal ray from the camera is clear (the sea holds the camera)" );
+			Check( seaIn, "A40: the sea is seeded whatever the pane stack's detours cost" );
+			bool agree = true;
+			const char* names[4] = { "sea", "p1", "p25", "p50" };
+			for( int k = 0; k < 4; k++ ) {
+				bool inSeed = false;
+				for( std::size_t i = 1; i < st.Depth(); i++ ) {
+					if( st.ObjectAt( i ) == mix.O( names[k] ) ) inSeed = true;
+				}
+				agree = agree && ( inSeed == IORStackSeeding::PointInOpenSheetMedium( mix.O( names[k] ), objs, Point3( 0, 0, 0 ) ) );
+			}
+			Check( agree, "A40: seed and PointInOpenSheetMedium agree for the sea and the panes" );
+		}
+	}
+
+	// A41 (DL-622 review round 2, P2-2): an unpushed exit is decided by the
+	// seed convention at the point past the crossing -- not by walking along
+	// the walk's direction through opaque surfaces until the sheet is met.
+	// A walk in the sea's medium (seeded above an opaque roof slab that
+	// spans the sea's whole prism) leaves a small pane under the roof
+	// through its back face going up: the sea's back face IS straight ahead,
+	// past the roof, but the sea's normal ray from there is blocked by the
+	// roof, so a seed there is not in the sea, and the walk leaves it too.
+	{
+		Loaded roofed( Header()
+			+ HSheet( "g_sea", 5, 6, true ) + Obj( "sea", "g_sea", "glass133" )
+			+ "box_geometry\n{\n\tname g_roof\n\twidth 14\n\theight 0.2\n\tdepth 14\n}\n\n" + Obj( "roof", "g_roof", "matte", "0 3.1 0" )
+			+ HSheet( "g_pane", 1, 1, true ) + Obj( "pane", "g_pane", "glass15" ) );
+		Check( roofed.ok, "A41 scene loads" );
+		if( roofed.ok ) {
+			IORStack walk = roofed.Seed( Point3( 0, 4, 0 ) );
+			Check( walk.Depth() == 2 && walk.topObject() == roofed.O( "sea" ), "A41 fixture: a seed above the roof is in the sea" );
+			const IORStack seedAfter = roofed.Seed( Point3( 0, 1.001, 0 ) );
+			walk.SetMediumProbeScene( &roofed.Scene() );
+			walk.SetCurrentObject( roofed.O( "pane" ) );
+			RayIntersection exitHit( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			roofed.O( "pane" )->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
+			if( exitHit.geometric.bHit ) {
+				const IORStackSeeding::OpenSheetCrossing cross =
+					IORStackSeeding::ResolveOpenSheetCrossing( exitHit.geometric, 1.5, walk );
+				char label[200];
+				std::snprintf( label, sizeof(label),
+					"A41: exit under the roof agrees with a seed past it (walk depth %zu, seed depth %zu)",
+					walk.Depth(), seedAfter.Depth() );
+				Check( !cross.bEntering && walk.Depth() == seedAfter.Depth() && Close( cross.etaTo, seedAfter.top() ), label );
+			} else {
+				Check( false, "A41: probe hits the pane" );
+			}
+		}
+	}
+
+	// A42 (DL-622 review round 2, P3): entry contexts are shared copy-on-
+	// write: a copy that pushes, pops or re-indexes never changes the
+	// original's contexts, and popping an entry below a context re-indexes
+	// it.
+	{
+		Loaded two( Header() + HSheet( "g_a", 2, 3, true ) + Obj( "a", "g_a", "glass15" )
+			+ HSheet( "g_b", 4, 3, true ) + Obj( "b", "g_b", "glass133" )
+			+ "box_geometry\n{\n\tname g_box\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n" + Obj( "box", "g_box", "glass20", "0 -5 0" ) );
+		Check( two.ok, "A42 scene loads" );
+		if( two.ok ) {
+			const IORStack orig = two.Seed( Point3( 0, 0, 0 ) );
+			const bool fixtureOk = orig.Depth() == 3 && orig.ContextAt( 1 ).bHasContext && orig.ContextAt( 2 ).bHasContext;
+			Check( fixtureOk, "A42 fixture: [b, a] seeded with contexts" );
+			if( fixtureOk ) {
+				const Point3 aAt = orig.ContextAt( 2 ).ptIntersection;
+				IORStack copy( orig );
+				copy.SetCurrentObject( two.O( "box" ) );
+				copy.push( 2.0 );
+				IORStack::EntryContext moved = copy.ContextAt( 2 );
+				moved.ptIntersection = Point3( 9, 9, 9 );
+				copy.SetContextAt( 2, moved );
+				copy.SetCurrentObject( two.O( "b" ) );
+				copy.pop();		// erase b (index 1) below a's context
+				Check( orig.Depth() == 3 && orig.ContextAt( 2 ).ptIntersection.x == aAt.x &&
+					orig.ContextAt( 1 ).bHasContext && orig.FindEntryContext( two.O( "a" ) ) == &orig.ContextAt( 2 ),
+					"A42: mutating a copy leaves the original's contexts untouched" );
+				Check( copy.Depth() == 3 && copy.ObjectAt( 1 ) == two.O( "a" ) && copy.ContextAt( 1 ).ptIntersection.x == 9 &&
+					!copy.ContextAt( 2 ).bHasContext && copy.FindEntryContext( two.O( "b" ) ) == 0,
+					"A42: popping an entry below a context re-indexes the copy's contexts" );
+			}
+		}
+	}
+
+	// A43 (DL-622 review round 2, P3): RefreshLegacySeedFallbackNM, an entry
+	// it cannot re-index (a key that is not a scene object) stands in its
+	// query stack as its PARENT's index, so a DL-46 translucent entry above
+	// it re-pushes the refreshed ancestor at the companion wavelength (the
+	// first DL-622 landing pushed the hero value 1.7 there).
+	{
+		Loaded tl( Header()
+			+ "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n"
+			+ "translucent_material\n{\n\tname mat_trans\n\tref white\n\ttau white\n\text 0\n\tN 1.0\n\tscattering 0.3\n}\n\n"
+			+ "box_geometry\n{\n\tname g_tank\n\twidth 12\n\theight 12\n\tdepth 12\n}\n\n" + Obj( "tank", "g_tank", "glass_disp" )
+			+ "box_geometry\n{\n\tname g_card\n\twidth 3\n\theight 3\n\tdepth 3\n}\n\n" + Obj( "card", "g_card", "mat_trans" )
+			+ HSheet( "g_slab_top", 2, 4, true ) + Obj( "slab_top", "g_slab_top", "glass15" ) );
+		Check( tl.ok, "A43 scene loads" );
+		if( tl.ok ) {
+			RayIntersection probe( Ray( Point3( 0, 0, 0 ), Vector3( 1, 0, 0 ) ), nullRasterizerState );
+			tl.O( "tank" )->IntersectRay( probe, RISE_INFINITY, true, true, false );
+			IORStack empty( 1.0 );
+			const Scalar ior400 = tl.O( "tank" )->GetMaterial()->GetSpecularInfoNM( probe.geometric, empty, 400 ).ior;
+			static int notASceneObject = 0;
+			IORStack start( 1.0 );
+			start.SetMediumProbeScene( &tl.Scene() );
+			start.SetCurrentObject( tl.O( "tank" ) );
+			start.push( 1.5 );
+			start.SetCurrentObject( reinterpret_cast<const IObject*>( &notASceneObject ) );
+			start.push( 1.7 );
+			start.SetCurrentObject( tl.O( "card" ) );
+			start.push( 1.7 );
+			std::vector<IShaderOp*> ops;
+			IShader* shader = nullptr;
+			RISE_API_CreateStandardShader( &shader, ops );
+			RayCaster* caster = new RayCaster( false, 16, *shader, true );
+			caster->AttachScene( &tl.Scene() );
+			ManifoldSolverConfig cfg;
+			cfg.enabled = true;
+			ManifoldSolver* solver = new ManifoldSolver( cfg );
+			std::vector<ManifoldVertex> chain;
+			solver->BuildSnellBaseSeed(
+				Point3( 0, 3, 0 ), Vector3( 0, -1, 0 ), Point3( 0, 1.0, 0 ),
+				tl.Scene(), *caster, chain, &start, nullptr, 400 );
+			char label[220];
+			std::snprintf( label, sizeof(label),
+				"A43: translucent entry above an unresolvable key re-pushes the refreshed ancestor (etaI %.4f, want ior(400) %.4f)",
+				chain.empty() ? -1.0 : chain[0].etaI, ior400 );
+			Check( chain.size() >= 1 && Close( chain[0].etaI, ior400 ), label );
+			solver->release();
+			caster->release();
+			shader->release();
+		}
+	}
+
+	// A44 (DL-622 review round 3, P2-A): an unpushed exit must not keep a
+	// sheet because a same-material sheet it is NESTED in holds the point --
+	// that sheet is already on the stack.  pane2 (large, y 1) and pane1
+	// (small, y 0) are one glass, both facing +y; a camera below seeds
+	// [pane2, pane1].  The walk leaves pane1's prism and crosses the back
+	// face of an unrelated small sheet X: past it pane2 holds the point and
+	// pane1 does not, so the seed there is [pane2]; the walk must match it
+	// (keeping pane1 too left it at 1.5 after it later exited pane2).
+	{
+		Loaded nest( Header()
+			+ HSheet( "g_p2", 1, 10, true ) + Obj( "pane2", "g_p2", "glass15" )
+			+ HSheet( "g_p1", 0, 1, true ) + Obj( "pane1", "g_p1", "glass15" )
+			+ HSheet( "g_x", -0.5, 0.5, true ) + Obj( "xs", "g_x", "glass133", "5 0 5" ) );
+		Check( nest.ok, "A44 scene loads" );
+		if( nest.ok ) {
+			IORStack walk = nest.Seed( Point3( 0, -1, 0 ) );
+			Check( walk.Depth() == 3 && walk.ObjectAt( 1 ) == nest.O( "pane2" ) && walk.ObjectAt( 2 ) == nest.O( "pane1" ),
+				"A44 fixture: the camera seeds [pane2, pane1]" );
+			const IORStack seedAfter = nest.Seed( Point3( 5, -0.499, 5 ) );
+			walk.SetMediumProbeScene( &nest.Scene() );
+			walk.SetCurrentObject( nest.O( "xs" ) );
+			RayIntersection exitHit( Ray( Point3( 5, -1, 5 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			nest.O( "xs" )->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
+			if( exitHit.geometric.bHit ) {
+				IORStackSeeding::ResolveOpenSheetCrossing( exitHit.geometric, 1.33, walk );
+				char label[220];
+				std::snprintf( label, sizeof(label),
+					"A44: exit off pane1's prism under pane2 leaves [pane2] like the seed (walk depth %zu, seed depth %zu)",
+					walk.Depth(), seedAfter.Depth() );
+				Check( seedAfter.Depth() == 2 && walk.Depth() == 2 && walk.topObject() == nest.O( "pane2" ), label );
+			} else {
+				Check( false, "A44: probe hits X" );
+			}
+		}
+	}
+
+	// A45 (DL-622 review round 3, P2-B): an unpushed exit's cost.  A walk
+	// that seeded 50 deep in a pane stack (above a rock wider than the
+	// panes) crosses an unrelated sheet's back face under the rock: no pane
+	// holds that point, and each pane's detour walks the whole column.  One
+	// confirmation per crossing (not per popped entry, not per same-
+	// material sheet) bounds it.
+	{
+		std::string t = Header();
+		for( int k = 1; k <= 50; k++ ) {
+			char g[16], o[16];
+			std::snprintf( g, sizeof(g), "g_p%d", k );
+			std::snprintf( o, sizeof(o), "p%d", k );
+			t += HSheet( g, 2 + k, 5, true ) + Obj( o, g, "glass15" );
+		}
+		t += "box_geometry\n{\n\tname g_rock\n\twidth 12\n\theight 0.5\n\tdepth 12\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 1.5 0" );
+		t += HSheet( "g_x", 0.5, 0.5, true ) + Obj( "xs", "g_x", "glass133" );
+		Loaded cost( t );
+		Check( cost.ok, "A45 scene loads" );
+		if( cost.ok ) {
+			IORStack walk = cost.Seed( Point3( 0, 2.5, 0 ) );
+			Check( walk.Depth() == 51, "A45 fixture: a seed between the rock and the panes is 50 deep" );
+			walk.SetMediumProbeScene( &cost.Scene() );
+			walk.SetCurrentObject( cost.O( "xs" ) );
+			RayIntersection exitHit( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			cost.O( "xs" )->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			IORStackSeeding::ResolveOpenSheetCrossing( exitHit.geometric, 1.33, walk );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+			const IORStack seedAfter = cost.Seed( Point3( 0, 0.501, 0 ) );
+			char label[220];
+			std::snprintf( label, sizeof(label),
+				"A45: one unpushed exit popping 50 panes costs %zu scene rays (bound 300); walk depth %zu == seed depth %zu",
+				rays, walk.Depth(), seedAfter.Depth() );
+			std::cout << "  [recorded] " << label << std::endl;
+			Check( rays <= 300 && walk.Depth() == seedAfter.Depth(), label );
+		}
+	}
+
+	// A46 (DL-622 review round 3): the group certificate's cost bound with
+	// interleaved obstacles.  20 glass shelves, each carrying an opaque vase,
+	// camera below: every shelf is reached with its own obstacle box, so an
+	// unbounded certificate may try 8 waypoints per shelf, each walking the
+	// column.  The certificate spends at most kGroupDetourRayBudget scene
+	// rays (then refuses the rest, identically for a seed and an exit
+	// resolution, which both decide membership through ConfirmOpenSheetsAt);
+	// here the first waypoint confirms every shelf well inside it.
+	{
+		std::string t = Header() + "box_geometry\n{\n\tname g_vase\n\twidth 0.4\n\theight 0.6\n\tdepth 0.4\n}\n\n";
+		for( int k = 1; k <= 20; k++ ) {
+			char g[16], o[16], v[16], pos[48];
+			std::snprintf( g, sizeof(g), "g_s%d", k );
+			std::snprintf( o, sizeof(o), "s%d", k );
+			std::snprintf( v, sizeof(v), "v%d", k );
+			std::snprintf( pos, sizeof(pos), "%g %g 0", 0.005 * k, 1.0 * k + 0.35 );
+			t += HSheet( g, 1.0 * k, 4, true ) + Obj( o, g, "glass15" ) + Obj( v, "g_vase", "matte", pos );
+		}
+		Loaded shelves( t );
+		Check( shelves.ok, "A46 scene loads" );
+		if( shelves.ok ) {
+			shelves.Seed( Point3( 0, 0, 0 ) );
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			const IORStack st = shelves.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+			const std::size_t steps = 32 + 2 * 20;
+			const std::size_t bound = 6 * steps + IORStackSeeding::kGroupDetourRayBudget;
+			char label[240];
+			std::snprintf( label, sizeof(label),
+				"A46: 20 glass shelves with vases, camera below: %zu scene rays per seed (bound %zu), depth %zu (want 21)",
+				rays, bound, st.Depth() );
+			std::cout << "  [recorded] " << label << std::endl;
+			Check( rays <= bound && st.Depth() == 21, label );
+		}
+	}
+
+	// A47 (DL-622 review round 3, P3-1): a group sheet that is NOT trackable
+	// at the seed's wavelength (its ior reads -1 at 465 nm) is an opaque
+	// obstacle to the sheets beyond it, in the group certificate as in each
+	// sheet's own certificate, instead of ending the shared column.
+	{
+		Loaded odd( Header()
+			+ "scalar_painter\n{\n\tname pnt_neg\n\tvalues 1.5 1.5 -1\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_neg\n\trefractance white\n\tior pnt_neg\n}\n\n"
+			+ HSheet( "g_pa", 3, 1, true ) + Obj( "pa", "g_pa", "glass_neg" )
+			+ HSheet( "g_pb", 5, 5, true ) + Obj( "pb", "g_pb", "glass15" )
+			+ HSheet( "g_pc", 6, 5, true ) + Obj( "pc", "g_pc", "glass15" )
+			+ "box_geometry\n{\n\tname g_rock\n\twidth 1\n\theight 0.4\n\tdepth 1\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 1.5 0" ) );
+		Check( odd.ok, "A47 scene loads" );
+		if( odd.ok ) {
+			const IObjectManager* objs = odd.Scene().GetObjects();
+			RayIntersection h( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			odd.O( "pa" )->IntersectRay( h, RISE_INFINITY, true, true, false );
+			IORStack q( 1.0 );
+			Check( h.geometric.bHit && odd.O( "pa" )->GetMaterial()->GetSpecularInfoNM( h.geometric, q, 465 ).ior <= 0,
+				"A47 fixture: pa's ior is not positive at 465 nm" );
+			IORStack st( 1.0 );
+			IORStackSeeding::SeedFromPoint( st, Point3( 0, 0, 0 ), odd.Scene(), 465 );
+			bool agree = true;
+			for( const char* name : { "pb", "pc" } ) {
+				IORStackSeeding::OpenSheetCatalogEntry e;
+				const bool own = IORStackSeeding::FindOpenSheet( objs, odd.O( name ), e ) &&
+					IORStackSeeding::OpenSheetHoldsPoint( e, objs, Point3( 0, 0, 0 ), 465 );
+				bool inSeed = false;
+				for( std::size_t i = 1; i < st.Depth(); i++ ) {
+					if( st.ObjectAt( i ) == odd.O( name ) ) inSeed = true;
+				}
+				agree = agree && own && inSeed == own;
+			}
+			Check( agree, "A47: pb and pc beyond the untrackable pa are seeded, as their own certificates say" );
+		}
+	}
+
+	// A49 (DL-622 review round 3, HWSS cost): SeedLanesFromPoint seeds four
+	// wavelengths with ONE probe walk when every hit classifies alike at
+	// every lane, and its stacks equal four separate SeedFromPoint calls
+	// exactly (objects, order and per-lane indices); when a lane classifies
+	// a hit differently (an ior reading -1 at 465 nm) it seeds per lane.
+	{
+		Loaded nestBox( Header()
+			+ "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n"
+			+ "scalar_painter\n{\n\tname pnt_neg\n\tvalues 1.5 1.5 -1\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_neg\n\trefractance white\n\tior pnt_neg\n}\n\n"
+			+ "translucent_material\n{\n\tname mat_trans\n\tref white\n\ttau white\n\text 0\n\tN 1.0\n\tscattering 0.3\n}\n\n"
+			+ "box_geometry\n{\n\tname g_outer\n\twidth 8\n\theight 8\n\tdepth 8\n}\n\n" + Obj( "outer", "g_outer", "glass_disp" )
+			+ "box_geometry\n{\n\tname g_mid\n\twidth 4\n\theight 4\n\tdepth 4\n}\n\n" + Obj( "mid", "g_mid", "mat_trans" )
+			+ "box_geometry\n{\n\tname g_inner\n\twidth 2\n\theight 2\n\tdepth 2\n}\n\n" + Obj( "inner", "g_inner", "glass133" )
+			+ "box_geometry\n{\n\tname g_neg\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n" + Obj( "negbox", "g_neg", "glass_neg", "20 20 20" ) );
+		Check( nestBox.ok, "A49 scene loads" );
+		if( nestBox.ok ) {
+			const Scalar nms[4] = { 450, 520, 610, 680 };
+			auto check = [&]( const Point3& p, const char* label, const bool expectShared ) {
+				IORStack lanes[4] = { IORStack( 1.0 ), IORStack( 1.0 ), IORStack( 1.0 ), IORStack( 1.0 ) };
+				IORStack* targets[4] = { &lanes[0], &lanes[1], &lanes[2], &lanes[3] };
+				IORStackSeeding::DebugResetProbeTraceCount();
+				IORStackSeeding::SeedLanesFromPoint( targets, 4, nms, p, nestBox.Scene() );
+				const std::size_t shared = IORStackSeeding::DebugGetProbeTraceCount();
+				IORStackSeeding::DebugResetProbeTraceCount();
+				bool equal = true;
+				for( int k = 0; k < 4; k++ ) {
+					IORStack own( 1.0 );
+					IORStackSeeding::SeedFromPoint( own, p, nestBox.Scene(), nms[k] );
+					equal = equal && own.Depth() == lanes[k].Depth();
+					for( std::size_t i = 0; equal && i < own.Depth(); i++ ) {
+						equal = own.ObjectAt( i ) == lanes[k].ObjectAt( i ) && IorAt( own, i ) == IorAt( lanes[k], i );
+					}
+				}
+				const std::size_t separate = IORStackSeeding::DebugGetProbeTraceCount();
+				char buf[240];
+				std::snprintf( buf, sizeof(buf), "%s: lanes equal per-lane seeds (%d), probe walks shared %zu vs separate %zu",
+					label, int( equal ), shared, separate );
+				std::cout << "  [recorded] " << buf << std::endl;
+				Check( equal && ( expectShared ? shared * 4 == separate : shared == separate ), buf );
+			};
+			check( Point3( 0, 0, 0 ), "A49: point inside outer/mid/inner", true );
+			check( Point3( 20, 20, 20 ), "A49: point inside a box whose ior is -1 at one lane", false );
+			check( Point3( 10, -10, 10 ), "A49: point in air", true );
+		}
+	}
+
+	// A50 (DL-622 review round 4): a same-material sibling stands in for the
+	// walk's sheet by MATERIAL identity, not by an exact index match.  A walk
+	// seeded under dispersive pane pA (RGB convention, nm 0) moves under its
+	// same-material sibling pB and leaves an unrelated sheet X through its
+	// back face; a dispersive RGB SPF resolves that crossing at a channel
+	// wavelength (611 nm), where pB's index differs from pA's recorded one.
+	// A seed past the crossing holds pB's medium, so the walk must keep it.
+	{
+		Loaded sib( Header()
+			+ "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n"
+			+ "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n"
+			+ HSheet( "g_pa", 2, 1, true ) + Obj( "pa", "g_pa", "glass_disp" )
+			+ HSheet( "g_pb", 2, 1, true ) + Obj( "pb", "g_pb", "glass_disp", "3 0 0" )
+			+ HSheet( "g_x", 0.5, 0.3, true ) + Obj( "xs", "g_x", "glass133", "3 0 0" ) );
+		Check( sib.ok, "A50 scene loads" );
+		if( sib.ok ) {
+			for( const Scalar nm : { Scalar( 611 ), Scalar( 549 ), Scalar( 465 ) } ) {
+				IORStack walk = sib.Seed( Point3( 0, 0, 0 ) );
+				const IORStack seedAfter = sib.Seed( Point3( 3, 0.501, 0 ) );
+				walk.SetMediumProbeScene( &sib.Scene() );
+				walk.SetCurrentObject( sib.O( "xs" ) );
+				RayIntersection exitHit( Ray( Point3( 3, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+				sib.O( "xs" )->IntersectRay( exitHit, RISE_INFINITY, true, true, false );
+				if( !exitHit.geometric.bHit ) {
+					Check( false, "A50: probe hits X" );
+					continue;
+				}
+				IORStackSeeding::ResolveOpenSheetCrossing( exitHit.geometric, 1.33, walk, 0, nm );
+				char label[200];
+				std::snprintf( label, sizeof(label),
+					"A50: at %g nm the walk keeps the sibling medium like the seed (walk depth %zu, seed depth %zu)",
+					double( nm ), walk.Depth(), seedAfter.Depth() );
+				Check( seedAfter.Depth() == 2 && walk.Depth() == 2 && walk.topObject() == sib.O( "pa" ), label );
+			}
+		}
+	}
+
+	// A39 (DL-622 review, P3): a probe table never silently drops a met
+	// object.  With open sheets in the scene the probe's step budget grows
+	// past kMaxProbeEntries; a probe that meets 33 small glass spheres
+	// before leaving the big glass tank around the seed must still see the
+	// tank (34 distinct objects; 20 sheets far away raise the budget to 72).
+	{
+		std::string t = Header()
+			+ "box_geometry\n{\n\tname g_tank\n\twidth 90\n\theight 90\n\tdepth 90\n}\n\n" + Obj( "tank", "g_tank", "glass15" )
+			+ "sphere_geometry\n{\n\tname g_bead\n\tradius 0.2\n}\n\n";
+		for( int k = 1; k <= 33; k++ ) {
+			char o[16], pos[48];
+			std::snprintf( o, sizeof(o), "bead%d", k );
+			std::snprintf( pos, sizeof(pos), "0 0 %d", k );
+			t += Obj( o, "g_bead", "glass20", pos );
+		}
+		for( int k = 1; k <= 20; k++ ) {
+			char g[16], o[16], pos[48];
+			std::snprintf( g, sizeof(g), "g_far%d", k );
+			std::snprintf( o, sizeof(o), "far%d", k );
+			std::snprintf( pos, sizeof(pos), "300 %d 0", 3 * k );
+			t += HSheet( g, 0, 1, true ) + Obj( o, g, "glass133", pos );
+		}
+		Loaded beads( t );
+		Check( beads.ok, "A39 scene loads" );
+		if( beads.ok ) {
+			const IORStack st = beads.Seed( Point3( 0, 0, 0 ) );
+			Check( st.Depth() == 2 && st.topObject() == beads.O( "tank" ) && Close( st.top(), 1.5 ),
+				"A39: a seed inside a tank behind 33 beads along +z is seeded into the tank (no silent table cap)" );
+		}
+	}
+
+	const int dl626FailBefore = failCount;
+
+	// A51 (DL-626 (1)): in-place geometry shape edit that preserves BOTH the
+	// object transform AND the exact world AABB refreshes PosedOpenSheet and
+	// ConfirmOpenSheetsAt (including multi-pane normal groups) via
+	// IObject::ShapeRevision(), without bumping OpenSheetCatalogEpoch().
+	{
+		// Corners span [-1, 1] x [1, 3] x [-1, 1] before AND after edit,
+		// flipping normal from (-1/sqrt(2), +1/sqrt(2), 0) to (+1/sqrt(2), +1/sqrt(2), 0).
+		const double pre1[4][3] = { { -1, 1, 1 }, { 1, 3, 1 }, { 1, 3, -1 }, { -1, 1, -1 } };
+		const double pre2[4][3] = { { -1, 4, 1 }, { 1, 6, 1 }, { 1, 6, -1 }, { -1, 4, -1 } };
+		const double post1[4][3] = { { -1, 3, 1 }, { 1, 1, 1 }, { 1, 1, -1 }, { -1, 3, -1 } };
+		for( int mode = 0; mode < 2; ++mode ) {
+			std::string sc = Header() + SheetQuad( "g_p1", pre1[0], pre1[1], pre1[2], pre1[3] ) + Obj( "p1", "g_p1", "glass15" );
+			if( mode == 1 ) {
+				sc += SheetQuad( "g_p2", pre2[0], pre2[1], pre2[2], pre2[3] ) + Obj( "p2", "g_p2", "glass15" );
+			}
+			Loaded s( sc );
+			Check( s.ok, mode == 0 ? "A51 [DL-626] lone-sheet scene loads" : "A51 [DL-626] group-sheet scene loads" );
+			if( s.ok ) {
+				const Point3 ptRight( 0.6, 1.4, 0.0 );
+				const Point3 ptLeft( -0.6, 1.4, 0.0 );
+				const BoundingBox boxBefore = s.O( "p1" )->getBoundingBox();
+				const IORStack stRightBefore = s.Seed( ptRight );
+				const IORStack stLeftBefore = s.Seed( ptLeft );
+				Check( stRightBefore.Depth() == 2 && ( mode == 0 ? stLeftBefore.Depth() == 1 : true ),
+					"A51 [DL-626]: initial slope (-x,+y) seeds right point" );
+
+				const unsigned long long epochBefore = IORStackSeeding::OpenSheetCatalogEpoch().load();
+				IKeyframable* geom = dynamic_cast<IKeyframable*>( s.job->GetGeometries()->GetItem( "g_p1" ) );
+				Check( geom != nullptr, "A51 [DL-626]: g_p1 is keyframable" );
+				if( geom ) {
+					const char* names[4] = { "pta", "ptb", "ptc", "ptd" };
+					for( int c = 0; c < 4; ++c ) {
+						char val[96];
+						std::snprintf( val, sizeof(val), "%g %g %g", post1[c][0], post1[c][1], post1[c][2] );
+						IKeyframeParameter* kp = geom->KeyframeFromParameters( names[c], val );
+						if( kp ) { geom->SetIntermediateValue( *kp ); kp->release(); }
+					}
+					geom->RegenerateData();
+				}
+				const unsigned long long epochAfter = IORStackSeeding::OpenSheetCatalogEpoch().load();
+				const BoundingBox boxAfter = s.O( "p1" )->getBoundingBox();
+				Check( epochBefore == epochAfter &&
+					Close( boxBefore.ll.x, boxAfter.ll.x ) && Close( boxBefore.ll.y, boxAfter.ll.y ) && Close( boxBefore.ll.z, boxAfter.ll.z ) &&
+					Close( boxBefore.ur.x, boxAfter.ur.x ) && Close( boxBefore.ur.y, boxAfter.ur.y ) && Close( boxBefore.ur.z, boxAfter.ur.z ),
+					"A51 [DL-626]: corner flip preserves exact world AABB and leaves OpenSheetCatalogEpoch unchanged" );
+
+				const IORStack stLeftAfter = s.Seed( ptLeft );
+				const IORStack stRightAfter = s.Seed( ptRight );
+				if( mode == 0 ) {
+					Check( stLeftAfter.Depth() == 2 && stRightAfter.Depth() == 1,
+						"A51 [DL-626]: lone-sheet seed refreshes normal after AABB-preserving corner edit" );
+				} else {
+					// At ptLeft = (-0.6, 1.4, 0), Ray along p2's (-0.707,+0.707,0) hits (-2.0, 2.8, 0) outside [-1,1],
+					// so ONLY edited p1 (+0.707,+0.707,0 -> hits (0.2, 2.2, 0) on p1's back face) holds ptLeft!
+					Check( stLeftAfter.Depth() == 2 && stLeftAfter.topObject() == s.O( "p1" ),
+						"A51 [DL-626]: multi-sheet normal group invalidates stale group cache on AABB-preserving shape edit" );
+				}
+			}
+		}
+	}
+
+	// A52 (DL-626 (2)): group detour budget exhaustion and same-material
+	// sibling deduplication are invariant to scene declaration order.
+	{
+		auto buildOrderedStack = []( bool reverseOrder ) {
+			std::string t = Header()
+				+ "box_geometry\n{\n\tname g_rock1\n\twidth 1.4\n\theight 0.4\n\tdepth 1.4\n}\n\n" + Obj( "rock1", "g_rock1", "matte", "0 1.5 0" )
+				+ "box_geometry\n{\n\tname g_rock2\n\twidth 2.6\n\theight 0.4\n\tdepth 2.6\n}\n\n" + Obj( "rock2", "g_rock2", "matte", "0 6.5 0" );
+			for( int step = 0; step < 20; ++step ) {
+				const int k = reverseOrder ? ( 20 - step ) : ( step + 1 );
+				const double y = ( k <= 4 ) ? ( 2.0 + 0.8 * k ) : ( 7.0 + 0.8 * ( k - 4 ) );
+				const char alpha = static_cast<char>( 'a' + step );
+				char g[20], o[20];
+				std::snprintf( g, sizeof(g), "g_q%d", k );
+				std::snprintf( o, sizeof(o), "%c_q%d", alpha, k );
+				t += HSheet( g, y, 6.0, true ) + Obj( o, g, "glass15" );
+			}
+			return t;
+		};
+		Loaded fwd( buildOrderedStack( false ) );
+		Loaded rev( buildOrderedStack( true ) );
+		Check( fwd.ok && rev.ok, "A52 [DL-626] scenes load" );
+		if( fwd.ok && rev.ok ) {
+			fwd.Seed( Point3( 0, 0, 0 ) );
+			rev.Seed( Point3( 0, 0, 0 ) );
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = 6;
+			const IORStack stFwd = fwd.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stRev = rev.Seed( Point3( 0, 0, 0 ) );
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = IORStackSeeding::kGroupDetourRayBudget;
+			bool identicalSet = ( stFwd.Depth() == stRev.Depth() ) && ( stFwd.Depth() > 1 ) && ( stFwd.Depth() < 21 );
+			for( int k = 1; k <= 20 && identicalSet; ++k ) {
+				char oFwd[20], oRev[20];
+				std::snprintf( oFwd, sizeof(oFwd), "%c_q%d", static_cast<char>( 'a' + ( k - 1 ) ), k );
+				std::snprintf( oRev, sizeof(oRev), "%c_q%d", static_cast<char>( 'a' + ( 20 - k ) ), k );
+				bool inFwd = false, inRev = false;
+				for( std::size_t i = 1; i < stFwd.Depth(); ++i ) {
+					if( stFwd.ObjectAt( i ) == fwd.O( oFwd ) ) inFwd = true;
+				}
+				for( std::size_t i = 1; i < stRev.Depth(); ++i ) {
+					if( stRev.ObjectAt( i ) == rev.O( oRev ) ) inRev = true;
+				}
+				if( inFwd != inRev ) identicalSet = false;
+			}
+			Check( identicalSet,
+				"A52a [DL-626]: HasFreeSpaceDetourToSheets confirms the exact same panes under tight ray budget regardless of declaration/TLAS order" );
+		}
+
+		// Same-material siblings: roof at y = 1.5 (distance 1.5) vs wall at x = 3.0 (distance 3.0),
+		// flipping BOTH scene chunk order and alphabetical GenericManager/TLAS name order.
+		const double wa[3] = { 3, -3, -3 }, wb[3] = { 3, 3, -3 }, wc[3] = { 3, 3, 3 }, wd[3] = { 3, -3, 3 };
+		const std::string wallQ = SheetQuad( "g_wall", wa, wb, wc, wd );
+		Loaded roofFirst( Header() + HSheet( "g_roof", 1.5, 3.0, true ) + Obj( "a_roof", "g_roof", "glass15" )
+			+ wallQ + Obj( "z_wall", "g_wall", "glass15" ) );
+		Loaded wallFirst( Header() + wallQ + Obj( "a_wall", "g_wall", "glass15" )
+			+ HSheet( "g_roof", 1.5, 3.0, true ) + Obj( "z_roof", "g_roof", "glass15" ) );
+		Check( roofFirst.ok && wallFirst.ok, "A52b [DL-626] sibling scenes load" );
+		if( roofFirst.ok && wallFirst.ok ) {
+			const IORStack s1 = roofFirst.Seed( Point3( 0, 0, 0 ) );
+			const IORStack s2 = wallFirst.Seed( Point3( 0, 0, 0 ) );
+			Check( s1.Depth() == 2 && s2.Depth() == 2 &&
+				s1.topObject() == roofFirst.O( "a_roof" ) && s2.topObject() == wallFirst.O( "z_roof" ),
+				"A52b [DL-626]: same-material sibling deduplication always keeps the geometrically nearer sibling regardless of declaration/TLAS order" );
+		}
+	}
+
+	// A53 (DL-626 (3)): crossing an inner fold's back face on a multi-fold
+	// overhanging non-planar sheet keeps (or pushes) the sheet when an outer
+	// overhanging fold of the same sheet still encloses the post-crossing point,
+	// matching SeedFromPoint(pAfter).  Constructed as a certified-open 1.25-turn
+	// upward-facing helicoid ribbon (r in [0.3, 2.5], 10 octants, pitch 2.0 per
+	// turn) so quadrant 0 (x > 0, z > 0) has a lower fold at y ~ 1.25 and an
+	// overhanging upper fold of the same sheet at y ~ 3.25 directly above it.
+	{
+		std::ostringstream hs;
+		hs << "indexedmesh_geometry\n{\n\tname g_canopy\n\tdouble_sided TRUE\n\tface_normals TRUE\n";
+		const int K = 10;
+		const double r0 = 0.3, r1 = 2.5;
+		for( int k = 0; k <= K; ++k ) {
+			const double th = ( 2.0 * 3.14159265358979323846 * double( k ) ) / 8.0;
+			const double y = 1.0 + 2.0 * ( double( k ) / 8.0 );
+			const double c = std::cos( th ), s = std::sin( th );
+			hs << "\tvertex " << ( r0 * c ) << " " << y << " " << ( r0 * s ) << "\n";
+			hs << "\tvertex " << ( r1 * c ) << " " << y << " " << ( r1 * s ) << "\n";
+		}
+		for( int k = 0; k <= K; ++k ) {
+			hs << "\tuv 0 0\n\tuv 1 0\n";
+		}
+		for( int k = 0; k < K; ++k ) {
+			const int i0 = 2 * k, o0 = 2 * k + 1;
+			const int i1 = 2 * ( k + 1 ), o1 = 2 * ( k + 1 ) + 1;
+			// (i1 - i0) at th=0 goes (dx, +dy, +dz>0); (o0 - i0) goes (+dr, 0, 0):
+			// (i1 - i0) x (o0 - i0) has y-component (+dz)*(+dr) - 0 > 0 (+y)!
+			hs << "\ttriangle " << i0 << " " << i1 << " " << o1 << "\n";
+			hs << "\ttriangle " << i0 << " " << o1 << " " << o0 << "\n";
+		}
+		hs << "}\n\n";
+		Loaded mc( Header() + hs.str() + Obj( "canopy", "g_canopy", "glass15" ) );
+		Check( mc.ok && mc.O( "canopy" ) != nullptr,
+			"A53 [DL-626] certified-open multi-fold helicoid canopy scene loads" );
+		if( mc.ok && mc.O( "canopy" ) ) {
+			const Point3 ptBelow( 1.0, 0.2, 1.0 );
+			const Point3 ptBetween( 1.0, 2.25, 1.0 );
+			const Point3 ptAbove( 1.0, 4.25, 1.0 );
+			const IORStack seedBelow = mc.Seed( ptBelow );
+			const IORStack seedBetween = mc.Seed( ptBetween );
+			const IORStack seedAbove = mc.Seed( ptAbove );
+			Check( seedBelow.Depth() == 2 && seedBetween.Depth() == 2 && seedAbove.Depth() == 1,
+				"A53 [DL-626] fixture: SeedFromPoint holds canopy below lower fold and between folds, air above upper fold" );
+
+			// Hit lower fold near y = 1.25 going UP (+y) — both pushed and unpushed walks must stay in canopy (etaTo == 1.5)!
+			RayIntersection hitLower( Ray( ptBelow, Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			mc.O( "canopy" )->IntersectRay( hitLower, RISE_INFINITY, true, true, false );
+			Check( hitLower.geometric.bHit && std::fabs( hitLower.geometric.ptIntersection.y - 1.25 ) < 0.05,
+				"A53 [DL-626]: +y ray hits inner fold near y = 1.25" );
+			if( hitLower.geometric.bHit ) {
+				IORStack pushedWalk = seedBelow;
+				pushedWalk.SetMediumProbeScene( &mc.Scene() );
+				pushedWalk.SetCurrentObject( mc.O( "canopy" ) );
+				const IORStackSeeding::OpenSheetCrossing cPushed =
+					IORStackSeeding::ResolveOpenSheetCrossing( hitLower.geometric, 1.5, pushedWalk, mc.O( "canopy" )->GetMaterial() );
+				Check( !cPushed.bEntering && pushedWalk.Depth() == 2 && Close( cPushed.etaTo, 1.5 ),
+					"A53 [DL-626]: pushed walk crossing inner fold's back face stays in canopy enclosed by outer fold (matches SeedFromPoint)" );
+
+				IORStack unpushedWalk( 1.0 );
+				unpushedWalk.SetMediumProbeScene( &mc.Scene() );
+				unpushedWalk.SetCurrentObject( mc.O( "canopy" ) );
+				const IORStackSeeding::OpenSheetCrossing cUnpushed =
+					IORStackSeeding::ResolveOpenSheetCrossing( hitLower.geometric, 1.5, unpushedWalk, mc.O( "canopy" )->GetMaterial() );
+				Check( !cUnpushed.bEntering && unpushedWalk.Depth() == 2 && Close( cUnpushed.etaTo, 1.5 ),
+					"A53 [DL-626]: unpushed walk crossing inner fold's back face adopts canopy enclosed by outer fold (matches SeedFromPoint)" );
+
+				// Continuing UP (+y) across upper fold near y = 3.25 exits into air (Depth() == 1, etaTo == 1.0):
+				RayIntersection hitUpper( Ray( ptBetween, Vector3( 0, 1, 0 ) ), nullRasterizerState );
+				mc.O( "canopy" )->IntersectRay( hitUpper, RISE_INFINITY, true, true, false );
+				Check( hitUpper.geometric.bHit && std::fabs( hitUpper.geometric.ptIntersection.y - 3.25 ) < 0.05,
+					"A53 [DL-626]: +y ray from between folds hits outer fold near y = 3.25" );
+				if( hitUpper.geometric.bHit ) {
+					pushedWalk.SetCurrentObject( mc.O( "canopy" ) );
+					const IORStackSeeding::OpenSheetCrossing cTop =
+						IORStackSeeding::ResolveOpenSheetCrossing( hitUpper.geometric, 1.5, pushedWalk, mc.O( "canopy" )->GetMaterial() );
+					Check( !cTop.bEntering && pushedWalk.Depth() == 1 && Close( cTop.etaTo, 1.0 ),
+						"A53 [DL-626]: crossing outer fold's back face exits into air" );
+				}
+			}
+		}
+	}
+
+	// A54 (DL-626 (5)): curved multi-facet open sheet with 19 mutually
+	// >18.9 deg azimuthal wall facets (pairwise cos <= 0.9458 < 0.95) plus a
+	// dominant horizontal bottom flange (`bestNormal = +y` at y = 0.5).  Points
+	// at y = 1.5 lie ABOVE the flange (outside the +y half-space) and inside
+	// the 19 outward-facing radial wall skirts, so any <=16 auxiliary normal
+	// cap or coarse 15-ray Stage-1 grid misses panels by pigeonhole; 64-sample
+	// surface probing + 32-normal diversity seeds all 19/19 skirts.
+	{
+		const int N = 19;
+		const double rIn = 2.5, rOut = 4.5, yBot = 0.5, yTop = 2.5;
+		std::ostringstream ms;
+		ms << "indexedmesh_geometry\n{\n\tname g_collar\n\tdouble_sided TRUE\n\tface_normals TRUE\n";
+		for( int k = 0; k < N; ++k ) {
+			const double th = ( 2.0 * 3.14159265358979323846 * double( k ) ) / double( N );
+			const double c = std::cos( th ), s = std::sin( th );
+			ms << "\tvertex " << ( rIn * c ) << " " << yBot << " " << ( rIn * s ) << "\n";
+			ms << "\tvertex " << ( rIn * c ) << " " << yTop << " " << ( rIn * s ) << "\n";
+			ms << "\tvertex " << ( rOut * c ) << " " << yBot << " " << ( rOut * s ) << "\n";
+		}
+		for( int k = 0; k < 3 * N; ++k ) {
+			ms << "\tuv 0 0\n";
+		}
+		for( int k = 0; k < N; ++k ) {
+			const int kn = ( k + 1 ) % N;
+			const int b0 = 3 * k, t0 = 3 * k + 1, f0 = 3 * k + 2;
+			const int b1 = 3 * kn, t1 = 3 * kn + 1, f1 = 3 * kn + 2;
+			// Outward radial normal on wall (b0, t0, t1, b1), traversing bottom edge b1 -> b0:
+			ms << "\ttriangle " << b0 << " " << t0 << " " << t1 << "\n";
+			ms << "\ttriangle " << b0 << " " << t1 << " " << b1 << "\n";
+			// Bottom outward flange (b0, b1, f1, f0), traversing shared edge b0 -> b1 (consistent manifold!), normal +y:
+			ms << "\ttriangle " << b0 << " " << b1 << " " << f1 << "\n";
+			ms << "\ttriangle " << b0 << " " << f1 << " " << f0 << "\n";
+		}
+		ms << "}\n\n";
+
+		Loaded col( Header() + ms.str() + Obj( "collar", "g_collar", "glass15" ) );
+		Check( col.ok && col.O( "collar" ) != nullptr,
+			"A54 [DL-626] certified-open 19-panel collar scene loads" );
+		if( col.ok && col.O( "collar" ) ) {
+			int seededPanels = 0;
+			for( int k = 0; k < N; ++k ) {
+				const double thMid = ( 2.0 * 3.14159265358979323846 * ( double( k ) + 0.5 ) ) / double( N );
+				const double rMid = rIn * std::cos( 3.14159265358979323846 / double( N ) );
+				const Point3 pk( ( rMid - 0.08 ) * std::cos( thMid ), 1.5, ( rMid - 0.08 ) * std::sin( thMid ) );
+				if( col.Seed( pk ).Depth() == 2 ) {
+					++seededPanels;
+				}
+			}
+			char label[200];
+			std::snprintf( label, sizeof(label),
+				"A54 [DL-626]: 19-panel open glass collar seeds %d of %d radial skirt sectors outside bestNormal (+y) prism",
+				seededPanels, N );
+			Check( seededPanels == N, label );
+		}
+	}
+
+	// A55 (DL-626 (4)): an emissive ceiling slab sealing a dry room below a
+	// pond is NOT seeded into the pond when pSeedObject is passed (matching
+	// free-space room seeds), whereas the identical ceiling slab over an
+	// open-sided underwater pavilion IS seeded via free-space detour.
+	{
+		const std::string baseSlab = Header()
+			+ HSheet( "g_pond", 6.0, 12.0, true ) + Obj( "pond", "g_pond", "glass133" )
+			+ "lambertian_luminaire_material\n{\n\tname m_ceil\n\texitance white\n\tscale 4\n\tmaterial matte\n}\n\n"
+			+ "box_geometry\n{\n\tname g_roof\n\twidth 4.5\n\theight 0.25\n\tdepth 4.5\n}\n\n"
+			+ Obj( "roof", "g_roof", "m_ceil", "0 3.125 0" )
+			+ "box_geometry\n{\n\tname g_floor\n\twidth 4.5\n\theight 0.25\n\tdepth 4.5\n}\n\n"
+			+ Obj( "floor", "g_floor", "matte", "0 -0.125 0" );
+		const std::string walls4 =
+			"box_geometry\n{\n\tname g_wx\n\twidth 0.25\n\theight 3.25\n\tdepth 4.5\n}\n\n"
+			"box_geometry\n{\n\tname g_wz\n\twidth 4.0\n\theight 3.25\n\tdepth 0.25\n}\n\n"
+			+ Obj( "wpx", "g_wx", "matte", "2.125 1.625 0" )
+			+ Obj( "wmx", "g_wx", "matte", "-2.125 1.625 0" )
+			+ Obj( "wpz", "g_wz", "matte", "0 1.625 2.125" )
+			+ Obj( "wmz", "g_wz", "matte", "0 1.625 -2.125" );
+
+		Loaded dryRoom( baseSlab + walls4 );
+		Loaded pavilion( baseSlab );
+		Check( dryRoom.ok && pavilion.ok, "A55 [DL-626] dry-room and pavilion scenes load" );
+		if( dryRoom.ok && pavilion.ok ) {
+			RayIntersection ceilHit( Ray( Point3( 0.1, 1.5, 0.05 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			dryRoom.O( "roof" )->IntersectRay( ceilHit, RISE_INFINITY, true, true, false );
+			Check( ceilHit.geometric.bHit && std::fabs( ceilHit.geometric.ptIntersection.y - 3.0 ) < 1e-6,
+				"A55 [DL-626]: interior probe hits underside of emissive ceiling slab at y = 3.0" );
+			if( ceilHit.geometric.bHit ) {
+				IORStack dryLum( 1.0 );
+				IORStackSeeding::SeedFromPoint( dryLum, ceilHit.geometric.ptIntersection, dryRoom.Scene(), 0, true, dryRoom.O( "roof" ) );
+				const IORStack dryAir = dryRoom.Seed( Point3( 0.1, 1.5, 0.05 ) );
+				Check( dryAir.Depth() == 1 && dryLum.Depth() == 1,
+					"A55 [DL-626]: emissive ceiling slab sealing a dry room is NOT seeded into the pond above (agrees with interior free-space seed)" );
+
+				RayIntersection pavHit( Ray( Point3( 0.1, 1.5, 0.05 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+				pavilion.O( "roof" )->IntersectRay( pavHit, RISE_INFINITY, true, true, false );
+				IORStack pavLum( 1.0 );
+				IORStackSeeding::SeedFromPoint( pavLum, pavHit.geometric.ptIntersection, pavilion.Scene(), 0, true, pavilion.O( "roof" ) );
+				Check( pavLum.Depth() == 2 && pavLum.topObject() == pavilion.O( "pond" ) && Close( pavLum.top(), 1.33 ),
+					"A55 [DL-626] control: the same emissive ceiling slab over an open-sided underwater pavilion IS seeded into the pond via detour" );
+			}
+		}
+	}
+
+	// A56: strict weak ordering in ConfirmOpenSheetsAt / HasFreeSpaceDetourToSheets
+	// across a 0.7e-9 epsilon ladder (ha = 2.0, hb = 2.0 + 7e-10, hc = 2.0 + 1.4e-9)
+	// is invariant to all 6 scene declaration permutations.
+	{
+		const double ys[3] = { 2.0, 2.0 + 7.0e-10, 2.0 + 1.4e-9 };
+		const int perms[6][3] = {
+			{ 0, 1, 2 }, { 0, 2, 1 }, { 1, 0, 2 },
+			{ 1, 2, 0 }, { 2, 0, 1 }, { 2, 1, 0 }
+		};
+		BoundingBox refBox;
+		bool haveRef = false;
+		bool allMatch = true;
+		for( int p = 0; p < 6; ++p ) {
+			std::string sc = Header();
+			for( int k = 0; k < 3; ++k ) {
+				const int idx = perms[p][k];
+				char g[16], o[16];
+				std::snprintf( g, sizeof(g), "g_eps%d", idx );
+				std::snprintf( o, sizeof(o), "eps%d", idx );
+				// Slightly distinct extents so SheetGeomKeyLess distinguishes them cleanly too.
+				sc += HSheet( g, ys[idx], 3.0 + 0.1 * idx, true ) + Obj( o, g, "glass15" );
+			}
+			Loaded s( sc );
+			if( !s.ok ) { allMatch = false; break; }
+			const IORStack st = s.Seed( Point3( 0, 0, 0 ) );
+			if( st.Depth() != 2 || !st.topObject() ) { allMatch = false; break; }
+			const BoundingBox b = st.topObject()->getBoundingBox();
+			if( !haveRef ) {
+				refBox = b;
+				haveRef = true;
+			} else if( !Close( b.ll.x, refBox.ll.x ) || !Close( b.ur.x, refBox.ur.x ) ) {
+				allMatch = false;
+			}
+		}
+		Check( haveRef && allMatch,
+			"A56 [DL-626]: 0.7e-9 epsilon-ladder planar sheets pick identical canonical representative across all 6 permutations" );
+	}
+
+	// A57: non-planar multi-fold open sheet enclosing an inner closed dielectric
+	// preserves outer-to-inner stack order `[env, sheet(1.5), drop(1.33)]` and
+	// `etaFrom = 1.33, etaTo = 1.33` on both pushed and unpushed inner-fold back
+	// crossings, preserves nested outer sheets, and deduplicates against a
+	// non-nested same-material sibling sheet.
+	{
+		std::ostringstream hs;
+		hs << "indexedmesh_geometry\n{\n\tname g_pleat\n\tdouble_sided TRUE\n\tface_normals TRUE\n";
+		const int K = 10;
+		const double r0 = 0.3, r1 = 2.5;
+		for( int k = 0; k <= K; ++k ) {
+			const double th = ( 2.0 * 3.14159265358979323846 * double( k ) ) / 8.0;
+			const double y = 1.0 + 2.0 * ( double( k ) / 8.0 );
+			const double c = std::cos( th ), s = std::sin( th );
+			hs << "\tvertex " << ( r0 * c ) << " " << y << " " << ( r0 * s ) << "\n";
+			hs << "\tvertex " << ( r1 * c ) << " " << y << " " << ( r1 * s ) << "\n";
+		}
+		for( int k = 0; k <= K; ++k ) {
+			hs << "\tuv 0 0\n\tuv 1 0\n";
+		}
+		for( int k = 0; k < K; ++k ) {
+			const int i0 = 2 * k, o0 = 2 * k + 1;
+			const int i1 = 2 * ( k + 1 ), o1 = 2 * ( k + 1 ) + 1;
+			hs << "\ttriangle " << i0 << " " << i1 << " " << o1 << "\n";
+			hs << "\ttriangle " << i0 << " " << o1 << " " << o0 << "\n";
+		}
+		hs << "}\n\n";
+
+		const double wa[3] = { 4, -4, -4 }, wb[3] = { 4, 6, -4 }, wc[3] = { 4, 6, 4 }, wd[3] = { 4, -4, 4 };
+		const std::string coWall = SheetQuad( "g_cowall", wa, wb, wc, wd );
+		const std::string sc = Header()
+			+ hs.str() + Obj( "pleat", "g_pleat", "glass15" )
+			+ HSheet( "g_sib", 5.0, 5.0, true ) + Obj( "sib", "g_sib", "glass15" )
+			+ "sphere_geometry\n{\n\tname g_drop\n\tradius 0.4\n}\n\n"
+			+ Obj( "drop", "g_drop", "glass133", "1.0 1.25 1.0" );
+		const std::string scSib = Header()
+			+ hs.str() + Obj( "pleat", "g_pleat", "glass15" )
+			+ coWall + Obj( "cowall", "g_cowall", "glass15" )
+			+ "sphere_geometry\n{\n\tname g_drop\n\tradius 0.4\n}\n\n"
+			+ Obj( "drop", "g_drop", "glass133", "1.0 1.25 1.0" );
+		Loaded s( sc );
+		Loaded sSib( scSib );
+		Check( s.ok && sSib.ok, "A57 [DL-626] pleat + inner closed sphere scenes load" );
+		if( s.ok && sSib.ok ) {
+			const IObject* pPleat = s.O( "pleat" );
+			const IObject* pSib = s.O( "sib" );
+			const IObject* pDrop = s.O( "drop" );
+			Ray rUp( Point3( 1.0, 1.05, 1.0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitInner( rUp, nullRasterizerState );
+			pPleat->IntersectRay( hitInner, 1.0, true, true, false );
+			Check( hitInner.geometric.bHit && hitInner.geometric.bProvablyNoInterior,
+				"A57 [DL-626]: upward ray from inside drop hits inner fold back face at y = 1.25" );
+			if( hitInner.geometric.bHit ) {
+				// (a) Pushed case: whether the incoming stack is seeded below the fold
+				// (`[env, drop(1.33), pleat(1.5)]`) or holds `[env, pleat(1.5), drop(1.33)]`,
+				// exiting `pleat`'s lower fold upward at y = 1.25 retains `[env, pleat(1.5), drop(1.33)]`
+				// and refracts reciprocally `1.5 -> 1.33` (matching front-face downward `1.33 -> 1.5`).
+				IORStack pushed( 1.0 );
+				pushed.SetMediumProbeScene( &s.Scene() );
+				pushed.SetCurrentObject( pPleat );
+				pushed.pushOpenSheet( 1.5 );
+				pushed.SetCurrentObject( pDrop );
+				pushed.push( 1.33 );
+				pushed.SetCurrentObject( pPleat );
+				const auto cPushed = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitInner.geometric, 1.5, pushed, pPleat->GetMaterial(), 0 );
+				Check( pushed.Depth() == 3 &&
+					pushed.ObjectAt( 1 ) == pPleat && pushed.isOpenSheetAt( 1 ) &&
+					pushed.ObjectAt( 2 ) == pDrop && !pushed.isOpenSheetAt( 2 ) &&
+					Close( cPushed.etaFrom, 1.5 ) && Close( cPushed.etaTo, 1.33 ),
+					"A57a [DL-626]: pushed multi-fold crossing inside closed drop preserves [env, pleat, drop] order and reciprocal eta 1.5->1.33" );
+
+				// (b) Unpushed case: `[env, drop(1.33)]` -> inserts `pleat` BELOW `drop`: `[env, pleat(1.5), drop(1.33)]`
+				// and prices the back-face interface reciprocally (`1.5 -> 1.33`).
+				IORStack unpushed( 1.0 );
+				unpushed.SetMediumProbeScene( &s.Scene() );
+				unpushed.SetCurrentObject( pDrop );
+				unpushed.push( 1.33 );
+				unpushed.SetCurrentObject( pPleat );
+				const auto cUnpushed = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitInner.geometric, 1.5, unpushed, pPleat->GetMaterial(), 0 );
+				Check( unpushed.Depth() == 3 &&
+					unpushed.ObjectAt( 1 ) == pPleat && unpushed.isOpenSheetAt( 1 ) &&
+					unpushed.ObjectAt( 2 ) == pDrop && !unpushed.isOpenSheetAt( 2 ) &&
+					Close( cUnpushed.etaFrom, 1.5 ) && Close( cUnpushed.etaTo, 1.33 ),
+					"A57b [DL-626]: unpushed multi-fold crossing inside closed drop inserts pleat beneath drop with reciprocal eta 1.5->1.33" );
+
+				// (c) Nested outer `sib` (at y = 5 > 3.25) keeps both `[env, sib, pleat]`,
+				// whereas in `sSib` a non-nested sibling `cowall` (x = 4, disjoint normal prism) deduplicates.
+				IORStack nestedStack( 1.0 );
+				nestedStack.SetMediumProbeScene( &s.Scene() );
+				nestedStack.SetCurrentObject( pSib );
+				nestedStack.pushOpenSheet( 1.5 );
+				nestedStack.SetCurrentObject( pPleat );
+				nestedStack.pushOpenSheet( 1.5 );
+				nestedStack.SetCurrentObject( pPleat );
+				IORStackSeeding::ResolveOpenSheetCrossing(
+					hitInner.geometric, 1.5, nestedStack, pPleat->GetMaterial(), 0 );
+
+				const IObject* pPleat2 = sSib.O( "pleat" );
+				const IObject* pCoWall2 = sSib.O( "cowall" );
+				const IObject* pDrop2 = sSib.O( "drop" );
+				RayIntersection hitInner2( rUp, nullRasterizerState );
+				pPleat2->IntersectRay( hitInner2, 1.0, true, true, false );
+				IORStack sibStack( 1.0 );
+				sibStack.SetMediumProbeScene( &sSib.Scene() );
+				sibStack.SetCurrentObject( pCoWall2 );
+				sibStack.pushOpenSheet( 1.5 );
+				sibStack.SetCurrentObject( pDrop2 );
+				sibStack.push( 1.33 );
+				sibStack.SetCurrentObject( pPleat2 );
+				const auto cSib = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitInner2.geometric, 1.5, sibStack, pPleat2->GetMaterial(), 0 );
+
+				const IORStack seededNested = s.Seed( Point3( 1.0, 1.30, 1.0 ) );
+				const IORStack seededSib = sSib.Seed( Point3( 1.0, 1.30, 1.0 ) );
+				Check( nestedStack.Depth() == 3 && seededNested.Depth() == 4 &&
+					sibStack.Depth() == 3 && seededSib.Depth() == 3 &&
+					sibStack.ObjectAt( 1 ) == pCoWall2 && sibStack.ObjectAt( 2 ) == pDrop2 &&
+					Close( cSib.etaFrom, 1.5 ) && Close( cSib.etaTo, 1.33 ),
+					"A57c [DL-626]: nested outer sheet keeps both layers while non-nested sibling deduplicates" );
+			}
+		}
+	}
+
+	// A58: SeedFromPoint(..., /*seedOpenSheets=*/false) inside a closed dielectric
+	// tank still uses `cat.walkSteps` when >32 open panes lie along +z inside the tank.
+	{
+		std::string sc = Header()
+			+ "box_geometry\n{\n\tname g_bigtank\n\twidth 10\n\theight 10\n\tdepth 120\n}\n\n"
+			+ Obj( "bigtank", "g_bigtank", "glass15", "0 0 50" );
+		for( int k = 1; k <= 40; ++k ) {
+			char g[20], o[20];
+			std::snprintf( g, sizeof(g), "g_zp%d", k );
+			std::snprintf( o, sizeof(o), "zp%d", k );
+			const double z = 1.0 * k;
+			const double a[3] = { -2, -2, z }, b[3] = { 2, -2, z }, c[3] = { 2, 2, z }, d[3] = { -2, 2, z };
+			sc += SheetQuad( g, a, b, c, d ) + Obj( o, g, "glass133" );
+		}
+		Loaded s( sc );
+		Check( s.ok, "A58 [DL-631] tank with 40 +z open panes loads" );
+		if( s.ok ) {
+			IORStack stNoSheets( 1.0 );
+			IORStackSeeding::SeedFromPoint( stNoSheets, Point3( 0, 0, 0 ), s.Scene(), 0, false );
+			Check( stNoSheets.Depth() == 2 && stNoSheets.topObject() == s.O( "bigtank" ) && Close( stNoSheets.top(), 1.5 ),
+				"A58 [DL-631]: SeedFromPoint(seedOpenSheets=false) reaches closed tank exit past 40 +z open sheets" );
+		}
+	}
+
+	// A59: Opaque-only scenes (`!cat.hasTrackableMedia`) cast ZERO scene rays on
+	// both `SeedFromPoint` and `SeedLanesFromPoint`.
+	{
+		const std::string sc = Header()
+			+ "box_geometry\n{\n\tname g_w1\n\twidth 6\n\theight 6\n\tdepth 0.5\n}\n\n"
+			+ Obj( "w1", "g_w1", "matte", "0 0 3" )
+			+ Obj( "w2", "g_w1", "soot", "0 0 -3" );
+		Loaded s( sc );
+		Check( s.ok, "A59 [DL-631] opaque-only scene loads" );
+		if( s.ok ) {
+			// Prime catalog once, then reset ray counter.
+			s.Seed( Point3( 0, 0, 0 ) );
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			const IORStack st = s.Seed( Point3( 0.1, -0.2, 0.3 ) );
+			IORStack l0( 1.0 ), l1( 1.0 ), l2( 1.0 ), l3( 1.0 );
+			IORStack* lanes[4] = { &l0, &l1, &l2, &l3 };
+			const Scalar nms[4] = { 450, 520, 590, 660 };
+			IORStackSeeding::SeedLanesFromPoint( lanes, 4, nms, Point3( 0.1, -0.2, 0.3 ), s.Scene() );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+			Check( st.Depth() == 1 && l0.Depth() == 1 && rays == 0,
+				"A59 [DL-631]: SeedFromPoint and SeedLanesFromPoint cast 0 BVH rays on opaque-only scenes" );
+		}
+
+		// A59b: Per-operand-material `csg_object` (`material` omitted -> `GetMaterial() == nullptr`)
+		// over opaque operands must also set `cat.hasTrackableMedia == false` via
+		// `IObject::EnumerateEffectiveMaterials`, casting 0 BVH rays on both `SeedFromPoint`
+		// and `SeedLanesFromPoint`.
+		const std::string scCsg = Header()
+			+ "box_geometry\n{\n\tname g_w1c\n\twidth 6\n\theight 6\n\tdepth 0.5\n}\n\n"
+			+ Obj( "w1c", "g_w1c", "matte", "0 0 3" )
+			+ Obj( "w2c", "g_w1c", "soot", "0 0 -3" )
+			+ "csg_object\n{\n\tname w_union\n\tobja w1c\n\tobjb w2c\n\toperation union\n}\n\n";
+		Loaded sCsg( scCsg );
+		Check( sCsg.ok && sCsg.O( "w_union" ) && sCsg.O( "w_union" )->GetMaterial() == nullptr,
+			"A59b [DL-631] opaque per-operand-material csg_object scene loads with GetMaterial() == nullptr" );
+		if( sCsg.ok ) {
+			sCsg.Seed( Point3( 0, 0, 0 ) );
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			const IORStack stCsg = sCsg.Seed( Point3( 0.2, 0.1, -0.3 ) );
+			IORStack l0( 1.0 ), l1( 1.0 ), l2( 1.0 ), l3( 1.0 );
+			IORStack* lanes[4] = { &l0, &l1, &l2, &l3 };
+			const Scalar nms[4] = { 450, 520, 590, 660 };
+			IORStackSeeding::SeedLanesFromPoint( lanes, 4, nms, Point3( 0.2, 0.1, -0.3 ), sCsg.Scene() );
+			const std::size_t raysCsg = IORStackSeeding::Diagnostics::SceneRayCounter();
+			Check( stCsg.Depth() == 1 && l0.Depth() == 1 && raysCsg == 0,
+				"A59b [DL-631]: opaque per-operand-material csg_object casts 0 BVH rays on SeedFromPoint and SeedLanesFromPoint" );
+		}
+	}
+
+	// A60: Tilted (45-degree) coplanar open sheets of different extents & materials
+	// in `ConfirmSharedNormalRay` must detect sibling overlap (`activeDists` / `aloneDist`
+	// rather than `heights[k] - hPos`) and decline in BOTH declaration/TLAS orders; and
+	// tilted same-material crossed sheets sharing an identical world AABB tie-break
+	// deterministically via transform / confirmation-hit geometry rather than pointer order.
+	{
+		auto makeTiltedCoplanar = [&]( bool smallFirst ) -> std::string {
+			// Plane y + z = 2 (unit normal (0, 1/sqrt(2), 1/sqrt(2)) pointing toward +y,+z;
+			// origin (0,0,0) sits on the back side at normal distance sqrt(2)).
+			// Swap alphabetical object names (`a_*` vs `z_*`) as well as chunk order so
+			// `GenericManager` / `ObjectManager` reverses TLAS primitive insertion order.
+			const double bL[3] = { -4,  5, -3 }, aL[3] = {  4,  5, -3 }, dL[3] = {  4, -1,  3 }, cL[3] = { -4, -1,  3 };
+			const double bS[3] = { -1,  2,  0 }, aS[3] = {  1,  2,  0 }, dS[3] = {  1,  0,  2 }, cS[3] = { -1,  0,  2 };
+			const char* bigName   = smallFirst ? "z_tilt_big"   : "a_tilt_big";
+			const char* smallName = smallFirst ? "a_tilt_small" : "z_tilt_small";
+			const std::string big   = SheetQuad( "g_tilt_big",   aL, bL, cL, dL ) + Obj( bigName,   "g_tilt_big",   "glass15" );
+			const std::string small = SheetQuad( "g_tilt_small", aS, bS, cS, dS ) + Obj( smallName, "g_tilt_small", "glass133" );
+			return Header() + ( smallFirst ? ( small + big ) : ( big + small ) );
+		};
+		Loaded sA( makeTiltedCoplanar( false ) );
+		Loaded sB( makeTiltedCoplanar( true ) );
+		Check( sA.ok && sB.ok, "A60a [DL-626] tilted 45-degree coplanar sheets load in both orders" );
+		if( sA.ok && sB.ok ) {
+			const IORStack stA = sA.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stB = sB.Seed( Point3( 0, 0, 0 ) );
+			Check( stA.Depth() == 1 && stB.Depth() == 1,
+				"A60a [DL-626]: tilted 45-degree coplanar sheets of different sizes & materials decline in both TLAS orders" );
+		}
+
+		auto makeIdenticalBoxCrossed = [&]( bool swapOrder ) -> std::string {
+			// Two tilted glass15 panes sharing identical world AABB [-2,2] x [-2,2] x [-2,2]:
+			// panePlus on x + y = 0 (normal (+1,+1,0)/sqrt(2), enclosing (0,-1,0)),
+			// paneMinus on y - x = 0 (normal (-1,+1,0)/sqrt(2), enclosing (0,-1,0)).
+			const double aP[3] = { -2,  2, -2 }, bP[3] = { -2,  2,  2 }, cP[3] = {  2, -2,  2 }, dP[3] = {  2, -2, -2 };
+			const double aM[3] = {  2,  2,  2 }, bM[3] = {  2,  2, -2 }, cM[3] = { -2, -2, -2 }, dM[3] = { -2, -2,  2 };
+			const char* xpName = swapOrder ? "z_xp" : "a_xp";
+			const char* xmName = swapOrder ? "a_xm" : "z_xm";
+			const std::string plus  = SheetQuad( "g_xp", aP, bP, cP, dP ) + Obj( xpName, "g_xp", "glass15" );
+			const std::string minus = SheetQuad( "g_xm", aM, bM, cM, dM ) + Obj( xmName, "g_xm", "glass15" );
+			return Header() + ( swapOrder ? ( minus + plus ) : ( plus + minus ) );
+		};
+		Loaded x1( makeIdenticalBoxCrossed( false ) );
+		Loaded x2( makeIdenticalBoxCrossed( true ) );
+		Check( x1.ok && x2.ok, "A60b [DL-626] identical-AABB crossed tilted panes load in both orders" );
+		if( x1.ok && x2.ok ) {
+			const IORStack st1 = x1.Seed( Point3( 0, -1, 0 ) );
+			const IORStack st2 = x2.Seed( Point3( 0, -1, 0 ) );
+			const bool pickedXp1 = ( st1.Depth() == 2 && st1.topObject() == x1.O( "a_xp" ) );
+			const bool pickedXp2 = ( st2.Depth() == 2 && st2.topObject() == x2.O( "z_xp" ) );
+			Check( st1.Depth() == 2 && st2.Depth() == 2 && pickedXp1 == pickedXp2,
+				"A60b [DL-626]: identical-AABB crossed same-material panes pick the same geometric winner in both TLAS orders" );
+		}
+	}
+
+	// A61: Coplanar sibling confirmation across detour column/Segment-2 walks,
+	// per-sheet `OpenSheetNormalRayReaches` fallback, and slightly tilted
+	// (`Dot >= 1 - 1e-10`) group members (flipping alphabetical object names so
+	// both `GenericManager` / TLAS primitive orders are genuinely exercised):
+	{
+		auto makeSubmergedCoplanar = [&]( bool smallFirst ) -> std::string {
+			const char* bigName   = smallFirst ? "z_cbig"   : "a_cbig";
+			const char* smallName = smallFirst ? "a_csmall" : "z_csmall";
+			const std::string big   = HSheet( "g_cbig",   3.0, 6.0, true ) + Obj( bigName,   "g_cbig",   "glass15" );
+			const std::string small = HSheet( "g_csmall", 3.0, 2.0, true ) + Obj( smallName, "g_csmall", "glass133" );
+			const std::string rock  = "box_geometry\n{\n\tname g_crock\n\twidth 1.0\n\theight 0.4\n\tdepth 1.0\n}\n\n"
+				+ Obj( "m_crock", "g_crock", "matte", "0 1.5 0" );
+			return Header() + rock + ( smallFirst ? ( small + big ) : ( big + small ) );
+		};
+		Loaded wA1( makeSubmergedCoplanar( false ) );
+		Loaded wA2( makeSubmergedCoplanar( true ) );
+		Check( wA1.ok && wA2.ok, "A61a [DL-626] submerged coplanar panes load in both orders" );
+		if( wA1.ok && wA2.ok ) {
+			const IORStack st1 = wA1.Seed( Point3( 0, 0, 0 ) );
+			const IORStack st2 = wA2.Seed( Point3( 0, 0, 0 ) );
+			Check( st1.Depth() == 1 && st2.Depth() == 1,
+				"A61a [DL-626]: detour column + Segment-2 walks detect coplanar different-material panes and decline in both TLAS orders" );
+		}
+
+		bool wBOk = true;
+		for( int order = 0; order < 2; ++order ) {
+			const char* fixedName = ( order == 0 ) ? "a_fixed" : "z_fixed";
+			const char* editName  = ( order == 0 ) ? "z_edit"  : "a_edit";
+			const std::string fixed = HSheet( "g_fixed", 3.0, 6.0, true ) + Obj( fixedName, "g_fixed", "glass15" );
+			const std::string edit  = HSheet( "g_edit",  3.0, 2.0, true ) + Obj( editName,  "g_edit",  "glass133" );
+			Loaded s( Header() + ( order == 0 ? ( fixed + edit ) : ( edit + fixed ) ) );
+			if( !s.ok ) { wBOk = false; continue; }
+			(void)s.Seed( Point3( 0, 0, 0 ) );
+			IKeyframable* geom = dynamic_cast<IKeyframable*>( s.job->GetGeometries()->GetItem( "g_edit" ) );
+			if( !geom ) { wBOk = false; continue; }
+			const char* names[4] = { "pta", "ptb", "ptc", "ptd" };
+			const char* vals[4]  = { "-2 3 -2", "-2 3 2", "2 3 2", "2 3 -2" };
+			for( int c = 0; c < 4; ++c ) {
+				IKeyframeParameter* kp = geom->KeyframeFromParameters( names[c], vals[c] );
+				if( kp ) { geom->SetIntermediateValue( *kp ); kp->release(); }
+			}
+			geom->RegenerateData();
+			const IORStack st = s.Seed( Point3( 0, 0, 0 ) );
+			if( st.Depth() != 1 ) wBOk = false;
+		}
+		Check( wBOk,
+			"A61b [DL-626]: per-sheet OpenSheetNormalRayReaches fallback detects coplanar different-material panes in both TLAS orders" );
+
+		auto makeSlightlyTiltedGroupCoplanar = [&]( bool tiltFirst ) -> std::string {
+			const double fA[3] = { 24, 3, -4 }, fB[3] = { 16, 3, -4 }, fC[3] = { 16, 3, 4 }, fD[3] = { 24, 3, 4 };
+			const double dy = 4.0 * std::tan( 1.2e-5 );
+			const double tA[3] = { 24, 3.0 + dy, -4 }, tB[3] = { 16, 3.0 - dy, -4 }, tC[3] = { 16, 3.0 - dy, 4 }, tD[3] = { 24, 3.0 + dy, 4 };
+			const char* flatName = tiltFirst ? "z_flat20" : "a_flat20";
+			const char* tiltName = tiltFirst ? "a_tilt20" : "z_tilt20";
+			const std::string flat = SheetQuad( "g_flat20", fA, fB, fC, fD ) + Obj( flatName, "g_flat20", "glass15" );
+			const std::string tilt = SheetQuad( "g_tilt20", tA, tB, tC, tD ) + Obj( tiltName, "g_tilt20", "glass133" );
+			return Header() + ( tiltFirst ? ( tilt + flat ) : ( flat + tilt ) );
+		};
+		Loaded wC1( makeSlightlyTiltedGroupCoplanar( false ) );
+		Loaded wC2( makeSlightlyTiltedGroupCoplanar( true ) );
+		Check( wC1.ok && wC2.ok, "A61c [DL-626] slightly tilted group-coplanar panes at x=20 load in both orders" );
+		if( wC1.ok && wC2.ok ) {
+			const IORStack st1 = wC1.Seed( Point3( 20.0, 0.0, 0.0 ) );
+			const IORStack st2 = wC2.Seed( Point3( 20.0, 0.0, 0.0 ) );
+			Check( st1.Depth() == 1 && st2.Depth() == 1,
+				"A61c [DL-626]: exact ray-hit distance detects coplanarity at x=20 for 1.2e-5 rad tilted group sibling in both TLAS orders" );
+		}
+	}
+
+	// A62: Single-sheet detour ray budget (`GroupDetourRayBudget()`) is shared
+	// across `sheet.normal` + all `auxNormals` in `OpenSheetHoldsPoint` and
+	// enforced per ray step across Segment 1 and Segment 2 in `HasFreeSpaceDetourToSheet`.
+	{
+		// Build the 19-panel non-planar collar (so `auxNormals` has >= 19 distinct
+		// facet normals) enclosed inside a sealed opaque box so every normal ray hits
+		// an opaque wall and attempts `HasFreeSpaceDetourToSheet`.
+		const int N = 19;
+		const double rIn = 2.5, rOut = 4.5, yBot = 0.5, yTop = 2.5;
+		std::ostringstream ms;
+		ms << "indexedmesh_geometry\n{\n\tname g_bcollar\n\tdouble_sided TRUE\n\tface_normals TRUE\n";
+		for( int k = 0; k < N; ++k ) {
+			const double th = ( 2.0 * 3.14159265358979323846 * double( k ) ) / double( N );
+			const double c = std::cos( th ), s = std::sin( th );
+			ms << "\tvertex " << ( rIn * c ) << " " << yBot << " " << ( rIn * s ) << "\n";
+			ms << "\tvertex " << ( rIn * c ) << " " << yTop << " " << ( rIn * s ) << "\n";
+			ms << "\tvertex " << ( rOut * c ) << " " << yBot << " " << ( rOut * s ) << "\n";
+		}
+		for( int k = 0; k < 3 * N; ++k ) ms << "\tuv 0 0\n";
+		for( int k = 0; k < N; ++k ) {
+			const int kn = ( k + 1 ) % N;
+			const int b0 = 3 * k, t0 = 3 * k + 1, f0 = 3 * k + 2;
+			const int b1 = 3 * kn, t1 = 3 * kn + 1, f1 = 3 * kn + 2;
+			ms << "\ttriangle " << b0 << " " << t0 << " " << t1 << "\n";
+			ms << "\ttriangle " << b0 << " " << t1 << " " << b1 << "\n";
+			ms << "\ttriangle " << b0 << " " << b1 << " " << f1 << "\n";
+			ms << "\ttriangle " << b0 << " " << f1 << " " << f0 << "\n";
+		}
+		ms << "}\n\n";
+		// Sealed opaque inner box around the seed point `(0, 1.5, 0)`:
+		const std::string sealedBox =
+			"box_geometry\n{\n\tname g_sbh\n\twidth 2.0\n\theight 0.2\n\tdepth 2.0\n}\n\n"
+			"box_geometry\n{\n\tname g_sbx\n\twidth 0.2\n\theight 2.0\n\tdepth 2.0\n}\n\n"
+			"box_geometry\n{\n\tname g_sbz\n\twidth 2.0\n\theight 2.0\n\tdepth 0.2\n}\n\n"
+			+ Obj( "sb_top", "g_sbh", "matte", "0 2.4 0" )
+			+ Obj( "sb_bot", "g_sbh", "matte", "0 0.6 0" )
+			+ Obj( "sb_px",  "g_sbx", "matte", "0.9 1.5 0" )
+			+ Obj( "sb_mx",  "g_sbx", "matte", "-0.9 1.5 0" )
+			+ Obj( "sb_pz",  "g_sbz", "matte", "0 1.5 0.9" )
+			+ Obj( "sb_mz",  "g_sbz", "matte", "0 1.5 -0.9" );
+		Loaded sb( Header() + ms.str() + Obj( "bcollar", "g_bcollar", "glass15" ) + sealedBox );
+		Check( sb.ok, "A62 [DL-626] sealed-box multi-facet detour budget scene loads" );
+		if( sb.ok ) {
+			// Prime catalog first.
+			(void)sb.Seed( Point3( 0, 1.5, 0 ) );
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = 12;
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			const IORStack st = sb.Seed( Point3( 0, 1.5, 0 ) );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = IORStackSeeding::kGroupDetourRayBudget;
+			// Without shared per-sheet + per-step budget enforcement across auxNormals,
+			// 20 normals x 8 waypoints x multi-step Segment 1/2 spent >300 rays; with
+			// shared budget = 12, total scene rays (probe + normal + column + <=12 detour)
+			// stays well under 120.
+			Check( st.Depth() == 1 && rays <= 120,
+				"A62 [DL-626]: OpenSheetHoldsPoint + HasFreeSpaceDetourToSheet enforce shared per-step GroupDetourRayBudget across all auxNormals" );
+		}
+	}
+
+	// A63: Coplanar TLAS ties between open sheets and closed dielectric faces (`A63a`)
+	// and between opposite-facing zero-gap open sheets (`A63b`), flipping alphabetical
+	// object names so BOTH TLAS leaf orders are exercised:
+	{
+		// A63a: Closed dielectric `ice` (`glass133`, y in [0, 2.0]) with top face at y = 2.0
+		// flush with open sheet `pane1` (`glass15`, y = 2.0, +y) and second co-normal sheet
+		// `pane2` (`glass20`, y = 3.5, +y), plus single-sheet ungrouped twin (`pane1` only)
+		// and submerged opaque-detour twin (`rock` at y = -1.0 over seed at y = -2.0).
+		auto makeFlushIceGroup = [&]( bool iceFirst, bool withPane2, bool withRock ) -> std::string {
+			const char* iceName   = iceFirst ? "a_ice"   : "z_ice";
+			const char* pane1Name = iceFirst ? "m_pane1" : "a_pane1";
+			const char* pane2Name = iceFirst ? "z_pane2" : "m_pane2";
+			std::string s = Header()
+				+ "box_geometry\n{\n\tname g_fice\n\twidth 4.0\n\theight 2.0\n\tdepth 4.0\n}\n\n"
+				+ Obj( iceName, "g_fice", "glass133", "0 1.0 0" )
+				+ HSheet( "g_fpane1", 2.0, 6.0, true ) + Obj( pane1Name, "g_fpane1", "glass15" );
+			if( withPane2 ) {
+				s += HSheet( "g_fpane2", 3.5, 6.0, true ) + Obj( pane2Name, "g_fpane2", "glass20" );
+			}
+			if( withRock ) {
+				s += "box_geometry\n{\n\tname g_frock\n\twidth 1.0\n\theight 0.4\n\tdepth 1.0\n}\n\n"
+					+ Obj( "n_rock", "g_frock", "matte", "0 -1.0 0" );
+			}
+			return s;
+		};
+
+		Loaded fgA( makeFlushIceGroup( true, true, false ) );
+		Loaded fgB( makeFlushIceGroup( false, true, false ) );
+		Check( fgA.ok && fgB.ok, "A63a [DL-626] flush closed-dielectric + group sheets load in both TLAS orders" );
+		if( fgA.ok && fgB.ok ) {
+			// Seed outside `ice` at (0, -0.5, 0): crosses `ice` in [0, 2], flush `pane1` at y = 2, `pane2` at y = 3.5.
+			const IORStack outA = fgA.Seed( Point3( 0, -0.5, 0 ) );
+			const IORStack outB = fgB.Seed( Point3( 0, -0.5, 0 ) );
+			Check( outA.Depth() == 3 && outB.Depth() == 3 &&
+				outA.ObjectAt( 1 ) == fgA.O( "z_pane2" ) && outA.ObjectAt( 2 ) == fgA.O( "m_pane1" ) &&
+				outB.ObjectAt( 1 ) == fgB.O( "m_pane2" ) && outB.ObjectAt( 2 ) == fgB.O( "a_pane1" ),
+				"A63a [DL-626]: ConfirmSharedNormalRay confirms open sheet flush with closed dielectric face in both TLAS orders" );
+
+			// Seed inside `ice` at (0, 1.0, 0): `ice` encloses seed, and its exit at y = 2.0 ties with `pane1`.
+			// Both TLAS orders must order `[env, pane2, pane1, ice]` (`pane1` crossed `ice` -> outer to `ice`).
+			const IORStack inA = fgA.Seed( Point3( 0, 1.0, 0 ) );
+			const IORStack inB = fgB.Seed( Point3( 0, 1.0, 0 ) );
+			Check( inA.Depth() == 4 && inB.Depth() == 4 &&
+				inA.ObjectAt( 1 ) == fgA.O( "z_pane2" ) && inA.ObjectAt( 2 ) == fgA.O( "m_pane1" ) && inA.ObjectAt( 3 ) == fgA.O( "a_ice" ) &&
+				inB.ObjectAt( 1 ) == fgB.O( "m_pane2" ) && inB.ObjectAt( 2 ) == fgB.O( "a_pane1" ) && inB.ObjectAt( 3 ) == fgB.O( "z_ice" ),
+				"A63a [DL-626]: inside closed dielectric with flush top open sheet, nesting order [env, pane2, pane1, ice] is TLAS-invariant" );
+		}
+
+		Loaded fdA( makeFlushIceGroup( true, true, true ) );
+		Loaded fdB( makeFlushIceGroup( false, true, true ) );
+		if( fdA.ok && fdB.ok ) {
+			const IORStack detA = fdA.Seed( Point3( 0, -2.0, 0 ) );
+			const IORStack detB = fdB.Seed( Point3( 0, -2.0, 0 ) );
+			Check( detA.Depth() == 3 && detB.Depth() == 3 &&
+				detA.ObjectAt( 1 ) == fdA.O( "z_pane2" ) && detA.ObjectAt( 2 ) == fdA.O( "m_pane1" ) &&
+				detB.ObjectAt( 1 ) == fdB.O( "m_pane2" ) && detB.ObjectAt( 2 ) == fdB.O( "a_pane1" ),
+				"A63a [DL-626]: HasFreeSpaceDetourToSheets confirms open sheet flush with closed dielectric face in both TLAS orders" );
+		}
+
+		Loaded fsA( makeFlushIceGroup( true, false, false ) );
+		Loaded fsB( makeFlushIceGroup( false, false, false ) );
+		if( fsA.ok && fsB.ok ) {
+			const IORStack inSA = fsA.Seed( Point3( 0, 1.0, 0 ) );
+			const IORStack inSB = fsB.Seed( Point3( 0, 1.0, 0 ) );
+			Check( inSA.Depth() == 3 && inSB.Depth() == 3 &&
+				inSA.ObjectAt( 1 ) == fsA.O( "m_pane1" ) && inSA.ObjectAt( 2 ) == fsA.O( "a_ice" ) &&
+				inSB.ObjectAt( 1 ) == fsB.O( "a_pane1" ) && inSB.ObjectAt( 2 ) == fsB.O( "z_ice" ),
+				"A63a [DL-626]: ungrouped OpenSheetNormalRayReaches orders [env, pane1, ice] identically in both TLAS orders" );
+		}
+
+		// A63b: Zero-gap opposite-facing coplanar open sheets at y = 2.0 (`up` +y `glass15`,
+		// `down` -y `glass133`), tested both ungrouped and inside a multi-sheet group + detour.
+		auto makeOpposingZeroGap = [&]( bool upFirst, bool withUp2AndRock ) -> std::string {
+			const char* upName   = upFirst ? "a_up"   : "z_up";
+			const char* downName = upFirst ? "z_down" : "a_down";
+			std::string s = Header()
+				+ HSheet( "g_zup",   2.0, 5.0, true )  + Obj( upName,   "g_zup",   "glass15" )
+				+ HSheet( "g_zdown", 2.0, 5.0, false ) + Obj( downName, "g_zdown", "glass133" );
+			if( withUp2AndRock ) {
+				s += HSheet( "g_zup2", 4.0, 5.0, true ) + Obj( "m_up2", "g_zup2", "glass20" )
+					+ "box_geometry\n{\n\tname g_zrock\n\twidth 1.0\n\theight 0.4\n\tdepth 1.0\n}\n\n"
+					+ Obj( "n_zrock", "g_zrock", "matte", "0 1.0 0" );
+			}
+			return s;
+		};
+
+		Loaded ozA( makeOpposingZeroGap( true, false ) );
+		Loaded ozB( makeOpposingZeroGap( false, false ) );
+		Check( ozA.ok && ozB.ok, "A63b [DL-626] zero-gap opposite-facing sheets load in both TLAS orders" );
+		if( ozA.ok && ozB.ok ) {
+			const IORStack stA = ozA.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stB = ozB.Seed( Point3( 0, 0, 0 ) );
+			Check( stA.Depth() == 1 && stB.Depth() == 1,
+				"A63b [DL-626]: zero-gap opposite-facing coplanar sheets block each other in both TLAS orders" );
+
+			// Also verify ResolveOpenSheetCrossing across the zero-gap boundary at y = 2.0:
+			RayIntersection hitA( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			RayIntersection hitB( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			ozA.O( "a_up" )->IntersectRay( hitA, RISE_INFINITY, true, true, false );
+			ozB.O( "z_up" )->IntersectRay( hitB, RISE_INFINITY, true, true, false );
+			if( hitA.geometric.bHit && hitB.geometric.bHit ) {
+				IORStack wA( 1.0 ), wB( 1.0 );
+				wA.SetMediumProbeScene( &ozA.Scene() );
+				wB.SetMediumProbeScene( &ozB.Scene() );
+				wA.SetCurrentObject( ozA.O( "a_up" ) );
+				wB.SetCurrentObject( ozB.O( "z_up" ) );
+				const IORStackSeeding::OpenSheetCrossing cA =
+					IORStackSeeding::ResolveOpenSheetCrossing( hitA.geometric, 1.5, wA, ozA.O( "a_up" )->GetMaterial() );
+				const IORStackSeeding::OpenSheetCrossing cB =
+					IORStackSeeding::ResolveOpenSheetCrossing( hitB.geometric, 1.5, wB, ozB.O( "z_up" )->GetMaterial() );
+				Check( wA.Depth() == 1 && wB.Depth() == 1 && Close( cA.etaTo, 1.0 ) && Close( cB.etaTo, 1.0 ),
+					"A63b [DL-626]: ResolveOpenSheetCrossing across zero-gap opposing pair exits to air in both TLAS orders" );
+			}
+		}
+
+		Loaded ozdA( makeOpposingZeroGap( true, true ) );
+		Loaded ozdB( makeOpposingZeroGap( false, true ) );
+		if( ozdA.ok && ozdB.ok ) {
+			const IORStack stA = ozdA.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stB = ozdB.Seed( Point3( 0, 0, 0 ) );
+			// `up` at y = 2.0 is blocked by coplanar `down` (`kMembershipSheetFront`), which also blocks `m_up2` at y = 4.0!
+			Check( stA.Depth() == 1 && stB.Depth() == 1,
+				"A63b [DL-626]: group detour walk blocks on zero-gap opposite-facing coplanar sheet in both TLAS orders" );
+		}
+	}
+
+	// A64: Cost bounds on single-sheet multi-normal column walks (`A64a`, `R3-P1-1`)
+	// and 40 parallel 45-degree tilted non-overlapping panes (`A64b`, `R3-P1-2`):
+	{
+		// A64a: Annular spherical cap of radius R = 9.0 centered at (0, 0, 0) (`phi` in
+		// [12 deg, 45 deg], 24 azimuth wedges -> `auxNormals` populated near `kMaxAuxNormals = 32`,
+		// and every facet normal ray from (0, 0, 0) hits its facet squarely at `hitCos == 1.0`),
+		// blocked at y = 1.0 by a wide 40x40 opaque slab with 12 wide 40x40 closed `glass133`
+		// slabs stacked between y = 1.4 and y = 5.8.  With `GroupDetourRayBudget() = 10`,
+		// `columnWalkUsed` allows only 1 uncharged `vertProbe` column walk across all 33 normals.
+		std::ostringstream cap;
+		cap << "indexedmesh_geometry\n{\n\tname g_dome64\n\tdouble_sided TRUE\n\tface_normals TRUE\n";
+		const int NAz = 24;
+		const double R = 9.0;
+		const double phi0 = 12.0 * 3.14159265358979323846 / 180.0;
+		const double phi1 = 28.0 * 3.14159265358979323846 / 180.0;
+		const double phi2 = 45.0 * 3.14159265358979323846 / 180.0;
+		const double phis[3] = { phi0, phi1, phi2 };
+		for( int ring = 0; ring < 3; ++ring ) {
+			const double sp = std::sin( phis[ring] ), cp = std::cos( phis[ring] );
+			for( int k = 0; k < NAz; ++k ) {
+				const double th = ( 2.0 * 3.14159265358979323846 * double( k ) ) / double( NAz );
+				cap << "\tvertex " << ( R * sp * std::cos( th ) ) << " " << ( R * cp ) << " " << ( R * sp * std::sin( th ) ) << "\n";
+			}
+		}
+		for( int k = 0; k < 3 * NAz; ++k ) cap << "\tuv 0 0\n";
+		for( int ring = 0; ring < 2; ++ring ) {
+			for( int k = 0; k < NAz; ++k ) {
+				const int kn = ( k + 1 ) % NAz;
+				const int i0 = ring * NAz + k,       i1 = ring * NAz + kn;
+				const int o0 = ( ring + 1 ) * NAz + k, o1 = ( ring + 1 ) * NAz + kn;
+				// Outward (+radial, +y) winding:
+				cap << "\ttriangle " << i0 << " " << i1 << " " << o1 << "\n";
+				cap << "\ttriangle " << i0 << " " << o1 << " " << o0 << "\n";
+			}
+		}
+		cap << "}\n\n";
+		std::string slabs =
+			"box_geometry\n{\n\tname g_wslab\n\twidth 40.0\n\theight 0.1\n\tdepth 40.0\n}\n\n"
+			+ Obj( "roof_opaque", "g_wslab", "matte", "0 1.0 0" );
+		for( int m = 0; m < 12; ++m ) {
+			char oname[24], posStr[48];
+			std::snprintf( oname, sizeof(oname), "gslab_%02d", m );
+			std::snprintf( posStr, sizeof(posStr), "0 %.2f 0", 1.4 + 0.4 * double( m ) );
+			slabs += Obj( oname, "g_wslab", "glass133", posStr );
+		}
+		Loaded sc64( Header() + cap.str() + Obj( "dome64", "g_dome64", "glass15" ) + slabs );
+		Check( sc64.ok, "A64a [DL-626] spherical-cap + 12 intermediate slabs detour budget scene loads" );
+		if( sc64.ok ) {
+			(void)sc64.Seed( Point3( 0, 0, 0 ) );
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = 10;
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			const IORStack st = sc64.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = IORStackSeeding::kGroupDetourRayBudget;
+			// Without `columnWalkUsed`, 33 normals x ~26-step `vertProbe` column walks
+			// spent >800 scene rays despite budget = 10; with 1 uncharged column walk +
+			// shared budget = 10, total scene rays (probe + 33 blocked hits + 1 column + <=10) <= 95.
+			Check( st.Depth() == 1 && rays <= 95,
+				"A64a [DL-626]: OpenSheetHoldsPoint charges vertProbe column walks after the first normal (<= 95 rays at budget 10)" );
+		}
+
+		// A64b: 40 parallel 45-degree tilted non-overlapping `glass15` panes spaced 0.25
+		// apart along normal (0, 1/sqrt(2), 1/sqrt(2)) above an opaque rock at (0, 0.6, 0.6)
+		// over seed (0, 0, 0).  Their 3D world AABBs overlap heavily, yet scalar distance
+		// pre-filtering + CatalogBoxBvh perform 0 coplanar object ray casts!
+		std::string tiltStack = Header()
+			+ "box_geometry\n{\n\tname g_trock\n\twidth 0.8\n\theight 0.3\n\tdepth 0.3\n}\n\n"
+			+ Obj( "trock", "g_trock", "matte", "0 0.6 0.6" );
+		const double invSqrt2 = 0.70710678118654752440;
+		for( int p = 0; p < 40; ++p ) {
+			const double d = 1.5 + 0.25 * double( p ); // normal distance from (0,0,0)
+			const double cy = d * invSqrt2, cz = d * invSqrt2;
+			const double hw = 3.0 * invSqrt2; // half-extent along (0, +1, -1)/sqrt(2) -> 3D AABB height/depth = 4.24 >> 0.25 spacing!
+			const double bQ[3] = { -4.0, cy + hw, cz - hw };
+			const double aQ[3] = {  4.0, cy + hw, cz - hw };
+			const double dQ[3] = {  4.0, cy - hw, cz + hw };
+			const double cQ[3] = { -4.0, cy - hw, cz + hw };
+			char gname[24], oname[24];
+			std::snprintf( gname, sizeof(gname), "g_tp%02d", p );
+			std::snprintf( oname, sizeof(oname), "tp%02d", p );
+			tiltStack += SheetQuad( gname, aQ, bQ, cQ, dQ ) + Obj( oname, gname, "glass15" );
+		}
+		Loaded ts40( tiltStack );
+		Check( ts40.ok, "A64b [DL-626] 40 parallel 45-degree tilted panes over rock load" );
+		if( ts40.ok ) {
+			(void)ts40.Seed( Point3( 0, 0, 0 ) );
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+#ifdef RISE_HAS_COPLANAR_OBJECT_RAY_COUNTER
+			IORStackSeeding::Diagnostics::CoplanarObjectRayCounter() = 0;
+#endif
+			const IORStack st = ts40.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+#ifdef RISE_HAS_COPLANAR_OBJECT_RAY_COUNTER
+			const std::size_t coRays = IORStackSeeding::Diagnostics::CoplanarObjectRayCounter();
+#else
+			const std::size_t coRays = 0;
+#endif
+			Check( st.Depth() == 41 && coRays == 0 && rays <= 160,
+				"A64b [DL-626]: 40 parallel 45-degree tilted panes over rock seed all 40 with 0 coplanar object ray casts and <= 160 scene rays" );
+		}
+	}
+
+	// A65: Multi-fold open sheet `pleat` (`glass15`, lower turn at y = 1.25, upper
+	// overhanging turn at y = 3.25) enclosing a narrower inner open sheet `inner_pane`
+	// (`glass133` at y = 2.0): crossing `pleat`'s lower turn at y = 1.25 upward into
+	// y = 1.30 repositions `pleat` BELOW `inner_pane` (`[env, pleat(1.5), inner_pane(1.33)]`,
+	// `etaFrom = 1.5 -> etaTo = 1.33`) on BOTH pushed and unpushed walks, matching `SeedFromPoint`.
+	{
+		std::ostringstream hs;
+		hs << "indexedmesh_geometry\n{\n\tname g_pleat65\n\tdouble_sided TRUE\n\tface_normals TRUE\n";
+		const int K = 10;
+		const double r0 = 0.3, r1 = 2.5;
+		for( int k = 0; k <= K; ++k ) {
+			const double th = ( 2.0 * 3.14159265358979323846 * double( k ) ) / 8.0;
+			const double y = 1.0 + 2.0 * ( double( k ) / 8.0 );
+			const double c = std::cos( th ), s = std::sin( th );
+			hs << "\tvertex " << ( r0 * c ) << " " << y << " " << ( r0 * s ) << "\n";
+			hs << "\tvertex " << ( r1 * c ) << " " << y << " " << ( r1 * s ) << "\n";
+		}
+		for( int k = 0; k <= K; ++k ) {
+			hs << "\tuv 0 0\n\tuv 1 0\n";
+		}
+		for( int k = 0; k < K; ++k ) {
+			const int i0 = 2 * k, o0 = 2 * k + 1;
+			const int i1 = 2 * ( k + 1 ), o1 = 2 * ( k + 1 ) + 1;
+			hs << "\ttriangle " << i0 << " " << i1 << " " << o1 << "\n";
+			hs << "\ttriangle " << i0 << " " << o1 << " " << o0 << "\n";
+		}
+		hs << "}\n\n";
+		Loaded s65( Header()
+			+ hs.str() + Obj( "pleat65", "g_pleat65", "glass15" )
+			+ HSheet( "g_inpane65", 2.0, 0.35, true ) + Obj( "inpane65", "g_inpane65", "glass133", "1.0 0 1.0" ) );
+		Check( s65.ok, "A65 [DL-626] multi-fold pleat + intermediate inner open sheet scene loads" );
+		if( s65.ok ) {
+			const IObject* pPleat = s65.O( "pleat65" );
+			const IObject* pInPane = s65.O( "inpane65" );
+			const IORStack seedBefore = s65.Seed( Point3( 1.0, 1.05, 1.0 ) );
+			const IORStack seedAfter = s65.Seed( Point3( 1.0, 1.30, 1.0 ) );
+			Check( seedBefore.Depth() == 3 && seedBefore.ObjectAt( 1 ) == pInPane && seedBefore.ObjectAt( 2 ) == pPleat &&
+				seedAfter.Depth() == 3 && seedAfter.ObjectAt( 1 ) == pPleat && seedAfter.ObjectAt( 2 ) == pInPane,
+				"A65 [DL-626]: SeedFromPoint swaps [env, inpane, pleat] -> [env, pleat, inpane] across inner fold y = 1.25" );
+
+			Ray rUp( Point3( 1.0, 1.05, 1.0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitInner( rUp, nullRasterizerState );
+			pPleat->IntersectRay( hitInner, 1.0, true, true, false );
+			Check( hitInner.geometric.bHit && hitInner.geometric.bProvablyNoInterior,
+				"A65 [DL-626]: upward ray hits lower fold back face at y = 1.25" );
+			if( hitInner.geometric.bHit ) {
+				IORStack pushed = seedBefore;
+				pushed.SetMediumProbeScene( &s65.Scene() );
+				pushed.SetCurrentObject( pPleat );
+				const auto cPushed = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitInner.geometric, 1.5, pushed, pPleat->GetMaterial(), 0 );
+				Check( pushed.Depth() == 3 &&
+					pushed.ObjectAt( 1 ) == pPleat && pushed.isOpenSheetAt( 1 ) &&
+					pushed.ObjectAt( 2 ) == pInPane && pushed.isOpenSheetAt( 2 ) &&
+					Close( cPushed.etaFrom, 1.5 ) && Close( cPushed.etaTo, 1.33 ),
+					"A65a [DL-626]: pushed ResolveOpenSheetCrossing repositions multi-fold pleat below inner open sheet (1.5 -> 1.33)" );
+
+				IORStack unpushed( 1.0 );
+				unpushed.SetMediumProbeScene( &s65.Scene() );
+				unpushed.SetCurrentObject( pInPane );
+				unpushed.pushOpenSheet( 1.33 );
+				unpushed.SetCurrentObject( pPleat );
+				const auto cUnpushed = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitInner.geometric, 1.5, unpushed, pPleat->GetMaterial(), 0 );
+				Check( unpushed.Depth() == 3 &&
+					unpushed.ObjectAt( 1 ) == pPleat && unpushed.isOpenSheetAt( 1 ) &&
+					unpushed.ObjectAt( 2 ) == pInPane && unpushed.isOpenSheetAt( 2 ) &&
+					Close( cUnpushed.etaFrom, 1.5 ) && Close( cUnpushed.etaTo, 1.33 ),
+					"A65b [DL-626]: unpushed ResolveOpenSheetCrossing inserts multi-fold pleat below inner open sheet (1.5 -> 1.33)" );
+			}
+		}
+	}
+
+	// A66: CatalogBoxBvh (`sheetBoxBvh` + `closedTrackableBvh`) across >16 tilted
+	// ungrouped open sheets and >16 closed dielectric spheres (`A66a`), and
+	// `CrossingMedia::Keeps` `!cs.keep` deduplication filter (`A66b`):
+	{
+		auto makeManyTiltedAndClosed = [&]( bool revNames ) -> std::string {
+			std::string sc = Header()
+				+ "sphere_geometry\n{\n\tname g_csph66\n\tradius 0.25\n}\n\n";
+			// 20 closed dielectric spheres (>16 inline threshold) away from the origin + one enclosing (0,0,0):
+			sc += "sphere_geometry\n{\n\tname g_enc66\n\tradius 0.8\n}\n\n"
+				+ Obj( revNames ? "z_enc66" : "a_enc66", "g_enc66", "glass133", "0 0 0" );
+			for( int m = 0; m < 20; ++m ) {
+				char oname[24], pos[48];
+				std::snprintf( oname, sizeof(oname), "%s_sph%02d", revNames ? "y" : "b", m );
+				std::snprintf( pos, sizeof(pos), "%.2f -3.0 %.2f", -9.5 + double( m ), ( m & 1 ) ? 2.0 : -2.0 );
+				sc += Obj( oname, "g_csph66", "glass133", pos );
+			}
+			// 24 distinct tilted open sheets (>16), spaced in tilt by 0.002 rad (> 1e-5 group threshold)
+			// so each forms its own normal group, plus a coplanar different-material twin on sheet 0!
+			for( int k = 0; k < 24; ++k ) {
+				const double ang = 0.002 * double( k + 1 );
+				const double yBase = 2.0 + 0.15 * double( k );
+				const double dy = 3.0 * std::tan( ang );
+				const double fA[3] = {  3, yBase + dy, -3 }, fB[3] = { -3, yBase - dy, -3 };
+				const double fC[3] = { -3, yBase - dy,  3 }, fD[3] = {  3, yBase + dy,  3 };
+				char gname[24], oname[24];
+				std::snprintf( gname, sizeof(gname), "g_ts66_%02d", k );
+				std::snprintf( oname, sizeof(oname), "%s_ts66_%02d", revNames ? "x" : "c", k );
+				sc += SheetQuad( gname, fA, fB, fC, fD ) + Obj( oname, gname, "glass15" );
+				if( k == 0 ) {
+					const double sA[3] = {  1.5, yBase + 0.5 * dy, -1.5 }, sB[3] = { -1.5, yBase - 0.5 * dy, -1.5 };
+					const double sC[3] = { -1.5, yBase - 0.5 * dy,  1.5 }, sD[3] = {  1.5, yBase + 0.5 * dy,  1.5 };
+					sc += SheetQuad( "g_ts66_co", sA, sB, sC, sD )
+						+ Obj( revNames ? "a_ts66_co" : "z_ts66_co", "g_ts66_co", "glass20" );
+				}
+			}
+			return sc;
+		};
+		Loaded mA( makeManyTiltedAndClosed( false ) );
+		Loaded mB( makeManyTiltedAndClosed( true ) );
+		Check( mA.ok && mB.ok, "A66a [DL-626/DL-631] 24 tilted sheets + 21 closed spheres load in both TLAS orders" );
+		if( mA.ok && mB.ok ) {
+			// At (0,0,0), sheet 0 and `g_ts66_co` are coplanar with different materials -> open sheets decline,
+			// leaving only the enclosing closed sphere `[env, enc66(1.33)]` in both TLAS orders; at (2.2, 0, 0),
+			// outside `g_ts66_co` (|x|<=1.5) and `enc66` (r=0.8), all 24 nested tilted `glass15` sheets confirm
+			// (`Depth == 25`, `top == 1.5`) in both TLAS orders.
+			const IORStack c0A = mA.Seed( Point3( 0, 0, 0 ) );
+			const IORStack c0B = mB.Seed( Point3( 0, 0, 0 ) );
+			const IORStack sideA = mA.Seed( Point3( 2.2, 0, 0 ) );
+			const IORStack sideB = mB.Seed( Point3( 2.2, 0, 0 ) );
+			Check( c0A.Depth() == 2 && c0B.Depth() == 2 &&
+				Close( c0A.top(), 1.33 ) && Close( c0B.top(), 1.33 ) &&
+				sideA.Depth() == 25 && sideB.Depth() == 25 &&
+				Close( sideA.top(), 1.5 ) && Close( sideB.top(), 1.5 ),
+				"A66a [DL-626/DL-631]: CatalogBoxBvh handles 24 tilted ungrouped sheets + 21 closed spheres identically in both TLAS orders" );
+		}
+
+		// A66b: `roof66` (+y at y=2.0, glass15, keep=true at y=0.7) and `wall66` (+x at x=3.0,
+		// glass15, keep=false at (0, 0.7, 0)), plus `pane66` (+y at y=0.5, glass15, NOT enclosing y=0.7)
+		// and `exit66` (+y at y=0.7, glass133).  If a walk arrives at `exit66`'s back face with
+		// `[env, roof66, pane66, exit66]`, `ResolveOpenSheetCrossing` must pop `pane66` rather than
+		// retaining a duplicate `glass15` entry via `wall66` (`keep=false`).
+		const double wA[3] = { 3, -4, -4 }, wB[3] = { 3, 4, -4 }, wC[3] = { 3, 4, 4 }, wD[3] = { 3, -4, 4 };
+		Loaded k66( Header()
+			+ HSheet( "g_roof66", 2.0, 5.0, true ) + Obj( "roof66", "g_roof66", "glass15" )
+			+ SheetQuad( "g_wall66", wA, wB, wC, wD ) + Obj( "wall66", "g_wall66", "glass15" )
+			+ HSheet( "g_pane66", 0.5, 4.0, true ) + Obj( "pane66", "g_pane66", "glass15" )
+			+ HSheet( "g_exit66", 0.7, 4.0, true ) + Obj( "exit66", "g_exit66", "glass133" ) );
+		Check( k66.ok, "A66b [DL-626] keep=false sibling deduplication scene loads" );
+		if( k66.ok ) {
+			const IObject* pRoof = k66.O( "roof66" );
+			const IObject* pPane = k66.O( "pane66" );
+			const IObject* pExit = k66.O( "exit66" );
+			Ray rUp( Point3( 0, 0.6, 0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitExit( rUp, nullRasterizerState );
+			pExit->IntersectRay( hitExit, 1.0, true, true, false );
+			Check( hitExit.geometric.bHit, "A66b [DL-626]: upward ray hits exit66 back face at y = 0.7" );
+			if( hitExit.geometric.bHit ) {
+				IORStack walk( 1.0 );
+				walk.SetMediumProbeScene( &k66.Scene() );
+				walk.SetCurrentObject( pRoof );
+				walk.pushOpenSheet( 1.5 );
+				walk.SetCurrentObject( pPane );
+				walk.pushOpenSheet( 1.5 );
+				walk.SetCurrentObject( pExit );
+				const auto cExit = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitExit.geometric, 1.33, walk, pExit->GetMaterial(), 0 );
+				const IORStack seededAfter = k66.Seed( Point3( 0, 0.75, 0 ) );
+				Check( walk.Depth() == 2 && seededAfter.Depth() == 2 &&
+					walk.ObjectAt( 1 ) == pRoof && Close( cExit.etaTo, 1.5 ),
+					"A66b [DL-626]: CrossingMedia::Keeps ignores keep=false sibling so unconfirmed pane66 pops cleanly to [env, roof66]" );
+
+				// A66c: Stale non-enclosing open sheet `pane66c` (`y = 0.5`, `glass15`) sitting
+				// directly beneath a multi-fold `pleat66` (`glass15`, folds at `y = 1.25` and `y = 3.25`)
+				// on `staleWalk` (`[env, pane66c, pleat66]`): crossing `pleat66`'s inner fold back face
+				// upward at `y = 1.25` must peel the exposed unconfirmed `pane66c` and retain `pleat66`
+				// (`[env, pleat66]`), so a subsequent front-face re-entry into `pleat66` does not stack
+				// a duplicate `[env, pane66c, pleat66]` layer.
+				std::ostringstream hs66;
+				hs66 << "indexedmesh_geometry\n{\n\tname g_pleat66\n\tdouble_sided TRUE\n\tface_normals TRUE\n";
+				for( int k = 0; k <= 10; ++k ) {
+					const double th = ( 2.0 * 3.14159265358979323846 * double( k ) ) / 8.0;
+					const double y = 1.0 + 2.0 * ( double( k ) / 8.0 );
+					const double c = std::cos( th ), s = std::sin( th );
+					hs66 << "\tvertex " << ( 0.3 * c ) << " " << y << " " << ( 0.3 * s ) << "\n";
+					hs66 << "\tvertex " << ( 2.5 * c ) << " " << y << " " << ( 2.5 * s ) << "\n";
+				}
+				for( int k = 0; k <= 10; ++k ) {
+					hs66 << "\tuv 0 0\n\tuv 1 0\n";
+				}
+				for( int k = 0; k < 10; ++k ) {
+					const int i0 = 2 * k, o0 = 2 * k + 1;
+					const int i1 = 2 * ( k + 1 ), o1 = 2 * ( k + 1 ) + 1;
+					hs66 << "\ttriangle " << i0 << " " << i1 << " " << o1 << "\n";
+					hs66 << "\ttriangle " << i0 << " " << o1 << " " << o0 << "\n";
+				}
+				hs66 << "}\n\n";
+				Loaded p66( Header()
+					+ hs66.str() + Obj( "pleat66", "g_pleat66", "glass15" )
+					+ HSheet( "g_pane66c", 0.5, 4.0, true ) + Obj( "pane66c", "g_pane66c", "glass15" ) );
+				Check( p66.ok, "A66c [DL-626] multi-fold + stale underlying pane scene loads" );
+				if( p66.ok ) {
+					const IObject* pPleat66 = p66.O( "pleat66" );
+					const IObject* pPane66c = p66.O( "pane66c" );
+					Ray rInnerUp( Point3( 1.0, 1.05, 1.0 ), Vector3( 0, 1, 0 ) );
+					RayIntersection hitInnerUp( rInnerUp, nullRasterizerState );
+					pPleat66->IntersectRay( hitInnerUp, 1.0, true, true, false );
+					Ray rInnerDown( Point3( 1.0, 1.45, 1.0 ), Vector3( 0, -1, 0 ) );
+					RayIntersection hitInnerDown( rInnerDown, nullRasterizerState );
+					pPleat66->IntersectRay( hitInnerDown, 1.0, true, true, false );
+					Check( hitInnerUp.geometric.bHit && hitInnerDown.geometric.bHit,
+						"A66c [DL-626]: inner upward and downward rays hit pleat66 fold at y = 1.25" );
+					if( hitInnerUp.geometric.bHit && hitInnerDown.geometric.bHit ) {
+						IORStack staleWalk( 1.0 );
+						staleWalk.SetMediumProbeScene( &p66.Scene() );
+						staleWalk.SetCurrentObject( pPane66c );
+						staleWalk.pushOpenSheet( 1.5 );
+						staleWalk.SetCurrentObject( pPleat66 );
+						staleWalk.pushOpenSheet( 1.5 );
+						staleWalk.SetCurrentObject( pPleat66 );
+						const auto cInnerBack = IORStackSeeding::ResolveOpenSheetCrossing(
+							hitInnerUp.geometric, 1.5, staleWalk, pPleat66->GetMaterial(), 0 );
+						const IORStack seededMid = p66.Seed( Point3( 1.0, 1.30, 1.0 ) );
+						const bool backOk = ( staleWalk.Depth() == 2 && seededMid.Depth() == 2 &&
+							staleWalk.ObjectAt( 1 ) == pPleat66 &&
+							Close( cInnerBack.etaFrom, 1.5 ) && Close( cInnerBack.etaTo, 1.5 ) );
+						staleWalk.SetCurrentObject( pPleat66 );
+						const auto cInnerFront = IORStackSeeding::ResolveOpenSheetCrossing(
+							hitInnerDown.geometric, 1.5, staleWalk, pPleat66->GetMaterial(), 0 );
+						Check( backOk && staleWalk.Depth() == 2 &&
+							staleWalk.ObjectAt( 1 ) == pPleat66 &&
+							Close( cInnerFront.etaFrom, 1.0 ) && Close( cInnerFront.etaTo, 1.5 ),
+							"A66c [DL-626]: multi-fold back-face crossing peels stale underlying pane66c and retains pleat66 without duplicate layer on re-entry" );
+					}
+				}
+			}
+		}
+	}
+
+	// A67: Round 8 adversarial review pins:
+	//   A67a: Per-operand-material `csg_object` open sheet (`GetMaterial() == nullptr`)
+	//         across `ConfirmOpenSheetsAt`, `CrossingMedia::Keeps`, and dispersive
+	//         `ReindexStackForWavelength`.
+	//   A67b: Helmholtz reciprocity & `RadianceEtaScale` on back-face open-sheet exit
+	//         when another open sheet sits below on `IORStack` (`[1.0, S_bot(1.33), S_tilt(1.5)]`).
+	//   A67c: `DielectricSPF` and `PerfectRefractorSPF` back-face Snell refraction when
+	//         a closed dielectric sphere (`1.8`) straddles an open sheet (`1.33`).
+	{
+		// A67a: Two-sheet glass slab (`y = -1` down-facing bottom quad + `y = +1` up-facing
+		// CSG_SUBTRACTION(glassTop, matteNotch) with NO outer `material` on `csg_object`),
+		// plus a co-oriented inner `mid_sheet67` at `y = 0` to exercise `CrossingMedia::Keeps`
+		// in BOTH directions (`keep == false` above `y = 1` and `keep == true` at `y = 0.05`).
+		const std::string sc67a = Header()
+			+ "scalar_painter\n{\n\tname disp_spec\n\tvalues 1.45 1.55 1.75\n}\n\n"
+			+ "dielectric_material\n{\n\tname disp_glass\n\ttau 1.0\n\tior disp_spec\n\tscattering 1000000\n}\n\n"
+			+ HSheet( "g_top67", 1.0, 4.0, true ) + Obj( "top_op67", "g_top67", "disp_glass" )
+			+ "box_geometry\n{\n\tname g_notch67\n\twidth 0.6\n\theight 4.0\n\tdepth 0.6\n}\n\n"
+			+ Obj( "notch_op67", "g_notch67", "matte", "3.2 1.0 3.2" )
+			+ "csg_object\n{\n\tname top_csg67\n\tobja top_op67\n\tobjb notch_op67\n\toperation subtraction\n}\n\n"
+			+ HSheet( "g_mid67", 0.0, 4.0, true ) + Obj( "mid_sheet67", "g_mid67", "disp_glass" )
+			+ HSheet( "g_bot67", -1.0, 4.0, false ) + Obj( "bot_sheet67", "g_bot67", "disp_glass" );
+		Loaded s67a( sc67a );
+		Check( s67a.ok && s67a.O( "top_csg67" ) && s67a.O( "top_csg67" )->GetMaterial() == nullptr,
+			"A67a [DL-626] per-operand-material csg_object open-sheet slab loads with GetMaterial() == nullptr" );
+		if( s67a.ok ) {
+			const IObject* pTopCsg = s67a.O( "top_csg67" );
+			const IObject* pMid = s67a.O( "mid_sheet67" );
+			const IObject* pBot = s67a.O( "bot_sheet67" );
+			const IMaterial* pDispMat = s67a.O( "top_op67" )->GetMaterial();
+			const RayIntersectionGeometric dummyGeom( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			const Scalar ior550 = pDispMat->GetSpecularInfoNM( dummyGeom, IORStack( 1.0 ), 550.0 ).ior;
+			const Scalar ior420 = pDispMat->GetSpecularInfoNM( dummyGeom, IORStack( 1.0 ), 420.0 ).ior;
+
+			// 1. SeedFromPoint at (0, -0.5, 0) confirms `top_csg67` (null outer material)
+			//    + `mid_sheet67` (nested co-oriented) while deduplicating `bot_sheet67` (opposed sibling).
+			IORStack hero( 1.0 );
+			IORStackSeeding::SeedFromPoint( hero, Point3( 0, 0.5, 0 ), s67a.Scene(), 550.0 );
+			Check( hero.Depth() == 2 && Close( hero.top(), ior550 ),
+				"A67a-1 [DL-626]: SeedFromPoint confirms per-operand-material csg_object open-sheet slab at hero wavelength" );
+
+			// 2a. Unpushed back-face exit through `top_csg67` at y = 1.0 peels sibling `bot_sheet67` to air;
+			// 2b. Unpushed back-face exit through `mid_sheet67` at y = 0.0 while `top_csg67` sits on `IORStack`
+			//     retains `top_csg67` (`etaTo == ior550`) via `CrossingMedia::Keeps`.
+			Ray rExitTop( Point3( 0, 0.9, 0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitTop( rExitTop, nullRasterizerState );
+			pTopCsg->IntersectRay( hitTop, 1.0, true, true, false );
+			Ray rExitMid( Point3( 0, -0.1, 0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitMid( rExitMid, nullRasterizerState );
+			pMid->IntersectRay( hitMid, 1.0, true, true, false );
+			Check( hitTop.geometric.bHit && hitMid.geometric.bHit,
+				"A67a-2 [DL-626]: upward rays hit top_csg67 (y=1.0) and mid_sheet67 (y=0.0) back faces" );
+			if( hitTop.geometric.bHit && hitMid.geometric.bHit ) {
+				IORStack walkSlab( 1.0 );
+				walkSlab.SetMediumProbeScene( &s67a.Scene() );
+				walkSlab.SetCurrentObject( pBot );
+				walkSlab.pushOpenSheet( ior550 );
+				walkSlab.SetCurrentObject( pTopCsg );
+				const auto cSlabExit = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitTop.geometric, ior550, walkSlab, pDispMat, 550.0 );
+
+				IORStack walkKeep( 1.0 );
+				walkKeep.SetMediumProbeScene( &s67a.Scene() );
+				walkKeep.SetCurrentObject( pTopCsg );
+				walkKeep.pushOpenSheet( ior550 );
+				walkKeep.SetCurrentObject( pMid );
+				const auto cMidExit = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitMid.geometric, ior550, walkKeep, pDispMat, 550.0 );
+				Check( walkSlab.Depth() == 1 && Close( cSlabExit.etaFrom, ior550 ) && Close( cSlabExit.etaTo, 1.0 ) &&
+					walkKeep.Depth() == 2 && walkKeep.ObjectAt( 1 ) == pTopCsg &&
+					Close( cMidExit.etaFrom, ior550 ) && Close( cMidExit.etaTo, ior550 ),
+					"A67a-2 [DL-626]: CrossingMedia::Keeps peels unconfirmed bot_sheet67 above top_csg67 and retains enclosing top_csg67 above mid_sheet67" );
+			}
+
+			// 3. ReindexStackForWavelength on a stack holding `top_csg67` re-evaluates `disp_glass` at 420 nm.
+			IORStack stackHeroCsg( 1.0 );
+			stackHeroCsg.SetMediumProbeScene( &s67a.Scene() );
+			stackHeroCsg.SetCurrentObject( pTopCsg );
+			stackHeroCsg.pushOpenSheet( ior550 );
+			IORStack stackComp420( 1.0 );
+			const bool reidxOk = IORStackSeeding::ReindexStackForWavelength(
+				stackHeroCsg, stackComp420, 420.0, Point3( 0, 0.5, 0 ), &s67a.Scene() );
+			Check( reidxOk && std::fabs( ior420 - ior550 ) > 0.02 && Close( stackComp420.top(), ior420 ),
+				"A67a-3 [DL-626]: ReindexStackForWavelength re-evaluates dispersive operand material on csg_object open sheet" );
+		}
+
+		// A67b: Disjoint open sheets `s_bot` (+y at y = 2.0, glass133) and tilted `s_tilt`
+		// (rotated 25 deg at y = 1.0, glass15): at (0, 0, 0) `SeedFromPoint` builds
+		// `[env(1.0), s_bot(1.33), s_tilt(1.5)]` (outermost `s_bot` at larger normal distance).
+		// Exiting `s_tilt` across its back face leaves `[env(1.0), s_bot(1.33)]` and MUST
+		// price the crossing reciprocally as `1.5 -> 1.33` (matching front-face entry `1.33 -> 1.5`),
+		// with `RadianceEtaScale( before, &after ) == (1.5 / 1.33)^2`.
+		Loaded s67b( Header()
+			+ HSheet( "g_sbot67", 2.5, 5.0, true ) + Obj( "s_bot67", "g_sbot67", "glass133" )
+			+ RotatedSheet( "g_stilt67", 1.0, 4.0, 20.0 ) + Obj( "s_tilt67", "g_stilt67", "glass15" ) );
+		Check( s67b.ok, "A67b [DL-626] nested disjoint planar + tilted open sheets load" );
+		if( s67b.ok ) {
+			const IObject* pBot67 = s67b.O( "s_bot67" );
+			const IObject* pTilt67 = s67b.O( "s_tilt67" );
+			const IORStack seedBelow = s67b.Seed( Point3( 0, 0, 0 ) );
+			Check( seedBelow.Depth() == 3 &&
+				seedBelow.ObjectAt( 1 ) == pBot67 && Close( IorAt( seedBelow, 1 ), 1.33 ) &&
+				seedBelow.ObjectAt( 2 ) == pTilt67 && Close( IorAt( seedBelow, 2 ), 1.5 ),
+				"A67b-1 [DL-626]: SeedFromPoint(0,0,0) builds [env(1.0), s_bot67(1.33), s_tilt67(1.5)]" );
+
+			// Cast upward along +y from (0, 0, 0) to hit `s_tilt67`'s back face, and downward from
+			// (0, 1.5, 0) to hit `s_tilt67`'s front face.
+			Ray rUp67( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitBack67( rUp67, nullRasterizerState );
+			pTilt67->IntersectRay( hitBack67, 5.0, true, true, false );
+			Ray rDown67( Point3( 0, 1.5, 0 ), Vector3( 0, -1, 0 ) );
+			RayIntersection hitFront67( rDown67, nullRasterizerState );
+			pTilt67->IntersectRay( hitFront67, 5.0, true, true, false );
+			Check( hitBack67.geometric.bHit && hitFront67.geometric.bHit,
+				"A67b-2 [DL-626]: rays hit both back and front faces of s_tilt67 inside s_bot67" );
+			if( hitBack67.geometric.bHit && hitFront67.geometric.bHit ) {
+				IORStack beforeExit = seedBelow;
+				beforeExit.SetMediumProbeScene( &s67b.Scene() );
+				IORStack afterExit = beforeExit;
+				afterExit.SetCurrentObject( pTilt67 );
+				const auto cBack = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitBack67.geometric, 1.5, afterExit, pTilt67->GetMaterial(), 0 );
+				afterExit.SetCrossingEtaFrom( cBack.etaFrom );
+				const Scalar scaleExit = RadianceEtaScale( beforeExit, &afterExit );
+
+				IORStack beforeEnter = afterExit;
+				beforeEnter.SetCrossingEtaFrom( 0 );
+				IORStack afterEnter = beforeEnter;
+				afterEnter.SetCurrentObject( pTilt67 );
+				const auto cFront = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitFront67.geometric, 1.5, afterEnter, pTilt67->GetMaterial(), 0 );
+				afterEnter.SetCrossingEtaFrom( cFront.etaFrom );
+				const Scalar scaleEnter = RadianceEtaScale( beforeEnter, &afterEnter );
+
+				Check( Close( cBack.etaFrom, 1.5 ) && Close( cBack.etaTo, 1.33 ) &&
+					Close( cFront.etaFrom, 1.33 ) && Close( cFront.etaTo, 1.5 ) &&
+					Close( scaleExit * scaleEnter, 1.0 ) &&
+					Close( scaleExit, ( 1.5 / 1.33 ) * ( 1.5 / 1.33 ) ),
+					"A67b-3 [DL-626]: back-face exit (1.5->1.33) and front-face entry (1.33->1.5) are exact Helmholtz/L/n^2 reciprocals" );
+			}
+		}
+
+		// A67c: Closed dielectric `ball67` (ior 1.8, radius 1.0 at origin) straddling open
+		// `water67` (+y at y = 0, ior 1.33) for BOTH `dielectric_material` and `perfectrefractor_material`:
+		// inside `ball67`, front-face downward scatter refracts `1.8 -> 1.33` and back-face upward
+		// scatter refracts `1.33 -> 1.8` (Snell sin(theta_t) = (1.33/1.8) * sin(theta_i), NOT straight-through).
+		Loaded s67c( Header()
+			+ "dielectric_material\n{\n\tname diel133\n\ttau 1.0\n\tior 1.33\n\tscattering 1000000\n}\n\n"
+			+ "sphere_geometry\n{\n\tname g_ball67\n\tradius 1.0\n}\n\n"
+			+ Obj( "ball67", "g_ball67", "glass18", "0 0 0" )
+			+ HSheet( "g_wat_diel", 0.0, 3.0, true ) + Obj( "wat_diel", "g_wat_diel", "diel133" )
+			+ HSheet( "g_wat_perf", -0.2, 3.0, true ) + Obj( "wat_perf", "g_wat_perf", "glass133" ) );
+		Check( s67c.ok, "A67c [DL-626] closed ball(1.8) straddling dielectric & perfectrefractor open sheets loads" );
+		if( s67c.ok ) {
+			const IObject* pBall = s67c.O( "ball67" );
+			RandomNumberGenerator rng( 424242u );
+			IndependentSampler samp( rng );
+			const double sinIn = 0.5;
+			const double cosIn = std::sqrt( 1.0 - sinIn * sinIn );
+			const Vector3 dirUpOblique = Vector3Ops::Normalize( Vector3( sinIn, cosIn, 0.0 ) );
+			const double expectedSinOut = ( 1.33 / 1.8 ) * sinIn;
+
+			auto checkBackRefract = [&]( const char* sheetName, double yStart ) -> bool {
+				const IObject* pSh = s67c.O( sheetName );
+				if( !pSh || !pSh->GetMaterial() || !pSh->GetMaterial()->GetSPF() ) return false;
+				Ray r( Point3( -0.1, yStart, 0.0 ), dirUpOblique );
+				RayIntersection hit( r, nullRasterizerState );
+				pSh->IntersectRay( hit, 2.0, true, true, false );
+				if( !hit.geometric.bHit ) return false;
+				IORStack st( 1.0 );
+				st.SetMediumProbeScene( &s67c.Scene() );
+				st.SetCurrentObject( pBall );
+				st.push( 1.8 );
+				st.SetCurrentObject( pSh );
+				st.pushOpenSheet( 1.33 );
+				st.SetCurrentObject( pSh );
+				ScatteredRayContainer scat;
+				pSh->GetMaterial()->GetSPF()->Scatter( hit.geometric, samp, scat, st );
+				for( unsigned int i = 0; i < scat.Count(); ++i ) {
+					if( scat[i].type == ScatteredRay::eRayRefraction && scat[i].ior_stack ) {
+						const Vector3 d = Vector3Ops::Normalize( scat[i].ray.Dir() );
+						const Scalar scale = RadianceEtaScale( st, scat[i].ior_stack );
+						return std::fabs( d.x - expectedSinOut ) < 1e-6 &&
+							Close( scat[i].ior_stack->top(), 1.8 ) &&
+							Close( scale, ( 1.33 / 1.8 ) * ( 1.33 / 1.8 ) );
+					}
+				}
+				return false;
+			};
+
+			Check( checkBackRefract( "wat_diel", -0.1 ) && checkBackRefract( "wat_perf", -0.3 ),
+				"A67c [DL-626]: DielectricSPF and PerfectRefractorSPF refract 1.33->1.8 (not straight-through) on open-sheet back face inside closed ball(1.8)" );
+		}
+	}
+
+	// A68: Round 9 adversarial review pins:
+	//   A68a: `SeedFromPoint` inside closed dielectric `B(1.8)` (`y = -1 .. +1`) with an open
+	//         sheet `S(1.33)` above (`y = 3.0`) and a flush adjacent closed dielectric `C(1.5)`
+	//         (`y = +1 .. +2`) sharing `y = 1.0` must order `[env(1.0), S(1.33), B(1.8)]`
+	//         (`top() == 1.8`) in BOTH TLAS leaf orders (`RecordCoplanarOrderedExitsAt` on
+	//         `kMembershipTransparent`).
+	//   A68b: Same with a flush small opaque obstacle `R` (`y = 1.0 .. 1.2`, `|x|,|z| <= 0.3`)
+	//         sitting on `B`'s top face `y = 1.0` (exercising `RecordCoplanarOrderedExitsAt`
+	//         on `kMembershipBlock` -> `HasFreeSpaceDetourToSheets`) in BOTH TLAS leaf orders.
+	//   A68c: Per-operand-material `csg_object` open sheet trimmed by a refractive solid
+	//         (`CSG_SUBTRACTION(sheet_glass15, box_glass18)`) keeps `SingleRefractiveObjectMaterial`
+	//         == `glass15` (`CrossingMedia::Keeps` without `EntryContext`).
+	{
+		auto makeFlushStacked = [&]( bool revNames, bool withObstacle, bool twoSheets ) -> std::string {
+			const char* bName = revNames ? "z_bot_block" : "a_bot_block";
+			const char* topName = revNames ? "a_flush_top" : "z_flush_top";
+			std::string sc = Header()
+				+ "box_geometry\n{\n\tname g_b68\n\twidth 4\n\theight 2\n\tdepth 4\n}\n\n"
+				+ "box_geometry\n{\n\tname g_c68\n\twidth 4\n\theight 1\n\tdepth 4\n}\n\n"
+				+ "box_geometry\n{\n\tname g_r68\n\twidth 0.6\n\theight 0.2\n\tdepth 0.6\n}\n\n"
+				+ HSheet( "g_s68", 3.0, 5.0, true );
+			const std::string bChunk = Obj( bName, "g_b68", "glass18", "0 0 0" );
+			const std::string topChunk = withObstacle
+				? Obj( topName, "g_r68", "matte", "0 1.1 0" )
+				: Obj( topName, "g_c68", "glass15", "0 1.5 0" );
+			sc += revNames ? ( topChunk + bChunk ) : ( bChunk + topChunk );
+			sc += Obj( "m_sheet68", "g_s68", "glass133" );
+			if( twoSheets ) {
+				sc += HSheet( "g_s68b", 3.5, 5.0, true ) + Obj( "m_sheet68b", "g_s68b", "glass133" );
+			}
+			return sc;
+		};
+
+		Loaded fA1( makeFlushStacked( false, false, false ) );
+		Loaded fB1( makeFlushStacked( true,  false, false ) );
+		Loaded fA2( makeFlushStacked( false, false, true ) );
+		Loaded fB2( makeFlushStacked( true,  false, true ) );
+		Check( fA1.ok && fB1.ok && fA2.ok && fB2.ok,
+			"A68a [DL-626] flush closed-dielectric stack under 1 & 2 open sheets loads in both TLAS orders" );
+		if( fA1.ok && fB1.ok && fA2.ok && fB2.ok ) {
+			const IORStack stA1 = fA1.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stB1 = fB1.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stA2 = fA2.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stB2 = fB2.Seed( Point3( 0, 0, 0 ) );
+			Check( stA1.Depth() == 3 && stB1.Depth() == 3 &&
+				Close( IorAt( stA1, 1 ), 1.33 ) && Close( stA1.top(), 1.8 ) &&
+				Close( IorAt( stB1, 1 ), 1.33 ) && Close( stB1.top(), 1.8 ) &&
+				stA2.Depth() == 4 && stB2.Depth() == 4 &&
+				Close( IorAt( stA2, 1 ), 1.33 ) && Close( IorAt( stA2, 2 ), 1.33 ) && Close( stA2.top(), 1.8 ) &&
+				Close( IorAt( stB2, 1 ), 1.33 ) && Close( IorAt( stB2, 2 ), 1.33 ) && Close( stB2.top(), 1.8 ),
+				"A68a [DL-626]: flush adjacent closed dielectric at B's exit face preserves outer sheet(1.33) and inner B(1.8) in both TLAS orders" );
+		}
+
+		Loaded oA1( makeFlushStacked( false, true, false ) );
+		Loaded oB1( makeFlushStacked( true,  true, false ) );
+		Loaded oA2( makeFlushStacked( false, true, true ) );
+		Loaded oB2( makeFlushStacked( true,  true, true ) );
+		Check( oA1.ok && oB1.ok && oA2.ok && oB2.ok,
+			"A68b [DL-626] flush opaque obstacle on closed-dielectric top face loads in both TLAS orders" );
+		if( oA1.ok && oB1.ok && oA2.ok && oB2.ok ) {
+			const IORStack stOA1 = oA1.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stOB1 = oB1.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stOA2 = oA2.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stOB2 = oB2.Seed( Point3( 0, 0, 0 ) );
+			Check( stOA1.Depth() == 3 && stOB1.Depth() == 3 &&
+				Close( IorAt( stOA1, 1 ), 1.33 ) && Close( stOA1.top(), 1.8 ) &&
+				Close( IorAt( stOB1, 1 ), 1.33 ) && Close( stOB1.top(), 1.8 ) &&
+				stOA2.Depth() == 4 && stOB2.Depth() == 4 &&
+				Close( IorAt( stOA2, 1 ), 1.33 ) && Close( IorAt( stOA2, 2 ), 1.33 ) && Close( stOA2.top(), 1.8 ) &&
+				Close( IorAt( stOB2, 1 ), 1.33 ) && Close( IorAt( stOB2, 2 ), 1.33 ) && Close( stOB2.top(), 1.8 ),
+				"A68b [DL-626]: flush opaque obstacle detour at B's exit face preserves outer sheet(1.33) and inner B(1.8) in both TLAS orders" );
+		}
+
+		Loaded t68( Header()
+			+ HSheet( "g_top68", 1.0, 4.0, true ) + Obj( "top_sh68", "g_top68", "glass15" )
+			+ "box_geometry\n{\n\tname g_cut68\n\twidth 0.6\n\theight 4.0\n\tdepth 0.6\n}\n\n"
+			+ Obj( "cut_box68", "g_cut68", "glass18", "3.2 1.0 3.2" )
+			+ "csg_object\n{\n\tname trim_sh68\n\tobja top_sh68\n\tobjb cut_box68\n\toperation subtraction\n}\n\n"
+			+ HSheet( "g_mid68", 0.0, 4.0, true ) + Obj( "mid_sh68", "g_mid68", "glass15" ) );
+		Check( t68.ok, "A68c [DL-626] glass15 sheet trimmed by glass18 solid loads" );
+		if( t68.ok ) {
+			const IObject* pTrim = t68.O( "trim_sh68" );
+			const IObject* pMid = t68.O( "mid_sh68" );
+			Ray rUp68( Point3( 0, -0.1, 0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitMid68( rUp68, nullRasterizerState );
+			pMid->IntersectRay( hitMid68, 1.0, true, true, false );
+			// Push `trim_sh68` WITHOUT EntryContext (mirroring `SMSDomainReplay::RefreshLegacySeedFallbackNM`):
+			IORStack noCtxWalk( 1.0 );
+			noCtxWalk.SetMediumProbeScene( &t68.Scene() );
+			noCtxWalk.SetCurrentObject( pTrim );
+			noCtxWalk.pushOpenSheet( 1.5 );
+			noCtxWalk.SetCurrentObject( pMid );
+			const auto cMid68 = IORStackSeeding::ResolveOpenSheetCrossing(
+				hitMid68.geometric, 1.5, noCtxWalk, pMid->GetMaterial(), 0 );
+			Check( hitMid68.geometric.bHit && noCtxWalk.Depth() == 2 &&
+				noCtxWalk.ObjectAt( 1 ) == pTrim &&
+				Close( cMid68.etaFrom, 1.5 ) && Close( cMid68.etaTo, 1.5 ),
+				"A68c [DL-626]: kTrimSheetA ignores solid trimmer's glass18 material so context-free CrossingMedia::Keeps retains trim_sh68(1.5)" );
+		}
+	}
+
+	// A69: Round 10 adversarial review pin: `LambertianLuminaireMaterial` and
+	// `PhongLuminaireMaterial` forward `CouldLightPassThrough`, `GetSpecularInfo{,NM}`,
+	// `IsVolumetric`, `GetGradedIORField`, `Pdf{,NM}`, and `ScattersFullSphere` to
+	// their wrapped base material, so emissive dielectric closed solids and emissive
+	// dielectric open sheets participate identically in `SeedFromPoint`,
+	// `ResolveOpenSheetCrossing`, and `ReindexStackForWavelength`.
+	{
+		const std::string dispLumHeader = Header()
+			+ "uniformcolor_painter\n{\n\tname p_emit69\n\tcolor 1.0 0.8 0.5\n}\n\n"
+			+ "scalar_painter\n{\n\tname p_phong_n69\n\tvalue 8.0\n}\n\n"
+			+ "scalar_painter\n{\n\tname p_disp_ior69\n\tvalues 1.45 1.55 1.75\n}\n\n"
+			+ "dielectric_material\n{\n\tname disp_glass69\n\ttau 1.0\n\tior p_disp_ior69\n\tscattering 1000000\n}\n\n"
+			+ "lambertian_luminaire_material\n{\n\tname lum_lamb_glass18\n\texitance p_emit69\n\tmaterial glass18\n\tscale 2.0\n}\n\n"
+			+ "phong_luminaire_material\n{\n\tname lum_phong_disp\n\texitance p_emit69\n\tmaterial disp_glass69\n\tN p_phong_n69\n\tscale 1.5\n}\n\n";
+
+		Loaded s69( dispLumHeader
+			+ "sphere_geometry\n{\n\tname g_sph69\n\tradius 0.8\n}\n\n"
+			+ Obj( "ball_lum69", "g_sph69", "lum_lamb_glass18", "0 0 0" )
+			+ HSheet( "g_top69", 2.0, 4.0, true ) + Obj( "top_lum69", "g_top69", "lum_phong_disp" )
+			+ HSheet( "g_bot69", -2.0, 4.0, false ) + Obj( "bot_lum69", "g_bot69", "lum_phong_disp" ) );
+		Check( s69.ok, "A69 [DL-626] luminaire-wrapped dielectric closed sphere + dispersive open-sheet slab load" );
+		if( s69.ok ) {
+			const IObject* pBall = s69.O( "ball_lum69" );
+			const IObject* pTop = s69.O( "top_lum69" );
+			const IMaterial* pPhongLum = pTop->GetMaterial();
+			RayIntersectionGeometric qRig( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			qRig.bHit = true;
+			qRig.vNormal = Vector3( 0, 1, 0 );
+			qRig.vGeomNormal = Vector3( 0, 1, 0 );
+			const IORStack qAir( 1.0 );
+			const Scalar ior550 = pPhongLum->GetSpecularInfoNM( qRig, qAir, 550.0 ).ior;
+			const Scalar ior420 = pPhongLum->GetSpecularInfoNM( qRig, qAir, 420.0 ).ior;
+
+			// 1. Seed inside `ball_lum69(1.8)` enclosed by dispersive `lum_phong_disp` slab at 550 nm:
+			IORStack stInsideBall( 1.0 );
+			IORStackSeeding::SeedFromPoint( stInsideBall, Point3( 0, 0, 0 ), s69.Scene(), 550.0 );
+			Check( pPhongLum->CouldLightPassThrough() &&
+				pBall->GetMaterial()->CouldLightPassThrough() &&
+				stInsideBall.Depth() == 3 &&
+				Close( IorAt( stInsideBall, 1 ), ior550 ) &&
+				stInsideBall.ObjectAt( 2 ) == pBall &&
+				Close( stInsideBall.top(), 1.8 ),
+				"A69-1 [DL-626]: SeedFromPoint tracks both PhongLuminaire open-sheet slab and LambertianLuminaire closed sphere" );
+
+			// 2. ReindexStackForWavelength re-evaluates `lum_phong_disp` at 420 nm while keeping `ball_lum69` at 1.8:
+			IORStack st420( 1.0 );
+			const bool reidxOk = IORStackSeeding::ReindexStackForWavelength(
+				stInsideBall, st420, 420.0, Point3( 0, 0, 0 ), &s69.Scene() );
+			Check( reidxOk && std::fabs( ior420 - ior550 ) > 0.02 &&
+				st420.Depth() == 3 &&
+				Close( IorAt( st420, 1 ), ior420 ) &&
+				Close( st420.top(), 1.8 ),
+				"A69-2 [DL-626]: ReindexStackForWavelength re-evaluates dispersive PhongLuminaireMaterial open sheet" );
+
+			// 3. Back-face crossing of `top_lum69` at y = 2.0 exits to air(1.0) with reciprocal etaFrom == ior550:
+			Ray rUp69( Point3( 0, 1.5, 0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitTop69( rUp69, nullRasterizerState );
+			pTop->IntersectRay( hitTop69, 1.0, true, true, false );
+			IORStack walk69( 1.0 );
+			walk69.SetMediumProbeScene( &s69.Scene() );
+			walk69.SetCurrentObject( pTop );
+			walk69.pushOpenSheet( ior550 );
+			walk69.SetCurrentObject( pTop );
+			const auto cExit69 = IORStackSeeding::ResolveOpenSheetCrossing(
+				hitTop69.geometric, ior550, walk69, pPhongLum, 550.0 );
+			Check( hitTop69.geometric.bHit && walk69.Depth() == 1 &&
+				Close( cExit69.etaFrom, ior550 ) && Close( cExit69.etaTo, 1.0 ),
+				"A69-3 [DL-626]: ResolveOpenSheetCrossing exits PhongLuminaireMaterial open sheet reciprocally" );
+		}
+	}
+
+	// A70: Round 11 adversarial review pins:
+	//   (1) Opaque `PolishedMaterial` (bare and `LambertianLuminaireMaterial`-wrapped)
+	//       and non-`clearTransmission` SSS planar sheets are NEVER classified as
+	//       transmissive open sheets or transparent media in `IORStackSeeding` —
+	//       they act as `kMembershipBlock` obstacles against overlying glass sheets.
+	//   (2) `ManifoldSolver` unwraps `LambertianLuminaireMaterial` / `PhongLuminaireMaterial`
+	//       when checking `PolishedMaterial` coats (`SMSIsPolishedCoat`), so Legacy SMS
+	//       reflects off polished luminaires (`isReflection == true`) and evaluates
+	//       `LegacyPolishedKray` instead of refracting into an opaque body.
+	//   (3) `EnsureOpenSheetCatalog` refreshes automatically on direct `AssignMaterial`
+	//       calls without requiring `PrepareForRendering()`.
+	{
+		const std::string polHeader = Header()
+			+ "uniformcolor_painter\n{\n\tname p_emit70\n\tcolor 0.2 0.2 0.2\n}\n\n"
+			+ "uniformcolor_painter\n{\n\tname p_sub70\n\tcolor 0.4 0.4 0.4\n}\n\n"
+			+ "scalar_painter\n{\n\tname p_tau70\n\tvalue 0.8\n}\n\n"
+			+ "scalar_painter\n{\n\tname p_ior70\n\tvalue 1.5\n}\n\n"
+			+ "scalar_painter\n{\n\tname p_scat70\n\tvalue 1000000.0\n}\n\n"
+			+ "polished_material\n{\n\tname mat_pol70\n\treflectance p_sub70\n\ttau p_tau70\n\tior p_ior70\n\tscattering p_scat70\n}\n\n"
+			+ "lambertian_luminaire_material\n{\n\tname mat_lum_pol70\n\texitance p_emit70\n\tmaterial mat_pol70\n\tscale 1.0\n}\n\n"
+			+ "subsurfacescattering_material\n{\n\tname mat_sss70\n\tior 1.4\n\tabsorption 0.1 0.1 0.1\n\tscattering 2.0 2.0 2.0\n\tg 0.0\n\troughness 0.0\n}\n\n";
+
+		Loaded s70OnlyPol( polHeader
+			+ HSheet( "g_pol_ceil", 1.5, 4.0, true ) + Obj( "pol_ceil", "g_pol_ceil", "mat_pol70" )
+			+ HSheet( "g_lumpol_ceil", 2.5, 4.0, true ) + Obj( "lumpol_ceil", "g_lumpol_ceil", "mat_lum_pol70" ) );
+		Loaded s70Blocked( polHeader
+			+ HSheet( "g_pol_block", 1.5, 4.0, true ) + Obj( "pol_block", "g_pol_block", "mat_lum_pol70" )
+			+ HSheet( "g_sss_sheet", 2.0, 4.0, true ) + Obj( "sss_sheet", "g_sss_sheet", "mat_sss70" )
+			+ HSheet( "g_glass_roof", 3.0, 4.0, true ) + Obj( "glass_roof", "g_glass_roof", "glass18" ) );
+		Check( s70OnlyPol.ok && s70Blocked.ok, "A70 [DL-626] polished / polished-luminaire / SSS open-sheet fixtures load" );
+		if( s70OnlyPol.ok && s70Blocked.ok ) {
+			IORStack stOnlyPol( 1.0 );
+			IORStackSeeding::SeedFromPoint( stOnlyPol, Point3( 0, 0, 0 ), s70OnlyPol.Scene() );
+			IORStack stBlocked( 1.0 );
+			IORStackSeeding::SeedFromPoint( stBlocked, Point3( 0, 0, 0 ), s70Blocked.Scene() );
+			Check( !IORStackSeeding::SceneHasTrackableMedia( s70OnlyPol.Scene() ) &&
+				stOnlyPol.Depth() == 1 && Close( stOnlyPol.top(), 1.0 ) &&
+				stBlocked.Depth() == 1 && Close( stBlocked.top(), 1.0 ),
+				"A70-1 [DL-626]: PolishedMaterial, LambertianLuminaire(PolishedMaterial), and SSS open sheets block rather than seeding glass half-spaces" );
+
+			// Legacy SMS SnellContinueChain + EvaluateChainThroughput{,NM} on `lumpol_ceil`:
+			std::vector<IShaderOp*> ops70;
+			IShader* shader70 = nullptr;
+			RISE_API_CreateStandardShader( &shader70, ops70 );
+			RayCaster* rc70 = new RayCaster( false, 16, *shader70, true );
+			rc70->AttachScene( &s70OnlyPol.Scene() );
+			ManifoldSolverConfig smsCfg;
+			smsCfg.enabled = true;
+			ManifoldSolver* solver = new ManifoldSolver( smsCfg );
+			Point3 origin70( 0.0, 1.8, 0.0 );
+			Vector3 dir70 = Vector3Ops::Normalize( Vector3( 0.3, 1.0, 0.0 ) );
+			Scalar curIor70 = 1.0;
+			IORStack seedSt70( 1.0 );
+			std::vector<ManifoldVertex> chain70;
+			const unsigned int added70 = solver->SnellContinueChain(
+				origin70, dir70, 10.0, curIor70, seedSt70, s70OnlyPol.Scene(), *rc70, chain70, false );
+			const Point3 endPt70 = Point3Ops::mkPoint3(
+				chain70.empty() ? Point3( 0, 2.5, 0 ) : chain70[0].position, dir70 * 2.0 );
+			const RISEPel tpPel70 = chain70.empty()
+				? RISEPel( 0, 0, 0 )
+				: solver->EvaluateChainThroughput( Point3( 0.0, 1.8, 0.0 ), endPt70, chain70 );
+			const Scalar tpNM70 = chain70.empty()
+				? Scalar( 0 )
+				: solver->EvaluateChainThroughputNM( Point3( 0.0, 1.8, 0.0 ), endPt70, chain70, 550.0 );
+			Check( added70 >= 1 &&
+				chain70[0].pObject == s70OnlyPol.O( "lumpol_ceil" ) &&
+				chain70[0].isReflection &&
+				dir70.y < 0.0 &&
+				seedSt70.Depth() == 1 &&
+				tpPel70[0] > 0.0 && std::fabs( tpPel70[0] - tpNM70 ) < 1e-6,
+				"A70-2 [DL-626]: ManifoldSolver treats LambertianLuminaire(PolishedMaterial) as a reflective coat (never refracting into opaque substrate)" );
+			solver->release();
+			rc70->release();
+			shader70->release();
+
+			// Direct `AssignMaterial` on `lumpol_ceil` from opaque polished to `glass15` without `PrepareForRendering()`:
+			IObjectPriv* pMutCeil = s70OnlyPol.job->GetObjects()->GetItem( "lumpol_ceil" );
+			IMaterial* pGlass15 = s70OnlyPol.job->GetMaterials()->GetItem( "glass15" );
+			if( pMutCeil && pGlass15 ) {
+				pMutCeil->AssignMaterial( *pGlass15 );
+				IORStack stRebound( 1.0 );
+				IORStackSeeding::SeedFromPoint( stRebound, Point3( 0.0, 1.8, 0.0 ), s70OnlyPol.Scene() );
+				Check( IORStackSeeding::SceneHasTrackableMedia( s70OnlyPol.Scene() ) &&
+					stRebound.Depth() == 2 && Close( stRebound.top(), 1.5 ),
+					"A70-3 [DL-626]: EnsureOpenSheetCatalog refreshes automatically after direct Object::AssignMaterial without PrepareForRendering" );
+			}
+		}
+	}
+
+	const int dl626NewFails = failCount - dl626FailBefore;
+	std::cout << "[DL-626-SUMMARY] " << ( dl626NewFails == 0 ? "PASS" : "FAIL" )
+		<< " (new_failures=" << dl626NewFails << ")" << std::endl;
+}
+
+//////////////////////////////////////////////////////////////////////
+// Part B: renders
+//////////////////////////////////////////////////////////////////////
+class CapturingRasterizerOutput
+	: public virtual IRasterizerOutput
+	, public virtual Reference
+{
+public:
+	std::vector<RISEColor> pixels;
+	CapturingRasterizerOutput() {}
+protected:
+	virtual ~CapturingRasterizerOutput() {}
+public:
+	virtual void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	virtual void OutputImage( const IRasterImage& img, const Rect*, const unsigned int ) override
+	{
+		const unsigned int w = img.GetWidth(), h = img.GetHeight();
+		pixels.resize( w * h );
+		for( unsigned int y = 0; y < h; y++ ) {
+			for( unsigned int x = 0; x < w; x++ ) {
+				pixels[y * w + x] = img.GetPEL( x, y );
+			}
+		}
+	}
+};
+
+static double MeanLuminance( const CapturingRasterizerOutput& cap )
+{
+	if( cap.pixels.empty() ) return -1.0;
+	double sum = 0;
+	for( const RISEColor& c : cap.pixels ) {
+		const double r = c.base.r * c.a, g = c.base.g * c.a, b = c.base.b * c.a;
+		if( !std::isfinite( r ) || !std::isfinite( g ) || !std::isfinite( b ) ) return -1.0;
+		sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+	}
+	return sum / double( cap.pixels.size() );
+}
+
+//! One render, Sobol'-salted by (seed base, render index), libc rand()
+//! pinned likewise.
+static double Render( const std::string& sceneText )
+{
+	const std::string path = TempPath( "render" );
+	{
+		std::ofstream ofs( path.c_str() );
+		if( !ofs.is_open() ) return -1.0;
+		ofs << sceneText;
+	}
+	std::srand( g_seedBase + g_renderIndex );
+	SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 0x0618u + g_seedBase, g_renderIndex ) );
+	g_renderIndex++;
+
+	double result = -1.0;
+	IJobPriv* pJob = nullptr;
+	if( RISE_CreateJobPriv( &pJob ) && pJob ) {
+		if( pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+			pJob->RemoveRasterizerOutputs();
+			CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+			if( pJob->Rasterize() ) {
+				result = MeanLuminance( *pCap );
+			}
+			safe_release( pCap );
+		}
+		safe_release( pJob );
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	return result;
+}
+
+enum Integrator { kPT, kPTSMS, kBDPT, kVCM, kPTSpectral, kPTSpectralHWSS };
+static const char* kName[] = { "PT", "PT+SMS", "BDPT", "VCM", "PT spectral", "PT spectral HWSS" };
+
+static std::string Rasterizer( Integrator which )
+{
+	std::ostringstream ss;
+	ss << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+	switch( which ) {
+	case kPT:
+	case kPTSMS:
+		ss << "pathtracing_pel_rasterizer\n{\n\tsamples 256\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n"
+		   << "\tsms_enabled " << ( which == kPTSMS ? "TRUE" : "FALSE" ) << "\n}\n\n";
+		break;
+	case kBDPT:
+		ss << "bdpt_pel_rasterizer\n{\n\tsamples 128\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+		break;
+	case kPTSpectral:
+	case kPTSpectralHWSS:
+		ss << "pathtracing_spectral_rasterizer\n{\n\tsamples 128\n\tspectral_samples 1\n\tnum_wavelengths 160\n"
+		   << "\tnmbegin 380\n\tnmend 780\n\thwss " << ( which == kPTSpectralHWSS ? "TRUE" : "FALSE" ) << "\n"
+		   << "\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+		break;
+	default:
+		ss << "vcm_pel_rasterizer\n{\n\tsamples 128\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n"
+		   << "\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+		break;
+	}
+	ss << "file_rasterizeroutput\n{\n\tpattern rendered/half_space_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n"
+	   << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
+	return ss.str();
+}
+
+static std::string Emitter( double y, double h, double scale )
+{
+	std::ostringstream ss;
+	ss << "lambertian_luminaire_material\n{\n\tname m_emit\n\texitance white\n\tscale " << scale << "\n\tmaterial none\n}\n\n";
+	const double a[3] = { -h, y, -h }, b[3] = { h, y, -h }, c[3] = { h, y, h }, d[3] = { -h, y, h };
+	std::string q = SheetQuad( "g_emit", a, b, c, d );
+	q.replace( q.find( "doublesided TRUE" ), 16, "doublesided FALSE" );
+	return ss.str() + q + Obj( "emit", "g_emit", "m_emit" );
+}
+
+//! B1: camera under a lone up-facing glass pane at y 2, a 2.0 sphere
+//! below it, a grey receiver at y 0, a black floor at y -0.25 so a
+//! downward escape cannot differ from the closed-box reference, which
+//! replaces the pane by a 1.5 box spanning y -0.5 .. 2.
+static std::string PaneScene( Integrator which, bool closedBox )
+{
+	std::string s = "RISE ASCII SCENE 7\n" + Rasterizer( which ) + HeaderBody();
+	s += "pinhole_camera\n{\n\tlocation 0 1.3 1.0\n\tlookat 0 0.3 0\n\tup 0 1 0\n\tfov 35.0\n}\n\n";
+	s += Emitter( 4, 2, 4 );
+	s += HSheet( "g_recv", 0, 1, true ) + Obj( "recv", "g_recv", "matte" );
+	s += HSheet( "g_floor", -0.25, 8, true ) + Obj( "floor", "g_floor", "soot" );
+	s += "sphere_geometry\n{\n\tname g_ball\n\tradius 0.35\n}\n\n" + Obj( "ball", "g_ball", "glass20", "0 0.6 0" );
+	if( closedBox ) {
+		s += "box_geometry\n{\n\tname g_box\n\twidth 16\n\theight 2.5\n\tdepth 16\n}\n\n" + Obj( "box", "g_box", "glass15", "0 0.75 0" );
+	} else {
+		s += HSheet( "g_pane", 2, 8, true ) + Obj( "pane", "g_pane", "glass15" );
+	}
+	return s;
+}
+
+//! B2: a closed opaque room (y 0 .. 3) lit from inside, a 2.0 sphere on
+//! its floor, camera inside; optionally an up-facing glass pane at y 6.
+static std::string RoomScene( Integrator which, bool pane )
+{
+	std::string s = "RISE ASCII SCENE 7\n" + Rasterizer( which ) + HeaderBody();
+	s += "pinhole_camera\n{\n\tlocation 0 1.5 1.5\n\tlookat 0 0.4 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n";
+	s += Emitter( 2.9, 0.5, 8 );
+	s += "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "0 1.5 0" );
+	s += "sphere_geometry\n{\n\tname g_ball\n\tradius 0.4\n}\n\n" + Obj( "ball", "g_ball", "glass20", "0 0.4 0" );
+	if( pane ) {
+		s += HSheet( "g_pane", 6, 8, true ) + Obj( "pane", "g_pane", "glass15" );
+	}
+	return s;
+}
+
+//! B4: a one-sided emitter quad lying 5e-5 above the floor of a closed
+//! opaque room (facing up into it), a 2.0 sphere beside it, camera inside;
+//! optionally an up-facing glass pane above the room.
+static std::string FlushRoomScene( Integrator which, bool pane )
+{
+	std::string s = "RISE ASCII SCENE 7\n" + Rasterizer( which ) + HeaderBody();
+	s += "pinhole_camera\n{\n\tlocation 0 1.5 1.5\n\tlookat -0.8 0.4 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n";
+	s += "lambertian_luminaire_material\n{\n\tname m_emit\n\texitance white\n\tscale 4\n\tmaterial none\n}\n\n";
+	{
+		std::string q = HSheet( "g_emit", 0.00005, 0.5, true );
+		q.replace( q.find( "doublesided TRUE" ), 16, "doublesided FALSE" );
+		s += q + Obj( "emit", "g_emit", "m_emit", "-0.8 0 0" );
+	}
+	s += "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "0 1.5 0" );
+	s += "sphere_geometry\n{\n\tname g_ball\n\tradius 0.6\n}\n\n" + Obj( "ball", "g_ball", "glass20", "-0.8 0.62 0" );
+	if( pane ) {
+		s += HSheet( "g_pane", 6, 8, true ) + Obj( "pane", "g_pane", "glass15" );
+	}
+	return s;
+}
+
+//! B5 (DL-622 review): an unpushed exit is resolved by the crossing, not
+//! the walk's history.  The camera sits in a sea sheet's medium (inside
+//! its normal prism, y 4, |x|,|z| <= 3); it views a receiver at x = 5,
+//! outside the prism, lit only THROUGH a glass pane above it (y 2) by an
+//! emitter in air (y 3.5).  PT's eye walk crosses the pane's back face
+//! carrying the sea on its stack; a rule that kept the sea there because
+//! the walk could still see where it entered priced that crossing
+//! 1.5 -> 1.33 while BDPT's light walk (seeded at the emitter, not in the
+//! sea) priced it 1.0 -> 1.5: PT and BDPT disagreed.
+static std::string OffPrismScene( Integrator which )
+{
+	// The receiver is lit only by BSDF-sampled hits on the emitter through
+	// the pane (PT) or by light tracing (BDPT): 16x the base sample count
+	// keeps each render's sd near 1 %.
+	std::string r = Rasterizer( which );
+	const std::size_t at = r.find( "\tsamples " );
+	if( at != std::string::npos ) {
+		const std::size_t eol = r.find( '\n', at );
+		const int spp = std::atoi( r.substr( at + 9, eol - at - 9 ).c_str() );
+		r.replace( at, eol - at, "\tsamples " + std::to_string( 16 * spp ) );
+	}
+	std::string s = "RISE ASCII SCENE 7\n" + r + HeaderBody();
+	s += "pinhole_camera\n{\n\tlocation 0 1 2.5\n\tlookat 5 0 0\n\tup 0 1 0\n\tfov 18.0\n}\n\n";
+	s += "lambertian_luminaire_material\n{\n\tname m_emit\n\texitance white\n\tscale 6\n\tmaterial none\n}\n\n";
+	{
+		std::string q = HSheet( "g_emit", 3.5, 0.7, false );
+		q.replace( q.find( "doublesided TRUE" ), 16, "doublesided FALSE" );
+		s += q + Obj( "emit", "g_emit", "m_emit", "5 0 0" );
+	}
+	s += HSheet( "g_sea", 4, 3, true ) + Obj( "sea", "g_sea", "glass133" );
+	s += HSheet( "g_pane", 2, 1, true ) + Obj( "pane", "g_pane", "glass15", "5 0 0" );
+	s += HSheet( "g_recv", 0, 0.9, true ) + Obj( "recv", "g_recv", "matte", "5 0 0" );
+	s += HSheet( "g_floor", -0.25, 20, true ) + Obj( "floor", "g_floor", "soot" );
+	return s;
+}
+
+//! B6 (DL-622 Gap 1): B1's scene with a small opaque rock between the
+//! camera and the pane, over the camera.  The camera is seeded into the
+//! pane's medium through the free-space detour around the rock, so the
+//! image matches the same scene with the pane replaced by a closed glass
+//! box (which seeds the camera by parity); before DL-622 the rock blocked
+//! the camera's normal ray and the camera was left in air.
+static std::string RockPaneScene( Integrator which, bool closedBox )
+{
+	std::string s = PaneScene( which, closedBox );
+	s += "box_geometry\n{\n\tname g_rock\n\twidth 0.6\n\theight 0.2\n\tdepth 0.6\n}\n\n" + Obj( "rock", "g_rock", "matte", "0 1.7 1.0" );
+	return s;
+}
+
+//! B7 (DL-622 companion re-index): the camera above a constant-index water
+//! sheet looks down at a DISPERSIVE glass ball under it; at the ball the
+//! HWSS hero hands off to its companions with the sheet on its stack, and
+//! each lane takes the hero's membership re-indexed at its wavelength.
+//! HWSS must match independent per-wavelength paths (hwss FALSE).
+static std::string DispersiveUnderSheetScene( Integrator which )
+{
+	std::string s = "RISE ASCII SCENE 7\n" + Rasterizer( which ) + HeaderBody();
+	s += "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n";
+	s += "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n";
+	s += "pinhole_camera\n{\n\tlocation 0 2.6 1.2\n\tlookat 0 0.3 0\n\tup 0 1 0\n\tfov 35.0\n}\n\n";
+	s += Emitter( 4, 2, 4 );
+	s += HSheet( "g_sea", 2, 8, true ) + Obj( "sea", "g_sea", "glass133" );
+	s += "sphere_geometry\n{\n\tname g_ball\n\tradius 0.35\n}\n\n" + Obj( "ball", "g_ball", "glass_disp", "0 0.6 0" );
+	s += HSheet( "g_recv", 0, 1, true ) + Obj( "recv", "g_recv", "matte" );
+	s += HSheet( "g_floor", -0.25, 8, true ) + Obj( "floor", "g_floor", "soot" );
+	return s;
+}
+
+//! B8 (DL-622 review): NO open sheet.  A dispersive glass ball inside a
+//! closed water box, camera outside: the HWSS hero enters the box and hands
+//! off at the ball with a closed-medium stack, which SeedCompanionLane
+//! seeds exactly as before DL-622 (the parent commit renders this row with
+//! the same means).  HWSS must match independent wavelengths.
+static std::string DispersiveInBoxScene( Integrator which )
+{
+	std::string s = "RISE ASCII SCENE 7\n" + Rasterizer( which ) + HeaderBody();
+	s += "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n";
+	s += "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n";
+	s += "pinhole_camera\n{\n\tlocation 0 2.6 1.2\n\tlookat 0 0.3 0\n\tup 0 1 0\n\tfov 35.0\n}\n\n";
+	s += Emitter( 4, 2, 4 );
+	s += "box_geometry\n{\n\tname g_tank\n\twidth 4\n\theight 2.25\n\tdepth 4\n}\n\n" + Obj( "tank", "g_tank", "glass133", "0 0.875 0" );
+	s += "sphere_geometry\n{\n\tname g_ball\n\tradius 0.35\n}\n\n" + Obj( "ball", "g_ball", "glass_disp", "0 0.6 0" );
+	s += HSheet( "g_recv", 0, 1, true ) + Obj( "recv", "g_recv", "matte" );
+	s += HSheet( "g_floor", -0.25, 8, true ) + Obj( "floor", "g_floor", "soot" );
+	return s;
+}
+
+struct Stat { double mean, sd; };
+
+static Stat Measure( const std::string& scene, unsigned int n )
+{
+	std::vector<double> v;
+	for( unsigned int i = 0; i < n; i++ ) v.push_back( Render( scene ) );
+	double m = 0;
+	for( double x : v ) m += x;
+	m /= double( n );
+	double s = 0;
+	for( double x : v ) s += ( x - m ) * ( x - m );
+	s = n > 1 ? std::sqrt( s / double( n - 1 ) ) : 0.0;
+	return Stat{ m, s };
+}
+
+static void RatioRow( const std::string& label, const Stat& a, const Stat& b, double tol )
+{
+	const double r = a.mean / b.mean;
+	const double sdr = r * std::sqrt( ( a.sd / a.mean ) * ( a.sd / a.mean ) + ( b.sd / b.mean ) * ( b.sd / b.mean ) );
+	char buf[400];
+	std::snprintf( buf, sizeof(buf), "%s: %.6f (sd %.6f) / %.6f (sd %.6f) = %.4f +/- %.4f (band %.3f)",
+		label.c_str(), a.mean, a.sd, b.mean, b.sd, r, sdr, tol );
+	std::cout << "  " << buf << std::endl;
+	Check( a.mean > 0 && b.mean > 0 && std::fabs( r - 1.0 ) <= tol, buf );
+}
+
+static std::string ReadFile( const char* path )
+{
+	std::ifstream in( path );
+	std::stringstream ss;
+	ss << in.rdbuf();
+	return ss.str();
+}
+
+static void PartB( unsigned int n )
+{
+	std::cout << "Part B: renders (n = " << n << ")" << std::endl;
+	const bool onlyB4 = std::getenv( "HALF_SPACE_ONLY_B4" ) != nullptr;
+	// HALF_SPACE_ONLY_NEW: only the DL-622 review rows (B5..B8).
+	const bool onlyNew = std::getenv( "HALF_SPACE_ONLY_NEW" ) != nullptr;
+
+	if( !onlyB4 && !onlyNew ) {
+	std::cout << "B1: camera under a lone glass pane, glass sphere below it" << std::endl;
+	const Stat pt = Measure( PaneScene( kPT, false ), n );
+	const Stat ptBox = Measure( PaneScene( kPT, true ), n );
+	RatioRow( "B1 pane PT / closed-box PT", pt, ptBox, 0.03 );
+	for( Integrator i : { kBDPT, kVCM } ) {
+		RatioRow( std::string( "B1 pane " ) + kName[i] + " / PT", Measure( PaneScene( i, false ), n ), pt, 0.03 );
+	}
+
+	std::cout << "B2: closed opaque room under a pane" << std::endl;
+	for( Integrator i : { kPT, kBDPT, kVCM } ) {
+		const Stat with = Measure( RoomScene( i, true ), n );
+		const Stat without = Measure( RoomScene( i, false ), n );
+		RatioRow( std::string( "B2 room with pane / without, " ) + kName[i], with, without, 0.02 );
+	}
+
+	}
+	if( !onlyNew ) {
+	std::cout << "B4: emitter 5e-5 above a closed room's floor, pane above the room" << std::endl;
+	for( Integrator i : { kPT, kBDPT } ) {
+		const Stat with = Measure( FlushRoomScene( i, true ), n );
+		const Stat without = Measure( FlushRoomScene( i, false ), n );
+		RatioRow( std::string( "B4 flush-emitter room with pane / without, " ) + kName[i], with, without, 0.02 );
+	}
+	}
+
+	if( onlyB4 ) {
+		return;
+	}
+
+	std::cout << "B5: unpushed exit off a sheet's prism, PT vs BDPT" << std::endl;
+	RatioRow( "B5 off-prism pane exit, PT / BDPT", Measure( OffPrismScene( kPT ), n ), Measure( OffPrismScene( kBDPT ), n ), 0.03 );
+
+	std::cout << "B6: camera under a rock under a pane" << std::endl;
+	{
+		const Stat pt = Measure( RockPaneScene( kPT, false ), n );
+		RatioRow( "B6 rock+pane PT / rock+closed-box PT", pt, Measure( RockPaneScene( kPT, true ), n ), 0.03 );
+		RatioRow( "B6 rock+pane BDPT / PT", Measure( RockPaneScene( kBDPT, false ), n ), pt, 0.03 );
+	}
+
+	std::cout << "B7: dispersive ball under a water sheet, HWSS vs independent wavelengths" << std::endl;
+	RatioRow( "B7 PT spectral hwss TRUE / FALSE", Measure( DispersiveUnderSheetScene( kPTSpectralHWSS ), n ),
+		Measure( DispersiveUnderSheetScene( kPTSpectral ), n ), 0.03 );
+
+	std::cout << "B8: dispersive ball in a closed water box (no open sheet), HWSS vs independent wavelengths" << std::endl;
+	RatioRow( "B8 PT spectral hwss TRUE / FALSE", Measure( DispersiveInBoxScene( kPTSpectralHWSS ), n ),
+		Measure( DispersiveInBoxScene( kPTSpectral ), n ), 0.03 );
+
+	if( onlyNew ) {
+		return;
+	}
+	std::cout << "B3: DL-619 fixture, PT+SMS / PT" << std::endl;
+	const std::string ptText = ReadFile( "tests/fixtures/dl382/PT_closed_below_ldn.RISEscene" );
+	const std::string smsText = ReadFile( "tests/fixtures/dl382/SMS_closed_below_ldn.RISEscene" );
+	Check( !ptText.empty() && !smsText.empty(), "B3 fixtures readable (run from the repository root)" );
+	if( !ptText.empty() && !smsText.empty() ) {
+		RatioRow( "B3 closed 2.2 box + down-facing 1.5 sheet, PT+SMS / PT", Measure( smsText, n ), Measure( ptText, n ), 0.03 );
+	}
+}
+
+int main( int argc, char** argv )
+{
+	// One worker: a multithreaded render seeds workers from libc rand() in
+	// thread-start order and is not reproducible run to run.
+	if( !std::getenv( "RISE_OPTIONS_FILE" ) ) {
+		const std::string optStr = TempDir() + "/half_space_options_" + std::to_string( static_cast<int>( ::getpid() ) ) + ".txt";
+		std::snprintf( g_optPath, sizeof(g_optPath), "%s", optStr.c_str() );
+		std::atexit( []() { std::remove( g_optPath ); } );
+		std::ofstream opt( g_optPath );
+		opt << "force_number_of_threads 1\n";
+		opt.close();
+#ifdef _WIN32
+		_putenv_s( "RISE_OPTIONS_FILE", g_optPath );
+#else
+		setenv( "RISE_OPTIONS_FILE", g_optPath, 1 );
+#endif
+	}
+	bool unitOnly = ( std::getenv( "HALF_SPACE_UNIT_ONLY" ) != nullptr );
+	for( int a = 1; a < argc; ++a ) {
+		if( std::string( argv[a] ) == "--unit-only" ) {
+			unitOnly = true;
+		} else {
+			const long v = std::strtol( argv[a], nullptr, 10 );
+			if( v > 0 ) g_seedBase = (unsigned int)v;
+		}
+	}
+	unsigned int n = 4;
+	if( const char* s = std::getenv( "HALF_SPACE_N" ) ) {
+		const long v = std::strtol( s, nullptr, 10 );
+		if( v > 0 ) n = (unsigned int)v;
+	}
+	std::cout << "OpenSheetHalfSpaceSeedingTest (DL-618 / DL-619 / DL-626)   seed base = " << g_seedBase << std::endl;
+	PartA();
+	if( !unitOnly ) {
+		PartB( n );
+	}
+	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
+	return failCount == 0 ? 0 : 1;
+}

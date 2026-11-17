@@ -401,7 +401,7 @@ static void TestSnapshotPreservesCSGType()
 	const bool csgMade = pJob->AddCSGObject(
 		"csg", "operA", "operB", /*op*/ 0,
 		/*material*/ nullptr, /*modifier*/ nullptr, /*shader*/ nullptr,
-		nilRMap, csgPos, orient, true, true );
+		nilRMap, csgPos, orient, true, true, /*bAllowTransformedOperands*/ false );
 	Check( csgMade, "[csg] AddCSGObject succeeded" );
 
 	IObjectManager* objs = pJob->GetObjects();
@@ -453,6 +453,48 @@ static void TestSnapshotPreservesCSGType()
 		       "[csg] cloned CSG bbox centered at the captured transform (y~3)" );
 	}
 
+	// --- ASSERT: the STANDALONE clones of the operands are not renderable. ---
+	// CreateSnapshot clones every manager item BY NAME, so `operA` / `operB` are
+	// each cloned twice: once underneath the composite's own clone (correctly
+	// hidden -- the clone's AssignObjects consumes them) and once on their own
+	// account, right here.  87 step 3b made "is an operand" a CONSUMPTION COUNT
+	// rather than a cleared visibility flag, and `CopySnapshotStateInto`
+	// deliberately does not copy that count -- so a standalone clone that copied
+	// the BASE flag came out WORLD-VISIBLE: a second, renderable copy of a shape
+	// that has no standalone existence (zero such clones before 3b, one per
+	// operand after).  The helper copies the COMPOSED `IsWorldVisible()` instead.
+	//
+	// EXPERIMENTAL PATH, no production caller (see the banner on
+	// Scene::CreateSnapshot) -- pinned anyway because the whole point of that
+	// banner is that the path is retained for a future isolated-render use, and
+	// this defect is exactly the kind that would ship with it.
+	{
+		const Object* cloneOperA = 0;
+		const Object* cloneOperB = 0;
+		for( size_t i = 0; i < snap->GetObjectCount(); ++i ) {
+			if( strcmp( snap->GetObjectName( i ).c_str(), "operA" ) == 0 ) cloneOperA = snap->GetClonedObject( i );
+			if( strcmp( snap->GetObjectName( i ).c_str(), "operB" ) == 0 ) cloneOperB = snap->GetClonedObject( i );
+		}
+		// (control) the standalone clones really are made -- otherwise the two
+		// assertions below would be satisfied by their absence.
+		Check( cloneOperA != nullptr && cloneOperB != nullptr,
+		       "[csg] (control) the snapshot carries a STANDALONE clone of each operand (cloned by name)" );
+		// (control) the LIVE operands are hidden, so the clones have something
+		// truthful to copy.
+		Check( objs->GetItem( "operA" ) && !static_cast<const IObject*>( objs->GetItem( "operA" ) )->IsWorldVisible()
+		    && objs->GetItem( "operB" ) && !static_cast<const IObject*>( objs->GetItem( "operB" ) )->IsWorldVisible(),
+		       "[csg] (control) the LIVE operands are not world-visible, being consumed by `csg`" );
+		// (control) visibility is not simply lost by cloning -- the composite's
+		// own clone is visible, so a blanket-hidden snapshot would fail here.
+		Check( clonedCsg && clonedCsg->IsWorldVisible(),
+		       "[csg] (control) the composite's OWN clone is world-visible, so the clone path does not blanket-hide" );
+		Check( cloneOperA && !cloneOperA->IsWorldVisible(),
+		       "[csg] MONEY: the standalone clone of `operA` is NOT world-visible -- a consumed operand does not "
+		       "become a renderable standalone shape by being snapshotted" );
+		Check( cloneOperB && !cloneOperB->IsWorldVisible(),
+		       "[csg] MONEY: ... and neither does `operB`" );
+	}
+
 	safe_release( snap );
 	pJob->release();
 }
@@ -486,7 +528,7 @@ static void TestSnapshotLightIsImmutable()
 	// off-origin so the transform-derived position must come across too.
 	const double srgb[3] = { 0.20, 0.40, 0.80 };
 	const double pos[3]  = { 3, 4, 5 };
-	pJob->AddPointOmniLight( "key", /*power*/ 7.0, srgb, pos, /*shootPhotons*/ false );
+	pJob->AddPointOmniLight( "key", /*power*/ 7.0, srgb, "sRGB", pos, /*shootPhotons*/ false );
 
 	ILightManager* lights = const_cast<ILightManager*>( pScene->GetLights() );
 	Check( lights != nullptr && lights->getItemCount() == 1,
@@ -571,7 +613,7 @@ static void TestSnapshotLightIsImmutable()
 	const double spotSrgb[3] = { 0.9, 0.8, 0.7 };
 	const double spotFoc[3]  = { 0, 0, 0 };
 	const double spotPos[3]  = { 0, 10, 0 };
-	pJob->AddPointSpotLight( "spot", /*power*/ 5.0, spotSrgb, spotFoc,
+	pJob->AddPointSpotLight( "spot", /*power*/ 5.0, spotSrgb, "sRGB", spotFoc,
 		/*inner*/ 0.2, /*outer*/ 0.5, spotPos, /*shootPhotons*/ false );
 
 	ILightPriv* liveSpot = lights->GetItem( "spot" );
@@ -712,7 +754,7 @@ static void TestSnapshotIsRenderComplete()
 	// --- A light. ---
 	const double srgb[3] = { 1.0, 0.9, 0.7 };
 	const double dir[3]  = { 0, 1, 0 };
-	pJob->AddDirectionalLight( "sun", /*power*/ 3.0, srgb, dir );
+	pJob->AddDirectionalLight( "sun", /*power*/ 3.0, srgb, "sRGB", dir );
 
 	// --- A film (replace the qHD default with a distinctive size). ---
 	IFilm* pFilm = nullptr;
@@ -857,9 +899,9 @@ static void MeasureSnapshotCostLargeScene()
 	// render-faithful capture, not just objects.
 	const double lc[3] = { 1, 1, 1 };
 	const double lp[3] = { 5, 5, 5 };
-	pJob->AddPointOmniLight( "L0", 4.0, lc, lp, false );
+	pJob->AddPointOmniLight( "L0", 4.0, lc, "Rec709RGB_Linear", lp, false );
 	const double ld[3] = { 0, 1, 0 };
-	pJob->AddDirectionalLight( "L1", 2.0, lc, ld );
+	pJob->AddDirectionalLight( "L1", 2.0, lc, "Rec709RGB_Linear", ld );
 
 	ICamera* pCam = nullptr;
 	if( RISE_API_CreatePinholeCamera( &pCam,

@@ -1,5 +1,5 @@
 # Observe Modes: Choosing How to Look at the Scene
-> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, and a production render each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
+> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, render{isolate:} (with or without target:), render{zoom:}, a production render, and (once you have called imagine_scene) that same production render shown beneath your imagined scene target -- each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
 
 There are exactly FOUR FAMILIES of call for looking at the scene
 through the agent surface.  They are not interchangeable, and three of
@@ -31,8 +31,10 @@ table, and "Transport modes" for all four additions.
 | Intent | Call | Cost | Trust it for | Do NOT trust it for |
 |---|---|---|---|---|
 | "What is the user seeing right now?" | `read_viewport {maxEdge?}` | Free -- copies the GUI's last interactive frame, NEVER renders | The exact live frame, whatever pipeline produced it, PLUS `paneSet` (N-up introspection: layout, primary, per-pane mode/vantage, and `sourcePane` = WHICH pane the PNG holds).  In a multi-pane layout ALWAYS check `sourcePane` first -- the image is the last-RENDERED pane, not necessarily the primary or the pane you care about.  The pane set is read-only by design; you cannot rearrange the user's panes | Anything when `available:false` (the full table is under "Hard warnings" item 3).  RETRIABLE, clears on its own: `editor_transaction_in_progress`, `render_in_progress`, `editor_interaction_finalize_failed`.  RESOLVES but not by retrying: `no_frame_yet` (viewport exists but hasn't drawn yet).  PERMANENT: `no_controller` (headless session -- there is no viewport and never will be), `editor_shutting_down`, `editor_interaction_unrecoverable` (a latched editor failure that never clears).  ROUTE-PERMANENT: `output_provenance_unavailable` (active fire media require a primary-plus-sidecar chain unavailable from viewport or agent render; use a provenance-capable file output or tell the user).  Falling back to `render` fixes `no_controller`/`no_frame_yet`; for the OTHER FOUR refusal reasons -- `editor_transaction_in_progress`, `editor_interaction_finalize_failed`, `editor_shutting_down`, `editor_interaction_unrecoverable` -- `render` hits the SAME gate and is refused too.  `render_in_progress` is the one split case, and even there `render` is a POOR fallback: a plain `render {}` BLOCKS up to 30 s on the render slot and only succeeds if the occupant finishes inside that window (the user's own production render, which shares that slot, usually does not), and it is refused with NO wait when a direct parked render holds the gate; a render with a `width`+`height` or `camera`/`view` override is always refused immediately.  Retry the FREE `read_viewport` instead of paying that block |
-| "Is this object roughly where I want it?" | `render {quality:"draft", width, height, camera?}` | Cheap -- a wholly separate fixed studio-preview pipeline, samples capped at 4 regardless of what you ask for | Geometry, silhouette, composition, camera framing; relative depth/placement (ESPECIALLY with a second `camera` angle -- one view alone can't tell front-of/behind/inside) | Materials, lighting, exposure, or colour -- the preview shader IGNORES the scene's authored materials and lights entirely |
+| "Is this object roughly where I want it?" | `render {quality:"draft", width, height, camera?}` | Cheap -- a wholly separate fixed studio-preview pipeline, samples capped at 4 regardless of what you ask for | Geometry, silhouette, composition, camera framing; relative depth/placement (ESPECIALLY with a second `camera` angle -- one view alone can't tell front-of/behind/inside); coarse material colour/roughness (the preview shader DOES shade each hit with the material's own BSDF, including procedural/expression painters and relief/bump/normal modifiers, e.g. one querying `proximity`/`occlusion`) | True lighting, exposure, or colour balance -- the preview shader IGNORES the scene's authored LIGHTS entirely (a fixed synthetic studio rig stands in, no shadows, no GI); it also does not show emission, transmission/refraction, or subsurface scattering |
 | "Which object is where? / Find object X on screen." | `render {mode:"objectmap"}` (survey, whole-frame legend) or `query_object_at {x,y}` (one answer) | About one identity render -- fixed 1 spp, no MC noise, ignores `quality`/`samples` entirely | Exact identity: byte-exact `colorHex` <-> `name` legend match, including CSG composites (legend carries the ROOT only, never the hidden operands) and instance arrays (`grid[i,j]`) | The colours as APPEARANCE -- they are arbitrary per-render identity ids, not materials. Read the objectmap PNG at NATIVE size only (omit `maxEdge` -- a box-downscale blends flat ids and breaks the match) |
+| "Is THIS PART's shape right?" (a small, dark, or occluded object you just built) | `render {isolate:"<object>", mode:"normals"}` (or `"facets"`) | One render of that mode, at the same fidelity it always costs | The part's silhouette and proportions, auto-framed to fill the frame instead of the dozen pixels it occupies in the wide shot; the result's `isolate` block reports its real world bbox and longest edge | The part IN CONTEXT -- isolate deletes the rest of the scene, so scale relative to neighbours, occlusion, and any lighting cast BY another object are all gone (a scene lit only by other objects' emissive materials isolates dark) |
+| "Does THIS object's detail read at the size it has in my scene?" (fur, weave, grain, small parts -- an object that is only a few dozen pixels wide in the full frame) | `render {zoom:"<object>"}` | One render at the fidelity you ask for | The object CLOSE UP from your own camera's position, with the field of view narrowed onto it and everything else (neighbours, occlusion, your lights) left in place; the result's `zoom` block reports the fov used and the object's coverage | A different viewpoint -- the camera keeps its position, so a face turned away from it stays turned away (use `isolate` or a `camera` for another angle); cannot combine with `isolate`, `view` or `camera` |
 | "Does it actually look right -- and what geometry/material cues explain it?" | `render {imageMaxEdge:N}` (no `quality`, i.e. production) when appearance alone is enough -- the PNG rides back in that ONE call; add a following `read_image {representation:"perception"}` only when you want the atlas | The real render cost; perception reuses that same render | Beauty is the honest appearance; the atlas adds diffuse albedo, world orientation, and raw primary-hit depth in one bounded image | Do not treat albedo as lit colour, normal RGB as colour, or auto-windowed depth brightness as an absolute cross-frame scale |
 | "Verify after an edit." | The cheap loop first (draft and/or objectmap/query at small dims), production LAST once confident | Escalating -- cheap checks first, one production pass at the end | Catching gross breakage (wrong object, black frame, object moved to the wrong side) cheaply, repeatedly | Calling it "done" off a cheap check alone -- ship the final judgment on one production render |
 | "I am BUILDING a scene from scratch." | One cheap look after EACH object group you place -- `render {quality:"draft", width:192, height:192}` or `render {imageMaxEdge:192}` -- not one look at the end | Cheap, and paid once per group rather than once per chunk | Keeping placement honest while a mistake is still one edit to fix.  Four looks across a six-object scene is too few; blind construction is the failure mode, not over-rendering | Skipping the looks to save turns -- batching chunks into one `insert_chunks` call is where round-trips are saved, NOT here |
@@ -109,9 +111,10 @@ Recipes:
   actually resolve to?"** -- `render {mode:"deep_reflect"}`. Deep
   bounce depth (24) and a real sample count (16 spp) let specular
   chains (glass-through-glass, metal-on-metal, a caustic-adjacent
-  reflection) actually converge, unlike a draft/false-colour render
-  which either ignores materials entirely or only resolves the first
-  hit.
+  reflection) actually converge, unlike a false-colour render (which
+  ignores materials entirely) or a draft render (which shades only the
+  primary hit -- no recursion, so it cannot show a reflection/refraction
+  chain at all).
 - **"Is the LIGHTING right, independent of indirect bounce / GI?"** --
   `render {mode:"direct"}`. Direct-only transport (no indirect bounces)
   isolates whether light placement/power/colour looks right before
@@ -313,6 +316,173 @@ Recipe: **"Which light is casting that shadow / that colour cast?"**
 `light:"filllight"`, ...) and compare; the offending light is the one
 whose solo render reproduces the shadow/cast you're chasing.
 
+## The `isolate` param: looking at ONE part on its own
+
+`isolate` is an optional string param on `render` naming ONE
+`standard_object`. That object is rendered alone -- every other object
+is hidden for that single render (no camera, bounce, or shadow ray
+reaches it) -- and the camera is auto-framed on its bounding box, a
+three-quarter view filling most of the frame:
+
+```json
+{"method": "render", "params": {"isolate": "dragon_wing", "mode": "normals"}}
+```
+
+It exists because a part is often too small, too dark, or too occluded
+in the full frame to evaluate: a wing that occupies twenty dim pixels
+in a wide night shot carries no information about its shape. Isolating
+it makes the silhouette and proportions readable, which is what makes
+a form defect fixable rather than invisible.
+
+`mode:"normals"` and `mode:"facets"` read FORM best under `isolate` --
+surface direction and raw tessellation, with no material or lighting
+in the read. `mode:"beauty"` composes too; note that a hidden emissive
+OBJECT also stops acting as a light, so a scene lit only by other
+objects' emissive materials isolates dark. Explicit light chunks and
+the environment are unaffected. `isolate` composes with every `mode`
+and with `quality:"draft"`; it is never silently ignored.
+
+A `camera` or `view` you pass yourself WINS -- no auto-framing then.
+The result's `isolate` object reports what happened: `object`,
+`bboxMin`/`bboxMax`, `longestEdge`, `autoFramed`, and `bboxCoverage`
+(the fraction of the frame the object's projected bounding box covers
+-- an upper bound on its silhouette; for an exact per-pixel count use
+`mode:"objectmap"` and read the legend's `pixelCount`). An unknown
+name, a generator name covering several instances, a CSG operand, or
+an object with a degenerate/unbounded bounding box FAILS the render
+(`ok:false`) with the available names in `message`, the same contract
+`view` and `light` use. Nothing is written to the document, the
+viewport, or the user's camera.
+
+## The `zoom` param: a close look from the scene camera
+
+`zoom` is an optional string param on `render` naming ONE object. The
+camera keeps its LOCATION, aims at that object, and narrows its field
+of view until the object fills about 85% of the frame (never below 2
+degrees, never wider than the scene's own fov; an object that already
+fills the frame keeps the scene fov and the result says so). Nothing is
+hidden: every other object, every light and the environment stay in
+place, so the frame is a crop of what a viewer of this scene would see
+of that object, occlusion included, at a size where its material and
+detail can be judged.
+
+```json
+{"method": "render", "params": {"zoom": "cat", "quality": "production"}}
+```
+
+It cannot be combined with `isolate`, `view` or `camera` (a clean
+error), and it needs a pinhole active camera. It FAILS (`ok:false`, no
+`zoom` block) when the object is not in view of the scene camera (behind
+it, or its surface centre more than about 10% past the frame edge --
+use `isolate` or a `camera` for those), when any part of its surface lies
+on or behind the plane through the camera (the camera is inside or beside
+it, e.g. a floor or room around the camera), or when its extent is
+degenerate or unbounded. The zoom keeps the scene camera's own roll. The result's `zoom`
+object reports `object`, `fovDegrees`, `sceneFovDegrees`,
+`keptSceneFov`, `coverage` (the projected surface bounds' share of the
+frame -- an upper bound on the silhouette) and `fitBasis`. When a
+build-plan element covers under about 1% of a full-frame production
+render, the scene inventory in that render's result says so and names a
+`zoom` target.
+
+## `finish_element`: an isolate look you did not ask for
+
+`finish_element` closes the element you are working on and, along with
+the facts of what was recorded against it, returns an ISOLATE RENDER of
+it -- the object recorded against that element, alone in the frame and
+auto-framed, at the same agent-surface size cap as any other render.
+When several objects were recorded against the element, the one with
+the most authored parts (an `sdf_geometry`'s `part` lines, say) is
+rendered, ties going to the larger bounding box and then the name; the
+message says which, and finishing again with no change to the shape shows
+the next one. When none was recorded, there is no image and the message
+says that instead. It is the
+same machinery `render {isolate}` uses, so the two looks are directly
+comparable. Nothing is required of an element before you finish it and
+nothing about the render is scored.
+
+## The `target` param: the isolated look, measured against your sketch
+
+`target` is an optional string param on `render` naming an ELEMENT in
+the build plan filed with `file_build_plan`. It requires `isolate` --
+the join between a plan element and a scene object is made in this
+call, by you. With no `camera`/`view` of your own the render uses the
+axis-aligned vantage the sketch declared (front looks along -Z, side
+along -X, top straight down); your own camera still wins, and the
+result's `target.vantage` then reads `caller-camera`.
+
+```json
+{"method": "render", "params": {"isolate": "dragon_wing", "target": "wing"}}
+```
+
+The comparison runs one extra internal identity render at the same
+pose and dims, so the silhouette it measures is exact and does not
+depend on `mode`, `quality`, lighting, or materials. The result gains
+a `target` object: `element`, `view`, `vantage`, `iou`, `mirroredIou`,
+`sketchAreaFraction`, `silhouetteAreaFraction`, `sketchAspect`,
+`silhouetteAspect`, `thinnestAxisRatio`, and the composite's dims.
+`iou` is intersection-over-union of the two silhouettes after both are
+cropped to their own bounding box and fitted onto the same 256x256
+canvas, so it measures shape alone -- not position, not size;
+`mirroredIou` is the same number with the render flipped left-to-right.
+`sketchAreaFraction` and `silhouetteAreaFraction` are each mask's
+filled fraction **of that shared 256x256 canvas**, not of the frame --
+`isolate.bboxCoverage`, sitting right next to them in the same result,
+is the frame measurement, and the two are not comparable.
+`thinnestAxisRatio` is the object's smallest 3D bounding-box extent
+over its largest. Two of these keys are conditional and are OMITTED
+rather than sent as a measured-looking zero: `silhouetteAspect` when
+no pixel of the object landed in the frame, and `thinnestAxisRatio`
+when the object's bounding box is unusable. Nothing is gated on any of
+these numbers.
+
+The image returned with the call is a `[sketch | silhouette | overlay]`
+strip: your sketch, the rendered silhouette, and both together with
+sketch-only red, silhouette-only cyan, overlap white, and neither
+black. It replaces the rendered frame as this call's image, with or
+without `imageMaxEdge`. An unknown part name, or no filed plan, FAILS
+the render (`ok:false`) with the filed part names in `message`.
+
+## The imagined scene target: `imagine_scene`, then every full render
+
+`imagine_scene {description}` asks your provider to generate one image
+from your own written description of the finished scene, returns it to
+you, and holds it as the session's scene target. Your words are the
+SUBJECT; the host asks for the picture in a simple, flat-shaded
+3D-render style, so what comes back is something this renderer can
+actually approach rather than concept art it cannot.
+
+From then on every FULL-FRAME PRODUCTION render -- not
+`quality:"draft"`, not any `mode:` render, not an `isolate` render --
+carries a `sceneTarget` block (`imagined`, `targetWidth`,
+`targetHeight`, `composite`, and the composite's dims), and any such
+render you pass `imageMaxEdge` to shows that target ABOVE your render
+in one picture, separated by a grey rule, in place of the rendered
+frame on its own. The render half is exactly the size the frame alone
+would have been, so looking at the target costs you no resolution. The
+three exclusions are honesty, not caution: draft ignores the scene's own
+lights (a fixed studio rig stands in, with no shadows/GI, though it
+does shade with each material's own BSDF), a `mode:` render paints
+identity or data colours
+rather than appearance, and an isolate render is a look at one part
+rather than at the scene the target describes.
+
+**There is no score, deliberately.** No RMSE, no similarity number, no
+per-channel means -- comparing the two pictures is your job, not a
+metric's. An earlier version of this mechanism did report an RMSE over
+the full frame; because that number is dominated by large flat areas,
+the only way to move it is global exposure, emissive scale and light
+power, so it rewarded cranking brightness and never rewarded a better
+shape. Look at the two images and ask what is structurally different:
+which forms are missing, which are the wrong shape, what is in the
+wrong place. Nothing is gated on the target and no reproduction is
+expected -- it is a reminder of what you set out to make, not a
+specification. `read_image` still returns this render's own frame, so
+the composite costs you nothing you cannot get back. Calling
+`imagine_scene` again replaces the target. On a provider without image
+generation the call returns `ok:false` with a plain statement and
+nothing else changes.
+
 ## Escalation ladder (cost, cheapest first)
 
 1. **`read_viewport`** -- free, no render at all; only works when a live
@@ -358,10 +528,18 @@ mention (viewport, objectmap/query).
 ## Hard warnings
 
 1. **`quality:"draft"` renders through a wholly separate, fixed
-   studio-preview pipeline that IGNORES the scene's authored materials
-   and lighting entirely.** Geometry, composition, and camera framing
-   are representative; materials, lighting, exposure, and colour are
-   NOT. NEVER judge those from a draft image. Check the result's
+   studio-preview pipeline that IGNORES the scene's authored LIGHTING
+   entirely** (a fixed synthetic studio rig of three hardcoded lights
+   stands in for it, with no shadows and no GI) **but DOES shade each hit
+   with the material's own BSDF** (colour/roughness response under that
+   fixed rig, not just albedo), so an expression-driven
+   painter (e.g. one querying `proximity`/`occlusion`) still runs and any
+   relief/bump/normal modifier still applies. It does NOT show emission,
+   transmission/refraction, or subsurface scattering.
+   Geometry, composition, and camera framing
+   are representative; true lighting, exposure, and colour balance are
+   NOT. NEVER judge lighting/exposure/shadows/GI from a draft image --
+   coarse material colour/roughness CAN be judged from it. Check the result's
    `renderMode` field ("production"/"draft"/"objectmap"/"normals"/
    "depth"/"facets"/"wireframe") to see which pipeline actually ran --
    `integrator` always names the head's active PRODUCTION rasterizer

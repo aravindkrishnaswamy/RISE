@@ -114,7 +114,7 @@ static Job* MakeSamplerScene()
 	// LightSampler::GetPositionalLightCount / GetPositionalLightExitance.
 	const double lc[3] = { 1.0, 1.0, 1.0 };
 	const double lp[3] = { 0, 10, 0 };
-	pJob->AddPointOmniLight( "key", /*power*/ 5.0, lc, lp, /*shootPhotons*/ false );
+	pJob->AddPointOmniLight( "key", /*power*/ 5.0, lc, "Rec709RGB_Linear", lp, /*shootPhotons*/ false );
 
 	// A "global" shader so RISE_API_CreateRayCaster has a default shader.
 	// DefaultDirectLighting is created by Job::InitializeContainers.
@@ -198,7 +198,7 @@ static void TestRestoreRebuildsSampler()
 	{
 		const double lc2[3] = { 0.5, 0.5, 0.5 };
 		const double lp2[3] = { 5, 5, 5 };
-		pJob->AddPointOmniLight( "key2", /*power*/ 7.0, lc2, lp2, false );
+		pJob->AddPointOmniLight( "key2", /*power*/ 7.0, lc2, "Rec709RGB_Linear", lp2, false );
 		// AddPointOmniLight routes through Job (not the editor path) — bump
 		// the generation as a structural light-list mutation must.
 		pScene->BumpLightTopologyGeneration();
@@ -421,7 +421,7 @@ static void TestJobAddLightBumpsGeneration()
 	caster->AttachScene( pScene );
 	const unsigned int rbBefore = RayCaster::GetSamplerRebuildCount();
 	const double lc[3]={1,1,1}, lp[3]={3,3,3};
-	Check( pJob->AddPointOmniLight("key2",7.0,lc,lp,false), "[p2a2] AddPointOmniLight applied" );
+	Check( pJob->AddPointOmniLight("key2",7.0,lc,"Rec709RGB_Linear",lp,false), "[p2a2] AddPointOmniLight applied" );
 	caster->AttachScene( pScene );
 	Check( RayCaster::GetSamplerRebuildCount() == rbBefore+1,
 	       "[p2a2] sampler rebuilt after Job::AddPointOmniLight (light set changed) (P2a ext)" );
@@ -437,7 +437,7 @@ static void TestJobRemoveLightBumpsGeneration()
 	IShader* pShader = pJob->GetShaders() ? pJob->GetShaders()->GetItem("global") : nullptr;
 	if( !pShader ) { Check( false, "[h3rm] shader" ); pJob->release(); return; }
 	const double lc[3]={1,1,1}, lp[3]={3,3,3};
-	pJob->AddPointOmniLight("key2",7.0,lc,lp,false);   // 2nd light so one remains after removal
+	pJob->AddPointOmniLight("key2",7.0,lc,"Rec709RGB_Linear",lp,false);   // 2nd light so one remains after removal
 	IRayCaster* caster=nullptr; RISE_API_CreateRayCaster(&caster,false,10,*pShader,true);
 	if( !caster ) { Check( false, "[h3rm] caster" ); pJob->release(); return; }
 	caster->AttachScene( pScene );

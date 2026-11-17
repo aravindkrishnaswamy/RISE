@@ -297,12 +297,6 @@ final class ChatViewModel: ObservableObject {
     /// the loop's own counter is cleared by Reset()/SetProvider() too.
     private var lastReportedCompactedEntryCount: UInt = 0
 
-    /// Highest `driverNoteCount` already reported as a `.notice` row — the
-    /// same one-event-one-notice watermark as above, for the notes the LOOP
-    /// injects into the conversation (today: the blind-edit nudge).  Reset
-    /// alongside `lastReportedCompactedEntryCount`; the loop's own counter
-    /// is cleared by Reset()/SetProvider() too.
-    private var lastReportedDriverNoteCount: UInt = 0
     @Published var inputText: String = ""
     /// Images queued to go out with the NEXT send() (Model-B F5 chat
     /// image attachments) — populated by attachImageFile(at:), shown as
@@ -589,6 +583,15 @@ final class ChatViewModel: ObservableObject {
                 summary = "insert: \(firstLine)"
             case "remove_chunk":
                 summary = entityKind.isEmpty ? "remove: \(target)" : "remove: \(target) (\(entityKind))"
+            case "remove_chunks":
+                // R1a (2026-08-09): ONE proposal for a WHOLE batch remove — `target`
+                // carries the '\n'-separated target-name list (see
+                // SceneEditController::AgentProposal's doc).  Render the count plus the
+                // names so an Owner approving the card sees exactly what it deletes.
+                let names = target.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+                summary = names.count == 1
+                    ? "remove: \(names[0])"
+                    : "remove \(names.count) chunks: \(names.joined(separator: ", "))"
             default:
                 summary = "\(target).\(param) = \(value)"
             }
@@ -723,6 +726,7 @@ final class ChatViewModel: ObservableObject {
     var chatRenderWillSubmit: () -> Void = {}
 
     private let chatBridge = RISEAgentChatBridge()
+
     /// The per-scene tool executor.  WEAK: RenderViewModel owns the
     /// viewport bridge; on clearScene it calls `sceneClosed()` (which
     /// also nils this) BEFORE shutting the bridge down, so the driver
@@ -973,11 +977,13 @@ final class ChatViewModel: ObservableObject {
         // Review-round P2: the session record's scene-identity fields were
         // shipped dead (""/-1) -- the scene PATH is the trajectory<->document
         // correlator the eval harness needs, and it is available right here.
-        // headVersion stays best-effort -1 on the GUI (no cheap accessor at
-        // attach time; the headless runner populates it precisely).
+        // headVersion is now populated too (durable-document-snapshots work):
+        // -agentHeadVersionRevision is a cheap accessor (RISEViewportBridge.h),
+        // closing the "no cheap accessor at attach time" gap this comment used
+        // to note; -1 only when there is no live viewport bridge yet.
         chatBridge.startTrajectory(directory: trajectoryDirectory,
                                    scenePath: currentScenePath,
-                                   headVersion: -1,
+                                   headVersion: viewportBridge?.agentHeadVersionRevision() ?? -1,
                                    enabled: recordTrajectories)
     }
 
@@ -1073,6 +1079,29 @@ final class ChatViewModel: ObservableObject {
         // (not `.propose`) is the honest default.
         let storedAutonomyRaw = UserDefaults.standard.object(forKey: Self.autonomyLevelKey) as? Int
         autonomyLevel = storedAutonomyRaw.flatMap(RISEAgentAutonomyLevel.init(rawValue:)) ?? .apply
+
+    }
+
+    /// Durable document snapshots: write the trajectory's final
+    /// `session_end` snapshot + summary under an honest "app_quit"
+    /// status.  Called by RenderViewModel's own
+    /// `NSApplication.willTerminateNotification` observer -- RenderViewModel
+    /// owns render lifecycle and must request cancellation of any
+    /// in-flight production render BEFORE this runs (see that
+    /// observer's doc): the coherent read this triggers (through
+    /// `AgentSession::ReadDocumentSnapshot`) BLOCKS while the render
+    /// thread holds the controller mutex, so calling this before the
+    /// render is at least cooperatively cancelling stalls app
+    /// termination for the render's full remaining duration.  The
+    /// viewport bridge/controller are still alive at willTerminate
+    /// (nothing tears them down on quit today), so the provider
+    /// installed in `sceneOpened` still works.  Idempotent:
+    /// FinishTrajectory's underlying CloseTrajectorySession guards a
+    /// second close (`mSessionEmitted`), so a normal `sceneClosed()`
+    /// reset racing this (it cannot in practice -- willTerminate is the
+    /// last thing that runs) would still be a harmless no-op.
+    func appWillTerminate() {
+        chatBridge.finishTrajectory(status: "app_quit")
     }
 
     // MARK: Scene lifecycle (driven by RenderViewModel)
@@ -1108,7 +1137,6 @@ final class ChatViewModel: ObservableObject {
         chatBridge.reset()
         transcript = []
         lastReportedCompactedEntryCount = 0
-        lastReportedDriverNoteCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         pendingAttachments = []
@@ -1143,6 +1171,28 @@ final class ChatViewModel: ObservableObject {
                     + "RISE's scene conventions. This is an installation problem, not a "
                     + "normal state.",
                 detailText: Self.skillIndexNote(fromRpcResponse: indexResponse)))
+        }
+
+        // Durable document snapshots (product gap: a scene built entirely
+        // inside a live agent session, never Save As'd, was otherwise
+        // unrecoverable on quit/crash).  Reinstall on every scene open so
+        // the closure always resolves against THIS scene's viewport bridge
+        // -- `[weak self]` plus a fresh read of `self.viewportBridge` at
+        // CALL time (not capture time) is what makes sceneClosed()'s
+        // close-time snapshot above find the right (still-alive) bridge.
+        // AGENT RPC THREAD DISCIPLINE: fired from wherever
+        // AgentChatLoop::SetDocumentSnapshotProvider's doc says the C++
+        // core calls its provider -- the agent RPC thread, in practice
+        // the same main/UI thread this whole bridge is single-threaded on
+        // (see the bridge headers' THREADING notes), so no dispatch hop
+        // is needed here.
+        chatBridge.setDocumentSnapshotProvider { [weak self] in
+            guard let vb = self?.viewportBridge else { return nil }
+            var uuid: UInt64 = 0
+            var revision: UInt64 = 0
+            guard let text = vb.agentReadDocumentSnapshotText(uuid: &uuid, revision: &revision)
+            else { return nil }
+            return RISEAgentChatDocumentSnapshot(text: text, headUuid: uuid, headRevision: revision)
         }
 
         // Eval-harness E1: a freshly-opened scene starts a NEW trajectory
@@ -1181,7 +1231,14 @@ final class ChatViewModel: ObservableObject {
         // time the panel re-renders for the (about to be gone) scene.
         stopExternalHosting()
         sceneGeneration += 1
-        viewportBridge = nil
+        // Durable document snapshots: `chatBridge.reset()` below closes the
+        // trajectory session and, per SetDocumentSnapshotProvider's policy,
+        // takes one final "session_end" snapshot through the closure set in
+        // sceneOpened -- which reads `self.viewportBridge`.  It MUST still
+        // resolve to the (still-alive; RenderViewModel calls sceneClosed()
+        // before shutdown -- see this method's doc) outgoing bridge, so
+        // `viewportBridge` is cleared AFTER reset(), not before.  Nilling it
+        // early used to make the close-time snapshot silently find nothing.
         currentScenePath = ""
         chatBridge.reset()
         // Eval-harness E1: reset() closed the session ("reset" summary to
@@ -1189,9 +1246,9 @@ final class ChatViewModel: ObservableObject {
         // next sceneOpened starts a fresh one).
         chatBridge.startTrajectory(directory: trajectoryDirectory,
                                    scenePath: "", headVersion: -1, enabled: false)
+        viewportBridge = nil
         transcript = []
         lastReportedCompactedEntryCount = 0
-        lastReportedDriverNoteCount = 0
         inputText = ""
         clearErrorAffordances()
         consecutiveHttp400s = 0
@@ -1254,7 +1311,6 @@ final class ChatViewModel: ObservableObject {
         modelId = chatBridge.modelId
         transcript = []
         lastReportedCompactedEntryCount = 0
-        lastReportedDriverNoteCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         // Eval-harness E1: setProvider closed the old session (a
@@ -1817,7 +1873,6 @@ final class ChatViewModel: ObservableObject {
         chatBridge.reset()
         transcript = []
         lastReportedCompactedEntryCount = 0
-        lastReportedDriverNoteCount = 0
         clearErrorAffordances()
         consecutiveHttp400s = 0
         transcript.append(Entry(kind: .notice, text: "Conversation reset."))
@@ -2094,6 +2149,23 @@ final class ChatViewModel: ObservableObject {
     /// promptly rather than merely safely-but-slowly (the pre-S2b
     /// pattern already handled "safely"; S2b adds "promptly").
     private func driveTurn() async {
+        // E4 retry parity: port of AgentEvalRunner.cpp's degenerate-turn
+        // retry-once (~line 2760-2792, `retryDegenerateTurn`) into this
+        // driver, so a local qwen3-thinking backend's occasional
+        // finish=stop + no-text + no-tool-calls turn gets ONE verbatim
+        // retry here too, instead of surfacing as a user-facing error the
+        // human has to notice and click Retry on.  `httpAttempt` mirrors
+        // the eval runner's per-round `attempt` counter (1 = first try of
+        // THIS round, 2 = the one verbatim retry); `degenerateTurnRetried`
+        // mirrors its `attempt == 1` gate -- at most ONE retry per round.
+        // Both are reset to their round-1 values the moment a round
+        // SUCCEEDS (the .toolCalls case below) since the retry allowance
+        // is per-round, not per-turn: a later round hitting its own
+        // degenerate response gets its own retry.  Neither is reset by
+        // the `continue` a retry itself takes -- that continuation IS the
+        // still-in-progress round, not a new one.
+        var httpAttempt = 1
+        var degenerateTurnRetried = false
         while true {
             if Task.isCancelled || stopRequested { return }
             guard viewportBridge != nil else { return }
@@ -2120,6 +2192,17 @@ final class ChatViewModel: ObservableObject {
                 retryAvailable = true
                 return
             }
+
+            // Arc 77 Phase 2 GUI wiring: keep `imagine_scene`'s HOST
+            // generator fresh on every in-app tool-call session before
+            // this round's tool calls (if any) dispatch. Reinstalled
+            // every turn with the SAME `apiKey` just resolved above --
+            // zero extra Keychain reads -- so a provider or key change
+            // mid-session (Settings' provider picker, Save Key, Clear
+            // Key) is picked up by the very next turn instead of leaving
+            // a generator bound to a stale credential. See
+            // -agentSetImageGenerator(provider:apiKey:)'s doc.
+            viewportBridge?.agentSetImageGenerator(provider: provider.rawValue, apiKey: apiKey)
 
             let request = chatBridge.buildRequest(apiKey: apiKey)
             // buildRequest is where span compaction runs, so this is the
@@ -2154,24 +2237,21 @@ final class ChatViewModel: ObservableObject {
                         + "no longer see them."))
             }
 
-            // DRIVER NOTES (Role::DriverNote — today the blind-edit nudge).
-            // The loop injects these into the conversation itself, so the
-            // model reads them and changes course.  This driver renders its
-            // own display list, not the wire transcript, so without this the
-            // note would be invisible here and the agent would appear to
-            // stop editing and render for no reason the user can see.
-            // Checked at the SAME place as the compaction notice: a note is
-            // appended when a tool round flushes, and the next thing that
-            // happens is always the buildRequest that carries it to the
-            // model — so the user is told at (or just before) the moment it
-            // takes effect.  The Windows panel paints the transcript entry
-            // itself; both end up showing the same text.
-            let notesNow = chatBridge.driverNoteCount
-            if notesNow > lastReportedDriverNoteCount {
-                lastReportedDriverNoteCount = notesNow
-                transcript.append(Entry(kind: .notice,
-                                        text: chatBridge.lastDriverNoteText))
-            }
+            // NOTE: the loop now injects ONE DriverNote (the malformed-tool-call
+            // corrective); this driver surfaces it with its own "Retrying
+            // malformed tool call..." notice at the retry site, not by polling.
+            // E4 (2026-08): this driver used to poll `driverNoteCount` /
+            // `lastDriverNoteText` here to surface the blind-edit NUDGE —
+            // advisory text the loop injected into the conversation.  That
+            // nudge was RETIRED (found unsafe: a model echoed it back as its
+            // own final text, and the loop had no way to tell the echo from
+            // genuine progress) and replaced by the SEQUENCING GATE, a tool
+            // call REFUSAL that arrives as an ordinary `.toolActivity` /
+            // outcome row via the existing per-call dispatch loop below —
+            // see the gate interception right before
+            // `chatBridge.toolCallToJsonRpcLine`.  No separate polling is
+            // needed: a refusal is already a tool RESULT, and this driver
+            // already renders every tool result.
             guard !request.isEmpty, let url = URL(string: request.url) else { return }
 
             var urlRequest = URLRequest(url: url)
@@ -2217,12 +2297,24 @@ final class ChatViewModel: ObservableObject {
             // into the trajectory BEFORE handling it (no-op when recording
             // is off).  The bridge strips auth headers from the cached
             // request; the writer redacts every line unconditionally.
-            chatBridge.recordHttpRound(status: status, body: bodyString, elapsedMs: elapsedMs)
+            // E4: the attempt/retryOf overload once this round is itself a
+            // retry (httpAttempt > 1), so the trajectory shows it as an
+            // honest sibling `llm` record rather than silently duplicating
+            // attempt 1's -- same convention AgentEvalRunner.cpp uses.
+            if httpAttempt > 1 {
+                chatBridge.recordHttpRound(status: status, body: bodyString,
+                                           elapsedMs: elapsedMs,
+                                           attempt: httpAttempt, retryOf: httpAttempt - 1)
+            } else {
+                chatBridge.recordHttpRound(status: status, body: bodyString, elapsedMs: elapsedMs)
+            }
             let step = chatBridge.handleResponse(status: status, body: bodyString)
 
             switch step.kind {
             case .toolCalls:
                 consecutiveHttp400s = 0
+                httpAttempt = 1
+                degenerateTurnRetried = false
                 // GUI stage 2: the model's reasoning for THIS turn, ahead
                 // of the assistant/tool rows it precedes on the wire —
                 // see ChatStepResult::reasoningText's doc (Anthropic
@@ -2277,8 +2369,26 @@ final class ChatViewModel: ObservableObject {
                     // so the later in-place update can't mismatch a
                     // same-named earlier call still visible above it.
                     let toolRowIndex = transcript.count - 1
-                    let line = chatBridge.toolCallToJsonRpcLine(call, rpcId: nextRpcId)
+                    let dispatchRpcId = nextRpcId
+                    let line = chatBridge.toolCallToJsonRpcLine(call, rpcId: dispatchRpcId)
                     nextRpcId += 1
+
+                    // SEQUENCING GATE (E4, AgentChatLoop.h): a mutating verb
+                    // refused by the blind-edit streak gate is intercepted
+                    // HERE, before dispatch -- the SAME shape as the
+                    // ask_user interception above and the eval runner's
+                    // identical check (AgentEvalRunner.cpp) -- some calls
+                    // must never reach the dispatcher.  `line` above is
+                    // still built (keeps the dispatch-latency stamp honest,
+                    // exactly as ask_user's comment already explains) but is
+                    // NEVER handed to agentHandleToolCall /
+                    // executeRenderToolCallAsync when gated -- the
+                    // underlying document is not touched.  The refusal
+                    // arrives as an ORDINARY tool result below (same
+                    // toolRowIndex / outcome-line / addToolResult path every
+                    // other call uses), so no new display code is needed:
+                    // it renders exactly like any other rejected edit.
+                    let gateResponse = chatBridge.gateRefusalResponse(for: call, rpcId: dispatchRpcId)
 
                     // Model-B F2 slice S2b: a `render` tool call goes
                     // through the NON-BLOCKING async path (submit +
@@ -2337,7 +2447,9 @@ final class ChatViewModel: ObservableObject {
                     // build/VS2022/RISE-GUI/ChatPanel.cpp's
                     // processNextToolCall / startAsyncRenderToolCall.
                     let responseLine: String
-                    if call.name == "render" {
+                    if !gateResponse.isEmpty {
+                        responseLine = gateResponse
+                    } else if call.name == "render" {
                         responseLine = await executeRenderToolCallAsync(
                             call: call, submitLine: line, vb: vb)
                     } else {
@@ -2415,9 +2527,41 @@ final class ChatViewModel: ObservableObject {
                 if !step.finalText.isEmpty {
                     transcript.append(Entry(kind: .assistant, text: step.finalText))
                 }
+                // Arc 83 §4.1: THE MODE TRANSITION.  A turn that ends with
+                // the model's own prose rather than a tool call is "the
+                // agent's first final answer" — the event that ends the
+                // staged build protocol's compulsion for every in-app
+                // session.  Unconditional and on every final turn: the
+                // underlying NoteFinalAnswer is idempotent and one-way, and
+                // a session that opened a scene already carrying geometry
+                // has been in "refining" since construction anyway.
+                viewportBridge?.agentNoteFinalAnswer()
                 return
 
             case .providerError:
+                // E4 retry parity (see the doc above the `while true`):
+                // one verbatim retry of a genuine degenerate turn before
+                // falling back to the ordinary error UX.  Nothing was
+                // recorded for THIS response (AgentChatLoop.cpp: "record
+                // nothing" on every ProviderError), so the next
+                // buildRequest at the top of the loop rebuilds from the
+                // unchanged transcript -- a true verbatim resend, no
+                // request change needed.
+                if step.retryDegenerateTurn && step.errorKind == .malformedToolCall {
+                    // Malformed tool call: the C++ loop already queued a
+                    // corrective user message for the next buildRequest and
+                    // bounds the retries (2 per user turn), so this case is
+                    // deliberately NOT gated by degenerateTurnRetried.
+                    transcript.append(Entry(
+                        kind: .notice, text: "Retrying malformed tool call..."))
+                    httpAttempt += 1
+                    continue
+                }
+                if step.retryDegenerateTurn && !degenerateTurnRetried {
+                    degenerateTurnRetried = true
+                    httpAttempt += 1
+                    continue
+                }
                 handleProviderError(step, httpStatus: status)
                 return
 
@@ -2594,15 +2738,17 @@ final class ChatViewModel: ObservableObject {
     /// single-turn classifier, not a conversational agent, so it gets
     /// none of the main prompt's scene-tool guidance.
     private static let triagePrompt =
-        "You are a scene-brief triage assistant for a 3D renderer. Given a " +
-        "user's scene request, decide if it is ambiguous in ways that " +
-        "MATERIALLY change the scene (subject identity, setting/placement, " +
-        "mood/lighting). Most briefs are fine as-is: when in doubt, do NOT " +
-        "ask. Reply with ONLY a JSON object, no prose: {\"needsClarification\": " +
-        "bool, \"questions\": [{\"question\": str, \"options\": [str,...]} up " +
-        "to 2], \"augmentedPrompt\": str}. augmentedPrompt: the user's request " +
-        "restated with any obvious defaults made explicit; empty string if no " +
-        "augmentation helps. If needsClarification is false, questions must be []."
+        "You are a scene-brief triage assistant for a 3D renderer. Given a user's scene request, decide if it is ambiguous in ways that MATERIALLY change the scene (subject identity, setting/placement, mood/lighting). Most briefs are fine as-is: when in doubt, do NOT ask.\n" +
+        "\n" +
+        "When you write augmentedPrompt, keep every subject CONCRETE and recognizable: describe it by its physical parts (a dragon has a head, wings, tail, claws; a wizard is a robed figure with a staff). NEVER use these words: abstract, stylized, suggestion of, impressionistic, symbolic. Mood and palette may be imaginative; subjects stay figurative. If the brief names two or more distinct subjects, end augmentedPrompt with one line in exactly this form: \"Must read clearly in frame: <subject> (<parts>), <subject> (<parts>).\" For a trivial single-object edit (e.g. \"add a red sphere\"), leave augmentedPrompt empty; never invent a manifest for it.\n" +
+        "\n" +
+        "If the scene features hero objects, creatures, or a close-range/still-life subject (skip this for an abstract, diagnostic, or test scene), append this sentence VERBATIM to the end of augmentedPrompt, after any \"Must read clearly in frame\" line: \"Surfaces will be scrutinized: flat uniform colors or constant roughness read as fake -- hero surfaces need spatial variation, and glass/membranes/liquids need transmissive materials (dielectric/translucent/SSS), not opaque approximations. Geometry comes first: silhouettes and proportions must match the brief before material polish.\"\n" +
+        "\n" +
+        "Two full worked examples of the exact reply shape, copy this bracket structure exactly:\n" +
+        "{\"needsClarification\": false, \"questions\": [], \"augmentedPrompt\": \"A dreamy landscape with a dragon (head, wings, tail, claws) and a wizard (robed figure, staff) in swirling mist, imaginative lighting. Must read clearly in frame: dragon (head, wings, tail), wizard (robed figure, staff), visible mist. Surfaces will be scrutinized: flat uniform colors or constant roughness read as fake -- hero surfaces need spatial variation, and glass/membranes/liquids need transmissive materials (dielectric/translucent/SSS), not opaque approximations. Geometry comes first: silhouettes and proportions must match the brief before material polish.\"}\n" +
+        "{\"needsClarification\": true, \"questions\": [{\"question\": \"What kind of object?\", \"options\": [\"Sculpture\", \"Plant\", \"Gadget\"]}, {\"question\": \"What style?\", \"options\": [\"Modern\", \"Natural\", \"Whimsical\"]}], \"augmentedPrompt\": \"\"}\n" +
+        "\n" +
+        "Reply with ONLY one JSON object in that exact shape, no prose, no markdown fence — close every {, [, and \" you open. If needsClarification is false, questions must be []."
 
     /// One parsed `questions[]` entry of the triage verdict.
     private struct TriageQuestion {
@@ -2938,7 +3084,7 @@ final class ChatViewModel: ObservableObject {
     // tests/SourceHygieneTest.cpp pins each of them on both platforms).
     // ================================================================
 
-    /// The FIVE mutating verbs whose results carry the `applied` +
+    /// The SIX mutating verbs whose results carry the `applied` +
     /// `retriable` pair this retry gate reads — exactly the set
     /// `AgentRpc.cpp`'s `IsProposeSafeVerb` enumerates, and exactly the
     /// set whose result JSON is built by `ChunkResultJson` /
@@ -2949,7 +3095,12 @@ final class ChatViewModel: ObservableObject {
     /// tests/SourceHygieneTest.cpp derives this set from
     /// `IsProposeSafeVerb` and fails if the two drift.
     private static let retriableEditVerbs: Set<String> = [
-        "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk"
+        "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
+        // R1a (2026-08-09): the ATOMIC batch remove.  Its envelope is a HYBRID —
+        // a top-level BOOLEAN `applied` (all-or-nothing) alongside a `results`
+        // array — so `editRefusalIsWhollyUnapplied` routes it down the SINGULAR
+        // arm, not the batch one.  See that function's note.
+        "remove_chunks"
     ]
 
     /// THE ATTEMPT BUDGET.  Total dispatch attempts for one refused edit
@@ -2997,7 +3148,9 @@ final class ChatViewModel: ObservableObject {
     /// Is this tool result a refusal with **nothing applied** — the only
     /// shape a client-side retry may re-issue?
     ///
-    /// SINGULAR verbs (`propose_patch`, `insert_chunk`, `remove_chunk`):
+    /// SINGULAR verbs (`propose_patch`, `insert_chunk`, `remove_chunk`) — and
+    /// R1a's `remove_chunks`, which despite carrying a `results` array is
+    /// ALL-OR-NOTHING and so reports ONE boolean verdict, exactly this shape:
     /// `applied == false` AND `retriable == true` AND
     /// `status == "rejected"`.  The rejection contract guarantees the
     /// head is byte-identical on a reject (SceneEditController refuses
@@ -3051,15 +3204,27 @@ final class ChatViewModel: ObservableObject {
         else { return false }
 
         // BATCH FIRST — see the BATCH-FIRST note above.
-        if let results = result["results"] as? [[String: Any]] {
+        //
+        // R1a (2026-08-09): the batch arm is now selected on the TYPE of the
+        // top-level `applied`, not merely on `results` being present.
+        // `remove_chunks` returns a HYBRID envelope — a `results` array (one entry
+        // per unique target) alongside a BOOLEAN top-level `applied`, because it is
+        // ALL-OR-NOTHING and so has one verdict, not a count.  Its correct handling
+        // is the SINGULAR arm below (top-level applied/retriable/status), so a
+        // boolean in the count position must FALL THROUGH here, not `return false`
+        // — the pre-R1a code would have silently declined to retry a genuinely
+        // retriable remove_chunks refusal.
+        let appliedIsCount: Bool = {
+            guard let appliedCount = result["applied"] as? NSNumber else { return false }
+            // A JSON boolean ALSO bridges to NSNumber, so type-check it out — the
+            // Qt sibling's `isDouble()` rejects a bool outright and the two halves
+            // must not diverge on shape validation.
+            return CFGetTypeID(appliedCount) != CFBooleanGetTypeID()
+        }()
+        if appliedIsCount, let results = result["results"] as? [[String: Any]] {
             guard
                 !results.isEmpty,
                 let appliedCount = result["applied"] as? NSNumber,
-                // A JSON boolean ALSO bridges to NSNumber, so type-check
-                // it out — the Qt sibling's `isDouble()` rejects a bool
-                // outright and the two halves must not diverge on shape
-                // validation.
-                CFGetTypeID(appliedCount) != CFBooleanGetTypeID(),
                 appliedCount.intValue == 0
             else { return false }
             for element in results {
@@ -3248,7 +3413,11 @@ final class ChatViewModel: ObservableObject {
                 min(attempts - 1, Self.editRetryBackoffMs.count - 1)]
             try? await Task.sleep(nanoseconds: backoffMs * 1_000_000)
             if Task.isCancelled || stopRequested { break }
-            guard viewportBridge != nil else { break }
+            // IDENTITY, not existence (same rule as `waitForChatRenderDrain`):
+            // a scene switch across the backoff detaches this bridge and binds
+            // a fresh one, so a mere non-nil check would keep re-issuing the
+            // edit against the shut-down instance the retry was opened for.
+            guard viewportBridge === vb else { break }
             guard sceneEditable() else { break }
             attempts += 1
             responseLine = vb.agentHandleToolCall(line)
@@ -3757,6 +3926,15 @@ final class ChatViewModel: ObservableObject {
                 kind: .error,
                 text: "Stopped after \(RISEAgentChatBridge.maxToolRoundsPerTurn) tool "
                     + "rounds in one turn.  Send a new message to continue."))
+
+        case .malformedToolCall:
+            // Corrective retries were exhausted (the loop gave up).
+            consecutiveHttp400s = 0
+            transcript.append(Entry(
+                kind: .error,
+                text: "The model kept producing a malformed tool call.  "
+                    + "Send a new message (e.g. \"keep going\") to try again.  "
+                    + step.errorMessage))
 
         case .parse, .provider:
             consecutiveHttp400s = 0

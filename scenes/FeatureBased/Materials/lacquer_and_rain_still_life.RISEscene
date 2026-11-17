@@ -1,0 +1,519 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                            #
+#   File:           lacquer_and_rain_still_life.RISEscene                                                   #
+#   Description:    PHASE-2 HERO SCENE for `coated_material` (docs/WETNESS_COAT_DESIGN.md Phase 2, section  #
+#                    7).  A tabletop still life demonstrating the coat's full expressive range in one frame: #
+#                                                                                                             #
+#                      1. LACQUERED WOOD  -- a turned candlestick (lathe_geometry), full-coverage amber      #
+#                         varnish (coat_ior 1.5).  coat_thickness is driven by |curv| (section 7.2's scalar  #
+#                         pipe), so the amber deepens at the profile's curved ring transitions relative to   #
+#                         the straighter stem/neck sections -- Beer-Lambert acting on a spatially varying    #
+#                         optical depth, not a flat tint.                                                    #
+#                      2. WORN OILED BRASS -- a small hardware box (sdf_geometry: a rounded core box with a  #
+#                         subtracted recessed lid panel).  coat_weight is driven by geometry signals          #
+#                         (occlusion in the recess vs. curv on the rubbed convex edges) -- section 7.3's      #
+#                         coverage-is-not-gloss showcase: the coat SURVIVES in the sheltered recess and is    #
+#                         WORN OFF the handled edges, everywhere at the SAME coat_roughness.  Doubles as the  #
+#                         "oiled metal" motivation case (GGX substrate, schlick_f0, non-metallic-look brass   #
+#                         tint so the allowlist and the coat's own gloss both read cleanly).                  #
+#                      3. WET STONE -- a pebble (sdf_geometry, unioned/smin spheres).  Water coat (ior 1.75,  #
+#                         untinted).  coat_weight AND coat_roughness both ride the doc's canonical damp/wet   #
+#                         mask prelude (section 6.3, reused byte-identical here across its two consumer       #
+#                         chunks) so the pebble is damp in sheltered up-facing hollows and mirror-smooth      #
+#                         only where water actually pools -- and the transport's own per-wavelength           #
+#                         recycling 1/(1 - r_i*R(lambda)) does the darkening/saturation (section 2.1, 7.1);   #
+#                         there is no pow(base, k) anywhere in this scene.                                    #
+#                      4. DRY TWIN -- the SAME pebble geometry, uncoated, seated beside the wet one, for the  #
+#                         direct before/after read.                                                          #
+#                                                                                                             #
+#                    Base materials are restricted to coated_material's allowlist throughout: two             #
+#                    lambertian_material substrates (wood, stone) and one ggx_material substrate (brass, in   #
+#                    schlick_f0 mode) -- no dielectric/luminaire base anywhere (section 7.2).  The stone       #
+#                    substrate stays lambertian rather than orennayar_material per section 12 debt 13         #
+#                    (Oren-Nayar's hemisphericalAlbedo over-estimates at high roughness, over-amplifying the  #
+#                    coat's own recycling term -- lambertian sidesteps the question entirely).  coat_tint     #
+#                    values are held at/below 0.90 per section 12 debt 12 (near-white tints in [0.96,1.0)     #
+#                    are spectrally discontinuous at the JH LUT's gamut corner); the wet-stone coat is left   #
+#                    genuinely untinted (coat_tint omitted -> the "none" sentinel Job::AddCoatedMaterial       #
+#                    reads as untinted white, not the colour manager's black `none` painter).                 #
+#                                                                                                             #
+#                    Lighting: a warm soft key (rect_light, upper front-right) plus a cooler rim/fill         #
+#                    (rect_light, upper back-left) so the coat's own sharp specular lobe reads as a distinct  #
+#                    highlight from the base's broader gloss, against a neutral warm-gray backdrop panel and  #
+#                    a low-key environment radiance (for the brass box's reflections -- a bare metallic-look  #
+#                    GGX lobe under only two small area lights would read near-black off-highlight;           #
+#                    docs/skills/effective-rise-scene-authoring.md's anti-pattern list).                      #
+#                                                                                                             #
+#                    Rendered under the default pathtracing_pel_rasterizer, oidn_denoise FALSE (the trap      #
+#                    docs/PT_ENV_MIS_DOUBLECOUNT.md records for anything that reads its own output back).     #
+#                                                                                                             #
+#   Author:         RISE contributors                                                                        #
+#   Birthdate:      2026-09-01                                                                                #
+#                                                                                                             #
+#############################################################################################################
+
+##################################################
+# Renderer
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_sky
+	color		0.15 0.16 0.19
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+film
+{
+	width		640
+	height		360
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				96
+	oidn_denoise		FALSE
+	radiance_map		pnt_sky
+	radiance_background	TRUE
+}
+
+pinhole_camera
+{
+	location	0.0 1.85 5.60
+	lookat		-0.35 0.60 0.15
+	up			0 1 0
+	fov			36.0
+}
+
+##################################################
+# Lights -- `direction`/`facing` conventions per
+# docs/SCENE_CONVENTIONS.md.  Warm key upper
+# front-right, cool rim/fill upper back-left so the
+# coat's sharp lobe reads distinctly from the base
+# gloss and from each other.
+##################################################
+
+rect_light
+{
+	name		light_key
+	center		0.30 2.70 2.30
+	size		3.20 2.40
+	facing		-0.20 -0.75 -0.75
+	color		1.00 0.95 0.88
+	exitance	13.0
+}
+
+rect_light
+{
+	name		light_rim
+	center		-2.85 1.90 -3.30
+	size		1.60 1.60
+	facing		0.55 -0.25 0.75
+	color		0.55 0.65 0.85
+	exitance	5.5
+}
+
+# Small, close, low-angle rake light dedicated to the stone pair (LEGIBILITY
+# FIX, tuning round): the two broad/soft lights above give the water coat's
+# low-alpha GGX lobe nothing to catch (docs/skills/effective-rise-scene-
+# authoring.md's soft-light anti-pattern) -- a 47-degree-wide key light
+# smears the coat's own reflected gain evenly across the whole visible face,
+# which partially CANCELS the substrate's Saunderson darkening instead of
+# reading as a tight mirror gleam.  This panel is ~40% the distance of
+# light_key and a fraction of its angular size, at a steep (~7 deg) grazing
+# elevation per WETNESS_COAT_DESIGN.md Sec 2.2 ("Fresnel is low at normal
+# incidence and steep at grazing") -- it produces a small, bright, tight
+# highlight on the wet pebble's mirror-alpha coat while leaving the dry twin
+# (no coat lobe at all) to show only its ordinary Lambertian falloff.
+rect_light
+{
+	name		light_stone_rake
+	center		2.50 0.45 2.00
+	size		0.30 0.22
+	facing		-0.453 -0.124 -0.883
+	color		0.90 0.95 1.00
+	exitance	22.0
+}
+
+##################################################
+# Painters -- backdrop / table
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_table
+	color		0.20 0.13 0.08
+}
+
+uniformcolor_painter
+{
+	name		pnt_backdrop
+	color		0.15 0.14 0.13
+}
+
+lambertian_material
+{
+	name		mat_table
+	reflectance	pnt_table
+}
+
+lambertian_material
+{
+	name		mat_backdrop
+	reflectance	pnt_backdrop
+}
+
+##################################################
+# Element 1 -- LACQUERED WOOD candlestick
+##################################################
+
+# Procedural wood grain: concentric rings along the turned profile
+# (Po.y, object-local so it is independent of world placement) with a
+# little fbm breakup so the rings are not perfectly regular.
+expression_painter
+{
+	name			pnt_wood_grain
+	param			dark_r    0.38 min 0 max 1 step 0.01 label "Dark ring R"
+	param			dark_g    0.22 min 0 max 1 step 0.01 label "Dark ring G"
+	param			dark_b    0.11 min 0 max 1 step 0.01 label "Dark ring B"
+	param			light_r   0.68 min 0 max 1 step 0.01 label "Light wood R"
+	param			light_g   0.48 min 0 max 1 step 0.01 label "Light wood G"
+	param			light_b   0.28 min 0 max 1 step 0.01 label "Light wood B"
+	param			ring_freq 46.0 min 4 max 200 step 1  label "Ring frequency"
+	seed			11
+	def			ring_n frac(Po.y*ring_freq + 0.4*fbm(vec3(Po.x*5.0, Po.y*ring_freq, Po.z*5.0), 3, 0.5, 2.0))
+	def			band   smoothstep(0.30, 0.70, ring_n)
+	expr			mix(vec3(dark_r, dark_g, dark_b), vec3(light_r, light_g, light_b), band)
+}
+
+lambertian_material
+{
+	name		mat_wood_dry
+	reflectance	pnt_wood_grain
+}
+
+# coat_thickness driven by |curv|: the profile's curved ring
+# transitions (collar, bulb shoulders, foot chamfer) get a deeper
+# Beer-Lambert optical depth than the straighter stem/neck cylinders,
+# at constant coat_absorption -- the "tint deepens on curved edges"
+# requirement, done through the physical thickness slot rather than a
+# second tint.
+scalar_painter
+{
+	name			sp_lacquer_thick
+	param			thick_min  0.01 min 0    max 0.05 step 0.001 label "Min lacquer thickness"
+	param			thick_gain 0.30 min 0    max 1    step 0.005 label "Curved-transition thickness gain"
+	def			curved clamp(abs(curv), 0, 1)
+	expression		thick_min + thick_gain*curved
+}
+
+# Amber varnish tint -- held at 0.75/0.55/0.32, safely under the 0.96
+# near-white discontinuity boundary (section 12 debt 12).
+uniformcolor_painter
+{
+	name		pnt_amber
+	color		0.75 0.55 0.32
+}
+
+coated_material
+{
+	name			mat_lacquer_wood
+	base			mat_wood_dry
+	coat_weight		1.0
+	coat_ior		1.5
+	coat_roughness	0.025
+	coat_thickness	sp_lacquer_thick
+	coat_absorption	1.8
+	coat_tint		pnt_amber
+}
+
+lathe_geometry
+{
+	name			geo_candlestick
+	axis			y
+	profile_point	0.00 0.00
+	profile_point	0.36 0.02
+	profile_point	0.30 0.06
+	profile_point	0.14 0.10
+	profile_point	0.13 0.45
+	profile_point	0.17 0.52
+	profile_point	0.29 0.66
+	profile_point	0.31 0.76
+	profile_point	0.24 0.88
+	profile_point	0.14 0.96
+	profile_point	0.14 1.10
+	profile_point	0.22 1.16
+	profile_point	0.15 1.21
+	profile_point	0.15 1.30
+	profile_point	0.00 1.34
+}
+
+standard_object
+{
+	name		obj_candlestick
+	geometry	geo_candlestick
+	material	mat_lacquer_wood
+	position	-2.10 0.0 0.05
+}
+
+##################################################
+# Element 2 -- WORN OILED BRASS hardware box
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_brass_rd
+	color		0.34 0.24 0.13
+}
+
+uniformcolor_painter
+{
+	name		pnt_brass_rs
+	color		0.58 0.44 0.20
+}
+
+# alphax/alphay lowered from the prior 0.45 (LEGIBILITY FIX, tuning round):
+# at 0.45 the base's own GGX lobe was so broad it read as matte painted
+# ceramic on the open faces -- no metallic specular cue distinguished it
+# from the oiled recess.  0.16 keeps a worn, not mirror-polished, brass
+# look while giving the base its own visible specular pop so the coated
+# recess (coat_roughness 0.03, sharper still) reads as a DIFFERENT,
+# glossier material rather than the same matte finish continuing.  (0.24,
+# not the initially-tried 0.16, is the settled value -- it spreads the
+# lobe enough to pick up a visible sheen across more of the front face
+# instead of a single pinprick highlight at the rim.)
+ggx_material
+{
+	name			mat_brass_dry
+	rd				pnt_brass_rd
+	rs				pnt_brass_rs
+	alphax			0.24
+	alphay			0.24
+	fresnel_mode	schlick_f0
+}
+
+# coat_weight: coverage survives in the SHELTERED recess (low
+# occlusion -> high 1-occlusion) and is worn off the RUBBED convex
+# edges (curv > 0) -- section 7.3's coverage-is-not-gloss showcase.
+# No gravity gate here (unlike the wetness prelude): this is
+# handling/rub wear, not water, so orientation is not the gate.
+scalar_painter
+{
+	name			sp_wear_coat
+	param			edge_wear   5.0  min 0 max 8 step 0.1  label "Edge wear (rubbing sheds coat)"
+	param			recess_gain 3.0  min 0 max 4 step 0.05 label "Recess retains coat"
+	param			base_cover  0.30 min 0 max 1 step 0.01 label "Base coverage"
+	def			shelter      1.0 - occlusion(0.10)
+	def			recess_keep  clamp(recess_gain*shelter, 0, 1)
+	def			edge_shed    clamp(edge_wear*clamp(curv, 0, 4), 0, 1)
+	def			coverage_raw clamp(base_cover + recess_keep - edge_shed, 0, 1)
+	expression		coverage_raw
+}
+
+# Faint warm oil tint, well under the 0.96 near-white boundary.
+uniformcolor_painter
+{
+	name		pnt_oil_tint
+	color		0.80 0.58 0.22
+}
+
+coated_material
+{
+	name			mat_worn_lacquer_brass
+	base			mat_brass_dry
+	coat_weight		sp_wear_coat
+	coat_ior		1.45
+	coat_roughness	0.03
+	coat_tint		pnt_oil_tint
+}
+
+sdf_geometry
+{
+	name		geo_hardware_box
+	part		roundbox union    0  0 0 0        0 0 0  1 1 1  0.55 0.35  0.40  0.10
+	part		box      subtract 0  0 0.335 0     0 0 0  1 1 1  0.42 0.045 0.28  0
+}
+
+standard_object
+{
+	name		obj_hardware_box
+	geometry	geo_hardware_box
+	material	mat_worn_lacquer_brass
+	position	-0.25 0.35 0.55
+}
+
+##################################################
+# Element 3 -- WET STONE pebble, and Element 4 --
+# its DRY TWIN (same geo_pebble geometry, no coat).
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_stone
+	color		0.62 0.36 0.17
+}
+
+lambertian_material
+{
+	name		mat_stone_dry
+	reflectance	pnt_stone
+}
+
+sdf_geometry
+{
+	name		geo_pebble
+	part		sphere union 0   0.00  0.00  0.00   0 0 0  1.3 0.62 1.0   0.30 0 0   0
+	part		sphere smin  0.05  0.16  0.05  0.10   0 0 0  1.0 0.55 0.9   0.20 0 0   0
+	part		sphere smin  0.04 -0.14  0.02 -0.12   0 0 0  1.0 0.50 0.95  0.17 0 0   0
+}
+
+# The doc's own damp/wet mask prelude (section 6.3), byte-identical
+# across both consumer chunks below -- only the final `expression`
+# line differs.  coat_weight rides `wet`; coat_roughness maps `pooling`
+# to a GGX ALPHA range (coated_material's coat_roughness IS alpha, NOT
+# polished_material's Phong exponent -- section 7.2/6.3 distinction),
+# broad-damp to mirror-pooled.
+scalar_painter
+{
+	name			sp_stone_wet_weight
+	param			dryness       0.05  min 0 max 1  step 0.01 label "Dryness"
+	param			base_wetness  0.64  min 0 max 1  step 0.01 label "Overall dampness"
+	param			pool_gain     2.60  min 0 max 4  step 0.05 label "Pooling in hollows"
+	param			ridge_shed    0.00  min 0 max 6  step 0.1  label "Ridges shed water"
+	param			gravity_bias  0.75  min 0 max 1  step 0.01 label "Water needs up-facing"
+	param			film_amount   1.00  min 0 max 1  step 0.01 label "Film vs merely damp"
+	param			breakup_amp   0.12  min 0 max 1  step 0.01 label "Mask breakup"
+	param			breakup_scale 10.0  min 0.1 max 40 step 0.1 label "Breakup scale"
+	seed			7
+	def			jitter    vec3(seed, seed*1.7, seed*2.3)
+	def			up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def			gravity   mix(1.0, up_facing, gravity_bias)
+	def			cavity    (1.0 - occlusion(0.10)) * gravity
+	def			pooling   clamp(pool_gain*cavity, 0, 1)
+	def			ridge     clamp(curv * ridge_shed, 0, 1)
+	def			breakup   breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def			damp_raw  clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def			damp      (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def			wet       clamp(damp * film_amount, 0, damp)
+	expression		wet
+}
+
+scalar_painter
+{
+	name			sp_stone_wet_rough
+	param			dryness       0.05  min 0 max 1  step 0.01 label "Dryness"
+	param			base_wetness  0.64  min 0 max 1  step 0.01 label "Overall dampness"
+	param			pool_gain     2.60  min 0 max 4  step 0.05 label "Pooling in hollows"
+	param			ridge_shed    0.00  min 0 max 6  step 0.1  label "Ridges shed water"
+	param			gravity_bias  0.75  min 0 max 1  step 0.01 label "Water needs up-facing"
+	param			film_amount   1.00  min 0 max 1  step 0.01 label "Film vs merely damp"
+	param			breakup_amp   0.12  min 0 max 1  step 0.01 label "Mask breakup"
+	param			breakup_scale 10.0  min 0.1 max 40 step 0.1 label "Breakup scale"
+	param			alpha_damp    0.14  min 0.01 max 1 step 0.01  label "Damp-film alpha"
+	param			alpha_pool    0.02  min 0.001 max 1 step 0.001 label "Pooled alpha"
+	seed			7
+	def			jitter    vec3(seed, seed*1.7, seed*2.3)
+	def			up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def			gravity   mix(1.0, up_facing, gravity_bias)
+	def			cavity    (1.0 - occlusion(0.10)) * gravity
+	def			pooling   clamp(pool_gain*cavity, 0, 1)
+	def			ridge     clamp(curv * ridge_shed, 0, 1)
+	def			breakup   breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def			damp_raw  clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def			damp      (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def			wet       clamp(damp * film_amount, 0, damp)
+	expression		mix(alpha_damp, alpha_pool, clamp(pooling*wet, 0, 1))
+}
+
+# Untinted: coat_tint omitted -> Job::AddCoatedMaterial's "none"
+# sentinel reads as UNTINTED WHITE (section 7.2), which is what a
+# clear water film is.
+coated_material
+{
+	name			mat_wet_stone
+	base			mat_stone_dry
+	coat_weight		sp_stone_wet_weight
+	coat_ior		1.75
+	coat_roughness	sp_stone_wet_rough
+}
+
+standard_object
+{
+	name		obj_stone_wet
+	geometry	geo_pebble
+	material	mat_wet_stone
+	position	1.15 0.19 0.15
+}
+
+standard_object
+{
+	name		obj_stone_dry
+	geometry	geo_pebble
+	material	mat_stone_dry
+	position	1.95 0.19 0.15
+}
+
+##################################################
+# Table + backdrop
+##################################################
+
+box_geometry
+{
+	name	geo_table
+	width	9.0
+	height	0.3
+	depth	4.0
+}
+
+standard_object
+{
+	name		obj_table
+	geometry	geo_table
+	material	mat_table
+	position	0.0 -0.15 0.0
+}
+
+box_geometry
+{
+	name	geo_backdrop
+	width	16.0
+	height	7.0
+	depth	0.2
+}
+
+standard_object
+{
+	name		obj_backdrop
+	geometry	geo_backdrop
+	material	mat_backdrop
+	position	0.0 2.70 -2.00
+}
+
+##################################################
+# Output
+##################################################
+
+file_rasterizeroutput
+{
+	pattern		rendered/lacquer_and_rain_still_life
+	type		EXR
+	color_space	Rec709RGB_Linear
+	exr_compression	piz
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/lacquer_and_rain_still_life
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	exposure			0.0
+	display_transform	aces
+}

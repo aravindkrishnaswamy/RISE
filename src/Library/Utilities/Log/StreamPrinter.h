@@ -16,9 +16,9 @@
 #define STREAM_PRINTER_
 
 #include "../../Interfaces/ILogPrinter.h"
-#include "../Threads/Threads.h"
 #include "../Reference.h"
 #include <iostream>
+#include <mutex>
 
 namespace RISE
 {
@@ -33,7 +33,7 @@ namespace RISE
 			bool			bFlushAlways;
 			bool			bFreeStream;
 			LOG_ENUM		eTypes;
-			RMutex			mutexPrint;
+			std::mutex		mutexPrint;
 
 		public:
 			StreamPrinter( std::ostream* pOut, const bool bFlushAlways_, const bool free_stream=false );

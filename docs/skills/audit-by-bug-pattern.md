@@ -4,9 +4,9 @@ description: |
   When you find a bug, IDENTIFY the pattern and then SWEEP the codebase
   for sibling sites with the same pattern before declaring the fix
   done.  Use immediately after fixing a non-trivial bug, especially
-  when the codebase has parallel code paths (RGB vs NM, snell vs
-  uniform, biased vs unbiased, RGB vs spectral, sync vs async) — these
-  paths drift over time and historically harbour the same bug at
+  when the codebase has parallel code paths (Pel / NM / HWSS triplets,
+  snell vs uniform, biased vs unbiased, RGB vs spectral, sync vs async) —
+  these paths drift over time and historically harbour the same bug at
   multiple sites.  The fix isn't done when the user-reported site is
   fixed; it's done when no sibling carries the same pattern.
 ---
@@ -21,7 +21,8 @@ description: |
   wrong kind of value, a flag was set incorrectly, a check was
   misplaced, etc.
 - The codebase has **duplicated code paths** that historically drift:
-  - RGB / NM (spectral) twins of the same algorithm.
+  - Pel / NM / HWSS (RGB, single-wavelength spectral, and hero-wavelength
+    spectral) triplets of the same integrator or shader algorithm.
   - snell / uniform (or any other algorithmic-mode) variants.
   - biased / unbiased branches in the same function.
   - main path / fallback path / photon-aided path / surface-sample
@@ -72,10 +73,15 @@ Common families to check:
 - **Same-helper callers**.  `grep` for the helper's name.  Each
   caller passes its own arguments — is the same kind of value being
   passed at each?
-- **RGB / NM twins**.  In rendering code, every RGB algorithm has a
-  spectral twin (suffix `NM` typically).  Search for the function
-  name with `NM` appended, or for the file's near-mirror.  Verify
-  the spectral path has the same fix.
+- **Pel / NM / HWSS triplets**.  In rendering code, integrator and
+  shader algorithms are implemented across three parallel wavelength
+  variants in the same file: RGB (`Pel`, e.g. `IntegrateFromHit`),
+  single-wavelength spectral (`NM`, e.g. `IntegrateFromHitNM`), and
+  hero-wavelength spectral (`HWSS`, e.g. `IntegrateFromHitHWSS`).
+  Search for the function stem across all three variants and explicitly
+  decide for each whether the fix applies identically, needs a
+  variant-specific form (e.g. `RandomlySelect(xi, true)` for NM/HWSS
+  vs `false` for Pel), or is genuinely inapplicable.
 - **Algorithmic-mode branches**.  Search for `if (config.X)` /
   `else` pairs in the same function — both branches usually need
   matching treatment.
@@ -138,7 +144,7 @@ a different-looking symptom.
 
 ### 6. Verify with regression scenes / tests
 
-If the codebase has a regression suite (RISE has 86+ unit tests
+If the codebase has a regression suite (RISE has 500+ standalone test suites
 plus canonical scenes like `sms_k1_*`, `sms_k2_*`), run them after
 each commit.  Add a new regression that specifically exercises the
 sibling sites if the pattern is novel and not yet covered.
@@ -169,12 +175,14 @@ Y, Z, W in the same file or sibling files because they all came
 from the same template / copy-paste / parallel implementation.
 Each unfixed sibling is a future bug report.
 
-### "RGB and NM are different algorithms so I only need to fix RGB"
+### "Pel, NM, and HWSS are different algorithms so I only need to fix Pel"
 
-False.  RGB and NM are usually ALMOST-identical implementations
-of the same algorithm with per-wavelength evaluation differences.
-A bug in the RGB algorithmic structure almost always exists in the
-NM twin.  Always check.
+False.  Pel (RGB), NM (single-wavelength), and HWSS (hero-wavelength
+spectral sampling) are parallel implementations of the same transport
+algorithm with domain-specific evaluation differences (e.g., spectral
+`krayNM` lobe selection vs RGB max-channel selection).  A bug in the
+Pel algorithmic structure almost always has a sibling in NM and/or
+HWSS — or an asymmetry between them.  Always check all three.
 
 ### "Biased mode is the production path so I'll skip the unbiased fix"
 

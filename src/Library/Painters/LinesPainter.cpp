@@ -71,6 +71,12 @@ Scalar LinesPainter::GetColorNM( const RayIntersectionGeometric& ri, const Scala
 	return ComputeWhich(ri).GetColorNM(ri, nm);
 }
 
+Scalar LinesPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	// SINGLE-SOURCE SELECTOR -- see the header comment.
+	return ComputeWhich(ri).GetRadianceNM(ri, nm);
+}
+
 static const unsigned int SIZE_ID = 100;
 
 IKeyframeParameter* LinesPainter::KeyframeFromParameters( const String& name, const String& value )
@@ -106,3 +112,10 @@ void LinesPainter::RegenerateData( )
 	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 }
 
+
+
+RISEPel LinesPainter::GetRadianceColor( const RayIntersectionGeometric& ri ) const
+{
+	// DL-396: the RGB twin of GetRadianceNM -- forward to the selected child.
+	return ComputeWhich(ri).GetRadianceColor(ri);
+}

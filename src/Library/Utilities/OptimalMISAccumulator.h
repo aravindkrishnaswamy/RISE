@@ -201,6 +201,31 @@ namespace RISE
 				SamplingTechnique technique
 				);
 
+			/// Reads the RAW training state of the tile containing the
+			/// given pixel, before Solve() collapses it into one alpha.
+			///
+			/// `Solve()`'s output is a ratio, so it cannot distinguish a
+			/// moment of the right SHAPE from one scaled by a constant --
+			/// which is precisely what a mis-formed `bsdfTimesCos` (the
+			/// DL-72 failure family) produces.  Tests that know a
+			/// site's closed-form per-sample contribution assert against
+			/// these sums directly (`OptimalMISTrainingSitesTest`).
+			///
+			/// \param px        Pixel x coordinate
+			/// \param py        Pixel y coordinate
+			/// \param sumNee    [out] sum of (f/p_nee)^2 over NEE hits
+			/// \param sumBsdf   [out] sum of (f/p_bsdf)^2 over BSDF hits
+			/// \param countNee_  [out] NEE sample ATTEMPTS (hits + misses)
+			/// \param countBsdf_ [out] BSDF sample ATTEMPTS (hits + misses)
+			void GetTileTraining(
+				unsigned int px,
+				unsigned int py,
+				double& sumNee,
+				double& sumBsdf,
+				unsigned int& countNee_,
+				unsigned int& countBsdf_
+				) const;
+
 			/// Solves for per-tile optimal alpha from accumulated statistics.
 			/// Must be called after all training iterations are complete.
 			void Solve();

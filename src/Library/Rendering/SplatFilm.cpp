@@ -15,9 +15,24 @@
 #include "SplatFilm.h"
 #include "ThreadLocalSplatBuffer.h"
 #include <atomic>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <mutex>
+#include "../Utilities/CheckedSize.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+std::size_t SplatFilm::CheckedPixelCount(unsigned int w, unsigned int h)
+{
+	constexpr std::uint64_t indexDomain = static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 1;
+	constexpr std::size_t indexLimit = std::numeric_limits<std::size_t>::max() < indexDomain ?
+		std::numeric_limits<std::size_t>::max() : static_cast<std::size_t>(indexDomain);
+	const auto count = RISE::Implementation::CheckedPixelCount<SplatPixel>(w, h, indexLimit);
+	if( count ) RISE::Implementation::CheckedPixelCount<std::unique_ptr<RMutex>>(h, 1);
+	return count;
+}
 
 SplatFilm::SplatFilm(
 	const unsigned int w,
@@ -25,21 +40,14 @@ SplatFilm::SplatFilm(
 	) :
 width( w ),
 height( h ),
-pixels( w * h )
+pixels( CheckedPixelCount(w, h) )
 {
+	if( pixels.empty() ) return;
 	rowMutexes.resize( height );
-	for( unsigned int i=0; i<height; i++ ) {
-		rowMutexes[i] = new RMutex();
-	}
+	for( auto& mutex : rowMutexes ) mutex = std::make_unique<RMutex>();
 }
 
-SplatFilm::~SplatFilm()
-{
-	for( unsigned int i=0; i<rowMutexes.size(); i++ ) {
-		delete rowMutexes[i];
-		rowMutexes[i] = 0;
-	}
-}
+SplatFilm::~SplatFilm() = default;
 
 void SplatFilm::Splat(
 	const unsigned int x,
@@ -71,8 +79,12 @@ void SplatFilm::SplatFiltered(
 	const IPixelFilter& filter
 	)
 {
+	if( width == 0 || height == 0 ) return;
 	Scalar halfW, halfH;
 	filter.GetFilterSupport( halfW, halfH );
+	// Invalid extents have no defined footprint. Validate before either the
+	// box shortcut or any floating-to-integer conversion.
+	if( !std::isfinite(halfW) || !std::isfinite(halfH) || halfW < 0 || halfH < 0 ) return;
 
 	// Box-filter fast path — half-width ≤ 0.501 means the filter
 	// footprint is exactly one pixel with weight 1, so a point
@@ -81,28 +93,19 @@ void SplatFilm::SplatFiltered(
 	// so behaviour is consistent across the codebase.
 	if( halfW <= 0.501 && halfH <= 0.501 )
 	{
-		// Round to nearest pixel center.  Pixel centers live at
-		// integer coordinates (matches BoxPixelFilter::warpOnScreen
-		// which returns canonical.x + x - 0.5 for canonical ∈ [0,1)).
-		// Casting floor(v + 0.5) is the portable way to do a
-		// round-half-up for positive values.
-		const Scalar rx = screenX + Scalar( 0.5 );
-		const Scalar ry = screenY + Scalar( 0.5 );
-		if( rx < 0 || ry < 0 ) return;
-		const unsigned int ix = static_cast<unsigned int>( rx );
-		const unsigned int iy = static_cast<unsigned int>( ry );
-		Splat( ix, iy, contribution );
+		// The pixel containing the splat (centres at i + 0.5, DL-368);
+		// NearestPixel is the film-membership rule (DL-294).
+		unsigned int ix = 0, iy = 0;
+		if( NearestPixel( screenX, screenY, width, height, ix, iy ) ) {
+			Splat( ix, iy, contribution );
+		}
 		return;
 	}
 
-	// Defensive fallback.  IPixelFilter::EvaluateFilter has a base
-	// implementation that returns 0, so a filter that advertises a
-	// support ≥ 0.5 via GetFilterSupport but forgot to override
-	// EvaluateFilter would silently drop every splat.  We detect
-	// this at the filter's own centre (where it should be strongly
-	// non-zero for any unit-integral kernel) and fall back to a
-	// single-pixel point splat if the filter looks broken.  Logs
-	// once per process so the scene author sees the problem.
+	// Preserve the centre-value heuristic for existing reconstruction
+	// filters: the base EvaluateFilter implementation returns zero, so a
+	// missing override would otherwise drop every splat. Nonpositive-centre
+	// kernels use the legacy point fallback, with one warning per process.
 	if( filter.EvaluateFilter( 0, 0 ) <= 0 )
 	{
 		static std::atomic<bool> warned{ false };
@@ -115,42 +118,54 @@ void SplatFilm::SplatFiltered(
 				"an EvaluateFilter override.",
 				halfW, halfH );
 		}
-		const Scalar rx = screenX + Scalar( 0.5 );
-		const Scalar ry = screenY + Scalar( 0.5 );
-		if( rx < 0 || ry < 0 ) return;
-		const unsigned int ix = static_cast<unsigned int>( rx );
-		const unsigned int iy = static_cast<unsigned int>( ry );
-		if( ix < width && iy < height ) {
+		unsigned int ix = 0, iy = 0;
+		if( NearestPixel( screenX, screenY, width, height, ix, iy ) ) {
 			Splat( ix, iy, contribution );
 		}
 		return;
 	}
 
+	// DL-294: film membership.  The camera's world-to-raster
+	// projection no longer clips to its nominal [0,W) x [0,H) film
+	// (BDPTCameraUtilities::InRasterGuardBand); the film decides, in
+	// the SAME convention the eye subpaths are sampled in and the box
+	// fast path above rounds in: a splat is on the film iff its
+	// nearest pixel centre is.  Without this a splat just outside the
+	// film would be renormalised onto the edge pixels below.
+	{
+		unsigned int hx = 0, hy = 0;
+		if( !NearestPixel( screenX, screenY, width, height, hx, hy ) ) {
+			return;
+		}
+	}
+
 	// Filter footprint expansion.  Mirrors FilteredFilm::Splat so
 	// the two accumulators agree on which pixels receive weight
-	// from a given fractional sample position.
-	const int minPX = static_cast<int>( floor( screenX - halfW ) );
-	const int maxPX = static_cast<int>( floor( screenX + halfW ) );
-	const int minPY = static_cast<int>( floor( screenY - halfH ) );
-	const int maxPY = static_cast<int>( floor( screenY + halfH ) );
-
-	const int x0 = minPX < 0 ? 0 : minPX;
-	const int x1 = maxPX >= static_cast<int>( width ) ?
-		static_cast<int>( width ) - 1 : maxPX;
-	const int y0 = minPY < 0 ? 0 : minPY;
-	const int y1 = maxPY >= static_cast<int>( height ) ?
-		static_cast<int>( height ) - 1 : maxPY;
-
-	if( x0 > x1 || y0 > y1 ) {
-		return;
-	}
+	// from a given fractional sample position.  (cx, cy) is the
+	// position measured in pixel-CENTRE units: pixel (px, py) has its
+	// centre at (px + 0.5, py + 0.5) (DL-368), i.e. at integer (cx, cy).
+	const Scalar cx = screenX - RasterConvention::kPixelCentre;
+	const Scalar cy = screenY - RasterConvention::kPixelCentre;
+	// Intersect in floating point first. Even DBL_MAX-sized finite support
+	// on a small film must not be narrowed before clipping to the film.
+	const Scalar firstX = std::max(Scalar(0), std::floor(cx - halfW));
+	const Scalar lastX = std::min(static_cast<Scalar>(width - 1), std::floor(cx + halfW));
+	const Scalar firstY = std::max(Scalar(0), std::floor(cy - halfH));
+	const Scalar lastY = std::min(static_cast<Scalar>(height - 1), std::floor(cy + halfH));
+	if( firstX > lastX || firstY > lastY ) return;
+	// The nonempty intersection proves every converted value lies in
+	// [0, axis - 1], including axes above the signed-int range.
+	const auto x0 = static_cast<unsigned int>(firstX);
+	const auto x1 = static_cast<unsigned int>(lastX);
+	const auto y0 = static_cast<unsigned int>(firstY);
+	const auto y1 = static_cast<unsigned int>(lastY);
 
 	// Two-pass per-splat normalization.
 	//
 	// SplatFilm::Resolve divides every pixel by a SCALAR global
 	// sampleCount — it does not track a per-pixel weight sum like
 	// FilteredFilm does.  That means the DISCRETE sum
-	//     Σ_i EvaluateFilter(px_i - screenX, py_i - screenY)
+	//     Σ_i EvaluateFilter(cx - px_i, cy - py_i)
 	// over the affected pixels must equal 1.0 for every fractional
 	// splat position, otherwise each splat deposits more or less
 	// than one sample's worth of energy and the resolved image is
@@ -159,34 +174,33 @@ void SplatFilm::SplatFiltered(
 	// truncated Gaussian both have ∫K = 1 but their discrete
 	// footprint sums oscillate with sub-pixel position.
 	//
-	// The fix: compute Σ over the actual affected pixels first,
-	// then deposit contribution*w/Σ at each pixel.  Every splat
-	// then deposits exactly `contribution` total energy across its
-	// footprint regardless of filter shape or sub-pixel alignment.
-	//
-	// Cost: one extra pass of 4x4 EvaluateFilter calls for the
-	// default Mitchell-Netravali footprint (~16 multiply-adds on
-	// top of the 16 we were already doing) — negligible compared
-	// to the BDPT/MLT path-evaluation cost this helper gates.
+	// Compute the sum over the affected pixels, then deposit contribution
+	// times each cached weight divided by that sum. Under the kernel
+	// contract this targets the original total contribution, subject to
+	// floating-point rounding. Evaluated weights are reused by the deposit
+	// pass; typical footprints use the stack buffer below, wider ones a
+	// scoped vector.
 	Scalar weightSum = 0;
-	const int footprintArea = ( x1 - x0 + 1 ) * ( y1 - y0 + 1 );
+	const std::size_t footprintWidth = static_cast<std::size_t>(x1) - x0 + 1;
+	const std::size_t footprintHeight = static_cast<std::size_t>(y1) - y0 + 1;
+	const auto footprintArea = RISE::Implementation::CheckedPixelCount<Scalar>(footprintWidth, footprintHeight);
 	// Stack buffer for typical 4×4 Mitchell footprint; heap for the
 	// rare case of a very wide filter (box width 10+ etc.).
 	Scalar weightsStack[64];
 	Scalar* weights = weightsStack;
 	std::vector<Scalar> weightsHeap;
-	if( footprintArea > static_cast<int>( sizeof(weightsStack) / sizeof(weightsStack[0]) ) ) {
-		weightsHeap.resize( static_cast<std::size_t>( footprintArea ) );
+	if( footprintArea > sizeof(weightsStack) / sizeof(weightsStack[0]) ) {
+		weightsHeap.resize( footprintArea );
 		weights = weightsHeap.data();
 	}
 	{
-		int k = 0;
-		for( int py = y0; py <= y1; py++ )
+		std::size_t k = 0;
+		for( unsigned int py = y0; py <= y1; py++ )
 		{
-			const Scalar dy = screenY - static_cast<Scalar>( py );
-			for( int px = x0; px <= x1; px++, k++ )
+			const Scalar dy = cy - static_cast<Scalar>( py );
+			for( unsigned int px = x0; px <= x1; px++, k++ )
 			{
-				const Scalar dx = screenX - static_cast<Scalar>( px );
+				const Scalar dx = cx - static_cast<Scalar>( px );
 				const Scalar w = filter.EvaluateFilter( dx, dy );
 				weights[k] = w;
 				weightSum += w;
@@ -209,15 +223,15 @@ void SplatFilm::SplatFiltered(
 	// work unchanged.  A 4×4 Mitchell footprint produces 16
 	// buffered records per filtered splat; they batch by row at
 	// flush time just like any other contributions.
-	int k = 0;
-	for( int py = y0; py <= y1; py++ )
+	std::size_t k = 0;
+	for( unsigned int py = y0; py <= y1; py++ )
 	{
-		for( int px = x0; px <= x1; px++, k++ )
+		for( unsigned int px = x0; px <= x1; px++, k++ )
 		{
 			const Scalar w = weights[k];
 			if( w != 0.0 ) {
-				Splat( static_cast<unsigned int>( px ),
-				       static_cast<unsigned int>( py ),
+				Splat( px,
+				       py,
 				       contribution * ( w * invWeightSum ) );
 			}
 		}
@@ -229,7 +243,7 @@ void SplatFilm::BatchCommit(
 	std::size_t count
 	)
 {
-	if( !records || count == 0 ) {
+	if( !records || count == 0 || width == 0 || height == 0 ) {
 		return;
 	}
 
@@ -251,7 +265,7 @@ void SplatFilm::BatchCommit(
 		}
 
 		// Single lock acquisition for all splats in this row.
-		rowMutexes[row]->lock();
+		std::lock_guard<RMutex> rowLock(*rowMutexes[row]);
 		for( std::size_t k = i; k < j; k++ ) {
 			const uint32_t idx = records[k].pixelIndex;
 			if( idx < pixels.size() ) {
@@ -260,9 +274,56 @@ void SplatFilm::BatchCommit(
 				pixel.weight += 1.0;
 			}
 		}
-		rowMutexes[row]->unlock();
 
 		i = j;
+	}
+}
+
+void SplatFilm::ApplyResolved(
+	IRasterImage& target,
+	const Scalar sampleCount,
+	const Rect* region,
+	const bool subtract
+	) const
+{
+	if( sampleCount <= 0 || width == 0 || height == 0 ) {
+		return;
+	}
+
+	const Scalar invSamples = 1.0 / sampleCount;
+	unsigned int startX = 0, startY = 0, endX = width - 1, endY = height - 1;
+	if( region ) {
+		if( region->left > region->right || region->top > region->bottom ||
+			region->left >= width || region->top >= height ) return;
+		startX = region->left;
+		startY = region->top;
+		endX = r_min( region->right, width - 1 );
+		endY = r_min( region->bottom, height - 1 );
+	}
+
+	// Writers (BatchCommit) mutate a row under rowMutexes[row] while a
+	// preview composition may resolve concurrently.  Snapshot each row's
+	// span under that same lock, release it, then write the target: no row
+	// lock is held across the target's SetPEL/GetPEL (lock-free for every
+	// in-tree target) and only one row lock is ever held at a time.
+	std::vector<SplatPixel> row( static_cast<std::size_t>( endX - startX ) + 1 );
+	for( unsigned int y=startY; y<=endY; y++ ) {
+		{
+			std::lock_guard<RMutex> rowLock( *rowMutexes[y] );
+			const SplatPixel* src = &pixels[static_cast<std::size_t>( y ) * width + startX];
+			std::copy( src, src + row.size(), row.begin() );
+		}
+		for( unsigned int x=startX; x<=endX; x++ ) {
+			const SplatPixel& pixel = row[x - startX];
+			if( pixel.weight > 0 ) {
+				// Scale the accumulated splat by the total sample count and
+				// add it to (or, for Unresolve, subtract it from) the target.
+				const RISEColor existing = target.GetPEL( x, y );
+				const RISEPel splatPel = pixel.color * invSamples;
+				const RISEColor combined( subtract ? existing.base - splatPel : existing.base + splatPel, existing.a );
+				target.SetPEL( x, y, combined );
+			}
+		}
 	}
 }
 
@@ -272,37 +333,7 @@ void SplatFilm::Resolve(
 	const Rect* region
 	) const
 {
-	if( sampleCount <= 0 || width == 0 || height == 0 ) {
-		return;
-	}
-
-	const Scalar invSamples = 1.0 / sampleCount;
-	unsigned int startX = 0, startY = 0, endX = width - 1, endY = height - 1;
-	if( region ) {
-		if( region->left > region->right || region->top > region->bottom ||
-			region->left >= width || region->top >= height ) return;
-		startX = region->left;
-		startY = region->top;
-		endX = r_min( region->right, width - 1 );
-		endY = r_min( region->bottom, height - 1 );
-	}
-
-	for( unsigned int y=startY; y<=endY; y++ ) {
-		for( unsigned int x=startX; x<=endX; x++ ) {
-			const SplatPixel& pixel = pixels[y * width + x];
-
-			if( pixel.weight > 0 ) {
-				// Get the existing color in the target
-				RISEColor existing = target.GetPEL( x, y );
-
-				// Scale the accumulated splat by the total sample count and add
-				RISEPel splatPel = pixel.color * invSamples;
-				RISEColor combined( existing.base + splatPel, existing.a );
-
-				target.SetPEL( x, y, combined );
-			}
-		}
-	}
+	ApplyResolved( target, sampleCount, region, false );
 }
 
 void SplatFilm::Unresolve(
@@ -311,40 +342,14 @@ void SplatFilm::Unresolve(
 	const Rect* region
 	) const
 {
-	if( sampleCount <= 0 || width == 0 || height == 0 ) {
-		return;
-	}
-
-	const Scalar invSamples = 1.0 / sampleCount;
-	unsigned int startX = 0, startY = 0, endX = width - 1, endY = height - 1;
-	if( region ) {
-		if( region->left > region->right || region->top > region->bottom ||
-			region->left >= width || region->top >= height ) return;
-		startX = region->left;
-		startY = region->top;
-		endX = r_min( region->right, width - 1 );
-		endY = r_min( region->bottom, height - 1 );
-	}
-
-	for( unsigned int y=startY; y<=endY; y++ ) {
-		for( unsigned int x=startX; x<=endX; x++ ) {
-			const SplatPixel& pixel = pixels[y * width + x];
-
-			if( pixel.weight > 0 ) {
-				RISEColor existing = target.GetPEL( x, y );
-				RISEPel splatPel = pixel.color * invSamples;
-				RISEColor combined( existing.base - splatPel, existing.a );
-				target.SetPEL( x, y, combined );
-			}
-		}
-	}
+	ApplyResolved( target, sampleCount, region, true );
 }
 
 void SplatFilm::Clear()
 {
-	for( unsigned int i=0; i<pixels.size(); i++ ) {
-		pixels[i].color = RISEPel( 0, 0, 0 );
-		pixels[i].weight = 0;
+	for( auto& pixel : pixels ) {
+		pixel.color = RISEPel( 0, 0, 0 );
+		pixel.weight = 0;
 	}
 }
 

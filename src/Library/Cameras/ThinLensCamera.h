@@ -16,6 +16,7 @@
 #define THINLENS_CAMERA_
 
 #include "CameraCommon.h"
+#include "../Interfaces/ILog.h"
 
 namespace RISE
 {
@@ -97,6 +98,13 @@ namespace RISE
 			// of truth (editor reads them in mm directly).
 			Scalar		shiftX_sceneUnits;
 			Scalar		shiftY_sceneUnits;
+			// Inverse of `mxTrans`, cached by Recompute (the only place
+			// `mxTrans` is assigned for this camera).  The light-tracing
+			// inverse projection -- `RasterFromLensPoint`, on the hot
+			// t==1 connection path of BDPT and VCM -- needs it once per
+			// splat, and a 4x4 inverse per splat is not a per-frame cost
+			// worth paying when the matrix only changes on Recompute.
+			Matrix4		mxTransInv;
 			// Cached 1/pixelAR for the aperture-sample X compensation.
 			// `mxTrans` includes a Stretch(pixelAR, 1, 1) — see
 			// ComputeScaleFromAR.  The image-plane math already
@@ -118,10 +126,34 @@ namespace RISE
 
 			Matrix4	ComputeScaleFromAR( ) const;
 
+			//! The whole per-(film sample, lens point) direction
+			//! construction: image-plane sample with shift, chief-ray
+			//! intersection with the (possibly tilted) focal plane, and
+			//! the normalised WORLD direction from `ptOnLens` to that
+			//! focus point.  `screenX` / `screenY` are raster
+			//! coordinates, `ptOnLens` is the camera-local aperture
+			//! point (already pixelAR-compensated).
+			//!
+			//! Single source of truth for both `GenerateRay` /
+			//! `GenerateRayWithLensSample` and for the +x / +y
+			//! differential rays, so lens shift, anamorphic squeeze,
+			//! focal-plane tilt and aperture-blade shaping are
+			//! inherited by the differentials rather than re-derived.
+			Vector3 ComputeWorldDirection( const Point3& ptOnLens, const Scalar screenX, const Scalar screenY ) const;
+
+			//! Populate `r` (origin, direction AND ray differentials)
+			//! for one film sample through one aperture point.  Shared
+			//! tail of both public generators; see the implementation
+			//! for what the thin-lens differential measures.
+			void EmitRayThroughLens( Ray& r, const Point3& ptOnLens, const Point2& ptOnScreen ) const;
+
 			//! Recomputes camera parameters from class values
 			void Recompute( const unsigned int width, const unsigned int height ) override;
 
 		public:
+			//! DL-465: see CameraCommon::CloneForTimeView.
+			CameraCommon* CloneForTimeView() const override { return new ThinLensCamera( *this ); }
+
 			ThinLensCamera(
 				const Point3& vPosition,
 				const Point3& vLookAt,
@@ -195,15 +227,168 @@ namespace RISE
 				// caller.
 				if( v > 0 ) sceneUnitMeters = v;
 			}
-			inline void SetTiltX( Scalar v )                   { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) tiltX = v; }
-			inline void SetTiltY( Scalar v )                   { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) tiltY = v; }
+			//! The parser refuses |tilt| >= 80 degrees (see the
+			//! thinlens_camera descriptor); the editor property path and
+			//! the Blender bridge reach these setters and the constructor
+			//! directly, so the same bound is enforced here.  Past it the
+			//! focal plane's vanishing line crosses the frame and
+			//! ComputeWorldDirection's n_dot_p changes sign mid-image.
+			static Scalar ClampTilt( const Scalar v )
+			{
+				const Scalar kMaxTiltRad = Scalar( 1.396 );	// 80 degrees, matches the parser
+				return v > kMaxTiltRad ? kMaxTiltRad : ( v < -kMaxTiltRad ? -kMaxTiltRad : v );
+			}
+			inline void SetTiltX( Scalar v )                   { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) tiltX = ClampTilt( v ); }
+			inline void SetTiltY( Scalar v )                   { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) tiltY = ClampTilt( v ); }
 			inline void SetShiftX( Scalar v )                  { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) shiftX = v; }
 			inline void SetShiftY( Scalar v )                  { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) shiftY = v; }
 			inline void SetApertureBlades( unsigned int v )    { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) apertureBlades = v; }
 			inline void SetApertureRotation( Scalar v )        { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) apertureRotation = v; }
-			inline void SetAnamorphicSqueeze( Scalar v )       { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) anamorphicSqueeze = v; }
+			//! The parser rejects `anamorphic_squeeze <= 0` (see the
+			//! thinlens_camera descriptor and GetApertureWorldArea()'s
+			//! own comment): `squeeze == 0` collapses the aperture to a
+			//! line, driving GetApertureWorldArea() to zero, which makes
+			//! BDPTCameraUtilities::HasFiniteAperture FALSE and splits
+			//! the eye ray (still sampling the collapsed segment) from
+			//! the t==1 connection (now imaging through the lens CENTRE)
+			//! onto different camera vertices.  A negative squeeze does
+			//! NOT reach that failure mode -- GetApertureWorldArea()
+			//! takes `fabs( anamorphicSqueeze )`, so it mirrors the
+			//! aperture about the lens's x-axis identically for both the
+			//! eye sampler (`SampleLensPoint`) and the t==1 connection
+			//! sampler, at unchanged area.  It is rejected anyway because
+			//! it is nonsense authoring, not a correctness hazard: the
+			//! parser's rejection message already says so ("use a value
+			//! in (0,1] for oval bokeh, 1.0 for circular").  The parser
+			//! only validates the AUTHORED value, though -- a KEYFRAMED
+			//! squeeze interpolating between two positive endpoints can
+			//! pass through 0 at a runtime-interpolated time the parser
+			//! never sees, and the editor / Blender-bridge property path
+			//! reaches this setter directly, bypassing the parser
+			//! entirely.  Enforce the same bound here: reject and keep
+			//! the last valid value rather than silently splitting the
+			//! paths mid-animation.
+			inline void SetAnamorphicSqueeze( Scalar v )
+			{
+				Transformable::PreparedExternalMutationScope m;
+				if( !m.IsValid() ) return;
+				if( v > 0 ) {
+					anamorphicSqueeze = v;
+				} else {
+					GlobalLog()->PrintEx( eLog_Error,
+						"ThinLensCamera::SetAnamorphicSqueeze:: rejected non-positive value %f "
+						"(a keyframed anamorphic_squeeze crossed <= 0); keeping %f -- see "
+						"GetApertureWorldArea()'s contract for why 0 or negative is unsafe.",
+						v, anamorphicSqueeze );
+				}
+			}
 
 			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const override;
+
+			//===============================================================
+			// Finite-aperture surface for bidirectional transport (debt 28).
+			//
+			// A thin lens is the only RISE camera whose importance is
+			// emitted from a region of non-zero AREA, so the t==1
+			// light-tracing strategy in BDPT / VCM cannot just connect to
+			// `GetLocation()`: it has to SAMPLE a point on the aperture
+			// with the same shape and density the primary rays use, divide
+			// by that density, and work out which film sample images the
+			// light vertex THROUGH that point.  These four methods are the
+			// whole surface `BDPTCameraUtilities` needs for that; they are
+			// deliberately concrete (not ICamera virtuals) for the same
+			// reason `GenerateRayWithLensSample` is -- see its comment.
+			//===============================================================
+
+			//! WORLD-space area of the entrance aperture.  Polygonal
+			//! blades and the anamorphic squeeze are included; the
+			//! `pixelAR` pre-stretch is NOT, because it cancels
+			//! (`SampleLensPoint` divides x by pixelAR and `mxTrans`
+			//! multiplies it back, which is exactly what keeps the lens
+			//! axisymmetric in world space).  Zero for a degenerate
+			//! aperture (fstop -> infinity), which callers must
+			//! treat as the pinhole limit rather than dividing by it.
+			//!
+			//! `anamorphic_squeeze == 0` would be the OTHER way to reach
+			//! zero here, and the scene parser rejects it rather than allow
+			//! it (debt 28 review, A P2-3): a zero area makes
+			//! `BDPTCameraUtilities::HasFiniteAperture` false, so the
+			//! bidirectional integrators would connect t==1 to the lens
+			//! CENTRE while `GenerateRay` went on sampling the collapsed
+			//! line segment -- eye and light layers imaging through
+			//! different camera vertices.  A negative squeeze does not
+			//! reach that failure mode -- the `fabs()` below keeps the
+			//! area positive and identical for both samplers, just
+			//! mirrored -- and is rejected only because it is nonsense
+			//! authoring (the parser's rejection message spells out the
+			//! intended `(0,1]` range), not because it would split the
+			//! eye/connection paths.  The parser only validates the
+			//! AUTHORED value, though, so `SetAnamorphicSqueeze` (reached
+			//! by keyframe interpolation, the editor, and the Blender
+			//! bridge) and `RISE_API_CreateThinlensCamera` (reached by any
+			//! direct API caller) enforce the same `> 0` bound themselves
+			//! (debt 28 round 2, A2 P2-5) -- this contract holds for every
+			//! construction path, not only scene-file authoring.
+			//!
+			//! `SampleLensPoint` is UNIFORM over this area -- the disk
+			//! path is uniform by construction and the n-gon path's
+			//! sec^2 inverse-CDF was derived to be (see SampleAperture in
+			//! the .cpp) -- so the area density of a sampled point is
+			//! exactly 1 / GetApertureWorldArea().
+			Scalar GetApertureWorldArea() const;
+
+			//! Sample a point on the entrance aperture with the SAME
+			//! shape and density `GenerateRay` uses, from two canonical
+			//! randoms.  Returns the CAMERA-LOCAL point (z == 0, x
+			//! already pixelAR-compensated) -- the coordinates
+			//! `RasterFromLensPoint` expects.  Push it through
+			//! `LensPointToWorld` for the connection geometry.
+			Point3 SampleLensPoint( const Point2& uv ) const;
+
+			//! Camera-local aperture point -> world space.
+			Point3 LensPointToWorld( const Point3& ptOnLens ) const;
+
+			//! Inverse of the ray generation THROUGH A GIVEN APERTURE
+			//! POINT: the raster coordinates of the film sample whose
+			//! generated ray leaves `ptOnLens` in the direction of
+			//! `worldPoint`.  FALSE when the point is behind the lens or
+			//! lands outside the film.
+			//!
+			//! Mechanically the exact inverse of `ComputeWorldDirection`:
+			//! intersect the (lens point -> world point) ray with the
+			//! plane of focus, then project that focus-plane point back
+			//! through the lens CENTRE onto the sensor.  Every constant it
+			//! uses (dx/dy, sx/sy, the shift cache, the focal-plane
+			//! equation, filmDistance) is the one ray generation uses, so
+			//! lens shift and focal-plane tilt are inverted rather than
+			//! ignored.
+			//!
+			//! Passing `ptOnLens = (0,0,0)` gives the lens-CENTRE
+			//! projection -- what a pinhole of the same field of view
+			//! would report, and what `BDPTCameraUtilities::Rasterize`
+			//! returns for this camera.  Passing a SAMPLED point is what
+			//! gives light-traced contributions the same depth of field
+			//! the eye rays have: two lens points image an off-focus world
+			//! point to raster positions a circle-of-confusion apart, and
+			//! an ON-focus point to the same raster position for every
+			//! lens point.
+			bool RasterFromLensPoint(
+				const Point3& worldPoint,		///< [in] World-space point to image
+				const Point3& ptOnLens,			///< [in] Camera-local aperture point (z == 0)
+				Point2& rasterOut				///< [out] Raster coordinates
+				) const;
+
+			//! The image-plane normalisation the camera's importance and
+			//! directional pdf are both built from:
+			//!     k = filmDistance^2 / (|sx * sy| * pixelAR)
+			//! i.e. (image-plane distance)^2 divided by the WORLD-space
+			//! area of one pixel on that plane.  Algebraically identical
+			//! to `height^2 / (4 tan^2(fov/2) * pixelAR)`; expressed in
+			//! the cached ray-generation constants so it cannot drift
+			//! from them.  Callers form `k / cos^3(theta)` for the
+			//! solid-angle pdf of one pixel and `k / (W*H*cos^3(theta))`
+			//! for the importance.
+			Scalar GetImagePlanePixelDensity() const;
 
 			//! Landing 5: photographic exposure compensation in EV stops.
 			//! Returns 0 when iso == 0 (physical exposure disabled);

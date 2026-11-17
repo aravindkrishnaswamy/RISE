@@ -247,10 +247,28 @@ Writing a bug-fix test AFTER the fix and running it green proves nothing:
 it may be tautological, or read the WRONG observable (a real example this
 session: a camera test checked `GetTargetOrientation().x` when the orbit
 writes `.y`, so its "reverted" assertions passed trivially).  **RED-prove
-every bug-fix test:** see it FAIL without the fix.  `tools/red_prove.sh
-<TestName> <marker> <src-file>...` automates it (stash the fix → build →
-assert FAIL → restore → assert PASS).  If it can't be made to fail without
-the fix, the test isn't pinning the bug.
+every bug-fix test:** see it FAIL without the fix.
+
+`tools/red_prove.sh [--args "<test-args>"] <TestName> <marker> <src-file>...`
+automates this (stash only the listed fix `<src-file>`s → build → assert
+RED → restore → build → assert GREEN).  Obey its output contract so
+false-greens cannot slip through:
+
+- **RED phase**: the test must exit with a normal assertion failure
+  (`1..127`, not exit `0` and not a crash signal `>= 128`) and print at
+  least one `FAIL` line containing `<marker>`.
+- **GREEN phase**: the test must exit `0` with zero `FAIL` lines, print
+  at least as many explicit marker-tied pass lines (`ok: ... <marker>`,
+  `PASS`, `PASSED`, or `✓` containing `<marker>`) as RED had `FAIL`
+  lines, and if a `<N> passed` summary is printed, `<N> passed` must
+  increase over RED by at least the RED marker-failure count.
+
+Use `--args "<test-args>"` when the targeted regression case is gated behind
+a CLI flag (e.g. `--dl482-only`).  For fast iteration across related
+suites before full sign-off, run `./run_all_tests.sh --tier fast --filter
+"<glob>"` (and `./run_all_tests.sh --tier all` for full-suite sign-off).
+If a bug-fix test can't be made to fail without the fix, it isn't pinning
+the bug.
 
 ## Concrete Examples From This Repo
 

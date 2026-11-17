@@ -127,6 +127,8 @@
 #define RISE_AGENT_AGENTCHATCODECS_
 
 #include <cstddef>
+#include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -291,6 +293,7 @@ namespace RISE
 			Refusal,       //!< the provider declined the request (safety/refusal)
 			MaxTokens,     //!< the reply hit the output-token cap (truncated; discarded).  A verbatim retry will likely truncate again -- recovery needs a NEW/narrower user message, not an automatic retry.
 			IterationCap,  //!< the loop's per-turn tool-round cap tripped
+			MalformedToolCall, //!< the model attempted a tool call the provider/codec could not accept as a call (Gemini finishReason MALFORMED_FUNCTION_CALL; OpenAI-family arguments that are not a JSON object).  Nothing is executed or recorded; AgentChatLoop::HandleResponse answers it with a bounded corrective retry (see ChatStepResult::retryDegenerateTurn), so only an EXHAUSTED budget reaches the user as an error.
 			Misuse         //!< caller-contract violation (e.g. HandleResponse while calls are pending)
 		};
 
@@ -390,10 +393,15 @@ namespace RISE
 			//! the sibling ChatErrorKind::Refusal branches at the same sites
 			//! (a structured refusal / content_filter is a considered
 			//! decision, not a serving glitch, and must stay terminal), and
-			//! not set on any other structural refusal (malformed tool args,
-			//! id-less tool_call, ...).  Only the eval runner's attempt loop
-			//! consumes this flag; AgentChatLoop's interactive driver does
-			//! not retry on it.  Always false for ToolCalls / FinalText and
+			//! not set on any other structural refusal (id-less tool_call,
+			//! duplicate id, ...).  ALSO set by AgentChatLoop::HandleResponse
+			//! (never by a codec) on a ChatErrorKind::MalformedToolCall
+			//! while that turn's corrective-retry budget lasts: the loop
+			//! queues a corrective user message that the next BuildRequest
+			//! appends, so the driver's recovery is the same "just call
+			//! BuildRequest again" it already performs for a blank turn.
+			//! Consumed by the eval runner's attempt loop and the GUI
+			//! drivers.  Always false for ToolCalls / FinalText and
 			//! for every other error kind.
 			bool                      retryDegenerateTurn = false;
 		};
@@ -538,7 +546,8 @@ namespace RISE
 			virtual std::string RewriteElidedToolResults(
 				const std::string& packedEntryJson,
 				const std::vector<std::size_t>& resultIndices,
-				const std::string& placeholderText ) const = 0;
+				const std::string& placeholderText,
+				const std::string& noteKey ) const = 0;
 
 			//! Build the full HTTP request for the current conversation.
 			//! `apiKey` is used ONLY for the auth header -- it is not
@@ -594,7 +603,8 @@ namespace RISE
 			virtual std::string RewriteElidedToolResults(
 				const std::string& packedEntryJson,
 				const std::vector<std::size_t>& resultIndices,
-				const std::string& placeholderText ) const;
+				const std::string& placeholderText,
+				const std::string& noteKey ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -629,7 +639,8 @@ namespace RISE
 			virtual std::string RewriteElidedToolResults(
 				const std::string& packedEntryJson,
 				const std::vector<std::size_t>& resultIndices,
-				const std::string& placeholderText ) const;
+				const std::string& placeholderText,
+				const std::string& noteKey ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -697,7 +708,8 @@ namespace RISE
 			virtual std::string RewriteElidedToolResults(
 				const std::string& packedEntryJson,
 				const std::vector<std::size_t>& resultIndices,
-				const std::string& placeholderText ) const;
+				const std::string& placeholderText,
+				const std::string& noteKey ) const;
 			virtual ChatHttpRequest BuildRequest(
 				const std::string& modelId,
 				const std::string& apiKey,
@@ -716,12 +728,19 @@ namespace RISE
 		//! True iff packing (call, raw JSON-RPC envelope line) would carry
 		//! a LIVE image block/part -- i.e. a success result from one of the
 		//! image-capable verbs (read_image, compare_to_reference,
-		//! read_viewport, or a render called with imageMaxEdge) with a
-		//! non-empty png_base64.
+		//! read_viewport, file_build_plan's G3a sketch composite,
+		//! imagine_scene's generated scene target, or a render called with
+		//! imageMaxEdge -- or, since Arc 77 Phase 2, a render carrying either
+		//! comparison composite, which rides the SAME png_base64 field on the
+		//! SAME `render` verb and so needs no new entry) with a non-empty
+		//! png_base64.
 		//! Shared by the loop (to decide when the
-		//! image-elision pass must run) and the codecs (which use the same
-		//! predicate to build the image block/part), so the two can never
-		//! disagree about what counts as an image-bearing result.
+		//! image-elision pass must run), the codecs (which use the same
+		//! predicate to build the image block/part), and -- as of
+		//! 2026-08-11 -- the MCP adapter's tools/call handler (which used
+		//! to keep its own hardcoded verb list and had drifted from this
+		//! one), so the three transports can never disagree about what
+		//! counts as an image-bearing result.
 		bool ChatToolResultCarriesImage( const ChatToolCall& call,
 		                                 const std::string& rawJsonRpcResponseLine );
 
@@ -762,6 +781,20 @@ namespace RISE
 		//!       tested; what (4) forbids is one RESULT being claimed by
 		//!       both.)
 		//! ON THE LIST TODAY: read_document and list_proposals.
+		//!
+		//! PLUS ONE ARGUMENT-NORMALIZED KEY (doc 91 slice L3a, 2026-10-17):
+		//! a successful NAMED read_skill (result {name, markdown}) is keyed
+		//! kChatReadSkillKeyPrefix + the skill's name, so a later read of the
+		//! SAME skill supersedes the earlier copy while two different skills
+		//! never collide -- exactly the argument-normalizing key function
+		//! property (3) below asks for.  Per name, property (1) holds (the
+		//! later copy is the whole file again).  Property (2) does NOT: a
+		//! skill file is static, so the elided copy is REDUNDANT rather than
+		//! stale -- admitted on cost (doc 91: three skill reads, 165 KB, live
+		//! to the end of a session), not correctness.  The INDEX form (no
+		//! name) is never keyed.  The exclusions below that name read_skill
+		//! are about the verb as a whole (different names = different
+		//! content), and still hold across names.
 		//!
 		//! list_proposals is a parameterless whole-queue read of mutable
 		//! state and is not image-bearing, so it satisfies (1)-(4).  It is
@@ -807,12 +840,80 @@ namespace RISE
 		std::string ChatToolResultSupersessionKey( const ChatToolCall& call,
 		                                           const std::string& rawJsonRpcResponseLine );
 
+		//! The JSON key a superseded-result placeholder rides under on the
+		//! wires whose result payload must stay an object (Gemini, OpenAI);
+		//! Anthropic carries the text as a plain text block and ignores it.
+		inline constexpr char kChatSupersededNoteKey[] = "superseded_note";
+		//! The key a LIFETIME stub (doc 91 L2/L3b) rides under -- distinct
+		//! from supersession's, so a reader of the wire can tell "a newer copy
+		//! exists" from "its subject is settled".
+		inline constexpr char kChatRetiredNoteKey[] = "retired_note";
+
 		//! The honest, actionable placeholder that replaces a superseded
 		//! result's payload -- a pure function of the verb name, so the
 		//! rewrite stays deterministic and replay-safe.  It says WHAT was
 		//! removed, WHY, and HOW to get it back, exactly as the image
 		//! elision note does.
 		std::string ChatSupersededResultNote( const std::string& verbName );
+
+		//! The prefix of a read_skill supersession key (see
+		//! ChatToolResultSupersessionKey): the key is this prefix followed
+		//! by the skill name.  A unit-separator byte can never appear in a
+		//! skill name (ReadSkill serves bare .md basenames), so a read_skill
+		//! key can never equal a plain verb-name key.
+		inline constexpr char kChatReadSkillKeyPrefix[] = "read_skill\x1f";
+
+		//! The placeholder for a superseded result, given its SUPERSESSION
+		//! KEY rather than its verb: a plain verb key forwards to
+		//! ChatSupersededResultNote, a read_skill key yields a note naming
+		//! the skill and the exact call that gets it back.  Pure function of
+		//! the key -- deterministic and replay-safe.
+		std::string ChatSupersededResultNoteForKey( const std::string& supersessionKey );
+
+		//! CONTEXT LIFETIMES (doc 91 slice L2): the stub an earlier
+		//! build_element / insert_chunks result for `element` is rewritten
+		//! to once a successful finish_element for that element has flowed
+		//! through the chat loop.  It states ONLY facts that cannot go stale
+		//! (review rounds 5-6): the result was retired when the element was
+		//! finished, read_document shows the CURRENT document and
+		//! finish_element / reopen_element results list the element's
+		//! chunks (pointers, not a claim that any exist; read_document has
+		//! no element attribution), and `facts` / `carried` --
+		//! recorded from the elided result and labelled as of that result
+		//! (the bounding box "when built", the head version "after that
+		//! call", the per-chunk outcomes "that call reported").
+		//! It never states an edit or reopen rule: the phase, the session
+		//! mode and the plan all change after the finish, and the session's
+		//! own refusal message names reopen_element when an edit is actually
+		//! refused.
+		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
+		                                               const std::string& element,
+		                                               const std::string& facts,
+		                                               const std::string& carried );
+
+		//! The canonical success message of a clean chunk insert, restated
+		//! for the sans-IO chat loop (which does not link IJobPriv.h, where
+		//! the writers' constant kCstChunkInsertedMessage lives); the carried
+		//! per-chunk notices strip it so their byte budget goes to the
+		//! notice itself.  AgentChatLoopTest T14d pins the two equal.
+		inline constexpr char kChatChunkInsertedMessage[] =
+			"chunk inserted via a full re-derive (Scene + managers were replaced)";
+
+		//! CONTEXT LIFETIMES (doc 91 slice L3b): the stub a live named
+		//! read_skill result is rewritten to once a successful
+		//! finish_element has reported the build plan's compose phase.
+		//! Past tense ("retired when every element ... was finished"): a
+		//! later reopen_element or new plan would make a present-tense
+		//! claim false, and the stub is never rewritten.
+		std::string ChatComposeSkillRetirementNote( const std::string& skillName );
+
+		//! The build-protocol phase name finish_element reports (its
+		//! `phase` field) once every element of the filed plan is finished
+		//! -- AgentSession::BuildPhaseName(AgentBuildPhase::Compose).  The
+		//! chat loop is sans-IO and does not link the session, so the
+		//! spelling is restated here and AgentChatLoopTest T14c pins the
+		//! two equal.
+		inline constexpr char kChatComposePhaseName[] = "compose";
 
 		//! Number of LIVE (not-yet-elided) image blocks/parts in a
 		//! MakeUserEntry-produced user entry -- i.e. how many of its
@@ -840,6 +941,355 @@ namespace RISE
 		//! table every codec maps from, so the fingerprint never depends on
 		//! which provider is selected.
 		std::string ChatToolDefsFingerprint();
+
+		//--------------------------------------------------------------
+		// Arc 77 Phase 2 (2026-08-11) -- PROVIDER IMAGE GENERATION, the
+		// wire half of `imagine_scene`.
+		//
+		// WHERE THIS LIVES AND WHY.  These four functions are the ONLY
+		// place the tree knows how a provider is asked for an image.
+		// They sit in the codec TU for the same reason the chat request
+		// builders do: it is the one file that already owns per-provider
+		// URLs, auth-header names and body shapes, and keeping the image
+		// call beside them is what makes "same auth idiom as the chat
+		// transport" checkable by reading one file.  They build/parse
+		// ONLY -- exactly like IChatProviderCodec::BuildRequest, nothing
+		// here touches the network.  The HOST performs the POST through
+		// the SAME IChatHttpTransport seam the chat rounds use.
+		//
+		// PROVIDER IDENTITY IS A STRING, not the ChatProvider enum: that
+		// enum lives in AgentChatLoop.h, one layer ABOVE this file, and
+		// the callers that need this (the eval runner, a GUI driver)
+		// already have the canonical lowercase name.  Accepted names are
+		// exactly "anthropic", "gemini", "openai", "xai", "local" -- the
+		// same spellings AgentEvalRunner's ChatProviderName emits.  An
+		// unrecognized name is simply NOT CAPABLE; it never throws and
+		// never guesses an endpoint.
+		//
+		// CAPABILITY IS PER PROVIDER, NOT PER TOOL TABLE.  `imagine_scene`
+		// stays in kToolDefs for EVERY provider (a per-provider tool
+		// table would fork the shared-table architecture); a provider
+		// without the capability answers the call with an honest
+		// statement instead of an image.
+		//--------------------------------------------------------------
+
+		//! Does `providerName` have a wired image-generation endpoint?
+		//! true for "gemini" and "openai"; false for every other name,
+		//! including unrecognized ones.
+		bool ChatProviderSupportsImageGeneration( const std::string& providerName );
+
+		//! The image model id this build will ask `providerName` for --
+		//! the compiled-in default, overridden by an environment variable
+		//! so a hand test can retarget a model without recompiling:
+		//!   gemini -> RISE_IMAGE_MODEL_GEMINI (default "gemini-3.1-flash-image")
+		//!   openai -> RISE_IMAGE_MODEL_OPENAI (default "gpt-image-1")
+		//! Empty string for a provider with no capability.  The env read
+		//! is CONFIG, not a credential (the same distinction AgentChatLoop's
+		//! RISE_LOCAL_LLM_BASE_URL read is documented under) -- no key is
+		//! ever read from the environment here.
+		std::string ChatImageGenerationModelId( const std::string& providerName );
+
+		//! Arc 77 Phase 2b (2026-08-11): the host-side STYLE directive
+		//! appended to every image-generation prompt, so the generated
+		//! target is something a path tracer driving SDF primitives can
+		//! actually approach.
+		//!
+		//! WHY IT EXISTS.  Phase 2 forwarded the model's description
+		//! verbatim and providers returned cinematic concept art --
+		//! painterly texture, volumetric god-rays, photographic depth of
+		//! field.  A target the renderer cannot get near shows a
+		//! difference on every render and never one the model can close,
+		//! which is the opposite of a progress-check.  The directive asks
+		//! for plain matte flat shading, simple geometric forms, neutral
+		//! even lighting, a plain background, and no painterly /
+		//! photographic / textual embellishment.
+		//!
+		//! IT CONSTRAINS STYLE ONLY.  The model's description remains the
+		//! SUBJECT, unaltered and first -- the imagining stays the model's
+		//! act.  Overridable wholesale by RISE_IMAGE_STYLE_PROMPT (config,
+		//! not a credential, same read as the model/endpoint overrides
+		//! above); an unset or empty value keeps the compiled-in default.
+		std::string ChatImageStyleDirective();
+
+		//! The exact prompt string sent to a provider for `description`:
+		//! the description verbatim, a blank line, then
+		//! ChatImageStyleDirective().  Exposed (rather than left inline in
+		//! BuildImageGenerationRequest) so a test can pin the composition
+		//! order without building a request per provider.  Either half
+		//! being empty degrades to the other alone.
+		std::string ComposeImageGenerationPrompt( const std::string& description );
+
+		//! Build the POST that asks `providerName` for ONE image of
+		//! `prompt`.  `prompt` is the model's own DESCRIPTION; this
+		//! function composes it with the style directive above
+		//! (ComposeImageGenerationPrompt) before it reaches either
+		//! provider body, so the two cannot drift.  `apiKey` rides in the provider's OWN auth header --
+		//! the identical header name and sanitization the chat codec for
+		//! that provider uses (`x-goog-api-key` for Gemini, `Authorization:
+		//! Bearer` for OpenAI), never a query parameter, never a log.
+		//! Returns false with a factual `outError` when the provider has
+		//! no capability or the model id resolved empty.
+		//!
+		//! Endpoint overrides, for the same no-recompile hand-test reason
+		//! as the model ids:
+		//!   gemini -> RISE_IMAGE_ENDPOINT_GEMINI (default
+		//!             "https://generativelanguage.googleapis.com/v1beta/models")
+		//!             -- the MODELS BASE; "/<model>:generateContent" is
+		//!             appended, matching GeminiChatCodec::BuildRequest.
+		//!   openai -> RISE_IMAGE_ENDPOINT_OPENAI (default
+		//!             "https://api.openai.com/v1/images/generations") -- the
+		//!             FULL url.
+		//! Two more, both narrow and both there because the exact accepted
+		//! value is provider-version-dependent:
+		//!   RISE_IMAGE_MODALITIES_GEMINI (default "IMAGE") -- a
+		//!     comma-separated responseModalities list.
+		//!   RISE_IMAGE_SIZE_OPENAI (default "1024x1024") -- the `size`
+		//!     field.
+		bool BuildImageGenerationRequest( const std::string& providerName,
+		                                  const std::string& modelId,
+		                                  const std::string& apiKey,
+		                                  const std::string& prompt,
+		                                  ChatHttpRequest& outRequest,
+		                                  std::string& outError );
+
+		//! Pull the FIRST generated image out of a 200-OK response body.
+		//! Gemini: `candidates[0].content.parts[]`, the first part with
+		//! `inlineData`/`inline_data` {mimeType, data}.  OpenAI:
+		//! `data[0].b64_json`.  On success `outBytes` holds the DECODED
+		//! image bytes and `outMimeType` whatever the provider declared
+		//! ("image/png" assumed for OpenAI, which documents PNG and sends
+		//! no mime).  Returns false with a factual, HEADER-FREE and
+		//! BODY-FREE `outError` otherwise -- a provider body can carry
+		//! prompt text and must not be echoed wholesale into a result the
+		//! model reads back.
+		bool ParseImageGenerationResponse( const std::string& providerName,
+		                                   const std::string& body,
+		                                   std::vector<unsigned char>& outBytes,
+		                                   std::string& outMimeType,
+		                                   std::string& outError );
+
+		//--------------------------------------------------------------
+		// GUI wiring (2026-08-11): the ONE place that turns the four
+		// building blocks above into an installable host image
+		// generator.  AgentEvalRunner.cpp used to hand-roll this exact
+		// wiring inline (build request -> POST -> parse response ->
+		// AgentSession::AgentImageGenOutcome); the Mac and Windows GUI
+		// drivers need the identical wiring to make `imagine_scene`
+		// work in-app, so it now lives here, once, beside the codec
+		// functions it composes.
+		//
+		// LAYERING: this file stays independent of AgentSession.h (a
+		// much larger, higher-level header) -- ChatImageGenerator below
+		// mirrors the SHAPE of AgentSession::AgentImageGenerator field-
+		// for-field, but is its own type.  Every caller that installs
+		// it via AgentSession::SetImageGenerator does a trivial 4-field
+		// copy (see AgentEvalRunner.cpp / RISEViewportBridge.mm for the
+		// two existing copies; ChatPanel.cpp mirrors it for Windows).
+		//
+		// `IChatHttpTransport` is only FORWARD-declared here (defined
+		// in ChatHttpTransport.h, which itself includes THIS header for
+		// ChatHttpRequest) -- taking it by reference keeps this
+		// declaration circular-include-free; the .cpp includes
+		// ChatHttpTransport.h to call Post().
+		//--------------------------------------------------------------
+
+		class IChatHttpTransport;
+
+		//! One blocking image-generation attempt's outcome.  Mirrors
+		//! AgentSession::AgentImageGenOutcome's four fields exactly.
+		struct ChatImageGenOutcome
+		{
+			bool                       ok = false;
+			std::vector<unsigned char> bytes;
+			std::string                mimeType;
+			std::string                error;
+		};
+
+		//! The host-installable shape.  Mirrors
+		//! AgentSession::AgentImageGenerator's three data fields plus
+		//! `generate`; see MakeChatImageGenerator's doc for how it is
+		//! built and AgentSession.h for why the real installation point
+		//! is a distinct, higher-level type.
+		struct ChatImageGenerator
+		{
+			bool        supported = false;
+			std::string providerName;
+			std::string modelId;
+			std::function<ChatImageGenOutcome( const std::string& description )> generate;
+		};
+
+		//! Build the FULL host-installable image generator for
+		//! `providerName`: `supported`/`modelId` resolved exactly as
+		//! ChatProviderSupportsImageGeneration/ChatImageGenerationModelId
+		//! already do, and (when supported) `generate` wired to perform
+		//! ONE synchronous BuildImageGenerationRequest -> `transport`.Post
+		//! -> ParseImageGenerationResponse round trip per call.  `apiKey`
+		//! is captured by value into the returned callable -- callers
+		//! that need a fresh key after a provider/key change must call
+		//! this function again and reinstall the result (see
+		//! AgentSession::SetImageGenerator's "call once, before the
+		//! session serves requests" contract: reinstalling is exactly
+		//! how a host satisfies that after the credential moves).
+		//!
+		//! `transport` is captured by shared_ptr into the returned
+		//! callable, so the caller may pass a fresh instance, a
+		//! process-lifetime singleton, or (as AgentEvalRunner.cpp does)
+		//! an adapter over its own replay/live FetchFn abstraction --
+		//! this function does not care which, only that `Post` performs
+		//! ONE synchronous round trip.  Never throws; an unsupported or
+		//! empty `providerName` returns `supported=false` and a null
+		//! `generate`, exactly like the four building blocks above.
+		ChatImageGenerator MakeChatImageGenerator(
+			const std::string& providerName,
+			const std::string& apiKey,
+			std::shared_ptr<IChatHttpTransport> transport );
+
+		//--------------------------------------------------------------
+		// Arc 79 slice S2 (2026-08-11) -- PROVIDER TEXT COMPLETION, the
+		// wire half of `build_element`.  The TEXT SIBLING of the image
+		// block above, function for function, and deliberately shaped
+		// the same way so the two read as one facility:
+		//
+		//   ChatProviderSupportsImageGeneration <-> ...SupportsTextCompletion
+		//   ChatImageGenerationModelId          <-> ChatTextCompletionModelId
+		//   BuildImageGenerationRequest         <-> BuildTextCompletionRequest
+		//   ParseImageGenerationResponse        <-> ParseTextCompletionResponse
+		//   ChatImageGenerator/MakeChat...      <-> ChatTextCompleter/MakeChat...
+		//
+		// WHY IT EXISTS (measured, docs/agentic-redesign/79-clean-room-
+		// construction.md sec 1).  The same request to the same model
+		// yields 18.0 SDF parts in a SHORT context, 7.7 with 60k of the
+		// agent's own skills prepended, and 1-2 inside a live session.
+		// Construction richness is bounded by CONTEXT VOLUME, not by
+		// knowledge -- so `build_element` asks the session's own provider
+		// for ONE element in ONE fresh, minimal completion instead of
+		// asking the loaded session to author it.
+		//
+		// SAME KEY DISCIPLINE, VERBATIM.  The key rides ONLY in the
+		// provider's own auth header (the identical header name and
+		// SanitizeHeaderValue call that provider's CHAT codec uses),
+		// never a query parameter, never the body, never a log.  Parse
+		// failures name a SHAPE and never echo a body substring: a
+		// provider body can carry the prompt back and must not be
+		// spliced into a result the model reads.
+		//
+		// PROVIDER IDENTITY IS A STRING, same accepted spellings and the
+		// same never-guess-an-endpoint rule as the image block.
+		//--------------------------------------------------------------
+
+		//! Does `providerName` have a wired single-turn text-completion
+		//! endpoint?  true for "anthropic", "gemini", "openai" and "xai";
+		//! false for every other name, INCLUDING "local" (whose base URL
+		//! is a launch-time configuration this TU deliberately does not
+		//! read) and every unrecognized one.
+		bool ChatProviderSupportsTextCompletion( const std::string& providerName );
+
+		//! The TEXT model id this build will ask `providerName` for --
+		//! that provider's own chat default, overridden by an environment
+		//! variable so a hand test can retarget without recompiling:
+		//!   anthropic -> RISE_BUILDER_MODEL_ANTHROPIC (default "claude-sonnet-5")
+		//!   gemini    -> RISE_BUILDER_MODEL_GEMINI    (default "gemini-4-argon")
+		//!   openai    -> RISE_BUILDER_MODEL_OPENAI    (default "gpt-5.6-terra")
+		//!   xai       -> RISE_BUILDER_MODEL_XAI       (default "grok-4.5")
+		//! The defaults are the SAME ids the four chat codecs declare as
+		//! their DefaultModelId, so the builder completion runs on the
+		//! same model line the session itself runs on unless a caller
+		//! says otherwise.  Empty string for a provider with no
+		//! capability.  The env read is CONFIG, not a credential -- the
+		//! same distinction the RISE_IMAGE_* reads are documented under;
+		//! no key is ever read from the environment here.
+		std::string ChatTextCompletionModelId( const std::string& providerName );
+
+		//! The baseline output-token budget a text completion asks for.  One
+		//! builder answer is a handful of chunks (the hand simulation's
+		//! richest element was 15 SDF parts plus a material, a painter and
+		//! an object), but the reasoning models spend output tokens on
+		//! reasoning before the first visible character, so the budget is
+		//! set well above the visible answer's size rather than at it
+		//! (Gemini requests 2x this baseline -- 32,768 -- because Gemini 4
+		//! Argon bills thoughtsTokenCount against maxOutputTokens up to a
+		//! 32K non-streaming ceiling).
+		unsigned int ChatTextCompletionMaxTokens();
+
+		//! Build the POST that asks `providerName` for ONE single-turn
+		//! completion of `prompt`.  There is no system prompt and no tool
+		//! table by construction: a fresh minimal context is the entire
+		//! point of the mechanism, so this builder has no parameter that
+		//! could add one.  `apiKey` rides in the provider's OWN auth
+		//! header (`x-api-key` + `anthropic-version` for Anthropic,
+		//! `x-goog-api-key` for Gemini, `Authorization: Bearer` for OpenAI
+		//! and xAI) -- never a query parameter, never a log.  Returns
+		//! false with a factual `outError` when the provider has no
+		//! capability, the model id resolved empty, or `prompt` is empty.
+		//!
+		//! Endpoint overrides, for the same no-recompile hand-test reason
+		//! as the model ids (all FULL urls except Gemini's, which is the
+		//! MODELS BASE with "/<model>:generateContent" appended exactly as
+		//! GeminiChatCodec::BuildRequest does):
+		//!   RISE_BUILDER_ENDPOINT_ANTHROPIC (default "https://api.anthropic.com/v1/messages")
+		//!   RISE_BUILDER_ENDPOINT_GEMINI    (default "https://generativelanguage.googleapis.com/v1beta/models")
+		//!   RISE_BUILDER_ENDPOINT_OPENAI    (default "https://api.openai.com/v1/responses")
+		//!   RISE_BUILDER_ENDPOINT_XAI       (default "https://api.x.ai/v1/chat/completions")
+		bool BuildTextCompletionRequest( const std::string& providerName,
+		                                 const std::string& modelId,
+		                                 const std::string& apiKey,
+		                                 const std::string& prompt,
+		                                 ChatHttpRequest& outRequest,
+		                                 std::string& outError );
+
+		//! Pull the assistant TEXT out of a 200-OK response body.
+		//! Anthropic: `content[]`, every {type:"text"} block concatenated.
+		//! Gemini: `candidates[0].content.parts[]`, every {text} part
+		//! concatenated.  OpenAI (responses API): `output_text` when the
+		//! provider sent that convenience field, else `output[]` ->
+		//! `content[]` -> every {type:"output_text"} block concatenated.
+		//! xAI (chat-completions): `choices[0].message.content`.
+		//! Returns false with a factual, HEADER-FREE and BODY-FREE
+		//! `outError` otherwise -- the same rule
+		//! ParseImageGenerationResponse states and for the same reason.
+		//! An empty-but-well-formed answer is a FAILURE here (a builder
+		//! that returned nothing is not a builder that succeeded).
+		bool ParseTextCompletionResponse( const std::string& providerName,
+		                                  const std::string& body,
+		                                  std::string& outText,
+		                                  std::string& outError );
+
+		//! One blocking text-completion attempt's outcome.  Mirrors
+		//! AgentSession::AgentTextCompletionOutcome's three fields exactly.
+		struct ChatTextCompletionOutcome
+		{
+			bool        ok = false;
+			std::string text;
+			std::string error;
+		};
+
+		//! The host-installable shape.  Mirrors
+		//! AgentSession::AgentTextCompleter's three data fields plus
+		//! `complete`, for the identical layering reason ChatImageGenerator
+		//! is a distinct type from AgentSession::AgentImageGenerator: this
+		//! file stays independent of AgentSession.h and every caller does a
+		//! trivial 4-field copy at the installation point.
+		struct ChatTextCompleter
+		{
+			bool        supported = false;
+			std::string providerName;
+			std::string modelId;
+			std::function<ChatTextCompletionOutcome( const std::string& prompt )> complete;
+		};
+
+		//! Build the FULL host-installable text completer for
+		//! `providerName` -- the exact sibling of MakeChatImageGenerator,
+		//! with the same by-value key capture, the same shared_ptr
+		//! transport lifetime, the same never-throws contract, and the same
+		//! "reinstall after a credential change" requirement (see
+		//! AgentSession::SetTextCompleter).  When supported, `complete`
+		//! performs ONE synchronous BuildTextCompletionRequest ->
+		//! `transport`.Post -> ParseTextCompletionResponse round trip per
+		//! call.
+		ChatTextCompleter MakeChatTextCompleter(
+			const std::string& providerName,
+			const std::string& apiKey,
+			std::shared_ptr<IChatHttpTransport> transport );
 	}
 }
 

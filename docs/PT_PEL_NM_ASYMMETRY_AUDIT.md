@@ -1,5 +1,12 @@
 # PT Pel/NM Asymmetry Audit (PathTracingIntegrator `IntegrateFromHit`)
 
+> **HISTORICAL AUDIT (2026-05-31, committed):** Asymmetries #1 and #3 were fixed
+> and committed as part of the Phase 2b follow-up. Asymmetry #2 (BSSRDF / RW-SSS
+> `rs2` SMS-flag propagation) was subsequently superseded by `DL-295` / `DL-340`
+> (see [DEBT_LEDGER.md](DEBT_LEDGER.md)), which explicitly set
+> `rs2.smsHadNonSpecularShading = false` across Pel, NM, and HWSS because SSS
+> exits are not SMS anchors.
+
 **Session date**: 2026-05-31 (diagnosis-only follow-up to Phase 2b part 2).
 **Scope**: the three Pel/NM behavioral asymmetries in `IntegrateFromHitTemplated<Tag>`
 that Phase 2b part 2 deliberately **preserved** (reproduced via `if constexpr (Traits::is_pel)`)
@@ -19,21 +26,22 @@ independently-validated commits.
 
 ---
 
-> **STATUS 2026-05-31: asymmetries #1 and #3 are FIXED** (working tree, pending commit) — see
-> [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) §"Session outcome (2026-05-31)". Both `if constexpr`
+> **STATUS 2026-05-31: asymmetries #1 and #3 are FIXED** (committed; see
+> [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) §"Session outcome (2026-05-31)"). Both `if constexpr`
 > divergences were collapsed so NM matches Pel; a third site (HWSS no-BSDF mid-path delegation,
 > `IntegrateFromHitTemplated`-adjacent) needed a co-fix (`smsHad=true`) the #1 change exposed.
 > Through-glass NM-SMS: **0.0 → 247** (Pel 248); diffuse→glass→light double-count counterfactual
 > confirmed and closed (p99.9 floor tail: #1-only 19.45 → #1+#3 15.44 ≈ Pel 13.85). Regression
-> fixture: `scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms.RISEscene`. #2 remains NO-OP /
-> untouched.
+> fixture: `scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms.RISEscene`. #2 was left untouched
+> in that session and later superseded by `DL-295` / `DL-340` (`rs2.smsHadNonSpecularShading = false`
+> across Pel/NM/HWSS).
 
 ## TL;DR verdicts
 
 | # | Asymmetry | Verdict | Blocks Phase 2c? | Recommended action |
 |---|-----------|---------|------------------|--------------------|
 | 1 | SPF/no-BSDF `considerEmission`: Pel `true`, NM `(isDelta && bSMS)?false:true` | **LATENT BUG (NM wrong)** — empirically confirmed — **✅ FIXED 2026-05-31** | **No** | ~~Isolated fix chip~~ DONE: NM SPF `considerEmission`→`true` for both tags + #3 co-fix + HWSS delegation co-fix. Validated (Gates 2–8). |
-| 2 | BSSRDF/RW-SSS `rs2`: Pel sets `sms*` flags, NM sets `bsdfTimesCos` + `AccumulateCount` | **NO-OP (dead for the spectral renderer)** — **untouched** | **No** | None now. Revisit only if optimal-MIS is wired for spectral, **or** a SMS+SSS+specular-to-light scene is authored (then it becomes a coordinated integrator+shader-op fix). |
+| 2 | BSSRDF/RW-SSS `rs2`: Pel sets `sms*` flags, NM sets `bsdfTimesCos` + `AccumulateCount` | **NO-OP at 2026-05-31 — later superseded by `DL-295` / `DL-340`** | **No** | Superseded: `DL-295` / `DL-340` unified Pel/NM/HWSS on `smsHadNonSpecularShading = false` at SSS exit continuations. |
 | 3 | PART3 BSDF-continuation flag tracking: Pel sets `bPassed/bHad`, NM does not | **NO-OP standalone, REQUIRED co-fix of #1** — **✅ FIXED 2026-05-31** | **No** | ~~Do not touch alone~~ DONE: un-gated the PART3 flag update so NM latches `bPassed/bHad`; landed with #1 (counterfactual confirmed it prevents the double-count). |
 
 **De-risking answer:** **Phase 2c can proceed.** None of the three blocks BDPT

@@ -147,11 +147,62 @@ light hits that SMS already covers.  Audit:
   through to `w=1` — so if suppression didn't set it to false, full
   emission is added.  This is the firefly mechanism behind the
   classic "random bright pixels on the floor OUTSIDE the caustic."
-- On recursive `CastRay` handoff (branching path, BSSRDF), the
-  child's `rs2.smsPassedThroughSpecular` and
-  `rs2.smsHadNonSpecularShading` must be populated from the parent's
-  state.  A fresh `RAY_STATE` starts with `false/false` and breaks
-  the suppression chain.
+- On a recursive `CastRay` handoff, the child's
+  `rs2.smsPassedThroughSpecular` / `rs2.smsHadNonSpecularShading` carry
+  the parent's state ONLY where the parent vertex really is an SMS
+  anchor (DL-295, next bullet).  A BSSRDF exit continuation, an SPF-only
+  (no-BSDF) vertex and a medium vertex are NOT anchors -- SMS never
+  runs there -- so they hand off `smsHadNonSpecularShading = false`;
+  passing `true` there suppresses an emitter hit nothing else estimates
+  (skin under a glass slab read exactly 0 under PT+SMS before DL-295
+  round 3).  Do not "restore" `true` at those hand-offs.
+- The OPPOSITE failure -- energy LOSS, not fireflies (DL-295,
+  2026-09-28/29): suppression is only correct for a chain SMS actually
+  estimates, which needs BOTH (1) an SMS anchor before the chain -- a
+  non-delta vertex at which SMS is EVALUATED, i.e. one that reaches PART 2
+  with a BSDF; BSDF-less (SPF-only) surfaces, BSSRDF exits and medium
+  vertices are NOT anchors, and a camera -> caster -> emitter chain has
+  none -- and (2) only casters in it (SMS classifies a surface by
+  `IMaterial::GetSpecularInfo().isSpecular` alone, so a weave gap, a
+  composite's delta walker exit, or any other non-caster delta lobe
+  breaks the chain).  `bHadNonSpecularShading` / `bSMSAnchor` carry (1)
+  and `PTNextSMSChainUncovered` / `bSMSChainUncovered` carry (2), in the
+  RGB/NM body, the HWSS body, and BOTH HWSS -> NM hand-offs (no-BSDF and
+  SSS; `IntegrateFromHitNM(..., smsChainUncovered_)`).  Setting the
+  anchor flag at a vertex where SMS never ran, reading only one of the
+  two, or a hand-off that passes a constant drops the path silently.
+  Reference-free check: on a scene with NO SMS caster, PT with
+  `sms_enabled TRUE` must equal PT without it
+  (`WeaveGapShadowTransmittanceTest` section `sms`, which runs
+  single-threaded so its bands mean something).  Historical / parked
+  relatives: ~~DL-340~~ (CLOSED — medium vertices and the HWSS medium-walk
+  hand-off no longer count as SMS anchors), DL-339 (**PARKED** — an
+  anchored refractive caster's reflection outside exact split-suppression
+  modes), ~~DL-372~~ (CLOSED — exact split-suppression classifier covers
+  deterministic refraction chains, below) and ~~DL-373~~ (CLOSED).
+- The split rule (2026-10-01, DL-372 / DL-336,
+  docs/SMS_ENERGY_LOSS_INVESTIGATION.md section 7): where SMS is
+  deterministic in (anchor, emitter point) -- snell, biased, no photons,
+  no alpha, RGB without a pure-mirror caster (`SplitSuppressionExact`) --
+  a suppressible hit is suppressed ONLY if SMS's own base seed + solve
+  from the recorded anchor reaches PT's chain
+  (`ClassifyEmitterHitCoverage`); otherwise it is kept at full weight.
+  So in the default mode a missed root, a Newton failure, a refractive
+  caster's reflection (DL-339 (a)) or an emitter SMS cannot sample is
+  counted by PT, not lost.  Two consequences for diagnosis: (1) a
+  double count now has a new candidate -- PT keeping a hit SMS DID
+  estimate, i.e. the classifier and the evaluator disagreeing (they share
+  `BuildSnellBaseSeed` and `Solve`; anything you add to one evaluator's
+  seed set -- a new fallback, random trials -- must either be replayed by
+  the classifier or turn `SplitSuppressionExact` off); (2) the anchor and
+  chain are carried in `SMSChainRecord` -- every scatter site and hand-off
+  that updates `bPassedThroughSpecular` / `bHadNonSpecularShading` must
+  update it too (append a delta vertex, `SetAnchor` on a non-delta BSDF
+  scatter after PART 2, `Invalidate` on a non-anchor, `broken` at a
+  medium vertex).  Non-exact modes and the HWSS body's own PART 3
+  suppression keep the suppress-all rule (DL-378); a finite-`scattering`
+  dielectric is split by the root Newton reaches from PT's chain, a few
+  percent off at a focus (DL-379).
 
 ### 7. Audit the photon tracer's pre-scatter state
 
@@ -263,14 +314,18 @@ three times.  Always search for the twin in the same file; if the
 file has a `*NM` function parallel to the RGB one, the fix usually
 needs to go into both.
 
-### Editing `src/Library/Parsers/AsciiSceneParser.cpp` and not doing a clean Library build
+### Editing `ChunkParserRegistry.cpp` / `Cst.cpp` without relinking the binary under test
 
-Stale `.obj` for the parser silently keeps the old chunk handler
-behaviour.  Symptom: scenes that should parse give a mysterious
-"Failed to parse parameter name `X`" for a parameter the CURRENT
-source clearly accepts.  Resolution: delete the `Library.obj`
-artefacts and full-rebuild.  This swallowed an hour on the teapot
-scene added in this session.
+(Historical note: the legacy `AsciiSceneParser.cpp` was retired in the
+July 2026 CST cutover; scene chunks now live in
+`src/Library/Parsers/ChunkParserRegistry.cpp` and CST derivation in
+`src/Library/Cst/Cst.cpp`, and the `make` build tracks header
+dependencies via `-MMD -MP`.)  If `bin/rise` or a test binary was not
+rebuilt after editing parser descriptors (`make -C build/make/rise -j8
+all`), the old binary silently keeps the previous chunk parameter list
+and fails with `"Failed to parse parameter name X"` for a parameter the
+current source accepts.  Rebuild `all` (or the named `build-test/<Name>`
+target) before re-running.
 
 ## Concrete Examples (from this repo's history)
 

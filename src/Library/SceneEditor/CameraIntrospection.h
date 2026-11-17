@@ -65,6 +65,70 @@ namespace RISE
 		// order ComputeChunkRefs uses) and hands back a UI Category to
 		// SetSelection on.
 		std::vector<ChunkCategory>   referenceCategories;
+
+		// doc 88 S4b (Tier-1 param sliders): an authored NUMERIC RANGE for this
+		// row, so a shell can render a slider instead of a bare text field.
+		// `hasRange` is true only when BOTH bounds are known — a one-sided bound
+		// cannot drive a slider, and silently inventing the missing end is how a
+		// panel comes to clamp a value the scene language accepts.  The only
+		// producer today is PainterIntrospection's expression `param[i]` rows,
+		// which read `min` / `max` / `step` off the ParamSpec the painter parsed
+		// at construction (ExpressionParamSpec.h); every other row leaves
+		// `hasRange` false and the shells keep drawing the field they already do.
+		//
+		// `rangeStep` is 0 when the author declared none — "continuous", i.e. the
+		// slider's own default granularity.  It is NOT a sentinel for "no range";
+		// that is `hasRange` alone.
+		//
+		// NOT the descriptor-level `range`/`softRange` hint MATERIAL_EDITOR.md
+		// §2.2 still wants: this carries an AUTHOR's per-param intent out of the
+		// scene text.  A future descriptor hint can populate these same three
+		// fields for rows that have no ParamSpec without either shell changing.
+		bool                         hasRange;
+		Scalar                       rangeMin;
+		Scalar                       rangeMax;
+		Scalar                       rangeStep;
+
+		// Material Editor Slice 3 (inline constant painter editing & slot swatches):
+		// For a ValueKind::Reference row whose referenceCategories include
+		// ChunkCategory::Painter or ChunkCategory::Function:
+		//   - `targetsPainter` is true so the inspector can show a 18x18
+		//     PainterPreview thumbnail next to the reference chip.
+		//   - When the slot is bound to a CST-authored constant painter chunk
+		//     (`uniformcolor_painter` with 3 finite decimal numbers in `color`, or
+		//     Form-1 `scalar_painter` with a single `value` parameter),
+		//     `inlinePainterKind` identifies the constant form,
+		//     `inlinePainterValue` holds the painter's `color` or `value` text, and
+		//     `inlinePainterRefCount` reports how many reference uses in the CST
+		//     document resolve to that painter chunk (`1` = solely owned by this
+		//     slot; `> 1` = shared across multiple slots/entities).
+		enum class InlinePainterKind : int
+		{
+			None         = 0,
+			UniformColor = 1,
+			ScalarValue  = 2
+		};
+		bool                         targetsPainter;
+		InlinePainterKind            inlinePainterKind;
+		String                       inlinePainterValue;
+		unsigned int                 inlinePainterRefCount;
+
+		// Every producer sets name/kind/value/description/editable explicitly;
+		// this ctor exists so the S4b range trio (and `editable`, historically
+		// indeterminate until assigned) has a defined value on a default-
+		// constructed row — a row that reaches a shell with an indeterminate
+		// `hasRange` would draw a slider over garbage bounds.
+		CameraProperty()
+		: kind( ValueKind::String )
+		, editable( false )
+		, hasRange( false )
+		, rangeMin( 0 )
+		, rangeMax( 0 )
+		, rangeStep( 0 )
+		, targetsPainter( false )
+		, inlinePainterKind( InlinePainterKind::None )
+		, inlinePainterRefCount( 0 )
+		{}
 	};
 
 	class CameraIntrospection
@@ -99,6 +163,22 @@ namespace RISE
 		//! Returns empty string for unknown / unreadable properties.
 		static String GetPropertyValue( const ICamera& camera,
 		                                const String& name );
+
+		//! BIT-EXACT capture / restore of the pose fields a transient
+		//! override (the agent's `view` / `camera` / `isolate` / `zoom`
+		//! renders) touches: "location" (the REST position, pre-orbit),
+		//! "lookat", "up", "orientation", "target_orientation" and (pinhole)
+		//! "fov".  The values are the camera's STORED doubles in their native
+		//! units (radians for the angles) -- no string formatting, no degree
+		//! round trip -- so capture -> override -> restore leaves the live
+		//! camera exactly as it was.  GetPropertyValue/SetProperty cannot do
+		//! that: they format with `%.6g` and convert through degrees, which is
+		//! right for a panel and wrong for "put it back".  `out` / `in` hold
+		//! up to three components (target_orientation uses two, fov one).
+		//! Returns false for any other name or a camera that cannot carry the
+		//! field; RestoreExactValue regenerates the camera's derived data.
+		static bool CaptureExactValue( const ICamera& camera, const String& name, double out[3] );
+		static bool RestoreExactValue( ICamera& camera, const String& name, const double in[3] );
 
 		//! Snapshot every field of the camera into a value-typed
 		//! struct.  Used by `SceneEdit::AddCamera` so Redo can

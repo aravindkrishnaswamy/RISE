@@ -11,18 +11,27 @@
 //  the re-emission vertex.
 //
 //  ALGORITHM OVERVIEW:
-//    1. Refract the incoming ray into the surface using Snell's law.
+//    1. Refract the incoming ray into the surface using Snell's law
+//       (exterior index `ri.ambientIOR` -> material index; DL-49).
 //    2. Walk loop (up to maxBounces):
 //       a. Trace ray from current position against the object with
 //          back-face-only hits to find the exit distance.
 //       b. Sample a spectral channel uniformly (RGB) or use the
 //          single channel (NM mode).
-//       c. Sample free-flight distance: t = -log(1-xi) / sigma_t[ch].
+//       c. Sample distance: t = -log(1-xi) / q, where q is the chosen
+//          effective rate (with tiny-extinction fallback). Event weights
+//          divide physical collision/survival density by that proposal.
 //       d. If t < exitDist: scatter inside.  Advance position, update
 //          throughput, sample new direction from HG phase function.
 //       e. If t >= exitDist: exit the mesh.  Compute Fresnel at exit.
 //          If total internal reflection: reflect back inside and
 //          continue.  Otherwise refract out and return the exit point.
+//          DL-370: if the point the continuation would start from (the
+//          exit offset BSSRDF_RAY_EPSILON outward) lies inside another
+//          random-walk body -- a touching or overlapping neighbour,
+//          `IObjectManager::RandomWalkObjectContaining` -- the walk
+//          crosses that interface instead and continues inside the
+//          neighbour with its coefficients.
 //    3. At exit: generate a cosine-weighted scattered direction from
 //       the exit normal and compute the BSSRDF weight.
 //
@@ -63,6 +72,9 @@ namespace RISE
 {
 	namespace RandomWalkSSS
 	{
+		//! Winding-independent entry admission for solids that certify containment.
+		Scalar EntryFacing( const RayIntersectionGeometric& ri, const IObject* object, const Vector3& wo );
+
 		/// Traces a random walk inside a mesh object and returns the
 		/// exit point as a BSSRDFSampling::SampleResult.
 		///
@@ -73,12 +85,19 @@ namespace RISE
 		/// \param ri         Exit point intersection (where the camera
 		///                   ray hit the surface).  Used as the walk
 		///                   entry point after refraction.
-		/// \param pObject    The translucent object to walk inside.
+		/// \param pObject    The translucent object to walk inside (the walk
+		///                   may cross into a touching random-walk body;
+		///                   the result's pExitObject names the one left).
 		/// \param sigma_a    Absorption coefficient per channel [1/m]
 		/// \param sigma_s    Scattering coefficient per channel [1/m]
 		/// \param sigma_t    Extinction coefficient per channel [1/m]
 		/// \param g          Henyey-Greenstein asymmetry parameter
-		/// \param ior        Index of refraction at the surface boundary
+		/// \param ior        The material's (absolute) index of refraction.
+		///                   The boundary is an interface against the
+		///                   exterior index `ri.ambientIOR` (DL-49): entry
+		///                   and exit refraction, exit Fresnel and the Sw
+		///                   factor all use the relative index
+		///                   ior / ri.ambientIOR.
 		/// \param maxBounces Maximum walk steps (safety cap)
 		/// \param sampler    Random number source
 		/// \param nm         Wavelength for spectral path (0 = RGB)

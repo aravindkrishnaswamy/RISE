@@ -11,10 +11,21 @@
 //    parser validates against -- single source of truth), and emit one
 //    typed CameraProperty row per declared parameter with the CURRENT
 //    text value read from the chunk (or the descriptor's
-//    defaultValueHint when the scene omitted it).  Every row is
+//    defaultValueHint when the scene omitted it).  "Current" means what
+//    the PARSER reads -- the LAST occurrence (Cst::ParamValueAsParsed) --
+//    so a row cannot disagree with the live scene it describes.  Rows are
 //    editable -- edits route through SceneEditController::
 //    ApplyAgentParamEdit (the generic, undoable, re-deriving CST
 //    param-edit path), so no per-family setter surface is needed.
+//
+//    ONE exception to "editable": a chunk that spells a NON-repeatable
+//    param more than once.  Nothing in the stack refuses that shape and
+//    the derive takes the LAST occurrence, but the edit route addresses
+//    occurrence 0 -- which is then dead text.  Such a write is refused at
+//    the boundary (Job::ApplyCstParamEditImpl_), so the row is surfaced
+//    READ-ONLY with a description naming the duplication, rather than
+//    offering an edit that would rewrite an invisible line and appear to
+//    do nothing.
 //
 //    Two enrichments over the painter original:
 //      1. Reference rows (ValueKind::Reference) carry the descriptor's
@@ -50,9 +61,14 @@ namespace RISE
 	{
 	public:
 		//! Returns one CameraProperty per parameter the entity's chunk
-		//! descriptor declares (the `name` param itself is surfaced as a
-		//! leading read-only "type" row instead -- renaming stays a
-		//! dedicated affordance).  Repeatable parameters are skipped --
+		//! descriptor declares, preceded by a leading read-only
+		//! "chunk_type" identity row whose value is the chunk KEYWORD
+		//! (e.g. "sdf3d_painter" -- not the entity's `name`; the `name`
+		//! param is skipped entirely, since renaming stays a dedicated
+		//! affordance).  "chunk_type" is deliberately a name no descriptor
+		//! param uses -- some chunks declare a real `type` param
+		//! (sdf3d_painter, polynomial_function2d_painter), which surfaces
+		//! as its own ordinary editable row.  Repeatable parameters are skipped --
 		//! the single-value ApplyAgentParamEdit occurrence-0 edit path
 		//! isn't a good fit for a repeated param; editing those stays
 		//! scene-text-only.  Returns an empty vector when `doc` is null,
@@ -63,7 +79,7 @@ namespace RISE
 		//! `roleKindSuffix` is the same vocabulary DocFindByNameAnyRole /
 		//! RoleKindSuffixForCategory use ("painter", "geometry",
 		//! "material", ...).  `typeRowDescription` is the doc string on
-		//! the leading read-only type row (e.g. "Geometry chunk
+		//! the leading read-only chunk_type row (e.g. "Geometry chunk
 		//! keyword").
 		static std::vector<CameraProperty> Inspect(
 			const RISE::Cst::Document* doc,

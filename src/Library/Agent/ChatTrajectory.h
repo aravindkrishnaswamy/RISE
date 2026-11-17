@@ -155,14 +155,63 @@ namespace RISE
 			bool        error = false;         //!< the envelope carried a JSON-RPC error
 		};
 
-		//! run_type "history_edit": one loop-driven transcript rewrite (an
-		//! image elision).  `reason` is a short machine tag.
+		//! run_type "history_edit": one loop-driven change to the history the
+		//! model sees.  `reason` is a short machine tag; the byte fields mean:
+		//!  - "tool_image_elision" / "user_image_elision": entryIndex = the
+		//!    rewritten entry; before/after = its rawJson size around the rewrite.
+		//!  - "tool_result_supersession" (a later read of the same view;
+		//!    doc 71 sec 6b, doc 91 L3a), "element_finished_retirement" (a
+		//!    successful finish_element retired the element's build_element /
+		//!    insert_chunks results; doc 91 L2) and "compose_skill_retirement"
+		//!    (the finish_element that reported the build plan's compose phase
+		//!    retired the earlier live read_skill results; doc 91 L3b): same
+		//!    byte meaning as the image elisions --
+		//!    one record per rewritten entry.
+		//!  - "context_compaction": entryIndex -1; before/after = the token
+		//!    ESTIMATE around the whole-span drop (not bytes).
+		//!  - "scenario_intervention": entryIndex -1; before/after = the
+		//!    affected document's byte size around the edit.
+		//!  - "malformed_tool_call_corrective": an INSERTION -- entryIndex =
+		//!    the new entry, before = 0, after = its rawJson size, `text` =
+		//!    the corrective message (it is NOT a human "user" record).
 		struct TrajectoryHistoryEditRecord
 		{
 			int         entryIndex = -1;   //!< which transcript entry was rewritten
-			long long   beforeBytes = 0;   //!< rawJson byte size before the rewrite
-			long long   afterBytes = 0;    //!< rawJson byte size after the rewrite
-			std::string reason;            //!< "tool_image_elision" / "user_image_elision"
+			long long   beforeBytes = 0;   //!< see the per-reason table above
+			long long   afterBytes = 0;    //!< see the per-reason table above
+			std::string reason;            //!< machine tag, see above
+			std::string text;              //!< optional payload; serialized only when non-empty
+		};
+
+		//! run_type "document_snapshot": a durable copy of the FULL scene
+		//! document, so a scene built entirely inside a live GUI agent
+		//! session (never Save As'd) survives a crash / force-quit --
+		//! recoverable from the newest document_snapshot line in the
+		//! trajectory JSONL.  `reason` is "head_bump" (the per-advancing-
+		//! tool-call policy in AgentChatLoop -- see
+		//! AgentChatLoop::SetDocumentSnapshotProvider) or "session_end"
+		//! (a chat-loop close for ANY status, including app_quit -- the
+		//! `summary` record emitted right after carries the actual
+		//! status).  headVersionUuid/headVersionRevision are BOTH stored
+		//! here -- unlike TrajectoryToolRecord::headVersionAfter, which
+		//! is revision-only -- because recovery must correlate a snapshot
+		//! to a SPECIFIC retained head (RISE::Cst::CstHeadVersion), not
+		//! just order revisions within one; a scene reload mints a fresh
+		//! uuid, so a revision number alone is ambiguous across loads.
+		struct TrajectoryDocumentSnapshotRecord
+		{
+			std::string reason;                    //!< "head_bump" / "session_end"
+			uint64_t    headVersionUuid = 0;
+			uint64_t    headVersionRevision = 0;
+			std::string documentText;              //!< the FULL serialized CST document
+			//! documentText.size() as captured, BEFORE the unconditional
+			//! secret-redaction pass (see RedactTrajectoryLine) runs over the
+			//! serialized line.  That pass can replace a matched span inside
+			//! document_text with "[REDACTED]", changing its on-disk length,
+			//! so documentBytes is a capture-time size HINT for cheap
+			//! scanning -- not a parse-free integrity/length check against
+			//! the JSONL line's actual document_text.
+			long long   documentBytes = 0;
 		};
 
 		//! run_type "summary": the terminal one-line rollup.
@@ -217,6 +266,8 @@ namespace RISE
 			const std::string& traceId, const std::string& dottedOrder );
 		std::string SerializeTrajectoryRecord( const TrajectoryHistoryEditRecord&,
 			const std::string& traceId, const std::string& dottedOrder );
+		std::string SerializeTrajectoryRecord( const TrajectoryDocumentSnapshotRecord&,
+			const std::string& traceId, const std::string& dottedOrder );
 		std::string SerializeTrajectoryRecord( const TrajectorySummaryRecord&,
 			const std::string& traceId, const std::string& dottedOrder );
 
@@ -243,6 +294,92 @@ namespace RISE
 			long long                sceneHeadVersion = -1;
 		};
 
+		//! GPT slice item 3 (2026-08-24): the WRITE-side dedup this recorder
+		//! applies to `response_body`, and its inverse for any reader that
+		//! needs the ORIGINAL, complete body back (AgentEvalRunner's
+		//! replay path today).
+		//!
+		//! THE MEASUREMENT: OpenAI's stateful Responses API echoes the
+		//! FULL `tools` and `instructions` request context back inside
+		//! EVERY response body, byte-identical turn to turn (a live
+		//! 33-round trajectory: exactly ONE distinct value for each
+		//! across the whole session).  That is 68-78% of the recorded
+		//! file on the trajectories measured (evals/runs/imagine_s7_
+		//! population_gpt/.../imagine_undersea_mermaid.trajectory.jsonl:
+		//! 5.18MB -> 1.19MB, 77.0%; an older 41-round trajectory pre-
+		//! dating the ALREADY-FIXED request-side duplication:
+		//! 12.03MB -> 2.67MB, 77.8%).  Gemini/Anthropic responses do not
+		//! echo the request back, so this is OpenAI-Responses-API-
+		//! specific in practice, but the mechanism keys off the JSON
+		//! shape (a top-level `tools`/`instructions` member), not the
+		//! provider name, so it degrades to a no-op rather than a wrong
+		//! answer on any other shape.
+		//!
+		//! WHY A BYTE-SPAN REPLACE, NOT A JSON ROUND-TRIP: `response_
+		//! body`'s own doc comment is explicit -- "rides as a STRING so
+		//! it round-trips byte-for-byte (the replay payload must not be
+		//! re-serialized)".  Parsing the whole body through JsonValue
+		//! and re-serializing would reformat EVERY record it touches
+		//! (key order, number formatting, whitespace), not just the
+		//! elided span -- a strictly bigger, unjustified fidelity loss
+		//! for a fix that only needs to touch two keys.  FindTopLevel
+		//! JsonValueSpan_ (ChatTrajectory.cpp, anonymous namespace) is a
+		//! hand-rolled, depth- and string-escape-aware scanner that
+		//! finds the exact byte span of ONE top-level key's value and
+		//! nothing else; the surrounding bytes are untouched.
+		//!
+		//! THE MARKER: kTrajectoryDedupRefMarker is a plain tag string,
+		//! but the LITERAL spliced into a record's response_body
+		//! (ChatTrajectory.cpp's TrajectoryDedupMarkerLiteral_) wraps
+		//! it in a JSON OBJECT -- `{"$dedupRef":"<tag>"}`, not a bare
+		//! string.  Review-round C, P3-c: an earlier draft spliced the
+		//! bare-string form (`"<tag>"`), which was merely "vanishingly
+		//! unlikely" to collide with a genuine value -- a real
+		//! `instructions` string that happened to equal that exact
+		//! text would be indistinguishable from the marker on the
+		//! read side, and "parse and compare the decoded value"
+		//! doesn't fix that either, because the AMBIGUITY IS IN THE
+		//! VALUE, not the encoding.  The object form is a STRUCTURAL
+		//! guarantee instead of a probabilistic one: `tools` is
+		//! always a JSON array and `instructions` is always a JSON
+		//! string under the Responses API schema this dedup targets,
+		//! and NEITHER can ever legitimately be a JSON object, so this
+		//! marker cannot collide with a genuine value at all, for any
+		//! content that value holds.  A naive consumer that doesn't
+		//! know about dedup and tries to iterate a deduped `tools` as
+		//! an array gets a TYPE MISMATCH, not silently wrong data --
+		//! fail loud, not quiet, is the fallback for any reader this
+		//! fix did not get updated.
+		static const char* const kTrajectoryDedupRefMarker = "__RISE_TRAJECTORY_DEDUP_REF__";
+
+		//! Per-session cache an EXPANDING reader owns while walking a
+		//! session's `llm` records IN DOCUMENT ORDER.  Reset (default-
+		//! construct a fresh one) at each `session` record boundary --
+		//! the SAME boundary DedupeResponseBody_'s own per-recorder
+		//! cache resets at (a mid-file provider switch starts a fresh
+		//! session and a fresh baseline on both the write and read
+		//! sides).
+		struct TrajectoryDedupExpandState
+		{
+			std::string toolsSpan;
+			bool        haveTools = false;
+			std::string instructionsSpan;
+			bool        haveInstructions = false;
+		};
+
+		//! Expand-side of the dedup: materializes ANY kTrajectoryDedupRef
+		//! Marker occupying `tools`/`instructions` in `bodyJson` (an `llm`
+		//! record's `response_body`) back to the last REAL value `state`
+		//! has seen, and updates `state` from any real (non-marker) value
+		//! this call observes.  Call once per `llm` record, IN ORDER,
+		//! reusing the SAME `state` across a session.  A body that is not
+		//! a JSON object, or carries neither key, is returned unchanged.
+		//! Idempotent on an ALREADY-EXPANDED body (no marker left to
+		//! find, so nothing to replace) -- safe to call on writer-side
+		//! output that was never deduped in the first place.
+		std::string ExpandTrajectoryResponseBody( const std::string& bodyJson,
+		                                          TrajectoryDedupExpandState& state );
+
 		class ChatTrajectoryRecorder
 		{
 		public:
@@ -260,6 +397,12 @@ namespace RISE
 			std::string EmitLlm( const TrajectoryLlmRecord& );
 			std::string EmitTool( const TrajectoryToolRecord& );
 			std::string EmitHistoryEdit( const TrajectoryHistoryEditRecord& );
+
+			//! Emit a document_snapshot record -- NOT counted in the running
+			//! summary accumulators (it is not a turn, tool call, or LLM
+			//! round); the only bookkeeping it needs lives in AgentChatLoop's
+			//! write policy, not here.
+			std::string EmitDocumentSnapshot( const TrajectoryDocumentSnapshotRecord& );
 
 			//! Emit the terminal summary from the running accumulators with
 			//! the given status; wall_ms is clock()-startedAt.
@@ -291,6 +434,26 @@ namespace RISE
 			int       mNReasoningClampedTurns;
 			long long mTotalCacheReadInputTokens;
 			int64_t   mTotalLatencyMs;
+
+			//! GPT slice item 3: the WRITE-side twin of
+			//! TrajectoryDedupExpandState, reset in EmitSession (a fresh
+			//! session -- or a mid-file provider switch -- starts a fresh
+			//! baseline; deduping against a PRIOR session's tools/
+			//! instructions would let an expanding reader stop at a
+			//! session boundary and materialize the WRONG session's value).
+			std::string mLastResponseToolsSpan;
+			bool        mHaveLastResponseTools;
+			std::string mLastResponseInstructionsSpan;
+			bool        mHaveLastResponseInstructions;
+
+			//! GPT slice item 3: dedupe `bodyJson`'s top-level `tools`/
+			//! `instructions` members against mLastResponseToolsSpan/
+			//! mLastResponseInstructionsSpan; see kTrajectoryDedupRefMarker's
+			//! doc for the full design.  Returns bodyJson UNCHANGED when
+			//! neither key is present, or when this is the first time this
+			//! session sees a real value for a key (nothing to dedupe
+			//! against yet).
+			std::string DedupeResponseBody_( const std::string& bodyJson );
 		};
 
 		//----------------------------------------------------------------

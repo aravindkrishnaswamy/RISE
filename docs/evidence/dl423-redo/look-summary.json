@@ -1,0 +1,60 @@
+{
+  "lacquer": {
+    "whole": {
+      "rejected_mean": 0.068457659472937,
+      "rejected_sd": 7.410971001833248e-06,
+      "restored_mean": 0.06846881873224922,
+      "restored_sd": 5.421853503347497e-06,
+      "paired_relative_mean": 0.00016301215636111468,
+      "paired_relative_sd": 3.501721324345488e-05,
+      "n": 4,
+      "pixels": 230400
+    },
+    "material": {
+      "rejected_mean": 0.1811637251828684,
+      "rejected_sd": 6.467058212453417e-05,
+      "restored_mean": 0.18140689388869546,
+      "restored_sd": 4.1236424428397595e-05,
+      "paired_relative_mean": 0.0013422984385618392,
+      "paired_relative_sd": 0.00016842832359499342,
+      "n": 4,
+      "pixels": 10735
+    },
+    "interior_blocks": {
+      "count": 139,
+      "min": -0.0024515009677180694,
+      "max": 0.024604022407520333,
+      "p5": -0.0008547212087851926,
+      "p95": 0.007295822887815149
+    }
+  },
+  "tidal": {
+    "whole": {
+      "rejected_mean": 0.08915963854431302,
+      "rejected_sd": 5.912862579148099e-06,
+      "restored_mean": 0.08916060644990755,
+      "restored_sd": 5.206000144062164e-06,
+      "paired_relative_mean": 1.0856399888187185e-05,
+      "paired_relative_sd": 2.048982445598117e-05,
+      "n": 4,
+      "pixels": 480000
+    },
+    "material": {
+      "rejected_mean": 0.17454524421605006,
+      "rejected_sd": 3.055847653514153e-05,
+      "restored_mean": 0.17454774509545112,
+      "restored_sd": 2.8963070825593248e-05,
+      "paired_relative_mean": 1.4329243261541908e-05,
+      "paired_relative_sd": 1.6486571286351922e-05,
+      "n": 4,
+      "pixels": 47471
+    },
+    "interior_blocks": {
+      "count": 658,
+      "min": -0.011159510634128319,
+      "max": 0.029930343112948503,
+      "p5": -0.001050822843345889,
+      "p95": 0.0009174720963007194
+    }
+  }
+}

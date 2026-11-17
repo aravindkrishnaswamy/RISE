@@ -17,6 +17,7 @@
 
 #include "../Polygon.h"
 #include "../Interfaces/IFunction2D.h"
+#include "../Interfaces/IScalarPainter.h"
 
 namespace RISE
 {
@@ -36,8 +37,21 @@ namespace RISE
 	// Destructively recomputes per-vertex normals from face topology.
 	// Unlike CalculateVertexNormals (which appends into an empty vNormals vector),
 	// this function resizes vNormals to match vVertices, clears any existing values,
-	// then fills it with freshly averaged face normals.  Use this after vertex positions
+	// then fills it with freshly ANGLE-WEIGHTED face normals (each incident face normal
+	// is weighted by the triangle's interior angle at that vertex, so the result does not
+	// depend on how a surface was triangulated -- slivers cannot dominate a vertex).  Use this after vertex positions
 	// have changed (e.g. post-displacement) to keep shading consistent with the new shape.
+	//
+	// SCOPE OF THE ANGLE-WEIGHTING (it replaced an unweighted face average): the callers are
+	// BezierPatchGeometry / BilinearPatchGeometry::TessellateToMesh, DisplacedGeometry (every
+	// bake, so a displaced ANALYTIC base -- sphere, ellipsoid, torus, ... -- too) and the
+	// refinement's geometric-normal pass.  Only per-vertex SHADING normals move, never
+	// positions, hits or areas.  Measured against the unweighted average: a sphere / ellipsoid
+	// tessellation at detail 32 differs by 0.18 / 0.20 deg on average (max 1.1 / 1.9 deg at the
+	// pole fans), a smooth bicubic Bezier patch by 0.11 deg (max 0.6 deg); where a patch edge
+	// COLLAPSES to a point (the teapot-lid fan) the vertices at the fan differ by up to ~35 deg,
+	// because the unweighted average let the many thin triangles of a fan outvote the wide ones
+	// -- the angle-weighted normal is the one a finer or differently split mesh would give.
 	extern void RecomputeVertexNormalsFromTopology(
 		const IndexTriangleListType& vFaces,
 		const VerticesListType&      vVertices,
@@ -100,12 +114,41 @@ namespace RISE
 		);
 
 	// Applies a displacement map to the given Object
-	extern void ApplyDisplacementMapToObject( 
-		IndexTriangleListType& vFaces, 
-		VerticesListType& vVertices, 
-		NormalsListType& vNormals, 
+	extern void ApplyDisplacementMapToObject(
+		IndexTriangleListType& vFaces,
+		VerticesListType& vVertices,
+		NormalsListType& vNormals,
 		TexCoordsListType& vCoords,
 		const IFunction2D& displacement,
+		const Scalar scale
+		);
+
+	//! The IScalarPainter twin of ApplyDisplacementMapToObject: displaces
+	//! every vertex along its normal by `height(vertex) * scale`, where the
+	//! height is a FIELD sampled through a synthetic
+	//! RayIntersectionGeometric rather than an (u,v) function.  Same
+	//! once-per-vertex `done_list` guard, same along-the-normal offset, same
+	//! `scale` meaning -- the ONLY difference is how the scalar is obtained.
+	//!
+	//! SPACE CAVEAT (2026-09-06).  A geometry is baked BEFORE it is bound to
+	//! an object, so it does not know its object-to-world transform here.
+	//! The synthetic hit therefore carries the vertex's OBJECT-space position
+	//! in BOTH `ptIntersection` (`P`) and `ptObjIntersec` (`Po`): the two
+	//! COINCIDE for displacement.  A field authored against `P` consequently
+	//! does NOT follow the object's placement -- move/rotate/scale the object
+	//! and the displacement pattern stays put on the surface.  Author against
+	//! `Po` to say what you mean.
+	//!
+	//! `vCoords` is fed to `ptCoord` verbatim, so the caller applies whatever
+	//! seam treatment it applies to the IFunction2D path (DisplacedGeometry
+	//! passes a tent-folded COPY when `uv_seam_fold` is on) -- keeping a
+	//! UV-domain field identical across the two routes.
+	extern void ApplyScalarHeightToObject(
+		IndexTriangleListType& vFaces,
+		VerticesListType& vVertices,
+		NormalsListType& vNormals,
+		TexCoordsListType& vCoords,
+		const IScalarPainter& height,
 		const Scalar scale
 		);
 

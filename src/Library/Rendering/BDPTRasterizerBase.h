@@ -38,6 +38,10 @@ namespace RISE
 		class BDPTRasterizerBase : public BidirectionalRasterizerBase
 		{
 		protected:
+			//! DL-465: motion-blurred animation frames render multi-threaded
+			//! through per-thread time-indexed scene state.
+			bool SupportsTimeIndexedMotionBlur() const { return true; }
+
 			BDPTIntegrator*			pIntegrator;
 
 			// pAOVBuffers is inherited from PixelBasedRasterizerHelper.
@@ -54,6 +58,18 @@ namespace RISE
 			PathGuidingConfig		guidingConfig;		///< Path guiding configuration
 
 			virtual ~BDPTRasterizerBase();
+
+			/// Per-render setup (DL-458): hand the integrator the
+			/// RayCaster's prepared LightSampler, (re)create the t==1
+			/// SplatFilm, configure the splat region, reset the adaptive
+			/// sample counter and the splat sample divisor.  Runs from
+			/// RasterizeScene AND, per frame, from
+			/// PixelBasedRasterizerHelper::RenderFrameOfAnimation -- an
+			/// animation frame used to skip all of it, so BDPT animation
+			/// frames carried no NEE, no light subpaths and no splats.
+			/// Requires pCaster->AttachScene to have run.  The Pel /
+			/// Spectral subclasses' diamond disambiguators forward here.
+			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const;
 
 		public:
 			BDPTRasterizerBase(

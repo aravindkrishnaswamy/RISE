@@ -18,7 +18,7 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name			global
-	shaderop		DefaultDirectLighting
+	shaderop		DefaultPathTracing
 }
 
 standard_shader
@@ -30,16 +30,13 @@ standard_shader
 standard_shader
 {
 	name			glass_shader
-	shaderop		DefaultDirectLighting
-	shaderop		DefaultReflection
-	shaderop		DefaultRefraction
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		5
 	samples				64
-	lum_samples			1
 }
 
 file_rasterizeroutput
@@ -266,13 +263,22 @@ uniformcolor_painter
 ##################################################
 
 # Polished marble floor
-polished_material
+# Legacy phase 2 slice B2: substrate of `polished_floor` (was polished_material reflectance).
+lambertian_material
+{
+	name				polished_floor_base
+	reflectance			pnt_floor_checker
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `polished_floor_base`; coat_weight = tau 1, coat_ior 1.5, coat_roughness 1/sqrt(2*600+1) = 0.02886 (SCENE_CONVENTIONS 11.5).
+coated_material
 {
 	name				polished_floor
-	reflectance			pnt_floor_checker
-	tau					1.0
-	ior					1.5
-	scattering			600.0
+	base				polished_floor_base
+	coat_weight			1
+	coat_ior			1.5
+	coat_roughness		0.02886
 }
 
 # Column marble
@@ -299,12 +305,15 @@ dielectric_material
 }
 
 # Bronze material for the vase (Cook-Torrance)
-cooktorrance_material
+# Legacy phase 2 slice B2: was cooktorrance_material; cooktorrance_material -> ggx_material conductor, alpha = facets 0.15 (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				bronze
 	rd					pnt_bronze
 	rs					pnt_bronze_spec
-	facets				0.15
+	alphax				0.15
+	alphay				0.15
+	fresnel_mode		conductor
 	ior					2.5
 	extinction			3.0
 }
@@ -333,13 +342,23 @@ clippedplane_geometry
 	ptd					5.0 0.0 -5.0
 }
 
-# Column cylinder
+# Column cylinder.
+#
+# `capped TRUE` is the parser DEFAULT and is spelled out here as a PIN
+# (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 8, Phase 3): the fluted columns are
+# CSG subtractions, and a composite's cross-object distance query composes its
+# operands' SIGNED fields -- which an OPEN cylinder cannot supply, because a
+# tube encloses nothing and has no inside for a sign to be exact about.  Flip
+# this to FALSE and `column2` silently stops answering `proximity()` for every
+# neighbour in the scene.  The digest does not move (it is the default); the
+# line exists so the flip is a visible edit rather than a silent one.
 cylinder_geometry
 {
 	name				colcylgeom
 	axis				y
 	radius				0.25
 	height				5.0
+	capped				TRUE
 }
 
 # Fluting cutout (thin boxes to subtract from cylinder)
@@ -392,7 +411,7 @@ clippedplane_geometry
 # Objects
 ##################################################
 
-# Floor with polished material and distribution tracing
+# Floor with polished material (path-traced; its shader was the only path-traced chain before Phase 2)
 standard_object
 {
 	name				floor
@@ -626,19 +645,25 @@ standard_object
 # Lights
 ##################################################
 
+# Legacy phase 2 slice B2 retune (owner-approved precedent, slice B1): power x1.682 (5.6 / 9.3 -> 9.42 / 15.6) restores the legacy mean: the frozen cooktorrance_material bronze added its diffuse uncoupled to the conductor lobe (furnace albedo red 1.18) and polished_material kept its full substrate albedo under the coat; the ggx / coated replacements conserve energy.
 omni_light
 {
 	name				ceiling_light
-	power				15.0
+	# Phase 2 slice B1 retune (owner-approved): power 15.0 -> 5.6; the legacy chain shaded the walls with direct light only, and path-traced indirect light brightened the room 2.7x
+	power				9.4192
 	color				1.0 0.98 0.92
+	colorspace			sRGB
 	position			0 4.5 0
 }
 
+# Legacy phase 2 slice B2 retune (owner-approved precedent, slice B1): see the first light above.
 omni_light
 {
 	name				fill_light
-	power				25
+	# Phase 2 slice B1 retune (owner-approved): power 25 -> 9.3; the legacy chain shaded the walls with direct light only, and path-traced indirect light brightened the room 2.7x
+	power				15.6426
 	color				0.9 0.92 1.0
+	colorspace			sRGB
 	position			3 3 4
 }
 

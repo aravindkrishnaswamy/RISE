@@ -32,6 +32,7 @@
 
 #include "pch.h"
 #include "VCMLightVertexStore.h"
+#include "VCMIntegrator.h"			// VCMIntegrator::LightThroughputSpectrum -- rebuild the cached throughputSpectrum after a rescale, see ClampOutlierThroughputs
 #include "../Utilities/BoundingBox.h"
 #include "../Utilities/ThreadPool.h"
 
@@ -215,6 +216,7 @@ LightVertexStore::~LightVertexStore()
 void LightVertexStore::Clear()
 {
 	mVertices.clear();
+	mStepChunks.clear();
 	mBuilt = false;
 }
 
@@ -259,6 +261,32 @@ void LightVertexStore::Concat( std::vector<LightVertex>&& localBuffer )
 		std::make_move_iterator( localBuffer.end() ) );
 	localBuffer.clear();
 	mBuilt = false;
+}
+
+void LightVertexStore::Concat( std::vector<LightVertex>&& localBuffer, std::vector< std::vector<VCMStep> >&& localBlocks )
+{
+	// DL-470: adopt the blocks as chunks (no copy into a shared array; the
+	// last block is trimmed of its unused reserve).  A chunk index past 16
+	// bits drops the records; those vertices then merge unwindowed
+	// (pre-DL-470 behaviour).
+	const std::size_t base = mStepChunks.size();
+	if( base + localBlocks.size() > 0xFFFFu ) {
+		for( std::size_t k = 0; k < localBuffer.size(); k++ ) {
+			localBuffer[k].stepBase = kLightVertexNoSteps;
+		}
+	} else {
+		for( std::size_t k = 0; k < localBuffer.size(); k++ ) {
+			if( localBuffer[k].stepBase != kLightVertexNoSteps ) {
+				localBuffer[k].stepChunk = static_cast<unsigned short>( localBuffer[k].stepChunk + base );
+			}
+		}
+		for( std::size_t b = 0; b < localBlocks.size(); b++ ) {
+			localBlocks[b].shrink_to_fit();
+			mStepChunks.push_back( std::move( localBlocks[b] ) );
+		}
+	}
+	localBlocks = std::vector< std::vector<VCMStep> >();
+	Concat( std::move( localBuffer ) );
 }
 
 void LightVertexStore::BuildKDTree()
@@ -572,19 +600,43 @@ Scalar LightVertexStore::ComputeBBoxDiagonal() const
 	return Vector3Ops::Magnitude( d );
 }
 
+std::size_t LightVertexStore::CountOrdinaryVertices() const
+{
+	std::size_t c = 0;
+	for( std::size_t i = 0; i < mVertices.size(); i++ ) {
+		if( !( mVertices[i].flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) ) {	// DL-469: and the volume-merge vertices
+			c++;
+		}
+	}
+	return c;
+}
+
 Scalar LightVertexStore::ComputeBBoxSurfaceArea() const
 {
 	if( mVertices.empty() ) {
 		return 0;
 	}
 
-	Point3 mn = mVertices[0].ptPosition;
+	// DL-380: over the ORDINARY vertices only (see the header).
+	bool any = false;
+	Point3 mn( 0, 0, 0 );
 	Point3 mx = mn;
-	for( std::size_t i = 1; i < mVertices.size(); i++ ) {
+	for( std::size_t i = 0; i < mVertices.size(); i++ ) {
+		if( mVertices[i].flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) {	// DL-469: volume-merge vertices too
+			continue;
+		}
 		const Point3& p = mVertices[i].ptPosition;
+		if( !any ) {
+			mn = mx = p;
+			any = true;
+			continue;
+		}
 		if( p.x < mn.x ) mn.x = p.x;  if( p.x > mx.x ) mx.x = p.x;
 		if( p.y < mn.y ) mn.y = p.y;  if( p.y > mx.y ) mx.y = p.y;
 		if( p.z < mn.z ) mn.z = p.z;  if( p.z > mx.z ) mx.z = p.z;
+	}
+	if( !any ) {
+		return 0;
 	}
 
 	const Scalar dx = mx.x - mn.x;
@@ -595,9 +647,12 @@ Scalar LightVertexStore::ComputeBBoxSurfaceArea() const
 
 namespace
 {
-	// Rec. 709 luminance — matches RISEPelToNMProxy in VCMIntegrator.cpp
-	// so the clamp ranks photons consistently with the spectral merge
-	// path's projection.
+	// Rec. 709 luminance — a MAGNITUDE used only to RANK stored
+	// throughputs for outlier clamping, never as a radiance.  (It used
+	// to be documented as matching VCMIntegrator's RISEPelToNMProxy;
+	// that proxy is gone — the spectral merge path now uplifts the
+	// stored throughput as an illuminant, Stage C slice 2 — but a
+	// luma-ordered percentile is still the right ranking here.)
 	inline Scalar LightVertexLuminance( const RISEPel& t )
 	{
 		return Scalar( 0.2126 ) * t[0]
@@ -608,7 +663,8 @@ namespace
 
 void LightVertexStore::ClampOutlierThroughputs(
 	const Scalar percentile,
-	const Scalar multiplier
+	const Scalar multiplier,
+	const Scalar mediumStoreProbability
 	)
 {
 	if( mVertices.empty() ) {
@@ -622,17 +678,28 @@ void LightVertexStore::ClampOutlierThroughputs(
 	// store's mVertices directly would let nth_element reorder photons,
 	// breaking later index-based access; the auxiliary copy is the
 	// only correct option.
+	// DL-380: the percentile is taken over the ORDINARY vertices only
+	// (not past an eye-coverable subsurface jump -- see the header), so
+	// the threshold is the pre-DL-380 one; every vertex is clamped
+	// against it.
 	const std::size_t n = mVertices.size();
 	std::vector<Scalar> lums;
 	lums.reserve( n );
 	for( std::size_t i = 0; i < n; i++ ) {
+		if( mVertices[i].flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) {	// DL-469: volume-merge vertices too
+			continue;
+		}
 		lums.push_back( LightVertexLuminance( mVertices[i].throughput ) );
+	}
+	if( lums.empty() ) {
+		return;
 	}
 
 	// Find the percentile via nth_element (O(n) average).  Clamp the
-	// index to [0, n-1] so percentile=1.0 doesn't run off the end.
-	std::size_t k = static_cast<std::size_t>( percentile * static_cast<double>( n ) );
-	if( k >= n ) k = n - 1;
+	// index to [0, m-1] so percentile=1.0 doesn't run off the end.
+	const std::size_t m = lums.size();
+	std::size_t k = static_cast<std::size_t>( percentile * static_cast<double>( m ) );
+	if( k >= m ) k = m - 1;
 	std::nth_element( lums.begin(), lums.begin() + k, lums.end() );
 	const Scalar pctValue = lums[k];
 
@@ -648,10 +715,20 @@ void LightVertexStore::ClampOutlierThroughputs(
 	// scale) so chromaticity stays the same; only the magnitude is
 	// capped.  Vertices already at or below threshold are untouched.
 	for( std::size_t i = 0; i < n; i++ ) {
-		const Scalar lum = LightVertexLuminance( mVertices[i].throughput );
+		// DL-469: a thinned medium vertex is judged on its physical
+		// throughput, q * stored (see the header).
+		const Scalar q = ( ( mVertices[i].flags & kLVF_IsMedium ) && mediumStoreProbability > 0 )
+			? mediumStoreProbability : Scalar( 1 );
+		const Scalar lum = q * LightVertexLuminance( mVertices[i].throughput );
 		if( lum > threshold ) {
 			const Scalar scale = threshold / lum;
 			mVertices[i].throughput = mVertices[i].throughput * scale;
+			// Rebuild the cached NM-merge spectrum to match the
+			// rescaled throughput -- see LightVertex::throughputSpectrum's
+			// comment (VCMLightVertex.h).  This is the only other site
+			// that writes `.throughput` after deposit.
+			mVertices[i].throughputSpectrum =
+				VCMIntegrator::LightThroughputSpectrum( mVertices[i].throughput );
 		}
 	}
 }

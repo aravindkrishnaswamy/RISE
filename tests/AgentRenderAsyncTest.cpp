@@ -51,6 +51,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "TestTempDir.h"
 // Round-8 review P2: per-process temp filenames -- see WriteTemp below.
 #ifdef _WIN32
 	#include <process.h>
@@ -126,8 +127,7 @@ static const char* const kScene =
 
 static std::string WriteTemp( const char* name, const std::string& text )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
@@ -312,10 +312,15 @@ class CanaryJob : public Job
 public:
 	CanaryJob( unsigned int sleepMs, std::shared_ptr<std::atomic<int>> counter )
 	: Job(), mSleepMs( sleepMs ), mCounter( std::move( counter ) ) {}
+	void ReleaseEarly() { mReleaseEarly.store( true, std::memory_order_release ); }
 	bool Rasterize() override
 	{
 		mCounter->fetch_add( 1, std::memory_order_acq_rel );
-		std::this_thread::sleep_for( std::chrono::milliseconds( mSleepMs ) );
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( mSleepMs );
+		while( !mReleaseEarly.load( std::memory_order_acquire ) &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+		}
 		const bool ok = Job::Rasterize();
 		mCounter->fetch_sub( 1, std::memory_order_acq_rel );
 		return ok;
@@ -323,6 +328,7 @@ public:
 private:
 	unsigned int mSleepMs;
 	std::shared_ptr<std::atomic<int>> mCounter;
+	std::atomic<bool> mReleaseEarly{ false };
 };
 
 // A Job subclass whose Rasterize() always throws -- mirrors
@@ -835,7 +841,7 @@ static void RunConcurrencyRaceClosureTest()
 
 		// Let the race window run for a bit -- long enough for many
 		// interleavings of interactive passes and agent renders.
-		std::this_thread::sleep_for( std::chrono::milliseconds( 600 ) );
+		std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
 		stop.store( true, std::memory_order_release );
 		agentThread.join();
 		scrubThread.join();
@@ -1334,13 +1340,29 @@ static void RunStopCancelsInFlightAgentRenderTest()
 //     Rasterize() via the shared progress hook, exactly like Stop()'s
 //     P2-C fix (RunStopCancelsInFlightAgentRenderTest above).
 //////////////////////////////////////////////////////////////////////
+// R1b (2026-08-09): this scene used to rely SOLELY on `samples 4096` to stay
+// slow enough for the GREEN side below (a render_cancel sent through the
+// AgentRpcDispatcher wire, i.e. the real `render{"async":true}` RPC path) to
+// catch it mid-flight.  The agent-surface samples cap (AgentSession::
+// kAgentSurfaceMaxSamples) now force-caps ANY agent-RPC-driven render with no
+// explicit `samples` down to 16spp -- see AgentRenderParams::fromAgentSurface's
+// doc -- so 4096 authored samples no longer reaches the rasterizer at all
+// through this specific test's RPC-driven submission (the OTHER, direct-C++
+// RenderAsync() heavy-scene test just above this one is UNAFFECTED: it never
+// goes through AgentRpcDispatcher, so fromAgentSurface stays false and its own
+// samples=4096 is honoured exactly as before).  Replaced the flat albedo with
+// an expensive perlin3d_painter (many octaves) so each SHADE stays costly
+// independent of spp/resolution -- neither of which this RPC path can any
+// longer be coaxed above the agent-surface cap.
 static const char* const kHeavyCancelScene =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
 	"pathtracing_pel_rasterizer\n{\n\tsamples 4096\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
 	"film\n{\n\twidth 96\n\theight 96\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
-	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_lo\n\tcolor 0.2 0.2 0.2\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_hi\n\tcolor 0.8 0.8 0.8\n}\n\n"
+	"perlin3d_painter\n{\n\tname pnt_albedo\n\tcolora pnt_lo\n\tcolorb pnt_hi\n\toctaves 1200\n}\n\n"
 	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
 	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
 	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
@@ -2138,7 +2160,6 @@ static void RunNoStaleOutstandingIdTest()
 	// drain would call CancelAgentRender_() and truncate the interactive
 	// pass early.
 	std::atomic<bool> stopScrub{ false };
-	std::atomic<unsigned int> cancelCountBefore{ controller.ForTest_GetCancelCount() };
 	std::thread scrubThread( [&]() {
 		double t = 0.0;
 		while( !stopScrub.load( std::memory_order_acquire ) ) {
@@ -2149,18 +2170,37 @@ static void RunNoStaleOutstandingIdTest()
 	} );
 	std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );   // let the interactive loop get genuinely busy
 
-	session.reset();   // destroys the (already-detached) AgentSession -- must be uneventful
-
-	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	// JOIN the scrub thread BEFORE the destroy, then kick ONE final pass and
+	// sample the counter after that kick.  OnTimeScrub legitimately
+	// self-cancels an in-flight pass whenever the next scrub arrives before
+	// the pass finishes, so a counter sampled while the scrub loop is still
+	// running is load-dependent (on a busy machine 5ms passes routinely
+	// overrun the cadence and the old form of this assertion flaked with
+	// before=0 after=4..5).  With the loop joined, the ONLY actor that can
+	// move the counter between the two samples below is ~AgentSession's
+	// drain -- which is exactly the thing under test, now deterministic.
 	stopScrub.store( true, std::memory_order_release );
 	scrubThread.join();
+	controller.OnTimeScrub( 0.99 );   // leave one interactive pass genuinely in flight across the destroy
 
-	const unsigned int cancelCountAfter = controller.ForTest_GetCancelCount();
-	std::printf( "  [no-stale-id] interactive cancel count before=%u after=%u\n", cancelCountBefore.load(), cancelCountAfter );
-	Check( cancelCountAfter == cancelCountBefore.load(),
-	       "RED-PROVE P1-2 BEHAVIORAL ASSERTION: destroying an already-completed, detached AgentSession does not spuriously cancel a "
-	       "concurrently-running UNRELATED interactive render (mCancelCount is unchanged) -- a stale mAsyncOutstandingJobId would have "
-	       "made DrainAsyncRender_ call CancelAgentRender_() against a job that no longer belongs to this session." );
+	// Sample the AGENT-cancel request counter, not mCancelCount: the buggy
+	// drain path (~AgentSession -> DrainAsyncRender_ -> CancelAgentRender_)
+	// never touches mCancelCount (that counter belongs to the UI-mutation
+	// CancelAndParkRender_ idiom), so the old mCancelCount comparison could
+	// not have gone red even with the P1-2 bug reintroduced -- while scrub
+	// self-cancels moved it spuriously under load.  This counter increments
+	// on exactly the call the stale-id bug would make, and nothing else runs
+	// between the two samples.
+	const unsigned int agentCancelsBefore = controller.ForTest_GetAgentCancelRequestCount();
+
+	session.reset();   // destroys the (already-detached) AgentSession -- must be uneventful
+
+	const unsigned int agentCancelsAfter = controller.ForTest_GetAgentCancelRequestCount();
+	std::printf( "  [no-stale-id] agent-cancel request count before=%u after=%u\n", agentCancelsBefore, agentCancelsAfter );
+	Check( agentCancelsAfter == agentCancelsBefore,
+	       "RED-PROVE P1-2 BEHAVIORAL ASSERTION: destroying an already-completed, detached AgentSession issues NO agent-cancel "
+	       "request (ForTest_GetAgentCancelRequestCount is unchanged) -- a stale mAsyncOutstandingJobId would have made "
+	       "DrainAsyncRender_ call CancelAgentRender_() against a job that no longer belongs to this session." );
 
 	controller.Stop();
 	pJob->release();
@@ -2326,10 +2366,15 @@ static void RunInterleavedMintNoClobberTest()
 	// ILLEGITIMATE clear (interactive pass, wrong id) from the
 	// legitimate one (agent's own ActiveFlipGuard, right id).
 	std::atomic<bool> agentRan{ false };
+	std::atomic<bool> allowAgentFinish{ false };
 	SceneEditController::RenderJobId agentJobId = SceneEditController::kInvalidRenderJobId;
 	const bool accepted = controller.SubmitAgentRenderAsync(
 		[&]() {
-			std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 500 );
+			while( !allowAgentFinish.load( std::memory_order_acquire ) &&
+			       std::chrono::steady_clock::now() < deadline ) {
+				std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+			}
 			agentRan.store( true, std::memory_order_release );
 		},
 		String( "clobber_probe" ), &agentJobId );
@@ -2372,6 +2417,7 @@ static void RunInterleavedMintNoClobberTest()
 	// legitimately blocked behind the -- now released -- interactive
 	// pass's CancelAndParkRender_ wait; the closure runs trivially fast
 	// once unblocked).
+	allowAgentFinish.store( true, std::memory_order_release );
 	Check( controller.WaitForRenderJob( agentJobId, 5000 ), "WaitForRenderJob eventually observes the agent job's REAL completion" );
 	Check( agentRan.load( std::memory_order_acquire ), "the agent closure actually ran by the time WaitForRenderJob returned true" );
 
@@ -3124,10 +3170,16 @@ static void RunSaveSnapshotConcurrentEditTest()
 	Check( controller.HasUnsavedChanges(),
 		"MONEY (t2-a): newer head remains dirty after the older snapshot is saved" );
 
-	std::ifstream firstDiskIn( scenePath.c_str(), std::ios::binary );
-	std::stringstream firstDiskBytes;
-	firstDiskBytes << firstDiskIn.rdbuf();
-	const std::string firstDisk = firstDiskBytes.str();
+	std::string firstDisk;
+	{
+		// Scoped so the stream CLOSES before the second RequestSave below:
+		// SaveEngine's atomic temp-file + rename fails on Windows with a
+		// sharing violation while any ordinary read handle is still open.
+		std::ifstream firstDiskIn( scenePath.c_str(), std::ios::binary );
+		std::stringstream firstDiskBytes;
+		firstDiskBytes << firstDiskIn.rdbuf();
+		firstDisk = firstDiskBytes.str();
+	}
 	Check( firstDisk.find( "scale 30.0" ) != std::string::npos
 	    && firstDisk.find( "scale 45.0" ) == std::string::npos,
 		"MONEY (t2-b): first save wrote exactly the pre-edit snapshot, not the concurrently replaced live Document" );
@@ -3135,11 +3187,15 @@ static void RunSaveSnapshotConcurrentEditTest()
 	const SaveResult secondSave = controller.RequestSave( scenePath );
 	Check( Succeeded( secondSave.status ), "second save writes the newer live head" );
 	Check( !controller.HasUnsavedChanges(), "second save baselines the unchanged newer head as clean" );
-	std::ifstream secondDiskIn( scenePath.c_str(), std::ios::binary );
-	std::stringstream secondDiskBytes;
-	secondDiskBytes << secondDiskIn.rdbuf();
-	Check( secondDiskBytes.str().find( "scale 45.0" ) != std::string::npos,
-		"MONEY (t2-c): second save persisted the newer edit" );
+	{
+		// Scoped for the same reason: the std::remove below would silently
+		// fail on Windows while this read handle is open.
+		std::ifstream secondDiskIn( scenePath.c_str(), std::ios::binary );
+		std::stringstream secondDiskBytes;
+		secondDiskBytes << secondDiskIn.rdbuf();
+		Check( secondDiskBytes.str().find( "scale 45.0" ) != std::string::npos,
+			"MONEY (t2-c): second save persisted the newer edit" );
+	}
 
 	pJob->release();
 	std::remove( scenePath.c_str() );
@@ -3223,7 +3279,7 @@ static void RunProductionTripleConcurrencyProofTest()
 		}
 	} );
 
-	std::this_thread::sleep_for( std::chrono::milliseconds( 600 ) );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
 	stop.store( true, std::memory_order_release );
 	productionThread.join();
 	agentThread.join();
@@ -3292,7 +3348,13 @@ static void RunDirectRasterizeRedProveTest()
 		}
 	} );
 
-	std::this_thread::sleep_for( std::chrono::milliseconds( 600 ) );
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 600 );
+		while( proof.maxObserved.load( std::memory_order_acquire ) < 2 &&
+		       std::chrono::steady_clock::now() < deadline ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
+	}
 	stop.store( true, std::memory_order_release );
 	directThread.join();
 	scrubThread.join();
@@ -5271,6 +5333,7 @@ static void RunRenderOwnsSceneGuardTest()
 			} );
 		Check( mutatorQuick, "MONEY: GoToHomeView() did NOT wedge on mMutex during a render" );
 
+		pJob->ReleaseEarly();
 		const bool completed = session->RenderWait( ar.renderJobId, 5000 );
 		Check( completed, "render completed within the timeout" );
 		Check( !controller.ForTest_RenderOwnsScene(), "render-owns-scene flag CLEARED after the render finished" );
@@ -6176,8 +6239,840 @@ static void RunRefusalCauseAttributionTest()
 	std::printf( "=== (refusal-cause) refusals name the right cause: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
 }
 
+//////////////////////////////////////////////////////////////////////
+// R1b (2026-08-09, docs/agentic-redesign/75-expressive-surface-arc.md):
+// agent-surface render resolution/sample caps -- see AgentRenderParams::
+// fromAgentSurface's doc for the full mechanism.  Every case here drives
+// the REAL "render" RPC verb through AgentRpcDispatcher (never a direct
+// C++ AgentRenderParams construction, which would leave fromAgentSurface
+// false and bypass the caps entirely -- see that field's doc for why
+// every OTHER test in this file, which DOES construct AgentRenderParams
+// directly, is deliberately unaffected by this arc).
+//////////////////////////////////////////////////////////////////////
+
+// A wide (2:1) film, well over kAgentSurfaceMaxRenderEdge (256) on its long
+// edge, with an authored sample count well over kAgentSurfaceMaxSamples
+// (16) -- so a PLAIN render{} (no width/height/samples at all) exercises
+// BOTH implicit agent-surface defaults in one fixture.  Cheap geometry (the
+// same lit sphere as kScene) keeps the CAPPED 256x128@16spp render fast
+// despite the large authored film -- that boundedness is exactly the
+// property this arc exists to guarantee.
+static const char* const kWideBigFilmScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 200\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 2048\n\theight 1024\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+// FIX 1 (P1, 2026-08-09, R1 fix round): same wide/big-authored-film shape as
+// kWideBigFilmScene, but the rasterizer is `mlt_rasterizer` instead of
+// `pathtracing_pel_rasterizer`.  `MLTRasterizer` (and its spectral subclass)
+// derive from `Rasterizer`, NOT `PixelBasedRasterizerHelper` (the ONLY class
+// in the tree that overrides Get/SetSampleCountOverride) and neither
+// overrides the pair -- confirmed by reading MLTRasterizer.h/.cpp -- so it
+// inherits IRasterizer's base-class defaults: GetSampleCountOverride()
+// always returns -1 ("unknown/unsupported"), and SetSampleCountOverride()
+// always returns false.  This exercises the widened force-cap gate
+// (`origSamples < 0 || origSamples > kAgentSurfaceMaxSamples`) via the
+// UNKNOWN branch rather than the known-too-high branch that kWideBigFilmScene
+// already covers.  Using MLT in a test scene fixture is explicitly allowed
+// here (a separate upcoming slice blocks AGENTS from CREATING MLT
+// rasterizers, but an agent must still be able to honestly render a
+// user-authored scene that already contains one).  `bootstrap_samples`,
+// `chains`, and `mutations_per_pixel` are all pinned to their cheapest
+// meaningful values (totalMutations = mutations_per_pixel * width * height,
+// so mutations_per_pixel is the one knob that matters at the capped 256x128
+// resolution) to keep the render itself fast despite the wide authored film.
+//
+// FIX B (P2, round-3 fix, 2026-08-09): an EARLIER draft of this comment
+// claimed an `auto_rasterizer`-based twin of this fixture was "WITHDRAWN"
+// because "AutoRasterizer always resolves to and delegates through a real PT
+// rasterizer, so the sample-count override IS honoured via the delegate and
+// the cap applies normally; it is not an unknown/-1 case".  That claim is
+// FALSE and was supervisor-verified false: `grep -c SampleCountOverride
+// src/Library/Rendering/AutoRasterizer.{h,cpp}` returns 0 for BOTH files.
+// AutoRasterizer forwards an enumerated subset of IRasterizer and does NOT
+// forward the Get/SetSampleCountOverride pair, so -- exactly like
+// MLTRasterizer -- it inherits the base -1/false regardless of which
+// integrator it delegates to internally.  AutoRasterizer belongs in the SAME
+// unknown/unsupported bucket as MLT, not a separate honoured-override case.
+// (The real reason the original auto-based attempt at this test failed was
+// only an assertion-string mismatch: the unknown-case message is "could NOT
+// be verified or applied", which does not contain the substring "could NOT
+// be applied" that assertion was checking for.)  See kWideBigFilmSceneAuto
+// and case (f2) below, which now exercise AutoRasterizer through this exact
+// branch alongside MLT.
+static const char* const kWideBigFilmSceneMLT =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"mlt_rasterizer\n{\n\tmax_eye_depth 2\n\tmax_light_depth 2\n\tbootstrap_samples 8\n\tchains 1\n\tmutations_per_pixel 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 2048\n\theight 1024\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+// FIX B (P2, round-3 fix, 2026-08-09): the AutoRasterizer twin of
+// kWideBigFilmSceneMLT -- see the corrected comment above kWideBigFilmSceneMLT
+// for why AutoRasterizer belongs in the SAME unknown/unsupported
+// sample-count bucket as MLT (it inherits IRasterizer's base -1/false
+// Get/SetSampleCountOverride defaults; it does not forward the pair to
+// whichever integrator it delegates to).  `integrator pt` pins the
+// dispatcher's choice so the render is deterministic, and `samples` is
+// pinned LOW (4) -- unlike MLT, whose cost is bounded by
+// mutations_per_pixel regardless of the sample-override outcome,
+// AutoRasterizer's internal PT delegate spends wall-clock directly
+// proportional to `samples`, and since the override attempt on this
+// fixture is expected to fail (unsupported), the render actually runs at
+// the raw authored count -- so it must be authored cheap up front.
+static const char* const kWideBigFilmSceneAuto =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"auto_rasterizer\n{\n\tsamples 4\n\tintegrator pt\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 2048\n\theight 1024\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+static std::string MakeR1bRenderReq( double id, const std::string& method, const JsonValue& params )
+{
+	JsonValue r = JsonValue::MakeObject();
+	r.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+	r.set( "id", JsonValue::MakeNumber( id ) );
+	r.set( "method", JsonValue::MakeString( method ) );
+	r.set( "params", params );
+	return JsonSerialize( r );
+}
+
+static void RunAgentSurfaceRenderCapTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: R1b agent-surface render resolution/sample caps ===\n" );
+
+	// --- (a) explicit width/height 512x512 -> clamped to 256x256, fact reported ---
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_explicit_dims.RISEscene", kScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(a): scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "R1b(a): session wraps" );
+		if( session )
+		{
+			AgentRpcDispatcher rpc( std::move( session ) );
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "width",  JsonValue::MakeNumber( 512.0 ) );
+			params.set( "height", JsonValue::MakeNumber( 512.0 ) );
+			const std::string resp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", params ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( resp, env, err ), "R1b(a): response parses" );
+			const JsonValue& result = env.get( "result" );
+			Check( result.get( "ok" ).asBool(), "R1b(a): render succeeded" );
+			Check( result.get( "width" ).asNumber( -1 ) == 256.0 && result.get( "height" ).asNumber( -1 ) == 256.0,
+			       "R1b(a) MONEY: an explicit 512x512 request renders at 256x256 (clamped, not rejected)" );
+			const JsonValue& cap = result.get( "agentRenderCap" );
+			Check( cap.isObject(), "R1b(a) MONEY: the result carries an agentRenderCap fact" );
+			Check( cap.get( "resolutionCapped" ).asBool(), "R1b(a): resolutionCapped is true" );
+			Check( cap.get( "maxEdge" ).asNumber( -1 ) == 256.0, "R1b(a): maxEdge echoes 256" );
+			Check( cap.get( "requestedWidth" ).asNumber( -1 ) == 512.0 && cap.get( "requestedHeight" ).asNumber( -1 ) == 512.0,
+			       "R1b(a): the fact echoes the caller's ORIGINAL (pre-clamp) 512x512 request" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- (b) absent width/height on a wide, oversized authored Film ->
+	//     scaled to fit 256px on the long edge, aspect preserved; absent
+	//     samples on an authored 200spp scene -> capped to 16.  Both facts
+	//     land in ONE render.
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_absent_dims.RISEscene", kWideBigFilmScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(b): scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "R1b(b): session wraps" );
+		if( session )
+		{
+			AgentRpcDispatcher rpc( std::move( session ) );
+			const std::string resp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", JsonValue::MakeObject() ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( resp, env, err ), "R1b(b): response parses" );
+			const JsonValue& result = env.get( "result" );
+			Check( result.get( "ok" ).asBool(), "R1b(b): render succeeded" );
+			Check( result.get( "width" ).asNumber( -1 ) == 256.0 && result.get( "height" ).asNumber( -1 ) == 128.0,
+			       "R1b(b) MONEY: no width/height requested renders at the scene's own 2:1 aspect scaled to a 256px "
+			       "long edge (256x128), NEVER the scene's full authored 2048x1024" );
+			Check( result.get( "effectiveSamples" ).asNumber( -1 ) == 16.0,
+			       "R1b(b) MONEY: no samples requested on a 200spp-authored scene renders at 16spp (capped), not the full authored count" );
+			Check( result.get( "samplesOverridden" ).asBool(), "R1b(b): samplesOverridden is honestly true (the cap WAS applied)" );
+			const JsonValue& cap = result.get( "agentRenderCap" );
+			Check( cap.isObject(), "R1b(b) MONEY: the result carries an agentRenderCap fact for the ABSENT-value defaults" );
+			Check( cap.get( "resolutionCapped" ).asBool() && cap.get( "samplesCapped" ).asBool(),
+			       "R1b(b): both resolutionCapped and samplesCapped are true" );
+			Check( cap.get( "filmWidth" ).asNumber( -1 ) == 2048.0 && cap.get( "filmHeight" ).asNumber( -1 ) == 1024.0,
+			       "R1b(b): the fact names the scene's UNCAPPED authored Film dims (2048x1024), so the caller can see what it did NOT get" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- (c) explicit samples:64 -> clamped to 16, fact reported ---
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_explicit_samples.RISEscene", kScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(c): scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "R1b(c): session wraps" );
+		if( session )
+		{
+			AgentRpcDispatcher rpc( std::move( session ) );
+			JsonValue params = JsonValue::MakeObject();
+			params.set( "samples", JsonValue::MakeNumber( 64.0 ) );
+			const std::string resp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", params ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( resp, env, err ), "R1b(c): response parses" );
+			const JsonValue& result = env.get( "result" );
+			Check( result.get( "ok" ).asBool(), "R1b(c): render succeeded" );
+			Check( result.get( "samplesOverridden" ).asBool() && result.get( "effectiveSamples" ).asNumber( -1 ) == 16.0,
+			       "R1b(c) MONEY: an explicit samples:64 request honestly overrides to 16 (clamped), not 64" );
+			const JsonValue& cap = result.get( "agentRenderCap" );
+			Check( cap.isObject() && cap.get( "samplesCapped" ).asBool(),
+			       "R1b(c): the result carries an agentRenderCap fact for the explicit samples clamp" );
+			Check( cap.get( "requestedSamples" ).asNumber( -1 ) == 64.0,
+			       "R1b(c): the fact echoes the caller's ORIGINAL (pre-clamp) samples:64 request" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- (d) draft and objectmap renders are UNTOUCHED: no agentRenderCap
+	//     fact, and neither one's own pre-existing fixed fidelity changes.
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_draft_objectmap.RISEscene", kScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(d): scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "R1b(d): session wraps" );
+		if( session )
+		{
+			AgentRpcDispatcher rpc( std::move( session ) );
+
+			JsonValue draftParams = JsonValue::MakeObject();
+			draftParams.set( "quality", JsonValue::MakeString( "draft" ) );
+			const std::string draftResp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", draftParams ) );
+			JsonValue draftEnv; std::string derr;
+			Check( JsonParse( draftResp, draftEnv, derr ), "R1b(d): draft response parses" );
+			const JsonValue& draftResult = draftEnv.get( "result" );
+			Check( draftResult.get( "ok" ).asBool(), "R1b(d): draft render succeeded" );
+			Check( !draftResult.has( "agentRenderCap" ),
+			       "R1b(d) MONEY: a draft render carries NO agentRenderCap fact (untouched by R1b -- draft has its own fixed cap)" );
+			Check( draftResult.get( "renderMode" ).asString() == "draft", "R1b(d): renderMode is draft" );
+
+			JsonValue omParams = JsonValue::MakeObject();
+			omParams.set( "mode", JsonValue::MakeString( "objectmap" ) );
+			const std::string omResp = rpc.HandleLine( MakeR1bRenderReq( 2.0, "render", omParams ) );
+			JsonValue omEnv; std::string oerr;
+			Check( JsonParse( omResp, omEnv, oerr ), "R1b(d): objectmap response parses" );
+			const JsonValue& omResult = omEnv.get( "result" );
+			Check( omResult.get( "ok" ).asBool(), "R1b(d): objectmap render succeeded" );
+			Check( !omResult.has( "agentRenderCap" ),
+			       "R1b(d) MONEY: an objectmap render carries NO agentRenderCap fact (diagnostic mode, untouched by R1b)" );
+			Check( omResult.get( "width" ).asNumber( -1 ) == 24.0 && omResult.get( "height" ).asNumber( -1 ) == 24.0,
+			       "R1b(d): objectmap with no explicit dims still renders at the scene's authored 24x24 -- the RESOLUTION "
+			       "cap only applies to BEAUTY production renders, never a diagnostic mode" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- (e) async + pinned paths are capped IDENTICALLY to the sync path ---
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_async_pinned.RISEscene", kWideBigFilmScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(e): scene loads" );
+		SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
+		controller->Start( /*suppressInitialRender=*/true );
+		std::unique_ptr<AgentSession> ownedSession = AgentSession::WrapJob( pJob );
+		Check( ownedSession != nullptr, "R1b(e): session wraps" );
+		if( ownedSession )
+		{
+			ownedSession->AttachController( controller );
+			AgentSession* session = ownedSession.get();
+			AgentRpcDispatcher rpc( std::move( ownedSession ) );
+
+			// async, no dims/samples, no pinned.
+			JsonValue asyncParams = JsonValue::MakeObject();
+			asyncParams.set( "async", JsonValue::MakeBool( true ) );
+			const std::string submitResp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", asyncParams ) );
+			JsonValue submitEnv; std::string serr;
+			Check( JsonParse( submitResp, submitEnv, serr ), "R1b(e): async submit response parses" );
+			const double jobId = submitEnv.get( "result" ).get( "renderJobId" ).asNumber( 0.0 );
+			Check( jobId > 0.0, "R1b(e): async submit accepted" );
+
+			bool waited = false;
+			JsonValue waitEnv;
+			RunWatchdogged( "R1b(e) render_wait for the capped async render", 10000, [&]() {
+				for( int i = 0; i < 200; ++i ) {
+					JsonValue waitParams = JsonValue::MakeObject();
+					waitParams.set( "renderJobId", JsonValue::MakeNumber( jobId ) );
+					waitParams.set( "timeoutMs", JsonValue::MakeNumber( 100.0 ) );
+					const std::string waitResp = rpc.HandleLine( MakeR1bRenderReq( 2.0, "render_wait", waitParams ) );
+					JsonValue thisWaitEnv; std::string werr;
+					if( !JsonParse( waitResp, thisWaitEnv, werr ) ) continue;
+					if( thisWaitEnv.get( "result" ).get( "completed" ).asBool() ) { waitEnv = thisWaitEnv; waited = true; break; }
+				}
+			} );
+			Check( waited, "R1b(e): the async render completed within the watchdog window" );
+			if( waited )
+			{
+				const JsonValue& asyncResult = waitEnv.get( "result" ).get( "result" );
+				Check( asyncResult.get( "ok" ).asBool(), "R1b(e): async render succeeded" );
+				Check( asyncResult.get( "width" ).asNumber( -1 ) == 256.0 && asyncResult.get( "height" ).asNumber( -1 ) == 128.0,
+				       "R1b(e) MONEY: the ASYNC path is capped IDENTICALLY to sync -- 256x128, never the full 2048x1024" );
+				Check( asyncResult.get( "effectiveSamples" ).asNumber( -1 ) == 16.0,
+				       "R1b(e) MONEY: the ASYNC path's samples cap matches sync -- 16spp, never the authored 200" );
+				const JsonValue& cap = asyncResult.get( "agentRenderCap" );
+				Check( cap.isObject() && cap.get( "resolutionCapped" ).asBool() && cap.get( "samplesCapped" ).asBool(),
+				       "R1b(e): render_wait's echoed result carries the SAME agentRenderCap fact an equivalent sync render would" );
+			}
+
+			// pinned, no dims/samples -- same caps apply.
+			JsonValue pinnedParams = JsonValue::MakeObject();
+			pinnedParams.set( "pinned", JsonValue::MakeBool( true ) );
+			const std::string pinnedResp = rpc.HandleLine( MakeR1bRenderReq( 3.0, "render", pinnedParams ) );
+			JsonValue pinnedEnv; std::string perr;
+			Check( JsonParse( pinnedResp, pinnedEnv, perr ), "R1b(e): pinned sync response parses" );
+			const JsonValue& pinnedResult = pinnedEnv.get( "result" );
+			Check( pinnedResult.get( "ok" ).asBool(), "R1b(e): pinned render succeeded" );
+			Check( pinnedResult.get( "width" ).asNumber( -1 ) == 256.0 && pinnedResult.get( "height" ).asNumber( -1 ) == 128.0,
+			       "R1b(e) MONEY: a PINNED render is capped IDENTICALLY too -- 256x128, never the full 2048x1024" );
+			Check( pinnedResult.get( "effectiveSamples" ).asNumber( -1 ) == 16.0,
+			       "R1b(e): a pinned render's samples cap matches -- 16spp" );
+
+			session->AttachController( nullptr );
+		}
+		delete controller;
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- (f) FIX 1 (P1, 2026-08-09): the implicit force-cap gate must also
+	//     fire when the active rasterizer's sample count is UNKNOWN
+	//     (GetSampleCountOverride() == -1), not just when it's known and
+	//     too high.  `mlt_rasterizer` (MLTRasterizer derives from
+	//     Rasterizer, not PixelBasedRasterizerHelper, and does not override
+	//     the Get/SetSampleCountOverride pair) always reports -1 and always
+	//     refuses SetSampleCountOverride -- before this fix, the old gate
+	//     (`origSamples > kAgentSurfaceMaxSamples`) was false for -1, so the
+	//     cap was never even ATTEMPTED and no honesty note fired at all.  A
+	//     plain render{} (no samples) on this MLT scene must: attempt the
+	//     cap, report honestly that it could NOT be applied (distinct
+	//     unknown-case wording, not the scene's authored count), still
+	//     render successfully, and still get its RESOLUTION capped (that
+	//     axis is independent of the sample-count override protocol).
+	//     See (f2) below for the `auto_rasterizer` twin of this exact case
+	//     (FIX B, round-3 fix, 2026-08-09) -- AutoRasterizer belongs in this
+	//     same unknown/unsupported bucket, not a separate honoured-override
+	//     one (see the corrected comment above kWideBigFilmSceneMLT).
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_unknown_samples_mlt.RISEscene", kWideBigFilmSceneMLT );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(f): scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "R1b(f): session wraps" );
+		if( session )
+		{
+			AgentRpcDispatcher rpc( std::move( session ) );
+			const std::string resp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", JsonValue::MakeObject() ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( resp, env, err ), "R1b(f): response parses" );
+			const JsonValue& result = env.get( "result" );
+			Check( result.get( "ok" ).asBool(), "R1b(f) MONEY: an unknown-sample-count rasterizer (mlt_rasterizer) still renders ok:true" );
+			Check( result.get( "width" ).asNumber( -1 ) == 256.0 && result.get( "height" ).asNumber( -1 ) == 128.0,
+			       "R1b(f) MONEY: resolution is still capped to 256 on its long edge -- independent of the sample-count axis" );
+			Check( !result.get( "samplesOverridden" ).asBool(),
+			       "R1b(f): samplesOverridden is honestly FALSE -- the cap was attempted but could not be applied" );
+			const std::string msg = result.get( "message" ).asString();
+			// The unknown-count (-1) branch's actual wording, in
+			// AgentSession.cpp's `agentSamplesForceCapAttempted` handling
+			// (the `agentSamplesCapOrigValue < 0` arm), is "could NOT be
+			// verified or applied" -- distinct from the known-too-high
+			// arm's "could NOT be applied".  Assert against the wording
+			// production actually emits for THIS branch.
+			Check( msg.find( "could NOT be verified or applied" ) != std::string::npos,
+			       "R1b(f) MONEY: the result message honestly reports the cap could NOT be verified or applied (never silent)" );
+			Check( msg.find( "does not report its sample count" ) != std::string::npos,
+			       "R1b(f) MONEY: the unknown-case wording is distinct from the known-too-high wording (never prints a bogus \"-1\" authored count)" );
+			Check( msg.find( "authored sample count (-1)" ) == std::string::npos,
+			       "R1b(f): the message never prints the raw -1 sentinel as if it were a real authored count" );
+			const JsonValue& cap = result.get( "agentRenderCap" );
+			Check( cap.isObject(), "R1b(f): the result still carries an agentRenderCap fact (resolution axis capped)" );
+			Check( cap.get( "resolutionCapped" ).asBool(), "R1b(f): resolutionCapped is true" );
+			Check( !cap.get( "samplesCapped" ).asBool(),
+			       "R1b(f): samplesCapped is honestly false -- the sample axis cap did not actually land" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// --- (f2) FIX B (P2, round-3 fix, 2026-08-09): the `auto_rasterizer`
+	//     twin of (f) -- see kWideBigFilmSceneAuto's doc and the corrected
+	//     comment above kWideBigFilmSceneMLT for why AutoRasterizer belongs
+	//     in the SAME unknown/unsupported sample-count bucket as MLT.  Same
+	//     assertions as (f), on the auto-rasterizer fixture; the fixture's
+	//     low authored `samples 4` keeps this cheap even though the
+	//     override attempt is expected to fail and the render actually runs
+	//     at the raw authored count.
+	{
+		const std::string scenePath = WriteTemp( "rise_r1b_unknown_samples_auto.RISEscene", kWideBigFilmSceneAuto );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "R1b(f2): scene loads" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "R1b(f2): session wraps" );
+		if( session )
+		{
+			AgentRpcDispatcher rpc( std::move( session ) );
+			const std::string resp = rpc.HandleLine( MakeR1bRenderReq( 1.0, "render", JsonValue::MakeObject() ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( resp, env, err ), "R1b(f2): response parses" );
+			const JsonValue& result = env.get( "result" );
+			Check( result.get( "ok" ).asBool(), "R1b(f2) MONEY: an unknown-sample-count rasterizer (auto_rasterizer) still renders ok:true" );
+			Check( result.get( "width" ).asNumber( -1 ) == 256.0 && result.get( "height" ).asNumber( -1 ) == 128.0,
+			       "R1b(f2) MONEY: resolution is still capped to 256 on its long edge -- independent of the sample-count axis" );
+			Check( !result.get( "samplesOverridden" ).asBool(),
+			       "R1b(f2): samplesOverridden is honestly FALSE -- the cap was attempted but could not be applied" );
+			const std::string msg = result.get( "message" ).asString();
+			Check( msg.find( "could NOT be verified or applied" ) != std::string::npos,
+			       "R1b(f2) MONEY: the result message honestly reports the cap could NOT be verified or applied (never silent) -- "
+			       "AutoRasterizer takes the SAME unknown-case branch MLT does" );
+			Check( msg.find( "does not report its sample count" ) != std::string::npos,
+			       "R1b(f2) MONEY: the unknown-case wording is distinct from the known-too-high wording (never prints a bogus \"-1\" authored count)" );
+			Check( msg.find( "authored sample count (-1)" ) == std::string::npos,
+			       "R1b(f2): the message never prints the raw -1 sentinel as if it were a real authored count" );
+			const JsonValue& cap = result.get( "agentRenderCap" );
+			Check( cap.isObject(), "R1b(f2): the result still carries an agentRenderCap fact (resolution axis capped)" );
+			Check( cap.get( "resolutionCapped" ).asBool(), "R1b(f2): resolutionCapped is true" );
+			Check( !cap.get( "samplesCapped" ).asBool(),
+			       "R1b(f2): samplesCapped is honestly false -- the sample axis cap did not actually land" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	std::printf( "=== R1b agent-surface render caps: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// G3b fix-round (2026-08-10) FIX 1: the ASYNC `target` comparison runs
+// off a SUBMISSION-TIME SNAPSHOT of the filed sketch.
+//
+// THE DEFECT THIS PINS.  G3b's `render{isolate,target}` shipped with
+// its sketch lookup done BY NAME inside RenderCore_ and again inside
+// ApplyTargetComparison_.  On the async path both of those run on the
+// controller's dedicated render worker thread, and both read
+// AgentSession::mElementSketches -- which FileBuildPlan REASSIGNS on the
+// dispatcher thread with no lock.  Concurrent read/write of a
+// std::vector being reallocated is UB (use-after-free on the mask
+// bytes), and it is reachable from the ordinary wire: the raw JSON-RPC
+// `render` verb accepts {"async":true,"isolate":X,"target":Y} (the
+// target parse block never consults `async`), and RenderAsync is public
+// C++ besides.
+//
+// THE FIX, and therefore what this test asserts.  Resolution now
+// happens EXACTLY ONCE, on the SUBMITTING thread, and the resolved
+// AgentElementSketch COPY is threaded into the worker closure; the worker
+// never touches session build-plan state.  That is also the correct
+// SEMANTICS independently of the race -- an async comparison must
+// describe the plan as it was when the caller submitted.  So the pin is
+// a semantic one: file plan A, submit, IMMEDIATELY re-file a
+// deliberately different plan B under the SAME part name, and require
+// the completed render's echoed facts to describe A.
+//
+// WHICH ASSERTION GOES RED ON A REGRESSION.  (FIX1-b1) and (FIX1-b2).
+// Restore name-resolution on the worker thread and
+// ApplyTargetComparison_ re-resolves AFTER the (deliberately slow)
+// render, by which time plan B has long since landed -- the echo then
+// reports view "top" and sketchAspect 4.0 instead of "front" and 1.0.
+// The 400ms render is what makes that ordering deterministic rather
+// than a coin flip; the underlying data race has no reliable
+// observable, so the semantics are the practical pin.
+//////////////////////////////////////////////////////////////////////
+static std::vector<AgentSession::AgentBuildPlanEntry> AsyncTargetPlan( const char* outline,
+                                                                      const char* view )
+{
+	AgentSession::AgentBuildPlanEntry e;
+	e.element         = "ball";
+	e.pieces.push_back( "piece" );
+	e.construction.push_back( "primitive" );
+	e.outline      = outline;
+	e.view         = view;
+	return std::vector<AgentSession::AgentBuildPlanEntry>( 1, e );
+}
+
+static void RunAsyncTargetSnapshotTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (G3b FIX 1) async target comparison snapshots the plan at submission ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_target.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the async-target scene to a temp file" );
+
+	// ---- (a) end-to-end through the REAL wire, and (b) THE RACE PIN,
+	//      in one flight.
+	{
+		SlowRasterizeJob* pJob = new SlowRasterizeJob();
+		// 400ms per Rasterize() -- long enough that the re-file below (a
+		// handful of microseconds after the submit returns) is GUARANTEED
+		// to land before the worker reaches the comparison, which is what
+		// makes the regression deterministic rather than a coin flip.
+		pJob->SetSleepMs( 400 );
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "SlowRasterizeJob loads the async-target scene via the CST path" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> owned = AgentSession::WrapJob( pJob );
+		Check( owned != nullptr, "AgentSession::WrapJob wraps the async-target Job" );
+		if( owned )
+		{
+			owned->AttachController( &controller );
+			AgentSession* session = owned.get();
+			AgentRpcDispatcher rpc( std::move( owned ) );
+
+			Check( session->FileBuildPlan( AsyncTargetPlan( "0 0; 1 0; 1 1; 0 1", "front" ) ).ok,
+			       "plan A files: a unit-SQUARE `ball` sketch (bbox aspect 1.0) declared FRONT" );
+
+			JsonValue submitEnv; std::string err;
+			Check( JsonParse( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"async\":true,"
+				"\"isolate\":\"obj_sph\",\"target\":\"ball\"}}" ), submitEnv, err ),
+				"the async target submit response parses" );
+			Check( submitEnv.get( "result" ).get( "status" ).asString() == "submitted",
+			       "MONEY ASSERTION (FIX1-a1): the RAW WIRE really accepts "
+			       "{async:true, isolate, target} -- the shape the P1 called reachable is a "
+			       "supported submission, not a rejected one" );
+			const double jobIdD = submitEnv.get( "result" ).get( "renderJobId" ).asNumber( 0.0 );
+			Check( jobIdD > 0.0 && ( static_cast<std::uint64_t>( jobIdD ) % 2 ) == 0,
+			       "and it mints a real, EVEN (coordinator-tracked) job id" );
+
+			// ---- THE RACE.  Replace the plan, under the SAME part name,
+			// with one whose every reported fact differs, while the worker
+			// is still inside the render.  Pre-fix this is an unsynchronized
+			// write against two live reads on the worker thread; post-fix
+			// the worker holds its own copy and this is simply invisible to
+			// the in-flight comparison.
+			Check( session->FileBuildPlan( AsyncTargetPlan( "0 0; 4 0; 4 1; 0 1", "top" ) ).ok,
+			       "plan B re-files WHILE the async render is in flight: same part name `ball`, "
+			       "bbox aspect 4.0, declared TOP" );
+
+			JsonValue waitEnv;
+			Check( JsonParse( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render_wait\",\"params\":{\"renderJobId\":" +
+				std::to_string( static_cast<unsigned long long>( jobIdD ) ) +
+				",\"timeoutMs\":30000}}" ), waitEnv, err ),
+				"the render_wait response parses" );
+			const JsonValue& waitResult = waitEnv.get( "result" );
+			Check( waitResult.get( "completed" ).asBool(), "the async target render completed" );
+			Check( waitResult.has( "result" ),
+			       "and render_wait echoes the full cached render result" );
+			const JsonValue& rr = waitResult.get( "result" );
+			Check( rr.get( "ok" ).asBool(),
+			       std::string( "the async target render succeeded: " ) + rr.get( "message" ).asString() );
+			Check( rr.has( "target" ),
+			       "MONEY ASSERTION (FIX1-a2): the render_wait echo carries the nested `target` "
+			       "facts -- the async path measures the comparison exactly as the sync path does "
+			       "(this also closes review P2-3: the echo was previously untested)" );
+			const JsonValue& tgt = rr.get( "target" );
+			Check( tgt.get( "element" ).asString() == "ball", "the echoed part name is the one submitted" );
+
+			Check( tgt.get( "view" ).asString() == "front",
+			       "MONEY ASSERTION (FIX1-b1): the echoed sketch VIEW is \"front\" -- plan A, the "
+			       "plan AS IT WAS AT SUBMISSION -- and NOT plan B's \"top\".  Goes RED the moment "
+			       "anyone restores name-resolution on the worker thread." );
+			Check( tgt.get( "vantage" ).asString() == "front",
+			       "and the vantage the render actually framed from agrees with it -- one snapshot "
+			       "feeds BOTH the framing and the measurement, so they cannot disagree" );
+			const double echoedAspect = tgt.get( "sketchAspect" ).asNumber( -1.0 );
+			std::printf( "  echoed sketchAspect %.4f (plan A square = 1.0; plan B = 4.0)\n", echoedAspect );
+			Check( echoedAspect > 0.9 && echoedAspect < 1.1,
+			       "MONEY ASSERTION (FIX1-b2): the echoed sketchAspect is plan A's 1.0, NOT plan "
+			       "B's 4.0 -- the second red-prove of the same snapshot, on a number rather than "
+			       "a name, so a partial revert cannot slip through" );
+			Check( tgt.get( "compositeWidth" ).asNumber( 0.0 ) == 768.0 &&
+			       tgt.get( "compositeHeight" ).asNumber( 0.0 ) == 256.0,
+			       "the echoed composite DIMS are the [sketch|silhouette|overlay] strip's" );
+			Check( !rr.has( "png_base64" ) && !rr.has( "byteLength" ),
+			       "MONEY ASSERTION (FIX1-a3): the render_wait echo carries the target FACTS and "
+			       "NEVER image bytes -- RenderResultJson has no image branch, so an async caller "
+			       "that wants the composite reads it back deliberately rather than being billed "
+			       "for it on every poll" );
+
+			// The session's own state is plan B now -- the snapshot is a
+			// copy taken for the render, never a rollback of the session.
+			Check( session->ElementSketches().size() == 1 &&
+			       session->ElementSketches()[0].view == "top",
+			       "and the SESSION's live plan is still plan B -- the snapshot pinned the render, "
+			       "not the session" );
+
+			session->AttachController( nullptr );
+		}
+		controller.Stop();
+		pJob->release();
+	}
+
+	// ---- (c) an unresolvable `target` FAILS THE SUBMISSION.
+	//      Nothing is queued, so there is no later result to carry the
+	//      reason -- the refusal has to be the submit's own answer, in
+	//      the same shape (and the same sentences) the sync render uses.
+	{
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "a plain Job loads the async-target scene for the refusal cases" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> owned = AgentSession::WrapJob( pJob );
+		Check( owned != nullptr, "WrapJob wraps the refusal-case Job" );
+		if( owned )
+		{
+			owned->AttachController( &controller );
+			AgentSession* session = owned.get();
+
+			AgentRenderParams p;
+			p.isolate = "obj_sph";
+			p.target  = "ball";
+			const AgentSession::AgentRenderAsyncResult noPlan = session->RenderAsync( p );
+			Check( !noPlan.accepted,
+			       "MONEY ASSERTION (FIX1-c1): with NO plan filed, the async submission is REFUSED "
+			       "at submit time -- the resolution now happens on this thread, before anything "
+			       "is queued" );
+			Check( noPlan.renderJobId == 0, "and no job id is minted: nothing was queued" );
+			Check( noPlan.message.find( "no build plan has been filed" ) != std::string::npos,
+			       "with the SAME sentence a synchronous render puts in `message`" );
+
+			Check( session->FileBuildPlan( AsyncTargetPlan( "0 0; 1 0; 1 1; 0 1", "front" ) ).ok,
+			       "the plan files" );
+
+			p.target = "wing";
+			const AgentSession::AgentRenderAsyncResult unknown = session->RenderAsync( p );
+			Check( !unknown.accepted,
+			       "MONEY ASSERTION (FIX1-c2): an UNKNOWN part name fails the SUBMISSION" );
+			Check( unknown.message.find( "unknown target element \"wing\"" ) != std::string::npos &&
+			       unknown.message.find( "\"ball\"" ) != std::string::npos,
+			       "and the refusal names the element AND lists the filed names, exactly as the sync "
+			       "render's failure does" );
+
+			AgentRenderParams unpairedParams;
+			unpairedParams.target = "ball";
+			const AgentSession::AgentRenderAsyncResult unpaired = session->RenderAsync( unpairedParams );
+			Check( !unpaired.accepted &&
+			       unpaired.message.find( "requires `isolate`" ) != std::string::npos,
+			       "MONEY ASSERTION (FIX1-c3): `target` without `isolate` fails the async "
+			       "submission too -- a direct C++ caller that bypassed the wire's -32602 still "
+			       "cannot get an unpaired comparison queued" );
+
+			// And the wire renders a refused submission the way it renders
+			// every other one: status "refused", job id 0, reason in message.
+			AgentRpcDispatcher rpc( std::move( owned ) );
+			JsonValue env; std::string err;
+			Check( JsonParse( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"async\":true,"
+				"\"isolate\":\"obj_sph\",\"target\":\"wing\"}}" ), env, err ),
+				"the unknown-part async submit response parses" );
+			const JsonValue& res = env.get( "result" );
+			Check( res.get( "status" ).asString() == "refused",
+			       "MONEY ASSERTION (FIX1-c4): the wire reports status:\"refused\" for an "
+			       "unresolvable async target -- the SAME refusal shape the no-controller case "
+			       "already uses, so no new wire contract is invented" );
+			Check( res.get( "renderJobId" ).asNumber( 1.0 ) == 0.0, "with renderJobId 0" );
+			Check( res.get( "message" ).asString().find( "unknown target element" ) != std::string::npos,
+			       "and the reason on the wire" );
+
+			session->AttachController( nullptr );
+		}
+		controller.Stop();
+		pJob->release();
+	}
+
+	std::remove( scenePath.c_str() );
+	std::printf( "=== (G3b FIX 1) async target snapshot: %d passed, %d failed (cumulative) ===\n",
+		g_pass, g_fail );
+}
+
+//======================================================================
+// Arc 77 Phase 2 (2026-08-11): the SCENE-TARGET snapshot across the async
+// boundary -- the same defect class G3b's FIX 1 closed for the build plan,
+// pinned for the whole-scene target before it can be reintroduced.
+//
+// REACHABILITY, ENUMERATED (the standing rule for a claim like "this can
+// race"): the TOOL SCHEMA exposes `async` on `render`; the RAW WIRE accepts
+// {"method":"render","params":{"async":true}} whether or not any schema
+// mentions it (this test drives exactly that line); and RenderAsync is
+// public C++.  Three surfaces, so the worker closure really can run while
+// the dispatcher thread is inside ImagineScene -- a snapshot is required,
+// not merely tidy.
+//
+// The pin: submit an async render against a 256x256 target, REPLACE the
+// target with a 512x256 one while the worker is still rendering, and
+// require the echoed comparison to describe the target AS IT WAS AT
+// SUBMISSION.  Goes red if anyone makes the worker read mSceneTarget.
+//======================================================================
+static void RunAsyncSceneTargetSnapshotTest()
+{
+	std::printf( "=== AgentRenderAsyncTest: (Arc 77 Phase 2) async scene-target snapshot ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_async_scenetarget.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the async scene-target scene to a temp file" );
+
+	// Two canned, decodable PNGs of DIFFERENT sizes, minted from a throwaway
+	// session's build-plan sketch composite (256x256 per tile) so this test
+	// needs no PNG encoder of its own.
+	std::vector<unsigned char> smallPng, widePng;
+	{
+		Job* mintJob = new Job();
+		if( mintJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) {
+			for( int n = 1; n <= 2; ++n ) {
+				std::unique_ptr<AgentSession> m = AgentSession::WrapJob( mintJob );
+				std::vector<AgentSession::AgentBuildPlanEntry> parts;
+				for( int i = 0; i < n; ++i ) {
+					AgentSession::AgentBuildPlanEntry e;
+					e.element = "canned" + std::to_string( i );
+					e.pieces.push_back( "piece" );
+					e.construction.push_back( "primitive" );
+					e.outline = "0 0; 1 0; 1 1; 0 1";
+					parts.push_back( e );
+				}
+				const std::vector<unsigned char> png = m->FileBuildPlan( parts ).compositePng;
+				if( n == 1 ) smallPng = png; else widePng = png;
+			}
+		}
+		mintJob->release();
+	}
+	Check( !smallPng.empty() && !widePng.empty(), "two distinguishable canned targets were minted" );
+
+	auto makeGen = []( const std::vector<unsigned char>& png ) {
+		AgentSession::AgentImageGenerator g;
+		g.supported    = true;
+		g.providerName = "gemini";
+		g.modelId      = "test-image-model";
+		g.generate = [png]( const std::string& ) {
+			AgentSession::AgentImageGenOutcome o;
+			o.ok = true; o.bytes = png; o.mimeType = "image/png";
+			return o;
+		};
+		return g;
+	};
+
+	{
+		SlowRasterizeJob* pJob = new SlowRasterizeJob();
+		// Long enough that the re-imagine below is GUARANTEED to land before
+		// the worker reaches the comparison -- deterministic, not a coin flip.
+		pJob->SetSleepMs( 400 );
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "SlowRasterizeJob loads the async scene-target scene" );
+
+		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+		controller.Start( /*suppressInitialRender=*/true );
+
+		std::unique_ptr<AgentSession> owned = AgentSession::WrapJob( pJob );
+		Check( owned != nullptr, "AgentSession::WrapJob wraps the async scene-target Job" );
+		if( owned )
+		{
+			owned->AttachController( &controller );
+			AgentSession* session = owned.get();
+			AgentRpcDispatcher rpc( std::move( owned ) );
+
+			session->SetImageGenerator( makeGen( smallPng ) );
+			Check( session->ImagineScene( "target A -- a 256x256 imagination" ).ok,
+			       "target A is imagined (256x256)" );
+
+			JsonValue submitEnv; std::string err;
+			Check( JsonParse( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"async\":true}}" ),
+				submitEnv, err ), "the async submit response parses" );
+			Check( submitEnv.get( "result" ).get( "status" ).asString() == "submitted",
+			       "MONEY ASSERTION: the RAW WIRE accepts {async:true} on a session holding a scene "
+			       "target -- the shape that makes the snapshot necessary is a supported submission" );
+			const double jobIdD = submitEnv.get( "result" ).get( "renderJobId" ).asNumber( 0.0 );
+
+			// THE RACE: replace the target while the worker is still inside
+			// the render.  Pre-snapshot this is an unsynchronized write
+			// against a live read on the worker thread.
+			session->SetImageGenerator( makeGen( widePng ) );
+			Check( session->ImagineScene( "target B -- a 512x256 imagination" ).ok,
+			       "target B replaces it WHILE the async render is in flight" );
+
+			JsonValue waitEnv;
+			Check( JsonParse( rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render_wait\",\"params\":{\"renderJobId\":" +
+				std::to_string( static_cast<unsigned long long>( jobIdD ) ) +
+				",\"timeoutMs\":30000}}" ), waitEnv, err ), "the render_wait response parses" );
+			const JsonValue& waitResult = waitEnv.get( "result" );
+			Check( waitResult.get( "completed" ).asBool(), "the async render completed" );
+			const JsonValue& rr = waitResult.get( "result" );
+			Check( rr.get( "ok" ).asBool(),
+			       std::string( "the async render succeeded: " ) + rr.get( "message" ).asString() );
+			Check( rr.has( "sceneTarget" ),
+			       "MONEY ASSERTION: the async path attaches the whole-scene target exactly as "
+			       "the sync path does, and render_wait echoes it" );
+			const JsonValue& st = rr.get( "sceneTarget" );
+			Check( st.get( "targetWidth" ).asNumber( 0.0 ) == 256.0,
+			       "MONEY ASSERTION: the echoed target is A (256 wide), the one that existed AT "
+			       "SUBMISSION -- NOT B (512).  Goes RED the moment anyone makes the render worker "
+			       "read mSceneTarget instead of the snapshot it was handed." );
+			Check( !rr.has( "png_base64" ),
+			       "and the render_wait echo carries the FACTS without image bytes, exactly as the "
+			       "part-target echo does -- and, since Phase 2b, doubly so: `imageMaxEdge` is "
+			       "refused with `async`, and the composite is sized by it" );
+			Check( !st.get( "composite" ).asBool( true ),
+			       "Phase 2b: `composite:false` says so honestly rather than leaving the model to "
+			       "infer the absence of an image it was told to expect" );
+			Check( !st.has( "rmse" ),
+			       "Phase 2b MONEY ASSERTION: and the echoed block carries NO similarity score -- "
+			       "the RMSE this mechanism shipped with was a tone metric that drove measurable "
+			       "exposure/emissive cranking, and it is gone from every surface" );
+			Check( session->SceneTarget() && session->SceneTarget()->width == 512,
+			       "while the SESSION's live target is B -- the snapshot pinned the render, not the "
+			       "session" );
+
+			session->AttachController( nullptr );
+		}
+		controller.Stop();
+		pJob->release();
+	}
+
+	std::remove( scenePath.c_str() );
+	std::printf( "=== (Arc 77 Phase 2) async scene-target snapshot: %d passed, %d failed (cumulative) ===\n",
+		g_pass, g_fail );
+}
+
 int main()
 {
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	RunAsyncReturnsQuicklyTest();
 	RunRenderOwnsSceneGuardTest();
 	RunSingleSlotRejectionTest();
@@ -6224,6 +7119,9 @@ int main()
 	RunEphemeralGuardCtorWindowTest();
 	RunRefusalCauseAttributionTest();
 	RunPinnedFieldNotStaleAfterCompletionTest();
+	RunAgentSurfaceRenderCapTest();
+	RunAsyncTargetSnapshotTest();
+	RunAsyncSceneTargetSnapshotTest();   // Arc 77 Phase 2 (2026-08-11)
 
 	std::printf( "=== AgentRenderAsyncTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

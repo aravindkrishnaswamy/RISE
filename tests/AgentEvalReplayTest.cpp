@@ -76,14 +76,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
-// Per-process scratch directory -- see ScratchRunDir below.
-#ifdef _WIN32
-	#include <process.h>
-	#define getpid _getpid
-#else
-	#include <unistd.h>			// getpid(), fork(), pipe()
-	#include <sys/wait.h>		// waitpid() -- collision-hazard proof below
-#endif
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -105,65 +98,16 @@ static void Check( bool c, const std::string& w )
 // other's fixtures/results via the remove_all() below, surfacing as a
 // bogus flaky failure.  The pid suffix makes the tree unique per process;
 // ScratchTestRoot() lets main() remove the WHOLE tree on exit.
+static constexpr const char* kScratchPrefix = "rise_agent_eval_replay_test_";
+
 static std::string ScratchTestRoot()
 {
-	const char* base = std::getenv( "TMPDIR" );
-	if( !base ) base = std::getenv( "TMP" );   // Windows spelling
-	std::string dir = base ? base : "/tmp";
-	if( !dir.empty() && dir.back() != '/' && dir.back() != '\\' ) dir += '/';
-	dir += "rise_agent_eval_replay_test_";
-	dir += std::to_string( (long)getpid() );
-	return dir;
+	return RISE::TestSupport::ScratchTestRoot( kScratchPrefix );
 }
 
 static std::string ScratchRunDir( const char* leaf )
 {
-	std::string dir = ScratchTestRoot() + "/" + leaf;
-	std::error_code ec;
-	std::filesystem::remove_all( dir, ec );   // start clean each run
-	return dir;
-}
-
-//----------------------------------------------------------------------
-// Collision-hazard proof: two processes calling ScratchTestRoot() must
-// get DISTINCT trees.  See AgentEvalCheckTest.cpp's twin of this test for
-// the full rationale; POSIX-only (no fork() on Windows).
-//----------------------------------------------------------------------
-static void TestScratchRootDiffersAcrossProcesses()
-{
-#ifndef _WIN32
-	std::printf( "Collision-hazard check: ScratchTestRoot() differs across processes...\n" );
-	int fds[2];
-	if( pipe( fds ) != 0 ) { Check( false, "collision check: pipe() succeeded" ); return; }
-	const pid_t child = fork();
-	if( child < 0 ) {
-		Check( false, "collision check: fork() succeeded" );
-		close( fds[0] ); close( fds[1] );
-		return;
-	}
-	if( child == 0 ) {
-		close( fds[0] );
-		const std::string childRoot = ScratchTestRoot();
-		ssize_t w = write( fds[1], childRoot.data(), childRoot.size() );
-		(void)w;
-		close( fds[1] );
-		_exit( 0 );
-	}
-	close( fds[1] );
-	std::string childRoot;
-	char buf[4096]; ssize_t n;
-	while( ( n = read( fds[0], buf, sizeof( buf ) ) ) > 0 ) childRoot.append( buf, (size_t)n );
-	close( fds[0] );
-	int status = 0;
-	waitpid( child, &status, 0 );
-
-	const std::string parentRoot = ScratchTestRoot();
-	Check( !childRoot.empty(), "collision check: child reported a non-empty scratch root" );
-	Check( childRoot != parentRoot,
-		"collision check: parent (" + parentRoot + ") and child (" + childRoot + ") scratch roots differ" );
-#else
-	std::printf( "Collision-hazard check: skipped on Windows (no fork()); pid-suffix logic is still exercised by every ScratchRunDir() call above.\n" );
-#endif
+	return RISE::TestSupport::ScratchRunDir( kScratchPrefix, leaf );
 }
 
 static std::vector<JsonValue> ReadJsonl( const std::string& path )
@@ -193,6 +137,14 @@ static std::vector<std::string> ToolNameSequence( const std::vector<JsonValue>& 
 	for( std::size_t i = 0; i < records.size(); ++i )
 		if( records[i].get( "run_type" ).asString() == "tool" ) out.push_back( records[i].get( "name" ).asString() );
 	return out;
+}
+
+static JsonValue Parse( const std::string& s )
+{
+	JsonValue v;
+	std::string err;
+	if( !JsonParse( s, v, err ) ) return JsonValue::MakeNull();
+	return v;
 }
 
 static bool WriteFile( const std::string& path, const std::string& text )
@@ -623,6 +575,103 @@ static void TestReplaySourceLoad()
 		Check( src2.Provider() == "anthropic" && src2.Total() == 2,
 		       "the single-provider trajectory yields anthropic + 2 bodies" );
 	}
+}
+
+//----------------------------------------------------------------------
+// GPT slice item 3 (2026-08-24): a RECORDED trajectory can carry
+// ChatTrajectory.h's response-body dedup (OpenAI's Responses API echoes
+// `tools`/`instructions` byte-identical on every round; the recorder
+// replaces a repeat with a marker -- see kTrajectoryDedupRefMarker's doc).
+// AgentEvalReplaySource::LoadFromFile must hand back the MATERIALIZED
+// (expanded) body, never the marker, or a replayed run would feed a
+// truncated response into the real codec parser.
+//----------------------------------------------------------------------
+static void TestReplaySourceExpandsDedupedBody()
+{
+	std::printf( "T3b: AgentEvalReplaySource expands a deduped response_body...\n" );
+
+	static const char* const kToolsJson =
+		"[{\"type\":\"function\",\"name\":\"propose_patch\"},{\"type\":\"function\",\"name\":\"render\"}]";
+	static const char* const kInstructions = "You are an agent.";
+
+	// Record 1: full tools+instructions, output "turn1" -- the baseline.
+	JsonValue body1 = JsonValue::MakeObject();
+	{
+		JsonValue tools;
+		std::string perr;
+		JsonParse( kToolsJson, tools, perr );
+		body1.set( "tools", tools );
+		body1.set( "instructions", JsonValue::MakeString( kInstructions ) );
+		JsonValue out = JsonValue::MakeArray();
+		out.push_back( JsonValue::MakeString( "turn1" ) );
+		body1.set( "output", out );
+	}
+	// Record 2: the SAME tools/instructions, deduped to the marker by
+	// hand here (this is exactly the shape ChatTrajectoryRecorder::
+	// EmitLlm produces -- AgentTrajectoryTest.cpp's E10 covers the
+	// recorder side; this test covers the READ side specifically).
+	// Review-round C, P3-c: the marker is a JSON OBJECT
+	// ({"$dedupRef":"<tag>"}), NOT a bare string -- see ChatTrajectory.h's
+	// kTrajectoryDedupRefMarker doc for why (a bare-string marker is
+	// indistinguishable from a genuine value that happens to equal that
+	// exact text; the object form is structurally impossible to collide
+	// with, since neither `tools` nor `instructions` is ever legitimately
+	// an object).
+	JsonValue body2 = JsonValue::MakeObject();
+	{
+		JsonValue marker = JsonValue::MakeObject();
+		marker.set( "$dedupRef", JsonValue::MakeString( "__RISE_TRAJECTORY_DEDUP_REF__" ) );
+		body2.set( "tools", marker );
+		body2.set( "instructions", marker );
+		JsonValue out = JsonValue::MakeArray();
+		out.push_back( JsonValue::MakeString( "turn2" ) );
+		body2.set( "output", out );
+	}
+
+	const std::string dir = ScratchRunDir( "t3b_dedup" );
+	const std::string path = dir + "/deduped_trajectory.jsonl";
+	JsonValue sessionLine = JsonValue::MakeObject();
+	sessionLine.set( "run_type", JsonValue::MakeString( "session" ) );
+	sessionLine.set( "provider", JsonValue::MakeString( "openai" ) );
+	sessionLine.set( "gen_ai.request.model", JsonValue::MakeString( "gpt-5.6" ) );
+	JsonValue llm1 = JsonValue::MakeObject();
+	llm1.set( "run_type", JsonValue::MakeString( "llm" ) );
+	llm1.set( "response_body", JsonValue::MakeString( JsonSerialize( body1 ) ) );
+	JsonValue llm2 = JsonValue::MakeObject();
+	llm2.set( "run_type", JsonValue::MakeString( "llm" ) );
+	llm2.set( "response_body", JsonValue::MakeString( JsonSerialize( body2 ) ) );
+	WriteFile( path,
+		JsonSerialize( sessionLine ) + "\n" + JsonSerialize( llm1 ) + "\n" + JsonSerialize( llm2 ) + "\n" );
+
+	AgentEvalReplaySource src;
+	std::string err;
+	Check( AgentEvalReplaySource::LoadFromFile( path, src, err ),
+	       "the deduped trajectory loads (" + err + ")" );
+	Check( src.Provider() == "openai" && src.Total() == 2, "openai provider, 2 bodies" );
+
+	std::string got1, got2;
+	Check( src.NextBody( got1 ), "record 1 hands back a body" );
+	Check( src.NextBody( got2 ), "record 2 hands back a body" );
+
+	const JsonValue p1 = Parse( got1 );
+	Check( p1.get( "tools" ).isArray() && JsonSerialize( p1.get( "tools" ) ).find( "propose_patch" ) != std::string::npos,
+	       "record 1 (never deduped) carries the real tools array" );
+
+	const JsonValue p2 = Parse( got2 );
+	// MONEY ASSERTION: record 2's handed-back body has the MARKER
+	// MATERIALIZED, not left as a bare string -- a codec parsing this as
+	// a real OpenAI response must see the SAME tools array record 1 saw,
+	// never the 30-byte sentinel.
+	Check( p2.get( "tools" ).isArray(),
+	       "T3b MONEY ASSERTION: record 2's `tools` is a REAL array after LoadFromFile, not the "
+	       "dedup marker string" );
+	Check( JsonSerialize( p2.get( "tools" ) ) == JsonSerialize( p1.get( "tools" ) ),
+	       "...and it is BYTE-EQUAL to record 1's tools (the same real value, materialized)" );
+	Check( p2.get( "instructions" ).asString() == kInstructions,
+	       "...and `instructions` is likewise materialized back to the real text" );
+	// The per-turn content that was NEVER deduped survives untouched.
+	Check( JsonSerialize( p2.get( "output" ) ).find( "turn2" ) != std::string::npos,
+	       "...while record 2's OWN per-turn output is exactly what was recorded (not record 1's)" );
 }
 
 //----------------------------------------------------------------------
@@ -1432,12 +1481,19 @@ static void TestAskUserParallelWithDispatchedTool()
 
 int main()
 {
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentEvalReplayTest (Eval-harness slice E2: replay backend + scenario runner) ===\n" );
 
-	TestScratchRootDiffersAcrossProcesses();
 	TestLoadSeedScenarios();
 	TestLoadScenarioGates();
 	TestReplaySourceLoad();
+	TestReplaySourceExpandsDedupedBody();
 	TestParamEditScenario();
 	TestTwoToolObserveScenario();
 	TestErrorPathScenario();

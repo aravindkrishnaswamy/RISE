@@ -6,7 +6,7 @@ with external parts files; see SDFGeometry::ParsePartLines):
 
     <type> <op> <k>  <px py pz>  <exDeg eyDeg ezDeg>  <sx sy sz>  <a b c>  <round>
 
-type  : sphere | box | roundbox | cylinder | torus | capsule | roundcone
+type  : sphere | box | roundbox | cylinder | torus | capsule | roundcone | superellipsoid
 op    : union | smin | subtract | intersect   (smin/subtract/intersect use k as the blend radius)
 a,b,c : per-primitive size (see SDFGeometry.h):
         sphere    a=radius
@@ -15,6 +15,9 @@ a,b,c : per-primitive size (see SDFGeometry.h):
         torus     a=major  b=tube                 (ring in local XZ, around Y)
         capsule   a=radius b=half-height          (axis = local Y)
         roundcone a=base-radius b=tip-radius c=height  (axis = local Y, base at y=0)
+        superellipsoid a=radius b=e1 (north-south exp) c=e2 (east-west exp), clamped [0.1,2]
+                       (axis = local Y; 1,1 ellipsoid / ->0 box / 0.1,1 cylinder / 2,2 octahedron;
+                        proportions come from <sx sy sz>, `round` unused)
 euler : applied Rz*Ry*Rx (degrees).  scale : per-axis (non-uniform OK).
 
   python3 sdf_gen.py                 # print the seven watch chunks (paste into watch_dial.RISEscene)

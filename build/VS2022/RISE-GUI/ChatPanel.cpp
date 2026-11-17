@@ -6,6 +6,7 @@
 
 #include "ChatPanel.h"
 
+#include "CredentialStore.h"
 #include "ViewportBridge.h"
 #include "Theme.h"
 
@@ -73,6 +74,16 @@ namespace
     {
         const QByteArray utf8 = s.toUtf8();
         return std::string(utf8.constData(), static_cast<std::size_t>(utf8.size()));
+    }
+
+    void scrubSecretString(QString& s)
+    {
+        if (!s.isEmpty()) {
+            if (s.isDetached()) {
+                s.fill(QChar(0));
+            }
+            s.clear();
+        }
     }
 
     // GUI stage 3 (Windows parity, chat-display enrichment): cap a
@@ -297,7 +308,7 @@ namespace
     // Sum = 2250 ms across the four gaps between five attempts.
     const int kEditRetryBackoffMs[] = { 150, 300, 600, 1200 };
 
-    // The FIVE mutating verbs whose results carry the `applied` +
+    // The SIX mutating verbs whose results carry the `applied` +
     // `retriable` pair the gate below reads -- exactly the set
     // AgentRpc.cpp's IsProposeSafeVerb enumerates, and exactly the set
     // whose result JSON is built by ChunkResultJson / propose_patch's
@@ -313,7 +324,12 @@ namespace
                name == "propose_patches" ||
                name == "insert_chunk" ||
                name == "insert_chunks" ||
-               name == "remove_chunk";
+               name == "remove_chunk" ||
+               // R1a (2026-08-09): the ATOMIC batch remove.  Its envelope is a
+               // HYBRID -- a top-level BOOLEAN `applied` (all-or-nothing)
+               // alongside a `results` array -- so editRefusalIsWhollyUnapplied
+               // routes it down the SINGULAR arm, not the batch one.
+               name == "remove_chunks";
     }
 
     int editRetryBackoffMs(int attemptsSoFar)
@@ -326,7 +342,9 @@ namespace
     // Is this tool result a refusal with NOTHING applied -- the only
     // shape a client-side retry may re-issue?
     //
-    // SINGULAR verbs (propose_patch / insert_chunk / remove_chunk):
+    // SINGULAR verbs (propose_patch / insert_chunk / remove_chunk) -- and
+    // R1a's remove_chunks, which despite carrying a `results` array is
+    // ALL-OR-NOTHING and so reports ONE boolean verdict, exactly this shape:
     // applied == false AND retriable == true AND status == "rejected".
     // The rejection contract guarantees the head is byte-identical on a
     // reject (SceneEditController refuses BEFORE any mutation or park),
@@ -378,10 +396,19 @@ namespace
         const QJsonObject result = envelope.value("result").toObject();
 
         // BATCH FIRST -- see the BATCH-FIRST note above.
-        if (result.value("results").isArray()) {
+        //
+        // R1a (2026-08-09): the batch arm is now selected on the TYPE of the
+        // top-level `applied`, not merely on `results` being present.
+        // remove_chunks returns a HYBRID envelope -- a `results` array (one entry
+        // per unique target) alongside a BOOLEAN top-level `applied`, because it
+        // is ALL-OR-NOTHING and so has one verdict, not a count.  Its correct
+        // handling is the SINGULAR arm below, so a boolean in the count position
+        // must FALL THROUGH here rather than return false -- the pre-R1a shape
+        // check would have silently declined to retry a genuinely retriable
+        // remove_chunks refusal.  Mirrors the macOS sibling's `appliedIsCount`.
+        if (result.value("results").isArray() && result.value("applied").isDouble()) {
             const QJsonArray results = result.value("results").toArray();
             if (results.isEmpty()) return false;
-            if (!result.value("applied").isDouble()) return false;
             if (result.value("applied").toDouble() != 0.0) return false;
             for (const QJsonValue& element : results) {
                 if (!element.isObject()) return false;
@@ -504,7 +531,7 @@ const char* const kAutonomyLevelSettingsKey = "agentAutonomyLevel";
 QColor withAlpha(const QColor& c, double alphaFraction)
 {
     QColor result = c;
-    result.setAlphaF(alphaFraction);
+    result.setAlphaF(static_cast<float>(alphaFraction));
     return result;
 }
 
@@ -744,6 +771,27 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_loop->SetContextBudget(AgentChatLoop::kDefaultContextBudgetHighTokens,
                              AgentChatLoop::kDefaultContextBudgetLowTokens);
 
+    // Durable document snapshots (product gap: a scene built entirely
+    // inside a live GUI agent session, never Save As'd, was otherwise
+    // unrecoverable on quit/crash -- the trajectory recorded tool
+    // calls/results but never the document TEXT).  Installed ONCE here
+    // -- unlike the macOS bridge's per-scene reinstall, `this` (the
+    // panel) is native C++ and outlives every scene, and the lambda
+    // reads `this->m_bridge` FRESH at call time (never captured), so
+    // one installation covers every future setViewportBridge() call.
+    // No-op until a bridge is attached (ViewportBridge::
+    // agentReadDocumentSnapshot returns false with m_bridge == nullptr).
+    // AGENT RPC THREAD DISCIPLINE: fired from wherever
+    // AgentChatLoop::SetDocumentSnapshotProvider's doc says the C++ core
+    // calls its provider -- the agent RPC thread, in practice the same
+    // main/UI thread this whole panel is single-threaded on (mirrors the
+    // Mac bridge's THREADING note).
+    m_loop->SetDocumentSnapshotProvider(
+        [this](std::string& outText, uint64_t& outUuid, uint64_t& outRevision) -> bool {
+            if (!m_bridge) return false;
+            return m_bridge->agentReadDocumentSnapshot(outText, outUuid, outRevision);
+        });
+
     m_network = new QNetworkAccessManager(this);
     // P2-6: mirror the Mac driver's URLRequest.timeoutInterval = 300 --
     // without this a stalled connection blocks the turn (and the render-
@@ -791,13 +839,31 @@ ChatPanel::ChatPanel(QWidget* parent)
     providerRow->addWidget(m_modelEdit, 1);
     outer->addLayout(providerRow);
 
+    auto* apiKeyRow = new QHBoxLayout();
+    apiKeyRow->setSpacing(6);
     m_apiKeyEdit = new QLineEdit();
     m_apiKeyEdit->setEchoMode(QLineEdit::Password);
-    m_apiKeyEdit->setPlaceholderText("API key");
+    m_apiKeyEdit->setPlaceholderText("Paste API key (stored in Credential Manager)");
     m_apiKeyEdit->setFont(Theme::mono(10));
+    // Write-only: never populated with stored or environment secrets.
     // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
-    m_apiKeyEdit->setText(envKeyFor(Provider::Local));
-    outer->addWidget(m_apiKeyEdit);
+    apiKeyRow->addWidget(m_apiKeyEdit, 1);
+
+    m_saveKeyBtn = makePillButton(tr("Save Key"), this);
+    m_saveKeyBtn->setToolTip(tr("Store in Windows Credential Manager (\"RISE Agent Chat\") for this provider"));
+    m_saveKeyBtn->setEnabled(false);
+    apiKeyRow->addWidget(m_saveKeyBtn);
+
+    m_clearKeyBtn = makePillButton(tr("Clear Key"), this);
+    m_clearKeyBtn->setToolTip(tr("Delete this provider's stored key from Windows Credential Manager"));
+    m_clearKeyBtn->setEnabled(false);
+    apiKeyRow->addWidget(m_clearKeyBtn);
+    outer->addLayout(apiKeyRow);
+
+    m_keySourceLabel = new QLabel();
+    m_keySourceLabel->setFont(Theme::sans(10));
+    m_keySourceLabel->setWordWrap(true);
+    outer->addWidget(m_keySourceLabel);
 
     // Secure-MCP slice 5c (Windows parity, RISE UI redesign): pending/
     // recently-resolved proposals column -- above the transcript,
@@ -954,16 +1020,22 @@ ChatPanel::ChatPanel(QWidget* parent)
     connect(m_modelEdit, &QLineEdit::editingFinished,
             this, &ChatPanel::modelEditingFinished);
     // Start screen readiness (spec §6): agentConfigured() reads the
-    // applied provider + the key field's live text.  The key field
-    // covers every keystroke; applyProviderToLoop() (below) emits
-    // explicitly for the applied-provider transition itself, since
-    // QLineEdit::setText is a no-op-and-no-signal when the incoming key
-    // happens to match what's already shown (e.g. switching between two
-    // providers that both currently have an empty stashed key) -- that
-    // case must still be able to flip agentConfigured() (Local is
-    // keyless; every other provider isn't).
+    // applied provider, hasStoredCredential(...) (CredentialStore), and any pending
+    // text in the write-only key field.  textChanged covers typing into the draft field;
+    // applyProviderToLoop() (below) emits explicitly for the applied-provider
+    // transition itself (switching providers clears the write-only field,
+    // which is a no-op-and-no-signal when the field was already empty).
     connect(m_apiKeyEdit, &QLineEdit::textChanged,
-            this, [this](const QString&) { emit agentConfiguredChanged(); });
+            this, [this](const QString&) {
+                m_keySaveNotice.clear();
+                m_keySaveNoticeIsWarning = false;
+                updateKeyControls();
+                emit agentConfiguredChanged();
+            });
+    connect(m_saveKeyBtn, &QPushButton::clicked,
+            this, &ChatPanel::saveApiKeyClicked);
+    connect(m_clearKeyBtn, &QPushButton::clicked,
+            this, &ChatPanel::clearApiKeyClicked);
     connect(m_inputEdit, &QLineEdit::returnPressed,
             this, &ChatPanel::sendMessage);
     connect(m_inputEdit, &QLineEdit::textChanged,
@@ -998,6 +1070,18 @@ ChatPanel::~ChatPanel()
         m_reply->deleteLater();
         m_reply = nullptr;
     }
+    for (auto it = m_keysByProvider.begin(); it != m_keysByProvider.end(); ++it) {
+        scrubSecretString(it.value());
+    }
+    m_keysByProvider.clear();
+    if (m_apiKeyEdit) {
+        m_apiKeyEdit->clear();
+    }
+}
+
+void ChatPanel::finishTrajectoryOnQuit()
+{
+    m_loop->FinishTrajectory("app_quit");
 }
 
 // ============================================================
@@ -1033,6 +1117,8 @@ void ChatPanel::restyleTheme()
 
     if (m_retryBtn) m_retryBtn->setStyleSheet(pillButtonStyleSheet());
     if (m_resetBtn) m_resetBtn->setStyleSheet(pillButtonStyleSheet());
+    if (m_saveKeyBtn) m_saveKeyBtn->setStyleSheet(pillButtonStyleSheet());
+    if (m_clearKeyBtn) m_clearKeyBtn->setStyleSheet(pillButtonStyleSheet());
 
     if (m_providerCombo) {
         m_providerCombo->setStyleSheet(QStringLiteral(
@@ -1049,6 +1135,7 @@ void ChatPanel::restyleTheme()
             "QLineEdit { color: %1; background: %2; border: 1px solid %3; border-radius: 6px; padding: 4px 8px; }")
             .arg(Theme::hex(Theme::textSecondary), Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight)));
     }
+    updateKeyControls();
 
     if (m_transcriptScroll) {
         // Task B (Phase-3 crispness): slim themed scrollbar, appended
@@ -1173,9 +1260,25 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
         // render_cancel must reach the controller that owns the job.
         requestStop();
     }
-    m_bridge = bridge;
+    // Durable document snapshots: on the CLOSING path (bridge == nullptr)
+    // `m_bridge` is intentionally NOT cleared yet here -- the
+    // document-snapshot provider set up alongside SetTrajectorySink reads
+    // `this->m_bridge` at call time, and `m_loop->Reset()` below (which
+    // closes the trajectory session and, per
+    // AgentChatLoop::SetDocumentSnapshotProvider's policy, takes one
+    // final "session_end" snapshot) needs that read to still resolve to
+    // the outgoing (still-alive; the caller owns synchronous teardown
+    // AFTER this call, per requestStop()'s comment above) bridge.  The
+    // `else` branch below clears `m_bridge` to nullptr AFTER Reset() but
+    // BEFORE startTrajectory() -- see the comment there.  Every check
+    // in between that needs "are we closing" uses the `bridge` PARAMETER
+    // (which is already nullptr here), not `m_bridge`, so this deferral
+    // changes no other behavior.
+    if (bridge) {
+        m_bridge = bridge;
+    }
     m_sceneEditableExternal = (bridge != nullptr);
-    if (!m_bridge && m_outstandingRenderJobId != 0) {
+    if (!bridge && m_outstandingRenderJobId != 0) {
         // The caller now owns synchronous bridge/controller teardown, which
         // joins the worker before a later scene can attach.  No live scene
         // controls remain to protect, so retire this scene's occupancy.
@@ -1184,7 +1287,7 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
         setOutstandingRenderJobId(0);
     }
     recomputeSceneEditable();
-    if (m_bridge) {
+    if (bridge) {
         // Agent autonomy selector: a fresh bridge's dispatchers default
         // to Apply (see ViewportBridge.h's doc) until told otherwise --
         // apply THIS panel's persisted choice immediately so a scene
@@ -1227,6 +1330,14 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
         m_skillIndexEmpty = false;
         m_skillIndexNote.clear();
         m_loop->Reset();
+        // NOW clear it -- see the top of this function for why the close-
+        // time trajectory snapshot needed m_bridge to still be valid
+        // through the Reset() call above.  It MUST be cleared BEFORE
+        // startTrajectory() below, whose "detach when no scene is bound"
+        // guard reads m_bridge -- with the outgoing bridge still set it
+        // would ATTACH a fresh sink to the closing scene instead of
+        // detaching.
+        m_bridge = nullptr;
         // Detach so no file lingers between scenes.
         startTrajectory();
         refreshTranscript();
@@ -1342,8 +1453,8 @@ void ChatPanel::sendMessage()
     if (m_busy || !m_bridge || !m_sceneEditable) return;
     const QString text = m_inputEdit->text().trimmed();
     if (text.isEmpty()) return;
-    if (providerRequiresApiKey(m_appliedProvider) && m_apiKeyEdit->text().trimmed().isEmpty()) {
-        refreshTranscript("Enter an API key before sending.");
+    if (providerRequiresApiKey(m_appliedProvider) && resolveApiKey(m_appliedProvider).isEmpty()) {
+        refreshTranscript("Enter or save an API key before sending.");
         return;
     }
 
@@ -1421,11 +1532,29 @@ void ChatPanel::networkFinished()
     refreshTranscript(step.assistantDisplayText.empty() ? QString() : "Running tools...");
 
     if (step.kind == ChatStepResult::Kind::ProviderError) {
+        // Malformed tool call: the loop queued a corrective user message
+        // for the next BuildRequest and bounds the retries itself, so
+        // re-issue the request exactly as retryLastRequest() does (m_busy
+        // stays set; nothing was recorded for the malformed response).
+        if (step.retryDegenerateTurn &&
+            step.errorKind == ChatErrorKind::MalformedToolCall) {
+            refreshTranscript("Retrying malformed tool call...");
+            runNextStep();
+            return;
+        }
         handleProviderError(step);
         return;
     }
 
     if (step.kind == ChatStepResult::Kind::FinalText) {
+        // Arc 83 sec 4.1: THE MODE TRANSITION.  A turn that ends with the
+        // model's own prose rather than a tool call is "the agent's first
+        // final answer" -- the event that ends the staged build protocol's
+        // compulsion for every in-app session.  Unconditional and on every
+        // final turn: NoteFinalAnswer is idempotent and one-way, and a
+        // session that opened a scene already carrying geometry has been in
+        // "refining" since construction anyway.
+        if (m_bridge) m_bridge->agentNoteFinalAnswer();
         finishBusy();
         return;
     }
@@ -1507,6 +1636,21 @@ QString ChatPanel::envKeyFor(Provider provider) const
     return qEnvironmentVariable("OPENAI_API_KEY");
 }
 
+QString ChatPanel::agentProviderName(Provider provider)
+{
+    switch (provider) {
+    case Provider::Anthropic: return QStringLiteral("anthropic");
+    case Provider::Gemini:    return QStringLiteral("gemini");
+    case Provider::OpenAI:    return QStringLiteral("openai");
+    case Provider::XAI:       return QStringLiteral("xai");
+    case Provider::Local:     return QStringLiteral("local");
+    }
+    qWarning("ChatPanel::agentProviderName: unhandled Provider %d -- falling back to openai",
+              static_cast<int>(provider));
+    Q_ASSERT(false && "ChatPanel::agentProviderName: unhandled Provider");
+    return QStringLiteral("openai");
+}
+
 bool ChatPanel::providerRequiresApiKey(Provider provider)
 {
     return provider != Provider::Local;
@@ -1518,8 +1662,159 @@ bool ChatPanel::agentConfigured() const
     // gates a send on, inverted to a positive "ready" reading -- reusing
     // it rather than a second source of truth.  m_appliedProvider (not
     // the combo's possibly-mid-edit selection) matches what an actual
-    // send would evaluate right now.
-    return !providerRequiresApiKey(m_appliedProvider) || !m_apiKeyEdit->text().trimmed().isEmpty();
+    // send would evaluate right now across draft input, Credential
+    // Manager, and environment fallback.
+    return !providerRequiresApiKey(m_appliedProvider) || !resolveApiKey(m_appliedProvider).isEmpty();
+}
+
+void ChatPanel::ensureCredentialLoaded(Provider provider) const
+{
+    if (!providerRequiresApiKey(provider)) return;
+    const int slot = static_cast<int>(provider);
+    if (m_credLoadedProviders.contains(slot)) return;
+    m_credLoadedProviders.insert(slot);
+    const QString stored = CredentialStore::read(agentProviderName(provider));
+    if (!stored.isEmpty()) {
+        m_keysByProvider.insert(slot, stored);
+    }
+}
+
+bool ChatPanel::hasStoredCredential(Provider provider) const
+{
+    if (!providerRequiresApiKey(provider)) return false;
+    ensureCredentialLoaded(provider);
+    return !m_keysByProvider.value(static_cast<int>(provider)).isEmpty();
+}
+
+QString ChatPanel::resolveApiKey(Provider provider) const
+{
+    // 1. Write-only input box: transient unsaved draft for the applied provider.
+    if (provider == m_appliedProvider && m_apiKeyEdit) {
+        const QString draft = m_apiKeyEdit->text().trimmed();
+        if (!draft.isEmpty()) return draft;
+    }
+    if (!providerRequiresApiKey(provider)) {
+        return QString();
+    }
+    // 2. Windows Credential Manager (lazily cached once per provider per process).
+    ensureCredentialLoaded(provider);
+    const QString cred = m_keysByProvider.value(static_cast<int>(provider));
+    if (!cred.isEmpty()) return cred;
+    // 3. Process environment variable fallback.
+    return envKeyFor(provider).trimmed();
+}
+
+QString ChatPanel::envVarHintFor(Provider provider)
+{
+    switch (provider) {
+    case Provider::Anthropic: return QStringLiteral("ANTHROPIC_API_KEY");
+    case Provider::Gemini:    return QStringLiteral("GEMINI_API_KEY or GOOGLE_API_KEY");
+    case Provider::OpenAI:    return QStringLiteral("OPENAI_API_KEY");
+    case Provider::XAI:       return QStringLiteral("XAI_API_KEY");
+    case Provider::Local:     return QString();
+    }
+    return QStringLiteral("OPENAI_API_KEY");
+}
+
+void ChatPanel::saveApiKeyClicked()
+{
+    if (m_busy || !providerRequiresApiKey(m_appliedProvider) || !m_apiKeyEdit) return;
+    const QString draft = m_apiKeyEdit->text().trimmed();
+    if (draft.isEmpty()) {
+        m_keySaveNotice = tr("Enter a key first, or use Clear Key to remove one.");
+        m_keySaveNoticeIsWarning = true;
+        updateKeyControls();
+        return;
+    }
+    const QString account = agentProviderName(m_appliedProvider);
+    if (!CredentialStore::write(account, draft)) {
+        m_keySaveNotice = tr("Credential Manager write failed.");
+        m_keySaveNoticeIsWarning = true;
+        updateKeyControls();
+        return;
+    }
+    const int slot = static_cast<int>(m_appliedProvider);
+    if (m_keysByProvider.contains(slot)) {
+        scrubSecretString(m_keysByProvider[slot]);
+    }
+    m_keysByProvider.insert(slot, draft);
+    m_credLoadedProviders.insert(slot);
+    m_apiKeyEdit->clear();
+    m_keySaveNotice.clear();
+    m_keySaveNoticeIsWarning = false;
+    updateKeyControls();
+    emit agentConfiguredChanged();
+}
+
+void ChatPanel::clearApiKeyClicked()
+{
+    if (m_busy || !providerRequiresApiKey(m_appliedProvider)) return;
+    const QString account = agentProviderName(m_appliedProvider);
+    if (!CredentialStore::remove(account)) {
+        m_keySaveNotice = tr("Credential Manager delete failed.");
+        m_keySaveNoticeIsWarning = true;
+        updateKeyControls();
+        return;
+    }
+    const int slot = static_cast<int>(m_appliedProvider);
+    if (m_keysByProvider.contains(slot)) {
+        scrubSecretString(m_keysByProvider[slot]);
+        m_keysByProvider.remove(slot);
+    }
+    m_credLoadedProviders.insert(slot);
+    if (m_apiKeyEdit) m_apiKeyEdit->clear();
+    m_keySaveNotice.clear();
+    m_keySaveNoticeIsWarning = false;
+    updateKeyControls();
+    emit agentConfiguredChanged();
+}
+
+void ChatPanel::updateKeyControls()
+{
+    const bool needsKey = providerRequiresApiKey(m_appliedProvider);
+    const QString draft = m_apiKeyEdit ? m_apiKeyEdit->text().trimmed() : QString();
+    const bool hasStored = needsKey && hasStoredCredential(m_appliedProvider);
+
+    if (m_saveKeyBtn) {
+        m_saveKeyBtn->setVisible(needsKey);
+        m_saveKeyBtn->setEnabled(!m_busy && needsKey && !draft.isEmpty());
+    }
+    if (m_clearKeyBtn) {
+        m_clearKeyBtn->setVisible(needsKey);
+        m_clearKeyBtn->setEnabled(!m_busy && needsKey && hasStored);
+    }
+    if (!m_keySourceLabel) return;
+
+    const QColor labelColor = (needsKey && m_keySaveNoticeIsWarning && !m_keySaveNotice.isEmpty())
+        ? Theme::warn
+        : Theme::textDim;
+    m_keySourceLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(labelColor)));
+
+    if (!needsKey) {
+        m_keySourceLabel->setText(
+            tr("Endpoint: %1 \xE2\x80\x94 no API key needed (requires a running local server; "
+               "override with RISE_LOCAL_LLM_BASE_URL).")
+                .arg(localResolvedEndpoint()));
+        return;
+    }
+
+    if (!m_keySaveNotice.isEmpty()) {
+        m_keySourceLabel->setText(m_keySaveNotice);
+        return;
+    }
+
+    QString activeSource;
+    if (!draft.isEmpty()) {
+        activeSource = tr("Unsaved input (click Save Key to store in Credential Manager)");
+    } else if (hasStored) {
+        activeSource = tr("Credential Manager");
+    } else if (!envKeyFor(m_appliedProvider).trimmed().isEmpty()) {
+        activeSource = tr("Environment (%1)").arg(envVarHintFor(m_appliedProvider));
+    } else {
+        activeSource = tr("Not set \xE2\x80\x94 Credential Manager first, then %1")
+            .arg(envVarHintFor(m_appliedProvider));
+    }
+    m_keySourceLabel->setText(tr("Active key source: %1.").arg(activeSource));
 }
 
 QString ChatPanel::currentProviderDisplayName() const
@@ -1539,38 +1834,24 @@ void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
     const Provider oldProvider = m_appliedProvider;
     const Provider newProvider = currentProvider();
 
-    // P1-1: keys are per-provider and must never cross providers.  Stash
-    // whatever is currently in the field under the OLD applied provider's
-    // slot (a harmless no-op rewrite of the same slot when oldProvider ==
-    // newProvider, e.g. a model-only change), then repopulate the field
-    // from the NEW provider's slot, falling back to its env var when that
-    // slot is still empty.  This guarantees the field -- and therefore
-    // every fetch/step path that reads it -- always carries only the
-    // CURRENTLY APPLIED provider's key.
-    m_keysByProvider[static_cast<int>(oldProvider)] = m_apiKeyEdit->text();
+    // Write-only secret hygiene: stored and environment API keys are NEVER
+    // echoed into m_apiKeyEdit.  When switching providers, clear any
+    // transient unsaved text in m_apiKeyEdit so a draft key pasted for one
+    // provider can never be sent under another provider's auth header.
+    if (oldProvider != newProvider && m_apiKeyEdit) {
+        m_apiKeyEdit->clear();
+    }
+    m_keySaveNotice.clear();
+    m_keySaveNoticeIsWarning = false;
 
     if (resetModelToDefault || m_modelEdit->text().trimmed().isEmpty()) {
         m_modelEdit->setText(defaultModelFor(newProvider));
     }
 
-    QString newKey = m_keysByProvider.value(static_cast<int>(newProvider));
-    if (newKey.trimmed().isEmpty()) {
-        newKey = envKeyFor(newProvider);
-    }
-    m_apiKeyEdit->setText(newKey);
-
-    // No-key affordance for Provider::Local (keyless-by-design): there is
-    // no per-provider settings popover on this platform to swap in
-    // dedicated endpoint UI, so reuse the existing key field's placeholder
-    // to show where the chat is pointing plus a hint that a server has to
-    // actually be running -- the field itself stays enabled (a local
-    // server started with --api-key still accepts an optional key here).
     m_apiKeyEdit->setPlaceholderText(
         providerRequiresApiKey(newProvider)
-            ? QStringLiteral("API key")
-            : QStringLiteral("No key needed -- ") + localResolvedEndpoint() +
-                  QStringLiteral(" (requires a running local server, e.g. "
-                                 "`ollama serve`; override with RISE_LOCAL_LLM_BASE_URL)"));
+            ? QStringLiteral("Paste API key (stored in Credential Manager)")
+            : QStringLiteral("Optional bearer token (no key needed for local Ollama)"));
 
     ChatProvider chatProvider = ChatProvider::OpenAI;
     if (newProvider == Provider::Anthropic) {
@@ -1598,12 +1879,12 @@ void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
     m_appliedProvider = newProvider;
     m_appliedModel = m_modelEdit->text().trimmed();
     clearErrorAffordances();
+    updateKeyControls();
 
     // Start screen readiness (spec §6): the applied provider just changed
-    // (or was (re)confirmed) -- explicit emit because the key-field
-    // textChanged connection above can miss this transition (setText is a
-    // no-op-and-no-signal when the incoming key equals what's already
-    // shown).
+    // (or was (re)confirmed) -- explicit emit because the write-only key
+    // field stays empty across saved-key providers (clear() emits nothing
+    // when the field was already empty).
     emit agentConfiguredChanged();
 }
 
@@ -2057,6 +2338,7 @@ void ChatPanel::updateButtonStates()
     m_apiKeyEdit->setEnabled(!m_busy);
     m_inputEdit->setEnabled(!m_busy && m_bridge && m_sceneEditable);
     m_retryBtn->setEnabled(m_retryAvailable && !m_busy && m_bridge && m_sceneEditable);
+    updateKeyControls();
 }
 
 void ChatPanel::runNextStep()
@@ -2070,13 +2352,21 @@ void ChatPanel::runNextStep()
         return;
     }
 
-    // P1-1: the field always carries only m_appliedProvider's key (see
-    // applyProviderToLoop) -- since providerChanged/modelEditingFinished
-    // cannot change m_appliedProvider without going back through that
-    // function, reading the live field text here is reading the CURRENTLY
-    // APPLIED provider's key, never a stale/foreign one.
+    // Resolve the active key for m_appliedProvider (write-only draft input,
+    // else Credential Manager cached entry, else environment fallback).
+    const QString appliedApiKey = resolveApiKey(m_appliedProvider);
+
+    // Arc 77 Phase 2 GUI wiring: keep `imagine_scene`'s HOST generator
+    // fresh on every in-app tool-call session before this round's tool
+    // calls (if any) dispatch. Reinstalled every round with the SAME key
+    // just read above, so a provider or key change mid-session is picked
+    // up by the very next round instead of leaving a generator bound to
+    // a stale credential. See ViewportBridge::agentSetImageGenerator's
+    // doc (mirrors macOS ChatViewModel.driveTurn's identical call).
+    m_bridge->agentSetImageGenerator(agentProviderName(m_appliedProvider), appliedApiKey);
+
     const RISE::Agent::ChatHttpRequest req =
-        m_loop->BuildRequest(toStdString(m_apiKeyEdit->text().trimmed()));
+        m_loop->BuildRequest(toStdString(appliedApiKey));
     if (req.url.empty()) {
         finishBusy();
         return;
@@ -2177,7 +2467,10 @@ void ChatPanel::startTrajectory()
     RISE::Agent::ChatTrajectoryConfig cfg;
     cfg.traceId = traceId;
     cfg.scenePath = toStdString(m_scenePath);
-    cfg.sceneHeadVersion = -1;   // best-effort on the GUI; the headless runner populates it precisely
+    // Durable-document-snapshots work: m_bridge is guaranteed non-null here
+    // (guarded above), so the cheap accessor always resolves to the real
+    // revision -- closes the "-1 best-effort" gap this used to note.
+    cfg.sceneHeadVersion = static_cast<long long>(m_bridge->agentHeadVersionRevision());
     m_loop->SetTrajectorySink(RISE::Agent::MakeTrajectoryFileSink(path), cfg);
 }
 
@@ -2317,6 +2610,13 @@ void ChatPanel::handleProviderError(const RISE::Agent::ChatStepResult& step)
         finishBusy("Internal chat error. Reset the conversation if it persists.");
         break;
 
+    case ChatErrorKind::MalformedToolCall:
+        // Corrective retries exhausted (the loop gave up).
+        finishBusy("The model kept producing a malformed tool call. "
+                   "Send a new message (e.g. \"keep going\") to try again. "
+                   + toQString(step.errorMessage));
+        break;
+
     case ChatErrorKind::Parse:
     case ChatErrorKind::Provider:
     case ChatErrorKind::None:
@@ -2375,6 +2675,31 @@ void ChatPanel::processNextToolCall()
                     }
                 }
             });
+        }
+
+        // E4 SEQUENCING GATE (mirrors AgentChatLoop.h's SEQUENCING GATE
+        // block and macOS ChatViewModel.driveTurn's identical check
+        // immediately before its own dispatch site -- see that file's
+        // `gateResponse` local): a mutating verb refused by the blind-edit
+        // streak gate is intercepted HERE, before dispatch, so a gated
+        // call's document mutation never happens.  `line` above is still
+        // built (keeps the dispatch-latency stamp honest, same rationale
+        // as the macOS comment) but is NEVER handed to agentHandleToolCall
+        // / startAsyncRenderToolCall when gated.  render is never itself a
+        // mutating verb, so this check running before the render branch
+        // below never intercepts a render call -- GateRefusalResponse
+        // returns "" for it unconditionally, same as any other
+        // non-mutating verb.  The refusal is finished through the SAME
+        // updatePendingToolRow / AddToolResult / processNextToolCall
+        // sequence the synchronous dispatch path below uses, so it
+        // renders exactly like any other tool result -- no new display
+        // code needed here.
+        const std::string gateResponse = m_loop->GateRefusalResponse(call, rpcId);
+        if (!gateResponse.empty()) {
+            updatePendingToolRow(call, gateResponse);
+            m_loop->AddToolResult(call, gateResponse);
+            processNextToolCall();
+            return;
         }
 
         if (call.name == "render") {
@@ -3055,4 +3380,7 @@ void ChatPanel::onProposalUndoClicked()
     // underneath an in-flight render.
     if (!m_bridge || !m_sceneEditable) return;
     m_bridge->undo();
+    // A refused step explains itself (same notice MainWindow's Undo shows).
+    const QString notice = m_bridge->consumeHistoryNotice();
+    if (!notice.isEmpty()) QMessageBox::warning(this, "Undo Refused", notice);
 }

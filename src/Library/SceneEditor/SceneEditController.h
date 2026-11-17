@@ -29,6 +29,9 @@
 #include "SaveEngine.h"
 #include "CancellableProgressCallback.h"
 #include "CameraIntrospection.h"
+#include "ReferenceGraph.h"                 // doc-88 Phase 3 S11 round 2 P2-b: ReferenceEdge, for the public ExpandFunctionPromotionFrontier helper's signature
+#include "ConnectionLegality.h"             // doc-88 Phase 3 S17: ConnectionVerdict, for CheckConnection/WouldCycle below
+#include "OwnershipClosure.h"               // doc-88 Phase 3 S19: ClosureClassification, for RewireConnection's RewireResult below
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IRasterizer.h"
 #include "../Interfaces/IRasterizerOutput.h"
@@ -39,8 +42,11 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <map>
 #include <mutex>
+#include <set>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace RISE
@@ -186,6 +192,14 @@ namespace RISE
 		//! no Object is selected or the object's transform is
 		//! unresolvable.
 		bool ForTest_GetSelectionPivotWorld( double& wx, double& wy, double& wz ) const;
+
+		//! Test/debug hook: apply the WORLD-space translate op the gizmo's
+		//! translate drag produces, to the current Object selection.  Exists so
+		//! the world-delta path -- which under 87 conjugates the op into the
+		//! object's PARENT frame -- can be regression-tested without
+		//! synthesising a pointer gesture and a camera projection.  Returns
+		//! false if no Object is selected or the edit was refused.
+		bool ForTest_TranslateSelectedObjectWorld( double dx, double dy, double dz );
 
 		//! Hit-test the current gizmo handle array against an image-
 		//! pixel-space pointer position.  Returns the index of the
@@ -583,6 +597,14 @@ namespace RISE
 			//! parse/resolution so the Agent surface reports what was inserted/removed.
 			String                     chunkKeyword;
 			String                     chunkName;
+			//! Batched agent edits (2026-10-16, ApplyAgentEditBatch only): the batch exceeded its isolation
+			//! budget and committed NOTHING -- the caller must commit this element on its own (status
+			//! "sequential").
+			bool                       needsSequential = false;
+			//! Review round 3 (chunk-CRUD / param verbs and ApplyAgentEditBatch): the refusal is a
+			//! WOULD-NOT-DERIVE (Job's code 0) -- as opposed to a policy gate, a malformed chunk or a duplicate.
+			//! The batch fallback's retry keys on this, never on the message text.
+			bool                       wouldNotDerive = false;
 		};
 
 		//! Facet 5 slice 1b: route an agent param-value commit through the
@@ -617,12 +639,24 @@ namespace RISE
 		//! it -- the agent should retry after the gesture completes
 		//! (retriable=true marks this as the transient reject a wire
 		//! client may resubmit verbatim).
+		//! `occ`/`occAddressed` (1b, 2026-08-25): THREAD the SAME occurrence
+		//! addressing ApplyAgentParamEditInner_ has carried since doc 88 S4b
+		//! (see that method's own doc for the full contract) out to the AGENT
+		//! surface -- until now only the GUI property panel's occurrence-
+		//! addressed rows could reach a non-first occurrence of a repeatable
+		//! param (skeleton_geometry's `joint`, sdf_geometry's `part`); every
+		//! agent patch was hardcoded to occ=0, so a model trying to re-pose
+		//! one specific joint among 23 always rewrote joint #1 instead (or
+		//! failed to derive when the replacement text did not fit there).
+		//! Both default to the pre-1b meaning (0, false) so every existing
+		//! caller is BYTE-IDENTICAL with no change at any call site.
 		AgentCommitResult ApplyAgentParamEdit(
 			const String& entityName,
 			const String& entityKind,
 			const String& param,
 			const String& value,
-			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+			int occ = 0, bool occAddressed = false );
 
 		//! Model-B F5 slice S2: route an agent CHUNK INSERT through the SAME
 		//! render-thread-SAFE critical section as ApplyAgentParamEdit (mTxnOpen
@@ -650,6 +684,124 @@ namespace RISE
 			const String& kind,
 			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
+		//! R1a (2026-08-09, batched remove_chunks): route an ATOMIC agent BATCH chunk remove through the SAME
+		//! critical section as ApplyAgentRemoveChunk (mTxnOpen refusal -> cancel-and-park under mMutex ->
+		//! conflict gate -> the Job primitive -> rebind -> MarkCstHeadDirty -> ONE history push -> re-render
+		//! kick -> post-commit head read).  `targets[i]` / `kinds[i]` (kinds may be shorter, or carry empty
+		//! entries, meaning "no kind narrowing") are resolved with the SAME rules the singular verb uses.
+		//!
+		//! ALL-OR-NOTHING and ONE head bump: Job::ApplyCstRemoveChunks resolves every target against the
+		//! unmutated Document, refuses the WHOLE batch if any target fails, and otherwise erases them all in
+		//! ONE Document mutation realized by ONE dry-run-guarded re-derive.  Intra-batch references therefore
+		//! resolve regardless of the order the caller listed them in, and a target still referenced from
+		//! OUTSIDE the batch refuses the batch as a whole with the head byte-identical.
+		//!
+		//! HISTORY: exactly ONE EditHistory record (SceneEdit::AgentRemoveChunks) is pushed, so a single Cmd-Z
+		//! restores every removed chunk -- not N records the user has to undo one at a time.  The record's
+		//! Undo payload is the byte-exact pre-batch Document text captured under this same lock hold.
+		//!
+		//! The result's `chunkName` is the comma-joined target list and `chunkKeyword` is the '\n'-joined
+		//! resolved keyword list (one entry per INPUT target, input order) -- the batch analogue of the
+		//! singular verb's single-chunk echo.
+		AgentCommitResult ApplyAgentRemoveChunks(
+			const std::vector<String>& targets,
+			const std::vector<String>& kinds,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! Batched agent edits (2026-10-16): route a BATCH of agent chunk inserts and/or param edits through
+		//! the SAME critical section the single verbs use (render-admission gate -> mTxnOpen refusal ->
+		//! cancel-and-park under mMutex -> the Job primitive -> rebind -> dirty marks -> ONE history push ->
+		//! epoch bump -> re-render kick -> post-commit head read), holding mMutex across the WHOLE batch so a
+		//! co-editing GUI user can never interleave with it.  The batch is realized by Job::ApplyCstEditBatch:
+		//! ONE dry-run + ONE full re-derive on the common path instead of one pair per element, with every
+		//! element still validated and -- if it would not derive in context -- refused INDIVIDUALLY.
+		//!
+		//! Returns one AgentCommitResult per input element, folded exactly as the single verb for that
+		//! element folds it (ApplyAgentInsertChunk / ApplyAgentParamEdit: same statuses, same messages, the
+		//! insert's keyword/name echo), except that a landed element always reports rawCode 2/3 -- a batch
+		//! realizes through one full re-derive, never the incremental path.  Every result carries the SAME
+		//! post-call headVersion: the head revision is bumped ONCE for the whole batch.  The per-element
+		//! controller-level refusals the single verbs make (empty field, a surface binding on a container
+		//! object) are made here per element; the container gate is judged against the batch's EVOLVING document.
+		//!
+		//! No optimistic-concurrency base: a caller pinning a base head version commits that element through
+		//! the single verb (AgentSession does), so the conflict rules never change shape.
+		//!
+		//! HISTORY: exactly ONE EditHistory record (SceneEdit::AgentEditBatch: the landed elements'
+		//! OPERATION-LEVEL inverses, see RISE::CstBatchUndoOp) for the whole batch, so one Cmd-Z undoes the
+		//! whole batch, matching ApplyAgentRemoveChunks.
+		//!
+		//! A batch whose failure isolation exceeds Job's dry-run budget commits NOTHING and returns every
+		//! admitted element with status "sequential" / needsSequential -- the caller then commits them one at
+		//! a time through the single verbs, so this lock is not held for O(N) dry-runs.  Those fallback commits are
+		//! PER-ELEMENT undo steps (each single verb pushes its own record); they cannot be bracketed by
+		//! CompositeBegin/End, because an open composite refuses agent commits by design.
+		//!
+		//! A diagnosed (code 3) batch re-derive is reported per element: an element a diagnostic is ATTRIBUTED
+		//! to (it opens with that element's own `<keyword> `<name>``) is "diagnosed" and every other landed
+		//! element "applied" (rawCode 3) with the diagnostics quoted; when nothing is attributable, every
+		//! landed element is "diagnosed".  An Undo/Redo of this batch's record that cannot apply is REFUSED and
+		//! the record stays in place (the rule every refused record follows), with a user-facing notice set --
+		//! read it with ConsumeHistoryNotice.
+		std::vector<AgentCommitResult> ApplyAgentEditBatch( const std::vector<CstBatchEdit>& edits );
+
+		//! R2 (2026-08-10, replace_geometry_scaffold): install `candidateDocText` -- a WHOLE candidate
+		//! document the caller computed off a head snapshot -- through the SAME critical section as
+		//! ApplyAgentRemoveChunks (mTxnOpen refusal -> cancel-and-park under mMutex -> conflict gate -> the
+		//! Job primitive -> rebind -> MarkCstHeadDirty -> ONE history push -> re-render kick -> post-commit
+		//! head read).  `objectName` is the `standard_object` whose `geometry` slot the candidate rebinds --
+		//! used for the history record, the dirty mark, and the result echo, never for resolution (the
+		//! candidate text already IS the resolved outcome).
+		//!
+		//! ATOMIC and ONE head bump: Job::ApplyCstReplaceDocumentText re-parses the text and hands it to the
+		//! SAME dry-run-guarded re-derive every chunk-CRUD verb ends in, so a candidate that would not derive
+		//! leaves Document + live scene byte-identical.
+		//!
+		//! `baseVersionOrNull` is NOT optional in practice for this verb even though the parameter is
+		//! nullable: the candidate was computed OUTSIDE this lock, so committing it without proving the head
+		//! has not moved would silently CLOBBER a concurrent co-editor's edit (a whole-document swap
+		//! overwrites everything, unlike a targeted param edit).  AgentSession::ReplaceGeometryScaffold
+		//! therefore always passes the head version its own snapshot read, and the conflict gate below is
+		//! what makes the snapshot-then-commit sequence safe.  A null base is still honoured (no gate) for
+		//! the benefit of a direct in-process caller that has externally serialized itself.
+		//!
+		//! HISTORY: exactly ONE EditHistory record (SceneEdit::AgentReplaceGeometry) is pushed, carrying the
+		//! byte-exact PRE text (captured under this same lock hold) and the byte-exact POST text, so one
+		//! Cmd-Z restores the pre-call document and one Cmd-Shift-Z reinstalls the post-call one.
+		//! `verbLabel` is the DIAGNOSTIC CONTEXT string handed to
+		//! Job::ApplyCstReplaceDocumentText -- it names, in the log, which
+		//! agent verb composed the candidate.  Defaulted so every pre-existing
+		//! call site and its wording are untouched; 88 step 2 passes
+		//! "collapse_to_instances", the second verb whose commit is one
+		//! whole-document swap (see AgentSession::CollapseToInstances).  It
+		//! does NOT change the result messages -- those stay this verb's, and
+		//! a caller with different wording overwrites them in its own result,
+		//! which is exactly what CollapseToInstances does.
+		//! `entityKind` is forwarded verbatim to
+		//! ApplyAgentReplaceGeometryCrud_'s own `entityKind`, which reaches
+		//! SceneEditor::MarkCstHeadDirty and decides WHICH dirty channel the
+		//! mark lands in.  Defaulted to "standard_object" so every existing
+		//! call site -- all of which pass a real object name for a real
+		//! geometry replacement -- keeps the per-entity Object channel it
+		//! already had.
+		//!
+		//! Doc 90 R2 fix round (2026-08-23): a caller whose `objectName` is
+		//! a VERB LABEL rather than a real entity must pass "" instead.
+		//! ClassifyCstEntityKind recognizes "standard_object", so the default
+		//! would route a name that matches no entity in the scene into the
+		//! PER-ENTITY dirty set, which by contract holds real entity names;
+		//! an unrecognized kind falls to MarkCstHeadDirty's generic CST-head
+		//! boolean channel, which is what a whole-document swap naming no
+		//! single entity actually means.  AgentSession::RevertToRevision is
+		//! that caller.  The HISTORY record is unaffected either way --
+		//! PushAgentReplaceGeometryEdit takes `objectName`, never the kind.
+		AgentCommitResult ApplyAgentReplaceGeometry(
+			const String& objectName,
+			const String& candidateDocText,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+			const char* verbLabel = "replace_geometry_scaffold",
+			const char* entityKind = "standard_object" );
+
 		//! Secure-MCP slice 5a: which verb-kind a staged AgentProposal replays
 		//! on approval.  Mirrors the three existing agent commit entry points
 		//! 1:1 -- there is no fourth kind because those are the only three
@@ -658,7 +810,11 @@ namespace RISE
 		{
 			ParamEdit    = 0,   //!< replays via ApplyAgentParamEdit (entity/kind/param/value)
 			InsertChunk  = 1,   //!< replays via ApplyAgentInsertChunk (chunkText)
-			RemoveChunk  = 2    //!< replays via ApplyAgentRemoveChunk (target/kind)
+			RemoveChunk  = 2,   //!< replays via ApplyAgentRemoveChunk (target/kind)
+			//! R1a (2026-08-09): replays via ApplyAgentRemoveChunks -- ONE proposal for a WHOLE batch remove,
+			//! so an Owner approves (or rejects) the batch as the single atomic edit it is, rather than N
+			//! separate cards that could be partially approved into a state the agent never asked for.
+			RemoveChunks = 3
 		};
 
 		//! Secure-MCP slice 5a: ONE staged (inert) proposal from an
@@ -695,6 +851,11 @@ namespace RISE
 			String              chunkText;
 			//! RemoveChunk fields (kind==RemoveChunk only); `target`/`entityKind`
 			//! above double as RemoveChunk's (target,kind) -- no separate fields.
+			//! R1a: RemoveChunkS (kind==RemoveChunks) reuses the SAME two carriers rather than adding
+			//! batch-only members -- `target` holds the '\n'-separated TARGET NAMES and `entityKind` the
+			//! '\n'-separated KINDS, one entry per target, same order, an empty entry meaning "no kind
+			//! narrowing".  ResolveProposal splits them back apart; ListProposals surfaces them verbatim so a
+			//! proposal card can render the N targets it will delete.
 			RISE::Cst::CstHeadVersion baseVersion;   //!< the head this proposal was staged against
 			//! S5a hardening: when false (the common case -- the proposing
 			//! session did not pin an explicit baseHeadVersion), `baseVersion`
@@ -704,10 +865,36 @@ namespace RISE
 			//! this is what closes the unlocked-read race (see StageProposal's
 			//! doc).  When true, the caller already supplied a real
 			//! caller-pinned baseVersion (an explicit baseHeadVersion argument
-			//! to one of the 5 mutating verbs -- propose_patch/propose_patches/
-			//! insert_chunk/insert_chunks/remove_chunk) and StageProposal
-			//! passes it through untouched.
+			//! to one of the 6 mutating verbs -- propose_patch/propose_patches/
+			//! insert_chunk/insert_chunks/remove_chunk/remove_chunks) and
+			//! StageProposal passes it through untouched.
 			bool                hasExplicitBaseVersion = false;
+			//! G2 fix-round (2026-08-10): was the staging session's PART-PLAN
+			//! GATE still ARMED at stage time (no plan filed, not given up, not
+			//! disabled)?  Carried on the proposal because ResolveProposal has
+			//! no handle on the AgentSession that staged it and the gate's state
+			//! is session-scoped -- unlike E1's and R1c's re-checks, which are
+			//! stateless policy the controller can evaluate on its own.
+			//!
+			//! Used for ONE narrow re-check: a ParamEdit staged while the gate
+			//! was armed was, by construction, NOT geometry-introducing against
+			//! the head AS IT STOOD THEN (AgentSession::ProposePatch's G2 arm
+			//! refuses those before they can stage).  But a param edit's effect
+			//! is head-dependent -- a target that did not resolve at stage time
+			//! can resolve later -- so the same value can become
+			//! geometry-introducing while the proposal sits on the queue.
+			//! ResolveProposal therefore re-runs the stateless delta
+			//! (RISE::Agent::DescribeBuildPlanGeometryDeltaForPatch) against the
+			//! CURRENT head and refuses, exactly as it already does for E1 and
+			//! R1c.  FALSE for every proposal staged with the gate disarmed --
+			//! including every pre-G2 proposal shape and every default-
+			//! constructed AgentProposal -- so the re-check simply does not run
+			//! for them, which is the correct answer: no plan was ever required.
+			//! The gate's disarm flags are permanent-once-set, so this can only
+			//! be conservatively STALE (armed at stage, plan filed before
+			//! resolve); the refusal names reissue as the remedy and the
+			//! reissued patch stages cleanly.
+			bool                buildPlanGateArmedAtStage = false;
 			String              sessionLabel;        //!< diagnostic: which session staged it (caller-supplied via AgentSession::SetSessionLabel); "" when the staging session never set one -- see struct doc above
 			String              status;              //!< "pending" / "applied" / "rejected" / "conflict"
 		};
@@ -1701,8 +1888,14 @@ namespace RISE
 		void BeginPropertyScrub();
 		void EndPropertyScrub();
 
-		void Undo();
-		void Redo();
+		//! Return whether the step was applied (false = nothing to undo/redo, refused, or blocked).  A refused
+		//! AgentEditBatch step sets a user-facing notice -- read it with ConsumeHistoryNotice.
+		bool Undo();
+		bool Redo();
+
+		//! Review round 3: the notice the last refused Undo/Redo set (e.g. an agent batch edit whose inverse would
+		//! leave a document that does not derive), cleared on read; "" when none.
+		std::string ConsumeHistoryNotice();
 
 		//! Human-readable labels for the next Undo()/Redo() step
 		//! ("Translate", "Agent Edit", …) for the platform shells'
@@ -1933,6 +2126,1532 @@ namespace RISE
 		//! the active camera / rasterizer / film rather than "(pick one)".
 		String       CategoryActiveName( Category cat ) const;
 
+		// Authored-graph node tree (87 §5 step 4a) ---------------------
+		//
+		// THE GENERIC NODE-CHILDREN SURFACE that replaces the per-category
+		// flat lists above.  Both shells consume it: 4b builds a SwiftUI
+		// `OutlineGroup` from it, 4c a `QAbstractItemModel`.  Neither knows
+		// anything about Objects specifically -- a category whose entities
+		// have no hierarchy (Camera, Material, Painter, ...) is modelled as
+		// N ROOTS WITH NO CHILDREN, which is why a shell needs no per-
+		// category branch and why the flat categories keep working through
+		// the identical code path.
+		//
+		// The tree is over the AUTHORED graph, not over the flat render
+		// list.  For Category::Object that means the manager's entries with
+		// the SYNTHESIZED ones (87 step 3's instancing expansions) FOLDED
+		// INTO the chunk that produced them -- see BuildObjectTreeSeedsLocked_
+		// for the rule and for why nobody may reconstruct it from the
+		// spelling of a name.
+		//
+		// `ReadTree` IS THE SANCTIONED MULTI-NODE SURFACE.  Decided in round 4
+		// of this step's review, and it changes what the per-node getters are
+		// FOR, so read this before building anything on them.
+		//
+		// A node is addressed by an opaque handle that carries the SNAPSHOT
+		// GENERATION it was minted in, and every per-node getter refuses a
+		// handle whose generation is not the currently published one.  That
+		// tag remains worth having: it turns "silently re-resolves onto some
+		// other node" into a visible failure -- remove one object and a bare
+		// index that named `BBB` names `CCC`, with a valid-looking name
+		// coming back and no way for the caller to tell (measured).
+		//
+		// But a handle is NOT A DURABLE IDENTITY and must not be treated as
+		// one.  Its guarantee is bounded: VALID WITHIN ONE WALK, against the
+		// generation you observed.  Two things bound it, and neither is going
+		// away:
+		//   - A REBUILD of the stores (ClearAll + re-derive) is only
+		//     detectable because `AuthoredTree::rebuildCount` is folded into
+		//     the equivalence.  Take that away and the tag cannot see it,
+		//     because the serials it is built on restart from 1.
+		//   - An INCREMENTAL edit invalidates a whole category's handles even
+		//     when nothing the shell drew has moved -- see the
+		//     "HANDLE CHURN" note on the getters below.
+		// So nothing should hold a handle ACROSS AN EVENT-LOOP TURN.  Nothing
+		// in tree does: 87 §5 step 4 keys expand state on the tree PATH, this
+		// controller's selection is by NAME (`SetSelection( Category, const
+		// String& )`), and `ViewportBridge::categoryTree` reads `ReadTree`
+		// only.  4b and 4c must be written the same way.
+		//
+		// The per-node getters therefore stay as a CONVENIENCE (a single-node
+		// probe, the C-ABI's only node surface) and as a SAFETY NET -- a
+		// detectable-when-it-can-be failure beats a silent one.  They are not
+		// deleted and neither is the generation check.
+		//
+		// PREFER `ReadTree` for anything that walks more than one node.  It
+		// is the only TRANSACTIONAL entry point: one refresh, one locked
+		// pass, the whole tree copied out.  A multi-call walk is not
+		// transactional even without a mutation -- each getter takes the
+		// leaf lock on its own, so another thread's count call can land
+		// between two of them.  DO NOT "simplify" the handle back to a raw
+		// index either: within a walk the tag is what makes the failure
+		// visible.
+		//
+		// REFRESH CADENCE, and how it differs from the flat getters
+		// deliberately: `TreeNodeCount` and `TreeRootCount` refresh the
+		// snapshot; the per-node accessors serve the PUBLISHED snapshot
+		// without refreshing.  The flat getters refresh on every indexed
+		// call, which makes a full walk of N entries O(N^2) (each
+		// CategoryEntityName rebuilds the whole list).  A tree walk touches
+		// every node several times, so repeating that here would be O(N^2)
+		// with a much larger constant.  Entering through a count getter is
+		// not a burden the shells have to remember: a tree walk BEGINS at
+		// the roots.
+		//
+		// A refresh REPUBLISHES ONLY WHEN THE TREE ACTUALLY CHANGED, and the
+		// generation is bumped only then.  That is load-bearing rather than
+		// an optimisation: bumping on every refresh would invalidate every
+		// outstanding handle on every count call, which makes the handle API
+		// unusable.  Compare-then-publish costs one O(n) structural compare
+		// on top of an O(n) build.
+		//
+		// EPOCH CONTRACT, and a TRAP for 4b/4c.  A shell re-reads when
+		// `SceneEpoch()` advances.  That is sufficient TODAY only because
+		// `parent` is a READ-ONLY property (ObjectIntrospection.cpp) and every
+		// re-parent therefore goes through a document chunk edit, which bumps
+		// the epoch.  When 4b/4c add DRAG-TO-REPARENT, that path MUST bump
+		// `mSceneEpoch` itself: a re-parent changes the TREE without changing
+		// any category's entity LIST, so nothing else in the pipeline would
+		// notice, and the outliner would keep drawing the old hierarchy.  The
+		// generation tag does not cover this -- it makes a stale handle fail,
+		// it does not tell a shell that the shape it drew is out of date.
+
+		//! An opaque, GENERATION-TAGGED node handle.  64 bits because it is
+		//! two fields: the high 32 are the snapshot generation the handle was
+		//! minted in, the low 32 the index into that snapshot's node table.
+		//! Callers must treat it as opaque -- the split is an implementation
+		//! detail of Encode/DecodeTreeHandle in the .cpp.  32 bits would have
+		//! forced a narrow generation field that wraps within one GUI session
+		//! and starts making stale handles look valid again, which is the
+		//! exact failure the tag exists to remove.
+		typedef unsigned long long TreeNodeHandle;
+
+		//! Handle value meaning "no such node" -- returned for an
+		//! out-of-range index, for a handle from an older generation, and
+		//! reported as the parent of a root.
+		static constexpr TreeNodeHandle kInvalidTreeNode = 0xFFFFFFFFFFFFFFFFull;
+
+		//! Sentinel for a RAW node index inside an AuthoredTree
+		//! (TreeNodeRow::parent).  Distinct from kInvalidTreeNode, which is a
+		//! HANDLE: the two live in different value spaces and conflating them
+		//! is how a root's parent would decode to node 0xFFFFFFFF.
+		static constexpr unsigned int kInvalidNodeIndex = 0xFFFFFFFFu;
+
+		//! Total nodes in `cat`'s tree.  REFRESHES the snapshot.
+		unsigned int TreeNodeCount( Category cat ) const;
+		//! Number of ROOT nodes in `cat`'s tree.  REFRESHES the snapshot.
+		unsigned int TreeRootCount( Category cat ) const;
+		//! The generation of `cat`'s currently published tree.  Does NOT
+		//! refresh.  A caller that wants to know whether a walk it just did
+		//! spanned a republish reads this before and after and compares.
+		//!
+		//! 0 means NO REFRESH HAS RUN for this category yet -- nothing is
+		//! published, so there are no nodes and no handle can resolve.  Note
+		//! that a legitimately EMPTY category does NOT stay at 0: since round
+		//! 4 the tree carries `rebuildCount`, which differs from the
+		//! default-constructed 0 on the very first refresh, so an empty
+		//! category publishes an empty tree at generation >= 1.  (An earlier
+		//! version of this doc said the opposite, and it was true then.)
+		//!
+		//! Generations are minted from a PROCESS-GLOBAL counter shared by
+		//! every controller and every category, so no two published trees
+		//! anywhere in the process share one -- see the round-4 P3-1 note in
+		//! the .cpp.
+		unsigned long long TreeGeneration( Category cat ) const;
+
+		// HANDLE CHURN, and an ASYMMETRY a 4b/4c author must not be
+		// surprised by (round-4 P2).  An INCREMENTAL CST param edit
+		// (`Cst.cpp`'s re-Finalize loop) DROPS and RE-ADDS the affected
+		// Material / Geometry / Light / Modifier entity in the same manager
+		// under the same name, which mints a fresh registration serial --
+		// while OBJECTS are re-pointed IN PLACE, precisely so the raw
+		// addresses the TLAS stores stay valid, and keep their serial.
+		//
+		// So dragging a sphere's `radius` bumps the Geometry tree's
+		// generation on EVERY tick and invalidates every outstanding
+		// Geometry handle, while the same gesture on an Object's transform
+		// invalidates nothing.  That is CORRECT under the identity model --
+		// the geometry really is a different instance -- and it is harmless
+		// exactly because `ReadTree` is the sanctioned surface and nothing
+		// holds a handle across a turn.  It is documented here so that a
+		// shell which finds its handles dying under a drag reaches for
+		// `ReadTree` instead of "fixing" the equivalence by dropping the
+		// serial, which would re-open round-4 case S.
+
+		//! Handle of the `rootIdx`-th root, or kInvalidTreeNode.
+		TreeNodeHandle TreeRootNode( Category cat, unsigned int rootIdx ) const;
+		//! How many children `node` has.  0 for an unknown or STALE handle.
+		//!
+		//! `ByHandle` for the same reason the C-ABI mirror carries it: round
+		//! 3 widened the node parameter from `unsigned int` to
+		//! `TreeNodeHandle` and changed NOTHING ELSE in the signature, so a
+		//! caller written against the pre-handle API keeps compiling and
+		//! degrades to "every node is a childless row" -- indistinguishable
+		//! from a legitimately flat category.  A rename is the only thing
+		//! that breaks it loudly.  Round 4 applied it on this side too, which
+		//! also gives the C++ and C names parity.  (The other three getters
+		//! kept their names: each ALSO changed its return type, so a caller
+		//! storing the result in an `unsigned int` at least gets a narrowing
+		//! the compiler can warn about, and the C ABI's out-pointer widening
+		//! is a hard error outright.)
+		unsigned int TreeChildCountByHandle( Category cat, TreeNodeHandle node ) const;
+		//! Handle of `node`'s `childIdx`-th child, or kInvalidTreeNode.
+		TreeNodeHandle TreeChildNode( Category cat, TreeNodeHandle node, unsigned int childIdx ) const;
+		//! `node`'s parent handle, or kInvalidTreeNode for a root / unknown /
+		//! STALE handle.  Walking this up to a root is how a shell builds the
+		//! tree PATH that 87 §5 step 4 keys expand-state on -- but do that
+		//! WITHIN one walk, or better over a `ReadTree` copy, not by parking
+		//! a handle between turns.
+		TreeNodeHandle TreeNodeParent( Category cat, TreeNodeHandle node ) const;
+		//! `node`'s entity name -- the identity a shell passes to
+		//! `SetSelection` and renders as the row label.  Empty for an unknown
+		//! or STALE handle.  `ByHandle` for the reason on
+		//! `TreeChildCountByHandle`.
+		String       TreeNodeNameByHandle( Category cat, TreeNodeHandle node ) const;
+
+		//! One tree node, as published in the snapshot.  `parent` and the
+		//! `childIndices` slice are indices into the SAME snapshot's node
+		//! table -- see AuthoredTree for why that identity is load-bearing.
+		struct TreeNodeRow
+		{
+			String       name;         //!< entity name (the selection identity)
+			unsigned int parent;       //!< kInvalidNodeIndex for a root
+			unsigned int firstChild;   //!< offset into AuthoredTree::childIndices
+			unsigned int childCount;   //!< length of that slice
+			//! REGISTRATION IDENTITY -- `IManager::GetItemSerial` for the
+			//! entity behind this row, 0 when the backing store has no
+			//! serial (see TreeNodeSeed::serial).  Carried so that
+			//! TreesEquivalent can tell a REPLACEMENT from a no-op: a
+			//! remove + re-add under the SAME name is a different instance
+			//! with the same name, same parent and the same sort position,
+			//! so every other member of this row compares equal and the
+			//! generation would stand -- leaving an outstanding handle
+			//! resolving onto an object the manager no longer holds.  This
+			//! is the identity model `SceneEditor.cpp`'s capture/apply
+			//! serial gate already enforces one layer down; a name-only
+			//! equivalence here would contradict it.
+			//!
+			//! MEANINGFUL PER INDEX, NOT CATEGORY-WIDE.  A serial is unique
+			//! only within one manager instance, and `Category::Painter` is
+			//! a UNION of two managers with independent counters -- so two
+			//! Painter rows denoting two genuinely different entities can
+			//! carry the same number.  `TreesEquivalent` compares row `i`
+			//! against row `i`, which is exactly the comparison the value
+			//! supports; do not build a set or a map out of these.
+			//!
+			//! AND IT SAYS NOTHING ACROSS A REBUILD.  See
+			//! AuthoredTree::rebuildCount -- the counter behind every serial
+			//! restarts when the manager is reconstructed, so the serial is
+			//! an identity WITHIN one instance of the stores only.
+			//!
+			//! NOT part of the public handle surface and deliberately not
+			//! exposed by a getter -- it is an equivalence input, not a row
+			//! property a shell should key on.  (A shell keys on the NAME,
+			//! which is what selection takes.)
+			unsigned long long serial = 0;
+		};
+
+		//! ONE STRUCT, READ AND PUBLISHED UNDER ONE LOCK HOLD, and it must
+		//! stay that way.
+		//!
+		//! The flat per-category surface is a single `std::vector<String>`:
+		//! there is nothing to keep consistent with anything else.  A TREE is
+		//! a node table PLUS index arrays that address INTO that table, so a
+		//! reader that saw a NEW `childIndices` against an OLD `nodes` would
+		//! read OUT OF BOUNDS, not merely answer stale.
+		//!
+		//! WHAT ACTUALLY PREVENTS THAT is `mUiSnapshotMutex`: RefreshTreeSnapshot_
+		//! assigns this struct while holding it, and EVERY reader holds the
+		//! same lock for the WHOLE of its read.  It is NOT the assignment
+		//! being one statement -- the publish is the compiler-generated
+		//! `AuthoredTree::operator=( AuthoredTree&& )`, which is FOUR
+		//! sequential member assignments (three vector moves and the
+		//! generation), and a reader that took no lock could land between any
+		//! two of them.  An earlier version of this comment claimed the
+		//! single assignment was itself the mechanism; it is not, and reading
+		//! it that way would invite a lock-free reader that is unsound.
+		//!
+		//! Keeping the vectors in one struct is still worth doing -- it is
+		//! what makes "publish them all or none" the obvious shape and stops
+		//! a future edit from publishing one member outside the lock -- so DO
+		//! NOT split these back out into separate snapshot members.
+		struct AuthoredTree
+		{
+			std::vector<TreeNodeRow>  nodes;
+			std::vector<unsigned int> childIndices;  //!< flattened child lists
+			std::vector<unsigned int> roots;         //!< indices into `nodes`
+			//! The generation this tree was published at; 0 = never
+			//! published.  Handles minted from this tree carry it, and the
+			//! per-node getters refuse any handle that does not match.
+			//! Travels INSIDE the struct so it cannot be published
+			//! separately from the table it describes.
+			unsigned long long        generation = 0;
+			//! WHICH INSTANCE OF THE STORES this tree was read out of --
+			//! `IJobPriv::GetContainerRebuildCount`, stamped by
+			//! `BuildCategoryTreeLocked_`.  Compared by `TreesEquivalent`,
+			//! which is what makes a whole-scene rebuild republish.
+			//!
+			//! It is here because A SERIAL IS NOT A CROSS-REBUILD IDENTITY,
+			//! and the rest of this API's identity story is built on serials.
+			//! `GenericManager::m_nNextSerial` is per-manager-INSTANCE and
+			//! starts at 0 on construction; `Job::ClearAll` destroys and
+			//! recreates every manager; a re-derive re-registers the same
+			//! document in the same order.  So a full re-derive reproduces
+			//! BYTE-IDENTICAL serials for genuinely new instances, every row
+			//! compares equal, the generation stands, and a handle minted
+			//! before the rebuild still resolves -- now onto an entity that
+			//! did not exist when it was minted.  (Measured; case U.)
+			//!
+			//! THE HOLE THIS CLOSES BELONGED TO EVERY CATEGORY, not to the
+			//! serial-less ones.  An earlier version of this header
+			//! enumerated Medium / Rasterizer / Film / Animation /
+			//! SceneVariant and implied the gap was theirs.  Their gap is
+			//! real and separate (a same-name REPLACEMENT inside one store
+			//! is invisible there, because there is no serial to move -- see
+			//! TreeNodeSeed::serial).  The rebuild gap was UNIVERSAL: it
+			//! applied to Object, Material, Geometry, Light and Painter
+			//! exactly as much, because it defeats the serial rather than
+			//! being defeated by its absence.
+			//!
+			//! Reachable on the mainline, not exotic: `ApplyCstParamEdit`
+			//! returning 2 or 3 -- the full-re-derive fallback taken by every
+			//! category the incremental path refuses, which is all Camera and
+			//! all Painter edits, `let` edits, unnamed chunks and composed
+			//! materials -- plus `RederiveCstWithVariant` and reopening a
+			//! document into a reused Job.
+			//!
+			//! Bumped at TWO sites in Job, not one: `InitializeContainers` and
+			//! `SetPrimaryAcceleration`, which replaces the ObjectManager on its
+			//! own.  Round 5 found the second one missing here; no GUI can reach
+			//! it today (its callers are the CLI console, the Blender bridge at
+			//! job-build time, and 3DSMax, none of which holds a controller), but
+			//! the fresh manager restarts its serials at 0 just the same, so it
+			//! would have reopened this exact hole for whoever wired it up next.
+			unsigned long long        rebuildCount = 0;
+		};
+
+		//! THE TRANSACTIONAL READ, and what every multi-node consumer should
+		//! use.  Refreshes once, then copies the whole published tree out
+		//! under a single hold of the leaf lock, so the result cannot mix two
+		//! trees the way a sequence of per-node getters can.  The returned
+		//! indices (`roots`, `TreeNodeRow::parent`, `childIndices`) are RAW
+		//! indices into `out.nodes` -- not handles -- because the caller owns
+		//! the copy and nothing can republish underneath it.  `HandleFor`
+		//! below is the way back from one of those indices to a handle the
+		//! per-node getters accept.
+		//!
+		//! This is an API PROPERTY, not an accident of how a given shell
+		//! happens to be written: ViewportBridge::categoryTree and 4b's
+		//! SwiftUI model both depend on it, and neither should have to
+		//! rediscover it by reasoning about the getters.
+		void ReadTree( Category cat, AuthoredTree& out ) const;
+
+		//! THE WAY BACK from a `ReadTree` row to the per-node getters.
+		//!
+		//! `ReadTree` is what every multi-node consumer is told to use, and it
+		//! yields RAW INDICES -- while `TreeNodeNameByHandle` / `TreeChildCountByHandle` /
+		//! `TreeNodeParent` take generation-tagged HANDLES, and the encoding is
+		//! deliberately private.  Without this a shell that follows the advice
+		//! has only two ways out of its own model row: re-walk with the
+		//! per-node getters (surrendering the transactional property it took
+		//! ReadTree for), or hand-roll the `(generation << 32) | index` layout
+		//! in shell code (breaking the "two places know the layout" invariant
+		//! that makes the tag changeable at all).  So: one function, on this
+		//! side of the wall.
+		//!
+		//! VALIDITY.  The handle carries `t.generation`, and every getter
+		//! compares that against the CURRENTLY PUBLISHED generation for the
+		//! category -- so a handle minted from a copy resolves for exactly as
+		//! long as that copy is still the published tree, and FAILS (rather
+		//! than naming some other node) once a real change republishes.  An
+		//! idle refresh does not republish, so a handle minted from a copy
+		//! survives a UI poll.
+		//!
+		//! Returns kInvalidTreeNode for an out-of-range index, and for a tree
+		//! that was never published (`generation == 0` -- e.g. one straight
+		//! out of `BuildAuthoredTree`), because no such handle could ever
+		//! resolve.
+		//!
+		//! PURE and static: it reads only the tree it is handed, so it takes
+		//! no lock.
+		//!
+		//! IT DOES CARE WHICH CONTROLLER THE COPY CAME FROM, and an earlier
+		//! version of this line said the opposite and sold that as a feature.
+		//! A handle is only ever resolved AGAINST a particular controller's
+		//! published tree, so one minted from controller A's copy and handed
+		//! to controller B is a bug, not a portability affordance.  Since
+		//! round 4 generations come from a process-global counter, so such a
+		//! handle FAILS to decode rather than naming B's node at the same
+		//! index (which is what it used to do -- measured).
+		static TreeNodeHandle HandleFor( const AuthoredTree& t, unsigned int index );
+
+		//! THE WAY BACK FROM A LIVE ENTRY TO THE ROW THAT REPRESENTS IT.
+		//!
+		//! The outliner draws the AUTHORED graph, so a SYNTHESIZED entry
+		//! (87 step 3's instancing expansions) is not a row: `I[1,0]` folds
+		//! into `I`.  Selection, though, is by NAME and comes from wherever
+		//! the user clicked -- and a VIEWPORT pick necessarily names the LIVE
+		//! entry it hit, because that is the only thing a ray can return.  So
+		//! `GetSelectionName()` can legitimately hold a name no row answers
+		//! to, and a shell matching it against row names highlights nothing.
+		//! That was the state 87 step 4b left behind, deliberately.
+		//!
+		//! This resolves that name to the row.  Answers `entityName` itself
+		//! whenever that IS a row -- which covers every ordinary object, the
+		//! step-3a COLLAPSE case (entry name == chunk name), and the PASS-1b
+		//! UNFOLD case where a same-name collision made the fold refuse.
+		//!
+		//! THE AUTHORITY IS TREE MEMBERSHIP, NOT A REIMPLEMENTED FOLD RULE.
+		//! `BuildObjectTreeSeedsLocked_` decides what folds, through several
+		//! interacting cases (collapse, unfold-on-collision, synthesized
+		//! chunk nodes).  Restating any of that here would be a second copy
+		//! free to drift, and a resolver that names a row the tree does not
+		//! contain is worse than no resolver -- the shell would highlight
+		//! nothing while reporting success.  So the only question asked of
+		//! the fold data is "what chunk did this entry come from?"
+		//! (`IObjectManager::GetObjectProvenance`, the ONE sanctioned route
+		//! -- see its header: a synthesized name is an opaque token and
+		//! nobody may split it on `.` or probe for a `[`), and the only
+		//! question asked of the tree is "is this name a row?".  Every
+		//! discrimination falls out of the second question.
+		//!
+		//! ITERATED and CYCLE-PROOF: the chain is walked with a visited set
+		//! rather than a hop budget, so a future expansion that folds one
+		//! synthesized entry into another resolves, and a fold CYCLE
+		//! terminates instead of spinning.  One hop is all any shape reaches
+		//! today.
+		//!
+		//! Returns `entityName` UNCHANGED when nothing resolves -- an empty
+		//! name, a name that has since been deleted, a non-Object category
+		//! (only Objects have provenance), or a contended read.  The caller
+		//! then highlights nothing, which is exactly the pre-fix behaviour:
+		//! this can restore a highlight, never move one onto a wrong row.
+		//!
+		//! IT DOES NOT CHANGE WHAT IS SELECTED, and that is the point.  The
+		//! selection stays the LIVE ENTRY the user clicked, so the gizmo
+		//! still lands on THAT copy, the properties panel still inspects
+		//! THAT copy, and the viewport chrome still names it.  Folding
+		//! `mSelectionName` itself would have moved all three onto the array
+		//! -- and for a COUNTED chunk, whose row has no live object at all,
+		//! `IObjectManager::GetItem` would return null and the gizmo would
+		//! disappear rather than move.  This is a PRESENTATION fold, applied
+		//! at the one place that presents.
+		//!
+		//! IT DOES NOT REFRESH THE TREE, unlike `ReadTree` /
+		//! `TreeNodeCount` -- it answers against whatever is PUBLISHED,
+		//! which is what the shell has drawn.  Both shells re-read the
+		//! selection on every refresh and the Qt outliner's refresh rides
+		//! `imageUpdated` (once per preview frame), so refreshing here would
+		//! defeat the epoch gate they use to keep the O(n) rebuild off that
+		//! path.  The sole exception is a category nothing has published yet
+		//! (`TreeGeneration( cat ) == 0`), which is a COLD controller rather
+		//! than a stale one and publishes once, so this stays usable on its
+		//! own.  See the fuller note at the definition.
+		String ResolveTreeRowName( Category cat, const String& entityName ) const;
+
+		//! The row a shell should highlight for the CURRENT selection:
+		//! `ResolveTreeRowName( GetSelectionCategory(), GetSelectionName() )`.
+		//! This is what an outliner compares against its row names; the
+		//! unfolded `GetSelectionName()` remains what the property panel,
+		//! the gizmo and the viewport chrome use.
+		String SelectionRowName() const;
+
+		//! The input to the pure tree assembler: one record per node that is
+		//! to APPEAR in the tree, already resolved out of whatever the
+		//! category's backing store is.
+		struct TreeNodeSeed
+		{
+			String             name;
+			String             parent;      //!< "" -- or a name that is not itself a seed -- means ROOT
+			unsigned long long order  = 0;  //!< sibling display order key
+			//! Registration identity of the entity behind this seed, or 0
+			//! when its backing store does not provide one.  DISTINCT from
+			//! `order`, which is only a display key: for the flat categories
+			//! `order` is the entity's position in the enumeration, while
+			//! this is `IManager::GetItemSerial`.  They coincide for
+			//! Category::Object, where the serial IS the declaration order.
+			//!
+			//! 0 means "this store cannot tell a replacement from the
+			//! original" -- Medium, Rasterizer, Film, Animation and
+			//! SceneVariant, none of which is reached through an IManager
+			//! from here.  For those categories a remove + re-add under the
+			//! same name WITHIN one instance of the stores does NOT bump the
+			//! tree generation, and an outstanding handle keeps resolving.
+			//! Said out loud rather than left for a reader to infer from a
+			//! silent 0.
+			//!
+			//! That is the ONLY gap left, and it is narrower than it reads:
+			//! a whole-scene REBUILD is caught for every category, serial or
+			//! not, by AuthoredTree::rebuildCount.
+			//!
+			//! Category::Painter does not come through here at all -- its
+			//! serial is positional, from the manager the row was enumerated
+			//! out of.  See BuildCategoryTreeLocked_.
+			unsigned long long serial = 0;
+		};
+
+		//! Assemble an AuthoredTree from seeds.  PURE and static: it touches
+		//! no controller state and no manager, which is what lets its two
+		//! hostile inputs -- a DANGLING parent and a CYCLE -- be driven
+		//! directly by a test.  Neither is reachable through
+		//! `IObjectManager::SetObjectParent` today (it refuses an unknown
+		//! parent and walks the ancestor chain to refuse a cycle), so a
+		//! scene-level test cannot produce either and this seam is the only
+		//! honest way to pin the guards.
+		//!
+		//! Contract:
+		//!  - Every seed becomes exactly one node.  Nothing is ever dropped.
+		//!  - A parent that names no seed is treated as ROOT (the same rule
+		//!    `ComposeWorldTransforms` applies to a dangling link).
+		//!  - A cycle is BROKEN, not followed: one link on each cycle is cut
+		//!    and the node it belonged to becomes a root, so the walk
+		//!    terminates and every node stays visible.  The assembly is
+		//!    iterative throughout -- no recursion, so no stack overflow on
+		//!    a deep chain either.
+		//!  - Roots and each child list are ordered by `order`, ties broken
+		//!    by name, so the result is deterministic.
+		//!  - `generation` is left 0: only RefreshTreeSnapshot_ stamps it,
+		//!    at publish time.
+		static AuthoredTree BuildAuthoredTree( const std::vector<TreeNodeSeed>& seeds );
+
+		// =====================================================================
+		// doc-88 Phase 3 S11 -- the multi-parent Painter/Material DAG.
+		//
+		// Generalizes BuildAuthoredTree (immediately above) from a single-
+		// parent TREE (Category::Object) to a multi-parent DAG (Category::
+		// Painter + Category::Material, plus any ChunkCategory::Function node
+		// an edge from one of those actually reaches -- docs/gui/
+		// NODE_GRAPH_CANVAS.md §1.1's two-level model: a `def` stage stays
+		// internal to its owning painter node, NEVER a top-level graph node
+		// here). Same three-layer split as the object tree:
+		//   1. BuildPainterMaterialGraph        -- PURE.  Seeds+edge-seeds ->
+		//                                          PainterMaterialGraph.  The
+		//                                          only layer a test may hand
+		//                                          a hostile input to.
+		//   2. BuildPainterMaterialGraphSeedsLocked_ -- seeds nodes from the
+		//                                          retained CST Document's
+		//                                          own Painter/Material
+		//                                          chunks (SceneReferenceGraph
+		//                                          ::AllChunks), edges from
+		//                                          SceneReferenceGraph::
+		//                                          EdgesAndDangling over the
+		//                                          SAME scan, both under
+		//                                          mMutex; the live Painter/
+		//                                          Material managers are
+		//                                          consulted ONLY for
+		//                                          enrichment (serial,
+		//                                          def-count), never as the
+		//                                          node SOURCE -- see the
+		//                                          .cpp for why (doc-88 S11
+		//                                          review round 1 P1-2).
+		//   3. RefreshPainterMaterialGraphSnapshot_  -- the SAME stale-fallback
+		//                                          publish discipline
+		//                                          RefreshTreeSnapshot_ uses.
+		//
+		// UNLIKE BuildAuthoredTree, this assembler never WALKS the structure
+		// it builds -- a DAG's adjacency is exactly the edge-seed list,
+		// classified once against an id->index map (GraphNodeSeed::id, the
+		// chunk's own Cst::NodeId -- see review round 1 P1-2), so a crafted
+		// cycle (or a self-reference) needs no break-and-root logic: it is
+		// simply two ordinary adjacency rows, never a hang.  See
+		// BuildPainterMaterialGraph's own comment.
+		// =====================================================================
+
+		//! The input to the pure DAG assembler: one record per NODE that is
+		//! to appear in the graph, seeded from a `SceneReferenceGraph::
+		//! DocumentChunk` (identity/keyword/category/name) plus enrichment
+		//! read out of the live Painter/Material managers (order/serial/
+		//! def-count) -- see BuildPainterMaterialGraphSeedsLocked_.
+		//!
+		//! `id` is the chunk's OWN `Cst::NodeId` and is the assembler's node
+		//! IDENTITY (doc-88 S11 review round 1 P1-2/P2-1/P2-2) -- NOT
+		//! (category,name): two chunks of the SAME category can legally
+		//! share a name (a colour painter and a `scalar_painter` both named
+		//! "P"), and each gets its OWN node here. `id` must be nonzero and
+		//! unique per seed (0 is the reserved "no such chunk" sentinel
+		//! `Cst::NodeId` uses throughout this codebase -- `DocParamId`,
+		//! `ResolveChunk`, ... -- so a real document chunk never has it).
+		struct GraphNodeSeed
+		{
+			Cst::NodeId   id = 0;
+			String        name;
+			String        chunkKeyword;
+			ParameterPipe outputPipe = ParameterPipe::Other;
+			ChunkCategory category   = ChunkCategory::Painter;
+			unsigned long long order  = 0;   //!< sibling/display order key, same role as TreeNodeSeed::order
+			unsigned long long serial = 0;   //!< registration identity, same role as TreeNodeSeed::serial
+			int           defCount   = 0;
+			//! Object Graph slice: a `standard_object`'s `count_u * count_v`
+			//! repeat-sugar (87 step 3c) -- see `GraphNode::repeatCount`'s own
+			//! comment for the full contract. Every Painter/Material seed
+			//! leaves this at the default 0; `BuildPainterMaterialGraph`
+			//! copies it straight through, same as `defCount`.
+			int           repeatCount = 0;
+		};
+
+		//! The input to the pure DAG assembler: one record per reference
+		//! edge, resolved or dangling, gathered from the retained Document
+		//! (see SceneReferenceGraph::Edges) -- deliberately the SAME shape
+		//! ReferenceEdge carries (referrer side + target side), so the
+		//! seeds-gathering step is a straight field copy, not a re-derivation.
+		//!
+		//! `fromId`/`toId` are the referrer's/target's `Cst::NodeId` (see
+		//! GraphNodeSeed::id) -- the assembler matches edges to nodes by
+		//! THESE, not by (category,name), for the same ambiguity reason.
+		//! `toId == 0` means the reference is dangling or points outside
+		//! this graph's modeled categories (`toName` still carries the
+		//! target's name for display either way) -- `fromId` is always
+		//! nonzero (an edge is only ever discovered by walking a real
+		//! chunk's own params).
+		struct GraphEdgeSeed
+		{
+			Cst::NodeId   fromId = 0;
+			ChunkCategory fromCategory = ChunkCategory::Painter;
+			String        fromName;
+			String        paramName;
+			int           occurrence   = 0;
+			std::vector<ChunkCategory> portCategories;
+			ParameterPipe portPipe = ParameterPipe::Other;
+			bool portColorAlsoAcceptsScalar = false;
+			Cst::NodeId   toId = 0;
+			ChunkCategory toCategory   = ChunkCategory::Painter;
+			String        toName;        //!< may name no seed at all -- see BuildPainterMaterialGraph
+		};
+
+		//! One port on a graph node: a single (paramName, occurrence) slot
+		//! that either REFERENCES another node (an outEdges row) or IS
+		//! referenced BY another node (an inEdges row) -- the SAME struct
+		//! serves both directions, mirroring ReferenceEdge's shape.
+		struct GraphPort
+		{
+			String paramName;                          //!< the reference-bearing param's role
+			int    occurrence      = 0;                 //!< 0-based occurrence among same-role siblings
+			//! Index into PainterMaterialGraph::nodes of the OTHER end, or
+			//! kInvalidNodeIndex when this port is a NODE-LESS PORT: the
+			//! reference is dangling (points at a name nothing declares) or
+			//! points OUT OF SCOPE (a category this graph does not model,
+			//! e.g. a `standard_object.geometry` reference would never reach
+			//! this graph at all, but a Painter->Object edge if one ever
+			//! existed would land here). Never dropped silently -- see
+			//! BuildPainterMaterialGraph.
+			unsigned int otherNode = kInvalidNodeIndex;
+			String otherName;                            //!< the other end's name, even when otherNode is invalid
+			//! The port's declared TYPE (ParameterDescriptor::referenceCategories)
+			//! -- what kind of chunk this slot accepts.
+			std::vector<ChunkCategory> portCategories;
+			ParameterPipe portPipe = ParameterPipe::Other;
+			bool portColorAlsoAcceptsScalar = false;
+		};
+
+		//! An opaque, GENERATION-TAGGED node handle for a PUBLISHED
+		//! PainterMaterialGraph -- THE SAME `(generation << 32) | index`
+		//! layout as `TreeNodeHandle` (see its own comment for the 32/32
+		//! split rationale), minted with the SAME `EncodeTreeHandle` the
+		//! object tree uses (doc-88 S11 review round 2 P1).
+		//!
+		//! WHY THIS EXISTS, and why `GraphNode` used to publish a raw
+		//! `Cst::NodeId` instead: a chunk's `Cst::NodeId` is a PER-PARSE
+		//! identity (`Cst.h`'s own NodeId lineage caveat) -- a full re-derive
+		//! (any of the `ApplyCstParamEdit` fallback paths, `RederiveCstWith
+		//! Variant`, reopening a document into a reused Job) mints a FRESH
+		//! Document with FRESH NodeIds, and nothing stops a later chunk from
+		//! being handed the SAME integer an earlier, now-gone chunk used to
+		//! own. A shell that cached a raw `id` across such a reload and used
+		//! it to, say, jump back to "the node the user last selected" could
+		//! silently land on an unrelated chunk instead of failing loudly --
+		//! exactly the aliasing hole `TreeNodeHandle` was built to close for
+		//! the object tree, and the S11 spec (`docs/gui/NODE_GRAPH_CANVAS.md`
+		//! §6 S11) requires the SAME discipline here.
+		//!
+		//! Callers must treat it as opaque; see `ResolveGraphNodeHandle`.
+		typedef unsigned long long GraphNodeHandle;
+		//! Handle value meaning "no such node" -- default `GraphNode::handle`
+		//! before publish, and the refusal value `ResolveGraphNodeHandle`
+		//! returns for an unresolvable handle. Same bit pattern as
+		//! `kInvalidTreeNode`, kept as a SEPARATE named constant (rather than
+		//! reusing `kInvalidTreeNode` directly) because the two live in
+		//! different handle spaces -- see `kInvalidTreeNode`'s own comment on
+		//! why conflating sentinel spaces is a hazard even when the bits match.
+		static constexpr GraphNodeHandle kInvalidGraphNode = 0xFFFFFFFFFFFFFFFFull;
+
+		//! One node: a single Painter/Material (or edge-reached Function)
+		//! chunk. `inEdges` is the "parents is a LIST" half of the doc's
+		//! §1.2 links-not-copies rule -- a painter shared by two materials
+		//! is ONE node with TWO inEdges rows, never two nodes.
+		struct GraphNode
+		{
+			//! Opaque, generation-tagged identity -- see `GraphNodeHandle`.
+			//! `kInvalidGraphNode` here means "not yet stamped": true only
+			//! for a `GraphNode` fresh out of the PURE `BuildPainterMaterial
+			//! Graph` assembler, which has no generation to mint against (the
+			//! same reason `AuthoredTree::TreeNodeRow` carries no handle at
+			//! all). Every node this controller actually PUBLISHES (i.e. a
+			//! `GraphNode` reachable via `ReadPainterMaterialGraph`) carries a
+			//! real handle, stamped in `RefreshPainterMaterialGraphSnapshot_`
+			//! right after `generation` is finalized -- see that function's
+			//! own comment for why the stamp cannot happen any earlier.
+			//! Deliberately NOT compared by `GraphNodesEqual`: it is a
+			//! DERIVED field, not content, and the compare-then-publish step
+			//! that decides whether to bump `generation` runs BEFORE a new
+			//! generation exists to stamp with -- comparing it would either
+			//! always disagree (spurious republish every refresh) or require
+			//! computing the new generation before knowing whether one is
+			//! needed. Replaces the raw `Cst::NodeId` this struct used to
+			//! publish -- see `GraphNodeHandle`'s own comment for why.
+			GraphNodeHandle handle = kInvalidGraphNode;
+			String        name;
+			String        chunkKeyword;                  //!< e.g. "ramp_painter", "ggx_material"
+			ParameterPipe outputPipe = ParameterPipe::Other;
+			ChunkCategory category    = ChunkCategory::Painter;
+			unsigned long long order  = 0;                //!< presentation-order key, same role as TreeNodeSeed::order
+			unsigned long long serial = 0;                //!< registration identity, same role as TreeNodeSeed::serial
+			//! S10's ExpressionProgram::DefCount() for an expression-family
+			//! painter (expression_painter / scalar_painter{expression}); 0
+			//! for every other chunk kind. The §1.1 two-level model's hook:
+			//! `def` stages are a COUNT here, never nodes of their own.
+			int defCount = 0;
+			//! Object Graph slice: `standard_object`'s `count_u * count_v`
+			//! repeat-sugar (87 step 3c) when this chunk CARRIES counts (i.e.
+			//! declares `count_u` at all -- `count_v` alone defaults to 1 per
+			//! that param's own descriptor comment), 0 otherwise. 0 is
+			//! therefore NOT "a repeat of one" -- it is "not a repeat chunk at
+			//! all"; a genuine `count_u 1` (no `count_v`) publishes 1, not 0,
+			//! per that param's own "PRESENCE selects the repeated form"
+			//! contract. Deliberately NOT `defCount` repurposed (a shell
+			//! badges an object's repeat count and a painter's expression-def
+			//! count with different affordances; conflating the two fields
+			//! would make one graph type's reader guess which meaning it is
+			//! looking at). Every Painter/Material node leaves this 0 -- the
+			//! object seeder is the only writer.
+			int repeatCount = 0;
+			std::vector<GraphPort> outEdges;              //!< this node's OWN reference params -> other nodes (or dangling)
+			std::vector<GraphPort> inEdges;                //!< other nodes' reference params -> this node (its "parents")
+		};
+
+		//! ONE STRUCT, published under mUiSnapshotMutex exactly like
+		//! AuthoredTree -- see AuthoredTree's own comment for why the publish
+		//! must stay one assignment under one lock hold rather than several
+		//! fields split apart.
+		struct PainterMaterialGraph
+		{
+			//! Per-read freshness; false when contention/render ownership served the cached graph.
+			//! Not graph content, so excluded from snapshot equivalence.
+			bool snapshotFresh = true;
+			std::vector<GraphNode> nodes;
+			//! Generation this graph was published at; 0 = never published.
+			//! Same process-global counter as AuthoredTree::generation
+			//! (NextTreeGeneration()) -- so a Painter/Material graph
+			//! generation and an AuthoredTree generation are drawn from the
+			//! same space and never collide. Every `GraphNode::handle` in
+			//! `nodes` is stamped from THIS field at publish time (doc-88 S11
+			//! review round 2 P1) -- see `GraphNode::handle`'s own comment.
+			unsigned long long generation   = 0;
+			//! Which INSTANCE of the stores this graph was read out of --
+			//! same role as AuthoredTree::rebuildCount; see its comment for
+			//! why a serial alone cannot detect a ClearAll + re-derive.
+			unsigned long long rebuildCount = 0;
+		};
+
+		//! Object Graph slice (below): a NEUTRAL alias for the SAME shared
+		//! model -- GraphNodeSeed/GraphEdgeSeed/GraphPort/GraphNode/
+		//! PainterMaterialGraph/BuildPainterMaterialGraph/GraphLayout/
+		//! BFSGraphClosure/FilterPainterMaterialGraph are all painter-
+		//! agnostic already (nothing in any of them mentions a Painter or
+		//! Material concept by name -- they are node/edge/rank machinery
+		//! over an opaque (category,name,ports) shape), so the object
+		//! hierarchy graph reuses every one of them VERBATIM rather than
+		//! duplicating a structurally-identical twin. Deliberately a
+		//! TYPEDEF, not a rename of `PainterMaterialGraph` itself -- this
+		//! class's S11-era Painter/Material call sites (`ReadPainterMaterial
+		//! Graph` and everything downstream of it, both platform bridges,
+		//! the C ABI) already spell the concrete name throughout; renaming
+		//! it would touch every one of those for a purely cosmetic gain.
+		//! This alias exists so the NEW object-graph code below can spell
+		//! its own intent without the word "Painter" in it, nothing more.
+		using SceneGraphModel = PainterMaterialGraph;
+
+		//! The pure assembly step, seeds+edge-seeds -> PainterMaterialGraph.
+		//! PURE and static, like BuildAuthoredTree: touches no controller
+		//! state and no manager.
+		//!
+		//! Node identity is `GraphNodeSeed::id` (the backing chunk's own
+		//! `Cst::NodeId`) -- NOT (category, name) (doc-88 S11 review round 1
+		//! P1-2/P2-1/P2-2: a Painter and a Function chunk may share a name,
+		//! the same coarseness Cst::BuildReferenceGraph's own "painter
+		//! alias" already lives with, but so can TWO chunks of the SAME
+		//! category, e.g. a colour painter and a `scalar_painter` both named
+		//! "P" -- (category,name) cannot key those as separate nodes, `id`
+		//! always can). A DUPLICATE `id` seed keeps the FIRST occurrence in
+		//! presentation order (order, then name tie-break, exactly like
+		//! BuildAuthoredTree) and DROPS every later seed sharing that id
+		//! from `out.nodes` too -- not just from the lookup map. (An earlier
+		//! draft of this assembler deduped ONLY the lookup map, leaving a
+		//! second same-key seed in `out.nodes` as a permanently-unreachable
+		//! orphan node no edge could ever address -- round-1 review caught
+		//! it with a synthetic 2-duplicate-seed input producing 3 nodes
+		//! instead of 1.) This is the caller's contract, same "least
+		//! surprising degradation" posture BuildAuthoredTree's own
+		//! duplicate-name handling documents.
+		//!
+		//! An edge seed whose `fromId` does not match any node seed's `id`
+		//! is DROPPED (the caller's contract: every edge must be seeded
+		//! FROM a node this graph actually contains). An edge seed whose
+		//! `toId` is 0 or does not match any node seed's `id` becomes a
+		//! NODE-LESS PORT on the referrer's outEdges (otherNode ==
+		//! kInvalidNodeIndex, otherName preserved) -- covers both a genuinely
+		//! DANGLING reference and a reference that resolves out of this
+		//! graph's modeled categories; never a crash, never a silently
+		//! dropped edge.
+		//!
+		//! A self-reference (fromName==toName, fromCategory==toCategory) is
+		//! NOT special-cased: the node simply gets one row in its own
+		//! outEdges AND one row in its own inEdges. A CYCLE among edge seeds
+		//! needs no guard at all -- unlike BuildAuthoredTree this function
+		//! never walks the structure it produces, so there is nothing for a
+		//! cycle to make loop.
+		static PainterMaterialGraph BuildPainterMaterialGraph(
+			const std::vector<GraphNodeSeed>& nodeSeeds,
+			const std::vector<GraphEdgeSeed>& edgeSeeds );
+
+		//! Pure legacy dangling-port seeding from cached node identities.
+		//! Expression records are excluded (their typed edges come from the
+		//! reference snapshot). No CST nodes are read. sourceLookups, if
+		//! supplied, counts the one indexed identity probe per remaining record.
+		static std::vector<GraphEdgeSeed> BuildDanglingGraphEdgeSeeds(
+			const std::vector<GraphNodeSeed>& nodes,
+			const std::vector<Cst::UnresolvedReference>& unresolved,
+			size_t* sourceLookups = nullptr );
+
+		//! THE TRANSACTIONAL READ -- mirrors ReadTree exactly: refreshes
+		//! once, then copies the whole published graph out under a single
+		//! hold of the leaf lock.
+		void ReadPainterMaterialGraph( PainterMaterialGraph& out ) const;
+
+		//! THE WAY BACK from a `GraphNode::handle` a caller squirreled away
+		//! (e.g. "the node the user last selected") to that node's index in
+		//! a LATER `PainterMaterialGraph` copy -- mirrors `HandleFor`'s
+		//! reverse direction for the object tree, adapted to this type's own
+		//! shape: `GraphNode` already carries its handle inline (unlike
+		//! `AuthoredTree::TreeNodeRow`, which carries none), so there is
+		//! nothing to MINT here, only to RESOLVE.
+		//!
+		//! Returns the resolved node's index into `g.nodes` on success.
+		//! Returns `kInvalidNodeIndex` -- never a crash, never a silent
+		//! alias onto whatever node happens to sit at the decoded index in
+		//! `g` -- when `handle` is `kInvalidGraphNode`, was minted from a
+		//! DIFFERENT generation than `g.generation` (the exact case a raw
+		//! `Cst::NodeId` could not detect, see `GraphNodeHandle`'s own
+		//! comment), or decodes to an out-of-range index.
+		//!
+		//! PURE and static, same testability posture as
+		//! `BuildPainterMaterialGraph`: a test can hand it a hostile or
+		//! cross-generation handle directly, with no controller, no lock, no
+		//! live document.
+		static unsigned int ResolveGraphNodeHandle( const PainterMaterialGraph& g, GraphNodeHandle handle );
+
+		//! Resolve the UNIQUE node index in `g` for `(category, name)`, or
+		//! -1 when zero or MORE THAN ONE node matches -- refuse rather than
+		//! guess, the same posture `SceneReferenceGraph::ResolveChunk` uses
+		//! for the identical hazard (a graph seeded straight from the
+		//! Document, per `BuildPainterMaterialGraph`'s own comment, CAN
+		//! legally contain two same-category chunks sharing a name -- node
+		//! identity here is `GraphNodeSeed::id`, not `(category,name)`).
+		//! `outMatches`, when non-null, receives the raw match count so a
+		//! caller (or a test) can distinguish "not found" (0) from
+		//! "ambiguous, refused" (>1) -- an index of -1 alone cannot tell
+		//! those apart.
+		//!
+		//! PURE and static, same testability posture as
+		//! `BuildPainterMaterialGraph`/`ResolveGraphNodeHandle`: a test can
+		//! hand this a synthetic graph (built via `BuildPainterMaterialGraph`
+		//! from hand-authored seeds, exactly like this class's own PART-2-
+		//! style unit tests do) containing a deliberate same-category
+		//! same-name duplicate, with no controller, no lock, no live
+		//! document, no Job that would need to successfully DERIVE two
+		//! same-named chunks (which a real scene load cannot do -- the live
+		//! manager `AddItem` refuses a duplicate name and fails the whole
+		//! derive; the DOCUMENT-seeded graph this resolves against has no
+		//! such restriction, which is exactly the gap this method closes).
+		//!
+		//! Used by `AppearanceClosureForObject` to resolve the object's
+		//! bound material name into a graph node; exposed on this class's
+		//! public PURE-helper surface (not file-local) so callers/tests
+		//! needing the identical "unique (category,name) or refuse" answer
+		//! do not have to re-derive it.
+		static int ResolveUniqueGraphNodeIndex( const PainterMaterialGraph& g, ChunkCategory category,
+		                                         const String& name, int* outMatches = nullptr );
+
+		// =====================================================================
+		// doc-88 Phase 3 S17 -- connection-legality passthrough
+		// (ConnectionLegality.h/.cpp; docs/gui/NODE_GRAPH_CANVAS.md sect. 6
+		// S17). Thin, controller-scoped wrappers over the standalone
+		// (Document + NodeId)-only `ConnectionLegality` module -- the
+		// FUTURE S21 drag-drop canvas's pre-commit checks. Addressed by
+		// (category, name) rather than `GraphNodeHandle`, matching
+		// `SceneReferenceGraph::ResolveChunk`'s own addressing (a
+		// `GraphNode` published to the ABI carries no raw `Cst::NodeId` by
+		// design -- see `GraphNodeHandle`'s comment above -- so a
+		// name-based resolve is this passthrough's natural seam; S21 can
+		// read `chunkKeyword`/`category`/`name` directly off the
+		// `GraphNode` it already has cached from `ReadPainterMaterialGraph`).
+		// =====================================================================
+
+		//! `ConnectionLegality::CheckConnectionByName` over this
+		//! controller's CURRENT document (`mJob.GetCstDocument()`).
+		//! Illegal (with a diagnostic) when either name fails to resolve,
+		//! `paramName` is not a declared Reference-kind parameter on the
+		//! target's descriptor, or the candidate's category/pipe is
+		//! rejected -- see ConnectionLegality.h for the full contract.
+		ConnectionVerdict CheckConnection(
+			ChunkCategory targetCategory, const String& targetName,
+			const String& paramName,
+			ChunkCategory candidateCategory, const String& candidateName ) const;
+
+		//! `ConnectionLegality::WouldCycle` over this controller's CURRENT
+		//! document, with `from`/`to` resolved by (category, name) via
+		//! `SceneReferenceGraph::ResolveChunk`. Returns false (never a
+		//! crash) when either name fails to resolve or is ambiguous --
+		//! the caller should treat an unresolved name as "cannot commit
+		//! this wire at all" via `CheckConnection` first, not infer
+		//! safety from a false `WouldCycle` alone.
+		bool WouldCycle(
+			ChunkCategory fromCategory, const String& fromName,
+			ChunkCategory toCategory, const String& toName ) const;
+
+		//! ONE FULL PASS of the transitive Function-node promotion BFS that
+		//! `BuildPainterMaterialGraphSeedsLocked_` runs to find every
+		//! Function-category chunk reachable from an in-scope Painter/
+		//! Material referrer (doc-88 S11 review round 1 P2-3's fixpoint
+		//! walk). Factored out of that method (doc-88 S11 review round 2
+		//! P2-b) because the walk's own visited-set guard -- the thing that
+		//! makes a crafted Function->Function CYCLE terminate rather than
+		//! loop forever -- was previously reachable only through a REAL
+		//! document's chunk descriptors, which today never form such a
+		//! cycle post-derive, leaving the guard itself untested by anything
+		//! but a comment's say-so.
+		//!
+		//! `edgesByReferrer` is the SAME adjacency index the production call
+		//! site already builds once from its full edge scan (an in-memory
+		//! multimap, `referrerId -> ReferenceEdge*`, built once and reused --
+		//! see `BuildPainterMaterialGraphSeedsLocked_`'s own comment for why
+		//! that reuse matters on a large scene). `promotedFunctionIds` is the
+		//! visited set (a chunk id enters it at most once, which is what
+		//! bounds this to the graph's actual size no matter how the edges
+		//! are wired) and `functionFrontier` is the BFS queue-so-far, in
+		//! discovery order; BOTH are read AND written in place, exactly as
+		//! the inline loop this replaces did, so the caller's post-loop use
+		//! of either (the node-seed emission loop, the edge-seed in-scope
+		//! check) sees the identical end state.
+		//!
+		//! The loop bound is `functionFrontier.size()`, RE-READ every
+		//! iteration -- that is what lets an entry THIS CALL appends get
+		//! walked in the same pass, to a fixpoint, rather than needing the
+		//! caller to invoke this repeatedly.
+		//!
+		//! PURE over its explicit parameters (no Document, no manager, no
+		//! controller lock) -- a synthetic `edgesByReferrer`, including one
+		//! encoding a Function->Function cycle, can drive this EXACT
+		//! function in a test and prove it terminates, rather than a test
+		//! re-deriving the walk against its own copy of the logic. The
+		//! production call site (`BuildPainterMaterialGraphSeedsLocked_`)
+		//! calls this with the SAME three pieces of state it threaded
+		//! through the loop before this refactor -- behavior unchanged.
+		static void ExpandFunctionPromotionFrontier(
+			const std::multimap<Cst::NodeId, const ReferenceEdge*>& edgesByReferrer,
+			std::set<Cst::NodeId>& promotedFunctionIds,
+			std::vector<std::pair<Cst::NodeId, String> >& functionFrontier );
+
+		// =====================================================================
+		// doc-88 Phase 3 S14 -- the `{nodes, edges, positions}` snapshot,
+		// composed from S11 (this graph) + S12 (GraphLayout::LayoutGraph,
+		// GraphLayout.h) + S13 (GraphLayoutSidecar, GraphLayoutSidecar.h) --
+		// and the layout-position WRITE counterpart, S13's sidecar write's
+		// first real (non-test) caller.  docs/gui/NODE_GRAPH_CANVAS.md sect.
+		// 6 S14.  Plus a FLAT indexed-accessor surface mirroring
+		// TreeNodeCount/TreeRootNode/TreeChildNode/TreeNodeParent/
+		// TreeNodeNameByHandle's own split (a REFRESHING count getter, then
+		// non-refreshing per-index/per-handle getters reading the snapshot
+		// the count call just published) -- the shape `RISE_API_
+		// SceneEditController_PainterGraph*` (RISE_API.h) forwards 1:1, the
+		// SAME two-surface pattern S11's own AuthoredTree-crossing-the-ABI
+		// precedent established: a bulk C++ read (`ReadTree` /
+		// `ReadPainterMaterialGraph`) for a shell that can see the nested
+		// C++ type (both platform bridges, exactly like `-categoryTree:`
+		// already does for AuthoredTree -- see RISEViewportBridge.h's own
+		// "one `-categoryTree:` call rather than walked node by node"
+		// comment for why a per-node ABI walk is the WRONG shape for a
+		// widget's bulk read), plus these flat accessors for a caller that
+		// cannot name the nested type at all (the C ABI; see the "NO
+		// `ReadTree` AND NO `HandleFor` ON THIS SURFACE" note by the Tree
+		// ABI block in RISE_API.h for why).
+		//
+		// WHERE THE SCENE PATH COMES FROM (the sidecar's own contract needs
+		// one): the controller does NOT own a dedicated "current scene path"
+		// field.  It reads `mJob.GetCstLoadFileIdentity().filePath` instead
+		// -- the SAME FileIdentity the CST save-guard already tracks
+		// (FileIdentity.h), refreshed at CST-load (`Job::
+		// LoadAsciiSceneViaCst` calls `RefreshCstLoadFileIdentity(filename)`
+		// right after a successful load) AND at the end of every successful
+		// `RequestSave` (so a Save-As re-anchors it to the new path).  This
+		// is exactly "the currently open scene's file path" a sidecar path
+		// needs, already threaded through the one place (`Job`) both load
+		// and save funnel through -- no new field, no new invalidation
+		// surface to keep in sync.  Empty (`FileIdentity::filePath == ""`)
+		// on a brand-new, never-loaded-or-saved scene -- GraphLayoutSidecar
+		// ::SidecarPathForScene's/WriteSidecar's own "unsaved scene" case,
+		// which both ReadPainterMaterialGraphLaidOut (degrades to
+		// full-auto-layout, no sidecar) and WriteGraphLayoutPositions
+		// (no-ops, returns true) already handle by construction -- see
+		// GetCurrentScenePath_'s own comment (SceneEditController.cpp) for
+		// the full non-blocking-poll-vs-blocking-write split.
+		// =====================================================================
+
+		//! One node's laid-out 2D position -- parallel-indexed to
+		//! `PainterMaterialGraphLaidOut::graph.nodes` (positions[i] is
+		//! nodes[i]'s position), the SAME parallel-array convention
+		//! `GraphLayout::ComputeRanks` already established for this graph
+		//! type ("ranks[i] is nodes[i]'s rank" -- GraphLayout.h).
+		//!
+		//! Deliberately a LOCAL type here, not a reuse of `GraphLayout::
+		//! GraphLayoutPoint` -- GraphLayout.h itself `#include`s THIS header
+		//! (it takes a `PainterMaterialGraph` by value), so this header
+		//! including GraphLayout.h back for its point type would be
+		//! circular. Same (x, y) shape; SceneEditController.cpp (which DOES
+		//! include GraphLayout.h) converts between the two with a trivial
+		//! field copy at the composition boundary.
+		struct GraphNodePosition
+		{
+			double x = 0.0;
+			double y = 0.0;
+		};
+
+		//! The composed snapshot: S11's PainterMaterialGraph plus a position
+		//! for EVERY node -- S13's sidecar filling in whatever it has saved,
+		//! S12's LayoutGraph filling in everything else -- exactly the
+		//! "{nodes, edges, positions}" shape NODE_GRAPH_CANVAS.md sect. 6
+		//! S14 asks for.  No separate edge array: an edge is reachable
+		//! through either endpoint's own `outEdges`/`inEdges` (`GraphPort`
+		//! already carries both endpoints -- `otherNode`/`otherName` -- plus
+		//! the `paramName` label), which is everything S15's canvas needs to
+		//! draw a wire (both endpoints + the param label it connects).
+		struct PainterMaterialGraphLaidOut
+		{
+			PainterMaterialGraph graph;
+			//! Parallel to graph.nodes; see GraphNodePosition's own comment.
+			std::vector<GraphNodePosition> positions;
+		};
+
+		//! THE S14 COMPOSITION POINT.  Three steps, in order:
+		//!   1. `ReadPainterMaterialGraph` (S11) -- the current graph.
+		//!   2. `GraphLayoutSidecar::ReadSidecar` (S13) on the CURRENT
+		//!      scene's path (see this block's own "WHERE THE SCENE PATH
+		//!      COMES FROM" note) -- whatever positions were saved.  Read
+		//!      FRESH from disk on EVERY call, deliberately not cached: the
+		//!      sidecar is a tiny (per-node, two-double) JSON file, so a
+		//!      per-call read costs nothing worth caching for, and caching
+		//!      it would add a THIRD invalidation cadence (beside the
+		//!      graph's own compare-then-publish and the scene path's own
+		//!      Save-As-can-move-without-a-graph-change hazard --
+		//!      GetCurrentScenePath_'s own comment) for no measured benefit.
+		//!      A caller that walks many nodes per frame should use the
+		//!      bulk read below ONCE per frame (exactly what both platform
+		//!      bridges do), not re-call this per node.
+		//!   3. `GraphLayout::LayoutGraph` (S12) over the result -- echoes
+		//!      every saved position back verbatim and auto-lays-out every
+		//!      node the sidecar did not have one for.
+		//! `out.positions` is populated parallel to `out.graph.nodes`; a
+		//! node with an empty name (should not occur, see `GraphLayout::
+		//! LayoutGraph`'s own comment) is left at the default (0, 0).
+		void ReadPainterMaterialGraphLaidOut( PainterMaterialGraphLaidOut& out ) const;
+
+		//! One position UPDATE for WriteGraphLayoutPositions -- keyed by
+		//! node NAME, not `GraphNodeHandle` (see GraphLayout.h's "NAME-KEYED,
+		//! NOT HANDLE-KEYED" note: a handle is generation-tagged and cannot
+		//! survive the save/reload a sidecar entry must).
+		struct GraphNodePositionUpdate
+		{
+			String name;
+			double x = 0.0;
+			double y = 0.0;
+		};
+
+		//! THE WRITE COUNTERPART -- the future canvas drag's commit path
+		//! (one node moved -> one update here), and S13's `GraphLayoutSidecar
+		//! ::WriteSidecar`'s first REAL (non-test) caller.  Merges `updates`
+		//! onto whatever the sidecar currently has saved (so moving one node
+		//! does not clobber every other node's saved position), then writes
+		//! through `WriteSidecar`, which itself:
+		//!   - orphan-prunes any name not among the CURRENT graph's own node
+		//!     names. This function supplies that live-name set itself, from
+		//!     `BuildPainterMaterialGraphSeedsLocked_` called under the SAME
+		//!     blocking `mMutex` hold used to read the scene path (doc-88
+		//!     S14 review round P2(1)) -- deliberately NOT via
+		//!     `ReadPainterMaterialGraph` / `RefreshPainterMaterialGraphSnapshot_`,
+		//!     whose non-blocking `try_lock` may serve a STALE published
+		//!     graph under contention. Reading the path and the live-name
+		//!     set from two SEPARATE critical sections (the prior shape)
+		//!     left a window where a node added by a concurrent edit is
+		//!     reflected in neither, or in the path but not (yet, or at all,
+		//!     under sustained contention) the stale-servable graph read --
+		//!     either way this call's own `updates` for that node would get
+		//!     silently orphan-pruned by `WriteSidecar` moments after the
+		//!     node was created. An explicit user-initiated write cannot
+		//!     accept that degradation the way a polled read may;
+		//!   - REFUSES (no-ops, returns true, touches no file) when the
+		//!     current scene has never been saved -- see this block's own
+		//!     "WHERE THE SCENE PATH COMES FROM" note; this function passes
+		//!     the path it read straight through rather than special-casing
+		//!     empty itself, so the ONE refusal rule lives in ONE place
+		//!     (`WriteSidecar`);
+		//!   - skips the write entirely when the serialized result is
+		//!     byte-identical to the file's current content ("only when
+		//!     positions actually changed").
+		//! An `updates` entry with an empty name is skipped (nothing to key
+		//! a sidecar entry by).  Returns false with `outError` set on an
+		//! actual I/O failure, OR when the controller cannot determine the
+		//! current scene path right now (a render owns the scene -- same
+		//! `mRenderOwnsScene` refusal `GetCurrentScenePath_`'s blocking
+		//! branch itself implements; this is the ONE case this function
+		//! refuses itself, because an explicit user-initiated write must not
+		//! silently no-op the way a POLLED read may).
+		bool WriteGraphLayoutPositions( const std::vector<GraphNodePositionUpdate>& updates,
+		                                std::string& outError ) const;
+
+		// ---- Flat indexed accessors -----------------------------------
+		// Mirror TreeNodeCount/TreeRootNode/TreeChildCountByHandle/
+		// TreeChildNode/TreeNodeParent/TreeNodeNameByHandle's own split
+		// EXACTLY: PainterGraphNodeCount is the ONLY one that refreshes
+		// (`RefreshPainterMaterialGraphSnapshot_`); every other accessor
+		// below reads the ALREADY-PUBLISHED `mUi.painterMaterialGraph`
+		// under the leaf `mUiSnapshotMutex` ONLY, no refresh -- a caller
+		// walking many nodes/ports must call PainterGraphNodeCount ONCE
+		// first (exactly the existing Tree-walk contract). Calling it once
+		// does NOT, by itself, PREVENT a republish from landing mid-walk --
+		// a concurrent thread can call PainterGraphNodeCount (or any other
+		// refresh) at any time, and a raw-INDEX accessor like
+		// `PainterGraphNodeHandleAt` has no generation of its own to check
+		// against, so an index obtained before such a republish can name a
+		// different node, or run past a now-shorter array, after one lands.
+		// The two guarantees this surface actually has are narrower:
+		// (a) every per-HANDLE accessor below (as opposed to per-index)
+		// resolves through `ResolveGraphNodeHandle`, which refuses a handle
+		// whose encoded generation does not match the graph it is being
+		// read against -- so once a caller holds a `GraphNodeHandle`, a
+		// later republish makes further per-handle accessor calls for it
+		// fail cleanly (`kInvalidGraphNode`-shaped refusal) rather than read
+		// a wrong or stale node; and (b) every PRODUCTION caller of this
+		// graph (both platform bridges) reads it through the one-shot bulk
+		// C++ snapshot (`ReadPainterMaterialGraph` / `ReadPainterMaterialGraphLaidOut`)
+		// instead of walking this flat surface index-by-index, so the
+		// mid-walk-republish hazard described above does not arise for
+		// them at all. This flat indexed surface exists for the C ABI
+		// (`RISE_API.cpp`) and is, in practice, exercised only by it and by
+		// `tests/ReferenceGraphTest.cpp` -- it is SMOKE-TEST-SCOPED, not a
+		// surface any shipped bridge walks this way. `otherNode` on a port accessor is
+		// resolved to the OTHER node's real `GraphNodeHandle` (not the raw
+		// `GraphPort::otherNode` index) IN THE SAME LOCKED PASS -- one
+		// consistent identity space (`GraphNodeHandle`, `kInvalidGraphNode`
+		// for "no such node", including a node-less/dangling port) for
+		// every accessor below, rather than a second index space a caller
+		// would have to know how to dereference.  `portCategories` is
+		// DELIBERATELY NOT exposed here -- nothing on this surface needs it
+		// yet (S15's canvas draws a wire from endpoint + param label alone;
+		// see PainterMaterialGraphLaidOut's own comment) -- a future
+		// connection-legality slice (S17) adds an accessor for it WHEN
+		// something crossing the ABI actually reads it, not before.
+
+		//! Total nodes in the CURRENT Painter/Material graph.  Refreshes.
+		unsigned int PainterGraphNodeCount() const;
+
+		//! The generation of the currently published graph.  Does NOT
+		//! refresh (see the block comment).  0 if nothing has ever been
+		//! published.
+		unsigned long long PainterGraphGeneration() const;
+
+		//! Handle of the `idx`-th node (presentation order, same order
+		//! `ReadPainterMaterialGraph` would hand back).  `kInvalidGraphNode`
+		//! on an out-of-range index.
+		GraphNodeHandle PainterGraphNodeHandleAt( unsigned int idx ) const;
+
+		//! `node`'s name / chunk keyword.  Empty String on an unknown or
+		//! stale handle.
+		String PainterGraphNodeName( GraphNodeHandle node ) const;
+		String PainterGraphNodeKeyword( GraphNodeHandle node ) const;
+
+		//! `node`'s `ChunkCategory`, cast to int -- the SAME "just append,
+		//! never reorder" ABI-stability contract the parser's `ValueKind`
+		//! already crosses the ABI under (RISEViewportProperty.kind's own
+		//! "the parser's ValueKind enum cast to int" comment, RISEViewport
+		//! Bridge.h) -- not a bespoke per-value NS_ENUM/QT-enum mirror: a
+		//! graph node's category is, in practice, always Painter/Material/
+		//! Function today (`BuildPainterMaterialGraphSeedsLocked_`'s own
+		//! scope), and a shell that wants a friendly label already has
+		//! `chunkKeyword` (e.g. "ramp_painter") without needing to switch on
+		//! this value at all.  -1 on an unknown or stale handle (never a
+		//! valid `ChunkCategory` ordinal).
+		int PainterGraphNodeCategory( GraphNodeHandle node ) const;
+		int PainterGraphNodeOutputPipe( GraphNodeHandle node ) const;
+		bool PainterGraphNodePortPipe( GraphNodeHandle node, unsigned int portIdx,
+			bool incoming, int& outPipe, bool& outColorAlsoAcceptsScalar ) const;
+
+		//! `node`'s expression-family def-stage count (S10's `ExpressionProgram
+		//! ::DefCount()`; 0 for every non-expression chunk).  -1 on an
+		//! unknown or stale handle (never a legitimate defCount).
+		int PainterGraphNodeDefCount( GraphNodeHandle node ) const;
+
+		//! `node`'s laid-out position (see ReadPainterMaterialGraphLaidOut).
+		//! UNLIKE every other accessor on this surface, this one DOES
+		//! perform the S14 composition (sidecar read + LayoutGraph fill-in)
+		//! on every call -- position is not part of the compare-then-publish
+		//! `PainterMaterialGraph` snapshot the other accessors read (see
+		//! this block's own "WHERE THE SCENE PATH COMES FROM" note for why
+		//! position/path cannot be folded into that same struct). Acceptable
+		//! for an occasional/smoke-test caller; a widget walking every
+		//! node's position should call `ReadPainterMaterialGraphLaidOut`
+		//! ONCE instead (exactly as RISESceneTreeNode's own comment steers a
+		//! bulk walk away from a per-node handle call). Returns false --
+		//! `outX`/`outY` untouched -- on an unknown or stale handle.
+		bool PainterGraphNodePosition( GraphNodeHandle node, double& outX, double& outY ) const;
+
+		//! Port counts + indexed port accessors for `node`'s two port lists
+		//! (S11's `GraphNode::outEdges`/`inEdges` -- "direction" is WHICH of
+		//! these two you call, not a separate flag field: mirrors GraphNode's
+		//! own out/in split rather than inventing a second encoding of the
+		//! same information). 0 / false on an unknown or stale handle, same
+		//! degradation as every other accessor here.
+		unsigned int PainterGraphNodeOutEdgeCount( GraphNodeHandle node ) const;
+		unsigned int PainterGraphNodeInEdgeCount( GraphNodeHandle node ) const;
+
+		//! One port at `portIdx` (0-based, presentation order = `GraphPort`'s
+		//! own vector order). `outOtherNode` is `kInvalidGraphNode` for a
+		//! node-less port (dangling reference, or a reference out of this
+		//! graph's modeled categories -- `GraphPort::otherNode`'s own
+		//! comment) -- `outOtherName` still carries the target's name either
+		//! way. Returns false -- no out-param touched -- on an unknown/stale
+		//! handle or an out-of-range `portIdx`.
+		bool PainterGraphNodeOutEdge( GraphNodeHandle node, unsigned int portIdx,
+		                              GraphNodeHandle& outOtherNode, String& outParamName,
+		                              int& outOccurrence, String& outOtherName ) const;
+		bool PainterGraphNodeInEdge( GraphNodeHandle node, unsigned int portIdx,
+		                             GraphNodeHandle& outOtherNode, String& outParamName,
+		                             int& outOccurrence, String& outOtherName ) const;
+
+		// =====================================================================
+		// Node-graph "spotlight" query -- viewport/outliner object pick ->
+		// canvas highlight.  A thin composition over TWO already-shipped,
+		// already-correct mechanisms (deliberately not a third): the live
+		// object->material resolution `SetSelection`'s Object-pick auto-fill
+		// already uses (`FindObjectMaterialName`, SceneEditController.cpp,
+		// instancing-correct by construction -- see its own comment), and the
+		// S11 `PainterMaterialGraph` this class already publishes
+		// (`ReadPainterMaterialGraph`) -- the SAME edges the node-graph canvas
+		// itself draws from.  "Never disagree with what the canvas shows" only
+		// holds WITHIN one call: the two reads below are two SEPARATE snapshot
+		// acquisitions (the live-manager name resolution, then a possibly-later
+		// `ReadPainterMaterialGraph` refresh), so a concurrent structural edit
+		// landing in the gap between them (a rename, or a duplicate-name chunk
+		// being added/removed) can, in principle, make this call's answer stale
+		// by one edit relative to what the canvas renders a moment later --
+		// review-round P1 fix note: this is an eventual-consistency window, not
+		// a "never" guarantee.
+		// =====================================================================
+
+		//! One entry in an `AppearanceClosureForObject` result: a node
+		//! IDENTITY, not just a display string -- (category, name), the SAME
+		//! two fields `SceneReferenceGraph::ResolveChunk`/`GraphNode` already
+		//! use to address a node, because a bare name is NOT unique here.
+		//! Two DIFFERENT-category chunks (a Painter and a Material) may
+		//! legally share a name; a caller matching by name alone against a
+		//! mixed-category node list (exactly what `PainterMaterialGraph::nodes`
+		//! is) can silently spotlight the wrong node (review-round P1 fix).
+		//! `category` is `RISE::ChunkCategory` cast to int -- the SAME ordinal
+		//! `GraphNode::category`/`RISEGraphNode.category` already use (Painter
+		//! 0, Function 1, Material 2 -- the only three this graph models), so
+		//! a caller matches an entry against an already-fetched
+		//! `PainterMaterialGraph`/`RISEPainterMaterialGraph` node by
+		//! `(category, name)` directly, no cast or remapping needed.
+		struct AppearanceClosureEntry
+		{
+			ChunkCategory category = ChunkCategory::Painter;
+			String        name;
+		};
+
+		//! For `objectName` (an Object-category chunk name -- a
+		//! `standard_object`/`csg_object`, addressed the same way
+		//! `selectionRowName` resolves an instancing pick back to its own
+		//! chunk, NOT a synthesized per-repetition/per-subtree-member name
+		//! like `I[1,0]`/`I.child`, neither of which is ever an addressable
+		//! chunk), returns the chunk (category, name) identities to highlight
+		//! on the Painter/Material node-graph canvas: the object's bound
+		//! material first (index 0), then every node transitively reachable
+		//! from it in the published `PainterMaterialGraph` -- Painter,
+		//! Function, AND Material nodes alike (so a `composite_material`'s
+		//! `top`/`bottom` sub-materials, and their own painter chains, are
+		//! included, not just the primary material's own direct painter
+		//! references) -- in BFS discovery order.
+		//!
+		//! Empty when: `objectName` does not name a live, registered Object
+		//! (unknown name, or a Painter/Material/other-category name passed by
+		//! mistake); the object has no material bound (`material none`/unset,
+		//! or a container node with no `geometry` to bind one to at all); the
+		//! resolved material name does not appear in the current graph at
+		//! all; the resolved material name is AMBIGUOUS in the current graph
+		//! -- more than one `ChunkCategory::Material` node shares it (the CST
+		//! Document tolerates two same-name Material chunks even though the
+		//! live `IMaterialManager` a real derive registers into cannot -- see
+		//! `BuildPainterMaterialGraphSeedsLocked_`'s own "two same-category
+		//! chunks... each gets its OWN node" comment; this method REFUSES
+		//! rather than guess which one `FindObjectMaterialName`'s live answer
+		//! actually meant, matching `SceneReferenceGraph::ResolveChunk`'s own
+		//! established "ambiguous name -> refuse" convention, review-round P1
+		//! fix); or the controller could not get a non-blocking hold of the
+		//! commit lock right now (a render owns the scene, or another editor
+		//! operation is already inside it) -- see this method's own `.cpp`
+		//! comment for the locking discipline, mirrored from
+		//! `ResolveTreeRowName`/`SelectionRowName`'s established
+		//! try-lock-and-degrade-to-empty pattern; a polling caller (both
+		//! platform canvases already poll on every selection-observing pass)
+		//! retries on the next call rather than blocking the UI thread behind
+		//! a render.
+		//!
+		//! `outDegraded` (later external review round): an empty `result` is
+		//! OVERLOADED -- it means EITHER a genuinely resolved answer (unknown
+		//! object, no material bound, ambiguous material) OR that this call
+		//! could not even ATTEMPT a real answer because the commit lock was
+		//! contended. A caller that polls (both platform canvases do) needs
+		//! to tell these apart: a genuine empty answer should be accepted and
+		//! NOT retried; a degraded one should be retried once the lock is
+		//! likely free again. When non-null, `*outDegraded` is set to `true`
+		//! ONLY on the `mRenderOwnsScene`/`try_to_lock` refusals above, and
+		//! `false` on every other return path -- INCLUDING a successful walk
+		//! that finds nothing reachable. Defaults to `nullptr` (every
+		//! existing caller, including every test written before this
+		//! parameter existed, is unaffected).
+		//!
+		//! `objectName` naming an INSTANCING chunk (a `standard_object` with
+		//! its own `source X` and no `material` of its own) resolves to the
+		//! SAME material `X` itself would: this query reads the LIVE
+		//! post-derive `IObject`'s bound `IMaterial` (`FindObjectMaterialName`),
+		//! never the instancing chunk's own CST text -- which, absent an
+		//! explicit `material` override, never has a `material` line at all
+		//! (`Cst::DeriveToJob` PASS-2 merges the source's bindings into the
+		//! Job-facing bag at DERIVE time, never into the retained Document;
+		//! see `standard_object`'s own descriptor comment on `source`).
+		std::vector<AppearanceClosureEntry> AppearanceClosureForObject(
+			const String& objectName, bool* outDegraded = nullptr ) const;
+
+		// =====================================================================
+		// Node-graph FOCUSED-VIEW read -- user-requested slice: the canvas
+		// toggles between "show all nodes" (ReadPainterMaterialGraphLaidOut,
+		// above) and "show only the selection's subgraph". Subgraph
+		// selection AND layout live here in C++ (this class's own C4
+		// convention: logic in the shared core, shells stay thin), not
+		// duplicated per platform.
+		// =====================================================================
+
+		//! Focused variant of `ReadPainterMaterialGraphLaidOut`: `out.graph`
+		//! contains ONLY the subgraph rooted at `(cat, name)`, laid out
+		//! fresh. Subgraph definition:
+		//!   - `cat == ChunkCategory::Object`: the object's APPEARANCE
+		//!     CLOSURE -- exactly `AppearanceClosureForObject`'s own
+		//!     resolution (live bound material, instancing-correct) and BFS
+		//!     (shared code, not a second walk) -- the object's bound
+		//!     material plus its full transitive Painter/Function/Material
+		//!     closure.
+		//!   - `cat == Painter/Function/Material` (a canvas node): that
+		//!     node plus its own transitive closure in the SAME direction
+		//!     (`BFSGraphClosure`'s outEdges walk -- a node's "inputs",
+		//!     the identical direction the Object case walks from a
+		//!     material). Nodes that only REFERENCE the selected node
+		//!     (downstream referrers, reachable via inEdges, never
+		//!     followed) are EXCLUDED from the subgraph -- this is a
+		//!     narrower view than `AppearanceClosureForObject` would ever
+		//!     produce for the same node, by design (an "upstream/inputs
+		//!     only" focus, not "everything touching this node").
+		//! `name` unknown, or (for the Object case) the object's bound
+		//! material AMBIGUOUS/unresolved, or (for the non-Object case)
+		//! `(cat, name)` itself ambiguous/not-found -- empty `out.graph`,
+		//! same refusal convention as `ResolveUniqueGraphNodeIndex`.
+		//!
+		//! `outDegraded` is true when graph refresh could only serve cached
+		//! data because of render ownership or scene-mutex contention. This
+		//! applies to EVERY category, including Painter/Function/Material.
+		//! Object focus can also degrade during live material resolution.
+		//! Preserve the displayed graph and retry; a genuinely unknown or
+		//! ambiguous target returns an empty graph with outDegraded=false.
+		//!
+		//! LAYOUT IS TRANSIENT (design decision, NOT an oversight): unlike
+		//! `ReadPainterMaterialGraphLaidOut`, this NEVER reads or writes the
+		//! `.risegraph.json` sidecar -- `GraphLayout::LayoutGraph` runs
+		//! against an always-empty saved-positions map, fresh on every
+		//! call, so a focused subgraph's layout can never leak into, or be
+		//! polluted by, the persisted all-view layout. Toggling back to the
+		//! all-view reads the sidecar exactly as it stood before any
+		//! focused excursion.
+		void ReadPainterMaterialGraphLaidOutFocused( ChunkCategory cat, const String& name,
+		                                              PainterMaterialGraphLaidOut& out,
+		                                              bool* outDegraded = nullptr ) const;
+
+		// =====================================================================
+		// Object Graph slice (S1 core, "GUI redesign" Object Graph canvas tab --
+		// a sibling of the S11/S14 Painter/Material canvas, shown in the shells
+		// as "Material Graph"/"Object Graph"). Same three-layer split S11
+		// established, over the SAME shared model (`SceneGraphModel`, above):
+		//   1. `BuildPainterMaterialGraph` (S11, reused VERBATIM) -- PURE.
+		//   2. `BuildObjectGraphSeedsLocked_` -- seeds nodes/edges from the
+		//      retained CST Document's OWN Object/Geometry-category chunks
+		//      (`SceneReferenceGraph::AllChunks`/`EdgesAndDangling`), the SAME
+		//      document-seeded discipline S11's own seeder uses and for the
+		//      SAME reason (a live-manager union cannot tell two same-name
+		//      same-category chunks apart, and this graph's node identity is
+		//      `GraphNodeSeed::id`, not (category,name), exactly like S11's).
+		//      REQUIRES mMutex held.
+		//   3. `RefreshObjectGraphSnapshot_` -- the SAME compare-then-publish
+		//      discipline `RefreshPainterMaterialGraphSnapshot_` uses (serve
+		//      stale on contention/render-owns-scene, republish -- and bump
+		//      generation, and re-stamp every node's handle -- only on an
+		//      actual structural change).
+		//
+		// NODE SET: `ChunkCategory::Object` (`standard_object`/`csg_object`,
+		// generically -- excluding `override_object`, the legacy pre-CST
+		// round-trip chunk nothing emits today, which would otherwise show up
+		// as a node with no useful edges since its target is a STRING param,
+		// not a Reference) + `ChunkCategory::Geometry` (every `*_geometry`
+		// chunk, including `gltf_import` -- its own descriptor category IS
+		// Geometry) + the two "light sugar" chunks `rect_light`/`shape_light`
+		// BY KEYWORD -- their OWN descriptor category is `ChunkCategory::Light`
+		// (they desugar into a painter+material+geometry+`standard_object`
+		// QUARTET at scene-DERIVE time, per their own descriptor comment, but
+		// the RETAINED CST document -- what this document-seeded graph reads --
+		// still holds exactly the ONE authored `rect_light`/`shape_light`
+		// chunk, not the desugared quartet), so they are RE-CATEGORIZED as
+		// `ChunkCategory::Object` in THIS graph -- the object graph models
+		// what a chunk PRODUCES, not its authoring category. A `gltf_import`
+		// chunk's PER-PRIMITIVE live objects (registered only at derive time,
+		// one live IObject per glTF mesh primitive) are invisible to this
+		// document-only seed -- an ACCEPTED fold, the same "document, not
+		// managers" posture S11 already lives with; the import chunk itself
+		// still appears as ONE Geometry node.
+		//
+		// EDGE TAXONOMY (every Reference-kind param on an in-scope node,
+		// classified by paramName -- every OTHER param, e.g. `material`/
+		// `modifier`/`shader`/`radiance_map`/`interior_medium`, is simply
+		// never matched by either bucket below and therefore never seeded as
+		// an edge at all -- "dropped", but for free: no exclusion list to
+		// maintain, just an allowlist that does not mention them):
+		//   - HIERARCHY family -- `parent` (standard_object/csg_object/
+		//     rect_light/shape_light), `source` (standard_object instancing),
+		//     `obja`/`objb` (csg_object operands). Seeded with the SAME
+		//     direction `SceneReferenceGraph::Edges` already reports
+		//     (referrer -> target, i.e. child -> parent / instance -> source
+		//     / composite -> operand) -- see the RANK/LAYOUT DIRECTION note
+		//     below for why this direction, not a flip, is what makes the
+		//     layout read left-to-right root-to-leaf.
+		//   - GEOMETRY family -- `geometry` (standard_object's own geometry,
+		//     AND `path_instances_geometry`'s template reference -- same
+		//     param name, same bucket), `base_geometry`
+		//     (`displaced_geometry`'s base). Seeded FLIPPED (geometry-chunk ->
+		//     consumer) -- see the RANK/LAYOUT DIRECTION note. `paramName`/
+		//     `occurrence`/`portCategories` stay faithful to the DOCUMENT's
+		//     actual param even though the edge direction is synthetic, so a
+		//     shell drawing a wire still labels the port correctly.
+		//
+		// RANK/LAYOUT DIRECTION (GraphLayout's outEdges-mean-"my inputs"
+		// convention -- rank 0 = no valid outEdges, else 1+max(rank(outEdges
+		// targets)), column x = rank * spacing, so INCREASING rank sits
+		// FURTHER RIGHT): the user's mental model is "an object tree flowing
+		// left-to-right, ending in the geometry" -- roots at rank 0 (leftmost,
+		// since a root's own outEdges are empty), each generation of children
+		// one rank to the right of its parent (a child's outEdges points AT
+		// its parent, so child.rank = 1+parent.rank), and a geometry chunk
+		// sitting to the RIGHT of every object (or geometry, for a chained
+		// `displaced_geometry`) that consumes it (geometry.rank =
+		// 1+max(rank(consumers)) because the FLIP above makes the geometry
+		// chunk the "referrer" whose outEdges point AT its consumer(s)). A
+		// geometry shared by several consumers therefore ranks to the right
+		// of the DEEPEST one, and gets one outEdges row per consumer -- the
+		// exact "shared painter fan-out" shape S11 already established for
+		// `inEdges`, mirrored here on `outEdges` because the flip put the
+		// many-to-one relationship on that side instead.
+		void ReadObjectGraph( SceneGraphModel& out ) const;
+
+		//! Object Graph twin of `PainterMaterialGraphLaidOut` -- deliberately
+		//! a DISTINCT struct (not a reuse of that one), same reasoning as
+		//! `SceneGraphModel` itself: the shape is identical (`{graph,
+		//! positions}`, both fields already painter-agnostic types) but the
+		//! NAME should not carry "Painter" for an API describing the object
+		//! hierarchy graph.
+		struct ObjectGraphLaidOut
+		{
+			SceneGraphModel graph;
+			//! Parallel to graph.nodes; see GraphNodePosition's own comment.
+			std::vector<GraphNodePosition> positions;
+		};
+
+		//! `ReadObjectGraph` (above) + a fresh `GraphLayout::LayoutGraph` pass
+		//! over the result -- deliberately WITHOUT S13's `.risegraph.json`
+		//! sidecar (unlike `ReadPainterMaterialGraphLaidOut`): that sidecar is
+		//! keyed by bare node NAME with no category/graph-kind partition
+		//! (`GraphLayoutSidecar.h`'s own format comment: `{"nodes":
+		//! {"<name>":...}}`), so an Object named "Foo" and a Painter named
+		//! "Foo" would silently fight over ONE saved position if this graph
+		//! shared that file. The object graph's layout is therefore ALWAYS
+		//! auto (transient), on every call, the same design decision
+		//! `ReadPainterMaterialGraphLaidOutFocused` already documents for the
+		//! FOCUSED painter view and for the identical reason (no
+		//! per-graph-kind sidecar partition exists to write into safely). A
+		//! future slice that wants persisted Object Graph layout needs a
+		//! sidecar format revision (a `"kind"` top-level key, or a second
+		//! file) FIRST -- not a shared write into the existing one.
+		void ReadObjectGraphLaidOut( ObjectGraphLaidOut& out ) const;
+
+		//! Focused Object Graph read: "all parents and children of the
+		//! clicked object" (the user's own framing), resolved by `name`
+		//! against `ChunkCategory::Object` (which, per `ReadObjectGraph`'s own
+		//! header comment, already includes `rect_light`/`shape_light`
+		//! nodes) -- unknown or ambiguous `name` refuses to an empty,
+		//! non-degraded `out.graph`, the SAME "refuse rather than guess"
+		//! convention `ResolveUniqueGraphNodeIndex` documents.
+		//!
+		//! The subgraph (`ObjectGraphFocusedClosure`, below) is FOUR
+		//! components, unioned:
+		//!   - UP: transitive ancestors -- the `parent` chain, PLUS (a
+		//!     composite is an "ancestor-like owner") any `csg_object` that
+		//!     references an already-included node via `obja`/`objb`, climbed
+		//!     transitively (that composite's own parent, its own owning
+		//!     composite if it is itself nested as an operand, and so on).
+		//!   - DOWN: transitive descendants -- the reverse `parent` chain
+		//!     (every node whose parent chain reaches back to the target),
+		//!     PLUS the operands (`obja`/`objb`) of any `csg_object` that is
+		//!     ITSELF a descendant (or the target), climbed transitively the
+		//!     same way.
+		//!   - GEO: every node in UP ∪ DOWN ∪ {target}'s full geometry chain
+		//!     -- one hop via a `geometry`/`base_geometry` inEdge, then
+		//!     continued from THAT node (so a `displaced_geometry` chain
+		//!     surfaces its own base too), however many hops deep.
+		//!   - SOURCE: ONE hop only -- the direct `source` target of any node
+		//!     in UP ∪ DOWN ∪ {target}, so the user sees WHAT an instance
+		//!     copies without pulling in that source's own whole subtree (its
+		//!     ancestors/descendants/geometry are NOT further expanded).
+		//! UP and DOWN are DELIBERATELY SEPARATE walks, not one combined
+		//! worklist applying all four hierarchy rules to every discovered
+		//! node -- see `ObjectGraphFocusedClosure`'s own comment for the
+		//! sibling-subtree leak that combining them produces (a mid-tree
+		//! focus pulling in an unrelated sibling branch through a shared
+		//! ancestor). An UNRELATED SIBLING SUBTREE of the target is therefore
+		//! EXCLUDED, even though it shares an ancestor UP discovers.
+		//!
+		//! `outDegraded` is true while a render owns the scene or when the
+		//! object graph refresh serves cached data under scene-mutex
+		//! contention. Preserve the displayed graph and retry. A genuinely
+		//! unknown/ambiguous target is an empty, non-degraded result.
+		//!
+		//! LAYOUT IS TRANSIENT -- same reasoning as `ReadObjectGraphLaidOut`'s
+		//! own header comment (this graph has no sidecar to read OR write at
+		//! all, focused or not).
+		void ReadObjectGraphLaidOutFocused( const String& name, ObjectGraphLaidOut& out,
+		                                     bool* outDegraded = nullptr ) const;
+
 		//! Monotonic counter — set ONCE at controller construction from
 		//! a process-global atomic that increments per `SceneEditController`
 		//! instance.  Each fresh controller therefore has a unique
@@ -1989,6 +3708,61 @@ namespace RISE
 		//! caller should retain its last successful snapshot and try again.
 		bool GetHasAnimation( bool& hasAnimation ) const;
 
+		//! doc 88 S10 (Tier-2 panel affordances): headless RGBA8 preview of
+		//! a named painter -- see PainterPreview.h for the full domain /
+		//! display-encode / scalar-normalization contract, which this
+		//! method does not repeat.  `defIndex < 0` previews the painter's
+		//! own output (colour or scalar pipe, whichever it resolves in);
+		//! `defIndex >= 0` previews that expression `def` slot's
+		//! intermediate stage (refused for a non-expression painter or an
+		//! out-of-range index).  Fills `outRGBA` (resized to exactly
+		//! `w*h*4` bytes on success, row-major top-to-bottom) and, when the
+		//! previewed stage is SCALAR-typed, the auto-range actually applied
+		//! (`outWasScalar`/`outRangeMin`/`outRangeMax` -- all optional,
+		//! pass null to skip; untouched for a colour-typed stage). Returns
+		//! false (outRGBA cleared) on an unresolved name, w/h outside
+		//! (0, PainterPreview::kMaxDim], an out-of-range/inapplicable
+		//! defIndex, or the same render-owns-scene / contended-lock
+		//! refusal GetAnimationOptions above documents (non-blocking
+		//! try_lock -- PainterPreview.h's CONCURRENCY note).
+		bool GetPainterPreview( const String& painterName, int defIndex,
+		                        unsigned int w, unsigned int h,
+		                        std::vector<unsigned char>& outRGBA,
+		                        bool* outWasScalar = nullptr,
+		                        double* outRangeMin = nullptr,
+		                        double* outRangeMax = nullptr ) const;
+
+		//! doc 88 S10: a ramp_painter's own colour interpolation over its
+		//! authored stop domain, as a horizontal gradient strip -- see
+		//! PainterPreview::RenderRampStripPreview's doc comment.  Same
+		//! fill/refusal contract as GetPainterPreview above; additionally
+		//! refuses when `painterName` does not resolve to a ramp_painter.
+		bool GetRampStripPreview( const String& painterName,
+		                          unsigned int w, unsigned int h,
+		                          std::vector<unsigned char>& outRGBA ) const;
+
+		//! Material Editor Slice 5 (MATERIAL_EDITOR.md §4): headless 3D
+		//! shaderball RGBA8 preview of a named material. Same non-blocking
+		//! try_lock + mRenderOwnsScene refusal contract as GetPainterPreview.
+		bool GetMaterialPreview( const String& materialName,
+		                         unsigned int w, unsigned int h,
+		                         std::vector<unsigned char>& outRGBA ) const;
+
+		//! Material Editor Slice 6 (SPECTRAL_DIFFERENTIATORS.md §5 / D3):
+		//! horizontal 0..89 deg thin-film interference reflectance strip
+		//! and single-angle evaluation for a `ggx_material`.
+		bool GetThinFilmAngleStrip( const String& materialName,
+		                            unsigned int w, unsigned int h,
+		                            std::vector<unsigned char>& outRGBA,
+		                            double* outThicknessNm = nullptr,
+		                            double* outFilmIor = nullptr ) const;
+
+		bool EvaluateThinFilmAtAngle( const String& materialName,
+		                              double angleDeg,
+		                              unsigned char outRGBA[4],
+		                              double* outThicknessNm = nullptr,
+		                              double* outFilmIor = nullptr ) const;
+
 		// (Named animations are a first-class accordion Category —
 		// Category::Animation; the generic CategoryEntityCount/Name,
 		// CategoryActiveName and SetSelection surface lists + activates
@@ -2039,6 +3813,16 @@ namespace RISE
 		//! in-flight render.  Reads can race with the render thread;
 		//! callers should join via Stop() before sampling.
 		unsigned int ForTest_GetCancelCount() const;
+
+		//! Increments on every CancelAgentRender_() invocation -- the
+		//! agent-teardown/drain cancel path, which deliberately does NOT
+		//! bump mCancelCount (that counter belongs to the UI-mutation
+		//! CancelAndParkRender_ idiom).  Added for AgentRenderAsyncTest's
+		//! no-stale-id red-prove: a stale mAsyncOutstandingJobId makes
+		//! ~AgentSession's drain call CancelAgentRender_() against an
+		//! unrelated render, and THIS counter is the only signal that
+		//! observes that call directly.
+		unsigned int ForTest_GetAgentCancelRequestCount() const;
 
 		//! Increments at the start of each render-loop iteration
 		//! that actually fires a render pass.
@@ -2299,6 +4083,18 @@ namespace RISE
 		//! the result-stamping sites that need only the version.
 		RISE::Cst::CstHeadVersion ReadAgentHeadVersion() const;
 
+		//! Batched agent edits (2026-10-16): ReadAgentSceneSnapshot's lock + lifecycle refusal, returning a
+		//! persistent-structure COPY of the head Document (cheap; no serialization) -- the base of
+		//! AgentSession's incremental preview of a deferred batch.
+		void CopyAgentHeadDocument( bool& outHasDocument,
+		                            RISE::Cst::Document& outDocument,
+		                            RISE::Cst::CstHeadVersion& outVersion ) const;
+
+		//! Batched agent edits (2026-10-16): Job::ApplyCstBatchElement on the CALLER's document, under mMutex
+		//! (the element reads live Job state, e.g. the active camera).  Mutates only `doc`.
+		int ApplyAgentBatchElementToDocument( RISE::Cst::Document& doc, const CstBatchEdit& edit,
+		                                      CstBatchOutcome& outcome ) const;
+
 		//! "Reveal in scene file" (the design comp's ⌗ affordance): resolve
 		//! ENTITY (cat, name) to WHERE it sits in SerializedSceneText() --
 		//! its top-level chunk's byte offset and 1-based line number.
@@ -2469,6 +4265,14 @@ namespace RISE
 		String       PropertyPresetLabelFor( Category cat, unsigned int idx, unsigned int presetIdx ) const;
 		String       PropertyPresetValueFor( Category cat, unsigned int idx, unsigned int presetIdx ) const;
 		String       PropertyUnitLabelFor( Category cat, unsigned int idx ) const;
+		bool         PropertyHasRangeFor( Category cat, unsigned int idx ) const;
+		double       PropertyRangeMinFor( Category cat, unsigned int idx ) const;
+		double       PropertyRangeMaxFor( Category cat, unsigned int idx ) const;
+		double       PropertyRangeStepFor( Category cat, unsigned int idx ) const;
+		bool         PropertyTargetsPainterFor( Category cat, unsigned int idx ) const;
+		int          PropertyInlinePainterKindFor( Category cat, unsigned int idx ) const;
+		String       PropertyInlinePainterValueFor( Category cat, unsigned int idx ) const;
+		unsigned int PropertyInlinePainterRefCountFor( Category cat, unsigned int idx ) const;
 
 		//! Quick-pick preset accessors for the editor combo box.
 		//! Empty for parameters whose descriptor declares no presets.
@@ -2482,6 +4286,32 @@ namespace RISE
 		//! dimensionless / unlabelled parameters.  Pure presentation
 		//! hint; the parser ignores it.
 		String PropertyUnitLabel( unsigned int idx ) const;
+
+		//! doc 88 S4b (Tier-1 param sliders): the row's authored numeric
+		//! RANGE, if it declared one.  `PropertyHasRange` is true only
+		//! when BOTH bounds are known -- a shell must not draw a slider
+		//! otherwise, and must keep its text field either way (the
+		//! range is a presentation hint, not a validation rule: the
+		//! value still round-trips as text through SetProperty, and the
+		//! scene language accepts values outside the hint).  Step is 0
+		//! when the author declared none ("continuous").  The min/max/
+		//! step readers return 0 for a row with no range, which is why
+		//! `HasRange` is a separate question and not an in-band 0/0.
+		//!
+		//! Populated today only for an expression painter's `param[i]`
+		//! rows, from the `min` / `max` / `step` metadata on the scene
+		//! text's `param` line (ExpressionParamSpec).
+		bool   PropertyHasRange( unsigned int idx ) const;
+		double PropertyRangeMin( unsigned int idx ) const;
+		double PropertyRangeMax( unsigned int idx ) const;
+		double PropertyRangeStep( unsigned int idx ) const;
+
+		//! Material Editor Slice 3: inline constant-painter editing & slot
+		//! swatch metadata for ValueKind::Reference rows targeting painters.
+		bool         PropertyTargetsPainter( unsigned int idx ) const;
+		int          PropertyInlinePainterKind( unsigned int idx ) const;
+		String       PropertyInlinePainterValue( unsigned int idx ) const;
+		unsigned int PropertyInlinePainterRefCount( unsigned int idx ) const;
 
 		//! Jump-to-definition (GUI redesign, 2026-07-22): for a
 		//! ValueKind::Reference row whose value names another element,
@@ -2527,6 +4357,40 @@ namespace RISE
 		//! with `cat = Material` and the controller resolves the
 		//! material name via the Object's bound material.
 		bool SetPropertyForCategory( Category cat, const String& name, const String& valueStr );
+
+		//! Material Editor Slice 3: edit the `color` or `value` parameter of
+		//! the CST-authored constant painter (`uniformcolor_painter` or Form-1
+		//! `scalar_painter`) currently bound to reference slot `slotParam` on
+		//! the active selection in `cat`.  Routes through the checked CST
+		//! transaction path so undo/redo, dirty state, and re-render all stay
+		//! in sync.
+		bool SetReferenceSlotPainterValue( Category cat, const String& slotParam, const String& valueStr );
+
+		//! Material Editor Slice 3: fork the CST-authored painter currently
+		//! bound to reference slot `slotParam` on the active selection in `cat`
+		//! into a new copy placed immediately after the original painter in
+		//! declaration order, and rebind ONLY `slotParam` to the new copy in a
+		//! single atomic whole-document commit (1 Undo step).
+		bool ForkReferenceSlotPainter( Category cat, const String& slotParam, String* outNewPainterName = nullptr );
+
+		//! Material Editor Slice 6 (SPECTRAL_DIFFERENTIATORS.md §3/§4): apply a
+		//! spectral preset to the active entity in `cat` as a single atomic
+		//! operation-level undo batch (CstBatchUndoOp):
+		//!   - `ggx_material`: measured metal ("Au", "Ag", "Cu", "Al", "Cr", "Ti")
+		//!     inserts `<mat>_<metal>_n` and `<mat>_<metal>_k` `scalar_painter`
+		//!     chunks (file-backed when found via GlobalMediaPathLocator, or
+		//!     4-term polynomial fallback) before the material chunk, binds `ior`
+		//!     and `extinction`, and ensures `fresnel_mode` is `conductor` (unless
+		//!     already `thinfilm`).
+		//!   - `dielectric_material` / `agx_dielectric`: Sellmeier glass ("N-BK7",
+		//!     "SF11", "Diamond", "FusedSilica") inserts `<mat>_<glass>_ior`
+		//!     `scalar_painter` with `sellmeier` coefficients before the material
+		//!     chunk and binds `ior`.
+		//!   - `scalar_painter`: Sellmeier glass preset sets `sellmeier` on the
+		//!     selected `scalar_painter` chunk (removing any competing `value`).
+		//!   - `blackbody_painter`: Kelvin preset ("1800", "2700", "5500", "6500",
+		//!     "9500" or with trailing "K") sets `temperature`.
+		bool ApplySpectralPreset( Category cat, const String& presetId );
 
 		//! Clone the currently-active camera under a new name and
 		//! promote the clone to active. `proposedName` is canonicalized to a
@@ -2764,6 +4628,545 @@ namespace RISE
 		//! entity isn't found, or the insert itself is rejected (e.g. a
 		//! dangling reference the copy would introduce).
 		AgentCommitResult DuplicateEntity( Category cat, const String& name, String* outName );
+
+		//! -------- S18: node-graph canvas chunk creation --------
+		//! (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S18; the Phase-B
+		//! prerequisite S19/S20/S21 build on.)
+		//!
+		//! WHY THIS EXISTS ALONGSIDE THE TWO CREATION PATHS ABOVE.  There
+		//! are exactly three chunk-creation shapes in the tree and this is
+		//! deliberately NOT a fourth:
+		//!   * Job::ApplyCstInsertCameraChunk -- DOCUMENT-ONLY, no
+		//!     re-derive, because CloneActiveCamera already put the clone
+		//!     in the LIVE scene and a re-derive would throw it away.  A
+		//!     live-first special case, not a general creator.
+		//!   * Job::ApplyCstInsertChunk (via ApplyAgentInsertChunk) -- the
+		//!     GENERAL creator: caller-supplied chunk TEXT, tier-positioned
+		//!     splice, dry-run-guarded full re-derive, EditHistory record,
+		//!     dirty, epoch, kick.  Everything below routes through it.
+		//!   * InstantiateEntityTemplate -- a fixed PICKER over
+		//!     hand-authored recipes, keyed by (category, index).
+		//! The canvas needs the picker's ergonomics (pick a name, hand back
+		//! a live entity) over an OPEN keyword set (a search palette of
+		//! every painter/material chunk the registry knows), which no
+		//! fixed table can supply.  So this method composes the two: it
+		//! DERIVES the minimal body from the ChunkDescriptorRegistry
+		//! (EntityTemplates::BuildNodeChunkText) and then inserts it
+		//! through ApplyAgentInsertChunk -- inheriting the whole commit
+		//! discipline (admission lock, mTxnOpen refusal, cancel-and-park,
+		//! optimistic-concurrency conflict gate, dry-run-guarded derive so
+		//! a refusal leaves the Document BYTE-IDENTICAL, rebind on D2,
+		//! MarkCstHeadDirty, the U2 EditHistory record so one Cmd-Z removes
+		//! the node again, the scene-epoch bump the canvas re-enumerates
+		//! on, and the render kick) rather than re-deriving any of it.
+		//!
+		//! NOT EXPOSED TO THE AGENT SURFACE, deliberately: an agent already
+		//! writes chunk text, and insert_chunk accepts it with strictly
+		//! more expressive power than a keyword + arg list.  Adding a verb
+		//! that can only do less would widen the MCP surface for no
+		//! capability.  This is a controller + C ABI surface for the S21
+		//! canvas.
+		//!
+		//! LIGHT GENERATION: no explicit bump is needed (nor correct) here.
+		//! An insert is always D2-class -- the Scene and every manager are
+		//! rebuilt from the re-derived Document, so the luminary list is
+		//! reconstructed wholesale.  The BumpSceneLightGeneration* calls
+		//! exist for the INCREMENTAL (code-1) param-edit path, which
+		//! mutates a live material in place; there is no such path here.
+		//! A created emissive material therefore lights the scene on the
+		//! very next pass, and creating a non-emissive one costs nothing.
+
+		//! One creation argument: `param` must be a parameter the
+		//! keyword's descriptor declares, `value` its literal text.
+		//! `name` is refused -- this verb picks the name.
+		struct ChunkNodeArg
+		{
+			String param;
+			String value;
+		};
+
+		//! One argument the caller MUST supply for a given keyword (a
+		//! `required` descriptor parameter with no static default -- in
+		//! practice the required REFERENCE slots, e.g. `ramp_painter`'s
+		//! `input`, which can only name another chunk in THIS scene).
+		//! `isReference` tells the canvas to resolve it from the drag
+		//! context / a candidate picker rather than a text field; use
+		//! ConnectionLegality (S17) for the legal candidate set.
+		//! `referenceCategories` is the descriptor's own legal-category
+		//! set for that reference (empty = unrestricted, per
+		//! ConnectionLegality::CategoryAllowed's convention) -- a caller
+		//! MUST consult this before picking a stand-in / candidate: a
+		//! required reference is not always Painter-typed (`coated_
+		//! material.base` and `fabric_material.base` are `{Material}`),
+		//! and guessing Painter for those fails at derive time with an
+		//! "unresolved reference" the caller cannot self-diagnose from
+		//! `isReference` alone.  Threaded straight from
+		//! `EntityTemplates::ChunkNodeRequirement::referenceCategories`,
+		//! which already carries this per-parameter -- this field used to
+		//! stop at `isReference` here, silently discarding the category on
+		//! the way from EntityTemplates to every real caller of this API.
+		struct ChunkNodeRequirement
+		{
+			String param;
+			String description;
+			bool   isReference = false;
+			std::vector<ChunkCategory> referenceCategories;
+		};
+
+		//! The caller-supplied-argument contract for `keyword`.  Empty for
+		//! a keyword that needs nothing, for a non-painter/material
+		//! keyword, and for an unknown keyword.  Pure descriptor read: no
+		//! scene state, no locking, callable from any thread at any time.
+		std::vector<ChunkNodeRequirement> ChunkNodeRequirements( const String& keyword ) const;
+
+		//! doc-88 Phase 3 S21 -- every registered keyword whose descriptor
+		//! category is @a category, sorted lexicographically
+		//! (`ChunkDescriptorRegistry::AllKeywordsForCategory` passthrough).
+		//! Backs the canvas's "add node" search palette: `Painter`,
+		//! `Function`, and `Material` are the three categories the palette
+		//! offers (the same three `PainterMaterialGraph` models -- see
+		//! `BuildPainterMaterialGraphSeedsLocked_`'s own comment). Pure
+		//! descriptor read, same "no scene state, no locking" posture as
+		//! `ChunkNodeRequirements` above.
+		//!
+		//! DL-401: DEPRECATED chunk types (`ChunkDescriptor::deprecated`)
+		//! sort AFTER the modern keywords, and FROZEN ones (legacy Phase 1)
+		//! after the deprecated ones (each group lexicographic).
+		//! `AllKeywordsForCategory` keeps its plain alphabetical order.
+		std::vector<String> PaletteKeywords( ChunkCategory category ) const;
+
+		//! DL-401: the descriptor's replacement hint for @a keyword when
+		//! that chunk type is deprecated (names the modern keyword first,
+		//! then the parameter translation), else the EMPTY string.  The
+		//! GUI node palettes read it to badge a deprecated row.  Pure
+		//! descriptor read, same posture as `PaletteKeywords`.
+		std::string PaletteKeywordDeprecation( const String& keyword ) const;
+
+		//! Legacy-deprecation Phase 1 (2026-10-09): is @a keyword a FROZEN
+		//! chunk type (`ChunkDescriptor::frozen` -- legacy and UNSUPPORTED)?
+		//! A frozen type is also deprecated, so `PaletteKeywordDeprecation`
+		//! returns its replacement hint too; the GUIs read this to badge it
+		//! "legacy, unsupported" instead of "deprecated".  `PaletteKeywords`
+		//! sorts frozen types after the merely deprecated ones.
+		bool PaletteKeywordIsFrozen( const String& keyword ) const;
+
+		//! Create ONE new painter/material chunk of type `keyword`, named
+		//! from `baseName` (deduped `_2`, `_3`, ... exactly as
+		//! InstantiateEntityTemplate does, and checked doc-wide so a
+		//! leftover chunk of another kind cannot collide), with the
+		//! minimal derivable body plus `args`.  `*outName` (if non-null)
+		//! receives the name that actually landed -- read from the primitive's
+		//! own parsed-back-out chunkName, not the locally-composed base --
+		//! whenever the Document was mutated (a clean apply OR a diagnosed-
+		//! but-mutated commit, see below), never only on a clean apply.
+		//!
+		//! REFUSES on a REJECTED result (non-mutating, head byte-identical,
+		//! `message` naming the cause, `retriable` set like
+		//! ApplyAgentInsertChunk's own render-locked/teardown refusals) when:
+		//! the keyword is unknown or is not a painter / material; an arg
+		//! names an undeclared parameter or carries an empty value; a
+		//! required arg is missing; an arg value is not a single line; or
+		//! the composed chunk would not derive in context (the dry-run's own
+		//! diagnostic is appended).  Also carries every refusal
+		//! ApplyAgentInsertChunk itself can produce -- render-locked
+		//! (retriable), open-editor-transaction (retriable), controller
+		//! teardown.  A DIAGNOSED result is DIFFERENT and NOT byte-identical:
+		//! the chunk was spliced in and the live managers were rebuilt, but
+		//! the full re-derive also emitted diagnostics -- `applied` is still
+		//! false, the mutation is real (and undoable), and `*outName` IS
+		//! filled.
+		//!
+		//! `baseName` is a HINT, canonicalized through the same
+		//! CanonicalCameraName choke point CloneActiveCamera's name pick
+		//! uses (whitespace/braces/etc. become `_`): only a genuinely empty
+		//! base (before or after canonicalization) falls back to the keyword
+		//! itself (`ramp_painter` -> `ramp_painter`, `ramp_painter_2`, ...) --
+		//! a 1-char base is used as-is.  Any base is suffixed on collision
+		//! (reserving suffix bytes before truncating to the 255-byte payload
+		//! the 256-byte `outName` C ABI buffer allows, same discipline as
+		//! UniqueCameraName), so the caller must read `*outName` rather than
+		//! assume it got what it asked for.
+		AgentCommitResult CreateChunkNode( const String& keyword,
+		                                   const String& baseName,
+		                                   const std::vector<ChunkNodeArg>& args,
+		                                   String* outName );
+
+		// =====================================================================
+		// doc-88 Phase 3 S19 -- the ownership-closure rewrite + REFUSE path
+		// (OwnershipClosure.h/.cpp; docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S19,
+		// implementing docs/gui/MATERIAL_EDITOR.md sect. 3.7a).  The canvas's
+		// REWIRE verb: re-point one reference slot at a different chunk.
+		// =====================================================================
+
+		//! `RewireConnection`'s answer: the ordinary commit result, plus the
+		//! sect. 3.7a closure report the canvas needs to badge / explain /
+		//! offer the escape hatch.  The closure fields are populated on BOTH
+		//! outcomes where they are known (a clean rewire reports the owner it
+		//! resolved and anything the edit orphaned; a refusal reports what
+		//! blocked it), never only on failure.
+		struct RewireResult
+		{
+			//! The underlying commit -- `applied` / `status` / `message` /
+			//! `headVersion` / `conflict` / `retriable` all carry the SAME
+			//! meanings `AgentCommitResult` documents. Ordinary rewires return
+			//! ApplyAgentParamEdit's result; adapter insertions map the batch
+			//! document-replacement result to the same statuses. Every
+			//! refusal below is a `status == "rejected"`, non-mutating,
+			//! head-BYTE-IDENTICAL result.
+			AgentCommitResult commit;
+
+			//! Why the closure step refused, machine-readable so a bridge can
+			//! branch (offer Duplicate-node only for `SharedTarget`) without
+			//! parsing prose.  `Clean` on every outcome that got PAST the
+			//! closure step -- including a later legality/conflict refusal --
+			//! so read `commit.applied` for "did it land", not this.
+			ClosureClassification closure = ClosureClassification::Clean;
+
+			//! True when the refusal came from `ConnectionLegality`
+			//! (S17) rather than from the closure: the proposed binding is
+			//! not one the real parser would accept.  `commit.message` then
+			//! carries the parser's OWN diagnostic verbatim, so a
+			//! canvas-rejected wire reads identically to what a hand-edited
+			//! scene file fails on (MATERIAL_EDITOR.md:145).
+			bool legalityRefused = false;
+			//! Color-capable source can be wrapped for a Scalar slot; only
+			//! offered on an ordinary legality refusal only after the shared
+			//! cycle, occurrence, closure, addressing, form, declaration-order,
+			//! transaction and head-version gates admit the adapter edit.
+			bool canInsertScalarAdapter = false;
+
+			//! True when the refusal came from the forward-reachability cycle
+			//! check (`ConnectionLegality::WouldCycle`).
+			bool cycleRefused = false;
+
+			//! sect. 3.7a's (a)/(b)/(c): the shared chunk(s), the referrers
+			//! outside the closure, and the owning roots.  See
+			//! OwnershipClosureResult's own field docs -- these are copied
+			//! from it verbatim.
+			std::vector<String> sharedChunks;
+			std::vector<String> outOfClosureReferrers;
+			std::vector<String> owners;
+
+			//! Chunks that lose their LAST reference if/when this rewire
+			//! commits -- for the canvas to badge as newly orphaned.
+			//!
+			//! SCOPING, stated rather than left to be discovered: this slice
+			//! does NOT auto-delete them.  Reference-safe delete (block-or-
+			//! cascade, ENTITY_CREATION.md sect. 5) is S20's slice; S19 rewires
+			//! the slot and REPORTS what that orphaned, leaving the orphan in
+			//! the document where an undo can still restore the wiring.
+			//!
+			//! APPLIED GUARD: empty whenever `commit.applied` is false --
+			//! including a refusal that lands AFTER the closure step already
+			//! computed a non-empty report (a later addressing-seam mismatch,
+			//! a mid-transaction refusal, a stale-baseVersion conflict).
+			//! `RewireConnection` clears it on every refusal path so this
+			//! field never reports an orphan from an edit that never
+			//! committed (S19 review round 1 P2-1).
+			std::vector<String> nowUnreferenced;
+		};
+
+		//! Re-point `targetName`'s `param` (occurrence `occurrence`) at
+		//! `newRefName`, as ONE undoable commit through the existing
+		//! param-edit machinery.  The canvas's drag-a-wire-to-a-different-
+		//! node verb.
+		//!
+		//! GATE ORDER, which is load-bearing:
+		//!   1. Render-locked / no-document pre-flight.
+		//!   2. RESOLUTION of both endpoints.  An AMBIGUOUS name (two
+		//!      same-category chunks share it -- the colour/`scalar_painter`
+		//!      pair `SceneReferenceGraph::ResolveChunk` documents) REFUSES;
+		//!      it never guesses which one it meant.
+		//!   3. LEGALITY (`ConnectionLegality::CheckConnection`) and the
+		//!      CYCLE check (`WouldCycle`) -- FIRST, before ownership,
+		//!      because an illegal or cyclic wire is refused whether or not
+		//!      the edit owns what it touches, and its diagnostic is the
+		//!      parser's own.
+		//!   4. OWNERSHIP CLOSURE (`OwnershipClosure::Compute`) -- sect. 3.7a.
+		//!   5. The commit, through `ApplyAgentParamEditInner_` (so it
+		//!      inherits the mid-transaction refusal, the optimistic-
+		//!      concurrency conflict gate, the U1 undo record + prior-value
+		//!      capture at the SAME occurrence, the D2 rebind, the dirty
+		//!      mark, the scene-epoch bump the canvas re-enumerates on, and
+		//!      the render kick -- none of it re-derived here).
+		//!
+		//! Every refusal in steps 1-4 leaves the retained Document
+		//! BYTE-IDENTICAL: nothing before step 5 mutates anything.
+		//!
+		//! `newRefName` must name a REAL chunk.  A DETACH (unbind the slot)
+		//! is NOT commitable in this slice -- NOT because a reference slot
+		//! has no valid empty literal (`none` parses and commits into most
+		//! reference slots fine when written directly), but because
+		//! `ConnectionLegality::CheckConnection` (step 3 above) is
+		//! `Cst::NodeId`-addressed on both sides, and `none` is a runtime
+		//! default with no `NodeId` -- there is no candidate to run the
+		//! legality gate against, so a detach's per-slot legality can't be
+		//! checked.  Closing that (a NodeId-free legality path for `none`)
+		//! is S20's scope, alongside the reference-safe delete/unbind
+		//! policy it already owns.  `OwnershipClosure::Compute`
+		//! DOES model `TopologyEditKind::Detach`, so a canvas can pre-flight
+		//! "would detaching this orphan anything?" today.
+		//!
+		//! `occurrence` selects WHICH occurrence of a repeatable reference
+		//! param to rewrite, and is validated against the chunk's actual
+		//! occurrence count (out of range REFUSES rather than silently
+		//! no-op'ing, which is what an unchecked occurrence does inside
+		//! `Cst::DocSetOrAddParamValue`).  NOTE (pinned by
+		//! RewireConnectionTest's registry sweep): NO chunk kind addressable
+		//! through this verb declares a repeatable pure-`ValueKind::Reference`
+		//! parameter today -- the one that exists at all,
+		//! `standard_shader.shaderop`, lives on a Shader-category chunk this
+		//! controller has no (category, name) addressing scheme for -- so
+		//! `occurrence` is 0 in every reachable case, and the sweep fails
+		//! loudly the day that stops being true.  Reference params that are
+		//! repeatable via a TUPLE (`voronoi_painter.gen`'s `<x> <y>
+		//! <painter>`) are refused: rewriting one would have to re-emit the
+		//! whole tuple, which this verb does not do.
+		//!
+		//! `baseVersionOrNull` is the same optimistic-concurrency
+		//! precondition every other agent commit takes: non-null and not
+		//! equal to the current head -> `status == "conflict"`, non-mutating.
+		RewireResult RewireConnection(
+			ChunkCategory targetCategory, const String& targetName,
+			const String& param, int occurrence,
+			ChunkCategory newRefCategory, const String& newRefName,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! Insert an R-channel scalar_painter after the source and bind the
+		//! target slot, as one operation-level undo batch. Raster painters
+		//! use `texture`; other Color-capable painters use `painter`.
+		RewireResult InsertScalarAdapterAndRewire(
+			ChunkCategory targetCategory, const String& targetName,
+			const String& param, int occurrence,
+			ChunkCategory sourceCategory, const String& sourceName,
+			String* outAdapterName = nullptr,
+			const Cst::CstHeadVersion* baseVersionOrNull = nullptr );
+
+		// =====================================================================
+		// doc-88 Phase 3 S20 -- cycle / orphan / copy-vs-link enforcement
+		// (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S20; the reference-safe
+		// delete policy of docs/gui/ENTITY_CREATION.md sect. 5, and sect. 3.7a's
+		// Duplicate-node escape hatch that S19 could only NAME).
+		//
+		// WHY THESE ARE NEW VERBS AND NOT `RemoveEntity` / `DuplicateEntity`
+		// GROWN A POLICY (the placement question, answered rather than left
+		// implicit -- both shipped verbs were read first):
+		//
+		//   * ADDRESSING.  `RemoveEntity`/`DuplicateEntity` are addressed by
+		//     the UI `Category` and resolve through
+		//     `Cst::DocFindByNameAnyRole` + `RoleKindSuffixForCategory` -- the
+		//     UI UNION in which "painter" deliberately accepts BOTH
+		//     ChunkCategory::Painter and ChunkCategory::Function, and in which
+		//     a camera may resolve POSITIONALLY.  A graph node's identity is
+		//     (declared descriptor category, name) and must NOT merge those
+		//     two (see SceneReferenceGraph::ResolveChunk's own note), which is
+		//     exactly why `RewireConnection` is `ChunkCategory`-addressed.
+		//     These two are its siblings, so they are too.
+		//   * BLAST RADIUS.  `RemoveEntity` is the shipped OUTLINER delete for
+		//     EVERY category.  ENTITY_CREATION.md sect. 5.2 deletes an Object,
+		//     a Camera and a Light FREELY -- teaching `RemoveEntity` to refuse
+		//     on referrers would change behaviour for every one of those, and
+		//     for every shipped caller/bridge/test of it, to serve a
+		//     painter/material policy.
+		//   * RESULT SHAPE.  A canvas delete has to report WHICH referrers
+		//     blocked it and WHAT a cascade swept; `AgentCommitResult` has
+		//     nowhere to carry either.  `RewireResult` set the precedent of a
+		//     verb-specific result wrapping the commit.
+		// `RemoveEntity` and `DuplicateEntity` are therefore UNCHANGED and
+		// still the right calls for the outliner; these are the graph's.
+
+		//! What a `DeleteGraphNode` should do about the chunks BELOW the
+		//! target that nothing else uses once it is gone.
+		enum class GraphDeleteMode
+		{
+			//! Delete ONLY the target.  Chunks it solely owned stay in the
+			//! document as orphans (which is also what a rewire leaves behind
+			//! -- see `RewireResult::nowUnreferenced`).
+			TargetOnly = 0,
+			//! Delete the target AND its solely-owned, unreferenced-after
+			//! closure, as ONE undoable composite.  A chunk shared with any
+			//! other graph is NEVER swept -- see `kDeleteCascadeSharedFmt`.
+			Cascade    = 1
+		};
+
+		//! `DeleteGraphNode`'s answer: the ordinary commit result plus the
+		//! reference-safety report the canvas needs to explain a refusal or
+		//! show what a cascade took.
+		struct DeleteResult
+		{
+			//! The underlying commit.  On the accept path this IS
+			//! `ApplyAgentRemoveChunk`'s (TargetOnly) or
+			//! `ApplyAgentRemoveChunks`'s (Cascade) result verbatim; every
+			//! refusal below is a `status == "rejected"`, non-mutating,
+			//! head-BYTE-IDENTICAL result.
+			AgentCommitResult commit;
+
+			//! `AmbiguousTargetName` / `UnresolvedTarget` when the name did
+			//! not resolve to exactly one chunk; `Clean` on every outcome that
+			//! got past resolution -- INCLUDING a later reference/cascade
+			//! refusal, which is not a CLOSURE verdict.  Read
+			//! `commit.applied` for "did it land", not this.
+			ClosureClassification closure = ClosureClassification::Clean;
+
+			//! True when the refusal was "still referenced" -- so a bridge can
+			//! offer "rewire those away" without parsing prose.
+			bool referenceRefused = false;
+
+			//! True when a CASCADE was refused because its sweep would have
+			//! reached a chunk another graph owns.
+			bool cascadeRefused = false;
+
+			//! Every referrer that blocks the delete, as `chunk`.`param`
+			//! (an unnamed referrer contributes `<keyword>`.`param`, the same
+			//! angle-bracket display convention `OwnershipClosureResult::owners`
+			//! uses).  Populated on the `referenceRefused` path; EMPTY on a
+			//! clean delete, which by definition had none.
+			std::vector<String> referrers;
+
+			//! In DOCUMENT ORDER: the chunks this call removed (target first
+			//! only if it happens to be first in the document -- this is the
+			//! document's order, not a priority order).  EMPTY ON EVERY REFUSAL
+			//! (corrected -- S20 review round 1 P2-2: an earlier draft of this
+			//! comment claimed a cascade-shared refusal leaves a "preview" of
+			//! the sweep here, but that can never happen -- this field's only
+			//! writer is the addressability loop, which itself only runs while
+			//! the internal refusal accumulator is still empty, and the
+			//! shared-cascade guard always sets that accumulator BEFORE the
+			//! addressability loop would run.  So a `cascadeRefused` outcome
+			//! reaches this field exactly like every other refusal: empty).
+			//! APPLIED GUARD: on a refusal `commit.applied` is false and
+			//! nothing was removed -- read this as a record of a successful
+			//! mutation only, never present on any refusal path.
+			std::vector<String> removed;
+		};
+
+		//! Delete the graph node `(category, name)`, reference-safely.
+		//!
+		//! CATEGORY SCOPE -- DELIBERATELY WIDER THAN `DuplicateGraphNode`
+		//! (S20 review round 1 P3, documenting the asymmetry rather than
+		//! collapsing it): `DuplicateGraphNode` below refuses every category
+		//! except Painter / Function / Material, because ITS specific
+		//! contract -- "splice the copy immediately after the original in
+		//! declaration order" -- is only meaningful for an interior graph
+		//! node or a material sitting inside a reference DAG where "after"
+		//! has a consumer-legality meaning.  This verb has no such
+		//! constraint: it implements ENTITY_CREATION.md sect. 5's
+		//! reference-safe delete policy, which is scoped to EVERY
+		//! introspectable entity family the doc's dependency-graph table
+		//! covers -- Object, Camera, Light, Material, Medium, and (stage 2)
+		//! Painter -- not to the canvas's graph-node subset.  `DeleteGraphNodeTest`
+		//! 1f/1g exercise this directly: a `ChunkCategory::Shader` delete
+		//! reaches the SAME addressability refusal a Painter/Material delete
+		//! would (refused for lacking a `(UI Category, name)` edit path in
+		//! THIS editor, per `UiCategoryForChunkCategory`/
+		//! `RoleKindSuffixForCategory` -- not for being the "wrong kind" the
+		//! way `DuplicateGraphNode`'s up-front kind check refuses).  So the
+		//! practical scope ends up self-limiting to whatever
+		//! `RoleKindSuffixForCategory` already addresses (Painter, Material,
+		//! Geometry, Medium, Object, Camera, Light) without this verb having
+		//! to enumerate or gate categories itself -- widening that set (a
+		//! future Shader/Modifier addressing surface) widens what this verb
+		//! can delete for free, with no change here.
+		//!
+		//! GATE ORDER, load-bearing exactly as `RewireConnection`'s is:
+		//!   1. Render-locked / teardown / no-document pre-flight.
+		//!   2. RESOLUTION, ambiguity-aware (`SceneReferenceGraph::ResolveChunk`).
+		//!      An AMBIGUOUS name REFUSES -- never delete on a guess.
+		//!   3. REFERRERS (`SceneReferenceGraph::FindReferencesTo`).  Any
+		//!      referrer at all REFUSES, in BOTH modes, naming every one of
+		//!      them plus the two escapes (`kDeleteReferencedFmt`).
+		//!   4. `Cascade` only: build the sweep, then CROSS-CHECK every member's
+		//!      ownership through `OwnershipClosure::OwnersOf` -- a member owned
+		//!      by anything but the target REFUSES the whole cascade
+		//!      (`kDeleteCascadeSharedFmt`), and so does a member the editor
+		//!      cannot address (`kDeleteUnaddressableFmt`).
+		//!   5. The commit: `ApplyAgentRemoveChunk` (TargetOnly) or
+		//!      `ApplyAgentRemoveChunks` (Cascade -- ONE atomic all-or-nothing
+		//!      erase, ONE EditHistory record, so one Cmd-Z restores the whole
+		//!      composite).
+		//!
+		//! Every refusal in steps 1-4 leaves the retained Document
+		//! BYTE-IDENTICAL: nothing before step 5 mutates anything.
+		//!
+		//! WHY `ApplyAgentRemoveChunks` AND NOT `BeginTransaction`/
+		//! `EndTransaction` FOR THE CASCADE.  The two are MUTUALLY EXCLUSIVE by
+		//! construction: every agent-commit entry point (`ApplyAgentChunkCrud_`,
+		//! `ApplyAgentRemoveChunksCrud_`, `ApplyAgentParamEditInner_`) refuses
+		//! outright while `mTxnOpen` is set, so bracketing agent removes in an
+		//! editor transaction produces N refusals, not a composite -- the same
+		//! constraint `InstantiateEntityTemplate` already documents.
+		//! `ApplyAgentRemoveChunks` IS the composite primitive: it resolves and
+		//! erases every target against the SAME pre-erase Document, runs ONE
+		//! dry-run-guarded re-derive (so an intra-batch reference can never
+		//! cause a spurious refusal), and records ONE `AgentRemoveChunks` U2
+		//! step whose undo payload is the BYTE-EXACT pre-batch document -- a
+		//! stronger inverse than N per-chunk splices, which for ADJACENT
+		//! targets are not even well defined (`DocEraseChunkTidy`'s
+		//! trailing-separator collapse for chunk i depends on whether chunk
+		//! i+1 is still there).
+		//!
+		//! `baseVersionOrNull` is the usual optimistic-concurrency precondition.
+		DeleteResult DeleteGraphNode(
+			ChunkCategory category, const String& name,
+			GraphDeleteMode mode,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! `DuplicateGraphNode`'s answer.
+		struct DuplicateResult
+		{
+			//! The underlying commit (the whole-document composite swap).
+			AgentCommitResult commit;
+			//! `AmbiguousTargetName` / `UnresolvedTarget` when the name did not
+			//! resolve to exactly one chunk; `Clean` otherwise.
+			ClosureClassification closure = ClosureClassification::Clean;
+			//! The deduped name the copy actually landed under -- READ THIS
+			//! rather than assuming the requested base survived. Empty unless
+			//! the Document was mutated.
+			String newName;
+			//! The top-level document index of the ORIGINAL at the moment of
+			//! the copy, for a canvas that wants to place the new node beside
+			//! it. -1 when nothing landed.
+			int    originalIndex = -1;
+		};
+
+		//! Fork `(category, name)` into an owned copy positioned IMMEDIATELY
+		//! AFTER the original in declaration order -- sect. 3.7a's Duplicate-node
+		//! escape hatch, which S19 could name in a diagnostic but not deliver.
+		//!
+		//! WHY THIS IS A NEW VERB AND NOT A FIX INSIDE `DuplicateEntity`.
+		//! `DuplicateEntity`'s copy is placed by `Job::ApplyCstInsertChunk`'s
+		//! TIER heuristic -- a painter goes "before the first Material/Geometry/
+		//! Shader/... chunk".  In a scene whose FIRST chunk is a `standard_shader`
+		//! (tier 1), that target index is 0, ahead of every painter the copy
+		//! itself references, so the positioned dry-run fails and the insert
+		//! FALLS BACK to append-at-end -- which is the S19 handoff's pinned gap
+		//! (`RewireConnectionTest` case 1c'), reproduced and confirmed by probe.
+		//! Making `ApplyCstInsertChunk` position by DEPENDENCY instead would
+		//! change where every agent `insert_chunk` lands, in every scene, to
+		//! serve one canvas verb; and no pure function of (document, chunk text)
+		//! can express "immediately after THAT chunk", because the text of a
+		//! copy does not say which chunk it is a copy OF.  So position is the
+		//! CALLER's knowledge here, and this verb splices with it.  A rename is
+		//! deliberately NOT attempted: `DuplicateEntity` remains the outliner's
+		//! duplicate, unchanged.
+		//!
+		//! SHALLOW, BY DESIGN AND BY DEFINITION.  The copy shares every chunk
+		//! the original referenced -- that is the POINT of the hatch: it unshares
+		//! exactly ONE level, so the requesting consumer can be re-pointed at a
+		//! node it now solely owns while the leaves below stay links (sect. 3.8's
+		//! "shared painters are links, not copies").  A DEEP copy would fork the
+		//! whole subgraph and is deliberately out of scope for this slice; it is
+		//! also why the copy is guaranteed to derive at its new position:
+		//! identical references, one slot later than an original that already
+		//! derived where it sits.
+		//!
+		//! Refuses (non-mutating, head byte-identical) on an ambiguous or
+		//! unresolved name, on a chunk with no `name` parameter to substitute,
+		//! on a name collision the dedup could not clear, and on every refusal
+		//! the commit layer itself can produce.
+		DuplicateResult DuplicateGraphNode(
+			ChunkCategory category, const String& name,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
 
 		//! Remove the named entity in `cat` via ApplyAgentRemoveChunk,
 		//! narrowed by `cat`'s CST role-kind suffix (RoleKindSuffixForCategory)
@@ -3220,6 +5623,48 @@ namespace RISE
 		virtual void ForTest_OnSaveEngineAboutToRun() {}
 
 	private:
+		RewireResult RewireConnectionInner_(
+			ChunkCategory targetCategory, const String& targetName,
+			const String& param, int occurrence,
+			ChunkCategory newRefCategory, const String& newRefName,
+			const Cst::CstHeadVersion* baseVersionOrNull,
+			bool insertScalarAdapter, String* outAdapterName );
+
+		// ---- Node-graph spotlight / focused-view shared helpers --------
+		// See AppearanceClosureForObject and ReadPainterMaterialGraphLaidOutFocused
+		// (both public, above) for the two consumers of these three.
+
+		//! Object -> live bound material name, locking-safe (try_to_lock,
+		//! degrade rather than block behind a render). See the .cpp
+		//! definition's own comment for the full rationale; shared by
+		//! AppearanceClosureForObject and
+		//! ReadPainterMaterialGraphLaidOutFocused's Object-category case.
+		String ResolveObjectMaterialNameLocked_( const String& objectName, bool* outDegraded = nullptr ) const;
+
+		//! BFS from `startIdx` over `g` via outEdges only (the "downstream
+		//! reference" / "this node's own inputs" direction). Returns
+		//! visited indices in discovery order, `startIdx` first. PURE and
+		//! static -- see the .cpp definition's own comment.
+		static std::vector<unsigned int> BFSGraphClosure( const PainterMaterialGraph& g, unsigned int startIdx );
+
+		//! Filter `g` down to exactly the nodes named by `keep` (indices
+		//! into `g.nodes`, caller's own order), remapping every port's
+		//! `otherNode` into the new index space or to `kInvalidNodeIndex`
+		//! when the target is not itself kept. PURE and static -- see the
+		//! .cpp definition's own comment.
+		//!
+		//! Contract (review-round P3-1 fix on 0562b9c4): tolerates an
+		//! out-of-range entry anywhere in `keep` -- it is silently skipped
+		//! and every OTHER entry's remap is still exactly correct (not
+		//! shifted by the skip count, the bug this fix closed). `keep` is
+		//! documented as a SET of node indices; a caller that repeats one
+		//! gets an unspecified but non-crashing remap for that index's
+		//! incoming edges. BFSGraphClosure's own output already satisfies
+		//! both (clean, no duplicates) -- this contract exists for future
+		//! callers of this now-shared helper, not the one caller today.
+		static PainterMaterialGraph FilterPainterMaterialGraph(
+			const PainterMaterialGraph& g, const std::vector<unsigned int>& keep );
+
 		bool PrepareForDestructionClaimed_();
 		void RenderLoop();
 		void KickRender();
@@ -3366,9 +5811,13 @@ namespace RISE
 		//! (same hold as the coming apply -- no TOCTOU).  Returns false (no
 		//! output written) if there is no retained Document or the entity does
 		//! not resolve.  See SceneEditController.cpp for the full contract.
+		//! doc 88 S4b: `occ` selects WHICH occurrence to capture (0 = first) and
+		//! MUST equal the occurrence the coming write addresses -- capture and
+		//! write reading different lines is exactly how an Undo comes to restore
+		//! the wrong one.  Defaults to 0, the pre-S4b convention.
 		bool CaptureAgentPriorParamValue_(
 			const String& entityName, const String& entityKind, const String& param,
-			String& outPrevValue, bool& outWasAbsent );
+			String& outPrevValue, bool& outWasAbsent, int occ = 0 );
 
 		//! Shared-undo U2: capture the EXACT verbatim bytes + top-level document index of the chunk
 		//! `ApplyAgentRemoveChunk` is about to erase, BEFORE the coming `Job::ApplyCstRemoveChunk` call runs --
@@ -3387,6 +5836,15 @@ namespace RISE
 			const String& target, const String& kind,
 			String& outBytes, int& outIndex, bool& outWasRasterizer );
 
+		//! 87: is the agent's target a CONTAINER node -- a `standard_object`
+		//! that names no `geometry`?  Read from the DOCUMENT (which is what the
+		//! agent path mutates) using CaptureAgentPriorParamValue_'s verbatim
+		//! resolution, so the two cannot drift apart.  FALSE for an
+		//! unresolvable target, for any other chunk role, and when there is no
+		//! retained Document.
+		bool AgentTargetIsContainerObject_( const String& entityName, const String& entityKind );
+
+
 		//! Model-B F5 slice S2: the SHARED body of ApplyAgentInsertChunk /
 		//! ApplyAgentRemoveChunk -- the two verbs differ ONLY in which Job
 		//! primitive runs inside the parked critical section and in their
@@ -3396,6 +5854,50 @@ namespace RISE
 		//! MarkCstHeadDirty + kick on a mutated head).  `isInsert` selects the
 		//! primitive; `a` = chunkText (insert) or target name (remove); `b` =
 		//! unused (insert) or kind (remove).
+		//! R1a (2026-08-09, batched remove_chunks): the batch sibling of ApplyAgentChunkCrud_ -- the whole
+		//! critical section for ApplyAgentRemoveChunks (see that method's doc).  Kept SEPARATE from
+		//! ApplyAgentChunkCrud_ deliberately: the batch takes a LIST, captures a WHOLE-DOCUMENT undo payload
+		//! rather than a per-chunk bytes+index capture, and pushes a DIFFERENT history op.  Everything the two
+		//! genuinely share lives one level down, in Job::ApplyCstRemoveChunks.  Caller holds
+		//! mRenderAdmissionMutex and has already cleared the agent-render gate; this takes mMutex itself.
+		AgentCommitResult ApplyAgentRemoveChunksCrud_(
+			const std::vector<String>& targets,
+			const std::vector<String>& kinds,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+
+		//! Batched agent edits (2026-10-16): the whole critical section for ApplyAgentEditBatch.  Caller holds
+		//! mRenderAdmissionMutex and has already cleared the agent-render gate; this takes mMutex itself.
+		std::vector<AgentCommitResult> ApplyAgentEditBatchCrud_( const std::vector<CstBatchEdit>& edits );
+
+		//! R2 (2026-08-10, replace_geometry_scaffold): the whole critical section for
+		//! ApplyAgentReplaceGeometry (see that method's doc).  Kept SEPARATE from ApplyAgentRemoveChunksCrud_
+		//! for the same reason that one is separate from ApplyAgentChunkCrud_: it takes a whole-document text
+		//! rather than a target list, calls a different Job primitive, and pushes a different history op.
+		//! Caller holds mRenderAdmissionMutex and has already cleared the agent-render gate; this takes
+		//! mMutex itself.
+		//!
+		//! doc-88 Phase 3 S20: GENERALIZED (not copied) so the canvas's
+		//! positioned Duplicate-node rides the SAME commit block.  A positioned
+		//! insert needs exactly this undo shape and no other: its inverse cannot
+		//! be `AgentInsertChunk`'s, because that op's REDO replays through
+		//! `Job::ApplyCstInsertChunk`, whose TIER heuristic would put the copy
+		//! somewhere else than the forward commit did.  A byte-exact prior/post
+		//! text pair is position-agnostic in both directions.  The `entityKind` /
+		//! `noun` / `appliedPhrase` / `duplicateNodeOp` parameters are the ONLY differences between
+		//! the two verbs -- deliberately parameters rather than a second copy of
+		//! the mTxnOpen refusal + cancel-and-park + conflict gate + rebind +
+		//! history-push + epoch-bump + kick sequence, which is precisely the
+		//! "two policies free to drift" shape this file keeps warning about.
+		AgentCommitResult ApplyAgentReplaceGeometryCrud_(
+			const String& objectName,
+			const String& candidateDocText,
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+			const char* verbLabel,
+			const char* entityKind = "standard_object",
+			const char* noun = "geometry replacement",
+			const char* appliedPhrase = "geometry replaced",
+			bool duplicateNodeOp = false );
+
 		AgentCommitResult ApplyAgentChunkCrud_(
 			bool isInsert,
 			const String& a,
@@ -3546,7 +6048,9 @@ namespace RISE
 			double  axisDirY[3];      ///< pixels per world unit, y component
 			bool    axisOk[3];        ///< false if axis colinear with view at drag-start
 			Vector3 prevOrient;       ///< object Euler at drag-start (for Rotate)
-			Matrix4 dragStartMatrix;  ///< authoritative final-matrix anchor for scale drag.
+			Matrix4 dragStartMatrix;  ///< authoritative LOCAL-matrix anchor for scale drag (87: the
+			                          ///< scale is applied along the node's own axes, so a world
+			                          ///< anchor would bake a parent's transform into a child).
 			TransformStateV2 dragStartState;  ///< exact components, stack entries, and
 			                                ///< authoritative-matrix metadata at drag-start.
 			bool    dragStartStateValid;    ///< F6: dragStartState captured this drag.
@@ -3829,6 +6333,7 @@ namespace RISE
 		std::atomic<bool>           mDirectRenderCancelRequested;
 		std::string                 mLastSaveError;
 		std::atomic<unsigned int>   mCancelCount;
+		std::atomic<unsigned int>   mAgentCancelRequestCount;   // see ForTest_GetAgentCancelRequestCount
 		std::atomic<unsigned int>   mRenderCount;
 
 		// Model-B F2 slice S1: render-identity bookkeeping.  The counter
@@ -4651,11 +7156,23 @@ namespace RISE
 		EditorStateSnapshot CaptureEditorStateLocked_() const;
 		void RestoreEditorStateLocked_( const EditorStateSnapshot& s, bool restoreDirty );
 		bool SetSelectionInner_( Category cat, const String& entityName );
-		void UndoInner_();
-		void RedoInner_();
+		bool UndoInner_();
+		bool RedoInner_();
+		//! doc 88 S4b: `occ` is WHICH occurrence of `param` to write (0 = first),
+		//! and `occAddressed` says the caller reached this param through an
+		//! occurrence-addressed row (`stop[2]`) rather than by naming a param the
+		//! chunk spells once.  The pair travels together all the way into the
+		//! history record (SceneEdit::cstParamOcc / cstParamOccAddressed), where
+		//! `occAddressed` arms the undo/redo drift guard.  Both default to the
+		//! pre-S4b meaning, so the agent surface (propose_patch) and every other
+		//! caller stay occurrence-0 with no behaviour change.  The caller is
+		//! responsible for bounding `occ` against the chunk's actual occurrence
+		//! count; an out-of-range `occ` here just makes the Document edit a no-op
+		//! and reports a plain rejection.
 		AgentCommitResult ApplyAgentParamEditInner_(
 			const String& entityName, const String& entityKind, const String& param,
-			const String& value, const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+			const String& value, const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+			int occ = 0, bool occAddressed = false );
 
 		//! External-review round 3 (2026-07-22): the UNLOCKED bodies of the
 		//! category-enumeration getters.  REQUIRE a stable manager set: either
@@ -4668,6 +7185,34 @@ namespace RISE
 		unsigned int CategoryEntityCountLocked_( Category cat ) const;
 		String       CategoryEntityNameLocked_( Category cat, unsigned int idx ) const;
 		String       CategoryActiveNameLocked_( Category cat ) const;
+
+		//! ALL of `cat`'s entity names in ONE pass -- the O(N) bulk twin of
+		//! the O(N) - per - call `CategoryEntityNameLocked_`.  Same list, same
+		//! order, by construction: the manager-backed categories share the
+		//! single EnumerateItemNames call here, and the handful that are
+		//! genuinely index-addressed (Rasterizer, Film, Animation,
+		//! SceneVariant) fall through to the count+index loop, which is O(N)
+		//! for them anyway.
+		//!
+		//! Exists because the per-index getter RE-ENUMERATES THE WHOLE
+		//! MANAGER on every call, so building a list of N names through it is
+		//! O(N^2).  RefreshEnumSnapshot_ has always paid that; the tree API
+		//! is meant to REPLACE the flat one and must not inherit its worst
+		//! property, so both go through this.  REQUIRES mMutex held.
+		void CategoryEntityNamesLocked_( Category cat, std::vector<String>& out ) const;
+
+		//! Registration serial of `name` in `cat`'s backing store, or 0 when
+		//! that store is not an IManager reachable from here (Medium,
+		//! Rasterizer, Film, Animation, SceneVariant) -- see
+		//! TreeNodeSeed::serial for what a 0 costs.  mMutex must be held.
+		//!
+		//! ALSO 0 FOR Category::Painter, which is not a lookup failure but a
+		//! statement that the question is ill-posed: Painter is the union of
+		//! two managers with independent counters, a name may live in both,
+		//! and a row denotes ONE of them by position.  BuildCategoryTreeLocked_
+		//! builds Painter seeds from `CollectPainterUnionEntries` instead and
+		//! never calls this for that category.
+		unsigned long long CategoryEntitySerialLocked_( Category cat, const String& name ) const;
 
 		//! Round-4 structural fix (the "UI reads live managers" P1 class): the
 		//! PUBLIC enumeration getters serve a per-category SNAPSHOT with a
@@ -4683,6 +7228,155 @@ namespace RISE
 		//! acquires mMutex (or anything else) while holding it.
 		void RefreshEnumSnapshot_( Category cat ) const;
 
+		//! 87 step 4a: the same refresh policy, for the node tree.  A
+		//! SEPARATE pass from RefreshEnumSnapshot_ rather than a second half
+		//! of it, deliberately: the flat getters refresh on EVERY indexed
+		//! call, so folding the tree build into them would rebuild the whole
+		//! tree once per `CategoryEntityName` -- N tree builds to enumerate N
+		//! names.  Identical discipline otherwise: bail on render-owns-scene,
+		//! bail on a contended mMutex (serving the prior tree in both cases),
+		//! build into a LOCAL under mMutex, publish under the leaf
+		//! mUiSnapshotMutex -- but COMPARE FIRST and publish only when the
+		//! tree actually changed, stamping a fresh generation when it does.
+		//! An unconditional publish would bump the generation on every count
+		//! call and invalidate every outstanding handle, which would make the
+		//! handle API unusable for the shells it exists for.
+		//!
+		//! Note on the `std::try_to_lock` above: it doubles as a re-entrancy
+		//! guard (a dirty-changed listener that calls back in on the mutating
+		//! thread fails it and gets the stale tree).  By the standard,
+		//! try_lock on a non-recursive mutex the calling thread already owns
+		//! is UNDEFINED; in practice pthreads and Win32 both return false,
+		//! which is the behaviour relied on.  This is PRE-EXISTING -- the
+		//! whole refresh discipline is copied from RefreshEnumSnapshot_,
+		//! which has always done it -- and is recorded here rather than
+		//! changed, because changing it is a change to the deadlock-avoidance
+		//! contract of every snapshot getter, not a local edit.
+		void RefreshTreeSnapshot_( Category cat ) const;
+
+		//! Build `cat`'s tree from the live managers.  REQUIRES mMutex held.
+		AuthoredTree BuildCategoryTreeLocked_( Category cat ) const;
+
+		//! Category::Object's half of that: turn the manager's FLAT entry set
+		//! into the AUTHORED graph's nodes.  REQUIRES mMutex held.
+		//!
+		//! The flat set is the render list, and under 87 step 3 instancing it
+		//! contains SYNTHESIZED entries that have no chunk of their own --
+		//! `I.X` for a subtree clone, `I[i,j]` for a repetition, `I[i,j].X`
+		//! for both.  Showing them would flood the outliner (an 8x8 grid is
+		//! 64+ rows) and offer edits on rows no author can address.  So each
+		//! synthesized entry is FOLDED INTO ITS INSTANCING CHUNK, and the
+		//! discriminator is `IObjectManager::GetObjectProvenance` -- NEVER the
+		//! spelling of the name.  Splitting on `.` or probing for `[` is
+		//! explicitly forbidden by that interface's contract (an author may
+		//! legitimately write `name my.object`), and the map is the only
+		//! sanctioned route.
+		void BuildObjectTreeSeedsLocked_( std::vector<TreeNodeSeed>& outSeeds ) const;
+
+		//! doc-88 Phase 3 S11's refresh cadence for the Painter/Material DAG --
+		//! the SAME compare-then-publish discipline as RefreshTreeSnapshot_
+		//! (a serve-stale on contention/render-owns-scene, republish only on
+		//! an actual structural change, generation bumped only then).
+		bool RefreshPainterMaterialGraphSnapshot_() const;
+
+		//! Gather BOTH halves of the DAG assembler's input under mMutex, from
+		//! ONE `SceneReferenceGraph::AllChunks` document scan (doc-88 S11
+		//! review round 1 P1-1/P1-2 -- see the .cpp for the full design
+		//! note): node seeds are every Painter/Material-category chunk that
+		//! scan finds (identity/keyword/category/name are correct BY
+		//! CONSTRUCTION, no re-resolution), enriched with order/serial/
+		//! defCount read from the live Painter/Material managers as a
+		//! SECONDARY lookup, never as the node source; edge seeds (plus
+		//! Function-node promotion and dangling ports) come from
+		//! `SceneReferenceGraph::EdgesAndDangling` over the SAME retained
+		//! Document (`mJob.GetCstDocument()`), given the SAME chunk scan and
+		//! called ONCE -- calling `ResolveChunk` per node (the prior design)
+		//! or `Edges`/`DanglingReferences` as two separate passes would each
+		//! re-pay the O(N log N) document walk (measured 24s under mMutex on
+		//! a 7442-chunk scene for the ResolveChunk-per-node version).
+		//! REQUIRES mMutex held.
+		void BuildPainterMaterialGraphSeedsLocked_(
+			std::vector<GraphNodeSeed>& outNodes, std::vector<GraphEdgeSeed>& outEdges ) const;
+
+		//! Object Graph slice: the SAME compare-then-publish refresh cadence
+		//! as `RefreshPainterMaterialGraphSnapshot_`, targeting `mUi.
+		//! objectGraph` instead. See that method's own comment for the full
+		//! discipline (serve-stale on `mRenderOwnsScene`/contended `mMutex`,
+		//! republish -- and re-stamp every node's `GraphNodeHandle` from a
+		//! FRESH `NextTreeGeneration()` draw -- only on an actual structural
+		//! change).
+		bool RefreshObjectGraphSnapshot_() const;
+
+		//! Object Graph slice: gather both halves of the DAG assembler's
+		//! input under mMutex, from ONE `SceneReferenceGraph::AllChunks`
+		//! document scan -- the SAME single-scan discipline
+		//! `BuildPainterMaterialGraphSeedsLocked_` uses and for the SAME
+		//! reason (one O(N log N) document walk, not one per node). See
+		//! `ReadObjectGraph`'s own header comment for the full node-set/
+		//! edge-taxonomy/rank-direction design. REQUIRES mMutex held.
+		void BuildObjectGraphSeedsLocked_(
+			std::vector<GraphNodeSeed>& outNodes, std::vector<GraphEdgeSeed>& outEdges ) const;
+
+		//! Object Graph slice: the FOUR-component (UP/DOWN/GEO/SOURCE)
+		//! bidirectional, edge-kind-aware closure `ReadObjectGraphLaidOutFocused`
+		//! filters down to -- see that method's own header comment for the
+		//! full contract of each component, and why UP and DOWN are TWO
+		//! separate worklists rather than one combined walk (a combined walk
+		//! leaks an unrelated sibling subtree into the result the instant an
+		//! ancestor is discovered -- popping that ancestor would then also
+		//! apply the "find my children" rule to it, rediscovering every OTHER
+		//! child it has, not just the path back to the original target).
+		//! Deliberately NOT a reuse of `BFSGraphClosure` (single-direction,
+		//! outEdges-only, no notion of "which paramName this port is") --
+		//! this graph's four relationship kinds (parent/source/obja-objb/
+		//! geometry) need to be told apart by `GraphPort::paramName`, and two
+		//! of the four components (UP's composite-ownership rule, DOWN's
+		//! children rule) walk `inEdges`, which `BFSGraphClosure` never
+		//! touches at all.
+		//!
+		//! PURE and static, same testability posture as `BFSGraphClosure`/
+		//! `FilterPainterMaterialGraph`: a test can hand this a synthetic
+		//! `SceneGraphModel` (hand-built via `BuildPainterMaterialGraph` from
+		//! hand-authored seeds) with no controller, no lock, no live document.
+		static std::vector<unsigned int> ObjectGraphFocusedClosure(
+			const SceneGraphModel& g, unsigned int startIdx );
+
+		//! doc-88 Phase 3 S14: "the current scene's file path", read from
+		//! `mJob.GetCstLoadFileIdentity().filePath` -- see the block comment
+		//! by `ReadPainterMaterialGraphLaidOut`'s declaration for why the
+		//! controller reads THIS field rather than owning a dedicated path
+		//! of its own. `outPath` is cleared first and left empty (not
+		//! untouched) on every return, including a `false` return -- a
+		//! caller that ignores the bool and reads `outPath` anyway sees ""
+		//! (the "no sidecar" / "unsaved scene" degradation), never a stale
+		//! leftover from a previous call.
+		//!
+		//! `blocking=false` (the default -- used by the POLLED read path,
+		//! `ReadPainterMaterialGraphLaidOut`) follows the same non-blocking
+		//! "serve stale on contention" convention `RefreshTreeSnapshot_`/
+		//! `GetAnimationOptions` already use: `try_to_lock`, returns false
+		//! without touching `outPath` on contention OR while a render owns
+		//! the scene -- a polling caller degrades to "no sidecar this call"
+		//! (full auto-layout) rather than blocking a UI thread, and
+		//! self-heals on the next poll.
+		//!
+		//! `blocking=true` (used by the explicit, user-initiated
+		//! `WriteGraphLayoutPositions`) waits for `mMutex` like
+		//! `RequestSave`'s own snapshot step does -- an explicit write must
+		//! not silently no-op just because a poll happened to be
+		//! mid-refresh. It still refuses (returns false) while a render owns
+		//! the scene, same as `RequestSave` itself refuses a save in that
+		//! state -- `WriteGraphLayoutPositions` surfaces that as an error
+		//! rather than a silent no-op, unlike the polled read path, because
+		//! it is an explicit user action.
+		bool GetCurrentScenePath_( std::string& outPath, bool blocking = false ) const;
+
+		//! Does `cat`'s CURRENTLY PUBLISHED tree contain a row named `name`?
+		//! Takes only the leaf snapshot lock and does NOT refresh -- it asks
+		//! about the tree a shell has drawn, which is the question
+		//! `ResolveTreeRowName` needs answered.
+		bool TreeContainsName_( Category cat, const std::string& name ) const;
+
 		//! Document-first ADR phase 2: THE unified UI read surface.  Every
 		//! public read accessor (properties, enumeration, jump rows) serves
 		//! this one struct under the one leaf mUiSnapshotMutex; the writers
@@ -4696,9 +7390,34 @@ namespace RISE
 			std::vector<CameraProperty> propertiesByCategory[kNumCategories];
 			std::vector<String>         entityNames[kNumCategories];
 			String                      activeNames[kNumCategories];
+			//! 87 step 4a.  ONE AuthoredTree per category -- see AuthoredTree's
+			//! own comment for why its vectors may not be hoisted out into
+			//! parallel arrays here.
+			AuthoredTree                trees[kNumCategories];
+			//! doc-88 Phase 3 S11.  ONE graph, not per-category (unlike
+			//! `trees`) -- it already spans exactly Category::Painter +
+			//! Category::Material (plus any edge-reached Function node), so a
+			//! per-category slot would be either empty or a duplicate of this
+			//! one for every other category.
+			PainterMaterialGraph        painterMaterialGraph;
+			//! Object Graph slice: same "ONE graph, not per-category" shape
+			//! as `painterMaterialGraph` above, spanning
+			//! `ChunkCategory::Object` + `ChunkCategory::Geometry` (plus the
+			//! `rect_light`/`shape_light` keyword special-case) -- see
+			//! `ReadObjectGraph`'s own header comment.
+			SceneGraphModel             objectGraph;
 		};
 		mutable std::mutex        mUiSnapshotMutex;   // leaf: never held while acquiring any other lock
 		mutable EditorUiSnapshot  mUi;
+
+		// NO PER-CONTROLLER GENERATION COUNTER.  Round-4 P3-1 moved it to a
+		// process-global atomic (`NextTreeGeneration()` in the .cpp): a
+		// per-controller counter seeded at 1 meant a handle minted on
+		// controller A decoded cleanly against controller B and named B's node
+		// at the same index.  Global also keeps the cross-CATEGORY property the
+		// old member had (one counter serves every category, so no two
+		// published trees share a generation) without depending on the two
+		// being in the same object.
 
 		//! External-review P1 (2026-07-22): general reference-target guard for
 		//! GUI property edits.  Returns true (== "reject this edit") ONLY when

@@ -19,6 +19,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Animation/KeyframableHelper.h"
+#include "../Utilities/SurfaceCurvature.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -206,6 +207,17 @@ bool CylinderGeometry::IntersectCappedSolid( const Ray& ray, Scalar& tNear, int&
 	int		candS[4];
 	int		n = 0;
 
+	// Scale-relative self-intersection floor for every candidate root --
+	// same mechanism and same floor as RaySphereIntersection (see its
+	// note) and RayBilinearPatchIntersection (debt 21): a ray published
+	// from a hit on this cylinder that crosses it has a ~1e-12 self root
+	// which the fixed NEARZERO gate let through.  Measured 2026-09-05
+	// (docs/CLOTH_FABRIC_DESIGN.md section 15, debt 25 sibling audit): a
+	// unit cylinder carrying a full-sphere transmissive weave lit from
+	// behind read PT 0.46x (capped) / 0.35x (open tube, side-on) of BDPT.
+	const Scalar coordScale = fabs( axO ) + fabs( raO ) + fabs( rbO ) + fabs( m_dRadius );
+	const Scalar tMin = NEARZERO * ( Scalar(1) + coordScale );
+
 	// --- Side wall: infinite cylinder of radius m_dRadius about the axis ---
 	// Reduced quadratic A t^2 + 2 B t + C = 0 (B is the half coefficient),
 	// matching Ray?CylinderIntersection's convention.
@@ -220,7 +232,7 @@ bool CylinderGeometry::IntersectCappedSolid( const Ray& ray, Scalar& tNear, int&
 			const Scalar tt[2] = { (-B - sq)*inva, (-B + sq)*inva };
 			for( int i = 0; i < 2; i++ ) {
 				const Scalar t = tt[i];
-				if( t > NEARZERO ) {
+				if( t > tMin ) {
 					const Scalar ax = axO + t*axD;
 					if( ax >= m_dAxisMin && ax <= m_dAxisMax ) {
 						candT[n] = t; candS[n] = SURF_SIDE; n++;
@@ -238,7 +250,7 @@ bool CylinderGeometry::IntersectCappedSolid( const Ray& ray, Scalar& tNear, int&
 		const Scalar r2        = m_dRadius*m_dRadius;
 		for( int i = 0; i < 2; i++ ) {
 			const Scalar t = (planes[i] - axO)*invAxD;
-			if( t > NEARZERO ) {
+			if( t > tMin ) {
 				const Scalar ra = raO + t*raD;
 				const Scalar rb = rbO + t*rbD;
 				if( ra*ra + rb*rb <= r2 ) {
@@ -367,6 +379,49 @@ void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bH
 					FillSurfaceNormalUV( ri.ptExit, ( ri.range2 > 0.0 ) ? surfOther : surfHit, ri.vNormal2, 0 );
 					ri.vGeomNormal2 = ri.vNormal2;	// analytical: shading == geometric
 				}
+
+				// PHASE-1 GEOMETRY-DERIVED SHADING SIGNALS
+				// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.4) -- see the
+				// identical block in SphereGeometry::IntersectRay for the full
+				// rationale.  ComputeSurfaceDerivatives handles BOTH surfaces of
+				// a capped cylinder: it identifies an end cap by an axis-aligned
+				// normal and returns dndu = dndv = 0 there, so a cap correctly
+				// reads as flat (H = 0) while the side wall reports its genuine
+				// 1/(2r).  No cap special-case is needed here.
+				{
+					const SurfaceDerivatives sd = ComputeSurfaceDerivatives( ri.ptIntersection, ri.vNormal );
+					if( sd.valid ) {
+						ri.derivatives.dpdu = sd.dpdu;
+						ri.derivatives.dpdv = sd.dpdv;
+						ri.derivatives.dndu = sd.dndu;
+						ri.derivatives.dndv = sd.dndv;
+						ri.derivatives.valid = true;
+						// The texcoord chart map travels with the derivatives: the
+						// footprint solve needs to know how this primitive's own (u, v)
+						// parameters relate to the (s, t) stamped into ptCoord above.
+						// Without it SolveFootprintUV publishes radians where the
+						// texture sampler expects [0, 1] -- see the chart-map comment on
+						// SurfaceDerivativesInfo.
+						ri.derivatives.dsdu = sd.dsdu;
+						ri.derivatives.dsdv = sd.dsdv;
+						ri.derivatives.dtdu = sd.dtdu;
+						ri.derivatives.dtdv = sd.dtdv;
+						ri.derivatives.texChartValid = sd.texChartValid;
+						if( SurfaceCurvatureDemand::Any() ) {
+							ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+						}
+						// docs/CLOTH_FABRIC_DESIGN.md 9.1: this dpdu is a
+						// genuine surface parameterization with no
+						// discontinuous fallback branch (unlike the mesh
+						// sites, and true on caps too -- the cap's dpdu is
+						// still the primitive's own closed-form tangent),
+						// so hand it to the shading ONB unconditionally on
+						// sd.valid.
+						ri.bShadingTangentFromGeometry = true;
+						ri.vShadingTangent             = sd.dpdu;	// object space
+						ri.bHasShadingTangent          = true;
+					}
+				}
 			}
 			else
 			{
@@ -477,6 +532,42 @@ void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bH
 
 		// Calculate UV co-ordinates
 		GeometricUtilities::CylinderTextureCoord( ri.ptIntersection, m_chAxis, m_dOVRadius, m_dAxisMin, m_dAxisMax, ri.ptCoord );
+
+		// PHASE-1 GEOMETRY-DERIVED SHADING SIGNALS -- see the capped-path
+		// block above (and SphereGeometry::IntersectRay) for the rationale.
+		// Open-tube path: every hit is on the side wall, so the derivatives
+		// are unconditionally the curved ones.
+		{
+			const SurfaceDerivatives sd = ComputeSurfaceDerivatives( ri.ptIntersection, ri.vNormal );
+			if( sd.valid ) {
+				ri.derivatives.dpdu = sd.dpdu;
+				ri.derivatives.dpdv = sd.dpdv;
+				ri.derivatives.dndu = sd.dndu;
+				ri.derivatives.dndv = sd.dndv;
+				ri.derivatives.valid = true;
+				// The texcoord chart map travels with the derivatives: the
+				// footprint solve needs to know how this primitive's own (u, v)
+				// parameters relate to the (s, t) stamped into ptCoord above.
+				// Without it SolveFootprintUV publishes radians where the
+				// texture sampler expects [0, 1] -- see the chart-map comment on
+				// SurfaceDerivativesInfo.
+				ri.derivatives.dsdu = sd.dsdu;
+				ri.derivatives.dsdv = sd.dsdv;
+				ri.derivatives.dtdu = sd.dtdu;
+				ri.derivatives.dtdv = sd.dtdv;
+				ri.derivatives.texChartValid = sd.texChartValid;
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
+				// docs/CLOTH_FABRIC_DESIGN.md 9.1: this dpdu is a genuine
+				// surface parameterization with no discontinuous fallback
+				// branch (unlike the mesh sites), so hand it to the shading
+				// ONB unconditionally on sd.valid.
+				ri.bShadingTangentFromGeometry = true;
+				ri.vShadingTangent             = sd.dpdu;	// object space
+				ri.bHasShadingTangent          = true;
+			}
+		}
 	}
 }
 
@@ -487,7 +578,7 @@ bool CylinderGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scal
 		Scalar	tNear = 0.0, tFar = 0.0;
 		int		surfNear = SURF_SIDE, surfFar = SURF_SIDE;
 		if( IntersectCappedSolid( ray, tNear, surfNear, tFar, surfFar ) ) {
-			// IntersectCappedSolid only returns candidates with t > NEARZERO.
+			// IntersectCappedSolid only returns candidates above its scale-relative self-hit floor.
 			// Honour the front/back-face filter (IGeometry contract, and consistent
 			// with the detailed IntersectRay above): occlude only if a crossing of
 			// the requested facing lies within dHowFar.  Front = outward normal
@@ -681,10 +772,39 @@ SurfaceDerivatives CylinderGeometry::ComputeSurfaceDerivatives( const Point3& ob
 					break;
 			}
 
+			// THE CHART MAP for the cap (docs/GEOMETRY_DERIVATIVES.md "The
+			// texcoord chart map").  FillSurfaceNormalUV stamps exactly the
+			// (ra, rb) disk coordinate this branch differentiates --
+			// s = (ra/r + 1)/2, t = (rb/r + 1)/2 -- so before the handedness
+			// swap below the map is the IDENTITY (unlike the side wall and
+			// every other analytic primitive, whose charts are normalised
+			// angles).  The swap exchanges which of the two the derivative
+			// `u` is, and the map has to follow.
+			sd.dsdu = 1.0; sd.dsdv = 0.0;
+			sd.dtdu = 0.0; sd.dtdv = 1.0;
+			sd.texChartValid = true;
+
 			// Orient (dpdu, dpdv, n) right-handed: swap if the frame is left-handed
-			// (happens on the -axis cap where the outward normal is negated).
+			// WHICH cap this fires on is NOT "the -axis one" (this comment
+			// said that until fix round 2, and so did
+			// docs/GEOMETRY_DERIVATIVES.md and TextureFootprintTest).  It is
+			// whichever cap's outward normal opposes `dpdu x dpdv`, and the
+			// (ra, rb) pairs above are not consistently cyclic:
+			//
+			//     axis 'x'  (ra, rb) = (y, z)  dpdu x dpdv = +X  -> swaps on -x
+			//     axis 'y'  (ra, rb) = (x, z)  dpdu x dpdv = -Y  -> swaps on +y
+			//     axis 'z'  (ra, rb) = (x, y)  dpdu x dpdv = +Z  -> swaps on -z
+			//
+			// 'y' is the odd one out because its pair is (x, z) where the
+			// cyclic choice would be (z, x).  Measured by instrumenting this
+			// branch and driving all six caps through
+			// TextureFootprintTest's chart oracle (fix round 2); the FD
+			// oracle's own cap case is the +y cylinder, so the swapped
+			// branch IS the one under test.
 			if( Vector3Ops::Dot( Vector3Ops::Cross( dpdu, dpdv ), objSpaceNormal ) < 0.0 ) {
 				Vector3 tmp = dpdu; dpdu = dpdv; dpdv = tmp;
+				sd.dsdu = 0.0; sd.dsdv = 1.0;
+				sd.dtdu = 1.0; sd.dtdv = 0.0;
 			}
 
 			sd.dpdu = dpdu;
@@ -771,6 +891,34 @@ SurfaceDerivatives CylinderGeometry::ComputeSurfaceDerivatives( const Point3& ob
 	sd.uv = Point2( axial, theta );  // matches the u↔axial, v↔theta swap
 	sd.valid = true;
 
+	// THE CHART MAP for the side wall (docs/GEOMETRY_DERIVATIVES.md
+	// "The texcoord chart map").  GeometricUtilities::CylinderTextureCoord
+	// emits, from the SAME (a, b, axial) axis decomposition used above,
+	//     s = atan2(b, a) / (2*PI),   t = (axial - axisMin) / height
+	// while the right-handedness swap makes the DERIVATIVE parameters
+	// (u, v) = (axial, theta).  So the map is transposed -- the axial
+	// parameter drives t and the angular one drives s -- and carries
+	// the two very different scale factors 1/height and 1/(2*PI) that
+	// the un-mapped solve was silently omitting.
+	//
+	// SIGN: the per-axis right-handedness fix-ups above rotate dpdv the
+	// OPPOSITE way from increasing atan2(b, a) on the x- and z-axis
+	// cylinders (compare each case's dpdv against the natural
+	// d/dtheta (-r sin, r cos) in that case's (a, b) pair); only the
+	// y-axis case rotates with it.  Getting this backwards would leave
+	// |dudx| right and its sign wrong -- invisible to mip LOD, which
+	// squares, and visible to the finite-difference oracle in
+	// tests/TextureFootprintTest.cpp.
+	const Scalar height = m_dAxisMax - m_dAxisMin;
+	if( fabs( height ) > NEARZERO ) {
+		const Scalar thetaSign = ( m_chAxis == 'y' ) ? 1.0 : -1.0;
+		sd.dsdu = 0.0;
+		sd.dsdv = thetaSign / TWO_PI;
+		sd.dtdu = 1.0 / height;
+		sd.dtdv = 0.0;
+		sd.texChartValid = true;
+	}
+
 	return sd;
 }
 
@@ -812,11 +960,13 @@ void CylinderGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 	case RADIUS_ID:
 		{
 			m_dRadius = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	case HEIGHT_ID:
 		{
 			m_dHeight = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	}
@@ -833,4 +983,134 @@ void CylinderGeometry::RegenerateData( )
 	} else {
 		GlobalLog()->PrintSourceError( "CylinderGeometry:: m_dRadius is <= 0", __FILE__, __LINE__ );
 	}
+	BumpShapeRevision();
+}
+
+
+//! IGeometry::DistanceToSurface -- EXACT for BOTH of this class's forms.
+//!
+//! `m_bCapped` picks between two genuinely different SURFACES, and they get
+//! two different closed forms rather than one with a fudge:
+//!
+//!   * CAPPED (a closed solid: side wall plus two cap disks).  In the
+//!     (radial, axial) half-plane the solid is a rectangle, so the standard
+//!     exact 2D box field in those coordinates is the exact 3D signed
+//!     distance, inside as well as outside -- but what is REPORTED is that
+//!     field CLAMPED AT ZERO, so a point inside the solid answers 0
+//!     (interpenetration is contact, design §2) rather than its depth.
+//!   * OPEN (a tube: the side wall only, no caps).  The surface is an
+//!     annulus-free cylinder of finite length, so a point level with the
+//!     tube is `|rho - R|` away and a point past either end is the
+//!     hypotenuse of that radial offset and the axial overhang.  There is
+//!     no "inside" -- an open tube encloses nothing -- so a point on the
+//!     axis is `R` away, which is right.
+//!
+//! The axis is whichever of x / y / z `m_chAxis` names, and the axial
+//! extent is [m_dAxisMin, m_dAxisMax] -- the same convention
+//! GenerateBoundingBox uses, read from the same two members, so the two
+//! cannot disagree about which cylinder this is.
+bool CylinderGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+
+	Scalar axial = 0, r1 = 0, r2 = 0;
+	switch( m_chAxis )
+	{
+	case 'x': axial = ptObject.x; r1 = ptObject.y; r2 = ptObject.z; break;
+	case 'y': axial = ptObject.y; r1 = ptObject.x; r2 = ptObject.z; break;
+	case 'z': axial = ptObject.z; r1 = ptObject.x; r2 = ptObject.y; break;
+	default:  return false;		// an axis this class does not model: refuse rather than guess
+	}
+
+	const Scalar rho = std::sqrt( r1*r1 + r2*r2 );
+	const Scalar dRadial = rho - m_dRadius;
+
+	Scalar d = Scalar( 0 );
+	if( m_bCapped ) {
+		const Scalar centre = ( m_dAxisMin + m_dAxisMax ) * Scalar( 0.5 );
+		const Scalar half   = ( m_dAxisMax - m_dAxisMin ) * Scalar( 0.5 );
+		const Scalar dAxial = std::fabs( axial - centre ) - half;
+
+		const Scalar ox = ( dRadial > Scalar( 0 ) ) ? dRadial : Scalar( 0 );
+		const Scalar oy = ( dAxial  > Scalar( 0 ) ) ? dAxial  : Scalar( 0 );
+		const Scalar outside = std::sqrt( ox*ox + oy*oy );
+		const Scalar qmax = std::max( dRadial, dAxial );
+		const Scalar inside = ( qmax < Scalar( 0 ) ) ? qmax : Scalar( 0 );
+		// CLAMPED AT ZERO rather than fabs: a point inside the closed solid
+		// reads 0 ("interpenetration IS contact").  The OPEN tube below
+		// needs no such clause -- it encloses nothing, so it has no inside.
+		const Scalar sgn = outside + inside;
+		d = ( sgn > Scalar( 0 ) ) ? sgn : Scalar( 0 );
+	} else {
+		// Overhang past whichever end the point is beyond; zero when it is
+		// level with the tube.
+		Scalar over = Scalar( 0 );
+		if( axial < m_dAxisMin )      over = m_dAxisMin - axial;
+		else if( axial > m_dAxisMax ) over = axial - m_dAxisMax;
+
+		if( over <= Scalar( 0 ) ) {
+			d = std::fabs( dRadial );
+		} else {
+			d = std::sqrt( dRadial*dRadial + over*over );
+		}
+	}
+
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}
+
+//! IGeometry::SignedDistanceLower -- the CAPPED form's field, UNCLAMPED;
+//! the OPEN form REFUSES.
+//!
+//! That split is not a convenience, it is the sheet rule
+//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).  A capped cylinder is a
+//! closed solid and the (radial, axial) 2D box field is its exact signed
+//! distance on both sides, so the flag is set.  An OPEN tube encloses
+//! nothing: there is no "inside" for a sign to be exact about, and a
+//! family that cannot decide inside from outside must refuse -- the same
+//! refusal a plane, a disk and a mesh give.
+bool CylinderGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+	Scalar& outSigned, bool& outExact ) const
+{
+	(void)maxDistObject;
+	outExact = false;
+	if( !m_bCapped ) {
+		return false;			// a SHEET: no inside to sign
+	}
+	if( !( m_dRadius > Scalar( 0 ) ) || !( m_dAxisMax > m_dAxisMin ) ) {
+		return false;			// degenerate: no interior points near a landing
+	}
+
+	Scalar axial = 0, r1 = 0, r2 = 0;
+	switch( m_chAxis )
+	{
+	case 'x': axial = ptObject.x; r1 = ptObject.y; r2 = ptObject.z; break;
+	case 'y': axial = ptObject.y; r1 = ptObject.x; r2 = ptObject.z; break;
+	case 'z': axial = ptObject.z; r1 = ptObject.x; r2 = ptObject.y; break;
+	default:  return false;		// an axis this class does not model: refuse rather than guess
+	}
+
+	const Scalar rho = std::sqrt( r1*r1 + r2*r2 );
+	const Scalar dRadial = rho - m_dRadius;
+
+	const Scalar centre = ( m_dAxisMin + m_dAxisMax ) * Scalar( 0.5 );
+	const Scalar half   = ( m_dAxisMax - m_dAxisMin ) * Scalar( 0.5 );
+	const Scalar dAxial = std::fabs( axial - centre ) - half;
+
+	const Scalar ox = ( dRadial > Scalar( 0 ) ) ? dRadial : Scalar( 0 );
+	const Scalar oy = ( dAxial  > Scalar( 0 ) ) ? dAxial  : Scalar( 0 );
+	const Scalar outside = std::sqrt( ox*ox + oy*oy );
+	const Scalar qmax = std::max( dRadial, dAxial );
+	const Scalar inside = ( qmax < Scalar( 0 ) ) ? qmax : Scalar( 0 );
+
+	const Scalar sgn = outside + inside;
+	if( !RISE::IsFiniteDouble( (double)sgn ) ) {
+		return false;
+	}
+	outSigned = sgn;
+	outExact  = true;
+	return true;
 }

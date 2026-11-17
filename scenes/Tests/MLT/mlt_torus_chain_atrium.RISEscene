@@ -25,14 +25,12 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-mlt_rasterizer
+# Legacy phase 2 slice B2: was mlt_rasterizer (frozen) -> bdpt_pel_rasterizer; mutations_per_pixel -> samples, dropped bootstrap_samples 1000000, chains 64, large_step_prob 0.25.
+bdpt_pel_rasterizer
 {
 	max_eye_depth		10
 	max_light_depth		10
-	bootstrap_samples	1000000
-	chains				64
-	mutations_per_pixel	1000
-	large_step_prob		0.25
+	samples				1000
 }
 
 file_rasterizeroutput
@@ -292,7 +290,8 @@ lambertian_luminaire_material
 {
 	name				warm_lum
 	exitance			pnt_warm_light
-	scale				200.0
+	# DL-320 (2026-09-28): 200 -> 55.6.  The ceiling panels are wound face-UP 0.02 below the ceiling, so the atrium was lit by their BACK faces, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and x0.278 on all three panel materials returns the torus chain (centre of frame) to its pre-DL-320 MLT level.
+	scale				55.6
 	material			none
 }
 
@@ -300,7 +299,8 @@ lambertian_luminaire_material
 {
 	name				cool_lum
 	exitance			pnt_cool_light
-	scale				200.0
+	# DL-320 (2026-09-28): 200 -> 55.6.  The ceiling panels are wound face-UP 0.02 below the ceiling, so the atrium was lit by their BACK faces, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and x0.278 on all three panel materials returns the torus chain (centre of frame) to its pre-DL-320 MLT level.
+	scale				55.6
 	material			none
 }
 
@@ -308,7 +308,8 @@ lambertian_luminaire_material
 {
 	name				neutral_lum
 	exitance			pnt_neutral_light
-	scale				2000.0
+	# DL-320 (2026-09-28): 2000 -> 556.  The ceiling panels are wound face-UP 0.02 below the ceiling, so the atrium was lit by their BACK faces, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and x0.278 on all three panel materials returns the torus chain (centre of frame) to its pre-DL-320 MLT level.
+	scale				556.0
 	material			none
 }
 
@@ -570,6 +571,7 @@ spot_light
 	position			0 7.5 4.0
 	target				0 3.5 4.0
 	color				1.0 0.98 0.94
+	colorspace			sRGB
 	power				4.0
 	inner				10
 	outer				25

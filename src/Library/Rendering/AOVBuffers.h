@@ -94,6 +94,9 @@ namespace RISE
 
 			/// Accumulates a weighted normal sample at (x,y).
 			/// The Vector3 components (double) are narrowed to float.
+			/// Callers pass UNIT normals; the running sum is a weighted
+			/// arithmetic mean, which Normalize() renormalizes back to
+			/// unit length.
 			void AccumulateNormal(
 				unsigned int x,
 				unsigned int y,
@@ -119,10 +122,13 @@ namespace RISE
 			/// fallback on empty/all-delta scenes without inventing zero samples.
 			void MarkGuidesExamined();
 
-			/// Finalizes every allocated AOV at (x,y). Albedo and normal use
-			/// the supplied inverse total sample weight; depth uses its own
-			/// accumulated hit-only weight so background misses do not dilute
-			/// silhouette distances.
+			/// Finalizes every allocated AOV at (x,y). Albedo uses the supplied
+			/// inverse total sample weight; normal is RENORMALIZED to unit
+			/// length (the arithmetic mean of unit normals is not a unit
+			/// vector -- see the spherical-mean note in the .cpp -- so
+			/// `invWeight` does not affect it); depth uses its own accumulated
+			/// hit-only weight so background misses do not dilute silhouette
+			/// distances.
 			void Normalize(
 				unsigned int x,
 				unsigned int y,

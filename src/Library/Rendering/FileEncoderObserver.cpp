@@ -1403,7 +1403,7 @@ namespace
 		DiskFileWriteBuffer* output = new DiskFileWriteBuffer(filename.c_str());
 		const bool success = output->ReadyToWrite() &&
 			output->setBytes(bytes.empty() ? 0 : &bytes[0],
-				static_cast<unsigned int>(bytes.size())) && output->Close();
+				static_cast<unsigned int>(bytes.size())) && output->Finish();
 		safe_release(output);
 		if( !success ) error = "could not write and close '"+filename+"'";
 		return success;
@@ -1439,7 +1439,7 @@ namespace
 		catch( ... ) {
 			encoded = false;
 		}
-		const bool artifactClosed = artifact->Close();
+		const bool artifactClosed = artifact->Finish();
 		safe_release(artifact);
 		if( !encoded || !artifactClosed || !ArtifactHasBytes(filename.c_str()) ) {
 			std::remove(filename.c_str());
@@ -1816,8 +1816,15 @@ namespace
 				EXRReader reader(*buffer,eColorSpace_Rec709RGB_Linear);
 				unsigned int width = 0u;
 				unsigned int height = 0u;
-				reader.BeginRead(width,height);
+				// EXRReader reports decode failures by returning false (it
+				// catches the SDK exception and logs it) rather than throwing.
+				const bool readerDecoded = reader.BeginRead(width,height);
 				reader.EndRead();
+				if( !readerDecoded ) {
+					error = "OpenEXR pixel decode failed: the reader rejected the artifact";
+					buffer->release();
+					return false;
+				}
 				const std::uint64_t expectedWidth = static_cast<std::uint64_t>(
 					static_cast<std::int64_t>(facts.dataWindow[2])-
 					static_cast<std::int64_t>(facts.dataWindow[0])+1);
@@ -2487,7 +2494,7 @@ void FileEncoderObserver::WriteFile(
 	const char* suffix,
 	const bool denoisedDerivative )
 {
-	if ( !store_ || !encoder_ ) return;
+	if ( !store_ || !encoder_ || store_->Width() == 0 || store_->Height() == 0 ) return;
 
 	// Determine the file extension from the encoder's first listed
 	// extension.  This is the canonical extension per
@@ -2503,11 +2510,16 @@ void FileEncoderObserver::WriteFile(
 	EncodeOpts frameOpts = opts_;
 	frameOpts.frame = frame;
 	frameOpts.denoisedDerivative = denoisedDerivative;
-	const bool primaryArtifact = IsPrimaryArtifact(*encoder_,frameOpts);
-	std::string writeError;
-	if( !EncodeFrameStoreFileTransaction(*store_,*encoder_,frameOpts,filename,
-		writeError) ) {
-		if( !store_->Meta().renderFidelityStatus.empty() ) {
+
+	// Fire renders publish the artifact and its provenance sidecar as one
+	// fail-closed transaction (FIRE_OUTPUT_PROVENANCE_PIN_V1); there is no
+	// emergency fallback because an unprovenanced fire artifact must never
+	// be published.
+	if( !store_->Meta().renderFidelityStatus.empty() ) {
+		const bool primaryArtifact = IsPrimaryArtifact(*encoder_,frameOpts);
+		std::string writeError;
+		if( !EncodeFrameStoreFileTransaction(*store_,*encoder_,frameOpts,filename,
+			writeError) ) {
 			if( primaryArtifact ) {
 				GlobalLog()->PrintEx( eLog_Error,
 					"FileEncoderObserver:: output_provenance_unavailable for '%s': %s",
@@ -2520,33 +2532,50 @@ void FileEncoderObserver::WriteFile(
 				filename.c_str(),writeError.c_str() );
 			return;
 		}
-		const FileEncoderObserver* pMe = this;
-		const std::string emergencyPattern = "fro_temp_"+
-			std::to_string(static_cast<unsigned long>(
-				reinterpret_cast<uintptr_t>(pMe)))+
-			(suffix ? suffix : "")+(bMultiple_ ? "_" : "");
-		const std::string emergency = BuildFrameArtifactFilename(
-			emergencyPattern,"",frame,ext,bMultiple_);
-
-		std::string emergencyError;
-		if( !EncodeFrameStoreFileTransaction(*store_,*encoder_,frameOpts,emergency,
-			emergencyError) ) {
-			GlobalLog()->PrintEx( eLog_Error,
-				"FileEncoderObserver:: artifact transaction failed for '%s' (%s); "
-				"emergency transaction also failed for '%s' (%s)",
-				filename.c_str(),writeError.c_str(),emergency.c_str(),
-				emergencyError.c_str() );
-			return;
-		}
-		GlobalLog()->PrintEx( eLog_Warning,
-			"Artifact transaction failed for '%s' (%s); rendered scene written "
-			"transactionally to emergency file '%s' instead!",
-			filename.c_str(),writeError.c_str(),emergency.c_str() );
-		// Use the emergency filename as the effective filename for
-		// the success log message below.
-		filename = emergency;
+		GlobalLog()->PrintEx( eLog_Event,
+			"FileEncoderObserver:: Written to '%s'", filename.c_str() );
+		return;
 	}
 
-	GlobalLog()->PrintEx( eLog_Event,
-		"FileEncoderObserver:: Written to '%s'", filename.c_str() );
+	// Stage each frame beside its destination. If staging is unavailable,
+	// allow the historical direct-write path for writable destinations.
+	// Publication failures retain completed staging bytes. Other failures
+	// may try a new exclusive emergency file without trusting an old candidate.
+	const auto encode = [&]( DiskFileWriteBuffer& buffer ) {
+		encoder_->Encode( *store_, buffer, frameOpts );
+		return true;
+	};
+	DiskFileWriteBuffer::WriteDiagnostics primary;
+	if( !DiskFileWriteBuffer::WriteAtomically(filename, encode, DiskFileWriteBuffer::StagingPolicy::AllowInPlace, &primary) ) {
+		if( !primary.recoveryPath.empty() ) {
+			GlobalLog()->PrintEx(eLog_Warning, "Could not publish '%s'; completed image retained at '%s'",
+				filename.c_str(), primary.recoveryPath.c_str());
+			return;
+		}
+		const std::string emergency = "fro_temp_" +
+			std::to_string( reinterpret_cast<uintptr_t>( this ) ) + (suffix ? suffix : "") +
+			(bMultiple_ ? "_" : "") +
+			BuildFrameArtifactFilename( "", "", frame, ext, bMultiple_ );
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Could not publish '%s', trying emergency file '%s'",
+			filename.c_str(), emergency.c_str() );
+		DiskFileWriteBuffer::WriteDiagnostics recovery;
+		if( !DiskFileWriteBuffer::WriteNewFile(emergency, encode, &recovery) ) {
+			GlobalLog()->PrintEx(eLog_Error, "FileEncoderObserver: Could not write emergency file '%s': %s",
+				emergency.c_str(), recovery.error.message().c_str());
+			return;
+		}
+		filename = recovery.recoveryPath;
+	} else {
+		// A non-fire artifact replaced whatever was at the destination; a
+		// fire provenance sidecar left beside it would now describe the
+		// wrong bytes, so retire it.
+		auto transactionLock = AcquireFileTransactionLock();
+		const std::string staleSidecar = filename + ".provenance.cbor";
+		std::error_code ec;
+		if( std::filesystem::is_regular_file( staleSidecar, ec ) ) {
+			std::remove( staleSidecar.c_str() );
+		}
+	}
+	GlobalLog()->PrintEx( eLog_Event, "FileEncoderObserver:: Written to '%s'", filename.c_str() );
 }

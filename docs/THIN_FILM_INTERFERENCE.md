@@ -57,7 +57,7 @@ documented extension point.
 | **One conductor-Fresnel chokepoint**, templated on `T ∈ {Scalar, RISEPel}` | `Optics::CalculateConductorReflectance<T>` [Optics.hpp:34](../src/Library/Utilities/Optics.hpp) | Thin-film is a sibling evaluator + a new `FresnelMode`, not a refactor. Called from GGX ([GGXSPF.cpp:225/427](../src/Library/Materials/GGXSPF.cpp), [GGXBRDF.cpp:177/283](../src/Library/Materials/GGXBRDF.cpp)) and 5 Cook-Torrance sites. |
 | **A BSDF sees its wavelength on the spectral path** | `valueNM(vLightIn, ri, const Scalar nm)` [IBSDF.h:61](../src/Library/Interfaces/IBSDF.h); `ScatterNM(ri, sampler, nm, …)` [ISPF.h:141](../src/Library/Interfaces/ISPF.h) | We evaluate Airy reflectance **directly per hero wavelength** — no spectral antialiasing needed on the primary path. The single most important fact for the feature. |
 | All 4 hero wavelengths evaluated independently; HWSS companions via `EvaluateKrayNM` else `valueNM` | [PathTracingIntegrator.cpp:4046/4053](../src/Library/Shaders/PathTracingIntegrator.cpp); `EvaluateKrayNM` [ISPF.h:206](../src/Library/Interfaces/ISPF.h) | Must implement the thin-film term identically in `ScatterNM`, `valueNM`, and `EvaluateKrayNM` (RGB/NM twin hazard — [audit-by-bug-pattern](skills/audit-by-bug-pattern.md)). |
-| **Tabulated `(nm, value)` asset path already exists** | `PiecewiseLinearScalarPainter` [PiecewiseLinearScalarPainter.h](../src/Library/Painters/PiecewiseLinearScalarPainter.h); `scalar_painter { file … }` [AsciiSceneParser.cpp:1180](../src/Library/Parsers/ChunkParserRegistry.cpp) | refractiveindex.info n/k drops straight in (2-col, bare numeric, nm; split n and k files). |
+| **Tabulated `(nm, value)` asset path already exists** | `PiecewiseLinearScalarPainter` [PiecewiseLinearScalarPainter.h](../src/Library/Painters/PiecewiseLinearScalarPainter.h); `scalar_painter { file … }` [ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) | refractiveindex.info n/k drops straight in (2-col, bare numeric, nm; split n and k files). |
 | n, k, roughness are `IScalarPainter` (no JH uplift); reflectance/tint are `IPainter` | GGXBRDF/GGXSPF slot types | New film slots (`film_ior`, `film_extinction`, `film_thickness`) are `IScalarPainter`. Routing IOR through `IPainter` mangles it via JH uplift. |
 | GGX has anisotropy (`alphax`/`alphay` + tangent rotation) | GGXBRDF.h | Guilloché cut-direction micro-roughness is already supported — no new aniso work. |
 | **Kulla-Conty geometric tables baked at F=1** (Fresnel-agnostic) | `E_ss`/`E_avg` [MicrofacetEnergyLUT.h](../src/Library/Utilities/MicrofacetEnergyLUT.h) | No table regeneration. Only `ComputeFresnelAvg` (LUT.h:146) hardwires conductor Fresnel → needs a thin-film-aware hemispherical average for the multiscatter term. |
@@ -410,7 +410,7 @@ src/Library/Utilities/ThinFilm.h        # lifted, RISE Scalar/complex, N-layer e
 src/Library/Utilities/ThinFilmRGBLUT.*  # per-material (cosθ×thickness)→RGB bake (if a .cpp)
 src/Library/Materials/GGX{BRDF,SPF,Material}.*   # eFresnelThinFilmConductor + film_* slots
 src/Library/Interfaces/IMaterial.h      # enum value
-src/Library/Parsers/AsciiSceneParser.cpp; Job.cpp; RISE_API.{h,cpp}   # scene language + factory
+src/Library/Parsers/ChunkParserRegistry.cpp; Job.cpp; RISE_API.{h,cpp}   # scene language + factory
 tests/ThinFilmBRDFTest.cpp              # production evaluator ≡ Phase-1 oracle; furnace; reciprocity
 scenes/{FeatureBased,Tests}/Materials/thinfilm_*.RISEscene
 ```
@@ -676,8 +676,8 @@ identical (or each-optimal) thermal treatment.
 
 ## 14. Open questions / future
 
-- Multi-layer scene syntax (`thinfilm_stack` chunk) — when a use case appears.
-- `ambient_ior` painter (sapphire-crystal-over-dial) — defaulted to 1.0 for now.
+- Multi-layer scene syntax (`thinfilm_stack` chunk) — when a use case appears (note: `dielectric_material` already supports repeatable `ar_layer` stacks).
+- ~~`ambient_ior` painter (sapphire-crystal-over-dial) — defaulted to 1.0 for now.~~ **DONE (2026-07, Enamel G6):** ambient IOR is now automatically coupled via `ri.ambientIOR` stamped from `ior_stack.top()` at hit production across both bare-conductor and `thinfilm` GGX evaluations (including per-wavelength `n(λ)` in spectral mode), so thin-film dials under sapphire/glass/enamel use the enclosing medium's refractive index with no extra material parameter needed.
 - glTF `KHR_materials_iridescence` import/export — design already aligns; wire later.
 - ACES working space — the LUT bake follows whatever `RISEPel`/LUT target is current.
 

@@ -18,6 +18,7 @@
 
 #include "../Interfaces/IMemoryBuffer.h"
 #include "Reference.h"
+#include <memory>
 
 #ifndef MEMORY_BUFFER_
 #define MEMORY_BUFFER_
@@ -139,6 +140,13 @@ namespace RISE
 			char*				pBuffer;		///< Memory itself
 			unsigned int		nCursor;		///< Current location within the buffer
 			bool				bIOwnMemory;	///< Does the object own its pBuffer its using?
+		private:
+			void ReplaceStorage( std::unique_ptr<char[]> replacement, unsigned int capacity );
+			std::unique_ptr<char[]> AllocateGrowth( unsigned int required, unsigned int& allocated ) const;
+
+			std::unique_ptr<char[]> ownedStorage;
+			unsigned int capacity = 0;
+
 		};
 	}
 }

@@ -113,6 +113,30 @@ namespace RISE
 				return source.GetColorNM( ri2, nm );
 			}
 
+			//! SINGLE-SOURCE FORWARDER (Stage C slice 2).  This painter
+			//! composes nothing: it re-parameterises `ri` and hands the
+			//! sample to exactly one source.  The generic
+			//! `IPainter::GetRadianceNM` default would uplift the
+			//! composed `GetColor` instead, throwing away a physical SPD
+			//! behind the transform for its RGB projection.  Forward to
+			//! the same source at the same transformed `ri`.
+			Scalar GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+			{
+				if( isIdentity ) return source.GetRadianceNM( ri, nm );
+				RayIntersectionGeometric ri2 = ri;
+				ri2.ptCoord = ApplyTransform( ri.ptCoord );
+				return source.GetRadianceNM( ri2, nm );
+			}
+
+			//! DL-396: RGB twin of GetRadianceNM, same forwarding.
+			RISEPel GetRadianceColor( const RayIntersectionGeometric& ri ) const
+			{
+				if( isIdentity ) return source.GetRadianceColor( ri );
+				RayIntersectionGeometric ri2 = ri;
+				ri2.ptCoord = ApplyTransform( ri.ptCoord );
+				return source.GetRadianceColor( ri2 );
+			}
+
 			SpectralPacket GetSpectrum( const RayIntersectionGeometric& ri ) const
 			{
 				// Spectral counterpart of GetColor / GetColorNM.  Without
@@ -139,6 +163,11 @@ namespace RISE
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) { (void)name; (void)value; return 0; };
 			void SetIntermediateValue( const IKeyframeParameter& val ) { (void)val; };
 			void RegenerateData( ) {};
+			//! DL-203 (docs/DEBT_LEDGER.md): this class forwards to `source`'s own
+			//! TRUE `GetColorNM` (see this class's own GetColorNM), so this
+			//! recurses -- see IPainter::IsSpectrallyDefined's own doc comment
+			//! for the full rationale and which composites do NOT recurse.
+			bool IsSpectrallyDefined() const { return source.IsSpectrallyDefined(); }
 		};
 	}
 }

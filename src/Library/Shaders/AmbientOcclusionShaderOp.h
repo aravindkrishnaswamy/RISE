@@ -1,8 +1,12 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  AmbientOcclusionShaderOp.h - The ambient occlusion shader op 
+//  AmbientOcclusionShaderOp.h - The ambient occlusion shader op
 //    performs ambient occlusion, which is basically spraying
-//    a distribution of shadow rays.
+//    a distribution of GEOMETRY-PRESENCE occlusion rays (IRayCaster::
+//    CastOcclusionRay) -- not shadow rays.  An occluder authored with
+//    `casts_shadows FALSE` still occludes here; see IRayCaster::
+//    CastOcclusionRay's contract comment and
+//    docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md section 8.1 (2026-09-07).
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: January 30, 2005
@@ -50,7 +54,7 @@ namespace RISE
 				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				RISEPel& c,									///< [in/out] Resultant color from op
-				const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,			///< [in] Index of refraction stack
 				const ScatteredRayContainer* pScat			///< [in] Scattering information
 				) const;
 
@@ -63,7 +67,7 @@ namespace RISE
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				const Scalar caccum,						///< [in] Current value for wavelength
 				const Scalar nm,							///< [in] Wavelength to shade
-				const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,			///< [in] Index of refraction stack
 				const ScatteredRayContainer* pScat			///< [in] Scattering information
 				) const;
 

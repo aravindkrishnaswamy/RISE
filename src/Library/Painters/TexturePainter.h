@@ -84,6 +84,12 @@ namespace RISE
 			// doc § Architecture decisions.
 			Scalar			GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
 
+			// Source-term sample (Stage C slice 2): the sampled texel
+			// uplifted as an ILLUMINANT, whatever `spectrumKind` this
+			// painter was constructed with.  Same per-sample uplift
+			// discipline as GetColorNM -- filter in RGB, uplift last.
+			Scalar			GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+
 			// GetSpectrum returns a properly-populated SpectralPacket
 			// (81 bins, 380-780nm).  Required so LambertianEmitter /
 			// PhongEmitter caching `averageSpectrum = radEx.GetSpectrum`

@@ -144,4 +144,4 @@ echo
 echo "RISE's build configs (build/make/rise/Config.OSX, the Xcode project,"
 echo "the VS2022 projects and the rise-tests CMakeLists) prefer this install"
 echo "over any system OIDN.  Verify at render time by looking for:"
-echo "    OIDN: creating Metal device (one-time per rasterizer)"
+echo "    OIDN: creating Metal device (cached while backend request is unchanged)"

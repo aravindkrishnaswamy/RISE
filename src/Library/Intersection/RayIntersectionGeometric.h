@@ -18,6 +18,7 @@
 #include "../Utilities/Ray.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/Color/Color.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"
 
 namespace RISE
 {
@@ -35,34 +36,194 @@ namespace RISE
 		Vector3 dndv;
 		bool    valid;  // true if geometry populated these fields
 
+		//! CHARACTERISTIC LENGTH of the hit geometry, in WORLD units --
+		//! the normalization factor behind the expression VM's
+		//! dimensionless `curv` (design doc §5.2).  Mean curvature H has
+		//! units of 1/length, which is a trap for an author writing
+		//! `clamp(curv,0,1)` on a creature whose features have 0.05-unit
+		//! radius; multiplying by this makes the exposed value O(1) at
+		//! object scale on any scene scale.
+		//!
+		//! Stamped OBJECT-SPACE by the geometry at intersection time (the
+		//! bounding-box diagonal, uniformly: SDFGeometry's `m_diagonal`,
+		//! the mesh BVH root box, the analytic primitives' own radii),
+		//! then folded with the object's world scale --
+		//! `|det M|^(1/3)`, the linear-measure sibling of the
+		//! `|det L|^(2/3)` area Jacobian `Object::GetArea()` uses -- at the
+		//! `Object::IntersectRay` / `CSGObject::IntersectRay` transform
+		//! layer.  Exact for rotations and uniform scales; under
+		//! NON-UNIFORM scale no single scalar can be right (a
+		//! `scale 4 0.05 4` panel has no one characteristic length) and
+		//! this is the documented geometric-mean approximation.
+		//!
+		//! DEFAULT 1.0 -- the honest "this geometry did not say", which
+		//! makes `curv` collapse to the raw `curvR` rather than to zero.
+		//! Populated only when SurfaceCurvatureDemand::Any() (nothing else
+		//! reads it, so nothing else should pay for it).
+		Scalar  scaleHint;
+
+		//! DIRECT per-hit mean curvature, for geometry families that can
+		//! answer the curvature question better than a synthesized
+		//! `dndu`/`dndv` pair could (design doc §5.4).  Today that means
+		//! the SDF family, whose implicit surface has no natural `(u,v)`
+		//! for which those partials are meaningful but whose
+		//! `div n_hat = k1 + k2` is a few field evaluations away.
+		//!
+		//! Same sign convention, units and world-measure as the shape
+		//! operator's H (see SurfaceCurvature.h): positive = convex,
+		//! 1/world-length after the `Object::IntersectRay` fold divides
+		//! out the same `|det M|^(1/3)`.  `BuildContext` PREFERS this when
+		//! `curvatureValid`, and falls back to the shape operator over the
+		//! four vectors above.
+		//!
+		//! Independent of `valid`: the SDF sets `curvatureValid` while
+		//! leaving `valid` false, and a mesh does the reverse.
+		Scalar  curvature;
+		bool    curvatureValid;
+
+		//! THE CHART MAP -- the 2x2 Jacobian of the TEXTURE coordinate
+		//! `(s, t)` stamped into `RayIntersectionGeometric::ptCoord`
+		//! with respect to the `(u, v)` parameters `dpdu` / `dpdv`
+		//! differentiate.  Mirrors `SurfaceDerivatives::dsdu`… on the
+		//! `IGeometry` side; see the long comment there and
+		//! docs/GEOMETRY_DERIVATIVES.md "The texcoord chart map".
+		//!
+		//! Why it exists: the analytic primitives parameterise by their
+		//! own natural coordinates (sphere `u` = azimuth in RADIANS,
+		//! cylinder `u` = axial WORLD coordinate, torus/cylinder with
+		//! the two axes SWAPPED relative to their texture coordinate),
+		//! while `ptCoord` is the normalised `[0, 1]^2` chart the
+		//! matching `GeometricUtilities::*TextureCoord` produces.
+		//! `SolveFootprintUV` solves the pixel differentials in the
+		//! DERIVATIVE chart and then applies this map, so the
+		//! `dudx`…`dvdy` it publishes are in the same chart as
+		//! `ptCoord` -- which is the pairing `TexturePainter::
+		//! SampleTextured` and `WeaveBRDF` assume.  Without it a
+		//! textured sphere mips 1.65 levels too blurry, a cylinder
+		//! 1.59 and a torus 2.65 (re-measured in fix round 2 by
+		//! disabling the multiply-through and reading
+		//! `TextureFootprintTest` test 11's per-geometry LOD error:
+		//! 1.651 / 1.585 / 2.651, plus 2.33 for the ellipsoid; the
+		//! 1.67 / 1.02 / 2.64 this comment used to carry disagreed
+		//! with both design docs and, on the cylinder, was not a
+		//! rounding of anything).
+		//!
+		//! DEFAULT identity with `texChartValid = false`, which makes
+		//! `SolveFootprintUV` decline to publish a Jacobian at all
+		//! (`valid` stays false, `widthValid` is unaffected) rather
+		//! than publish one in the wrong chart.
+		Scalar  dsdu, dsdv, dtdu, dtdv;
+		bool    texChartValid;
+
 		SurfaceDerivativesInfo() :
 		dpdu( Vector3(0,0,0) ), dpdv( Vector3(0,0,0) ),
 		dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
-		valid( false )
+		valid( false ),
+		scaleHint( 1.0 ),
+		curvature( 0 ), curvatureValid( false ),
+		dsdu( 1 ), dsdv( 0 ), dtdu( 0 ), dtdv( 1 ), texChartValid( false )
 		{
 		}
 	};
 
-	//! Texture-space footprint at the hit point — the projection of
-	//! the incoming ray's screen-space differentials onto the surface
-	//! UV plane.  Populated at intersection time by geometries that
-	//! support it (currently: triangle meshes) when the incoming
-	//! ray has hasDifferentials = true.  Consumed by TexturePainter
-	//! to compute mip LOD per Landing 2 of the PB pipeline plan.
+	//! Pixel footprint at the hit point — the projection of the
+	//! incoming ray's screen-space differentials onto the surface
+	//! tangent plane, plus (where the surface has a UV chart) the
+	//! resulting UV Jacobian.  Populated at intersection time by
+	//! `Object::IntersectRay` for EVERY geometry, whenever the
+	//! incoming ray has hasDifferentials = true (see
+	//! docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md).  Consumed by
+	//! TexturePainter to compute mip LOD per Landing 2 of the PB
+	//! pipeline plan, and by ExpressionPainter/ExpressionScalarPainter
+	//! (doc 88 S9) to populate ExprEvalContext::fw for footprint-aware
+	//! fbm/turbulence/ridged octave fade.
+	//!
+	//! TWO INDEPENDENT VALIDITY FLAGS, with the invariant
+	//! `valid ⇒ widthValid`:
+	//!
+	//!   - `widthValid` — `dpdx`, `dpdy`, `worldWidth` and
+	//!     `objectWidth` are usable.  Requires only ray differentials
+	//!     and a surface normal, so it is set on every geometry, UV
+	//!     chart or not.
+	//!   - `valid` — the UV Jacobian (`dudx`…`dvdy`) is usable.
+	//!     Additionally requires `derivatives.valid` (a non-degenerate
+	//!     dpdu/dpdv basis).  Deliberately NOT widened to mean "some
+	//!     footprint exists": `TexturePainter::SampleTextured` and
+	//!     `WeaveBRDF` key on it, and a zero Jacobian handed to
+	//!     `ComputeLODFromTexelFootprint` would read as LOD 0 (finest)
+	//!     rather than the honest base-level fallback.
 	//!
 	//! Units: dudx / dudy / dvdx / dvdy are the partial derivatives
 	//! of the surface UV coordinates with respect to screen-space
 	//! pixel x and y.  In other words, advancing one pixel in x
 	//! moves the UV by (dudx, dvdx).  The texture-space Jacobian
 	//! follows by multiplying by texture width / height.
+	//!
+	//! dpdx / dpdy are the surface-plane displacements a ONE-PIXEL
+	//! step in screen x / y induces at this hit point, and worldWidth
+	//! is the mean of their magnitudes — a filter-WIDTH (diameter-like,
+	//! full pixel step, not a radius) estimate in the same length units
+	//! as ptIntersection / the expression VM's `P`.  All three are 0
+	//! when !widthValid.
+	//!
+	//! `objectWidth` is that SAME width measured in the frame
+	//! `ptObjIntersec` (the expression VM's `Po`) is written in — an
+	//! OBJECT-space length (2026-09-06).  It exists because the
+	//! expression VM can filter an object-space noise domain
+	//! (`fbm(Po*62, …)`) only if the hit reports the footprint in that
+	//! frame: no compile-time constant converts between the two, since
+	//! the object→world map is a per-INSTANCE fact.
+	//!
+	//! It is not a derived scalar — it is the pre-promotion value of
+	//! `worldWidth`, captured by `Object::IntersectRay` in the SAME
+	//! block, at the SAME nesting level, that computes
+	//! `ptObjIntersec`.  That is what keeps the two co-framed at every
+	//! level (a placed object; a CSG composite, where
+	//! `AdoptCsgSurfacePayload` copies this whole struct and
+	//! `ptObjIntersec` together from the winning CHILD, so both stay
+	//! in that child's own frame and the CSG level promotes only
+	//! `worldWidth`).  Deriving it instead as `worldWidth / |det
+	//! M|^(1/3)` would be exact only under a uniform scale — the same
+	//! geometric-mean approximation §3.4 of
+	//! docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md retired for
+	//! `worldWidth` because it under-counted a `scale 4 0.05 4` panel
+	//! by 4.31×.
+	//!
+	//! Under NON-UNIFORM object scale it carries the same anisotropy
+	//! caveat `worldWidth` does: one isotropic width stands in for an
+	//! elliptical footprint, so it reports the MEAN of the two
+	//! object-space step magnitudes rather than a per-axis pair.  0
+	//! when !widthValid.
+	//!
+	//! FRAME: these fields live in whatever frame the record itself
+	//! currently lives in.  The geometry layer stamps them from the
+	//! OBJECT-space ray `Object::IntersectRay` transformed on entry, and
+	//! `Object::IntersectRay` / `CSGObject::IntersectRay` promote them
+	//! to world by applying their own forward map `m_mxFinalTrans` to
+	//! `dpdx`/`dpdy` and re-deriving `worldWidth` from the transformed
+	//! pair.  That promotion is EXACT for any linear map — non-uniform
+	//! scale and shear included — because an affine map carries the
+	//! object-space auxiliary line onto the world auxiliary line and the
+	//! object-space tangent plane onto the world tangent plane, so the
+	//! line∩plane point commutes with the map.  (It superseded a
+	//! `worldWidth *= |det M|^(1/3)` geometric-mean fold, which
+	//! under-counted a `scale 4 0.05 4` panel by 4.31x.)  By the time
+	//! any consumer (ExpressionPainter's `fw`, ReliefModifier's
+	//! footprint-aware step) reads these fields they ARE world-space.
 	struct TextureFootprint
 	{
 		Scalar  dudx, dudy;
 		Scalar  dvdx, dvdy;
-		bool    valid;
+		Vector3 dpdx, dpdy;
+		Scalar  worldWidth;
+		Scalar  objectWidth;	// the same width in ptObjIntersec's frame
+		bool    valid;			// the UV Jacobian is usable
+		bool    widthValid;		// dpdx / dpdy / worldWidth / objectWidth are usable
 
 		TextureFootprint() :
-		dudx( 0 ), dudy( 0 ), dvdx( 0 ), dvdy( 0 ), valid( false )
+		dudx( 0 ), dudy( 0 ), dvdx( 0 ), dvdy( 0 ),
+		dpdx( Vector3(0,0,0) ), dpdy( Vector3(0,0,0) ),
+		worldWidth( 0 ), objectWidth( 0 ), valid( false ), widthValid( false )
 		{
 		}
 	};
@@ -89,28 +250,16 @@ namespace RISE
 		bool						bHit;			// was there an intersection ? 
 		Scalar						range;			// distance to the intersection point
 		Scalar						range2;			// distance to the exit point
-		//! Exact world-ray distances to the geometric boundary before
-		//! Object's shading-point surface-error offset is applied.  Medium
-		//! topology walkers must use these: `range`/`range2` deliberately sit
-		//! just before/after a surface and therefore cannot delimit arbitrarily
-		//! thin volume segments without skipping or double-counting them.
-		Scalar						surfaceRange;
-		Scalar						surfaceRange2;
-		//! Per-cast input.  When non-negative, object-manager traversal
-		//! rejects candidates whose exact `surfaceRange` is not greater
-		//! than this value.  Boundary walks set zero to discard only the
-		//! just-processed zero-distance root without stepping over space.
-		Scalar						minimumSurfaceRange;
-		Vector3						vNormal;		// normal at the point of intersection (SHADING normal — Phong-interpolated on triangle meshes, perturbed by bump/normal-map modifiers)
+		Vector3						vNormal;		// normal at the point of intersection (SHADING normal — Phong-interpolated on triangle meshes, perturbed by the normal-perturbing modifiers: relief, normal map, glint)
 		Vector3						vNormal2;		// normal at the point of exit
 		//! GEOMETRIC normals at the entry / exit points — the actual
 		//! flat-triangle face normal on triangle meshes (independent of
 		//! Phong interpolation), or identical to `vNormal` / `vNormal2`
 		//! on analytical primitives (sphere, ellipsoid, plane, …) where
 		//! the surface IS smooth and shading == geometric by construction.
-		//! Modifiers (bump map, normal map) perturb `vNormal` only;
-		//! `vGeomNormal` / `vGeomNormal2` always reflect the underlying
-		//! geometry.
+		//! The normal-perturbing modifiers (relief, normal map, glint,
+		//! relief) perturb `vNormal` only; `vGeomNormal` / `vGeomNormal2`
+		//! always reflect the underlying geometry.
 		//!
 		//! Use these — not `vNormal` / `vNormal2` — for queries that ask
 		//! "which side of the actual surface is this direction on?".
@@ -129,11 +278,8 @@ namespace RISE
 		Vector3						vGeomNormal2;
 
 		//! OUTPUT: set by geometries that flip `vGeomNormal` to oppose the
-		//! incoming ray (currently: double-sided triangle meshes -- see
-		//! TriangleMeshGeometry::IntersectRay / TriangleMeshGeometryIndexed::
-		//! IntersectRay).  Default false -- geometries that do not flip
-		//! (single-sided meshes, and every analytical primitive whose
-		//! geometric normal is the true, unmodified surface normal) leave
+		//! incoming ray.  Default false; the authoritative list of which
+		//! geometries set it is below -- geometries that do not flip leave
 		//! this false, so the recovery formula below is a no-op for them.
 		//!
 		//! Consumers that need the TRUE surface facing (which side of the
@@ -151,7 +297,267 @@ namespace RISE
 		//! genuine exit both face the ray under the flip, which collapses
 		//! the raw dot-product facing test to the same sign on both --
 		//! this flag lets the caster undo the flip losslessly instead.)
+		//!
+		//! WHICH GEOMETRIES SET IT (keep this list current -- an earlier
+		//! version of this comment, and copies of it in TranslucentSPF.cpp
+		//! and IORStackSeeding.h, claimed "single-sided meshes and every
+		//! analytical primitive leave the flag false", which is only half
+		//! the story):
+		//!   * `TriangleMeshGeometry` / `TriangleMeshGeometryIndexed` --
+		//!     only when `bDoubleSided`, and only when the flip actually
+		//!     happened.
+		//!   * `BezierPatchGeometry`, `ClippedPlaneGeometry` -- on a
+		//!     BACK-FACE hit (they flip the normal toward the ray there,
+		//!     exactly like the double-sided mesh path).
+		//!   * `HairGeometry` -- UNCONDITIONALLY; see
+		//!     `bGeomNormalRayDerived` below, because the recovery formula
+		//!     above does NOT apply there.
+		//!   * `CSGObject` propagates whichever operand's surface it is
+		//!     actually reporting.
+		//! Single-sided triangle meshes and the analytical primitives
+		//! (sphere, box, ellipsoid, torus, cylinder, plane, disk, bilinear
+		//! patch) do leave it false.
+		//! A consumer that instead wants the true, ray-independent
+		//! GEOMETRIC NORMAL VECTOR itself (not just its dot-product sign
+		//! against one particular ray direction -- e.g. an entry point's
+		//! outward normal for a Fresnel/cosine term computed against an
+		//! arbitrary later direction, such as a light sample) recovers it
+		//! the same way, applied to the vector rather than the scalar dot:
+		//!
+		//!     oriented ? -vGeomNormal : vGeomNormal
+		//!
+		//! This is unconditional on WHERE or in what direction the hit was
+		//! reached -- the flip predicate is evaluated fresh per hit by each
+		//! setter above (see e.g. TriangleMeshGeometry::IntersectRay's
+		//! `bFlipGeomNormal`), so undoing it always recovers that hit's true
+		//! winding-order normal, never a position- or direction-dependent
+		//! approximation of one (BSSRDFSampling.cpp's DL-71/DL-75 probe
+		//! correction is the motivating consumer -- see that file).
+		//! ONLY valid when `bGeomNormalRayDerived` is false; see that flag.
 		bool						bGeomNormalOrientedToRay;
+
+		//! OUTPUT: set by geometries whose `vGeomNormal` is DERIVED FROM
+		//! THE RAY rather than being a static property of the surface.
+		//! `HairGeometry` is the only such geometry today: a hair strand is
+		//! a 1-D curve with no two-sided surface, so it fabricates a flat
+		//! normal `Nflat = normalize(-(D - (D.T)T))` from the ray direction
+		//! `D` and the strand tangent `T` -- by construction always facing
+		//! the ray -- and reports `bGeomNormalOrientedToRay = true`
+		//! unconditionally.
+		//!
+		//! CONTRACT: when this is true, `bGeomNormalOrientedToRay`'s
+		//! recovery formula above is MEANINGLESS.  Un-flipping a
+		//! ray-derived normal yields a direction that always faces AWAY
+		//! from the ray, so a "true entry vs. true exit" classifier built
+		//! on it reads EXIT at every single crossing.  A consumer asking a
+		//! which-side-of-the-real-surface question must therefore SKIP such
+		//! a hit (there is no real side to be on) rather than trust the
+		//! recovery -- `IORStackSeeding::SeedFromPoint`'s containment probe
+		//! skips it, and `TranslucentSPF`'s exit gate falls back to the
+		//! shading normal (making the gate a no-op).  A consumer that only
+		//! needs "which way does the surface face the ray" may keep reading
+		//! `vGeomNormal` directly; `bGeomNormalOrientedToRay` stays
+		//! truthful about the reported orientation either way.
+		bool						bGeomNormalRayDerived;
+
+		//! OUTPUT: set by geometries whose double-sided/back-face
+		//! `bGeomNormalOrientedToRay` flip happens on an OPEN 2-D SHEET
+		//! rather than a closed, watertight solid -- i.e. a surface where
+		//! BOTH faces are legitimate physical sides (a leaf, a cloth
+		//! card, a bare `clipped_plane`) rather than the
+		//! inside/outside of a solid volume.  Default false.
+		//!
+		//! DL-96: the BSSRDF front-face admission gate
+		//! (`PathTracingIntegrator.cpp`, `BDPTIntegrator.cpp`) uses
+		//! `TrueGeomFacing()` to pick the SINGLE true outward face of a
+		//! closed solid -- correct there (that is DL-70's own fix), but
+		//! it silently drops subsurface-scattering entry from the SECOND
+		//! face of an open sheet, where both faces are legitimate entry
+		//! points.  `BSSRDFEntryFacing()` below reads this flag to admit
+		//! entry on the RAY-FACING (reported) side instead, for that
+		//! gate ONLY.  No other DL-70 consumer (the medium-stack walk,
+		//! the transmissive-shadow Fresnel pair, the volume-shading
+		//! entering/leaving test, the SMS photon `bEntering` stamp, the
+		//! alpha-card `bOneSided` cull, the override-UV-generator normal)
+		//! reads this flag -- they keep DL-70's closed-solid recovery
+		//! unconditionally, so adding this flag does not change their
+		//! behaviour.
+		//!
+		//! WHICH GEOMETRIES SET IT (mirrors `bGeomNormalOrientedToRay`'s
+		//! own list, but narrower):
+		//!   * `TriangleMeshGeometryIndexed` -- `bDoubleSided &&
+		//!     !m_bWatertight` (DL-143's build-time position-weld
+		//!     watertightness certification).
+		//!   * `TriangleMeshGeometry` (the non-indexed twin) --
+		//!     `bDoubleSided` unconditionally: this class has no
+		//!     watertightness certification at all, so every
+		//!     double-sided non-indexed mesh is treated as an open
+		//!     sheet.
+		//!   * `ClippedPlaneGeometry` -- on a back-face hit (the same
+		//!     condition it already uses for `bGeomNormalOrientedToRay`):
+		//!     a single clipped plane never encloses a volume, so a
+		//!     double-sided hit on one is always an open sheet.
+		//! `BezierPatchGeometry` does NOT set it (DL-220): a patch
+		//! list can enclose a volume (`models/raw/teapot.bezier` declares
+		//! 28 patches in one geometry; `aphrodite.bezier` and `f16.bezier`
+		//! are closed solids). Stamping `bOpenSheet = bDidFlip` caused an
+		//! interior wall hit to be admitted by `BSSRDFEntryFacing()` as a
+		//! subsurface entry seeded from inside the object. Bezier geometries
+		//! fall back to the DL-70 closed-solid gate (`bOpenSheet == false`).
+		//! `HairGeometry` does NOT set it -- it is already excluded from
+		//! the recovery via `bGeomNormalRayDerived`/`HasTrueGeomSide()`,
+		//! for an orthogonal reason (no genuine two-sided winding at
+		//! all, not "two legitimate sides of one winding").
+		bool						bOpenSheet;
+
+		//! DL-157 review round 2 (2026-09-18): the surface's OBJECT
+		//! PROVABLY HAS NO INTERIOR.
+		//!
+		//! `bOpenSheet` does NOT mean this, and conflating the two is a
+		//! measured defect.  For the two mesh classes it means
+		//! "UNCERTIFIED": `TriangleMeshGeometryIndexed` sets it whenever
+		//! DL-143's build-time weld could not certify watertightness --
+		//! which, per DL-143's own audit, is all four glTF assets it
+		//! examined, every one of them a closed solid -- and the
+		//! non-indexed twin sets it on every double-sided hit because it
+		//! has no certification at all.  A consumer that reads
+		//! `bOpenSheet` as "no interior" therefore misreads a genuine
+		//! interior EXIT on an ordinary closed mesh as an entry.
+		//!
+		//! Only a geometry whose SHAPE forbids an interior can set this.
+		//! The setters, each stamping EVERY hit (front and back -- DL-345
+		//! needs front hits recognised too):
+		//!  - `ClippedPlaneGeometry`: four corners spanning one bounded
+		//!    bilinear sheet, which cannot enclose a volume however it is
+		//!    transformed -- no build-time check needed;
+		//!  - `DisplacedGeometry` over a coplanar convex clipped plane
+		//!    (DL-345): the graph of a function over the quad;
+        //!  - meshes passing the legacy planar proof, or the general
+        //!    embedded open oriented surface proof (DL-382). The latter
+        //!    combines welded topology, single-component/free-face peeling,
+        //!    embedding, and normal agreement. Boundary edges alone prove
+        //!    nothing. Disconnected non-planar pieces are refused.
+        //! Object::IntersectRay admits the broader proof only for clear
+        //! dielectric/perfect-refractor materials. Other material consumers
+        //! retain the old planar/displaced-convex-quad proof. In particular,
+        //! random-walk load rejection uses IsZeroVolumeSheet(), because an
+        //! open cracked solid still has a meaningful random-walk interior.
+        //!
+        //! A collection of analytic patches cannot certify itself merely
+        //! because each patch is interior-free; the union may be closed.
+        //! Bezier and bilinear patch sets retain no such proof (DL-616).
+
+		//! Explicitly cleared by `CSGObject::IntersectRay` after operand
+		//! copies and payload adoption, unlike
+		//! `bOpenSheet`: `bOpenSheet` is a property of the SURFACE the
+		//! ray struck and survives compositing, while this is a property
+		//! of the OBJECT -- a CSG tree built from planes can perfectly
+		//! well have an interior, so the wrapper must not inherit an
+		//! operand's claim.
+		bool						bProvablyNoInterior;
+
+		//! DL-341 review round 6 (2026-10-02): which way the reported
+		//! `vGeomNormal` faced the ray that ARRIVED at this hit, for a
+		//! record whose `ray` is NOT that arrival.  0 (the default, every
+		//! live hit) means "read it off `ray`": `ray` is the arrival.  A
+		//! REBUILT record (`PathVertexEval::PopulateRIGFromVertex`) aims
+		//! `ray` per query -- along `-wi`, which on a light-subpath vertex,
+		//! a reverse-pdf query or a connection is not the walk's own
+		//! incoming segment -- so it records the live hit's answer here:
+		//! -1 = the reported normal OPPOSED the arrival, +1 = it did not.
+		//! Read through `GeomNormalOpposesArrival()`.  The one consumer is
+		//! `composite_material`'s layer frame, which recovers a closed
+		//! surface's true outward normal from (stack says inside) and
+		//! (reported normal opposes the arrival) -- a fact of the VERTEX,
+		//! so it must not change with the query direction.  Not a surface
+		//! property: a consumer that builds a new record with a new live
+		//! ray from a copy of this one must reset it to 0.
+		signed char					arrivalGeomFacing;
+
+		//! True when the reported geometric normal opposed the ray that
+		//! arrived at this hit (see `arrivalGeomFacing`).
+		inline bool GeomNormalOpposesArrival() const
+		{
+			return ( arrivalGeomFacing != 0 ) ? ( arrivalGeomFacing < 0 )
+				: ( Vector3Ops::Dot( vGeomNormal, ray.Dir() ) < 0 );
+		}
+
+		//! Signed cosine in the shading hemisphere facing the incoming
+		//! view ray. Ordinary two-sided BRDFs/SPFs orient this hemisphere
+		//! to -ray.Dir(); a strong normal perturbation can cross the view
+		//! horizon even while the geometric face still points at the view.
+		//! Keep the sign toward the opposite shading hemisphere so NEE can
+		//! reject it; full-sphere materials explicitly take the magnitude.
+		inline Scalar RayFacingShadingCosine( const Vector3& direction ) const
+		{
+			const Scalar c = Vector3Ops::Dot( vNormal, direction );
+			return Vector3Ops::Dot( vNormal, ray.Dir() ) > Scalar(0) ? -c : c;
+		}
+
+		//! THE shared recovery for the two flags above (DL-70).  Returns
+		//! the TRUE, ray-independent, winding-order geometric normal: the
+		//! reported `vGeomNormal` with the double-sided / back-face
+		//! orient-to-ray flip undone, and the `bGeomNormalRayDerived`
+		//! exception honoured (a fabricated, ray-derived normal has no
+		//! flip to undo, so it is returned AS REPORTED -- i.e. still
+		//! facing the ray).
+		//!
+		//! USE THIS, not a raw `vGeomNormal` read, for every
+		//! entry-vs-exit / front-vs-back / which-side-of-the-real-surface
+		//! test.  A raw read is deliberately always ray-facing on a
+		//! double-sided hit, which collapses exactly the distinction such
+		//! a test exists to make (DL-70 enumerated fourteen consumers that
+		//! did this and went blind on double-sided geometry).
+		//!
+		//! NOT for "which way does this surface face the ray" -- that
+		//! question wants the reported orientation and should keep reading
+		//! `vGeomNormal` directly.  And NOT on its own where a hit may be
+		//! HAIR: pair it with `HasTrueGeomSide()` and SKIP (or fall back)
+		//! when that is false, because for a ray-derived normal this
+		//! returns a ray-facing direction that is not a surface side at
+		//! all.  See both flags' doc comments above for the contract, and
+		//! docs/DL70_GEOM_NORMAL_ORIENTATION_SITES.md for the site table.
+		inline Vector3 UnflippedGeomNormal() const
+		{
+			return ( bGeomNormalOrientedToRay && !bGeomNormalRayDerived )
+				? -vGeomNormal : vGeomNormal;
+		}
+
+		//! Signed facing of the TRUE surface (`UnflippedGeomNormal()`)
+		//! against an arbitrary direction `d`.  Negative = `d` travels
+		//! INTO the surface (a true entry / front-face approach);
+		//! positive = `d` travels out of it (a true exit / back-face
+		//! approach).  Same caveats as `UnflippedGeomNormal()`.
+		inline Scalar TrueGeomFacing( const Vector3& d ) const
+		{
+			return Vector3Ops::Dot( UnflippedGeomNormal(), d );
+		}
+
+		//! True when `UnflippedGeomNormal()` / `TrueGeomFacing()` answer a
+		//! meaningful which-side-of-the-real-surface question -- i.e. when
+		//! the reported geometric normal is a genuine surface property
+		//! rather than a per-ray fabrication.  False only for
+		//! `HairGeometry` today (see `bGeomNormalRayDerived`).
+		inline bool HasTrueGeomSide() const
+		{
+			return !bGeomNormalRayDerived;
+		}
+
+		//! DL-96: the BSSRDF front-face admission test's own facing
+		//! function.  Admits entry from the RAY-FACING (reported) side
+		//! on an open sheet -- `bOpenSheet`, both faces legitimate -- and
+		//! from the TRUE outward side (`TrueGeomFacing`) otherwise
+		//! (closed-solid semantics, DL-70's original fix, unchanged).
+		//! NOT a general-purpose replacement for `TrueGeomFacing` --
+		//! scoped to this one gate; see `bOpenSheet`'s doc comment for
+		//! why every other DL-70 consumer keeps `TrueGeomFacing`
+		//! unconditionally.
+		inline Scalar BSSRDFEntryFacing( const Vector3& d ) const
+		{
+			return bOpenSheet
+				? Vector3Ops::Dot( vGeomNormal, d )
+				: TrueGeomFacing( d );
+		}
 
 		Point2						ptCoord;		// primary texture mapping co-ordinates (TEXCOORD_0 from glTF)
 
@@ -165,12 +571,98 @@ namespace RISE
 		Point2						ptCoord1;
 		bool						bHasTexCoord1;
 
-		Point3						ptIntersection;	// the point in world co-ordinates of the intersection, only	
+		//! OUTPUT (DL-107): whether an overriding `IUVGenerator` has
+		//! ALREADY supplied `ptCoord` for the surface this record
+		//! reports -- set true the moment ANY `IUVGenerator::GenerateUV`
+		//! call fires for this hit (`Object::IntersectRay`'s own
+		//! override-generator block, mirrored at composite level by
+		//! `CSGObject::IntersectRay`), false otherwise (explicitly, not
+		//! just "left unset" -- `Object::IntersectRay` writes both
+		//! branches so a farther, rejected BVH candidate's leftover
+		//! `true` can never survive onto a later, generator-less hit
+		//! that reuses the same shared record).
+		//!
+		//! WHY IT EXISTS.  A `CSGObject` composite may carry its own
+		//! `pUVGenerator` in addition to (or instead of) one on either
+		//! operand.  The operand's own generator, if it has one, must
+		//! WIN (it is the more specific binding); the composite's is
+		//! only the correct FALLBACK for an operand with none of its
+		//! own.  This flag is how `CSGObject::IntersectRay` tells the
+		//! two cases apart without a getter on `pUVGenerator` itself
+		//! (there is none -- see `Object::SetUVGenerator`): it is
+		//! carried by BOTH the whole-record `ri = riObjA` / `= riObjB`
+		//! copy (via `operator=`, below) AND by
+		//! `AdoptCsgSurfacePayload` (CSGObject.cpp), so it composes
+		//! correctly through arbitrary CSG nesting depth for free, the
+		//! same way `ptObjIntersec` and `ptCoord` themselves do.
+		//!
+		//! Precedence at any one CSGObject level: operand generator
+		//! (this flag already true when the composite's own check runs)
+		//! WINS over the composite generator (fires only when this flag
+		//! is still false) WINS over the operand's native UV (no
+		//! generator anywhere in the chain, flag stays false
+		//! throughout).
+		bool						bUVGeneratorApplied;
+
+		Point3						ptIntersection;	// the point in world co-ordinates of the intersection, only
 													// set if there was an intersection
 		Point3						ptExit;			// point at which the ray exits the object
 
 		Point3						ptObjIntersec;	// the point of intersection on object space
 		Point3						ptObjExit;		// the point of exit in object space
+
+		//! WORLD -> OBJECT linear map for the frame `ptObjIntersec` is
+		//! expressed in, or `nullptr` when it is not known.
+		//!
+		//! WHY IT EXISTS.  A modifier that wants to evaluate a painter at
+		//! an OFFSET point (ReliefModifier's central difference in the
+		//! tangent plane, docs/RELIEF_MODIFIER_DESIGN.md 3.2/3.4) has to
+		//! move every point domain a painter can read, consistently:
+		//! `ptIntersection` by the world step, `ptCoord` by the UV chain
+		//! rule -- and `ptObjIntersec` by the SAME step expressed in
+		//! object space, or an object-space painter (`mapping_painter
+		//! space object`, `voronoi3d space object`, `Po` in an
+		//! expression) sees a field that is flat along the step.  The hit
+		//! record carried no transform, so this is it.
+		//!
+		//! WHAT IT POINTS AT.  `Object::m_mxInvFinalTrans` -- the object's
+		//! own finalized world->object matrix, which is exactly the
+		//! inverse of the `m_mxFinalTrans` that produced `ptIntersection`
+		//! from `ptObjIntersec` two lines below the stamp.  It is a
+		//! borrowed pointer into the Object that also became `ri.pObject`,
+		//! so it is valid for as long as the hit record is (the scene is
+		//! immutable during a render, docs/ARCHITECTURE.md).
+		//!
+		//! USE THE LINEAR PART ONLY.  A step is a DIRECTION, so transform
+		//! it with `Vector3Ops::Transform` (which drops the translation
+		//! column), never `Point3Ops::Transform`.  Under a non-uniform
+		//! scale the object-space step is not the world step's length --
+		//! that is correct, not a defect: the painter's field lives in
+		//! object space and the finite difference must span the object-
+		//! space distance the world step actually covers.
+		//!
+		//! NULL ON CSG HITS, DELIBERATELY.  `CSGObject::IntersectRay`
+		//! clears it.  A CSG composite reports the CHILD operand's own
+		//! object-space point in `ptObjIntersec` (see
+		//! `AdoptCsgSurfacePayload`, which copies it untransformed, and
+		//! its comment naming the resulting frame mismatch as a
+		//! pre-existing, deliberate gap), so the map from world to THAT
+		//! frame is the product of the child's inverse with every
+		//! enclosing composite's inverse -- a per-hit matrix no member
+		//! holds and a pointer cannot express.  Stamping the composite's
+		//! own inverse would be wrong by exactly the child's transform,
+		//! and leaving the child's stamp would be wrong by exactly the
+		//! composite's; `nullptr` is the honest third answer, and the
+		//! consumer's documented degraded mode (move the object-space
+		//! point by the WORLD step, warn once) is at least correct
+		//! whenever the composite chain is a pure translation.
+		//!
+		//! NULL ALSO on any record a transport path builds without going
+		//! through `Object::IntersectRay` (BDPT/VCM's
+		//! `PopulateRIGFromVertex`, hand-built test hits, the geometry
+		//! unit tests).  This is an OUTPUT field, so `PropagateCastInputs`
+		//! does not carry it.
+		const Matrix4*				pmxWorldToObject;
 
 		OrthonormalBasis3D			onb;			// the orthonormal basis at the point of intersection
 
@@ -204,6 +696,39 @@ namespace RISE
 		//! Other geometries leave this with valid=false; consumers should
 		//! fall back to IGeometry::ComputeSurfaceDerivatives.
 		SurfaceDerivativesInfo		derivatives;
+
+		//! GEOMETRY-DERIVED SHADING SIGNALS, Phase 2 — the typed, `const`
+		//! channel through which the expression VM's `occlusion(radius)` /
+		//! `thickness(radius)` builtins reach the hit geometry
+		//! (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.1).  Stamped by
+		//! geometries that can answer such queries (today: the SDF family)
+		//! inside their own `IntersectRay`, in their own OBJECT space, and
+		//! left untransformed by the layers above — both signals are
+		//! dimensionless, so no frame conversion is needed or wanted.
+		//!
+		//! Default (no provider) is the honest "this surface publishes no
+		//! signals": the builtins then return their documented neutral
+		//! values.  This is the narrow, typed version of the PainterContext
+		//! refactor `pCustom`'s comment above has been asking for — one
+		//! channel, not the whole refactor.
+		//!
+		//! MIRRORED ONTO `BDPTVertex` (2026-09-11,
+		//! docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3), so a record
+		//! `PathVertexEval::PopulateRIGFromVertex` rebuilds at a BDPT /
+		//! VCM / MLT subpath vertex carries the stamp forward instead of
+		//! reading the neutral — the bidirectional integrators used to
+		//! sample against the live record and then price the same sample
+		//! against a neutral one, which is a bias, not a flat mask.
+		//!
+		//! AND PROBED ONTO A SAMPLED EMISSION POINT (same date, §5 of that
+		//! document): a light sample is a point `UniformRandomPoint`
+		//! returned, not a hit, so `LightSampler::ProbeEmitterSurface`
+		//! fires one closest-hit at the luminary and stamps THIS field
+		//! from the resulting record — including the cross-object triple,
+		//! with exactly the values `ObjectManager::IntersectRay` uses. It
+		//! is the one place other than that function where the triple is
+		//! written, and SourceHygieneTest pins the pair.
+		SurfaceSignalInfo			signals;
 
 		//! Texture-space footprint at the hit point — Landing 2.  Computed
 		//! at intersection time by projecting the incoming ray's screen-
@@ -250,6 +775,55 @@ namespace RISE
 		//! byte-identical.
 		bool						bShadingTangentFromGeometry;
 
+		//! Written by curve geometry (HairGeometry) alongside
+		//! bShadingTangentFromGeometry=true: the OBJECT-space fiber
+		//! tangent at the hit -- like `vNormal` and `vTangent`, a
+		//! geometry writes this in its own object space; it is
+		//! `Object::IntersectRay` (and, for a CSG-composed hair fibre,
+		//! `CSGObject::IntersectRay`) that lifts it to world space
+		//! (forward matrix, like `vTangent` -- a tangent transforms like
+		//! a position, NOT inverse-transpose), projects it into the
+		//! world-space shading-normal plane, and builds the ONB from it
+		//! (falling back to the legacy world-X projection if the
+		//! supplied tangent is degenerate, i.e. near-parallel to the
+		//! normal).  Same convention as `vTangent` above: each level
+		//! OVERWRITES this field IN PLACE with its own promoted value
+		//! (one promotion per level of nesting) rather than leaving the
+		//! object-space original untouched, so a CSG-of-CSG composite
+		//! sees the field arrive one promotion short of world space at
+		//! each level and finishes the job itself -- exactly the
+		//! invariant `vTangent`'s write-back establishes.  A singular
+		//! transform (the promoted tangent itself collapses to
+		//! near-zero, not merely its projection) clears
+		//! `bHasShadingTangent` and skips the write-back instead of
+		//! leaving a "valid" flag paired with a garbage vector.  A
+		//! geometry that sets `bShadingTangentFromGeometry` WITHOUT also
+		//! setting `bHasShadingTangent` (the SDFGeometry heightfield
+		//! case) still gets the legacy world-X projection, byte-identical
+		//! to before this field existed.  Consumers downstream of
+		//! intersection (e.g. `HairBSDF`) therefore always see this field
+		//! in world space, never object space.
+        //! Separate shader socket direction, promoted forward at each Object/CSG
+        //! level, retaining the RAW normal component for modifier reprojection.
+        //! Its anisotropy frame uses world cross(N,T), without UV parity.
+        //! normalMapOnb retains the ORIGINAL UV/global tangent frame: modifiers
+        //! do not tilt it; Object/CSG promote its own N/U/sign independently.
+        Vector3 vShaderDirection;
+        bool bHasShaderDirection;
+        OrthonormalBasis3D normalMapOnb;
+        bool bHasNormalMapFrame;
+        //! DL-302: the shading frame as it stood BEFORE the first
+        //! normal-perturbing modifier (NormalMap / Relief / Glint) ran on this
+        //! hit; recorded by ModifierFrame::RecordPreModifierFrame.  Only the
+        //! coat-normal decode reads it, so an independently authored Coat
+        //! Normal tilts from the original frame instead of composing with the
+        //! base normal map.  Unset (false) when no modifier ran.
+        OrthonormalBasis3D coatDecodeOnb;
+        bool bHasCoatDecodeOnb;
+		Vector3						vShadingTangent;
+		Scalar						shadingBitangentSign;	// +1 or -1 companion to vShadingTangent (DL-12)
+		bool						bHasShadingTangent;
+
 		//! Wireframe view-mode edge info (GUI render modes P1,
 		//! docs/gui/RENDER_MODES.md).  INPUT: `bWantsWireEdgeInfo` is
 		//! stamped onto the record by the ray caster BEFORE the
@@ -271,6 +845,33 @@ namespace RISE
 		bool						bHasWireEdgeInfo;
 		bool						bWantsWireEdgeInfo;
 
+		//! (Fire r40.)  Declared LAST, after every master field, on purpose:
+		//! inserting them mid-struct shifted the offsets of ptIntersection,
+		//! the normals etc., which changed how the vectorizer pairs their
+		//! components under -ffast-math and moved non-fire renders by ulps
+		//! (LegacyTierRenderIdentityTest et al. pin bit-exact pixels).
+		//! Exact world-ray distances to the geometric boundary before
+		//! Object's shading-point surface-error offset is applied.  Medium
+		//! topology walkers must use these: `range`/`range2` deliberately sit
+		//! just before/after a surface and therefore cannot delimit arbitrarily
+		//! thin volume segments without skipping or double-counting them.
+		Scalar						surfaceRange;
+		Scalar						surfaceRange2;
+		//! Per-cast input.  When non-negative, object-manager traversal
+		//! rejects candidates whose exact `surfaceRange` is not greater
+		//! than this value.  Boundary walks set zero to discard only the
+		//! just-processed zero-distance root without stepping over space.
+		Scalar						minimumSurfaceRange;
+		//! Per-cast input, meaningful only with `minimumSurfaceRange >= 0`.
+		//! True when the query origin is an EXACT geometric boundary point
+		//! produced by the boundary walk itself (not a caller's backed-off
+		//! shading point).  Geometry-level self-hit heuristics that treat a
+		//! face within a plane-distance band of the origin as "the origin's
+		//! own face" (BoxGeometry's DropSelfHitRoot) must not fire then: the
+		//! zero-distance root is rejected by `minimumSurfaceRange`, and a
+		//! genuinely distinct face inside that band must be kept.
+		bool						bExactBoundaryOrigin;
+
 		//! Copies the per-cast INPUT fields -- values stamped by the
 		//! integrator/caster BEFORE intersection and consumed AFTER --
 		//! onto a freshly-constructed scratch record.  Traversal and
@@ -286,6 +887,7 @@ namespace RISE
 			glossyFilterWidth = src.glossyFilterWidth;
 			bWantsWireEdgeInfo = src.bWantsWireEdgeInfo;
 			minimumSurfaceRange = src.minimumSurfaceRange;
+			bExactBoundaryOrigin = src.bExactBoundaryOrigin;
 		}
 
 		RayIntersectionGeometric( const Ray& ray_, const RasterizerState& rast_ ) :
@@ -294,11 +896,14 @@ namespace RISE
 		  bHit( false ),
 		  range( RISE_INFINITY ),
 		  range2( RISE_INFINITY ),
-		  surfaceRange( RISE_INFINITY ),
-		  surfaceRange2( RISE_INFINITY ),
-		  minimumSurfaceRange( -1.0 ),
 		  bGeomNormalOrientedToRay( false ),
+		  bGeomNormalRayDerived( false ),
+		  bOpenSheet( false ),
+		  bProvablyNoInterior( false ),
+		  arrivalGeomFacing( 0 ),
 		  bHasTexCoord1( false ),
+		  bUVGeneratorApplied( false ),
+		  pmxWorldToObject( 0 ),
 		  pCustom( 0 ),
 		  glossyFilterWidth( 0 ),
 		  ambientIOR( 1.0 ),
@@ -306,8 +911,15 @@ namespace RISE
 		  bitangentSign( 1.0 ),
 		  bHasTangent( false ),
 		  bShadingTangentFromGeometry( false ),
+          bHasShaderDirection(false), bHasNormalMapFrame(false), bHasCoatDecodeOnb(false),
+		  shadingBitangentSign( 1.0 ),
+		  bHasShadingTangent( false ),
 		  bHasWireEdgeInfo( false ),
-		  bWantsWireEdgeInfo( false )
+		  bWantsWireEdgeInfo( false ),
+		  surfaceRange( RISE_INFINITY ),
+		  surfaceRange2( RISE_INFINITY ),
+		  minimumSurfaceRange( -1.0 ),
+		  bExactBoundaryOrigin( false )
 		{}
 
 		~RayIntersectionGeometric( )
@@ -321,26 +933,30 @@ namespace RISE
 		  bHit( r.bHit ),
 		  range( r.range ),
 		  range2( r.range2 ),
-		  surfaceRange( r.surfaceRange ),
-		  surfaceRange2( r.surfaceRange2 ),
-		  minimumSurfaceRange( r.minimumSurfaceRange ),
 		  vNormal( r.vNormal ),
 		  vNormal2( r.vNormal2 ),
 		  vGeomNormal( r.vGeomNormal ),
 		  vGeomNormal2( r.vGeomNormal2 ),
 		  bGeomNormalOrientedToRay( r.bGeomNormalOrientedToRay ),
+		  bGeomNormalRayDerived( r.bGeomNormalRayDerived ),
+		  bOpenSheet( r.bOpenSheet ),
+		  bProvablyNoInterior( r.bProvablyNoInterior ),
+		  arrivalGeomFacing( r.arrivalGeomFacing ),
 		  ptCoord( r.ptCoord ),
 		  ptCoord1( r.ptCoord1 ),
 		  bHasTexCoord1( r.bHasTexCoord1 ),
+		  bUVGeneratorApplied( r.bUVGeneratorApplied ),
 		  ptIntersection( r.ptIntersection ),
 		  ptExit( r.ptExit ),
 		  ptObjIntersec( r.ptObjIntersec ),
 		  ptObjExit( r.ptObjExit ),
+		  pmxWorldToObject( r.pmxWorldToObject ),
 		  onb( r.onb ),
 		  pCustom( r.pCustom ),
 		  glossyFilterWidth( r.glossyFilterWidth ),
 		  ambientIOR( r.ambientIOR ),
 		  derivatives( r.derivatives ),
+		  signals( r.signals ),
 		  txFootprint( r.txFootprint ),
 		  vColor( r.vColor ),
 		  bHasVertexColor( r.bHasVertexColor ),
@@ -348,9 +964,19 @@ namespace RISE
 		  bitangentSign( r.bitangentSign ),
 		  bHasTangent( r.bHasTangent ),
 		  bShadingTangentFromGeometry( r.bShadingTangentFromGeometry ),
+          vShaderDirection(r.vShaderDirection), bHasShaderDirection(r.bHasShaderDirection),
+          normalMapOnb(r.normalMapOnb), bHasNormalMapFrame(r.bHasNormalMapFrame),
+          coatDecodeOnb(r.coatDecodeOnb), bHasCoatDecodeOnb(r.bHasCoatDecodeOnb),
+		  vShadingTangent( r.vShadingTangent ),
+		  shadingBitangentSign( r.shadingBitangentSign ),
+		  bHasShadingTangent( r.bHasShadingTangent ),
 		  ptWireNearestEdge( r.ptWireNearestEdge ),
 		  bHasWireEdgeInfo( r.bHasWireEdgeInfo ),
-		  bWantsWireEdgeInfo( r.bWantsWireEdgeInfo )
+		  bWantsWireEdgeInfo( r.bWantsWireEdgeInfo ),
+		  surfaceRange( r.surfaceRange ),
+		  surfaceRange2( r.surfaceRange2 ),
+		  minimumSurfaceRange( r.minimumSurfaceRange ),
+		  bExactBoundaryOrigin( r.bExactBoundaryOrigin )
 		{
 			if( pCustom ) {
 				pCustom->addref();
@@ -367,20 +993,28 @@ namespace RISE
 			surfaceRange = r.surfaceRange;
 			surfaceRange2 = r.surfaceRange2;
 			minimumSurfaceRange = r.minimumSurfaceRange;
+			bExactBoundaryOrigin = r.bExactBoundaryOrigin;
 			vNormal = r.vNormal;
 			vNormal2 = r.vNormal2;
 			vGeomNormal = r.vGeomNormal;
 			vGeomNormal2 = r.vGeomNormal2;
 			bGeomNormalOrientedToRay = r.bGeomNormalOrientedToRay;
+			bGeomNormalRayDerived = r.bGeomNormalRayDerived;
+			bOpenSheet = r.bOpenSheet;
+			bProvablyNoInterior = r.bProvablyNoInterior;
+			arrivalGeomFacing = r.arrivalGeomFacing;
 			ptCoord = r.ptCoord;
 			ptCoord1 = r.ptCoord1;
 			bHasTexCoord1 = r.bHasTexCoord1;
+			bUVGeneratorApplied = r.bUVGeneratorApplied;
 			derivatives = r.derivatives;
+			signals = r.signals;
 			txFootprint = r.txFootprint;
 			ptIntersection = r.ptIntersection;
 			ptExit = r.ptExit;
 			ptObjIntersec = r.ptObjIntersec;
 			ptObjExit = r.ptObjExit;
+			pmxWorldToObject = r.pmxWorldToObject;
 			onb = r.onb;
 			glossyFilterWidth = r.glossyFilterWidth;
 			ambientIOR = r.ambientIOR;
@@ -390,6 +1024,12 @@ namespace RISE
 			bitangentSign = r.bitangentSign;
 			bHasTangent = r.bHasTangent;
 			bShadingTangentFromGeometry = r.bShadingTangentFromGeometry;
+            vShaderDirection=r.vShaderDirection; bHasShaderDirection=r.bHasShaderDirection;
+            normalMapOnb=r.normalMapOnb; bHasNormalMapFrame=r.bHasNormalMapFrame;
+            coatDecodeOnb=r.coatDecodeOnb; bHasCoatDecodeOnb=r.bHasCoatDecodeOnb;
+			vShadingTangent = r.vShadingTangent;
+			shadingBitangentSign = r.shadingBitangentSign;
+			bHasShadingTangent = r.bHasShadingTangent;
 			ptWireNearestEdge = r.ptWireNearestEdge;
 			bHasWireEdgeInfo = r.bHasWireEdgeInfo;
 			bWantsWireEdgeInfo = r.bWantsWireEdgeInfo;

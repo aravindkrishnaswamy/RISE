@@ -11,6 +11,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include "pch.h"
 #include "FireOptics.h"
 #include "Math3D/Math3D.h"
 #include "SpectralConfig.h"

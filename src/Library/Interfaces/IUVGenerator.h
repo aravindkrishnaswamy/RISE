@@ -22,6 +22,18 @@
 
 namespace RISE
 {
+    // Optional internal capability; the legacy UV-generator vtable is unchanged.
+    // Covers every supported object-space point/normal (the same arguments
+    // Object passes to GenerateUV) and declines unaudited boundaries.
+    class ISMSUVDifferential
+    {
+    public:
+        virtual ~ISMSUVDifferential() = default;
+        virtual bool HasSMSUVDifferentialContract() const = 0;
+        virtual bool SMSUVDifferential(const Point3&,const Vector3&,
+            const Vector3& pointDerivative,const Vector3& normalDerivative,
+            Point2& uvDerivative) const = 0;
+    };
 	//! Generates UV co-ordinates
 	class IUVGenerator : public virtual IReference
 	{
@@ -40,4 +52,3 @@ namespace RISE
 }
 
 #endif
-

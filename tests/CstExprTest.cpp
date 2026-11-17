@@ -134,6 +134,27 @@ int main()
 	// [whitespace-heavy] interior spacing + nested parens evaluate the same.
 	Check( DumpCst( Sphere( "expr(  sqrt( ( 4 ) * 4 )  )" ) ) == DumpCst( Sphere( "4" ) ), "derive: whitespace-heavy nested expr == literal 4" );
 
+	// [P2-A, review round 1] the S1 texture-expressions VM added `time` (and
+	// P/Po/N/fw) as parseable context-var names to ExpressionEval.h -- but
+	// EvalExprBody (this surface's evaluator) does NOT opt in via
+	// EnableContextVars, so `time` must stay exactly what it was before that
+	// VM extension: an ordinary "unknown variable" compile error, refusing
+	// the whole value (not silently folding to 0).
+	{
+		std::vector<std::string> d;
+		const std::string dump = DumpCst( Sphere( "expr(time*2+1)" ), &d );
+		Check( !d.empty() && dump != lit5, "refuse: `time` is still a hard unknown-variable error on the expr(...) surface (P2-A)" );
+	}
+	// [P2-A] a vec3-typed final expr is also rejected here -- this surface
+	// only ever meant "compute one number"; `expr(vec3(...))` used to be
+	// unreachable pre-S1 (there was no vec3 type at all) and must not start
+	// silently deriving the .x component now that there is one.
+	{
+		std::vector<std::string> d;
+		const std::string dump = DumpCst( Sphere( "expr(vec3(1,2,3))" ), &d );
+		Check( !d.empty() && dump != lit5, "refuse: a vec3-typed expr(...) result is rejected, not silently .x-derived (P2-A)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

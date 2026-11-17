@@ -10,9 +10,10 @@ See [`../build/cmake/rise-android/toolchain_notes.md`](../build/cmake/rise-andro
 
 - **Android Studio Narwhal 3 Feature Drop (2025.1.3) or a newer release
   compatible with AGP 8.13**. Install the project-pinned NDK
-  **27.0.12077973** and CMake 3.22.1 through the SDK Manager.
+  **27.0.12077973**, SDK Platform **35** (`compileSdk = 35`, `targetSdk = 35`,
+  `minSdk = 29`), and CMake 3.22.1 through the SDK Manager.
 - **JDK 17** (bundled with Android Studio).
-- An **arm64-v8a** Android 14 (API 34) emulator image. On an Apple Silicon
+- An **arm64-v8a** Android 14/15 (API 34–35) emulator image. On an Apple Silicon
   host the ARM image is hardware-accelerated; on Intel hosts it runs under
   translation (slower but usable for the smoke test).
 
@@ -21,8 +22,8 @@ See [`../build/cmake/rise-android/toolchain_notes.md`](../build/cmake/rise-andro
 1. In Android Studio: *File → Open* → select the `android/` directory.
 2. Wait for Gradle sync. First sync will download AGP 8.13.2 and the Compose
    dependencies, then invoke CMake against `../build/cmake/rise-android/
-   CMakeLists.txt` and compile ~340 library TUs. Expect the first build to
-   take several minutes; incremental builds are fast.
+   CMakeLists.txt` and compile ~380 library TUs (377 in `rise_sources.cmake`).
+   Expect the first build to take several minutes; incremental builds are fast.
 3. Select the `app` run configuration and an arm64 emulator, then Run.
 
 The first launch extracts bundled self-contained native-v7 scenes (including
@@ -77,6 +78,7 @@ android/
             RiseCallback.kt            progress / tile / log interface
           ui/
             RenderScreen.kt            top scene dropdown + full-bleed viewport
+            ViewportPane.kt            interactive touch / progressive viewport surface
             RenderViewModel.kt         state orchestration
             RenderState.kt             sealed UI state
             SceneCatalog.kt            bundled scene list

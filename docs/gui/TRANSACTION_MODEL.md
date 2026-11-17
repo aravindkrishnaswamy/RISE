@@ -11,13 +11,9 @@
 >
 > **Deliberately NOT built** (do not assume these exist): no `SceneTransaction`/`TxnMeta`/`CommitResult` value types; no published-snapshot `AcquireSnapshot()`/`DocumentId` seam (§3.4/§3.5.4 are still aspirational, per their own inline "NOT YET IMPLEMENTED" markers); no `RenderTransactionDiff` unified-diff renderer; no `CheckDiskSync`/`ResolveAndSave`/`FileSyncState`/`ReconcileChoice` reconcile-prompt surface (§9's promote-refusal-to-prompt UX is undesigned-in-code — `SaveEngine`'s external-modification refusal from §9.1 is real, but nothing above it); no proposal persistence across a reload or process restart; no S6-style per-proposal scope/limit enforcement. The aspirational §7/§8/§10 prose below is kept in place as design history — it documents *why* the shipped shape looks the way it does — but a reader implementing against this doc should follow the shipped symbols above, not the pseudocode in §7/§8/§10.
 
-**Status:** **MIXED IMPLEMENTATION AND HISTORICAL DESIGN.** The retained CST
-document, `(uuid, revision)` head version, shared undo path, owner/external
-authority, and proposal conflict checks have shipped. The general
-`SceneTransaction`, published-snapshot API, attribution model, and file
-reconciliation UX did not; follow the supersession banner above and current
-symbols rather than the aspirational pseudocode. This document remains the
-design owner for work that has not shipped.
+**Status:** **SINGLE-DOCUMENT CORE SHIPPED; V2 MULTI-DOCUMENT / RCU SNAPSHOTS UNBUILT.**
+- **Shipped for single-document safety:** Retained CST `Document` + `Cst::CstHeadVersion` / `AgentSession` `headVersion` CAS, `SceneEditController` single-slot FIFO render admission, CST exact-byte undo (`Cst::DocReplaceChunkIfText` + per-object gizmo spelling journal), L1 staged `AgentProposal` queue (`Owner` vs `External` authority), `EditorUiSnapshot` UI read surface, and `FileIdentity` external-modification check in `SaveEngine::Save`.
+- **Unbuilt (aspirational v2 design below):** multi-document architecture, lock-free RCU `SceneSnapshot` / `AcquireSnapshot()`, `DocumentId{uuidHi,uuidLo,revision}`, standalone process-wide `RenderCoordinator`, `SceneTransaction`/`TxnMeta` attribution model, and interactive `CheckDiskSync`/`ResolveAndSave` reconciliation UX. Follow the supersession banner above and current symbols rather than the aspirational pseudocode.
 **Owner:** Aravind Krishnaswamy
 **Scope:** The document/authority model for the interactive editor and every client that mutates a loaded scene — in-app GUI (macOS / Windows / Android), the in-process AI agent, and external MCP clients — layered as a *thin extension* of the shipped `SceneEditController` + `SceneEditor` + `EditHistory` + `DirtyTracker` + `SaveEngine`. ABI-additive only: new non-virtual controller methods + C-ABI exports appended to [../../src/Library/RISE_API.h](../../src/Library/RISE_API.h); no edits to existing signatures, no new virtuals on shipped interfaces.
 **Honors:** GUI_ROADMAP §1 principles — text is the durable source of truth (#1); maximize shared C++ (#2); Android not left behind (#3); **everything routes through one mutation path** (#6). And §16 decisions (agent subsystem is `src/Library/Agent/`; avoid the bare `MCP` token; `ICredentialStore : IReference`).

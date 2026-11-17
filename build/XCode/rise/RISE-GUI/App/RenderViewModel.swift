@@ -39,6 +39,17 @@ enum RenderState: Equatable {
 enum LeftPanelTab {
     case agent
     case sceneFile
+    /// doc-88 Phase 3 S15: the read-only Painter/Material node canvas
+    /// (`NodeGraphCanvas.swift`) — a third tab alongside Agent/Scene file,
+    /// same tab-strip idiom, no new chrome pattern. User-facing tab label
+    /// is "Material Graph" (renamed from the original generic "Graph" once
+    /// `.objects` shipped as a sibling) — the case name stays `graph`,
+    /// unrenamed, per this slice's "display strings only" scoping.
+    case graph
+    /// Object Graph slice (S2): a fourth tab, sibling of `.graph` --
+    /// `ObjectGraphCanvas.swift`, the object hierarchy down to geometry.
+    /// User-facing tab label is "Object Graph".
+    case objects
 }
 
 /// Thread-safe image buffer that accumulates progressive RGBA16 render updates
@@ -349,6 +360,26 @@ final class RenderViewModel: ObservableObject {
     }
     @Published var editorRevealRequest: EditorRevealRequest? = nil
     private var nextEditorRevealGeneration = 1
+
+    /// doc-88 Phase 3 S15 (docs/gui/NODE_GRAPH_CANVAS.md §5 item 2):
+    /// double-clicking an expression-family node on the canvas asks
+    /// PropertiesPanel to reveal its `def[i]` rows.  Same generation-
+    /// counter shape as `EditorRevealRequest` for the identical reason —
+    /// a repeat double-click on the SAME already-selected painter (e.g.
+    /// the user hand-collapsed "Advanced" since the first click) must
+    /// still re-trigger the reveal rather than being skipped as
+    /// "unchanged."  No new introspection: PropertiesPanel already
+    /// renders `def[i]` rows (with a stage thumbnail) whenever they're
+    /// visible — this only asks it to open the Advanced disclosure that
+    /// may be hiding them.  See PropertiesPanel's consumption of this
+    /// for why that's the documented Phase-A scope (no per-row scroll-to
+    /// anchor exists in the panel yet).
+    struct GraphDefFocusRequest {
+        let painterName: String
+        let generation: Int
+    }
+    @Published var graphDefFocusRequest: GraphDefFocusRequest? = nil
+    private var nextGraphDefFocusGeneration = 1
 
     // Facet 5 slice 1c-1: the live agent (JSON-RPC) panel.  A minimal
     // "agent + user co-edit" affordance — a typed JSON-RPC request is
@@ -849,6 +880,14 @@ final class RenderViewModel: ObservableObject {
     /// when not playing; cancelled + niled by stopPreviewPlay().
     private var previewPlayTask: Task<Void, Never>? = nil
     private let cancelFlag = AtomicBool(false)
+    /// Durable document snapshots: the app-quit observer token
+    /// (NSApplication.willTerminateNotification) registered once in
+    /// `init()` -- see that registration's doc.  Held so `deinit` can
+    /// remove it; RenderViewModel is an app-lifetime singleton (see
+    /// AppModel), so in practice this fires exactly once per process,
+    /// but removing it on deinit keeps the observer from outliving its
+    /// `[weak self]` closure's usefulness if that ever changes.
+    private var appQuitObserver: NSObjectProtocol?
     private let imageBuffer = RenderImageBuffer()
     private var renderStartTime: Date? = nil
     private var displayTimer: Timer? = nil
@@ -995,6 +1034,58 @@ final class RenderViewModel: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.refreshEDRAvailability()
             }
+        }
+
+        // Durable document snapshots: RenderViewModel owns render
+        // lifecycle, so it -- not ChatViewModel -- is where a quit-time
+        // render cancellation belongs.  ORDERING REQUIRED: cancel BEFORE
+        // finish, mirroring MainWindow::~MainWindow's destructor ordering
+        // on Windows (cancelAndJoinInFlightWork() runs before
+        // finishTrajectoryOnQuit()).  Without this, quitting mid-
+        // production-render would block app termination for the render's
+        // FULL remaining duration: ChatViewModel.appWillTerminate()'s
+        // coherent document read blocks on the controller mutex for as
+        // long as the render thread holds it (see
+        // SceneEditController::ReadAgentSceneSnapshot's documented
+        // "BLOCKING, deliberately" contract).  Requesting cancellation
+        // first bounds that wait to the render's cooperative-cancel
+        // latency instead.
+        //
+        // A `queue: .main` NotificationCenter observer is delivered
+        // SYNCHRONOUSLY when the notification is posted from the main
+        // thread (which app termination is) -- this closure calls
+        // straight into @MainActor-isolated members rather than hopping
+        // through `Task { @MainActor in }`, so both steps below complete
+        // before `-applicationWillTerminate:` returns.  (Mirrors the
+        // pattern the old ChatViewModel-owned observer used before this
+        // fix moved it here.)
+        appQuitObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            // The notification is posted (and, with `queue: .main`,
+            // delivered) on the main thread during app termination, so
+            // asserting main-actor isolation here is sound -- and keeps
+            // the body SYNCHRONOUS, which a `Task { @MainActor in }` hop
+            // would not.
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // Non-blocking cancel REQUEST only -- the same request
+                // continueClearAndLoad/finishSaveAndReload issue before their
+                // own awaited join.  No `await` here: willTerminate's
+                // synchronous-delivery guarantee is what bounds the stall,
+                // and an async hop would defeat it.
+                if self.renderState == .rendering || self.renderState == .cancelling {
+                    self.cancelRender()
+                }
+                self.chat.appWillTerminate()
+            }
+        }
+    }
+
+    deinit {
+        if let observer = appQuitObserver {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 
@@ -2267,12 +2358,25 @@ final class RenderViewModel: ObservableObject {
     func undo() {
         guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.undo()
+        publishHistoryNotice(vb)
     }
 
     /// Same gate as `pauseRefinement` — see `canUseSceneTransport`.
     func redo() {
         guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.redo()
+        publishHistoryNotice(vb)
+    }
+
+    /// A refused undo/redo (e.g. an agent batch edit whose inverse would
+    /// not derive) leaves a notice the user must see -- the step stays in
+    /// the history, so a silent refusal would read as a dead Cmd-Z.
+    /// `ContentView` presents it as an alert.
+    @Published var historyNotice: String? = nil
+
+    private func publishHistoryNotice(_ vb: RISEViewportBridge) {
+        let notice = vb.consumeHistoryNotice()
+        if !notice.isEmpty { historyNotice = notice }
     }
 
     // MARK: - UI redesign: TopBar Save
@@ -2553,15 +2657,23 @@ final class RenderViewModel: ObservableObject {
     }
 
     /// The single unsaved-work gate for destructive scene transitions
-    /// (Close Scene, load-over).  Handles BOTH dirt kinds — unsaved LIVE
+    /// (Close Scene, load-over, and — via AppDelegate.applicationShouldTerminate
+    /// in RISEApp.swift — app quit).  Handles BOTH dirt kinds — unsaved LIVE
     /// scene edits (sceneEditsDirty) and unsaved RAW editor text
     /// (isEditorDirty) — including the BOTH-dirty case round 3 caught:
     /// they are independent flags, and saving the scene does NOT save a
     /// divergent editor buffer (writing that buffer to the same file
     /// would clobber the scene save), so the both case gets an explicit
     /// follow-up offer to save the text to a SEPARATE file.  Returns true
-    /// to proceed with the transition, false to abort it.
-    private func promptToSaveUnsavedWork(before action: String) -> Bool {
+    /// to proceed with the transition, false to abort it.  Not `private`:
+    /// AppDelegate calls this synchronously from `applicationShouldTerminate`,
+    /// which NSAlert.runModal() (called inside) supports directly — no
+    /// `.terminateLater` dance needed.  Deliberately indifferent to render
+    /// state, same as the Close Scene / load-over callers: a render in
+    /// flight at quit time is cancelled separately by the existing
+    /// `willTerminateNotification` observer in `init()`, which fires AFTER
+    /// `applicationShouldTerminate` has already decided to terminate.
+    func promptToSaveUnsavedWork(before action: String) -> Bool {
         guard sceneEditsDirty || isEditorDirty else { return true }
         let alert = NSAlert()
         alert.messageText = "Unsaved Changes"
@@ -2655,6 +2767,16 @@ final class RenderViewModel: ObservableObject {
         guard !isEditorDirty else { return }
         editorRevealRequest = EditorRevealRequest(byteOffset: offset, byteLength: 0, generation: nextEditorRevealGeneration)
         nextEditorRevealGeneration += 1
+    }
+
+    /// doc-88 Phase 3 S15: node-canvas double-click entry point — see
+    /// `GraphDefFocusRequest`.  Selection (which entity/category the
+    /// property panel shows) is a separate call the canvas makes itself
+    /// via the bridge (`setSelection`); this only carries the "please
+    /// open Advanced" intent, so it takes just the name, not a category.
+    func focusPainterDefRows(name: String) {
+        graphDefFocusRequest = GraphDefFocusRequest(painterName: name, generation: nextGraphDefFocusGeneration)
+        nextGraphDefFocusGeneration += 1
     }
 
     /// Source traceability: reveal a specific UI element's span in the Scene-file

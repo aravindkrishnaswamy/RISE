@@ -37,21 +37,21 @@ namespace RISE
 		protected:
 			virtual ~VCMPelRasterizer();
 
-			const char* GetProgressTitle() const { return "VCM Rasterizing: "; }
+			const char* GetProgressTitle() const override { return "VCM Rasterizing: "; }
 
 			/// Override to use VCMRasterizerBase::stabilityConfig
 			/// instead of the default from PixelBasedPelRasterizer.
-			void PrepareRuntimeContext( RuntimeContext& rc ) const;
+			void PrepareRuntimeContext( RuntimeContext& rc ) const override;
 
 			/// Override to return the adaptive sampling budget when active.
-			unsigned int GetProgressiveTotalSPP() const;
+			unsigned int GetProgressiveTotalSPP() const override;
 
 			/// Adaptive-sample-map intent for ProgressiveFilm::Resolve.
 			/// See PixelBasedRasterizerHelper.h docs and the
 			/// "show_adaptive_map ineffective in progressive mode" fix
 			/// landed 2026-05-24.
-			bool GetAdaptiveShowMap() const { return adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0; }
-			unsigned int GetAdaptiveTargetSamples() const { return adaptiveConfig.maxSamples; }
+			bool GetAdaptiveShowMap() const override { return adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0; }
+			unsigned int GetAdaptiveTargetSamples() const override { return adaptiveConfig.maxSamples; }
 
 			/// Diamond-inheritance disambiguation: both
 			/// VCMRasterizerBase and PixelBasedPelRasterizer
@@ -61,15 +61,15 @@ namespace RISE
 			/// PixelBasedPelRasterizer's side effects (OpenPGL
 			/// guiding training plumbing) so nothing the base
 			/// rasterizer needs is silently skipped.
-			void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const;
+			void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const override;
 
 			/// Diamond-inheritance disambiguation: forward all three
 			/// flush overrides to the VCMRasterizerBase implementations
 			/// so the splat film gets composited before output.
-			void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
-			void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
-			void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
-			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
+			void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
+			void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
+			void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
+			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const override;
 
 			void IntegratePixel(
 				const RuntimeContext& rc,
@@ -81,13 +81,13 @@ namespace RISE
 				const bool temporal_samples,
 				const Scalar temporal_start,
 				const Scalar temporal_exposure
-				) const;
+				) const override;
 
 		public:
 			// Deferred photon-map gate (IRasterizer): own light transport, never
 			// reads the scene photon maps -> false (overrides the inherited
 			// PixelBasedPelRasterizer::true).
-			bool ConsumesScenePhotonMaps() const { return false; }
+			bool ConsumesScenePhotonMaps() const override { return false; }
 
 			VCMPelRasterizer(
 				IRayCaster* pCaster_,

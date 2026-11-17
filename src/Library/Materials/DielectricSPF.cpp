@@ -17,6 +17,8 @@
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Optics.h"
 #include "../Utilities/ThinFilm.h"
+#include "../Utilities/IORStackSeeding.h"
+#include <memory>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -85,6 +87,39 @@ void DielectricSPF::SetIOR( const IScalarPainter& v )
 	pRIndex = &v;
 }
 
+// DL-24 review round 2, P1-A.  The warp is active exactly where
+// GenerateScatteredRay draws a non-zero `alpha`: Henyey-Greenstein for
+// g < 1, the Phong cone for scattering < 1e6 (the delta pass-through
+// convention).  The shading-vs-geometric tilt test is exact up to the
+// normalisation round-off of the two normals: a residual wedge of at most
+// ~1.4e-6 rad between the planes (1 - cos < 1e-12) is treated as none.
+bool DielectricSPF::SelectionMassIsDeterministic(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm
+	) const
+{
+	bool warp = false;
+	if( nm > 0 ) {
+		const Scalar v = pScat->GetValueAtNM( ri, nm );
+		warp = bHG ? ( v < 1 ) : ( v < 1000000.0 );
+	} else {
+		const ScalarTriple v = pScat->GetValuesAt( ri );
+		for( int i = 0; i < 3; i++ ) {
+			warp = warp || ( bHG ? ( v.v[i] < 1 ) : ( v.v[i] < 1000000.0 ) );
+		}
+	}
+	if( !warp ) {
+		return true;
+	}
+	// A degenerate geometric normal makes DielectricSPF clip against the
+	// shading normal itself (its own nEff fallback): no wedge exists.
+	if( !( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar( 1e-12 ) ) ) {
+		return true;
+	}
+	const Scalar c = fabs( Vector3Ops::Dot( Vector3Ops::Normalize( ri.vGeomNormal ), ri.onb.w() ) );
+	return c >= Scalar( 1 ) - Scalar( 1e-12 );
+}
+
 void DielectricSPF::SetScattering( const IScalarPainter& v )
 {
 	v.addref();
@@ -116,6 +151,29 @@ static Scalar ARStackReflectance(
 	return RISE::ThinFilm::ReflectanceConductorStack( cosI, lam, N0, film, thick, nF, Ns );
 }
 
+bool DielectricSPF::EvaluateSpecularFresnelAfterRefraction(Scalar cosI,Scalar etaI,Scalar etaT,
+    bool exiting,Scalar nm,Scalar& reflectance) const
+{
+    if(arStack.nLayers==0) return false;
+    reflectance=ARStackReflectance(arStack,exiting,cosI,nm,etaI,etaT);
+    return true;
+}
+
+bool DielectricSPF::EvaluateSpecularFresnel( Scalar cosI, Scalar etaI, Scalar etaT,
+	bool exiting, Scalar nm, Scalar& reflectance ) const
+{
+	if( arStack.nLayers == 0 ) return false;
+	// Use the SPF's Snell/TIR classifier before evaluating its fixed film
+	// stack. Canonical incidence retains the caller's solved cosine/indices.
+	Vector3 refracted( std::sqrt( r_max( Scalar(0), Scalar(1)-cosI*cosI ) ), -cosI, 0 );
+	if( !Optics::CalculateRefractedRay( Vector3(0,1,0), etaI, etaT, refracted ) ) {
+		reflectance = 1;
+	} else {
+		EvaluateSpecularFresnelAfterRefraction(cosI,etaI,etaT,exiting,nm,reflectance);
+	}
+	return true;
+}
+
 //! Returns true if there was reflection
 Scalar DielectricSPF::GenerateScatteredRay(
 	ScatteredRay& dielectric,									///< [out] Scattered dielectric ray
@@ -128,7 +186,8 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	const Scalar scatfunc,
 	const Scalar rIndex,
 	const Scalar nm,
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,								///< [in] Index of refraction stack
+	const bool bAllocateStacks
 	) const
 {
 	dielectric.type = ScatteredRay::eRayRefraction;
@@ -143,56 +202,93 @@ Scalar DielectricSPF::GenerateScatteredRay(
 
 	bDielectric = bFresnel = true;
 
-	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
-	// to 60 deg off the true surface, so a Fresnel reflection direction that
-	// validates against the (tilted) shading normal can still point below the
-	// geometric surface -- the continuation ray then tunnels into the solid.
-	// Orient the geometric normal to the crossing's outward side (entering:
-	// +onb.w(); leaving: -onb.w() -- the side the reflection must stay on).
-	// Degenerate
-	// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp) falls back
-	// to the shading normal, making the gate a no-op.
+	// Geometric-horizon reference (DL-111, 2026-09-17).  GlintModifier can
+	// tilt the shading normal up to 60 deg off the true surface, and a bump
+	// or normal map or a smooth-shaded mesh's interpolated normal does the
+	// same more mildly, so a direction that validates against the (tilted)
+	// SHADING normal can still be on the wrong side of the actual surface.
+	// Both lobes below need a reference that no shading tilt can move:
 	//
-	// NOTE (ray-anchor sweep): unlike the myonb.FlipW()-derived anchors
-	// elsewhere (GGXSPF et al.), nEff here is NOT re-derived from a per-hit
-	// Dot(rayDir, tiltable shading normal) test -- bFromInside is ground
-	// truth from the IOR stack (which side of the interface the walk is
-	// physically on), independent of any glint tilt.  This is provably
-	// equivalent to the ray-anchor rule used elsewhere: for the entering
-	// case the ray opposes the true outward normal (Dot(rayDir,Ng)<0) so
-	// nEff=+onb.w() picks the same side as a direct ray-anchor would; for
-	// the leaving case the ray travels outward (Dot(rayDir,Ng)>0) so
-	// nEff=-onb.w() again matches.  Left as stack-anchored rather than
-	// rewritten to Dot(geomNRaw, ri.ray.Dir()) to avoid perturbing
-	// well-tested crossing logic for a change that is a no-op here.
-	// CAVEAT: the equivalence assumes the IOR stack accurately reflects the
-	// ray's physical containment (bFromInside is only as good as the stack).
-	// See IORStackSeeding.h for the class of bug where it doesn't -- a
-	// subpath origin sealed inside nested dielectrics with an unseeded stack.
-	const Vector3 nEff = bFromInside ? -ri.onb.w() : ri.onb.w();
-	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
-		? ri.vGeomNormal : nEff;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, nEff ) >= 0 ) ? geomNRaw : -geomNRaw;
+	//   * the Fresnel reflection must stay on the side the incoming ray
+	//     arrived from,      Dot(dir, geomN) > 0;
+	//   * the transmission must cross to the other side,
+	//                        Dot(dir, geomN) < 0   ==   Dot(dir, throughSurface) > 0.
+	//
+	// `geomN` is therefore RAY-ANCHORED -- flipped to oppose
+	// `ri.ray.Dir()` -- which makes those two half-spaces exact
+	// complements and, crucially, makes ONE expression correct for BOTH
+	// crossings: on entry it is the outward normal, on exit the inward
+	// one.
+	//
+	// This REPLACES an `nEff`-anchored rule (`nEff = bFromInside ?
+	// -onb.w() : onb.w()`, oriented by `Dot(geomNRaw, nEff) >= 0`) whose
+	// own comment argued it was "provably equivalent to the ray-anchor
+	// rule used elsewhere".  It is not, on a DOUBLE-SIDED triangle mesh:
+	// there the geometry flips BOTH normals to face the incoming ray
+	// (`bGeomNormalOrientedToRay`), so at an EXIT hit `onb.w()` points
+	// INWARD and `nEff = -onb.w()` lands outward -- the opposite of the
+	// ray-opposing side.  The gate then inverted: measured on a
+	// double-sided dielectric slab's inside face, 100% of the internal
+	// Fresnel reflection was DROPPED at zero tilt (no bump map needed),
+	// and past 45 deg of tilt it was EMITTED pointing out of the solid
+	// while still carrying the interior IOR stack
+	// (tests/TransmissionPushGateTest.cpp sub-test 3).  Ray-anchoring is
+	// also the convention `a4fb884d` established for GGXSPF after the
+	// same class of inversion (tests/GlintModifierTest.cpp Test 8d).
+	//
+	// `ri.vGeomNormal` is recovered through `HasTrueGeomSide()` /
+	// `UnflippedGeomNormal()` (DL-70) first.  The un-flip is immaterial to
+	// the ray-anchored composite itself, but `HasTrueGeomSide()` also
+	// excludes `HairGeometry`, whose normal is FABRICATED from the ray
+	// (`bGeomNormalRayDerived`) and so carries no genuine second side:
+	// there, as for a degenerate normal (SquaredModulus guard, matching
+	// GlintModifier.cpp), fall back to the shading normal and the gates
+	// become no-ops.
+	const Vector3 nShading = ri.onb.w();
+	const Vector3 trueGeomNormal = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : nShading;
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
+		? trueGeomNormal : nShading;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 throughSurface = -geomN;
+
+	// The ordered indices of THIS crossing, hoisted so the DL-111
+	// re-derivation below can rebuild both the direction and its Fresnel
+	// at the same interface.
+	Scalar Ni = 1.0, Nt = 1.0;
+
+	// DL-345: a PROVABLY OPEN sheet is crossed by its FACE, not by the
+	// stack (IORStackSeeding::ResolveOpenSheetCrossing has the ruling; the
+	// caller's `bFromInside` already applied the same face test).
+	std::unique_ptr<IORStack> pOpenSheetStack;
+	IORStackSeeding::OpenSheetCrossing openSheet = { false, Scalar( 1 ), Scalar( 1 ) };
+	if( ri.bProvablyNoInterior ) {
+		pOpenSheetStack.reset( new IORStack( ior_stack ) );
+		openSheet = IORStackSeeding::ResolveOpenSheetCrossing( ri, rIndex, *pOpenSheetStack, 0, nm );
+	}
 
 	if( bFromInside )
 	{
 		// Determine the exit IOR: the medium the ray enters after leaving
 		// this object.  Pop the current object from a temporary copy of
 		// the stack so that top() reveals the underlying medium's IOR.
-		IORStack exitStack( ior_stack );
-		exitStack.pop();
+		IORStack exitStack( pOpenSheetStack ? *pOpenSheetStack : ior_stack );
+		if( !pOpenSheetStack ) {
+			exitStack.pop();
+		}
 		Scalar exitIOR = exitStack.top();
+		Ni = pOpenSheetStack ? openSheet.etaFrom : rIndex;
+		Nt = exitIOR;
 
-		if( Optics::CalculateRefractedRay( -ri.onb.w(), rIndex, exitIOR, refracted ) ) {
-			dielectric.ior_stack = new IORStack( ior_stack );
-			dielectric.ior_stack->pop();
-			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
+		if( Optics::CalculateRefractedRay( -ri.onb.w(), Ni, exitIOR, refracted ) ) {
+			if( bAllocateStacks ) {
+				dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, rIndex );
+			}
 			if( arStack.nLayers > 0 ) {
 				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
 				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
-				ref = ARStackReflectance( arStack, /*fromInside*/ true, cosI, lam, rIndex, exitIOR );
+				ref = ARStackReflectance( arStack, /*fromInside*/ true, cosI, lam, Ni, exitIOR );
 			} else {
-				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), rIndex, exitIOR );
+				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), Ni, exitIOR );
 			}
 		} else {
 			// Total internal reflection
@@ -201,27 +297,159 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	}
 	else
 	{
-		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), rIndex, refracted ) ) {
+		Ni = pOpenSheetStack ? openSheet.etaFrom : ior_stack.top();
+		Nt = rIndex;
+
+		if( Optics::CalculateRefractedRay( ri.onb.w(), Ni, rIndex, refracted ) ) {
 			if( arStack.nLayers > 0 ) {
 				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
 				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
-				ref = ARStackReflectance( arStack, /*fromInside*/ false, cosI, lam, ior_stack.top(), rIndex );
+				ref = ARStackReflectance( arStack, /*fromInside*/ false, cosI, lam, Ni, rIndex );
 			} else {
-				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), ior_stack.top(), rIndex );
+				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), Ni, rIndex );
 			}
-			dielectric.ior_stack = new IORStack( ior_stack );
-			dielectric.ior_stack->push( rIndex );
-			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
+			if( bAllocateStacks ) {
+				dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, rIndex );
+			}
 		} else {
+			ref = 1.0;
+		}
+	}
+
+	// DL-111: the transmitted direction above was built from the SHADING
+	// normal, and nothing yet says it actually crossed the surface -- while
+	// `dielectric.ior_stack` has ALREADY been pushed (entry) or popped
+	// (exit) to say it did.  A continuation that travels back out the side
+	// it came from with the object pushed makes the NEXT hit on that object
+	// read as an exit that was never legitimately entered: the DL-03 /
+	// DL-45 / DL-68 misclassification, here at a delta lobe.
+	//
+	// THE DISPOSAL RULING (docs/DL111_DL112_TRANSMISSION_PUSH_GATES.md has
+	// the full derivation).  A delta Snell lobe has no distribution to
+	// renormalize, so DL-68's clip does not apply; of the candidates --
+	// mirroring the Snell result across the geometric plane, re-labelling
+	// it as a reflection, dropping it with the energy accounted as loss,
+	// or RE-DERIVING the refraction about the true geometric normal -- only
+	// the last keeps the event a genuine refraction obeying Snell's law at
+	// the true interface with the SAME eta (so a dispersion fan stays an
+	// ordered fan), preserves the energy exactly, and CANNOT fail the gate:
+	// a refraction about N always lands on the far side of N.  It is also
+	// exactly the treatment this function already applies to its own
+	// mandatory (TIR) reflection just below.  The Fresnel term is
+	// recomputed at the same normal so direction and weight describe one
+	// interface.
+	//
+	// Reachability -- CORRECTED by the review's P2-1; an earlier version of
+	// this comment claimed refraction into a DENSER medium could never
+	// reach this branch, and that is FALSE.  There are TWO reachable
+	// families:
+	//
+	//   (1) Refraction into a RARER medium (an ordinary glass->air exit,
+	//       or entry into a bubble: an `ior 1.0` object inside a glass
+	//       block) with the shading tilt and the refracted deviation
+	//       ADDING -- a grazing ray at a normal-perturbed silhouette.
+	//       While `Dot(d, n_s) < 0` (the shading normal still opposes the
+	//       incoming ray) this really is the only family, because a
+	//       DENSER-medium refraction bends TOWARD the normal and so lands
+	//       angularly BETWEEN the incoming ray and the shading normal's
+	//       far side, both already inside the convex crossing half-space.
+	//
+	//   (2) ANY refraction, denser included, once the tilt carries the
+	//       shading normal PAST the grazing incoming ray so that
+	//       `Dot(d, n_s) > 0`.  That is the premise (1)'s argument
+	//       silently assumes, and it is exactly what a bump / normal map
+	//       or `GlintModifier` produces at a silhouette --
+	//       `ReliefModifier` is explicitly NOT a horizon clamp.
+	//       `Optics::CalculateRefractedRay` then flips the normal
+	//       internally to restore its sign convention, so the refraction
+	//       is built about `-n_s`, whose far side is the side the ray
+	//       CAME FROM.  Closed form at geomN = +Z, an air->glass 1.5
+	//       ENTRY arriving 89 deg off the geometric normal with the
+	//       shading normal tilted 30 deg the OTHER way: the transmitted
+	//       direction is (-0.911, 0, +0.412), above the surface.  Pre-fix
+	//       this dropped BOTH lobes (the reflection is wrong-side too) and
+	//       the SPF emitted nothing at all -- total energy 0.0000 instead
+	//       of 1 at every one of nine such cells
+	//       (tests/TransmissionPushGateTest.cpp sub-test 2c).
+	//
+	// So: ordinary glass ENTRY at a bump-mapped silhouette was 100%
+	// broken pre-fix.  The branch is not narrow.
+	if( ref < 1.0 && Vector3Ops::Dot( refracted, throughSurface ) <= 0 ) {
+		Vector3 geomRefracted = ri.ray.Dir();
+		if( Optics::CalculateRefractedRay( geomN, Ni, Nt, geomRefracted ) ) {
+			refracted = geomRefracted;
+			if( arStack.nLayers > 0 ) {
+				const Scalar cosI = fabs( Vector3Ops::Dot( geomN, ri.ray.Dir() ) );
+				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
+				ref = ARStackReflectance( arStack, bFromInside, cosI, lam, Ni, Nt );
+			} else {
+				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, geomN, Ni, Nt );
+			}
+		} else {
+			// The TRUE interface total-internally-reflects at this
+			// incidence even though the tilted shading normal did not.
+			// Mandatory reflection; the transmission lobe is not emitted
+			// (the `ref < 1.0` gate below), and the reflection block
+			// immediately following carries all the energy.
+			//
+			// `refracted` MUST be restored to the incoming direction here
+			// (review P1-1).  It is currently holding the WRONG-SIDE
+			// shading-normal Snell result -- that is what brought us into
+			// this block -- and the `scattering` warp further down runs
+			// UNCONDITIONALLY, so leaving it would hand
+			// `GeometricUtilities::PerturbClipped` an axis outside its clip
+			// half-space and fire its fail-loud precondition (a
+			// global-lock console + file write) on the per-sample scatter
+			// path.  Measured on the shipped
+			// `scenes/Tests/SMS/sms_veach_egg_bumpmap.RISEscene` at
+			// 400x400 / 4 spp: 89-98 such lines per render; 320/320 at
+			// five (delta, tilt) exit cells in
+			// tests/TransmissionPushGateTest.cpp sub-test 12.  Behaviour
+			// was otherwise nil (`ref == 1` drops the lobe and the energy
+			// still sums to 1), but the log write is not.
+			//
+			// `ri.ray.Dir()` is the value the two ORIGINAL TIR branches
+			// above leave in place (`Optics::CalculateRefractedRay` does
+			// not touch its in/out argument when it returns false), and it
+			// satisfies the warp's precondition by construction:
+			// `geomN` is ray-anchored, so
+			// `Dot(ri.ray.Dir(), throughSurface) > 0` always.
+			refracted = ri.ray.Dir();
 			ref = 1.0;
 		}
 	}
 
 	// reflect ray
 	{
+		// `Optics::CalculateReflectedRay` is sign-invariant in its normal
+		// argument (r = d - 2 Dot(d,n) n), so the two branches differ only
+		// in the IOR stack the reflection carries, not in the direction.
+		//
+		// REVIEW P3, worth stating because the DL-111 re-derivation above
+		// made the two normals differ: this direction is the SHADING
+		// mirror (`ri.onb.w()`), while after a re-derivation the `ref` it
+		// is about to be weighted by was recomputed at the GEOMETRIC
+		// normal.  That pairing is deliberate, and the alternatives are
+		// worse:
+		//   * `ref` must come from `geomN` in that case, because it is the
+		//     Fresnel partner of a transmission that is now a refraction
+		//     about `geomN` -- `ref` and `1-ref` have to describe ONE
+		//     interface or they do not sum to the incident energy;
+		//   * the DIRECTION is left at the shading mirror because that is
+		//     what a bump / normal map is FOR (the perturbed highlight is
+		//     the whole visual point of the map), and because the gate
+		//     immediately below already re-derives it about `geomN`
+		//     whenever the shading mirror is geometrically impossible --
+		//     i.e. exactly where keeping it would be wrong.
+		// So the split is: weight from the true interface, direction from
+		// the shading frame unless the shading frame is invalid.  The
+		// re-derivation branch below IS the one place both come from
+		// `geomN`.
 		if( bFromInside ) {
-			fresnel.ior_stack = new IORStack( ior_stack );
-			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
+			if( bAllocateStacks ) {
+				fresnel.ior_stack = new IORStack( ior_stack );
+				GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
+			}
 			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 		} else {
 			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
@@ -229,23 +457,24 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	}
 
 	if( Vector3Ops::Dot( fresnel.ray.Dir(), geomN ) <= 0 ) {
-		if( ref >= 1.0 ) {
-			// Mandatory reflection: ref forced to 1.0 above means TIR (or an
-			// exact grazing Fresnel of 1.0) -- no transmission lobe will be
-			// emitted at all (see the `bDielectric && ref < 1.0` gate below),
-			// so dropping the Fresnel lobe here would be total, deterministic
-			// energy loss.  TIR has no companion channel: re-derive the
-			// reflection direction about the TRUE geometric normal instead of
-			// the shading normal.  This is guaranteed to satisfy the gate (no
-			// re-check needed): for a ray arriving against geomN,
-			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 -- holds
-			// unconditionally here since geomN's orientation (nEff, see the
-			// NOTE above) is provably ray-anchored, so dot(d,geomN) < 0 always
-			// (up to the measure-zero exact-tangent boundary).
-			fresnel.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
-		} else {
-			bFresnel = false;
-		}
+		// DL-111, reflection half of the same disposal ruling.  This
+		// re-derivation used to be reserved for a MANDATORY (TIR)
+		// reflection, and every other wrong-side reflection was DROPPED --
+		// deterministic energy loss that grows with the shading tilt and
+		// that the transmission channel does not pick up, since `ref` is
+		// simply never paid to anything.  A delta reflection has no
+		// distribution to renormalize either, so the same answer applies:
+		// re-derive about the TRUE geometric normal, which is the coarse
+		// form of the "clamp the shading normal so the reflection stays
+		// valid" rule production renderers apply (Cycles'
+		// `ensure_valid_reflection`).
+		//
+		// Guaranteed to satisfy the gate, so no re-check is needed: for a
+		// ray arriving against geomN,
+		// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0, and geomN is
+		// ray-anchored by construction above so dot(d,geomN) < 0 always
+		// (up to the measure-zero exact-tangent boundary).
+		fresnel.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
 	}
 
 	// refracted ray
@@ -266,18 +495,59 @@ Scalar DielectricSPF::GenerateScatteredRay(
 			}
 		}
 
-		// Use the warping function for a Phong based PDF
+		// Use the warping function for a Phong based PDF.
+		//
+		// DL-111: this warp is the one NON-delta part of the lobe, and
+		// DL-68's construction applies to it verbatim.  Whether `alpha`
+		// came from the Henyey-Greenstein inverse CDF or the Phong
+		// `cos^N` one, the warp is UNIFORM IN AZIMUTH about the Snell
+		// axis at fixed `alpha`, and the crossing constraint is a plane
+		// through the origin -- so the clipped conditional is still
+		// uniform in azimuth, and drawing it on the valid ARC instead of
+		// the full circle is EXACT, costs the same single canonical
+		// number `random.y`, and renormalizes the clipped-away energy
+		// into the valid region rather than dropping it.  Without it a
+		// wide `scattering` widens the wrong-side set on its own, with no
+		// grazing silhouette needed: measured pre-fix on a closed
+		// analytic entry at `scattering 1`, 9/4075 wrong-side pushes at
+		// 15 deg of tilt rising to 663/3572 at 89 deg, and at
+		// `scattering 0` (the documented "maximally diffuse
+		// transmission") 119/3878 to 1065/3123.
+		//
+		// The precondition (`Dot(axis, throughSurface) >= 0`) holds on
+		// every path into here, and the block runs UNCONDITIONALLY --
+		// including when the lobe is about to be dropped -- so all THREE
+		// paths matter:
+		//
+		//   * the re-derivation above SUCCEEDED (`ref < 1`): `refracted`
+		//     is a refraction about the ray-anchored `geomN`, which lands
+		//     on `throughSurface` by construction;
+		//   * the shading-normal Snell SUCCEEDED and was already on the
+		//     right side: the re-derivation block was skipped and the
+		//     value satisfies the same test it was just checked against;
+		//   * any TIR (either of the two original branches, or the
+		//     re-derivation's own fallback -- review P1-1): every one of
+		//     them leaves `refracted == ri.ray.Dir()`, and
+		//     `Dot(ri.ray.Dir(), throughSurface) > 0` holds because
+		//     `geomN` is ray-anchored.
 		if( alpha > 0 && alpha < PI_OV_TWO ) {
-			dielectric.ray.SetDir(GeometricUtilities::Perturb(
+			dielectric.ray.SetDir(GeometricUtilities::PerturbClipped(
 				dielectric.ray.Dir(),
 				alpha,
-				TWO_PI * random.y
+				throughSurface,
+				random.y
 				));
 		}
 
-		if( !bFromInside && Vector3Ops::Dot(dielectric.ray.Dir(), ri.onb.w()) > -NEARZERO ) {
-			bDielectric = false;
-		} else if( bFromInside && Vector3Ops::Dot(dielectric.ray.Dir(), ri.onb.w()) < NEARZERO ) {
+		// DL-111: the crossing test, against the ray-anchored GEOMETRIC
+		// normal.  This replaces a test against `ri.onb.w()` -- the
+		// SHADING normal, the very quantity a bump map or glint tilts --
+		// which both admitted directions that never crossed and rejected
+		// directions that did.  Both branches above now guarantee this
+		// holds, so it is a defensive net for the measure-zero
+		// exact-tangent boundary of the clipped arc rather than a live
+		// rejection path.
+		if( Vector3Ops::Dot( dielectric.ray.Dir(), throughSurface ) <= 0 ) {
 			bDielectric = false;
 		}
 	}
@@ -290,7 +560,7 @@ void DielectricSPF::DoSingleRGBComponent(
 	 const RayIntersectionGeometric& ri,						///< [in] Geometric intersection details for point of intersection
 	 const Point2& random,										///< [in] Two canonical random numbers
 	 ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	 const IORStack& ior_stack,							///< [in/out] Index of refraction stack
+	 const IORStack& ior_stack,							///< [in] Index of refraction stack
 	 const int oneofthree,
 	 const Scalar newIOR,
 	 const Scalar scattering,
@@ -308,7 +578,9 @@ void DielectricSPF::DoSingleRGBComponent(
 	// is currently inside, so if this object is in the stack we must be
 	// exiting. This is more robust than the normal-based cosine test at
 	// grazing angles where numerical precision can give wrong results.
-	if( ior_stack.containsCurrent() ) {
+	// DL-345: EXCEPT on a provably open sheet, which is crossed by its
+	// FACE (IORStackSeeding::ResolveOpenSheetCrossing has the ruling).
+	if( ri.bProvablyNoInterior ? IORStackSeeding::OpenSheetBackFace( ri ) : ior_stack.containsCurrent() ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
@@ -333,6 +605,17 @@ void DielectricSPF::DoSingleRGBComponent(
 	bool bDielectric, bFresnel;
 	Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, random, scattering, newIOR, nm, ior_stack );
 
+	// NO eta^2 HERE, DELIBERATELY (debt 30).  The transmission lobe below
+	// carries only Fresnel (1-ref) and Beer's-law tau^distance.  Radiance
+	// is not invariant across the interface -- L/n^2 is -- but whether the
+	// (eta_before/eta_after)^2 factor applies depends on whether the walk
+	// consuming this ray carries RADIANCE (camera-rooted: apply) or
+	// IMPORTANCE / FLUX (light subpath, photon tracer: do not), and an SPF
+	// cannot know which.  The factor therefore lives at the consumer,
+	// which reads it off `dielectric.ior_stack` (pushed / popped just above
+	// in GenerateScatteredRay) via RISE::RadianceEtaScale -- see the
+	// contract on ScatteredRay::kray in Interfaces/ISPF.h and the site
+	// table in docs/REFRACTIVE_RADIANCE_SCALING.md.
 	if( bDielectric && ref < 1.0 ) {
 		if( oneofthree ) {
 			dielectric.kray[oneofthree-1] = dielectric.kray[oneofthree-1] * (1.0-ref);
@@ -359,7 +642,7 @@ void DielectricSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	Scalar		cosine = -Vector3Ops::Dot(ri.onb.w(), ri.ray.Dir());
@@ -381,13 +664,18 @@ void DielectricSPF::Scatter(
 		// No dispersion
 		DoSingleRGBComponent( ri, Point2(sampler.Get1D(),sampler.Get1D()), scattered, ior_stack, false, iorVals.v[0], scatVals.v[0], cosine, -1.0 );
 	} else {
-		// We have dispersion, so we must process each component seperately
-		// Representative per-channel wavelengths for the AR-coating reflectance
-		// on the RGB preview path (sRGB primary dominant wavelengths, nm).
-		static const Scalar kARChannelNM[3] = { 611.0, 549.0, 465.0 };
+		// We have dispersion, so we must process each component seperately.
+		// The per-channel representative wavelengths (used here for the
+		// AR-coating reflectance on the RGB preview path) are the SHARED
+		// `ScalarPainterRGB::kChannelNM` -- the same three an
+		// `IScalarPainter` samples its curve at to build the `iorVals`
+		// triple this loop is refracting against (DL-29).  They used to
+		// be a private `kARChannelNM` copy here; keeping one array means
+		// the painter's triple and this loop can never describe two
+		// different sets of wavelengths.
 		Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 		for( int i=0; i<3; i++ ) {
-			DoSingleRGBComponent( ri, ptrand, scattered, ior_stack, i+1, iorVals.v[i], scatVals.v[i], cosine, kARChannelNM[i] );
+			DoSingleRGBComponent( ri, ptrand, scattered, ior_stack, i+1, iorVals.v[i], scatVals.v[i], cosine, ScalarPainterRGB::kChannelNM[i] );
 		}
 	}
 }
@@ -397,7 +685,7 @@ void DielectricSPF::ScatterNM(
 	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	ScatteredRay dielectric;
@@ -406,8 +694,9 @@ void DielectricSPF::ScatterNM(
 	bool		bFromInside = false;
 
 	// Use the IOR stack as the authoritative source for inside/outside
-	// determination when available (see DoSingleRGBComponent for details)
-	if( ior_stack.containsCurrent() ) {
+	// determination when available (see DoSingleRGBComponent for details;
+	// DL-345: a provably open sheet is crossed by its face)
+	if( ri.bProvablyNoInterior ? IORStackSeeding::OpenSheetBackFace( ri ) : ior_stack.containsCurrent() ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
@@ -419,7 +708,11 @@ void DielectricSPF::ScatterNM(
 
 	bool bDielectric, bFresnel;
 	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2(sampler.Get1D(),sampler.Get1D()), pScat->GetValueAtNM( ri, nm ), pRIndex->GetValueAtNM( ri, nm ), nm, ior_stack );
-	
+
+	// No eta^2 on krayNM either -- same contract as the Pel twin above.
+	// The per-wavelength IOR is already in the stack this ray carries
+	// (`pRIndex->GetValueAtNM` was pushed by GenerateScatteredRay), so a
+	// dispersive medium gets its own factor at the consumer for free.
 	if( bDielectric && ref < 1.0 ) {
 		dielectric.krayNM = dielectric.krayNM * (1.0-ref);
 		scattered.AddScatteredRay( dielectric );
@@ -448,4 +741,149 @@ Scalar DielectricSPF::PdfNM(
 	) const
 {
 	return 0;
+}
+
+// DL-297 / DL-406.  The `scattering` warp of the delta-tagged transmission,
+// as a law and a density the composite's layered evaluator can connect
+// through (ISPF has the contract).  Everything below is read off
+// GenerateScatteredRay's own sampler:
+//
+//   * Phong (`hg` false): alpha = acos(u^(1/(N+1))), always perturbed while
+//     N < 1e6 (the delta pass-through convention).
+//   * Henyey-Greenstein (`hg` true, g = scattering): alpha from the HG
+//     inverse CDF while g < 1; the perturbation runs ONLY for
+//     alpha < PI/2, so every draw with cos(alpha) <= 0 leaves exactly on
+//     the Snell axis -- a delta part of weight F_HG(0).  g == 0 makes the
+//     sampler's 1/(2g) non-finite, alpha NaN and the perturbation never
+//     run: an ideal delta, reported as none; g <= -1 is not a
+//     distribution (none, as before DL-406).
+//   * The RGB pipe's dispersive / per-channel loop (DoSingleRGBComponent
+//     per channel, one shared random pair) emits one transmission per
+//     channel with that channel's ior, scattering and AR wavelength.
+bool DielectricSPF::ResolveWarpChannel(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm,
+	const int channel,
+	Scalar& scat,
+	Scalar& rIndex,
+	Scalar& lam
+	) const
+{
+	if( nm > 0 ) {
+		scat = pScat->GetValueAtNM( ri, nm );
+		rIndex = pRIndex->GetValueAtNM( ri, nm );
+		lam = nm;
+		return true;
+	}
+	if( !DeltaTransmissionWarpIsPerChannel( ri ) ) {
+		// One transmission for every channel: Scatter reads channel 0
+		// (`iorVals.v[0]`, `scatVals.v[0]`, nm -1).
+		scat = pScat->GetValuesAt( ri ).v[0];
+		rIndex = pRIndex->GetValuesAt( ri ).v[0];
+		lam = -1.0;
+		return true;
+	}
+	if( channel < 0 || channel > 2 ) {
+		return false;
+	}
+	scat = pScat->GetValuesAt( ri ).v[channel];
+	rIndex = pRIndex->GetValuesAt( ri ).v[channel];
+	lam = ScalarPainterRGB::kChannelNM[channel];
+	return true;
+}
+
+bool DielectricSPF::DeltaTransmissionWarpIsPerChannel(
+	const RayIntersectionGeometric& /*ri*/
+	) const
+{
+	// Exactly Scatter's `disperse` test.
+	return pRIndex->HasPerChannelVariation() || pScat->HasPerChannelVariation() || arStack.nLayers > 0;
+}
+
+DeltaTransmissionWarpLaw DielectricSPF::DeltaTransmissionWarp(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm,
+	const int channel
+	) const
+{
+	Scalar v = 0, rIndex = 1, lam = -1;
+	if( !ResolveWarpChannel( ri, nm, channel, v, rIndex, lam ) ) {
+		return DeltaTransmissionWarpLaw();
+	}
+	if( bHG ) {
+		if( v < Scalar( 1 ) && v > Scalar( -1 ) && v != Scalar( 0 ) ) {
+			return DeltaTransmissionWarpLaw( DeltaTransmissionWarpLaw::eHenyeyGreenstein, v );
+		}
+		return DeltaTransmissionWarpLaw();
+	}
+	// `cos^N` is a density for any N > -1.
+	if( v < 1000000.0 && v > Scalar( -1 ) ) {
+		return DeltaTransmissionWarpLaw( DeltaTransmissionWarpLaw::ePhong, v );
+	}
+	return DeltaTransmissionWarpLaw();
+}
+
+Scalar DielectricSPF::DeltaTransmissionWarpPdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& w,
+	const Scalar nm,
+	const IORStack& ior_stack,
+	const int channel
+	) const
+{
+	Scalar scat = 0, rIndex = 1, lam = -1;
+	if( !ResolveWarpChannel( ri, nm, channel, scat, rIndex, lam ) ) {
+		return 0;
+	}
+	const DeltaTransmissionWarpLaw law = DeltaTransmissionWarp( ri, nm, channel );
+	if( !law.IsWarped() ) {
+		return 0;
+	}
+
+	// The warp's AXIS is the transmitted direction GenerateScatteredRay
+	// builds before it perturbs (Snell about the shading normal, re-derived
+	// about the true surface when that is wrong-side -- DL-111).  Running
+	// it with a `scattering` that draws `alpha == 0` (1 for HG, 1e6 for
+	// Phong: the sampler's own no-warp values) leaves the direction
+	// unperturbed, so the returned direction IS that axis and every branch
+	// of the real sampler is reused rather than re-implemented.
+	const bool bFromInside = ri.bProvablyNoInterior ? IORStackSeeding::OpenSheetBackFace( ri ) : ior_stack.containsCurrent();
+	ScatteredRay dielectric;
+	ScatteredRay fresnel;
+	bool bDielectric = false, bFresnel = false;
+	const Scalar noWarp = bHG ? Scalar( 1 ) : Scalar( 1000000.0 );
+	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2( 1.0, 0.5 ), noWarp, rIndex, lam, ior_stack, false );
+	if( !bDielectric || !( ref < 1.0 ) ) {
+		return 0;
+	}
+	const Vector3 axis = Vector3Ops::Normalize( dielectric.ray.Dir() );
+
+	// The clip half-space, built exactly as GenerateScatteredRay builds it.
+	const Vector3 nShading = ri.onb.w();
+	const Vector3 trueGeomNormal = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : nShading;
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
+		? trueGeomNormal : nShading;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 throughSurface = -geomN;
+
+	const Vector3 wn = Vector3Ops::Normalize( w );
+	if( !( Vector3Ops::Dot( wn, throughSurface ) > 0 ) ) {
+		return 0;
+	}
+	const Scalar c = Vector3Ops::Dot( wn, axis );
+	if( !( c > 0 ) ) {
+		return 0;
+	}
+	// The azimuth is drawn uniformly on the valid arc of half-width `half`
+	// at this polar angle (GeometricUtilities::PerturbClipped -- the SAME
+	// arc math the sampler used, so the density cannot drift from it).
+	Scalar half = PI;
+	const Scalar down = acos( r_min( Scalar( 1 ), c ) );
+	if( down > 0 ) {
+		GeometricUtilities::PerturbClipped( axis, down, throughSurface, Scalar( 0.5 ), &half );
+	}
+	if( !( half > 0 ) ) {
+		return 0;
+	}
+	return law.PolarDensity( r_min( Scalar( 1 ), c ) ) / ( Scalar( 2 ) * half );
 }

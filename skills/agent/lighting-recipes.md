@@ -1,7 +1,108 @@
 # Lighting Recipes
 > hook: Read when adding or tuning lights — three-point setups, environment/IBL, emissive geometry, or when brightness/units look wrong.
 
+## Which light kind to use (read this first)
+
+**Most scenes should be lit by AREA LIGHTS** — a real emitting surface
+in the scene.  That is the only kind with real area, so it is the only
+one that gives soft shadows and physical falloff.  Reach for it first.
+
+**A rectangular panel is ONE chunk, `rect_light`:**
+
+```
+rect_light
+{
+	name		window_light
+	center		0 4 0
+	size		2 1
+	facing		0 -1 0
+	color		1.0 0.95 0.85
+	exitance	6000
+}
+```
+
+`center` is the panel's centre, `size` is `width height`, and `facing`
+is the direction it emits toward — a ceiling panel lighting the floor is
+`0 -1 0`, and the back face does not emit at all.  `exitance` is
+brightness **per unit area**, so the same number on a panel twice the
+size delivers twice the light; it must be > 0, and there is **no
+`power`** on this chunk (a `power` line fails the load).  Because it is
+an ordinary object, the camera sees its surface wherever it is: point it
+away from the camera, or put it outside the frame, unless a visible
+glowing panel is what the shot wants.
+
+**A glowing solid — a bulb, an orb, a lamp body — is ONE chunk,
+`shape_light`:**
+
+```
+shape_light
+{
+	name		bulb_light
+	shape		sphere
+	center		0 3 0
+	size		0.15
+	color		1.0 0.92 0.8
+	exitance	400
+}
+```
+
+`shape` is `sphere` (one `size` number, the radius), `ellipsoid` (three,
+the semi-axis radii), `box` (three, width height depth) or `cylinder`
+(two, radius height — stands on +Y until `orientation` turns it).
+`center` is world-space; `orientation` is an optional Euler rotation in
+degrees, default `0 0 0`.  **There is no `facing` on this chunk and none
+is needed**: every one of these shapes is a closed solid whose surface
+normal points outward everywhere, so it emits outward over its whole
+surface and nowhere inward.  `exitance` is the same per-unit-area
+quantity `rect_light` takes, must be > 0, and there is **no `power`**
+here either.
+
+For an emitter of any **other** shape — a mesh fixture, a torus, a
+curved patch — write the four chunks `rect_light` and `shape_light` both
+expand into: painter → `lambertian_luminaire_material` → geometry →
+`standard_object`.  That is what "Emissive geometry (area light)" below
+builds.
+
+`hosek_wilkie_skylight` is fine — a physically based analytic sun-and-sky
+(see "Environment / IBL").
+
+`omni_light`, `spot_light` and `directional_light` are **zero-area
+idealizations**: the light arrives from a single point or from infinity,
+their shadows have hard edges with no penumbra at any distance, and
+nothing about them appears in the frame.  Use them for the special cases
+that want exactly that — a stand-in sun with no sky, a hard key, a cheap
+probe while iterating — not as the default way to light a scene.  The
+three-point recipe immediately below is written with them because it is
+the cheap, fast setup; swapping its key for an emissive quad is a
+one-for-one substitution and gives softer, more physical shadows.
+
+**Every insert of one of these three kinds needs confirmation** on this
+agent surface — unconditional, from the first request, not past a free
+allowance (the free budget of 2 this shipped with on 2026-08-12 was
+removed 2026-08-13: it exempted exactly the uses this confirmation
+exists to make deliberate).  The insert is refused once — stating the
+physics and the alternatives — and lands when the identical request is
+re-issued unchanged.  `shape_light`, `rect_light`, an emissive object
+and `hosek_wilkie_skylight` carry no confirmation requirement at all.
+
+**`ambient_light` is refused.**  `insert_chunk`, `insert_chunks`,
+`light_scene` and the value-splice path all reject it, in every phase and
+with the build protocol off.  It contributes the same `color * power` at
+every shading point, has no position and no direction, and casts no
+shadow ray — so it produces neither a shadow nor any falloff.  A
+path-traced scene that reads too dark wants a bigger or brighter emitting
+surface (a `rect_light`, or a bigger `exitance` on the one it has), or a
+sky, not a constant term.
+
 ## Three-point lighting
+
+> A light's `color` (on `omni_light`, `spot_light`, `directional_light`,
+> `ambient_light`) is **linear Rec.709** by default — a numerical weight,
+> the same convention `uniformcolor_painter`'s `color` uses, not a
+> perceptual value.  Add `colorspace sRGB` on the light chunk only when
+> pasting a colour-picker swatch or a hex code.  This has been the
+> convention since 2026-09-02; before that, lights silently gamma-decoded
+> `color` as sRGB.  See docs/SCENE_CONVENTIONS.md §4 ("Lights").
 
 Key = a spot aimed at the subject; fill = a dim omni opposite the key;
 rim = a directional from behind-above to separate subject from
@@ -61,25 +162,8 @@ pinhole_camera
 
 uniformcolor_painter
 {
-	name	pnt_gray_a
-	color	0.82 0.83 0.86
-}
-
-uniformcolor_painter
-{
-	name	pnt_gray_b
-	color	0.35 0.37 0.42
-}
-
-# View-angle colour shift instead of a flat grey -- a lit subject reads
-# its shading better than a plain matte ball.  Swap back to
-# uniformcolor_painter for a neutral subject.
-iridescent_painter
-{
-	name	pnt_gray
-	colora	pnt_gray_a
-	colorb	pnt_gray_b
-	bias	0.05
+	name	pnt_subject
+	color	0.72 0.58 0.42
 }
 
 uniformcolor_painter
@@ -91,7 +175,7 @@ uniformcolor_painter
 lambertian_material
 {
 	name		mat_subject
-	reflectance	pnt_gray
+	reflectance	pnt_subject
 }
 
 lambertian_material
@@ -138,7 +222,7 @@ spot_light
 {
 	name		key
 	power		60
-	color		1.0 0.95 0.85
+	color		1.0 0.89 0.692
 	position	3 4 4
 	target		0 0.5 0
 	inner		20
@@ -150,7 +234,7 @@ omni_light
 {
 	name		fill
 	power		12
-	color		0.7 0.8 1.0
+	color		0.448 0.604 1.0
 	position	-4 1 4
 }
 
@@ -166,10 +250,14 @@ directional_light
 ```
 
 **A quick varied subject material.** The demo above gives the subject a
-view-shifting `iridescent_painter` tint; for a subject with real surface
+warm clay `uniformcolor_painter` so the three lights' colour separation
+reads cleanly (note: the old view-angle `iridescent_painter` look-alike
+is deprecated — use `ggx_material` with `fresnel_mode thinfilm` for
+physical thin-film interference); for a subject with real surface
 texture instead, `insert_material_scaffold {family:"brushed_metal",
 name:"fixture1", tone:"0.55 0.56 0.6", wear:0.5, scale:4.0}` expands
-into a wired `ward_anisotropic_material` (`tmpl_fixture1_mat`) with
+into a wired `ggx_material` (`tmpl_fixture1_mat`, `fresnel_mode
+schlick_f0`) with
 both `alphax`/`alphay` bound to a spatially-varying scalar field, in
 one call -- point `mat_subject`'s slot at it, or reference it from a
 fresh `standard_object.material`.
@@ -274,13 +362,22 @@ standard_object
 
 ## Emissive geometry (area light)
 
+This is the GENERAL form, for an emitter that is neither a rectangle
+nor one of `shape_light`'s four solids (sphere, ellipsoid, box,
+cylinder) — see "Which light kind to use" at the top.  A rectangular
+panel is one `rect_light` chunk; a glowing solid is one `shape_light`
+chunk; both expand into exactly this.
+
 A `lambertian_luminaire_material` turns any object into an area
 emitter: `exitance` is the emission color painter, `scale` the
 brightness, `material` the underlying surface (`none` = pure emitter).
 Prefer area emitters over point lights for soft shadows and for BDPT /
 VCM scenes; prefer point/omni lights for cheap hard-shadow setups.
-**Winding rule**: the quad's vertex ORDER picks the emitting side — if
-an emissive quad gives a black render, flip the point order.
+**Winding rule**: the quad's vertex ORDER picks the emitting side — the
+normal is `Cross(ptb - pta, ptd - pta)` and emission only leaves that
+face, so if an emissive quad gives a black render, flip the point order.
+With `doublesided TRUE` (the default) the quad emits from BOTH faces;
+set it `FALSE` for a one-way panel.
 
 ```rise
 RISE ASCII SCENE 7
@@ -388,15 +485,54 @@ standard_object
 }
 ```
 
+## Atmospheric volumes
+
+A hand-built "atmosphere" is easy to get wrong two ways: a uniform-
+density sphere/box filled with a plain `homogeneous_medium` never
+swirls (it looks like a flat grey haze, not drifting mist or smoke),
+and the medium is USELESS unless an object's `interior_medium` binds
+it -- a medium chunk sitting unreferenced in the document does nothing.
+
+**A one-call elongated, swirling volume: `volume_bank`.**
+`insert_geometry_scaffold {family:"volume_bank", name:"mist1",
+size:1.4, aspect:2.2, detail:0.6, tone:"0.75 0.8 0.85"}` expands a
+fully-wired atmospheric bank in one call: an elongated ellipsoid
+container, a near-invisible dielectric boundary (so the container's
+own surface never reads as a hard edge), and a
+`painter_heterogeneous_medium` whose density comes from a domain-
+warped noise painter -- so the volume genuinely drifts and swirls
+instead of reading as a flat fog block.  `aspect` elongates the bank
+along its local X axis (a horizontal drift, not a ball of fog);
+`detail` raises the noise field's warp amplitude and frequency
+together for a wispier, more turbulent result; `tone` tints what the
+medium scatters (and, inversely, what it absorbs) -- a cool pale blue
+like the example above reads as mist, a warm dim orange as smoke or
+haze.  Unlike every other `insert_geometry_scaffold` family, this ONE
+family also emits the dielectric material AND a `standard_object`
+binding geometry + material + `interior_medium` together (returned as
+`material`/`medium`/`object`, each `{name,kind}`) -- a bare volume
+graph would otherwise do nothing, and the medium's density field is
+anchored in WORLD SPACE at creation time, so the scaffold has to place
+the object itself to keep the density aligned with the container.  The
+call's result carries a factual `message`: if you reposition or
+rescale the emitted object afterward, the medium's `bbox_min`/
+`bbox_max` need a matching hand-edit or the swirl will drift out of
+alignment with the container's new position.
+
 ## Power / units guidance
 
-- Directional & ambient: radiance = `color * power`, no distance
-  falloff.  `power 3.14` is a good starting key.
+- Directional: radiance = `color * power`, no distance falloff.
+  `power 3.14` is a good starting key.  (`ambient_light` is refused —
+  see "Which light kind to use" at the top.)
 - Omni & spot: `color * power / r^2` — scale power with the SQUARE of
   the distance (a light 10 units away needs ~100x the power of one at
   1 unit).
 - Luminaire `scale` multiplies exitance directly; 10-150 is a typical
-  range for a small quad lighting a room-sized scene.
+  range for a small quad lighting a room-sized scene.  `exitance` on a
+  `rect_light` or a `shape_light` is that same number: brightness per
+  unit area, so the light delivered scales with the emitter's AREA --
+  doubling a panel's width doubles it, and doubling a sphere
+  `shape_light`'s radius quadruples it.
 - If everything is black: check the directional `direction` sign first
   (FROM-surface-TO-light), then power magnitudes; for an emissive
   quad, check the vertex winding (it picks the emitting side).

@@ -1,0 +1,15 @@
+{
+ "//": "Arc-83 rect_light live test (2026-08-12): the scene language now has a ONE-chunk physical light in the lighting category. Enumeration already names things (4/4 last run). THE question: does the build step, reaching for lighting-category chunks, now land on rect_light for the glowing sources? Prior area counts: 1/0/0/0/2 (single-call), 0 of 11 (per-intent), 0 of 7 (source-first pre-rect_light). Any nonzero rect_light/luminaire count is signal; also watch facing sanity and whether panels land in frame.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_undersea_mermaid.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_s12_rectlight"
+}

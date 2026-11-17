@@ -58,6 +58,10 @@ namespace RISE
 			/// \return The SPF for this material.  NULL If there is no SPF
 			inline ISPF* GetSPF() const override {			return pSPF; };
 
+			//! DL-471: every lobe is the diffuse one (IMaterial::ConnectionScatterTypes).
+			inline unsigned int ConnectionScatterTypes() const override { return 1u << ScatteredRay::eRayDiffuse; }
+
+
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const override {	return 0; };
 
@@ -68,7 +72,7 @@ namespace RISE
 			{
 				const ScalarTriple roughness = pBRDF->GetRoughness().GetValuesAt(ri);
 				return CreateOrenNayarContinuationClosurePel(
-					ri,pBRDF->GetReflectance().GetColor(ri),
+					ri,ReflectanceColor(pBRDF->GetReflectance(),ri),
 					RISEPel(roughness.v[0],roughness.v[1],roughness.v[2]),pathState);
 			}
 
@@ -78,7 +82,7 @@ namespace RISE
 				const ContinuationPathState& pathState ) const override
 			{
 				return CreateOrenNayarContinuationClosureNM(
-					ri,pBRDF->GetReflectance().GetColorNM(ri,nm),
+					ri,ReflectanceColorNM(pBRDF->GetReflectance(),ri,nm),
 					pBRDF->GetRoughness().GetValueAtNM(ri,nm),pathState);
 			}
 

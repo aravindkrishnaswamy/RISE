@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "NormalMap.h"
+#include "ModifierFrame.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Math3D/Math3D.h"
 
@@ -58,6 +59,7 @@ namespace
 
 void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 {
+	ModifierFrame::RecordPreModifierFrame( ri );	// DL-302
 	// Sample the normal map at the hit's primary UV.  The painter is
 	// expected to be backed by an image loaded with NO color-matrix
 	// conversion -- post Stage B colour-space migration that means
@@ -84,7 +86,9 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 	// per-vertex TANGENT (correct across UV seams and mirrored regions);
 	// fall back to the ONB-derived tangents when the source had none.
 	Vector3 T, B;
-	const Vector3 N = ri.vNormal;
+	// Independent shader directions preserve the original UV decoding N as
+	// well as T/B. Normal modifiers affect anisotropy, not node evaluation.
+	const Vector3 N = ri.bHasNormalMapFrame ? ri.normalMapOnb.w() : ri.vNormal;
 	if( ri.bHasTangent ) {
 		// Best path: imported per-vertex TANGENT.  Honours mirrored
 		// UVs via the bitangent sign (asset-author intent preserved).
@@ -127,36 +131,129 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 		// rotated arbitrarily relative to UV.
 		T = Vector3Ops::Normalize(
 			ri.derivatives.dpdu - N * Vector3Ops::Dot( ri.derivatives.dpdu, N ) );
-		B = Vector3Ops::Cross( N, T );
+		// `* ri.bitangentSign` (doc 89 slice C).  With no imported TANGENT the sign
+		// carries only ONE thing -- the object transform's handedness, folded in
+		// unconditionally by Object::IntersectRay -- and this cross product is
+		// precisely what a negative determinant flips: N comes through the
+		// inverse-transpose while dpdu comes through the forward matrix, so under a
+		// reflection `cross(N_world, T_world)` points opposite the transformed
+		// original bitangent.  Omitting it inverts the normal map's green channel on
+		// every mirrored asset that carries derivatives but no TANGENT accessor --
+		// i.e. every lathe / sweep / skin bake, which is the asset class `mirror`
+		// exists to serve.  For an un-mirrored object the sign is +1 and this is
+		// byte-identical to the previous expression.
+		B = Vector3Ops::Cross( N, T ) * ri.bitangentSign;
+	} else if( ModifierFrame::HasSurfaceTangentFrame( ri ) ) {
+		// P2 fix (docs/CLOTH_FABRIC_DESIGN.md 9.9 fix round): no imported
+		// TANGENT and no `ri.derivatives` (e.g. ClippedPlaneGeometry, which
+		// writes a geometry-supplied shading tangent but by design never
+		// populates `ri.derivatives` at all -- section 9.1), but the hit
+		// still carries a COHERENT, geometry-supplied tangent.
+		// Object::IntersectRay / CSGObject::IntersectRay already built
+		// `ri.onb` from exactly that tangent (via CreateFromWU, including
+		// this round's mirrored-transform V-sign correction), so
+		// `ri.onb.u()/v()` here are NOT the arbitrary CreateFromW frame the
+		// last-ditch warning below describes -- they are the surface's own
+		// UV/fiber-aligned frame, already correctly signed.  Use them
+		// directly, no warning.
+		//
+		// UV decoding uses HasSurfaceTangentFrame; a separate shader
+		// vector is only used by the later anisotropy-frame rebuild. The legacy
+		// flag pair Object::IntersectRay branches on to build that frame
+		// (bShadingTangentFromGeometry, OR the hair-only bHasShadingTangent)
+		// -- not `bHasShadingTangent` alone: an SDF heightfield hit sets only
+		// the former, and gating on the latter sent it to the last-ditch
+		// branch below, whose VALUES are identical (same onb.u()/v()) but
+		// whose once-per-process warning fired on exactly such a hit
+		// (relief-modifier fix round 1 residual, closed there).
+		//
+		// FIX ROUND 2, P2-B -- what "no warning here" actually claims for
+		// the SDF-heightfield case, precisely (round 1's "false positive on
+		// exactly that hit" overstated it): SDFGeometry's heightfield mode
+		// parameterises `ptCoord` from the OBJECT-space hit point
+		// (SDFGeometry.cpp, the `m_isHeightfield` branch of IntersectRay --
+		// `(hp.x+R)/2R, (hp.y+R)/2R`), while the coherent tangent
+		// `ri.onb.u()/v()` traces back to Object::IntersectRay's fallback
+		// sub-case (no real supplied tangent), which projects WORLD-X --
+		// not the object-space +X the UV is actually built from -- into the
+		// world-space shading-normal plane.  Those two agree only when the
+		// instance's linear part maps object +X to world +X, i.e. no
+		// rotation, shear, or orientation-reversing (negative) scale; a
+		// positive uniform or non-uniform scale and translation are fine.
+		// On an UNROTATED SDF-heightfield instance suppressing the warning
+		// is correct: the values genuinely are the UV-aligned frame. On a
+		// ROTATED one, `onb.u()/v()` is no longer aligned with the
+		// heightfield's own U axis, a normal map applied through this
+		// branch is shaded against the wrong basis, and the diagnostic gap
+		// this branch's silence creates is real, not cosmetic -- nothing
+		// here fixes that misalignment, only ceases to warn about the
+		// unrotated case where there was nothing to warn about.  The VALUES
+		// are unchanged either way; only the disclosure is corrected.
+		T = ri.bHasNormalMapFrame ? ri.normalMapOnb.u() : ri.onb.u();
+		B = ri.bHasNormalMapFrame ? ri.normalMapOnb.v() : ri.onb.v();
 	} else {
-		// Last-ditch fallback: no TANGENT and no surface derivatives
-		// (some non-triangle geometry, or future geometry types that
-		// don't populate derivatives.valid).  ri.onb.u()/v() are an
-		// arbitrary tangent frame derived from N alone; correct only
-		// when the normal map happens to be authored against an
-		// ONB-aligned UV space (which is essentially never).  Fire the
-		// warning so the user knows what's gone wrong.
+		// Last-ditch fallback: no TANGENT, no surface derivatives, and no
+		// geometry-supplied shading tangent (some non-triangle geometry, or
+		// future geometry types that populate none of the three).
+		// ri.onb.u()/v() are an arbitrary tangent frame derived from N
+		// alone; correct only when the normal map happens to be authored
+		// against an ONB-aligned UV space (which is essentially never).
+		// Fire the warning so the user knows what's gone wrong.
 		if( !g_warnedNoFrame.exchange( true ) ) {
 			GlobalLog()->PrintEasyWarning(
-				"NormalMap modifier: hit has neither imported TANGENT nor valid "
-				"surface derivatives (ri.derivatives.valid).  Falling back to "
-				"ONB-derived tangents, which is correct only when the normal "
-				"map's UV axes happen to align with the arbitrary ONB frame -- "
-				"i.e. essentially never.  Re-export the source asset with "
-				"TANGENT included, or attach the modifier to a triangle-mesh "
-				"geometry (which populates derivatives).  This warning fires "
-				"once per process; subsequent fallbacks are silent." );
+				"NormalMap modifier: hit has neither imported TANGENT, valid "
+				"surface derivatives (ri.derivatives.valid), nor a geometry-"
+				"supplied shading tangent.  Falling "
+				"back to ONB-derived tangents, which is correct only when the "
+				"normal map's UV axes happen to align with the arbitrary ONB "
+				"frame -- i.e. essentially never.  Re-export the source asset "
+				"with TANGENT included, or attach the modifier to a triangle-"
+				"mesh geometry (which populates derivatives).  This warning "
+				"fires once per process; subsequent fallbacks are silent." );
 		}
-		T = ri.onb.u();
-		B = ri.onb.v();
+		T = ri.bHasNormalMapFrame ? ri.normalMapOnb.u() : ri.onb.u();
+		B = ri.bHasNormalMapFrame ? ri.normalMapOnb.v() : ri.onb.v();
 	}
 
 	// World-space perturbed normal = T*nx + B*ny + N*nz, normalized.
-	Vector3 perturbed = Vector3Ops::Normalize(
+	const Vector3 perturbed = Vector3Ops::Normalize(
 		T * nx + B * ny + N * nz );
 
-	ri.vNormal = perturbed;
-	// Rebuild the ONB so SPFs (refraction / reflection) sample around
-	// the perturbed normal, not the original geometric one.
-	ri.onb.CreateFromW( ri.vNormal );
+	// Rebuild the ONB so SPFs (refraction / reflection) sample around the
+	// perturbed normal, not the original geometric one.  The rebuild body
+	// -- project legacy CURRENT u, or the independent RAW shader vector,
+	// into the new normal's tangent plane,
+	// CreateFromWU, restore the incoming handedness with FlipV, fall back
+	// to CreateFromW on a degenerate projection -- lives in
+	// ModifierFrame::RebuildPreservingTangent, which carries the full
+	// rationale for BOTH corrections it encodes (geometry-supplied tangent
+	// preservation; the mirrored-instance FlipV fix).
+	//
+	// The GATE stays here, and is deliberately NOT inside the helper: when
+	// the hit carries no coherent tangent frame at all
+	// (ModifierFrame::HasCoherentTangent false) this modifier rebuilds with
+	// a plain CreateFromW, which is byte-identical to its behaviour before
+	// the tangent fix existed.  The predicate -- not `ri.bHasShadingTangent`
+	// alone, which is only the sub-case that ALSO supplies a real tangent
+	// vector -- is what mirrors Object::IntersectRay's coherent-frame
+	// branch; see its comment for the SDFGeometry-heightfield case the bare
+	// flag misses.  (The T/B selection above now keys on the SAME
+	// predicate, not the bare flag: three tangent-source branches --
+	// imported TANGENT, UV-derived dpdu/dpdv, and
+	// `ModifierFrame::HasCoherentTangent` for a geometry-supplied coherent
+	// tangent with neither of the first two -- feed a rebuild gated on that
+	// identical predicate, so an SDF-heightfield hit takes the third branch
+	// (T = ri.onb.u(), B = ri.onb.v(), the same values the last-ditch
+	// fallback would have used) and the rebuild below.  The last-ditch
+	// branch, and its once-per-process warning, now fires only on a hit
+	// that is genuinely tangent-less by all three tests -- fix round 2,
+	// P1, closing the round-1 residual this paragraph used to describe.)
+	// GlintModifier makes the opposite choice for its own reasons -- see
+	// the helper's header comment.
+	if( ModifierFrame::HasCoherentTangent( ri ) ) {
+		ModifierFrame::RebuildPreservingTangent( ri, perturbed );
+	} else {
+		ri.vNormal = perturbed;
+		ri.onb.CreateFromW( ri.vNormal );
+	}
 }

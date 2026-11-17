@@ -46,7 +46,8 @@ GGXSPF::GGXSPF(
 	const IPainter* tangent_rotation,
 	const IScalarPainter* film_ior,
 	const IScalarPainter* film_extinction,
-	const IScalarPainter* film_thickness
+	const IScalarPainter* film_thickness,
+	const IScalarPainter* tangent_rotation_scalar
 	) :
   pDiffuse( &diffuse ),
   pSpecular( &specular ),
@@ -56,6 +57,7 @@ GGXSPF::GGXSPF(
   pExtinction( &ext ),
   fresnelMode( fresnel_mode ),
   pTangentRotation( tangent_rotation ),
+  pTangentRotationScalar( tangent_rotation_scalar ),
   pFilmIOR( film_ior ),
   pFilmExtinction( film_extinction ),
   pFilmThickness( film_thickness )
@@ -67,6 +69,7 @@ GGXSPF::GGXSPF(
 	pIOR->addref();
 	pExtinction->addref();
 	if( pTangentRotation ) pTangentRotation->addref();
+	if( pTangentRotationScalar ) pTangentRotationScalar->addref();
 	if( pFilmIOR )        pFilmIOR->addref();
 	if( pFilmExtinction ) pFilmExtinction->addref();
 	if( pFilmThickness )  pFilmThickness->addref();
@@ -83,13 +86,20 @@ namespace
 
 	// Landing 8: rotate the tangent ONB per anisotropy_rotation
 	// (mirrors GGXBRDF.cpp's helper).  Returns source unchanged when
-	// the rotation painter is null — every pre-L8 GGXSPF site falls
-	// back here.
+	// neither rotation input is bound — every pre-L8 GGXSPF site falls
+	// back here.  DL-16: `pRotationScalar` (the Scalar-pipe alias) is
+	// preferred over `pRotation` (the legacy Color-pipe binding) when
+	// both are non-null.
 	inline RISE::OrthonormalBasis3D ApplyTangentRotation(
 		const RISE::OrthonormalBasis3D& source,
 		const RISE::IPainter* pRotation,
+		const RISE::IScalarPainter* pRotationScalar,
 		const RISE::RayIntersectionGeometric& ri )
 	{
+		if( pRotationScalar ) {
+			const RISE::Scalar angle = pRotationScalar->GetValuesAt( ri ).v[0];
+			return RISE::MicrofacetUtils::RotateTangent( source, angle );
+		}
 		if( !pRotation ) return source;
 		const RISE::Scalar angle = RISE::ColorMath::MaxValue( pRotation->GetColor( ri ) );
 		return RISE::MicrofacetUtils::RotateTangent( source, angle );
@@ -105,6 +115,7 @@ GGXSPF::~GGXSPF()
 	safe_release( pIOR );
 	safe_release( pExtinction );
 	if( pTangentRotation ) pTangentRotation->release();
+	if( pTangentRotationScalar ) pTangentRotationScalar->release();
 	if( pFilmIOR )        pFilmIOR->release();
 	if( pFilmExtinction ) pFilmExtinction->release();
 	if( pFilmThickness )  pFilmThickness->release();
@@ -140,7 +151,7 @@ void GGXSPF::Scatter(
 
 	// Landing 8: apply the anisotropy_rotation AFTER the FlipW so the
 	// rotation is in the (possibly flipped) surface tangent plane.
-	myonb = ApplyTangentRotation( myonb, pTangentRotation, ri );
+	myonb = ApplyTangentRotation( myonb, pTangentRotation, pTangentRotationScalar, ri );
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
@@ -167,13 +178,49 @@ void GGXSPF::Scatter(
 		alphaY = r_min( alphaY + ri.glossyFilterWidth, Scalar(1.0) );
 	}
 
-	// Effective alpha for isotropic LUT lookups
+	// Effective alpha, used only for the specular/MS-lobe activation gates
+	// below ("is this surface smooth enough that the specular lobe
+	// degenerates to a delta?") -- NOT for Kulla-Conty compensation
+	// lookups, which take alphaX,alphaY directly since DL-77 (see below).
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
-	// 3-lobe mixture weights: diffuse + specular + multiscatter
-	const Scalar wd = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
-	const Scalar ws = ColorMath::MaxValue( pSpecular->GetColor(ri) );
-	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
+	// 3-lobe mixture weights: diffuse + specular + multiscatter.
+	// DL-64 / P2-1 (2026-09-13): the specular/MS lobe-selection weight
+	// `ws` must stay reachable at F0=0 -- but only eFresnelSchlickF0 has
+	// that failure mode (raw F0 can be exactly 0 while the Schlick
+	// grazing term (1-cosTheta)^5 is not).  eFresnelConductor and
+	// eFresnelThinFilmConductor already multiply a real physically
+	// computed Fresnel term by the painter TINT elsewhere (`specColor`);
+	// tint==0 legitimately means "no specular energy" there, so the raw
+	// tint is already a valid, cheap, always-correct selection weight for
+	// those two modes.  Calling interfaceFresnel.Mean()/MeanNM()
+	// unconditionally on EVERY Scatter()/Pdf() call was measured to cost
+	// an unconditional 21-tap MicrofacetEnergyLUT::ComputeFresnelAvg
+	// (conductor -- the parser DEFAULT) or a 21-node Gauss-Legendre
+	// quadrature over a 32-wavelength-step Airy thin-film evaluation
+	// (thin-film) -- see docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md
+	// "Cost".  Restrict the hemispherical-average path to Schlick mode
+	// only; the other two modes keep the pre-DL-64 raw-tint weight, which
+	// was never the defect.
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const Scalar wd = ColorMath::MaxValue( ReflectanceColor( *pDiffuse, ri ) );
+	const Scalar ws = (fresnelMode == eFresnelSchlickF0)
+		? ColorMath::MaxValue( interfaceFresnel.Mean() )
+		: ColorMath::MaxValue( ReflectanceColor( *pSpecular, ri ) );
+	// DL-63: every LookupEavg/LookupEss/MSLobeZ/MSPdf/SampleMSCosTheta
+	// call in this file uses the "G2" (height-correlated) LUT variant,
+	// matching the Smith height-correlated G2 masking-shadowing GGXBRDF
+	// actually renders with (MicrofacetUtils::GGX_G2_Aniso) -- NOT the
+	// separable-G1(wi)*G1(wo) LUT CookTorranceSPF/BRDF use, which is
+	// calibrated to a different single-scatter model.  See
+	// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md and the DL-63 ledger row.
+	// DL-77 (fixed): the G2 LUT's plain alphaEff=sqrt(alphaX*alphaY) form
+	// is calibrated to the ISOTROPIC Smith model -- exact only when
+	// alphaX==alphaY.  The "Aniso" twins below resolve an additional
+	// anisotropy-ratio table dimension and fall back to the exact
+	// isotropic lookup when alphaX==alphaY; see the DL-77 ledger row and
+	// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-77".
+	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2Aniso( alphaX, alphaY );
 	// H6: direction-aware MS selection weight -- the true MS albedo for
 	// THIS incident direction is F_ms*(1-Ess(cosWi)), not the
 	// hemisphere-averaged F_ms*(1-Eavg); using the averaged form let a
@@ -181,12 +228,22 @@ void GGXSPF::Scatter(
 	// docs/... H6).  Eavg itself is still used unchanged below in the
 	// MS lobe's BRDF-value term.
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
-	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff );
+	// DL-77 P2 (per-azimuth energy term): Ess_i feeds both this selection
+	// weight AND the MS lobe's actual BRDF-value energy term below (kray),
+	// so it uses the per-direction LookupEssG2AnisoDirectional (wi's local
+	// x,y in the SAME tangent frame alphaX/alphaY are defined in) rather
+	// than the azimuth-averaged LookupEssG2Aniso -- see that function's
+	// doc comment in MicrofacetEnergyLUT.h for why the H6 sampler shape
+	// (MSLobeZG2Aniso/SampleMSCosThetaG2Aniso/MSPdfG2Aniso just below)
+	// keeps the averaged lookup instead.
+	const Scalar wiLocalX = Vector3Ops::Dot( wi, myonb.u() );
+	const Scalar wiLocalY = Vector3Ops::Dot( wi, myonb.v() );
+	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( cosWi, wiLocalX, wiLocalY, alphaX, alphaY );
 	const Scalar wms = ws * (1.0 - Ess_i);
 	const Scalar total = wd + ws + wms;
 	// Exact MS-lobe outgoing-direction normalization, shared by every
 	// mixPdf site below and by the MS lobe's own sampler/kray.
-	const Scalar msZ = MicrofacetEnergyLUT::MSLobeZ( alphaEff );
+	const Scalar msZ = MicrofacetEnergyLUT::MSLobeZG2Aniso( alphaX, alphaY );
 
 	const Scalar pDiffuseSelect = (total > 1e-10) ? wd / total : 1.0;
 	const Scalar pSpecSelect    = (total > 1e-10) ? ws / total : 0.0;
@@ -206,18 +263,15 @@ void GGXSPF::Scatter(
 			const Scalar diffPdf = cosTheta * INV_PI;
 			const Scalar specPdf = (alphaEff >= 1e-6) ?
 				MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, myonb, alphaX, alphaY ) : 0;
-			const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, msZ );
+			const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2Aniso( cosTheta, alphaX, alphaY, msZ );
 			const Scalar mixPdf = (total > 1e-10) ?
 				(wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
-			RISEPel kray = pDiffuse->GetColor(ri) * (1.0 / pDiffuseSelect);
-			if( fresnelMode == eFresnelSchlickF0 )
-			{
-				// (1 - max(F0)) energy split per glTF spec
-				const RISEPel specColor = pSpecular->GetColor(ri);
-				const Scalar maxF0 = ColorMath::MaxValue( specColor );
-				kray = kray * r_max( Scalar(0), Scalar(1.0) - maxF0 );
-			}
+			// `interfaceFresnel` is the same instance computed above for
+			// the wsSel weight (DL-64) -- reused here for the diffuse
+			// entry/exit transmission (DL-37), unchanged formula.
+			const RISEPel kray = ReflectanceColor( *pDiffuse, ri ) * (1.0 / pDiffuseSelect) *
+				GGXInterfaceFresnel::Transmission( interfaceFresnel.Directional(cosWi), interfaceFresnel.Directional(cosTheta) );
 
 			ScatteredRay diffuse;
 			diffuse.type = ScatteredRay::eRayDiffuse;
@@ -250,12 +304,12 @@ void GGXSPF::Scatter(
 					if( vndfPdf > 1e-10 )
 					{
 						const Scalar diffPdf = cosTheta * INV_PI;
-						const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, msZ );
+						const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2Aniso( cosTheta, alphaX, alphaY, msZ );
 						const Scalar mixPdf = (total > 1e-10) ?
 							(wd * diffPdf + wms * msPdfHere + ws * vndfPdf) / total : vndfPdf;
 
 						// Fresnel evaluated at microfacet normal m, not macrosurface normal
-						const RISEPel specColor = pSpecular->GetColor(ri);
+						const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
 						RISEPel F;
 						if( fresnelMode == eFresnelSchlickF0 )
 						{
@@ -341,25 +395,32 @@ void GGXSPF::Scatter(
 		{
 			const Scalar u1ms = sampler.Get1D();
 			const Scalar u2ms = sampler.Get1D();
-			const Scalar cosTheta = MicrofacetEnergyLUT::SampleMSCosTheta( alphaEff, u1ms );
+			const Scalar cosTheta = MicrofacetEnergyLUT::SampleMSCosThetaG2Aniso( alphaX, alphaY, u1ms );
 			const Scalar sinTheta = sqrt( r_max( Scalar(0), Scalar(1.0) - cosTheta * cosTheta ) );
 			const Scalar phiMs = TWO_PI * u2ms;
-			const Vector3 wo = myonb.Transform( Vector3( sinTheta * cos(phiMs), sinTheta * sin(phiMs), cosTheta ) );
+			// wo's local x,y (pre-transform) are exactly sinTheta*cos/sin(phiMs)
+			// in myonb's tangent frame -- reused below for the DL-77 P2
+			// per-azimuth Ess_o lookup instead of re-projecting wo.
+			const Scalar woLocalX = sinTheta * cos(phiMs);
+			const Scalar woLocalY = sinTheta * sin(phiMs);
+			const Vector3 wo = myonb.Transform( Vector3( woLocalX, woLocalY, cosTheta ) );
 
 			if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 			{
 				const Scalar diffPdf = cosTheta * INV_PI;
 				const Scalar specPdf = (alphaEff >= 1e-6) ?
 					MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, myonb, alphaX, alphaY ) : 0;
-				const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, msZ );
+				const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2Aniso( cosTheta, alphaX, alphaY, msZ );
 				const Scalar mixPdf = (total > 1e-10) ?
 					(wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
-				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alphaEff );
+				// DL-77 P2 (per-azimuth energy term; see the top-of-Scatter()
+				// Ess_i comment).
+				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( cosTheta, woLocalX, woLocalY, alphaX, alphaY );
 				// Ess_i, cosWi computed once at the top of Scatter() (shared
 				// with the direction-aware wms selection weight).
 
-				const RISEPel specColor = pSpecular->GetColor(ri);
+				const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
 				RISEPel F_ms;
 				if( fresnelMode == eFresnelSchlickF0 )
 				{
@@ -434,7 +495,7 @@ void GGXSPF::ScatterNM(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	myonb = ApplyTangentRotation( myonb, pTangentRotation, ri );	// Landing 8
+	myonb = ApplyTangentRotation( myonb, pTangentRotation, pTangentRotationScalar, ri );	// Landing 8
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
@@ -462,16 +523,34 @@ void GGXSPF::ScatterNM(
 
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
-	// 3-lobe mixture weights
-	const Scalar wd = pDiffuse->GetColorNM(ri,nm);
-	const Scalar ws = pSpecular->GetColorNM(ri,nm);
-	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
-	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
+	// 3-lobe mixture weights.  DL-64 / P2-1 (see Scatter()'s twin comment):
+	// `ws` uses the hemispherical Fresnel-weighted albedo
+	// (GGXInterfaceFresnel::MeanNM) ONLY in eFresnelSchlickF0 mode, where
+	// raw F0 can collapse to exactly zero despite real grazing energy.
+	// eFresnelConductor / eFresnelThinFilmConductor keep the pre-DL-64
+	// raw-tint weight (`wsF0`) -- calling MeanNM unconditionally there
+	// costs a 21-tap LUT average or a 21-node x 32-wavelength Airy
+	// quadrature on every call for no correctness benefit.  `wsF0` also
+	// remains the true per-wavelength painter sample for the
+	// per-direction Fresnel evaluations below (specColor/F0), which are
+	// unaffected by this fix.
+	const Scalar wd = ReflectanceColorNM( *pDiffuse, ri, nm );
+	const Scalar wsF0 = ReflectanceColorNM( *pSpecular, ri, nm );
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const Scalar ws = (fresnelMode == eFresnelSchlickF0) ? interfaceFresnel.MeanNM( nm ) : wsF0;
+	// DL-77 (fixed, see Scatter()'s twin comment): LookupEavgG2Aniso/
+	// MSLobeZG2Aniso resolve the anisotropy-ratio dimension the plain
+	// isotropized alphaEff lookup was missing.
+	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2Aniso( alphaX, alphaY );
+	// H6: direction-aware MS selection weight (see Scatter()'s twin
+	// comment).  DL-77 P2: per-azimuth energy term (wi's local x,y).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
-	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff );
+	const Scalar wiLocalX = Vector3Ops::Dot( wi, myonb.u() );
+	const Scalar wiLocalY = Vector3Ops::Dot( wi, myonb.v() );
+	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( cosWi, wiLocalX, wiLocalY, alphaX, alphaY );
 	const Scalar wms = ws * (1.0 - Ess_i);
 	const Scalar total = wd + ws + wms;
-	const Scalar msZ = MicrofacetEnergyLUT::MSLobeZ( alphaEff );
+	const Scalar msZ = MicrofacetEnergyLUT::MSLobeZG2Aniso( alphaX, alphaY );
 
 	const Scalar pDiffuseSelect = (total > 1e-10) ? wd / total : 1.0;
 	const Scalar pSpecSelect    = (total > 1e-10) ? ws / total : 0.0;
@@ -490,16 +569,15 @@ void GGXSPF::ScatterNM(
 			const Scalar diffPdf = cosTheta * INV_PI;
 			const Scalar specPdf = (alphaEff >= 1e-6) ?
 				MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, myonb, alphaX, alphaY ) : 0;
-			const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, msZ );
+			const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2Aniso( cosTheta, alphaX, alphaY, msZ );
 			const Scalar mixPdf = (total > 1e-10) ?
 				(wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
-			Scalar krayNM = pDiffuse->GetColorNM(ri,nm) / pDiffuseSelect;
-			if( fresnelMode == eFresnelSchlickF0 )
-			{
-				const Scalar F0 = pSpecular->GetColorNM(ri,nm);
-				krayNM = krayNM * r_max( Scalar(0), Scalar(1.0) - F0 );
-			}
+			// wd already holds the guarded sample for this call; `interfaceFresnel`
+			// is the same instance computed above for the wsSel weight (DL-64) --
+			// reused here for the diffuse entry/exit transmission (DL-37).
+			const Scalar krayNM = (wd / pDiffuseSelect) *
+				GGXInterfaceFresnel::Transmission( interfaceFresnel.DirectionalNM(cosWi,nm), interfaceFresnel.DirectionalNM(cosTheta,nm) );
 
 			ScatteredRay diffuse;
 			diffuse.type = ScatteredRay::eRayDiffuse;
@@ -532,12 +610,15 @@ void GGXSPF::ScatterNM(
 					if( vndfPdf > 1e-10 )
 					{
 						const Scalar diffPdf = cosTheta * INV_PI;
-						const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, msZ );
+						const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2Aniso( cosTheta, alphaX, alphaY, msZ );
 						const Scalar mixPdf = (total > 1e-10) ?
 							(wd * diffPdf + wms * msPdfHere + ws * vndfPdf) / total : vndfPdf;
 
 						// Fresnel evaluated at microfacet normal m
-						const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+						// (wsF0 holds the raw painter F0 sample for this call -- the true
+						// per-direction Fresnel input, independent of the DL-64 wsSel
+						// selection-weight fix above)
+						const Scalar specColor = wsF0;
 						Scalar F;
 						if( fresnelMode == eFresnelSchlickF0 )
 						{
@@ -614,27 +695,33 @@ void GGXSPF::ScatterNM(
 		{
 			const Scalar u1ms = sampler.Get1D();
 			const Scalar u2ms = sampler.Get1D();
-			const Scalar cosTheta = MicrofacetEnergyLUT::SampleMSCosTheta( alphaEff, u1ms );
+			const Scalar cosTheta = MicrofacetEnergyLUT::SampleMSCosThetaG2Aniso( alphaX, alphaY, u1ms );
 			const Scalar sinTheta = sqrt( r_max( Scalar(0), Scalar(1.0) - cosTheta * cosTheta ) );
 			const Scalar phiMs = TWO_PI * u2ms;
-			const Vector3 wo = myonb.Transform( Vector3( sinTheta * cos(phiMs), sinTheta * sin(phiMs), cosTheta ) );
+			// wo's local x,y (pre-transform); see Scatter()'s twin comment.
+			const Scalar woLocalX = sinTheta * cos(phiMs);
+			const Scalar woLocalY = sinTheta * sin(phiMs);
+			const Vector3 wo = myonb.Transform( Vector3( woLocalX, woLocalY, cosTheta ) );
 
 			if( cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0 )
 			{
 				const Scalar diffPdf = cosTheta * INV_PI;
 				const Scalar specPdf = (alphaEff >= 1e-6) ?
 					MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, myonb, alphaX, alphaY ) : 0;
-				const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, msZ );
+				const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2Aniso( cosTheta, alphaX, alphaY, msZ );
 				const Scalar mixPdf = (total > 1e-10) ?
 					(wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
-				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alphaEff );
+				// DL-77 P2 (per-azimuth energy term; see Scatter()'s twin comment).
+				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( cosTheta, woLocalX, woLocalY, alphaX, alphaY );
 				// Ess_i, cosWi computed once at the top of ScatterNM().
 
 				Scalar F_ms;
 				if( fresnelMode == eFresnelSchlickF0 )
 				{
-					const Scalar F0 = pSpecular->GetColorNM(ri,nm);
+					// wsF0 holds the raw painter F0 sample for this call (see the
+					// specular-branch note above)
+					const Scalar F0 = wsF0;
 					const Scalar F_avg = SchlickFresnelAvg<Scalar>( F0 );
 					F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
 				}
@@ -650,7 +737,8 @@ void GGXSPF::ScatterNM(
 					// specColor INSIDE the average: the tinted per-bounce reflectance
 					// specColor*F_avg compounds across bounces (matches single-scatter
 					// specColor*Rfilm).  Pulling it outside over-brightens tinted metals.
-					const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+					// (wsF0 holds the raw painter F0 sample for this call; see above)
+					const Scalar specColor = wsF0;
 					F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
 				}
 				else
@@ -662,7 +750,8 @@ void GGXSPF::ScatterNM(
 					const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, ri.ambientIOR, iorVal, extVal );
 					// specColor INSIDE the average (tinted per-bounce reflectance
 					// specColor*F_avg compounds; matches single-scatter specColor*fresnel).
-					const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+					// (wsF0 holds the raw painter F0 sample for this call; see above)
+					const Scalar specColor = wsF0;
 					F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
 				}
 
@@ -696,7 +785,7 @@ Scalar GGXSPF::Pdf(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	myonb = ApplyTangentRotation( myonb, pTangentRotation, ri );	// Landing 8
+	myonb = ApplyTangentRotation( myonb, pTangentRotation, pTangentRotationScalar, ri );	// Landing 8
 
 	const Vector3 n = myonb.w();
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
@@ -720,19 +809,33 @@ Scalar GGXSPF::Pdf(
 	}
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
-	// 3-lobe mixture PDF weighted by painter albedos
-	const Scalar wd = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
-	const Scalar ws = ColorMath::MaxValue( pSpecular->GetColor(ri) );
-	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
+	// 3-lobe mixture PDF weighted by painter albedos.  DL-64 / P2-1: `ws`
+	// matches the mixture Scatter() actually samples from -- the
+	// hemispherical Fresnel-weighted albedo ONLY in eFresnelSchlickF0
+	// mode (see Scatter()'s twin comment for why the other two modes keep
+	// the cheap raw-tint weight); otherwise this reported density would
+	// disagree with the sampler it is meant to describe (MIS /
+	// SPFPdfConsistencyTest).
+	const Scalar wd = ColorMath::MaxValue( ReflectanceColor( *pDiffuse, ri ) );
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const Scalar ws = (fresnelMode == eFresnelSchlickF0)
+		? ColorMath::MaxValue( interfaceFresnel.Mean() )
+		: ColorMath::MaxValue( ReflectanceColor( *pSpecular, ri ) );
+	// H6: direction-aware MS selection weight (see Scatter()'s twin
+	// comment).  DL-77 P2: per-azimuth energy term (wi's local x,y),
+	// matching Scatter()/ScatterNM()'s wms so the reported density stays
+	// consistent with what they actually sample from.
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
-	const Scalar wms = ws * (1.0 - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ));
+	const Scalar wiLocalX = Vector3Ops::Dot( wi, myonb.u() );
+	const Scalar wiLocalY = Vector3Ops::Dot( wi, myonb.v() );
+	const Scalar wms = ws * (1.0 - MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( cosWi, wiLocalX, wiLocalY, alphaX, alphaY ));
 	const Scalar total = wd + ws + wms;
 	if( total < 1e-10 ) return cosTheta * INV_PI;
 
 	const Scalar diffPdf = cosTheta * INV_PI;
 	const Scalar specPdf = (alphaEff >= 1e-6) ?
 		MicrofacetUtils::VNDF_Pdf_Aniso( wi, woNorm, myonb, alphaX, alphaY ) : 0;
-	const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, MicrofacetEnergyLUT::MSLobeZ( alphaEff ) );
+	const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2Aniso( cosTheta, alphaX, alphaY, MicrofacetEnergyLUT::MSLobeZG2Aniso( alphaX, alphaY ) );
 
 	return (wd * diffPdf + wms * msPdfHere + ws * specPdf) / total;
 }
@@ -748,7 +851,7 @@ Scalar GGXSPF::PdfNM(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	myonb = ApplyTangentRotation( myonb, pTangentRotation, ri );	// Landing 8
+	myonb = ApplyTangentRotation( myonb, pTangentRotation, pTangentRotationScalar, ri );	// Landing 8
 
 	const Vector3 n = myonb.w();
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
@@ -772,19 +875,28 @@ Scalar GGXSPF::PdfNM(
 	}
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
-	// 3-lobe mixture PDF weighted by per-wavelength albedos
-	const Scalar wd = pDiffuse->GetColorNM(ri,nm);
-	const Scalar ws = pSpecular->GetColorNM(ri,nm);
-	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
+	// 3-lobe mixture PDF weighted by per-wavelength albedos.  DL-64 /
+	// P2-1: `ws` matches the mixture ScatterNM() actually samples from --
+	// the hemispherical Fresnel-weighted albedo ONLY in eFresnelSchlickF0
+	// mode (see ScatterNM()'s twin comment).
+	const Scalar wd = ReflectanceColorNM( *pDiffuse, ri, nm );
+	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
+	const Scalar ws = (fresnelMode == eFresnelSchlickF0) ? interfaceFresnel.MeanNM( nm ) : ReflectanceColorNM( *pSpecular, ri, nm );
+	// H6: direction-aware MS selection weight (see Scatter()'s twin
+	// comment).  DL-77 P2: per-azimuth energy term (wi's local x,y),
+	// matching Scatter()/ScatterNM()'s wms so the reported density stays
+	// consistent with what they actually sample from.
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
-	const Scalar wms = ws * (1.0 - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ));
+	const Scalar wiLocalX = Vector3Ops::Dot( wi, myonb.u() );
+	const Scalar wiLocalY = Vector3Ops::Dot( wi, myonb.v() );
+	const Scalar wms = ws * (1.0 - MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( cosWi, wiLocalX, wiLocalY, alphaX, alphaY ));
 	const Scalar total = wd + ws + wms;
 	if( total < 1e-10 ) return cosTheta * INV_PI;
 
 	const Scalar diffPdf = cosTheta * INV_PI;
 	const Scalar specPdf = (alphaEff >= 1e-6) ?
 		MicrofacetUtils::VNDF_Pdf_Aniso( wi, woNorm, myonb, alphaX, alphaY ) : 0;
-	const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdf( cosTheta, alphaEff, MicrofacetEnergyLUT::MSLobeZ( alphaEff ) );
+	const Scalar msPdfHere = MicrofacetEnergyLUT::MSPdfG2Aniso( cosTheta, alphaX, alphaY, MicrofacetEnergyLUT::MSLobeZG2Aniso( alphaX, alphaY ) );
 
 	return (wd * diffPdf + wms * msPdfHere + ws * specPdf) / total;
 }

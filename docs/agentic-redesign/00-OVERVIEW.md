@@ -1,12 +1,37 @@
 # RISE Agentic Redesign — Synthesis & Overview
 
-> **Current status (2026-07-24): PARTIALLY IMPLEMENTED.** The CST/v7 cutover,
-> CST-native editor/save/history, scene variants, schema-driven desktop
-> surfaces, first-party agent runtime/tool surface, eval harness, and transcript
-> compaction have shipped. The complete immutable
-> `DerivedScene`/`PreparedRenderState` publication architecture and several
-> security/orchestration layers remain design work. The dated transfer-gate
-> narrative below is retained as the execution record.
+> **Current status (2026-11): HYBRID MODEL-B + EXPRESSIVE/AGENTIC STACK SHIPPED.**
+> Beyond the July 2026 CST/v7 cutover, CST-backed editor/save/history, scene variants
+> (doc 63), eval harness (doc 70), and context compaction (doc 71), the Aug–Nov 2026
+> arcs landed:
+> - **Recursive scene graph (doc 87):** parented `standard_object` hierarchy, `source`
+>   subtree instancing + `count_u`/`count_v` grids (retiring `instance_array`), and the
+>   hierarchical Tree Outliner.
+> - **Staged clean-room construction (docs 77–83):** imagination targets, `file_build_plan`,
+>   clean-room `build_element` / `place_element`, forward render inventory (`scene_inventory`),
+>   physical area-light chunks (`rect_light`, `shape_light`) + `light_scene`, `populate_scene`
+>   (including `source` subtree clones), `environment_scene`, and `frame_scene`.
+> - **Geometry & generic shape operators (docs 85, 89 + hair):** `lathe_geometry`,
+>   multi-profile loft/`skin_geometry`, `hair_geometry`, `standard_object.mirror`,
+>   `collapse_to_instances`, and semantic SDF operators (`modify_sdf_part`, `duplicate_sdf_part`,
+>   `remove_sdf_part`, `mirror_sdf_parts`, `fit_primitive_to_points`).
+> - **Procedural texture, material & node-canvas suite (doc 88):** `mapping_painter`,
+>   extended `blend_painter` modes, world-space `voronoi3d_painter`, `stochastic_tile_painter`,
+>   `scatter_painter`, `fw`/`fwo` filter-width + `sample()`/`sample_scalar()` in `expr(...)`,
+>   material authoring verbs (`build_material`, `tweak_material`, `apply_material_recipe`),
+>   and desktop Material Editor + Node/Object Graph canvases.
+> - **Iteration ratchet & context lifetimes (docs 90, 91):** `revert_to_revision` forward
+>   snapshot commits, render/tool payload lifetime retirement, perception atlas, and
+>   `render{isolate, zoom}` workflows.
+> - **Runtime & provider breadth:** batched single-rederive CST edits (`ApplyCstEditBatch`),
+>   malformed tool-call recovery, **5 chat providers** (`claude-sonnet-5`, `gemini-4-argon`,
+>   `gpt-5.6-terra`, `grok-4.5`, `opencoder`), and **38 chat tools** in `kToolDefs`
+>   (plus MCP/session verbs).
+>
+> The full immutable COW `DerivedScene`/`PreparedRenderState` publication DAG and persistent
+> `VersionGraph` remain unbuilt target design; the shipping editor retains and adapts
+> `SceneEditor`/`SceneEdit`/`EditHistory`/`SaveEngine` over the canonical CST. The dated
+> transfer-gate narrative below is preserved as the execution record.
 >
 > **Implementation update (2026-06-21):** the design is backed by **four prototype slices**
 > (`tests/Cst*SliceTest.cpp`; see [`IMPLEMENTATION_SLICES.md`](IMPLEMENTATION_SLICES.md)) that
@@ -16,7 +41,7 @@
 > persistent `Document` with NodeId/name-path lookup counted *in* the complexity measure → live
 > descriptor registry → real-resolver reference tracing on a 3-level chain → measure a non-spatial
 > AND a spatial edit, TLAS reported separately), keeping expr/RepeatGroup/instance_array out until
-> it is green (SINCE LANDED: the gate is green; RepeatGroup + expr + let's Facet-1 halves are #5 slices 1-4 (RepeatGroup, expr, let, instance_array)). **Claims narrowed per that review:** the O(closure) result is by **apply-layer-call
+> it is green (SINCE LANDED: the gate is green; RepeatGroup + expr + let's Facet-1 halves are #5 slices 1-4 (RepeatGroup, expr, let, instance_array — *note: `instance_array` was subsequently retired in doc 87 step 3d in favor of `standard_object` `source` + `count_u`/`count_v`*)). **Claims narrowed per that review:** the O(closure) result is by **apply-layer-call
 > count with the closure already computed** — it excludes target lookup, persistent-cache/COW,
 > realization, and TLAS rebuild, and **spatial edits remain O(N log N)** (D24); "reparse-stable
 > identity" (in the PROTOTYPES) covered **param/value NodeIds only** (chunk identity +
@@ -47,7 +72,7 @@
 |---|---|---|
 | [`00-CHARTER.md`](00-CHARTER.md) | Thesis, Model B decision, locked/open decisions, invariants | Are the locked decisions actually right? |
 | [`01-DECISIONS.md`](01-DECISIONS.md) | **Authoritative** round-1 resolutions (D1–D10) | Read FIRST after the charter; it overrides §3/§6 here and the facet docs |
-| [`10-scene-language-and-cst.md`](10-scene-language-and-cst.md) | The CST, parser→retained-tree, NodeId identity (name-path = addressing), declarative iteration (FOR→`instance_array`/`let`/`expr`) | **R1** (tree representation), lossless round-trip gate, generator expressiveness |
+| [`10-scene-language-and-cst.md`](10-scene-language-and-cst.md) | The CST, parser→retained-tree, NodeId identity (name-path = addressing), declarative iteration (FOR→`instance_array` *[retired doc 87 step 3d → `standard_object` `source` + `count_u`/`count_v`]* / `let` / `expr`) | **R1** (tree representation), lossless round-trip gate, generator expressiveness |
 | [`20-derivation-engine.md`](20-derivation-engine.md) | Incremental `derive(CST)→Scene`, memo+dep-graph, apply-layer reuse | **Latency budget** (the second tar-pit), order-independence audit |
 | [`30-edit-model-and-history.md`](30-edit-model-and-history.md) | CST versioning replacing the whole edit/transaction subsystem | **R1** (depends on persistent CST), deletion inventory completeness |
 | [`40-dynamic-ui.md`](40-dynamic-ui.md) | Schema-driven reactive UI, widget↔CST binding, split form/source | **R2** (derived-overlay contract), cross-platform thin-bridge |
@@ -93,7 +118,7 @@ document) is deleted; the engine, managers, apply layer, and realize seam are un
 
 Per-facet headline:
 - **F1 (CST):** promote the existing span machinery to a retained, lossless, descriptor-bound tree;
-  `FOR`→`instance_array` (homogeneous, instances *derived*) or one-shot desugar (heterogeneous);
+  `FOR`→`instance_array` *(retired in doc 87 step 3d in favor of `standard_object` `source` + `count_u`/`count_v`)* (homogeneous, instances *derived*) or one-shot desugar (heterogeneous);
   `DEFINE`→`let`; `$(...)`/`hal`/macros→one `expr(...)` sublanguage over the existing
   `ExpressionProgram`; v6 is migrated to v7 by a one-shot migrator, then the v6 reader is **deleted**
   (time-bounded, no runtime legacy nodes — D8).
@@ -134,7 +159,10 @@ Per-facet headline:
   binding is name-path→`EditIntent`→F3's pathway; split form/source via spans; the bridge
   boundary-enum becomes generated (kills `case 5:` drift).
 - **F5 (Agent):** thin surface — one mutating verb (`propose_patch`, structured or text, both →
-  one validated CST version) + `validate`/`render`/`read_*`; the edit→validate→derive→render loop
+  one validated CST version) + `validate`/`render`/`read_*` *(2026-11 shipped state: expanded to a
+  **38-tool tiered surface** across 5 providers — CST edit/batch verbs, staged clean-room builders,
+  shape & material operators, `render{isolate, zoom}` + perception atlas, and `revert_to_revision`;
+  see [`50-agentic-surface.md`](50-agentic-surface.md))*; the edit→validate→derive→render loop
   maps 1:1 onto the coding-agent loop; git-native diff/PR/bisect on INV-4; headless autonomy emits
   a branch/PR, not a commit.
 - **F6 (Migration):** concentrated supersession; phased P0–P8 strangler-fig with v6/v7 dual-path
@@ -223,17 +251,25 @@ assumptions meet. **R1 is load-bearing for the whole design; the rest are contai
 
 ## 5. What Model B deletes (roll-up)
 
+> **2026-11 implementation note:** In the shipped hybrid Model-B architecture, the legacy
+> streaming preprocessor (`FOR`/`DEFINE`/`$(...)`/`>` directives) and `AsciiSceneParser.cpp`
+> **were** deleted, whereas `SceneEdit` (31 ops incl. `AgentEditBatch`), `EditHistory`
+> (with exact-byte CST undo), `SaveEngine` (rewritten around `SerializeCst` + atomic CAS save,
+> dropping Mode-A/B override-block splicing), `DirtyTracker`, and the **9 `*Introspection`
+> classes** were **retained and adapted** onto the canonical CST.
+
 Concentrated in `src/Library/SceneEditor/` and the parser preprocessing layer:
 - **Whole edit/history/transaction subsystem:** `SceneEdit`, `EditHistory`, transactions/rollback,
   composite atomicity, the round-4 identity-serial, `DropStaleSelection_`, the
   Capture/ApplyRevert/ApplyForward *tracking* (the *apply* logic survives as F2's value-fast-path).
-  → CST versioning (F3).
+  → CST versioning (F3). *(Retained & CST-adapted in tree; see [`30-edit-model-and-history.md`](30-edit-model-and-history.md).)*
 - **`SaveEngine` Mode-A/B byte-splice + managed-override block + `OverrideSpanIndex` + dirty
   diffing** → `SerializeCst` (F1/F3): serialize the canonical tree, verbatim for untouched nodes.
-- **`DirtyTracker` / "unsaved changes"** → dissolves (head-version-id ≠ flushed-version-id).
+  *(`SaveEngine` class retained as the `SerializeCst` + atomic CAS save wrapper; Mode-A/B override splicing deleted.)*
+- **`DirtyTracker` / "unsaved changes"** → dissolves (head-version-id ≠ flushed-version-id). *(`DirtyTracker` retained & adapted.)*
 - **Fixed accordion `Category`/`PanelMode`, the nine per-category state arrays, the 7 introspection
-  classes, `ResyncObjectBoundSections_`** → one schema walk (F4).
-- **`FOR`/`ENDFOR`/`DEFINE`/`UNDEF`/`@`/`%`/`$(...)`/global `MultiHalton`** → `instance_array` /
+  classes, `ResyncObjectBoundSections_`** → one schema walk (F4). *(9 `*Introspection` classes retained alongside schema-driven UI; see [`40-dynamic-ui.md`](40-dynamic-ui.md).)*
+- **`FOR`/`ENDFOR`/`DEFINE`/`UNDEF`/`@`/`%`/`$(...)`/global `MultiHalton`** → `instance_array` *(retired in doc 87 step 3d in favor of `standard_object` `source` + `count_u`/`count_v`)* /
   `let` / `expr(...)` (F1); legacy spellings round-trip read-only until migrated.
 - **`Job` order-dependence** (e.g. `SetPrimaryAcceleration` discarding prior objects) → declarative
   config + topo-ordered derivation (F2).
@@ -247,7 +283,7 @@ realize→TLAS→light-sampler→photon seam, `ChunkDescriptor`/`Describe()`.
 > single canonical phased fixture: 1 `sphere_geometry` → 2 `+uniformcolor_painter` **+
 > `lambertian_material{reflectance→painter}`** (the first real *reference* → ref-picker) → 3
 > `+standard_object{geometry,material}` (the true geometry→material→object chain + rename) → 4
-> `+expr` → 5 `+instance_array` → **6 `+image_painter`/mesh (asset-backed, so G5 is exercisable)**.
+> `+expr` → 5 `+instance_array` *(retired in doc 87 step 3d → `standard_object` `source` + `count_u`/`count_v`)* → **6 `+image_painter`/mesh (asset-backed, so G5 is exercisable)**.
 > Shared gates **G1–G5** (round-trip byte-identity; incremental-derive < 50 ms on a Sponza-class
 > scene; minimal invalidation; version-DAG undo; asset/file-conflict). The earlier, divergent text
 > below is retained for context.
@@ -278,5 +314,5 @@ smallest chunk, the architecture is sound to scale; if either fails, we learn it
 1. Reviewer rules on **R1** (+ confirms R2–R5, O2 bar, O3 window) — gate before any code.
 2. Build the **first slice** (`sphere_geometry`) to the two gates (round-trip identity; latency).
 3. If green: proceed along F6's phased P0–P8 strangler-fig (add `Reference`/rename, `RepeatGroup`,
-   `expr(...)`, then `instance_array` replacing `loops.RISEscene`), deleting the superseded
+   `expr(...)`, then `instance_array` *[retired in doc 87 step 3d in favor of `standard_object` `source` + `count_u`/`count_v`]* replacing `loops.RISEscene`), deleting the superseded
    subsystems phase-by-phase behind the v6/v7 dual path — never a flag-day rewrite.

@@ -148,6 +148,20 @@ Scalar MediumScatterMaterial::Pdf(
 	const IORStack& ior_stack
 	) const
 {
+	// DL-73 (ruled not a debt, see docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
+	// "DL-73 RULED NOT A DEBT"): this is the RAW, un-guided phase pdf --
+	// deliberately NOT combined with any OpenPGL volume-guiding mixture.
+	// RayCaster.cpp's volume phase-scatter continuation records this SAME
+	// raw value as its MIS-PARTNER density -- `rs2.bsdfMisPdf = phasePdf`
+	// since DL-74 split the two roles apart (`rs2.bsdfPdf` now carries the
+	// guided mixture the direction was really drawn from, which the
+	// optimal-MIS moment estimator needs).  So the two sides of the
+	// env-NEE/env-escape MIS pair, and of the area-NEE/emitter-hit pair,
+	// feed PowerHeuristic the identical (phasePdf, p_light) pair and sum to
+	// exactly 1.  Combining this with the guide pdf would break that
+	// partition -- do not do it.  Fire: `PdfProposal` is that same raw
+	// (un-guided) density of the retained collision closure's own
+	// sampling proposal; for every non-fire phase function it IS `Pdf`.
 	return m_pPhase->PdfProposal( vToLight, m_wo );
 }
 
@@ -176,6 +190,8 @@ RISEPel MediumTransport::EvaluateInScattering(
 	ISampler& sampler,
 	const RasterizerState& rast,
 	const IObject* pMediumObject,
+	Scalar neeTrainingScale,
+	const IORStack* pGradedIndexStack,
 	const IORStack* pMediumStack
 	)
 {
@@ -206,9 +222,16 @@ RISEPel MediumTransport::EvaluateInScattering(
 	scatterRI.vNormal = wo;
 	scatterRI.onb.CreateFromW( wo );
 
+	// DL-185: `neeTrainingScale` forwards CastRay's LOCAL cast-level RR
+	// compensation for THIS call (default 1 for every other caller) --
+	// scales the optimal-MIS training integrand only, never the returned
+	// in-scattered radiance itself.
 	return pLightSampler->EvaluateDirectLighting(
 		scatterRI, scatterBSDF, &scatterMaterial,
-		caster, sampler, 0, pMedium, true, pMediumObject, pMediumStack );
+		caster, sampler, 0, pMedium, true, pMediumObject,
+		0, 0, neeTrainingScale,
+		/*bBsdfSamplingPartnerExists*/ true, pGradedIndexStack,
+		/*bSMSCoversDeltaLights*/ false, pMediumStack );
 }
 
 Scalar MediumTransport::EvaluateInScatteringNM(
@@ -222,6 +245,8 @@ Scalar MediumTransport::EvaluateInScatteringNM(
 	ISampler& sampler,
 	const RasterizerState& rast,
 	const IObject* pMediumObject,
+	Scalar neeTrainingScale,
+	const IORStack* pGradedIndexStack,
 	const IORStack* pMediumStack
 	)
 {
@@ -244,7 +269,11 @@ Scalar MediumTransport::EvaluateInScatteringNM(
 	scatterRI.vNormal = wo;
 	scatterRI.onb.CreateFromW( wo );
 
+	// DL-185 -- see the RGB twin above.
 	return pLightSampler->EvaluateDirectLightingNM(
 		scatterRI, scatterBSDF, &scatterMaterial,
-		nm, caster, sampler, 0, pMedium, true, pMediumObject, pMediumStack );
+		nm, caster, sampler, 0, pMedium, true, pMediumObject,
+		0, 0, neeTrainingScale,
+		/*bBsdfSamplingPartnerExists*/ true, pGradedIndexStack,
+		/*bSMSCoversDeltaLights*/ false, pMediumStack );
 }

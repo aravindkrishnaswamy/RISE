@@ -193,6 +193,7 @@ csg_object
 	objb				lens_b
 	operation			intersection
 	position			-1.0 0.5 0
+	allow_transformed_operands			TRUE
 }
 
 # Reference: a plain sphere with same glass material (should be transparent)

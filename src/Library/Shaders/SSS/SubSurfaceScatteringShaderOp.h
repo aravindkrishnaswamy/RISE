@@ -69,10 +69,10 @@ namespace RISE
 			const bool cache;
 			const bool low_discrepancy;
 
-			typedef std::map<const IObject*,PointSetOctree*> PointSetMap;
+			typedef std::map<std::pair<const IObject*,bool>,PointSetOctree*,PointSetOctree::ModeKeyLess> PointSetMap;
 			// Known scene-immutability exception: pointsets are lazily built on first
-			// access because construction requires ray tracing the scene. Access is
-			// serialized by create_mutex (one std::lock_guard'd find-or-build), thread-safe.
+			// access because construction requires ray tracing the scene. Map
+			// lookup/publication are serialized by create_mutex; shader capture is unlocked.
 			mutable PointSetMap	pointsets;
 
 			mutable RMutex create_mutex;
@@ -99,7 +99,7 @@ namespace RISE
 				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				RISEPel& c,									///< [in/out] Resultant color from op
-				const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,			///< [in] Index of refraction stack
 				const ScatteredRayContainer* pScat			///< [in] Scattering information
 				) const;
 
@@ -112,12 +112,13 @@ namespace RISE
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				const Scalar caccum,						///< [in] Current value for wavelength
 				const Scalar nm,							///< [in] Wavelength to shade
-				const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,			///< [in] Index of refraction stack
 				const ScatteredRayContainer* pScat			///< [in] Scattering information
 				) const;
 
 			//! Tells the ShaderOp to reset itself
 			void ResetRuntimeData() const;
+			bool HasRuntimeData() const { return true; }
 
 			//! Asks if the shader op needs SPF data
 			bool RequireSPF() const { return false; };

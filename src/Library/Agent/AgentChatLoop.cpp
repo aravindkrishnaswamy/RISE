@@ -31,37 +31,50 @@ namespace RISE
 			//! this text is MODEL-FACING, and a stale count in it is a lie
 			//! told to the model on every single turn.
 			const char* const kSystemPrompt =
+				"[ROLE & CO-EDITING CONTRACT]\n"
 				"You are a scene-editing agent embedded in the RISE renderer. You and "
 				"the user CO-EDIT one live scene: the user sees the same viewport and "
 				"may edit concurrently, so never assume the document is unchanged -- "
-				"always work from a fresh read_document.\n"
+				"always work from a fresh read_document. Treat live tool outputs "
+				"(read_document, scene_inventory, validate diagnostics, query_object_at, "
+				"and rendered images) as ground truth over prior-turn memory or "
+				"internal coordinate arithmetic.\n"
 				"\n"
-				"Workflow for every edit:\n"
-				"1. read_document to see the scene and its headVersion (read_schema "
-				"when unsure about a chunk or parameter; consult read_skill before "
-				"scene-authoring tasks -- the skills carry the conventions that make "
-				"scenes render correctly on the first try). When you need MORE THAN "
-				"ONE chunk kind, ask for them ALL IN ONE read_schema call: "
-				"{keywords:[\"sdf_geometry\",\"pbr_metallic_roughness_material\","
-				"\"uniformcolor_painter\",\"omni_light\",\"standard_object\"]} returns "
-				"every one of those schemas in that single result, positionally "
-				"aligned with what you asked for, at most 24 per call. Batch the "
-				"kinds you have DECIDED to use -- one call per chunk kind is "
-				"wasteful, but a padded batch is just a bigger bill. Use "
-				"{category:\"material\"|"
-				"\"geometry\"|\"painter\"|...} only when you do not yet know which chunk kinds "
+				"[WORKFLOW & SCENE CONSTRUCTION]\n"
+				"1. Inspect & schema-check: read_document to see the scene and its "
+				"headVersion (read_schema when unsure about a chunk or parameter; "
+				"consult read_skill before scene-authoring tasks -- the skills carry "
+				"the conventions that make scenes render correctly on the first try). "
+				"When you need MORE THAN ONE chunk kind, ask for them ALL IN ONE "
+				"read_schema call: {keywords:[\"sdf_geometry\","
+				"\"pbr_metallic_roughness_material\",\"uniformcolor_painter\","
+				"\"omni_light\",\"standard_object\"]} returns every one of those "
+				"schemas in that single result, positionally aligned with what you "
+				"asked for, at most 24 per call. Batch the kinds you have DECIDED to "
+				"use -- one call per chunk kind is wasteful, but a padded batch is "
+				"just a bigger bill. Use {category:\"material\"|\"geometry\"|"
+				"\"painter\"|...} only when you do not yet know which chunk kinds "
 				"exist: it is a cheap keyword list. Do ALL the category listings you "
 				"need FIRST, then ONE keywords batch for everything you picked across "
 				"all of them -- a batch per category is most of the waste back. "
 				"A bare read_schema (whole grammar) is expensive and rarely "
 				"needed.\n"
-				"2. propose_patch (or insert_chunk / remove_chunk) with the "
-				"headVersion you just read as baseHeadVersion. On status=conflict, "
-				"re-read and re-propose; on "
-				"retriable=true, retry the same patch after a moment. "
-				"status=diagnosed means the edit WAS applied but the re-derive "
-				"produced diagnostics -- read them and fix the reported problem; "
-				"do not blindly re-propose the same patch.\n"
+				"2. Choose the right mutation path: for targeted edits to an existing "
+				"scene, use propose_patch (or insert_chunk / insert_chunks / "
+				"remove_chunk / remove_chunks) with the headVersion you just read as "
+				"baseHeadVersion. When authoring a new multi-element scene from "
+				"scratch and the staged builder capability is available, prefer the "
+				"staged clean-room pipeline (imagine_scene when visual reference "
+				"helps -> file_build_plan -> build_element / place_element / "
+				"finish_element per hero element -> light_scene, populate_scene, "
+				"environment_scene, frame_scene) so each element is constructed and "
+				"inspected in isolation before final assembly. On status=conflict, "
+				"re-read and re-propose; on retriable=true, retry the same patch "
+				"after a moment. status=diagnosed means the edit WAS applied but the "
+				"re-derive produced diagnostics -- read them and fix the reported "
+				"problem; do not blindly re-propose the same patch.\n"
+				"\n"
+				"[VERIFICATION & OBSERVATION STANDARD]\n"
 				"3. Verify by CHANGE KIND. PARAM/STRUCTURAL edits (value changes, "
 				"bindings, insert/remove of non-visual chunks) are confirmed by "
 				"the apply response's status and bumped headVersion alone -- "
@@ -95,7 +108,13 @@ namespace RISE
 				"cheap look first: render width/height 128-192 (or "
 				"quality:\"draft\" for a geometry/placement-only check -- it "
 				"uses a fixed studio-preview shader, capped at 4 samples, that "
-				"IGNORES materials and lighting, so NEVER judge those from it; "
+				"IGNORES the scene's authored lighting (a fixed synthetic "
+				"studio rig stands in, with no shadows and no GI), so NEVER "
+				"judge lighting/exposure/shadows from it -- but it DOES shade "
+				"each hit with the material's own BSDF (colour, roughness, "
+				"procedural/expression painters, relief and bump/normal "
+				"modifiers all apply), so colour and texture CAN be judged "
+				"coarsely from it; "
 				"check `renderMode`, not `integrator`, to confirm which "
 				"pipeline ran) with imageMaxEdge ~192, which returns the PNG "
 				"in that same call -- do not follow it with read_image. Use render's "
@@ -145,6 +164,7 @@ namespace RISE
 				// kind="camera" positional fallback, so the camera-SWAP
 				// recipe (remove FIRST, then insert) is taught, plus the
 				// retarget-refused remove+reinsert escape).
+				"[CAPABILITY SCOPE & CHUNK MECHANICS]\n"
 				"You can change PARAMETERS of existing entities via propose_patch. "
 				"To patch a chunk that has NO name -- the sole camera, the film, "
 				"the rasterizer -- leave `target` EMPTY and pass `kind`: "
@@ -158,7 +178,13 @@ namespace RISE
 				"media -- are positioned before the objects that consume them "
 				"automatically), and DELETE an entity with remove_chunk (refused "
 				"while another chunk still references the target -- retarget or "
-				"remove the consumers first). Any edit that would leave the "
+				"remove the consumers first). DELETING MORE THAN ONE chunk? Use "
+				"ONE remove_chunks{targets:[...]} call, not repeated remove_chunk "
+				"calls: it is one round-trip and one undo step, it is "
+				"ALL-OR-NOTHING (a failure removes nothing, so you fix the one "
+				"named offender and resend), and chunks that reference each other "
+				"WITHIN the batch come out together in any order -- so tearing "
+				"down a painter+material+object subassembly is a single call. Any edit that would leave the "
 				"document unable to derive in order is refused cleanly with the "
 				"head unchanged. Honest limits: whole-chunk granularity only -- "
 				"no rename verb (the safe recipe: insert_chunk the renamed "
@@ -189,9 +215,11 @@ namespace RISE
 				"validation, a rejection is informative and cheap, and "
 				"pre-validating variants of a small insert wastes rounds.\n"
 				"\n"
-				"Keep responses concise. After acting, report plainly what changed "
-				"(entity, parameter, old vs new value when known) and what you "
-				"observed in the render.";
+				"[OUTPUT & REPORTING CONTRACT]\n"
+				"Keep responses concise and grounded in tool results. After acting, "
+				"report plainly what changed (entity, parameter, old vs new value "
+				"when known, and the resulting headVersion) and what you observed "
+				"in the render.";
 
 			std::unique_ptr<IChatProviderCodec> MakeCodec( ChatProvider provider )
 			{
@@ -400,6 +428,242 @@ namespace RISE
 				std::lock_guard<std::mutex> lock( ReasoningEffortCacheMutex() );
 				ReasoningEffortCacheSet().insert( ReasoningEffortCacheKey( providerName, modelId ) );
 			}
+
+			//! SEQUENCING GATE (see the file header): the DOCUMENT-MUTATING
+			//! verb allowlist -- shared by AddToolResult's streak accounting
+			//! and GateRefusalResponse's gate check, so the two can never
+			//! disagree about which verbs count.  The BATCH forms
+			//! (insert_chunks / propose_patches / remove_chunks /
+			//! insert_material_scaffold / insert_geometry_scaffold) count too -- they still edit the
+			//! document with no visual observation in between, same
+			//! blind-edit risk, and if anything a LARGER one (N edits land
+			//! per call, so a model that batches would otherwise never
+			//! accrue the streak at all and the gate would silently never
+			//! fire for exactly the models making the biggest unobserved
+			//! edits).
+			bool IsMutatingToolName( const std::string& v )
+			{
+				return v == "insert_chunk" || v == "insert_chunks" ||
+				       v == "insert_material_scaffold" ||
+				       v == "insert_geometry_scaffold" ||
+				       // R2 (2026-08-10): ONE replace_geometry_scaffold call is
+				       // ONE blind mutation -- it is deliberately ONE head bump,
+				       // ONE history entry and ONE undo step, so it must count
+				       // exactly once here too, no more and no less.
+				       v == "replace_geometry_scaffold" ||
+				       // 88 step 2 (2026-08-19): ONE collapse_to_instances call
+				       // is ONE blind mutation on the same argument -- one
+				       // composite document swap, one head bump, one undo step.
+				       // It counts even though the rewrite is a provable no-op on
+				       // the rendered scene: what this streak measures is edits
+				       // the model made without looking, and it looked at nothing.
+				       v == "collapse_to_instances" ||
+				       // 88 S5 (2026-08-20): ONE vary_material call is ONE blind
+				       // mutation on the same argument -- one composite document
+				       // swap, one head bump, one undo step, made without looking.
+				       v == "vary_material" ||
+				       // Cat plan item 1 (2026-08-25): ONE fix_blend_scale call
+				       // is ONE blind mutation on the same argument -- one
+				       // composite document swap (across however many joints it
+				       // clamps), one head bump, one undo step, made without
+				       // looking.
+				       v == "fix_blend_scale" ||
+				       // GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): ONE
+				       // add_wear call is ONE blind mutation on the same
+				       // argument -- one composite document swap (a painter or
+				       // two plus the material's slots), one head bump, one
+				       // undo step, made without looking.
+				       v == "add_wear" ||
+				       // WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): ONE
+				       // add_wetness call is ONE blind mutation on the same
+				       // argument -- one composite document swap (a Lambertian
+				       // base wrapped in coated_material -- Phase 2; the Phase 1
+				       // rewrite to the now-FROZEN polished_material is gone --
+				       // or one-to-three field
+				       // chunks plus the material's slots on a GGX/PBR base),
+				       // one head bump, one undo step, made without looking.
+				       v == "add_wetness" ||
+				       // CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): ONE
+				       // make_fabric call is ONE blind mutation on the same
+				       // argument -- one composite document swap (up to four
+				       // minted chunks plus every bound object's material
+				       // reference), one head bump, one undo step, made
+				       // without looking.
+				       v == "make_fabric" ||
+				       // CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): ONE
+				       // add_fuzz call is ONE blind mutation on the same
+				       // argument -- one composite document swap (a
+				       // hair_geometry/hair_material/standard_object triad
+				       // per bound object), one head bump, one undo step,
+				       // made without looking.
+				       v == "add_fuzz" ||
+				       // Doc 90 R2 (2026-08-23): ONE revert_to_revision call is
+				       // ONE blind mutation on the same argument -- one composite
+				       // document swap, one head bump, one undo step.  It counts
+				       // even though the model necessarily DID look before making
+				       // it (a revert answers a render it just saw): the streak
+				       // measures edits made since the last look, and a revert is
+				       // an edit like any other -- exempting it would let a model
+				       // revert-and-edit-and-revert its way to an unbounded
+				       // unobserved streak.
+				       v == "revert_to_revision" ||
+				       // S2 (2026-08-11): ONE build_element call is ONE blind
+				       // mutation -- it inserts the whole element's chunks with
+				       // no visual observation in between, exactly like one
+				       // batched insert_chunks (and, if anything, a LARGER one).
+				       // ONE place_element call is likewise ONE blind mutation:
+				       // it is deliberately one patch batch, one head bump and
+				       // one undo step, so it counts exactly once.  Neither is a
+				       // LOOK -- neither renders anything, so neither can reset
+				       // the streak the way finish_element's real isolate render
+				       // legitimately does.
+				       v == "build_element" || v == "place_element" ||
+			       // Arc 81 (2026-08-12): ONE light_scene call is ONE blind
+			       // mutation -- it inserts a whole lighting design with no
+			       // visual observation in between, exactly like one batched
+			       // insert_chunks.  ARC 83 SLICE 1 (2026-08-12) made that
+			       // call an internal plan-then-per-intent LOOP, and it still
+			       // counts exactly ONCE: what this streak measures is the
+			       // model's unobserved edits, and the model made one call and
+			       // saw one result.  It is NOT a look: the small solo renders
+			       // it fires to measure each light's contribution are
+			       // internal and ephemeral and no pixel of them reaches the
+			       // model, so treating it as an observation would hand every
+			       // model a free, image-free streak reset -- the same call
+			       // file_build_plan's sketch echo and imagine_scene's
+			       // generated image each got, and for the same reason.
+			       v == "light_scene" ||
+			       // Arc 82 (2026-08-12): ONE populate_scene call is ONE blind
+			       // mutation for light_scene's reason exactly -- it inserts a
+			       // whole set of placements with no visual observation in
+			       // between.  It is even more clearly NOT a look than its
+			       // sibling: it fires no render at all, not even an internal
+			       // one, so there is nothing here that could be mistaken for
+			       // an observation.
+			       v == "populate_scene" ||
+		       // Arc 83 slices 5 and 6 (2026-08-13): ONE environment_scene
+		       // call and ONE frame_scene call are each ONE blind mutation,
+		       // for light_scene's reason exactly -- each applies a whole
+		       // design with no visual observation in between.  Neither is a
+		       // LOOK: environment_scene's two tonal renders and frame_scene's
+		       // two identity passes are internal and ephemeral and no pixel of
+		       // them reaches the model, so treating either as an observation
+		       // would hand every model a free, image-free streak reset -- the
+		       // same call light_scene's solo renders, file_build_plan's sketch
+		       // echo and imagine_scene's generated image each got, and for the
+		       // same reason.
+		       v == "environment_scene" ||
+		       v == "frame_scene" ||
+				       v == "propose_patch" || v == "propose_patches" ||
+				       v == "remove_chunk" ||
+				       // R1a (2026-08-09): ONE remove_chunks call is ONE
+				       // blind mutation, exactly like one batched
+				       // insert_chunks -- N chunks leave the document with
+				       // no visual observation in between.  A REFUSED call
+				       // never counts: the streak accounting in AddToolResult
+				       // is gated on the response, not on the verb name.
+				       v == "remove_chunks";
+			}
+
+			//! The VISUAL-OBSERVE verb allowlist -- resets the blind-edit
+			//! streak (see IsMutatingToolName's doc).  compare_to_reference
+			//! belongs here for the same reason render/read_image/
+			//! read_viewport do: AgentRpc.cpp documents it as a PURE READ
+			//! that RENDERS (a visual side-by-side comparison), and the file
+			//! header's IMAGE RETENTION rule already treats it as an
+			//! image-bearing result alongside those three -- it was simply
+			//! missing from this specific allowlist.  query_object_at is
+			//! also a look even though it is not image-bearing itself: it
+			//! answers from a RENDERED frame (see AgentSession.cpp's
+			//! EphemeralRenderCacheGuard), so querying it requires the scene
+			//! to have actually been rendered first.  ask_user is
+			//! DELIBERATELY neither this nor a mutation: it neither mutates
+			//! the document nor observes the rendered result, so (like
+			//! read_document/read_schema/read_skill/validate) it leaves the
+			//! streak UNCHANGED -- pausing to ask a clarifying question is
+			//! not progress toward the blind-edit failure mode this gate
+			//! guards against, so it should neither reset nor grow it.
+			//!
+			//! G2 (2026-08-10): file_build_plan is DELIBERATELY neither, for
+			//! exactly ask_user's reason and by the same test.  It does not
+			//! mutate the document (no chunk, no param, no head bump), so
+			//! counting it as a mutation would refuse a model for declaring a
+			//! plan -- and the build-plan gate can force that call, so the two
+			//! gates would fight.  It is not a LOOK either: it observes no
+			//! rendered pixels, so resetting the blind-edit streak with it
+			//! would hand every model a free, image-free streak reset and
+			//! silently defeat E4.  It leaves the streak exactly as it found
+			//! it.
+			//!
+			//! G3a (2026-08-10) RE-AFFIRMS THAT CALL, against the one fact
+			//! that looks like it should change it: file_build_plan's result
+			//! now CARRIES AN IMAGE (the composite sketch echo), and it is
+			//! listed in AgentChatCodecs' IsImageResult accordingly.  It is
+			//! STILL neither a mutation nor a look.  The sketch is the model's
+			//! OWN drawing rasterized back at it -- it observes nothing about
+			//! the scene, contains no rendered pixel, and would be identical
+			//! on an empty document.  Treating "the result has a PNG" as "the
+			//! model looked" is exactly the free streak reset above, only
+			//! harder to spot.  The two classifications are deliberately
+			//! independent: IsImageResult governs image TRANSPORT (build the
+			//! block, count it against the retention cap), this list governs
+			//! observation BEHAVIOUR.
+			//!
+			//! Arc 77 Phase 2 (2026-08-11): `imagine_scene` is likewise
+			//! NEITHER, by the same two tests and for a sharper version of
+			//! the same reason.  It mutates nothing (no chunk, no param, no
+			//! head bump) and the build-plan gate can force it, so counting it
+			//! as a mutation would have the two gates fight -- exactly
+			//! file_build_plan's argument.  And it is not a LOOK: the image it
+			//! returns is the model's own imagination rendered by a provider,
+			//! containing no pixel of the actual scene and identical on an
+			//! empty document, so resetting the blind-edit streak with it
+			//! would hand every model a free, scene-free streak reset -- the
+			//! G3a sketch-echo precedent, one step further from the scene.
+			//! A RENDER that carries a `sceneTarget` comparison is of course
+			//! still a look: it is a `render`, already on the list by name,
+			//! and it really did produce scene pixels.
+			//!
+			//! Doc 90 slice R1 (2026-08-22): `set_render_anchor` is likewise
+			//! NEITHER, and the call is easier than its predecessors'.  It
+			//! mutates nothing (no chunk, no param, no head bump).  And it is
+			//! plainly not a LOOK: it returns no image AT ALL -- it re-points
+			//! a bookmark at a render the model has ALREADY seen, so there is
+			//! not even a picture to argue about.  A render that carries an
+			//! `anchor` composite is of course still a look, for the reason
+			//! the sceneTarget paragraph above gives: it is a `render`,
+			//! already on the list by name, and it really did produce scene
+			//! pixels.
+			//! S1 (2026-08-11): `finish_element` IS a look, by the very test
+			//! the two paragraphs above apply -- it performs a REAL isolate
+			//! render of the live scene and returns those pixels, so it is not
+			//! the free, scene-free streak reset a sketch echo or an imagined
+			//! target would be.  Refusing it entry here would have this gate
+			//! tell a model "N edits in a row without looking" in the turn
+			//! right after it looked, which is a false claim in a model-facing
+			//! payload.  It is name-based like every other entry, so the one
+			//! case where finish_element returns NO image (an element with no
+			//! renderable object attributed to it) still resets the streak --
+			//! the same granularity a FAILED `render` already has, and the same
+			//! direction of error (under-refusing, never over-refusing).
+			//!
+			//! `reopen_element` is DELIBERATELY neither, by ask_user's test: it
+			//! mutates nothing and observes nothing, so it leaves the streak
+			//! exactly as it found it.
+			bool IsVisualObserveToolName( const std::string& v )
+			{
+				return v == "render" || v == "read_image" || v == "read_viewport" ||
+				       v == "query_object_at" || v == "compare_to_reference" ||
+				       // Arc 80 (2026-08-12): scene_inventory is a look by
+				       // exactly query_object_at's test -- it answers from a
+				       // RENDERED identity frame of the live scene, so
+				       // calling it requires the scene to have actually been
+				       // rendered.  (The mechanism it belongs to does not
+				       // depend on this: the same inventory rides every
+				       // `render` result, and `render` is already on the list.)
+				       v == "scene_inventory" ||
+				       v == "finish_element";
+			}
 		}
 
 		const char* AgentChatLoop::SystemPrompt()
@@ -518,16 +782,21 @@ namespace RISE
 			mPendingResults.clear();
 			mToolLineStash.clear();
 			mToolRounds = 0;
+			mMalformedRetries = 0;
+			mPendingCorrective.clear();
 			// Describes the transcript we just cleared, so it goes with it.
 			mCompactedEntryCount = 0;
 			mBlindEditStreak = 0;
-			mPendingBuildNudge.clear();
+			mGateRefusedCallIds.clear();
 			// Describe the transcript we just cleared, like mCompactedEntryCount.
 			mDriverNoteCount = 0;
 			mLastDriverNoteText.clear();
 			// A fresh session may target a different, image-capable model --
 			// the text-only proof does not carry across a Reset/SetProvider.
 			mElideAllImages = false;
+			// Doc 91 L3b: the Compose signal describes the transcript just
+			// cleared, so a fresh conversation retires its skills afresh.
+			mComposeSkillRetirementDone = false;
 			// Likewise, a fresh session may target a different model that
 			// has no reasoning-vs-tools conflict at all -- but re-arm from
 			// the process-wide cache rather than blindly clearing: if THIS
@@ -696,6 +965,14 @@ namespace RISE
 			// fires when BOTH are empty.
 			if( IsBlank( text ) && attachments.empty() ) return;
 
+			// A genuine user message starts a new turn: restore the
+			// malformed-tool-call retry budget and discard a corrective
+			// the driver never sent (the user's words supersede it).
+			if( !mAppendingCorrective ) {
+				mMalformedRetries = 0;
+				mPendingCorrective.clear();
+			}
+
 			// Eval-harness E1: ensure the session record leads the trajectory.
 			EnsureSessionRecordEmitted();
 
@@ -719,7 +996,10 @@ namespace RISE
 			mTranscript.push_back( entry );
 
 			// Eval-harness E1: record the user turn (text + attachment count).
-			if( mRecorder ) {
+			// A loop-injected corrective is NOT a human turn: it is recorded
+			// as a history_edit by BuildRequest instead (eval readers count
+			// run_type "user" records as human turns).
+			if( mRecorder && !mAppendingCorrective ) {
 				TrajectoryUserRecord u;
 				u.text = text;
 				u.attachments = static_cast<int>( attachments.size() );
@@ -766,8 +1046,21 @@ namespace RISE
 			}
 
 			// A new conversation-turn: the tool-round cap starts over, and so
-			// does the blind-edit run (the user just spoke -- a fresh
-			// instruction, not a continuation of an unseen edit streak).
+			// does the SEQUENCING GATE's blind-edit streak.  DECISION (E4):
+			// a new user message ALWAYS resets the streak, even mid-gate --
+			// i.e. a redirect ("actually, make it blue instead") immediately
+			// un-gates the next mutating call, without requiring a look
+			// first.  Justification: the gate exists to stop a model from
+			// compounding errors it never checked, but a human who just
+			// spoke has, by definition, looked at SOMETHING (the running
+			// conversation/scene state) and made a deliberate judgment call
+			// to redirect -- inheriting a stale gate from an unrelated prior
+			// streak would refuse the model's very first attempt to act on
+			// fresh, human-supervised instructions, for no safety benefit.
+			// This mirrors the tool-round cap immediately above it (also
+			// reset unconditionally by a new user turn) and was already
+			// true of the pre-gate blind-edit-NUDGE streak this replaces --
+			// carried forward unchanged, now serving the gate instead.
 			mToolRounds = 0;
 			mBlindEditStreak = 0;
 		}
@@ -775,6 +1068,36 @@ namespace RISE
 		ChatHttpRequest AgentChatLoop::BuildRequest( const std::string& apiKey )
 		{
 			FlushPendingToolResults();
+
+			// MALFORMED-TOOL-CALL RECOVERY: append the queued corrective as an
+			// ordinary user turn (user-role text after a user turn / tool
+			// results is the shape AddUserMessage already produces for every
+			// provider).  It is NOT a new conversation turn, so the
+			// tool-round counter is preserved.
+			if( !mPendingCorrective.empty() ) {
+				const std::string corrective = mPendingCorrective;
+				mPendingCorrective.clear();
+				const int savedRounds = mToolRounds;
+				const int savedBlindStreak = mBlindEditStreak;
+				mAppendingCorrective = true;
+				AddUserMessage( corrective );
+				mAppendingCorrective = false;
+				// Same wire shape as a user entry (MakeUserEntry), but a
+				// loop-injected note, NOT a span boundary: CompactTranscript
+				// must never treat it as a turn the user took, or repeated
+				// correctives could let it erase the real request's span.
+				if( !mTranscript.empty() &&
+				    mTranscript.back().role == ChatTranscriptEntry::Role::User ) {
+					mTranscript.back().role = ChatTranscriptEntry::Role::DriverNote;
+					++mDriverNoteCount;
+					mLastDriverNoteText = corrective;
+					RecordHistoryEdit( "malformed_tool_call_corrective", 0,
+					                   static_cast<long long>( mTranscript.back().rawJson.size() ),
+					                   static_cast<int>( mTranscript.size() ) - 1, corrective );
+				}
+				mToolRounds = savedRounds;
+				mBlindEditStreak = savedBlindStreak;
+			}
 
 			// TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY: once a model has
 			// proven text-only, every request stays image-free -- strip any
@@ -814,9 +1137,12 @@ namespace RISE
 			// before system in every provider's cache prefix, so one changed
 			// system byte invalidates tools + system + the whole history for
 			// that request AND for the next one (which differs again by
-			// reverting).  The blind-edit nudge used to be appended here; it
-			// now rides the conversation instead -- see
-			// AppendPendingBuildNudge.
+			// reverting).  An early blind-edit NUDGE design used to append
+			// advisory text here (and, after that, to the conversation
+			// instead) -- both were retired for the SEQUENCING GATE (see the
+			// file header), which needs no system-prompt or conversation
+			// content at all: it answers a tool call, through the ordinary
+			// ToolResults path.
 			const std::string systemPrompt = ComposeSystemPrompt();
 
 			// The key goes straight through to the codec's auth header and
@@ -913,6 +1239,41 @@ namespace RISE
 				return pr.step;
 			}
 
+			// MALFORMED-TOOL-CALL RECOVERY (Gemini finishReason
+			// MALFORMED_FUNCTION_CALL; OpenAI-family non-object arguments):
+			// the turn carries no executable call and nothing is recorded
+			// (a Gemini one is a single EMPTY text part, invalid to echo).
+			// Within a bounded per-turn budget, queue a corrective user
+			// message for the next BuildRequest and flag the driver to
+			// re-issue; beyond it the error surfaces with a clear message.
+			if( pr.step.kind == ChatStepResult::Kind::ProviderError &&
+			    pr.step.errorKind == ChatErrorKind::MalformedToolCall ) {
+				if( mMalformedRetries >= kMaxMalformedToolCallRetries ) {
+					pr.step.errorMessage += " -- the model produced a malformed tool call " +
+						std::to_string( mMalformedRetries + 1 ) +
+						" times in a row despite corrective instructions; giving up on this turn";
+					return pr.step;
+				}
+				++mMalformedRetries;
+				// Provider text is model-authored: flatten control characters
+				// and newlines so it cannot restructure the corrective.
+				std::string detail = pr.step.errorMessage;
+				for( std::size_t i = 0; i < detail.size(); ++i ) {
+					const unsigned char ch = static_cast<unsigned char>( detail[i] );
+					if( ch < 0x20 || ch == 0x7f ) detail[i] = ' ';
+				}
+				if( detail.size() > 300 ) detail = detail.substr( 0, 300 ) + "...";
+				mPendingCorrective =
+					"[automatic notice] Your previous tool call was malformed and was NOT executed: " +
+					detail + "\n"
+					"Tool arguments must be a valid JSON object. In particular, string values "
+					"(including every element of an array of strings such as `chunks`) must be JSON "
+					"strings: wrapped in double quotes, with newlines escaped as \\n, tabs as \\t "
+					"and inner double quotes as \\\". Please re-issue the tool call with valid JSON arguments.";
+				pr.step.retryDegenerateTurn = true;
+				return pr.step;
+			}
+
 			if( pr.step.kind == ChatStepResult::Kind::ToolCalls ) {
 				// Iteration cap: the (kMaxToolRoundsPerTurn+1)-th tool round
 				// within one conversation-turn is refused WITHOUT recording
@@ -930,6 +1291,7 @@ namespace RISE
 					return capped;
 				}
 				++mToolRounds;
+				mMalformedRetries = 0;   // the cap counts CONSECUTIVE malformed calls
 
 				ChatTranscriptEntry entry;
 				entry.role = ChatTranscriptEntry::Role::Assistant;
@@ -945,6 +1307,7 @@ namespace RISE
 				mPendingResults.clear();
 			}
 			else if( pr.step.kind == ChatStepResult::Kind::FinalText ) {
+				mMalformedRetries = 0;
 				ChatTranscriptEntry entry;
 				entry.role = ChatTranscriptEntry::Role::Assistant;
 				entry.displayText = pr.assistantDisplayText;
@@ -988,6 +1351,42 @@ namespace RISE
 			return line;
 		}
 
+		std::string AgentChatLoop::GateRefusalResponse( const ChatToolCall& call, int rpcId )
+		{
+			if( !IsMutatingToolName( call.name ) ) return std::string();
+			if( mBlindEditGateThreshold <= 0 ) return std::string();
+			if( mBlindEditStreak < mBlindEditGateThreshold ) return std::string();
+
+			// Gated: this call would be the (threshold+1)-th (or later)
+			// consecutive mutation with no look between.  Mark the call id
+			// so the AddToolResult the caller makes next (with THIS
+			// envelope, per the contract) knows to skip the streak
+			// accounting -- a refused call never touched the document, so
+			// it is not itself a blind edit and must not advance the streak
+			// further (every refusal reports the SAME streak count until a
+			// look resets it).
+			mGateRefusedCallIds.push_back( call.id );
+
+			char msg[400];
+			std::snprintf( msg, sizeof( msg ),
+				"%d document edits in a row without looking. Rendering catches compounding "
+				"errors -- call render (a small preview is enough) or read_viewport, then "
+				"edits continue.",
+				mBlindEditStreak );
+
+			JsonValue result = JsonValue::MakeObject();
+			result.set( "applied",   JsonValue::MakeBool( false ) );
+			result.set( "status",    JsonValue::MakeString( "rejected" ) );
+			result.set( "retriable", JsonValue::MakeBool( true ) );
+			result.set( "message",   JsonValue::MakeString( msg ) );
+
+			JsonValue env = JsonValue::MakeObject();
+			env.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+			env.set( "id", JsonValue::MakeNumber( static_cast<double>( rpcId ) ) );
+			env.set( "result", result );
+			return JsonSerialize( env );
+		}
+
 		void AgentChatLoop::AddToolResult( const ChatToolCall& call, const std::string& rawJsonRpcResponseLine )
 		{
 			// Accept a result ONLY for a pending, not-yet-answered call of
@@ -1005,60 +1404,38 @@ namespace RISE
 
 			mPendingResults.push_back( std::make_pair( call, rawJsonRpcResponseLine ) );
 
-			// BLIND-EDIT NUDGE (see kDefaultBlindEditNudgeThreshold): track a
-			// run of document mutations with no VISUAL observation between
-			// them.  A model building a whole scene can slip into "insert
-			// forever, never look" -- measured: a local model emitted 70-100+
-			// chunks and rendered zero times.  We reset the run on any visual
-			// observe (render / read_image / read_viewport / query_object_at),
+			// SEQUENCING GATE (see kDefaultBlindEditGateThreshold and the
+			// file header): track a run of document mutations with no
+			// VISUAL observation between them.  A model building a whole
+			// scene can slip into "insert forever, never look" -- measured:
+			// a local model emitted 70-100+ chunks and rendered zero times.
+			// We reset the run on any visual observe (IsVisualObserveToolName),
 			// leave it UNCHANGED on a non-visual read (read_document /
 			// read_schema / read_skill / validate -- inspecting text or the
-			// registry is not looking at the RENDERED result), and grow it on
-			// a mutation.  When it hits a positive multiple of the threshold
-			// we arm a reminder (appended to the transcript as a user message
-			// by AppendPendingBuildNudge, once the whole parallel round is
-			// answered and flushed).  Threshold <= 0 disables it.
+			// registry is not looking at the RENDERED result) and on
+			// ask_user (see IsVisualObserveToolName's doc), and grow it on a
+			// mutation (IsMutatingToolName) -- UNLESS this particular result
+			// is itself a GateRefusalResponse the caller just built for this
+			// exact call id, in which case nothing was actually mutated and
+			// the streak must not move at all (see GateRefusalResponse's
+			// doc).  GateRefusalResponse is what actually REFUSES a call
+			// once the streak reaches the threshold; this block only ever
+			// counts.
 			{
-				const std::string& v = call.name;
-				// The BATCH forms (insert_chunks / propose_patches /
-				// insert_material_scaffold / insert_geometry_scaffold)
-				// count as a mutation here too --
-				// they still edit the document with no visual observation
-				// in between, same blind-edit risk, and if anything a
-				// LARGER one (N edits land per call, so a model that
-				// batches would otherwise never accrue the streak at all and
-				// the nudge would silently stop firing for exactly the models
-				// making the biggest unobserved edits).
-				const bool isMutation = ( v == "insert_chunk" || v == "insert_chunks" ||
-				                          v == "insert_material_scaffold" ||
-				                          v == "insert_geometry_scaffold" ||
-				                          v == "propose_patch" || v == "propose_patches" ||
-				                          v == "remove_chunk" );
-				const bool isVisualObserve = ( v == "render" || v == "read_image" ||
-				                               v == "read_viewport" || v == "query_object_at" );
-				// ask_user is EXPLICITLY neither: it neither mutates the
-				// document nor observes the rendered result, so (like
-				// read_document/read_schema/read_skill/validate above) it
-				// falls through both branches below and leaves the streak
-				// UNCHANGED -- pausing to ask a clarifying question is not
-				// progress toward the blind-edit failure mode this nudge
-				// guards against, so it should neither reset nor grow it.
-				if( isVisualObserve ) {
-					mBlindEditStreak = 0;
+				bool wasGateRefused = false;
+				for( std::size_t i = 0; i < mGateRefusedCallIds.size(); ++i ) {
+					if( mGateRefusedCallIds[i] == call.id ) {
+						wasGateRefused = true;
+						mGateRefusedCallIds.erase( mGateRefusedCallIds.begin() + i );
+						break;
+					}
 				}
-				else if( isMutation ) {
-					++mBlindEditStreak;
-					if( mBlindEditNudgeThreshold > 0 &&
-					    ( mBlindEditStreak % mBlindEditNudgeThreshold ) == 0 ) {
-						char note[320];
-						std::snprintf( note, sizeof( note ),
-							"[system reminder] You have made %d document edits in a row without "
-							"rendering. Building blind compounds errors -- call render (or "
-							"read_viewport) now to SEE the current scene, check the framing, "
-							"lighting and placement of what you have built so far, then continue "
-							"from what you observe rather than inserting more unseen.",
-							mBlindEditStreak );
-						mPendingBuildNudge = note;
+				if( !wasGateRefused ) {
+					if( IsVisualObserveToolName( call.name ) ) {
+						mBlindEditStreak = 0;
+					}
+					else if( IsMutatingToolName( call.name ) ) {
+						++mBlindEditStreak;
 					}
 				}
 			}
@@ -1081,6 +1458,16 @@ namespace RISE
 						break;
 					}
 				}
+				// Durable document snapshots: the SAME headVersion object this
+				// loop already parses for t.headVersionAfter also carries the
+				// uuid half of the identity that snapshot policy needs (see
+				// SetDocumentSnapshotProvider) -- t.headVersionAfter stays
+				// revision-only (unchanged wire contract), but this call also
+				// wants the uuid, so it is parsed alongside into locals rather
+				// than added to TrajectoryToolRecord.
+				bool     headVersionAdvanced = false;
+				uint64_t headVersionUuid = 0;
+				uint64_t headVersionRevision = 0;
 				JsonValue env;
 				std::string perr;
 				if( JsonParse( rawJsonRpcResponseLine, env, perr ) && env.isObject() ) {
@@ -1090,15 +1477,38 @@ namespace RISE
 					if( result.isObject() ) {
 						const JsonValue& hv = result.get( "headVersion" );
 						if( hv.isObject() ) {
-							if( hv.get( "revision" ).isNumber() )
+							if( hv.get( "revision" ).isNumber() ) {
 								t.headVersionAfter = static_cast<long long>( hv.get( "revision" ).asNumber() );
+								headVersionRevision = static_cast<uint64_t>( hv.get( "revision" ).asNumber() );
+								headVersionAdvanced = true;
+							}
+							if( hv.get( "uuid" ).isNumber() )
+								headVersionUuid = static_cast<uint64_t>( hv.get( "uuid" ).asNumber() );
 						}
 						else if( hv.isNumber() ) {
 							t.headVersionAfter = static_cast<long long>( hv.asNumber() );
+							headVersionRevision = static_cast<uint64_t>( hv.asNumber() );
+							headVersionAdvanced = true;
 						}
 					}
 				}
 				mRecorder->EmitTool( t );
+
+				// Durable document snapshots, head_bump path -- see
+				// SetDocumentSnapshotProvider.  AGENT RPC THREAD DISCIPLINE:
+				// AddToolResult runs on whatever thread dispatches a tool
+				// result back into this loop, which in the GUI's in-app
+				// topology is the agent RPC thread -- the SAME thread every
+				// tool dispatch and read verb runs on, matching
+				// AgentSession::ReadDocumentSnapshot's documented discipline
+				// (the provider this loop calls is a thin wrapper around it).
+				// uuid 0 is the documented "no retained head" sentinel
+				// (Cst.h:206, CstHeadVersion::uuid) -- e.g. read_document on a
+				// session with no CST head reports {uuid:0, revision:0}, which
+				// looks "advanced" against a fresh trace's zero-init locals but
+				// names no real document, so skip the provider call entirely.
+				if( headVersionAdvanced && headVersionUuid != 0 )
+					MaybeEmitHeadBumpSnapshot( headVersionUuid, headVersionRevision );
 			}
 
 			// Once every pending call of the assistant turn has a result,
@@ -1157,10 +1567,28 @@ namespace RISE
 			//!   2. result.status == "rejected"            -> "rejected: <issues[0].reason `param`, or <=80 chars of message>"
 			//!   3. result.status == "conflict"             -> "conflict (stale base)"
 			//!   4. name in {insert_chunks,propose_patches,insert_material_scaffold,insert_geometry_scaffold}  -> "<applied>/<total> applied"
+			//!   4b. name == "remove_chunks"                -> "<removed>/<total> removed" (all-or-nothing: `applied` is a BOOL here, counts ride in removed/total)
+			//!   4c. name == "replace_geometry_scaffold"   -> "`<target>` -> <geometryKind> (old geometry removed|kept)" (R2: ONE atomic mutation, so an N/M count would misreport it as a best-effort batch)
+			//!   4d. name == "collapse_to_instances"      -> "<n> copies -> `<source>` + instancing[ (<u>x<v> grid)]", or "refused: <=80 chars of message" (88 step 2: a pre-commit refusal carries an EMPTY status, so it cannot reach rule 2)
+			//!   4e. name == "vary_material"              -> "`<material>` <slot(s)> -> `<painter>` (varying)", or "refused: <=80 chars of message" (88 S5: same empty-status-on-refusal shape as 4d)
+			//!   4f. name == "revert_to_revision"         -> "rev <requested> restored as rev <new> (was rev <previous>)", or "refused: <=80 chars of message" (doc 90 R2: same empty-status-on-refusal shape as 4d, and refusing is the COMMON outcome -- every "that is the current head" / "that one has aged out" answer arrives this way)
+			//!   4g. name == "fix_blend_scale"            -> "<n> joint(s) clamped[ -- <k> more: call again]", or "refused: <=80 chars of message" (cat plan item 1: same empty-status-on-refusal shape as 4d, and "nothing to fix" is a common, honest outcome)
+			//!   4h. name == "add_wear"                  -> "`<material>` <colorSlot>[+<roughSlots>] -> wear fields", or "refused: <=80 chars of message" (GEOMETRY_SHADING_SIGNALS sec 11: same empty-status-on-refusal shape as 4d)
+			//!   4i. name == "add_wetness"                -> "`<material>` <reflectanceSlot>[+<scatteringSlots>] -> wetness fields", or "refused: <=80 chars of message" (WETNESS_COAT_DESIGN sec 6/13: same empty-status-on-refusal shape as 4h)
+			//!   4j. name == "make_fabric"                -> "`<material>` -> `<fabricMaterial>` (<preset>), minted <kind> `<name>` | substrate reused", or "refused: <=80 chars of message" (CLOTH_FABRIC_DESIGN 9.7: same empty-status-on-refusal shape as 4i)
+			//!   4k. name == "add_fuzz"                   -> "`<material>` -> <n> fuzz object(s), first `<fuzzObject>` (<strandCount> strands)", or "refused: <=80 chars of message" (CLOTH_FABRIC_DESIGN Phase 3: same empty-status-on-refusal shape as 4j)
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
+			//!                                                  (+ "; <part> vs sketch: iou <2dp>" on a G3b target comparison,
+			//!                                                   + "; imagined-scene target shown|held" on an Arc-77 scene-target render -- Phase 2b: no score, the composite IS the comparison)
 			//!   7. name in {read_image,read_viewport}       -> "image <w>x<h>" when width/height are present, else "ok"
+			//!   7b. name == "file_build_plan"                -> "<n> element(s): <element>=<construction>[+<construction>], ... (<p> piece(s), <k> sketch(es))" (G2; sketches G3a; elements/pieces S1; multi-method C4)
+			//!   7c. name == "imagine_scene"                 -> "scene imagined (image received) <w>x<h>[, replaced previous]"
+			//!   7c2. name == "set_render_anchor"           -> "anchor pinned at rev <n>[ (was rev <m>)]" | "no anchor: <msg>" (doc 90 R1)
+			//!   7d. name == "finish_element"                -> "finished <element> (<n> chunks, <k>/<m> pieces named) -> <next>|compose" (S1)
+			//!       name == "reopen_element"                -> "reopened <element> (from <phase>)" (S1)
+			//!                                                  | "no image generation on this provider" | "not imagined: <msg>" (Arc 77 Phase 2)
 			//!   8. name == "validate" AND result.diagnostics is an array
 			//!                                               -> "clean" | "<n> warning(s)" | "<n> error(s): <firstCode>",
 			//!                                                  each with " (candidate)" appended when validated == "text".
@@ -1231,7 +1659,243 @@ namespace RISE
 				    call.name == "insert_geometry_scaffold" ) {
 					const long long applied = static_cast<long long>( result.get( "applied" ).asNumber() );
 					const long long total   = static_cast<long long>( result.get( "total" ).asNumber() );
+					// 2026-10-16 (batch review round 5): a "diagnosed" element LANDED (it is in the document,
+					// applied=false only because the shared re-derive's diagnostics are attributed to it), so it
+					// counts toward what the batch changed -- reported distinctly, never as "not applied".
+					long long diagnosed = 0;
+					const JsonValue& items = result.get( "results" );
+					if( items.isArray() )
+						for( std::size_t k = 0; k < items.size(); ++k )
+							if( !items.at( k ).get( "applied" ).asBool() && items.at( k ).get( "status" ).asString() == "diagnosed" )
+								++diagnosed;
+					if( diagnosed > 0 )
+						return std::to_string( applied + diagnosed ) + "/" + std::to_string( total ) + " landed (" +
+						       std::to_string( diagnosed ) + " diagnosed)";
 					return std::to_string( applied ) + "/" + std::to_string( total ) + " applied";
+				}
+
+				// 4c. R2 (2026-08-10) replace_geometry_scaffold: it carries the SAME
+				// {applied,total,results} FIELDS, but the call is ONE atomic mutation --
+				// "3/3 applied" would misreport a composite as a best-effort batch, and
+				// it is not the fact the user needs anyway.  Report what actually
+				// happened to the scene: which object got which new form, and whether
+				// the old geometry chunk went with it.
+				if( call.name == "replace_geometry_scaffold" ) {
+					const std::string tgt  = result.get( "target" ).asString();
+					const std::string gkind = result.get( "geometry" ).get( "kind" ).asString();
+					const bool removed = result.get( "previousGeometry" ).get( "removed" ).asBool();
+					std::string s = tgt.empty() ? std::string( "geometry replaced" )
+					                            : ( "`" + tgt + "` -> " + ( gkind.empty() ? std::string( "new geometry" ) : gkind ) );
+					s += removed ? " (old geometry removed)" : " (old geometry kept)";
+					return s;
+				}
+
+				// 4b-2. 88 step 2 (2026-08-19) collapse_to_instances: also ONE atomic
+				// mutation, and also not a count -- report the fact the user needs,
+				// which is how many hand-authored copies stopped being chunks and
+				// what replaced them.  A REFUSAL left through rule 2 above, so
+				// reaching here means the collapse landed.
+				if( call.name == "collapse_to_instances" ) {
+					// A PRE-COMMIT refusal carries ok=false and an EMPTY `status`, so it
+					// slips past rule 2's status=="rejected" test -- and it is the most
+					// common non-success outcome this verb has, since refusing is how it
+					// keeps its no-op contract.  Reported here, with the reason, rather
+					// than falling through to a count of zero that reads like a success.
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					const long long collapsed = static_cast<long long>( result.get( "collapsed" ).asNumber() );
+					const std::string src = result.get( "source" ).asString();
+					std::string s = std::to_string( collapsed ) + " copies -> `" +
+						( src.empty() ? std::string( "source" ) : src ) + "` + instancing";
+					const long long cv = static_cast<long long>( result.get( "countV" ).asNumber() );
+					const long long cu = static_cast<long long>( result.get( "countU" ).asNumber() );
+					if( cv >= 2 ) s += " (" + std::to_string( cu ) + "x" + std::to_string( cv ) + " grid)";
+					return s;
+				}
+
+				// 4b-3b. GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30) add_wear: ONE
+				// atomic mutation, and not a count -- report which material now wears
+				// and which slots it repointed.  Same empty-status-on-refusal shape as
+				// vary_material below, so a refusal ("nothing qualifies", "already
+				// worn", "planar-only geometry") is reported HERE with its reason
+				// rather than reading like a success.
+				if( call.name == "add_wear" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					std::string slots = result.get( "colorSlot" ).asString();
+					const JsonValue& rough = result.get( "roughSlots" );
+					if( rough.isArray() ) {
+						for( std::size_t i = 0; i < rough.size(); ++i ) {
+							if( !slots.empty() ) slots += "+";
+							slots += rough.at( i ).asString();
+						}
+					}
+					return "`" + result.get( "material" ).asString() + "` " + slots + " -> wear fields";
+				}
+
+				// WETNESS_COAT_DESIGN sec 6/13 (2026-08-31) add_wetness: ONE
+				// atomic mutation, and not a count -- report which material is
+				// now wet and which slots it repointed.  Same empty-status-on-
+				// refusal shape as add_wear above, so a refusal ("nothing
+				// qualifies", "already wet", "collides with add_wear") is
+				// reported HERE with its reason rather than reading like a
+				// success.
+				if( call.name == "add_wetness" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					std::string slots = result.get( "reflectanceSlot" ).asString();
+					const JsonValue& scat = result.get( "scatteringSlots" );
+					if( scat.isArray() ) {
+						for( std::size_t i = 0; i < scat.size(); ++i ) {
+							if( !slots.empty() ) slots += "+";
+							slots += scat.at( i ).asString();
+						}
+					}
+					return "`" + result.get( "material" ).asString() + "` " + slots + " -> wetness fields";
+				}
+
+				// CLOTH_FABRIC_DESIGN 9.7 (2026-09-02) make_fabric: ONE atomic
+				// mutation, and not a count -- report which material is now
+				// cloth, which preset it took, and WHETHER A SUBSTRATE WAS
+				// MINTED, because that is the one fact about this verb an
+				// author cannot infer from the call.  Same empty-status-on-
+				// refusal shape as add_wetness above, so a refusal ("nothing
+				// qualifies", "already a fabric_material", "planar-only
+				// geometry", "collides with add_wetness") is reported HERE
+				// with its reason rather than reading like a success.
+				if( call.name == "make_fabric" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					const std::string minted = result.get( "mintedSubstrate" ).asString();
+					return "`" + result.get( "material" ).asString() + "` -> `" +
+					       result.get( "fabricMaterial" ).asString() + "` (" +
+					       result.get( "fabricPreset" ).asString() + ")" +
+					       ( minted.empty()
+					         ? std::string( ", substrate reused" )
+					         : ( ", minted " + result.get( "mintedSubstrateKind" ).asString() +
+					             " `" + minted + "`" ) );
+				}
+
+				// CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03) add_fuzz: ONE
+				// atomic ADD (never an edit), and not a count -- report
+				// which material grew fuzz, how many objects got a triad,
+				// and the FIRST triad's strand count, because that is the
+				// one fact an author needs to sanity-check the density.
+				// Same empty-status-on-refusal shape as make_fabric above.
+				if( call.name == "add_fuzz" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					const long long minted = static_cast<long long>( result.get( "mintedObjectCount" ).asNumber() );
+					const long long strands = static_cast<long long>( result.get( "strandCount" ).asNumber() );
+					return "`" + result.get( "material" ).asString() + "` -> " + std::to_string( minted ) +
+					       " fuzz object" + ( minted == 1 ? std::string() : std::string( "s" ) ) +
+					       ", first `" + result.get( "fuzzObject" ).asString() + "` (" +
+					       std::to_string( strands ) + " strands)";
+				}
+
+			// 4b-3. 88 S5 (2026-08-20) vary_material: ONE atomic mutation, and
+				// not a count -- report which material stopped being flat and what
+				// it is now bound to.  Same empty-status-on-refusal shape as
+				// collapse_to_instances above, so the refusal is reported HERE with
+				// its reason rather than falling through to a zero count that reads
+				// like a success.
+				if( call.name == "vary_material" ) {
+					// Materials-realism item 2: the `all:true` batch form
+					// returns a DIFFERENT shape (no top-level "applied" bool,
+					// no "material"/"painter" -- `perMaterial` is the tell)
+					// -- summarize the COUNTS rather than trying to read this
+					// call's single-material fields off a response that
+					// never carried them.
+					const JsonValue& perMaterial = result.get( "perMaterial" );
+					if( perMaterial.isArray() ) {
+						// Review-round P2-2: a STRUCTURAL batch refusal (no
+						// retained document, zero qualifying materials) now
+						// sets status="rejected"/"conflict" (see
+						// AgentVaryMaterialBatchResult::status's own doc),
+						// which rules 2/3 above already intercept before this
+						// branch runs -- but this is the belt: any refusal
+						// that somehow reaches here (perMaterial empty, ok
+						// false) still surfaces `message` instead of the
+						// content-free "0 applied, 0 refused" that used to
+						// hide it.
+						if( perMaterial.size() == 0 && !result.get( "ok" ).asBool() ) {
+							return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+						}
+						const long long applied   = static_cast<long long>( result.get( "applied" ).asNumber() );
+						const long long refused   = static_cast<long long>( result.get( "refused" ).asNumber() );
+						const long long remaining = static_cast<long long>( result.get( "remaining" ).asNumber() );
+						std::string s = std::to_string( applied ) + " applied, " + std::to_string( refused ) + " refused";
+						if( remaining > 0 ) s += " (" + std::to_string( remaining ) + " more flagged -- call again)";
+						return s;
+					}
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					std::string slots;
+					const JsonValue& arr = result.get( "slots" );
+					if( arr.isArray() ) {
+						for( std::size_t i = 0; i < arr.size(); ++i ) {
+							if( !slots.empty() ) slots += "/";
+							slots += arr.at( i ).asString();
+						}
+					}
+					if( slots.empty() ) slots = "roughness";
+					return "`" + result.get( "material" ).asString() + "` " + slots + " -> `" +
+						result.get( "painter" ).asString() + "` (varying)";
+				}
+
+				// 4b-4. Doc 90 R2 (2026-08-23) revert_to_revision: ONE atomic
+				// mutation whose whole meaning is WHICH revisions were involved --
+				// the one restored, the new head it landed as, and the one left
+				// behind (which is what a revert-of-the-revert would name).  Same
+				// empty-status-on-refusal shape as 4b-2, and here the refusals are
+				// the COMMON case, not the exception: "that is already the current
+				// head" and "that revision has aged out" both arrive this way, and
+				// a model reading its own transcript needs to see which.
+				if( call.name == "revert_to_revision" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					const long long want = static_cast<long long>( result.get( "requestedRevision" ).asNumber() );
+					const long long prev = static_cast<long long>( result.get( "previousRevision" ).asNumber() );
+					const JsonValue& hv  = result.get( "headVersion" );
+					const long long now  = hv.isObject()
+						? static_cast<long long>( hv.get( "revision" ).asNumber() ) : 0;
+					return "rev " + std::to_string( want ) + " restored as rev " + std::to_string( now ) +
+						" (was rev " + std::to_string( prev ) + ")";
+				}
+
+				// 4b-5. Cat plan item 1 (2026-08-25) fix_blend_scale: ONE atomic
+				// mutation whose meaning is HOW MANY offending smin joints were
+				// clamped, not a name/count of chunks -- report the joint count
+				// and, when the batch cap left work behind, that too.  Same
+				// empty-status-on-refusal shape as vary_material above; "nothing
+				// to fix" (offendersFound == 0) is a common, honest refusal here,
+				// not the exception.
+				if( call.name == "fix_blend_scale" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					const long long fixed     = static_cast<long long>( result.get( "fixed" ).asNumber() );
+					const long long remaining = static_cast<long long>( result.get( "remaining" ).asNumber() );
+					std::string s = std::to_string( fixed ) + " joint" + ( fixed == 1 ? "" : "s" ) + " clamped";
+					if( remaining > 0 ) s += " (" + std::to_string( remaining ) + " more -- call again)";
+					return s;
+				}
+
+				// 4b. R1a (2026-08-09) remove_chunks: an ALL-OR-NOTHING batch, so
+				// its `applied` is a BOOL (not a count like rule 4's verbs) and the
+				// counts ride in `removed`/`total`.  A refusal already left through
+				// rule 2 above, so reaching here means every target went.
+				if( call.name == "remove_chunks" ) {
+					const long long removed = static_cast<long long>( result.get( "removed" ).asNumber() );
+					const long long total   = static_cast<long long>( result.get( "total" ).asNumber() );
+					return std::to_string( removed ) + "/" + std::to_string( total ) + " removed";
 				}
 
 				// 5. A single-chunk mutation that applied cleanly.
@@ -1261,7 +1925,43 @@ namespace RISE
 					std::string line = std::to_string( w ) + "x" + std::to_string( h ) + ", luma " + lumaBuf;
 					const std::string mode = result.get( "renderMode" ).asString();
 					if( !mode.empty() && mode != "beauty" ) line += " [" + mode + "]";
-					return line;
+					// G3b (2026-08-10): a `target` comparison is the one thing
+					// about a render a human watching the transcript cannot
+					// reconstruct from dims and luma, so the line reports it --
+					// the part and the measured IoU, nothing else.  A NUMBER,
+					// never a judgement: no "close", no "poor", no arrow, no
+					// comparison against any threshold, matching the payload's
+					// own no-characterization rule.  Absent for every render
+					// that did not carry one, so the existing line shape is
+					// unchanged.
+					if( result.has( "target" ) ) {
+						const JsonValue& tgt = result.get( "target" );
+						if( tgt.isObject() && tgt.has( "iou" ) ) {
+							char iouBuf[32];
+							std::snprintf( iouBuf, sizeof( iouBuf ), "%.2f", tgt.get( "iou" ).asNumber() );
+							line += "; " + tgt.get( "element" ).asString() + " vs sketch: iou " + iouBuf;
+						}
+					}
+					// Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: the
+					// whole-scene target.  Phase 2 printed its RMSE here; that
+					// number is GONE from the payload (it was a tone metric
+					// that drove exposure cranking -- see
+					// AgentRenderResult::sceneTargetApplied), so the line now
+					// records only WHETHER this render was shown against the
+					// imagined scene, which is the census fingerprint a human
+					// reading the transcript cannot otherwise reconstruct.
+					// Absent on every render that carried no target, so the
+					// existing line shape is unchanged for any session that
+					// never imagined a scene.
+					if( result.has( "sceneTarget" ) ) {
+						const JsonValue& st = result.get( "sceneTarget" );
+						if( st.isObject() && st.has( "imagined" ) ) {
+							line += st.get( "composite" ).asBool( false )
+								? "; imagined-scene target shown"
+								: "; imagined-scene target held";
+						}
+					}
+					return TruncateForOutcome( line, 140 );
 				}
 
 				// 7. read_image / read_viewport: both always carry
@@ -1276,6 +1976,146 @@ namespace RISE
 						return "image " + std::to_string( w ) + "x" + std::to_string( h );
 					}
 					return "ok";
+				}
+
+				// 7b. G2 (2026-08-10) file_build_plan: "ok" would throw away the
+				// one fact the human watching the transcript wants -- WHAT the
+				// model declared.  The whole point of the gate is the
+				// representation choice, so the choice is what the line
+				// reports.  Factual echo only, no verdict on the plan.
+				// G3a (2026-08-10): the filing now also produces N sketches,
+				// so the line says how many -- a filing that produced fewer
+				// sketches than parts (or none) is a visible discrepancy
+				// rather than a silent one.  Counted from the ECHOED parts,
+				// which carry `pointCount` iff a sketch was rasterized for
+				// them, so the count cannot claim a sketch that does not
+				// exist.
+				// 7c. Arc 77 Phase 2 (2026-08-11) imagine_scene: "ok" would
+				// throw away the one fact a human watching the transcript
+				// wants -- whether the model's imagination actually became a
+				// picture, or whether the provider could not supply one.
+				// Three distinguishable outcomes, no verdict on any of them.
+				if( call.name == "imagine_scene" ) {
+					if( result.get( "ok" ).asBool() ) {
+						std::string line = "scene imagined (image received)";
+						const long long w = static_cast<long long>( result.get( "width" ).asNumber() );
+						const long long h = static_cast<long long>( result.get( "height" ).asNumber() );
+						if( w > 0 && h > 0 )
+							line += " " + std::to_string( w ) + "x" + std::to_string( h );
+						if( result.get( "replacedPreviousTarget" ).asBool() ) line += ", replaced previous";
+						return TruncateForOutcome( line, 140 );
+					}
+					// The capability refusal gets its OWN line rather than the
+					// generic one: "this provider cannot do it" and "the
+					// attempt failed" are different events for anyone reading
+					// the transcript, and only the second is worth retrying.
+					if( result.has( "capabilityAvailable" ) ) return "no image generation on this provider";
+					return TruncateForOutcome( "not imagined: " + result.get( "message" ).asString(), 140 );
+				}
+
+				// 7c2. Doc 90 slice R1 (2026-08-22) set_render_anchor: "ok"
+				// would throw away the one fact a human reading the transcript
+				// wants -- WHICH render the model chose to keep, and whether
+				// it displaced an earlier choice.  That is the ratchet's whole
+				// census fingerprint: a session that never re-pinned and a
+				// session that re-pinned five times are different runs, and no
+				// other line records the difference.  Factual echo only, no
+				// verdict on the choice.
+				if( call.name == "set_render_anchor" ) {
+					if( result.get( "ok" ).asBool() ) {
+						std::string line = "anchor pinned at rev " + std::to_string(
+							static_cast<long long>( result.get( "anchorRevision" ).asNumber() ) );
+						if( result.has( "previousAnchorRevision" ) ) {
+							line += " (was rev " + std::to_string( static_cast<long long>(
+								result.get( "previousAnchorRevision" ).asNumber() ) ) + ")";
+						}
+						return TruncateForOutcome( line, 140 );
+					}
+					return TruncateForOutcome( "no anchor: " + result.get( "message" ).asString(), 140 );
+				}
+
+				if( call.name == "file_build_plan" ) {
+					const JsonValue& elements = result.get( "elements" );
+					if( !elements.isArray() || elements.size() == 0 ) return "ok";
+					std::size_t sketched = 0;
+					std::size_t pieces = 0;
+					std::string line = std::to_string( elements.size() ) +
+						( elements.size() == 1 ? " element: " : " elements: " );
+					for( std::size_t i = 0; i < elements.size(); ++i ) {
+						if( i ) line += ", ";
+						// C4 (2026-08-19): `construction` is an ARRAY on the
+						// wire now (an element may declare up to
+						// kBuildPlanMaxConstructionMethods methods, e.g. a
+						// turned vessel with a coiled pipe).  Read
+						// array-OR-string, both because a trajectory recorded
+						// before C4 replays through this same function and
+						// because a bare string is still an accepted INBOUND
+						// form -- rendering "wing=" for either would silently
+						// drop the one fact this line exists to show.
+						line += elements.at( i ).get( "element" ).asString() + "=";
+						const JsonValue& cons = elements.at( i ).get( "construction" );
+						if( cons.isArray() ) {
+							for( std::size_t c = 0; c < cons.size(); ++c ) {
+								if( c ) line += "+";
+								line += cons.at( c ).asString();
+							}
+						}
+						else {
+							line += cons.asString();
+						}
+						const JsonValue& pv = elements.at( i ).get( "pieces" );
+						if( pv.isArray() ) pieces += pv.size();
+						if( elements.at( i ).has( "pointCount" ) ) ++sketched;
+					}
+					// S1: the PIECE count joins the line -- the decomposition
+					// depth is the first thing this arc measures, so a human
+					// watching the transcript should see it without opening the
+					// raw payload.
+					line += " (" + std::to_string( pieces ) +
+						( pieces == 1 ? " piece, " : " pieces, " ) + std::to_string( sketched ) +
+						( sketched == 1 ? " sketch)" : " sketches)" );
+					return TruncateForOutcome( line, 140 );
+				}
+
+				// 7d. S1 (2026-08-11) finish_element / reopen_element: "ok"
+				// would hide the two facts a human watching the transcript
+				// needs -- WHICH element the session just left or re-entered,
+				// and where the protocol now is.  A did-nothing call (ok:false)
+				// says so rather than reading as a successful advance.
+				if( call.name == "finish_element" ) {
+					if( !result.get( "ok" ).asBool() )
+						return TruncateForOutcome( "no element closed: " +
+							result.get( "message" ).asString(), 140 );
+					std::string line = "finished " + result.get( "element" ).asString();
+					const JsonValue& chunks = result.get( "chunks" );
+					if( chunks.isArray() )
+						line += " (" + std::to_string( chunks.size() ) +
+							( chunks.size() == 1 ? " chunk" : " chunks" );
+					// S1 fix-round (2026-08-11, P3): the "N/M pieces named"
+					// fraction below is DISPLAY-ONLY.  This function builds the
+					// human-readable transcript one-liner, which is never
+					// serialized into a provider payload, so the ratio cannot
+					// steer the model.  It is nonetheless the one score-SHAPED
+					// string this arc writes down: it must never be moved,
+					// copied or echoed into anything a provider sees (77 sec 15
+					// -- an attached number selects the axis the model moves).
+					const JsonValue& named = result.get( "piecesNamed" );
+					const JsonValue& notNamed = result.get( "piecesNotNamed" );
+					if( chunks.isArray() && named.isArray() && notNamed.isArray() )
+						line += ", " + std::to_string( named.size() ) + "/" +
+							std::to_string( named.size() + notNamed.size() ) + " pieces named)";
+					else if( chunks.isArray() )
+						line += ")";
+					const std::string next = result.get( "nextElement" ).asString();
+					line += next.empty() ? " -> compose" : ( " -> " + next );
+					return TruncateForOutcome( line, 140 );
+				}
+				if( call.name == "reopen_element" ) {
+					if( !result.get( "ok" ).asBool() )
+						return TruncateForOutcome( "not reopened: " +
+							result.get( "message" ).asString(), 140 );
+					return TruncateForOutcome( "reopened " + result.get( "element" ).asString() +
+						" (from " + result.get( "previousPhase" ).asString() + ")", 140 );
 				}
 
 				// 8. validate: the one-liner must say whether the scene is
@@ -1348,6 +2188,339 @@ namespace RISE
 					summaries[i].carriesImage = false;
 				}
 			}
+
+			//! CONTEXT LIFETIMES (doc 91): the `result` object of a parseable
+			//! JSON-RPC SUCCESS envelope, or nullptr (error envelope, the
+			//! loop's synthesized "not executed" envelope, unparseable line).
+			//! `env` owns the storage.
+			const JsonValue* LifetimeSuccessResult( const std::string& raw, JsonValue& env )
+			{
+				std::string perr;
+				if( !JsonParse( raw, env, perr ) || !env.isObject() ) return nullptr;
+				if( env.find( "error" ) ) return nullptr;
+				const JsonValue* result = env.find( "result" );
+				return ( result && result->isObject() ) ? result : nullptr;
+			}
+
+			//! The call's string argument `key`, or "".
+			std::string LifetimeArgString( const ChatToolCall& call, const char* key )
+			{
+				JsonValue args;
+				std::string perr;
+				if( !JsonParse( call.argsJson, args, perr ) || !args.isObject() ) return std::string();
+				return args.get( key ).asString();
+			}
+
+			//! Doc 91 slice L2: the element a build_element / insert_chunks
+			//! result describes, or "".  build_element: the result's
+			//! `element` (the session's own spelling), else the call's
+			//! `element` argument -- so an error envelope or an ok:false
+			//! refusal for E is retired with E too.  insert_chunks: the
+			//! per-chunk `element` attribution (AgentRpc.cpp's
+			//! ChunkResultJson), taken only when every attributed chunk names
+			//! the SAME element -- an unattributed batch (no element window)
+			//! or a mixed one is never retired.
+			std::string LifetimeElementOf( const ChatToolCall& call, const std::string& raw )
+			{
+				if( call.name == "build_element" ) {
+					JsonValue env;
+					if( const JsonValue* r = LifetimeSuccessResult( raw, env ) ) {
+						const std::string e = r->get( "element" ).asString();
+						if( !e.empty() ) return e;
+					}
+					return LifetimeArgString( call, "element" );
+				}
+				if( call.name == "insert_chunks" ) {
+					JsonValue env;
+					const JsonValue* r = LifetimeSuccessResult( raw, env );
+					if( !r ) return std::string();
+					const JsonValue& items = r->get( "results" );
+					if( !items.isArray() ) return std::string();
+					std::string element;
+					for( std::size_t i = 0; i < items.size(); ++i ) {
+						// Review round 1 P3: attribute ONLY from chunks that are
+						// in the document (applied, or diagnosed -- landed with
+						// diagnostics).  A REJECTED chunk's `element` is looked
+						// up by its name, which may be ANOTHER element's chunk
+						// (a refused duplicate), so it says nothing about this
+						// batch.
+						const JsonValue& it = items.at( i );
+						if( !it.get( "applied" ).asBool( false ) &&
+						    it.get( "status" ).asString() != "diagnosed" ) continue;
+						const std::string e = it.get( "element" ).asString();
+						if( e.empty() ) continue;
+						if( element.empty() ) element = e;
+						else if( element != e ) return std::string();
+					}
+					return element;
+				}
+				return std::string();
+			}
+
+			//! Doc 91 L2 (review rounds 2-4): the compact record of the
+			//! PER-CHUNK outcomes a build_element / insert_chunks result
+			//! reports that the document does not record, so the
+			//! element-finished stub can carry them.  Each item names the
+			//! chunk ("<name> (<kind>)") and states only what the result
+			//! RECORDS -- never an order inferred from names:
+			//!   "refused: <text>"  -- this insert did not land (for a refused
+			//!                         duplicate the NAME may still exist:
+			//!                         another chunk owns it)
+			//!   "rejected on attempt A (as K), landed on attempt B[ as K2]"
+			//!                      -- ONLY when build_element's report says so:
+			//!                         `rejected[i].attempt` A and a `landed`
+			//!                         entry of the same name whose
+			//!                         `landedAttempts` B is later than A (the
+			//!                         kind-changed re-land disclosure when
+			//!                         K != K2).  One answer that lands X and
+			//!                         has a second X refused is two facts,
+			//!                         reported as a refusal.
+			//!   "landed with a notice: <text>" / "landed, diagnosed: <text>"
+			//!                      -- the notice with the canonical insert
+			//!                         prefix stripped, plus any `issues`
+			//!   "staged as a proposal: <text>" -- External authority
+			//! Each text is capped at 160 bytes (UTF-8-safe); items are keyed by
+			//! (name, kind, text) -- N distinct refusals stay N items, and the
+			//! SAME refusal recorded n > 1 times (one answer naming X four
+			//! times: one lands, three are refused as duplicates) reads
+			//! "refused (x3): ..." -- at most kMaxItems, then "and N more".
+			//! For build_element the `rejected` list is the count of record:
+			//! its chunkResults repeat insertion-time refusals and never add
+			//! to a count.  NOT carried:
+			//! build_element's top-level message prose (the give-up fold, the
+			//! unquoted-name disclosure, the total-rejection excerpt).
+			std::string LifetimeCarryOf( const ChatToolCall& call, const std::string& raw )
+			{
+				if( call.name != "build_element" && call.name != "insert_chunks" ) return std::string();
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				if( !r ) return std::string();
+				static const std::size_t kMaxItems = 12;
+				struct Item { std::string key, head, verdict, text; std::size_t count; };
+				std::vector<Item> all;   // keyed by name \x1f kind \x1f text
+				auto label = []( const std::string& name, const std::string& kind ) {
+					if( name.empty() ) return kind.empty() ? std::string( "a chunk" ) : ( "an unnamed " + kind );
+					return kind.empty() ? name : ( name + " (" + kind + ")" );
+				};
+				// `head` names the chunk, `verdict` is the outcome phrase, `text`
+				// the (already capped) reason/notice, "" when the item has none.
+				// A repeat of a key bumps its count only when `counts`.
+				auto add = [&]( const std::string& name, const std::string& kind, const std::string& keyText,
+				                const std::string& head, const std::string& verdict, const std::string& text,
+				                bool counts ) {
+					const std::string k = name + "\x1f" + kind + "\x1f" + keyText;
+					for( std::size_t i = 0; i < all.size(); ++i ) {
+						if( all[i].key != k ) continue;
+						if( counts ) ++all[i].count;
+						return;
+					}
+					all.push_back( Item{ k, head, verdict, text, 1 } );
+				};
+				// One per-chunk entry that carries a message (L1: a clean insert carries none).
+				// Review round 5: a landed chunk's message OPENS with the
+				// canonical insert text when a notice was appended to it -- strip
+				// that (and the separating whitespace) so the 160-byte budget goes
+				// to the notice; a landed chunk whose only extra is `issues`
+				// (e.g. a forward-reference warning) carries those instead.
+				auto noticeText = [&]( const JsonValue& it ) {
+					std::string msg = it.get( "message" ).asString();
+					const std::string canon( kChatChunkInsertedMessage );
+					if( msg.compare( 0, canon.size(), canon ) == 0 ) {
+						std::size_t k = canon.size();
+						while( k < msg.size() && ( msg[k] == ' ' || msg[k] == ';' || msg[k] == ':' ) ) ++k;
+						msg = msg.substr( k );
+					}
+					const JsonValue& issues = it.get( "issues" );
+					for( std::size_t k = 0; issues.isArray() && k < issues.size(); ++k ) {
+						const std::string reason = issues.at( k ).get( "reason" ).asString();
+						const std::string param = issues.at( k ).get( "param" ).asString();
+						if( reason.empty() ) continue;
+						if( !msg.empty() ) msg += "; ";
+						msg += reason + ( param.empty() ? std::string() : ( " `" + param + "`" ) );
+					}
+					return msg;
+				};
+				auto addOutcome = [&]( const JsonValue& it, bool counts ) {
+					const std::string full = it.get( "message" ).asString();
+					const std::string text = noticeText( it );
+					if( text.empty() ) return;
+					const std::string name = it.get( "name" ).asString();
+					const std::string kind = it.get( "kind" ).asString();
+					const std::string status = it.get( "status" ).asString();
+					std::string verdict;
+					if( it.get( "applied" ).asBool( false ) ) verdict = "landed with a notice";
+					else if( status == "diagnosed" )          verdict = "landed, diagnosed";
+					else if( status == "staged" )             verdict = "staged as a proposal";
+					else                                      verdict = "refused";
+					// Keyed by the FULL message, so it deduplicates against the
+					// matching `rejected` entry of a build_element report.
+					add( name, kind, full, label( name, kind ), verdict, TruncateForOutcome( text, 160 ), counts );
+				};
+				if( call.name == "build_element" ) {
+					// A `rejected` entry repeats a chunkResults entry for an
+					// insertion-time outcome; a STAGED one (External authority)
+					// is labelled staged, not refused (review round 5).
+					const JsonValue& crsAll = r->get( "chunkResults" );
+					auto stagedTwin = [&]( const std::string& name, const std::string& kind, const std::string& text ) {
+						for( std::size_t k = 0; crsAll.isArray() && k < crsAll.size(); ++k ) {
+							const JsonValue& c = crsAll.at( k );
+							if( c.get( "status" ).asString() == "staged" && c.get( "name" ).asString() == name &&
+							    c.get( "kind" ).asString() == kind && c.get( "message" ).asString() == text ) return true;
+						}
+						return false;
+					};
+					const JsonValue& landed = r->get( "landed" );
+					const JsonValue& landedKinds = r->get( "landedKinds" );
+					const JsonValue& landedAttempts = r->get( "landedAttempts" );
+					const JsonValue& rej = r->get( "rejected" );
+					for( std::size_t i = 0; rej.isArray() && i < rej.size(); ++i ) {
+						const JsonValue& it = rej.at( i );
+						const std::string name = it.get( "name" ).asString();
+						const std::string kind = it.get( "kind" ).asString();
+						const std::string reason = it.get( "reason" ).asString();
+						const int attempt = static_cast<int>( it.get( "attempt" ).asNumber( 0 ) );
+						// The landing of this name by a LATER attempt, if the
+						// report records one (attempt numbers absent -> none).
+						long later = -1;
+						int laterAttempt = 0;
+						for( std::size_t k = 0; attempt > 0 && !name.empty() && landed.isArray() &&
+						                        k < landed.size() && landedAttempts.isArray() &&
+						                        k < landedAttempts.size(); ++k ) {
+							const int la = static_cast<int>( landedAttempts.at( k ).asNumber( 0 ) );
+							if( landed.at( k ).asString() == name && la > attempt ) {
+								later = static_cast<long>( k );
+								laterAttempt = la;
+								break;
+							}
+						}
+						if( later >= 0 ) {
+							const std::string nowKind = ( landedKinds.isArray() &&
+								static_cast<std::size_t>( later ) < landedKinds.size() )
+								? landedKinds.at( static_cast<std::size_t>( later ) ).asString() : std::string();
+							std::string verdict = "rejected on attempt " + std::to_string( attempt ) +
+								( kind.empty() ? std::string() : ( " (as " + kind + ")" ) ) +
+								", landed on attempt " + std::to_string( laterAttempt );
+							if( !nowKind.empty() && nowKind != kind ) verdict += " as " + nowKind;
+							add( name, kind, reason, name, verdict, std::string(), true );
+						}
+						else {
+							add( name, kind, reason, label( name, kind ),
+							     stagedTwin( name, kind, reason ) ? "staged as a proposal" : "refused",
+							     TruncateForOutcome( reason, 160 ), true );
+						}
+					}
+					// A refused chunkResults entry repeats a `rejected` entry
+					// (same name, kind and text) and deduplicates against it.
+					const JsonValue& crs = r->get( "chunkResults" );
+					for( std::size_t i = 0; crs.isArray() && i < crs.size(); ++i ) addOutcome( crs.at( i ), false );
+				}
+				else {
+					const JsonValue& items2 = r->get( "results" );
+					for( std::size_t i = 0; items2.isArray() && i < items2.size(); ++i ) addOutcome( items2.at( i ), true );
+				}
+				std::string out;
+				for( std::size_t i = 0; i < all.size() && i < kMaxItems; ++i ) {
+					if( i ) out += "; ";
+					out += all[i].head + " " + all[i].verdict;
+					if( all[i].count > 1 ) out += " (x" + std::to_string( all[i].count ) + ")";
+					if( !all[i].text.empty() ) out += ": " + all[i].text;
+				}
+				if( all.size() > kMaxItems ) out += "; and " + std::to_string( all.size() - kMaxItems ) + " more";
+				return out;
+			}
+
+			//! True for a successful reopen_element (result ok:true naming its
+			//! element), with the element in `element` -- E is no longer
+			//! settled, so a decided-but-unapplied L2 retirement for it is
+			//! cancelled.
+			bool IsReopenedElementResult( const ChatToolCall& call, const std::string& raw,
+			                              std::string& element )
+			{
+				if( call.name != "reopen_element" ) return false;
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				if( !r || !r->get( "ok" ).asBool( false ) ) return false;
+				element = r->get( "element" ).asString();
+				return !element.empty();
+			}
+
+			//! True for a successful finish_element (result ok:true naming
+			//! its element), with the element in `element` and whether the
+			//! result reports that the build plan is now in its COMPOSE phase
+			//! (every element finished) in `composeReached`.  A failed finish
+			//! (ok:false, error envelope) is not a lifetime event.  The phase
+			//! name is kChatComposePhaseName, which T14c pins equal to
+			//! AgentSession::BuildPhaseName(Compose) -- the loop is sans-IO
+			//! and does not link the session.
+			bool IsFinishedElementResult( const ChatToolCall& call, const std::string& raw,
+			                              std::string& element, bool& composeReached )
+			{
+				composeReached = false;
+				if( call.name != "finish_element" ) return false;
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				if( !r || !r->get( "ok" ).asBool( false ) ) return false;
+				element = r->get( "element" ).asString();
+				composeReached = ( r->get( "phase" ).asString() == kChatComposePhaseName );
+				return !element.empty();
+			}
+
+			//! Doc 91 L2 review round 4: the facts the element-finished stub
+			//! keeps besides the per-chunk outcomes -- build_element's realised
+			//! world bounding box (no other verb reports it, and composing the
+			//! scene needs it) and insert_chunks' last head version (the next
+			//! call's baseHeadVersion).  Numbers are printed %.4g.
+			std::string LifetimeFactsOf( const ChatToolCall& call, const std::string& raw )
+			{
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				if( !r ) return std::string();
+				auto num = []( double v ) {
+					char b[32];
+					std::snprintf( b, sizeof( b ), "%.4g", v );
+					return std::string( b );
+				};
+				if( call.name == "build_element" ) {
+					const JsonValue& bb = r->get( "bbox" );
+					const JsonValue& mn = bb.get( "min" );
+					const JsonValue& mx = bb.get( "max" );
+					if( !mn.isArray() || !mx.isArray() || mn.size() != 3 || mx.size() != 3 ) return std::string();
+					std::string f = "Realised world bounding box when built: min (" + num( mn.at( 0 ).asNumber() ) + ", " +
+						num( mn.at( 1 ).asNumber() ) + ", " + num( mn.at( 2 ).asNumber() ) + ") max (" +
+						num( mx.at( 0 ).asNumber() ) + ", " + num( mx.at( 1 ).asNumber() ) + ", " +
+						num( mx.at( 2 ).asNumber() ) + ")";
+					if( bb.get( "height" ).isNumber() ) f += ", height " + num( bb.get( "height" ).asNumber() );
+					return f + ".";
+				}
+				if( call.name == "insert_chunks" ) {
+					const JsonValue& items = r->get( "results" );
+					if( !items.isArray() || items.size() == 0 ) return std::string();
+					const JsonValue& hv = items.at( items.size() - 1 ).get( "headVersion" );
+					if( !hv.get( "uuid" ).isNumber() || !hv.get( "revision" ).isNumber() ) return std::string();
+					// EXACT integers (review round 6): %.4g turned revision 123456
+					// into 1.235e+05.  Same digits as AgentRpc.cpp's HeadVersionJson
+					// emits (JSON numbers carrying the uint64 values).
+					auto integer = []( double v ) {
+						char b[32];
+						std::snprintf( b, sizeof( b ), "%.0f", v );
+						return std::string( b );
+					};
+					return "headVersion after that call: {\"uuid\":" + integer( hv.get( "uuid" ).asNumber() ) +
+						",\"revision\":" + integer( hv.get( "revision" ).asNumber() ) + "}.";
+				}
+				return std::string();
+			}
+
+			//! True for a successful file_build_plan (result filed:true) --
+			//! a new plan has its own planning phase, so it re-arms the
+			//! compose-phase skill retirement (doc 91 L3b).
+			bool IsFiledBuildPlanResult( const ChatToolCall& call, const std::string& raw )
+			{
+				if( call.name != "file_build_plan" ) return false;
+				JsonValue env;
+				const JsonValue* r = LifetimeSuccessResult( raw, env );
+				return r && r->get( "filed" ).asBool( false );
+			}
 		}
 
 		void AgentChatLoop::FlushPendingToolResults()
@@ -1357,12 +2530,6 @@ namespace RISE
 			// pending calls.  Clear defensively all the same.)
 			if( mPendingCalls.empty() ) {
 				mPendingResults.clear();
-				// Defensive, and unreachable in practice: the nudge is armed
-				// ONLY inside AddToolResult, which requires a pending call,
-				// so a nudge always finds its flush on the main path below.
-				// Draining it here too makes "an armed nudge is never
-				// stranded" true by construction rather than by argument.
-				AppendPendingBuildNudge();
 				return;
 			}
 
@@ -1504,10 +2671,25 @@ namespace RISE
 			// PackToolResults writes them, and therefore the index space
 			// RewriteElidedToolResults addresses.  Built here (not lazily)
 			// so the key reflects the envelope AS PACKED.
+			// CONTEXT LIFETIMES (doc 91) are recorded on the same slots:
+			// which element a build/insert result describes (L2) and which
+			// skill a named read_skill carries (L3b, read off its
+			// supersession key so the two can never disagree).
 			entry.toolResultSlots.resize( ordered.size() );
-			for( std::size_t i = 0; i < ordered.size(); ++i )
-				entry.toolResultSlots[i].supersessionKey =
+			for( std::size_t i = 0; i < ordered.size(); ++i ) {
+				ChatToolResultSlot& slot = entry.toolResultSlots[i];
+				slot.supersessionKey =
 					ChatToolResultSupersessionKey( ordered[i].first, ordered[i].second );
+				slot.verb = ordered[i].first.name;
+				slot.lifetimeElement = LifetimeElementOf( ordered[i].first, ordered[i].second );
+				if( !slot.lifetimeElement.empty() ) {
+					slot.lifetimeCarry = LifetimeCarryOf( ordered[i].first, ordered[i].second );
+					slot.lifetimeFacts = LifetimeFactsOf( ordered[i].first, ordered[i].second );
+				}
+				const std::string skillPrefix( kChatReadSkillKeyPrefix );
+				if( slot.supersessionKey.compare( 0, skillPrefix.size(), skillPrefix ) == 0 )
+					slot.lifetimeSkill = slot.supersessionKey.substr( skillPrefix.size() );
+			}
 			entry.rawJson = mCodec->PackToolResults( ordered );
 			entry.carriesLiveImage = carriesImage;
 			if( carriesImage ) {
@@ -1535,83 +2717,17 @@ namespace RISE
 			// image payload correct either way.
 			ElideSupersededToolResults();
 
+			// CONTEXT LIFETIMES (doc 91 L2 + L3b): a result whose subject is
+			// now SETTLED -- an element just finished, the session just
+			// reached Compose -- is retired to a one-line stub.  Runs after
+			// supersession so a slot either rule already killed is skipped.
+			RetireToolResultsByLifetime( mTranscript.size() - 1, ordered );
+
 			mPendingResults.clear();
 			mPendingCalls.clear();
 			// Eval-harness E1: the turn's tool calls are done -- drop any
 			// remaining stamped lines (unanswered/synthesized calls).
 			mToolLineStash.clear();
-
-			// BLIND-EDIT NUDGE: deliver it as conversation content, directly
-			// after the tool results whose flush it followed.  Runs AFTER the
-			// elision passes above so their entry indices are unperturbed.
-			AppendPendingBuildNudge();
-		}
-
-		void AgentChatLoop::AppendPendingBuildNudge()
-		{
-			if( mPendingBuildNudge.empty() ) return;
-
-			// WHY CONVERSATION CONTENT, NOT THE SYSTEM PROMPT.  The nudge
-			// used to be appended to BuildRequest's system prompt.  That made
-			// the system block differ on exactly the request carrying it --
-			// and differ again on the next one, which reverted -- so a single
-			// nudge cost TWO cache-invalidated turns on every provider:
-			// tools render before system in the cached prefix, so a changed
-			// system byte invalidates tools + system + everything after it
-			// (Anthropic's explicit cache_control breakpoint, OpenAI/xAI
-			// automatic prefix caching, and Gemini implicit caching all key
-			// on the leading prefix).  Appending a message instead EXTENDS
-			// the prefix rather than editing it, which is free.
-			//
-			// The reminder reaches the model with the same force -- it is a
-			// message it must read to answer, not a system line it may weigh
-			// against the rest of the prompt -- and it now persists in the
-			// history rather than evaporating after one request, so a model
-			// that keeps editing keeps seeing it.  This is deliberate: the
-			// alternative (drop it next turn) would mean rewriting the
-			// message suffix, which re-introduces the invalidation.
-			//
-			// WIRE POSITION: emitted from FlushPendingToolResults, i.e.
-			// immediately after the ToolResults entry that answers the
-			// assistant turn -- assistant(tool_use) -> user(tool_results) ->
-			// user(nudge).  Every tool_use is therefore still answered by the
-			// message that directly follows it, so no tool_result is
-			// orphaned.  Adjacent user entries are an ALREADY-SUPPORTED shape
-			// on all four codecs (AddUserMessage produces the same
-			// tool_results -> user(text) pair): Anthropic combines
-			// consecutive same-role messages, Gemini's BuildRequest merges a
-			// run of adjacent user contents with the functionResponse parts
-			// FIRST, and the OpenAI-family codecs emit a flat message list
-			// where a trailing user message is unremarkable.
-			//
-			// ROLE: DriverNote, not User.  The WIRE is unchanged -- rawJson
-			// still comes from the same MakeUserEntry a real user message
-			// uses, and BuildRequest reads rawJson only -- but a GUI that
-			// renders out of this transcript can now tell that the loop, not
-			// the human, said this, and render it as a system notice rather
-			// than as the user's chat bubble.  See Role::DriverNote's doc.
-			ChatTranscriptEntry entry;
-			entry.role = ChatTranscriptEntry::Role::DriverNote;
-			entry.displayText = mPendingBuildNudge;
-			entry.rawJson = mCodec->MakeUserEntry( mPendingBuildNudge );
-			mTranscript.push_back( entry );
-
-			// Display-mirror drivers (the Mac ChatViewModel) never read the
-			// transcript, so they watermark against this counter instead --
-			// see DriverNoteCount().
-			++mDriverNoteCount;
-			mLastDriverNoteText = mPendingBuildNudge;
-
-			// Eval-harness E1: recorded as a history edit, NOT as a `user`
-			// record.  A `user` record would inflate the running user-turn
-			// count that AgentEvalRunner's toolCallAfterUserTurn check walks,
-			// silently changing what that assertion means -- the nudge is a
-			// loop-synthesized message, not a turn the user took.
-			RecordHistoryEdit( "blind_edit_nudge", 0,
-			                   static_cast<long long>( entry.rawJson.size() ),
-			                   static_cast<int>( mTranscript.size() - 1 ) );
-
-			mPendingBuildNudge.clear();
 		}
 
 		void AgentChatLoop::ElideSupersededToolResults()
@@ -1647,22 +2763,17 @@ namespace RISE
 			if( lastLive.empty() ) return;
 
 			// PASS 2: every OTHER live slot sharing a surviving key is
-			// superseded.  Collect per entry so each entry's rawJson is
-			// rewritten (and recorded) exactly once, even when it packs
-			// several superseded results.
+			// superseded.  The placeholder is chosen PER KEY (it names its own
+			// verb -- or, for a read_skill key, its skill), and
+			// RewriteToolResultSlots groups the targets per entry and per note,
+			// so each entry's rawJson is rewritten (and recorded) exactly once
+			// even when it packs several superseded results of different keys.
+			std::vector<ToolResultSlotRewrite> targets;
 			for( std::size_t e = 0; e < mTranscript.size(); ++e ) {
-				ChatTranscriptEntry& entry = mTranscript[e];
+				const ChatTranscriptEntry& entry = mTranscript[e];
 				if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
-
-				// Grouped BY KEY, not one bucket per entry: the placeholder
-				// names its own verb, so an entry that ever packs superseded
-				// results of TWO different allowlisted verbs must not be told
-				// one verb's note for both.  (Today's single-verb allowlist
-				// makes that unreachable -- grouping keeps it correct by
-				// construction rather than by that coincidence.)
-				std::vector<std::pair<std::string, std::vector<std::size_t>>> byKey;
 				for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
-					ChatToolResultSlot& slot = entry.toolResultSlots[s];
+					const ChatToolResultSlot& slot = entry.toolResultSlots[s];
 					if( !slot.live || slot.supersessionKey.empty() ) continue;
 					bool survives = false;
 					for( std::size_t k = 0; k < lastLive.size(); ++k ) {
@@ -1672,10 +2783,40 @@ namespace RISE
 						break;
 					}
 					if( survives ) continue;
+					ToolResultSlotRewrite t;
+					t.entry = e;
+					t.slot = s;
+					t.note = ChatSupersededResultNoteForKey( slot.supersessionKey );
+					targets.push_back( t );
+				}
+			}
+			RewriteToolResultSlots( targets, "tool_result_supersession", kChatSupersededNoteKey );
+		}
+
+		void AgentChatLoop::RewriteToolResultSlots( const std::vector<ToolResultSlotRewrite>& targets,
+		                                            const char* reason, const char* noteKey )
+		{
+			// Visit entries in transcript order so the history_edit records
+			// come out in a deterministic order.
+			for( std::size_t e = 0; e < mTranscript.size(); ++e ) {
+				ChatTranscriptEntry& entry = mTranscript[e];
+				if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+
+				// Grouped BY NOTE: the codec rewrites a set of indices to ONE
+				// placeholder per call, and two targets in one entry may need
+				// different ones (two verbs, two skills, two elements).
+				std::vector<std::pair<std::string, std::vector<std::size_t>>> byNote;
+				for( std::size_t t = 0; t < targets.size(); ++t ) {
+					if( targets[t].entry != e ) continue;
+					const std::size_t s = targets[t].slot;
+					if( s >= entry.toolResultSlots.size() || !entry.toolResultSlots[s].live ) continue;
 					bool bucketed = false;
-					for( std::size_t k = 0; k < byKey.size(); ++k ) {
-						if( byKey[k].first == slot.supersessionKey ) {
-							byKey[k].second.push_back( s );
+					for( std::size_t k = 0; k < byNote.size(); ++k ) {
+						if( byNote[k].first == targets[t].note ) {
+							bool dup = false;
+							for( std::size_t j = 0; j < byNote[k].second.size(); ++j )
+								if( byNote[k].second[j] == s ) dup = true;
+							if( !dup ) byNote[k].second.push_back( s );
 							bucketed = true;
 							break;
 						}
@@ -1683,17 +2824,17 @@ namespace RISE
 					if( !bucketed ) {
 						std::vector<std::size_t> one;
 						one.push_back( s );
-						byKey.push_back( std::make_pair( slot.supersessionKey, one ) );
+						byNote.push_back( std::make_pair( targets[t].note, one ) );
 					}
 				}
-				if( byKey.empty() ) continue;
+				if( byNote.empty() ) continue;
 
 				// REWRITE FIRST, THEN mark the bucket dead -- and only when
 				// the rewrite actually LANDED.  Every codec returns its input
 				// UNCHANGED when the entry does not parse or its shape guards
 				// miss; clearing `live` before knowing that would leave the
 				// payload riding forever while the bookkeeping believed it
-				// elided, and pass 1 (which skips dead slots) would never
+				// elided, and the callers (which skip dead slots) would never
 				// retry.  A no-op rewrite instead leaves the slots live, so
 				// the next flush tries again -- bounded work, and no
 				// history_edit is emitted for a non-edit.
@@ -1712,15 +2853,14 @@ namespace RISE
 				// signal here.
 				const std::size_t beforeBytes = entry.rawJson.size();
 				bool anyLanded = false;
-				for( std::size_t k = 0; k < byKey.size(); ++k ) {
+				for( std::size_t k = 0; k < byNote.size(); ++k ) {
 					const std::string before = entry.rawJson;
 					entry.rawJson = mCodec->RewriteElidedToolResults(
-						entry.rawJson, byKey[k].second,
-						ChatSupersededResultNote( byKey[k].first ) );
+						entry.rawJson, byNote[k].second, byNote[k].first, noteKey );
 					if( entry.rawJson == before ) continue;
 					anyLanded = true;
-					for( std::size_t j = 0; j < byKey[k].second.size(); ++j )
-						entry.toolResultSlots[ byKey[k].second[j] ].live = false;
+					for( std::size_t j = 0; j < byNote[k].second.size(); ++j )
+						entry.toolResultSlots[ byNote[k].second[j] ].live = false;
 				}
 				if( !anyLanded ) continue;
 				// Eval-harness E1: record the transcript rewrite, exactly as
@@ -1731,9 +2871,121 @@ namespace RISE
 					h.entryIndex = static_cast<int>( e );
 					h.beforeBytes = static_cast<long long>( beforeBytes );
 					h.afterBytes = static_cast<long long>( entry.rawJson.size() );
-					h.reason = "tool_result_supersession";
+					h.reason = reason;
 					mRecorder->EmitHistoryEdit( h );
 				}
+			}
+		}
+
+		void AgentChatLoop::RetireToolResultsByLifetime(
+			std::size_t newEntry,
+			const std::vector<std::pair<ChatToolCall, std::string>>& ordered )
+		{
+			if( newEntry >= mTranscript.size() ) return;
+
+			// Marks every live, not-yet-marked slot that comes BEFORE result
+			// `limitInNew` of the new entry in wire order and satisfies
+			// `wanted`, with the note `noteFor` builds and `reason`.
+			auto mark = [&]( std::size_t limitInNew, const char* reason, auto wanted, auto noteFor ) {
+				for( std::size_t e = 0; e <= newEntry; ++e ) {
+					ChatTranscriptEntry& entry = mTranscript[e];
+					if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+					const std::size_t limit = ( e == newEntry ) ? limitInNew : entry.toolResultSlots.size();
+					for( std::size_t s = 0; s < limit && s < entry.toolResultSlots.size(); ++s ) {
+						ChatToolResultSlot& slot = entry.toolResultSlots[s];
+						if( !slot.live || !slot.pendingRetireNote.empty() || !wanted( slot ) ) continue;
+						slot.pendingRetireNote = noteFor( slot );
+						slot.pendingRetireReason = reason;
+					}
+				}
+			};
+
+			// (1) DECIDE -- walk the new entry's results in wire order.
+			for( std::size_t i = 0; i < ordered.size(); ++i ) {
+				const ChatToolCall& call = ordered[i].first;
+				const std::string& raw = ordered[i].second;
+
+				// A new build plan has its own planning phase: re-arm L3b.
+				if( IsFiledBuildPlanResult( call, raw ) ) {
+					mComposeSkillRetirementDone = false;
+					continue;
+				}
+
+				std::string element;
+
+				// Review round 2: a reopened element is no longer settled --
+				// cancel any element-finished retirement for it that was
+				// decided but not yet applied (a same-turn build+finish whose
+				// build result was still waiting for the next flush).
+				if( IsReopenedElementResult( call, raw, element ) ) {
+					for( std::size_t e = 0; e <= newEntry; ++e ) {
+						ChatTranscriptEntry& entry = mTranscript[e];
+						if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+						for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
+							ChatToolResultSlot& slot = entry.toolResultSlots[s];
+							if( !slot.live || slot.lifetimeElement != element ||
+							    slot.pendingRetireReason != "element_finished_retirement" ) continue;
+							slot.pendingRetireNote.clear();
+							slot.pendingRetireReason.clear();
+						}
+					}
+					continue;
+				}
+
+				bool composeReached = false;
+				if( !IsFinishedElementResult( call, raw, element, composeReached ) ) continue;
+
+				// L2: a successful finish_element for E settles E -- its
+				// build_element / insert_chunks results are history now.
+				mark( i, "element_finished_retirement",
+				      [&]( const ChatToolResultSlot& slot ) { return slot.lifetimeElement == element; },
+				      [&]( const ChatToolResultSlot& slot ) {
+				          return ChatElementFinishedRetirementNote( slot.verb, element,
+				                                                    slot.lifetimeFacts, slot.lifetimeCarry ); } );
+
+				// L3b: the finish that takes the plan into its COMPOSE phase
+				// settles the planning -- every skill read in an EARLIER turn
+				// retires, once per plan.  Placing an element is NOT this
+				// signal: place_element is legal (and prescribed) in the
+				// pieces phase, while later elements are still unbuilt.  A
+				// skill read in the SAME turn as the compose finish is
+				// treated as post-compose (limit 0 in the new entry), so
+				// [read_skill X, finish] and [finish, read_skill X] behave
+				// identically: X stays live (review round 2).
+				if( composeReached && !mComposeSkillRetirementDone ) {
+					mComposeSkillRetirementDone = true;
+					mark( 0, "compose_skill_retirement",
+					      []( const ChatToolResultSlot& slot ) { return !slot.lifetimeSkill.empty(); },
+					      []( const ChatToolResultSlot& slot ) {
+					          return ChatComposeSkillRetirementNote( slot.lifetimeSkill ); } );
+				}
+			}
+
+			// (2) APPLY -- every marked, still-live slot in an entry EARLIER
+			// than the one being flushed.  The new entry's own results are
+			// never rewritten here, so a turn that builds and finishes (or
+			// reads a skill and composes) still delivers those results once;
+			// they retire on the next flush.  A rewrite that did not land
+			// leaves its slot live and marked, so it is retried next flush.
+			// Grouped per reason so each history_edit names its rule.
+			static const char* const kReasons[] = { "element_finished_retirement", "compose_skill_retirement" };
+			for( std::size_t r = 0; r < sizeof( kReasons ) / sizeof( kReasons[0] ); ++r ) {
+				std::vector<ToolResultSlotRewrite> targets;
+				for( std::size_t e = 0; e < newEntry; ++e ) {
+					const ChatTranscriptEntry& entry = mTranscript[e];
+					if( entry.role != ChatTranscriptEntry::Role::ToolResults ) continue;
+					for( std::size_t s = 0; s < entry.toolResultSlots.size(); ++s ) {
+						const ChatToolResultSlot& slot = entry.toolResultSlots[s];
+						if( !slot.live || slot.pendingRetireNote.empty() ||
+						    slot.pendingRetireReason != kReasons[r] ) continue;
+						ToolResultSlotRewrite t;
+						t.entry = e;
+						t.slot = s;
+						t.note = slot.pendingRetireNote;
+						targets.push_back( t );
+					}
+				}
+				RewriteToolResultSlots( targets, kReasons[r], kChatRetiredNoteKey );
 			}
 		}
 
@@ -1907,6 +3159,7 @@ namespace RISE
 					case ChatErrorKind::MaxTokens:    return "max_tokens";
 					case ChatErrorKind::IterationCap: return "iteration_cap";
 					case ChatErrorKind::Misuse:       return "misuse";
+					case ChatErrorKind::MalformedToolCall: return "malformed_tool_call";
 					case ChatErrorKind::None:
 					default:                          return "";
 				}
@@ -2023,6 +3276,31 @@ namespace RISE
 		void AgentChatLoop::CloseTrajectorySession( const std::string& status )
 		{
 			if( !mRecorder || !mSessionEmitted ) return;
+
+			// Durable document snapshots, session_end path -- see
+			// SetDocumentSnapshotProvider.  BEFORE the summary, for ANY
+			// close status (including "app_quit" -- the summary right after
+			// this carries that status), capture one final snapshot --
+			// UNLESS the head has not moved since the last snapshot already
+			// written this trace (the head_bump policy usually already
+			// covers it; this dedupe just avoids writing an identical copy
+			// on every ordinary close).  AGENT RPC THREAD DISCIPLINE: see
+			// the provider setter's doc.  Reset()/SetProvider() can reach
+			// here from the MAIN thread while a controller-owned render
+			// still holds the scene -- the provider then BLOCKS until the
+			// render releases (matching ReadAgentSceneSnapshot's documented
+			// try-lock-is-wrong-here rationale).  Accepted, not a bug: a
+			// close-time snapshot is worth a brief stall.
+			if( mDocumentSnapshotProvider ) {
+				std::string text;
+				uint64_t    uuid = 0;
+				uint64_t    revision = 0;
+				if( mDocumentSnapshotProvider( text, uuid, revision ) &&
+				    ( !mHasLastSnapshotVersion ||
+				      mLastSnapshotUuid != uuid || mLastSnapshotRevision != revision ) )
+					WriteDocumentSnapshotRecord( "session_end", text, uuid, revision );
+			}
+
 			mRecorder->EmitSummary( status );
 			mSessionEmitted = false;
 			// Roll to a fresh trace id on the SAME sink so the next recorded
@@ -2033,6 +3311,14 @@ namespace RISE
 				cfg.traceId.clear();
 				mRecorder.reset( new ChatTrajectoryRecorder( mTrajectorySink, cfg ) );
 			}
+
+			// A fresh trace has no prior snapshot to compare against or
+			// decimate by -- see the write-policy fields' doc.
+			mHasLastSnapshotVersion = false;
+			mLastSnapshotUuid = 0;
+			mLastSnapshotRevision = 0;
+			mLastSnapshotDocumentBytes = 0;
+			mSnapshotAdvanceCount = 0;
 		}
 
 		void AgentChatLoop::SetTrajectorySink(
@@ -2057,6 +3343,91 @@ namespace RISE
 				mRecorder.reset();
 				mTrajectorySink = std::function<void(const std::string&)>();
 			}
+
+			// Durable document snapshots: a replaced or detached sink starts
+			// a fresh trace with no prior snapshot to compare against or
+			// decimate by -- see the write-policy fields' doc.  (Note: the
+			// "replaced" summary above -- unlike CloseTrajectorySession's
+			// close -- does NOT itself write a session_end snapshot; that
+			// hook is scoped to Reset/SetProvider/FinishTrajectory closes.
+			// Deliberately so: on the replace path (e.g. a successor scene's
+			// startTrajectory calling in while this session is still live),
+			// mDocumentSnapshotProvider may ALREADY resolve to the NEW
+			// scene's bridge by the time we get here, so a snapshot taken
+			// now could attribute the successor's document to the closing
+			// trace -- worse than no snapshot.  Every path that CAN
+			// coherently snapshot (Reset/SetProvider/FinishTrajectory) goes
+			// through CloseTrajectorySession first, while the provider still
+			// unambiguously names the trace being closed.)
+			mHasLastSnapshotVersion = false;
+			mLastSnapshotUuid = 0;
+			mLastSnapshotRevision = 0;
+			mLastSnapshotDocumentBytes = 0;
+			mSnapshotAdvanceCount = 0;
+		}
+
+		void AgentChatLoop::SetDocumentSnapshotProvider(
+			std::function<bool( std::string& outText, uint64_t& outUuid, uint64_t& outRevision )> provider )
+		{
+			mDocumentSnapshotProvider = provider;
+		}
+
+		void AgentChatLoop::MaybeEmitHeadBumpSnapshot( uint64_t uuid, uint64_t revision )
+		{
+			if( !mRecorder || !mDocumentSnapshotProvider ) return;
+			// The head did not advance past the last WRITTEN snapshot --
+			// nothing new to save.  Covers both "this tool call did not
+			// mutate" (uuid/revision unchanged) and "we already snapshotted
+			// this exact head" (a prior call in the same turn already fired).
+			if( mHasLastSnapshotVersion &&
+			    mLastSnapshotUuid == uuid && mLastSnapshotRevision == revision )
+				return;
+
+			// Decimation: once a WRITTEN snapshot's document met or exceeded
+			// kDocumentSnapshotDecimationBytes, only every
+			// kDocumentSnapshotDecimationStride-th advance actually
+			// snapshots.  The FIRST advance of a trace is exempt --
+			// mHasLastSnapshotVersion is false, so mLastSnapshotDocumentBytes
+			// is still its zero-init default and `decimating` below is
+			// false -- it always fires.
+			++mSnapshotAdvanceCount;
+			const bool decimating = mLastSnapshotDocumentBytes >= kDocumentSnapshotDecimationBytes;
+			if( decimating && mSnapshotAdvanceCount < kDocumentSnapshotDecimationStride )
+				return;
+
+			std::string docText;
+			uint64_t    docUuid = 0;
+			uint64_t    docRevision = 0;
+			if( mDocumentSnapshotProvider( docText, docUuid, docRevision ) )
+				WriteDocumentSnapshotRecord( "head_bump", docText, docUuid, docRevision );
+			// NOTE: mSnapshotAdvanceCount is intentionally NOT reset here --
+			// see WriteDocumentSnapshotRecord.  If the provider returned
+			// false above, the stride-th advance is consumed with nothing
+			// written, and resetting here would silently extend the
+			// decimation window; leaving the counter armed means the very
+			// next advancing call retries immediately.
+		}
+
+		void AgentChatLoop::WriteDocumentSnapshotRecord( const std::string& reason,
+			const std::string& text, uint64_t uuid, uint64_t revision )
+		{
+			EnsureSessionRecordEmitted();
+			TrajectoryDocumentSnapshotRecord rec;
+			rec.reason = reason;
+			rec.headVersionUuid = uuid;
+			rec.headVersionRevision = revision;
+			rec.documentText = text;
+			rec.documentBytes = static_cast<long long>( text.size() );
+			mRecorder->EmitDocumentSnapshot( rec );
+
+			mHasLastSnapshotVersion = true;
+			mLastSnapshotUuid = uuid;
+			mLastSnapshotRevision = revision;
+			mLastSnapshotDocumentBytes = rec.documentBytes;
+			// Reset ONLY on a successful write -- see the field's doc.  A
+			// provider failure at the stride boundary must NOT consume the
+			// decimation window (see MaybeEmitHeadBumpSnapshot).
+			mSnapshotAdvanceCount = 0;
 		}
 
 		void AgentChatLoop::RecordHttpRound(
@@ -2163,7 +3534,8 @@ namespace RISE
 		}
 
 		void AgentChatLoop::RecordHistoryEdit( const std::string& reason, long long beforeBytes,
-		                                       long long afterBytes, int entryIndex )
+		                                       long long afterBytes, int entryIndex,
+		                                       const std::string& text )
 		{
 			if( !mRecorder ) return;
 			EnsureSessionRecordEmitted();   // keep the `session` record leading, like RecordHttpRound
@@ -2172,6 +3544,7 @@ namespace RISE
 			rec.beforeBytes = beforeBytes;
 			rec.afterBytes  = afterBytes;
 			rec.reason      = reason;
+			rec.text        = text;
 			mRecorder->EmitHistoryEdit( rec );
 		}
 	}

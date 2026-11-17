@@ -32,12 +32,13 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
-#ifdef _WIN32
-#include <process.h>
-#define getpid _getpid
-#else
-#include <unistd.h>
-#endif
+#include "../src/Library/Interfaces/IShaderManager.h"
+#include "../src/Library/Utilities/PiecewiseLinearFunction.h"
+#include "../src/Library/Utilities/MediaPathLocator.h"
+#include "../src/Library/Parsers/AsciiCommandParser.h"
+#include "../src/Library/Options.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -48,6 +49,27 @@ namespace
 	int s_pass = 0, s_fail = 0;
 	void Check( bool ok, const std::string& what ) { if( ok ) ++s_pass; else { ++s_fail; std::printf( "  FAIL: %s\n", what.c_str() ); } }
 
+	void CheckRegression( bool ok, const std::string& what )
+	{
+		Check( ok, what );
+		if( ok ) std::printf( "  ok: %s\n", what.c_str() );
+	}
+
+	class CapturedLog final : public ILogPrinter, public Reference
+	{
+	public:
+		std::vector<std::string> messages;
+		void Print( const LogEvent& event ) override { messages.emplace_back( event.szMessage ); }
+		void Flush() override {}
+		bool Contains( const std::string& text ) const
+		{
+			for( const auto& message : messages ) {
+				if( message.find(text) != std::string::npos ) return true;
+			}
+			return false;
+		}
+	};
+
 	// DumpJob of a fresh, empty Job -- the "derived nothing" sentinel.  A successful
 	// accepted native load must produce a dump that differs from this.
 	const std::string& EmptyJobDump()
@@ -56,19 +78,23 @@ namespace
 		return e;
 	}
 
+	// Per-test scratch path under the owned scratch directory (see TestTempDir.h).
 	std::string TempPath( const char* name )
 	{
-		return ( std::filesystem::temp_directory_path() /
-			( "cst_load_via_" + std::to_string( static_cast<long>( getpid() ) ) +
-			  "_" + name ) ).string();
+		return RISE::TestSupport::ScratchPath( std::string( "cst_load_via_" ) + name );
 	}
 
-	bool WriteTmp( const std::string& path, const std::string& text )
+	bool WriteTmp( const std::filesystem::path& path, const std::string& text )
 	{
-		std::ofstream f( path );
+		std::ofstream f( RISE::LongAwareFsPath( path ) );
 		if( !f ) return false;
 		f << text;
 		return f.good();
+	}
+
+	bool WriteTmp( const char* path, const std::string& text )
+	{
+		return WriteTmp( std::filesystem::path( path ? path : "" ), text );
 	}
 
 	// Load `scene` (written to `path`) via the CST path; assert it derives a non-trivial Scene
@@ -120,9 +146,178 @@ namespace
 	}
 }
 
-int main()
+static int RunTests()
 {
 	std::printf( "=== CstLoadViaCstTest (P5 Slice 1: load via the canonical CST) ===\n" );
+	auto* capturedLog = new CapturedLog();
+	GlobalLogPriv()->AddPrinter( capturedLog );
+
+	{
+		const std::string path = RISE::TestSupport::ScratchPath( "console_numeric.options" );
+		Check( WriteTmp( path.c_str(),
+			"count +27units\ncount 5\ninvalid invalid\nlarge 9999999999999999999999\n"
+			"tiny 1e-309\nnonfinite 1e999\ntitle str Foo #1\ntext str \"one two\" three" ), "write options fixture" );
+		auto* options = new Options( path.c_str() );
+		Check( options->ReadInt( "count", 99 ) == 27 && options->ReadInt( "invalid", 99 ) == 0 &&
+			options->ReadInt( "large", 99 ) == 99 && options->ReadInt( "missing", 99 ) == 99,
+			"integer options preserve prefixes and first definition and fall back on overflow" );
+		Check( options->ReadDouble( "tiny", 99 ) > 0.0 && options->ReadDouble( "tiny", 99 ) < 1e-308 &&
+			options->ReadDouble( "nonfinite", 99 ) == 99 && options->ReadDouble( "invalid", 99 ) == 0,
+			"floating options accept finite subnormals and reject overflow" );
+		Check( options->ReadString( "text", String() ) == " one two three",
+			"options preserve quoted spaces and an unterminated final line" );
+		CheckRegression( options->ReadString( "title", String() ) == " Foo #1",
+			"literal hash compatibility: options retain a hash-prefixed word" );
+		options->release();
+		std::remove( path.c_str() );
+	}
+
+	{
+		const std::string path = RISE::TestSupport::ScratchPath( "load_ascii.RISEscript" );
+		auto script = [&]( const std::string& contents, bool expected, const char* label ) {
+			if( !WriteTmp( path.c_str(), contents ) ) {
+				Check( false, "write ASCII script fixture" );
+				return;
+			}
+			auto* job = new Job();
+			Check( job->RunAsciiScript( path.c_str() ) == expected, label );
+			job->release();
+			std::remove( path.c_str() );
+		};
+		script( "bad marker\nclearall\n", false, "script rejects missing marker" );
+		script( "RISE ASCII SCRIPT 9999999999999999999999\n", false, "script rejects an out-of-range version" );
+		script( "RISE ASCII SCRIPT +3 # annotation\nclearall", true, "script accepts legacy version spelling" );
+		script( "RISE ASCII SCRIPT 3\nunknown_command", false, "script processes its final unterminated line" );
+		script( "RISE ASCII SCRIPT 3\n#" + std::string( 10000, 'a' ) + "\nunknown_command\n",
+			false, "script keeps reading after a long comment" );
+		script( std::string( "RISE ASCII SCRIPT 3\nclearall" ) + '\0' + "unknown\n",
+			false, "script rejects embedded NUL" );
+		script( "RISE ASCII SCRIPT 3\n\"\"\n", false, "script rejects an empty quoted command" );
+		script( "RISE ASCII SCRIPT 3\nset light_rr_threshold nonsense\n", false,
+			"script rejects a malformed scalar before changing the job" );
+		script( "RISE ASCII SCRIPT 3\nset light_rr_threshold +0.25legacy\n", true,
+			"script preserves signed scalar prefixes" );
+		struct CommandJob final : Job {
+			unsigned int calls = 0;
+			unsigned int renderCalls = 0;
+			unsigned int uvCalls = 0;
+			char uvAxis = 0;
+			double uvRadius = 0, uvSize = 0;
+			bool SetObjectUVToCylindrical( const char*, double radius, char axis, double size ) override
+			{ ++uvCalls; uvRadius = radius; uvAxis = axis; uvSize = size; return true; }
+			bool Rasterize() override { ++calls; ++renderCalls; return true; }
+			bool RasterizeRegion( unsigned int, unsigned int, unsigned int, unsigned int ) override { ++calls; return true; }
+			bool RasterizeAnimationUsingOptions( unsigned int ) override { ++calls; return true; }
+			bool SaveCausticPelPhotonmap( const char* ) override { ++calls; return true; }
+			void SetProgress( IProgressCallback* ) override { ++calls; }
+		};
+		auto* commandJob = new CommandJob();
+		auto* parser = new AsciiCommandParser();
+		Check( !parser->ParseCommand( "renderanimation 999999999999999999999999", *commandJob ) &&
+			!parser->ParseCommand( "render 0 10 bad 10", *commandJob ) &&
+			!parser->ParseCommand( "render 0 10 2", *commandJob ) &&
+			!parser->ParseCommand( "photonmap caustic save", *commandJob ) && commandJob->calls == 0,
+			"malformed arguments fail before touching the job" );
+		Check( parser->ParseCommand( "photonmap caustic save file.photonmap", *commandJob ) &&
+			commandJob->calls == 1, "valid photon map command dispatches once" );
+		Check( parser->ParseCommand( "render # trailing comment", *commandJob ) &&
+			commandJob->renderCalls == 1, "render ignores a trailing comment and dispatches once" );
+		CheckRegression( parser->ParseCommand( "render #", *commandJob ) && commandJob->renderCalls == 2,
+			"literal hash compatibility: a standalone final hash starts a console comment" );
+		const auto callsAfterRender = commandJob->calls;
+		Check( parser->ParseCommand( "  # full comment", *commandJob ) &&
+			parser->ParseCommand( "   ", *commandJob ) && commandJob->calls == callsAfterRender,
+			"comments and whitespace are successful no-op commands" );
+		const auto commented = AsciiCommandParser::Tokenize( "echo \"# quoted\" file#tag # ignored" );
+		CheckRegression( commented == std::vector<std::string>({ "echo", "# quoted", "file#tag", "#", "ignored" }),
+			"literal hash compatibility: raw tokenization retains every hash token" );
+		String legacyTokens[4];
+		CheckRegression( AsciiCommandParser::TokenizeString( "value #1 # tail", legacyTokens, 4 ) == 4 &&
+			legacyTokens[1] == "#1" && legacyTokens[2] == "#" && legacyTokens[3] == "tail",
+			"literal hash compatibility: legacy raw tokenization retains hash tokens" );
+		capturedLog->messages.clear();
+		CheckRegression( parser->ParseCommand( "echo info Rendering #3", *commandJob ) &&
+			capturedLog->Contains("Rendering #3"),
+			"literal hash compatibility: console echo retains a hash-prefixed word" );
+		capturedLog->messages.clear();
+		CheckRegression( parser->ParseCommand( "echo info \"# quoted\" file#tag # ignored", *commandJob ) &&
+			capturedLog->Contains("# quoted file#tag") && !capturedLog->Contains("ignored"),
+			"literal hash compatibility: console comments preserve quoted and embedded hashes" );
+		CheckRegression( parser->ParseCommand( "#full-line-comment", *commandJob ),
+			"literal hash compatibility: full-line comments need no space after hash" );
+		capturedLog->messages.clear();
+		CheckRegression( !parser->ParseCommand( "modify object uv cylindrical object 2 X 9", *commandJob ) &&
+			!parser->ParseCommand( "modify object uv cylindrical object 2 xy 9", *commandJob ) &&
+			commandJob->uvCalls == 0 && capturedLog->Contains("expected lowercase axis x, y, or z"),
+			"cylindrical axis diagnostic rejects unsupported axes before mutation" );
+		for( const char axis : { 'x', 'y', 'z' } ) {
+			const std::string command = std::string("modify object uv cylindrical object 2 ") + axis + " 9";
+			CheckRegression( parser->ParseCommand(command.c_str(), *commandJob) &&
+				commandJob->uvAxis == axis && commandJob->uvRadius == 2 && commandJob->uvSize == 9,
+				"cylindrical axis diagnostic preserves supported axes and the size argument" );
+		}
+		parser->release();
+		commandJob->release();
+		script( "RISE ASCII SCRIPT 3\nrun \"" + path + "\"", false, "script rejects a recursive run" );
+		const std::string child = RISE::TestSupport::ScratchPath( "child_ascii.RISEscript" );
+		Check( WriteTmp( child.c_str(), "RISE ASCII SCRIPT 3\nclearall" ), "write nested script fixture" );
+		script( "RISE ASCII SCRIPT 3\nrun \"" + child + "\"\nrun \"" + child + "\"", true,
+			"script can run a child again after it returns" );
+		std::remove( child.c_str() );
+		const auto media = std::filesystem::path( RISE::TestSupport::ScratchPath( "script media #Dir" ) );
+		std::filesystem::create_directory( media );
+		const std::string filename = "rise_script_media_fixture.txt";
+		const std::string found = (media / filename).string();
+		Check( WriteTmp( found.c_str(), "fixture" ), "write script media lookup fixture" );
+		script( "RISE ASCII SCRIPT 3\nmediapath add " + media.string(), true,
+			"script adds an unquoted media root containing a hash-prefixed word" );
+		Check( std::filesystem::path(GlobalMediaPathLocator().Find( filename.c_str() ).c_str()) == media / filename,
+			"script media root resolves a real file without a trailing space" );
+		script( "RISE ASCII SCRIPT 3\nmediapath remove \"" + media.string() + "\"", true,
+			"script removes a quoted media root" );
+		std::filesystem::remove_all( media );
+	}
+
+	{
+		namespace fs = std::filesystem;
+		const auto root = fs::path( RISE::TestSupport::ScratchPath( "long_raw_path" ) );
+		const auto directory = root / std::string(100, 'a') / std::string(100, 'b') / std::string(80, 'c');
+		fs::create_directories( RISE::LongAwareFsPath( directory ) );
+		const auto mesh = directory / "mesh.raw";
+		Check( WriteTmp( mesh, "tri 0 0 0 1 0 0 0 1 0" ), "write RAW fixture under a long path" );
+		Case( "RAW importer accepts a filename longer than 255 bytes",
+			RISE::TestSupport::ScratchPath( "long_raw.RISEscene" ).c_str(),
+			"RISE ASCII SCENE 7\nrawmesh_geometry\n{\nname mesh\nfile " + mesh.generic_string() + "\n}\n" );
+		std::error_code rmEc;
+		fs::remove_all( RISE::LongAwareFsPath( root, true ), rmEc );
+		Check( !rmEc, "clean up long RAW fixture directory" );
+#ifdef _WIN32
+		Check( RISE::LongAwareFsPath( fs::path( L"\\\\?\\C:\\alpha/beta\\.\\..\\gamma\\\\delta\\" ) ).native() ==
+			std::wstring( L"\\\\?\\C:\\alpha\\gamma\\delta" ) &&
+			RISE::LongAwareFsPath( fs::path( L"//?/C:/alpha/beta/./../gamma//delta/" ) ).native() ==
+			std::wstring( L"\\\\?\\C:\\alpha\\gamma\\delta" ) &&
+			RISE::LongAwareFsPath( fs::path( L"\\\\?\\UNC\\srv/share\\dir\\.\\..\\leaf/" ) ).native() ==
+			std::wstring( L"\\\\?\\UNC\\srv\\share\\leaf" ),
+			"LongAwareFsPath canonicalizes pre-prefixed Win32 extended-length and UNC paths" );
+#endif
+	}
+
+	{
+		const std::string name( 300, 'p' );
+		const std::string path = RISE::TestSupport::ScratchPath( "voronoi_long_reference.RISEscene" );
+		const std::string base = "RISE ASCII SCENE 7\nuniformcolor_painter\n{\nname " + name +
+			"\ncolor 0.5 0.25 0.1\n}\n";
+		Case( "Voronoi generators use full names and the default border", path.c_str(), base +
+			"voronoi2d_painter\n{\nname cells2\ngen 0 0 " + name + "\ngen 1 1 " + name + "\n}\n"
+			"voronoi3d_painter\n{\nname cells3\ngen 0 0 0 " + name + "\ngen 1 1 1 " + name + "\n}\n" );
+		const std::string longName( 8300, 'q' );
+		const std::string rows = RISE::TestSupport::ScratchPath( "voronoi_generators.txt" );
+		Check( WriteTmp( rows.c_str(), "0 0 " + longName + "\n1 1 " + longName ), "write long Voronoi generator rows" );
+		Case( "file-backed Voronoi generator reads whole rows", path.c_str(),
+			"RISE ASCII SCENE 7\nuniformcolor_painter\n{\nname " + longName +
+			"\ncolor 0.5 0.25 0.1\n}\nvoronoi2d_painter\n{\nname cells2\nfile " + rows + "\n}\n" );
+		std::remove( rows.c_str() );
+	}
 
 	// Slice 6e header-bump back-compat pair: the reader accepts BOTH the post-cutover `7` header and the
 	// transitional `6` header (the CST is version-agnostic).  Prove both load so a re-header can't break
@@ -267,6 +462,129 @@ int main()
 		std::filesystem::remove( pb );
 	}
 
+	{
+		const std::string scenePath = RISE::TestSupport::ScratchPath( "cst_tuple_records.RISEscene" );
+		const std::string rawPath = RISE::TestSupport::ScratchPath( "cst_raw_records.rawmesh" );
+		const std::string header = "RISE ASCII SCENE 7\n";
+		const std::string shader = "advanced_shader\n{\nname tuple_shader\n";
+		const std::string sphere = "sphere_geometry\n{\nname tuple_sphere\nradius 1\n}\n";
+		for( const char* entries : { "shaderop DefaultEmission\n", "" } ) {
+			Check( WriteTmp( scenePath.c_str(), header + shader + entries + "}\n" + sphere ),
+				"write advanced shader tuple fixture" );
+			auto* job = new Job();
+			Check( job->LoadAsciiSceneViaCst( scenePath.c_str() ) &&
+				job->GetShaders()->GetItem( "tuple_shader" ) != nullptr,
+				*entries ? "advanced shader shorthand registers" : "empty advanced shader registers" );
+			job->release();
+			std::remove( scenePath.c_str() );
+		}
+		RefuseCase( "invalid optional depth", scenePath.c_str(),
+			header + shader + "shaderop DefaultEmission invalid\n}\n" );
+		RefuseCase( "long shader-op name", scenePath.c_str(),
+			header + shader + "shaderop " + std::string( 600, 'x' ) + "\n}\n" );
+		RefuseCase( "incomplete two-dimensional function row", scenePath.c_str(),
+			header + "piecewise_linear_function2d\n{\nname bad_row\ncp 0\n}\n" );
+		const std::string rawScene = header + "rawmesh_geometry\n{\nname raw_records\nfile " + rawPath + "\n}\n";
+		Check( WriteTmp( rawPath.c_str(), "tri 0 0 0 1 0 0 0 1 0\n" ), "write valid RAW fixture" );
+		Case( "valid RAW triangle", scenePath.c_str(), rawScene );
+		Check( WriteTmp( rawPath.c_str(), "tri 0 0 0 1 0 0 0 1 0\ntri 0 0\n" ), "write incomplete RAW fixture" );
+		RefuseCase( "incomplete RAW record after a valid triangle", scenePath.c_str(), rawScene );
+		const std::string raw2Scene = header + "rawmesh2_geometry\n{\nname raw2_records\nfile " + rawPath + "\n}\n";
+		const std::string raw2Vertices =
+			"3 1\nv 0 0 0 0 0 1 0 0\nv 1 0 0 0 0 1 1 0\nv 0 1 0 0 0 1 0 1\n";
+		Check( WriteTmp( rawPath.c_str(), raw2Vertices + "t 0 1 2\n" ), "write valid RAW2 fixture" );
+		Case( "valid RAW2 triangle", scenePath.c_str(), raw2Scene );
+		Check( WriteTmp( rawPath.c_str(), raw2Vertices + "t 0 1\n" ), "write incomplete RAW2 fixture" );
+		RefuseCase( "incomplete RAW2 face", scenePath.c_str(), raw2Scene );
+		Check( WriteTmp( rawPath.c_str(), raw2Vertices + "t 0 1 2\nt 0 2 1\n" ),
+			"write RAW2 fixture with an extra face" );
+		RefuseCase( "RAW2 face count understates the records", scenePath.c_str(), raw2Scene );
+		Check( WriteTmp( rawPath.c_str(), "" ), "write empty RAW2 fixture" );
+		RefuseCase( "missing RAW2 header", scenePath.c_str(), raw2Scene );
+		std::remove( rawPath.c_str() );
+	}
+
+	{
+		const std::string scenePath = RISE::TestSupport::ScratchPath( "cst_worley_output.RISEscene" );
+		const std::string painter = "RISE ASCII SCENE 7\nworley3d_painter\n{\nname cells\noutput ";
+		Case( "canonical Worley boundary output", scenePath.c_str(), painter + "f2-f1\n}\n" );
+		RefuseCase( "unrecognized Worley output", scenePath.c_str(), painter + "f2f1\n}\n" );
+	}
+
+	{
+		const std::string scene = RISE::TestSupport::ScratchPath( "table_compat.RISEscene" );
+		const std::string data = RISE::TestSupport::ScratchPath( "table_compat.txt" );
+		Check( WriteTmp( data.c_str(), "wavelength amplitude extra\n380 0.5 0.7\ninvalid row\n780 0.8 extra\n" ),
+			"write a table with headers and additional columns" );
+		for( const char* keyword : { "spectral_painter", "piecewise_linear_function" } ) {
+			const std::string head = std::string("RISE ASCII SCENE 7\n") + keyword + "\n{\nname table\n";
+			Case( "table reader accepts leading finite columns and skips headers", scene.c_str(),
+				head + "file " + data + "\n}\n" );
+			Case( "inline table sample accepts extra columns", scene.c_str(),
+				head + "cp 380 0.5 0.7\ncp 780 0.8 0.9\n}\n" );
+			RefuseCase( "inline table sample requires both columns", scene.c_str(), head + "cp 380\n}\n" );
+			RefuseCase( "inline table sample requires finite values", scene.c_str(), head + "cp 380 nan\n}\n" );
+			RefuseCase( "inline table sample rejects the old comma form", scene.c_str(), head + "cp 550,1.0\n}\n" );
+		}
+		for( const char* keyword : { "spectral_painter", "piecewise_linear_function" } ) {
+			for( const char* field : { "file", "nmfile", "ampfile" } ) {
+				if( std::string(keyword) == "piecewise_linear_function" && std::string(field) != "file" ) continue;
+				const std::string contents = std::string("RISE ASCII SCENE 7\n") + keyword +
+					"\n{\nname table\n" + field + " " + data + "\n}\n";
+				const char nulRows[] = "380 0.5\n780 0.8\0extra\n";
+				Check( WriteTmp(data.c_str(), std::string(nulRows, sizeof(nulRows)-1)), "write table NUL diagnostic fixture" );
+				capturedLog->messages.clear();
+				RefuseCase( "embedded NUL table refused", scene.c_str(), contents );
+				CheckRegression( capturedLog->Contains("Embedded NUL in file `" + data + "` at line 2") &&
+					!capturedLog->Contains("Failed to open file"),
+					std::string("table diagnostic: embedded NUL has filename and physical line for ") + keyword + " " + field );
+				std::remove( data.c_str() );
+				capturedLog->messages.clear();
+				RefuseCase( "missing table refused", scene.c_str(), contents );
+				CheckRegression( capturedLog->Contains("Failed to open file `" + data + "`"),
+					std::string("table diagnostic: missing file reports open failure for ") + keyword + " " + field );
+			}
+		}
+		std::remove( data.c_str() );
+	}
+
+	{
+		auto* row = new PiecewiseLinearFunction1D();
+		{
+			PiecewiseLinearFunction2D grid;
+			grid.addControlPoint( 0, row );
+			grid.addControlPoint( 1, row );
+			Check( row->refcount() == 3, "2D function retains each row occurrence" );
+			PiecewiseLinearFunction2D copy( grid );
+			Check( row->refcount() == 5, "copied 2D function owns its row references" );
+			grid.clearControlPoints();
+			Check( row->refcount() == 3, "clearing 2D function releases only its own row references" );
+		}
+		Check( row->refcount() == 1, "destroying the 2D function releases its remaining row references" );
+		row->release();
+
+		IShaderOp* op = nullptr;
+		if( RISE_API_CreateEmissionShaderOp( &op ) && op ) {
+			IShader* standard = nullptr;
+			IShader* advanced = nullptr;
+			const bool madeStandard = RISE_API_CreateStandardShader( &standard, { op } );
+			const bool madeAdvanced = RISE_API_CreateAdvancedShader( &advanced, { op }, { 0 }, { 1 }, "+" );
+			Check( madeStandard && madeAdvanced && op->refcount() == 3, "both shader chains retain their shader op" );
+			safe_release( standard );
+			safe_release( advanced );
+			Check( op->refcount() == 1, "destroying shader chains releases their shader-op references" );
+			op->release();
+		} else {
+			Check( false, "create shader op for shader ownership test" );
+		}
+	}
+
+	capturedLog->release();
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );
 	return s_fail == 0 ? 0 : 1;
+}
+
+int main()
+{
+	return RISE::TestSupport::WithOwnedScratch(RunTests);
 }

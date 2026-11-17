@@ -1,12 +1,90 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  CompositeSPF.h - Defines a SPF that that composes two SPFs
-//    together
+//    together, and the layered BSDF that prices the same transport
+//    (DL-24, 2026-09-28).
+//
+//  THE MODEL.  A composite is two boundary SPFs (top, bottom) separated
+//  by an absorbing gap of `thickness`.  Light that crosses the top
+//  interface performs a random walk between the two boundaries until it
+//  leaves through one of them.  That transport is split into three
+//  disjoint classes, each estimated by exactly one technique:
+//
+//    DIRECT   -- the top interface's own response at the entry vertex
+//                (its up-going lobes).  Sampled by the top's own SPF,
+//                priced by the top's own BSDF / density.
+//
+//    COVERED  -- walked transport whose LAST event before exiting the
+//                top is either (a) a non-delta scatter at a bottom
+//                layer that has a BSDF, followed by a DELTA exit
+//                through the top, or (b) a non-delta exit through a top
+//                layer that has a BSDF.  This is the whole of the
+//                coat-over-substrate regime (a dielectric over a
+//                Lambertian / GGX / Oren-Nayar / translucent base).  It
+//                is priced by a position-free Monte-Carlo layered
+//                evaluator (Guo et al. 2018; PBRT-v4 LayeredBxDF::f):
+//                the walk runs from the entry direction, and at every
+//                bottom visit it CONNECTS to the requested exit
+//                direction through the top's delta refraction (term a)
+//                and at every top visit it evaluates the top's own
+//                exit BSDF (term b).  DL-296 (2026-10-09): when the
+//                BOTTOM transmits through its own BSDF (the bottom
+//                material ScattersFullSphere -- translucent_material, a
+//                thin-transmission weave), COVERED also holds a non-delta
+//                exit DOWN through the bottom after a walk entered from
+//                above, at a record on a surface that provably encloses
+//                no volume (an open sheet; elsewhere the class stays
+//                WALKER, DL-472): every bottom visit connects to a below-horizon
+//                direction through the bottom's BSDF (term c, no
+//                Jacobian), and the layered value carries the radiance
+//                eta^2 of that exit (BelowEtaScale) while the emitted
+//                kray leaves it to the ray's BELOW stack.  It is sampled
+//                from a KNOWN density (a mixture of a cosine hemisphere
+//                above, the bottom's own sampler, and -- DL-296 -- a
+//                cosine hemisphere below), so `Pdf` reports the exact
+//                density of what `Scatter` emits.
+//
+//    WALKER   -- everything else: all-delta walks (glass over glass or
+//                a mirror), walks whose last non-delta event is followed
+//                by more delta events (glass over a polished coat),
+//                layers with no BSDF (skin), transmission out through the
+//                BOTTOM by a delta lobe or through a bottom whose BSDF does
+//                not price it (DL-472), walks entered from below and arrivals behind a
+//                tilted shading normal (DL-341).  These are sampled
+//                by an unbiased single-path random walk and emitted
+//                DELTA-TAGGED: no NEE / connection strategy prices them,
+//                so the MIS partition is exact and the emitted weight is
+//                its own estimator.
+//
+//  The evaluator's WALK is seeded from a hash of (incoming direction,
+//  position) alone and recorded once per shading point; only its two
+//  exit CONNECTION terms depend on the outgoing direction, and term (a)'s
+//  top transmission draws from its own stream seeded by (incoming,
+//  outgoing, position).  So `value(w)` is a deterministic function of
+//  its arguments, and the kray of an emitted covered ray is
+//  `value(dir) * cos / Pdf(dir)` up to floating-point rounding.  When
+//  the top DECLARES a deterministic up/down split at this record
+//  (ISPF::SelectionMassIsDeterministic(ri, nm)) `Pdf` is the exact
+//  density of what `Scatter` emits and the HWSS companion weight of an
+//  up-going reflection is reconstructible from (ri, dir, nm) (DL-221);
+//  otherwise `Pdf` is the MIS partner of a per-branch estimator and the
+//  5-argument EvaluateKrayNM declines (-1).  For a DISPERSIVE top the
+//  direct delta reflection is reconstructed as the hero's weight (ratio
+//  1) where the true companion ratio is F(nm)/F(hero) -- close, not
+//  exact.
+//
+//  ENERGY (DL-24).  Neither walk is truncated.  The recursion budgets
+//  (`max_recursion`, `max_*_recursion`) used to DROP every continuation
+//  past them -- which dropped the internal Fresnel/TIR reflection series
+//  at the top interface's underside and lost 57 % of a lossless
+//  coat-over-white furnace at normal incidence.  They now mark the depth
+//  at which Russian roulette may begin, with its survival compensated,
+//  so they trade variance for cost and no longer remove energy.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: February 6, 2004
 //  Tabs: 4
-//  Comments:  
+//  Comments:
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -16,107 +94,172 @@
 #define COMPOSITE_SPF_
 
 #include "../Interfaces/ISPF.h"
-#include "../Interfaces/IPainter.h"
+#include "../Interfaces/IBSDF.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
 {
 	namespace Implementation
 	{
+		struct CompositeSPFImpl;
+
 		class CompositeSPF : public virtual ISPF, public virtual Reference
 		{
+			friend struct CompositeSPFImpl;
+
 		protected:
 			virtual ~CompositeSPF( );
 
 			const ISPF&	top;				// top
 			const ISPF& bottom;				// bottom
-			const unsigned int max_recur;	// maximum level of absolute recusion before terminating
+			const IBSDF* pTopBSDF;			// top layer's BSDF, or 0 (prices the DIRECT class and term (b))
+			const IBSDF* pBottomBSDF;		// bottom layer's BSDF, or 0 (prices term (a))
+			//! DL-296: the bottom layer's BSDF prices its own transmission
+			//! (the bottom MATERIAL scatters over the full sphere and has a
+			//! BSDF -- translucent_material), so the evaluator's term (c)
+			//! connects every bottom visit to a direction BELOW the stack
+			//! and the walker leaves that class to the covered sampler.
+			const bool bBottomTransmits;
+			const unsigned int max_recur;	// depth past which Russian roulette may terminate a walk (DL-24: no longer a hard cut)
 
-			const unsigned int max_reflection_recursion;		// maximum level of reflection recursion
-			const unsigned int max_refraction_recursion;		// maximum level of refraction recursion
-			const unsigned int max_diffuse_recursion;			// maximum level of diffuse recursion
-			const unsigned int max_translucent_recursion;		// maximum level of translucent recursion
+			const unsigned int max_reflection_recursion;		// per-type Russian-roulette onset depth
+			const unsigned int max_refraction_recursion;		// per-type Russian-roulette onset depth
+			const unsigned int max_diffuse_recursion;			// per-type Russian-roulette onset depth
+			const unsigned int max_translucent_recursion;		// per-type Russian-roulette onset depth
 
 			const Scalar thickness;			// thickness of each of the layers
-			const IPainter& extinction;		// extinction coefficient for Beer's law absorption between layers
 
-			bool	ShouldScatteredRayBePropagated(
+			//! Beer-Lambert extinction coefficient for the inter-layer gap.
+			//! A PHYSICAL SCALAR, not a colour: it is an inverse length that
+			//! is routinely authored well above 1 (the shipped scene uses
+			//! 8.0 on blue).  Typed `IScalarPainter` for exactly the reason
+			//! docs/ISCALARPAINTER_REFACTOR.md gives -- `IPainter::GetColorNM`
+			//! routes through the Jakob-Hanika ALBEDO uplift, which is
+			//! bounded to [0,1], so every extinction above ~1 used to
+			//! saturate to ~1.0 in every SPECTRAL rasterizer while the RGB
+			//! walk used the authored value.  `IScalarPainter` never touches
+			//! colourspace.  Mirrors `TranslucentSPF::pExtinction`.
+			const IScalarPainter& extinction;
+
+			//! Process-unique identity for the per-thread probe cache
+			//! (CompositeSPF.cpp, "PROBE CACHE").  NOT the object's address:
+			//! a destroyed composite's address is reused by the next one
+			//! allocated, and a cache keyed on it would hand the new
+			//! material the old one's branch weights.
+			const unsigned long long instanceId;
+
+			//! DL-341: the IOR-stack convention of the walk (one internal
+			//! stack, the bottom layer keyed by its own per-instance key,
+			//! entry side by the GEOMETRIC normal, emitted rays carrying the
+			//! external form) lives in CompositeSPF.cpp, "THE STACK
+			//! CONVENTION".  It replaced the pre-DL-341 two-stack
+			//! (`outside` / `gap`) EvalStack rule, which was defined only for
+			//! a walk entered from above.
+
+			//! True when a continuation of `type` leaving the walk event at
+			//! `steps` has passed its budget and may be Russian-rouletted.
+			//! (Pre-DL-24 this predicate DROPPED the continuation outright.)
+			bool	IsRouletteEligible(
 					const ScatteredRay::ScatRayType type,
 					const unsigned int steps
 					) const;
 
-			void	ProcessTopLayer(
-					const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-					const RISEPel& importance,									///< [in] Importance from prevous pass
-					ISampler& sampler,									///< Sampler for the MC process
-					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-					const unsigned int steps,									///< [in] Number of steps taken in the random walk process
-					const IORStack& ior_stack								///< [in/out] Index of refraction stack
-					) const;
-
-			void	ProcessBottomLayer(
-					const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-					const RISEPel& importance,									///< [in] Importance from prevous pass
-					ISampler& sampler,									///< Sampler for the MC process
-					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-					const unsigned int steps,									///< [in] Number of steps taken in the random walk process
-					const IORStack& ior_stack								///< [in/out] Index of refraction stack
-					) const;
-
-			void	ProcessTopLayerNM(
-					const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-					const Scalar importance,									///< [in] Importance from prevous pass
-					ISampler& sampler,									///< Sampler for the MC process
-					const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
-					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-					const unsigned int steps,									///< [in] Number of steps taken in the random walk process
-					const IORStack& ior_stack								///< [in/out] Index of refraction stack
-					) const;
-
-			void	ProcessBottomLayerNM(
-					const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-					const Scalar importance,									///< [in] Importance from prevous pass
-					ISampler& sampler,									///< Sampler for the MC process
-					const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
-					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-					const unsigned int steps,									///< [in] Number of steps taken in the random walk process
-					const IORStack& ior_stack								///< [in/out] Index of refraction stack
-					) const;
-
 		public:
+			//! Cosine floor for the gap crossing -- see the definition's
+			//! comment in CompositeSPF.cpp for why it is 1e-3.
+			static const Scalar kMinCosTheta;
+
+			//! Hard safety cap on the number of layer events in one walk.
+			//! Russian roulette ends a walk that loses energy long before
+			//! this.  It is reached by a LOSSLESS trapping pair (a mirror
+			//! facing down over an albedo-1 bottom, whose energy can never
+			//! leave the stack).  Before DL-341 (2026-10-02) it was also
+			//! reached by a stack-convention defect -- a nested
+			//! composite{dielectric/dielectric} walked from below read each
+			//! layer on the wrong side and total-internally-reflected
+			//! without end (91,323 of 100,000 walks of
+			//! CompositeEnergyConservationTest H4 at 35 deg).
+			static const unsigned int kMaxWalkEvents;
+
+			//! The slant distance a ray travels crossing the inter-layer gap:
+			//! `thickness / max(|dir . normal|, kMinCosTheta)`.
+			//!
+			//! Public (rather than a file-static in the .cpp) so
+			//! tests/CompositeExtinctionTest can check the grazing limit
+			//! directly -- the behaviour it guards fires for cos < 1e-3, which
+			//! is a ~1e-6 fraction of any cosine-weighted lobe and therefore
+			//! unreachable by a Monte-Carlo test at any practical sample count.
+			static Scalar GapPathLength(
+					const Vector3& dir,									///< [in] Normalised direction crossing the gap
+					const Vector3& normal,								///< [in] The slab normal (the top interface's onb.w())
+					const Scalar thickness								///< [in] Perpendicular gap thickness; a negative or NaN value yields 0
+					);
+
 			CompositeSPF(
 				const ISPF& top_,
 				const ISPF& bottom_,
 				const unsigned int max_recur_,
-				const unsigned int max_reflection_recursion_,		// maximum level of reflection recursion
-				const unsigned int max_refraction_recursion_,		// maximum level of refraction recursion
-				const unsigned int max_diffuse_recursion_,			// maximum level of diffuse recursion
-				const unsigned int max_translucent_recursion_,		// maximum level of translucent recursion
+				const unsigned int max_reflection_recursion_,		// Russian-roulette onset for reflection continuations
+				const unsigned int max_refraction_recursion_,		// Russian-roulette onset for refraction continuations
+				const unsigned int max_diffuse_recursion_,			// Russian-roulette onset for diffuse continuations
+				const unsigned int max_translucent_recursion_,		// Russian-roulette onset for translucent continuations
 				const Scalar thickness_,							// thickness between the materials
-				const IPainter& extinction_							// extinction coefficient for absorption between layers
+				const IScalarPainter& extinction_,					// extinction coefficient for absorption between layers (physical scalar)
+				const IBSDF* pTopBSDF_ = 0,							// top layer's BSDF (CompositeMaterial passes it); 0 = none
+				const IBSDF* pBottomBSDF_ = 0,						// bottom layer's BSDF (CompositeMaterial passes it); 0 = none
+				const bool bottomTransmits_ = false					// DL-296: the bottom MATERIAL's ScattersFullSphere() (ignored without pBottomBSDF_)
 				);
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
-			//! the reflected and transmitted rays along with attenuation factors.  
-			void	Scatter( 
+			//! the reflected and transmitted rays along with attenuation factors.
+			//! Emits AT MOST ONE ray (see the file header for which class).
+			void	Scatter(
 					const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 					ISampler& sampler,									///< [in] Sampler
 					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-					const IORStack& ior_stack								///< [in/out] Index of refraction stack
+					const IORStack& ior_stack								///< [in] Index of refraction stack
 					) const;
 
-			//! Given parameters describing the intersection of a ray with a surface, this will return
-			//! the reflected and transmitted rays along with attenuation factors which taking into 
-			//! account spectral affects.  
+			//! Spectral twin of Scatter.
 			void	ScatterNM(
 				const RayIntersectionGeometric& ri,								///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,										///< [in] Sampler
 				const Scalar nm,												///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,								///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack									///< [in/out] Index of refraction stack
+				const IORStack& ior_stack									///< [in] Index of refraction stack
 				) const;
 
-			//! Returns the PDF for the composite SPF as the sum of weighted child PDFs
+			//! DL-05: the straight-through delta pass-through of the WHOLE
+			//! two-layer walk -- the first layer's pass-through lobe (a thin
+			//! weave's gap), the gap crossing's Beer attenuation, and the
+			//! second layer's pass-through lobe -- mirroring Scatter's walk
+			//! step for step (layer order by ray direction, the propagation
+			//! and recursion gates).  Every other walk turns the ray, so this
+			//! product is the whole straight-through expectation.  See
+			//! ISPF::DeltaPassThroughTransmittance.
+			RISEPel DeltaPassThroughTransmittance(
+				const RayIntersectionGeometric& ri
+				) const;
+
+			Scalar DeltaPassThroughTransmittanceNM(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm
+				) const;
+
+
+			//! DL-341: a composite's delta-tagged exits are whole layer
+			//! walks, not refractions of the incoming direction.
+			bool DeltaTransmissionIsRefraction() const
+			{
+				return false;
+			}
+
+			//! The density of the NON-DELTA directions Scatter emits (the
+			//! DL-67 Slice 0 contract): the top's own density over its
+			//! up-going lobes plus the covered class's known proposal
+			//! mixture.  Delta-tagged emissions (the top's delta lobes and
+			//! the walker class) carry no density, as for every SPF.
 			Scalar Pdf(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details
 				const Vector3& wo,											///< [in] Outgoing scattered direction
@@ -130,6 +273,129 @@ namespace RISE
 				const Scalar nm,											///< [in] Wavelength
 				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
+
+			//! DL-221.  Every NON-DELTA ray this SPF emits carries
+			//! `kray = value(dir) * cos / Pdf(dir)` with `value` the
+			//! deterministic layered evaluator, so its companion weight
+			//! is `valueNM(dir; nm) * cos / pdfHero` -- returned here as
+			//! the aggregate spectral value.  -1 (fall back) only when the
+			//! top layer's selection probabilities are not deterministic
+			//! (see CompositeSPF.cpp, "PER-BRANCH MODE").
+			Scalar EvaluateLobeFNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
+			//! DL-221, delta rays.  A DIRECT delta ray (the top's own
+			//! delta reflection) is reconstructed from the top layer at
+			//! `nm`; a WALKER ray is a stochastic multi-event path and
+			//! declines (-1), which reaches the named fallback below.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
+			using ISPF::EvaluateKrayNM;
+
+			//! DL-125 / DL-221.  Still named, because the WALKER class
+			//! (delta-tagged multi-event paths) cannot be reconstructed
+			//! from (ri, outDir, nm); the fallback is reached ONLY for
+			//! those rays and for a top with non-deterministic selection
+			//! probabilities.  Every covered and every direct ray is
+			//! reconstructed exactly.
+			const char* PerLobeDensityFallbackName() const
+			{
+				return "CompositeSPF";
+			}
+
+			//! The layered evaluator.  Returns the NON-DELTA response of the
+			//! composite for light arriving from `vLightIn` scattered toward
+			//! `-ri.ray.Dir()`: the top's own BSDF at the entry vertex plus
+			//! the covered walked class.  Zero for an entry from below
+			//! (walker-only, DL-472); on the far side, the covered
+			//! transmission out through a transmitting bottom (term c,
+			//! DL-296, including its radiance eta^2), else zero.
+			//! `pStack` is the caller's LIVE IOR stack, or 0.
+			RISEPel EvaluateLayered(
+				const Vector3& vLightIn,
+				const RayIntersectionGeometric& ri,
+				const IORStack* pStack
+				) const;
+
+			Scalar EvaluateLayeredNM(
+				const Vector3& vLightIn,
+				const RayIntersectionGeometric& ri,
+				const Scalar nm,
+				const IORStack* pStack
+				) const;
+
+			//! True when at least one layer has a BSDF, i.e. the covered
+			//! class can be priced at all.  CompositeMaterial presents a
+			//! CompositeBSDF exactly when this is true.
+			bool HasLayeredValue() const { return pTopBSDF || pBottomBSDF; }
+
+			//! DL-296: true when the layered value can have a below-horizon
+			//! term (transmission out through the bottom, term (c), live at
+			//! records with bProvablyNoInterior), so the composite's BSDF
+			//! scatters over the full sphere.
+			bool HasTransmissionValue() const { return bBottomTransmits; }
+
+			//! DL-407 (2): the index of the medium BELOW this
+			//! composite -- the index a walk that crosses both layers
+			//! downward pushes for the object (the bottom's index when the
+			//! bottom refracts, else the gap's: the top's index when the top
+			//! refracts, else @a outerIOR).  A nested composite layer
+			//! answers recursively.  Used to start a walk on a provably open
+			//! sheet struck from BEHIND, whose back side is that medium
+			//! under DL-345's face rule.
+			Scalar BelowMediumIOR(
+				const RayIntersectionGeometric& ri,
+				const IORStack& ior_stack,
+				const Scalar nm,									///< [in] wavelength, or <= 0 for the RGB query
+				const Scalar outerIOR,
+				const int channel = -1			///< [in] exact RGB channel, or -1 for scalar metadata
+				) const;
+
+			//! DL-407 (2): true when light can cross the whole stack by
+			//! DELTA events only (each layer a clear dielectric / perfect
+			//! refractor, or a nested composite that does) -- the
+			//! composites to which DL-345's open-sheet face rule applies.
+			//! A translucent (non-delta) layer is excluded: a from-below
+			//! walk is delta-tagged and invisible to NEE (DL-472), so a
+			//! delta light would contribute nothing to the back face.
+			bool TransmitsThrough(
+				const RayIntersectionGeometric& ri,
+				const IORStack& ior_stack,
+				const Scalar nm										///< [in] wavelength, or <= 0 for the RGB query
+				) const;
+		};
+
+		//! The BSDF of a composite: the SAME function the composite's
+		//! Scatter prices its non-delta emissions with, so NEE, BDPT/VCM
+		//! connections and the BSDF-sampled continuation estimate one
+		//! integral (DL-157, "one function per side").
+		class CompositeBSDF : public virtual IBSDF, public virtual Reference
+		{
+		protected:
+			const CompositeSPF& spf;
+			const IBSDF* pAlbedoSource;		// for the OIDN albedo AOV only
+
+			virtual ~CompositeBSDF();
+
+		public:
+			CompositeBSDF( const CompositeSPF& spf_, const IBSDF* pAlbedoSource_ );
+
+			RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
+			Scalar  valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			RISEPel valueStateful( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* pIORStack ) const;
+			Scalar  valueStatefulNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* pIORStack ) const;
+			RISEPel albedo( const RayIntersectionGeometric& ri ) const;
 		};
 	}
 }

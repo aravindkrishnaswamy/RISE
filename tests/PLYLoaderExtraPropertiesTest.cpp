@@ -1,3 +1,4 @@
+#include <cstdint>
 // PLYLoaderExtraPropertiesTest.cpp
 //
 // Regression test for the schema-driven PLY parser.  Before the fix,
@@ -14,6 +15,9 @@
 //   - Old PLY using 'vertex_index' (singular) face list name
 
 #include <atomic>
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -53,16 +57,16 @@ namespace
 		std::remove( p.c_str() );
 	}
 
-	// Write a binary little-endian PLY with position + normal per vertex.
+	// Write a binary PLY with position + normal per vertex.
 	// 4 vertices forming a quad in the XY plane; one quad face.
-	void WriteBinaryPLYWithNormals( const std::string& path )
+	void WriteBinaryPLYWithNormals( const std::string& path, bool bigEndian )
 	{
 		FILE* f = std::fopen( path.c_str(), "wb" );
 		assert( f );
 
 		// Header.
 		std::fprintf( f, "ply\n" );
-		std::fprintf( f, "format binary_little_endian 1.0\n" );
+		std::fprintf( f, "format binary_%s_endian 1.0\n", bigEndian ? "big" : "little" );
 		std::fprintf( f, "element vertex 4\n" );
 		std::fprintf( f, "property float x\n" );
 		std::fprintf( f, "property float y\n" );
@@ -76,20 +80,24 @@ namespace
 
 		// Vertex data: 4 vertices, each with 3 position floats + 3 normal
 		// floats, totaling 24 bytes per vertex.  Old loader would read 12.
-		struct V { float x, y, z, nx, ny, nz; };
-		const V verts[4] = {
-			{ 0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f },
-			{ 1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f },
-			{ 1.0f, 1.0f, 0.0f,  0.0f, 0.0f, 1.0f },
-			{ 0.0f, 1.0f, 0.0f,  0.0f, 0.0f, 1.0f },
+		const auto writeWord = [&]( std::uint32_t word ) {
+			for( unsigned int i = 0; i < 4; ++i ) {
+				const unsigned int shift = 8 * (bigEndian ? 3 - i : i);
+				std::fputc( static_cast<unsigned char>(word >> shift), f );
+			}
 		};
-		std::fwrite( verts, sizeof(V), 4, f );
-
-		// Face: count=4, then 4 uints.
-		const unsigned char count = 4;
-		const unsigned int idx[4] = { 0, 1, 2, 3 };
-		std::fwrite( &count, 1, 1, f );
-		std::fwrite( idx, sizeof(unsigned int), 4, f );
+		constexpr std::uint32_t one = 0x3f800000;
+		const std::uint32_t vertices[][6] = {
+			{ 0, 0, 0, 0, 0, one },
+			{ one, 0, 0, 0, 0, one },
+			{ one, one, 0, 0, 0, one },
+			{ 0, one, 0, 0, 0, one }
+		};
+		for( const auto& vertex : vertices ) {
+			for( auto word : vertex ) writeWord( word );
+		}
+		std::fputc( 4, f );
+		for( unsigned int index = 0; index < 4; ++index ) writeWord( index );
 
 		std::fclose( f );
 	}
@@ -147,11 +155,11 @@ namespace
 		std::fclose( f );
 	}
 
-	void TestBinaryWithNormals()
+	void TestBinaryWithNormals( bool bigEndian )
 	{
 		std::cout << "Testing binary PLY with declared normal properties..." << std::endl;
 		const std::string path = TempPath( "_rise_ply_bin_norm.ply" );
-		WriteBinaryPLYWithNormals( path );
+		WriteBinaryPLYWithNormals( path, bigEndian );
 
 		TriangleMeshGeometryIndexed* pMesh =
 			new TriangleMeshGeometryIndexed( false, false );
@@ -279,7 +287,8 @@ namespace
 int main()
 {
 	std::cout << "Running PLYLoaderExtraPropertiesTest..." << std::endl;
-	TestBinaryWithNormals();
+	TestBinaryWithNormals( false );
+	TestBinaryWithNormals( true );
 	TestAsciiWithColors();
 	TestLegacyFaceListName();
 	TestNoColorsWhenSourceHasNone();

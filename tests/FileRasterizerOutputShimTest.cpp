@@ -39,10 +39,12 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -62,6 +64,7 @@
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Job.h"
+#include "TestTempDir.h"
 #include "../src/Library/Utilities/RISECBOR64.h"
 #ifndef NO_EXR_SUPPORT
 #include <ImfChannelList.h>
@@ -696,8 +699,8 @@ namespace
 	std::string MakeTempPathWithoutExt()
 	{
 		std::ostringstream os;
-		os << "rise_l3_shim_" << ::getpid();
-		return (std::filesystem::temp_directory_path()/os.str()).string();
+		os << RISE::TestSupport::ScratchBaseDir() << "/rise_l3_shim_" << ::getpid();
+		return os.str();
 	}
 
 	// Drive the FileRasterizerOutput shim to write a file with the
@@ -1304,10 +1307,14 @@ namespace
 					{ "tau_caustic", Value::Float(1.0) },
 					{ "tau_reach", Value::Float(1.0) },
 					{ "variance_renders", Value::Unsigned(2) } }) },
+				{ "time_indexed_motion_blur", Value::Bool(true) },
 				{ "vcm", Value::MapValue({
 					{ "progressive_radius_enabled", Value::Bool(true) },
 					{ "throughput_clamp_multiplier", Value::Float(20.0) },
-					{ "throughput_clamp_percentile", Value::Float(0.99) } }) } }) },
+					{ "throughput_clamp_percentile", Value::Float(0.99) },
+					{ "volume_merge_footprints", Value::Float(2.0) },
+					{ "volume_merge_max_vertices", Value::Float(250000.0) },
+					{ "volume_merge_neighbours", Value::Float(0.01) } }) } }) },
 			{ "integrator", Value::MapValue({
 				{ "auto_choice", Value::Unsigned(0) },
 				{ "auto_probe_enabled", Value::Bool(false) },
@@ -1338,6 +1345,7 @@ namespace
 					{ "bernoulli_trials", Value::Unsigned(0) },
 					{ "biased", Value::Bool(false) },
 					{ "enabled", Value::Bool(false) },
+					{ "extended", Value::Bool(false) },
 					{ "max_chain_depth", Value::Unsigned(0) },
 					{ "max_iterations", Value::Unsigned(0) },
 					{ "max_photon_seeds_per_shading_point", Value::Unsigned(0) },
@@ -3310,10 +3318,13 @@ namespace
 	// declared no rasterizer chunk at all) segfaulted at load, and the
 	// interactive console's `remove rasterizeroutputs` command segfaulted
 	// on a Job with no rasterizer set.  Both sites now null-guard: Add
-	// fails cleanly (Finalize returns false, so Cst's PASS 2 stops and
-	// LoadAsciiSceneAuto/LoadAsciiSceneViaCst returns false with a
-	// diagnostic); Remove returns false.  These load calls not crashing
-	// IS the regression guard for what was a segfault before the fix.
+	// fails cleanly (Finalize returns false, diagnosing the chunk by name;
+	// Cst's PASS 2 keeps applying any later chunks -- bug-fix wave,
+	// 2026-08-28 -- but the derive as a whole is still refused whenever any
+	// diagnostic fired, so LoadAsciiSceneAuto/LoadAsciiSceneViaCst still
+	// returns false with a diagnostic); Remove returns false.  These load
+	// calls not crashing IS the regression guard for what was a segfault
+	// before the fix.
 	// ------------------------------------------------------------------
 
 	bool WriteSceneFile( const std::string& path, const std::string& text )
@@ -3348,6 +3359,170 @@ namespace
 			"lambertian_material\n{\nname mat_diffuse\nreflectance pnt_albedo\n}\n\n"
 			"sphere_geometry\n{\nname sph\nradius 0.8\n}\n\n"
 			"standard_object\n{\nname obj_sph\ngeometry sph\nmaterial mat_diffuse\n}\n";
+	}
+
+	void TestAutomaticRecoveryNames()
+	{
+		namespace fs = std::filesystem;
+		struct CountingEncoder final : IFrameEncoder, Reference
+		{
+			unsigned int calls = 0;
+			std::function<void()> afterWrite;
+			std::string FormatName() const override { return "recovery-test"; }
+			std::vector<std::string> Extensions() const override { return { "recovery" }; }
+			bool SupportsHDR() const override { return false; }
+			bool SupportsAOVs() const override { return false; }
+			void Encode(const FrameStore&, IWriteBuffer& dst, const EncodeOpts&) override
+			{
+				++calls;
+				if( !dst.setBytes("recovered frame", 15) ) throw std::runtime_error("recovery test write failed");
+				if( afterWrite ) afterWrite();
+			}
+		} encoder;
+		const auto scratch = fs::path(RISE::TestSupport::ScratchTestRoot("rise_automatic_recovery_"));
+		fs::create_directory(scratch);
+		struct RestoreDirectory {
+			fs::path previous = fs::current_path();
+			~RestoreDirectory() { fs::current_path(previous); }
+		} restore;
+		fs::current_path(scratch);
+		FrameStore::Spec spec;
+		spec.width = spec.height = 1;
+		auto* store = new FrameStore(spec);
+		EncodeOpts opts;
+		const auto primary = scratch / "missing-parent" / "frame";
+		auto* observer = new FileEncoderObserver(store, &encoder, opts, primary.string(), false);
+		const auto automatic = scratch / ("fro_temp_" + std::to_string(reinterpret_cast<uintptr_t>(observer)) + ".recovery");
+		const auto sentinel = scratch / "unrelated-sentinel.bin";
+		const std::vector<unsigned char> expectedSentinel = { 's', 'e', 'n', 't', 'i', 'n', 'e', 'l' };
+		const std::vector<unsigned char> expectedFrame = { 'r', 'e', 'c', 'o', 'v', 'e', 'r', 'e', 'd', ' ', 'f', 'r', 'a', 'm', 'e' };
+		for( unsigned int axis = 0; axis < 3; ++axis ) {
+			FrameStore::Spec emptySpec;
+			emptySpec.width = axis == 1 ? 2 : 0;
+			emptySpec.height = axis == 2 ? 2 : 0;
+			auto* emptyStore = new FrameStore(emptySpec);
+			const auto emptyPattern = scratch / "empty-frame";
+			const auto emptyPrimary = scratch / "empty-frame.recovery";
+			std::ofstream(emptyPrimary, std::ios::binary | std::ios::trunc) << "sentinel";
+			auto* emptyObserver = new FileEncoderObserver(emptyStore, &encoder, opts, emptyPattern.string(), false);
+			emptyStore->release();
+			const auto entriesBefore = std::distance(fs::directory_iterator(scratch), fs::directory_iterator());
+			encoder.calls = 0;
+			emptyObserver->OnFrameComplete(0, 0);
+			std::vector<unsigned char> preserved;
+			Check(encoder.calls == 0 && ReadFileAllBytes(emptyPrimary.string(), preserved) && preserved == expectedSentinel &&
+				std::distance(fs::directory_iterator(scratch), fs::directory_iterator()) == entriesBefore,
+				"empty-frame observer rejects either zero dimension before encoder output changes primary sentinel or creates recovery files");
+			emptyObserver->release();
+			fs::remove(emptyPrimary);
+		}
+		const auto additionalFiles = [&] {
+			std::vector<fs::path> files;
+			for( const auto& entry : fs::directory_iterator(scratch) ) {
+				if( entry.path().filename().string().find(automatic.stem().string() + "-") == 0 &&
+					entry.path().extension() == automatic.extension() ) files.push_back(entry.path());
+			}
+			return files;
+		};
+		const auto completePrivateFrame = [&](const fs::path& path) {
+			std::vector<unsigned char> bytes;
+			bool complete = !fs::is_symlink(path) && ReadFileAllBytes(path.string(), bytes) && bytes == expectedFrame;
+#ifndef _WIN32
+			complete = complete && (fs::status(path).permissions() &
+				(fs::perms::group_all | fs::perms::others_all)) == fs::perms::none;
+#endif
+			return complete;
+		};
+		std::ofstream(sentinel, std::ios::binary) << "sentinel";
+		for( unsigned int kind = 0; kind < 4; ++kind ) {
+			if( kind == 1 ) fs::create_symlink(sentinel, automatic);
+			else if( kind == 2 ) fs::create_hard_link(sentinel, automatic);
+			else if( kind == 3 ) std::ofstream(automatic, std::ios::binary) << "sentinel";
+			const auto entriesBefore = std::distance(fs::directory_iterator(scratch), fs::directory_iterator());
+			encoder.calls = 0;
+			DiskFileWriteBuffer::WriteDiagnostics adoption;
+			bool saved = true;
+			{
+				struct RestoreAdoptionFailure {
+					bool previous = ForTest_SetRecoveryStreamAdoptionFailure(true);
+					~RestoreAdoptionFailure() { ForTest_SetRecoveryStreamAdoptionFailure(previous); }
+				} restoreFailure;
+				saved = DiskFileWriteBuffer::WriteNewFile(automatic.string(), [&](DiskFileWriteBuffer& buffer) {
+					encoder.Encode(*store, buffer, opts);
+					return true;
+				}, &adoption);
+			}
+			std::vector<unsigned char> untouched, candidate;
+			const bool originalPreserved = kind == 0 ? !fs::exists(automatic) :
+				(ReadFileAllBytes(automatic.string(), candidate) && candidate == expectedSentinel &&
+				 (kind != 1 || fs::is_symlink(automatic)) && (kind != 2 || fs::equivalent(automatic, sentinel)));
+			Check(!saved && encoder.calls == 0 && adoption.error == std::errc::not_enough_memory &&
+				adoption.operation == "adopt automatic output stream" && adoption.recoveryPath.empty() &&
+				adoption.cleanupPath.empty() && !adoption.cleanupError && originalPreserved && additionalFiles().empty() &&
+				ReadFileAllBytes(sentinel.string(), untouched) && untouched == expectedSentinel &&
+				std::distance(fs::directory_iterator(scratch), fs::directory_iterator()) == entriesBefore,
+				"automatic stream-adoption failure removes only its newly created candidate after optional existing-name collision");
+			fs::remove(automatic);
+			for( const auto& path : additionalFiles() ) fs::remove(path);
+		}
+		for( unsigned int kind = 0; kind < 3; ++kind ) {
+			if( kind == 0 ) fs::create_symlink(sentinel, automatic);
+			else if( kind == 1 ) fs::create_hard_link(sentinel, automatic);
+			else std::ofstream(automatic, std::ios::binary) << "sentinel";
+			encoder.calls = 0;
+			observer->OnFrameComplete(0, 0);
+			const auto fresh = additionalFiles();
+			std::vector<unsigned char> untouched, candidate;
+			Check(encoder.calls == 1 && ReadFileAllBytes(sentinel.string(), untouched) && untouched == expectedSentinel &&
+				ReadFileAllBytes(automatic.string(), candidate) && candidate == expectedSentinel &&
+				(kind != 0 || fs::is_symlink(automatic)) && fresh.size() == 1 && completePrivateFrame(fresh.front()),
+				"automatic recovery preserves planted symlink hardlink and regular-file sentinels while encoding once into a new private file");
+			for( const auto& path : fresh ) fs::remove(path);
+			fs::remove(automatic);
+		}
+		encoder.calls = 0;
+		observer->OnFrameComplete(0, 0);
+		std::vector<unsigned char> recovered;
+		Check(encoder.calls == 1 && ReadFileAllBytes(automatic.string(), recovered) && recovered == expectedFrame,
+			"automatic recovery creates a fresh candidate and encodes complete bytes once");
+#ifndef _WIN32
+		const auto permissions = fs::status(automatic).permissions();
+		Check((permissions & (fs::perms::group_all | fs::perms::others_all)) == fs::perms::none,
+			"automatic recovery creates owner-only output permissions");
+#endif
+		encoder.calls = 0;
+		observer->OnFrameComplete(0, 0);
+		const auto repeated = additionalFiles();
+		Check(encoder.calls == 1 && completePrivateFrame(automatic) && repeated.size() == 1 && completePrivateFrame(repeated.front()),
+			"automatic recovery repeated render preserves its earlier file and creates a fresh complete candidate");
+		for( const auto& path : repeated ) fs::remove(path);
+		fs::remove(automatic);
+		observer->release();
+
+		// A complete staged image is already a usable recovery artifact. Make
+		// ordinary publication fail after encoding and ensure it is reused.
+		const auto failedTarget = scratch / "publication.recovery";
+		std::ofstream(failedTarget, std::ios::binary) << "previous image";
+		encoder.calls = 0;
+		encoder.afterWrite = [&] {
+			fs::remove(failedTarget);
+			fs::create_directory(failedTarget);
+		};
+		auto* retainedObserver = new FileEncoderObserver(store, &encoder, opts, (scratch / "publication").string(), false);
+		const auto redundantAutomatic = scratch / ("fro_temp_" + std::to_string(reinterpret_cast<uintptr_t>(retainedObserver)) + ".recovery");
+		retainedObserver->OnFrameComplete(0, 0);
+		unsigned int completeArtifacts = 0;
+		for( const auto& entry : fs::directory_iterator(scratch) ) {
+			if( !entry.is_directory() || entry.path().filename().string().find(".rise-write-") != 0 ) continue;
+			std::vector<unsigned char> retained;
+			if( ReadFileAllBytes((entry.path() / "output").string(), retained) && retained == expectedFrame ) ++completeArtifacts;
+		}
+		Check(encoder.calls == 1 && completeArtifacts == 1 && !fs::exists(redundantAutomatic),
+			"automatic recovery reuses complete failed-publication stage without encoder replay or a second automatic file");
+		retainedObserver->release();
+		store->release();
+		fs::current_path(restore.previous);
+		fs::remove_all(scratch);
 	}
 
 	void TestNullRasterizerGuard()
@@ -3477,6 +3652,7 @@ int main()
 	TestMultiFrameReuse();
 	TestNullRasterizerGuard();
 	#endif
+	TestAutomaticRecoveryNames();
 	TestFireFidelityProvenanceOutput();
 
 	std::cout << "----------------------------------------------------------------------\n";

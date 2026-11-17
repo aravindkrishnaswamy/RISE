@@ -16,13 +16,14 @@
 //
 //////////////////////////////////////////////////////////////////////
 
-#include <type_traits>   // static_assert guarding the RISEPel == Rec709RGBPel decode assumption
 #include "pch.h"
+#include <type_traits>   // static_assert guarding the RISEPel == Rec709RGBPel decode assumption
 #include "AgentEvalRunner.h"
 
 #include "AgentSession.h"
 #include "AgentRpc.h"
 #include "AgentDiagnostic.h"
+#include "ChatTrajectory.h"   // GPT slice item 3: ExpandTrajectoryResponseBody -- materialize a deduped response_body before replay
 #include "Base64.h"   // image-reconstruction Wave 1: Base64Encode for reference-image attachments
 #include "../Cst/Cst.h"   // Eval-harness slice E3: the "document"/"untouched" checkpoint kinds walk the CST directly
 #include "../Version.h"   // RISE_VER_* -- the run manifest's riseBuild string
@@ -349,6 +350,18 @@ namespace RISE
 			if( first.has( "run_type" ) ) {
 				std::string provider;
 				std::vector<std::string> bodies;
+				// GPT slice item 3 (2026-08-24): the recorder may have
+				// deduped `response_body`'s `tools`/`instructions` against
+				// this SAME session's earlier llm records (Chat
+				// Trajectory.h's kTrajectoryDedupRefMarker) -- materialize
+				// each body back to its ORIGINAL, complete form before it
+				// is fed to a provider codec below, so replay sees exactly
+				// what the recorder actually captured, dedup or not
+				// (ExpandTrajectoryResponseBody is a no-op on a body that
+				// was never deduped in the first place).  Reset at each
+				// `session` record -- the SAME boundary the recorder's own
+				// dedup baseline resets at.
+				Agent::TrajectoryDedupExpandState dedupState;
 				for( std::size_t i = 0; i < lines.size(); ++i ) {
 					JsonValue j;
 					std::string lerr;
@@ -380,9 +393,11 @@ namespace RISE
 							      "one provider-segment at a time (split it at the session boundary)";
 							return false;
 						}
+						dedupState = Agent::TrajectoryDedupExpandState();
 					}
 					else if( runType == "llm" ) {
-						bodies.push_back( j.get( "response_body" ).asString() );
+						bodies.push_back( Agent::ExpandTrajectoryResponseBody(
+							j.get( "response_body" ).asString(), dedupState ) );
 					}
 				}
 				if( provider.empty() ) {
@@ -1073,7 +1088,20 @@ namespace RISE
 			//!    -- OR an ARRAY of such spec objects,
 			//!  askUserMin?/askUserMax?:number (whole, >= 0),
 			//!  askUserBeforeMutation?:bool,
-			//!  askUserQuestionContainsAny?:non-empty string array}.  toolOutcomes.expect (and
+			//!  askUserQuestionContainsAny?:non-empty string array,
+			//!  toolCallCount?: {name:string, min:number, max?:number}}.  88 S6
+			//!  (2026-08-20): `toolCallCount` is the doc-88 §5 gate-(c) census
+			//!  primitive -- "how many times was tool `name` called in this
+			//!  trajectory" -- generalizing the askUserMin/askUserMax counting
+			//!  shape to any named tool.  `name` is REQUIRED (a missing name never
+			//!  matches); `min` is REQUIRED (an unbounded count checkpoint asserts
+			//!  nothing, same rule `objects_reaching_kinds`'s "min" enforces);
+			//!  `max`, when present, must be >= min.  Unlike every other
+			//!  trajectory field, `toolCallCount` POPULATES CheckOutcome's
+			//!  metricValue (the observed count) -- see the carriesMetric dedupe
+			//!  pass in LoadEvalScenario and the metric-op enumeration comment
+			//!  above ValidateCheckpointFieldTypes, BOTH of which this field
+			//!  extends alongside the five "document" ops. toolOutcomes.expect (and
 			//!  the optional toolCallAfterUserTurn.expect) is one of
 			//!  applied|staged|rejected|error|conflict; argsContains (when
 			//!  present) is a non-empty string OR a non-empty array of non-empty
@@ -1085,7 +1113,7 @@ namespace RISE
 			//!  clarifying-questions feature); askUserBeforeMutation asserts the
 			//!  FIRST ask_user record precedes the FIRST document-mutating tool
 			//!  record (insert_chunk/insert_chunks/propose_patch/
-			//!  propose_patches/remove_chunk -- see kMutatingToolNames in
+			//!  propose_patches/remove_chunk/remove_chunks -- see kMutatingToolNames in
 			//!  CheckTrajectoryKind; a mutating verb missing from that table
 			//!  reads as non-mutating and VACUOUSLY PASSES this assertion);
 			//!  askUserQuestionContainsAny requires at least one ask_user
@@ -1121,6 +1149,57 @@ namespace RISE
 							      "].askUserQuestionContainsAny[" + std::to_string( i ) + "] must be a non-empty string";
 							return false;
 						}
+					}
+				}
+
+				// toolCallCount: {name:string (required), min:number (required),
+				// max?:number} -- the gate-(c) census primitive (88 S6).  `name`
+				// missing/empty never matches anything, so it is REQUIRED; `min` is
+				// REQUIRED for the identical reason `objects_reaching_kinds`' "min"
+				// is required -- an unbounded count checkpoint asserts nothing and
+				// would vacuously pass every trajectory.  `max`, when present, must
+				// be >= min (an inverted band can never pass).
+				if( cp.has( "toolCallCount" ) ) {
+					const JsonValue& tcc = cp.get( "toolCallCount" );
+					const std::string pfx = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) + "].toolCallCount";
+					if( !tcc.isObject() ) {
+						err = pfx + " must be an object (got " + JsonTypeName( tcc.type() ) + ")";
+						return false;
+					}
+					if( !tcc.has( "name" ) || !tcc.get( "name" ).isString() || tcc.get( "name" ).asString().empty() ) {
+						err = pfx + ".name must be a non-empty string";
+						return false;
+					}
+					if( !tcc.has( "min" ) || !tcc.get( "min" ).isNumber() ) {
+						err = pfx + " REQUIRES a numeric \"min\" (an unbounded count checkpoint asserts nothing)";
+						return false;
+					}
+					if( tcc.get( "min" ).asNumber() < 0 ) {
+						err = pfx + ".min must be >= 0 (a call COUNT can never be negative)";
+						return false;
+					}
+					if( tcc.has( "max" ) ) {
+						if( !tcc.get( "max" ).isNumber() ) {
+							err = pfx + ".max, when present, must be a number";
+							return false;
+						}
+						if( tcc.get( "max" ).asNumber() < tcc.get( "min" ).asNumber() ) {
+							err = pfx + ".max must be >= .min (an inverted band can never pass)";
+							return false;
+						}
+					}
+					// Unlike a "document" op, a "trajectory" checkpoint has no "op"
+					// name for the metricLabel dedupe pass (LoadEvalScenario) to fall
+					// back to -- so an explicit, non-empty "metricLabel" is REQUIRED
+					// here (never optional) to keep the census metric this field
+					// exists to report nameable and to keep two toolCallCount
+					// checkpoints in one scenario from silently colliding on an
+					// empty label.
+					if( !cp.has( "metricLabel" ) || !cp.get( "metricLabel" ).isString() || cp.get( "metricLabel" ).asString().empty() ) {
+						err = "scenario '" + scenarioId + "': checkpoints[" + std::to_string( idx ) +
+						      "] carries \"toolCallCount\" but no non-empty \"metricLabel\" -- required (trajectory "
+						      "checkpoints have no \"op\" name to fall back to)";
+						return false;
 					}
 				}
 
@@ -1352,9 +1431,12 @@ namespace RISE
 			//! (CheckScenario's own reader), plus the OPTIONAL "metricLabel"
 			//! string every kind shares too (geometry scope expansion) --
 			//! type-checked generically here since a checkpoint of ANY kind may
-			//! in principle carry one, even though today only four "document" ops
+			//! in principle carry one, even though today only five "document" ops
 			//! (distinct_chunk_kinds / objects_reaching_kinds / param_binding /
-			//! chunk_name_prefix_count) ever populate a metricValue for it to
+			//! chunk_name_prefix_count / any_param_references_kind, the S6 fix)
+			//! plus the "trajectory" kind's "toolCallCount" field (88 S6, the
+			//! doc-88 §5 gate-(c) census primitive)
+			//! ever populate a metricValue for it to
 			//! label.  An unrecognized kind name is
 			//! left unchecked here too -- CheckOneCheckpoint already fails it
 			//! loudly at runtime ("unknown checkpoint kind").
@@ -1620,13 +1702,19 @@ namespace RISE
 
 				// Geometry scope expansion / metric labeling: every METRIC-CARRYING
 				// checkpoint (today: "document" ops "distinct_chunk_kinds",
-				// "objects_reaching_kinds", "param_binding" (S0.1), and
-				// "chunk_name_prefix_count" (S2.3) -- the FOUR CheckOneCheckpoint
+				// "objects_reaching_kinds", "param_binding" (S0.1),
+				// "chunk_name_prefix_count" (S2.3), and "any_param_references_kind"
+				// (S6 fix) -- the FIVE document ops -- PLUS the "trajectory" kind's
+				// "toolCallCount" field (88 S6, the gate-(c) census primitive) --
+				// the ones CheckOneCheckpoint
 				// populates CheckOutcome::metricValue from) resolves to an
 				// EFFECTIVE label --
 				// its explicit "metricLabel" string when present and non-empty, else
 				// its "op" name (so a single such checkpoint needs no metricLabel at
-				// all).  Two metric-carrying checkpoints in the SAME scenario that
+				// all; "toolCallCount" has no "op" to fall back to, so its own
+				// load-time validation REQUIRES an explicit metricLabel -- see
+				// ValidateTrajectoryCheckpointTypes).  Two metric-carrying checkpoints
+				// in the SAME scenario that
 				// resolve to the same effective label is a load-time HARD ERROR: with
 				// only one metric-carrying op, eval_report.py pooling every
 				// metricValue in a group was a documented latent limitation; with more
@@ -1641,9 +1729,10 @@ namespace RISE
 						const JsonValue& cp = cps.at( i );
 						const std::string cpKind = ( cp.has( "kind" ) && cp.get( "kind" ).isString() ) ? cp.get( "kind" ).asString() : std::string();
 						const std::string cpOp   = ( cp.has( "op" )   && cp.get( "op" ).isString() )   ? cp.get( "op" ).asString()   : std::string();
-						const bool carriesMetric = cpKind == "document" &&
+						const bool carriesMetric = ( cpKind == "document" &&
 							( cpOp == "distinct_chunk_kinds" || cpOp == "objects_reaching_kinds" || cpOp == "param_binding" ||
-							  cpOp == "chunk_name_prefix_count" );
+							  cpOp == "chunk_name_prefix_count" || cpOp == "any_param_references_kind" ) ) ||
+							( cpKind == "trajectory" && cp.has( "toolCallCount" ) );
 						if( !carriesMetric ) continue;
 						std::string label = cpOp;
 						if( cp.has( "metricLabel" ) && cp.get( "metricLabel" ).isString() && !cp.get( "metricLabel" ).asString().empty() )
@@ -2325,6 +2414,48 @@ namespace RISE
 
 			using FetchFn = std::function<FetchOutcome( const ChatHttpRequest& )>;
 
+			//! Arc 77 Phase 2 GUI wiring (2026-08-11): adapts THIS file's
+			//! replay/live FetchFn abstraction to the codec layer's
+			//! IChatHttpTransport seam, so the `imagine_scene` host
+			//! generator (Agent::MakeChatImageGenerator, AgentChatCodecs.h)
+			//! can be reused here byte-for-byte instead of hand-rolled --
+			//! that function is now the ONE implementation every host
+			//! (this runner, the Mac GUI, the Windows GUI) builds its
+			//! generator from.  A FetchFn's `!proceed` case has no direct
+			//! ChatHttpResponse analogue (it distinguishes "never got an
+			//! HTTP response" via a stopStatus/stopError pair rather than a
+			//! bare status+error), so this adapter folds it into
+			//! ChatHttpResponse's own "transport failure" shape (status 0,
+			//! a synthesized error) -- textually identical to the message
+			//! this file used to construct inline before the extraction.
+			class FetchFnTransport : public IChatHttpTransport
+			{
+			public:
+				explicit FetchFnTransport( FetchFn fetch ) : mFetch( std::move( fetch ) ) {}
+
+				ChatHttpResponse Post( const ChatHttpRequest& req ) override
+				{
+					const FetchOutcome fo = mFetch( req );
+					ChatHttpResponse resp;
+					if( !fo.proceed ) {
+						resp.status = 0;
+						resp.error = fo.stopError.empty()
+							? ( "the image request did not complete (" +
+							    ( fo.stopStatus.empty() ? std::string( "no reason reported" )
+							                            : fo.stopStatus ) + ")" )
+							: fo.stopError;
+						return resp;
+					}
+					resp.status    = fo.status;
+					resp.body      = fo.body;
+					resp.elapsedMs = fo.elapsedMs;
+					return resp;
+				}
+
+			private:
+				FetchFn mFetch;
+			};
+
 			//! The SHARED scenario drive loop for both the replay
 			//! (RunScenario) and live (RunScenarioLive) paths.  Everything
 			//! below the body source -- scene load, session/dispatcher
@@ -2501,6 +2632,95 @@ namespace RISE
 					}
 				}
 				session->SetReferenceImages( std::move( referenceImages ) );
+
+				// Arc 77 Phase 2 (2026-08-11): install the HOST half of
+				// `imagine_scene` -- the capability the session cannot supply
+				// for itself, because performing the POST needs this host's
+				// transport and this run's credentials.
+				//
+				// THIS TU'S NO-CREDENTIAL / NO-GETENV CONTRACT IS INTACT (see
+				// the file header).  The key is the `apiKey` parameter this
+				// function was already handed for BuildRequest, and the POST
+				// goes through the SAME injected `fetch` seam every chat round
+				// uses -- via FetchFnTransport, the IChatHttpTransport adapter
+				// defined above -- so a mocked transport drives image
+				// generation on the byte-identical code path a real socket
+				// does, and nothing new is read from the environment here.
+				// The actual wiring (build request -> POST -> parse response)
+				// is Agent::MakeChatImageGenerator (AgentChatCodecs.h/.cpp) --
+				// the ONE implementation every host (this runner, the Mac and
+				// Windows GUIs) builds its generator from; this block is just
+				// the adapter + the trivial 3-field copy into
+				// AgentSession::AgentImageGenerator's own type (kept distinct
+				// from ChatImageGenerator so AgentChatCodecs.h stays
+				// independent of AgentSession.h -- see MakeChatImageGenerator's
+				// doc).
+				//
+				// `fetch` is a const& whose referent is this function's
+				// caller's local; FetchFnTransport copies it into the
+				// shared_ptr-held adapter instance, which the generator
+				// lambda below in turn keeps alive by shared_ptr -- so
+				// nothing here outlives its referent even though the session
+				// (and its generator) outlives this function inside the
+				// returned handle's dispatcher.
+				{
+					const std::string providerName = ChatProviderName( provider );
+					const std::shared_ptr<IChatHttpTransport> transport =
+						std::make_shared<FetchFnTransport>( fetch );
+					const ChatImageGenerator wire =
+						MakeChatImageGenerator( providerName, apiKey, transport );
+
+					AgentSession::AgentImageGenerator gen;
+					gen.providerName = wire.providerName;
+					gen.supported    = wire.supported;
+					gen.modelId      = wire.modelId;
+					if( wire.supported ) {
+						const std::function<ChatImageGenOutcome( const std::string& )> rawGenerate =
+							wire.generate;
+						gen.generate =
+							[rawGenerate]( const std::string& description ) -> AgentSession::AgentImageGenOutcome
+						{
+							AgentSession::AgentImageGenOutcome out;
+							const ChatImageGenOutcome r = rawGenerate( description );
+							out.ok       = r.ok;
+							out.bytes    = r.bytes;
+							out.mimeType = r.mimeType;
+							out.error    = r.error;
+							return out;
+						};
+					}
+					session->SetImageGenerator( std::move( gen ) );
+
+					// S2 (2026-08-11): the TEXT sibling, installed from the
+					// SAME provider name, the SAME apiKey parameter and the
+					// SAME FetchFnTransport -- so a replayed or mocked
+					// transport drives `build_element`'s builder completion on
+					// the byte-identical code path a real socket does, and this
+					// TU's no-credential/no-getenv contract is as intact as it
+					// is for the image generator above.
+					const ChatTextCompleter wireText =
+						MakeChatTextCompleter( providerName, apiKey, transport );
+
+					AgentSession::AgentTextCompleter comp;
+					comp.providerName = wireText.providerName;
+					comp.supported    = wireText.supported;
+					comp.modelId      = wireText.modelId;
+					if( wireText.supported ) {
+						const std::function<ChatTextCompletionOutcome( const std::string& )> rawComplete =
+							wireText.complete;
+						comp.complete =
+							[rawComplete]( const std::string& prompt ) -> AgentSession::AgentTextCompletionOutcome
+						{
+							AgentSession::AgentTextCompletionOutcome out;
+							const ChatTextCompletionOutcome r = rawComplete( prompt );
+							out.ok    = r.ok;
+							out.text  = r.text;
+							out.error = r.error;
+							return out;
+						};
+					}
+					session->SetTextCompleter( std::move( comp ) );
+				}
 
 				const long long headVersionStart = static_cast<long long>( session->HeadVersion().revision );
 				handle.result.headVersionStart = headVersionStart;
@@ -2784,6 +3004,15 @@ namespace RISE
 							// so the ProviderError branch after the attempt
 							// loop sets terminalStatus/errorMessage exactly as
 							// it would have with no retry arm at all.
+							// ChatErrorKind::MalformedToolCall also arrives here
+							// (AgentChatLoop queued a corrective user message that
+							// the next BuildRequest appends).  DECISION: the eval
+							// runner allows ONE such retry per round, not the
+							// loop's two -- an eval measures the model, and a
+							// model that needs a second correction in the same
+							// round is a result worth reporting as provider_error
+							// rather than hiding behind extra attempts; the loop's
+							// own per-turn cap still bounds the interactive GUIs.
 							if( st.kind == ChatStepResult::Kind::ProviderError &&
 							    st.retryDegenerateTurn && attempt == 1 &&
 							    ( scenario.budgets.maxLlmCalls < 0 || llmCalls < scenario.budgets.maxLlmCalls ) ) {
@@ -2807,7 +3036,25 @@ namespace RISE
 								const int rpcId = nextRpcId++;
 								const std::string line = loop.ToolCallToJsonRpcLine( call, rpcId );
 								std::string resp;
-								if( call.name == "ask_user" ) {
+								// SEQUENCING GATE (E4, AgentChatLoop.h): a mutating
+								// verb refused by the blind-edit streak gate is
+								// intercepted HERE, before dispatch -- the SAME
+								// shape as the ask_user interception immediately
+								// below (checked first since a refusal must win
+								// even for a verb that also has other special
+								// handling -- ask_user itself is never a mutating
+								// verb, so the two branches never overlap in
+								// practice, but the ordering keeps the invariant
+								// obvious rather than incidental).  `line` above is
+								// still built (keeps the dispatch-latency stamp
+								// honest, exactly as ask_user's comment already
+								// explains) but is NEVER handed to the dispatcher
+								// here -- the underlying document is not touched.
+								const std::string gateResp = loop.GateRefusalResponse( call, rpcId );
+								if( !gateResp.empty() ) {
+									resp = gateResp;
+								}
+								else if( call.name == "ask_user" ) {
 									// PINNED DESIGN: ask_user is a chat-loop-only tool
 									// (see AgentChatCodecs.cpp) -- it has NO AgentRpc verb
 									// and is never sent to dispatcher->HandleLine.  The
@@ -2900,6 +3147,19 @@ namespace RISE
 						else if( st.kind == ChatStepResult::Kind::FinalText ) {
 							finalText = st.finalText;
 							turnDone = true;
+							// ARC 83 sec 4.1: THE MODE TRANSITION SEAM.  A turn
+							// that ends with the model's own prose rather than a
+							// tool call is "the agent's first final answer" --
+							// the exact event that ends the build protocol's
+							// compulsion.  This is the ONE structural signal for
+							// it (no chat-text sniffing, no wall-clock, no call
+							// counts), and it is per-HOST because AgentChatLoop
+							// deliberately holds no session pointer.  Called
+							// unconditionally and on EVERY final turn:
+							// NoteFinalAnswer is idempotent and one-way, so only
+							// the first one does anything.
+							if( AgentSession* sess = dispatcher->Session() )
+								sess->NoteFinalAnswer();
 						}
 						else {   // ProviderError
 							terminalStatus = "provider_error";
@@ -4125,6 +4385,7 @@ namespace RISE
 						{ "irradiance_cache",  ChunkCategory::IrradianceCache },
 						{ "animation",         ChunkCategory::Animation },
 						{ "scene_variant",     ChunkCategory::SceneVariant },
+						{ "hair_guides",       ChunkCategory::HairGuides },
 					};
 					for( const auto& kv : kNames ) {
 						if( name == kv.first ) { out = kv.second; return true; }
@@ -4348,14 +4609,17 @@ namespace RISE
 				//! minus "exclude", and grades against distinctMin/distinctMax (both
 				//! bounds INCLUSIVE; loader enforces distinctMin >= 0 and
 				//! distinctMax >= distinctMin); it is
-				//! one of TWO ops that populate CheckOutcome::metricValue (the
+				//! one of FIVE ops that populate CheckOutcome::metricValue (the
 				//! distinct count; the metric's effective LABEL -- "metricLabel" when
 				//! present, else the op name -- is loader-guarded against collision,
 				//! see LoadEvalScenario's metricLabel dedupe pass).
 				//! {op:"any_param_references_kind",referencedKind}
 				//! passes iff a chunk of that kind exists AND has >=1 referrer
 				//! anywhere in the document (the FORWARD-existential sibling of
-				//! param_references_kind, which needs a known target).
+				//! param_references_kind, which needs a known target); populates
+				//! metricValue as a 1.0/0.0 pass indicator (S6 fix, review round 1
+				//! P1) -- the FIFTH metricValue emitter, and the one whose metric IS
+				//! its pass/fail rather than a distinct count.
 				//! {op:"no_orphan_chunks",kindSuffix?|kinds?|category?,exclude?}
 				//! passes iff EVERY chunk matching the filter has >=1 referrer
 				//! (vacuously true when zero chunks match -- absence is
@@ -4370,7 +4634,7 @@ namespace RISE
 				//! mitigation distinct_chunk_kinds/no_orphan_chunks cannot express
 				//! (both only see EXISTENCE + boundness, not WHICH object a binding
 				//! reaches); grades the qualifying-root count against min/max (both
-				//! bounds INCLUSIVE); one of FOUR metricValue emitters.
+				//! bounds INCLUSIVE); one of FIVE metricValue emitters.
 				//! {op:"param_binding",slots:[{chunkKind,params:[...]}],
 				//! excludeReferencedKinds?,min,max?} (eval-harness S0.1) counts CHUNK
 				//! INSTANCES (never twice, even when several of a chunk's listed
@@ -4383,7 +4647,7 @@ namespace RISE
 				//! specifically a scalar_painter).  A numeric literal, an inline
 				//! `r g b`, "none", or a name that resolves to nothing are all NOT a
 				//! binding.  Grades the qualifying-instance count against min
-				//! (required) / max (optional), both bounds INCLUSIVE; one of FOUR
+				//! (required) / max (optional), both bounds INCLUSIVE; one of FIVE
 				//! metricValue emitters.
 				//! {op:"chunk_name_prefix_count",prefix,kindSuffix?|kinds?|category?,
 				//! min,max?} (Arc-75 S2.3, provenance metrics) counts chunks whose
@@ -4402,7 +4666,7 @@ namespace RISE
 				//! expansion's chunks span several different kinds (one material,
 				//! several painters) under one shared prefix.  Grades the count
 				//! against min (required) / max (optional), both bounds INCLUSIVE;
-				//! the FOURTH metricValue emitter.
+				//! the FOURTH of FIVE metricValue emitters.
 				CheckOutcome CheckDocumentKind( const JsonValue& cp, AgentSession* session )
 				{
 					if( !session ) return { false, "document checkpoint: no live session (run did not complete)" };
@@ -4939,27 +5203,53 @@ namespace RISE
 					// param_references_kind needs a known TARGET+param; this needs
 					// none).  Passes iff a chunk with role == referencedKind exists AND
 					// has >=1 referrer in RISE::Cst::BuildReferenceGraph(doc).dependents
-					// (some param, somewhere in the document, names it).
+					// (some param, somewhere in the document, names it).  Populates
+					// CheckOutcome::metricValue as a 1.0/0.0 pass indicator on every
+					// SUBSTANTIVE evaluation (the S6 fix -- rich_material_closeup.json's
+					// headline "spatially_varying_scalar" metricLabel needs a live
+					// metricValue to reach results.jsonl at all; see the "FIFTH
+					// metricValue emitter" doc comment on CheckDocumentKind above
+					// and LoadEvalScenario's metricLabel dedupe pass).  The one
+					// early-return that does NOT set it is the malformed-checkpoint case
+					// (missing/empty "referencedKind"), matching distinct_chunk_kinds'
+					// own missing-"distinctMin" convention -- an authoring error is not
+					// a measurement.
 					if( op == "any_param_references_kind" ) {
 						if( !cp.has( "referencedKind" ) || !cp.get( "referencedKind" ).isString() || cp.get( "referencedKind" ).asString().empty() )
 							return { false, "any_param_references_kind requires a non-empty string \"referencedKind\"" };
 						const std::string kind = cp.get( "referencedKind" ).asString();
 
 						const std::vector<std::pair<RISE::Cst::NodeId, NodeRef>> chunks = CheckerCollectChunkIdsOfKind( doc, kind );
-						if( chunks.empty() )
-							return { false, "any_param_references_kind: no chunk of kind '" + kind + "' exists in the document" };
+						if( chunks.empty() ) {
+							CheckOutcome oc;
+							oc.hasMetricValue = true;
+							oc.metricValue = 0.0;
+							oc.passed = false;
+							oc.detail = "any_param_references_kind: no chunk of kind '" + kind + "' exists in the document";
+							return oc;
+						}
 
 						const RISE::Cst::ReferenceGraph graph = RISE::Cst::BuildReferenceGraph( doc );
 						for( const auto& kv : chunks ) {
 							const auto it = graph.dependents.find( kv.first );
 							if( it != graph.dependents.end() && !it->second.empty() ) {
 								const std::string nm = CheckerChunkName( kv.second );
-								return { true, "any_param_references_kind: '" + ( nm.empty() ? std::string( "<unnamed>" ) : nm ) +
-									"' (kind '" + kind + "') has " + std::to_string( it->second.size() ) + " referrer(s)" };
+								CheckOutcome oc;
+								oc.hasMetricValue = true;
+								oc.metricValue = 1.0;
+								oc.passed = true;
+								oc.detail = "any_param_references_kind: '" + ( nm.empty() ? std::string( "<unnamed>" ) : nm ) +
+									"' (kind '" + kind + "') has " + std::to_string( it->second.size() ) + " referrer(s)";
+								return oc;
 							}
 						}
-						return { false, "any_param_references_kind: " + std::to_string( chunks.size() ) + " chunk(s) of kind '" +
-							kind + "' exist, but NONE has a referrer (all orphaned)" };
+						CheckOutcome oc;
+						oc.hasMetricValue = true;
+						oc.metricValue = 0.0;
+						oc.passed = false;
+						oc.detail = "any_param_references_kind: " + std::to_string( chunks.size() ) + " chunk(s) of kind '" +
+							kind + "' exist, but NONE has a referrer (all orphaned)";
+						return oc;
 					}
 
 					// no_orphan_chunks: {kindSuffix?|kinds?|category?, exclude?} --
@@ -6393,7 +6683,13 @@ namespace RISE
 					if( !cp.has( "expect" ) || !cp.get( "expect" ).isString() )
 						return { false, "diagnostics checkpoint missing string field \"expect\"" };
 					const std::string expect = cp.get( "expect" ).asString();
-					const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
+					// (Doc 91) pass the live session's real build phase through
+					// rather than ValidateText's conservative no-session
+					// default, so a scenario checkpoint sees the SAME
+					// DESIGN_UNBOUND_MATERIAL gating a live run would.
+					const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument(),
+						session->BuildProtocolActive() && session->BuildPhase() == AgentSession::AgentBuildPhase::Pieces,
+						&session->LightSoloMeasurements() );
 
 					if( expect == "clean" ) {
 						// Creative-richness P2.b (73-creative-richness-design.md
@@ -6458,13 +6754,20 @@ namespace RISE
 				//! user-turn count.  askUserMin/askUserMax (stage 2 of the
 				//! clarifying-questions feature) count "ask_user" tool records;
 				//! askUserBeforeMutation asserts the FIRST "ask_user" record
-				//! precedes the FIRST record of one of the 5 document-mutating
+				//! precedes the FIRST record of one of the document-mutating
 				//! tools (insert_chunk/insert_chunks/propose_patch/
-				//! propose_patches/remove_chunk -- the same mutation set
+				//! propose_patches/remove_chunk/remove_chunks -- the same mutation set
 				//! AgentChatLoop::AddToolResult's blind-edit nudge tracks).
 				CheckOutcome CheckTrajectoryKind( const JsonValue& cp, const AgentEvalRunHandle& handle )
 				{
 					std::vector<std::string> failures;
+					// toolCallCount's observed count, populated inside the
+					// needsRecords block below when the field is present -- read
+					// again at the function's end to set CheckOutcome::metricValue,
+					// since this is the ONE trajectory field that reports a metric
+					// (88 S6, the gate-(c) census primitive).  -1 means "not computed"
+					// (the field was absent).
+					long long toolCallCountObserved = -1;
 
 					if( cp.has( "maxToolCalls" ) && cp.get( "maxToolCalls" ).isNumber() ) {
 						const double m = cp.get( "maxToolCalls" ).asNumber();
@@ -6486,12 +6789,13 @@ namespace RISE
 						cp.has( "noMechanicalLoop" ) || cp.has( "expectAutonomyRefusal" ) ||
 						cp.has( "toolOutcomes" ) || cp.has( "toolCallAfterUserTurn" ) ||
 						cp.has( "askUserMin" ) || cp.has( "askUserMax" ) || cp.has( "askUserBeforeMutation" ) ||
-						cp.has( "askUserQuestionContainsAny" );
+						cp.has( "askUserQuestionContainsAny" ) || cp.has( "toolCallCount" );
 					if( needsRecords ) {
 						if( handle.trajectoryPath.empty() ) {
 							failures.push_back( "trajectory file unavailable (run did not complete) -- cannot check "
 								"noAutonomyRefusal/requiredToolInOrder/noMechanicalLoop/expectAutonomyRefusal/"
-								"toolOutcomes/toolCallAfterUserTurn/askUserMin/askUserMax/askUserBeforeMutation/askUserQuestionContainsAny" );
+								"toolOutcomes/toolCallAfterUserTurn/askUserMin/askUserMax/askUserBeforeMutation/"
+								"askUserQuestionContainsAny/toolCallCount" );
 						} else {
 							std::ifstream f( handle.trajectoryPath.c_str(), std::ios::binary );
 							if( !f ) {
@@ -6617,6 +6921,37 @@ namespace RISE
 									}
 								}
 
+								// toolCallCount (88 S6, the doc-88 §5 gate-(c) census
+								// primitive): count tool records named `toolCallCount.name`
+								// -- the SAME counting shape askUserMin/askUserMax use
+								// below, generalized to any tool.  Unlike every other
+								// trajectory assertion, this ALSO populates
+								// toolCallCountObserved so the function's final return can
+								// set CheckOutcome::metricValue -- the mechanism gate (c)
+								// reads per-run ("was vary_material called") before an
+								// external pass counts how many of N repeats hit it.
+								if( cp.has( "toolCallCount" ) && cp.get( "toolCallCount" ).isObject() ) {
+									const JsonValue& tcc = cp.get( "toolCallCount" );
+									const std::string wantName = tcc.get( "name" ).asString();
+									long long count = 0;
+									for( const auto& t : toolRecords )
+										if( t.get( "name" ).asString() == wantName ) ++count;
+									toolCallCountObserved = count;
+
+									if( tcc.has( "min" ) && tcc.get( "min" ).isNumber() ) {
+										const long long wantMin = static_cast<long long>( tcc.get( "min" ).asNumber() );
+										if( count < wantMin )
+											failures.push_back( "toolCallCount: '" + wantName + "' observed " + std::to_string( count ) +
+												" call(s), want >= " + std::to_string( wantMin ) );
+									}
+									if( tcc.has( "max" ) && tcc.get( "max" ).isNumber() ) {
+										const long long wantMax = static_cast<long long>( tcc.get( "max" ).asNumber() );
+										if( count > wantMax )
+											failures.push_back( "toolCallCount: '" + wantName + "' observed " + std::to_string( count ) +
+												" call(s), want <= " + std::to_string( wantMax ) );
+									}
+								}
+
 								// askUserMin/askUserMax (stage 2 of the clarifying-
 								// questions feature): count "ask_user" tool records
 								// in the trajectory, one shared pass over toolRecords
@@ -6671,10 +7006,11 @@ namespace RISE
 								// askUserBeforeMutation: the FIRST "ask_user" record
 								// must precede the FIRST document-mutating tool
 								// record ("asked before building") -- mirrors the
-								// blind-edit-nudge mutation set AgentChatLoop::
-								// AddToolResult already tracks (insert_chunk/
+								// SEQUENCING GATE mutation set AgentChatLoop.cpp's
+								// IsMutatingToolName already tracks (insert_chunk/
 								// insert_chunks/insert_material_scaffold/
-								// propose_patch/propose_patches/remove_chunk).
+								// insert_geometry_scaffold/propose_patch/
+								// propose_patches/remove_chunk/remove_chunks).
 								// EVERY mutating verb must be
 								// listed: a verb missing here is silently treated
 								// as non-mutating, so a run that built via that
@@ -6696,7 +7032,7 @@ namespace RISE
 									//   * THIS list answers "did the MODEL mutate the
 									//     document, and when?".  resolve_proposal is an
 									//     OWNER-authority verb: it is not in the model's
-									//     14-tool chat table at all (AgentChatCodecs.cpp
+									//     19-tool chat table at all (AgentChatCodecs.cpp
 									//     -- the eval runner's only source of
 									//     `toolRecords`), and even on the MCP surface it
 									//     is refused at the dispatcher under BOTH Read
@@ -6725,7 +7061,103 @@ namespace RISE
 										// geometry sibling, SAME InsertChunks path, SAME
 										// membership rationale.
 										"insert_geometry_scaffold",
-										"propose_patch", "propose_patches", "remove_chunk"
+										// R2 (2026-08-10): replace_geometry_scaffold mutates the
+										// document too -- ONE composite swap of a part's form.
+										// Omitting it would let a run that re-formed the scene
+										// before asking VACUOUSLY PASS askUserBeforeMutation.
+										"replace_geometry_scaffold",
+										// 88 step 2 (2026-08-19): collapse_to_instances mutates the
+										// document (one composite swap replacing N chunks), so a run
+										// that collapsed a run before asking must not VACUOUSLY pass
+										// askUserBeforeMutation.
+										"collapse_to_instances",
+										// 88 S5 (2026-08-20): vary_material mutates the
+										// document (one composite swap adding a painter and
+										// rebinding a material slot), so a run that varied a
+										// material before asking must not VACUOUSLY pass
+										// askUserBeforeMutation.
+										"vary_material",
+										// Cat plan item 1 (2026-08-25): fix_blend_scale mutates
+										// the document (one composite swap clamping k on every
+										// flagged smin joint in scope), so a run that fixed a
+										// blend before asking must not VACUOUSLY pass
+										// askUserBeforeMutation.
+										"fix_blend_scale",
+										// GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30):
+										// add_wear mutates the document (one composite
+										// swap adding a painter or two and rebinding the
+										// material's slots), so a run that wore a
+										// material before asking must not VACUOUSLY pass
+										// askUserBeforeMutation.
+										"add_wear",
+										// WETNESS_COAT_DESIGN sec 6/13 (2026-08-31):
+										// add_wetness mutates the document (a Lambertian
+										// rewrite to polished_material, or one-to-three
+										// field chunks plus the material's slots on a
+										// GGX/PBR base), so a run that wet a material
+										// before asking must not VACUOUSLY pass
+										// askUserBeforeMutation.
+										"add_wetness",
+										// CLOTH_FABRIC_DESIGN 9.7 (2026-09-02):
+										// make_fabric mutates the document (up
+										// to four minted chunks plus every bound
+										// object's material reference moved onto
+										// the fabric wrapper), so a run that
+										// converted a material before asking must
+										// not VACUOUSLY pass askUserBeforeMutation.
+										"make_fabric",
+										// CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03):
+										// add_fuzz mutates the document (a
+										// hair_geometry/hair_material/
+										// standard_object triad per bound
+										// object), so a run that grew a fuzz
+										// shell before asking must not
+										// VACUOUSLY pass askUserBeforeMutation.
+										"add_fuzz",
+										// Doc 90 R2 (2026-08-23): revert_to_revision mutates
+										// the document (one composite swap restoring an
+										// earlier revision's whole text), so a run that
+										// reverted before asking must not VACUOUSLY pass
+										// askUserBeforeMutation.  That its text is one the
+										// document ALREADY had at some point does not make it
+										// less of a mutation of the document as it stands.
+										"revert_to_revision",
+										// G2 (2026-08-10): file_build_plan is DELIBERATELY
+										// absent.  It changes nothing in the document, so
+										// listing it here would fail askUserBeforeMutation
+										// for a run that filed a plan and THEN asked -- and
+										// the build-plan gate can force that ordering, so
+										// the two mechanisms would fight.  Same call it
+										// gets in AgentChatLoop.cpp's IsMutatingToolName.
+										// Arc 77 Phase 2 (2026-08-11): `imagine_scene` is
+										// absent for the IDENTICAL reason -- it changes
+										// nothing in the document, and on a capable provider
+										// the same gate can force it before the first
+										// geometry call, so listing it would make the gate
+										// and askUserBeforeMutation fight in exactly the way
+										// file_build_plan's exclusion prevents.
+										// S1 (2026-08-11): `finish_element` and
+										// `reopen_element` are absent for the identical
+										// reason -- neither changes the document (they move
+										// per-session phase state), and finish_element is
+										// the protocol's own advance, which a run may
+										// legitimately call before ever asking the user
+										// anything.
+										// Doc 90 slice R1 (2026-08-22):
+										// `set_render_anchor` is absent for the
+										// identical reason -- it changes nothing in
+										// the document, it only re-points a
+										// per-session bookmark at a render that has
+										// already happened, and a run that keeps a
+										// good frame before asking the user anything
+										// has mutated nothing to ask about.
+										"propose_patch", "propose_patches", "remove_chunk",
+										// R1a (2026-08-09): remove_chunks is the ATOMIC batch
+										// remove -- ONE call removes N chunks, so it is very
+										// much a mutation record; omitting it would let a run
+										// that tore the scene down before asking VACUOUSLY
+										// PASS askUserBeforeMutation.
+										"remove_chunks"
 									};
 									auto isMutatingTool = [&]( const std::string& name ) -> bool {
 										for( const char* m : kMutatingToolNames ) if( name == m ) return true;
@@ -6865,11 +7297,23 @@ namespace RISE
 						}
 					}
 
+					// toolCallCount is the ONE trajectory field that reports a
+					// metric (88 S6) -- populate CheckOutcome::metricValue on BOTH
+					// the pass and fail branches below (mirrors
+					// any_param_references_kind's CheckDocumentKind branches:
+					// the census number is worth reporting even when this
+					// checkpoint's OTHER assertions, if any, failed).
 					if( !failures.empty() ) {
 						std::string detail; for( std::size_t i = 0; i < failures.size(); ++i ) { if( i ) detail += "; "; detail += failures[i]; }
-						return { false, detail };
+						CheckOutcome oc; oc.passed = false; oc.detail = detail;
+						if( toolCallCountObserved >= 0 ) { oc.hasMetricValue = true; oc.metricValue = static_cast<double>( toolCallCountObserved ); }
+						return oc;
 					}
-					return { true, "trajectory assertion(s) satisfied" };
+					{
+						CheckOutcome oc; oc.passed = true; oc.detail = "trajectory assertion(s) satisfied";
+						if( toolCallCountObserved >= 0 ) { oc.hasMetricValue = true; oc.metricValue = static_cast<double>( toolCallCountObserved ); }
+						return oc;
+					}
 				}
 
 				//! "finalText": {containsAll?/containsAny?/absent?:string array,

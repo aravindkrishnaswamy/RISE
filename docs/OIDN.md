@@ -56,8 +56,18 @@ chunk in
 
 ### Exact OIDN API surface RISE calls
 
+> **Historical audit baseline (2026-04-29, pre-P0/P1):** The snippet and
+> feature table below record RISE's initial CPU-only OIDN call surface before
+> `OIDN-P0-1`..`P0-4` and `OIDN-P1-1`..`P1-2` shipped. Current
+> [`OIDNDenoiser.cpp`](../src/Library/Rendering/OIDNDenoiser.cpp) resolves
+> Metal/GPU via `ResolveOidnDevice`, caches device and filter state per
+> `Rasterizer`, applies `oidn_quality` (`auto` via deterministic `DL-360`
+> `workPerMegapixel`), runs `accurate` auxiliary prefilters when requested,
+> and uses shared host buffers on CPU (`DL-440` owned copies for `accurate`
+> aux) vs `buf.write` / `buf.read` on GPU.
+
 ```cpp
-// OIDNDenoiser.cpp:106-144
+// OIDNDenoiser.cpp:106-144 (historical pre-P0/P1 baseline)
 oidn::DeviceRef device = oidn::newDevice( oidn::DeviceType::CPU );
 device.commit();
 oidn::BufferRef colorBuf  = device.newBuffer( bufBytes );
@@ -174,7 +184,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 ### P0 — high leverage, low-to-moderate cost
 
 #### OIDN-P0-1 — Expose `quality` preset as a scene-language parameter (with `auto`)
-- **Status:** Code complete — pending commit/PR (2026-04-29)
+- **Status:** Shipped (2026-04-29; `auto` heuristic updated to deterministic `workPerMegapixel` policy in `DL-360`, 2026-10-02)
 - **Owner:** Aravind
 - **PR:** —
 - **Why:** OIDN's BALANCED preset is roughly 2× faster than HIGH; FAST is
@@ -187,10 +197,18 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   `filter.set("quality", oidn::Quality::*)` call. New default: `auto` (see
   heuristic below) — replaces OIDN's `DEFAULT` (which is just an alias for
   HIGH).
-- **Auto heuristic:** Compute `r = render_time_seconds / megapixels`, where
-  `render_time_seconds` is wall-clock from rasterizer start to immediately
-  before `oidn::Filter::execute()` runs (includes sample accumulation, AOV
-  retrace, and buffer marshalling — everything the user has already paid).
+- **Auto heuristic (DL-360, 2026-10-02):** Compute a deterministic work
+  estimate `estimated_seconds = pixels * configured_spp * family_cost / 1e6`,
+  then carry the algebraically equivalent `r = configured_spp * family_cost`
+  directly, avoiding area multiply/divide roundoff at preset thresholds. Family costs are fixed quality
+  policy constants (seconds per million samples), not hardware benchmarks:
+  legacy pixel renderers 0.1, PT RGB 0.2, PT spectral 0.8, bidirectional
+  BDPT/VCM 0.6, MLT RGB 0.4, MLT spectral 1.6. Adaptive pixel renderers use
+  the maximum of their configured sample budget and adaptive target.
+  Cancellation, convergence, machine load and elapsed time do not choose
+  quality. Region denoise uses the same per-megapixel rate directly, so its
+  policy matches full-frame denoise even exactly at a preset threshold. Direct-companion PT
+  denoise uses the same configured budget and PT family policy.
   Map:
 
   | `r` (s/MP) | Quality | Interpretation |
@@ -199,10 +217,11 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   | `3 ≤ r < 20` | **BALANCED** | Working render — fair trade |
   | `r ≥ 20` | **HIGH** | Final-quality render — extra denoise seconds well-spent |
 
-  Thresholds calibrated against Apple Silicon CPU; see `OIDN-P0-3` for the
-  Metal-backend recalibration note. Each frame computes its own `r` and picks
-  independently — animations with consistent per-frame render times converge
-  to the same bucket. Logged per render: `OIDN auto: render=12.5s, image=1920x1080 (2.07 MP), r=6.04 s/MP → BALANCED`.
+  These retained 3/20 policy thresholds were originally calibrated against
+  Apple Silicon CPU; see `OIDN-P0-3` for the
+  historical Metal-backend recalibration note. Frames with the same sample
+  budget and rasterizer family select the same bucket. The log reports
+  `OIDN auto: image=...`, `r=... policy s/MP` and the selected quality.
 
   Thresholds live as `static constexpr` in `OIDNDenoiser.cpp` so they're
   easy to tune later from real-world telemetry.
@@ -230,7 +249,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   `auto` flips between FAST / BALANCED / HIGH around the documented
   thresholds. ABI-evolving change → review against the
   retired `abi-preserving-api-evolution` skill.
-- **Result:**
+- **Historical result (2026-04-29; timing-based Auto superseded by DL-360):**
   - `make -C build/make/rise -j8 all` clean (no new warnings).
   - `./run_all_tests.sh` clean: **72/72 pass**.
   - Sample render of `scenes/Tests/Geometry/shapes.RISEscene` (800×800, 0.82 s
@@ -243,7 +262,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     and rise_sources.cmake skipped as those track only `.cpp` files).
 
 #### OIDN-P0-2 — Cache device + filter across renders
-- **Status:** Code complete — pending commit/PR (2026-04-29)
+- **Status:** Shipped (2026-04-29)
 - **Owner:** Aravind
 - **PR:** —
 - **Primary motivator:** Interactive renderer ([InteractivePelRasterizer](../src/Library/Rendering/InteractivePelRasterizer.h)).
@@ -253,11 +272,14 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   and network commit.  At interactive frame rates that overhead alone
   caps the achievable fps; caching makes the steady-state denoise cost
   essentially "execute + memcpy."
-- **Cache key:** `(width, height, hasAlbedo, hasNormal, resolvedQuality)`.
-  Mismatch on any → tear down filter and (only if dims change) reallocate
-  buffers, rebuild filter, re-commit.  Match → reuse, skip the commit.
-  Device is created once on first denoise and survives the rasterizer
-  lifetime; only filter and buffers re-key.
+- **Cache key:** `(width, height, hasAlbedo, hasNormal, resolvedQuality, prefilter, requestedDevice)`.
+  Mismatch on any → tear down and rebuild the filter, then re-commit.
+  GPU color/output storage is retained at unchanged dimensions; CPU
+  shared-buffer handles are rebuilt for configuration/pointer changes.
+  Backend changes recreate buffers. Match → reuse, skip the commit.
+  Device is created lazily and reused while the requested backend is unchanged.
+  Changing Auto/CPU/GPU while idle releases the device, filters and buffers
+  and resolves the new request with the same fallback policy.
 - **Lifetime:** Cache lives on the `Rasterizer` base via an opaque pImpl
   pointer so OIDNDenoiser internals stay out of the public header and
   the cache naturally dies with the rasterizer.
@@ -282,7 +304,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   - `./run_all_tests.sh` clean: **72/72 pass**.
   - 3-render back-to-back on `scenes/Tests/Geometry/shapes.RISEscene`
     (800×800):
-    - Render 1 (cold): logs `OIDN: creating CPU device (one-time per rasterizer)` and `OIDN cache: rebuild filter (800x800 q=FAST aux=albedo+normal)`. Denoise 94.1 ms.
+    - Render 1 (cold): logged `OIDN: creating CPU device (one-time per rasterizer)` (wording at the time; the message now reads "(cached while backend request is unchanged)") and `OIDN cache: rebuild filter (800x800 q=FAST aux=albedo+normal)`. Denoise 94.1 ms.
     - Render 2 (warm): logs `OIDN cache: hit (800x800 q=FAST)`. Denoise 69.7 ms (24 ms / ~26% saved).
     - Render 3 (warm): cache hit, 68.2 ms.
   - The "creating device" line fires exactly once → device + filter
@@ -290,10 +312,9 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     the property the interactive viewport needs.
 
 #### OIDN-P0-3 — Add Metal device backend on Apple Silicon
-- **Status:** Shipped — code complete, Metal verified end-to-end via
-  the in-tree OIDN install at `extlib/oidn/install/` (2026-04-29).
-  Auto-quality threshold recalibration deferred — see decision log
-  for the measurement-driven reasoning.
+- **Status:** Shipped (2026-04-29 — Metal verified end-to-end via the
+  in-tree OIDN install at `extlib/oidn/install/`; auto-quality threshold
+  recalibration deferred per decision log)
 - **Owner:** Aravind
 - **PR:** —
 - **Why:** RISE primarily targets macOS / Apple Silicon. OIDN 2.x ships a
@@ -396,21 +417,21 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     amortises that across the rasterizer's lifetime.
 
 #### OIDN-P0-4 — Register an error callback + verbose toggle
-- **Status:** Code complete — pending commit/PR (2026-04-29)
+- **Status:** Shipped (2026-04-29)
 - **Owner:** Aravind
 - **PR:** —
-- **Why:** Today RISE polls `device.getError()` exactly once after
-  `filter.execute()`. OIDN can emit warnings (deprecated parameter usage,
-  fallback paths, missing prefilter) that we silently lose. With multiple
-  filters (`OIDN-P1-1` below) some of these warnings happen at commit time,
-  before the polled `getError`.
+- **Why (historical motivation):** the original path polled after
+  `filter.execute()`. The callback routes subsequent OIDN error codes
+  through the RISE log; polling also occurs after filter setup. This is
+  not a promise to capture every verbose library diagnostic.
 - **What:**
   - Register `device.setErrorFunction(OidnErrorCallback, nullptr)`
-    immediately after `oidn::newDevice(...)` and before the device's
-    first `commit()` so commit-time failures route through our log
-    system instead of being silently dropped.  Existing
-    `device.getError(...)` polls in `Denoise()` are kept as a per-call
-    "no error since last poll" confirmation.
+    AFTER `ResolveOidnDevice` returns a successfully committed device.
+    `TryCreateOidnDevice` polls initial commit errors during resolution;
+    failed first attempts are consumed deliberately to avoid logging
+    normal fallback as an error. The callback covers subsequent filter
+    setup/execution errors; `Denoise()` also polls after filter setup and
+    execution. Initial device-commit failures do not reach this callback.
   - Severity mapping: `OIDN_ERROR_CANCELLED` → `eLog_Warning` (we
     don't propagate cancel to OIDN per `OIDN-P1-3` invariant, but if
     OIDN signals it for any reason it's not a fatal condition).  All
@@ -436,8 +457,21 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 ### P1 — solid wins, moderate effort
 
 #### OIDN-P1-1 — Inline AOV accumulation + `accurate` prefilter mode
-- **Status:** Shipped (v1 PT-only on 2026-04-29; v2 BDPT + VCM
-  Pel/Spectral on 2026-04-29).  Supersedes OIDN-P1-4 — inline
+- **⚠ Scope correction, 2026-08-28:** `accurate` is **not** universally the
+  better mode.  On hair it is measurably WORSE than `fast` on every metric at
+  every sample count — see `OIDN-P1-5` below for the numbers.  The cause is now
+  isolated: it is the **aux PREFILTER**, part 2 of this ticket's change, not the
+  inline first-non-delta capture (part 1).  With the two prefilter `execute()`
+  calls disabled, `accurate`'s capture matches or slightly beats `fast` on the
+  hair matrix.  On high-frequency geometry the prefilter blends one sampled
+  fibre's albedo/normal into its neighbours', handing the network a guide
+  smoother than the truth.  Treat `accurate` as the right default for
+  surface-dominated scenes with delta transport (the regime it was built and
+  verified for), not as a blanket upgrade.
+- **Status:** Shipped (v1 PT Pel on 2026-04-29; v2 BDPT + VCM
+  Pel/Spectral on 2026-04-29; spectral PT + `pixelintegratingspectral`
+  inline AOV wired 2026-06-02; channel-planned depth + guide
+  `AOVBuffers::Plan` added with agent perception).  Supersedes OIDN-P1-4 — inline
   accumulation handles glass refraction probabilistically via
   per-sample `ScatteredRay::isDelta` instead of a separate recursive
   retrace.  v1 shipped the full plumbing + the 3-filter prefilter
@@ -559,24 +593,22 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
       (vs 518 ms accurate, 2.3× speedup as designed).
 
 #### OIDN-P1-2 — Replace `device.newBuffer + memcpy` with `oidnNewSharedBuffer`
-- **Status:** Shipped — 2026-04-29.  `oidn::DeviceRef::newBuffer(void*, size_t)`
-  (the C++ wrapper for `oidnNewSharedBuffer`) wraps host memory
-  directly; the device-side `newBuffer(size_t)` + `buffer.write` /
-  `read` round trip is now skipped on CPU device.  GPU devices
-  (Metal / SYCL / CUDA / HIP) keep the device-owned-buffer path
-  because their memory isn't host-mapped.  Mode is auto-detected
-  by introspecting the actual device type after creation, so
-  `oidn_device auto` correctly picks zero-copy when OIDN falls
-  back to CPU on a Mac without the metal device dylib.
+- **Status:** Shipped (2026-04-29; ownership corrected by DL-440 on
+  2026-10-03). CPU beauty/output remain shared. Fast aux is input-only and
+  shared too; Accurate aux uses reusable owned buffers and one fresh copy
+  per supplied guide on every call. GPU retains device-owned buffers and
+  uploads/readback. Actual device type selects this path, including CPU
+  fallback from `oidn_device auto`.
 - **Owner:** Aravind
 - **PR:** —
-- **Why:** Today `Denoise()` does up to 4 host-side full-image copies (image
-  → beautyBuf, beautyBuf → colorBuf, outputBuf → denoisedBuf, denoisedBuf →
-  image). At 4K RGB that's ~50 MB per copy. On CPU device, OIDN can directly
-  alias host memory via `oidnNewSharedBuffer`.
-- **What:** When device type is CPU, wrap `beautyBuf` / `albedoBuf` /
-  `normalBuf` / `outputBuf` directly. Skip the intermediate
-  `device.newBuffer + memcpy`. Falls back to the current path on GPU device.
+- **Why (historical motivation):** the April implementation sought to avoid
+  OIDN color/auxiliary uploads and output readback on CPU by wrapping host
+  storage. Image-to-staging and staging-to-image conversions still run.
+  The former ~50 MB estimate per 4K RGB Float3 buffer was incorrect; see
+  the explicit current byte accounting below.
+- **What:** CPU wraps beauty/output and Fast auxiliary inputs directly.
+  DL-440 makes Accurate auxiliary buffers owned and copies their const
+  inputs each call. GPU keeps the device-owned upload/readback path.
 - **Touch:** [OIDNDenoiser.cpp:113](../src/Library/Rendering/OIDNDenoiser.cpp#L113).
 - **Effort:** ~1 hour. Subtle aliasing rules — test in/out buffer overlap.
 - **Verification:** heap profiler before / after on a 4K denoise.
@@ -595,13 +627,16 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     `device.newBuffer(host_ptr, bytes)` for color / output / albedo /
     normal (with `const_cast` on the input-only aux pointers — safe
     in Fast mode since OIDN doesn't write through them; in Accurate
-    mode the prefilter writes back in-place, which is intentional
-    and harmless because `AOVBuffers::Reset()` zeroes the buffers
-    before each render).  Non-shared mode keeps the original
-    `newBuffer(bytes)` device-owned path.
-  - Per-call write/read are gated on `!useSharedBuffers` — in shared
-    mode the data is already aliased and the copies are no-ops.
-  - Build clean, 72/72 tests pass.  Smoke tests on M1 Max:
+    mode this historical implementation wrote into caller aux storage.
+    DL-440 corrects that const violation: Accurate aux uses reusable owned
+    `newBuffer(bytes)` storage on CPU too, with fresh input copies each call.
+    Beauty/output remain shared. Non-shared mode keeps device-owned buffers.
+  - Fast CPU skips all input/output copies; Accurate CPU copies each supplied
+    auxiliary input and retains shared beauty/output. GPU uploads/readback
+    retain their existing behavior.
+  - **Historical 2026-04-29 smoke results, before DL-440:** build clean,
+    72/72 tests pass. These timings do not measure current Accurate copies.
+    Smoke tests on M1 Max:
     - **CPU shared** (`oidn_device cpu`) at 200×150 + glass scene:
       cold-cache 12 ms, warm-cache 5.9 ms.  Log shows
       `[zero-copy shared buffers]` suffix on device creation.
@@ -609,10 +644,15 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
       cold 209 ms (Metal init dominates), warm 5.2 ms.  No
       `[zero-copy]` suffix as expected.
     - **CPU shared + Accurate prefilter**: 24 ms cold (vs 12 ms
-      Fast).  In-place prefilter through shared aliases works.
-  - Memory savings scale with image size: at 4K RGB a single
-    image is ~96 MB; eliminating 4 such copies saves ~380 MB of
-    transient bandwidth per denoise on the CPU path.
+      Fast). The historical prefilter wrote through shared aux aliases;
+      DL-440 withdraws that ownership policy for const caller inputs.
+  - **Current byte accounting, not measured bandwidth:** one 3840×2160
+    Float3 buffer contains `3840 * 2160 * 3 * sizeof(float)` =99,532,800
+    bytes (99.5 MB /94.9 MiB). Fast CPU avoids up to four OIDN copies
+    (398.1 MB logical copy payload); Accurate shares beauty/output but
+    retains up to two owned auxiliary buffers and copies each supplied
+    guide once per call. Image/staging conversions remain. No current
+    whole-render or bandwidth speed bound is claimed.
 
 #### OIDN-P1-3 — Progress monitor (cancel intentionally NOT wired)
 - **Status:** Closed (won't do unless an interactive UI consumer
@@ -676,23 +716,139 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   `OIDN-P2-2`) for visual diff.
 - **Result:** —
 
+#### OIDN-P1-5 — Coverage-weighted multi-sample aux accumulation for high-frequency geometry (hair)
+- **Status: CLOSED — not the mechanism (2026-08-28).**  Opened and closed the
+  same day.  The work was taken up in the hair Phase-4 wave; the write-up with
+  every table is [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) §6.5 ("Follow-up,
+  2026-08-28").  Two findings close it:
+  1. **The accumulation this ticket asked for already exists.**  The "captured
+     once per pixel" premise below misread the AOV contract: capture is once
+     per PATH SAMPLE, and every pixel-based integrator has accumulated across
+     all of a pixel's samples — weighted by film weight, normalized at
+     resolve — since `OIDN-P1-1` v1/v2 shipped 2026-04-29
+     ([PathTracingPelRasterizer.cpp:431-440](../src/Library/Rendering/PathTracingPelRasterizer.cpp#L431)
+     inside the per-sample loop, resolved at
+     [PixelBasedRasterizerHelper.cpp:1284](../src/Library/Rendering/PixelBasedRasterizerHelper.cpp#L1284)).
+     Only estimators with no `PixelAOV` hook (MLT) use the single-capture
+     retrace.  There was nothing here to build.
+  2. **The deficit is not aux-limited, so no aux change could have closed it.**
+     Ablation at 128 spp on the same scene: guides give a gradient-ratio lift of
+     0.081 (0.760 with no guides → 0.841 with both) against a deficit of ~0.16;
+     the **albedo guide contributes nothing** on a groom (albedo-only 0.757 ≈
+     no-guide 0.760 — every fibre shares one melanin colour, so the albedo plane
+     is flat); and the aux is already converged at 256 spp while the deficit
+     persists.  The residual is OIDN's spatial prior.  (Note for future
+     experiments: OIDN rejects a normal guide supplied *without* an albedo guide
+     — `InvalidOperation: unsupported combination of input features` — and the
+     "denoised" output is then an untouched passthrough.)
+- **Shipped from this ticket anyway** (a contract fix, not a fix for the
+  symptom): `AOVBuffers::NormalizeSelected` now **renormalizes the accumulated
+  normal to unit length**.  The weighted arithmetic mean of unit normals is not
+  a unit vector and collapses toward zero as a pixel's samples disagree, which
+  is precisely what high-frequency geometry does; OIDN's normal guide is
+  contractually unit-length, so it read that shortening as a different surface
+  orientation.  This also repairs the agent-perception Normal channel, whose
+  `n*0.5+0.5` byte encoding
+  ([InMemoryRasterizerOutput.cpp:141](../src/Library/Agent/InMemoryRasterizerOutput.cpp#L141))
+  assumes unit normals and was washing multi-surface pixels toward flat grey.
+  Guarded by three `FrameStoreTest` checks (unit-length mean, idempotence, and
+  an all-miss pixel keeping its zero vector).  Measured effect on the hair OIDN
+  matrix: **none, inside the run-to-run band** — kept on contract grounds, not
+  on this metric.
+- **Also settled here — the `accurate`-is-worse surprise is the PREFILTER, not
+  the capture point.**  Running `accurate`'s inline first-non-delta capture with
+  the two aux prefilter `execute()` calls disabled restores `fast`-level results
+  (128 spp: gradient ratio 0.839 vs `fast` 0.841, RMSE 2.700e-3 vs 2.728e-3;
+  256 spp: 0.869 vs 0.856).  So the capture-point difference is
+  neutral-to-slightly-positive and prefiltering the aux is the entire penalty:
+  on a groom it blends one sampled fibre's normal into its neighbours' and hands
+  the network a guide smoother than the truth.  This confirms and sharpens the
+  working hypothesis recorded below.  No code change — the interim rule ("do not
+  set `oidn_prefilter accurate` on hair") already covers it, and no scene has
+  asked for a third prefilter mode.
+- **Reopen only if** a scene appears whose aux genuinely *is* the limiter — a
+  groom with strongly varying per-strand albedo would be the case to look for,
+  since that is the one regime where the (currently inert) albedo guide could
+  start carrying structure.
+- Historical premise and numbers, kept for the record:
+- **Owner:** —
+- **PR:** —
+- **Why (ORIGINAL PREMISE -- REFUTED, see Status):** The aux contract captures
+  albedo/normal **once per pixel**, from a
+  single surface.  On a groom, dozens of fibers cross one pixel, so the aux
+  buffers are strand-noise-textured and the denoiser is guided by one
+  arbitrary fiber.  *(The first sentence is wrong: capture is once per path
+  SAMPLE, and per-pixel accumulation has shipped since 2026-04.  The measured
+  deficit in the rest of this bullet is real and reproduced; only its
+  attribution was wrong.)*  Measured on `scenes/Tests/Hair/hair_styled.RISEscene`
+  (256x256, PT, RMSE vs a 2048-spp reference, `pixel_filter box` pinned
+  everywhere): denoising holds a **15–18 % mean-gradient deficit vs the
+  reference in `fast` mode and 25–30 % in `accurate` mode**, and the deficit
+  **does not shrink as spp rises** (fast: 0.824 / 0.843 / 0.854 of the
+  reference's gradient energy at 64 / 128 / 256 spp) — a systematic smear of
+  real strand structure, not noise removal.  Net RMSE crosses over between 64
+  and 128 spp: −17.2 % at 64 spp, a tie at 128, **+20.0 % at 256**, with the
+  loss concentrated at strand edges (+25.6 % at 256 spp) while flat regions
+  stay roughly neutral.
+- **Note — `accurate` is the WORSE mode here, which `OIDN-P1-1` did not
+  anticipate.** It loses to `fast` on every metric at every sample count
+  (+52.1 % RMSE vs off at 256 spp; 0.703–0.749 gradient ratio).  Working
+  hypothesis to test first: `accurate` both captures at the first non-delta
+  scatter rather than the first hit AND prefilters the aux buffers, and on
+  hair that prefilter blends the one sampled fiber's albedo/normal into the
+  background's — making the guide more wrong, not less.  **CONFIRMED and
+  narrowed 2026-08-28** (see Status): it is the prefilter alone; the
+  capture-point half of the hypothesis is neutral-to-slightly-positive.
+- **Touch (as scoped; the accumulation half was already in tree):**
+  [AOVBuffers.cpp](../src/Library/Rendering/AOVBuffers.cpp) /
+  [AOVBuffers.h](../src/Library/Rendering/AOVBuffers.h) -- what actually
+  landed here is the normal renormalization in `NormalizeSelected`.
+  Not a hair change.
+- **Target (NOT MET, and shown to be unreachable from the aux side):** bring
+  `fast`-mode gradient ratio from ~0.85 to within a few
+  percent of 1.0 while keeping the flat-region win.  The whole guide channel
+  is worth ~0.08 of gradient ratio; the deficit is ~0.16.
+- **Interim guidance, needs no code:** on hair scenes do **not** set
+  `oidn_prefilter accurate`, and keep `oidn_denoise FALSE` above ~100 spp.
+- **Measurement protocol — pin `pixel_filter box` on EVERY scene in the
+  comparison, reference included.**  `oidn_denoise TRUE` skips the
+  `pFilteredFilm->Resolve()` step (see the §"inline box-filtered" note below
+  and `PixelBasedRasterizerHelper.cpp:1300-1320`), so an OIDN-on beauty image
+  is box-filtered where an OIDN-off one is filter-reconstructed.  Left
+  unpinned, that alone made OIDN-on plain renders read **22–39 % worse RMSE**
+  at matched spp in the 2026-08-28 run — a difference with nothing to do with
+  the denoiser, which would have been charged to it.  With the pin, the three
+  modes' plain renders agree to within 1 %.
+- **Effort:** ~1 day plus a re-measure against the same scene set.
+- **Result:** Closed as *not the mechanism* -- see Status.  Landed: the normal
+  renormalization + three `FrameStoreTest` guards.  Not landed: any change to
+  the accumulation itself (it was already correct) and any new prefilter mode
+  (no scene has asked).
+
 ### P2 — polish
 
 #### OIDN-P2-1 — CLI override flag for denoise
-- **Status:** Closed (won't do, low ROI) — 2026-04-29.  Editing
-  the scene file is acceptable friction for batch sweeps; the
-  parser already supports per-chunk `oidn_denoise` and
-  `oidn_quality` parameters.  Reopen if a benchmarking workflow
-  emerges that genuinely needs flag-driven override.
-- **Owner:** —
-- **PR:** —
-- **Why:** Today the only way to flip `oidn_denoise` for a scene is to edit
-  the `.RISEscene` file. A CLI flag like `--no-denoise` /
-  `--denoise-quality fast` in the `rise` binary would help for batch sweeps
-  and benchmarking.
-- **Touch:** wherever the CLI lives (e.g. `src/Tools/RenderApp/` or analogue).
+- **Status:** Shipped (2026-11-12). `--denoise` and `--no-denoise`
+  (mutually exclusive) are parsed in `src/RISE/CliOptions.h` +
+  `src/RISE/commandconsole.cpp` alongside `--camera <name>`, `--width`,
+  `--height`, and `--pixel-ar`, and applied post-load via
+  `IRasterizer::SetDenoisingOverride` (`Rasterizer.h`, `AutoRasterizer` for
+  both `auto_rasterizer` and `auto_spectral_rasterizer` via `mSpectral`, and
+  post-resolve `PixelBasedRasterizerHelper` checks), gated by
+  `tests/CliOverridesTest.cpp` (`77/0`).
+- **Owner:** Aravind
+- **PR:** Tier 0.3.3 (`df6877d86`..`HEAD`)
+- **Why:** Allows batch sweeps and benchmarks to force OIDN post-process
+  denoising on or off from the `rise` / `RISE-CLI` command line without editing
+  `.RISEscene` files.
+- **Touch:** [CliOptions.h](../src/RISE/CliOptions.h),
+  [commandconsole.cpp](../src/RISE/commandconsole.cpp),
+  [IRasterizer.h](../src/Library/Interfaces/IRasterizer.h),
+  [Rasterizer.h](../src/Library/Rendering/Rasterizer.h),
+  [AutoRasterizer.{h,cpp}](../src/Library/Rendering/AutoRasterizer.cpp),
+  [CliOverridesTest.cpp](../tests/CliOverridesTest.cpp).
 - **Effort:** ~1 hour.
-- **Result:** —
+- **Result:** Shipped and covered in `fast` CI (`CliOverridesTest`).
 
 #### OIDN-P2-2 — Write `_albedo` / `_normal` AOVs as separate file outputs
 - **Status:** Closed (won't do, low ROI) — 2026-04-29.  No
@@ -787,6 +943,19 @@ Any P0 or P1 change additionally needs:
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
 
+### 2026-11-12 — OIDN-P2-1 shipped (`--denoise` / `--no-denoise` CLI override)
+- Reopened and shipped `OIDN-P2-1` as part of Tier `0.3.3` to allow headless
+  renders, benchmarks (`--no-denoise`), and A/B sweeps to force OIDN
+  post-process denoising on or off without mutating `.RISEscene` files.
+- `src/RISE/CliOptions.h` and `src/RISE/commandconsole.cpp` parse mutually
+  exclusive `--denoise` / `--no-denoise` flags (rejecting conflicts with exit
+  status) and apply `IRasterizer::SetDenoisingOverride(bool enable)` after
+  scene load, forwarding through `AutoRasterizer` (covering both
+  `auto_rasterizer` and `auto_spectral_rasterizer` via `mSpectral`) into the
+  resolved rasterizer and honoring mid-render/post-resolve checks in
+  `PixelBasedRasterizerHelper.cpp`.
+- Gated in `fast` CI by `tests/CliOverridesTest.cpp` (**77/0**).
+
 ### 2026-04-29 — MLT animation rendering with per-frame OIDN denoise
 - Closes the "MLT animation gap" called out in the prior animation-
   denoise entry.  `MLTRasterizer::RasterizeSceneAnimation` was an
@@ -834,7 +1003,8 @@ from a reviewer, or has its priority moved. Most recent first.
     animator `EvaluateAtTime` + `InvalidateSpatialStructure`
     (when keyframed) + `PrepareForRendering` + `SetSceneTime`
     between frames; per-frame `BeginRenderTimer()` so the
-    OidnQuality::Auto heuristic decides each frame independently;
+    timing telemetry describes each frame independently (Auto uses static
+    work since DL-360);
     cancel-mid-frame abandons the frame entirely (no flush, no
     denoise) so the MOV writer's tail stays clean.
 - **Per-frame OIDN flow** mirrors `PixelBasedRasterizerHelper::
@@ -906,7 +1076,8 @@ from a reviewer, or has its priority moved. Most recent first.
   did not).
 - Two-part change in `PixelBasedRasterizerHelper`:
   1. **`RenderFrameOfAnimation`** gains the per-frame setup:
-     `BeginRenderTimer()` so the OidnQuality::Auto heuristic decides
+     `BeginRenderTimer()` for per-frame telemetry (Auto uses static work
+     since DL-360); originally the timing heuristic decided
      each frame independently rather than inflating with cumulative
      animation time; `pAOVBuffers` allocate-or-reset per frame so
      each frame starts with a fresh AOV; AOV normalization after
@@ -995,6 +1166,8 @@ from a reviewer, or has its priority moved. Most recent first.
     an interactive UI needs denoise progress feedback.
   - **P2-1** CLI override flag — editing the scene file is
     acceptable friction; the parser surface is already enough.
+    *(Reopened and shipped 2026-11-12 in `df6877d86` / `0f39278cb`; see
+    `2026-11-12 — OIDN-P2-1 shipped` above.)*
   - **P2-2** aux-buffer EXR dump — no concrete debugging request.
   - **P2-3** inputScale knob — OIDN's auto-exposure handles
     observed scenes; niche.
@@ -1014,16 +1187,20 @@ from a reviewer, or has its priority moved. Most recent first.
 - `OIDNDenoiser::Denoise` now uses
   `oidn::DeviceRef::newBuffer(host_ptr, bytes)` (the C++ wrapper for
   `oidnNewSharedBuffer`) on CPU device, eliminating up to 4
-  image-sized memcpy operations per denoise (color in, albedo in,
-  normal in, output out — each was ~50 MB at 4K RGB).
+  image-sized memcpy operations per Fast denoise (color in, albedo in,
+  normal in, output out — each is99.5 MB /94.9 MiB at3840×2160 Float3;
+  the former ~50 MB estimate was incorrect). DL-440 keeps
+  Accurate auxiliary inputs in owned mutable buffers: up to two extra
+  image-sized allocations retained by the cache and two input copies per
+  call. No measured end-to-end cost bound is claimed for this correction.
 - **Auto-detection over user knob:** mode is decided by introspecting
   `device.get<int>("type") == CPU` AFTER device creation.  This is
   more robust than trusting the user's `oidn_device` parameter
   because `Default` silently picks CPU when no GPU backend is
   loadable (e.g., Mac without the metal device dylib — see
-  OIDN-P0-3 install gotcha).  The log line gains a
-  `[zero-copy shared buffers]` suffix when shared mode kicks in,
-  so it's visible at a glance.
+  OIDN-P0-3 install gotcha). The historical log suffix was
+  `[zero-copy shared buffers]`; after DL-440 it is
+  `[shared beauty/output; Fast aux shared]`, explicitly naming the scope.
 - **Cache-key extension for pointer stability:** shared buffers pin
   to a specific host address at filter-commit time; if the caller
   passes a different pointer next call, we must rebuild.  Added
@@ -1032,15 +1209,14 @@ from a reviewer, or has its priority moved. Most recent first.
   miss.  In practice the State staging vectors (`beautyStaging`,
   `denoisedStaging`) and `AOVBuffers` are stable across calls of
   the same dimensions, so cache hits are the common case.
-- **Const correctness deliberately relaxed:** input-only aux
-  pointers are `const float*` in the API, but
-  `oidn::Buffer::newBuffer(void*, size_t)` requires a non-const
-  pointer.  `const_cast` is safe in Fast mode (OIDN doesn't write
-  inputs).  In Accurate mode the in-place prefilter writes back
-  to the aux buffer through the shared alias, which mutates the
-  host AOV vector — that's intentional and harmless because
-  `AOVBuffers::Reset()` zeroes the buffers before each render.
-  Documented in the OIDN-P1-2 entry.
+- **Const-correctness correction (DL-440, 2026-10-03):** the historical
+  Accurate shared-aux path violated the public `const float*` contract.
+  Accurate now owns mutable auxiliary buffers and copies the supplied
+  inputs before each execution, including cache hits. Fast auxiliary
+  pointers remain input-only shared buffers; its cast is solely at the
+  third-party read-only interface. Caller auxiliary inputs stay unchanged
+  on either backend. The former “harmless because AOVBuffers resets”
+  justification did not cover direct callers and is withdrawn.
 - **GPU path unchanged:** Metal / SYCL / CUDA / HIP devices keep
   the original `newBuffer(bytes)` + `buffer.write` / `read` round
   trip because their memory is not host-mapped.  Smoke test
@@ -1265,10 +1441,12 @@ from a reviewer, or has its priority moved. Most recent first.
   workaround.
 
 ### 2026-04-29 — OIDN-P0-4 code complete; cancel-doesn't-propagate invariant recorded
-- `OidnErrorCallback` (file-static, C-style function pointer) is
-  registered on the OIDN device immediately after `oidn::newDevice`
-  and before its first `commit()`.  Maps OIDN's error codes to a
-  short name + severity and routes through `GlobalLog()->PrintEx(...)`.
+- **Registration correction:** the original before-first-commit wording
+  in this entry was superseded by P0-3 device resolution. The callback
+  is registered only after a working committed device is returned.
+  Initial commit errors are polled/consumed during fallback; subsequent
+  filter setup/execution errors map to a short name + severity through
+  `GlobalLog()->PrintEx(...)`. Verbose diagnostics are a separate surface.
 - Verbose: deferred to OIDN's own `OIDN_VERBOSE` env var.  We do not
   override it via `device.set("verbose", ...)` — keeping it as an
   env-var knob is consistent with OIDN's documented control surface
@@ -1287,7 +1465,7 @@ from a reviewer, or has its priority moved. Most recent first.
 - `OIDNDenoiser` is now a stateful instance class with private opaque
   pImpl `State` holding the cached `oidn::DeviceRef` / `FilterRef` /
   `BufferRef` handles plus the cache key
-  `(width, height, hasAlbedo, hasNormal, resolvedQuality)`.  Static
+  `(width, height, hasAlbedo, hasNormal, resolvedQuality, prefilter, requestedDevice)`. Static
   helpers (`ImageToFloatBuffer`, `FloatBufferToImage`,
   `CollectFirstHitAOVs`) stay static — none of them touch device state.
 - Cache lifetime: one `OIDNDenoiser*` member on `Rasterizer` base,
@@ -1297,19 +1475,20 @@ from a reviewer, or has its priority moved. Most recent first.
   interactive viewport's persistent rasterizer instance reuses the
   same cached state across every viewport-driven re-render.
 - Rebuild semantics: any cache-key mismatch tears down the filter and
-  re-commits.  Buffers are re-allocated only when dimensions change;
-  toggling aux presence keeps existing color/output buffers and just
-  allocates / releases the aux ones.  Device is built lazily on first
-  denoise and survives the entire rasterizer lifetime regardless of
-  filter rebuilds.
-- New log lines: one-shot `OIDN: creating CPU device (one-time per rasterizer)`,
+  re-commits. GPU color/output storage is reallocated when dimensions
+  change; toggling aux presence allocates/releases the aux storage.
+  CPU shared-buffer handles are rebuilt for configuration/pointer changes.
+  Backend changes recreate buffers.  Device is built lazily on first
+  denoise and survives filter rebuilds while the backend request is unchanged.
+  An idle backend-request change rebuilds device, filters and buffers.
+- Device creation logs `OIDN: creating CPU device (cached while backend request is unchanged)`,
   per-render `OIDN cache: rebuild filter (...)` or `OIDN cache: hit (...)`,
   and total denoise wall-clock appended to the existing
   `OIDN denoising complete.` line as `(N.N ms)`.
 - Verified: 800x800 back-to-back render shows 94.1 ms cold → 69.7 ms /
   68.2 ms warm (~25 ms saved per frame).
 
-### 2026-04-29 — OIDN-P0-1 code complete
+### 2026-04-29 — OIDN-P0-1 code complete (timing policy superseded by DL-360)
 - Implementation lands all of: `OidnQuality` enum in
   `src/Library/Utilities/OidnConfig.h`; full plumbing through `IJob.h`,
   `Job.h/cpp`, `RISE_API.h/cpp`; `Rasterizer` base gains
@@ -1328,7 +1507,7 @@ from a reviewer, or has its priority moved. Most recent first.
   `kAutoBalancedUntilSecPerMP`) are `static constexpr` in
   `OIDNDenoiser.cpp` so they're easy to retune from real telemetry.
 
-### 2026-04-29 — OIDN-P0-1 started; auto heuristic agreed
+### 2026-04-29 — OIDN-P0-1 started; auto heuristic agreed (superseded by DL-360)
 - Heuristic: `r = render_time_seconds / megapixels`; `r<3` FAST, `r<20`
   BALANCED, else HIGH. Calibrated for Apple Silicon CPU.
 - Independent of `oidn_denoise`: `oidn_quality` is parsed and stored even
@@ -1355,4 +1534,10 @@ from a reviewer, or has its priority moved. Most recent first.
 
 ## Shipped log
 
-(empty)
+- **2026-04-29 — `OIDN-P0-1` (`oidn_quality` preset + `auto`):** Added `oidn_quality` (`auto` / `high` / `balanced` / `fast`, default `auto`) across rasterizer chunks, `IJob`, and `OIDNDenoiser::Denoise`. Updated on **2026-10-02 (`DL-360`)** from wall-clock timing to deterministic `workPerMegapixel` (`configured_spp * family_cost`) policy thresholds (`< 3` FAST, `< 20` BALANCED, `>= 20` HIGH).
+- **2026-04-29 — `OIDN-P0-2` (per-rasterizer device + filter cache):** Cached OIDN device, filter, and buffer handles on `Rasterizer` keyed by `(width, height, hasAlbedo, hasNormal, resolvedQuality, prefilter, requestedDevice)`, eliminating repeated kernel/network commit overhead across interactive and multi-frame renders.
+- **2026-04-29 — `OIDN-P0-3` (`oidn_device` + Apple Silicon Metal backend):** Added `oidn_device` (`auto` / `cpu` / `gpu`, default `auto`) with `ResolveOidnDevice` fallback introspection, `buf.write` / `buf.read` GPU-safe transfers, and in-tree Metal-enabled OIDN build support (`extlib/oidn/install/`).
+- **2026-04-29 — `OIDN-P0-4` (error callback + `OIDN_VERBOSE` pass-through):** Registered `OidnErrorCallback` after device resolution and polled post-setup / post-execute errors into RISE's `GlobalLog()`.
+- **2026-04-29 / 2026-06-02 — `OIDN-P1-1` (inline AOV accumulation + `oidn_prefilter`):** Shipped `oidn_prefilter` (`fast` / `accurate`) and 3-filter auxiliary prefiltering alongside inline AOV accumulation across Pel PT (v1, 2026-04-29), BDPT + VCM Pel/Spectral (v2, 2026-04-29), and Spectral PT + `pixelintegratingspectral` (2026-06-02), later extended with channel-planned `AOVBuffers::Plan` (albedo/normal guides + depth).
+- **2026-04-29 / 2026-10-03 — `OIDN-P1-2` (CPU `newSharedBuffer` zero-copy + `DL-440` ownership fix):** Replaced host `memcpy` staging on CPU devices with shared buffers for beauty/output and `fast` aux inputs; `DL-440` (2026-10-03) switched `accurate` aux prefilter buffers to reusable owned storage with per-call input copies so const caller guides are never mutated in place.
+- **2026-11-12 — `OIDN-P2-1` (`--denoise` / `--no-denoise` CLI flags):** Added mutually exclusive `--denoise` and `--no-denoise` headless CLI overrides (`CliOptions.h`, `commandconsole.cpp`, `IRasterizer::SetDenoisingOverride`, `AutoRasterizer` for both `auto_rasterizer` and `auto_spectral_rasterizer`), gated by `tests/CliOverridesTest.cpp` (**77/0**).

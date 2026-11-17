@@ -24,11 +24,13 @@ bool EditHistory::StringLess::operator()( const String& a, const String& b ) con
 	return std::strcmp( sa, sb ) < 0;
 }
 
-EditHistory::EditHistory( unsigned int maxEntries )
+EditHistory::EditHistory( unsigned int maxEntries, unsigned long long maxBytes )
 : mMaxEntries( maxEntries )
 , mNextSeq( 0 )
 , mMaxTrimmedSeq( 0 )
 , mDidTrim( false )
+, mByteBudget( maxBytes )
+, mCurrentBytes( 0 )
 {
 }
 
@@ -36,11 +38,50 @@ EditHistory::~EditHistory()
 {
 }
 
+// P2-4: which op/field pairs are "heavyweight document-payload" bytes, per
+// the survey in SceneEdit.h -- AgentDuplicateNode and AgentReplaceGeometry
+// each carry a full pre- AND post-mutation Document text
+// (Job::ApplyCstReplaceDocumentText swaps in both directions); AgentRemoveChunks
+// carries only the pre-batch text (its `prevPropertyValue` redo descriptor is
+// a short per-target `kind\tname` list, not document-sized).  SetAgentCstParam
+// (2026-10-17) counts the two owner-chunk texts it carries for its verbatim
+// inverse: ONE chunk each, but a chunk can be large (an inline mesh).  Every
+// other op returns 0 -- transform deltas, typed property strings, and
+// single-chunk CRUD bytes (AgentInsertChunk / AgentRemoveChunk) are not
+// document-scale and already fit comfortably within the entry cap alone.
+unsigned long long EditHistory::HeavyPayloadBytes_( const SceneEdit& e )
+{
+	switch( e.op )
+	{
+	case SceneEdit::AgentDuplicateNode:
+	case SceneEdit::AgentReplaceGeometry:
+		return static_cast<unsigned long long>( e.propertyValue.size() )
+		     + static_cast<unsigned long long>( e.prevPropertyValue.size() );
+	case SceneEdit::AgentRemoveChunks:
+	case SceneEdit::AgentEditBatch:     // 2026-10-16: the operation list (both directions in one field)
+		return static_cast<unsigned long long>( e.propertyValue.size() );
+	case SceneEdit::SetAgentCstParam:   // 2026-10-17: the owner chunk's exact text, before and after
+		return static_cast<unsigned long long>( e.agentOwnerPreText.size() )
+		     + static_cast<unsigned long long>( e.agentOwnerPostText.size() );
+	default:
+		return 0;
+	}
+}
+
+void EditHistory::RecomputeCurrentBytes_()
+{
+	unsigned long long total = 0;
+	for( std::deque<SceneEdit>::const_iterator it = mUndoStack.begin(); it != mUndoStack.end(); ++it )
+		total += HeavyPayloadBytes_( *it );
+	mCurrentBytes = total;
+}
+
 void EditHistory::Push( const SceneEdit& edit )
 {
 	SceneEdit stamped = edit;
 	stamped.historySeq = mNextSeq++;   // F2: monotonic, trim-immune id
 	mUndoStack.push_back( stamped );
+	mCurrentBytes += HeavyPayloadBytes_( stamped );   // P2-4: BEFORE TrimToMax, so it sees the true post-push total
 	mRedoStack.clear();
 
 	// Track dirty objects for write-back.  Composite markers and
@@ -58,6 +99,7 @@ bool EditHistory::PopForUndo( SceneEdit& outEdit )
 	if( mUndoStack.empty() ) return false;
 	outEdit = mUndoStack.back();
 	mUndoStack.pop_back();
+	mCurrentBytes -= HeavyPayloadBytes_( outEdit );   // P2-4: left the tracked (undo) stack
 	mRedoStack.push_back( outEdit );
 	return true;
 }
@@ -68,6 +110,7 @@ bool EditHistory::PopForRedo( SceneEdit& outEdit )
 	outEdit = mRedoStack.back();
 	mRedoStack.pop_back();
 	mUndoStack.push_back( outEdit );
+	mCurrentBytes += HeavyPayloadBytes_( outEdit );   // P2-4: entered the tracked (undo) stack
 	return true;
 }
 
@@ -83,6 +126,7 @@ void EditHistory::Clear()
 	mDirtyObjects.clear();
 	mMaxTrimmedSeq = 0;   // mNextSeq stays monotonic (no seq reuse)
 	mDidTrim = false;
+	mCurrentBytes = 0;    // P2-4
 }
 
 bool EditHistory::IsObjectDirty( const String& name ) const
@@ -118,6 +162,7 @@ namespace
 		case SceneEdit::SetObjectShader:        return "Set Shader";
 		case SceneEdit::SetObjectShadowFlags:   return "Set Shadow Flags";
 		case SceneEdit::SetObjectInteriorMedium:return "Set Interior Medium";
+		case SceneEdit::SetObjectMirror:      return "Set Mirror";
 		case SceneEdit::SetCameraTransform:     return "Set Camera";
 		case SceneEdit::OrbitCamera:            return "Orbit Camera";
 		case SceneEdit::PanCamera:              return "Pan Camera";
@@ -132,6 +177,10 @@ namespace
 		case SceneEdit::SetAgentCstParam:       return "Agent Edit";
 		case SceneEdit::AgentInsertChunk:       return "Agent Insert Chunk";
 		case SceneEdit::AgentRemoveChunk:       return "Agent Remove Chunk";
+		case SceneEdit::AgentRemoveChunks:      return "Agent Remove Chunks";   // R1a: one label for the whole batch
+		case SceneEdit::AgentReplaceGeometry:   return "Agent Replace Geometry";   // R2: one label for the whole composite
+		case SceneEdit::AgentDuplicateNode:     return "Duplicate Node";           // doc-88 S20: one label for the whole positioned fork
+		case SceneEdit::AgentEditBatch:         return "Agent Batch Edit";         // 2026-10-16: one label for a whole insert/patch batch
 		case SceneEdit::CompositeBegin:         return "Edit";
 		case SceneEdit::CompositeEnd:           return "Edit";
 		}
@@ -191,6 +240,7 @@ void EditHistory::PopFrontTracked()
 		mDidTrim = true;
 		if( mUndoStack.front().historySeq > mMaxTrimmedSeq )
 			mMaxTrimmedSeq = mUndoStack.front().historySeq;
+		mCurrentBytes -= HeavyPayloadBytes_( mUndoStack.front() );   // P2-4
 		mUndoStack.pop_front();
 	}
 }
@@ -203,6 +253,7 @@ void EditHistory::RestoreLastUndoFromRedo()
 	// un-reverted edit on the redo stack.
 	if( mRedoStack.empty() ) return;
 	mUndoStack.push_back( mRedoStack.back() );
+	mCurrentBytes += HeavyPayloadBytes_( mRedoStack.back() );   // P2-4: (re-)entered the tracked (undo) stack
 	mRedoStack.pop_back();
 }
 
@@ -214,12 +265,23 @@ void EditHistory::RestoreLastRedoFromUndo()
 	// the depth nor leaves a phantom no-op edit on the undo stack.
 	if( mUndoStack.empty() ) return;
 	mRedoStack.push_back( mUndoStack.back() );
+	mCurrentBytes -= HeavyPayloadBytes_( mUndoStack.back() );   // P2-4: left the tracked (undo) stack
 	mUndoStack.pop_back();
 }
 
 void EditHistory::TrimToMax()
 {
-	while( mUndoStack.size() > mMaxEntries )
+	// P2-4: evaluate the byte budget ALONGSIDE the entry cap, not instead of
+	// it -- either one being over triggers the SAME oldest-first eviction
+	// loop below.  `mUndoStack.size() > 1` is the floor: generalizes the
+	// composite branch's own "never trim the LAST/only undo unit" rule (see
+	// its comment below) to the byte-budget trigger too, so a single
+	// legitimately-huge document (bigger than the whole budget on its own)
+	// is retained over-budget rather than leaving the user with zero
+	// undoability -- the same trade the composite branch already makes for
+	// an in-progress gesture that alone exceeds the entry cap.
+	while( mUndoStack.size() > 1
+	    && ( mUndoStack.size() > mMaxEntries || ( mByteBudget > 0 && mCurrentBytes > mByteBudget ) ) )
 	{
 		if( mUndoStack.front().op == SceneEdit::CompositeBegin )
 		{

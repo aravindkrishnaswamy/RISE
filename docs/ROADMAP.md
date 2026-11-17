@@ -1,0 +1,196 @@
+# RISE Implementation Roadmap
+
+**Last Verified Against Repository:** `HEAD` (`2026-11-16`, post-Tier-0 completion)
+**Lifecycle:** Active roadmap — authoritative consolidated backlog across core rendering, materials, spectral/color pipeline, GUI/editor, platform bridges, and agentic authoring.
+
+See [README.md](README.md) for the documentation catalog, [DEBT_LEDGER.md](DEBT_LEDGER.md) for the granular correctness-debt tracker, [IMPROVEMENTS.md](IMPROVEMENTS.md) for historical rendering gap criteria, and [GUI_ROADMAP.md](GUI_ROADMAP.md) for the GUI milestone breakdown.
+
+---
+
+## Executive Snapshot: What Has Already Shipped
+
+Before prioritizing new work, note what is **complete in production** as of November 2026 so contributors do not re-plan shipped systems:
+
+- **Scene Language & CST Core:** Lossless CST parse/derive/save (`RISE ASCII SCENE 7`, 176 descriptor-driven chunk keywords in [../src/Library/Parsers/ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)), `let` bindings, `expr(...)` evaluator with `sample()` / `sample_scalar()`, incremental editor derive (`DeriveToJobIncremental`), and multi-variant scenes (`scene_variant` / `active_scene_variant`).
+- **Integrators & Transport:** Unidirectional PT, BDPT, VCM (including SPPM auto-radius clipped to pixel footprint, surface + volumetric merging, and continuous-PMF env+light sampling), PSSMLT (frozen legacy tier), Specular Manifold Sampling (`SMS` + `sms_extended` Phases 1–4 across RGB/NM/HWSS), OpenPGL path guiding (one-sample + RIS with exact aggregate MIS partitioning), and the `auto_rasterizer` / `auto_spectral_rasterizer` two-tier router.
+- **Materials, Curves & Signals:** GGX + height-correlated Smith $G_2$ directional/anisotropic energy-compensation LUTs, `pbr_metallic_roughness_material`, `coated_material` (refracted-frame substrate + trapped diffuse recycling + `coat_normal`), `ggx_material` (`fresnel_mode thinfilm`) + `dielectric_material` (`ar_layer`) Airy thin-film interference, `fabric_material` (Charlie sheen) + `weave_material` + `add_fuzz`, `hair_geometry` + Chiang `HairBSDF` + Yan 2017 fur medulla (`medulla_ratio`) + `.hair` loader + Hair Phase 4 LOD, Donner-Jensen diffusion + `randomwalk_sss_material` (spectral + relative exterior IOR), scalar material `alpha_coverage`, `relief_modifier` / `glint_modifier` / `add_wetness` / `add_wear`, and cross-object `proximity(r)` / watertight `interior(r)` shading signals.
+- **Spectral & Color Pipeline:** `RISEPel = Rec709RGBPel` (Linear Rec.709 / D65 working space), Stage C illuminant-aware Jakob-Hanika LUT (`100 %` cell convergence; `GetColorNM` vs `GetRadianceNM`), physical-scalar `IScalarPainter` separation, GPU-backed OIDN denoising with albedo/normal AOVs (`OIDN-P1-1` inline delta-walk first-diffuse AOV accumulation and `oidn_prefilter`), and `FrameStore` HDR display pipeline.
+- **Multi-Platform GUI, Importers & Agent Surface:** Native macOS SwiftUI + Metal and Windows Qt6 + D3D11/OpenGL editors (with Material Editor Slices 1–6: node graph, `ObjectGraphCanvas`, 3D `MaterialPreview` shaderball, Kelvin/Sellmeier/preset-metal/thin-film spectral controls, `NamedViewsPanel`, and Keychain / Windows Credential Manager API-key persistence), Android Compose + NDK viewer/editor, glTF 2.0 importer (9 KHR material/light/transform extensions), Blender 4.x–5.3 add-on (C ABI v18), and the 43-tool MCP / HTTP / in-app LLM agent with 9 runtime authoring skills (`skills/agent/`), 12 contributor workflow skills (`docs/skills/`), and 532 standalone C++ test suites.
+
+---
+
+## Tier 0 — Immediate Bug Fixes, Active Correctness Debts & Parity Quick Wins (**COMPLETED 2026-11-16**)
+
+All 14 Tier 0 items are **complete on `master`** (leaving **0 active unparked** items in [DEBT_LEDGER.md](DEBT_LEDGER.md); all cross-platform and macOS-buildable items are red-proven and verified green on macOS, while native MSVC/Qt6 compilation and runtime execution of the Windows-only `DL-632` test targets and `0.3.1`/`0.3.2` Qt6 GUI widgets remain gated on a Windows host):
+
+### 0.1 Code & Scene Hygiene Bugs (**COMPLETED**)
+
+1. ~~**Blender Bridge Normal-Map Color-Space Bug:**~~ **SHIPPED.** Switched Blender normal-map and non-color scalar PNG textures from `COLOR_SPACE_ROMM_LINEAR = 2` to `COLOR_SPACE_LINEAR = 0` (`Rec709RGB_Linear`) in `src/Blender/addons/rise_renderer/{exporter.py,material_bake.py}` and `src/Blender/native/rise_blender_bridge.{h,cpp}`, clamped legacy `color_space == 2` normal-map callers to `0`, and gated in `tests/BlenderBridgeCoatNormalTest.cpp` + `test_hair_export.py`.
+2. ~~**Unblock `add_wear` on Analytic Patch Geometries:**~~ **SHIPPED.** Removed `bezierpatch_geometry` and `bilinearpatch_geometry` from `CurvBarrenGeometryKind_` in [../src/Library/Agent/AgentSession.cpp](../src/Library/Agent/AgentSession.cpp), unblocking `add_wear` on analytic patches (`tests/AgentAddWearTest.cpp`).
+3. ~~**Relocate Stray Frozen-Material Test Scene & Stale RPC Comment:**~~ **SHIPPED.** Removed duplicate `scenes/Tests/Materials/composite_material.RISEscene` (canonical copy kept at `scenes/Tests/Legacy/composite_material.RISEscene`) and aligned `populate_scene` wire-contract comments in [../src/Library/Agent/AgentRpc.h](../src/Library/Agent/AgentRpc.h) / `AgentRpc.cpp`.
+
+### 0.2 Active Un-Parked Correctness Debts ([DEBT_LEDGER.md](DEBT_LEDGER.md) `DL-626..DL-632` — **ALL 7 CLOSED**)
+
+1. ~~**`DL-632` (Windows Test Portability):**~~ **CLOSED.** Guarded POSIX-dependent test suites and fixtures for `_WIN32`, adopted `RISE::TestSupport::ScratchBaseDir()` / `ScratchPath()` in `tests/TestTempDir.h` (`TMPDIR` -> `TEMP` -> `TMP` -> `temp_directory_path(ec)` -> `"."` with `\` -> `/` normalization) across 155 `tests/*.cpp` suites (while the remaining ~24 scratch-writing suites use portable `std::filesystem::temp_directory_path()`, leaving zero hardcoded `_WIN32`-active `"/tmp"` paths or `system("mkdir/rmdir")` calls across all 555 non-self C++ source/header files under `tests/`), added `"${VCPKG_INCLUDE}/OpenEXR"` + `"${VCPKG_INCLUDE}/Imath"` include and `/UNDEBUG` assert parity in `build/cmake/rise-tests/CMakeLists.txt` plus `RISE_ENABLE_OIDN`/`RISE_ENABLE_OPENPGL`/`OpenEXR`/`Imath` parity in `build/VS2022/RISE-CLI/RISE-CLI.vcxproj`, added `RISE::LongAwareFsPath` (`\\?\` / `\\?\UNC\`, normalizing `/` -> `\` and stripping non-root trailing `\`) in `MediaPathLocator.{h,cpp}` + `TriangleMeshLoaderRAW{,2}.cpp` + `tests/CstLoadViaCstTest.cpp` (**173/0**) for $>260$-char RAW paths on Windows, quoted `_WIN32` `_popen` commands in `LuminarySamplerAreaTest.cpp` and space-containing interactive `load "..."` paths in `CLIExitStatusTest.cpp` (**20/0**) / `AsciiCommandParser.cpp`, cleared `RISE_MEDIA_PATH` and tracked per-target subset build failures in `run_all_tests.{sh,ps1}` (with non-fatal `\tmp` fallback in `run_all_tests.ps1`), and added fail-closed `Win32PpVal` `_WIN32` preprocessor + `RISE-GUI` `Theme::` symbol + `RISE-CLI.vcxproj` + 5-project forward/reverse `src/Library/` parity (`PBXSourcesBuildPhase` across both Xcode targets) checks across `tests/` and `build/VS2022/RISE-GUI/` (`tests/SourceHygieneTest.cpp` **198/0**; native MSVC test execution remains gated on a Windows CI/host).
+2. ~~**`DL-628` (Deterministic Heterogeneous Medium RNG):**~~ **CLOSED.** Added `ScopedMediumTileSeed` + `ActiveMediumRNG{,_NM}()` (with bijective non-`MERSENNE53` `SeedFallbackState`, strict `[0, nextafter(1, 0)]` `PSSMLTSampler::Mutate` clamping, and `std::memcpy` bit-exact `mProgressBase` + `((rect.top << 32) | rect.left)` tile keys) across all multi-threaded and single-threaded (`PixelBasedRasterizerHelper`, `BDPTRasterizerBase`) tile/row/light/MLT dispatchers so Pel, NM, and HWSS `HeterogeneousMedium` transmittance evaluations reproduce bit-identically under a fixed `std::srand` while varying across distinct salts (`tests/LuminarySamplerAreaTest.cpp` mode `F`, `tests/VCMVolumeNoBoundaryHashTest.cpp`).
+3. ~~**`DL-627` (CSG Subtraction Multi-Lobe Edge Cases):**~~ **CLOSED.** Fixed outside-both covered-lobe advance, multi-`B`-entry interval clamping, degenerate zero-thickness `B` pinch skipping (`SkipDegenerateMultiLobeB`, `SkipDegenerateClampSummaryB`), shared nested-CSG advance budgeting (`ScopedCsgQueryBudget` across `WalkTrimmedSheet` and solid loops), un-truncated continuation probing (`RISE_INFINITY`), unbacked `CoincidenceTol` comparisons behind covering `B` lobes, shrank per-frame `NextLobeSummary` storage from ~1 KB to ~176 bytes, epoch-memoized ($O(|V|)$ on epoch miss, $O(1)$ on hit) `CSGObject::ShapeRevision()`, `CSGObject::CertificateBits()`, `CSGObject::getBoundingBox()`, `CSGObject::LocalBoxDiagonal()`, `CSGObject::Realize()`, and `CSGObject::EnumerateEffectiveMaterials()`, deduplicated `ObjectManager::PrepareForRendering()`, `CSGObject::ResetRuntimeData()`, and `CSGObject::CloneSnapshot()` in $O(|V|)$ per traversal, and added $O(1)$ `pObjectA == pObjectB` short-circuits, child `CSGObject` AABB pre-rejection, `16384`-visit caps, and `IsSharedConsumerTarget()` (`nConsumedBy > 1`) allocation-free `CsgFlatGenMap` per-query shared-DAG memoization across `IntersectRay{,_IntersectionOnly}`, `OperandContainsPoint`, `SelfHitRootFloor`, and SDF queries including `TimeIndexed::tlsSlots != nullptr` passes in `src/Library/Objects/CSGObject.cpp` (`tests/CsgMeshOperandTest.cpp` Sections `L`–`N`, **333/0**).
+4. ~~**`DL-626` (Open-Sheet Seeding & Walk Edge Cases):**~~ **CLOSED.** Added `ShapeRevision()` tracking (plus `GlobalGeometryShapeEpoch` / `GlobalTransformPoseEpoch` / `ThreadTransformPoseEpoch` / `ThreadCsgPoseEpoch` / `ThreadTrackablePoseEpoch`) for AABB-preserving shape edits across all 14 shape-mutable geometry families (15 concrete `Geometry` classes), `IObject::EnumerateEffectiveMaterials()` for per-operand-material `csg_object` open sheets, full refractive/volumetric/SSS/graded-IOR/`ScattersFullSphere` forwarding on `LambertianLuminaireMaterial` and `PhongLuminaireMaterial` (plus `PolishedSPF`/`clearTransmission` gating and `SMSIsPolishedCoat` luminaire unwrapping, `A69`–`A70`), canonical declaration- and TLAS-order-invariant geometric ordering (`SheetGeomKeyLess` with NaN-safe `ScalarTotalLess` and transform-matrix + `std::less<const IObject*>{}` fallback tie-breaking, `Snapshot::columnDist`, exact `aloneDist`/`activeDists`/`sheetColDists` ray-hit distances, `EnsureCatalogPoseState` (`cat.confirmGroupPoseValid` + `SameBox`) + `CatalogBoxBvh` `sheetBoxBvh` / `closedTrackableBvh` $O(\log N + K_{\text{box}})$ / $O(\log M + K_{\text{box}})$ 3D AABB BVH2s across normal/detour/`TallyProbe` walks, `ProbeCoplanarSheetBackAt` + `RecordCoplanarOrderedExitsAt`, and confirmation-hit tie-breaking in `ConfirmOpenSheetsAt`), shared `columnWalkUsed` + `GroupDetourRayBudget()` enforcement across `sheet.normal` + `auxNormals`, `!cs.keep` sibling-deduplication filtering + `FindRetainedSelf` effective-material/confirmed guard + post-pop stale-sheet peel + outer-to-inner multi-fold `CrossingMedia` enclosure + reciprocal back-face `etaFrom` (`DielectricSPF` / `PerfectRefractorSPF` across Pel/NM/HWSS) in `ResolveOpenSheetCrossing`, `DetourOriginForSeedExit` past `pSeedObject`, and 64-sample / 32-normal `DescribeOpenSheet` facet coverage ([DL622_OPEN_SHEET_SEEDING_AND_WALK_MEMBERSHIP.md](DL622_OPEN_SHEET_SEEDING_AND_WALK_MEMBERSHIP.md) §5.8; `tests/OpenSheetHalfSpaceSeedingTest.cpp` **279/0**).
+5. ~~**`DL-629` (Non-Rectangular `ClippedPlaneGeometry` Luminary Residual):**~~ **CLOSED.** Verified zero luminary sampler bias via high-power $96 \times 96 \times 1024\,\text{spp} \times 64$ quadrature and fixed progressive Pel multi-pass `XYZPel` round-trip compounding (`ProgressivePixel::LoadPelPassInit` / `StorePelPassDelta` across `PixelBasedPelRasterizer`, `PathTracingPelRasterizer`, `BDPTPelRasterizer`, `VCMPelRasterizer`), progressive `pSplatFilm` (`t == 1`) `BidirectionalRasterizerBase::AddAdaptiveSamples` (`mSplatTotalSamples`) normalization across Pel/NM/HWSS `BDPT*` & `VCM*`, single- and multi-threaded (`RasterizeBlockDispatcher`) 1-tile progressive progress weighting and cancellation, orthographic `BDPTIntegrator` `eyeVerts[0].position`, rotated `OrthographicCamera` basis projection in `RasterizeOrthographic`, and odd-dimension `OrthographicCamera` centering (`tests/LuminarySamplerAreaTest.cpp` modes `P`/`Q` **90/0**, `tests/CameraImportanceTest.cpp` **1000/0**).
+6. ~~**`DL-630` (Certified Watertight `.bezier` / `.bilinear` Glass Models):**~~ **CLOSED.** Shipped `models/bezier/teapot_watertight.bezier` (632 bicubic patches), `models/raw/vessel_watertight.bilinear` (552 bilinear patches), and `scenes/Tests/Geometry/teapot_watertight_glass.RISEscene`, certified across analytic patch refraction (with lazy `Object` refractive patch certification and 5-arg `RayBilinearPatchIntersection` + 5-arg `RayBezierPatchIntersection` per-root normal/face-culling filters), `DisplacedGeometry`, `SeedFromPoint`, and CSG while preserving historical defective-model census pins (`tests/PatchSetCertificationTest.cpp` **264/0**).
+7. ~~**`DL-631` (`+2 %` Render CPU Drift Bisect):**~~ **CLOSED.** Replaced `MyIORStack`'s heap `std::vector<IORDATA>` base with inline 4-entry `m_inline[4]` SBO + `noexcept` move construction/assignment (`-65 %` `malloc`/`free` samples; copy-on-write `MyIORStack::ContextList` stays out-of-line only for open-sheet pushes, `IORStackTest` **33/0**), added 8-entry inline SBO in `LaneSeed` (`SeedLanesFromPoint`), added `!cat.hasTrackableMedia` 0-ray opaque-scene skip (including per-operand-material `csg_object`s) + `!cat.hasSheets` 32-entry stack fast path (`ProbeEntry[32]`, zero per-ray heap allocations for $K_{\text{box}} \le 32$) + $O(1)$ epoch-validated `EnsureCatalogPoseState` + `CatalogBoxBvh` in `SeedFromPointImpl`, gated `guidedIorStack` behind `#ifdef RISE_ENABLE_OPENPGL` in PT, and eliminated duplicate `HWSSLaneSeeds` origin probe walks (`74 -> 0` frames) via single-walk `SeedLanesFromPoint` + zero-copy `IORStack& iorStack = laneStacks[0]` + `preseededOriginLanes_` forwarding in `PathTracingIntegrator::IntegrateRayHWSS` (`hwss_prism_dispersion_pt` wall `-1.45 %` / user CPU `+0.07 %`, `cornellbox_bdpt_materials_pt` user CPU `-0.60 %` / wall `+3.77 %` across $n = 4$ `ABBAABBA` runs vs `6946c4c82` on `a1d619190`, with `556bf4a3b` included).
+
+### 0.3 Desktop Parity & CLI Quick Wins (**COMPLETED**)
+
+1. ~~**Windows Qt6 `NamedViewsPanel` Widget (`GUI_ROADMAP` B2 Parity):**~~ **SHIPPED (code-complete & review/hygiene-verified on macOS; native MSVC/Qt6 compile & runtime pass gated on a Windows host).** Added `build/VS2022/RISE-GUI/NamedViewsPanel.{h,cpp}` wired into `MainWindow.{h,cpp}` and `RISE-GUI.vcxproj`.
+2. ~~**Windows Credential Manager for LLM API Keys:**~~ **SHIPPED (code-complete & review/hygiene-verified on macOS; native MSVC/Qt6 compile & runtime pass gated on a Windows host).** Added `build/VS2022/RISE-GUI/CredentialStore.{h,cpp}` (UTF-16LE `CRED_TYPE_GENERIC` `CredWriteW` / `CredReadW` / `CredDeleteW` + `SecureZeroMemory`) with write-only `ChatPanel` key entry matching macOS `AgentChatKeychain` in `ChatViewModel.swift`.
+3. ~~**CLI Overrides (`OIDN-P2-1` & Camera Selection):**~~ **SHIPPED.** Added `--denoise` / `--no-denoise` (`IRasterizer::SetDenoisingOverride`, including `AutoRasterizer` for both `auto_rasterizer` and `auto_spectral_rasterizer`), `--camera <name>` / `--camera=<name>`, and `=`-joined `--width=` / `--height=` / `--pixel-ar=` in `src/RISE/CliOptions.h` + `src/RISE/commandconsole.cpp` (`tests/CliOverridesTest.cpp` **77/0**).
+4. ~~**Standalone `MaterialPreviewTest`:**~~ **SHIPPED.** Added `tests/MaterialPreviewTest.cpp` gating headless 3D `MaterialPreview` shaderballs, D1–D3 spectral helpers, and `CreateInteractiveMaterialPreviewPipeline` in `fast` CI (**63/0**).
+
+---
+
+## Tier 1 — Core Rendering, Materials, Spectral & Output Pipeline
+
+High-impact rendering capabilities that close the remaining physical-transport and output gaps:
+
+### 1.1 Rough Dielectric BSDF (`BTDF`, Walter et al. 2007) + Remaining glTF Extensions
+
+**Started 2026-11-16 — kernel and native material.** `MicrofacetUtils::RoughDielectric`
+provides anisotropic GGX VNDF reflection/refraction (Heitz projected-disk
+sampling), an aggregate solid-angle
+PDF, height-correlated Smith masking, exact smooth/equal-index delta limits,
+and explicit radiance versus importance scaling. Its supported GGX widths are
+`(0,1]` on both axes, or both zero for smooth scattering; larger widths and
+single-zero-axis distributions are rejected. `RoughDielectricKernelTest`
+checks analytic limits, independent Walter equations and refractive Jacobians,
+adjoint reciprocity, and sampled distributions/energy against quadrature.
+Draws retain their sampled micronormal for evaluating their value and PDF;
+direction-only reconstruction loses that information when the half-vector is
+unresolved, including machine-adjacent IORs.
+NDF products keep binary exponents separate until conversion, and sampling/
+throughput formulas avoid squared-norm and grazing-product underflow. True
+densities beyond `Scalar` range can still overflow; sample throughput is
+evaluated independently rather than dividing such values.
+Dimensionless masking fractions are formed before rounding subnormal lengths;
+their binary scale is retained through cancellation with incident cosines and
+through the paired masking sum, rather than converting each fraction early.
+refraction uses a contrast correction near unity and a tangent/normal Snell
+decomposition outside that interval. Radiance scaling divides by IOR twice
+instead of forming a potentially overflowing IOR square.
+Incident sine is retained near normal, while a factored cosine/IOR-contrast
+form preserves grazing critical-angle information. The projected-disk warp
+uses positive-factor horizon heights rather than a cancelling cap-vector sum.
+The disk warp selects equivalent sums by their rounding bounds to retain tiny
+components near normal incidence as well as grazing boundary heights.
+Small Fresnel reflection/transmission tails are evaluated directly and selected
+first. `Evaluation::positiveDensity` retains scaled-density positivity when its
+`Scalar` conversion underflows, avoiding artificial rejection of that draw.
+Physical radiance weights can themselves exceed `Scalar` range; representable
+BSDF values and throughput are evaluated without those overflowing intermediates.
+`rough_dielectric_material` now exposes this kernel through the public factory,
+IJob, descriptor parser, editor slots/templates, and snapshot cloning. Pel uses
+one scalar IOR; spectral scalar-slot views retain dispersion for NM/HWSS.
+HWSS conservatively terminates companions at rough interfaces, including
+non-dispersive ones, because the walkers share a hero medium stack and eta scale.
+This reduces a four-wavelength bundle to one active wavelength; wavelength-specific
+medium tracking is required before retaining companions through rough glass.
+Sampling and stateful evaluation share nested-medium crossing and geometric
+horizon gates. SPF weights exclude eta scaling; the BSDF honors radiance versus
+importance mode, and spectral companion weights use the hero sampling density.
+`RoughDielectricMaterialTest` checks these boundaries; the comparison scene is
+`scenes/Tests/Materials/rough_dielectric.RISEscene`.
+This is single scattering with null events: multiscatter compensation and
+importer wiring remain before closing 1.1. Both material alpha widths must be
+in (0,1]; smooth interfaces use `dielectric_material`. Bulk absorption uses a
+separate medium. World-position IOR fields are refused in this increment.
+
+- **Why:** Currently `dielectric_material` uses a delta Snell refraction with optional Phong/HG directional perturbation (`scattering`), while `ggx_material` is opaque-only. True microfacet rough transmission (VNDF half-vector sampling for both reflection and refraction with $G_2$ height-correlated masking, $1/\eta^2$ radiance scaling, and multiscatter energy compensation — [VITREOUS_ENAMEL.md](VITREOUS_ENAMEL.md) Gap G2) is the single biggest material-model gap in RISE.
+- **Unlocks:**
+  - Physically accurate frosted/etched glass, ground crystal, ice, and translucent opal enamel without heuristic Phong exponents.
+  - Full `KHR_materials_transmission` roughness parity in [GLTF_IMPORT.md](GLTF_IMPORT.md) (currently mapped to `dielectric_material` scattering approximations) and Blender Principled BSDF `Transmission` + `Roughness`.
+  - Remaining glTF 2.0 material extensions: `KHR_materials_dispersion` (Abbe-number spectral Cauchy/Sellmeier mapping), `KHR_materials_iridescence` (direct mapping onto RISE's existing `ggx_material` `fresnel_mode thinfilm` / `dielectric_material` `ar_layer` Airy layer), and `KHR_materials_clearcoat` rough/normal texture polish.
+
+### 1.2 Full Primaries-Aware AgX Display Transform & FrameStore Multichannel Output
+
+- **Full AgX Tonemapper:** Replace the scalar log-sigmoid placeholder in `src/Library/Rendering/DisplayTransform.h` (`DisplayTransform::AgX` — currently documented as *not* full primaries-aware AgX) with Troy Sobotka's full inset-matrix → 1D log2 Lut/curve → outset-matrix transform so saturated HDR highlights desaturate cleanly without hue skew across CLI, macOS Metal, Windows D3D11/GL, and Android viewports ([FRAMESTORE_DESIGN.md](FRAMESTORE_DESIGN.md)).
+- **Multichannel AOV EXR Output (`FrameStore` L7):** Upgrade `EXRFrameEncoder` (`SupportsAOVs() == true`) to write multi-layer OpenEXR files (`Beauty`, `Albedo`, `Normal`, `Depth`, `Variance`), expose an `aov` selection parameter on `file_rasterizeroutput`, and enable 16-bpc PNG/TIFF + HDR EXR in GUI `saveAs`.
+
+### 1.3 VCM, Spectral Media & Coat Transport Completions
+
+- **VCM Completions ([VCM.md](VCM.md), [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)):**
+  - Add `directional_light` NEE and light-subpath emission support in `VCMIntegrator` (currently PT/BDPT support directional lights while VCM drops them).
+  - Add a configurable memory cap (`max_stored_light_vertices`) on surface `LightVertexStore` matching `LightMediumVertexStore` (`10M` cap) to bound RAM at ultra-high resolutions.
+  - Close VCM volumetric single-scatter environment-IBL MIS weighting (`EnvLightBalanceTest` strict residual notes).
+  - Evaluate hero-wavelength `LightVertexNM` spectral photon storage ([VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md)) if narrowband/dispersive VCM caustics become a priority.
+- **Spectral Participating Media & Equi-Angular BDPT/VCM:**
+  - Extend `IPhaseFunction` with `EvaluateNM` / wavelength-dependent Mie & Rayleigh phase functions and per-wavelength extinction/albedo in `HeterogeneousMedium` ([IMPROVEMENTS.md](IMPROVEMENTS.md) §17).
+  - Bring equi-angular distance sampling (currently in PT `MediumTransport`) to BDPT and VCM medium walks for point/spot lights embedded in fog.
+- **Absorbing / Tinted Clearcoat Presets & Importer Surfacing:**
+  - `coated_material` already supports `coat_thickness`, `coat_absorption`, and `coat_tint` (`DL-342`); surface measured spectral extinction curves ($\sigma_a(\lambda)$) and absorbing-coat presets across glTF/Blender importers, GUI material presets, and vitreous enamel authoring ([VITREOUS_ENAMEL.md](VITREOUS_ENAMEL.md) Gap G1).
+
+### 1.4 Extended SMS Performance (`DL-500`) & Coverage Extensions
+
+- **Optimize `sms_extended` Area-Emitter Cost (`DL-500`):** Extended SMS (`sms_extended TRUE`) solves multi-bounce R/T caustics across RGB/NM/HWSS cleanly, but area-emitter estimator B + `ClassifyExtendedChain` over 6 canonical seeds currently runs ~`9–17×` slower than `sms_extended FALSE`. Profile and prune redundant canonical-seed Newton walks (early-exit bounding / shared Jacobian factorization).
+- **SMS Participating Media & Alpha Coverage in Extended Mode:** Lift the current `sms_extended` restrictions on participating media and non-opaque `alpha_coverage` casters ([SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md)), and evaluate `k=1` Specular Polynomials exact root enumeration (Zhdan et al. 2025, [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md)) for single-bounce glints/caustics.
+
+---
+
+## Tier 2 — GUI, Spectral Differentiators, Blender & Platform Parity
+
+Features that turn RISE's spectral and physical differentiators into frictionless interactive workflows:
+
+### 2.1 Approachability & Scene Editing Completion ([GUI_ROADMAP.md](GUI_ROADMAP.md), [gui/OPEN_ITEMS.md](gui/OPEN_ITEMS.md))
+
+1. **Zero-Config Studio Startup (`A1`):** Ship a curated `default_studio.RISEscene` (shaderball + 3-point lighting + neutral cyclorama + camera presets) reachable in one click from `StartScreenView` / `StartScreenWidget`.
+2. **Viewport Drag-and-Drop (`A3`) & Bundled Asset Browser (`A5`):** Drag materials from the palette/graph onto viewport objects (raycast hit → `setObjectParameter("material", ...)`), drag `.hdr`/`.exr` files onto the sky to wire IBL, and add a searchable bundled CC0 material/HDRI/model shelf.
+3. **Entity Creation & Inspector Gaps ([gui/OPEN_ITEMS.md](gui/OPEN_ITEMS.md) §§2, 4):**
+   - Support non-16:9 aspect presets and inserting a `film` chunk when absent (`applyFilmPreset`).
+   - Add editable Hosek–Wilkie sky parameters (`turbidity`, `ground_albedo`, `sun_direction`) to `EnvironmentPanel` alongside HDRI mode.
+   - Add `Category::Geometry` creation templates (sphere, box, torus, cylinder, clipped plane, SDF, displaced), surface `Shader` and `Modifier` categories in the Outliner, and wire atomic glTF/OBJ mesh import into an open `.RISEscene` ([gui/ENTITY_CREATION.md](gui/ENTITY_CREATION.md) §11).
+
+### 2.2 MaterialX Import (`C3`) & Remaining Spectral Differentiators (`D1`, `D4–D7`)
+
+Slices 1–6 of the Material Editor and Spectral Differentiators (`D1` Kelvin/Sellmeier, `D2` measured metals, `D3` thin-film interference strip) have already shipped ([gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md), [gui/SPECTRAL_DIFFERENTIATORS.md](gui/SPECTRAL_DIFFERENTIATORS.md)). Remaining high-leverage slices:
+
+1. **`D1` Remainder — CSV SPD Import & Monochromatic Wavelength Slider:** Drag-import `.csv` / `.spd` spectral curves onto painter/function nodes with an inline 380–780 nm SPD plot, plus a single-wavelength laser/monochromatic source helper.
+2. **`D4` & `D6` — HDR Scopes, Gamut Clipping & Pixel Loupe:** Live HDR waveform, RGB parade, Rec.709/P3 gamut-warning overlay, exposure false-color EV mode, and spectral/linear-RGB pixel inspector loupe (`gui/RENDER_MODES.md` Phase 2).
+3. **`D5` — Pre-Render Auto-Router Diagnostic Overlay:** Visualize `auto_rasterizer`'s Tier-2 probe metrics (caustic merge share, indirect ratio, resolved PT/BDPT/VCM choice) directly in the viewport HUD.
+4. **`D7` — Interactive Post-Render Light Mix:** Per-light-group FrameStore AOV buffers allowing real-time intensity/tint re-balancing after a single path-traced render without re-tracing.
+5. **`C3` — MaterialX (`.mtlx`) Import:** Translate `standard_surface` and `open_pbr_surface` graphs into native RISE `ggx_material` / `coated_material` / `fabric_material` / painter chains.
+
+### 2.3 Android Tier-A Completion, Linux TLS & Blender Viewport Bridge
+
+1. **Android App Completion ([../android/README.md](../android/README.md)):**
+   - Wire CST `.RISEscene` round-trip save through `RiseBridge.cpp` + Android SAF document picker.
+   - Expose remaining Outliner/Inspector categories (`Material`, `Painter`, `Geometry`, `Options`) on tablet layouts.
+   - Add an OkHttp/NDK `ITlsTransport` + Android Keystore bridge so the in-app LLM Agent tab can run on Android.
+2. **Linux Headless TLS Transport:** Implement a `libcurl` or OpenSSL `ITlsTransport` backend (`TlsTransportCurl.cpp`) to replace `TlsTransportUnsupported.cpp` on Linux so `--agent-eval` live LLM runs and headless HTTP/agent workflows work natively on Linux CI/workstations.
+3. **Blender Interactive Viewport & Light Parity ([../src/Blender/README.md](../src/Blender/README.md)):**
+   - Implement `view_update` / `view_draw` interactive viewport rendering in the Blender add-on via `InteractivePelRasterizer` / progressive PT.
+   - ~~Bridge Blender 4.2+ Principled Thin-Film onto `ggx_material`'s thin-film parameters.~~ **SHIPPED 2026-11-14 (ABI v18)** together with Blender 5.3 transmission dispersion (Cauchy IOR curve) and light power parity (Normalize off for every light type, world-area-normalised area panels; `tools/blender_light_parity.py`, 20 gated cases within 0.33% under a +/-0.5% gate; a genuinely sheared panel is a reported Cycles divergence); validated on Blender 5.3.  See [BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md) "Thin film and dispersion" and "Lights".
+   - Remaining light parity: per-object camera-ray visibility (Cycles hides light objects from camera by default; a RISE emitter panel cannot be hidden without also removing its light), area-light Spread, and soft shadows from point/spot Radius and sun Angle (they only enter through the Normalize-off power today).  Native `rect_light` / disk primitives would only replace the disk's 64-gon edge.
+   - Translate procedural Noise / Voronoi / Checker onto `perlin3d_painter` / `voronoi3d_painter` / `checker_painter` (today the input they feed loses their contribution, with a warning).
+
+---
+
+## Tier 3 — Agentic Hardening, Expressive Authoring, Cameras & Architecture v2
+
+Longer-horizon strategic tracks:
+
+### 3.1 Agent Security, Schema Tooling & Editor Diagnostics
+
+- **Security Boundary Hardening ([gui/AI_SECURITY_MODEL.md](gui/AI_SECURITY_MODEL.md)):** Land `ProjectRootJail` (`openat` verified-fd path confinement for scene/asset writes), `IOutboundUrlPolicy` (SSRF private-subnet blocklist for custom LLM endpoints), `SecretRedactor` over logs/transcripts, and first-egress vision/cloud consent dialogs on macOS and Windows.
+- **Inline Validation Squiggles & Enum Codegen ([gui/VALIDATION_ARCHITECTURE.md](gui/VALIDATION_ARCHITECTURE.md), [gui/CROSS_PLATFORM_ARCHITECTURE.md](gui/CROSS_PLATFORM_ARCHITECTURE.md)):** Wire Tier-1 parse/reference/arity diagnostics into inline squiggle gutters in the raw `.RISEscene` text tab, add `SchemaConformanceTest`, and add `tools/gen_bridge_enums.py` so C++, Swift, Kotlin, and Qt bridge enums cannot drift.
+
+### 3.2 Agent Context Lifetimes, Procedural Geometry & Eval Refresh
+
+- **Context Compaction Extensions ([agentic-redesign/91-context-lifetimes-and-visible-detail.md](agentic-redesign/91-context-lifetimes-and-visible-detail.md), [agentic-redesign/71-context-compaction-design.md](agentic-redesign/71-context-compaction-design.md)):** Extend L1 superseded-observation compaction to `remove_chunks`, `finish_element`, and `place_element`, and add `S3` head-anchored edit-ledger summaries for 100+ turn scene-construction sessions.
+- **Geometry Expressiveness & Hierarchy Speed ([agentic-redesign/85-geometry-expressiveness-candidates.md](agentic-redesign/85-geometry-expressiveness-candidates.md), [agentic-redesign/87-recursive-scene-graph.md](agentic-redesign/87-recursive-scene-graph.md)):**
+  - Add `branch_geometry` / botanical L-system / space-colonization foliage (`C5`), architectural macro-builders (`C4`), and `extruded_poly_geometry`.
+  - Memoize `ObjectManager::RebakeHierarchy` pointer plans so deep `group_object` animations/turntables avoid $O(N)$ rebuilds per frame.
+- **Agent Eval Harness Refresh ([../evals/README.md](../evals/README.md)):** Add robust HDR percentile grading (`p95`/`p99` firefly-resistant luminance bands) and refresh `evals/RESULTS.md` across current frontier models (`gemini-4-argon`, `claude-sonnet-5`, `gpt-5.6-terra`) including the two `DL-60` replay scenarios (`altar_stress`, `rainwet_closeup`).
+
+### 3.3 Specialized Cameras & Multi-Document Architecture
+
+- **Cameras Roadmap Phases 2–7 ([CAMERAS_ROADMAP.md](CAMERAS_ROADMAP.md)):** Implement `equirectangular_camera` (360° lat-long IBL baking/VR), `cubemap_camera`, `dome_camera` (fulldome), `ods_camera` (omnidirectional stereo), optical vignette / polygonal aperture blades / Scheimpflug tilt-shift (`thinlens_camera` extensions), and multi-element `realistic_camera` ray tracing through tabular lens prescriptions.
+- **Immutable Scene Snapshot v2 & Multi-Document `RenderCoordinator` ([agentic-redesign/20-derivation-engine.md](agentic-redesign/20-derivation-engine.md), [gui/RENDER_COORDINATOR.md](gui/RENDER_COORDINATOR.md)):** Only if multi-tab simultaneous scene editing is needed: decouple live viewport reads from `Job` mutation locks via immutable `DerivedScene` snapshots and process-wide `RenderCoordinator` thread-budget arbitration.
+- **Legacy Isolation Prep ([LEGACY_DEPRECATION_ASSESSMENT.md](LEGACY_DEPRECATION_ASSESSMENT.md) `D13`/`D14`):** Decouple `PathTracingIntegrator` SSS exit continuations from `defaultshader` (`D13`) and migrate the `RAW1` mesh loader onto `TriangleMeshGeometryIndexed` (`D14`) so the frozen shader-op and non-indexed mesh surfaces have zero active-pipeline dependencies.

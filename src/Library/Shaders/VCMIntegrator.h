@@ -88,6 +88,12 @@ namespace RISE
 				const StabilityConfig& stabilityConfig_
 				);
 
+			/// DL-474: normalize a certified sphere/box cut of the ball, including
+            /// conservative bounds for adjacent faces of one containing box.
+            /// Unknown geometry and independent multiple cuts retain the old kernel.
+            static VCMNormalization BoundaryVolumeNormalization(
+                const VCMNormalization& norm, const BDPTVertex& vertex );
+
 			void SetLightSampler( const LightSampler* pLS );
 
 			BDPTIntegrator* GetGenerator() const { return pGenerator; }
@@ -114,8 +120,22 @@ namespace RISE
 				const std::vector<BDPTVertex>& verts,
 				const VCMNormalization& norm,
 				std::vector<LightVertex>& out,
-				std::vector<VCMMisQuantities>* outMis = 0
+				std::vector<VCMMisQuantities>* outMis = 0,
+				const bool seeThroughLive = false,	///< DL-424: SeeThroughLive( caster )
+				std::vector<VCMStep>* outSteps = 0,	///< DL-470: append the subpath's step records (records
+													///< 0..deepest stored vertex) and point the new vertices'
+													///< stepBase at them; 0 = keep none (merges unwindowed)
+				const BDPTIntegrator* pTypeCapSource = 0	///< DL-471: whose per-type caps the stored vertices'
+													///< merge data (LightVertex::capCounts, kLVF_TypeSplitPrefix)
+													///< are stamped for; 0 or no cap that can bind = none
 				);
+
+			/// DL-424: is the see-through NEE (an eye vertex connecting to
+			/// a delta light through thin-weave delta pass-throughs) live
+			/// in this scene?  Exactly when the pass-through shadow walk is
+			/// (RayCaster::DeltaPassThroughShadowsActive).  EvaluateNEE and
+			/// ConvertLightSubpath must agree on it.
+			static bool SeeThroughLive( const IRayCaster& caster );
 
 			/// Walk a generated BDPT eye subpath and derive the
 			/// per-vertex SmallVCM running quantities (dVCM, dVC,
@@ -137,6 +157,46 @@ namespace RISE
 				const std::vector<BDPTVertex>& verts,
 				const VCMNormalization& norm,
 				std::vector<VCMMisQuantities>& outMis
+				);
+
+			/// The RGB → wavelength projection the NM merge estimator
+			/// applies to a STORED light-subpath throughput
+			/// (`LightVertexThroughput<NMTag>`), Stage C slice 2.
+			///
+			/// The LightVertexStore holds Pel throughputs only: the
+			/// light pass is not wavelength-matched to the eye pass, so
+			/// a deposited vertex has no single wavelength it could have
+			/// been traced at.  This projects it as the reference
+			/// ILLUMINANT rather than the Rec.709 luma scalar it used
+			/// to, so the VM (merge) strategies land on the same chroma
+			/// as the VC (connect) strategies they share a MIS partition
+			/// with — every other source term in the engine now emits
+			/// the D65-shaped spectrum, and a flat luma scalar resolves
+			/// to (1.205, 0.948, 0.909) on this film.
+			///
+			/// Exposed as a static so the merge path's projection is
+			/// unit-testable without standing up a scene, and so there
+			/// is exactly ONE definition of it (the estimator calls this
+			/// same function).  See the comment block above
+			/// `LightVertexThroughput` in VCMIntegrator.cpp for where
+			/// the projection is exact and where it approximates.
+			static Scalar LightThroughputRadianceNM(
+				const RISEPel& throughput,
+				const Scalar nm
+				);
+
+			/// Sibling of LightThroughputRadianceNM that returns the
+			/// built RGBIlluminantSpectrum itself (EnsurePositve'd RGB,
+			/// then FromRGB) rather than evaluating it at one
+			/// wavelength.  This is the ONE place the spectrum is
+			/// constructed; LightThroughputRadianceNM just calls
+			/// `.Eval(nm)` on the result.  A deposited LightVertex
+			/// caches this at write time (`LightVertex::throughputSpectrum`,
+			/// see VCMLightVertex.h) so the per-merge-candidate NM read
+			/// in EvaluateMerges is a plain Eval, not a fresh JH LUT
+			/// lookup per candidate.
+			static RGBIlluminantSpectrum LightThroughputSpectrum(
+				const RISEPel& throughput
 				);
 
 			/// Strategy (s=0): eye subpath's tail vertex directly
@@ -198,15 +258,27 @@ namespace RISE
 			/// ConvertLightSubpath rather than re-walking the
 			/// recurrence.  ConvertLightSubpath's overload emits
 			/// this array via 'outMis'.
+			///
+			/// `cameraLensSample` is two canonical randoms used to pick
+			/// the point on the camera's entrance APERTURE the splat
+			/// connects to (debt 28).  Consumed only by a camera with a
+			/// finite aperture (`thinlens_camera`); point-aperture cameras
+			/// (`pinhole_camera`, `fisheye_camera`) ignore it and connect to
+			/// `camera.GetLocation()`, while delta-direction cameras
+			/// (`orthographic_camera`) skip `t == 1` splats altogether.  No
+			/// default on purpose -- a fixed value would give a thin
+			/// lens the right splat energy with no depth of field, a
+			/// sharp light-traced layer over a defocused eye-traced one.
 			void SplatLightSubpathToCamera(
 				const std::vector<BDPTVertex>& lightVerts,
 				const std::vector<VCMMisQuantities>& lightMis,
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
+				const Point2& cameraLensSample,
 				SplatFilm& splatFilm,
 				const VCMNormalization& norm,
-				const IPixelFilter* pixelFilter	///< [in] Reconstruction kernel; null = round-to-nearest point splat
+				const IPixelFilter* pixelFilter, ISampler* alphaSampler = nullptr	///< [in] Reconstruction kernel; null = round-to-nearest point splat
 				) const;
 
 			/// Strategy (s>=2, t>=2): interior vertex connection.
@@ -223,7 +295,7 @@ namespace RISE
 				const std::vector<VCMMisQuantities>& lightMis,
 				const std::vector<BDPTVertex>& eyeVerts,
 				const std::vector<VCMMisQuantities>& eyeMis,
-				const VCMNormalization& norm
+				const VCMNormalization& norm, ISampler* alphaSampler = nullptr
 				) const;
 
 			/// Strategy (vertex merging): for each non-delta surface
@@ -280,16 +352,19 @@ namespace RISE
 				const Scalar nm
 				) const;
 
+			/// `cameraLensSample`: see SplatLightSubpathToCamera above.
 			void SplatLightSubpathToCameraNM(
 				const std::vector<BDPTVertex>& lightVerts,
 				const std::vector<VCMMisQuantities>& lightMis,
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
+				const Point2& cameraLensSample,
 				SplatFilm& splatFilm,
 				const VCMNormalization& norm,
 				const Scalar nm,
-				const IPixelFilter* pixelFilter	///< [in] Reconstruction kernel; null = round-to-nearest point splat
+				const IPixelFilter* pixelFilter,	///< [in] Reconstruction kernel; null = round-to-nearest point splat
+				const Scalar splatScale = 1.0, ISampler* alphaSampler = nullptr		///< [in] DL-201/DL-217 spectral splat scale: (SampledWavelengths::N / surviving lanes) * mYNormalization at the spectral call sites -- so ~3.74 (not 1.0) when nothing terminated; 1.0 only for the Pel instantiation.
 				) const;
 
 			Scalar EvaluateInteriorConnectionsNM(
@@ -300,7 +375,7 @@ namespace RISE
 				const std::vector<BDPTVertex>& eyeVerts,
 				const std::vector<VCMMisQuantities>& eyeMis,
 				const VCMNormalization& norm,
-				const Scalar nm
+				const Scalar nm, ISampler* alphaSampler = nullptr
 				) const;
 
 			Scalar EvaluateMergesNM(

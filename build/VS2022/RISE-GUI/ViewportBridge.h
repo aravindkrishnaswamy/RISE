@@ -12,13 +12,18 @@
 #ifndef VIEWPORTBRIDGE_H
 #define VIEWPORTBRIDGE_H
 
+#include <QByteArray>
 #include <QObject>
 #include <QImage>
 #include <QPointer>
 #include <QString>
 #include <QVector>
 #include <QtGlobal>
+#include <atomic>
+#include <cstdint>
 #include <memory>
+#include <mutex>
+#include <string>
 
 class RenderEngine;
 
@@ -50,6 +55,24 @@ struct ViewportProperty {
     QVector<ViewportPropertyPreset> presets;   // empty when descriptor declared no presets
     QString unitLabel;                         // short suffix shown next to the field — "mm", "°", "scene units", or empty
     int     index = -1;                        // snapshot position (the C-ABI property index) — jump-to-definition queries by index
+    // doc 88 S4b (Tier-1 param sliders): the row's authored numeric range,
+    // mirroring RISEViewportProperty on the macOS side and CameraProperty in
+    // the core.  `hasRange` is true only when BOTH bounds are known.
+    // `rangeStep` is 0 for "continuous".  Populated today only for an
+    // expression painter's `param[i]` rows, from the `min`/`max`/`step`
+    // metadata on the scene text's `param` line.
+    //
+    // Rendered by ViewportProperties::buildPropertyRow's slider block (the
+    // Qt mirror of the Mac ParamSliderCell); still owed a compile-verify on
+    // an actual MSVC build (this checkout is macOS-only).
+    bool    hasRange = false;
+    double  rangeMin = 0.0;
+    double  rangeMax = 0.0;
+    double  rangeStep = 0.0;
+    bool    targetsPainter = false;
+    int     inlinePainterKind = 0;
+    QString inlinePainterValue;
+    unsigned int inlinePainterRefCount = 0;
 };
 
 /// Tool enum mirroring SceneEditController::Tool and the C-API
@@ -111,6 +134,47 @@ struct ViewportRenderModeInfo {
     /// x-ray flag, so TopBar disables `m_xrayBtn` while the active mode has
     /// this set (see TopBar::refreshRenderModeCombo).
     bool isVariant = false;
+};
+
+/// 87 section 5 step 4a: one node of the AUTHORED-graph tree, as read
+/// out of SceneEditController's snapshot in a single pass.
+///
+/// `parent` and every entry of `children` index into the SAME
+/// SceneTree::nodes this node came from -- which is why the whole tree is
+/// handed over as one value by `categoryTree()` rather than
+/// walked node by node: the controller's own snapshot may be republished
+/// between calls, and a handle minted before a republish is REFUSED
+/// afterwards (it carries the snapshot generation, so it fails rather
+/// than silently naming whichever node now sits at that index).  One
+/// locked pass, one consistent tree, and a QAbstractItemModel can hold
+/// it as its backing store -- including in QModelIndex::internalId(),
+/// which is exactly the place a controller handle must never go.
+///
+/// `parent` is -1 for a root.  `name` is the entity name -- what the row
+/// displays and what `setSelection()` takes.
+struct SceneTreeNode {
+    QString      name;
+    int          parent = -1;
+    QVector<int> children;
+};
+
+/// 87 section 5 step 4: one category's whole authored tree -- the node
+/// table PLUS the root list.
+///
+/// THE ROOTS ARE CARRIED EXPLICITLY, and step 4b (the macOS twin) flagged
+/// their absence here as the one thing 4a got wrong.  Re-deriving them by
+/// scanning `nodes` for `parent == -1` yields the right answer TODAY only
+/// because `SceneEditController::BuildAuthoredTree` happens to emit its
+/// node table in presentation order -- an internal detail of the
+/// assembler, not a contract, and sibling ORDER is part of the contract
+/// (87 section 2: "child order for display comes from declaration
+/// order").  `AuthoredTree::roots` states that order directly, so it is
+/// copied across rather than reconstructed.  RISESceneTree on macOS
+/// carries the same two arrays for the same reason.
+struct SceneTree {
+    QVector<SceneTreeNode> nodes;
+    /// Indices into `nodes`, in display order.
+    QVector<int>           roots;
 };
 
 class ViewportBridge : public QObject
@@ -513,6 +577,75 @@ public:
     /// retains its last successful value on -1.
     int animationPresence() const;
 
+    /// doc 88 S10 (Tier-2 panel affordances): a small RGBA8 preview patch
+    /// for a named painter, or (defIndex >= 0) one of its expression
+    /// `def` stages -- see src/Library/SceneEditor/PainterPreview.h for
+    /// the domain / display-encode / scalar-normalization contract this
+    /// call does not repeat.  CARRY ONLY on this platform today (the Qt
+    /// paint-into-a-swatch-widget half is owed, needs an MSVC build to
+    /// verify -- MATERIAL_EDITOR.md §2.1's standing Mac-renders/
+    /// Windows-carries split): this fills `outRGBA` with exactly
+    /// `w*h*4` bytes (row-major top-to-bottom RGBA8, trivially wrapped
+    /// as `QImage(outRGBA.constData(), w, h, QImage::Format_RGBA8888)`
+    /// by a future widget) and reports the auto-range normalization via
+    /// `outWasScalar`/`outRangeMin`/`outRangeMax` when the previewed
+    /// stage is scalar-typed.  Returns false (buffer cleared) on an
+    /// unresolved name, an out-of-range/inapplicable defIndex, bad
+    /// dimensions, or the render-owns-scene / contended-lock refusal
+    /// every other getter in this section documents.
+    bool painterPreview( const QString& painterName, int defIndex,
+                          unsigned int w, unsigned int h, QByteArray& outRGBA,
+                          bool* outWasScalar = nullptr,
+                          double* outRangeMin = nullptr,
+                          double* outRangeMax = nullptr ) const;
+
+    /// doc 88 S10: a ramp_painter's own colour interpolation over its
+    /// authored stop domain, as a horizontal gradient strip.  Same
+    /// carry-only contract as painterPreview() above; additionally
+    /// refuses when `painterName` does not resolve to a ramp_painter.
+    bool rampStripPreview( const QString& painterName,
+                            unsigned int w, unsigned int h,
+                            QByteArray& outRGBA ) const;
+
+    /// Material Editor Slice 5 (MATERIAL_EDITOR.md §4): headless 3D
+    /// shaderball RGBA8 preview of a named material. Same carry-only
+    /// contract as painterPreview() above.
+    bool materialPreview( const QString& materialName,
+                           unsigned int w, unsigned int h,
+                           QByteArray& outRGBA ) const;
+
+    /// Material Editor Slice 6 (SPECTRAL_DIFFERENTIATORS.md §3/§4/§5):
+    /// spectral differentiator widgets (D1 Blackbody & Sellmeier, D2 Measured
+    /// Metals, D3 Thin-Film Iridescence Angle-Sweep Strip).
+    bool thinFilmAngleStrip( const QString& materialName,
+                             unsigned int w, unsigned int h,
+                             QByteArray& outRGBA,
+                             double* outThicknessNm = nullptr,
+                             double* outFilmIor = nullptr ) const;
+
+    bool evaluateThinFilmAtAngle( const QString& materialName,
+                                  double angleDeg,
+                                  unsigned char outRGBA[4],
+                                  double* outThicknessNm = nullptr,
+                                  double* outFilmIor = nullptr ) const;
+
+    bool blackbodyKelvinStrip( unsigned int w, unsigned int h,
+                               double minKelvin, double maxKelvin,
+                               QByteArray& outRGBA ) const;
+
+    bool evaluateBlackbodyKelvin( double kelvin,
+                                  double* outPeakNm,
+                                  unsigned char outRGBA[4] ) const;
+
+    bool evaluateSellmeierMetrics( const QString& sellmeierParamValue,
+                                   double* outNd,
+                                   double* outAbbeVd ) const;
+
+    bool measuredMetalPresetSwatch( const QString& presetId,
+                                    unsigned char outRGBA[4] ) const;
+
+    bool applySpectralPreset( Category cat, const QString& presetId );
+
     // Named animations are surfaced as a first-class accordion Category
     // (Category::Animation) — the generic categoryEntities() /
     // activeNameForCategory() / setSelection() surface lists + activate
@@ -532,6 +665,8 @@ public:
     void endPropertyScrub();
 
     void undo();
+    // 2026-10-16: the notice a REFUSED undo/redo left ("" when none); cleared on read.
+    QString consumeHistoryNotice();
     void redo();
 
     /// Human-readable label of the next Undo/Redo step ("Translate",
@@ -663,6 +798,36 @@ public:
     /// first if you want pixels back here.
     QString agentHandleLine(const QString& jsonRpcRequest);
 
+    /// Durable document snapshots (see
+    /// RISE::Agent::AgentChatLoop::SetDocumentSnapshotProvider): the
+    /// retained CST head's REVISION alone, via the administrative
+    /// dispatcher's session (m_agentDispatcher -- Owner authority,
+    /// WrapJob's the SAME Job and AttachController's the SAME
+    /// m_controller as every other in-app session, so any of the three
+    /// would answer identically).  -1 when the dispatcher/session is
+    /// unavailable, mirroring TrajectorySessionRecord::sceneHeadVersion's
+    /// documented "-1 = unknown" sentinel.  CHEAP -- no document copy --
+    /// safe to call at trajectory-start time, though it takes the
+    /// controller mutex like every coherent read (same lock used by
+    /// commits / interactive render coordination), so it can briefly
+    /// block if the render thread currently holds it.  Mirrors macOS
+    /// RISEViewportBridge.agentHeadVersionRevision.
+    qint64 agentHeadVersionRevision() const;
+
+    /// Durable document snapshots: ONE coherent read of the full CST
+    /// document text plus the head-version identity those exact bytes
+    /// ARE, for ChatPanel's document-snapshot provider to wrap.
+    /// Delegates to AgentSession::ReadDocumentSnapshot on the SAME
+    /// administrative session `agentHeadVersionRevision()` reads.
+    /// CONTROLLER-MEDIATED: this call can BLOCK while a render owns the
+    /// scene -- call only from the agent RPC thread, matching
+    /// AgentChatLoop::SetDocumentSnapshotProvider's documented
+    /// discipline.  Returns false (outText/outUuid/outRevision
+    /// untouched) when there is no retained document (never CST-loaded,
+    /// or after ClearAll) or the dispatcher/session is unavailable.
+    /// Mirrors macOS RISEViewportBridge.agentReadDocumentSnapshotTextWithUuid:revision:.
+    bool agentReadDocumentSnapshot(std::string& outText, uint64_t& outUuid, uint64_t& outRevision) const;
+
     // ---- Agent autonomy selector (2026-07 GUI composer chips) -------
     // Mirrors the macOS RISEViewportBridge's three-dispatcher design
     // (RISEAgentAutonomyLevel / -agentHandleToolCall:).
@@ -699,7 +864,7 @@ public:
     ///   * Read    -> the read-safe allowlist dispatches (IsReadSafeVerb
     ///                in AgentRpc.cpp IS the membership list -- no copy
     ///                or count of it here);
-    ///                the 5 mutating verbs (and any
+    ///                the 6 mutating verbs (and any
     ///                other verb) are REFUSED (kAutonomyRefused,
     ///                -32011) — this is Owner authority under Read
     ///                autonomy, so even the refusal path never reaches
@@ -709,7 +874,7 @@ public:
     ///                authority AgentSession sharing the SAME live
     ///                SceneEditController `agentHandleLine()`'s
     ///                administrative session is attached to — so
-    ///                the 5 mutating verbs
+    ///                the 6 mutating verbs
     ///                (IsProposeSafeVerb) STAGE a real proposal
     ///                onto that controller's ONE queue (the exact queue
     ///                the existing proposals panel already reads via
@@ -838,6 +1003,53 @@ public:
     /// that bookkeeping is deliberately NOT shared.
     QString agentHandleToolCall(const QString& jsonRpcRequest, AgentAutonomyLevel level);
 
+    // Agent image generation (Arc 77 Phase 2: imagine_scene GUI wiring) --
+
+    /// Windows mirror of macOS RISEViewportBridge's
+    /// `-agentSetImageGeneratorProvider:apiKey:`. Installs (or replaces)
+    /// the HOST half of `imagine_scene` on every in-app tool-call session
+    /// this bridge owns (m_agentDispatcher, m_agentToolDispatcherOwner,
+    /// m_agentToolDispatcherPropose -- see
+    /// RISE::Agent::AgentSession::SetImageGenerator's doc for why this is
+    /// host-installed-only). `providerName` is the SAME lowercase
+    /// spelling ChatPanel's Provider enum already maps to for
+    /// OpenAIChatCodec::Config ("anthropic"/"gemini"/"openai"/"xai"/
+    /// "local") -- capability is per-provider (gemini/openai only).
+    /// `apiKey` rides in the SAME per-provider auth header the chat
+    /// codec for that provider uses; pass an empty string for a
+    /// keyless/no-key-yet posture. Builds the actual generator via
+    /// RISE::Agent::MakeChatImageGenerator (AgentChatCodecs.h) over the
+    /// platform system transport (RISE::Agent::CreateSystemChatHttpTransport)
+    /// -- `imagine_scene` dispatches synchronously on the calling thread,
+    /// so it cannot await Qt's async QNetworkAccessManager reply the chat
+    /// panel's own HTTP path uses. CALL AGAIN on every provider or key
+    /// change; ChatPanel does so once per round, at the same point it
+    /// already reads the applied provider's key for BuildRequest (see
+    /// ChatPanel::runNextStep).
+    void agentSetImageGenerator(const QString& providerName, const QString& apiKey);
+
+    // Agent session mode (Arc 83 sec 4.1: the build/refine transition) ---
+
+    /// Windows mirror of macOS RISEViewportBridge's
+    /// `-agentNoteFinalAnswer`.  Tells EVERY in-app session this bridge
+    /// owns (m_agentDispatcher, m_agentToolDispatcherOwner,
+    /// m_agentToolDispatcherPropose) that the agent's turn just ended with
+    /// its own prose rather than a tool call -- the ONE structural signal
+    /// that ends the staged build protocol's COMPULSION (see
+    /// RISE::Agent::AgentSession::NoteFinalAnswer and the block above
+    /// AgentSession::SessionMode).  After it no construction gate fires
+    /// again on these sessions: no phase refusals, no compose-phase delete
+    /// ban, no forced clean rooms, no populate-before-render, no build-plan
+    /// gate.  Every verb stays available; nothing is compelled.
+    ///
+    /// Called from ChatPanel's FinalText arm, unconditionally and on every
+    /// final turn: NoteFinalAnswer is idempotent and one-way, so only the
+    /// first one on a session that started from an EMPTY scene changes
+    /// anything.  Deliberately does NOT reach the hosted loopback server's
+    /// External session -- there the external MCP client owns the model
+    /// loop and no turn-end signal crosses the wire.
+    void agentNoteFinalAnswer();
+
     // Properties panel ------------------------------------------------
 
     /// Mirrors RISE::SceneEditController::PanelMode.  Drives which
@@ -892,6 +1104,8 @@ public:
     bool propertyJumpTargetFor(Category cat, int index,
                                Category* outCat, QString* outName);
     bool setPropertyForCategory(Category cat, const QString& name, const QString& value);
+    bool setReferenceSlotPainterValue(Category cat, const QString& slotParam, const QString& value);
+    bool forkReferenceSlotPainter(Category cat, const QString& slotParam, QString* outNewPainterName = nullptr);
     /// Per-category selection accessor.  Returns the entity name
     /// picked in `cat`'s section, or empty when nothing is picked.
     /// An Object pick auto-fills the Material section's selection
@@ -913,6 +1127,275 @@ public:
     /// scene has nothing in that category.
     QStringList categoryEntities(Category cat) const;
 
+    /// The AUTHORED-graph tree for `category` (87 section 5 step 4a) --
+    /// the surface the outliner's QAbstractItemModel is built over,
+    /// replacing the flat `categoryEntities()` list above.
+    ///
+    /// `nodes` is the controller's node TABLE and `roots` is the
+    /// controller's own root list, both in presentation order.  START AT
+    /// `roots` and descend through each node's `children` list -- do NOT
+    /// re-derive the roots by scanning for `parent == -1` (see
+    /// SceneTree's doc for why that only happens to work).
+    ///
+    /// A category with no hierarchy (Camera, Material, Painter, ...)
+    /// comes back as N nodes all with `parent == -1` and no children,
+    /// all of them in `roots`, so the model needs no per-category branch.
+    ///
+    /// For Category::Object the tree is the AUTHORED graph, not the flat
+    /// render list: 87 step 3's synthesized instancing entries (`I.X`,
+    /// `I[i,j]`) are folded into the chunk that produced them, so an 8x8
+    /// instanced grid is one row rather than 64+.
+    ///
+    /// TRANSACTIONAL: built from SceneEditController::ReadTree, which
+    /// copies the whole published tree under one lock hold, so the
+    /// result is never a mixture of two trees.  Do NOT reimplement this
+    /// as a walk over the per-node getters -- each of those takes the
+    /// snapshot lock separately, and another thread's count call can
+    /// republish between two of them.
+    ///
+    /// Re-read this whenever the scene epoch advances.  NOTE for the
+    /// drag-to-reparent work: a re-parent changes the TREE without
+    /// changing any category's entity LIST, so that path must bump the
+    /// scene epoch itself or the outliner keeps drawing the old shape.
+    ///
+    /// Empty (both arrays) on a null controller or an empty category.
+    SceneTree categoryTree(Category cat) const;
+
+    // ---- doc-88 Phase 3 S14/S16/S22 Painter/Material graph value types ---
+    // NESTED as public members of ViewportBridge (review-round P1 fix):
+    // these FOUR structs were previously declared as siblings of this
+    // class, at global namespace scope, while NodeGraphCanvas.h/.cpp (and
+    // this file's own out-of-line method definitions) referenced them as
+    // `ViewportBridge::PainterGraph` / `ViewportBridge::PainterGraphNode` /
+    // `ViewportBridge::PainterGraphPort` / `ViewportBridge::
+    // AppearanceClosureEntry` -- qualified-name lookup only searches the
+    // NAMED class, so a global-scope sibling is simply not found through
+    // that spelling ("no type named 'PainterGraph' in 'ViewportBridge'"
+    // under Clang; MSVC C2039 identically). This predates the
+    // AppearanceClosureEntry addition -- PainterGraph/PainterGraphNode/
+    // PainterGraphPort shipped broken in the S14/S16/S22 slices, never
+    // caught because this file has never been built by a real MSVC
+    // toolchain (see the MSVC-verification checklist in
+    // NodeGraphCanvas.cpp). Nesting here, rather than qualifying every
+    // call site with `::` to force global lookup, is the minimal-churn fix:
+    // every existing `ViewportBridge::X` spelling becomes valid AS WRITTEN.
+    //
+    // Plain data structs (QString/QVector/int/double/quint64 members only)
+    // passed by value or by const-ref/QVector -- none crosses a
+    // Q_DECLARE_METATYPE, a signal parameter, or any other context that
+    // would need them registered with Qt's meta-object system, so nesting
+    // introduces no such hazard.
+    // =====================================================================
+
+    /// doc-88 Phase 3 S14 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): one
+    /// reference-param slot on a `PainterGraphNode`.  Mirrors
+    /// `SceneEditController::GraphPort`.
+    ///
+    /// `otherNodeIndex` is -1 for a NODE-LESS port (a dangling reference, or
+    /// one pointing outside this graph's modeled categories) -- `otherName`
+    /// still carries the target's name either way, never blank for a real
+    /// reference.  Otherwise it is an INDEX into the SAME
+    /// `PainterGraph::nodes` array this port's owning node came from -- like
+    /// `SceneTreeNode`'s own `parent`/`children` indices, NOT a controller
+    /// handle: valid only within the ONE `painterMaterialGraph()` call that
+    /// produced it (see `SceneTreeNode`'s own header comment for why -- the
+    /// same rule applies here for the same reason).
+    struct PainterGraphPort {
+        int portPipe = 7;
+        bool portColorAlsoAcceptsScalar = false;
+        QString paramName;
+        int     occurrence     = 0;
+        int     otherNodeIndex = -1;
+        QString otherName;
+    };
+
+    /// One node of the Painter/Material graph, WITH its laid-out position --
+    /// mirrors `SceneEditController::GraphNode` plus the parallel
+    /// `SceneEditController::GraphNodePosition`
+    /// `ReadPainterMaterialGraphLaidOut` hands back for it (doc-88 Phase 3
+    /// S11/S12/S13/S14).
+    ///
+    /// `handle` is a real `SceneEditController::GraphNodeHandle` (unlike this
+    /// struct's own port INDICES) -- it survives being held across a
+    /// re-fetch of the SAME published generation (`PainterGraph::
+    /// generation`), the same "the way back" role `ResolveGraphNodeHandle`
+    /// plays on the C++ side.  A caller that wants to re-find "the node the
+    /// user last selected" after a re-fetch should hold THIS, never an
+    /// `outEdges[i].otherNodeIndex`.
+    struct PainterGraphNode {
+        int outputPipe = 7;
+        quint64 handle   = 0;
+        QString name;
+        QString chunkKeyword;   ///< e.g. "ramp_painter" -- always non-blank for a real node
+        /// `RISE::ChunkCategory` cast to int -- the SAME "cast the parser's
+        /// enum, no bespoke per-value mirror" convention `ViewportProperty::
+        /// kind` already uses for `ValueKind` (see `SceneEditController::
+        /// PainterGraphNodeCategory`'s own comment). `chunkKeyword` above is
+        /// almost always the more useful discriminator for a UI label/icon.
+        int     category = -1;
+        int     defCount = 0;   ///< expression-family def-stage count; 0 otherwise
+        /// Object Graph slice (S3): a `standard_object`'s `count_u *
+        /// count_v` repeat sugar when this chunk carries counts, 0
+        /// otherwise -- see `SceneEditController::GraphNode::repeatCount`'s
+        /// own header comment for the full contract, including the
+        /// accepted `count_u 0` fold. Always 0 for a Painter/Material/
+        /// Function node (`painterMaterialGraph()`).
+        int     repeatCount = 0;
+        double  x = 0.0;
+        double  y = 0.0;
+        QVector<PainterGraphPort> outEdges;
+        QVector<PainterGraphPort> inEdges;   ///< non-empty here == this node is SHARED (fan-out badge)
+    };
+
+    /// The whole Painter/Material graph, positioned -- one
+    /// `painterMaterialGraph()` call, the node table plus its generation.  No
+    /// separate edge array: an edge is reachable through either endpoint's
+    /// own `outEdges`/`inEdges` (`PainterGraphPort` already carries both
+    /// endpoints + the param label, everything needed to draw a wire).
+    struct PainterGraph {
+        bool snapshotFresh = true;
+        QVector<PainterGraphNode> nodes;
+        quint64                   generation = 0;
+    };
+
+    /// One entry of an `appearanceClosureForObject()` result -- a node
+    /// IDENTITY, not just a display string.  Mirrors
+    /// `SceneEditController::AppearanceClosureEntry` field-for-field: a bare
+    /// name is NOT enough to address a node in `PainterGraph::nodes` (a
+    /// Painter and a Material chunk may legally share a name), so a caller
+    /// matching a returned entry against an already-fetched node list MUST
+    /// compare BOTH `category` and `name`, never `name` alone (review-round P1
+    /// fix -- an earlier draft of this bridge method returned a bare
+    /// `QStringList` and the Qt canvas matched by name only, which could
+    /// silently spotlight the wrong node on a cross-category name collision).
+    struct AppearanceClosureEntry {
+        /// `RISE::ChunkCategory` cast to int -- the SAME ordinal
+        /// `PainterGraphNode::category` already uses (Painter 0, Function 1,
+        /// Material 2), so this compares directly against a node's own
+        /// `category` field with no remapping.
+        int     category = -1;
+        QString name;
+    };
+
+    /// doc-88 Phase 3 S14: the Painter/Material node graph, positioned --
+    /// {nodes, edges, positions}.  Same ONE-TRANSACTIONAL-READ discipline
+    /// categoryTree() documents just above: built from
+    /// SceneEditController::ReadPainterMaterialGraphLaidOut, which
+    /// composes S11's graph + S13's saved sidecar positions + S12's
+    /// auto-layout fill-in under one snapshot-lock hold (plus one small
+    /// sidecar file read -- see that method's own header comment) rather
+    /// than a per-node ABI walk.  Empty (no nodes) on a null controller.
+    PainterGraph painterMaterialGraph() const;
+
+    /// Node-graph "spotlight" query: for `objectName` (an Object-category
+    /// chunk name -- pass `selectionRowName()`, NOT `selectionName()`, for
+    /// a viewport/outliner pick, since a synthesized per-repetition/
+    /// subtree-member name like `I[1,0]`/`I.child` is never itself an
+    /// addressable chunk -- see `selectionRowName()`'s own comment),
+    /// returns the chunk (category, name) IDENTITIES to highlight on the
+    /// node-graph canvas: the object's bound material first, then the full
+    /// transitive Painter/Function/Material closure reachable from it in
+    /// the SAME published PainterGraph `painterMaterialGraph()` reads from,
+    /// in BFS discovery order -- see `AppearanceClosureEntry`'s own comment
+    /// on why a bare name is not enough to match against
+    /// `PainterGraph::nodes`.  Empty when the object is unknown, has no
+    /// material bound, or the resolved material name is AMBIGUOUS in the
+    /// current graph (more than one same-category chunk shares it --
+    /// refused rather than guessed, see
+    /// SceneEditController::AppearanceClosureForObject's own comment).
+    ///
+    /// `degraded` (later external review round -- an empty result used to
+    /// be overloaded, and the Qt consumer polling this could not tell a
+    /// genuine empty answer apart from lock contention, which caused a
+    /// material-less object to pay a full deep resolve on every single
+    /// preview frame forever, since the caller had no way to know it was
+    /// safe to cache "empty" the way it caches a real answer): when
+    /// non-null, `*degraded` is set to `true` ONLY when the controller
+    /// could not get a non-blocking hold of the commit lock right now (a
+    /// render owns the scene) and so could not even ATTEMPT a real answer
+    /// -- this is a POLLED query (the Qt canvas calls it from every
+    /// performReload() pass), so `degraded == true` means "retry next
+    /// pass," not "the object has nothing to show." Set to `false` on
+    /// every other outcome, INCLUDING a successful walk that finds nothing
+    /// reachable -- that is a genuine, resolved answer a caller should
+    /// accept and cache, not retry. Defaults to `nullptr`. Called directly
+    /// on the C++ controller (SceneEditController::AppearanceClosureForObject),
+    /// the same "this file already calls SceneEditController natively"
+    /// reasoning painterMaterialGraph() documents above.
+    QVector<AppearanceClosureEntry> appearanceClosureForObject(const QString& objectName, bool* degraded = nullptr) const;
+
+    /// User-requested slice: the node-graph canvas's "All" vs "Focused"
+    /// view-scope toggle. Focused variant of painterMaterialGraph() --
+    /// the returned PainterGraph's `nodes` contains ONLY the subgraph
+    /// rooted at `(category, name)`, laid out fresh -- see
+    /// SceneEditController::ReadPainterMaterialGraphLaidOutFocused's own
+    /// header comment for the exact subgraph definition:
+    ///   - `category == 8` (RISE::ChunkCategory::Object -- the SAME "cast
+    ///     the parser's enum" ordinal PainterGraphNode::category already
+    ///     uses for Painter(0)/Function(1)/Material(2), extended here to
+    ///     also accept Object): the object's APPEARANCE CLOSURE, identical
+    ///     to appearanceClosureForObject()'s own resolution + walk.
+    ///   - `category` Painter(0)/Function(1)/Material(2) (a canvas node
+    ///     itself): that node plus its own transitive closure in the SAME
+    ///     direction (its "inputs") -- DOWNSTREAM REFERRERS of the
+    ///     selected node are EXCLUDED, a narrower view than the Object
+    ///     case would ever produce for the same node, by design.
+    /// Empty `nodes` for an unknown `name`, or (Object case) an
+    /// unresolved/ambiguous bound material, or (non-Object case) an
+    /// ambiguous `(category, name)` -- same refusal convention as
+    /// ResolveUniqueGraphNodeIndex.
+    ///
+    /// `degraded` is true when graph refresh serves cached data under
+    /// render ownership or scene-mutex contention, for ANY category.
+    /// Object focus can also degrade during live material resolution.
+    /// Preserve the displayed graph and retry. Genuinely unknown/ambiguous
+    /// targets are empty, non-degraded results. Defaults to nullptr.
+    ///
+    /// LAYOUT IS TRANSIENT: this NEVER reads or writes the
+    /// .risegraph.json sidecar -- see the C++ method's own comment.
+    /// Toggling back to the all-view (painterMaterialGraph()) is
+    /// completely unaffected by any number of prior focused reads.
+    PainterGraph painterMaterialGraphFocused(int category, const QString& name, bool* degraded = nullptr) const;
+
+    /// S3 Qt carry (Object Graph canvas, sibling of the Painter/Material
+    /// canvas above): the object hierarchy graph, positioned -- {nodes,
+    /// edges, positions}. Reuses `PainterGraph`/`PainterGraphNode`
+    /// verbatim (same shape: a node table + generation, nodes carrying
+    /// category/keyword/ports/position/repeatCount) rather than a second
+    /// wrapper type -- the SAME "reuse the shared model, don't duplicate a
+    /// structurally identical twin" call `SceneEditController::
+    /// SceneGraphModel`'s own comment makes on the C++ side, ported
+    /// verbatim from the Mac bridge's identical choice
+    /// (`-[RISEViewportBridge objectGraph]` reuses `RISEPainterMaterialGraph`
+    /// the same way). ONE TRANSACTIONAL READ, built from
+    /// `SceneEditController::ReadObjectGraphLaidOut` -- see that method's
+    /// own header comment for the node set (`ChunkCategory::Object` +
+    /// `ChunkCategory::Geometry`, plus `rect_light`/`shape_light` by
+    /// keyword), the edge taxonomy, and why this NEVER reads or writes the
+    /// `.risegraph.json` sidecar (layout is always transient here, even
+    /// for the all-view -- unlike `painterMaterialGraph()`). Empty (no
+    /// nodes) on a null controller.
+    PainterGraph objectGraph() const;
+
+    /// Object Graph twin of `painterMaterialGraphFocused()` -- "all
+    /// parents and children of the clicked object" (the user's own
+    /// framing). See `SceneEditController::ReadObjectGraphLaidOutFocused`'s
+    /// own header comment for the exact four-component subgraph
+    /// definition (UP/DOWN/GEO/SOURCE). Unlike the Painter/Material
+    /// focused read, there is no `category` parameter -- the object graph
+    /// only ever focuses on an Object-category name (which already
+    /// includes `rect_light`/`shape_light` nodes, per `objectGraph()`'s
+    /// own comment).
+    ///
+    /// `degraded` is true while render ownership or scene-mutex contention
+    /// prevents a fresh graph read. Preserve the displayed graph and retry.
+    /// Unknown/ambiguous targets are empty, non-degraded results. Defaults
+    /// to nullptr.
+    ///
+    /// LAYOUT IS TRANSIENT -- same as `objectGraph()` itself (this graph
+    /// has no sidecar to read OR write at all, focused or not).
+    PainterGraph objectGraphFocused(const QString& name, bool* degraded = nullptr) const;
+
     /// Scene-level active entity name for `category`, independent of
     /// the UI selection.  Camera → active camera; Rasterizer →
     /// active rasterizer chunk name; Film → "default" (a scene has
@@ -925,6 +1408,19 @@ public:
     /// row).  Empty name means "section open, no row picked".
     Category selectionCategory() const;
     QString  selectionName() const;
+
+    /// The OUTLINER ROW the current selection should highlight -- what the
+    /// outliner model compares against its row names.  Identical to
+    /// `selectionName` for every ordinary entity; differs only when the
+    /// selection names a SYNTHESIZED instancing entry (`I[1,0]`, `I.X`),
+    /// which is what a viewport pick necessarily produces, where the row is
+    /// the instancing CHUNK those entries were expanded from.
+    ///
+    /// ROW HIGHLIGHTING ONLY.  `selectionName` stays the selected ENTITY --
+    /// what the property panel inspects, what the gizmo moves, what the
+    /// viewport chrome names.  Falls back to `selectionName` when nothing
+    /// resolves.
+    QString  selectionRowName() const;
 
     /// Apply a selection.  Empty `name` opens the section without
     /// picking a row.  Camera / Rasterizer selections also activate
@@ -1025,6 +1521,317 @@ public:
     bool removeEntity(Category category, const QString& name,
                        QString* outMessage = nullptr);
 
+    // ---- Node-graph canvas: create node (S18) -----------------------
+    // Mirrors RISE_API_SceneEditController_{ChunkNodeRequiredArgCount,
+    // ChunkNodeRequiredArg,CreateChunkNode} / the macOS
+    // RISEViewportBridge's identically-named section.  Unlike the fixed
+    // template picker above, this creates a node for ANY painter/
+    // material KEYWORD -- the open set the S21/S22 canvas search
+    // palette offers.  `createChunkNode` takes the controller's commit
+    // mutex (same do-not-call-during-renders caveat as the entity CRUD
+    // above); `chunkNodeRequirements` is a pure descriptor read.
+    //
+    // STANDING CAVEAT (same posture as S4b's Qt range-slider and S10's
+    // Qt swatch widget, docs/gui/MATERIAL_EDITOR.md:69,205): this half
+    // is CARRIED, not MSVC-verified -- it is written to match the
+    // macOS bridge line for line and is owed a Windows build.
+
+    /// One argument the caller must supply to create a node of a given
+    /// keyword.  `isReference` = the value must name another chunk in
+    /// this scene (resolve it from the drag context / a candidate
+    /// picker filtered by the S17 connection-legality check), rather
+    /// than being free text or a file path.
+    struct ChunkNodeRequirement
+    {
+        QString param;
+        QString description;
+        bool    isReference = false;
+    };
+
+    /// The creation-argument contract for `keyword`.  Empty for a
+    /// keyword that needs nothing, for a non-painter/material keyword,
+    /// and for an unknown keyword.
+    QVector<ChunkNodeRequirement> chunkNodeRequirements(const QString& keyword) const;
+
+    /// Create one painter/material node of type `keyword`, named from
+    /// `baseName` (deduped on collision -- READ `outName`, do not
+    /// assume the base was granted; an empty base falls back to the
+    /// keyword).  `argParams` / `argValues` are ORDERED PARALLEL lists
+    /// (must be the same length; a mismatched pair is treated as no
+    /// args) mirroring the C ABI beneath -- NOT a QMap: a keyed map can
+    /// neither repeat a param (e.g. voronoi's repeatable `gen`) nor
+    /// guarantee the composed chunk body's line order matches what the
+    /// caller wrote (QMap iterates in KEY-SORTED order, not insertion
+    /// order).  Every `argParams[i]` must cover a requirement above.
+    /// Returns `applied`; `outName` / `outMessage` as the entity CRUD
+    /// calls above (each optional, may be null).
+    ///
+    /// On a REJECTED refusal the scene is left byte-identical.  A
+    /// DIAGNOSED refusal is different: the node WAS created and the
+    /// live managers WERE rebuilt, but the full re-derive also emitted
+    /// diagnostics -- `applied` is still false, but the mutation is
+    /// real (and undoable) and `outName` is filled with the name that
+    /// landed.
+    bool createChunkNode(const QString& keyword, const QString& baseName,
+                          const QStringList& argParams,
+                          const QStringList& argValues,
+                          QString* outName = nullptr,
+                          QString* outMessage = nullptr);
+
+    // ---- Node-graph canvas: rewire a connection (S19) ---------------
+    // Mirrors RISE_API_SceneEditController_RewireConnection / the macOS
+    // RISEViewportBridge's identically-named section -- the
+    // ownership-closure REWIRE verb (docs/gui/NODE_GRAPH_CANVAS.md
+    // sect. 6 S19, implementing docs/gui/MATERIAL_EDITOR.md sect. 3.7a).
+    // Takes the controller's commit mutex -- gate on
+    // MainWindow::canUseSceneTransport() before calling.
+    //
+    // STANDING CAVEAT (same posture as the S18 block above): this half
+    // is CARRIED, not MSVC-verified -- written to match the macOS bridge
+    // line for line and owed a Windows build.
+
+    /// Why a rewire was refused.  Mirrors `RISE::ClosureClassification`'s
+    /// ordinals 1:1 (the C ABI passes it as a plain `int`).  This IS a real
+    /// mirror that can drift (P2-3, S19 review round 1 -- an earlier
+    /// RISE_API.h comment wrongly claimed neither bridge re-declares this
+    /// enum) -- see the ordinal-pinning `static_assert`s at the top of
+    /// tests/RewireConnectionTest.cpp, which check the C++ side; keep this
+    /// enum's five values in step with them by hand.
+    enum class RewireClosure
+    {
+        Clean = 0,
+        UnresolvedTarget = 1,
+        AmbiguousTargetName = 2,
+        ExpressionDrivenTarget = 3,
+        SharedTarget = 4
+    };
+
+    /// The refusal / success detail a canvas needs to explain a rewire.
+    struct RewireOutcome
+    {
+        bool          applied = false;   ///< true only on a clean commit
+        QString       status;            ///< "applied"/"rejected"/"diagnosed"/"conflict"
+        /// On a LEGALITY refusal this is the real parser's own diagnostic
+        /// verbatim, so a canvas-rejected wire reads exactly like a
+        /// hand-edited scene's failure (MATERIAL_EDITOR.md:145).
+        QString       message;
+        RewireClosure closure = RewireClosure::Clean;
+        bool          legalityRefused = false;
+        bool          canInsertScalarAdapter = false;
+        bool          cycleRefused = false;
+        QStringList   sharedChunks;             ///< sect. 3.7a (a)
+        QStringList   outOfClosureReferrers;    ///< sect. 3.7a (b)
+        QStringList   owners;                   ///< the owning roots (1 when clean)
+        /// Chunks left with no reference -- BADGE them; this slice does
+        /// not delete them (that is S20's reference-safe delete).  Empty
+        /// whenever `applied` is false -- the controller clears it on
+        /// every refusal path, including one that lands after the
+        /// closure step already computed a non-empty report, so this
+        /// never names an orphan from an edit that never committed.
+        QStringList   nowUnreferenced;
+    };
+
+    /// Insert an R-channel scalar_painter and bind the target in one undo step.
+    /// A diagnosed result can change the document despite reporting failure;
+    /// the inserted name is still returned, and Undo remains available.
+    bool insertScalarAdapterAndRewire(int targetCategory, const QString& targetName,
+        const QString& param, int occurrence, int sourceCategory, const QString& sourceName,
+        QString* outAdapterName, QString* outMessage = nullptr);
+
+    /// Re-point `targetName`.`param` (occurrence `occurrence`, 0 for the
+    /// only occurrence) at `newRefName`, as ONE undoable commit.  The
+    /// category arguments are `RISE::ChunkCategory` ordinals -- the SAME
+    /// convention the graph-snapshot node category uses, NOT
+    /// ViewportBridge::Category.
+    ///
+    /// On ANY refusal the scene is left byte-identical; read
+    /// `outcome.closure` to decide what to offer (a `SharedTarget`
+    /// refusal is the one the Duplicate-node escape hatch unblocks).
+    /// Returns `applied`; `outOutcome` (optional) receives the detail.
+
+    bool rewireConnection(int targetCategory, const QString& targetName,
+                           const QString& param, int occurrence,
+                           int newRefCategory, const QString& newRefName,
+                           RewireOutcome* outOutcome = nullptr);
+
+    // ---- Node-graph canvas: reference-safe delete + duplicate (S20) --
+    // Mirrors RISE_API_SceneEditController_DeleteGraphNode /
+    // _DuplicateGraphNode and the macOS RISEViewportBridge's
+    // identically-named section (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S20,
+    // implementing docs/gui/ENTITY_CREATION.md sect. 5's block-or-cascade
+    // policy and MATERIAL_EDITOR.md sect. 3.7a's Duplicate escape hatch).
+    // Both take the controller's commit mutex -- gate on
+    // MainWindow::canUseSceneTransport() before calling.
+    //
+    // STANDING CAVEAT (same posture as the S18/S19 blocks above): this half
+    // is CARRIED, not MSVC-verified -- written to match the macOS bridge
+    // line for line and owed a Windows build.
+
+    /// What a delete should do about the chunks BELOW the target that
+    /// nothing else uses.  Mirrors
+    /// `SceneEditController::GraphDeleteMode`'s ordinals (the C ABI passes
+    /// it as a plain int: 0 = TargetOnly, 1 = Cascade).
+    enum class GraphDeleteMode
+    {
+        TargetOnly = 0,
+        Cascade    = 1
+    };
+
+    /// The reference-safety detail a canvas needs to explain a refused
+    /// delete or show what a cascade took.
+    struct DeleteOutcome
+    {
+        bool          applied = false;   ///< true only on a clean commit
+        QString       status;            ///< "applied"/"rejected"/"diagnosed"/"conflict"
+        QString       message;
+        /// Only Clean / UnresolvedTarget / AmbiguousTargetName are
+        /// reachable through this verb; the ordinals are shared with the
+        /// rewire verb's mirror above (and pinned by the same
+        /// static_asserts).
+        RewireClosure closure = RewireClosure::Clean;
+        bool          referenceRefused = false;   ///< offer "rewire those away first"
+        bool          cascadeRefused = false;     ///< offer "delete without cascade"
+        QStringList   referrers;                  ///< `chunk`.`param` of each blocker
+        /// The chunks removed, in DOCUMENT ORDER.  EMPTY ON EVERY REFUSAL,
+        /// including a cascade refusal (corrected -- S20 review round 1
+        /// P2-2: an earlier draft of this comment claimed a cascade
+        /// refusal leaves a sweep PREVIEW here; it cannot -- see
+        /// `SceneEditController::DeleteResult::removed`'s own corrected
+        /// comment for why). Read it as a mutation record only when
+        /// `applied` is true.
+        QStringList   removed;
+    };
+
+    /// The Duplicate-node fork's outcome.
+    struct DuplicateOutcome
+    {
+        bool          applied = false;
+        QString       status;
+        QString       message;
+        RewireClosure closure = RewireClosure::Clean;
+        /// The DEDUPED name the copy actually landed under -- use THIS to
+        /// select or rewire to the new node, never the requested name.
+        /// Empty when nothing landed.
+        QString       newName;
+        /// The original's top-level document index at the moment of the
+        /// fork, for placing the new node beside it; -1 when nothing landed.
+        int           originalIndex = -1;
+    };
+
+    /// Delete the graph node `(category, name)` REFERENCE-SAFELY: a node
+    /// anything still references is REFUSED in BOTH modes, with every
+    /// referrer named.  `category` is a `RISE::ChunkCategory` ordinal (NOT
+    /// ViewportBridge::Category).  `Cascade` also removes the chunks below
+    /// the target that nothing else uses, as ONE undoable composite; a
+    /// chunk shared with another graph is never swept, and a cascade that
+    /// would reach one is refused whole.  On ANY refusal the scene is left
+    /// byte-identical.  Returns `applied`; `outOutcome` receives the detail.
+    bool deleteGraphNode(int category, const QString& name,
+                          GraphDeleteMode mode,
+                          DeleteOutcome* outOutcome = nullptr);
+
+    /// Fork `(category, name)` into an owned copy placed IMMEDIATELY AFTER
+    /// the original in declaration order, so every consumer the original
+    /// had can legally be re-pointed at the copy -- MATERIAL_EDITOR.md
+    /// sect. 3.7a's escape hatch out of a SharedTarget rewire refusal.
+    /// SHALLOW: the copy shares everything the original referenced (the
+    /// fork unshares exactly ONE level).  Returns `applied`; `outOutcome`
+    /// receives the deduped `newName` to rewire at.
+    bool duplicateGraphNode(int category, const QString& name,
+                             DuplicateOutcome* outOutcome = nullptr);
+
+    // ---- Node-graph canvas: drag-to-wire pre-checks + drag-to-reposition (S16/S21/S22) --
+    // Mirrors RISE_API_SceneEditController_{CheckConnection,WouldCycle,
+    // WriteGraphNodeLayoutPosition} / RISE_API_ConnectionLegality_
+    // CheckConnectionByKeyword and the macOS RISEViewportBridge's
+    // identically-named section (docs/gui/NODE_GRAPH_CANVAS.md sect. 6
+    // S16/S21/S22). ADDED IN THIS SLICE -- the S14 bridge carry stopped at
+    // painterMaterialGraph()/categoryTree() (the read-only S16 surface);
+    // this half is the S21/S22 EDIT surface the Windows canvas widget
+    // needs and had no carry yet. `checkConnection`/`wouldCycle` are pure
+    // reads (safe at any time); `writeGraphNodeLayoutPosition` touches
+    // only the layout sidecar file (never the CST document) but still
+    // refuses while a render owns the scene -- gate on
+    // MainWindow::canUseSceneTransport() before calling, same as every
+    // other mutating call in this section.
+    //
+    // STANDING CAVEAT (same posture as the S18/S19/S20 blocks above): this
+    // whole section is CARRIED, not MSVC-verified -- written to match the
+    // macOS bridge line for line and owed a Windows build.
+
+    /// Connection-legality pre-check (S17 passthrough) for the canvas's
+    /// live drag-to-wire preview: may `candidateName` legally be bound at
+    /// `targetName`.`param`? Categories are `RISE::ChunkCategory` ordinals,
+    /// the SAME convention `rewireConnection`/`duplicateGraphNode` use, NOT
+    /// ViewportBridge::Category. `outDiagnostic` (optional) receives the
+    /// real parser's own diagnostic text on a refusal (left untouched on a
+    /// legal verdict) -- show it as the drag's status line / tooltip.
+    /// Returns false on a missing controller or empty argument, with no
+    /// diagnostic written.
+    bool checkConnection(int targetCategory, const QString& targetName,
+                          const QString& param,
+                          int candidateCategory, const QString& candidateName,
+                          QString* outDiagnostic = nullptr) const;
+
+    /// Forward-reachability cycle check (S17 `WouldCycle` passthrough):
+    /// would wiring `fromName` to reference `toName` create a cycle?
+    /// Categories as above. Returns false (never a crash) on a missing
+    /// controller or either name failing to resolve -- treat an unresolved
+    /// name as "cannot commit this wire" via `checkConnection` first, not
+    /// as proof of safety.
+    bool wouldCycle(int fromCategory, const QString& fromName,
+                     int toCategory, const QString& toName) const;
+
+    /// Pure-descriptor connection-legality check (`ConnectionLegality::
+    /// CheckConnectionByKeyword` passthrough): may a chunk of
+    /// `candidateKeyword`/`candidateCategory` legally be bound at
+    /// `targetKeyword`.`param` -- for the "add node" palette's required-
+    /// reference candidate picker, BEFORE the new node exists to address by
+    /// name (unlike `checkConnection` above, which needs a real target
+    /// chunk in the document). No document, no locking, safe at any time
+    /// including before any scene is loaded -- does NOT require
+    /// `m_controller` to be non-null (STATIC, unlike every other call in
+    /// this section). `outDiagnostic` (optional) receives the diagnostic
+    /// text on a refusal (left untouched on a legal verdict).
+    static bool checkConnectionByKeyword(const QString& targetKeyword, const QString& param,
+                                          const QString& candidateKeyword, int candidateCategory,
+                                          QString* outDiagnostic = nullptr);
+
+    /// Persist ONE node's canvas position into the layout sidecar -- the
+    /// drag-to-reposition commit path (`WriteGraphLayoutPositions` with a
+    /// single-element update, the shape a canvas drag commits: call ONCE
+    /// on drag release, never mid-drag). `x`/`y` are the node's TOP-LEFT
+    /// anchor in the same graph-space units `painterMaterialGraph()`'s
+    /// `PainterGraphNode::x`/`.y` report. Returns true on success,
+    /// INCLUDING the two documented no-op cases (position unchanged on
+    /// disk; scene never saved yet) -- see the C++ method's own comment.
+    /// Returns false on a null controller / empty name / an actual I/O
+    /// failure / a render owning the scene; `outError` (optional)
+    /// receives a message on false.
+    bool writeGraphNodeLayoutPosition(const QString& name, double x, double y,
+                                       QString* outError = nullptr);
+
+    // ---- Node-graph canvas: add-node search palette (S16/S21/S22) ------
+
+    /// Every registered Painter/Function/Material keyword whose descriptor
+    /// category is `category` (a `RISE::ChunkCategory` ordinal), sorted
+    /// lexicographically -- exactly the open keyword set `createChunkNode`
+    /// can create. Pure descriptor read: no scene state, safe at any time.
+    /// Empty for an unmodeled category or a null controller.
+    QStringList paletteKeywords(int category) const;
+
+    /// DL-401: the replacement hint (modern keyword first, then the parameter
+    /// translation) when `keyword` is a DEPRECATED chunk type, else an empty
+    /// string. `paletteKeywords` already sorts deprecated keywords after the
+    /// modern ones; the add-node palette badges them with this.
+    QString paletteDeprecationReplacement(const QString& keyword) const;
+
+    /// Legacy-deprecation Phase 1 (2026-10-09): true when `keyword` is a FROZEN
+    /// chunk type (legacy and UNSUPPORTED). Frozen types are also deprecated,
+    /// so `paletteDeprecationReplacement` returns their hint too; the palette
+    /// badges them "legacy, unsupported" instead of "deprecated".
+    bool paletteKeywordIsFrozen(const QString& keyword) const;
+
     /// Clone the currently-active camera under a new name and
     /// promote the clone to active. `proposedName` is canonicalized to a
     /// CST-safe identifier, then deduplicated with a numeric suffix.
@@ -1105,6 +1912,8 @@ private:
     // instead of writing into freed memory.
     QPointer<RenderEngine>    m_engine;
     RISE::SceneEditController* m_controller = nullptr;
+    std::atomic<bool>          m_previewShuttingDown{false};
+    mutable std::mutex         m_previewLifecycleMutex;
     RISE::IRayCaster*          m_caster = nullptr;        // preview caster, max-recursion 1
     RISE::IRayCaster*          m_polishCaster = nullptr;  // polish caster, max-recursion 2 (one bounce of glossy / refl / refr)
     RISE::IRasterizer*         m_interactiveRasterizer = nullptr;

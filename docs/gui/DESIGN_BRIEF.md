@@ -1,8 +1,9 @@
 # RISE UI Redesign — Design Brief
 
-**Status:** **EXECUTED DESIGN INPUT.** The macOS and Windows workspace redesign
-shipped from this brief; it remains the product-principles and requirements
-record, while `REDESIGN_IMPLEMENTATION.md` describes the delivered UI.
+**Status:** **SHIPPED (macOS + Windows; see [REDESIGN_IMPLEMENTATION.md](REDESIGN_IMPLEMENTATION.md)).**
+The macOS and Windows workspace redesign shipped from this brief; it remains the
+product-principles and requirements record, while [REDESIGN_IMPLEMENTATION.md](REDESIGN_IMPLEMENTATION.md)
+describes the delivered UI.
 
 **Purpose of this document:** input to a ground-up UI redesign of the RISE desktop application (macOS + Windows). It describes what RISE is, who uses it, what the UI does today, what the redesigned UI must cover (current features plus the committed roadmap), the design principles the product has already adopted, hard technical constraints, and explicit non-goals.
 
@@ -119,7 +120,7 @@ These are the features that make RISE visibly unlike any RGB renderer, and they 
 - **D1 Spectral color picker / curve editor**: alongside a normal color picker — a Kelvin temperature slider, a 380–780 nm monochromatic wavelength slider, drag-in a measured-SPD CSV and see the curve plotted next to the swatch, and a named-glass dropdown (BK7 / SF11 / diamond) with a live prism/dispersion preview.
 - **D2 Measured-metal picker**: choose real metals (gold, copper, titanium…) whose color comes from measured n,k physics data, not an RGB approximation.
 - **D3 Thin-film slider**: film thickness in nanometers with an angle-reactive swatch — soap-bubble and anodized-titanium iridescence, live.
-- **D4 Gamut honesty warning**: when a picked color lands where the spectral-uplift model degrades (deep blue corner), the UI says so — a uniquely-spectral honesty feature.
+- **D4 Gamut honesty warning**: when a picked color lands where the spectral-uplift model degrades (deep blue corner), the UI says so — a uniquely-spectral honesty feature. **Stale (2026-09-02):** Stage C ([SPECTRAL_ILLUMINANT_CONVENTION.md](../SPECTRAL_ILLUMINANT_CONVENTION.md)) closed the degrading corner (0 % unconverged cells); see [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) §4A for the note and a possible replacement trigger.
 - **D5 "Explain the auto-router"**: a per-region heatmap over the render plus a plain-language rationale ("Auto chose BDPT here: glossy indirect variance is high"). No competitor can replicate this.
 - **D6 EDR cinematography overlays**: false color (IRE legend), zebra stripes, waveform monitor, and a spectral vectorscope plotting true chromaticity — pro-video-style scopes over a genuinely HDR viewport.
 - **D7 Spectral Light Mix**: after one render with per-light AOVs, re-balance each light's contribution and color temperature live without re-rendering.

@@ -21,12 +21,15 @@
 //        exclude a valid strategy.
 //
 //    APPROACH: render a few minimal scenes, each exercising a
-//    different BDPT topology, with both pixelpel_rasterizer (PT) and
-//    bdpt_pel_rasterizer (BDPT).  Capture the rendered radiance buffer
-//    into memory via a custom IRasterizerOutput (no file I/O), compute
-//    the per-channel mean, and assert BDPT's mean matches PT's mean
-//    within a tolerance generous enough to absorb sampling variance at
-//    low spp but tight enough to catch the canonical bias modes.
+//    different BDPT topology, with both pathtracing_pel_rasterizer (PT)
+//    and bdpt_pel_rasterizer (BDPT).  Capture the rendered radiance
+//    buffer into memory via a custom IRasterizerOutput (no file I/O),
+//    compute the per-channel mean, and assert BDPT's mean matches PT's
+//    mean within a tolerance generous enough to absorb sampling variance
+//    at low spp but tight enough to catch the canonical bias modes.
+//    (The reference was the legacy `pixelpel_rasterizer` until
+//    2026-09-05 -- see the block above `kRasterizerPT` for why it had to
+//    go and what it cost.)
 //
 //    Topologies exercised:
 //      A. Delta-position light (omni) over a Lambertian surface
@@ -37,6 +40,82 @@
 //      C. Mixed (delta + area) light selection
 //         — exercises the unified light-selection MIS plus the
 //         per-strategy partition simultaneously.
+//      D. Orthographic (delta-DIRECTION) camera + mesh area emitter
+//         — the phantom t==1 light-tracing strategy must be skipped.
+//      E. Backlit thin weave curtain, delta omni light
+//         — a MIXED delta+continuum vertex stays connectible for NEE.
+//      F. Gapped thin weave curtain + full-width mesh area emitter
+//         — s=0 through a chain whose middle vertex was sampled as a
+//         delta, competing with s=1 NEE at that same mixed vertex.
+//      G. Thin-lens (FINITE-APERTURE) camera at f/22, focused
+//      H. The same camera at f/2.8, focused 5.97 m in front of the
+//         receiver (2.4 pixel circle of confusion, 1.2 px radius)
+//      I. The same defocused camera with a SIX-BLADED aperture
+//         — the polygonal branch of SampleAperture / the polygonal
+//         closed form in GetApertureWorldArea, whose area is 0.827
+//         of the circumscribed disk's
+//         — the t==1 light-tracing strategy has to SAMPLE a point on
+//         the aperture, connect to THAT point, and divide by its area
+//         density, which is what cancels the 1/A_lens inside the
+//         thin-lens importance.  Debt 28.
+//      J. Submerged Lambertian floor under a delta water box, sphere
+//         emitter and camera both in air
+//         — pins the eta^2 CANCELLATION on an in-and-out eye path.
+//         Green before and after the debt-30 fix, by construction; its
+//         VCM twin (VCMStrategyBalanceTest topology H) is the red one.
+//      K. AIR ceiling patch above a delta water box, diffuse floor and
+//         sphere emitter both SUBMERGED (debt 30 review round 2, C2)
+//         — a CONSISTENCY PIN, not a red row: the eye-side s=0/s=1
+//         strategies (continuing from the ceiling patch, crossing INTO
+//         the water -- one RADIANCE-mode crossing, so debt 30's eta^2
+//         factor applies) and the light-tracing t=1 splat (a light
+//         subpath crossing OUT of the water to reach the same ceiling
+//         vertex -- IMPORTANCE-mode, no factor) are two different MIS
+//         strategies for the SAME physical path, on the two sides of
+//         debt 30's asymmetric rule, and already have to reconcile via
+//         ordinary MIS.  Green before and after this round's
+//         TranslucentSPF fix, which this scene never exercises; its VCM
+//         twin is VCMStrategyBalanceTest topology I (the two share the
+//         same scene text).
+//
+//      L. MULTI-LOBE `schlick_material` wall + floor, large area emitter
+//         (DL-69) -- the only topology in this file whose material
+//         emits more than one non-delta lobe per Scatter() call.
+//         BDPT's non-delta throughput used to pair the material's
+//         AGGREGATE BSDF value with the ONE selected lobe's density,
+//         an N-times over-count; every other topology here uses
+//         `lambertian_material` (N == 1) and is structurally blind
+//         to it.
+//
+//      Q. CLOSED two-layer gapped weave box (gap 0.3), omni light
+//         OUTSIDE behind it (DL-05) -- the light reaches the camera-
+//         facing layer only THROUGH the far layer's delta gap lobe.
+//         BDPT gets that path by light tracing; PT only since DL-05,
+//         whose delta-light NEE shadow ray now sees through the gap.
+//         Pre-fix BDPT/PT read 1.545.
+//      R. Q's AREA-LIGHT twin -- a mesh emitter behind the same box.
+//         PT reaches it through the far gap by BSDF sampling at MIS
+//         weight 1 (a delta vertex has no NEE partner), so it was right
+//         before DL-05 and must stay right: an area-light NEE arm that
+//         also saw through the gap would count the path twice.
+//
+//      M. GGX wall + Lambertian floor, same geometry / emitter /
+//         camera / rasterizers as L -- L's CONTROL.  Both materials
+//         are immune to DL-127 and DL-103 (see the topology's own
+//         comment), so it discriminates a Schlick-specific residual
+//         on L from a generic PT-vs-BDPT one.
+//
+//     AB. `polished_material` wall + floor, un-guided and guided
+//         (DL-285): its BSDF and its SPF's kray are one function, so
+//         guiding must not move the mean (0.5 % band).
+//
+//      U. ROUGH `subsurfacescattering_material` wall + floor (DL-307)
+//         and V. a closed ROUGH `randomwalk_sss_material` sphere
+//         (DL-307) -- both generators used to break on an empty scatter
+//         container (a rough reflection drawn below the horizon) before
+//         the subsurface branch.  Each gates un-guided BDPT vs PT,
+//         guided-RIS BDPT vs PT, and un-guided vs guided BDPT in its own
+//         tight band (see the topologies' own comment).
 //
 //    Tolerance: 8% relative on the mean RGB.  At 32 spp, 64x64 images
 //    Monte Carlo noise on the mean of a smooth scene is sub-percent;
@@ -50,11 +129,15 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <cstdio>
+#include <cstring>
+#include <utility>
 #include <cstdlib>
 #include <iostream>
 #include <fstream>
+#include <iterator>
 #include <vector>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <algorithm>
 #ifdef _WIN32
@@ -71,6 +154,9 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "DataDrivenTestTables.h"
+#include "../src/Library/Utilities/SobolSampler.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -194,11 +280,26 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	// -- the image the sensor measures -- agrees to <0.2%.  Multiplying by
 	// alpha makes the comparison convention-independent and is a no-op for
 	// full-coverage pixels (alpha == 1).  See docs/INTEGRATOR_BUGFIX_FINDINGS.md Bug 2.
+	// DL-40: a nonfinite (NaN/Inf) captured component is a broken render,
+	// not a statistic -- reject the whole capture (return invalid) before
+	// sort/sum ever touches it.  Otherwise NaN silently propagates into
+	// mean/median/p99/max, and ChannelsAgree's fabs()-based comparison
+	// can't see it (fabs(x-NaN) is NaN, and "NaN > relTol" is false, so
+	// an un-guarded comparison falls through to "agrees").
+	bool allFinite = true;
 	for( const RISEColor& c : cap.pixels ) {
 		const double cov = c.a;
-		ch[0].push_back( c.base.r * cov );
-		ch[1].push_back( c.base.g * cov );
-		ch[2].push_back( c.base.b * cov );
+		const double r = c.base.r * cov, g = c.base.g * cov, b = c.base.b * cov;
+		if( !std::isfinite( r ) || !std::isfinite( g ) || !std::isfinite( b ) ) {
+			allFinite = false;
+			break;
+		}
+		ch[0].push_back( r );
+		ch[1].push_back( g );
+		ch[2].push_back( b );
+	}
+	if( !allFinite ) {
+		return ImageStats{};   // valid stays false
 	}
 
 	for( int c = 0; c < 3; c++ ) {
@@ -224,10 +325,10 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 //////////////////////////////////////////////////////////////////////
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/bdpt_strategy_balance_%s_%d.RISEscene",
-		tag, static_cast<int>(::getpid()) );
+		"%s/bdpt_strategy_balance_%s_%d.RISEscene",
+		RISE::TestSupport::ScratchBaseDir().c_str(), tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) {
@@ -260,13 +361,17 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 
 	// Drop the scene's file_rasterizeroutput so we don't pollute the
 	// rendered/ directory during a test run, and so the test reads the
-	// raw radiance buffer instead of an LDR-encoded PNG.
+	// raw radiance buffer directly.
 	pJob->RemoveRasterizerOutputs();
 
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	// Fresh libc seed per render; worker scheduling still makes repeats
+	// non-bit-reproducible. Repeat averages must not reuse one seed.
+	static unsigned renderIndex = 0;
+	std::srand(1729u + renderIndex++);
 	const bool bRendered = pJob->Rasterize();
 	if( !bRendered ) {
 		safe_release( pCap );
@@ -292,6 +397,12 @@ static bool ChannelsAgree(
 	double absFloor )
 {
 	for( int c = 0; c < 3; c++ ) {
+		// DL-40: a nonfinite operand on EITHER side must disagree.  Without
+		// this, fabs(a-b) with a NaN operand is NaN, and "NaN > relTol" is
+		// false under IEEE comparison rules, so the loop fell through and
+		// the function returned true (spurious agreement) for a broken
+		// candidate or reference.
+		if( !std::isfinite( a[c] ) || !std::isfinite( b[c] ) ) return false;
 		const double denom = std::fmax( std::fabs(a[c]), absFloor );
 		if( std::fabs(a[c] - b[c]) / denom > relTol ) return false;
 	}
@@ -321,6 +432,89 @@ static void PrintRelDiff( const char* label, const double a[3], const double b[3
 	}
 	std::cout << "    " << label << " relative diff: ("
 	          << d[0] << "%, " << d[1] << "%, " << d[2] << "%)" << std::endl;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-40 red-proof: nonfinite candidate statistics must be REJECTED, not
+// silently agree.  Two layers, matching the two functions the ledger
+// row names:
+//
+//   1. ComputeStats must never report `valid=true` for a capture that
+//      contains a NaN/Inf composited component -- explicit malformed
+//      CapturingRasterizerOutput fixtures, not a live render (a live
+//      render producing NaN would need a second, unrelated bug to
+//      reach this code path at all).
+//   2. ChannelsAgree must disagree when handed a finite reference
+//      against a NaN/Inf candidate mean/p99/max directly, bypassing
+//      ComputeStats entirely -- belt-and-suspenders in case some other
+//      caller ever constructs an ImageStats by hand.
+//
+// Both are exercised against the UNFIXED functions in the commit that
+// introduces this test (see the fix commit message for the failing
+// output); with the fix above applied, both are green.
+//////////////////////////////////////////////////////////////////////
+static void TestNonfiniteCandidateRejected()
+{
+	std::cout << std::endl << "-- DL-40: nonfinite candidate statistics are rejected --" << std::endl;
+
+	// (1) ComputeStats: one NaN pixel component among otherwise-normal
+	// pixels must flip the WHOLE capture to invalid, not just corrupt
+	// one channel's mean silently.
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 2; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.5, 0.5, 0.5 ), 1.0 ) );
+		cap->pixels.push_back( RISEColor( RISEPel( std::nan(""), 0.2, 0.2 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with a NaN pixel component (valid==false)" );
+		cap->release();
+	}
+	// Same for a +Inf component (a firefly gone unbounded, not a NaN).
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.3, std::numeric_limits<double>::infinity(), 0.3 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with an Inf pixel component (valid==false)" );
+		cap->release();
+	}
+	// A capture with no nonfinite components is unaffected (no false positive).
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.4, 0.5, 0.6 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( s.valid, "DL-40: ComputeStats control -- an all-finite capture stays valid" );
+		cap->release();
+	}
+
+	// (2) ChannelsAgree: a finite reference against a NaN candidate mean
+	// must disagree at generous tolerance -- explicit malformed fixtures,
+	// not relying on ComputeStats to have filtered it first.
+	{
+		const double ref[3]  = { 0.5, 0.5, 0.5 };
+		const double cand[3] = { std::nan(""), 0.5, 0.5 };
+		Check( !ChannelsAgree( ref, cand, /*relTol=*/1000.0, /*absFloor=*/1e-6 ),
+		       "DL-40: ChannelsAgree rejects a NaN candidate[0] even at relTol=1000" );
+	}
+	{
+		const double ref[3]  = { 0.5, 0.5, 0.5 };
+		const double cand[3] = { 0.5, 0.5, std::numeric_limits<double>::infinity() };
+		Check( !ChannelsAgree( ref, cand, /*relTol=*/1000.0, /*absFloor=*/1e-6 ),
+		       "DL-40: ChannelsAgree rejects an Inf candidate[2] even at relTol=1000" );
+	}
+	{
+		const double ref[3]  = { std::nan(""), 0.5, 0.5 };
+		const double cand[3] = { 0.5, 0.5, 0.5 };
+		Check( !ChannelsAgree( ref, cand, /*relTol=*/1000.0, /*absFloor=*/1e-6 ),
+		       "DL-40: ChannelsAgree rejects a NaN REFERENCE too, not just a NaN candidate" );
+	}
+	{
+		const double ref[3]  = { 0.5, 0.5, 0.5 };
+		const double cand[3] = { 0.5, 0.5, 0.5 };
+		Check( ChannelsAgree( ref, cand, /*relTol=*/0.01, /*absFloor=*/1e-6 ),
+		       "DL-40: ChannelsAgree control -- identical finite stats still agree" );
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -435,28 +629,67 @@ static const char* kSceneCommonOrtho =
 	"\tmaterial mat_diffuse\n"
 	"}\n";
 
+//////////////////////////////////////////////////////////////////////
+// THE PT REFERENCE.  `pathtracing_pel_rasterizer` -- the modern
+// progressive path tracer -- NOT the legacy `pixelpel_rasterizer` this
+// file used until 2026-09-05 (docs/CLOTH_FABRIC_DESIGN.md §15 debt 26).
+//
+// The legacy rasterizer executes the scene's `standard_shader` chain
+// literally, and a chain of `DefaultDirectLighting` alone is a
+// DIRECT-LIGHTING-ONLY render by construction: neither
+// `DirectLightingShaderOp` nor the `DefaultEmission` op that
+// `Job::AddStandardShader` auto-prepends declares `RequireSPF()`, so
+// `StandardShader::Shade` never even calls `ISPF::Scatter` and no
+// continuation ray of any kind is cast.  That is correct legacy
+// semantics -- a plain `dielectric_material` pane renders BLACK under
+// the same chain, and the shipped legacy scenes pair
+// `DefaultDirectLighting` with `DefaultRefraction` / `DefaultReflection`
+// exactly because of it (scenes/FeatureBased/Caustics/pool_caustics
+// .RISEscene) -- but it makes the legacy rasterizer unusable as a
+// TRANSPORT reference for any topology whose energy arrives through a
+// scattered ray.  Measured on the topology F scene below (32x32,
+// 256 spp): legacy `[DefaultEmission, DefaultDirectLighting]` 0.04159,
+// the same chain plus `DefaultRefraction` 0.10148, this rasterizer
+// 0.10240 -- a 2.46x reference error that adding one op removes.
+//
+// The two scene strings must still differ ONLY in the rasterizer chunk,
+// so this string carries the same `DefaultPathTracing` shader and the
+// same `pixel_filter box` as `kRasterizerBDPT`; the modern PT rasterizer
+// drives `PathTracingIntegrator` directly and does not consult the
+// shader chain, but leaving the two shaders different would reintroduce
+// a second free variable.
+//////////////////////////////////////////////////////////////////////
 static const char* kRasterizerPT =
 	"standard_shader\n"
 	"{\n"
 	"\tname global\n"
-	"\tshaderop DefaultDirectLighting\n"
+	"\tshaderop DefaultPathTracing\n"
 	"}\n"
 	"\n"
-	"pixelpel_rasterizer\n"
+	"pathtracing_pel_rasterizer\n"
 	"{\n"
-	"\tmax_recursion 2\n"
 	"\tsamples 32\n"
-	"\tlum_samples 1\n"
+	"\trr_min_depth 8\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/bdpt_balance_pt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/bdpt_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
+// `oidn_denoise FALSE` on BOTH rasterizer strings (2026-09-05).  The
+// capture output only overrides `OutputImage`, and the default
+// `OutputDenoisedImage` forwards POST-denoise pixels there, so with the
+// denoiser on this test was comparing denoised images -- and OIDN's
+// `auto` quality selection is timing-based, so it flipped between
+// BALANCED and HIGH from run to run and made topology A's PT mean
+// bimodal across otherwise identical invocations.  Off, every topology
+// is a straight integrator-vs-integrator comparison and no band moved.
 static const char* kRasterizerBDPT =
 	"standard_shader\n"
 	"{\n"
@@ -470,14 +703,15 @@ static const char* kRasterizerBDPT =
 	"\tmax_light_depth 3\n"
 	"\tsamples 32\n"
 	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
 	"{\n"
-	"\tpattern /tmp/bdpt_balance_bdpt_unused\n"
-	"\ttype PNG\n"
-	"\tbpp 8\n"
-	"\tcolor_space sRGB\n"
+	"\tpattern rendered/bdpt_balance_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
 static const char* kLightOmni =
@@ -574,6 +808,16 @@ struct Tolerances
 
 static const Tolerances kStrictTolerances{ 0.08, 0.25, 1.00 };
 
+//! Topology L only (DL-103 closure, 2026-09-17).  Its MEAN band is
+//! tightened from the shared 8% to 2% -- see that topology's own
+//! comment for the isolated-A/B evidence (BDPT/PT went from
+//! +5.198% +/- 0.011 pp to +0.040% +/- 0.012 pp when the PT-side fix
+//! landed; 2% is ~115x the measured run-to-run sigma, and catches both
+//! a DL-103-class regression (5.2%) and a DL-69-class one (19%)).
+//! p99 and max stay at the shared values: they are noise-dominated on
+//! this topology and neither row moved them materially.
+static const Tolerances kSchlickTopologyLTolerances{ 0.02, 0.25, 1.00 };
+
 //////////////////////////////////////////////////////////////////////
 // RunTopologyTest - shared driver for each (PT, BDPT) comparison.
 //
@@ -582,15 +826,31 @@ static const Tolerances kStrictTolerances{ 0.08, 0.25, 1.00 };
 // supplied tolerance.  PT is the trusted reference; BDPT must
 // converge to the same image distribution.
 //////////////////////////////////////////////////////////////////////
+//! A tolerance as a percent label ("0.5", "8") -- `int( tol * 100 )`
+//! printed a 0.5 % band as "0%".
+static std::string PercentLabel( const double tol )
+{
+	char buf[32];
+	std::snprintf( buf, sizeof( buf ), "%g", tol * 100.0 );
+	return std::string( buf );
+}
+
 static void RunTopologyTest(
 	const char* topologyName,
 	const std::string& sceneCommonBlock,
-	const Tolerances& tol = kStrictTolerances )
+	const Tolerances& tol = kStrictTolerances,
+	// Per-topology rasterizer strings.  Default to this file's shared
+	// 32-spp pair; topologies G / H override them with a 512-spp pair
+	// because a strongly defocused render is far noisier per pixel (see
+	// the comment above SceneCommonThinLens).  The two strings must
+	// still differ ONLY in the rasterizer chunk.
+	const char* ptRasterizer = kRasterizerPT,
+	const char* bdptRasterizer = kRasterizerBDPT )
 {
 	std::cout << "Testing PT-vs-BDPT: " << topologyName << std::endl;
 
-	const std::string ptScene   = std::string("RISE ASCII SCENE 7\n") + kRasterizerPT   + sceneCommonBlock;
-	const std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + kRasterizerBDPT + sceneCommonBlock;
+	const std::string ptScene   = std::string("RISE ASCII SCENE 7\n") + ptRasterizer   + sceneCommonBlock;
+	const std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + bdptRasterizer + sceneCommonBlock;
 
 	const std::string ptPath   = WriteSceneToTempFile( ptScene.c_str(),   "pt"   );
 	const std::string bdptPath = WriteSceneToTempFile( bdptScene.c_str(), "bdpt" );
@@ -624,7 +884,7 @@ static void RunTopologyTest(
 	const bool maxMatch  = ChannelsAgree( pt.max,  bdpt.max,  tol.maxTol,  absFloor );
 
 	Check( meanMatch, ( std::string("BDPT mean within ")
-		+ std::to_string(int(tol.meanTol*100)) + "% of PT: " + topologyName ).c_str() );
+		+ PercentLabel( tol.meanTol ) + "% of PT: " + topologyName ).c_str() );
 	Check( p99Match,  ( std::string("BDPT p99 within ")
 		+ std::to_string(int(tol.p99Tol*100))  + "% of PT: " + topologyName ).c_str() );
 	Check( maxMatch,  ( std::string("BDPT max within ")
@@ -720,14 +980,4677 @@ static void TestOrthographicCamera()
 		std::string( kSceneCommonOrtho ) + kLightMesh, kStrictTolerances );
 }
 
-int main()
+//////////////////////////////////////////////////////////////////////
+// Topology E: backlit thin weave curtain with delta omni light.
+//
+// Regression guard for the mixed delta+continuum connectibility fix:
+// WeaveSPF with transmission thin has a delta gap lobe and a continuous
+// diffuse transmission lobe. When subpath generation stochastically chose
+// the gap lobe, it set hasNonDelta = false which marked the surface vertex
+// non-connectible and dropped NEE on a `gap` fraction of camera rays,
+// deflating BDPT by (1 - gap) vs PT (a ~10% under-contribution on linen).
+// With GetBSDF() checked directly, BDPT and PT agree within Monte Carlo noise.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneBacklitThinCurtain =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.2\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 34.0\n"
+	"}\n\n"
+	"omni_light\n"
+	"{\n"
+	"\tname backlight\n"
+	"\tposition 0 0 -3.0\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"\tpower 6.0\n"
+	"}\n\n"
+	"weave_material\n"
+	"{\n"
+	"\tname mat_curtain\n"
+	"\tfabric linen\n"
+	"\ttransmission thin\n"
+	"\tgap 0.1\n"
+	"}\n\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname curtain_geo\n"
+	"\tpta -1.4 -1.4 0\n\tptb 1.4 -1.4 0\n\tptc 1.4 1.4 0\n\tptd -1.4 1.4 0\n"
+	"\tdoublesided TRUE\n"
+	"}\n\n"
+	"standard_object\n"
+	"{\n"
+	"\tname curtain_obj\n"
+	"\tgeometry curtain_geo\n"
+	"\tmaterial mat_curtain\n"
+	"\tposition 0 0 0\n"
+	"}\n";
+
+static void TestBacklitThinCurtain()
 {
+	RunTopologyTest( "backlit thin weave curtain (delta omni light)",
+		kSceneBacklitThinCurtain, kStrictTolerances );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology F: the AREA-LIGHT TWIN of topology E -- gap-0.1 weave
+// curtain in front of a full-width mesh emitter.
+//
+// This file carried no such twin until 2026-09-05, because the PT
+// reference was the legacy `pixelpel_rasterizer` and it reads 0.0416
+// here against the modern path tracer's 0.1024 -- see the block under
+// `kRasterizerPT` and docs/CLOTH_FABRIC_DESIGN.md §15 debt 26.  With the
+// reference switched, the twin belongs here, and it is the ONLY
+// topology in this file that puts the s=0 "eye subpath hits the
+// emitter" strategy into competition with s=1 NEE THROUGH A CHAIN WHOSE
+// MIDDLE VERTEX WAS SAMPLED AS A DELTA:
+//
+//   - Topology E backlights the same curtain with an OMNI light.  A
+//     point light has zero solid angle, so the weave's delta gap lobe
+//     -- a deterministic straight-line continuation -- can never land on
+//     it: s=0 has zero density and never fires, and the whole image is
+//     s=1 NEE against the continuum lobe.
+//   - Here the emitter is an area quad covering the curtain's whole
+//     footprint, so essentially every gap draw (10% of camera rays)
+//     lands on it -- 94.9% of the film's straight-through rays reach the
+//     quad, the shortfall being the outermost pixel ring only.
+//     s=0-through-a-delta-chain, s=1 NEE at that same mixed vertex (which
+//     the debt-23 fix made legal again), and light tracing all compete
+//     on the same pixel.  If the s=0 emission strategy took weight 1
+//     through the delta chain -- the natural-looking rule, and wrong at a
+//     MIXED vertex where NEE can produce the same path -- this is the
+//     topology that shows it, at an s=0-sized share (tens of percent),
+//     an order of magnitude above the 8% mean band.
+//
+// The emitter is full-width and only `scale 2.0`, deliberately not a
+// small bright one: a small emitter makes the through-gap sighting a
+// rare, peaky event whose noise floor swamps the partition error it is
+// meant to detect.
+//
+// This is the same scene as tests/FabricRenderTest.cpp case 8
+// (`TestGappedWeaveWithAreaLight`), which keeps it at 256 spp with a
+// PT/BDPT/VCM three-way band; here it runs at this file's 32 spp under
+// the shared strict tolerances and adds the topology to BDPT's MIS
+// partition matrix.  MEASURED on this machine after the reference
+// switch (32x32, 32 spp, mean of 3 runs): PT mean
+// (0.10802, 0.10411, 0.09630), BDPT (0.10746, 0.10355, 0.09574) --
+// BDPT/PT (0.9948, 0.9946, 0.9941) with a run-to-run sigma of 4.8e-4,
+// i.e. ~15x inside the 8% mean band; p99 ratio 1.007 (25% band) and
+// max ratio 1.009 (2x band).  The channels differ because the weave's
+// linen preset is not neutral, not because the integrators disagree.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneGappedCurtainAreaLight =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.2\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 34.0\n"
+	"}\n\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit_ga\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit_ga\n"
+	"\texitance pnt_emit_ga\n"
+	"\tscale 2.0\n"
+	"\tmaterial none\n"
+	"}\n\n"
+	// Winding gives the one-sided luminaire normal +Z, i.e. facing the
+	// curtain (and the camera behind it).
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_emit_ga\n"
+	"\tpta -1.4 -1.4 -1.5\n\tptb 1.4 -1.4 -1.5\n"
+	"\tptc 1.4 1.4 -1.5\n\tptd -1.4 1.4 -1.5\n"
+	"}\n\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit_ga\n"
+	"\tgeometry quad_emit_ga\n"
+	"\tmaterial mat_emit_ga\n"
+	"}\n\n"
+	"weave_material\n"
+	"{\n"
+	"\tname mat_curtain\n"
+	"\tfabric linen\n"
+	"\ttransmission thin\n"
+	"\tgap 0.1\n"
+	"}\n\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname curtain_geo\n"
+	"\tpta -1.4 -1.4 0\n\tptb 1.4 -1.4 0\n\tptc 1.4 1.4 0\n\tptd -1.4 1.4 0\n"
+	"\tdoublesided TRUE\n"
+	"}\n\n"
+	"standard_object\n"
+	"{\n"
+	"\tname curtain_obj\n"
+	"\tgeometry curtain_geo\n"
+	"\tmaterial mat_curtain\n"
+	"\tposition 0 0 0\n"
+	"}\n";
+
+static void TestGappedCurtainAreaLight()
+{
+	RunTopologyTest( "gapped thin weave curtain + mesh area emitter",
+		kSceneGappedCurtainAreaLight, kStrictTolerances );
+}
+
+//////////////////////////////////////////////////////////////////////
+// HOW THE AREA-LIGHT TWIN GOT HERE (history, 2026-09-04 -> 2026-09-05).
+//
+// Topology F above used to live only in
+// tests/FabricRenderTest.cpp::TestGappedWeaveWithAreaLight, and this
+// block used to say it could never live here, because THIS FILE'S PT
+// REFERENCE COULD NOT RENDER IT: `kRasterizerPT` was the legacy
+// `pixelpel_rasterizer`, which reads 0.0416 on that scene against the
+// modern path tracer's 0.1024 at the same spp, and raising
+// `max_recursion` from 2 to 8 does not recover it.  Asserting
+// BDPT == pixelpel there would have banked a 2.46x reference error as
+// expected behaviour.
+//
+// That reading of the evidence was right about the numbers and wrong
+// about the cause.  The legacy RASTERIZER is not broken; the legacy
+// SHADER CHAIN the scene declared was direct-lighting-only, so no
+// continuation ray -- delta gap lobe, dielectric refraction, or plain
+// indirect -- was ever cast, or even sampled (neither
+// `DirectLightingShaderOp` nor the auto-prepended `DefaultEmission`
+// declares `RequireSPF()`, so `StandardShader::Shade` skips
+// `ISPF::Scatter` outright).  Adding one op, `DefaultRefraction`, brings
+// the legacy rasterizer to 0.10148 against the modern PT's 0.10240 --
+// 0.991, from 0.406.  A plain `dielectric_material` pane in the same
+// scene renders exactly 0.000000 under the direct-lighting-only chain
+// and 0.61119 with `DefaultRefraction` added (modern PT: 0.61116), so
+// this is not weave-specific and not a defect: it is the legacy
+// shader-op contract, which the shipped legacy scenes already honour
+// (scenes/FeatureBased/Caustics/pool_caustics.RISEscene pairs
+// `DefaultDirectLighting` with `DefaultRefraction`).
+//
+// The reference was therefore switched to `pathtracing_pel_rasterizer`
+// rather than patched, because a STRATEGY-BALANCE test wants a
+// full-transport reference, not a shader chain whose coverage depends on
+// which ops the scene string happens to list -- the legacy chain is
+// still 0.980 of the modern PT on the SAME curtain at gap 0, where no
+// delta lobe exists at all, purely from the indirect bounces it does not
+// follow.  Every pre-existing topology agreed with BDPT more tightly
+// after the switch than before, with no band loosened; full old-vs-new
+// table in docs/CLOTH_FABRIC_DESIGN.md §15 debt 26.  The "PT may be the
+// broken one" pre-flight in docs/skills/bdpt-vcm-mis-balance.md keeps
+// this as its legacy-rasterizer instance, now with the mechanism.
+//////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////
+// Topologies G / H: FINITE-APERTURE (thin-lens) camera.  Debt 28.
+//
+// `thinlens_camera` is the only RISE camera whose importance is emitted
+// from a surface of non-zero AREA.  Its importance carries a 1/A_lens
+// exactly because the t==1 light-tracing connection is supposed to
+// SAMPLE a point on that aperture with density 1/A_lens -- the two
+// cancel, and the contribution reduces to the pinhole's.  Connecting to
+// the lens CENTRE while keeping the 1/A_lens multiplies every t==1
+// contribution by 1/(cos(theta) * A_lens): the f/22 row's aperture
+// radius is 15.1 mm / 44 = 3.43e-4 scene units, area 3.70e-7, so the
+// splat layer comes out ~2.7e6 times too bright before MIS.
+//
+// WHY THIS GEOMETRY and not a copy of topology B's.  The t==1 strategy
+// only shows the defect if BDPT's MIS gives it non-negligible weight,
+// and its weight is set by the ratio (camera-side area density at the
+// light vertex) / (light-side area density at the same vertex) --
+// roughly pi * d^2 * r^2 / D^2 with d = H/(2 tan(fov/2)) the image-plane
+// distance in pixels, r the emitter-to-receiver distance and D the
+// camera distance.  Topology B's 30-degree/3.5 m/4 m numbers put that
+// ratio near 1.5e4, i.e. t==1 weight ~5e-9, and a 2.5e5x inflated splat
+// still moves the mean by 1e-3 -- the bug hides completely (measured:
+// BDPT/PT = 1.0010 on topology B's scene with an f/22 thin lens).  A
+// 100-degree lens at 6 m over an emitter 0.5 m above the receiver puts
+// the ratio near 4, i.e. t==1 weight ~0.06, which is the regime the
+// showcase scenes that surfaced debt 28 actually live in.
+//
+// Geometry:
+//   camera  (0, 0, 6) looking at the origin; 36 mm sensor / 15.1 mm
+//           lens = 2*atan(36/30.2) = 100.0 deg VERTICAL field of view
+//   receiver 40x40 Lambertian quad at z = 0 (large enough that the
+//           frame stays fully covered even under topology H's blur, so
+//           no partial-coverage edge pixel can confound the mean)
+//   emitter 1x1 luminaire quad at z = 0.5 facing the receiver
+//
+// Topology H's `focus_distance 0.03` puts the plane of focus 5.97 m in
+// front of the receiver.  Blur DIAMETER in PIXELS for a thin lens is
+//   H * f * |S2-S1| / (2 * N * S1 * S2 * tan(fov/2))
+//     = 32 * 0.0151 * 5.97 / (2 * 2.8 * 0.03 * 6 * 1.1918) = 2.4 px,
+// i.e. a circle-of-confusion RADIUS of 1.2 px -- still far too large
+// for a centre-rasterized light-traced layer to hide inside the pixel
+// grid.  (A wide field of view and a big circle of confusion pull
+// against each other -- the blur formula divides by tan(fov/2) --
+// which is why the focus plane has to come this close.)
+//
+// An earlier version of this comment wrote (S1 - f) where this one
+// writes S1 and got 4.8 px, exactly 2x too big (debt 28 review,
+// B P2-2).  The sensor-side photographic formula
+//   c_mm = (f/N) * f/(S1-f) * |S2-S1|/S2
+// is per-MILLIMETRE and must be divided by the pixel pitch at the
+// ACTUAL image distance v = f*S1/(S1-f), not at f: the pitch is
+// 2*v*tan(fov/2)/H, and the (S1-f) cancels, leaving the form above.
+// The identical reduction is asserted from the other direction by
+// tests/CameraImportanceTest.cpp's TestAnalyticCircleOfConfusion,
+// whose per-lens-offset displacement is
+//   |L| * H * |1/S1 - 1/S2| / (2 tan(fov/2)),
+// which at |L| = f/(2N) is half of the above -- the radius.
+//
+// 512 spp, not this file's usual 32: the defocused row's per-pixel
+// sigma/mu is 156% against the focused row's 23%, so at 32 spp the mean
+// alone swings ~5% run to run, over half the 8% band.  At 512 spp both
+// rows are stable to under 1% (measured: focused 0.0453 / 0.0452,
+// defocused 0.0449 / 0.0452 across reruns) and the pair costs ~2 s.
+//
+// MEASURED PRE-FIX on this machine, BDPT mean / PT mean (R channel):
+//   G (f/22,  focused):   65.5184  / 0.0452077 = 1449x     over
+//   H (f/2.8, defocused):  1.10416 / 0.0448614 =   24.6x   over
+// and POST-FIX (same run configuration):
+//   G: 0.0441068 / 0.0452868 = 0.974
+//   H: 0.0444746 / 0.0450516 = 0.987
+// (each of these is one draw from a run-to-run spread of a few
+// percentage points; the band, not the figure, is the contract)
+// with p99 and max agreeing to within 1% and 3% respectively.
+// The f/22 row is the harsher of the two precisely because the defect
+// scales as 1/A_lens: stopping down 3 stops from f/2.8 to f/22 shrinks
+// the aperture area 62x and the pinhole-centre splat grows to match.
+//////////////////////////////////////////////////////////////////////
+static std::string SceneCommonThinLens(
+	const char* fstop,
+	const char* focusDistance,
+	// Topology I: a POLYGONAL aperture.  0 keeps the default disk.
+	const char* apertureBlades = "0" )
+{
+	return std::string(
+		"film\n"
+		"{\n"
+		"\twidth 32\n"
+		"\theight 32\n"
+		"}\n"
+		"\n"
+		"thinlens_camera\n"
+		"{\n"
+		"\tlocation 0 0 6\n"
+		"\tlookat 0 0 0\n"
+		"\tup 0 1 0\n"
+		"\tsensor_size 36\n"
+		"\tfocal_length 15.1\n"
+		"\tfstop " ) + fstop + "\n"
+		"\tfocus_distance " + focusDistance + "\n"
+		"\taperture_blades " + apertureBlades + "\n"
+		"}\n"
+		"\n"
+		"uniformcolor_painter\n"
+		"{\n"
+		"\tname pnt_albedo\n"
+		"\tcolor 0.5 0.5 0.5\n"
+		"}\n"
+		"\n"
+		"lambertian_material\n"
+		"{\n"
+		"\tname mat_diffuse\n"
+		"\treflectance pnt_albedo\n"
+		"}\n"
+		"\n"
+		"clippedplane_geometry\n"
+		"{\n"
+		"\tname quad\n"
+		"\tpta -20 -20 0\n"
+		"\tptb 20 -20 0\n"
+		"\tptc 20 20 0\n"
+		"\tptd -20 20 0\n"
+		"}\n"
+		"\n"
+		"standard_object\n"
+		"{\n"
+		"\tname obj_quad\n"
+		"\tgeometry quad\n"
+		"\tmaterial mat_diffuse\n"
+		"}\n"
+		"\n"
+		// The emitter has to sit CLOSE to the receiver -- see the
+		// MIS-weight arithmetic above -- so it is a small quad 0.5
+		// above the plane rather than kLightMesh's 4.0.
+		"uniformcolor_painter\n"
+		"{\n"
+		"\tname pnt_emit_tl\n"
+		"\tcolor 1.0 1.0 1.0\n"
+		"}\n"
+		"\n"
+		"lambertian_luminaire_material\n"
+		"{\n"
+		"\tname mat_emit_tl\n"
+		"\texitance pnt_emit_tl\n"
+		"\tscale 20.0\n"
+		"\tmaterial none\n"
+		"}\n"
+		"\n"
+		"clippedplane_geometry\n"
+		"{\n"
+		"\tname quad_emit_tl\n"
+		"\tpta -0.5 0.5 0.5\n"
+		"\tptb 0.5 0.5 0.5\n"
+		"\tptc 0.5 -0.5 0.5\n"
+		"\tptd -0.5 -0.5 0.5\n"
+		"}\n"
+		"\n"
+		"standard_object\n"
+		"{\n"
+		"\tname obj_emit_tl\n"
+		"\tgeometry quad_emit_tl\n"
+		"\tmaterial mat_emit_tl\n"
+		"}\n";
+}
+
+// 512-spp twins of kRasterizerPT / kRasterizerBDPT.  Identical in every
+// other respect (same shader chain, same box filter, same denoiser
+// setting, same depth caps) so the pair still isolates the integrator.
+static const char* kRasterizerPT512 =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 512\n"
+	"\trr_min_depth 8\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerBDPT512 =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 3\n"
+	"\tmax_light_depth 3\n"
+	"\tsamples 512\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static void TestThinLensStoppedDown()
+{
+	RunTopologyTest( "thin-lens f/22 camera, focused (finite aperture)",
+		SceneCommonThinLens( "22", "6.0" ),
+		kStrictTolerances, kRasterizerPT512, kRasterizerBDPT512 );
+}
+
+static void TestThinLensWideOpenDefocused()
+{
+	RunTopologyTest( "thin-lens f/2.8 camera, 2.4 px defocus (finite aperture)",
+		SceneCommonThinLens( "2.8", "0.03" ),
+		kStrictTolerances, kRasterizerPT512, kRasterizerBDPT512 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology I: SIX-BLADED aperture, f/2.8, same defocus as H.
+//
+// Topologies G and H both use the default DISK aperture, so neither
+// exercises the shaped-aperture branch of
+// `ThinLensCamera::SampleAperture` (a sec^2 inverse-CDF over the
+// n-gon's triangles) or the polygonal closed form in
+// `GetApertureWorldArea` (n/2 * R^2 * sin(2 pi/n), 0.827 of the
+// circumscribed disk for a hexagon).  This row runs both end to end.
+//
+// WHAT IT DOES NOT CATCH, measured rather than assumed.  Forcing
+// `ThinLensCamera::SampleLensPoint` -- which ONLY the t==1 connection
+// side calls, since `GenerateRay` reaches the file-local
+// `SampleAperture` helper directly -- to pass 0 blades, so the light
+// layer samples a DISK while the eye rays stay hexagonal, leaves this
+// row passing: BDPT/PT 0.969 (VCM's twin 0.997), both inside the 8%
+// band -- each one draw from a run-to-run spread of a few percentage
+// points; the band, not the figure, is the contract.  That is not a
+// weak test, it is the FIX being true: debt 28's
+// whole point is that the aperture area CANCELS out of `Importance`,
+// so neither the shape nor the area of the sampled aperture appears in
+// a t==1 contribution's weight -- they decide only WHICH PIXEL the
+// splat lands in.  A shape mismatch is a bokeh-figure defect, not an
+// energy one, and a 1.2 px circle of confusion on a smooth receiver
+// does not move a mean, a p99 or a max.
+//
+// So this row is a path-coverage guard (the polygonal branch runs, is
+// finite, and does not disturb the energy balance), and the SHAPE and
+// DENSITY guarantees live where they can actually be asserted:
+// tests/CameraImportanceTest.cpp Test 1 pins
+// `GetApertureWorldArea == 1 / (SampleLensPoint's density)` for disk,
+// POLYGONAL and anamorphic apertures by Monte-Carlo integration
+// against the closed form.
+//
+// Defocused rather than focused on purpose: at the plane of focus
+// every aperture point images to the same pixel, so the polygonal
+// branch would not even change the sampled ray.
+//////////////////////////////////////////////////////////////////////
+static void TestThinLensBladedAperture()
+{
+	RunTopologyTest( "thin-lens f/2.8, six-bladed aperture, defocused",
+		SceneCommonThinLens( "2.8", "0.03", "6" ),
+		kStrictTolerances, kRasterizerPT512, kRasterizerBDPT512 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology J: SUBMERGED Lambertian floor under a delta water box, with
+// a small sphere emitter and the camera both in AIR (debt 30).
+//
+// GREEN BEFORE THE FIX AND GREEN AFTER IT -- that is the whole point of
+// this row.  It pins the CANCELLATION that hid the missing eta^2
+// basic-radiance factor for years, so a future "fix" that adds the
+// factor only on one crossing of an in-and-out eye path is caught here
+// rather than in a scene.
+//
+// Both PT and BDPT reach this floor by the SAME family of paths: the
+// eye path enters the water (a factor of 1/n^2 that RISE now applies),
+// scatters off the floor, and the continuation exits the water toward
+// the emitter (a factor of n^2).  The two cancel, so the measured value
+// is identical before and after the factor landed:
+//
+//   unfixed b6c12301:  PT 0.00462597   BDPT 0.00467030   BDPT/PT 1.0096
+//
+// Its VCM twin -- tests/VCMStrategyBalanceTest.cpp topology H, the same
+// scene -- is the one that was RED (VCM +16.6%), because a MERGE pairs
+// the eye path's single inward crossing with photons that crossed in
+// the importance direction and cancel nothing.
+//
+// REFERENCE.  BDPT's connection strategies cannot help here: a
+// connecting segment from the floor to a light vertex in air is blocked
+// by the water surface (a delta interface is opaque to a straight
+// connection).  So BDPT reaches the emitter through s=0 only, the same
+// BSDF-sampled chain PT uses, and agreement is tight.
+//
+// TOLERANCES.  4096 / 2048 spp and the loosened 60% / 4x tail bands:
+// with a 0.08-radius emitter reachable only by BSDF sampling through a
+// delta interface, both integrators carry real specular fireflies.  The
+// mean stays at the strict 8%.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneSubmergedFloorJ =
+	"film\n"
+	"{\n"
+	"\twidth 64\n"
+	"\theight 64\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 2.0 2.5 0\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo\n"
+	"\tcolor 0.5 0.5 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse\n"
+	"\treflectance pnt_albedo\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad\n"
+	"\tpta -1 0.05 1\n"
+	"\tptb 1 0.05 1\n"
+	"\tptc 1 0.05 -1\n"
+	"\tptd -1 0.05 -1\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_quad\n"
+	"\tgeometry quad\n"
+	"\tmaterial mat_diffuse\n"
+	"}\n"
+	"\n"
+	"dielectric_material\n"
+	"{\n"
+	"\tname mat_water\n"
+	"\tior 1.33\n"
+	"\ttau 1.0\n"
+	"\tscattering 1000000\n"
+	"}\n"
+	"\n"
+	"box_geometry\n"
+	"{\n"
+	"\tname geo_water\n"
+	"\twidth 2.2\n"
+	"\theight 0.3\n"
+	"\tdepth 2.2\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname water\n"
+	"\tgeometry geo_water\n"
+	"\tmaterial mat_water\n"
+	"\tposition 0 0.15 0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit_sph\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit_sph\n"
+	"\texitance pnt_emit_sph\n"
+	"\tscale 42.2\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"sphere_geometry\n"
+	"{\n"
+	"\tname geo_emit_sph\n"
+	"\tradius 0.08\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit_sph\n"
+	"\tgeometry geo_emit_sph\n"
+	"\tmaterial mat_emit_sph\n"
+	"\tposition 0 2.5 0\n"
+	"}\n";
+
+static const char* kRasterizerPTSubmergedJ =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 4096\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_pt_submerged_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerBDPTSubmergedJ =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 8\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 2048\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_bdpt_submerged_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const Tolerances kSubmergedTolerances{ 0.08, 0.60, 4.00 };
+
+static void TestSubmergedFloorCancellation()
+{
+	RunTopologyTest( "submerged Lambertian floor, sphere emitter in air (eta^2 cancellation, debt 30)",
+		std::string( kSceneSubmergedFloorJ ), kSubmergedTolerances,
+		kRasterizerPTSubmergedJ, kRasterizerBDPTSubmergedJ );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology K: AIR ceiling patch above a delta water box; a Lambertian
+// FLOOR and a small sphere EMITTER both SUBMERGED (debt 30 review
+// round 2, C2).  BDPT twin of VCMStrategyBalanceTest topology I --
+// see that file's header comment on this same scene for the full
+// derivation of why it exercises the eta^2 MIS-combination case rather
+// than an isolated cancellation (J) or an isolated red row (VCM's H).
+//
+// For BDPT specifically: s=0 (eye subpath BSDF-samples the emitter
+// directly, no light vertex) and s=1 (NEE from a submerged eye vertex
+// -- the floor -- to the emitter) both continue the eye subpath from
+// the ceiling patch INTO the water, a RADIANCE-mode crossing that
+// carries debt 30's (eta_before/eta_after)^2 = 1/1.33^2 factor.  The
+// t==1 light-tracing splat connects a light subpath vertex (the
+// ceiling patch, reached by refracting OUT of the water from the
+// emitter, optionally via the floor) directly to the camera; that
+// crossing happened while building the light subpath in IMPORTANCE
+// mode, so it carries no factor by construction.  Both are BDPT
+// strategies for the SAME path family, combined by ordinary MIS at the
+// shared ceiling vertex.
+//
+// GREEN BEFORE AND AFTER this round's TranslucentSPF exit-loop fix
+// (C1) -- this scene's materials (lambertian_material,
+// dielectric_material, lambertian_luminaire_material) never touch
+// TranslucentSPF.  What this pins is the MIS combination itself --
+// eye-side continuation (s=0 / s=1, carrying the 1/n^2 factor) and the
+// light-tracing splat (t=1, carrying none) priced together for one
+// path family.  It is a CONSISTENCY PIN, not a proven guard: the
+// measured counterfactual below shows that a factor wrongly ADDED to
+// the splat does NOT move this row (the splat's MIS share is too small
+// on this scene; VCM's topology I catches that direction instead).  A
+// factor DROPPED from the eye side is expected to move s=0/s=1 by
+// ~1/n^2, but that direction was NOT measured.  Neither J (an isolated
+// in-and-out cancellation) nor VCM's H (an isolated merge) exercises
+// this cross-strategy combination at all.
+//
+// REFERENCE.  Plain `pathtracing_pel_rasterizer`, `transparent_shadows`
+// left at its default (false, and this scene does not set it): PT
+// reaches the emitter and the submerged floor purely by BSDF sampling
+// through the delta interface, the same family of scatter events
+// BDPT's eye-side strategies use here, so it is unbiased.
+//
+// SPP / SE (this round's own measurement, same scene VCMStrategyBalanceTest
+// topology I re-derives independently): 2048 spp, two renders,
+// `srand` reseeded per run by the CLI's own `srand(GetMilliseconds())`:
+//   run 1 mean 0.012498317, run 2 mean 0.012497488 -- 0.0066% apart
+// (at 512 spp the two-run spread was 0.095%) -- comfortably under the
+// "SE < 1%" bar.
+//
+// MEASURED RATIOS (this round, two renders each for BDPT to confirm
+// stability):
+//   PT   mean 0.012496226 (reference)
+//   BDPT mean 0.012631816, 0.012620802               -> ratio 1.010-1.011
+//   p99  0.021637727, 0.021515656 vs PT's 0.020320892 -> ratio 1.059-1.065
+//   max  0.03451538, 0.034210205 vs PT's 0.0317688     -> ratio 1.077-1.086
+// (VCM's ratios on the identical scene are in the twin topology I
+// comment: 0.977-0.978 mean, 0.855-0.863 p99, 0.698-0.712 max -- listed
+// there, not re-derived here, because this file only renders BDPT.)
+//
+// TOLERANCES.  Kept at this file's shared 8% mean band (kSubmergedTolerances
+// below is topology J's; this row does not need its loosened 60%/4x
+// tail bands -- there is no tiny-emitter firefly tail here, camera
+// never resolves the emitter's disk directly -- so it uses its own,
+// tighter 30%/100% tail bands with headroom over the measured 6-9%
+// (p99) and 8% (max) spread).
+//
+// MEASURED COUNTERFACTUAL, AND AN HONEST GAP (debt 30 review round 3,
+// C4).  This topology's own header (above) claims it "pins" the
+// cross-strategy MIS combination and would catch a future change that
+// applies the eta^2 factor to the t==1 splat by mistake.  That claim
+// was never measured.  Measured once, this round: temporarily applied
+// `RadianceEtaScale` inside `GenerateLightSubpathImpl`
+// (BDPTIntegrator.cpp), mirroring the eye-side site verbatim -- the
+// exact wrong edit this row is supposed to catch -- rebuilt, ran this
+// test twice: BDPT/PT mean 0.0126348/0.0124913 = 1.01149 and
+// 0.0126287/0.0124948 = 1.01072 (spread 0.00077, ~0.08%). Reverted
+// immediately after (`git diff --stat src/` empty, library rebuilt
+// clean). Both counterfactual runs sit within 0.1 percentage points of
+// this file's own previously-measured correct-code range (1.010-1.011,
+// this document's header above; 1.01149 is just above it, 1.01072 is
+// inside it) -- the wrong edit is statistically INDISTINGUISHABLE from
+// the correct baseline on this scene.
+//
+// **This row does NOT catch the bug it was written to guard against,
+// and tightening the 8% band would not fix that** -- the counterfactual
+// signal here is ~0.1 percentage points, not a few points hiding near
+// an 8% edge; no band width between 0% and 8% would separate 1.011
+// (wrong) from 1.010-1.011 (correct), because they are the same number
+// within this scene's own MC noise. The likely mechanism (not directly
+// instrumented this round): BDPT's power-2 MIS heuristic gives the
+// t==1 light-tracing-splat strategy a small weight `w_{t=1}` relative
+// to the total for THIS scene, because the competing eye-side
+// strategies (s=0 direct BSDF-sampled emitter, s=1 NEE off the
+// submerged floor) are low-variance, well-conditioned direct-lighting
+// estimators that dominate the MIS-combined estimate for a single flat
+// ceiling patch lit through one delta interface -- the same reason a
+// t==1 splat's MIS weight was found to vanish for a pinhole camera in
+// unrelated env-IBL work (see the env-S0/env-NEE partition
+// investigation referenced from CLAUDE.md's high-value facts). A
+// wrongly-scaled but small-weight contributor moves the combined
+// estimate by a correspondingly small amount, invisible against this
+// scene's own noise floor. VCMStrategyBalanceTest's twin, topology I,
+// reaches the OPPOSITE conclusion on the IDENTICAL wrong edit (VCM has
+// no eye-side strategy competing with its light-tracing splat on THIS
+// scene the way BDPT's s=0/s=1 do, so the splat is not diluted) --
+// +45.6-45.8% there, comfortably caught by the same 8% band. Net: this
+// specific bug class (a wrongly-applied light-side eta^2 factor) is
+// caught by VCM's topology I, not by BDPT's topology K.  Topology K's
+// remaining value is as a consistency pin plus an EXPECTED (not
+// measured) sensitivity to the other direction -- a factor dropped
+// from, or applied to only one of, the eye-side strategies s=0/s=1,
+// which carry most of the MIS weight here and would move the row by
+// up to ~1/n^2 = 0.565x.  This counterfactual only tested the
+// splat-side direction, which this scene's MIS weighting hides; the
+// eye-side direction has NOT been rendered and is not claimed.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneSubmergedCeilingK =
+	"film\n"
+	"{\n"
+	"\twidth 64\n"
+	"\theight 64\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0.4 0.15\n"
+	"\tlookat 0 0.6 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 60.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo_a\n"
+	"\tcolor 0.5 0.5 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse_a\n"
+	"\treflectance pnt_albedo_a\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_a\n"
+	"\tpta -0.6 0.6 0.6\n"
+	"\tptb 0.6 0.6 0.6\n"
+	"\tptc 0.6 0.6 -0.6\n"
+	"\tptd -0.6 0.6 -0.6\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_a\n"
+	"\tgeometry quad_a\n"
+	"\tmaterial mat_diffuse_a\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo_b\n"
+	"\tcolor 0.5 0.5 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse_b\n"
+	"\treflectance pnt_albedo_b\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_b\n"
+	"\tpta -1 0.05 1\n"
+	"\tptb 1 0.05 1\n"
+	"\tptc 1 0.05 -1\n"
+	"\tptd -1 0.05 -1\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_b\n"
+	"\tgeometry quad_b\n"
+	"\tmaterial mat_diffuse_b\n"
+	"}\n"
+	"\n"
+	"dielectric_material\n"
+	"{\n"
+	"\tname mat_water\n"
+	"\tior 1.33\n"
+	"\ttau 1.0\n"
+	"\tscattering 1000000\n"
+	"}\n"
+	"\n"
+	"box_geometry\n"
+	"{\n"
+	"\tname geo_water\n"
+	"\twidth 2.2\n"
+	"\theight 0.3\n"
+	"\tdepth 2.2\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname water\n"
+	"\tgeometry geo_water\n"
+	"\tmaterial mat_water\n"
+	"\tposition 0 0.15 0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit\n"
+	"\texitance pnt_emit\n"
+	"\tscale 5.0\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"sphere_geometry\n"
+	"{\n"
+	"\tname geo_emit\n"
+	"\tradius 0.06\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit\n"
+	"\tgeometry geo_emit\n"
+	"\tmaterial mat_emit\n"
+	"\tposition 0 0.18 0\n"
+	"}\n";
+
+static const char* kRasterizerPTCeilingK =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 2048\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_pt_ceiling_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerBDPTCeilingK =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 1024\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_bdpt_ceiling_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const Tolerances kCeilingTolerancesK{ 0.08, 0.30, 1.00 };
+
+static void TestSubmergedCeilingMISCombination()
+{
+	RunTopologyTest( "air ceiling patch, floor + emitter both submerged (eta^2 MIS combination, debt 30 review round 2)",
+		std::string( kSceneSubmergedCeilingK ), kCeilingTolerancesK,
+		kRasterizerPTCeilingK, kRasterizerBDPTCeilingK );
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// Topology L: MULTI-LOBE `schlick_material` (DL-69).
+//
+// Every other topology in this file uses `lambertian_material`, whose
+// SPF emits exactly ONE lobe -- so the lobe-selection probability is
+// trivially 1 and the material's aggregate BSDF value IS its only
+// lobe's value.  That made this file structurally blind to DL-69:
+// BDPT's non-delta eye/light throughput paired the material's
+// AGGREGATE `IBSDF::value()` (all lobes summed) with the ONE
+// stochastically-selected lobe's own density, an N-times over-count
+// for N accepted lobes with overlapping support.
+//
+// `schlick_material` is the canonical such material: `SchlickSPF::
+// Scatter` pushes a cosine-weighted diffuse lobe AND a Schlick
+// half-vector specular lobe into the same container, both non-delta,
+// both over the same upper hemisphere, each carrying its OWN
+// conditional pdf.  tests/SchlickLobePairingTest.cpp measures the
+// resulting over-count in closed form: exactly 2.00x the BRDF
+// integral at 0/30/60 deg incidence.
+//
+// SCENE.  The receiver wall (z=0, +-1, normal +Z) fills the frame at
+// fov 30 (half-height 3.5*tan(15 deg) = 0.938).  The floor (y=-1,
+// z in [0,2], normal +Y) is outside the frustum, and the area emitter
+// -- a 12 x 12 quad in the z=4.2 plane, normal -Z, i.e. a large
+// softbox BEHIND the camera (which sits at z=3.5 looking toward -Z) --
+// is behind the near plane, so the image is pure receiver radiance
+// with no emitter pixels and no background.  Both non-emitting
+// surfaces are `schlick_material`, which puts a multi-lobe vertex on
+// BOTH subpaths:
+//   - eye side: camera -> wall (v1) -> floor or emitter (v2) -> ...
+//     The v1 scatter throughput multiplies every strategy of length
+//     >= 3, including the s=0 emitter-hit that competes with v1's NEE.
+//   - light side: emitter -> wall or floor (l1) -> the other (l2) ->
+//     ...  The l1 scatter throughput multiplies every s >= 3
+//     connection and splat.
+// The emitter's size and proximity (12 x 12 units at z=4.2, so it
+// subtends a large solid angle from every point on the wall) are
+// deliberate: they give the BSDF-sampling strategies real MIS weight
+// against NEE, so the over-count lands in the mean rather than being
+// MIS-suppressed.
+//
+// Depth budgets are matched explicitly (BDPT max_eye_depth /
+// max_light_depth 5 vs PT's `max_diffuse_bounce` / `max_glossy_bounce`
+// 5) because unlike the single-bounce Lambertian topologies above,
+// this scene has real interreflection and an unequal budget would be
+// a second free variable.
+//
+// THIS TOPOLOGY'S BAND WAS PROVISIONAL PENDING DL-103; THAT ROW IS NOW
+// CLOSED AND THE MEAN BAND IS TIGHTENED TO 2%
+// (docs/DL103_PT_ESCAPE_MIS_PARTNER.md, 2026-09-17).
+//
+// The marker existed because the reference this row gates against is
+// PT, and PT was not integrator-free here: un-guided PT's escape-side
+// MIS partner was the SELECTED lobe's own per-lobe density rather than
+// the material's aggregate, so `w_bsdf + w_nee != 1` at THIS material
+// -- a PT-side bias in a direction a furnace could bound but a full
+// scene could not.  There is still no closed form for this topology
+// (wall + floor + area emitter, depth 5 both sides), so the closure
+// evidence is an isolated A/B on `PathTracingIntegrator.cpp` alone
+// (revert that one file to this slice's own pre-fix commit, rebuild,
+// re-render this same topology, n = 4 each side):
+//
+//   pre-fix   PT 0.0601656 +/- 0.0000054   BDPT 0.0632933 +/- 0.0000024
+//             BDPT/PT 1.05198 +/- 0.00011   (+5.198%)
+//   post-fix  PT 0.0632676 +/- 0.0000110   BDPT 0.0632930 +/- 0.0000044
+//             BDPT/PT 1.00040 +/- 0.00012   (+0.040%)
+//
+// PT moved +5.16% and BDPT moved -0.0005%.  That asymmetry is the
+// point: the ONLY file that changed lives in PT, BDPT's `pdfFwd` has
+// been the same aggregate function as its `pdfRev` since DL-69, and the
+// two integrators -- which share no MIS code and weight completely
+// different strategy mixes -- now agree to 0.040%, four times their own
+// run-to-run sigma.  Two independent estimators landing on the same
+// number after only one of them was corrected is evidence about the
+// TRUTH, not merely about their agreement.
+//
+// What the tightened band does NOT claim: DL-127 (`SchlickSPF`'s
+// per-lobe `kray` is the Schlick-1994 sampling weight, not that lobe's
+// `f_I cos / p_I`) is still open, and PT and BDPT BOTH consume `kray`,
+// so a residual from that row can sit inside this agreement rather than
+// show up as a gap.  Read a pass here as "PT and BDPT agree to 2% on a
+// multi-lobe material", which is exactly what a strategy-balance test
+// is for.  Topology M below is the immune control that makes a future
+// L-only residual attributable.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneSchlickMultiLobeL =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.5\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_rd\n"
+	"\tcolor 0.4 0.4 0.4\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_rs\n"
+	"\tcolor 0.4 0.4 0.4\n"
+	"}\n"
+	"\n"
+	"scalar_painter\n"
+	"{\n"
+	"\tname pnt_rough\n"
+	"\tvalue 0.5\n"
+	"}\n"
+	"\n"
+	"scalar_painter\n"
+	"{\n"
+	"\tname pnt_iso\n"
+	"\tvalue 1.0\n"
+	"}\n"
+	"\n"
+	"schlick_material\n"
+	"{\n"
+	"\tname mat_schlick\n"
+	"\trd pnt_rd\n"
+	"\trs pnt_rs\n"
+	"\troughness pnt_rough\n"
+	"\tisotropy pnt_iso\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_wall\n"
+	"\tpta -1 -1 0\n"
+	"\tptb 1 -1 0\n"
+	"\tptc 1 1 0\n"
+	"\tptd -1 1 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_wall\n"
+	"\tgeometry quad_wall\n"
+	"\tmaterial mat_schlick\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_floor\n"
+	"\tpta -1 -1 0\n"
+	"\tptb -1 -1 2\n"
+	"\tptc 1 -1 2\n"
+	"\tptd 1 -1 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_floor\n"
+	"\tgeometry quad_floor\n"
+	"\tmaterial mat_schlick\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit_l\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit_l\n"
+	"\texitance pnt_emit_l\n"
+	"\tscale 0.5\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_emit_l\n"
+	"\tpta -6 -6 4.2\n"
+	"\tptb -6 6 4.2\n"
+	"\tptc 6 6 4.2\n"
+	"\tptd 6 -6 4.2\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit_l\n"
+	"\tgeometry quad_emit_l\n"
+	"\tmaterial mat_emit_l\n"
+	"}\n";
+
+// 256-spp, depth-matched twins of kRasterizerPT / kRasterizerBDPT for
+// topology L.  Identical in every respect except the rasterizer chunk
+// (and, inside it, the depth budget and sample count).
+static const char* kRasterizerPTSchlickL =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 256\n"
+	"\trr_min_depth 8\n"
+	"\tmax_diffuse_bounce 5\n"
+	"\tmax_glossy_bounce 5\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerBDPTSchlickL =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 256\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+
+//////////////////////////////////////////////////////////////////////
+// DL-302: `coated_material` with a COAT NORMAL over a BASE normal-map
+// modifier (wall + floor).  The coat normal decodes from the PRE-modifier
+// frame; a BDPT/VCM vertex rebuild that dropped that frame
+// (BDPTVertex::coatDecodeOnb / PathVertexEval::PopulateRIGFromVertex)
+// would decode it from the MODIFIED frame at connection time while the
+// walk used the original one, splitting PT from the bidirectional
+// integrators.  Dark sharp-coat wall so the coat lobe carries the image; band max(0.1%, 3 sigma): with the replay dropped BDPT reads -0.27% (5.8 sigma), with it -0.0007%.
+//////////////////////////////////////////////////////////////////////
+static std::string SceneCoatNormalOverNormalMap()
+{
+	std::string s( kSceneSchlickMultiLobeL );
+	const std::string head = "schlick_material\n{\n\tname mat_schlick\n";
+	const size_t a = s.find( head );
+	const size_t b = ( a == std::string::npos ) ? std::string::npos : s.find( "}\n", a );
+	if( a == std::string::npos || b == std::string::npos ) return std::string();
+	s.replace( a, b + 2 - a,
+		"uniformcolor_painter\n{\n\tname pnt_coatmap\n\tcolor 0.85 0.5 1.0\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_basemap\n\tcolor 0.5 0.85 1.0\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"normal_map_modifier\n{\n\tname nm_cn\n\tnormal_map pnt_basemap\n\tscale 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_cn_dark\n\tcolor 0.05 0.05 0.05\n}\n\n"
+		"lambertian_material\n{\n\tname mat_cn_base\n\treflectance pnt_cn_dark\n}\n\n"
+		"coated_material\n{\n\tname mat_schlick\n\tbase mat_cn_base\n\tcoat_weight 1\n\tcoat_ior 1.5\n"
+		"\tcoat_roughness 0.03\n\tcoat_normal pnt_coatmap\n}\n" );
+	const std::string objOld = "\tmaterial mat_schlick\n}";
+	size_t pos = 0;
+	int n = 0;
+	while( ( pos = s.find( objOld, pos ) ) != std::string::npos ) {
+		const std::string objNew = "\tmaterial mat_schlick\n\tmodifier nm_cn\n}";
+		s.replace( pos, objOld.size(), objNew );
+		pos += objNew.size();
+		++n;
+	}
+	return ( n == 2 ) ? s : std::string();
+}
+
+static bool MeasureCoatNormalSalted( const char* rasterizer, const std::string& sceneText, int n, double& mean, double& sd )
+{
+	const std::string path = WriteSceneToTempFile( ( std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + sceneText ).c_str(), "dl302_coatnormal" );
+	if( path.empty() ) return false;
+	std::vector<double> v;
+	for( int i = 0; i < n; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 0x302u, unsigned( i ) ) );
+		const ImageStats st = RenderAndComputeStats( path.c_str() );
+		if( !st.valid ) break;
+		v.push_back( ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0 );
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( int( v.size() ) != n ) return false;
+	double sum = 0;
+	for( double x : v ) sum += x;
+	mean = sum / n;
+	double ss = 0;
+	for( double x : v ) ss += ( x - mean ) * ( x - mean );
+	sd = std::sqrt( ss / ( n - 1 ) );
+	return std::isfinite( mean ) && mean > 0;
+}
+
+static void TestCoatNormalOverNormalMap()
+{
+	std::cout << "Testing DL-302 coat_normal over normal_map_modifier (PT vs BDPT, n = 4 salted)" << std::endl;
+	const std::string scene = SceneCoatNormalOverNormalMap();
+	Check( !scene.empty(), "DL-302 coat-normal scene assembled from topology L's fixture" );
+	if( scene.empty() ) return;
+	double pt = 0, ptSd = 0, bi = 0, biSd = 0;
+	const bool ok = MeasureCoatNormalSalted( kRasterizerPTSchlickL, scene, 4, pt, ptSd )
+		&& MeasureCoatNormalSalted( kRasterizerBDPTSchlickL, scene, 4, bi, biSd );
+	Check( ok, "DL-302 renders produced output" );
+	if( !ok ) return;
+	const double rel = bi / pt - 1.0;
+	const double se = std::sqrt( ( ptSd / pt ) * ( ptSd / pt ) + ( biSd / bi ) * ( biSd / bi ) ) / 2.0;
+	std::printf( "    PT %.7f (sd %.7f)  BDPT %.7f (sd %.7f)  BDPT/PT %+.4f%% (se %.4f%%)\n",
+		pt, ptSd, bi, biSd, 100.0 * rel, 100.0 * se );
+	Check( std::fabs( rel ) <= std::max( 0.001, 3.0 * se ), "DL-302 BDPT mean agrees with PT within max(0.1%, 3 sigma)" );
+}
+
+static void TestSchlickMultiLobe()
+{
+	RunTopologyTest( "multi-lobe schlick_material wall + floor, area emitter (DL-69)",
+		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
+
+	// Topology Y (DL-310): topology L's geometry, emitter, camera and
+	// rasterizers with a `schlick_material` INSIDE the coupled-diffuse
+	// clip -- Rd .9, rho .5, roughness .05, isotropy .3 -- so the
+	// diffuse lobe's weight min(Rd, 1 - A(i), 1 - A(o)) is direction-
+	// dependent at every vertex (A reaches ~.8 at grazing).  PT prices
+	// the continuation with `kray` and NEE with `value()` under the
+	// aggregate `Pdf` as MIS partner; BDPT prices connections with
+	// `value()` and continuations with `kray`, with `Pdf` as `pdfFwd` /
+	// `pdfRev`.  A coupling that reached one of those and not the others
+	// would split the two estimators.
+	{
+		std::string scene( kSceneSchlickMultiLobeL );
+		const std::string rdOld = "\tname pnt_rd\n\tcolor 0.4 0.4 0.4\n";
+		const std::string rsOld = "\tname pnt_rs\n\tcolor 0.4 0.4 0.4\n";
+		const std::string roOld = "\tname pnt_rough\n\tvalue 0.5\n";
+		const std::string isOld = "\tname pnt_iso\n\tvalue 1.0\n";
+		const size_t a = scene.find( rdOld ), b = scene.find( rsOld ), c = scene.find( roOld ), d = scene.find( isOld );
+		Check( a != std::string::npos && b != std::string::npos && c != std::string::npos && d != std::string::npos,
+			"topology Y: topology L's painter blocks found" );
+		if( a != std::string::npos && b != std::string::npos && c != std::string::npos && d != std::string::npos ) {
+			scene.replace( scene.find( rdOld ), rdOld.size(), "\tname pnt_rd\n\tcolor 0.9 0.9 0.9\n" );
+			scene.replace( scene.find( rsOld ), rsOld.size(), "\tname pnt_rs\n\tcolor 0.5 0.5 0.5\n" );
+			scene.replace( scene.find( roOld ), roOld.size(), "\tname pnt_rough\n\tvalue 0.05\n" );
+			scene.replace( scene.find( isOld ), isOld.size(), "\tname pnt_iso\n\tvalue 0.3\n" );
+			RunTopologyTest( "topology Y: schlick_material inside the DL-310 coupled-diffuse clip",
+				scene, kSchlickTopologyLTolerances, kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
+		}
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// Topology M: GGX wall + Lambertian floor -- topology L's CONTROL.
+//
+// WHY IT EXISTS.  Topology L reads BDPT +5.2% over PT (see that
+// topology's own comment for the current numbers).  Two known-open
+// rows can both push a PT-vs-BDPT comparison on a `schlick_material`
+// scene, and neither is DL-69:
+//
+//   * DL-127 -- `SchlickSPF`'s per-lobe `kray` is the Schlick-1994
+//     sampling weight, which is NOT that lobe's `f_I cos / p_I`.  PT
+//     and BDPT both consume `kray`, but they weight the resulting
+//     samples through DIFFERENT strategy mixes, so a per-lobe weight
+//     that is off by up to ~20% at grazing does not cancel between
+//     them.
+//   * DL-103 -- un-guided PT's escape-side MIS partner is the SELECTED
+//     lobe's own density rather than the material's aggregate, so
+//     `w_bsdf + w_nee != 1` at a multi-lobe SPF whose lobes carry
+//     DIFFERENT per-lobe densities.  That is PT-side only, so it moves
+//     the reference, not BDPT.
+//
+// This topology is the same geometry, the same emitter, the same
+// camera and the same two depth-matched rasterizers, with the two
+// receiver materials replaced by ones IMMUNE to both:
+//
+//   * `ggx_material` (wall).  `GGXSPF::Scatter` selects ONE of its three
+//     lobes INTERNALLY (a `uLobe` draw) and emits exactly that one
+//     `ScatteredRay`, stamped with the shared `mixPdf` -- so the emitted
+//     lobe's density already IS the aggregate (DL-103 cannot bite: there
+//     is no other lobe's density for it to disagree with).  Each lobe's
+//     `kray` is NOT `f_I cos / mixPdf` (P3-2, round-2 review: it is the
+//     INTERNAL-SELECTION estimator each lobe branch builds against its
+//     own internal selection probability -- diffuse
+//     `albedo * (1/pDiffuseSelect) * T`, specular
+//     `F * G2 / (G1(wi) * pSpecSelect)`, multiscatter
+//     `f_ms * cos / (msPdf * pMSSelect)`, `GGXSPF.cpp`).  DL-127 still
+//     cannot bite here, but for a narrower reason: `selectProb` (the
+//     OUTER `ScatteredRayContainer::RandomlySelect` probability DL-127
+//     is about) is trivially 1 because only one `ScatteredRay` reaches
+//     the container, not because each lobe's `kray` equals its BRDF/pdf
+//     ratio.
+//   * `lambertian_material` (floor).  One lobe, `selectProb == 1`,
+//     `kray == albedo == f cos / p`.  Immune to both trivially, and to
+//     DL-69 itself.
+//
+// So a residual here is NOT attributable to either row, and a residual
+// on L that this control does not reproduce IS attributable to the
+// Schlick-specific pair.  Same 8% band as every other topology in this
+// file.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneGGXLambertianControlM =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.5\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_rd\n"
+	"\tcolor 0.4 0.4 0.4\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_rs\n"
+	"\tcolor 0.4 0.4 0.4\n"
+	"}\n"
+	"\n"
+	"ggx_material\n"
+	"{\n"
+	"\tname mat_ggx\n"
+	"\trd pnt_rd\n"
+	"\trs pnt_rs\n"
+	"\talphax 0.5\n"
+	"\talphay 0.5\n"
+	"\tfresnel_mode schlick_f0\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_lambert\n"
+	"\treflectance pnt_rd\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_wall\n"
+	"\tpta -1 -1 0\n"
+	"\tptb 1 -1 0\n"
+	"\tptc 1 1 0\n"
+	"\tptd -1 1 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_wall\n"
+	"\tgeometry quad_wall\n"
+	"\tmaterial mat_ggx\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_floor\n"
+	"\tpta -1 -1 0\n"
+	"\tptb -1 -1 2\n"
+	"\tptc 1 -1 2\n"
+	"\tptd 1 -1 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_floor\n"
+	"\tgeometry quad_floor\n"
+	"\tmaterial mat_lambert\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit_l\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit_l\n"
+	"\texitance pnt_emit_l\n"
+	"\tscale 0.5\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_emit_l\n"
+	"\tpta -6 -6 4.2\n"
+	"\tptb -6 6 4.2\n"
+	"\tptc 6 6 4.2\n"
+	"\tptd 6 -6 4.2\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit_l\n"
+	"\tgeometry quad_emit_l\n"
+	"\tmaterial mat_emit_l\n"
+	"}\n";
+
+static void TestGGXLambertianControl()
+{
+	RunTopologyTest( "GGX wall + Lambertian floor, area emitter (DL-69 topology-L control)",
+		std::string( kSceneGGXLambertianControlM ), kStrictTolerances,
+		kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// Topology S: composite_material (DL-24, 2026-09-28).
+//
+// Topology M's geometry and emitter with a composite on BOTH receivers:
+// the wall is a clear coat (dielectric, ior 1.5) over a red Lambertian
+// across an absorbing 0.1-thick gap, the floor a translucent layer over a
+// gold Lambertian -- the two composite classes the shipped
+// scenes/Tests/Legacy/composite_material.RISEscene uses.
+//
+// A CONSISTENCY PIN, not a red-proof: this topology passes on the pre-DL-24
+// base too (~0.25 %), because there PT and BDPT shared the same wrong
+// model -- the truncated walk, the top-wins `GetBSDF()` (the bare
+// substrate under a dielectric coat) and the 50/50 `Pdf` entered both
+// integrators alike.  The red-proofs for those defects are
+// CompositeEnergyConservationTest's closed forms.  What this row pins is
+// that the composite's `value`, `Pdf` and emitted `kray` stay one function
+// under both integrators' strategy mixes.  Same 8 % band as topology M.
+// (Lettered S, not Q: a concurrent slice owns Q/R.)
+//////////////////////////////////////////////////////////////////////
+static std::string SceneCompositeS()
+{
+	std::string sc( kSceneGGXLambertianControlM );
+	const std::string mats =
+		"uniformcolor_painter\n{\n\tname pnt_red_s\n\tcolor 0.8 0.15 0.1\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_gold_s\n\tcolor 0.85 0.65 0.13\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tref_s\n\tcolor 0.3 0.3 0.3\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_ttau_s\n\tcolor 0.6 0.6 0.6\n}\n\n"
+		"lambertian_material\n{\n\tname mat_red_s\n\treflectance pnt_red_s\n}\n\n"
+		"lambertian_material\n{\n\tname mat_gold_s\n\treflectance pnt_gold_s\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass_s\n\ttau 1\n\tior 1.5\n}\n\n"
+		"translucent_material\n{\n\tname mat_trans_s\n\tref pnt_tref_s\n\ttau pnt_ttau_s\n\text 0.5\n\tN 10\n\tscattering 0.3\n}\n\n"
+		"composite_material\n{\n\tname mat_comp_wall_s\n\ttop mat_glass_s\n\tbottom mat_red_s\n\tthickness 0.1\n\textinction 0.2 0.5 2.0\n}\n\n"
+		"composite_material\n{\n\tname mat_comp_floor_s\n\ttop mat_trans_s\n\tbottom mat_gold_s\n\tthickness 0.05\n\textinction 0.0\n}\n\n";
+	// Insert the layer materials before the wall geometry and rebind the
+	// two receivers.
+	const std::string wallGeom = "clippedplane_geometry\n{\n\tname quad_wall\n";
+	const size_t at = sc.find( wallGeom );
+	if( at == std::string::npos ) return std::string();
+	sc.insert( at, mats );
+	const std::string wallObj  = "\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_ggx\n";
+	const std::string floorObj = "\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_lambert\n";
+	const size_t w = sc.find( wallObj );
+	const size_t f = sc.find( floorObj );
+	if( w == std::string::npos || f == std::string::npos ) return std::string();
+	sc.replace( sc.find( wallObj ), wallObj.size(), "\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_comp_wall_s\n" );
+	sc.replace( sc.find( floorObj ), floorObj.size(), "\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_comp_floor_s\n" );
+	return sc;
+}
+
+static void TestCompositeMaterial()
+{
+	const std::string scene = SceneCompositeS();
+	Check( !scene.empty(), "topology S scene assembled from topology M's fixture" );
+	if( scene.empty() ) return;
+	RunTopologyTest( "composite_material clear coat wall + translucent floor, area emitter (DL-24)",
+		scene, kStrictTolerances, kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology AD (DL-325): `datadriven_material` walls and floor on topology
+// L's geometry, camera and emitter, against the SAME scene with
+// `lambertian_material` at the table's albedo.
+//
+// WHAT WAS BROKEN.  `DataDrivenMaterial::GetSPF()` returned 0: the BSDF
+// (`DataDrivenBSDF`, a tabulated reflection function) was evaluable but
+// nothing sampled it, so PT stopped at the surface (next-event estimation
+// only, no indirect light), BDPT's eye walk ended there and rendered it
+// essentially black, and VCM priced indirect light into it only through its
+// connection strategies.  Measured on the DL-285 sibling audit's fixture
+// (this scene, a constant table): PT 0.0375, BDPT 1.81e-6, VCM 0.0387.
+//
+// THE REFERENCE.  A constant table of 0.4/pi on every view/light pair IS a
+// Lambertian surface of albedo 0.4 (value() is exactly 0.4/pi at every angle
+// -- gate 6 of PolishedBRDFConsistencyTest integrates it to 0.4), so the
+// Lambertian render of the same scene is a reference-free oracle for ALL
+// THREE integrators at once:
+//     dd_X / lambertian_X  == 1   for X in {PT, BDPT, VCM}
+// plus the cross-integrator agreement dd_BDPT / dd_PT, dd_VCM / dd_PT.
+// Every figure is the mean of N salted renders (the SAME salts for every
+// scene/integrator, so the gated ratio is not one fixed QMC draw).
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerVCMSchlickL =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"vcm_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 256\n"
+	"\tmerge_radius 0.0\n"
+	"\tvc_enabled true\n"
+	"\tvm_enabled true\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_vcm_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+//! Topology L with the schlick_material chunk replaced by `materialChunk`.
+static std::string TopologyLWithMaterial( const std::string& materialChunk )
+{
+	std::string s( kSceneSchlickMultiLobeL );
+	const std::string head = "schlick_material\n{\n\tname mat_schlick\n";
+	const size_t a = s.find( head );
+	const size_t b = ( a == std::string::npos ) ? std::string::npos : s.find( "}\n", a );
+	Check( a != std::string::npos && b != std::string::npos, "topology AD: schlick_material chunk found in topology L" );
+	if( a != std::string::npos && b != std::string::npos ) {
+		s.replace( a, b + 2 - a, materialChunk );
+	}
+	return s;
+}
+
+//! Mean (achromatic) and standard deviation over `n` salted renders.
+static bool SaltedImageMean( const std::string& rasterizer, const std::string& body, int n, unsigned saltBase,
+	double& mean, double& sd )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + body;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl325" );
+	if( path.empty() ) return false;
+	double sum = 0, sumSq = 0;
+	bool ok = true;
+	for( int i = 0; i < n && ok; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( saltBase, unsigned( i ) ) );
+		const ImageStats st = RenderAndComputeStats( path.c_str() );
+		ok = st.valid;
+		if( ok ) {
+			const double m = ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0;
+			sum += m;  sumSq += m * m;
+		}
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( !ok ) return false;
+	mean = sum / n;
+	sd = n > 1 ? std::sqrt( std::max( 0.0, ( sumSq - n * mean * mean ) / ( n - 1 ) ) ) : 0;
+	return std::isfinite( mean );
+}
+
+static void TestDataDrivenSPFDL325()
+{
+	std::cout << "Testing topology AD: datadriven_material (constant 0.4/pi table) vs lambertian_material 0.4 (DL-325)" << std::endl;
+	char bdf[256];
+	{
+		std::string dir = RISE::TestSupport::ScratchBaseDir();
+		if( dir.back() != '/' ) dir += '/';
+		std::snprintf( bdf, sizeof( bdf ), "%sdl325_const04_%d.bdf", dir.c_str(), static_cast<int>( ::getpid() ) );
+	}
+	Check( DataDrivenTestTables::WriteConstant( bdf, 0.4 ), "topology AD: synthetic constant .bdf written" );
+
+	const std::string sceneDD = TopologyLWithMaterial(
+		std::string( "datadriven_material\n{\n\tname mat_schlick\n\tfilename " ) + bdf + "\n}\n" );
+	const std::string sceneLamb = TopologyLWithMaterial(
+		"lambertian_material\n{\n\tname mat_schlick\n\treflectance pnt_rd\n}\n" );
+
+	struct Integrator { const char* name; const char* rasterizer; };
+	const Integrator integrators[3] = {
+		{ "PT",   kRasterizerPTSchlickL },
+		{ "BDPT", kRasterizerBDPTSchlickL },
+		{ "VCM",  kRasterizerVCMSchlickL } };
+	const int N = 4;
+	double ddMean[3] = { 0, 0, 0 }, ddSd[3] = { 0, 0, 0 }, lbMean[3] = { 0, 0, 0 }, lbSd[3] = { 0, 0, 0 };
+	for( int k = 0; k < 3; k++ ) {
+		const bool ok = SaltedImageMean( integrators[k].rasterizer, sceneDD,   N, 0x325Du, ddMean[k], ddSd[k] )
+		             && SaltedImageMean( integrators[k].rasterizer, sceneLamb, N, 0x325Du, lbMean[k], lbSd[k] );
+		Check( ok, ( std::string( "topology AD: renders produced output (" ) + integrators[k].name + ")" ).c_str() );
+		if( !ok ) { std::remove( bdf ); return; }
+		std::printf( "  %-4s datadriven %.6f (sd %.6f)   lambertian %.6f (sd %.6f)   dd/lamb %.5f\n",
+			integrators[k].name, ddMean[k], ddSd[k], lbMean[k], lbSd[k], ddMean[k] / lbMean[k] );
+	}
+	std::remove( bdf );
+
+	for( int k = 0; k < 3; k++ ) {
+		const double r = ddMean[k] / lbMean[k];
+		Check( std::fabs( r - 1.0 ) < 0.02,
+			( std::string( "topology AD (DL-325): datadriven " ) + integrators[k].name +
+			  " matches the same-albedo Lambertian render within 2%" ).c_str() );
+	}
+	Check( std::fabs( ddMean[1] / ddMean[0] - 1.0 ) < 0.03,
+		"topology AD (DL-325): datadriven BDPT / PT within 3%" );
+	Check( std::fabs( ddMean[2] / ddMean[0] - 1.0 ) < 0.04,
+		"topology AD (DL-325): datadriven VCM / PT within 4%" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology L, GUIDED (DL-67, docs/DL67_GUIDED_GENERATING_DENSITY.md).
+//
+// Topology L's geometry and `schlick_material` walls with OpenPGL path
+// guiding ON in the integrator under test.  Guiding is a
+// variance-reduction choice: it must not move the expectation, so the
+// reference is always an UN-GUIDED render of the other integrator.
+//
+//   BDPT guided (one-sample, eye + light subpaths)  vs  PT un-guided
+//   BDPT guided (RIS, eye + light subpaths)         vs  PT un-guided
+//   PT guided   (one-sample, learned alpha)         vs  BDPT un-guided
+//   PT guided   (RIS)                               vs  BDPT un-guided
+//
+// WHAT WAS BROKEN.  At a multi-lobe vertex the guided branches mixed
+// three densities: a guide-SUBSTITUTED direction was priced
+// `f_agg cos / (selectProb * p_c)` -- the aggregate BSDF over a density
+// that still carried the selected lobe's `1/selectProb`, although the
+// guide draw is not conditioned on any lobe; the kept direction divided
+// `kray_I p_I` by a mixture built from the lobe's OWN `p_I`; RIS
+// candidate 0 used `p_I` where candidate 1 used the aggregate; and the
+// specular lobe -- which BDPT never guides (`GuidingSupportsSurface
+// Sampling` admits diffuse lobes only) -- kept `kray/q` un-weighted
+// while the guide, pricing the AGGREGATE BSDF, covered it too.  All of
+// these are one error: the continuation must be priced on ONE partition
+// of the integral between its two techniques.  VCM shares this
+// generator but never guides (no VCM rasterizer calls
+// `BDPTIntegrator::SetGuidingField`, and the VCM chunks do not accept
+// the `pathguiding*` parameters), so it has no guided twin to test.
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerBDPTSchlickLGuidedOneSample =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 256\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"\tpathguiding TRUE\n"
+	"\tpathguiding_iterations 3\n"
+	"\tpathguiding_spp 16\n"
+	"\tpathguiding_alpha 0.7\n"
+	"\tpathguiding_max_depth 4\n"
+	"\tpathguiding_light_max_depth 4\n"
+	"\tpathguiding_sampling_type OneSampleMIS\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerBDPTSchlickLGuidedRIS =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 256\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"\tpathguiding TRUE\n"
+	"\tpathguiding_iterations 3\n"
+	"\tpathguiding_spp 16\n"
+	"\tpathguiding_alpha 0.7\n"
+	"\tpathguiding_max_depth 4\n"
+	"\tpathguiding_light_max_depth 4\n"
+	"\tpathguiding_sampling_type RIS\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerPTSchlickLGuided =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 256\n"
+	"\trr_min_depth 8\n"
+	"\tmax_diffuse_bounce 5\n"
+	"\tmax_glossy_bounce 5\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"\tpathguiding TRUE\n"
+	"\tpathguiding_iterations 3\n"
+	"\tpathguiding_spp 16\n"
+	"\tpathguiding_alpha 0.7\n"
+	"\tpathguiding_max_depth 4\n"
+	"\tpathguiding_sampling_type OneSampleMIS\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+// Band: topology L's own 2% mean band (`kSchlickTopologyLTolerances`),
+// not the shared 8%.  All three rows read within 0.1% of their
+// reference post-fix and the RIS row read +19.07% pre-fix.  NOTE what
+// the one-sample rows can and cannot see here: both rasterizers scale
+// the configured alpha by their adaptive variance heuristic
+// (`BDPTRasterizerBase` / `PixelBasedPelRasterizer`), which settles at
+// ~0.016 on this scene, so the one-sample rows exercise every guided
+// branch but only rarely; they read +0.08% pre-fix.  The one-sample
+// red-proof is the generator-level furnace in
+// tests/BDPTGuidedContinuationTest.cpp, which installs the field with a
+// fixed alpha.  RIS resamples every eligible vertex regardless of
+// alpha, which is why it discriminates at scene level.
+static const char* kRasterizerPTSchlickLGuidedRIS =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 256\n"
+	"\trr_min_depth 8\n"
+	"\tmax_diffuse_bounce 5\n"
+	"\tmax_glossy_bounce 5\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"\tpathguiding TRUE\n"
+	"\tpathguiding_iterations 3\n"
+	"\tpathguiding_spp 16\n"
+	"\tpathguiding_alpha 0.7\n"
+	"\tpathguiding_max_depth 4\n"
+	"\tpathguiding_sampling_type RIS\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static void TestSchlickMultiLobeGuided()
+{
+	RunTopologyTest( "multi-lobe schlick_material, BDPT GUIDED one-sample vs un-guided PT (DL-67)",
+		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickL, kRasterizerBDPTSchlickLGuidedOneSample );
+	RunTopologyTest( "multi-lobe schlick_material, BDPT GUIDED RIS vs un-guided PT (DL-67)",
+		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickL, kRasterizerBDPTSchlickLGuidedRIS );
+	RunTopologyTest( "multi-lobe schlick_material, PT GUIDED one-sample vs un-guided BDPT (DL-67)",
+		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickLGuided, kRasterizerBDPTSchlickL );
+	RunTopologyTest( "multi-lobe schlick_material, PT GUIDED RIS vs un-guided BDPT (DL-67)",
+		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickLGuidedRIS, kRasterizerBDPTSchlickL );
+
+	// DL-67 round 2 (external review P1-1): the same geometry with a
+	// BLACK diffuse (`rd 0`, `rs 0.9`).  `SchlickSPF::Scatter` still emits
+	// the zero-weight diffuse ray and rejects a sizeable fraction of its
+	// specular draws, so some realizations hold only the zero-weight
+	// diffuse ray.  Round 1 let BDPT's guide fire only when the SELECTED
+	// lobe was diffuse, which made "can the guide fire here" depend on the
+	// realization: BDPT guided RIS read +4.72% over un-guided (1024 and
+	// 4096 spp alike, the reviewer's measurement).  Round 2's technique
+	// choice is vertex-level.
+	std::string blackL( kSceneSchlickMultiLobeL );
+	{
+		const std::string rdOld = "\tname pnt_rd\n\tcolor 0.4 0.4 0.4\n";
+		const std::string rsOld = "\tname pnt_rs\n\tcolor 0.4 0.4 0.4\n";
+		const size_t iRd = blackL.find( rdOld );
+		Check( iRd != std::string::npos, "DL-67 black-diffuse topology L: rd painter found" );
+		if( iRd != std::string::npos ) {
+			blackL.replace( iRd, rdOld.size(), "\tname pnt_rd\n\tcolor 0 0 0\n" );
+		}
+		const size_t iRs = blackL.find( rsOld );
+		Check( iRs != std::string::npos, "DL-67 black-diffuse topology L: rs painter found" );
+		if( iRs != std::string::npos ) {
+			blackL.replace( iRs, rsOld.size(), "\tname pnt_rs\n\tcolor 0.9 0.9 0.9\n" );
+		}
+	}
+	RunTopologyTest( "black-diffuse schlick_material, BDPT GUIDED RIS vs un-guided PT (DL-67 round 2)",
+		blackL, kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickL, kRasterizerBDPTSchlickLGuidedRIS );
+	RunTopologyTest( "black-diffuse schlick_material, PT GUIDED RIS vs un-guided BDPT (DL-67 round 2)",
+		blackL, kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickLGuidedRIS, kRasterizerBDPTSchlickL );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology AB: `polished_material` wall + floor (DL-285, 2026-09-28).
+//
+// Topology L's geometry, emitter, camera and rasterizers with the
+// multi-lobe `schlick_material` swapped for `polished_material`
+// (reflectance 0.4, tau 0.9, ior 1.5, scattering 20 -- the DL-67 slice's
+// own polished reproduction of DL-285).  Until DL-285 the material's
+// `GetBSDF()` was a bare `LambertianBRDF(Rd)` while `PolishedSPF` sampled
+// a Fresnel coat plus a `(1-F)` substrate, so `IBSDF::value` (what NEE,
+// connections and the DL-67 guide draw price) and the SPF's `kray` (what
+// the kept lobe prices) were two functions -- DL-67's premise 2.  Guiding
+// then MOVED the expectation, and so did VCM (its merges and connections
+// price `value`).  Measured with the pre-fix library (isolated A/B,
+// 256 spp, the rasterizer strings below):
+//
+//   PT guided RIS vs un-guided BDPT   -1.63 %      post  -0.04 %
+//   BDPT guided RIS vs un-guided PT   -1.12 %      post  -0.13 %
+//   un-guided BDPT vs un-guided PT    -0.01 %      post  -0.04 %
+//
+// (n = 6 salted 1024-spp renders per cell: pre PT RIS/PT -1.551 % +-
+// 0.051 % sem, BDPT RIS/BDPT -1.666 % +- 0.192 %; post -0.002 % +- 0.015 %
+// and +0.012 % +- 0.008 %.)  Un-guided PT and BDPT agreed pre-fix too --
+// both price their own continuations with `kray` and their NEE with the
+// same wrong `value`, so the two errors coincide; the guided rows are
+// what see premise 2.  Band: 0.5 % on the mean (the pre-fix rows fail it
+// by >= 2x, the post-fix residuals sit >= 4x inside it); p99/max as L.
+//////////////////////////////////////////////////////////////////////
+static const Tolerances kPolishedTopologyABTolerances{ 0.005, 0.25, 1.00 };
+
+static std::string PolishedTopologyABScene()
+{
+	std::string s( kSceneSchlickMultiLobeL );
+	const std::string head = "schlick_material\n{\n\tname mat_schlick\n";
+	const size_t a = s.find( head );
+	const size_t b = ( a == std::string::npos ) ? std::string::npos : s.find( "}\n", a );
+	Check( a != std::string::npos && b != std::string::npos, "topology AB: schlick_material chunk found in topology L" );
+	if( a != std::string::npos && b != std::string::npos ) {
+		s.replace( a, b + 2 - a,
+			"polished_material\n{\n\tname mat_schlick\n\treflectance pnt_rd\n"
+			"\ttau 0.9\n\tior 1.5\n\tscattering 20\n}\n" );
+	}
+	return s;
+}
+
+static void TestPolishedGuidedAB()
+{
+	const std::string scene = PolishedTopologyABScene();
+	RunTopologyTest( "polished_material wall + floor (AB), un-guided BDPT vs un-guided PT (DL-285)",
+		scene, kPolishedTopologyABTolerances, kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
+	RunTopologyTest( "polished_material (AB), BDPT GUIDED RIS vs un-guided PT (DL-285)",
+		scene, kPolishedTopologyABTolerances, kRasterizerPTSchlickL, kRasterizerBDPTSchlickLGuidedRIS );
+	RunTopologyTest( "polished_material (AB), PT GUIDED RIS vs un-guided BDPT (DL-285)",
+		scene, kPolishedTopologyABTolerances, kRasterizerPTSchlickLGuidedRIS, kRasterizerBDPTSchlickL );
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-125 achromatic parity controls: spectral BDPT hero versus bundle.
+// Schlick supplies EvaluateKrayNM after DL-125; aggregate-density GGX
+// and Lambertian still use an appropriate aggregate fallback. Equal
+// grey lobe spectra make these controls insensitive to the per-lobe
+// ratio repair itself. Both strings use 160 wavelengths to match the
+// hero grid to the continuous bundle; hero-only gets 4x the spp to
+// reduce its larger chromatic noise. The achromatic statistic, not any
+// one channel, is gated. Calibration is recorded in DL69 §6.3.
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerBDPTSpectralNoHWSS =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_spectral_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 1024\n"
+	"\thwss FALSE\n"
+	"\tnum_wavelengths 160\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_spectral_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerBDPTSpectralHWSS =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_spectral_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 256\n"
+	"\thwss TRUE\n"
+	"\tnum_wavelengths 160\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_spectral_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static unsigned int spectralSampleScale = 1;
+
+static std::string ScaleSpectralSamples( std::string scene )
+{
+	if( spectralSampleScale == 2 ) {
+		for( const auto& counts : { std::make_pair("\tsamples 1024\n", "\tsamples 2048\n"),
+			std::make_pair("\tsamples 256\n", "\tsamples 512\n") } ) {
+			const size_t pos = scene.find( counts.first );
+			if( pos != std::string::npos ) scene.replace( pos, std::strlen(counts.first), counts.second );
+		}
+	}
+	return scene;
+}
+
+// Returns the achromatic hwss-TRUE/hwss-FALSE mean ratio, or -1 on a
+// render failure (already `Check`-flagged).  Shared by topology L's own
+// probe and topology M's control (round-2 review P3-4) so the two use
+// IDENTICAL rasterizer strings and statistics.
+static double RunSpectralHWSSLadder( const char* topologyLabel, const std::string& sceneBody,
+	ImageStats* outNoHWSS = 0, ImageStats* outHWSS = 0 )
+{
+	const std::string name = std::string( "spectral BDPT hwss FALSE vs TRUE on " ) + topologyLabel;
+	std::cout << "Testing " << name << std::endl;
+
+	const std::string sceneNo = std::string("RISE ASCII SCENE 7\n")
+		+ ScaleSpectralSamples(kRasterizerBDPTSpectralNoHWSS) + sceneBody;
+	const std::string sceneHW = std::string("RISE ASCII SCENE 7\n")
+		+ ScaleSpectralSamples(kRasterizerBDPTSpectralHWSS) + sceneBody;
+
+	const std::string pathNo = WriteSceneToTempFile( sceneNo.c_str(), "spec_nohwss" );
+	const std::string pathHW = WriteSceneToTempFile( sceneHW.c_str(), "spec_hwss"   );
+	if( pathNo.empty() || pathHW.empty() ) {
+		Check( false, ( std::string("temp file write: ") + name ).c_str() );
+		return -1;
+	}
+
+	const ImageStats noHWSS = RenderAndComputeStats( pathNo.c_str() );
+	const ImageStats hwss   = RenderAndComputeStats( pathHW.c_str() );
+
+	PrintStats( "hwss FALSE", noHWSS );
+	PrintStats( "hwss TRUE ", hwss );
+
+	std::remove( pathNo.c_str() );
+	std::remove( pathHW.c_str() );
+
+	Check( noHWSS.valid, ( std::string("spectral hwss FALSE render produced output: ") + topologyLabel ).c_str() );
+	Check( hwss.valid,   ( std::string("spectral hwss TRUE render produced output: ") + topologyLabel ).c_str() );
+	if( outNoHWSS ) *outNoHWSS = noHWSS;
+	if( outHWSS )   *outHWSS   = hwss;
+	if( !noHWSS.valid || !hwss.valid ) return -1;
+
+	for( int c = 0; c < 3; c++ ) {
+		if( noHWSS.mean[c] > 1e-6 ) {
+			const double r = hwss.mean[c] / noHWSS.mean[c];
+			std::cout << "    channel " << c << " hwss/no-hwss mean ratio = "
+			          << r << "  (" << ( ( r - 1.0 ) * 100.0 ) << "%)  [chromatic"
+			          << " MC noise dominates a single channel -- see the block comment]"
+			          << std::endl;
+		}
+	}
+
+	const double achroNo = ( noHWSS.mean[0] + noHWSS.mean[1] + noHWSS.mean[2] ) / 3.0;
+	const double achroHW = ( hwss.mean[0]   + hwss.mean[1]   + hwss.mean[2]   ) / 3.0;
+	Check( achroNo > 1e-6, ( std::string("hero-only achromatic mean is non-zero: ") + topologyLabel ).c_str() );
+	if( achroNo <= 1e-6 ) return -1;
+
+	const double achroRatio = achroHW / achroNo;
+	std::cout << "    ACHROMATIC mean: hwss FALSE = " << achroNo
+	          << ", hwss TRUE = " << achroHW
+	          << ", ratio = " << achroRatio
+	          << "  (" << ( ( achroRatio - 1.0 ) * 100.0 ) << "%)" << std::endl;
+	return achroRatio;
+}
+
+static void TestSpectralHWSSCompanionLadder()
+{
+	// DL-125 closed: Schlick now supplies the selected lobe's kray at
+	// each companion wavelength. This achromatic BDPT ladder is a parity
+	// control; equal grey lobe spectra make the old and new recomputation
+	// ratios identical, so it is not a red-proof of the repair.
+	// Both rasterizers use num_wavelengths 160. Hero-only gets 4x the
+	// samples because its single wavelength has greater chromatic noise.
+	const double achroRatio = RunSpectralHWSSLadder( "topology L (DL-125 probe)", kSceneSchlickMultiLobeL );
+	if( achroRatio < 0 ) return;
+
+	// Calibration and tolerance derivation: DL69_BDPT_LOBE_THROUGHPUT.md §6.3.
+	Check( std::fabs( achroRatio - 1.0 ) < 0.01,
+		"DL-125 parity control: spectral hwss TRUE achromatic mean stays within 1% of hwss FALSE on topology L" );
+}
+
+// GGX and Lambertian use aggregate sampling densities, so the aggregate
+// fallback is appropriate here. This material control is immune to DL-125.
+static void TestSpectralHWSSCompanionLadderControl()
+{
+	const double achroRatio = RunSpectralHWSSLadder(
+		"topology M (DL-125 control, exact companion fallback)", kSceneGGXLambertianControlM );
+	if( achroRatio < 0 ) return;
+
+	// Same achromatic parity band as topology L; neither is a red-proof.
+	Check( std::fabs( achroRatio - 1.0 ) < 0.01,
+		"DL-125 control: spectral hwss TRUE achromatic mean stays within 1% of hwss FALSE on topology M" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// TOPOLOGY P -- four-estimator calibration of the remaining DL-219 defect.
+// DL-125 added per-lobe companion ratios to RecomputeSubpathThroughputNM,
+// the render-visible BDPT/VCM/MLT path. The generator hwssBetaNM ladders
+// feed RR/guiding, not the image. Equal grey lobe spectra in topology L
+// cannot distinguish aggregate and per-lobe ratios; P uses divergent
+// diffuse/specular colours. DL-219's remaining bundle discrepancy is
+// distinct from that fix. All four estimators here use matched spp and
+// num_wavelengths 160 (hero-only otherwise samples a coarse discrete grid).
+// See docs/DL69_BDPT_LOBE_THROUGHPUT.md §6.3 for repeat statistics at two
+// sample counts and the historical isolated A/B evidence.
+//////////////////////////////////////////////////////////////////////
+static void ReplaceOnceOrFail( std::string& s, const std::string& from, const std::string& to,
+	const char* what )
+{
+	const size_t at = s.find( from );
+	const std::string label = std::string( "topology P: " ) + what + " appears exactly once in topology L";
+	Check( at != std::string::npos && s.find( from, at + 1 ) == std::string::npos, label.c_str() );
+	if( at != std::string::npos ) {
+		s.replace( at, from.size(), to );
+	}
+}
+
+//! The four rasterizer chunks topology P renders through, all at
+//! `num_wavelengths 160` -- see the block comment for why that is
+//! load-bearing rather than cosmetic.
+static std::string TopologyPRasterizer( bool bdpt, bool hwss, unsigned int samples )
+{
+	std::string s =
+		"standard_shader\n"
+		"{\n"
+		"\tname global\n"
+		"\tshaderop DefaultPathTracing\n"
+		"}\n"
+		"\n";
+	char buf[512];
+	if( bdpt ) {
+		std::snprintf( buf, sizeof(buf),
+			"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 5\n\tmax_light_depth 5\n"
+			"\tsamples %u\n\thwss %s\n\tnum_wavelengths 160\n"
+			"\tpixel_filter box\n\toidn_denoise FALSE\n}\n",
+			samples, hwss ? "TRUE" : "FALSE" );
+	} else {
+		std::snprintf( buf, sizeof(buf),
+			"pathtracing_spectral_rasterizer\n{\n\tsamples %u\n\thwss %s\n"
+			"\tnum_wavelengths 160\n\trr_min_depth 8\n\tmax_diffuse_bounce 5\n"
+			"\tmax_glossy_bounce 5\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n",
+			samples, hwss ? "TRUE" : "FALSE" );
+	}
+	s += buf;
+	s += "\nfile_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_topP_unused\n"
+	     "\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+	return s;
+}
+
+// Fixed before rendering: every replicate contributes its full energy.
+// A single chromatic firefly can defeat a one-render ratio gate even at
+// 2048 spp. Four repeats passed the retained calibration subsets; two
+// did not. This is finite-sample stabilization, not an outlier filter.
+static const unsigned int kTopologyPRepeats = 4;
+struct SpectralRepeatComparison
+{
+	double energy[4][3];
+	double br[4], achro[4], brDelta[4], achroDelta[4];
+};
+
+static SpectralRepeatComparison SummarizeSpectralRepeats(
+	const ImageStats (&trials)[kTopologyPRepeats][4], int omit = -1 )
+{
+	SpectralRepeatComparison out{};
+	const double n = kTopologyPRepeats - ( omit >= 0 ? 1 : 0 );
+	for( unsigned int r = 0; r < kTopologyPRepeats; ++r ) {
+		if( int(r) == omit ) continue;
+		for( int i = 0; i < 4; ++i ) {
+			for( int c = 0; c < 3; ++c ) out.energy[i][c] += trials[r][i].mean[c] / n;
+		}
+	}
+	double brRef = 0, achroRef = 0;
+	for( int i = 0; i < 4; ++i ) {
+		out.br[i] = out.energy[i][2] / out.energy[i][0];
+		out.achro[i] = ( out.energy[i][0] + out.energy[i][1] + out.energy[i][2] ) / 3.0;
+		if( i < 3 ) { brRef += out.br[i] / 3.0; achroRef += out.achro[i] / 3.0; }
+	}
+	for( int i = 0; i < 4; ++i ) {
+		out.brDelta[i] = out.br[i] / brRef - 1.0;
+		out.achroDelta[i] = out.achro[i] / achroRef - 1.0;
+	}
+	return out;
+}
+
+struct SpectralRepeatUncertainty
+{
+	double brSD[4], achroSD[4], brDeltaSE[4], achroDeltaSE[4];
+};
+
+static SpectralRepeatUncertainty SpectralRepeatErrors(
+	const ImageStats (&trials)[kTopologyPRepeats][4] )
+{
+	SpectralRepeatUncertainty out{};
+	SpectralRepeatComparison leaveOne[kTopologyPRepeats];
+	for( unsigned int r = 0; r < kTopologyPRepeats; ++r )
+		leaveOne[r] = SummarizeSpectralRepeats( trials, int(r) );
+	for( int i = 0; i < 4; ++i ) {
+		double meanBR = 0, meanAchro = 0, meanLeaveBR = 0, meanLeaveAchro = 0;
+		for( unsigned int r = 0; r < kTopologyPRepeats; ++r ) {
+			meanBR += trials[r][i].mean[2] / trials[r][i].mean[0] / kTopologyPRepeats;
+			meanAchro += ( trials[r][i].mean[0] + trials[r][i].mean[1] + trials[r][i].mean[2] ) / ( 3.0 * kTopologyPRepeats );
+			meanLeaveBR += leaveOne[r].brDelta[i] / kTopologyPRepeats;
+			meanLeaveAchro += leaveOne[r].achroDelta[i] / kTopologyPRepeats;
+		}
+		for( unsigned int r = 0; r < kTopologyPRepeats; ++r ) {
+			const double dBR = trials[r][i].mean[2] / trials[r][i].mean[0] - meanBR;
+			const double dAchro = ( trials[r][i].mean[0] + trials[r][i].mean[1] + trials[r][i].mean[2] ) / 3.0 - meanAchro;
+			out.brSD[i] += dBR * dBR / ( kTopologyPRepeats - 1 );
+			out.achroSD[i] += dAchro * dAchro / ( kTopologyPRepeats - 1 );
+			const double dLeaveBR = leaveOne[r].brDelta[i] - meanLeaveBR;
+			const double dLeaveAchro = leaveOne[r].achroDelta[i] - meanLeaveAchro;
+			out.brDeltaSE[i] += dLeaveBR * dLeaveBR * ( kTopologyPRepeats - 1.0 ) / kTopologyPRepeats;
+			out.achroDeltaSE[i] += dLeaveAchro * dLeaveAchro * ( kTopologyPRepeats - 1.0 ) / kTopologyPRepeats;
+		}
+		out.brSD[i] = std::sqrt( out.brSD[i] );
+		out.achroSD[i] = std::sqrt( out.achroSD[i] );
+		out.brDeltaSE[i] = std::sqrt( out.brDeltaSE[i] );
+		out.achroDeltaSE[i] = std::sqrt( out.achroDeltaSE[i] );
+	}
+	return out;
+}
+
+static void TestSpectralRepeatAggregation()
+{
+	ImageStats trials[kTopologyPRepeats][4]{};
+	for( unsigned int r = 0; r < kTopologyPRepeats; ++r ) {
+		for( int i = 0; i < 4; ++i ) {
+			trials[r][i].mean[0] = trials[r][i].mean[1] = 1.0;
+			trials[r][i].mean[2] = 2.0;
+		}
+	}
+	trials[3][0].mean[0] = 5.0;
+	const SpectralRepeatComparison c = SummarizeSpectralRepeats( trials );
+	const SpectralRepeatUncertainty e = SpectralRepeatErrors( trials );
+	// Independent arithmetic: sum R=8, sum B=8, so B/R=1 (averaging
+	// the four ratios instead would give 1.6; dropping the spike gives 2).
+	// Reference B/R=(1+2+2)/3=5/3, hence delta=-2/5.
+	Check( std::fabs( c.energy[0][0] - 2.0 ) < 1e-12,
+		"repeat aggregation: high-energy replicate remains in the arithmetic energy mean" );
+	Check( std::fabs( c.br[0] - 1.0 ) < 1e-12,
+		"repeat aggregation: ratio of summed energies, not a mean of ratios" );
+	Check( std::fabs( c.brDelta[0] + 0.4 ) < 1e-12,
+		"repeat aggregation: reference includes the retained high-energy contribution" );
+	// Raw ratios {2,2,2,0.4} have sample SD 0.8. Delete-one deltas
+	// {-8/17,-8/17,-8/17,0} have mean -6/17; (3/4)*sum squared
+	// deviations = 36/289, giving jackknife SE 6/17 (fraction units).
+	Check( std::fabs( e.brSD[0] - 0.8 ) < 1e-12,
+		"repeat uncertainty: sample SD is reported rather than standard error" );
+	Check( std::fabs( e.brDeltaSE[0] - 6.0 / 17.0 ) < 1e-12,
+		"repeat uncertainty: delete-one jackknife includes reference covariance" );
+}
+
+static void TestSpectralHWSSChromaticLobeSpectra()
+{
+	TestSpectralRepeatAggregation();
+	std::string body( kSceneSchlickMultiLobeL );
+	ReplaceOnceOrFail( body,
+		"\tname pnt_rd\n\tcolor 0.4 0.4 0.4\n",
+		"\tname pnt_rd\n\tcolor 0.05 0.10 0.70\n", "the rd colour" );
+	ReplaceOnceOrFail( body,
+		"\tname pnt_rs\n\tcolor 0.4 0.4 0.4\n",
+		"\tname pnt_rs\n\tcolor 0.70 0.10 0.05\n", "the rs colour" );
+
+	std::cout << "Testing topology P (DL-125 chromatic lobe spectra, "
+	             "four estimators at num_wavelengths 160)" << std::endl;
+
+	struct Row { const char* label; bool bdpt; bool hwss; unsigned int samples; };
+	const Row rows[4] = {
+		{ "PT   spectral hwss FALSE", false, false, 1024 },
+		{ "PT   spectral hwss TRUE ", false, true,  1024 },
+		{ "BDPT spectral hwss FALSE", true,  false, 1024 },
+		{ "BDPT spectral hwss TRUE ", true,  true,  1024 },
+	};
+	ImageStats trials[kTopologyPRepeats][4]{};
+	for( unsigned int r = 0; r < kTopologyPRepeats; ++r ) {
+		std::cout << "    Fixed repeat " << (r + 1) << "/" << kTopologyPRepeats << std::endl;
+		for( int i = 0; i < 4; ++i ) {
+			const std::string scene = std::string("RISE ASCII SCENE 7\n")
+				+ TopologyPRasterizer( rows[i].bdpt, rows[i].hwss, rows[i].samples * spectralSampleScale ) + body;
+			const std::string path = WriteSceneToTempFile( scene.c_str(), "topP" );
+			if( path.empty() ) {
+				Check( false, "temp file write: topology P" );
+				return;
+			}
+			trials[r][i] = RenderAndComputeStats( path.c_str() );
+			std::remove( path.c_str() );
+			PrintStats( rows[i].label, trials[r][i] );
+			Check( trials[r][i].valid, "topology P: every fixed-repeat render produced output" );
+			if( !trials[r][i].valid ) return;
+			Check( trials[r][i].mean[0] > 1e-6, "topology P: every fixed-repeat red channel is non-zero" );
+			if( trials[r][i].mean[0] <= 1e-6 ) return;
+		}
+	}
+	const SpectralRepeatComparison comparison = SummarizeSpectralRepeats( trials );
+	const SpectralRepeatUncertainty errors = SpectralRepeatErrors( trials );
+	for( int i = 0; i < 4; ++i ) {
+		std::cout << "    " << rows[i].label << "  n = " << kTopologyPRepeats
+		          << "  spp/render = " << rows[i].samples * spectralSampleScale
+		          << "  B/R = " << comparison.br[i]
+		          << "  (" << comparison.brDelta[i] * 100.0 << "% vs reference)"
+		          << "   achromatic = " << comparison.achro[i]
+		          << "  (" << comparison.achroDelta[i] * 100.0 << "%)" << std::endl;
+		std::cout << "      per-render SD: B/R " << errors.brSD[i] << " (ratio units), achromatic "
+		          << errors.achroSD[i] << " (linear radiance); delta jackknife SE: B/R "
+		          << errors.brDeltaSE[i] * 100.0 << " pp, achromatic "
+		          << errors.achroDeltaSE[i] * 100.0 << " pp" << std::endl;
+	}
+
+	// GATE: parity of all four estimators (DL-125 / DL-219).
+	// DL-219 fixed BDPT HWSS companion density evaluation so that BDPT `hwss TRUE`
+	// achieves parity with the reference estimators inside the 1.5% band.
+	for( int i = 0; i < 4; i++ ) {
+		Check( std::fabs( comparison.brDelta[i] ) < 0.015,
+			( std::string("DL-219 (topology P): ") + rows[i].label +
+			  " agrees with the reference estimators on B/R" ).c_str() );
+		Check( std::fabs( comparison.achroDelta[i] ) < 0.015,
+			( std::string("DL-219 (topology P): ") + rows[i].label +
+			  " agrees with the reference estimators on the achromatic mean" ).c_str() );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-125 PT-SIDE COMPANION-LADDER PARITY (was a KNOWN-DEFECT probe;
+// DL-103 review round 2, P2-1, closed 2026-09-18).
+//
+// WHAT IT MEASURES, AND WHY IT IS PT-VS-PT.  The two ladders above
+// compare `bdpt_spectral_rasterizer` at `hwss FALSE` vs `hwss TRUE`.
+// This one compares `pathtracing_pel_rasterizer` against
+// `pathtracing_spectral_rasterizer` at `hwss TRUE` on the SAME scene:
+// one integrator, one material, one geometry, the ONLY difference being
+// whether the walk carries a spectral bundle.  On a grey scene the two
+// estimate the same achromatic quantity, so a ratio far from 1 is a
+// defect in the HWSS body itself and cannot be an integrator-balance
+// question.
+//
+// DL-125 repaired Schlick's missing EvaluateKrayNM override: the old
+// aggregate-BSDF/per-lobe-density fallback inflated companion throughput.
+// This probe now gates parity after that repair. The historical isolated
+// A/B and the earlier DL-103 interaction are recorded in the DL-69 doc.
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerPTSpectralNoHWSS =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_spectral_rasterizer\n"
+	"{\n"
+	"\tsamples 1024\n"
+	"\thwss FALSE\n"
+	"\tnum_wavelengths 160\n"
+	"\trr_min_depth 8\n"
+	"\tmax_diffuse_bounce 5\n"
+	"\tmax_glossy_bounce 5\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_ptspec_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerPTSpectralHWSS =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_spectral_rasterizer\n"
+	"{\n"
+	"\tsamples 256\n"
+	"\thwss TRUE\n"
+	"\tnum_wavelengths 160\n"
+	"\trr_min_depth 8\n"
+	"\tmax_diffuse_bounce 5\n"
+	"\tmax_glossy_bounce 5\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_ptspec_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+//! Returns the achromatic (PT spectral hwss TRUE) / (PT pel) mean ratio,
+//! or -1 on a render failure (already `Check`-flagged).
+static double RunPTSpectralHWSSProbe( const char* topologyLabel, const std::string& sceneBody )
+{
+	std::cout << "Testing PT pel vs PT spectral hwss TRUE on " << topologyLabel << std::endl;
+
+	const std::string scenePel = std::string("RISE ASCII SCENE 7\n")
+		+ kRasterizerPTSchlickL + sceneBody;
+	const std::string sceneNo  = std::string("RISE ASCII SCENE 7\n")
+		+ kRasterizerPTSpectralNoHWSS + sceneBody;
+	const std::string sceneHW  = std::string("RISE ASCII SCENE 7\n")
+		+ kRasterizerPTSpectralHWSS + sceneBody;
+
+	const std::string pathPel = WriteSceneToTempFile( scenePel.c_str(), "ptpel_probe" );
+	const std::string pathNo  = WriteSceneToTempFile( sceneNo.c_str(),  "ptspecno_probe" );
+	const std::string pathHW  = WriteSceneToTempFile( sceneHW.c_str(),  "ptspec_probe" );
+	if( pathPel.empty() || pathNo.empty() || pathHW.empty() ) {
+		Check( false, "temp file write: PT spectral HWSS probe" );
+		return -1;
+	}
+
+	const ImageStats pel   = RenderAndComputeStats( pathPel.c_str() );
+	const ImageStats noHW  = RenderAndComputeStats( pathNo.c_str()  );
+	const ImageStats hwss  = RenderAndComputeStats( pathHW.c_str()  );
+
+	PrintStats( "PT pel        ", pel );
+	PrintStats( "PT spec hero  ", noHW );
+	PrintStats( "PT spec hwss  ", hwss );
+
+	std::remove( pathPel.c_str() );
+	std::remove( pathNo.c_str()  );
+	std::remove( pathHW.c_str()  );
+
+	Check( pel.valid,  ( std::string("PT pel render produced output: ") + topologyLabel ).c_str() );
+	Check( noHW.valid, ( std::string("PT spectral hwss FALSE render produced output: ") + topologyLabel ).c_str() );
+	Check( hwss.valid, ( std::string("PT spectral hwss TRUE render produced output: ") + topologyLabel ).c_str() );
+	if( !pel.valid || !noHW.valid || !hwss.valid ) return -1;
+
+	const double achroPel = ( pel.mean[0]  + pel.mean[1]  + pel.mean[2]  ) / 3.0;
+	const double achroNo  = ( noHW.mean[0] + noHW.mean[1] + noHW.mean[2] ) / 3.0;
+	const double achroHW  = ( hwss.mean[0] + hwss.mean[1] + hwss.mean[2] ) / 3.0;
+	Check( achroPel > 1e-6, ( std::string("PT pel achromatic mean is non-zero: ") + topologyLabel ).c_str() );
+	if( achroPel <= 1e-6 ) return -1;
+
+	// The hero-only SPECTRAL render is the discriminator between "the
+	// spectral pipeline" and "the HWSS bundle": it takes the same
+	// per-lobe hero path the pel render does, so it must track pel on a
+	// grey scene, and it moves with pel (not with hwss TRUE) across
+	// DL-103's own A/B.
+	std::cout << "    ACHROMATIC mean: PT spectral hwss FALSE = " << achroNo
+	          << ", / PT pel = " << ( achroNo / achroPel )
+	          << "  (" << ( ( achroNo / achroPel - 1.0 ) * 100.0 ) << "%)" << std::endl;
+	Check( std::fabs( achroNo / achroPel - 1.0 ) < 0.05,
+		( std::string("PT spectral hwss FALSE tracks PT pel within 5%: ") + topologyLabel ).c_str() );
+
+	const double ratio = achroHW / achroPel;
+	std::cout << "    ACHROMATIC mean: PT pel = " << achroPel
+	          << ", PT spectral hwss TRUE = " << achroHW
+	          << ", ratio = " << ratio
+	          << "  (" << ( ( ratio - 1.0 ) * 100.0 ) << "%)" << std::endl;
+	return ratio;
+}
+
+//! (Renamed 2026-09-18 from `TestPTSpectralHWSSKnownDefect`, which is
+//! what older docs and ledger rows call it -- DL-125 closed and the
+//! band around 1.63 became a parity gate around 1.0.)
+static void TestPTSpectralHWSSCompanionParity()
+{
+	const double ratio = RunPTSpectralHWSSProbe(
+		"topology L (DL-125 PT companion-ladder parity)", kSceneSchlickMultiLobeL );
+	if( ratio < 0 ) return;
+
+	// DL-125 CLOSED 2026-09-18.  This used to be a KNOWN-DEFECT pin
+	// around a measured 1.63-1.64; it is now a real two-sided PARITY
+	// gate around the target value, 1.0.
+	//
+	// What closed it: `SchlickSPF` (and the four other
+	// per-lobe-conditional-density SPFs) now implement
+	// `ISPF::EvaluateKrayNM`, so `PathTracingIntegrator.cpp`'s HWSS
+	// companion loop prices each companion wavelength with the SELECTED
+	// lobe's own `f_I cos / p_I` at THAT wavelength instead of falling
+	// back to the material's AGGREGATE `valueNM` over the hero lobe's
+	// density.  Isolated A/B on the five SPF .cpp/.h pairs alone
+	// (revert to this slice's base commit, rebuild library AND this
+	// test target, n = 3 per side, same scene):
+	//
+	//   pre-fix   1.61176 / 1.60333 / 1.60623   mean 1.60711 +/- 0.00433
+	//   post-fix  1.00131 / 1.00046 / 1.00102   mean 1.00093 +/- 0.00043
+	//
+	// and topology M (the immune control below) is unchanged across the
+	// same A/B: 0.99962 -> 1.00000.
+	//
+	// The band is 3%, not the control's 10%: post-fix this statistic's
+	// own run-to-run sigma is 4.3e-4, so 3% is ~70 sigma of headroom
+	// and still an order of magnitude tighter than the defect it
+	// replaces.
+	Check( ratio > 0.97 && ratio < 1.03,
+		"DL-125 (topology L): PT spectral hwss TRUE tracks PT pel within 3% "
+		"-- the companion ladder prices the selected lobe's own kray" );
+}
+
+static void TestPTSpectralHWSSCompanionParityControl()
+{
+	// Topology M: `ggx_material` + `lambertian_material`.  `GGXSPF` also
+	// declines `EvaluateKrayNM`, so the companion FALLBACK fires here too
+	// -- but its selected lobe's density already IS the aggregate `mixPdf`
+	// and its `kray` already matches, so the fallback computes the right
+	// thing (see `TestSpectralHWSSCompanionLadderControl`'s comment).  A
+	// residual here would therefore be material-independent HWSS
+	// behaviour, not DL-125, which is exactly what makes it the control
+	// for the row above.
+	const double ratio = RunPTSpectralHWSSProbe(
+		"topology M (DL-125 control, exact companion fallback)", kSceneGGXLambertianControlM );
+	if( ratio < 0 ) return;
+
+	Check( ratio > 0.90 && ratio < 1.10,
+		"DL-125 control (topology M): PT spectral hwss TRUE tracks PT pel within 10% "
+		"-- the immune material shows no companion inflation" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology N: biospec_skin_material receiver, mesh area emitter
+// (DL-126).
+//
+// `BioSpecSkinMaterial::GetBSDF()` returns null, so this vertex is
+// `!isConnectible` -- neither PT's NEE nor BDPT's connections can price
+// it (both gate their NEE arm on a non-null `IBSDF*` before ever
+// touching `IMaterial::ScattersFullSphere()`, so the emitter's position
+// relative to the surface normal is irrelevant here).  The ENTIRE image
+// is therefore carried by the SPF's own BSDF-sampled continuation:
+// `BioSpecSkinSPF::Scatter`'s front-hit branch runs the layered
+// Krishnaswamy-Baranoski Monte Carlo simulation and, when the photon is
+// not absorbed, emits a re-scattered ray with `kray = 1` unconditionally
+// and no `.pdf` (default 0) -- exactly the DL-126 pattern.  Pre-fix,
+// BDPT's eye-subpath generator `break`s at this vertex's very first
+// non-delta scatter (`effectivePdf <= 0`, and even bypassing that,
+// `PositiveMagnitude(f) <= 0` on the null aggregate BSDF) and the
+// render goes BLACK; PT is unaffected (it prices the continuation from
+// `pS->kray` alone -- `PathTracingIntegrator.cpp`'s own "Specular
+// surfaces (no BSDF -- use SPF)" branch, gated on `!pBRDF`, same as
+// here).  Post-fix both integrators price the identical continuation
+// and should agree within the usual band.  Same geometry, camera and
+// emitter as topology B (`kSceneCommon` + `kLightMesh`) with the
+// receiver material swapped for `biospec_skin_material` at its
+// defaults (every one of its ~20 parameters has a physically
+// reasonable default -- see `spectral_skin_fast.RISEscene`, which also
+// authors none of them).
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneNullBSDFSkin =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.5\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n\n"
+	"biospec_skin_material\n"
+	"{\n"
+	"\tname mat_skin\n"
+	"}\n\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_skin\n"
+	"\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n"
+	"}\n\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_skin\n"
+	"\tgeometry quad_skin\n"
+	"\tmaterial mat_skin\n"
+	"}\n";
+
+// DL-126, review round 2.  32 spp on this topology (the file's shared
+// default) quantises p99 in coarse L/32 steps -- the scene's only source
+// of per-pixel variance is BioSpecSkinSPF's binary absorb/re-emit roll at
+// a single scatter event, so a 32x32 image's 99th percentile is one of a
+// handful of discrete sample-count outcomes and the comparison is a coin
+// flip against the suite's 25% p99 band, not a meaningful measurement.
+// Raise spp instead of loosening the band.
+static const char* kRasterizerPTNullBSDF =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 256\n"
+	"\trr_min_depth 8\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_pt_nullbsdf_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerBDPTNullBSDF =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 3\n"
+	"\tmax_light_depth 3\n"
+	"\tsamples 256\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_bdpt_nullbsdf_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static void TestNullBSDFMaterialContinuation()
+{
+	RunTopologyTest( "biospec_skin_material receiver, mesh area emitter (DL-126)",
+		std::string( kSceneNullBSDFSkin ) + kLightMesh, kStrictTolerances,
+		kRasterizerPTNullBSDF, kRasterizerBDPTNullBSDF );
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-126 P1 (review round 2): HWSS companion wavelengths at a null-BSDF
+// continuation.
+//
+// The `nullBSDFContinuation` branch used to scale EVERY live companion
+// wavelength by the hero's own `krayNM` -- the delta branch's
+// convention, copied without re-deriving it.  That convention is sound
+// for an ACTUAL delta lobe (a mirror reflects every wavelength
+// identically, so one scalar legitimately describes all of them); it is
+// wrong here, where the material's colour is precisely its
+// per-wavelength absorb/survive Monte Carlo draw being
+// wavelength-DEPENDENT.  Broadcasting the hero's realized 0/1-ish
+// outcome to every companion made every wavelength inherit the HERO's
+// draw instead of its own -- grey and, on this material's blue-poor
+// absorption spectrum, badly over-bright in the companions that should
+// have been mostly absorbed.
+//
+// hero-only (`hwss FALSE`) mode never goes through this branch's
+// companion handling at all (each path samples exactly one wavelength,
+// priced by the SAME formula the RGB/Pel path already uses), so it is
+// already the correct per-wavelength reference this test measures
+// against -- no separate PT-spectral render is needed.
+//////////////////////////////////////////////////////////////////////
+static void TestNullBSDFHWSSCompanionLadder()
+{
+	ImageStats noHWSS, hwss;
+	const double achroRatio = RunSpectralHWSSLadder(
+		"topology N (DL-126 P1)", std::string( kSceneNullBSDFSkin ) + kLightMesh,
+		&noHWSS, &hwss );
+	if( achroRatio < 0 ) return;
+
+	// 10%, wider than L/M's 1%: historical run-to-run spread on this scene is
+	// wider than L/M's (0.4% / 4.7% / 5.3% across three otherwise-
+	// identical runs) -- still >3x inside this band even at the noisy
+	// end, and two orders of magnitude below the +34% this row red-
+	// proofs against pre-fix.
+	Check( std::fabs( achroRatio - 1.0 ) < 0.10,
+		"DL-126 P1: spectral hwss TRUE achromatic mean stays within 10% of hwss FALSE on topology N" );
+
+	// Per-channel shape check: the hero-only render's own B/R ratio is
+	// the reference (it is unaffected by this bug at any wavelength).
+	// Pre-fix this measured ~1.09 (grey-ified, everything inherits the
+	// hero) against a true ratio around 0.2 (this material absorbs blue
+	// far more than red); post-fix hwss TRUE should recover the same
+	// shape as hero-only, to within HWSS's own (256 spp, 3-wavelength
+	// bundle) higher per-channel noise.
+	if( noHWSS.mean[0] > 1e-6 && hwss.mean[0] > 1e-6 ) {
+		const double refBR  = noHWSS.mean[2] / noHWSS.mean[0];
+		const double hwssBR = hwss.mean[2]   / hwss.mean[0];
+		std::cout << "    B/R ratio: hero-only(reference) = " << refBR
+		          << ", hwss TRUE = " << hwssBR << std::endl;
+		Check( std::fabs( hwssBR - refBR ) < 0.35 * refBR,
+			"DL-126 P1: hwss TRUE B/R channel ratio tracks the hero-only reference on topology N (not grey-ified toward 1.0)" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology O: generic_human_tissue_material receiver, mesh area
+// emitter BEHIND the receiver (DL-183).
+//
+// `GenericHumanTissueSPF::Scatter`/`ScatterNM` set the continuation
+// ray's origin to `ri.ray.origin` -- the INCOMING ray's origin, which
+// for a camera ray is the CAMERA POSITION -- instead of
+// `ri.ptIntersection`, the actual point on the receiver the ray hit.
+//
+// This is a PT bug, not a DL-126-family bug: this material's
+// GetBSDF() is also null, so DL-126 (BDPT/VCM eye/light subpath
+// termination at a null-BSDF vertex) applies to it too and is already
+// fixed -- but PT was never affected by DL-126 (it prices this
+// continuation from the SPF's own kray, same as it always did). PT is
+// therefore the right integrator to isolate THIS bug.
+//
+// GEOMETRY NOTES (found empirically while building this red-proof):
+//
+// (1) `GenericHumanTissueSPF`'s outside-stack branch (the ONLY branch
+// a real render ever reaches -- see DL-131's row: the inside-stack
+// branch is unreachable because this material never pushes the IOR
+// stack and nothing else seeds it as trackable) samples its scattered
+// direction as `GeometricUtilities::Perturb(ri.ray.Dir(), acos(sqrt(u)),
+// v*2pi)` -- a cosine-weighted perturbation around the INCOMING ray's
+// own forward direction, i.e. this material only ever TRANSMITS
+// forward (into/through the surface, away from the incoming side),
+// never reflects back toward the side the light arrived from. Placing
+// the light on the camera's side (as topology N's `kLightMesh` does
+// at z=+4, for `biospec_skin_material`'s reflective front-hit branch)
+// makes this material's receiver read exactly 0 REGARDLESS of the
+// origin bug -- a confound, not a red-proof of DL-183. The light must
+// sit on the FAR side of the receiver (negative Z here).
+//
+// (2) The marginal polar-angle density of that cosine-weighted
+// perturbation is `sin(2*theta)`, peaking at 45 degrees, not 0 -- this
+// is NOT a tightly forward-peaked lobe (it is the well-known property
+// of cosine-weighted hemisphere sampling: growing ring circumference
+// compensates the falling cos(theta) term). A 1x1 light 4 units behind
+// the receiver catches only a sliver of that spread and both the
+// buggy and the fixed origin read close to 0 (confirmed empirically:
+// a 20x20 light saturates the frame at both origins, so the mechanism
+// itself works -- the earlier 1x1 light was simply too small a target
+// for either origin to hit reliably, which cannot discriminate the
+// bug). The light below (5x5, scale 20) was picked to give a strong,
+// non-saturating, origin-sensitive signal at 256 spp: manual CLI
+// renders of this exact geometry measured tonemapped mean 51/255
+// pre-fix (camera-position origin) vs 255/255 (saturated) post-fix
+// (ri.ptIntersection origin) -- see the fix commit message for the
+// linear achromatic means this test itself reads.
+//////////////////////////////////////////////////////////////////////
+static void TestGenericHumanTissueOriginFix()
+{
+	std::cout << "  [Topology O: generic_human_tissue_material receiver, mesh emitter behind (DL-183)]" << std::endl;
+
+	std::string sceneTissue =
+		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"pinhole_camera\n{\n"
+		"\tlocation 0 0 3.5\n"
+		"\tlookat 0 0 0\n"
+		"\tup 0 1 0\n"
+		"\tfov 30.0\n"
+		"}\n\n"
+		"generic_human_tissue_material\n{\n\tname mat_tissue\n}\n\n"
+		"clippedplane_geometry\n{\n"
+		"\tname quad_tissue\n"
+		"\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n"
+		"}\n\n"
+		"standard_object\n{\n"
+		"\tname obj_tissue\n\tgeometry quad_tissue\n\tmaterial mat_tissue\n"
+		"}\n\n"
+		// Mesh emitter BEHIND the receiver (negative Z; note pta/ptc
+		// swapped relative to kLightMesh so the quad's winding still
+		// faces the receiver -- verified empirically: kLightMesh's own
+		// vertex order merely negated in Z emits away from the
+		// receiver and this topology reads 0).
+		"uniformcolor_painter\n{\n\tname pnt_emit_behind\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n"
+		"\tname mat_emit_behind\n\texitance pnt_emit_behind\n\tscale 20.0\n\tmaterial none\n"
+		"}\n\n"
+		"clippedplane_geometry\n{\n"
+		"\tname quad_emit_behind\n"
+		"\tpta -2.5 -2.5 -4.0\n\tptb 2.5 -2.5 -4.0\n\tptc 2.5 2.5 -4.0\n\tptd -2.5 2.5 -4.0\n"
+		"}\n\n"
+		"standard_object\n{\n"
+		"\tname obj_emit_behind\n\tgeometry quad_emit_behind\n\tmaterial mat_emit_behind\n"
+		"}\n";
+
+	// ONE-SIDED red-proof: catches "reads (near) zero", the DL-183
+	// symptom, but NOT an over-count (e.g. a 2x BDPT/VCM-side
+	// double-continuation at this null-BSDF vertex type would still
+	// pass this floor). The PT-vs-BDPT gate below is the two-sided
+	// check for that failure mode.
+	{
+		const std::string scene = std::string("RISE ASCII SCENE 7\n") + sceneTissue + kRasterizerPTNullBSDF;
+
+		const std::string path = WriteSceneToTempFile( scene.c_str(), "tissueorigin" );
+		if( path.empty() ) {
+			Check( false, "Topology O: could not write scene temp file" );
+			return;
+		}
+
+		const ImageStats stats = RenderAndComputeStats( path.c_str() );
+		std::remove( path.c_str() );
+
+		if( !stats.valid ) {
+			Check( false, "Topology O: render failed" );
+			return;
+		}
+
+		PrintStats( "generic_human_tissue_material receiver, light behind", stats );
+		const double achro = ( stats.mean[0] + stats.mean[1] + stats.mean[2] ) / 3.0;
+		std::cout << "    achromatic mean = " << achro << std::endl;
+
+		// Pre-fix this reads ~1/9th of the post-fix value (0.205 vs 1.930,
+		// both measured directly by this test's own harness -- see the fix
+		// commit message) -- every pixel's continuation ray erroneously
+		// starts from the SAME single point (the camera), instead of the
+		// per-pixel hit point, so the natural per-pixel spread of exit
+		// points collapses and far fewer rays land on the light behind it.
+		// The threshold below sits roughly midway (in log terms) between
+		// the two measured values.
+		Check( achro > 0.6,
+			"DL-183: generic_human_tissue_material receiver reads strong PT radiance through to the light behind it "
+			"(scattered ray now originates at ri.ptIntersection, not at the camera)" );
+	}
+
+	// PT-vs-BDPT gate (review round 1, coverage gap): DL-183's origin bug
+	// is real under every integrator (PT, BDPT, VCM, MLT) since all of
+	// them call GenericHumanTissueSPF::Scatter/ScatterNM to build the
+	// continuation ray -- but the floor check above only ever exercised
+	// PT. This topology's material is also the DL-126 null-BSDF-
+	// continuation vertex type, so a future MISWeight/isConnectible
+	// regression specific to BDPT/VCM at this vertex kind needs its own
+	// two-sided check to fail loudly; a one-sided PT floor cannot catch
+	// an over-count. `kRasterizerBDPTNullBSDF` mirrors topology N's own
+	// depth/sample settings (256 spp) for a matched-noise comparison.
+	RunTopologyTest( "generic_human_tissue_material receiver, light behind (DL-183)",
+		sceneTissue, kStrictTolerances, kRasterizerPTNullBSDF, kRasterizerBDPTNullBSDF );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topologies Q and R: DL-05 (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md).
+//
+// The closed thin-weave box of docs/CLOTH_FABRIC_DESIGN.md section 15
+// debts 25/27 (`box_geometry` 2.8 x 2.8 x 1.0, `weave_material { fabric
+// custom transmission thin gap 0.3 warp_transmit 0.25 weft_transmit
+// 0.25 }`, camera at +3.2 z), lit from OUTSIDE behind it.
+//
+// Own rasterizer pair: 512 spp, and BDPT at depth 8/8 instead of this
+// file's 3/3 -- a closed box's interreflection chains are longer than
+// three vertices on each side, and PT (which has no such cap) would
+// otherwise read above BDPT for a reason that has nothing to do with
+// either integrator's correctness.  Measured n = 4 (seed bases
+// 1000..4000 of tests/WeaveGapShadowTransmittanceTest.cpp's table, 24x24,
+// which renders this same box): BDPT/PT 1.5453 +/- 0.0004 pre-fix and
+// 0.9933 post; the ~0.6 % left is the pre-existing closed-box residual
+// debt 25 records -- the SAME box at gap 0 (no pass-through exists, so
+// DL-05 cannot touch it) reads 0.9945 before and 0.9935 after (n = 4,
+// matching docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 5's own
+// design-doc table row for this box).
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerPTWeaveGap =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 512\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_pt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static const char* kRasterizerBDPTWeaveGap =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 512\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static const char* kSceneWeaveGapBox =
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 34.0\n}\n\n"
+	"weave_material\n{\n\tname mat_box\n\tfabric custom\n\ttransmission thin\n\tgap 0.3\n"
+		"\twarp_transmit 0.25\n\tweft_transmit 0.25\n}\n\n"
+	"box_geometry\n{\n\tname g_box\n\twidth 2.8\n\theight 2.8\n\tdepth 1.0\n}\n\n"
+	"standard_object\n{\n\tname o_box\n\tgeometry g_box\n\tmaterial mat_box\n\tposition 0 0 0\n}\n\n";
+
+static void TestWeaveGapBoxOmniOutside()
+{
+	RunTopologyTest( "closed two-layer gapped weave box, omni light OUTSIDE (DL-05)",
+		std::string( kSceneWeaveGapBox ) +
+		"omni_light\n{\n\tname lgt\n\tposition 0 0 -3.0\n\tcolor 1.0 1.0 1.0\n\tpower 6.0\n}\n",
+		kStrictTolerances, kRasterizerPTWeaveGap, kRasterizerBDPTWeaveGap );
+}
+
+static void TestWeaveGapBoxAreaOutside()
+{
+	// Winding gives the one-sided luminaire normal +Z, facing the box.
+	RunTopologyTest( "closed two-layer gapped weave box, AREA light outside (DL-05 partition guard)",
+		std::string( kSceneWeaveGapBox ) +
+		"uniformcolor_painter\n{\n\tname pnt_emit_wg\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit_wg\n\texitance pnt_emit_wg\n\tscale 2.0\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_emit_wg\n"
+			"\tpta -1.4 -1.4 -2.0\n\tptb 1.4 -1.4 -2.0\n\tptc 1.4 1.4 -2.0\n\tptd -1.4 1.4 -2.0\n}\n\n"
+		"standard_object\n{\n\tname obj_emit_wg\n\tgeometry quad_emit_wg\n\tmaterial mat_emit_wg\n}\n",
+		kStrictTolerances, kRasterizerPTWeaveGap, kRasterizerBDPTWeaveGap );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topologies Q and R, HWSS twins (DL-329).  The closed gapped weave box
+// again, now rendered `hwss TRUE`: the camera's first hit is the front
+// face, and a camera ray that draws the front face's delta GAP lobe
+// continues into the box -- a CONTINUATION through the gap, priced on
+// the companion lanes by the HWSS ladders (PT's IntegrateFromHitHWSS;
+// BDPT's RecomputeSubpathThroughputNM).  Before DL-329 WeaveSPF had no
+// `EvaluateKrayNM`, PT's companion fallback priced the gap ray with the
+// CONTINUUM weave BSDF (~0) and dropped 3 of 4 lanes on every such path:
+// Q read PT-HWSS 0.0200 against pel 0.0319, R 0.0257 against 0.0796.
+// BDPT's ladder already took ratio 1 at a delta vertex, so its twins are
+// controls.
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerBDPTWeaveGapPel =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static const char* kRasterizerBDPTWeaveGapHWSS =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\thwss TRUE\n"
+	"\tnum_wavelengths 160\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static double RunBDPTSpectralHWSSProbe( const char* topologyLabel, const std::string& sceneBody )
+{
+	std::cout << "Testing BDPT pel vs BDPT spectral hwss TRUE on " << topologyLabel << std::endl;
+	const std::string scenePel = std::string("RISE ASCII SCENE 7\n") + kRasterizerBDPTWeaveGapPel + sceneBody;
+	const std::string sceneHW  = std::string("RISE ASCII SCENE 7\n") + kRasterizerBDPTWeaveGapHWSS + sceneBody;
+	const std::string pathPel = WriteSceneToTempFile( scenePel.c_str(), "bdptpel_probe" );
+	const std::string pathHW  = WriteSceneToTempFile( sceneHW.c_str(),  "bdpthw_probe" );
+	if( pathPel.empty() || pathHW.empty() ) {
+		Check( false, "temp file write: BDPT spectral HWSS probe" );
+		return -1;
+	}
+	const ImageStats pel  = RenderAndComputeStats( pathPel.c_str() );
+	const ImageStats hwss = RenderAndComputeStats( pathHW.c_str() );
+	PrintStats( "BDPT pel      ", pel );
+	PrintStats( "BDPT spec hwss", hwss );
+	std::remove( pathPel.c_str() );
+	std::remove( pathHW.c_str() );
+	Check( pel.valid && hwss.valid, ( std::string("BDPT pel / spectral hwss TRUE renders produced output: ") + topologyLabel ).c_str() );
+	if( !pel.valid || !hwss.valid ) return -1;
+	const double achroPel = ( pel.mean[0]  + pel.mean[1]  + pel.mean[2]  ) / 3.0;
+	const double achroHW  = ( hwss.mean[0] + hwss.mean[1] + hwss.mean[2] ) / 3.0;
+	if( achroPel <= 1e-6 ) return -1;
+	const double ratio = achroHW / achroPel;
+	std::cout << "    ACHROMATIC mean: BDPT pel = " << achroPel << ", BDPT spectral hwss TRUE = " << achroHW
+	          << ", ratio = " << ratio << "  (" << ( ( ratio - 1.0 ) * 100.0 ) << "%)" << std::endl;
+	return ratio;
+}
+
+static std::string WeaveGapBoxOmniBody()
+{
+	return std::string( kSceneWeaveGapBox ) +
+		"omni_light\n{\n\tname lgt\n\tposition 0 0 -3.0\n\tcolor 1.0 1.0 1.0\n\tpower 6.0\n}\n";
+}
+
+static std::string WeaveGapBoxAreaBody()
+{
+	return std::string( kSceneWeaveGapBox ) +
+		"uniformcolor_painter\n{\n\tname pnt_emit_wg\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit_wg\n\texitance pnt_emit_wg\n\tscale 2.0\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_emit_wg\n"
+			"\tpta -1.4 -1.4 -2.0\n\tptb 1.4 -1.4 -2.0\n\tptc 1.4 1.4 -2.0\n\tptd -1.4 1.4 -2.0\n}\n\n"
+		"standard_object\n{\n\tname obj_emit_wg\n\tgeometry quad_emit_wg\n\tmaterial mat_emit_wg\n}\n";
+}
+
+static void TestWeaveGapBoxHWSS()
+{
+	struct T { const char* label; std::string body; };
+	const T rows[] = {
+		{ "topology Q (DL-329: gapped weave box, omni outside)", WeaveGapBoxOmniBody() },
+		{ "topology R (DL-329: gapped weave box, AREA outside)", WeaveGapBoxAreaBody() },
+	};
+	for( const T& r : rows )
+	{
+		const double pt = RunPTSpectralHWSSProbe( r.label, r.body );
+		if( pt >= 0 ) {
+			Check( pt > 0.97 && pt < 1.03,
+				( std::string( "DL-329: PT spectral hwss TRUE tracks PT pel within 3% through the weave gap: " ) + r.label ).c_str() );
+		}
+		const double bd = RunBDPTSpectralHWSSProbe( r.label, r.body );
+		if( bd >= 0 ) {
+			Check( bd > 0.97 && bd < 1.03,
+				( std::string( "DL-329: BDPT spectral hwss TRUE tracks BDPT pel within 3% through the weave gap: " ) + r.label ).c_str() );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology Z: the receiver is lit by the BACK face of a double-sided
+// mesh emitter (DL-320, docs/DL320_DOUBLE_SIDED_EMITTER.md).
+//
+// Topology B's 1x1 quad at z = 4, wound so its normal points UP (+Z),
+// away from the receiver; `clippedplane_geometry`'s `doublesided`
+// defaults to TRUE, so by docs/SCENE_CONVENTIONS.md the quad emits from
+// both faces and this scene must render exactly like topology B.
+//
+// PT vs BDPT alone CANNOT see DL-320: before the fix both read the SAME
+// wrong answer (NEE and light-subpath emission treated the quad as one-
+// sided while both hit-side MIS weights assumed they could reach its back
+// face -- 11-14x dark on a small quad).  So besides the usual PT-vs-BDPT
+// comparison, both back-face renders are compared against topology B's
+// FACE-down PT render at 512 spp.
+//////////////////////////////////////////////////////////////////////
+static const char* kLightMeshBackFace =
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit\n"
+	"\texitance pnt_emit\n"
+	"\tscale 20.0\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_emit\n"
+	"\tpta -0.5 -0.5 4.0\n"
+	"\tptb 0.5 -0.5 4.0\n"
+	"\tptc 0.5 0.5 4.0\n"
+	"\tptd -0.5 0.5 4.0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit\n"
+	"\tgeometry quad_emit\n"
+	"\tmaterial mat_emit\n"
+	"}\n";
+
+static void TestBackFaceEmitterZ()
+{
+	RunTopologyTest( "back-face-lit double-sided mesh emitter (DL-320)",
+		std::string( kSceneCommon ) + kLightMeshBackFace );
+
+	std::cout << "Testing back face vs face-down (512 spp): DL-320 topology Z" << std::endl;
+	const std::string face = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerPT512 + kSceneCommon + kLightMesh;
+	const std::string ptBack = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerPT512 + kSceneCommon + kLightMeshBackFace;
+	const std::string bdptBack = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerBDPT512 + kSceneCommon + kLightMeshBackFace;
+	const std::string pFace = WriteSceneToTempFile( face.c_str(), "zface" );
+	const std::string pPT = WriteSceneToTempFile( ptBack.c_str(), "zpt" );
+	const std::string pBD = WriteSceneToTempFile( bdptBack.c_str(), "zbdpt" );
+	if( pFace.empty() || pPT.empty() || pBD.empty() ) {
+		Check( false, "Topology Z: temp file write" );
+		return;
+	}
+	const ImageStats sFace = RenderAndComputeStats( pFace.c_str() );
+	const ImageStats sPT = RenderAndComputeStats( pPT.c_str() );
+	const ImageStats sBD = RenderAndComputeStats( pBD.c_str() );
+	std::remove( pFace.c_str() );
+	std::remove( pPT.c_str() );
+	std::remove( pBD.c_str() );
+	Check( sFace.valid && sPT.valid && sBD.valid, "Topology Z: renders produced output" );
+	if( !sFace.valid || !sPT.valid || !sBD.valid ) return;
+	PrintStats( "PT face-down ", sFace );
+	PrintStats( "PT back face ", sPT );
+	PrintStats( "BDPT back    ", sBD );
+	const double absFloor = 1e-6;
+	// 2%: the three renders' mean sd is ~0.2% at 512 spp; pre-fix the back
+	// face read ~9% of the face-down mean under both integrators.
+	Check( ChannelsAgree( sFace.mean, sPT.mean, 0.02, absFloor ),
+		"Topology Z: PT back-face mean within 2% of the face-down render (DL-320)" );
+	Check( ChannelsAgree( sFace.mean, sBD.mean, 0.02, absFloor ),
+		"Topology Z: BDPT back-face mean within 2% of the face-down render (DL-320)" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology W: NARROW-FOV light-tracing splat (DL-294,
+// docs/DL294_NARROW_FOV_SPLAT.md) -- NO weave anywhere.
+//
+// A spot light at (0, 1, 0) aimed UP at a perfect mirror (y = 2); the
+// reflected beam lights a Lambertian floor (rho 0.5) that a pinhole at
+// fov 2 deg (16 x 16) sees edge to edge.  The floor's only light is the
+// caustic delta light -> mirror -> floor, which no eye strategy can
+// reach (PT reads 0; BDPT's only estimator is the t = 1 splat), and it
+// has a closed form: the mirror image of the spot at (0, 3, 0), so
+// E = I / 3^2 on the beam axis and L = rho/pi * I / 9 (the frame spans
+// +/-0.043 on the floor, inside the beam's full-intensity radius
+// 3 tan(1 deg) = 0.052 -- `inner` is the FULL cone angle; cos and 1/d^2 are constant to < 3e-4 over it,
+// and the floor <-> mirror interreflection is ~1e-4).
+//
+// Before DL-294 the camera's world-to-raster inverse cut the splat at
+// the camera's nominal [0, 16) film while the rasterizers sample (and
+// SplatFilm rounds in) [-0.5, 15.5): a half-pixel strip per axis was
+// lost and the frame read 1 - (15.5/16)^2 = 6.15 % low (measured
+// -6.246 %, isolated A/B; post-fix +0.066 %).  BDPT's render is
+// seed-independent here (its Sobol streams are keyed by pixel and
+// sample index), so the residual is a fixed QMC pattern, not noise;
+// 1.5 % is a >20x margin on it and 4x under the defect.
+//////////////////////////////////////////////////////////////////////
+static const double kNarrowFovW_I = 16.0;		// color 1 x power 16
+static const double kNarrowFovW_Rho = 0.5;
+
+static const char* kSceneNarrowFovMirrorW =
+	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 2.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.5 0.5 0.5\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_mirror\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"lambertian_material\n{\n\tname mat_floor\n\treflectance pnt_floor\n}\n\n"
+	"perfectreflector_material\n{\n\tname mat_mirror\n\treflectance pnt_mirror\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_floor\n\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_mirror\n\tpta -4 2 4\n\tptb 4 2 4\n\tptc 4 2 -4\n\tptd -4 2 -4\n\tdoublesided TRUE\n}\n\n"
+	"standard_object\n{\n\tname obj_floor\n\tgeometry geo_floor\n\tmaterial mat_floor\n}\n\n"
+	"standard_object\n{\n\tname obj_mirror\n\tgeometry geo_mirror\n\tmaterial mat_mirror\n}\n\n"
+	"spot_light\n{\n\tname lgt\n\tposition 0 1 0\n\ttarget 0 2 0\n\tinner 2.0\n\touter 2.6\n\tcolor 1 1 1\n\tpower 16\n}\n";
+
+static const char* kRasterizerBDPTNarrowFovW =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static void TestNarrowFovSplatW()
+{
+	std::cout << "Testing topology W: narrow-fov (2 deg) caustic, t = 1 splat only, vs closed form (DL-294)" << std::endl;
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerBDPTNarrowFovW + kSceneNarrowFovMirrorW;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "narrowfov_w" );
+	if( path.empty() ) {
+		Check( false, "Topology W: temp file write" );
+		return;
+	}
+	const ImageStats st = RenderAndComputeStats( path.c_str() );
+	std::remove( path.c_str() );
+	Check( st.valid, "Topology W: BDPT render produced output" );
+	if( !st.valid ) return;
+	PrintStats( "BDPT", st );
+	const double expected = kNarrowFovW_Rho / 3.14159265358979323846 * kNarrowFovW_I / 9.0;
+	for( int c = 0; c < 3; c++ ) {
+		char buf[256];
+		std::snprintf( buf, sizeof(buf),
+			"Topology W: BDPT channel %d mean %.6f vs closed form rho/pi*I/9 = %.6f (%+.3f%%), within 1.5%% (DL-294)",
+			c, st.mean[c], expected, 100.0 * ( st.mean[c] / expected - 1.0 ) );
+		std::cout << "  " << buf << std::endl;
+		Check( std::fabs( st.mean[c] / expected - 1.0 ) <= 0.015, buf );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology W-stripe (DL-294 P2-1): a real guard against a ONE-SIDED
+// half-pixel convention change between the eye-ray sampling convention
+// (PT/BDPT/VCM hits, `warpOnScreen`) and the splat rounding convention
+// (`SplatFilm::NearestPixel`, used only by the t = 1 light-tracing
+// splat).  The doc's and Test 9's earlier claim -- that `fovsweep`,
+// topology W and `CameraImportanceTest` "catch a future one-sided
+// change" -- was FALSE for topology W and Test 9: an external review
+// moved `BDPTPelRasterizer`, `VCMPelRasterizer` and
+// `BoxPixelFilter::warpOnScreen` to PBRT's ( x + u, H - y + v - 1 )
+// sample placement, left `NearestPixel` untouched, and topology W (a
+// UNIFORMLY lit frame) stayed green -- a shared, symmetric shift of a
+// uniform field changes neither its mean nor its edge fingerprint.
+// (Test 9 was separately blind because it hard-codes `x + offs - 0.5`
+// instead of reading what the rasterizer does.)
+//
+// This topology adds an INTERIOR, non-uniform signal instead: a hard
+// floor edge at world x = 0.00085 -- HALF A PIXEL (0.0017 at the floor)
+// off the optical axis, so it splits a pixel in half.  (It was at x = 0
+// until DL-368 put the axis on a pixel BOUNDARY: there every
+// estimator read 0.0000 at the transition column and the fixture-sanity
+// check failed with PT, BDPT and VCM in agreement.)  Two scenes share one camera (pinhole,
+// fov 2 deg, 32 x 32, box filter) and one floor split at x = 0 -- a
+// reflective LEFT half (rho 0.5) and a BLACK right half (rho 0):
+//
+//   "direct" -- an overhead omni light lights the floor directly; PT's
+//               estimator is ordinary NEE/hit, resolved through the
+//               EYE-RAY sampling convention (RasterConvention::PixelToScreen,
+//               (x + u, H - 1 - y + v) since DL-368; (x + u - 0.5, H - y + v - 0.5)
+//               when this topology was written).
+//   "splat"  -- topology W's own spot -> mirror -> floor caustic (the
+//               spot points straight up, away from the floor, so NEE
+//               reads exactly 0 and the ONLY estimator BDPT/VCM have is
+//               the t = 1 light-tracing splat), resolved through
+//               `SplatFilm::NearestPixel`.  VCM runs with
+//               `merge_radius 0.0` so its estimator is ALSO the pure
+//               splat, not a merge-blurred one.
+//
+// If the two conventions agree (today's code), the edge's fractional
+// coverage at a column is the SAME function of the SAME world position
+// under both paths, so PT-direct's, BDPT-splat's and VCM-splat's
+// fractional coverage at the transition column -- LOCATED from PT's own
+// profile, never hard-coded, so this test does not repeat Test 9's
+// mistake of assuming the convention it exists to check -- must agree
+// within Monte Carlo noise.  A one-sided shift moves the transition a
+// whole column on the shifted side only, which reads as an order-1
+// fractional-coverage mismatch at the column PT located, not a small
+// residual (P2-1's own probe: PT/BDPT direct lit column 16 alone while
+// BDPT's splat still split across columns 16 and 17).
+//
+// Red-proof (P2-1, run once by hand, not part of the automated suite):
+// mutate `BDPTPelRasterizer.cpp`'s and `VCMPelRasterizer.cpp`'s eye-ray
+// `ptOnScreen` and `BoxPixelFilter::warpOnScreen` (`BoxPixelFilter.h`) to
+// the reviewer's PBRT convention ( x + u, H - y + v - 1 ), leaving
+// `SplatFilm::NearestPixel` on the CURRENT convention -- rebuild, run
+// `--narrow-fov-only`, `git checkout HEAD -- <the three files>` to
+// restore, rebuild.  Measured: green build fractional coverage
+// BDPT-splat/VCM-splat within 0.0067 of PT-direct (n = 4 salted, three
+// salt-base checks, worst case); the mutated build moves PT-direct's OWN
+// eye-ray placement too, so the fixed-in-world-space floor edge now
+// falls INSIDE pixel 16 instead of straddling it -- PT-direct reads
+// 0.0000 at column 16 (the fixture-sanity check correctly FAILS), while
+// BDPT-splat is unaffected (a t = 1 splat's raster position comes from
+// `RasterizeThrough` + `NearestPixel`, neither mutated) and still reads
+// 0.4989, its green-build value -- a 0.4989 mismatch, a whole column of
+// coverage.  VCM-splat reads 0.0070 (its splat position is likewise
+// unaffected, but its eye-vertex generation shares the mutated formula
+// and perturbs its overall MIS mixture).  Whole test: 11/0 -> 9/2.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneStripeCommon =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 2.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_floor_left\n\tcolor 0.5 0.5 0.5\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_floor_right\n\tcolor 0 0 0\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"lambertian_material\n{\n\tname mat_floor_left\n\treflectance pnt_floor_left\n}\n\n"
+	"lambertian_material\n{\n\tname mat_floor_right\n\treflectance pnt_floor_right\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_floor_left\n\tpta -1 0 1\n\tptb 0.00085 0 1\n\tptc 0.00085 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_floor_right\n\tpta 0.00085 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd 0.00085 0 -1\n\tdoublesided TRUE\n}\n\n"
+	"standard_object\n{\n\tname obj_floor_left\n\tgeometry geo_floor_left\n\tmaterial mat_floor_left\n}\n\n"
+	"standard_object\n{\n\tname obj_floor_right\n\tgeometry geo_floor_right\n\tmaterial mat_floor_right\n}\n\n";
+
+static const char* kSceneStripeDirectLight =
+	"omni_light\n{\n\tname lgt\n\tposition 0 2 0\n\tcolor 1 1 1\n\tpower 16\n}\n";
+
+static const char* kSceneStripeSplatLight =
+	"uniformcolor_painter\n{\n\tname pnt_mirror\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"perfectreflector_material\n{\n\tname mat_mirror\n\treflectance pnt_mirror\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_mirror\n\tpta -4 2 4\n\tptb 4 2 4\n\tptc 4 2 -4\n\tptd -4 2 -4\n\tdoublesided TRUE\n}\n\n"
+	"standard_object\n{\n\tname obj_mirror\n\tgeometry geo_mirror\n\tmaterial mat_mirror\n}\n\n"
+	"spot_light\n{\n\tname lgt\n\tposition 0 1 0\n\ttarget 0 2 0\n\tinner 2.0\n\touter 2.6\n\tcolor 1 1 1\n\tpower 16\n}\n";
+
+static const char* kRasterizerStripePT =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_stripe_pt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static const char* kRasterizerStripeBDPT =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_stripe_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static const char* kRasterizerStripeVCM =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\tmerge_radius 0.0\n"
+	"\tvc_enabled true\n\tvm_enabled true\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_stripe_vcm_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+//! Renders `scenePath` and returns the achromatic column-mean profile
+//! (averaged over height and the three channels, coverage-weighted the
+//! same way `ComputeStats` is) -- `width` entries, empty on failure.
+static std::vector<double> RenderColumnProfile( const char* scenePath )
+{
+	std::vector<double> profile;
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) return profile;
+	if( !pJob->LoadAsciiSceneViaCst( scenePath ) ) {
+		safe_release( pJob );
+		return profile;
+	}
+	pJob->RemoveRasterizerOutputs();
+	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+	static unsigned renderIndex = 0;
+	std::srand( 1729u + renderIndex++ );
+	const bool bRendered = pJob->Rasterize();
+	if( bRendered && pCap->width > 0 && pCap->height > 0 ) {
+		profile.assign( pCap->width, 0.0 );
+		bool allFinite = true;
+		for( unsigned int x = 0; x < pCap->width && allFinite; x++ ) {
+			double sum = 0;
+			for( unsigned int y = 0; y < pCap->height; y++ ) {
+				const RISEColor& c = pCap->pixels[y * pCap->width + x];
+				const double cov = c.a;
+				const double v = ( c.base.r + c.base.g + c.base.b ) / 3.0 * cov;
+				if( !std::isfinite( v ) ) { allFinite = false; break; }
+				sum += v;
+			}
+			profile[x] = sum / double( pCap->height );
+		}
+		if( !allFinite ) profile.clear();
+	}
+	safe_release( pCap );
+	safe_release( pJob );
+	return profile;
+}
+
+//! Mean column profile over `n` salted replicates (n <= 0: one unsalted
+//! render).  Empty on any failure.  Salt reset to 0 on return.
+static std::vector<double> RenderColumnProfileSalted( const char* scenePath, int n, unsigned saltBase )
+{
+	const int reps = n > 0 ? n : 1;
+	std::vector<double> sum;
+	bool ok = true;
+	for( int i = 0; i < reps && ok; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store(
+			n > 0 ? SobolSequence::HashCombine( saltBase, unsigned( i ) ) : 0u );
+		std::vector<double> p = RenderColumnProfile( scenePath );
+		ok = !p.empty();
+		if( ok ) {
+			if( sum.empty() ) sum.assign( p.size(), 0.0 );
+			for( size_t k = 0; k < p.size(); k++ ) sum[k] += p[k];
+		}
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	if( !ok ) return std::vector<double>();
+	for( double& v : sum ) v /= double( reps );
+	return sum;
+}
+
+//! Index of the column with the largest 2-wide drop (profile[k-1] -
+//! profile[k+1]) -- the centre of the left-bright/right-dark transition.
+static size_t FindTransitionColumn( const std::vector<double>& profile )
+{
+	size_t best = profile.size() / 2;
+	double bestDrop = -std::numeric_limits<double>::infinity();
+	for( size_t k = 1; k + 1 < profile.size(); k++ ) {
+		const double drop = profile[k-1] - profile[k+1];
+		if( drop > bestDrop ) { bestDrop = drop; best = k; }
+	}
+	return best;
+}
+
+static void TestNarrowFovStripeGuard()
+{
+	std::cout << "Testing topology W-stripe: interior floor edge, hit vs splat column alignment (DL-294 P2-1)" << std::endl;
+
+	const std::string sceneDirect = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerStripePT + kSceneStripeCommon + kSceneStripeDirectLight;
+	const std::string sceneSplatBDPT = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerStripeBDPT + kSceneStripeCommon + kSceneStripeSplatLight;
+	const std::string sceneSplatVCM = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerStripeVCM + kSceneStripeCommon + kSceneStripeSplatLight;
+
+	const std::string pathDirect = WriteSceneToTempFile( sceneDirect.c_str(), "stripe_pt" );
+	const std::string pathBDPT = WriteSceneToTempFile( sceneSplatBDPT.c_str(), "stripe_bdpt" );
+	const std::string pathVCM = WriteSceneToTempFile( sceneSplatVCM.c_str(), "stripe_vcm" );
+	if( pathDirect.empty() || pathBDPT.empty() || pathVCM.empty() ) {
+		Check( false, "Topology W-stripe: temp file write" );
+		return;
+	}
+
+	const int kReplicates = 4;
+	const std::vector<double> ptProfile = RenderColumnProfileSalted( pathDirect.c_str(), kReplicates, 0x57721301u );
+	const std::vector<double> bdptProfile = RenderColumnProfileSalted( pathBDPT.c_str(), kReplicates, 0x57721302u );
+	const std::vector<double> vcmProfile = RenderColumnProfileSalted( pathVCM.c_str(), kReplicates, 0x57721303u );
+	std::remove( pathDirect.c_str() );
+	std::remove( pathBDPT.c_str() );
+	std::remove( pathVCM.c_str() );
+
+	Check( !ptProfile.empty(), "Topology W-stripe: PT direct render produced output" );
+	Check( !bdptProfile.empty(), "Topology W-stripe: BDPT splat render produced output" );
+	Check( !vcmProfile.empty(), "Topology W-stripe: VCM splat render produced output" );
+	if( ptProfile.empty() || bdptProfile.empty() || vcmProfile.empty() ) return;
+	Check( ptProfile.size() == 32 && bdptProfile.size() == 32 && vcmProfile.size() == 32,
+		"Topology W-stripe: all three profiles are 32 columns wide" );
+
+	// Located from PT alone -- never hard-coded -- so this test does not
+	// repeat Test 9's mistake of assuming the convention it exists to check.
+	const size_t k = FindTransitionColumn( ptProfile );
+	// Baselines comfortably inside each flat region, away from both the
+	// transition and the film edges (which the DL-294 library fix itself
+	// already covers, and which is not this topology's concern).
+	const size_t kLeftBaseIdx = 4, kRightBaseIdx = 27;
+
+	auto fractionalCoverage = [&]( const std::vector<double>& profile ) -> double {
+		const double leftBase = profile[kLeftBaseIdx];
+		const double rightBase = profile[kRightBaseIdx];
+		const double denom = leftBase - rightBase;
+		// Finite poison (SourceHygieneTest bans NaN sentinels): -1 fails
+		// every coverage check below, which all require a value in (0, 1).
+		return ( denom > 1e-9 ) ? ( profile[k] - rightBase ) / denom : -1.0;
+	};
+
+	const double ptFrac = fractionalCoverage( ptProfile );
+	const double bdptFrac = fractionalCoverage( bdptProfile );
+	const double vcmFrac = fractionalCoverage( vcmProfile );
+
+	std::printf( "    transition column %zu; fractional coverage PT-direct %.4f, BDPT-splat %.4f, VCM-splat %.4f\n",
+		k, ptFrac, bdptFrac, vcmFrac );
+
+	Check( std::isfinite( ptFrac ) && ptFrac > 0.05 && ptFrac < 0.95,
+		"Topology W-stripe: PT locates a genuine partial-coverage transition column (fixture sanity)" );
+
+	// Band: measured over three independent salt-base choices (n = 4
+	// each, so 12 renders per side), the fixed build's BDPT-splat vs
+	// PT-direct spread is {-0.0012, -0.0067, -0.0008}, VCM-splat vs
+	// PT-direct {0.0000, +0.0011, -0.0021} -- worst observed 0.0067.
+	// A one-sided half-pixel convention drift moves an ENTIRE column of
+	// coverage into (or out of) column 16 (the red-proof above measured
+	// PT-direct 0.0000 / BDPT-splat 0.4989, a 0.4989 mismatch), so 0.03
+	// is a ~4.5x margin over the measured spread and still a >15x margin
+	// below the defect it exists to catch.  See docs/DL294_NARROW_FOV_SPLAT.md section 4
+	// for the full salted table and the red-proof numbers.
+	const double kBand = 0.03;
+	char buf[256];
+	std::snprintf( buf, sizeof(buf),
+		"Topology W-stripe: BDPT-splat fractional coverage %.4f within %.2f of PT-direct %.4f (DL-294 P2-1)",
+		bdptFrac, kBand, ptFrac );
+	std::cout << "    " << buf << std::endl;
+	Check( std::isfinite( bdptFrac ) && std::fabs( bdptFrac - ptFrac ) <= kBand, buf );
+	std::snprintf( buf, sizeof(buf),
+		"Topology W-stripe: VCM-splat fractional coverage %.4f within %.2f of PT-direct %.4f (DL-294 P2-1)",
+		vcmFrac, kBand, ptFrac );
+	std::cout << "    " << buf << std::endl;
+	Check( std::isfinite( vcmFrac ) && std::fabs( vcmFrac - ptFrac ) <= kBand, buf );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topologies U and V: DL-307 (docs/DL67_GUIDED_GENERATING_DENSITY.md
+// section 8, "DL-307").
+//
+// Both BDPT subpath generators used to BREAK on an empty scatter
+// container BEFORE the BSSRDF / random-walk entry branch.  A rough
+// `subsurfacescattering_material` / `randomwalk_sss_material` front
+// reflection whose microfacet draw lands below the horizon is DROPPED by
+// `SubSurfaceScatteringSPF::Scatter`, the container comes back empty, and
+// the walk died there -- losing the subsurface branch it would have taken
+// with probability Ft.  PT is immune (its BSSRDF block runs before PART 3
+// ever scatters), and so was GUIDED BDPT since DL-67 (a guided vertex
+// survives an empty container on the guide technique), so un-guided and
+// guided BDPT disagreed.
+//
+// U: topology L's wall + floor, `subsurfacescattering_material` ior 1.3
+//    roughness 0.3 (the DL-67 round-3 reviewer's replica).
+// V: a CLOSED `randomwalk_sss_material` sphere (roughness 0.8, albedo
+//    ~0.99) on a Lambertian wall + floor.  A random walk into the
+//    zero-thickness sheets of U carries almost nothing (measured n = 8,
+//    salted: BDPT/PT -0.06% +/- 0.16% pre-fix), which is why the
+//    reviewer's thin-sheet random-walk replica read "-0.24%,
+//    inconclusive"; a closed sphere gives the walk a body to scatter in,
+//    and the high roughness makes below-horizon reflection draws (the
+//    empty containers) common.  Depth 16 on both sides: at depth 5, PT's
+//    per-type bounce caps and BDPT's per-surface-vertex cap truncate a
+//    multi-event subsurface path differently (-0.10% on a roughness-0.3
+//    sphere with the fix in, vanishing at 16 -- a depth-semantics
+//    difference, not a bias).
+//
+// Measured (32x32, 1024 spp, salted Sobol', two separately built
+// binaries run interleaved; mean BDPT/PT - 1):
+//   U  un-guided BDPT   -0.830% (z -29.7) pre-fix   -0.033% (z -1.1) post   n = 16
+//   U  guided RIS BDPT  -0.048%           pre-fix   -0.033%          post   n = 16
+//   V  un-guided BDPT  -10.385% (z -339)  pre-fix   -0.015% (z -0.4) post   n = 8
+//   V  guided RIS BDPT  -0.076%           pre-fix   +0.018%          post   n = 8
+// (V's guided row moves too: vertices deeper than
+// `pathguiding_{,light_}max_depth` 4 are un-guided and hit the defect.)
+// Every gated quantity is a RATIO of two renders (BDPT/PT, RIS/PT,
+// BDPT/RIS), so a band is judged against the DECORRELATED ratio sd -- the
+// spread a QMC redraw of both sides (any future change to the sampler's
+// stream layout) would give -- not a single-render sd, and not the
+// same-salt pair sd, which common points shrink.  U: salted n = 10 on the
+// fixed build at 2048 spp, per-render sd PT 0.056% / BDPT 0.065% / RIS
+// 0.073%, decorrelated ratio sd 0.086% (BDPT/PT), 0.091% (RIS/PT), 0.098%
+// (BDPT/RIS).  A single UNSALTED draw is NOT safe here: the sampler's own
+// point set read PT +0.18% and BDPT -0.15% of the salted means at 2048 spp
+// (ratio -0.34%, against the 0.35% band -- it failed once in three runs),
+// while at 1024 / 4096 spp the same pair read -0.08% / +0.06%.  So U
+// gates the mean of 3 salted replicates per integrator (the same 3 salts
+// for all three): ratio sd <= 0.057%, the 0.35% band >= 6 sd from a
+// correct build, and the pre-fix -0.83% 8 sd outside it.  (At 1024 spp
+// and one unsalted draw -- external review of 2212f537 -- the ratio sd was
+// ~0.17% and the band only ~2 sd.)  V keeps one unsalted 1024-spp render:
+// decorrelated ratio sd 0.106%, band 0.6% = 5.7 sd, pre-fix -10.3% two
+// orders of magnitude outside.  Guided (RIS) vs un-guided BDPT is the
+// invariant the row exists for: the two
+// techniques must estimate the
+// same integral.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneRoughSSSU =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"subsurfacescattering_material\n{\n\tname mat_sss\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 1.0\n\tg 0.0\n\troughness 0.3\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_sss\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_floor\n\tpta -1 -1 0\n\tptb -1 -1 2\n\tptc 1 -1 2\n\tptd 1 -1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_sss\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit_u\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit_u\n\texitance pnt_emit_u\n\tscale 0.5\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit_u\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+	"standard_object\n{\n\tname obj_emit_u\n\tgeometry quad_emit_u\n\tmaterial mat_emit_u\n}\n";
+
+static const char* kSceneRandomWalkSphereV =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"randomwalk_sss_material\n{\n\tname mat_rw\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 10.0\n\tg 0.0\n\troughness 0.8\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_alb_v\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_lamb_v\n\treflectance pnt_alb_v\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_lamb_v\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_floor\n\tpta -1 -1 0\n\tptb -1 -1 2\n\tptc 1 -1 2\n\tptd 1 -1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_lamb_v\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_v\n\tradius 0.55\n}\n\n"
+	"standard_object\n{\n\tname obj_sph_v\n\tgeometry sph_v\n\tmaterial mat_rw\n\tposition 0 -0.45 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit_v\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit_v\n\texitance pnt_emit_v\n\tscale 0.5\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit_v\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+	"standard_object\n{\n\tname obj_emit_v\n\tgeometry quad_emit_v\n\tmaterial mat_emit_v\n}\n";
+
+//! PT / BDPT / guided-RIS BDPT rasterizer chunks for topologies U and V;
+//! `depth` is PT's diffuse/glossy cap and BDPT's eye/light cap.
+static std::string SSSRasterizer( const char* kind, int depth, int spp )
+{
+	char buf[1024];
+	const std::string head = "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+	const std::string tail = "\nfile_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_unused\n\ttype EXR\n"
+		"\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+	if( std::strcmp( kind, "pt" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "pathtracing_pel_rasterizer\n{\n\tsamples %d\n\trr_min_depth 8\n"
+			"\tmax_diffuse_bounce %d\n\tmax_glossy_bounce %d\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", spp, depth, depth );
+	} else if( std::strcmp( kind, "bdpt" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
+			"\tsamples %d\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", depth, depth, spp );
+	} else {
+		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
+			"\tsamples %d\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding TRUE\n"
+			"\tpathguiding_iterations 3\n\tpathguiding_spp 16\n\tpathguiding_alpha 0.7\n"
+			"\tpathguiding_max_depth 4\n\tpathguiding_light_max_depth 4\n"
+			"\tpathguiding_sampling_type RIS\n}\n", depth, depth, spp );
+	}
+	return head + buf + tail;
+}
+
+//! `replicates` == 0: one render with the sampler's own (unsalted) points.
+//! `replicates` == N: the mean of N renders, each an independent
+//! randomized-QMC replicate (a distinct `SobolSamplerTestHooks::ValueSalt`,
+//! the SAME N salts for every integrator of a topology), so the gated ratio
+//! is not one fixed draw of the QMC error.  The salt is reset to 0 after.
+static bool RenderSSSAchromaticMean( const std::string& rasterizer, const char* sceneBody,
+	const char* tag, int replicates, double& outMean )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + sceneBody;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), tag );
+	if( path.empty() ) return false;
+	const int n = replicates > 0 ? replicates : 1;
+	double sum = 0;
+	bool ok = true;
+	for( int i = 0; i < n && ok; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store(
+			replicates > 0 ? SobolSequence::HashCombine( 0xD307u, unsigned( i ) ) : 0u );
+		const ImageStats st = RenderAndComputeStats( path.c_str() );
+		ok = st.valid;
+		if( ok ) sum += ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0;
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( !ok ) return false;
+	outMean = sum / double( n );
+	return std::isfinite( outMean ) && outMean > 0;
+}
+
+static void CheckSSSMeanBand( const char* label, double ref, double test, double band )
+{
+	const double rel = test / ref - 1.0;
+	std::printf( "    %s: ref %.7f test %.7f  rel %+.3f%%  (band +/- %.2f%%)\n",
+		label, ref, test, 100.0 * rel, 100.0 * band );
+	Check( std::fabs( rel ) <= band, label );
+}
+
+static void RunSSSTopology( const char* name, const char* sceneBody, int depth, int spp, int replicates, double band )
+{
+	std::cout << "Testing DL-307 " << name << std::endl;
+	double pt = 0, bdpt = 0, ris = 0;
+	const bool okPT   = RenderSSSAchromaticMean( SSSRasterizer( "pt", depth, spp ),   sceneBody, "sss_pt",   replicates, pt );
+	const bool okBDPT = RenderSSSAchromaticMean( SSSRasterizer( "bdpt", depth, spp ), sceneBody, "sss_bdpt", replicates, bdpt );
+	const bool okRIS  = RenderSSSAchromaticMean( SSSRasterizer( "ris", depth, spp ),  sceneBody, "sss_ris",  replicates, ris );
+	Check( okPT && okBDPT && okRIS, ( std::string( "DL-307 renders produced output: " ) + name ).c_str() );
+	if( !okPT || !okBDPT || !okRIS ) return;
+	CheckSSSMeanBand( ( std::string( "DL-307 un-guided BDPT mean agrees with PT: " ) + name ).c_str(),
+		pt, bdpt, band );
+	CheckSSSMeanBand( ( std::string( "DL-307 guided RIS BDPT mean agrees with PT: " ) + name ).c_str(),
+		pt, ris, band );
+	CheckSSSMeanBand( ( std::string( "DL-307 un-guided BDPT mean agrees with guided RIS BDPT: " ) + name ).c_str(),
+		ris, bdpt, band );
+}
+
+static void TestRoughSSSEmptyContainerU()
+{
+	RunSSSTopology( "topology U (rough subsurfacescattering_material sheets, depth 5, 2048 spp x 3 salted)", kSceneRoughSSSU, 5, 2048, 3, 0.0035 );
+}
+
+static void TestRandomWalkSphereEmptyContainerV()
+{
+	RunSSSTopology( "topology V (roughness-0.8 randomwalk_sss_material closed sphere, depth 16, 1024 spp)", kSceneRandomWalkSphereV, 16, 1024, 0, 0.0060 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-333 / DL-356 consistency pins (2026-10-02): a SMOOTH (roughness 0)
+// diffusion `subsurfacescattering_material` sphere on topology V's
+// Lambertian wall + floor, once as the analytic `sphere_geometry` and
+// once tessellated (`displaced_geometry`, displacement none, detail 64 --
+// an indexed triangle mesh, the class DL-356 suspected through
+// `bOpenSheet` / the probe orientation on meshes).  DL-333 quoted BDPT
+// +7.9 % over PT on the shipped `bdpt_sss_dragon` made smooth; re-measured
+// on master that number does not survive (see docs/MIS_HEURISTICS.md
+// section 4a, "DL-333 / DL-356"): the dragon room's residual comes from
+// its ROMM-authored wall painters converting to NEGATIVE Rec.709
+// reflectance channels (DL-386), plus rare blue fireflies in PT and BDPT
+// alike.  These rows gate that smooth diffusion SSS itself, analytic and
+// meshed, is PT / BDPT / guided-BDPT consistent.  Green on the base as
+// well (a pin, not a red-proof).  Measured (32x32, 1024 spp, salted
+// probe, n = 6 per integrator): BDPT/PT +0.05 % (analytic) / +0.07 %
+// (mesh), per-render sd 0.05-0.08 %; the mean of 3 salted replicates
+// puts the ratio sd near 0.06 %, so the 0.5 % band is ~8 sd.
+//////////////////////////////////////////////////////////////////////
+static std::string SmoothDiffusionSphereScene( bool tessellated )
+{
+	std::string s =
+		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+		"subsurfacescattering_material\n{\n\tname mat_sss\n\tior 1.3\n\tabsorption 0.1\n"
+			"\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_alb_w\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\n\tname mat_lamb_w\n\treflectance pnt_alb_w\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+		"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_lamb_w\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_floor\n\tpta -1 -1 0\n\tptb -1 -1 2\n\tptc 1 -1 2\n\tptd 1 -1 0\n}\n\n"
+		"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_lamb_w\n}\n\n"
+		"sphere_geometry\n{\n\tname sph_w\n\tradius 0.55\n}\n\n";
+	if( tessellated ) {
+		s += "displaced_geometry\n{\n\tname sph_w_mesh\n\tbase_geometry sph_w\n\tdetail 64\n"
+			"\tdisplacement none\n\tdisp_scale 0\n}\n\n";
+	}
+	s += std::string( "standard_object\n{\n\tname obj_sph_w\n\tgeometry " ) + ( tessellated ? "sph_w_mesh" : "sph_w" )
+		+ "\n\tmaterial mat_sss\n\tposition 0 -0.45 0.6\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_emit_w\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit_w\n\texitance pnt_emit_w\n\tscale 0.5\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_emit_w\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+		"standard_object\n{\n\tname obj_emit_w\n\tgeometry quad_emit_w\n\tmaterial mat_emit_w\n}\n";
+	return s;
+}
+
+static void TestSmoothDiffusionSphereDL333()
+{
+	const std::string analytic = SmoothDiffusionSphereScene( false );
+	const std::string meshed = SmoothDiffusionSphereScene( true );
+	RunSSSTopology( "DL-333 pin: smooth diffusion analytic sphere (depth 16, 1024 spp x 3 salted)", analytic.c_str(), 16, 1024, 3, 0.005 );
+	RunSSSTopology( "DL-333 pin: smooth diffusion tessellated sphere (depth 16, 1024 spp x 3 salted)", meshed.c_str(), 16, 1024, 3, 0.005 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-375: a random-walk sphere lit by a DELTA light (omni / spot).  The
+// fixture is VCMStrategyBalanceTest's DL-317 D1/D2 scene: a Lambertian
+// wall, the sphere in front of it, the light behind the wall plane off its
+// edge, so the wall is lit ONLY through the sphere.  Two regions:
+//   sphere pixels (S1/S2): the sphere seen DIRECTLY.  Before DL-375 no
+//     BDPT strategy reached light -> sphere -> walk -> exit -> camera: the
+//     eye family's random-walk entry was non-connectible (no NEE /
+//     connection) and BSDF sampling onward never hits a point light, and
+//     the light family's random-walk entry could not splat either.  BDPT
+//     read ~-98.6% of PT, which NEEs from the exit (RandomWalkEntryBSDF).
+//   wall pixels (D1/D2): light -> sphere -> walk -> exit -> wall ->
+//     camera.  Before DL-375 only the light-sampled jump family reached
+//     it; now the eye family does (NEE at its random-walk entry), the
+//     light family is cut there by the by-path partition
+//     (BDPTUtilities::LightJumpPartition), and the row checks that
+//     the path is counted exactly once.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneDeltaLitRandomWalkDL375 =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"randomwalk_sss_material\n{\n\tname mat_rw\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 10.0\n\tg 0.0\n\troughness 0.3\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_alb_d\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_lamb_d\n\treflectance pnt_alb_d\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_lamb_d\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_d\n\tradius 0.55\n}\n\n"
+	"standard_object\n{\n\tname obj_sph_d\n\tgeometry sph_d\n\tmaterial mat_rw\n\tposition 0 -0.45 0.6\n}\n\n";
+
+static const char* kLightOmniDL375 =
+	"omni_light\n{\n\tname lgt\n\tpower 20\n\tcolor 1 1 1\n\tposition 1.8 -0.4 -0.3\n}\n";
+
+static const char* kLightSpotDL375 =
+	"spot_light\n{\n\tname lgt\n\tposition 1.8 -0.4 -0.3\n\ttarget 0 -0.45 0.6\n\tinner 20.0\n\touter 30.0\n\tcolor 1 1 1\n\tpower 20\n}\n";
+
+//! Nine dilated sample points per pixel against the sphere (pinhole at
+//! (0,0,3.5), fov 30, 32x32, sphere r 0.55 at (0,-0.45,0.6)): 0 hits is a
+//! wall pixel, 9 a sphere-interior pixel.  `row` counts from the top.
+static int SphereHitsDL375( int row, int col )
+{
+	const double t = std::tan( 15.0 * 3.14159265358979323846 / 180.0 );
+	const double c[3] = { 0.0, -0.45, 0.6 }, o[3] = { 0.0, 0.0, 3.5 };
+	int hits = 0;
+	for( int di = -1; di <= 1; di++ ) for( int dj = -1; dj <= 1; dj++ ) {
+		const double x = ( col + dj + 0.5 ) / 16.0 - 1.0, y = 1.0 - ( row + di + 0.5 ) / 16.0;
+		double d[3] = { x * t, y * t, -1.0 };
+		const double l = std::sqrt( d[0]*d[0] + d[1]*d[1] + d[2]*d[2] );
+		for( double& v : d ) v /= l;
+		const double oc[3] = { o[0]-c[0], o[1]-c[1], o[2]-c[2] };
+		const double b = d[0]*oc[0] + d[1]*oc[1] + d[2]*oc[2];
+		const double q = b*b - ( oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2] - 0.55*0.55 );
+		if( q > 0 ) hits++;
+	}
+	return hits;
+}
+
+//! One salted render of `body` (film, camera, objects, lights); the
+//! achromatic means over sphere-interior and wall pixels.
+static bool RenderRegionMeansBodyDL375( const std::string& rasterizer, const std::string& body, unsigned salt,
+	double& outSphere, double& outWall )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + body;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl375" );
+	if( path.empty() ) return false;
+	bool ok = false;
+	IJobPriv* pJob = nullptr;
+	if( RISE_CreateJobPriv( &pJob ) && pJob ) {
+		if( pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+			pJob->RemoveRasterizerOutputs();
+			CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+			GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+			SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 0x375u, salt ) );
+			std::srand( 3750u + salt );
+			const bool bRendered = pJob->Rasterize();
+			SobolSamplerTestHooks::ValueSalt().store( 0u );
+			if( bRendered && pCap->width == 32 && pCap->height == 32 ) {
+				double accS = 0, accW = 0; int nS = 0, nW = 0;
+				for( int row = 0; row < 32; row++ ) for( int col = 0; col < 32; col++ ) {
+					const int h = SphereHitsDL375( row, col );
+					const RISEColor& px = pCap->pixels[ row * 32 + col ];
+					const double v = ( px.base.r + px.base.g + px.base.b ) * px.a / 3.0;
+					if( h == 9 ) { accS += v; nS++; }
+					else if( h == 0 ) { accW += v; nW++; }
+				}
+				outSphere = nS ? accS / nS : 0;
+				outWall = nW ? accW / nW : 0;
+				ok = nS > 0 && nW > 0 && std::isfinite( outSphere ) && std::isfinite( outWall ) && outSphere > 0;
+			}
+			safe_release( pCap );
+		}
+		safe_release( pJob );
+	}
+	std::remove( path.c_str() );
+	return ok;
+}
+
+//! One salted render of the DL-375 scene lit by `light`.
+static bool RenderRegionMeansDL375( const std::string& rasterizer, const char* light, unsigned salt,
+	double& outSphere, double& outWall )
+{
+	return RenderRegionMeansBodyDL375( rasterizer, std::string( kSceneDeltaLitRandomWalkDL375 ) + light, salt, outSphere, outWall );
+}
+
+static void RunDeltaLitRandomWalkRowDL375( const char* name, const char* light, int spp,
+	double sphereBand, double wallBand )
+{
+	std::cout << "Testing DL-375 " << name << std::endl;
+	double ptS = 0, ptW = 0, bdS = 0, bdW = 0;
+	const bool ok = RenderRegionMeansDL375( SSSRasterizer( "pt", 16, spp ), light, 1u, ptS, ptW )
+		&& RenderRegionMeansDL375( SSSRasterizer( "bdpt", 16, spp ), light, 1u, bdS, bdW );
+	Check( ok, ( std::string( "DL-375 renders produced output: " ) + name ).c_str() );
+	if( !ok ) return;
+	CheckSSSMeanBand( ( std::string( "DL-375 sphere pixels, BDPT / PT: " ) + name ).c_str(), ptS, bdS, sphereBand );
+	CheckSSSMeanBand( ( std::string( "DL-375 wall pixels (lit only through the walk), BDPT / PT: " ) + name ).c_str(), ptW, bdW, wallBand );
+}
+
+static void TestDeltaLitRandomWalkDL375()
+{
+	RunDeltaLitRandomWalkRowDL375( "omni (S1 sphere / D1 wall)", kLightOmniDL375, 2048, 0.05, 0.05 );
+	RunDeltaLitRandomWalkRowDL375( "spot (S2 sphere / D2 wall)", kLightSpotDL375, 2048, 0.05, 0.05 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-380: the by-path subsurface partition under DEPTH CAPS.  Same
+// fixture, wall pixels only (lit only through the random-walk sphere:
+// light -> sphere -> walk -> exit -> wall -> camera).  The eye family
+// covers that path by NEE at its random-walk entry, which needs TWO eye
+// surface vertices (the wall, then the sphere it jumps from), so at
+// `max_eye_depth 1` it has no strategy and the light family is the only
+// estimator.  The partition used to decide from vertex types alone, cut
+// the light family anyway, and the path was lost (-99.95%).  D2 is
+// referenced to PT (no subpath caps): every path the wall pixels see at
+// first order is reachable through the light family at E1/L16 (a
+// connection at the wall, or a splat).  D1 (the omni) is gated on a
+// DIFFUSION twin against BDPT's own E16 render: on the random walk the
+// light family estimates a slightly different function than the eye
+// family (DL-381/DL-384, a model offset of ~-4 % on this wall), which the
+// noisier omni row exposes against a 5 % band.
+// E16/L1 is the mirror: the LIGHT walk is the truncated one (it stops at
+// the entry), the eye family owns the path, and the row checks nothing
+// is counted twice.  MLT goes through the same EvaluateAllStrategies.
+//////////////////////////////////////////////////////////////////////
+static std::string DL380Rasterizer( const char* kind, int eyeDepth, int lightDepth, int spp )
+{
+	char buf[1024];
+	if( std::strcmp( kind, "pt" ) == 0 ) {
+		return SSSRasterizer( "pt", 16, spp );
+	} else if( std::strcmp( kind, "mlt" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "mlt_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
+			"\tbootstrap_samples 1000000\n\tchains 512\n\tmutations_per_pixel %d\n"
+			"\tlarge_step_prob 0.3\n\toidn_denoise FALSE\n}\n", eyeDepth, lightDepth, spp );
+	} else {
+		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
+			"\tsamples %d\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", eyeDepth, lightDepth, spp );
+	}
+	return std::string( "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n" ) + buf +
+		"\nfile_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_unused\n\ttype EXR\n"
+		"\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+}
+
+//! Mean and sd of the wall-pixel mean over `n` salted renders.
+static bool DL380WallMeanBody( const std::string& rasterizer, const std::string& body, int n, unsigned saltBase,
+	double& mean, double& sd )
+{
+	double sum = 0, sumSq = 0;
+	for( int i = 0; i < n; i++ ) {
+		double s = 0, w = 0;
+		if( !RenderRegionMeansBodyDL375( rasterizer, body, saltBase + unsigned( i ), s, w ) ) return false;
+		sum += w; sumSq += w * w;
+	}
+	mean = sum / n;
+	sd = n > 1 ? std::sqrt( std::max( 0.0, ( sumSq - n * mean * mean ) / ( n - 1 ) ) ) : 0;
+	return true;
+}
+
+static bool DL380WallMean( const std::string& rasterizer, const char* light, int n, unsigned saltBase,
+	double& mean, double& sd )
+{
+	return DL380WallMeanBody( rasterizer, std::string( kSceneDeltaLitRandomWalkDL375 ) + light, n, saltBase, mean, sd );
+}
+
+//! The DL-375 fixture with the sphere a smooth-profile DIFFUSION material
+//! (same coefficients) instead of the random walk.  The diffusion BSSRDF is
+//! reciprocal -- the eye and light families estimate the SAME function --
+//! so a cap that hands the path from one family to the other must leave the
+//! image unchanged.  The random walk is not (DL-381/DL-384: its light family
+//! reads a few percent off the eye family on this scene, a model offset the
+//! partition cannot remove), which is why the D1 row is gated here.
+static std::string DL380DiffusionBody( const char* light )
+{
+	std::string b = kSceneDeltaLitRandomWalkDL375;
+	const std::string mat = "\tmaterial mat_rw\n";
+	const std::size_t at = b.find( mat );
+	if( at != std::string::npos ) {
+		b.replace( at, mat.size(), "\tmaterial mat_diff\n" );
+	}
+	return std::string( "subsurfacescattering_material\n{\n\tname mat_diff\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 10.0\n\tg 0.0\n\troughness 0.3\n}\n\n" ) + b + light;
+}
+
+static void RunDL380Row( const char* name, const char* light, const char* kind, int eyeDepth, int lightDepth,
+	int spp, int n, double ptMean, double band )
+{
+	std::cout << "Testing DL-380 " << name << std::endl;
+	double m = 0, sd = 0;
+	const bool ok = DL380WallMean( DL380Rasterizer( kind, eyeDepth, lightDepth, spp ), light, n, 380u, m, sd );
+	Check( ok, ( std::string( "DL-380 renders produced output: " ) + name ).c_str() );
+	if( !ok ) return;
+	std::printf( "    wall mean %.7f (sd %.7f, n %d) vs PT %.7f\n", m, sd, n, ptMean );
+	CheckSSSMeanBand( ( std::string( "DL-380 wall pixels / PT: " ) + name ).c_str(), ptMean, m, band );
+}
+
+//! D1 omni on the DIFFUSION twin: BDPT at E1/L16 (the light family owns the
+//! wall path) against BDPT at E16/L16 (the eye family owns it, by NEE at its
+//! entry).  Band 7 %: per-render sd measured 3.4 % (E1, n = 10) and 0.7 %
+//! (E16, n = 6) on the review's runs, so the ratio sd at n = 8 / 4 is
+//! ~1.3 %; measured -0.38 % (n=16, review round 2; +0.1..+0.4 % in gate runs)
+//! plus 4 sd is 6.6 %.
+static void RunDL380DiffusionD1Row()
+{
+	std::cout << "Testing DL-380 D1 omni, diffusion twin: BDPT max_eye_depth 1 / max_light_depth 16 vs 16 / 16" << std::endl;
+	const std::string body = DL380DiffusionBody( kLightOmniDL375 );
+	double e1 = 0, e1Sd = 0, e16 = 0, e16Sd = 0;
+	const bool ok = DL380WallMeanBody( DL380Rasterizer( "bdpt", 1, 16, 2048 ), body, 8, 3800u, e1, e1Sd )
+		&& DL380WallMeanBody( DL380Rasterizer( "bdpt", 16, 16, 2048 ), body, 4, 3810u, e16, e16Sd );
+	Check( ok, "DL-380 diffusion-twin renders produced output" );
+	if( !ok ) return;
+	std::printf( "    wall E1/L16 %.7f (sd %.7f, n 8)  E16/L16 %.7f (sd %.7f, n 4)\n", e1, e1Sd, e16, e16Sd );
+	CheckSSSMeanBand( "DL-380 D1 omni diffusion twin, BDPT E1/L16 / E16/L16 (wall pixels)", e16, e1, 0.07 );
+}
+
+static void TestDepthCappedPartitionDL380( bool withMLT )
+{
+	const int n = 3;
+	double ptSpot = 0, sdSpot = 0;
+	const bool ok = DL380WallMean( DL380Rasterizer( "pt", 16, 16, 2048 ), kLightSpotDL375, n, 380u, ptSpot, sdSpot );
+	Check( ok, "DL-380 PT reference produced output" );
+	if( !ok ) return;
+	std::printf( "    PT wall reference: D2 spot %.7f (sd %.7f), n %d\n", ptSpot, sdSpot, n );
+	if( withMLT ) {
+		// MLT normalizes its image by its bootstrap, which goes through the
+		// same EvaluateAllStrategies; one render, probe band.
+		RunDL380Row( "D2 spot, MLT max_eye_depth 1 / max_light_depth 16", kLightSpotDL375, "mlt", 1, 16, 256, 1, ptSpot, 0.10 );
+		return;
+	}
+	RunDL380DiffusionD1Row();
+	RunDL380Row( "D2 spot, BDPT max_eye_depth 1 / max_light_depth 16", kLightSpotDL375, "bdpt", 1, 16, 2048, n, ptSpot, 0.05 );
+	RunDL380Row( "D2 spot, BDPT max_eye_depth 16 / max_light_depth 1 (light truncated: no double count)",
+		kLightSpotDL375, "bdpt", 16, 1, 2048, n, ptSpot, 0.05 );
+	RunDL380Row( "D2 spot, BDPT max_eye_depth 2 / max_light_depth 16 (eye covers exactly at its cap)",
+		kLightSpotDL375, "bdpt", 2, 16, 2048, n, ptSpot, 0.05 );
+}
+
+// DL-346: a conservative environment-lit medium has L=1 independently
+// of every MIS implementation. Index-matched boundaries and a white floor
+// conserve radiance; max_volume_bounce 256 makes the omitted tail negligible.
+// Six independently salted trials give an unchanged 2% physical band and
+// a separately checked Student confidence width. The baseline reads ~.952.
+static void TestEnvironmentScatteringMediumDL346()
+{
+ const std::string common="RISE ASCII SCENE 7\n"
+  "standard_shader\n{\n name global\n shaderop DefaultPathTracing\n}\n"
+  "film\n{\n width 24\n height 24\n}\n"
+  "pinhole_camera\n{\n location 0 0 1.9999\n lookat 0 -1 0\n up 0 1 0\n fov 50\n}\n"
+  "uniformcolor_painter\n{\n name white\n color 1 1 1\n}\n"
+  "lambertian_material\n{\n name floor\n reflectance white\n}\n"
+  "homogeneous_medium\n{\n name fog\n absorption 0 0 0\n scattering .7 .7 .7\n phase isotropic\n}\n"
+  "dielectric_material\n{\n name shell\n tau 1 1 1\n ior 1\n scattering 1000000\n}\n"
+  "box_geometry\n{\n name box\n width 4\n height 4\n depth 4\n}\n"
+  "standard_object\n{\n name enclosure\n geometry box\n material shell\n interior_medium fog\n}\n"
+  "clippedplane_geometry\n{\n name quad\n pta -1.9 -1.5 -1.9\n ptb -1.9 -1.5 1.9\n ptc 1.9 -1.5 1.9\n ptd 1.9 -1.5 -1.9\n}\n"
+  "standard_object\n{\n name receiver\n geometry quad\n material floor\n}\n";
+ const char* modes[]={"pathtracing_pel_rasterizer","bdpt_pel_rasterizer"};
+ double sums[2]={},squares[2]={};
+ for(unsigned trial=0;trial<6;++trial) for(unsigned mode=0;mode<2;++mode) {
+  std::string scene=common+std::string(modes[mode])+"\n{\n samples 128\n pixel_filter box\n oidn_denoise FALSE\n max_volume_bounce 256\n radiance_map white\n radiance_background TRUE\n";
+  if(mode) scene+=" max_eye_depth 20\n max_light_depth 20\n";
+  scene+="}\n";
+  const std::string path=WriteSceneToTempFile(scene.c_str(),mode?"dl346_bdpt":"dl346_pt");
+  SobolSamplerTestHooks::ValueSalt().store(SobolSequence::HashCombine(34600u+trial,0x346u));
+  const ImageStats result=RenderAndComputeStats(path.c_str());
+  SobolSamplerTestHooks::ValueSalt().store(0u);std::remove(path.c_str());
+  const double value=(result.mean[0]+result.mean[1]+result.mean[2])/3;
+  Check(result.valid && std::isfinite(value),"DL346 environment medium produces finite radiance");
+  sums[mode]+=value;squares[mode]+=value*value;
+  std::printf("DL346 strategy furnace trial=%u mode=%s mean=%.12g\n",trial,modes[mode],value);
+ }
+ for(unsigned mode=0;mode<2;++mode) {
+  const double mean=sums[mode]/6;
+  const double sd=std::sqrt(std::max(0.,(squares[mode]-sums[mode]*sums[mode]/6)/5));
+  const double ci=2.571*sd/std::sqrt(6.);
+  std::printf("DL346 strategy furnace mode=%s n=6 mean=%.12g sd=%.12g ci95=%.12g oracle=1\n",modes[mode],mean,sd,ci);
+  Check(std::fabs(mean-1)<.02,"DL346 environment medium matches unit-radiance oracle within 2%");
+  Check(ci<.02,"DL346 furnace Student CI narrower than unchanged 2% band");
+ }
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-377: a LIGHT-side diffusion BSSRDF entry re-emits toward the camera.
+//
+// Fixture G of the DL-317 round-2 review: an omni light sits inside an
+// index-matched (ior 1.0, delta) glass sphere and lights a smooth
+// `subsurfacescattering_material` sphere.  The glass is optically absent,
+// so the reference-free truth is PT on the SAME scene WITHOUT the glass;
+// with it, every eye-side strategy is blocked (NEE cannot pass a delta
+// interface, and BSDF sampling never hits a point light), so BDPT renders
+// the sphere through the light-sampled jump alone -- the t=1 splat and the
+// connection AT the light-side entry.  Pre-fix those evaluated Sw along the
+// jump chord (`wiAtLight`, the arrival "direction" from the hit where the
+// light went in), which on a convex shape faces INTO the surface: Sw = 0
+// exactly.  G2 adds a Lambertian wall behind the sphere and reads only
+// wall pixels (outside a disk around the sphere's silhouette): the wall
+// sees the sphere's re-emission, again light-family only, through the
+// splat at the wall and the connection entry--wall.
+//////////////////////////////////////////////////////////////////////
+
+static const char* kSceneDL377Common =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"subsurfacescattering_material\n{\n\tname mat_s\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n}\n\n"
+	"sphere_geometry\n{\n\tname sg\n\tradius 0.6\n}\n\n"
+	"standard_object\n{\n\tname so\n\tgeometry sg\n\tmaterial mat_s\n}\n\n";
+
+static const char* kSceneDL377Omni =
+	"omni_light\n{\n\tname L\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 1.1 0.6\n}\n\n";
+
+// A narrow spot from the same point, aimed at the sphere's centre: its
+// cone (outer 14 deg) lies inside the sphere's 28.6 deg half-angle, so the
+// wall receives light ONLY through the sphere.
+static const char* kSceneDL377Spot =
+	"spot_light\n{\n\tname L\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 1.1 0.6\n"
+		"\ttarget 0 0 0\n\tinner 10\n\touter 14\n}\n\n";
+
+static const char* kSceneDL377Wall =
+	"uniformcolor_painter\n{\n\tname pw2\n\tcolor 0.7 0.7 0.7\n}\n\n"
+	"lambertian_material\n{\n\tname mat_w\n\treflectance pw2\n}\n\n"
+	"clippedplane_geometry\n{\n\tname qw\n\tpta -1.5 -1.5 -0.7\n\tptb 1.5 -1.5 -0.7\n"
+		"\tptc 1.5 1.5 -0.7\n\tptd -1.5 1.5 -0.7\n}\n\n"
+	"standard_object\n{\n\tname ow\n\tgeometry qw\n\tmaterial mat_w\n}\n\n";
+
+static const char* kSceneDL377Glass =
+	"dielectric_material\n{\n\tname mat_g\n\ttau 1.0\n\tior 1.0\n\tscattering 1000000\n}\n\n"
+	"sphere_geometry\n{\n\tname gg\n\tradius 0.25\n}\n\n"
+	"standard_object\n{\n\tname og\n\tgeometry gg\n\tmaterial mat_g\n\tposition 0 1.1 0.6\n}\n\n";
+
+static std::string DL377Rasterizer( const char* kind, int spp )
+{
+	char buf[1024];
+	if( std::strcmp( kind, "pt" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "pathtracing_pel_rasterizer\n{\n\tsamples %d\n\trr_min_depth 8\n"
+			"\tmax_diffuse_bounce 16\n\tmax_glossy_bounce 16\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", spp );
+	} else if( std::strcmp( kind, "bdpt" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 16\n\tmax_light_depth 16\n"
+			"\tsamples %d\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", spp );
+	} else if( std::strcmp( kind, "bdptspec" ) == 0 || std::strcmp( kind, "bdpthwss" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 16\n\tmax_light_depth 16\n"
+			"\tsamples %d\n\thwss %s\n\tnum_wavelengths 160\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n",
+			spp, std::strcmp( kind, "bdpthwss" ) == 0 ? "TRUE" : "FALSE" );
+	} else if( std::strcmp( kind, "vcmoff" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "vcm_pel_rasterizer\n{\n\tmax_eye_depth 16\n\tmax_light_depth 16\n"
+			"\tsamples %d\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled false\n"
+			"\tpixel_filter box\n\toidn_denoise FALSE\n}\n", spp );
+	} else {
+		std::snprintf( buf, sizeof(buf), "mlt_rasterizer\n{\n\tmax_eye_depth 16\n\tmax_light_depth 16\n"
+			"\tbootstrap_samples %d\n\tchains 512\n\tmutations_per_pixel %d\n"
+			"\tlarge_step_prob 0.3\n\toidn_denoise FALSE\n}\n",
+			std::strcmp( kind, "mlt1m" ) == 0 ? 1000000 : 100000, spp );
+	}
+	return std::string( "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n" ) + buf +
+		"\nfile_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_unused\n\ttype EXR\n"
+		"\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+}
+
+//! Achromatic coverage-weighted mean over the whole frame, or (wallOnly)
+//! over the pixels farther than 13 px from the frame centre -- outside the
+//! sphere's ~10.4 px silhouette disk, so wall only.  `replicates` salted
+//! renders (salt base fixed per call site); false on any failure.
+static bool RenderDL377Mean( const std::string& scene, const char* tag, bool wallOnly,
+	int replicates, unsigned saltBase, double& outMean, double* outSd = nullptr )
+{
+	const std::string path = WriteSceneToTempFile( scene.c_str(), tag );
+	if( path.empty() ) return false;
+	double sum = 0, sumSq = 0;
+	bool ok = true;
+	for( int i = 0; i < replicates && ok; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( saltBase, unsigned( i ) ) );
+		IJobPriv* pJob = nullptr;
+		ok = RISE_CreateJobPriv( &pJob ) && pJob;
+		if( !ok ) break;
+		ok = pJob->LoadAsciiSceneViaCst( path.c_str() );
+		if( ok ) {
+			pJob->RemoveRasterizerOutputs();
+			CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+			GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+			std::srand( 3770u + unsigned( i ) );
+			ok = pJob->Rasterize() && pCap->width > 0 && pCap->height > 0;
+			double acc = 0;
+			unsigned count = 0;
+			for( unsigned int y = 0; ok && y < pCap->height; y++ ) {
+				for( unsigned int x = 0; x < pCap->width; x++ ) {
+					const double dx = double( x ) + 0.5 - 0.5 * double( pCap->width );
+					const double dy = double( y ) + 0.5 - 0.5 * double( pCap->height );
+					if( wallOnly && dx * dx + dy * dy < 13.0 * 13.0 ) continue;
+					const RISEColor& c = pCap->pixels[y * pCap->width + x];
+					const double v = ( c.base.r + c.base.g + c.base.b ) / 3.0 * c.a;
+					if( !std::isfinite( v ) ) { ok = false; break; }
+					acc += v;
+					count++;
+				}
+			}
+			if( ok && count > 0 ) {
+				const double m = acc / double( count );
+				sum += m;
+				sumSq += m * m;
+			}
+			safe_release( pCap );
+		}
+		safe_release( pJob );
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( !ok ) return false;
+	outMean = sum / double( replicates );
+	if( outSd ) {
+		*outSd = replicates > 1
+			? std::sqrt( std::max( 0.0, ( sumSq - sum * sum / double( replicates ) ) / double( replicates - 1 ) ) )
+			: 0.0;
+	}
+	return std::isfinite( outMean ) && outMean >= 0;
+}
+
+//! `kind` renders the scene WITH the index-matched glass; `refKind` renders
+//! it WITHOUT (the glass is optically absent, so the two must agree).
+static void RunDL377Row( const char* label, bool wall, bool spot, const char* kind, int spp,
+	const char* refKind, int refSpp, int replicates, double band, bool refGlass = false )
+{
+	std::cout << "Testing DL-377 " << label << std::endl;
+	const std::string body = std::string( kSceneDL377Common ) + ( spot ? kSceneDL377Spot : kSceneDL377Omni ) +
+		( wall ? kSceneDL377Wall : "" );
+	const std::string ref = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( refKind, refSpp ) + body +
+		( refGlass ? kSceneDL377Glass : "" );
+	const std::string test = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( kind, spp ) + body + kSceneDL377Glass;
+	double r = 0, x = 0, rSd = 0, xSd = 0;
+	const bool okR = RenderDL377Mean( ref, "dl377_ref", wall, replicates, 0x377A, r, &rSd );
+	const bool okX = RenderDL377Mean( test, "dl377_x", wall, replicates, 0x377B, x, &xSd );
+	Check( okR && okX && r > 0, ( std::string( "DL-377 renders produced output: " ) + label ).c_str() );
+	if( !okR || !okX || !( r > 0 ) ) return;
+	const double rel = x / r - 1.0;
+	std::printf( "    %s: %s-%s %.7f (sd %.7f)  %s-with-glass %.7f (sd %.7f)  rel %+.3f%%  (band +/- %.2f%%, n=%d)\n",
+		label, refKind, refGlass ? "with-glass" : "no-glass", r, rSd, kind, x, xSd, 100.0 * rel, 100.0 * band, replicates );
+	Check( std::fabs( rel ) <= band, ( std::string( "DL-377 light-side diffusion entry re-emits toward the camera: " ) + label ).c_str() );
+}
+
+//! G: the light family alone renders the sphere; truth is PT without glass.
+//! G2 reads wall pixels against VCM (merging off) WITHOUT the glass, where
+//! the eye family covers the paths and VCM's DL-317 by-path partition
+//! holds.  Not PT: on G2's wall every bidirectional estimator reads above
+//! it (VCM merging off +1.0%, n = 4, independently of this row).  G3's wall
+//! is lit ONLY through the sphere and is dim, so the no-glass estimators of
+//! it are heavy-tailed (PT at 8192 spp 0.000891..0.000917 across runs, VCM
+//! sd 17% per render); it is referenced to VCM merging off WITH the glass
+//! -- the light-sampled family DL-317 validated against PT
+//! (VCMStrategyBalanceTest D1/D2) -- whose spread is ~1% per render.  G4 is
+//! G3 WITHOUT the glass under BDPT: the eye family covers the path (NEE at
+//! its entry reaches the spot), so it checks the partition from the other
+//! side -- before DL-375's barrier it read -93% (MISWeight reserved weight
+//! across the jump with phantom densities).  The eye family's estimate of
+//! this dim, spot-lit wall is heavy-tailed (+2.3% at n = 2, +7.7% at n = 4
+//! with the same salts), so G4's band only separates that failure.
+static void TestLightSideDiffusionEntryDL377()
+{
+	RunDL377Row( "G (omni in index-matched glass, diffusion sphere, whole frame)", false, false, "bdpt", 1024, "pt", 512, 4, 0.03 );
+	RunDL377Row( "G2 (G + Lambertian wall, wall pixels only)", true, false, "bdpt", 512, "vcmoff", 512, 4, 0.01 );
+	RunDL377Row( "G3 (G2 with a spot confined to the sphere, wall pixels only)", true, true, "bdpt", 1024, "vcmoff", 1024, 4, 0.03, true );
+	{
+		std::cout << "Testing DL-377 G4 (G3 WITHOUT glass under BDPT vs VCM merging off WITH glass)" << std::endl;
+		const std::string body = std::string( kSceneDL377Common ) + kSceneDL377Spot + kSceneDL377Wall;
+		double v = 0, b = 0;
+		const bool okV = RenderDL377Mean( std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( "vcmoff", 1024 ) + body +
+			kSceneDL377Glass, "dl377_g4v", true, 4, 0x377A, v );
+		const bool okB = RenderDL377Mean( std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( "bdpt", 1024 ) + body,
+			"dl377_g4b", true, 4, 0x377C, b );
+		Check( okV && okB && v > 0, "DL-377 G4 renders produced output" );
+		if( okV && okB && v > 0 ) {
+			const double rel = b / v - 1.0;
+			std::printf( "    G4: vcmoff-with-glass %.7f  bdpt-no-glass %.7f  rel %+.3f%%  (band +/- 20.00%%, n=4)\n", v, b, 100.0 * rel );
+			Check( std::fabs( rel ) <= 0.20, "DL-377 G4: the eye family alone renders a delta-lit diffusion jump it covers" );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-381: the light family through a random-walk jump (fixture G-RW =
+// the DL-375 omni scene with the omni inside an index-matched glass
+// sphere, so only the light family reaches the paths).
+//////////////////////////////////////////////////////////////////////
+
+static const char* kGlassAroundOmniDL381 =
+	"dielectric_material\n{\n\tname mat_g381\n\ttau 1.0\n\tior 1.0\n\tscattering 1000000\n}\n\n"
+	"sphere_geometry\n{\n\tname gg381\n\tradius 0.25\n}\n\n"
+	"standard_object\n{\n\tname og381\n\tgeometry gg381\n\tmaterial mat_g381\n\tposition 1.8 -0.4 -0.3\n}\n\n";
+
+//! The DL-375 scene body with the sphere's material variant `mat`
+//! ("rw03" shipped, "rw0" smooth boundary, "lamb" Lambertian 0.5) and,
+//! when `glass`, the omni inside an index-matched glass sphere.
+static std::string DL381Body( const char* mat, bool glass )
+{
+	std::string body = kSceneDeltaLitRandomWalkDL375;
+	const std::string rwOld = "\troughness 0.3\n";
+	if( std::strcmp( mat, "rw0" ) == 0 ) {
+		body.replace( body.find( rwOld ), rwOld.size(), "\troughness 0.0\n" );
+	} else if( std::strcmp( mat, "rw0black" ) == 0 ) {
+		// The smooth boundary over an interior that absorbs everything: only
+		// the boundary's specular reflection lights the wall.
+		body.replace( body.find( rwOld ), rwOld.size(), "\troughness 0.0\n" );
+		const std::string ab = "\tabsorption 0.1\n\tscattering 10.0\n";
+		body.replace( body.find( ab ), ab.size(), "\tabsorption 1000.0\n\tscattering 0.001\n" );
+	} else if( std::strcmp( mat, "lamb" ) == 0 ) {
+		const size_t a = body.find( "randomwalk_sss_material" );
+		const size_t b = body.find( "}\n\n", a ) + 3;
+		body.replace( a, b - a, "uniformcolor_painter\n{\n\tname pnt_s381\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\n\tname mat_rw\n\treflectance pnt_s381\n}\n\n" );
+	}
+	return body + kLightOmniDL375 + ( glass ? kGlassAroundOmniDL381 : "" );
+}
+
+//! Mean and per-render sample standard deviation of `n` salted renders'
+//! sphere/wall means.
+static bool MeasureDL381( const char* kind, int spp, const char* mat, bool glass, int n, unsigned saltBase,
+	double& s, double& sSd, double& w, double& wSd )
+{
+	double ss = 0, ss2 = 0, ww = 0, ww2 = 0;
+	for( int i = 0; i < n; i++ ) {
+		double a = 0, b = 0;
+		if( !RenderRegionMeansBodyDL375( DL377Rasterizer( kind, spp ), DL381Body( mat, glass ), saltBase + unsigned( i ), a, b ) ) {
+			return false;
+		}
+		ss += a; ss2 += a * a; ww += b; ww2 += b * b;
+	}
+	s = ss / n; w = ww / n;
+	sSd = n > 1 ? std::sqrt( std::max( 0.0, ( ss2 - ss * ss / n ) / ( n - 1 ) ) ) : 0;
+	wSd = n > 1 ? std::sqrt( std::max( 0.0, ( ww2 - ww * ww / n ) / ( n - 1 ) ) ) : 0;
+	return true;
+}
+
+//! DL-381: the random-walk model is NON-RECIPROCAL by construction -- the
+//! walk starts along the REFRACTED direction of whichever end it is traced
+//! from and leaves the other end through the cosine lobe Ft(cos)/c -- so
+//! the eye family (PT, BDPT/VCM wherever the DL-375 partition gives it the
+//! path) and the light family (the only family when a delta light reaches
+//! the object through a delta interface, fixture G-RW) estimate DIFFERENT
+//! functions.  Neither is a defect: each integrator is pinned here to an
+//! INDEPENDENT light tracer of its own model function
+//! (tools/DL381RandomWalkReciprocityMC.cpp, 4e8 photons; constants and
+//! their 16-batch standard errors below).  Exact physics (refracted at both
+//! ends) reads sphere 0.1280 / wall 0.0194: the light family's -12% is
+//! CLOSER to it than PT's -17%, so "fixing" the light family to PT's
+//! number would move BDPT/VCM AWAY from physics.  A light family that
+//! reproduced PT's function (sphere -6.0%) or a reciprocal both-ends-cosine
+//! model (sphere -18.5%) fails the sphere band.  (Re-baselined 2026-10-02
+//! for DL-368's pixel-centre convention; the tool bins photons by RISE's
+//! pixel centres, so every constant here moved -- the old ones read
+//! sphere 0.1186 / 0.1052 / 0.0974.)  Smooth boundary (roughness
+//! 0) so the MC needs no microfacet model; the walk itself ignores
+//! roughness.  docs/DL381_RANDOM_WALK_RECIPROCITY.md.
+static void CheckDL381( const char* label, double measured, double reference, double band )
+{
+	const double rel = measured / reference - 1.0;
+	std::printf( "    %s: %.7f vs model reference %.7f  rel %+.3f%%  (band +/- %.1f%%)\n",
+		label, measured, reference, 100.0 * rel, 100.0 * band );
+	Check( std::fabs( rel ) <= band, ( std::string( "DL-381 " ) + label ).c_str() );
+}
+
+static void TestRandomWalkReciprocityDL381()
+{
+	struct Row { const char* kind; bool glass; double refS, refW; const char* what; };
+	// MC references (standard error over 16 batches; DL-368 pixel centres,
+	// 2026-10-02): EYE model, tally A: sphere 0.105680 (0.00061), wall
+	// 0.020096 (0.00014); LIGHT model, tally B: sphere 0.112412 (0.00050),
+	// wall 0.020129 (0.00012).
+	const Row rows[] = {
+		{ "pt",     false, 0.105680, 0.020096, "PT (eye family, no glass) vs the EYE-model MC" },
+		{ "bdpt",   true,  0.112412, 0.020129, "BDPT G-RW (light family only) vs the LIGHT-model MC" },
+		{ "vcmoff", true,  0.112412, 0.020129, "VCM merging off G-RW (light family only) vs the LIGHT-model MC" },
+	};
+	for( const Row& r : rows ) {
+		std::cout << "Testing DL-381 " << r.what << std::endl;
+		double s = 0, sSd = 0, w = 0, wSd = 0;
+		const bool ok = MeasureDL381( r.kind, 1024, "rw0", r.glass, 4, 0x3810u, s, sSd, w, wSd );
+		Check( ok && s > 0 && w > 0, ( std::string( "DL-381 renders produced output: " ) + r.kind ).c_str() );
+		if( !ok ) continue;
+		// Bands widened at the DL-381 review: two runs of the pinned salts read
+		// VCM sphere -2.32 / -0.28 %, BDPT wall -1.65 / -2.78 % (the renders are
+		// not bit-repeatable multithreaded); 4 % / 5 % still separate the
+		// current model from PT's function (-7.4 %) and both-Lambertian (-18 %).
+		CheckDL381( ( std::string( r.kind ) + " sphere pixels" ).c_str(), s, r.refS, 0.04 );
+		CheckDL381( ( std::string( r.kind ) + " wall pixels" ).c_str(), w, r.refW, 0.05 );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-354: a SMALL emitter seen directly by the camera, rendered at three
+// pixel sizes.  `sms_k2_flatslab`'s visible luminaire (a 0.08 x 0.08
+// double-sided quad at y = 1.5, ~2.4 x 0.4 px at 100 x 75) with the slab
+// and floor kept, so the fixture is the row's own.  The gated quantity
+// is the ENERGY of a fixed fractional window around the emitter's image
+// (sum of achromatic pixel values times pixel solid angle ~ 1/(W H)),
+// which is resolution independent for a correct estimator.
+//////////////////////////////////////////////////////////////////////
+static std::string DL354Scene( const char* kind, unsigned w, unsigned h, unsigned spp )
+{
+	std::string r = "RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+	char buf[512];
+	const bool centred = kind[0] && kind[std::strlen( kind ) - 1] == 'c';
+	// "pts" before "pt": "pt" is a prefix of it (and of "ptc").
+	if( std::strncmp( kind, "pts", 3 ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "pathtracing_spectral_rasterizer\n{\n\tsamples %u\n\thwss FALSE\n\tnum_wavelengths 160\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", spp );
+	} else if( std::strncmp( kind, "pt", 2 ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "pathtracing_pel_rasterizer\n{\n\tsamples %u\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", spp );
+	} else if( std::strncmp( kind, "bdpts", 5 ) == 0 || std::strncmp( kind, "bdpth", 5 ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "bdpt_spectral_rasterizer\n{\n\tsamples %u\n\thwss %s\n\tnum_wavelengths 160\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n",
+			spp, kind[4] == 'h' ? "TRUE" : "FALSE" );
+	} else if( std::strncmp( kind, "mlt", 3 ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "mlt_rasterizer\n{\n\tbootstrap_samples 1000000\n\tchains 128\n\tmutations_per_pixel %u\n\tlarge_step_prob 0.3\n\toidn_denoise FALSE\n}\n\n", spp );
+	} else if( std::strncmp( kind, "vcm", 3 ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "vcm_pel_rasterizer\n{\n\tsamples %u\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", spp );
+	} else {
+		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tsamples %u\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", spp );
+	}
+	r += buf;
+	std::snprintf( buf, sizeof(buf), "film\n{\n\twidth %u\n\theight %u\n}\n\n", w, h );
+	r += buf;
+	r += centred ? "pinhole_camera\n{\n\tlocation 0 2.0 3\n\tlookat 0 1.5 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n"
+		: "pinhole_camera\n{\n\tlocation 0 2.0 3\n\tlookat 0 0.2 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n";
+	r +=
+		"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.8 0.75 0.65\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_light\n\tcolor 1.0 0.95 0.85\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_glass\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_material\n{\n\tname floor_mat\n\treflectance pnt_floor\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname light_mat\n\texitance pnt_light\n\tscale 2000.0\n\tmaterial none\n}\n\n"
+		"perfectrefractor_material\n{\n\tname glass_mat\n\trefractance pnt_glass\n\tior 2.2\n}\n\n"
+		"clippedplane_geometry\n{\n\tname plane_base\n\tpta -0.5 -0.5 0\n\tptb 0.5 -0.5 0\n\tptc 0.5 0.5 0\n\tptd -0.5 0.5 0\n}\n\n"
+		"clippedplane_geometry\n{\n\tname floor_geom\n\tpta -4.0 0.0 -4.0\n\tptb -4.0 0.0 4.0\n\tptc 4.0 0.0 4.0\n\tptd 4.0 0.0 -4.0\n}\n\n"
+		"clippedplane_geometry\n{\n\tname light_geom\n\tpta -0.1 0.0 -0.1\n\tptb 0.1 0.0 -0.1\n\tptc 0.1 0.0 0.1\n\tptd -0.1 0.0 0.1\n}\n\n"
+		"standard_object\n{\n\tname floor\n\tgeometry floor_geom\n\tmaterial floor_mat\n}\n\n"
+		"standard_object\n{\n\tname top_plane\n\tgeometry plane_base\n\torientation -90 0 0\n\tposition 0 0.55 0\n\tmaterial glass_mat\n}\n\n"
+		"standard_object\n{\n\tname bot_plane\n\tgeometry plane_base\n\torientation 90 0 0\n\tposition 0 0.45 0\n\tmaterial glass_mat\n}\n\n"
+		"standard_object\n{\n\tname area_light\n\tgeometry light_geom\n\tposition 0 1.5 0\n\tscale 0.4 0.4 0.4\n\tmaterial light_mat\n}\n";
+	return r;
+}
+
+//! Window energy (achromatic sum over the fractional window, times
+//! 100*75/(W*H) so it reads in the row's 100 x 75 "window sum" units) of
+//! `n` salted renders: mean and sd.  Window: x in [0.35, 0.65) W, y in
+//! [0, 0.10) H -- the emitter's image and black background only.
+static bool DL354WindowEnergy( const char* kind, unsigned w, unsigned h, unsigned spp, int n, unsigned saltBase,
+	double& mean, double& sd )
+{
+	const std::string scene = DL354Scene( kind, w, h, spp );
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl354" );
+	if( path.empty() ) return false;
+	std::vector<double> vals;
+	for( int i = 0; i < n; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( saltBase, unsigned( i ) ) );
+		IJobPriv* pJob = nullptr;
+		if( !RISE_CreateJobPriv( &pJob ) || !pJob ) break;
+		if( !pJob->LoadAsciiSceneViaCst( path.c_str() ) ) { safe_release( pJob ); break; }
+		pJob->RemoveRasterizerOutputs();
+		CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+		GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+		pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+		std::srand( 0x354u + unsigned( i ) );
+		const bool ok = pJob->Rasterize() && pCap->width == w && pCap->height == h;
+		if( ok ) {
+			const bool c = kind[0] && kind[std::strlen( kind ) - 1] == 'c';
+			const unsigned x0 = unsigned( 0.35 * w ), x1 = unsigned( 0.65 * w );
+			const unsigned y0 = c ? unsigned( 0.40 * h ) : 0u, y1 = c ? unsigned( std::ceil( 0.60 * h ) ) : unsigned( std::ceil( 0.10 * h ) );
+			double s = 0;
+			for( unsigned y = y0; y < y1; y++ ) for( unsigned x = x0; x < x1; x++ ) {
+				const RISEColor& c = pCap->pixels[y * w + x];
+				s += ( c.base.r + c.base.g + c.base.b ) / 3.0 * c.a;
+			}
+			vals.push_back( s * ( 100.0 * 75.0 ) / ( double( w ) * double( h ) ) );
+		}
+		safe_release( pCap );
+		safe_release( pJob );
+		if( !ok ) break;
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( int( vals.size() ) != n || n <= 0 ) return false;
+	mean = 0; for( double v : vals ) mean += v; mean /= n;
+	sd = 0; for( double v : vals ) sd += ( v - mean ) * ( v - mean );
+	sd = n > 1 ? std::sqrt( sd / ( n - 1 ) ) : 0.0;
+	return true;
+}
+
+//! DL-354 gate: BDPT (and BDPT spectral, hwss TRUE) vs PT window energy of
+//! the directly visible small luminaire at two pixel sizes.  Pre-fix the
+//! (1,1) strategy was never evaluated while MISWeight(0,2) counted it, so
+//! BDPT read r^2/(1+r^2) low with r the light's area density over the
+//! PER-PIXEL camera density at the emitter: measured (n = 3 salted, 64 spp
+//! BDPT, PT 256 spp) 0.58 at 100 x 75, 0.957 at 200 x 150, 0.997 at
+//! 400 x 300.  Per-render sd ~1.1-1.2 % on both sides at 100 x 75 (n = 6
+//! there: ratio sd ~0.7 %, the 3 % band ~4.4 sd) and ~0.2-0.6 % at
+//! 200 x 150 (n = 3); bands 3 % / 2.5 %.  The spectral row
+//! compares BDPT `hwss TRUE` (256 spp) against a real PT SPECTRAL render
+//! (4096 spp; a review found the first revision's "pts" kind fell through
+//! to the PT pel rasterizer).  Per-render sd: BDPT HWSS 1.2 % (n = 4);
+//! PT spectral 1.0 % and 2.7 % in two salt sets (n = 4, n = 3 -- its hero
+//! wavelength gives the tiny emitter a heavy tail), pooled ~1.8 %.  With
+//! n = 4 renders a side the ratio sd is ~1.1 % and the 5 % band ~4.6 sd;
+//! pre-fix BDPT HWSS read ~394 against PT spectral's ~688 (0.57).
+static void TestSmallVisibleEmitterResolutionSweep()
+{
+	struct Row { const char* kind; const char* ref; unsigned w, h, spp, refSpp; double band; int n; };
+	const Row rows[] = {
+		{ "bdpt",  "pt",  100, 75,  64, 256, 0.03, 6 },
+		{ "bdpt",  "pt",  200, 150, 64, 256, 0.025, 3 },
+		{ "bdpth", "pts", 100, 75, 256, 4096, 0.05, 4 },
+	};
+	for( const Row& r : rows ) {
+		std::printf( "Testing DL-354 small visible emitter: %s vs %s at %u x %u\n", r.kind, r.ref, r.w, r.h );
+		double m = 0, sd = 0, mr = 0, sdr = 0;
+		const bool ok = DL354WindowEnergy( r.kind, r.w, r.h, r.spp, r.n, 0x354B1u, m, sd ) &&
+			DL354WindowEnergy( r.ref, r.w, r.h, r.refSpp, r.n, 0x354B2u, mr, sdr );
+		char buf[256];
+		std::snprintf( buf, sizeof(buf), "DL-354 %s/%s window energy at %u x %u: %.2f (sd %.2f) / %.2f (sd %.2f) = %.4f (band %.1f%%)",
+			r.kind, r.ref, r.w, r.h, m, sd, mr, sdr, mr > 0 ? m / mr : 0.0, 100.0 * r.band );
+		std::cout << "    " << buf << std::endl;
+		Check( ok && mr > 0 && std::fabs( m / mr - 1.0 ) <= r.band, buf );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-386 (2026-10-02): the `vcm_sss_dragon` room with the dragon replaced
+// by a Lambertian sphere.  Its red and green walls are authored
+// `colorspace ROMMRGB_Linear`, which converts by matrix to Rec.709
+// reflectances with NEGATIVE channels -- red (1.134, -0.100, 0.020),
+// green (-0.233, 0.462, -0.029).  PT and BDPT disagreed on that signed
+// albedo (review on master f03359223: BDPT/PT +0.23 % whole frame,
+// -0.005 % with the negatives clamped); the mechanism was localised only
+// by the clamp, not attributed.  Since DL-386 every material reflectance
+// read clamps negative channels to 0 (IPainter.h `ReflectanceColor`), so
+// the two integrators see the same non-negative albedo.  Whole-frame
+// achromatic mean, salted replicates, the SAME salts for both integrators.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneRommRoomDL386 =
+	"film\n{\n\twidth 48\n\theight 36\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0.2 0 19.5\n\tlookat 0.2 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_white\n\tcolor 0.73 0.73 0.73\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_red\n\tcolor 0.57 0.025 0.025\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_green\n\tcolor 0.025 0.38 0.025\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_light\n\tcolor 1.0 0.95 0.85\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"lambertian_material\n{\n\tname white\n\treflectance pnt_white\n}\n\n"
+	"lambertian_material\n{\n\tname red\n\treflectance pnt_red\n}\n\n"
+	"lambertian_material\n{\n\tname green\n\treflectance pnt_green\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname lum\n\texitance pnt_light\n\tscale 5\n\tmaterial none\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 2.2\n}\n\n"
+	"standard_object\n{\n\tname ball\n\tgeometry sph\n\tposition 1 -1.3 0\n\tmaterial white\n}\n\n"
+	"clippedplane_geometry\n{\n\tname wallgeom\n\tpta -14.1 -14.1 0\n\tptb 14.1 -14.1 0\n\tptc 14.1 14.1 0\n\tptd -14.1 14.1 0\n}\n\n"
+	"standard_object\n{\n\tname rwall\n\tgeometry wallgeom\n\tposition 5.5 0 0\n\torientation 0 -90 0\n\tmaterial red\n}\n\n"
+	"standard_object\n{\n\tname bwall\n\tgeometry wallgeom\n\tposition 0 0 -10.5\n\tmaterial white\n}\n\n"
+	"standard_object\n{\n\tname twall\n\tgeometry wallgeom\n\tposition 0 3.5 0\n\torientation 90 0 0\n\tmaterial white\n}\n\n"
+	"standard_object\n{\n\tname botwall\n\tgeometry wallgeom\n\tposition 0 -3.5 0\n\torientation -90 0 0\n\tmaterial white\n}\n\n"
+	"standard_object\n{\n\tname lwall\n\tgeometry wallgeom\n\tposition -6 0 0\n\torientation 0 90 0\n\tmaterial green\n}\n\n"
+	"clippedplane_geometry\n{\n\tname lightgeom\n\tpta -5.0 -5.0 0\n\tptb 5.0 -5.0 0\n\tptc 5.0 5.0 0\n\tptd -5.0 5.0 0\n}\n\n"
+	"standard_object\n{\n\tname light\n\tgeometry lightgeom\n\tmaterial lum\n\tposition 0 0 -10.0\n}\n";
+
+static bool MeasureRommRoomDL386( const char* kind, int spp, int n, double& mean, double& sd )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + SSSRasterizer( kind, 16, spp ) + kSceneRommRoomDL386;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl386_room" );
+	if( path.empty() ) return false;
+	std::vector<double> v;
+	for( int i = 0; i < n; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 0x386u, unsigned( i ) ) );
+		const ImageStats st = RenderAndComputeStats( path.c_str() );
+		if( !st.valid ) break;
+		v.push_back( ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0 );
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( int( v.size() ) != n || n < 2 ) return false;
+	double s = 0;
+	for( double x : v ) s += x;
+	mean = s / n;
+	double ss = 0;
+	for( double x : v ) ss += ( x - mean ) * ( x - mean );
+	sd = std::sqrt( ss / ( n - 1 ) );
+	return std::isfinite( mean ) && mean > 0;
+}
+
+static void TestNegativeReflectanceRoomDL386()
+{
+	std::cout << "Testing DL-386 ROMM-walled room, Lambertian sphere (PT vs BDPT, 48x36, 512 spp x 4 salted)" << std::endl;
+	double pt = 0, ptSd = 0, bd = 0, bdSd = 0;
+	const bool okPT = MeasureRommRoomDL386( "pt", 512, 4, pt, ptSd );
+	const bool okBD = MeasureRommRoomDL386( "bdpt", 512, 4, bd, bdSd );
+	Check( okPT && okBD, "DL-386 renders produced output" );
+	if( !okPT || !okBD ) return;
+	const double rel = bd / pt - 1.0;
+	// Standard error of the ratio from the two replicate spreads (n = 4 each).
+	const double se = std::sqrt( ( ptSd / pt ) * ( ptSd / pt ) + ( bdSd / bd ) * ( bdSd / bd ) ) / 2.0;
+	std::printf( "    PT %.7f (sd %.7f)  BDPT %.7f (sd %.7f)  BDPT/PT %+.4f%% (se %.4f%%)\n",
+		pt, ptSd, bd, bdSd, 100.0 * rel, 100.0 * se );
+	Check( std::fabs( rel ) <= 0.0010, "DL-386 BDPT whole-frame mean agrees with PT to 0.10 % on the ROMM-walled room" );
+}
+
+int main( int argc, char** argv )
+{
+	if( argc == 2 && std::strcmp( argv[1], "--dl354-only" ) == 0 ) {
+		TestSmallVisibleEmitterResolutionSweep();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	// DL-354 probe: `--dl354-probe kind W H spp n` prints the window energy.
+	if( argc == 7 && std::strcmp( argv[1], "--dl354-probe" ) == 0 ) {
+		double m = 0, sd = 0;
+		const bool ok = DL354WindowEnergy( argv[2], unsigned( std::atoi( argv[3] ) ), unsigned( std::atoi( argv[4] ) ),
+			unsigned( std::atoi( argv[5] ) ), std::atoi( argv[6] ), 0x354Au, m, sd );
+		std::printf( "DL354 %s %sx%s spp=%s n=%s ok=%d window %.4f (sd %.4f)\n", argv[2], argv[3], argv[4], argv[5], argv[6], int( ok ), m, sd );
+		return ok ? 0 : 1;
+	}
+ if(argc == 2 && std::strcmp(argv[1],"--dl302-only") == 0) {
+  TestCoatNormalOverNormalMap();
+  std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+  return failCount == 0 ? 0 : 1;
+ }
+ if(argc == 2 && std::strcmp(argv[1],"--dl386-only") == 0) {
+  TestNegativeReflectanceRoomDL386();
+  std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+  return failCount == 0 ? 0 : 1;
+ }
+ if(argc == 2 && std::strcmp(argv[1],"--env-medium-only") == 0) {
+  TestEnvironmentScatteringMediumDL346();
+  std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+  return failCount == 0 ? 0 : 1;
+ }
+
+	// Focused repeated A/B measurement uses the exact shipped topology
+	// fixtures and unchanged gates without rerendering unrelated spectra.
+	if( argc == 2 && std::strcmp(argv[1], "--materials-only") == 0 ) {
+		TestSchlickMultiLobe();
+	TestCoatNormalOverNormalMap();
+		TestGGXLambertianControl();
+		TestCompositeMaterial();
+		TestDataDrivenSPFDL325();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl325-only") == 0 ) {
+		TestDataDrivenSPFDL325();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--guided-only") == 0 ) {
+		TestSchlickMultiLobeGuided();
+		TestPolishedGuidedAB();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	// DL-05: every weave topology (E, F, Q, R) and nothing else -- the
+	// focused before/after A/B.
+	if( argc == 2 && std::strcmp(argv[1], "--sss-only") == 0 ) {
+		TestRoughSSSEmptyContainerU();
+		TestRandomWalkSphereEmptyContainerV();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl375-only") == 0 ) {
+		TestDeltaLitRandomWalkDL375();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	// DL-380: the depth-capped partition rows (BDPT; --dl380-mlt: the MLT row alone).
+	if( argc == 2 && ( std::strcmp(argv[1], "--dl380-only") == 0 || std::strcmp(argv[1], "--dl380-mlt") == 0 ) ) {
+		TestDepthCappedPartitionDL380( std::strcmp(argv[1], "--dl380-mlt") == 0 );
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--weave-gap-only") == 0 ) {
+		TestBacklitThinCurtain();
+		TestGappedCurtainAreaLight();
+		TestWeaveGapBoxOmniOutside();
+		TestWeaveGapBoxAreaOutside();
+		TestWeaveGapBoxHWSS();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	// DL-294: topology W alone (plus the P2-1 stripe guard).
+	if( argc == 2 && std::strcmp(argv[1], "--narrow-fov-only") == 0 ) {
+		TestNarrowFovSplatW();
+		TestNarrowFovStripeGuard();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	// DL-320: topology Z alone (the focused before/after A/B).
+	if( argc == 2 && std::strcmp(argv[1], "--back-face-only") == 0 ) {
+		TestBackFaceEmitterZ();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp( argv[1], "--dl333-only" ) == 0 ) {
+		TestSmoothDiffusionSphereDL333();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp( argv[1], "--dl381-only" ) == 0 ) {
+		TestRandomWalkReciprocityDL381();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	// DL-381 probe: `--dl381-probe kind spp mat glass n` prints the
+	// sphere/wall means and standard errors (no gate).
+	if( argc == 7 && std::strcmp( argv[1], "--dl381-probe" ) == 0 ) {
+		double s = 0, sSe = 0, w = 0, wSe = 0;
+		const bool ok = MeasureDL381( argv[2], std::atoi( argv[3] ), argv[4], std::atoi( argv[5] ) != 0,
+			std::atoi( argv[6] ), 0x381u, s, sSe, w, wSe );
+		std::printf( "DL381 %s spp=%s mat=%s glass=%s n=%s ok=%d sphere %.7f (sd %.7f) wall %.7f (sd %.7f)\n",
+			argv[2], argv[3], argv[4], argv[5], argv[6], int( ok ), s, sSe, w, wSe );
+		return ok ? 0 : 1;
+	}
+	// DL-377: fixture G and its wall variant (the focused before/after A/B).
+	if( argc == 2 && std::strcmp(argv[1], "--dl377-only") == 0 ) {
+		TestLightSideDiffusionEntryDL377();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	// DL-377 shipped-scene A/B: whole-frame achromatic mean of a scene file
+	// over `n` salted renders (prints mean and sd; no gate).
+	if( argc == 4 && std::strcmp(argv[1], "--dl377-scene" ) == 0 ) {
+		std::ifstream ifs( argv[2] );
+		const std::string scene( ( std::istreambuf_iterator<char>( ifs ) ), std::istreambuf_iterator<char>() );
+		double m = 0, sd = 0;
+		const int n = std::atoi( argv[3] );
+		const bool ok = !scene.empty() && n > 0 && RenderDL377Mean( scene, "dl377_scene", false, n, 0x377D, m, &sd );
+		std::printf( "DL-377 scene %s: ok=%d n=%d mean=%.7f sd=%.7f\n", argv[2], int( ok ), n, m, sd );
+		return ok ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl377-hwss" ) == 0 ) {
+		RunDL377Row( "G3 HWSS TRUE vs FALSE, both with glass (probe)", true, true, "bdpthwss", 256, "bdptspec", 256, 2, 1.0, true );
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl377-mlt" ) == 0 ) {
+		// MLT's image mean IS its bootstrap normalization: at 100k bootstrap
+		// samples it read -7% (deterministic, identical at 512 and 4096
+		// mutations/px); at 1M it reads +0.33% against MLT without the glass.
+		RunDL377Row( "G under MLT, 1M bootstrap, vs MLT without glass (probe, ungated)", false, false, "mlt1m", 64, "mlt1m", 64, 1, 1.0 );
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--spectral-aggregate-unit") == 0 ) {
+		TestSpectralRepeatAggregation();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc > 1 ) {
+		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
+			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --dl325-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --dl380-only | --dl380-mlt | --back-face-only | --narrow-fov-only | --dl377-only | --dl377-mlt | --dl333-only | --dl386-only | --dl381-only | --dl381-probe kind spp mat glass n | --dl354-only | --dl354-probe kind W H spp n]" << std::endl;
+			return 2;
+		}
+		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
+		std::cout << "Spectral sample scale = " << spectralSampleScale << std::endl;
+		TestSpectralHWSSCompanionLadder();
+		TestSpectralHWSSCompanionLadderControl();
+		TestSpectralHWSSChromaticLobeSpectra();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
 
 	TestDeltaOmniLight();
 	TestMeshEmitterOnly();
 	TestMixedLights();
 	TestOrthographicCamera();
+	TestBacklitThinCurtain();
+	TestGappedCurtainAreaLight();
+	TestThinLensStoppedDown();
+	TestThinLensWideOpenDefocused();
+	TestThinLensBladedAperture();
+	TestSubmergedFloorCancellation();
+	TestSubmergedCeilingMISCombination();
+	TestSchlickMultiLobe();
+	TestCoatNormalOverNormalMap();
+	TestGGXLambertianControl();
+	TestCompositeMaterial();
+	TestDataDrivenSPFDL325();
+	TestSchlickMultiLobeGuided();
+	TestPolishedGuidedAB();
+	TestSpectralHWSSCompanionLadder();
+	TestSpectralHWSSCompanionLadderControl();
+	TestSpectralHWSSChromaticLobeSpectra();
+	TestPTSpectralHWSSCompanionParity();
+	TestPTSpectralHWSSCompanionParityControl();
+	TestNonfiniteCandidateRejected();
+	TestNullBSDFMaterialContinuation();
+	TestNullBSDFHWSSCompanionLadder();
+	TestGenericHumanTissueOriginFix();
+	TestWeaveGapBoxOmniOutside();
+	TestWeaveGapBoxAreaOutside();
+	TestWeaveGapBoxHWSS();
+	TestRoughSSSEmptyContainerU();
+	TestRandomWalkSphereEmptyContainerV();
+	TestSmoothDiffusionSphereDL333();
+	TestDeltaLitRandomWalkDL375();
+	TestDepthCappedPartitionDL380( false );
+ TestEnvironmentScatteringMediumDL346();
+	TestBackFaceEmitterZ();
+	TestNarrowFovSplatW();
+	TestNarrowFovStripeGuard();
+	TestLightSideDiffusionEntryDL377();
+	TestRandomWalkReciprocityDL381();
+	TestSmallVisibleEmitterResolutionSweep();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

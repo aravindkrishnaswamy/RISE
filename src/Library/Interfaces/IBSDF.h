@@ -21,6 +21,7 @@
 namespace RISE
 {
 	class RayIntersectionGeometric;
+	class IORStack;
 
 	//! Represents the Bi-Directional Scattering Distribution Function 
 	//! The BSDF describes how light is reflected/transmitted from a surface.
@@ -42,6 +43,34 @@ namespace RISE
 	//! \f[
 	//!   \forall\Theta: \int_{\Omega_x}fr(x, \Theta \leftrightarrow \Psi) cos( n_x, \Psi) dw_\Psi \leq 1
 	//! \f]
+	//! DL-472 (1): the TRANSPORT MODE of an `IBSDF::value` query.  A BSDF
+	//! that refracts INSIDE itself (a `composite_material` whose top
+	//! refracts over a bottom that transmits through its own BSDF -- the
+	//! original case) is not symmetric in its arguments: its radiance
+	//! value carries the basic-radiance factor (n_out / n_in)^2 of the
+	//! index step (RISE prices that factor on RADIANCE walks only,
+	//! REFRACTIVE_RADIANCE_SCALING.md), and a light-subpath (IMPORTANCE)
+	//! connection must not see it.  PathVertexEval::EvalBSDFAtVertex{,NM}
+	//! sets this for a light-subpath vertex; RoughDielectricSurface also honors it for its refractive BTDF.
+	//! Reciprocal reflection-only BSDFs ignore it.  Thread-local, scoped, nestable.
+	inline bool& BSDFImportanceModeFlag()
+	{
+		thread_local bool flag = false;
+		return flag;
+	}
+
+	struct BSDFImportanceScope
+	{
+		bool prev;
+		explicit BSDFImportanceScope( const bool importance ) : prev( BSDFImportanceModeFlag() )
+		{
+			BSDFImportanceModeFlag() = importance;
+		}
+		~BSDFImportanceScope() { BSDFImportanceModeFlag() = prev; }
+		BSDFImportanceScope( const BSDFImportanceScope& ) = delete;
+		BSDFImportanceScope& operator=( const BSDFImportanceScope& ) = delete;
+	};
+
 	class IBSDF : public virtual IReference
 	{
 	protected:
@@ -64,6 +93,88 @@ namespace RISE
 			const Scalar nm									///< [in] Wavelength of spectral packet we are processing
 			) const = 0;
 
+		/// STATEFUL evaluation: the same BRDF value, but told which media
+		/// the walk is currently inside (DL-157/DL-38, 2026-09-18).
+		///
+		/// WHY THIS EXISTS.  Almost every BSDF in RISE is a pure function
+		/// of `(vLightIn, ri)` and correctly ignores the extra argument --
+		/// which is why this is a DEFAULTED virtual rather than a change to
+		/// `value`'s signature.  `TranslucentBSDF` is not: which two lobes
+		/// exist at a hit (an entry front reflection + a transmission, or
+		/// an interior exit + a backscatter) is decided by
+		/// `IORStack::containsCurrent()`, exactly as
+		/// `TranslucentSPF::Scatter`/`Pdf` decide it, and pricing a hit
+		/// through the wrong side's lobes is what DL-157(b) measured at a
+		/// double-sided exit hit.
+		///
+		/// CONTRACT.  Passing a null stack must give the SAME answer as
+		/// `value` (the default below makes that automatic), so a call site
+		/// with no stack in hand -- an AOV probe, the legacy final-gather /
+		/// ambient-occlusion ops, an interactive preview -- loses nothing by
+		/// continuing to call `value`.  An implementation that overrides
+		/// this MUST make its own stackless `value` a null-stack call to it
+		/// rather than a second code path.
+		virtual RISEPel valueStateful(
+			const Vector3& vLightIn,						///< [in] Incoming vector from the light source
+			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection information
+			const IORStack* /*pIORStack*/					///< [in] LIVE index-of-refraction stack, or null when the caller has none
+			) const
+		{
+			return value( vLightIn, ri );
+		}
+
+		/// Spectral twin of `valueStateful`.
+		virtual Scalar valueStatefulNM(
+			const Vector3& vLightIn,						///< [in] Incoming vector from the light source
+			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection information
+			const Scalar nm,								///< [in] Wavelength of spectral packet we are processing
+			const IORStack* /*pIORStack*/					///< [in] LIVE index-of-refraction stack, or null when the caller has none
+			) const
+		{
+			return valueNM( vLightIn, ri, nm );
+		}
+
+		/// DL-481: the same value split by the `ScatteredRay::ScatRayType`
+		/// label the material's SPF stamps on the lobe that generates each
+		/// part.  `out[t]` (t = 1 diffuse, 2 reflection, 3 refraction,
+		/// 4 translucent; `out[0]` unused, always 0) is the part of
+		/// `valueStateful( vLightIn, ri, pIORStack )` whose label is t, in
+		/// the sense the per-type bounce caps need: for every direction
+		/// function g, the expectation of the SPF's sampled weight times
+		/// [type == t] times g(wo) equals the integral of out[t] cos g.
+		/// For RISE's SPFs that is each lobe's OWN BSDF term, because their
+		/// per-lobe weight is that lobe's f cos / p (multi-emit SPFs:
+		/// `kray_I / q_I` after `RandomlySelect`; single-emit internally
+		/// selected ones such as GGXSPF: `f_I cos / (p_I pSelect_I)`).
+		/// The parts sum to `valueStateful` up to rounding.  Returns false
+		/// (and leaves `out` unspecified) when the BSDF does not provide a
+		/// split; the caller must then not use one.  Used only at a
+		/// connection / merge endpoint of BDPT / VCM / MLT when a
+		/// per-type cap can bind (BDPTUtilities::JoinedTypeCapPlan), and
+		/// only for a material whose `IMaterial::HasConnectionTypeSplit`
+		/// says the split matches its SPF's labels.
+		virtual bool valueByScatterType(
+			const Vector3& /*vLightIn*/,
+			const RayIntersectionGeometric& /*ri*/,
+			const IORStack* /*pIORStack*/,
+			RISEPel /*out*/[5]
+			) const
+		{
+			return false;
+		}
+
+		/// Spectral twin of `valueByScatterType`.
+		virtual bool valueByScatterTypeNM(
+			const Vector3& /*vLightIn*/,
+			const RayIntersectionGeometric& /*ri*/,
+			const Scalar /*nm*/,
+			const IORStack* /*pIORStack*/,
+			Scalar /*out*/[5]
+			) const
+		{
+			return false;
+		}
+
 		/// Approximate directional-hemispherical reflectance at the
 		/// outgoing direction implied by `ri.ray` — i.e., the fraction
 		/// of incident energy reflected back toward the camera under
@@ -78,6 +189,68 @@ namespace RISE
 			) const
 		{
 			return RISEPel( 1.0, 1.0, 1.0 );
+		}
+
+		/// Reflectance this BSDF presents to a UNIFORM (diffuse)
+		/// incident field -- i.e. its hemispherically-averaged
+		/// directional-hemispherical reflectance.
+		///
+		/// DELIBERATELY VIEW-INDEPENDENT, and that is the whole point of
+		/// its existing separately from `albedo` above.  `albedo` is the
+		/// OIDN AOV: it answers "what does this surface reflect toward
+		/// the camera", reads `ri.ray.Dir()`, and is therefore a
+		/// function of the view direction.  A layered material that fed
+		/// `albedo` into a term shared by both directions would make its
+		/// own BRDF NON-RECIPROCAL, because f(a->b) would carry R(b)
+		/// while f(b->a) carried R(a).  That is not hypothetical: it was
+		/// a real defect in `coated_material`'s first cut, worth ~28 %
+		/// asymmetry at grazing on a GGX substrate, and it broke exactly
+		/// the NEE / BDPT-connection path the material exists to fix.
+		///
+		/// Implementations MUST NOT read `ri.ray`.  `ri` is passed only
+		/// so painters can be sampled at the shading point.
+		///
+		/// Consumed by `coated_material`, whose Saunderson recycling
+		/// denominator 1/(1 - r_i * R) describes light that has been
+		/// totally-internally-reflected at the coat's underside and is
+		/// arriving back at the substrate as a diffuse field -- so the
+		/// reflectance under a diffuse field is precisely the right
+		/// quantity, and it includes a glossy substrate's specular lobe
+		/// (via its hemispherical Fresnel average), not just its diffuse
+		/// one.
+		///
+		/// Follows the out-param convention rather than a sentinel
+		/// because RISEPel has no natural "not implemented" value.
+		///
+		///   @return  TRUE if `out` was filled; FALSE if this BSDF does
+		///            not implement it (the caller decides what to do --
+		///            `coated_material` refuses such substrates at parse
+		///            time, so for it the FALSE path is unreachable).
+		virtual bool hemisphericalAlbedo(
+			const RayIntersectionGeometric& /*ri*/,			///< [in] Shading point (for painter sampling ONLY -- do not read ri.ray)
+			RISEPel& /*out*/								///< [out] Reflectance under a uniform incident field, per channel
+			) const
+		{
+			return false;
+		}
+
+		/// Single-wavelength companion to `hemisphericalAlbedo`.
+		///
+		/// The per-wavelength form is what produces spectral wet
+		/// darkening AND the wet chroma boost in `coated_material`: the
+		/// recycling denominator 1/(1 - r_i * R(lambda)) amplifies the
+		/// wavelengths where R is largest, which is the Saunderson form
+		/// of docs/WETNESS_COAT_DESIGN.md 2.1 falling out of transport
+		/// rather than out of a fitted exponent.
+		///
+		///   @return  TRUE if `out` was filled, FALSE otherwise.
+		virtual bool hemisphericalAlbedoNM(
+			const RayIntersectionGeometric& /*ri*/,			///< [in] Shading point (for painter sampling ONLY -- do not read ri.ray)
+			const Scalar /*nm*/,							///< [in] Wavelength
+			Scalar& /*out*/									///< [out] Reflectance under a uniform incident field at `nm`
+			) const
+		{
+			return false;
 		}
 	};
 }

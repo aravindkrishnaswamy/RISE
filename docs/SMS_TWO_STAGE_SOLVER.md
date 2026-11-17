@@ -43,7 +43,7 @@ virtual bool ComputeAnalyticalDerivatives(
 
 Default impl returns `false` — the SMS code keeps its existing FD-probe / per-triangle-Jacobian fallbacks for any geometry that can't answer.
 
-A matching virtual on `IObject` forwards to `IGeometry` and applies the object transform (positions by `m_mxFinalTrans`, tangent vectors by its rotational/scale part, normals and their derivatives by `m_mxInvTranspose`).
+A matching virtual on `IObject` (`Object::ComputeAnalyticalDerivatives`) forwards to `IGeometry` and applies the object transform: positions by `m_mxFinalTrans`, tangent vectors (`dpdu`/`dpdv`) by the forward transform's linear part, the normal by the renormalized inverse-transpose, and `dndu`/`dndv` by the quotient-rule transform of the renormalized normal field — NOT a plain inverse-transpose (see [docs/GEOMETRY_DERIVATIVES.md](GEOMETRY_DERIVATIVES.md) "World-space transform"). It returns `false` — not a fabricated zero-derivative success — when the object's transform is singular along the world normal direction, since there is then no well-defined unit world normal to differentiate against; callers (e.g. `ManifoldSolver`'s smoothing>0 path just below) fall back exactly as they do for any other `false` return.
 
 ### Smoothing semantics
 

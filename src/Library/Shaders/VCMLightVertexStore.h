@@ -70,6 +70,33 @@ namespace RISE
 			/// is responsible for ordering across threads.
 			void Concat( std::vector<LightVertex>&& localBuffer );
 
+			/// DL-470: as above, together with the buffer's light-subpath
+			/// step records (ConvertLightSubpath's `outSteps`) in blocks;
+			/// each vertex's (stepChunk, stepBase) indexes `localBlocks`.
+			/// The blocks are ADOPTED as chunks of the step pool (never
+			/// copied into one shared array -- that doubled the light
+			/// pass's peak memory) and stepChunk is rebased onto them.
+			void Concat( std::vector<LightVertex>&& localBuffer, std::vector< std::vector<VCMStep> >&& localBlocks );
+
+			/// DL-470: record 0 of `v`'s light subpath in the step pool, or
+			/// 0 when its records were not kept.  Read-only once the store
+			/// is built, like the vertices.
+			const VCMStep* StepsOf( const LightVertex& v ) const
+			{
+				if( v.stepBase == kLightVertexNoSteps || v.stepChunk >= mStepChunks.size() ) {
+					return 0;
+				}
+				return &mStepChunks[v.stepChunk][0] + v.stepBase;
+			}
+
+			/// DL-470: total step records kept (all chunks).
+			std::size_t StepCount() const
+			{
+				std::size_t n = 0;
+				for( std::size_t c = 0; c < mStepChunks.size(); c++ ) n += mStepChunks[c].size();
+				return n;
+			}
+
 			/// Build a left-balanced KD-tree over the current
 			/// contents.  After this call the store is read-only;
 			/// Query() is safe from any thread.  Step 3 fills this
@@ -123,7 +150,19 @@ namespace RISE
 			/// side faces still contribute; this is a conservative
 			/// (radius-shrinks-further) bias that matches our intent
 			/// (use area, underestimate density, keep larger radius).
+			/// DL-380: computed over the ORDINARY vertices only -- those
+			/// NOT flagged `kLVF_JumpCover` (stored past an
+			/// eye-coverable light-side subsurface jump, merged only
+			/// where the eye walk's depth caps leave the eye family
+			/// without a strategy), i.e. exactly the store the
+			/// pre-DL-380 partition kept, so the adaptive radius floor
+			/// is unchanged.  Pair it with CountOrdinaryVertices().
 			Scalar ComputeBBoxSurfaceArea() const;
+
+			/// DL-380: number of stored vertices NOT flagged
+			/// `kLVF_JumpCover` (see ComputeBBoxSurfaceArea), nor
+			/// `kLVF_IsMedium` (DL-469's volume-merge vertices).
+			std::size_t CountOrdinaryVertices() const;
 
 			/// Clamp outlier throughputs to suppress photon-mapping
 			/// fireflies caused by rare bright photons (notably SSS
@@ -138,18 +177,32 @@ namespace RISE
 			/// practice (PBRT, Mitsuba, SmallVCM stability mode).
 			/// No-op when the store is empty, when `multiplier <= 0`,
 			/// or when the percentile value is sub-numerical.
+			/// DL-380: the percentile is taken over the ORDINARY
+			/// vertices only (see ComputeBBoxSurfaceArea), so the
+			/// threshold is the pre-DL-380 one; every vertex, flagged
+			/// or not, is clamped against it.
 			///
 			/// MUST be called after Concat and before BuildKDTree —
 			/// modifying throughputs after the tree balance does not
 			/// invalidate the spatial index, but doing it before is
 			/// simpler and avoids re-linearizing the array.
+			///
+			/// DL-469: a volume-merge vertex (kLVF_IsMedium) is stored
+			/// with probability q and carries throughput / q; it is
+			/// compared and capped on its PHYSICAL (un-thinned)
+			/// throughput, q * stored, so the clamp means the same thing
+			/// at every q (comparing the stored value would cap a medium
+			/// vertex at threshold * q -- a bias growing as q falls).
+			/// `mediumStoreProbability` is that q.
 			void ClampOutlierThroughputs(
 				const Scalar percentile,
-				const Scalar multiplier
+				const Scalar multiplier,
+				const Scalar mediumStoreProbability = 1
 				);
 
 		private:
 			std::vector<LightVertex>	mVertices;
+			std::vector< std::vector<VCMStep> >	mStepChunks;	///< DL-470 step pool, one chunk per Concat
 			bool						mBuilt;
 		};
 	}

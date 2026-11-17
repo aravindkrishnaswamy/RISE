@@ -246,6 +246,7 @@ spot_light
 	name		spot_01
 	power		200000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 280 100
 	target		200 0 250
 	inner		10.0
@@ -257,6 +258,7 @@ spot_light
 	name		spot_02
 	power		200000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	250 280 100
 	target		250 0 250
 	inner		10.0
@@ -268,6 +270,7 @@ spot_light
 	name		spot_03
 	power		200000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	400 280 100
 	target		300 0 250
 	inner		10.0
@@ -280,6 +283,7 @@ spot_light
 	name		spot_04
 	power		200000.0
 	color		0.85 0.90 1.0
+	colorspace	sRGB
 	position	100 280 400
 	target		200 0 250
 	inner		10.0
@@ -291,6 +295,7 @@ spot_light
 	name		spot_05
 	power		200000.0
 	color		0.85 0.90 1.0
+	colorspace	sRGB
 	position	250 280 400
 	target		250 0 250
 	inner		10.0
@@ -302,6 +307,7 @@ spot_light
 	name		spot_06
 	power		200000.0
 	color		0.85 0.90 1.0
+	colorspace	sRGB
 	position	400 280 400
 	target		300 0 250
 	inner		10.0
@@ -314,6 +320,7 @@ spot_light
 	name		spot_07
 	power		150000.0
 	color		1.0 0.7 0.5
+	colorspace	sRGB
 	position	10 200 150
 	target		250 50 250
 	inner		15.0
@@ -325,6 +332,7 @@ spot_light
 	name		spot_08
 	power		150000.0
 	color		1.0 0.7 0.5
+	colorspace	sRGB
 	position	10 200 350
 	target		250 50 250
 	inner		15.0
@@ -336,6 +344,7 @@ spot_light
 	name		spot_09
 	power		150000.0
 	color		0.5 0.7 1.0
+	colorspace	sRGB
 	position	490 200 150
 	target		250 50 250
 	inner		15.0
@@ -347,6 +356,7 @@ spot_light
 	name		spot_10
 	power		150000.0
 	color		0.5 0.7 1.0
+	colorspace	sRGB
 	position	490 200 350
 	target		250 50 250
 	inner		15.0
@@ -359,6 +369,7 @@ spot_light
 	name		spot_11
 	power		100000.0
 	color		0.8 1.0 0.8
+	colorspace	sRGB
 	position	150 10 200
 	target		150 300 200
 	inner		20.0
@@ -370,6 +381,7 @@ spot_light
 	name		spot_12
 	power		100000.0
 	color		0.8 1.0 0.8
+	colorspace	sRGB
 	position	350 10 300
 	target		350 300 300
 	inner		20.0

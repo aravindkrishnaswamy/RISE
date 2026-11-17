@@ -28,16 +28,26 @@
 #include "pch.h"
 #include <vector>
 #include <map>
+#include <memory>
+#include <limits>
 #include <set>
 #include <stack>
 #include <string>
+#include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <string_view>
 #include <cstring>   // Phase 6.2: strstr for sentinel detection
 #include <cstdio>    // Phase 6.2: sscanf in OnOverrideObjectFinalized
 #include <cstdlib>   // strtod for the ar_layer numeric parse
+#include <cstdarg>  // va_list / va_start -- SweepReject's formatted refusal channel
 #include <cerrno>    // ERANGE overflow detection for ar_layer values
+#include <cmath>     // std::isfinite/sqrt/atan2/fabs (AllFiniteD, DirectionToEulerDeg, etc.) --
+                     // only transitively available via ChunkDescriptor.h today; include directly
 #include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
+#include "../Materials/FabricPresets.h"   // fabric_material: the `fabric` enum's preset table (multi-slot seeding)
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "AsciiCommandParser.h"
@@ -45,9 +55,9 @@
 #include "ChunkParserRegistry.h"
 #include "StdOutProgress.h"
 #include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/MediaPathLocator.h"
-#include "MathExpressionEvaluator.h"
 #include "../Utilities/RasterizerDefaults.h"
 #include "../Utilities/Transformable.h"
 #include "../Rendering/Film.h"		// kDefaultFilm* constants for `film` chunk
@@ -56,9 +66,10 @@
 #include "../Interfaces/IScalarPainterManager.h"
 #include "../Interfaces/IFunction1DManager.h"
 #include "../Interfaces/IFunction2DManager.h"
-#include "../Interfaces/IModifierManager.h"	// bumpmap_modifier normalize_gradient path (via IJobPriv::GetModifiers)
+#include "../Interfaces/IModifierManager.h"	// modifier chunks that self-register via IJobPriv::GetModifiers
 #include "../Painters/RGBScalarPainter.h"		// for ScalarTriple::IsUniform et al
 #include "../Painters/TexturePainter.h"		// for resolving a named image painter -> raster accessor (scalar_painter texture form)
+#include "../Painters/ExpressionPainter.h"		// BuildExpressionProgramFromChunkFields (expression_painter, scalar_painter{expression})
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IObjectPriv.h"
@@ -93,44 +104,48 @@ using namespace RISE::Implementation;
 #define MAX_CHARS_PER_LINE		8192
 
 // Read a data file into its meaningful lines, tolerant of comments and
-// blank lines.  Skips blank / whitespace-only lines and lines whose first
-// non-blank character is '#'.  Returns false (the caller logs) if the file
-// cannot be opened.  Each returned line still contains its trailing
-// newline; callers sscanf their own column format from it and validate the
-// conversion count, so a malformed or non-numeric line is skipped rather
-// than — as the historical `while( !feof(f) ) { fscanf(...); push; }` loops
-// did — spinning forever on a comment line (fscanf matches nothing and does
-// not advance) or pushing uninitialized / duplicated values at EOF.
+// blank lines. Skips blank lines and lines whose first nonblank byte is '#'.
 static bool ReadDataFileLines( const String& filename, std::vector<std::string>& outLines )
 {
-	FILE* f = fopen( GlobalMediaPathLocator().Find( filename ).c_str(), "r" );
-	if( !f ) {
+	std::ifstream file( GlobalMediaPathLocator().Find( filename ).c_str() );
+	if( !file ) {
+		GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
 		return false;
 	}
-	char buf[MAX_CHARS_PER_LINE];
-	while( fgets( buf, sizeof( buf ), f ) ) {
-		const char* p = buf;
-		while( *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' ) {
-			++p;
+	std::string line;
+	size_t lineNumber = 0;
+	while( std::getline( file, line ) ) {
+		++lineNumber;
+		if( line.find( '\0' ) != std::string::npos ) {
+			GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Embedded NUL in file `%s` at line %zu", filename.c_str(), lineNumber );
+			return false;
 		}
-		if( *p == '\0' || *p == '#' ) {
-			continue;   // blank / whitespace-only / comment line
+		const auto start = line.find_first_not_of( " \t\r" );
+		if( start != std::string::npos && line[start] != '#' ) {
+			outLines.push_back( line );
 		}
-		outLines.push_back( std::string( buf ) );
 	}
-	fclose( f );
+	if( file.bad() ) {
+		GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to read file `%s` after line %zu", filename.c_str(), lineNumber );
+		return false;
+	}
 	return true;
 }
 
-inline bool string_split( const String& s, String& first, String& second, const char ch )
+// Table readers consume the leading required finite columns. Extra columns
+// belong to the source table and can be ignored by a narrower consumer.
+static bool ReadSampleColumns( const std::string& row, double* samples, size_t count )
 {
-	String::const_iterator it = std::find( s.begin(), s.end(), ch );
-	if( it==s.end() ) {
-		return false;
+	if( row.find( '\0' ) != std::string::npos ) return false;
+	const char* cursor = row.c_str();
+	for( size_t i = 0; i < count; ++i ) {
+		char* end = nullptr;
+		const double sample = std::strtod( cursor, &end );
+		if( end == cursor || !RISE::IsFiniteDouble(sample) ) return false;
+		samples[i] = sample;
+		cursor = end;
+		if( i + 1 < count && !std::isspace( static_cast<unsigned char>(*cursor) ) ) return false;
 	}
-
-	first = String( s.begin(), it );
-	second = String( it+1, s.end() );
 	return true;
 }
 
@@ -230,6 +245,40 @@ namespace RISE
 				ParameterDescriptor& p = cd.parameters.back();
 				p.name = "variant"; p.kind = ValueKind::String;
 				p.description = "If set, this chunk overrides the base same-named chunk when scene_variant <name> is active.";
+			}
+
+			// DL-323 follow-through (2026-10-02): mark a chunk TYPE deprecated.  The chunk keeps parsing,
+			// deriving and rendering EXACTLY as before; the flag only (a) makes DeriveToJob log one
+			// warning per deprecated keyword per derive, (b) is surfaced by the agent schema and the
+			// editor's chunk panel.  `replacement` names the modern keyword(s) AND the parameter
+			// translation (the full table is docs/SCENE_CONVENTIONS.md "Deprecated materials").  The
+			// description is prefixed too, so every consumer that only shows `description` (the
+			// property panel, the agent's read_schema catalog) carries the notice without a code change.
+			static void MarkDeprecated( ChunkDescriptor& cd, const char* replacement )
+			{
+				cd.deprecated = true;
+				cd.replacement = replacement;
+				cd.description = std::string( "DEPRECATED (still renders exactly as before): use " ) + replacement + "  " + cd.description;
+			}
+
+			// Legacy-deprecation Phase 1 (2026-10-09, docs/LEGACY_DEPRECATION_ASSESSMENT.md §10/§13):
+			// mark a chunk TYPE FROZEN -- legacy and UNSUPPORTED.  Strictly stronger than
+			// MarkDeprecated (it sets `deprecated` too, so every consumer that reads only that flag
+			// still sees a legacy chunk): the chunk keeps parsing, deriving and rendering
+			// bit-identically, but receives no fixes, and the agent surface refuses to insert a new
+			// one.  Idempotent over a descriptor MarkDeprecated already prefixed (its prefix is
+			// replaced, not stacked).
+			static void MarkFrozen( ChunkDescriptor& cd, const char* replacement )
+			{
+				if( cd.deprecated ) {
+					const std::string oldPrefix = std::string( "DEPRECATED (still renders exactly as before): use " ) + cd.replacement + "  ";
+					if( cd.description.compare( 0, oldPrefix.size(), oldPrefix ) == 0 )
+						cd.description = cd.description.substr( oldPrefix.size() );
+				}
+				cd.deprecated = true;
+				cd.frozen = true;
+				cd.replacement = replacement;
+				cd.description = std::string( "LEGACY, UNSUPPORTED (frozen 2026-10-09: still renders exactly as before but receives no fixes): use " ) + replacement + "  " + cd.description;
 			}
 
 			// Tracks uniform color painter values so that material parsers
@@ -475,10 +524,8 @@ namespace RISE
 				if( requestedName != "none" ) {
 					return false;
 				}
-				if( RISE::g_cstFinalizeDiagSink ) {
-					*RISE::g_cstFinalizeDiagSink =
-						"reserved name: `none` is the built-in unbind sentinel -- pick a different camera name";
-				}
+				RISE::SetFinalizeDiagIfEmpty(
+					"reserved name: `none` is the built-in unbind sentinel -- pick a different camera name" );
 				GlobalLog()->PrintEx( eLog_Error,
 					"%s:: `none` is a reserved name (the active-camera / unbind sentinel used by timeline `element`) -- pick a different camera name",
 					keyword.c_str() );
@@ -581,6 +628,29 @@ namespace RISE
 				return net < 0;
 			}
 
+			//! EVERY sweep_geometry refusal goes through this ONE helper so
+			//! the author's specific reason reaches BOTH the log and the CST
+			//! Finalize diagnostic sink -- the same channel lathe_geometry's
+			//! `Reject` and skeleton_geometry's already use.  Without it a
+			//! chunk-level refusal (a malformed point_scale arity, a
+			//! point_morph with no second profile, the profile2 trio's mutual
+			//! exclusion) surfaced to the author, and to the agent surface
+			//! reading those diagnostics, as the generic "sweep_geometry:
+			//! apply failed (e.g. unresolved reference); see log" -- actively
+			//! misleading, since no reference is involved.  Call sites keep
+			//! their printf form, so the message texts are unchanged.
+			inline bool SweepReject( const char* fmt, ... )
+			{
+				char buf[1024];
+				va_list ap;
+				va_start( ap, fmt );
+				vsnprintf( buf, sizeof(buf), fmt, ap );
+				va_end( ap );
+				SetFinalizeDiagIfEmpty( buf );
+				GlobalLog()->Print( eLog_Error, buf );
+				return false;
+			}
+
 			inline bool AllTokensAreFiniteNumbers( const char* sz, int* outTokenCount = 0 )
 			{
 				if( outTokenCount ) *outTokenCount = 0;
@@ -641,21 +711,144 @@ namespace RISE
 					&& actual == expected;
 			}
 
+			//! DL-32 (docs/DEBT_LEDGER.md).  A `scale` field is declared
+			//! `DoubleVec3` (`Sx Sy Sz`), but `ParseStateBag::GetVec3` zero-
+			//! FILLS every unread component before `sscanf`, so a partially
+			//! written value never fails to parse -- it silently DEGENERATES.
+			//! `scale 0.35` used to derive `(0.35, 0, 0)`: a transform with
+			//! two zero axes, which vanishes the object from the render and
+			//! makes `Object::DistanceToSurface` refuse it for every
+			//! `proximity()`/`interior()` query (`sigma_min <= 0`) -- with NO
+			//! diagnostic anywhere.  `override_object`'s own `scale` (a
+			//! DIFFERENT bug shape: it already hard-refused a non-3-count
+			//! value via `HasExactNumericArity`, but that refusal ALSO fired
+			//! on the single-number authoring shorthand this fixes) shares
+			//! this helper too, so the two chunks cannot drift apart on what
+			//! `scale` accepts -- their own descriptor text says "matches
+			//! standard_object semantics".
+			//!
+			//! Convention chosen (SCENE_CONVENTIONS.md's own "`scale` is
+			//! per-axis (Vector3, not scalar)" is the AUTHORING documentation,
+			//! not a parser contract -- nothing enforced it before this fix,
+			//! and both the glTF importer and the Blender bridge always emit
+			//! all three components, so a single number reaching the parser
+			//! is exclusively a hand-authoring shorthand): ONE number is a
+			//! UNIFORM-scale broadcast to all three axes (the intuitive
+			//! reading, and the one every other 3D tool's "uniform scale"
+			//! field means); anything else that is not exactly three finite
+			//! numbers -- two, four, a non-numeric token -- is a HARD parse
+			//! error naming the two accepted forms, rather than the previous
+			//! silent zero-fill.
+			//!
+			//! Returns `present = false` (and leaves `out` untouched) when
+			//! the key is absent, so a caller's own default -- `{1,1,1}` at
+			//! every call site -- stands.  Returns `present = true, ok =
+			//! false` on a malformed value, with `*diag` set to the
+			//! caller-ready message; the caller must fail the chunk rather
+			//! than proceed with a garbage `out`.
+			struct ScaleResolution { bool present; bool ok; };
+			inline ScaleResolution ResolveScaleVec3(
+				const ParseStateBag& bag, const char* chunkKeyword, const std::string& name,
+				double out[3], std::string* diag )
+			{
+				if( !bag.Has( "scale" ) ) {
+					return ScaleResolution{ false, true };
+				}
+				const std::string raw = bag.GetString( "scale" );
+				int actual = 0;
+				const bool allFinite = AllTokensAreFiniteNumbers( raw.c_str(), &actual );
+				if( !allFinite || ( actual != 1 && actual != 3 ) ) {
+					if( diag ) {
+						*diag = std::string( chunkKeyword ) + " `" + name + "`: `scale " + raw +
+							"` -- needs exactly ONE finite number (a UNIFORM scale, broadcast to "
+							"all three axes) or THREE (`Sx Sy Sz`).  A partial fill used to derive "
+							"a DEGENERATE transform silently (DL-32, docs/DEBT_LEDGER.md) -- the "
+							"object would vanish from the render with no diagnostic -- so it is "
+							"refused instead.";
+					}
+					return ScaleResolution{ true, false };
+				}
+				if( actual == 1 ) {
+					double s = 0.0;
+					sscanf( raw.c_str(), "%lf", &s );
+					out[0] = out[1] = out[2] = s;
+					GlobalLog()->PrintEx( eLog_Warning,
+						"%s `%s`: `scale %s` -- ONE number is a UNIFORM-scale broadcast to "
+						"(%.6g %.6g %.6g).  Write all three components explicitly (`scale %.6g "
+						"%.6g %.6g`) to silence this.",
+						chunkKeyword, name.c_str(), raw.c_str(), s, s, s, s, s, s );
+				} else {
+					bag.GetVec3( "scale", out );
+				}
+				return ScaleResolution{ true, true };
+			}
+
+			//! DL-32 round 3 (docs/DEBT_LEDGER.md).  `orthographic_camera`'s
+			//! `viewport_scale` is a symmetric-by-default field the same way
+			//! `standard_object`'s `scale` is, and the corpus already relies on
+			//! a single-number authoring shorthand for it: pre-fix, the raw
+			//! `sscanf( "%lf %lf" )` read on a 1-token value ("viewport_scale
+			//! 2.0") left the SECOND component at its hard-coded {1.0,1.0}
+			//! default (an accidental, ASYMMETRIC (2.0, 1.0) result -- not a
+			//! deliberate broadcast), and three call sites in the test corpus
+			//! (`AgentProposeRenderTest.cpp`, `AgentViewModeRenderTest.cpp`,
+			//! `SSSRadianceScalingTest.cpp`) author exactly that shorthand.
+			//! Mirrors `ResolveScaleVec3` exactly, generalized to any
+			//! 2-component `key` (not hardcoded to one name) so the ONE
+			//! sanctioned-broadcast field in the DoubleVec2 family shares one
+			//! helper rather than growing a second hand-rolled copy: a single
+			//! number is accepted as a UNIFORM broadcast to both components
+			//! (with a log warning naming the two-number spelling); anything
+			//! else that is not exactly one or two finite numbers is a hard
+			//! parse error.
+			struct Vec2Resolution { bool present; bool ok; };
+			inline Vec2Resolution ResolveVec2UniformBroadcast(
+				const ParseStateBag& bag, const char* chunkKeyword, const std::string& name,
+				const char* key, double out[2], std::string* diag )
+			{
+				if( !bag.Has( key ) ) {
+					return Vec2Resolution{ false, true };
+				}
+				const std::string raw = bag.GetString( key );
+				int actual = 0;
+				const bool allFinite = AllTokensAreFiniteNumbers( raw.c_str(), &actual );
+				if( !allFinite || ( actual != 1 && actual != 2 ) ) {
+					if( diag ) {
+						*diag = std::string( chunkKeyword ) + " `" + name + "`: `" + key + " " + raw +
+							"` -- needs exactly ONE finite number (a UNIFORM broadcast to both "
+							"components) or TWO (`X Y`).";
+					}
+					return Vec2Resolution{ true, false };
+				}
+				if( actual == 1 ) {
+					double s = 0.0;
+					sscanf( raw.c_str(), "%lf", &s );
+					out[0] = out[1] = s;
+					GlobalLog()->PrintEx( eLog_Warning,
+						"%s `%s`: `%s %s` -- ONE number is a UNIFORM broadcast to (%.6g %.6g).  "
+						"Write both components explicitly (`%s %.6g %.6g`) to silence this.",
+						chunkKeyword, name.c_str(), key, raw.c_str(), s, s, key, s, s );
+				} else {
+					bag.GetVec2( key, out );
+				}
+				return Vec2Resolution{ true, true };
+			}
+
 			inline bool DispatchChunkParameters(
 				const ChunkDescriptor& desc,
 				ParseStateBag&         bag,
 				const IAsciiChunkParser::ParamsList& params )
 			{
-				for( IAsciiChunkParser::ParamsList::const_iterator i = params.begin(); i != params.end(); ++i ) {
-					String pname;
-					String pvalue;
-					if( !string_split( *i, pname, pvalue, ' ' ) ) {
-						return false;
-					}
+				for( const auto& parameter : params ) {
+					const std::string_view line( parameter.c_str() );
+					const auto separator = line.find( ' ' );
+					if( separator == std::string_view::npos ) return false;
+					const std::string_view name = line.substr( 0, separator );
+					const char* value = line.data() + separator + 1;
 
 					const ParameterDescriptor* found = 0;
 					for( std::vector<ParameterDescriptor>::const_iterator p = desc.parameters.begin(); p != desc.parameters.end(); ++p ) {
-						if( p->name == std::string(pname.c_str()) ) {
+						if( p->name == name ) {
 							found = &(*p);
 							break;
 						}
@@ -663,24 +856,33 @@ namespace RISE
 
 					if( !found ) {
 						GlobalLog()->PrintEx( eLog_Error,
-							"ChunkParser:: Failed to parse parameter name `%s` (not declared in `%s` descriptor)",
-							pname.c_str(),
+							kUndeclaredParameterFmt,
+							std::string(name).c_str(),
 							desc.keyword.empty() ? "(unknown)" : desc.keyword.c_str() );
 						return false;
 					}
 
 					switch( found->kind ) {
+					case ValueKind::UInt: {
+						unsigned int parsed;
+						if( !ParseStateBag::ReadUnsigned( value, parsed ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser: parameter `%s` in `%s` is outside the unsigned integer range",
+								found->name.c_str(), desc.keyword.c_str() );
+							return false;
+						}
+						[[fallthrough]];
+					}
 					case ValueKind::Double:
+					case ValueKind::DoubleVec2:
 					case ValueKind::DoubleVec3:
 					case ValueKind::DoubleVec4:
 					case ValueKind::DoubleMat4:
-					case ValueKind::UInt:
-						if( !AllTokensAreFiniteNumbers( pvalue.c_str() ) ) {
+						if( !AllTokensAreFiniteNumbers( value ) ) {
 							GlobalLog()->PrintEx( eLog_Error,
 								"ChunkParser:: parameter `%s` in `%s` expects finite numeric value(s); got `%s` (nan/inf and non-numeric tokens are rejected)",
-								pname.c_str(),
+								std::string(name).c_str(),
 								desc.keyword.empty() ? "(unknown)" : desc.keyword.c_str(),
-								pvalue.c_str() );
+								value );
 							return false;
 						}
 						break;
@@ -689,9 +891,9 @@ namespace RISE
 					}
 
 					if( found->repeatable ) {
-						bag.AppendRepeatable( found->name, std::string(pvalue.c_str()) );
+						bag.AppendRepeatable( found->name, std::string(value) );
 					} else {
-						bag.SetSingle( found->name, std::string(pvalue.c_str()) );
+						bag.SetSingle( found->name, std::string(value) );
 					}
 				}
 				return true;
@@ -753,10 +955,10 @@ namespace RISE
 				{ auto& p = P(); p.name = "filter_glossy";                          p.kind = ValueKind::Double; p.description = "Per-bounce glossy roughness increase (0 disables)";    p.defaultValueHint = to_hint(d.filterGlossy); }
 				{ auto& p = P(); p.name = "rr_min_depth";                           p.kind = ValueKind::UInt;   p.description = "Min depth before Russian roulette";     p.defaultValueHint = to_hint(d.rrMinDepth); }
 				{ auto& p = P(); p.name = "rr_threshold";                           p.kind = ValueKind::Double; p.description = "Throughput threshold for RR";           p.defaultValueHint = to_hint(d.rrThreshold); }
-				{ auto& p = P(); p.name = "max_diffuse_bounce";                     p.kind = ValueKind::UInt;   p.description = "Max diffuse bounce depth (UINT_MAX = unlimited)";              p.defaultValueHint = to_hint(d.maxDiffuseBounce); }
-				{ auto& p = P(); p.name = "max_glossy_bounce";                      p.kind = ValueKind::UInt;   p.description = "Max glossy bounce depth (UINT_MAX = unlimited)";               p.defaultValueHint = to_hint(d.maxGlossyBounce); }
-				{ auto& p = P(); p.name = "max_transmission_bounce";                p.kind = ValueKind::UInt;   p.description = "Max transmission bounce depth (UINT_MAX = unlimited)";         p.defaultValueHint = to_hint(d.maxTransmissionBounce); }
-				{ auto& p = P(); p.name = "max_translucent_bounce";                 p.kind = ValueKind::UInt;   p.description = "Max translucent bounce depth (UINT_MAX = unlimited)";          p.defaultValueHint = to_hint(d.maxTranslucentBounce); }
+				{ auto& p = P(); p.name = "max_diffuse_bounce";                     p.kind = ValueKind::UInt;   p.description = "Max diffuse bounces (UINT_MAX = unlimited): per PATH in every integrator (the vertex next to the light is free unless its scatter is delta; SCENE_CONVENTIONS 8.10)";              p.defaultValueHint = to_hint(d.maxDiffuseBounce); }
+				{ auto& p = P(); p.name = "max_glossy_bounce";                      p.kind = ValueKind::UInt;   p.description = "Max glossy bounces (UINT_MAX = unlimited): per PATH in every integrator (the vertex next to the light is free unless its scatter is delta; SCENE_CONVENTIONS 8.10)";               p.defaultValueHint = to_hint(d.maxGlossyBounce); }
+				{ auto& p = P(); p.name = "max_transmission_bounce";                p.kind = ValueKind::UInt;   p.description = "Max transmission bounces (UINT_MAX = unlimited): per PATH in every integrator (the vertex next to the light is free unless its scatter is delta; SCENE_CONVENTIONS 8.10)";         p.defaultValueHint = to_hint(d.maxTransmissionBounce); }
+				{ auto& p = P(); p.name = "max_translucent_bounce";                 p.kind = ValueKind::UInt;   p.description = "Max translucent bounces (UINT_MAX = unlimited): per PATH in every integrator (the vertex next to the light is free unless its scatter is delta; SCENE_CONVENTIONS 8.10)";          p.defaultValueHint = to_hint(d.maxTranslucentBounce); }
 				{ auto& p = P(); p.name = "max_volume_bounce";                      p.kind = ValueKind::UInt;   p.description = "Max volume bounce depth";               p.defaultValueHint = to_hint(d.maxVolumeBounce); }
 				{ auto& p = P(); p.name = "light_bvh";                              p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = to_hint(d.useLightBVH); }
 			}
@@ -801,7 +1003,7 @@ namespace RISE
 			template<typename PushFn>
 			static void AddRadianceMapParams( PushFn P ) {
 				RadianceMapConfig d;
-				{ auto& p = P(); p.name = "radiance_map";                           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Environment radiance painter"; }
+				{ auto& p = P(); p.name = "radiance_map";                           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Environment radiance painter"; p.semantics.pipe = ParameterPipe::Color; }
 				{ auto& p = P(); p.name = "radiance_scale";                         p.kind = ValueKind::Double; p.description = "Scale applied to radiance map";         p.defaultValueHint = to_hint(d.scale); }
 				{ auto& p = P(); p.name = "radiance_background";                    p.kind = ValueKind::Bool;   p.description = "Also use as camera background";         p.defaultValueHint = to_hint(d.isBackground); }
 				{ auto& p = P(); p.name = "radiance_orient";                        p.kind = ValueKind::DoubleVec3; p.description = "Rotation (degrees) X Y Z";           p.defaultValueHint = "0 0 0"; }
@@ -888,10 +1090,11 @@ namespace RISE
 				{ auto& p = P(); p.name = "sms_two_stage";                          p.kind = ValueKind::Bool;   p.description = "Two-stage solver: smooth seed then refine on actual surface (Zeltner 2020 §5)"; p.defaultValueHint = to_hint(d.twoStage); }
 				{ auto& p = P(); p.name = "sms_seeding";                            p.kind = ValueKind::String; p.description = "SMS seeding strategy: \"snell\" (legacy Snell-trace) or \"uniform\" (Mitsuba-faithful uniform-on-shape)"; p.defaultValueHint = to_hint(d.seedingMode); }
 				{ auto& p = P(); p.name = "sms_target_bounces";                     p.kind = ValueKind::UInt;   p.description = "REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode."; p.defaultValueHint = to_hint(d.targetBounces); }
+				{ auto& p = P(); p.name = "sms_extended";                           p.kind = ValueKind::Bool;   p.description = "Extended SMS (opt-in): unbiased reference estimators -- root-level (A) for point/spot lights, topology-level (B) with a PT ownership partition for area emitters, per-lane under hwss.  Requires sms_enabled; ignores sms_biased, sms_seeding and sms_two_stage; sms_photon_count > 0 or alpha coverage disables SMS at the anchor; inert (with one warning, legacy SMS runs) on scenes containing a composite_material, a global medium or an object interior_medium.  The HWSS shader-op path stays legacy (DL-451); finite-scattering dielectrics are treated at their delta limit (DL-379, measured +5.5%).  Costly: ~10-17x PT on caustic-heavy scenes (DL-449).  See docs/SMS_EXTENDED_DESIGN.md."; p.defaultValueHint = to_hint(d.extended); }
 			}
 			template<typename PushFn>
 			static void AddPhotonMapGenerateCommonParams( PushFn P ) {
-				{ auto& p = P(); p.name = "num";                      p.kind = ValueKind::UInt;   p.description = "Photon count to shoot";                     p.defaultValueHint = "10000"; }
+				{ auto& p = P(); p.name = "num";                      p.kind = ValueKind::UInt;   p.description = "Attempted emissions and maximum stored packets (may store fewer)";                     p.defaultValueHint = "10000"; }
 				{ auto& p = P(); p.name = "power_scale";              p.kind = ValueKind::Double; p.description = "Photon power multiplier";                   p.defaultValueHint = "1.0"; }
 				{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt;   p.description = "Max photon scattering depth";               p.defaultValueHint = "10"; }
 				{ auto& p = P(); p.name = "min_importance";           p.kind = ValueKind::Double; p.description = "Photon-throughput cutoff";                  p.defaultValueHint = "0.01"; }
@@ -920,7 +1123,7 @@ namespace RISE
 				// in scene format v6 (Phase B2 of the Camera/Film/Output
 				// split).  Camera chunks are now imaging-only; the
 				// rasterizer reads grid dims from `Scene::GetFilm()`.
-				{ auto& p = P(); p.name = "exposure";           p.kind = ValueKind::Double;     p.description = "Shutter exposure time"; p.defaultValueHint = "0"; }
+				{ auto& p = P(); p.name = "exposure";           p.kind = ValueKind::Double;     p.description = "Shutter exposure time (motion blur in animation renders). The shutter is CENTRED on the frame time: each pixel sample draws its time in [t - exposure/2, t + exposure/2]. An animation frame with exposure > 0 renders multi-threaded under PT, BDPT and VCM when its keyframes animate only object transforms, cameras and point/spot/directional/ambient lights (each render thread poses its own copies, DL-465), and single-threaded otherwise (keyframed geometry, painters or materials, and the legacy rasterizers); VCM with vertex merging instead traces each progressive pass at one shutter time. 0 = no motion blur"; p.defaultValueHint = "0"; }
 				{ auto& p = P(); p.name = "scanning_rate";      p.kind = ValueKind::Double;     p.description = "Rolling-shutter rate"; p.defaultValueHint = "0"; }
 				{ auto& p = P(); p.name = "pixel_rate";         p.kind = ValueKind::Double;     p.description = "Per-pixel time offset"; p.defaultValueHint = "0"; }
 				{ auto& p = P(); p.name = "pitch";              p.kind = ValueKind::Double;     p.description = "Pitch rotation (degrees)"; }
@@ -929,7 +1132,7 @@ namespace RISE
 				{ auto& p = P(); p.name = "orientation";        p.kind = ValueKind::DoubleVec3; p.description = "Euler orientation (degrees)"; }
 				{ auto& p = P(); p.name = "theta";              p.kind = ValueKind::Double;     p.description = "Polar angle (radians)"; }
 				{ auto& p = P(); p.name = "phi";                p.kind = ValueKind::Double;     p.description = "Azimuthal angle (radians)"; }
-				{ auto& p = P(); p.name = "target_orientation"; p.kind = ValueKind::DoubleVec3; p.description = "Target Euler orientation"; }
+				{ auto& p = P(); p.name = "target_orientation"; p.kind = ValueKind::DoubleVec2; p.description = "Target Euler orientation (theta, phi)"; p.defaultValueHint = "0 0"; }
 			}
 			//! `persistenceDefault` is passed per chunk because the eight
 			//! chunks sharing this helper do NOT share one Finalize default
@@ -938,15 +1141,31 @@ namespace RISE
 			//! a single hardcoded hint here was wrong for seven of them, and
 			//! `defaultValueHint` is MODEL-FACING (read_schema serves it as
 			//! the parameter's `default`).
+			//!
+			//! `twoD` (DL-32 round 3, docs/DEBT_LEDGER.md): `perlin2d_painter`
+			//! is the ONE 2D chunk among these eight -- `Job::AddPerlin2DPainter`
+			//! takes `double scale[2]`/`shift[2]` -- but this shared helper used
+			//! to declare `scale`/`shift` `ValueKind::DoubleVec3` for it too
+			//! (copy-pasted from the seven genuinely-3D siblings), while its
+			//! Finalize read only 2 components via a raw, unchecked `sscanf` on
+			//! the bag string -- silently accepting `scale 1` (leaving the
+			//! second component at its unrelated default) or `scale 1 2 3`
+			//! (silently discarding the "3").  `twoD = true` (perlin2d_painter
+			//! only) declares the genuine 2-component arity instead.
 			template<typename PushFn>
-			static void AddNoisePainterCommonParams( PushFn P, const char* persistenceDefault = "0.5" ) {
+			static void AddNoisePainterCommonParams( PushFn P, const char* persistenceDefault = "0.5", bool twoD = false ) {
 				{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name";                p.defaultValueHint = "noname"; }
-				{ auto& p = P(); p.name = "colora";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Painter used where the noise field is at its LOW end"; }
-				{ auto& p = P(); p.name = "colorb";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Painter used where the noise field is at its HIGH end"; }
-				{ auto& p = P(); p.name = "persistence"; p.kind = ValueKind::Double;     p.description = "Amplitude falloff per octave (lower = smoother, higher = grittier)"; p.defaultValueHint = persistenceDefault; }
-				{ auto& p = P(); p.name = "octaves";     p.kind = ValueKind::UInt;       p.description = "Number of noise octaves (more = finer detail, more cost)"; p.defaultValueHint = "4"; }
-				{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis FREQUENCY multiplier on the sample coordinate -- LARGER = tighter/finer features.  Unequal components stretch the pattern along an axis (that is how you get grain or banding rather than blobs)"; p.defaultValueHint = "1 1 1"; }
-				{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis offset added to the sample coordinate -- slides the pattern without rescaling it (use it to de-register two objects that share one painter)"; p.defaultValueHint = "0 0 0"; }
+				{ auto& p = P(); p.name = "colora";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Painter used where the noise field is at its LOW end"; p.semantics.pipe = ParameterPipe::Color; }
+				{ auto& p = P(); p.name = "colorb";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Painter used where the noise field is at its HIGH end"; p.semantics.pipe = ParameterPipe::Color; }
+				{ auto& p = P(); p.name = "persistence"; p.kind = ValueKind::Double;     p.description = "Amplitude falloff per octave (lower = smoother, higher = grittier)"; p.defaultValueHint = persistenceDefault; p.SoftRange( 0.0, 1.0, 0.01 ); }
+				{ auto& p = P(); p.name = "octaves";     p.kind = ValueKind::UInt;       p.description = "Number of noise octaves (more = finer detail, more cost)"; p.defaultValueHint = "4"; p.SoftRange( 1.0, 16.0, 1.0 ); }
+				if( twoD ) {
+					{ auto& p = P(); p.name = "scale"; p.kind = ValueKind::DoubleVec2; p.description = "Per-axis (U, V) FREQUENCY multiplier on the sample coordinate -- LARGER = tighter/finer features.  Unequal components stretch the pattern along an axis (that is how you get grain or banding rather than blobs)"; p.defaultValueHint = "1 1"; }
+					{ auto& p = P(); p.name = "shift"; p.kind = ValueKind::DoubleVec2; p.description = "Per-axis (U, V) offset added to the sample coordinate -- slides the pattern without rescaling it (use it to de-register two objects that share one painter)"; p.defaultValueHint = "0 0"; }
+				} else {
+					{ auto& p = P(); p.name = "scale"; p.kind = ValueKind::DoubleVec3; p.description = "Per-axis FREQUENCY multiplier on the sample coordinate -- LARGER = tighter/finer features.  Unequal components stretch the pattern along an axis (that is how you get grain or banding rather than blobs)"; p.defaultValueHint = "1 1 1"; }
+					{ auto& p = P(); p.name = "shift"; p.kind = ValueKind::DoubleVec3; p.description = "Per-axis offset added to the sample coordinate -- slides the pattern without rescaling it (use it to de-register two objects that share one painter)"; p.defaultValueHint = "0 0 0"; }
+				}
 			}
 			//
 			// AddBaseRasterizerParams — the 7 fields every production
@@ -962,7 +1181,7 @@ namespace RISE
 				{ auto& p = P(); p.name = "samples";                                p.kind = ValueKind::UInt;   p.description = "Samples per pixel";                     p.defaultValueHint = to_hint(d.numPixelSamples); }
 				{ auto& p = P(); p.name = "show_luminaires";                        p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";        p.defaultValueHint = to_hint(d.showLuminaires); }
 				{ auto& p = P(); p.name = "oidn_denoise";                           p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                  p.defaultValueHint = to_hint(d.oidnDenoise); }
-				{ auto& p = P(); p.name = "oidn_quality";                           p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = to_hint(d.oidnQuality); }
+				{ auto& p = P(); p.name = "oidn_quality";                           p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto uses the scene sampling budget)"; p.defaultValueHint = to_hint(d.oidnQuality); }
 				{ auto& p = P(); p.name = "oidn_device";                            p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = to_hint(d.oidnDevice); }
 				{ auto& p = P(); p.name = "oidn_prefilter";                         p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(d.oidnPrefilter); }
 			}
@@ -1100,76 +1319,63 @@ namespace RISE
 					std::vector<double> wavelengths;
 					std::vector<double> amplitudes;
 
-					// Repeatable per-sample control points: "cp <nm> <amp>"
-					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
-					for( size_t k = 0; k < cps.size(); ++k ) {
-						double nm = 0.0, amp = 0.0;
-						sscanf( cps[k].c_str(), "%lf %lf", &nm, &amp );
-						wavelengths.push_back( nm );
-						amplitudes.push_back( amp );
-					}
 
-					// Optional file-loaded spectrum (pairs)
-					if( bag.Has( "file" ) ) {
-						std::string fname = bag.GetString( "file" );
-						std::vector<std::string> fileLines;
-						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
-							return false;
-						}
-						for( const std::string& ln : fileLines ) {
-							double nm = 0.0, amp = 0.0;
-							if( sscanf( ln.c_str(), "%lf %lf", &nm, &amp ) == 2 ) {
-								wavelengths.push_back( nm );
-								amplitudes.push_back( amp );
-							} else {
-								GlobalLog()->PrintEx( eLog_Warning, "spectral file:: skipping malformed line in `%s`", fname.c_str() );
-							}
-						}
-					}
+					const auto appendPair = [&]( const std::string& row ) {
+						double pair[2];
+						if( !ReadSampleColumns( row, pair, 2 ) ) return false;
+						wavelengths.push_back( pair[0] );
+						amplitudes.push_back( pair[1] );
+						return true;
+					};
 
-					// Optional file-loaded wavelengths
-					if( bag.Has( "nmfile" ) ) {
-						std::string fname = bag.GetString( "nmfile" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							char nmbuf[MAX_CHARS_PER_LINE];
-							while( fgets( nmbuf, sizeof( nmbuf ), f ) ) {
-								const char* q = nmbuf;
-								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
-								if( *q == '\0' || *q == '#' ) continue;
-								double nm = 0.0;
-								if( sscanf( nmbuf, "%lf", &nm ) == 1 ) wavelengths.push_back( nm );
-							}
-							fclose( f );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
+					for( const std::string& row : bag.GetRepeatable( "cp" ) ) {
+						if( !appendPair( row ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: invalid control point", name.c_str() );
 							return false;
 						}
 					}
 
-					// Optional file-loaded amplitudes
-					if( bag.Has( "ampfile" ) ) {
-						std::string fname = bag.GetString( "ampfile" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							char ampbuf[MAX_CHARS_PER_LINE];
-							while( fgets( ampbuf, sizeof( ampbuf ), f ) ) {
-								const char* q = ampbuf;
-								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
-								if( *q == '\0' || *q == '#' ) continue;
-								double amp = 0.0;
-								if( sscanf( ampbuf, "%lf", &amp ) == 1 ) amplitudes.push_back( amp );
+					for( const char* field : { "file", "nmfile", "ampfile" } ) {
+						if( !bag.Has( field ) ) continue;
+						const std::string filename = bag.GetString( field );
+						std::ifstream input( GlobalMediaPathLocator().Find( filename.c_str() ).c_str() );
+						if( !input ) {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
+							return false;
+						}
+						const std::string_view kind( field );
+						std::string row;
+						size_t lineNumber = 0;
+						while( std::getline( input, row ) ) {
+							++lineNumber;
+							if( row.find( '\0' ) != std::string::npos ) {
+								GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: Embedded NUL in file `%s` at line %zu", name.c_str(), filename.c_str(), lineNumber );
+								return false;
 							}
-							fclose( f );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
+							const auto first = row.find_first_not_of( " \t\r\f\v" );
+							if( first == std::string::npos || row[first] == '#' ) continue;
+							double sample = 0;
+							const bool valid = kind == "file" ? appendPair( row ) : ReadSampleColumns( row, &sample, 1 );
+							if( !valid ) {
+								GlobalLog()->PrintEx( eLog_Warning, "spectral_painter `%s`: skipping malformed line in `%s`", name.c_str(), filename.c_str() );
+								continue;
+							}
+							if( kind != "file" ) {
+								(kind == "nmfile" ? wavelengths : amplitudes).push_back( sample );
+							}
+						}
+						if( input.bad() ) {
+							GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: Failed to read file `%s` after line %zu", name.c_str(), filename.c_str(), lineNumber );
 							return false;
 						}
 					}
 
 					if( amplitudes.empty() || wavelengths.empty() ) {
 						GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: no samples (empty / all-comment file, no inline cp)", name.c_str() );
+						return false;
+					}
+					if( amplitudes.size() != wavelengths.size() ) {
+						GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: wavelength and amplitude sample counts differ", name.c_str() );
 						return false;
 					}
 					return pJob.AddSpectralColorPainter( name.c_str(), &amplitudes[0], &wavelengths[0], nmbegin, nmend, static_cast<unsigned int>(amplitudes.size()), scale );
@@ -1184,8 +1390,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "nmbegin"; p.kind = ValueKind::Double;   p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
 						{ auto& p = P(); p.name = "nmend";   p.kind = ValueKind::Double;   p.description = "End wavelength (nm)"; p.defaultValueHint = "700"; }
-						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;   p.description = "Overall amplitude scale"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String;   p.repeatable = true; p.description = "Wavelength,amplitude sample (repeatable)"; }
+						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;   p.description = "Multiplies the spectrum on every path (spectral samples and the RGB projections alike, DL-464); as a reflectance, a scaled spectrum above 1 is an energy gain"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String;   p.repeatable = true; p.description = "Wavelength amplitude sample (repeatable)"; }
 						{ auto& p = P(); p.name = "file";    p.kind = ValueKind::Filename; p.description = "Spectrum text file (pairs)"; }
 						{ auto& p = P(); p.name = "nmfile";  p.kind = ValueKind::Filename; p.description = "Wavelength list file"; }
 						{ auto& p = P(); p.name = "ampfile"; p.kind = ValueKind::Filename; p.description = "Amplitude list file"; }
@@ -1209,14 +1415,25 @@ namespace RISE
 			//   function2d <name>                      → Function2DScalarPainter wrapping a named IFunction2D
 			//   base <name> [scale <s>]                → ScaledScalarPainter (default scale = 1.0)
 			//   multiply <a> <b>                       → MultiplyScalarPainter
+			//   add <a> <b> [weight_a <w>] [weight_b <w>]
+			//                                          → AddScalarPainter (multiply's
+			//                                            additive sibling; out = weight_a*a
+			//                                            + weight_b*b, weights default 1.0)
 			//   texture <name> [channel R|G|B] [scale <s>] [bias <b>]
 			//                                          → TextureScalarPainter (image map
 			//                                            sampled at surface UV; out = bias +
 			//                                            scale * rawTexel; no JH-uplift)
+			//   expression <body> [param ...] [def ...] [seed <s>]
+			//                                          → ExpressionScalarPainter (doc 88 P1 S2)
+			//   painter <name> [channel R|G|B|A] [scale <s>] [bias <b>]
+			//                                          → PainterChannelScalarPainter (doc 88 P2.1 S3;
+			//                                            ANY colour painter, not just raster images;
+			//                                            channel A reads GetAlpha)
 			//
 			// At most one of {value, values, file, sellmeier, polynomial,
-			// function1d, function2d, base, multiply, texture} may be present.
-			// Mutually exclusive — the parser raises an error otherwise.
+			// function1d, function2d, base, multiply, add, texture,
+			// expression, painter} may be present.  Mutually exclusive —
+			// the parser raises an error otherwise.
 			//////////////////////////////////////////
 			struct ScalarPainterAsciiChunkParser : public IAsciiChunkParser
 			{
@@ -1234,14 +1451,18 @@ namespace RISE
 					const bool hasFunction2d  = bag.Has( "function2d" );
 					const bool hasBase        = bag.Has( "base" );
 					const bool hasMultiply    = bag.Has( "multiply" );
+					const bool hasAdd         = bag.Has( "add" );
 					const bool hasTexture     = bag.Has( "texture" );
+					const bool hasExpression  = bag.Has( "expression" );
+					const bool hasPainter     = bag.Has( "painter" );
 
 					const int formCount = (int)hasValue + (int)hasValues + (int)hasFile +
 						(int)hasSellmeier + (int)hasPolynomial + (int)hasFunction1d +
-						(int)hasFunction2d + (int)hasBase + (int)hasMultiply + (int)hasTexture;
+						(int)hasFunction2d + (int)hasBase + (int)hasMultiply + (int)hasAdd + (int)hasTexture +
+						(int)hasExpression + (int)hasPainter;
 					if( formCount == 0 ) {
 						GlobalLog()->PrintEx( eLog_Error,
-							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply, texture)",
+							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply, add, texture, expression, painter)",
 							name.c_str() );
 						return false;
 					}
@@ -1266,16 +1487,15 @@ namespace RISE
 						RISE_API_CreateUniformScalarPainter( &painter, Scalar( v ) );
 					}
 					else if( hasValues ) {
-						const std::string raw = bag.GetString( "values" );
+						// DL-32 round 4 (docs/DEBT_LEDGER.md): this used to read `values`
+						// into a local string and check `sscanf(...) != 3` -- but sscanf's
+						// return value counts SUCCESSFUL conversions, not total tokens, so
+						// `values 1 2 3 4` matched 3 (silently dropping the "4") and passed.
+						// Routed through the shared GetVec3 accessor instead, which counts
+						// the WHOLE token stream and hard-errors on anything but exactly 3
+						// (same contract as every other DoubleVec3-kind parameter).
 						double rgb[3] = { 0, 0, 0 };
-						const int matched = sscanf( raw.c_str(), "%lf %lf %lf",
-							&rgb[0], &rgb[1], &rgb[2] );
-						if( matched != 3 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"scalar_painter `%s`: `values` requires three numeric components (got %d in `%s`)",
-								name.c_str(), matched, raw.c_str() );
-							return false;
-						}
+						bag.GetVec3( "values", rgb );
 						RISE_API_CreateRGBScalarPainter( &painter,
 							Scalar( rgb[0] ), Scalar( rgb[1] ), Scalar( rgb[2] ) );
 					}
@@ -1309,15 +1529,34 @@ namespace RISE
 						RISE_API_CreatePiecewiseLinearScalarPainter( &painter, samples );
 					}
 					else if( hasSellmeier ) {
-						double B1=0, B2=0, B3=0, C1=0, C2=0, C3=0;
+						// DL-32 round 4 (docs/DEBT_LEDGER.md): this used to read `sellmeier`
+						// into a local string and check `sscanf(...) != 6` -- but sscanf's
+						// return value counts SUCCESSFUL conversions, not total tokens, so
+						// `sellmeier <7 numbers>` matched 6 (silently dropping the 7th) and
+						// passed.  `sellmeier` has no fixed ValueKind of its own (it is a
+						// 6-tuple, one more than GetVec4 covers and short of a would-be
+						// GetVec6 nobody else needs), so this hard-errors the same way
+						// GetVec3/GetVec4 do: exact whitespace-token count via the shared
+						// `AllTokensAreFiniteNumbers` primitive, log + latch the CST
+						// finalize-diagnostic sink on a mismatch, rather than trusting
+						// sscanf's partial-match count.
 						const std::string s = bag.GetString( "sellmeier" );
-						if( sscanf( s.c_str(), "%lf %lf %lf %lf %lf %lf",
-								&B1, &B2, &B3, &C1, &C2, &C3 ) != 6 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"scalar_painter `%s`: sellmeier needs 6 values (B1 B2 B3 C1 C2 C3)",
-								name.c_str() );
+						int actual = 0;
+						if( !AllTokensAreFiniteNumbers( s.c_str(), &actual ) || actual != 6 ) {
+							char diag[512];
+							std::snprintf( diag, sizeof( diag ),
+								"ChunkParser:: parameter `sellmeier` in `scalar_painter` expects exactly 6 "
+								"space-separated number(s) (B1 B2 B3 C1 C2 C3); got %d in `%s` \xE2\x80\x94 "
+								"a short or long vector used to silently zero-fill or truncate (DL-32, "
+								"docs/DEBT_LEDGER.md) instead of failing the parse",
+								actual, s.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "%s", diag );
+							RISE::SetFinalizeDiagIfEmpty( diag );
 							return false;
 						}
+						double B1=0, B2=0, B3=0, C1=0, C2=0, C3=0;
+						sscanf( s.c_str(), "%lf %lf %lf %lf %lf %lf",
+							&B1, &B2, &B3, &C1, &C2, &C3 );
 						RISE_API_CreateSellmeierScalarPainter( &painter,
 							Scalar( B1 ), Scalar( B2 ), Scalar( B3 ),
 							Scalar( C1 ), Scalar( C2 ), Scalar( C3 ) );
@@ -1386,14 +1625,27 @@ namespace RISE
 						RISE_API_CreateScaledScalarPainter( &painter, base, Scalar( scale ) );
 					}
 					else if( hasMultiply ) {
+						// DL-32 round 4 (docs/DEBT_LEDGER.md): `sscanf(s, "%255s %255s") != 2`
+						// counts SUCCESSFUL conversions, not total tokens -- `multiply a b c`
+						// matched 2 (silently ignoring "c") and passed.  Count whitespace-
+						// separated tokens explicitly first, matching the exact-arity contract
+						// every other fixed-tuple field in this file now uses.
 						const std::string s = bag.GetString( "multiply" );
-						char aname[256] = {0}, bname[256] = {0};
-						if( sscanf( s.c_str(), "%255s %255s", aname, bname ) != 2 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"scalar_painter `%s`: multiply needs two scalar_painter names",
-								name.c_str() );
+						std::istringstream cnt( s );
+						std::string tokBuf; int nTok = 0;
+						while( cnt >> tokBuf ) ++nTok;
+						if( nTok != 2 ) {
+							char diag[512];
+							std::snprintf( diag, sizeof( diag ),
+								"ChunkParser:: parameter `multiply` in `scalar_painter` expects exactly 2 "
+								"space-separated scalar_painter names (a b); got %d in `%s`",
+								nTok, s.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "%s", diag );
+							RISE::SetFinalizeDiagIfEmpty( diag );
 							return false;
 						}
+						char aname[256] = {0}, bname[256] = {0};
+						sscanf( s.c_str(), "%255s %255s", aname, bname );
 						IScalarPainter* a = pPriv->GetScalarPainters()->GetItem( aname );
 						IScalarPainter* b = pPriv->GetScalarPainters()->GetItem( bname );
 						if( !a || !b ) {
@@ -1403,6 +1655,36 @@ namespace RISE
 							return false;
 						}
 						RISE_API_CreateMultiplyScalarPainter( &painter, a, b );
+					}
+					else if( hasAdd ) {
+						// Same DL-32 round-4 fix as `multiply` immediately above.
+						const std::string s = bag.GetString( "add" );
+						std::istringstream cnt( s );
+						std::string tokBuf; int nTok = 0;
+						while( cnt >> tokBuf ) ++nTok;
+						if( nTok != 2 ) {
+							char diag[512];
+							std::snprintf( diag, sizeof( diag ),
+								"ChunkParser:: parameter `add` in `scalar_painter` expects exactly 2 "
+								"space-separated scalar_painter names (a b); got %d in `%s`",
+								nTok, s.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "%s", diag );
+							RISE::SetFinalizeDiagIfEmpty( diag );
+							return false;
+						}
+						char aname[256] = {0}, bname[256] = {0};
+						sscanf( s.c_str(), "%255s %255s", aname, bname );
+						IScalarPainter* a = pPriv->GetScalarPainters()->GetItem( aname );
+						IScalarPainter* b = pPriv->GetScalarPainters()->GetItem( bname );
+						if( !a || !b ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: add operands `%s` / `%s` not found",
+								name.c_str(), aname, bname );
+							return false;
+						}
+						const double weightA = bag.GetDouble( "weight_a", 1.0 );
+						const double weightB = bag.GetDouble( "weight_b", 1.0 );
+						RISE_API_CreateAddScalarPainter( &painter, a, b, Scalar( weightA ), Scalar( weightB ) );
 					}
 					else if( hasTexture ) {
 						// Spatially-varying physical scalar driven by a 2D image
@@ -1438,13 +1720,22 @@ namespace RISE
 								name.c_str(), ref.c_str() );
 							return false;
 						}
-						// channel select: R (default) / G / B.
+						// channel select: R (default) / G / B.  A is rejected
+						// here (TextureScalarPainter has no alpha read) --
+						// use the `painter` form instead, which reads ANY
+						// painter's GetAlpha.
 						unsigned int channel = 0;
 						if( bag.Has( "channel" ) ) {
 							const std::string chs = bag.GetString( "channel" );
 							if(      chs == "R" ) channel = 0;
 							else if( chs == "G" ) channel = 1;
 							else if( chs == "B" ) channel = 2;
+							else if( chs == "A" ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"scalar_painter `%s`: `texture` form does not support channel A (TextureScalarPainter has no alpha read) -- use `painter %s channel A` instead",
+									name.c_str(), ref.c_str() );
+								return false;
+							}
 							else {
 								GlobalLog()->PrintEx( eLog_Error,
 									"scalar_painter `%s`: unknown channel `%s` (expected R, G, or B)",
@@ -1456,6 +1747,118 @@ namespace RISE
 						const double bias  = bag.GetDouble( "bias",  0.0 );
 						RISE_API_CreateTextureScalarPainterAffine(
 							&painter, pRIA, channel, Scalar( scale ), Scalar( bias ) );
+					}
+					else if( hasPainter ) {
+						// P2.1 (doc 88 S3): the any-painter -> scalar bridge.
+						// Generalizes `texture` (raster-only) to ANY colour
+						// painter -- every painter kind (expression_painter
+						// included) becomes bindable to every physical-scalar
+						// slot.  See PainterChannelScalarPainter.h's file
+						// header for the post-colourspace-value caveat (same
+						// one PainterToScalarAdapter carries).
+						const std::string ref = bag.GetString( "painter" );
+						IPainter* srcPainter = pPriv->GetPainters()->GetItem( ref.c_str() );
+						if( !srcPainter ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: painter `%s` not found",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						unsigned int channel = 0;	// R default
+						if( bag.Has( "channel" ) ) {
+							const std::string chs = bag.GetString( "channel" );
+							if(      chs == "R" ) channel = 0;
+							else if( chs == "G" ) channel = 1;
+							else if( chs == "B" ) channel = 2;
+							else if( chs == "A" ) channel = 3;
+							else {
+								GlobalLog()->PrintEx( eLog_Error,
+									"scalar_painter `%s`: unknown channel `%s` (expected R, G, B, or A)",
+									name.c_str(), chs.c_str() );
+								return false;
+							}
+						}
+						const double scale = bag.GetDouble( "scale", 1.0 );
+						const double bias  = bag.GetDouble( "bias",  0.0 );
+						RISE_API_CreatePainterChannelScalarPainter(
+							&painter, *srcPainter, channel, Scalar( scale ), Scalar( bias ) );
+					}
+					else if( hasExpression ) {
+						// Spatially-varying physical scalar driven by the doc-88
+						// texture-expression VM -- the G1 fix (no colorspace, no
+						// JH uplift, by construction).  Same param/def/seed
+						// grammar as expression_painter (BuildExpressionProgramFromChunkFields
+						// is the shared builder), full 3D context (u,v,P,Po,N,fw,fwo)
+						// enabled.  `time` is NOT exposed here -- IScalarPainter
+						// has no IKeyframable hook (see ExpressionScalarPainter's
+						// class doc comment in ExpressionPainter.h).
+						const std::string finalExpr = bag.GetString( "expression", "" );
+						const double seed = bag.GetDouble( "seed", 0.0 );
+						const std::vector<std::string>& params = bag.GetRepeatable( "param" );
+						const std::vector<std::string>& defs = bag.GetRepeatable( "def" );
+
+						const std::string context = "scalar_painter `" + name + "` (expression)";
+						Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
+						std::vector<Implementation::ParamSpec> specs;
+
+						// DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g)) -- see
+						// Job::AddExpressionPainter's twin site (Job.cpp) for the
+						// full rationale; duplicated here rather than shared
+						// because the two call sites resolve against different
+						// IJobPriv REFERENCES (`*pPriv` here, `*this` there) with
+						// no header both can include without pulling IJobPriv.h
+						// into ExpressionPainter.h (see IExpressionPainterRefResolver's
+						// own doc comment).
+						//
+							// DL-25 review P3 -- PER MANAGER, not per name: this is
+							// the SCALAR chunk's resolver, so only
+							// `ResolveScalarPainter` can be naming the chunk being
+							// built.  A `sample(grain)` here names the COLOUR
+							// painter `grain`, a different chunk in a different
+							// manager, and must resolve normally.  See
+							// Job::AddExpressionPainter's twin for the full note.
+						class SelfReferenceCheckedResolver : public Implementation::IExpressionPainterRefResolver
+						{
+						public:
+							IJobPriv& job;
+							std::string selfName;
+							SelfReferenceCheckedResolver( IJobPriv& j, const std::string& self ) : job( j ), selfName( self ) {}
+							bool ResolveColorPainter( const std::string& nm, IPainter*& out, std::string& err ) override
+							{
+								// NO self-name check here -- see the class comment:
+								// this is a scalar_painter being built, so a COLOUR
+								// painter of the same name is a different chunk.
+								out = job.GetPainters()->GetItem( nm.c_str() );
+								if( !out ) { err = "painter `" + nm + "` not found (declare it before this chunk, or check the name)"; return false; }
+								return true;
+							}
+							bool ResolveScalarPainter( const std::string& nm, IScalarPainter*& out, std::string& err ) override
+							{
+								if( nm == selfName ) {
+									err = "references itself -- a painter cannot sample its own not-yet-registered chunk";
+									return false;
+								}
+								out = job.GetScalarPainters()->GetItem( nm.c_str() );
+								if( !out ) { err = "scalar_painter `" + nm + "` not found (declare it before this chunk, or check the name)"; return false; }
+								return true;
+							}
+						} painterRefResolver( *pPriv, name );
+
+						// true/true: full context vars + auto-registered `seed`,
+						// this call's ORIGINAL (pre-unification) behavior -- see
+						// BuildExpressionProgramFromChunkFields's own doc comment
+						// (ExpressionPainter.h).
+						std::string exprErr;
+						if( !Implementation::BuildExpressionProgramFromChunkFields(
+								context, params, defs, Scalar( seed ), finalExpr, prog, specs,
+								/*enableContextVars=*/true, /*autoRegisterSeed=*/true, &exprErr, &painterRefResolver ) ) {
+							// See Job::AddExpressionPainter's twin site -- thread the
+							// specific compiler diagnostic into the CST sink instead
+							// of leaving the caller with the generic apply-failed text.
+							SetFinalizeDiagIfEmpty( exprErr );
+							return false;
+						}
+						RISE_API_CreateExpressionScalarPainter( &painter, prog, specs );
 					}
 
 					if( !painter ) {
@@ -1473,7 +1876,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "scalar_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Physical-scalar painter (no colorspace, no spectral uplift).  Used for IOR, scattering, roughness, absorption, phase asymmetry.  Pick exactly one form via the optional fields below.  Only the `function2d` and `texture` forms VARY ACROSS THE SURFACE -- every other form is spatially constant, so spatially-varying roughness means scalar_painter { function2d <a UV-domain painter or expression_function2d> } or scalar_painter { texture <image painter> }.";
+						cd.description = "Physical-scalar painter (no colorspace, no spectral uplift).  Used for IOR, scattering, roughness, absorption, phase asymmetry.  Pick exactly one form via the optional fields below.  The `function2d`, `texture`, `expression`, and `painter` forms VARY ACROSS THE SURFACE -- every other form is spatially constant, so spatially-varying roughness means scalar_painter { expression <body> } (the doc-88 texture-expression VM; see `expression` below), scalar_painter { function2d <a UV-domain painter or expression_function2d> }, scalar_painter { texture <image painter> }, or scalar_painter { painter <any colour painter> channel <R|G|B|A> } (the any-painter -> scalar bridge -- P2.1: binds ANY colour painter kind, not just raster images).  `expression` is also the only form that can yield a genuine per-channel triple (a vec3-typed body sets HasPerChannelVariation) for spatially-varying RGB dispersion.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "value";      p.kind = ValueKind::Double;     p.description = "Single scalar value (form 1: UniformScalarPainter)"; }
@@ -1481,14 +1884,22 @@ namespace RISE
 						{ auto& p = P(); p.name = "file";       p.kind = ValueKind::Filename;   p.description = "2-column (nm value) file (form 3: PiecewiseLinearScalarPainter)"; }
 						{ auto& p = P(); p.name = "sellmeier";  p.kind = ValueKind::String;     p.description = "Sellmeier coefficients `B1 B2 B3 C1 C2 C3` (form 4: SellmeierScalarPainter)"; }
 						{ auto& p = P(); p.name = "polynomial"; p.kind = ValueKind::String;     p.description = "Polynomial coefficients `c0 c1 c2 ...` (form 5: PolynomialScalarPainter)"; }
-						{ auto& p = P(); p.name = "function1d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction1D to wrap (form 6: Function1DScalarPainter)"; }
-						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction2D to wrap (form 7: Function2DScalarPainter)"; }
-						{ auto& p = P(); p.name = "base";       p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Base scalar_painter for ScaledScalarPainter (form 8)"; }
-						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;     p.description = "Scale factor (companion to `base`, `texture`, and `function2d`)"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "multiply";   p.kind = ValueKind::String;     p.tupleKinds = {ValueKind::Reference, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Two scalar_painter names `a b` (form 9: MultiplyScalarPainter)"; }
-						{ auto& p = P(); p.name = "texture";    p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named raster image painter (png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter) to sample spatially at the surface UV (form 10: TextureScalarPainter; no JH-uplift / colourspace conversion)"; }
-						{ auto& p = P(); p.name = "channel";    p.kind = ValueKind::Enum;       p.enumValues = {"R","G","B"}; p.description = "Which texture channel sources the scalar (companion to `texture`)"; p.defaultValueHint = "R"; }
-						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;     p.description = "Additive offset for the `texture` / `function2d` forms: out = bias + scale * raw (raw in [0,1])"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "function1d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction1D to wrap (form 6: Function1DScalarPainter)"; p.semantics.pipe = ParameterPipe::Function1D; }
+						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "Named IFunction2D to wrap (form 7: Function2DScalarPainter) -- resolved via `pPriv->GetFunction2Ds()->GetItem` (this parser's own Finalize), which holds every `function`-category IFunction2D (piecewise_linear_function2d) PLUS every dual-registered colour painter except expression_painter/scalar_painter (Job.cpp's RegisterPainterDual), hence the {Painter, Function} pair"; p.semantics.pipe = ParameterPipe::Function2D; }
+						{ auto& p = P(); p.name = "base";       p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Base scalar_painter for ScaledScalarPainter (form 8)"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.note = "referenceCategories lists {Painter} (the CATEGORY grouping every painter-family chunk, scalar_painter included -- see ChunkParserRegistry.cpp's Describe()) but the value resolves via GetScalarPainters(), i.e. the Scalar pipe specifically -- referenceCategories is category, not pipe."; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;     p.description = "Scale factor (companion to `base`, `texture`, `function2d`, and `painter`)"; p.defaultValueHint = "1.0"; p.SoftRange( -5.0, 5.0, 0.05 ); }
+						{ auto& p = P(); p.name = "multiply";   p.kind = ValueKind::String;     p.tupleKinds = {ValueKind::Reference, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Two scalar_painter names `a b` (form 9: MultiplyScalarPainter)"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.note = "tuple of two scalar_painter names, both resolved via GetScalarPainters()"; }
+						{ auto& p = P(); p.name = "add";        p.kind = ValueKind::String;     p.tupleKinds = {ValueKind::Reference, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Two scalar_painter names `a b` (form 13: AddScalarPainter).  `multiply`'s additive sibling -- out = weight_a*a + weight_b*b, so a detail field layered on `add` never zeroes out where the OTHER operand is zero the way a product would.  See `weight_a` / `weight_b` below."; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.note = "tuple of two scalar_painter names, both resolved via GetScalarPainters()"; }
+						{ auto& p = P(); p.name = "weight_a";   p.kind = ValueKind::Double;     p.description = "Multiplier on `add`'s first operand (companion to `add`)"; p.defaultValueHint = "1.0"; p.SoftRange( -5.0, 5.0, 0.05 ); }
+						{ auto& p = P(); p.name = "weight_b";   p.kind = ValueKind::Double;     p.description = "Multiplier on `add`'s second operand (companion to `add`)"; p.defaultValueHint = "1.0"; p.SoftRange( -5.0, 5.0, 0.05 ); }
+						{ auto& p = P(); p.name = "texture";    p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named raster image painter (png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter) to sample spatially at the surface UV (form 10: TextureScalarPainter; no JH-uplift / colourspace conversion; channel A not supported here -- use `painter` instead)"; p.semantics.pipe = ParameterPipe::Color; p.semantics.keywordAllowlist = {"png_painter", "jpg_painter", "hdr_painter", "exr_painter", "tiff_painter"}; p.semantics.note = "Special case (the \"texture-form channel A redirect\"): resolves via GetPainters() then dynamic_cast<TexturePainter*> -- only raster-image painter chunks pass, not every Color-pipe chunk (a checker_painter or blend_painter is Color-pipe but NOT a TexturePainter and is rejected). channel \"A\" is additionally refused at the value layer with a message redirecting to the `painter` form (ChunkParserRegistry.cpp: \"does not support channel A ... use `painter %s channel A` instead\") -- a value-level constraint CheckConnection does not model (it answers candidate-identity legality, not per-channel value legality), documented here so the special case is not silently lost."; }
+						{ auto& p = P(); p.name = "channel";    p.kind = ValueKind::Enum;       p.enumValues = {"R","G","B","A"}; p.description = "Which channel sources the scalar (companion to `texture` [R/G/B only] and `painter` [R/G/B/A])"; p.defaultValueHint = "R"; }
+						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;     p.description = "Additive offset for the `texture` / `function2d` / `painter` forms: out = bias + scale * raw (raw in [0,1] for texture/painter)"; p.defaultValueHint = "0.0"; p.SoftRange( -2.0, 2.0, 0.02 ); }
+						{ auto& p = P(); p.name = "expression"; p.kind = ValueKind::String;     p.carriesExpressionSampleRefs = true; p.description = "Final value expression over the FULL 3D context (u, v, P, Po, N, fw, fwo, curv, curvR, plus the occlusion()/convexity()/thickness()/proximity()/interior() builtins; NOT time -- see `seed` below) (form 11: ExpressionScalarPainter, the doc-88 texture-expression VM).  `curv` / `curvR` are SURFACE CURVATURE at the hit, the geometry-derived signal wear and grime masks key on: POSITIVE = convex (an edge), NEGATIVE = concave (a crevice), 0 = flat.  `curvR` is the raw signed MEAN curvature in 1/world-length; `curv` is that value normalized by the hit geometry's world bounding-box diagonal, so it reads O(1) at object scale and `clamp(curv,0,1)` is an edge-wear mask / `clamp(-curv,0,1)` a crevice mask on ANY scene scale -- prefer `curv` unless you genuinely want physical units.  Quality by geometry: EXACT on sdf_geometry / skeleton_geometry (a true differential quantity on an implicit surface), on the analytic curved primitives (sphere, ellipsoid, torus, cylinder), and on bezierpatch_geometry / bilinearpatch_geometry (analytic Weingarten map); FACETED on triangle meshes (it is only as good as the vertex normals, and jumps across shared edges); and correctly 0 on planar primitives.  Under NON-UNIFORM object scale the normalization is a documented geometric-mean approximation (no single length is right for a `scale 4 0.05 4` panel).  It is fine-scale and RADIUS-FREE -- the local differential curvature, not a radius-sampled \"wear the 2cm edges, ignore the 2mm ones\" signal.  BUMP / NORMAL MAPS DO NOT MOVE IT: it comes from the geometric normal field, so `curv` and `N` legitimately disagree on a bump-mapped surface -- that is correct (a wear mask wants the form, not the texture, and a bump-perturbed curvature would double-count detail the bump map already shades).  GEOMETRY SIGNALS -- `occlusion(radius)`, `convexity(radius)` and `thickness(radius)`, the three ARG-TAKING builtins that ask the hit geometry about itself.  `occlusion` returns [0,1] with 1 = UNOCCLUDED (the universal convention -- white is open, dark is cavity), `convexity` returns [0,1] with 0 = FLAT-OR-CONCAVE and 1 = a knife edge, `thickness` returns [0,1] with 1 = THICK, normalized by the query radius.  `occlusion` AND `convexity` PARTITION ONE QUESTION -- how open is the surface at scale `radius`, measured against what a FLAT surface would read -- with occlusion reporting how much LESS open than flat and convexity how much MORE.  Neither is ever a residual of the other, and that is the thing to rely on while authoring.  (1) A MERELY CONVEX EDGE READS occlusion EXACTLY 1, the same as a flat face; occlusion darkens only for real cavities, so `1 - occlusion(r)` is a usable crevice mask with NO thresholding needed to keep it off the arrises.  (Before 2026-09-06 it was not: the old estimator returned 0.707 on any convex edge a CSG `intersect`/`subtract` produced, and the SAME 0.707 in a concave 90-degree valley, so the two were indistinguishable and every such scene needed a hand-tuned smoothstep.)  (2) A FLAT FACE AND EVERY CAVITY READ convexity EXACTLY 0, and every value above that has a FIXED GEOMETRIC MEANING on any object at any scene scale -- 0.5 IS a 90-degree arris, 0.75 IS a three-face corner -- which is precisely what `curv` cannot offer, since `curv` is an unbounded differential quantity whose useful thresholds have to be probe-measured per object.  Reach for `convexity(r)` for edge wear (\"wear the edges about r across, ignore the rest\"), and for `curv` when you want the form's signed bending at no particular scale.  THEY ARE MEASURED DIFFERENTLY, which matters in two places: occlusion sphere-traces 12 cosine-weighted directions over the outward hemisphere, the set spun about the normal per hit so the answer is an expectation rather than a multiple of 1/12 (the same integral -- and since 2026-09-07 the same per-hit spin -- a mesh's baked AO computes) and therefore SEES NARROW APERTURES a crack, a slot, a fold; convexity samples the query BALL and therefore sees smooth bulges too (on a convex sphere of radius rho it reads 3*radius/(8*rho), where a purely directional measure would read 0).  On edges, creases and corners the two agree exactly.  Occlusion is also the more expensive of the two by roughly 3x (~91 field evaluations against convexity's 32) -- neither costs anything unless the body calls it.  `radius` is NOT a world length: it is a FRACTION of the hit geometry's own characteristic size (its bounding-box diagonal), so `occlusion(0.05)` means \"5% of the object\" and reads identically at any scene scale and on any instance of that geometry.  A LITERAL radius <= 0 is a COMPILE error; a computed one that lands <= 0 returns the neutral value.  TWO GEOMETRY FAMILIES ANSWER THEM, by different means.  The SDF family (`sdf_geometry`, `skeleton_geometry`) evaluates them LIVE from its distance field and accepts a DYNAMIC radius (any expression, recomputed per hit).  INDEXED TRIANGLE MESHES answer from a per-vertex field BAKED LAZILY -- the first query at a given radius pays the bake (it announces itself and its millisecond cost in the log), every later sample is a barycentric read of it -- which makes the radius on a mesh necessarily a LITERAL: a computed one reads the NEUTRAL fallback rather than silently borrowing a table baked at a different scale, and at most 8 distinct literal radii per signal per mesh are baked before further ones read neutral too.  Everything else returns the NEUTRAL fallback: the analytic primitives, non-indexed meshes, and heightfield-mode `sdf_geometry` (whose global Lipschitz bound would make a local answer systematically wrong).  That fallback is deliberately the do-nothing end of each range -- occlusion 1 (unoccluded), thickness 1 (thick), convexity 0 (flat) -- so a mask built on an unsupported geometry lights NOTHING up rather than lighting everything up.  Note that convexity's neutral sits at the OPPOSITE end of its range from the other two, for exactly that reason: an absent edge-wear signal must mean \"no edge here\", never \"knife edge everywhere\".  They cost nothing unless the body actually calls them.  CROSS-OBJECT PROXIMITY -- `proximity(radius)` and `interior(radius)`, the FOURTH and FIFTH signal builtins and the only two that look at the REST OF THE SCENE.  The three above ask the hit geometry about ITSELF; this one returns [0,1] with 1 = TOUCHING and 0 = nothing within `radius`, computed as `1 - d/radius` for `d` the shortest distance from the hit to the surface of any OTHER object.  It is the quantity contact grime actually is -- dirt collecting where a nail rests on a plank, dust where a wall meets a floor -- and it is NOT an occlusion: a thin object lying on a plane subtends only grazing directions, so `1 - occlusion(r)` reads a two-to-ten-pixel band there rather than a seam, which is why this exists as its own builtin rather than as a wider radius on that one.  The analogue is Unreal's DistanceToNearestSurface node and Houdini's xyzdist(), not Substance's AO baker.  ITS `radius` IS A WORLD LENGTH -- `proximity(0.002)` is 2 mm -- deliberately UNLIKE the other three, whose radius is a fraction of the hit object's own size: a fraction of the RECEIVER cannot describe how far away a NEIGHBOUR is, and authors already reason in world units for `fw` and feature sizes.  A literal radius <= 0 is a compile error naming that unit; a computed one that lands <= 0 returns the neutral.  TWO THINGS TO KNOW BEFORE AUTHORING WITH IT.  (1) IT CANNOT DRIVE RELIEF: `relief_modifier` holds the signal channel FIXED across its four taps by documented design, so a `proximity`-driven height expression has zero gradient and produces no displacement -- the seam is a colour and roughness signal.  (2) EMISSIVE OBJECTS NEVER COUNT: a `rect_light` panel parked millimetres off a wall must not paint grime on it, so any object whose material emits is skipped -- which also means a DECORATIVE emitter (a lava pool, a glowing rune) will not collect contact dirt either.  `casts_shadows FALSE` does NOT exempt a neighbour (this is geometry presence, not light visibility), a CSG composite's operands never count separately, two INSTANCED COPIES of one geometry do count against each other, and a point INSIDE another object reads 1 (interpenetration is contact).  Unlike the other three it works on EVERY receiver, including ones that publish no signal provider at all (a `box_geometry`, an infinite plane) -- what varies is which NEIGHBOURS can answer: the analytic primitives (plane, sphere, box, capped and open cylinder, disk, torus, and a clipped plane whose four corners are COPLANAR AND CONVEX -- every rect_light and every hand-authored panel) are exact, INDEXED TRIANGLE MESHES are exact too (every loader but RAW, every tessellated primitive, and `displaced_geometry`'s baked mesh -- answered by a bounded closest-point traversal of the mesh's own BVH, identical to a brute-force minimum over every triangle), the ellipsoid and `sdf_geometry` / `skeleton_geometry` are upper bounds (so the signal may UNDER-paint a seam and can never paint one that is not there), CSG COMPOSITES ANSWER TOO (a `union` reports the nearer of its operands; an `intersection` or a `subtraction` brackets the composed field and reports an upper bound), refusing only when an operand refuses -- an `intersection` or `subtraction` with a SHEET operand (a plane, a disk, an open cylinder, a mesh) refuses outright, since it cannot tell inside from outside there -- and RAW (non-indexed) meshes, patches, hair, heightfield-mode SDFs and non-convex or non-coplanar clipped planes contribute nothing and say so ONCE PER REFUSING OBJECT in the log, naming the chunk and its kind.  A MESH IS A SHEET for this query and every solid family is not: a point INSIDE a sphere, box, cylinder or SDF reads 1 (interpenetration is contact), while a point inside a closed MESH reads its honest distance to the nearest triangle -- a triangle soup carries no inside test, and reporting a distance rather than inventing one is the direction that can only under-paint.  HOW LOOSE THE BOUNDS ARE, since it changes the radius you author: an ECCENTRIC ELLIPSOID over-reports by up to its semi-axis ratio -- a 4:1 ellipsoid at a true distance of 2.75 reports 11.0 -- so against one you want roughly ratio-times the radius you actually mean, and an anisotropically SCALED object is bounded the same way (it says so in the log, with its factor).  `interior(radius)` IS THE SIGNED SIBLING, and the two together cover the signed distance without a sign convention to remember: it returns [0,1] with 0 = INSIDE NO NEIGHBOUR and 1 = at least `radius` deep inside one, computed as `depth/radius` for `depth` the deepest containment over every other object.  Its `radius` is a WORLD LENGTH too, and mandatory.  Reach for it when what you want to paint is BURIAL rather than contact -- the sunk shank of a nail, the embedded flank of a stone in mortar.  ONLY THE SOLID FAMILIES CONTRIBUTE TO IT: a sphere, box, capped cylinder, torus, ellipsoid, SDF or CSG composite of those can say whether a point is inside it, while every SHEET -- a plane, a disk, an open cylinder, a TRIANGLE MESH, a patch, hair -- cannot and contributes 0 silently (it would otherwise print a refusal for every mesh in the scene).  So a receiver buried inside a MESH neighbour reads `interior` 0 and `proximity` its honest distance to the nearest triangle.  ALL SIX SIGNALS (curv, occlusion, convexity, thickness, proximity, interior) ARE READ LIVE AT EVERY SURFACE VERTEX UNDER PATH TRACING, BDPT, VCM AND MLT ALIKE (since 2026-09-11 -- docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md): BDPT's and VCM's per-vertex rebuild carries the same derivatives/signals the live hit did, and hand-built emitter records (NEE light samples, the light-subpath root) read them through a gated normal-aligned probe on the luminary, under PT as well.  The remaining neutral reads are identical under every integrator, not a PT-vs-bidirectional split: a BSSRDF entry vertex (an IOR/Fresnel painter keyed on a signal there is integrator-consistent but neutral); an emitter whose probe refuses (a non-finite self-hit floor, or a standoff larger than the luminary -- reachable, for a uniformly-transformed luminary, only through a CSG luminary's uncapped floor (a non-uniformly scaled SDF luminary can reach it too, via its direction stretch) -- or a second surface of the same luminary within the standoff band AND beyond the acceptance tolerance along the normal, unreachable for any luminary with a self-hit floor <= 0.0089*D -- every analytic primitive and every SDF at its default or family-E epsilon); a second surface WITHIN that tolerance is not on this list at all -- it is ACCEPTED, reading the neighbour's own live channel, a silent bounded read (at most one standoff, <= 0.5% of D, away) rather than a neutral one; and GUI painter preview / realize-time displacement / HairGenerator / hand-built test records, none of which is transport.  `occlusion` / `convexity` complement `curv`: `curv` is fine-scale and radius-free (a sharp edge), `occlusion` is radius-sampled and sees real cavities (a deep fold two bumps wide), `convexity` is the radius-sampled edge mask whose thresholds port between objects.  PAINTER-SAMPLING (DL-25): `sample(painter_name)` -> vec3 and `sample_scalar(painter_name)` -> scalar read another already-declared painter (colour and physical-scalar manager respectively) at THE CALLER'S OWN HIT RECORD -- so a sampled texture mip-filters, a sampled view-dependent painter sees the real ray, and a nested expression sees the real curvature / footprint / signal channel -- same contract as on `expression_painter`, see that chunk's description for the full account (bare-name argument, attach-time forward-only resolution, no colourspace/JH-uplift change to either pipe, `sample()` being RGB `GetColor` only, so it now REFUSES at attach time (DL-165, closed 2026-09-18) when bound to a spectrally-defined substrate (spectral_painter/blackbody_painter/a dual-registered piecewise_linear_function) rather than silently losing its spectrum -- `GetAlpha` is still dropped for every painter, spectral or not -- and `sample_scalar()` reading the 549 nm `ScalarPainterRGB::kSingleSampleChannel` lane so a wavelength-varying scalar painter reads achromatic).  A scalar-typed body yields a uniform value; a vec3-typed body (x->R, y->G, z->B) yields a genuine per-channel triple, e.g. `vec3(ior_r, ior_g, ior_b)` for spatially-varying RGB dispersion.  No colorspace, no JH uplift, by construction."; }
+						{ auto& p = P(); p.name = "param";      p.kind = ValueKind::String;     p.repeatable = true; p.description = "Companion to `expression`: named numeric constant `<name> <number> [min <a>] [max <b>] [step <s>] [label \"text\"]` (repeatable)"; }
+						{ auto& p = P(); p.name = "def";        p.kind = ValueKind::String;     p.repeatable = true; p.carriesExpressionSampleRefs = true; p.description = "Companion to `expression`: named sub-expression `<name> <expr>` (repeatable, in order)"; }
+						{ auto& p = P(); p.name = "seed";       p.kind = ValueKind::Double;     p.description = "Companion to `expression`: auto-registered named scalar constant `seed`, for deterministic per-instance variation"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "painter";    p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named COLOUR painter (any of the 36 kinds, or expression_painter) whose channel sources the scalar -- out = bias + scale * channel(source) (form 12: PainterChannelScalarPainter, the P2.1 any-painter bridge).  CAVEAT: reads a POST-COLORSPACE value (source.GetColor/GetAlpha), same as PainterToScalarAdapter -- fine for procedural masks/fields, not a spectral-fidelity path for a wavelength-varying source."; p.semantics.pipe = ParameterPipe::Color; p.semantics.note = "the any-painter -> scalar bridge (P2.1): binds ANY Color-pipe chunk (all 36 kinds, expression_painter included), channel-select R/G/B/A. Unlike `texture`, no keyword allowlist."; }
 						return cd;
 					}();
 					return d;
@@ -1882,8 +2293,8 @@ namespace RISE
 						cd.description = "Two-colour checkerboard in the surface UV (2D domain).  Deliberately synthetic: right for test / reference surfaces and tiled floors, wrong for material realism -- use a noise painter for that.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour (painter)"; }
-						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour (painter)"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour (painter)"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour (painter)"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "size";   p.kind = ValueKind::Double;    p.description = "Checker cell size"; p.defaultValueHint = "1.0"; }
 						return cd;
 					}();
@@ -1911,8 +2322,8 @@ namespace RISE
 						cd.description = "Two-colour stripe field in the surface UV (2D domain); `vertical` picks the axis.  Synthetic like checker_painter -- for real fabric weave or wood grain use gabor3d_painter / turbulence3d_painter instead.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour (painter)"; }
-						{ auto& p = P(); p.name = "colorb";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour (painter)"; }
+						{ auto& p = P(); p.name = "colora";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour (painter)"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour (painter)"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "size";     p.kind = ValueKind::Double;    p.description = "Stripe width"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "vertical"; p.kind = ValueKind::Bool;      p.description = "Vertical (vs horizontal) stripes"; p.defaultValueHint = "FALSE"; }
 						return cd;
@@ -1937,6 +2348,7 @@ namespace RISE
 					// truncation so backwards behaviour is identical.
 					double exponent    = 12.0;
 					if( bag.Has( "exponent" ) ) exponent = static_cast<double>( bag.GetUInt( "exponent" ) );
+					if( bag.HadHardError() ) return false;
 
 					return pJob.AddMandelbrotFractalPainter( name.c_str(), colora.c_str(), colorb.c_str(), xstart, xend, ystart, yend, exponent );
 				}
@@ -1948,13 +2360,13 @@ namespace RISE
 						cd.description = "Mandelbrot escape-time fractal in the surface UV (2D domain), colora -> colorb by iteration count.  An abstract-art surface, not a material.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inside-set colour"; }
-						{ auto& p = P(); p.name = "colorb";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Outside-set colour"; }
-						{ auto& p = P(); p.name = "xstart";   p.kind = ValueKind::Double;    p.description = "Real-axis start"; p.defaultValueHint = "-2.0"; }
-						{ auto& p = P(); p.name = "xend";     p.kind = ValueKind::Double;    p.description = "Real-axis end";   p.defaultValueHint = "2.0"; }
-						{ auto& p = P(); p.name = "ystart";   p.kind = ValueKind::Double;    p.description = "Imag-axis start"; p.defaultValueHint = "-2.0"; }
-						{ auto& p = P(); p.name = "yend";     p.kind = ValueKind::Double;    p.description = "Imag-axis end";   p.defaultValueHint = "2.0"; }
-						{ auto& p = P(); p.name = "exponent"; p.kind = ValueKind::Double;    p.description = "Iteration exponent"; p.defaultValueHint = "2.0"; }
+						{ auto& p = P(); p.name = "colora";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inside-set colour"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Outside-set colour"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "xstart";   p.kind = ValueKind::Double;    p.description = "Real-axis start"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "xend";     p.kind = ValueKind::Double;    p.description = "Real-axis end";   p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "ystart";   p.kind = ValueKind::Double;    p.description = "Imag-axis start"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "yend";     p.kind = ValueKind::Double;    p.description = "Imag-axis end";   p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "exponent"; p.kind = ValueKind::Double;    p.description = "Iteration exponent"; p.defaultValueHint = "12.0"; }
 						return cd;
 					}();
 					return d;
@@ -1972,8 +2384,8 @@ namespace RISE
 					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
 					double scale[2] = {1.0,1.0};
 					double shift[2] = {0,0};
-					if( bag.Has( "scale" ) ) sscanf( bag.GetString( "scale" ).c_str(), "%lf %lf", &scale[0], &scale[1] );
-					if( bag.Has( "shift" ) ) sscanf( bag.GetString( "shift" ).c_str(), "%lf %lf", &shift[0], &shift[1] );
+					bag.GetVec2( "scale", scale );
+					bag.GetVec2( "shift", shift );
 
 					return pJob.AddPerlin2DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
 				}
@@ -1984,7 +2396,7 @@ namespace RISE
 						cd.keyword = "perlin2d_painter"; cd.category = ChunkCategory::Painter;
 						cd.description = "Perlin fBm noise in the surface UV (2D domain -- follows the UV parameterisation, so it stretches with UV distortion and can show seams).  Smooth cloudy variation from colora (low) to colorb (high).  Prefer perlin3d_painter when the surface should look CARVED OUT of a solid material.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddNoisePainterCommonParams( P );
+						AddNoisePainterCommonParams( P, "1.0", /*twoD=*/true );
 						return cd;
 					}();
 					return d;
@@ -2002,7 +2414,7 @@ namespace RISE
 					double amplitude        = bag.GetDouble( "amplitude",   1.0 );
 					unsigned int mode       = bag.GetUInt(   "smoothness",  3 );	// default: cubic Hermite
 					double center[2] = { 0.5, 0.5 };
-					if( bag.Has( "center" ) ) sscanf( bag.GetString( "center" ).c_str(), "%lf %lf", &center[0], &center[1] );
+					bag.GetVec2( "center", center );
 
 					return pJob.AddControlledSmoothness2DPainter(
 						name.c_str(), colora.c_str(), colorb.c_str(),
@@ -2016,9 +2428,9 @@ namespace RISE
 						cd.description = "Test painter: a single radial bump with controllable boundary smoothness order.  Use as a `displaced_geometry` displacement to isolate per-edge C¹ jump effects on SMS Newton convergence.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Low/zero-end color"; }
-						{ auto& p = P(); p.name = "colorb";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "High/peak-end color"; }
-						{ auto& p = P(); p.name = "center";     p.kind = ValueKind::DoubleVec3;p.description = "Bump center in UV space (only first two components used)"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "colora";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Low/zero-end color"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "High/peak-end color"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "center";     p.kind = ValueKind::DoubleVec2;p.description = "Bump center in UV space"; p.defaultValueHint = "0.5 0.5"; }
 						{ auto& p = P(); p.name = "radius";     p.kind = ValueKind::Double;    p.description = "Bump radius in UV space"; p.defaultValueHint = "0.5"; }
 						{ auto& p = P(); p.name = "amplitude";  p.kind = ValueKind::Double;    p.description = "Peak height"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "smoothness"; p.kind = ValueKind::UInt;      p.description = "Boundary smoothness order: 0=Heaviside, 1=Tent, 2=Quadratic, 3=Cubic, 5=Quintic, 99=Gaussian"; p.defaultValueHint = "3"; }
@@ -2045,7 +2457,7 @@ namespace RISE
 					unsigned int seed          = bag.GetUInt(   "seed",               42 );
 					double time                = bag.GetDouble( "time",               0.0 );
 					double windDir[2] = {1.0, 0.0};
-					if( bag.Has( "wind_dir" ) ) sscanf( bag.GetString( "wind_dir" ).c_str(), "%lf %lf", &windDir[0], &windDir[1] );
+					bag.GetVec2( "wind_dir", windDir );
 
 					return pJob.AddGerstnerWavePainter(
 						name.c_str(),
@@ -2067,14 +2479,14 @@ namespace RISE
 						cd.description = "A sum of `num_waves` Gerstner waves in the surface UV (2D domain) -- the water-surface crest/trough field, steered by `wind_dir` / `directional_spread` and animated by `time`.  Most useful as a displaced_geometry displacement (real waves) with colora/colorb reading trough vs crest.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";                p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Trough colour"; }
-						{ auto& p = P(); p.name = "colorb";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Crest colour"; }
+						{ auto& p = P(); p.name = "colora";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Trough colour"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Crest colour"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "num_waves";           p.kind = ValueKind::UInt;      p.description = "Number of wave components (fewer + longer wavelengths reads as a calmer swell)"; p.defaultValueHint = "12"; }
 						{ auto& p = P(); p.name = "median_wavelength";   p.kind = ValueKind::Double;    p.description = "Median wavelength, in UV units"; p.defaultValueHint = "0.25"; }
 						{ auto& p = P(); p.name = "wavelength_range";    p.kind = ValueKind::Double;    p.description = "Ratio spread of wavelengths around the median"; p.defaultValueHint = "3.0"; }
 						{ auto& p = P(); p.name = "median_amplitude";    p.kind = ValueKind::Double;    p.description = "Median wave amplitude"; p.defaultValueHint = "0.05"; }
 						{ auto& p = P(); p.name = "amplitude_power";     p.kind = ValueKind::Double;    p.description = "Amplitude falloff exponent across the wave set"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "wind_dir";            p.kind = ValueKind::DoubleVec3;p.description = "Wind direction in UV space (only the first two components are used)"; p.defaultValueHint = "1 0 0"; }
+						{ auto& p = P(); p.name = "wind_dir";            p.kind = ValueKind::DoubleVec2;p.description = "Wind direction in UV space"; p.defaultValueHint = "1 0"; }
 						{ auto& p = P(); p.name = "directional_spread";  p.kind = ValueKind::Double;    p.description = "Angular spread about wind_dir (0 = a single travel direction)"; p.defaultValueHint = "0.5"; }
 						{ auto& p = P(); p.name = "dispersion_speed";    p.kind = ValueKind::Double;    p.description = "Dispersion coefficient (only matters when `time` animates)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "seed";                p.kind = ValueKind::UInt;      p.description = "RNG seed for the wave set"; p.defaultValueHint = "42"; }
@@ -2119,8 +2531,8 @@ namespace RISE
 					// the natural domain for unit-form polynomials.
 					double center[2] = { 0.5, 0.5 };
 					double scale[2]  = { 0.5, 0.5 };
-					if( bag.Has( "center" ) ) sscanf( bag.GetString( "center" ).c_str(), "%lf %lf", &center[0], &center[1] );
-					if( bag.Has( "scale" )  ) sscanf( bag.GetString( "scale"  ).c_str(), "%lf %lf", &scale[0],  &scale[1]  );
+					bag.GetVec2( "center", center );
+					bag.GetVec2( "scale",  scale  );
 
 					// Bivariate coefficients: space-separated doubles.
 					// Token-by-token parse so the user may supply any
@@ -2156,11 +2568,11 @@ namespace RISE
 						cd.description = "Polynomial-based Function2D painter.  Evaluates a polynomial in normalised coords ((u−center.u)/scale.u, (v−center.v)/scale.v); the `type` selects one of: radial_bump (compact-support bump), monomial (single term x^px·y^py), paraboloid, hyperbolic_saddle, monkey_saddle, or bivariate (general).  Drives `displaced_geometry` and texture materials alike.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Zero/low-end colour"; }
-						{ auto& p = P(); p.name = "colorb";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Positive/peak-end colour"; }
+						{ auto& p = P(); p.name = "colora";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Zero/low-end colour"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Positive/peak-end colour"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "type";         p.kind = ValueKind::String;    p.description = "Polynomial family: radial_bump | monomial | paraboloid | hyperbolic_saddle | monkey_saddle | bivariate"; p.defaultValueHint = "radial_bump"; }
-						{ auto& p = P(); p.name = "center";       p.kind = ValueKind::DoubleVec3;p.description = "(U, V) origin for the normalised coordinates"; p.defaultValueHint = "0.5 0.5"; }
-						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::DoubleVec3;p.description = "(U, V) divisor: x = (u − center.u)/scale.u"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "center";       p.kind = ValueKind::DoubleVec2;p.description = "(U, V) origin for the normalised coordinates"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::DoubleVec2;p.description = "(U, V) divisor: x = (u − center.u)/scale.u"; p.defaultValueHint = "0.5 0.5"; }
 						{ auto& p = P(); p.name = "amplitude";    p.kind = ValueKind::Double;    p.description = "Global multiplier"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "degree";       p.kind = ValueKind::UInt;      p.description = "Degree for radial_bump (smoothness exponent) and bivariate (max total degree)"; p.defaultValueHint = "2"; }
 						{ auto& p = P(); p.name = "power_x";      p.kind = ValueKind::UInt;      p.description = "x exponent for monomial type"; p.defaultValueHint = "0"; }
@@ -2213,10 +2625,10 @@ namespace RISE
 					double uvOffsetA[2] = { 0.0, 0.0 };
 					double uvScaleB[2]  = { 1.0, 1.0 };
 					double uvOffsetB[2] = { 0.0, 0.0 };
-					if( bag.Has( "uv_scale_a"  ) ) sscanf( bag.GetString( "uv_scale_a"  ).c_str(), "%lf %lf", &uvScaleA[0],  &uvScaleA[1]  );
-					if( bag.Has( "uv_offset_a" ) ) sscanf( bag.GetString( "uv_offset_a" ).c_str(), "%lf %lf", &uvOffsetA[0], &uvOffsetA[1] );
-					if( bag.Has( "uv_scale_b"  ) ) sscanf( bag.GetString( "uv_scale_b"  ).c_str(), "%lf %lf", &uvScaleB[0],  &uvScaleB[1]  );
-					if( bag.Has( "uv_offset_b" ) ) sscanf( bag.GetString( "uv_offset_b" ).c_str(), "%lf %lf", &uvOffsetB[0], &uvOffsetB[1] );
+					bag.GetVec2( "uv_scale_a",  uvScaleA  );
+					bag.GetVec2( "uv_offset_a", uvOffsetA );
+					bag.GetVec2( "uv_scale_b",  uvScaleB  );
+					bag.GetVec2( "uv_offset_b", uvOffsetB );
 
 					const unsigned int op = ParseOp( opStr );
 
@@ -2239,16 +2651,16 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "op";            p.kind = ValueKind::String;    p.description = "Binary operator: sum | product | lerp | max | min | difference"; p.defaultValueHint = "sum"; }
-						{ auto& p = P(); p.name = "colora";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Low-value color painter"; }
-						{ auto& p = P(); p.name = "colorb";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "High-value color painter"; }
-						{ auto& p = P(); p.name = "child_a";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First operand Function2D (must be a Function2D-implementing painter)"; }
-						{ auto& p = P(); p.name = "child_b";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second operand Function2D (must be a Function2D-implementing painter)"; }
+						{ auto& p = P(); p.name = "colora";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Low-value color painter"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "High-value color painter"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "child_a";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "First operand Function2D -- resolved via pFunc2DManager (Job::AddCompositeFunction2DPainter), which accepts any colour painter EXCEPT expression_painter (single-registered) / scalar_painter (never registered there), PLUS a genuine `function`-category IFunction2D (piecewise_linear_function2d), hence the {Painter, Function} pair"; p.semantics.pipe = ParameterPipe::Function2D; }
+						{ auto& p = P(); p.name = "child_b";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "Second operand Function2D -- same accepted-kind rule as `child_a` (resolved via the same pFunc2DManager lookup)"; p.semantics.pipe = ParameterPipe::Function2D; }
 						{ auto& p = P(); p.name = "weight_a";      p.kind = ValueKind::Double;    p.description = "Scalar multiplier applied to A before the operator"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "weight_b";      p.kind = ValueKind::Double;    p.description = "Scalar multiplier applied to B before the operator"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "uv_scale_a";    p.kind = ValueKind::DoubleVec3;p.description = "(U, V) scale applied to (u,v) before sampling A (only first two components used)"; p.defaultValueHint = "1.0 1.0"; }
-						{ auto& p = P(); p.name = "uv_offset_a";   p.kind = ValueKind::DoubleVec3;p.description = "(U, V) offset applied to (u,v) before sampling A"; p.defaultValueHint = "0.0 0.0"; }
-						{ auto& p = P(); p.name = "uv_scale_b";    p.kind = ValueKind::DoubleVec3;p.description = "(U, V) scale applied to (u,v) before sampling B"; p.defaultValueHint = "1.0 1.0"; }
-						{ auto& p = P(); p.name = "uv_offset_b";   p.kind = ValueKind::DoubleVec3;p.description = "(U, V) offset applied to (u,v) before sampling B"; p.defaultValueHint = "0.0 0.0"; }
+						{ auto& p = P(); p.name = "uv_scale_a";    p.kind = ValueKind::DoubleVec2;p.description = "(U, V) scale applied to (u,v) before sampling A"; p.defaultValueHint = "1.0 1.0"; }
+						{ auto& p = P(); p.name = "uv_offset_a";   p.kind = ValueKind::DoubleVec2;p.description = "(U, V) offset applied to (u,v) before sampling A"; p.defaultValueHint = "0.0 0.0"; }
+						{ auto& p = P(); p.name = "uv_scale_b";    p.kind = ValueKind::DoubleVec2;p.description = "(U, V) scale applied to (u,v) before sampling B"; p.defaultValueHint = "1.0 1.0"; }
+						{ auto& p = P(); p.name = "uv_offset_b";   p.kind = ValueKind::DoubleVec2;p.description = "(U, V) offset applied to (u,v) before sampling B"; p.defaultValueHint = "0.0 0.0"; }
 						{ auto& p = P(); p.name = "lerp_t";        p.kind = ValueKind::Double;    p.description = "Lerp parameter (clamped to [0,1]); only used when op = lerp"; p.defaultValueHint = "0.5"; }
 						{ auto& p = P(); p.name = "output_scale";  p.kind = ValueKind::Double;    p.description = "Final-stage scalar multiplier applied AFTER the operator"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "output_offset"; p.kind = ValueKind::Double;    p.description = "Final-stage scalar offset added AFTER output_scale"; p.defaultValueHint = "0.0"; }
@@ -2348,8 +2760,8 @@ namespace RISE
 						cd.description = "Gray-Scott reaction-diffusion, simulated ONCE onto a grid_size^3 volume at construction and then sampled at the world-space intersection point (3D solid domain).  ORGANIC spots / stripes / labyrinths -- `feed` + `kill` select which -- for animal hide, coral, lichen, oxidation blooms.  Setup cost grows as grid_size^3 * iterations, so keep both modest.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora";     p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
-						{ auto& p = P(); p.name = "colorb";     p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
+						{ auto& p = P(); p.name = "colora";     p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb";     p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "grid_size";  p.kind = ValueKind::UInt;       p.description = "Simulation grid edge (cost is grid_size^3)"; p.defaultValueHint = "32"; }
 						{ auto& p = P(); p.name = "da";         p.kind = ValueKind::Double;     p.description = "Diffusion rate of A";          p.defaultValueHint = "0.2"; }
 						{ auto& p = P(); p.name = "db";         p.kind = ValueKind::Double;     p.description = "Diffusion rate of B";          p.defaultValueHint = "0.1"; }
@@ -2391,12 +2803,12 @@ namespace RISE
 						cd.description = "Gabor noise (oriented band-limited wavelets) at the world-space intersection point (3D solid domain) -- DIRECTIONAL streaks along `orientation` at `frequency`, unlike the isotropic noises.  Brushed metal, wood fibre, fur flow, scratch fields.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora";          p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
-						{ auto& p = P(); p.name = "colorb";          p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
-						{ auto& p = P(); p.name = "frequency";       p.kind = ValueKind::Double;     p.description = "Carrier frequency (streak pitch)"; p.defaultValueHint = "4.0"; }
-						{ auto& p = P(); p.name = "bandwidth";       p.kind = ValueKind::Double;     p.description = "Gaussian bandwidth";  p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "colora";          p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb";          p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "frequency";       p.kind = ValueKind::Double;     p.description = "Carrier frequency (streak pitch)"; p.defaultValueHint = "4.0"; p.SoftRange( 0.1, 32.0, 0.1 ); }
+						{ auto& p = P(); p.name = "bandwidth";       p.kind = ValueKind::Double;     p.description = "Gaussian bandwidth";  p.defaultValueHint = "1.0"; p.SoftRange( 0.1, 5.0, 0.05 ); }
 						{ auto& p = P(); p.name = "orientation";     p.kind = ValueKind::DoubleVec3; p.description = "Orientation vector"; }
-						{ auto& p = P(); p.name = "impulse_density"; p.kind = ValueKind::Double;     p.description = "Impulses per unit volume (higher = denser streaks, more cost)"; p.defaultValueHint = "4.0"; }
+						{ auto& p = P(); p.name = "impulse_density"; p.kind = ValueKind::Double;     p.description = "Impulses per unit volume (higher = denser streaks, more cost)"; p.defaultValueHint = "4.0"; p.SoftRange( 0.5, 32.0, 0.5 ); }
 						{ auto& p = P(); p.name = "scale";           p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";      p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";           p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";      p.defaultValueHint = "0 0 0"; }
 						return cd;
@@ -2460,7 +2872,7 @@ namespace RISE
 						else if( t == "box" )      type = 1;
 						else if( t == "torus" )    type = 2;
 						else if( t == "cylinder" ) type = 3;
-						else                       type = String( t.c_str() ).toUInt();
+						else if( !ParseStateBag::ReadUnsigned( t.c_str(), type ) ) return false;
 					}
 
 					return pJob.AddSDF3DPainter( name.c_str(), type, param1, param2, param3, shell_thickness, noise_amplitude, noise_frequency, colora.c_str(), colorb.c_str(), scale, shift );
@@ -2473,8 +2885,8 @@ namespace RISE
 						cd.description = "Colours by the signed distance to an analytic primitive (`type`) at the world-space intersection point (3D solid domain): concentric shells / bands / an inlay footprint, optionally noise-perturbed.  This paints COLOUR only -- for actual SDF geometry use sdf_geometry.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora";           p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inside colour"; }
-						{ auto& p = P(); p.name = "colorb";           p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Outside colour"; }
+						{ auto& p = P(); p.name = "colora";           p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inside colour"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb";           p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Outside colour"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "type";             p.kind = ValueKind::Enum;       p.enumValues = {"sphere","box","torus","cylinder"}; p.description = "SDF primitive (SDFPrimitiveType has exactly these four; an unrecognised spelling falls through to sphere)"; }
 						{ auto& p = P(); p.name = "param1";           p.kind = ValueKind::Double;     p.description = "Shape parameter 1 (sphere/cylinder radius, box half-extent x, torus major radius)"; p.defaultValueHint = "0.5"; }
 						{ auto& p = P(); p.name = "param2";           p.kind = ValueKind::Double;     p.description = "Shape parameter 2 (box half-extent y, torus minor radius, cylinder half-height)"; p.defaultValueHint = "0.3"; }
@@ -2548,8 +2960,8 @@ namespace RISE
 						cd.description = "Noise whose INPUT coordinates are themselves noise-displaced (`warp_amplitude`, `warp_levels`), at the world-space intersection point (3D solid domain).  The cheapest way to stop regular fBm reading as `noise`: flowing, organic, marbled distortion.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddNoisePainterCommonParams( P, "0.65" );
-						{ auto& p = P(); p.name = "warp_amplitude"; p.kind = ValueKind::Double; p.description = "Warp displacement amplitude (how far the coordinates are dragged)"; p.defaultValueHint = "4.0"; }
-						{ auto& p = P(); p.name = "warp_levels";    p.kind = ValueKind::UInt;   p.description = "Warp iteration levels"; p.defaultValueHint = "2"; }
+						{ auto& p = P(); p.name = "warp_amplitude"; p.kind = ValueKind::Double; p.description = "Warp displacement amplitude (how far the coordinates are dragged)"; p.defaultValueHint = "4.0"; p.SoftRange( 0.0, 20.0, 0.1 ); }
+						{ auto& p = P(); p.name = "warp_levels";    p.kind = ValueKind::UInt;   p.description = "Warp iteration levels"; p.defaultValueHint = "2"; p.SoftRange( 1.0, 8.0, 1.0 ); }
 						return cd;
 					}();
 					return d;
@@ -2582,8 +2994,8 @@ namespace RISE
 						cd.description = "Perlin and Worley blended (`blend` weights them) at the world-space intersection point (3D solid domain) -- billowy but clumpy.  The standard cloud / foam / lichen / moss field.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddNoisePainterCommonParams( P, "0.65" );
-						{ auto& p = P(); p.name = "worley_jitter"; p.kind = ValueKind::Double; p.description = "Worley feature jitter amount"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "blend";         p.kind = ValueKind::Double; p.description = "Perlin/Worley blend weight";    p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "worley_jitter"; p.kind = ValueKind::Double; p.description = "Worley feature jitter amount"; p.defaultValueHint = "1.0"; p.SoftRange( 0.0, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "blend";         p.kind = ValueKind::Double; p.description = "Perlin/Worley blend weight";    p.defaultValueHint = "0.5"; p.SoftRange( 0.0, 1.0, 0.01 ); }
 						return cd;
 					}();
 					return d;
@@ -2609,7 +3021,7 @@ namespace RISE
 						if(      m == "euclidean" ) metric = 0;
 						else if( m == "manhattan" ) metric = 1;
 						else if( m == "chebyshev" ) metric = 2;
-						else                        metric = String( m.c_str() ).toUInt();
+						else if( !ParseStateBag::ReadUnsigned( m.c_str(), metric ) ) return false;
 					}
 					unsigned int output = 0;	// 0=F1, 1=F2, 2=F2-F1
 					if( bag.Has( "output" ) ) {
@@ -2617,7 +3029,7 @@ namespace RISE
 						if(      o == "f1" )    output = 0;
 						else if( o == "f2" )    output = 1;
 						else if( o == "f2-f1" ) output = 2;
-						else                    output = String( o.c_str() ).toUInt();
+						else if( !ParseStateBag::ReadUnsigned( o.c_str(), output ) ) return false;
 					}
 
 					return pJob.AddWorley3DPainter( name.c_str(), jitter, metric, output, colora.c_str(), colorb.c_str(), scale, shift );
@@ -2630,9 +3042,9 @@ namespace RISE
 						cd.description = "Worley / cellular noise (distance to scattered feature points) at the world-space intersection point (3D solid domain).  `output f1` gives blobby CELLS -- pebbles, hammered metal, leather, wear patches; `output f2-f1` gives the cell BOUNDARIES -- cracks, crazing, dried mud, veins.  colora (near a feature point) -> colorb (far).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
-						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
-						{ auto& p = P(); p.name = "jitter"; p.kind = ValueKind::Double;     p.description = "Feature jitter";               p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "jitter"; p.kind = ValueKind::Double;     p.description = "Feature jitter";               p.defaultValueHint = "1.0"; p.SoftRange( 0.0, 1.0, 0.01 ); }
 						{ auto& p = P(); p.name = "metric"; p.kind = ValueKind::Enum;       p.enumValues = {"euclidean","manhattan","chebyshev"}; p.description = "Distance metric"; p.defaultValueHint = "euclidean"; }
 						{ auto& p = P(); p.name = "output"; p.kind = ValueKind::Enum;       p.enumValues = {"f1","f2","f2-f1"};            p.description = "Value function: f1 = distance to nearest feature (blobby cells), f2 = second-nearest, f2-f1 = cell boundaries (cracks / veins)"; p.defaultValueHint = "f1"; }
 						{ auto& p = P(); p.name = "scale";  p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";               p.defaultValueHint = "1 1 1"; }
@@ -2687,10 +3099,11 @@ namespace RISE
 
 					// Repeatable inline generators: "gen <x> <y> <painter>"
 					const std::vector<std::string>& gens = bag.GetRepeatable( "gen" );
-					for( size_t k = 0; k < gens.size(); ++k ) {
+					for( const std::string& gen : gens ) {
 						double x = 0, y = 0;
-						char painter[256] = {0};
-						sscanf( gens[k].c_str(), "%lf %lf %255s", &x, &y, painter );
+						std::string painter;
+						std::istringstream fields( gen );
+						if( !(fields >> x >> y >> painter) ) return false;
 						ptx.push_back( x );
 						pty.push_back( y );
 						painters.push_back( painter );
@@ -2703,8 +3116,9 @@ namespace RISE
 						if( ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
 							for( const std::string& ln : fileLines ) {
 								double x = 0.0, y = 0.0;
-								char painter[256] = {0};
-								if( sscanf( ln.c_str(), "%lf %lf %255s", &x, &y, painter ) == 3 ) {
+								std::string painter;
+								std::istringstream fields( ln );
+								if( fields >> x >> y >> painter ) {
 									ptx.push_back( x );
 									pty.push_back( y );
 									painters.push_back( painter );
@@ -2713,22 +3127,14 @@ namespace RISE
 						}
 					}
 
-					const unsigned int num = static_cast<unsigned int>(painters.size());
-					char* pntrmem = new char[num*256];
-					memset( pntrmem, 0, num*256 );
-					char** pntrs = new char*[num];
+					if( painters.size() > std::numeric_limits<unsigned int>::max() ) return false;
+					std::vector<const char*> names;
+					names.reserve( painters.size() );
+					for( const std::string& painter : painters ) names.push_back( painter.c_str() );
 
-					for( unsigned int i=0; i<num; i++ ) {
-						pntrs[i] = &pntrmem[i*256];
-						strncpy( pntrs[i], painters[i].c_str(), 255 );
-					}
-
-					bool bRet = pJob.AddVoronoi2DPainter( name.c_str(), &ptx[0], &pty[0], (const char**)pntrs, num, border=="none"?0:border.c_str(), bordersize );
-
-					delete [] pntrs;
-					delete [] pntrmem;
-
-					return bRet;
+					return pJob.AddVoronoi2DPainter( name.c_str(), ptx.data(), pty.data(),
+						names.data(), static_cast<unsigned int>(names.size()),
+						border.c_str(), bordersize );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -2738,9 +3144,9 @@ namespace RISE
 						cd.description = "Explicit Voronoi cells in the surface UV (2D domain): each repeatable `gen <u> <v> <painter>` seeds ONE cell with its OWN painter, plus an optional `border` painter.  Art-directable where worley3d_painter is random -- mosaic, tile, stained glass, hide patches.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Voronoi generator: x y paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Voronoi generator: x y paintername (repeatable)"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "file";       p.kind = ValueKind::Filename;  p.description = "Generator list file (each line: x y paintername)"; }
-						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "bordersize"; p.kind = ValueKind::Double;    p.description = "Border width"; p.defaultValueHint = "0"; }
 						return cd;
 					}();
@@ -2756,6 +3162,23 @@ namespace RISE
 					std::string border = bag.GetString( "border",     "none" );
 					double bordersize  = bag.GetDouble( "bordersize", 0.0 );
 
+					// P2.5 (doc 88): historically this painter always sampled
+					// OBJECT space regardless of the "world space" claim in
+					// skills/agent/procedural-textures.md -- `space` makes that
+					// explicit and lets a scene opt into `world` to match the
+					// rest of the 3D painter family.  Default preserves the
+					// historical behaviour byte-identically.
+					std::string spaceStr = bag.GetString( "space", "object" );
+					bool worldSpace = false;
+					if( spaceStr == "object" )      worldSpace = false;
+					else if( spaceStr == "world" )  worldSpace = true;
+					else {
+						GlobalLog()->PrintEx( eLog_Error,
+							"voronoi3d_painter `%s`: unknown space `%s` (expected object or world)",
+							name.c_str(), spaceStr.c_str() );
+						return false;
+					}
+
 					std::vector<double> ptx;
 					std::vector<double> pty;
 					std::vector<double> ptz;
@@ -2763,10 +3186,11 @@ namespace RISE
 
 					// Repeatable inline generators: "gen <x> <y> <z> <painter>"
 					const std::vector<std::string>& gens = bag.GetRepeatable( "gen" );
-					for( size_t k = 0; k < gens.size(); ++k ) {
+					for( const std::string& gen : gens ) {
 						double x = 0, y = 0, z = 0;
-						char painter[256] = {0};
-						sscanf( gens[k].c_str(), "%lf %lf %lf %255s", &x, &y, &z, painter );
+						std::string painter;
+						std::istringstream fields( gen );
+						if( !(fields >> x >> y >> z >> painter) ) return false;
 						ptx.push_back( x );
 						pty.push_back( y );
 						ptz.push_back( z );
@@ -2779,11 +3203,13 @@ namespace RISE
 						std::vector<std::string> fileLines;
 						if( ReadDataFileLines( String( fname.c_str() ), fileLines ) && !fileLines.empty() ) {
 							int num = 0;
-							sscanf( fileLines[0].c_str(), "%d", &num );
-							for( int i = 1; i <= num && i < (int)fileLines.size(); ++i ) {
+							std::istringstream count( fileLines[0] );
+							count >> num;
+							for( size_t i = 1; num > 0 && i <= static_cast<size_t>(num) && i < fileLines.size(); ++i ) {
 								double x = 0.0, y = 0.0, z = 0.0;
-								char painter[256] = {0};
-								if( sscanf( fileLines[i].c_str(), "%lf %lf %lf %255s", &x, &y, &z, painter ) == 4 ) {
+								std::string painter;
+								std::istringstream fields( fileLines[i] );
+								if( fields >> x >> y >> z >> painter ) {
 									ptx.push_back( x );
 									pty.push_back( y );
 									ptz.push_back( z );
@@ -2793,35 +3219,28 @@ namespace RISE
 						}
 					}
 
-					const unsigned int num = static_cast<unsigned int>(painters.size());
-					char* pntrmem = new char[num*256];
-					memset( pntrmem, 0, num*256 );
-					char** pntrs = new char*[num];
+					if( painters.size() > std::numeric_limits<unsigned int>::max() ) return false;
+					std::vector<const char*> names;
+					names.reserve( painters.size() );
+					for( const std::string& painter : painters ) names.push_back( painter.c_str() );
 
-					for( unsigned int i=0; i<num; i++ ) {
-						pntrs[i] = &pntrmem[i*256];
-						strncpy( pntrs[i], painters[i].c_str(), 255 );
-					}
-
-					bool bRet = pJob.AddVoronoi3DPainter( name.c_str(), &ptx[0], &pty[0], &ptz[0], (const char**)pntrs, num, border=="none"?0:border.c_str(), bordersize );
-
-					delete [] pntrs;
-					delete [] pntrmem;
-
-					return bRet;
+					return pJob.AddVoronoi3DPainterWithSpace( name.c_str(), ptx.data(), pty.data(), ptz.data(),
+						names.data(), static_cast<unsigned int>(names.size()),
+						border.c_str(), bordersize, worldSpace );
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "voronoi3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Explicit Voronoi cells in world space (3D solid domain): each repeatable `gen <x> <y> <z> <painter>` seeds ONE cell with its OWN painter, plus an optional `border` painter.  Art-directable where worley3d_painter is random -- aggregate, terrazzo, crystal grains.";
+						cd.description = "Explicit Voronoi cells (3D solid domain): each repeatable `gen <x> <y> <z> <painter>` seeds ONE cell with its OWN painter, plus an optional `border` painter.  Art-directable where worley3d_painter is random -- aggregate, terrazzo, crystal grains.  HISTORICAL INCONSISTENCY (P2.5, doc 88): unlike the rest of the 3D painter family (perlin3d, worley3d, ...), which always sample the WORLD-space intersection, this painter has always sampled OBJECT space (`ptObjIntersec`) -- `space` makes that explicit; the default `object` preserves every existing scene byte-identically, `world` opts into the same convention as the other 3D painters.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Double, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Voronoi generator: x y z paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Double, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Voronoi generator: x y z paintername (repeatable).  These x/y/z coordinates are interpreted in whichever domain `space` selects (P2.5, doc 88): `object` (default) reads them as OBJECT-space coordinates (ptObjIntersec), `world` reads them as WORLD-space coordinates (ptIntersection) -- flipping `space` therefore RE-INTERPRETS every authored generator (and the border) position against a different point domain, it does not just change which point the distance test samples."; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "file";       p.kind = ValueKind::Filename;  p.description = "Generator list file (count-prefixed: N then N lines of x y z paintername)"; }
-						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "bordersize"; p.kind = ValueKind::Double;    p.description = "Border width"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "space";      p.kind = ValueKind::Enum;      p.enumValues = {"object","world"}; p.description = "Domain to sample generator distances in (P2.5, doc 88).  `object` (default) is the HISTORICAL behaviour -- ptObjIntersec, so an instanced/transformed object keeps the same cell pattern.  `world` samples ptIntersection, matching perlin3d/worley3d/etc.  WARNING: this is not just a sampling-side switch -- every `gen` (and border) position was authored assuming ONE of these domains, so flipping `space` re-interprets every authored cell position against the OTHER domain and generally requires re-authoring the generator coordinates to match."; p.defaultValueHint = "object"; }
 						return cd;
 					}();
 					return d;
@@ -2847,9 +3266,9 @@ namespace RISE
 						cd.description = "View-angle-dependent colour: interpolates from colora at GRAZING incidence to colorb at NORMAL incidence, on |dot(view, normal)| + `bias`.  Soap film, beetle shell, oil slick, pearlescent paint.  A cheap look-alike only -- the physical thin-film model is ggx_material with fresnel_mode thinfilm.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Grazing-angle colour (selected as |dot(view, normal)| approaches 0)"; }
-						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-incidence colour (selected as |dot(view, normal)| approaches 1)"; }
-						{ auto& p = P(); p.name = "bias";   p.kind = ValueKind::Double;    p.description = "Added to |dot(view, normal)| before the interpolation is clamped to [0,1]: positive pushes the whole surface toward colorb"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Grazing-angle colour (selected as |dot(view, normal)| approaches 0)"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-incidence colour (selected as |dot(view, normal)| approaches 1)"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "bias";   p.kind = ValueKind::Double;    p.description = "Added to |dot(view, normal)| before the interpolation is clamped to [0,1]: positive pushes the whole surface toward colorb"; p.defaultValueHint = "0.0"; p.SoftRange( -1.0, 1.0, 0.01 ); }
 						return cd;
 					}();
 					return d;
@@ -2878,12 +3297,12 @@ namespace RISE
 						cd.description = "Planckian blackbody spectrum at `temperature` Kelvin -- a physically-derived incandescent / flame / hot-metal colour instead of a hand-guessed RGB triple.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "temperature";  p.kind = ValueKind::Double; p.description = "Temperature in Kelvin"; p.defaultValueHint = "5600"; }
+						{ auto& p = P(); p.name = "temperature";  p.kind = ValueKind::Double; p.description = "Temperature in Kelvin"; p.defaultValueHint = "5600"; p.SoftRange( 1000.0, 15000.0, 50.0 ); }
 						{ auto& p = P(); p.name = "nmbegin";      p.kind = ValueKind::Double; p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
 						{ auto& p = P(); p.name = "nmend";        p.kind = ValueKind::Double; p.description = "End wavelength (nm)";   p.defaultValueHint = "700"; }
 						{ auto& p = P(); p.name = "numfreq";      p.kind = ValueKind::UInt;   p.description = "Sample count";          p.defaultValueHint = "30"; }
-						{ auto& p = P(); p.name = "normalize";    p.kind = ValueKind::Bool;   p.description = "Normalize peak to 1";   p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::Double; p.description = "Overall amplitude";     p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "normalize";    p.kind = ValueKind::Bool;   p.description = "Divide Planck's spectral exitance by its value at the Wien peak, so the curve's peak (possibly outside the visible band) equals `scale`; FALSE keeps absolute W m^-2 per metre of wavelength (~1e13 in the visible)";   p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::Double; p.description = "Multiplies the spectrum on every path (spectral samples and the RGB projections alike, DL-464)";     p.defaultValueHint = "1.0"; p.SoftRange( 0.0, 10.0, 0.05 ); }
 						return cd;
 					}();
 					return d;
@@ -2899,19 +3318,45 @@ namespace RISE
 					std::string colorb = bag.GetString( "colorb", "none" );
 					std::string mask   = bag.GetString( "mask",   "none" );
 
-					return pJob.AddBlendPainter( name.c_str(), colora.c_str(), colorb.c_str(), mask.c_str() );
+					// P2.4 (doc 88): blend mode -- HOW colora/colorb combine
+					// before mask interpolates toward colorb.  Absent = mix,
+					// byte-identical to the pre-P2.4 formula.
+					unsigned int mode = 0;
+					if( bag.Has( "mode" ) ) {
+						const std::string modeStr = bag.GetString( "mode" );
+						if(      modeStr == "mix" )      mode = 0;
+						else if( modeStr == "multiply" ) mode = 1;
+						else if( modeStr == "screen" )   mode = 2;
+						else if( modeStr == "overlay" )  mode = 3;
+						else if( modeStr == "add" )      mode = 4;
+						else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"blend_painter `%s`: unknown mode `%s` (expected mix, multiply, screen, overlay, or add)",
+								name.c_str(), modeStr.c_str() );
+							return false;
+						}
+					}
+
+					// P1-A fix (S7 review round 1): AddBlendPainter's
+					// original 4-arg signature must stay byte-identical
+					// (see IJob.h) -- call the tail-appended `WithMode`
+					// virtual instead, which always carries `mode`
+					// (defaulting to 0=mix, byte-identical, when `mode`
+					// is omitted above).
+					return pJob.AddBlendPainterWithMode( name.c_str(), colora.c_str(), colorb.c_str(), mask.c_str(), mode );
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "blend_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Blends colora and colorb per a THIRD painter used as the `mask`: out = colora * mask + colorb * (1 - mask), so mask 1 -> colora and mask 0 -> colorb (NOT the other way round).  The mask is applied PER CHANNEL, so a coloured mask tints as well as blends.  THE composition verb for procedural materials: put a noise painter in `mask` and two colours in colora/colorb, and the surface gets spatially-varying reflectance.";
+						cd.description = "Blends colora and colorb per a THIRD painter used as the `mask`: out = blend(colora,colorb) * mask + colorb * (1 - mask), so mask 1 selects the blended combination and mask 0 -> colorb (NOT the other way round).  `mode` (P2.4, doc 88) picks the blend(a,b) formula: `mix` (default) is blend(a,b)=a, which reduces the whole expression to the original `colora * mask + colorb * (1 - mask)` -- byte-identical when `mode` is omitted.  `multiply`/`screen`/`overlay`/`add` combine a and b per channel (RGB) or per spectral sample (GetColorNM) with the SAME formula shape before the mask still interpolates toward colorb.  `screen` and `overlay` are DISPLAY-COMPOSITING curves defined only on [0,1] -- colora/colorb are CLAMPED to [0,1] before those two formulas (an out-of-range input would otherwise sign-flip the result); `mix`/`multiply`/`add` stay unbounded, matching the rest of RISE's HDR colour math.  The mask is applied PER CHANNEL, so a coloured mask tints as well as blends.  THE composition verb for procedural materials: put a noise painter in `mask` and two colours in colora/colorb, and the surface gets spatially-varying reflectance.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
-						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
-						{ auto& p = P(); p.name = "mask";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Blend-weight painter, applied per channel: weight 1 selects colora, weight 0 selects colorb"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "mask";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Blend-weight painter, applied per channel: weight 1 selects colora, weight 0 selects colorb"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "mode";   p.kind = ValueKind::Enum;      p.enumValues = {"mix","multiply","screen","overlay","add"}; p.description = "P2.4 (doc 88): how colora and colorb combine before `mask` interpolates.  `mix` (default) reduces to the original colora*mask+colorb*(1-mask) formula, byte-identical when omitted."; p.defaultValueHint = "mix"; }
 						return cd;
 					}();
 					return d;
@@ -2955,10 +3400,10 @@ namespace RISE
 							"BLEND wiring in the glTF importer.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "source";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Source painter (e.g. a png_painter for an MR texture)"; }
+						{ auto& p = P(); p.name = "source";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Source painter (e.g. a png_painter for an MR texture)"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "channel"; p.kind = ValueKind::Enum;      p.enumValues = {"R","G","B","A"}; p.description = "Which channel to extract (R, G, B, or A); A reads un-premultiplied alpha"; p.defaultValueHint = "R"; }
-						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;    p.description = "Scale multiplier"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "bias";    p.kind = ValueKind::Double;    p.description = "Additive offset (post-scale)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;    p.description = "Scale multiplier"; p.defaultValueHint = "1.0"; p.SoftRange( -5.0, 5.0, 0.05 ); }
+						{ auto& p = P(); p.name = "bias";    p.kind = ValueKind::Double;    p.description = "Additive offset (post-scale)"; p.defaultValueHint = "0.0"; p.SoftRange( -2.0, 2.0, 0.02 ); }
 						return cd;
 					}();
 					return d;
@@ -2982,26 +3427,26 @@ namespace RISE
 
 					// Repeatable per-sample control points: "cp <x> <y>"
 					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
-					for( size_t k = 0; k < cps.size(); ++k ) {
-						double x = 0.0, y = 0.0;
-						sscanf( cps[k].c_str(), "%lf %lf", &x, &y );
-						cp_x.push_back( x );
-						cp_y.push_back( y );
+					for( const std::string& row : cps ) {
+						double pair[2];
+						if( !ReadSampleColumns( row, pair, 2 ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "piecewise_linear_function `%s`: invalid control point", name.c_str() );
+							return false;
+						}
+						cp_x.push_back( pair[0] );
+						cp_y.push_back( pair[1] );
 					}
 
 					// Optional file-loaded function (pairs)
 					if( bag.Has( "file" ) ) {
 						std::string fname = bag.GetString( "file" );
 						std::vector<std::string> fileLines;
-						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
-							return false;
-						}
+						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) return false;
 						for( const std::string& ln : fileLines ) {
-							double x = 0.0, y = 0.0;
-							if( sscanf( ln.c_str(), "%lf %lf", &x, &y ) == 2 ) {
-								cp_x.push_back( x );
-								cp_y.push_back( y );
+							double pair[2];
+							if( ReadSampleColumns( ln, pair, 2 ) ) {
+								cp_x.push_back( pair[0] );
+								cp_y.push_back( pair[1] );
 							} else {
 								GlobalLog()->PrintEx( eLog_Warning, "piecewise_linear_function:: skipping malformed line in `%s`", fname.c_str() );
 							}
@@ -3039,16 +3484,25 @@ namespace RISE
 					std::string name = bag.GetString( "name", "noname" );
 
 					std::vector<double> cp_x;
-					std::vector<String> cp_y;
+					std::vector<std::string> cp_y;
 
-					// Repeatable per-row entries: "cp <x> <y values...>"
+					// Repeatable per-row entries: "cp <x> <Function1D name>"
 					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
-					for( size_t k = 0; k < cps.size(); ++k ) {
-						double x = 0.0;
-						char y[1024] = {0};
-						sscanf( cps[k].c_str(), "%lf %s", &x, y );
+					for( const std::string& row : cps ) {
+						std::istringstream fields( row );
+						std::string xToken, y, extra;
+						if( !(fields >> xToken >> y) || ((fields >> extra) && extra[0] != '#') ) {
+							SetFinalizeDiagIfEmpty( "piecewise_linear_function2d control point expects a coordinate and a function name" );
+							return false;
+						}
+						char* end = nullptr;
+						const double x = std::strtod( xToken.c_str(), &end );
+						if( end != xToken.data() + xToken.size() || !IsFiniteDouble( x ) ) {
+							SetFinalizeDiagIfEmpty( "piecewise_linear_function2d control point requires a finite coordinate" );
+							return false;
+						}
 						cp_x.push_back( x );
-						cp_y.push_back( String(y) );
+						cp_y.push_back( std::move(y) );
 					}
 
 					if( cp_x.empty() ) {
@@ -3062,16 +3516,12 @@ namespace RISE
 					}
 
 					// Setup the array of strings
-					char** func = new char*[cp_x.size()];
-					for( unsigned int i=0; i<cp_x.size(); i++ ) {
-						func[i] = (char*)(&(*(cp_y[i].begin())));
+					std::vector<char*> functions;
+					functions.reserve( cp_y.size() );
+					for( std::string& rowName : cp_y ) {
+						functions.push_back( rowName.data() );
 					}
-
-					bool bRet = pJob.AddPiecewiseLinearFunction2D( name.c_str(), cp_x.empty() ? 0 : &cp_x[0], func, static_cast<unsigned int>(cp_x.size()) );
-
-					delete [] func;
-
-					return bRet;
+					return pJob.AddPiecewiseLinearFunction2D( name.c_str(), cp_x.data(), functions.data(), static_cast<unsigned int>(cp_x.size()) );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3081,7 +3531,7 @@ namespace RISE
 						cd.description = "2D piecewise-linear function (1D row at each x).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "cp";   p.kind = ValueKind::String; p.repeatable = true; p.description = "Row: x then space-separated y values (repeatable)"; }
+						{ auto& p = P(); p.name = "cp";   p.kind = ValueKind::String; p.repeatable = true; p.semantics.pipe = ParameterPipe::Function1D; p.description = "Row: x then Function1D name (repeatable)"; }
 						return cd;
 					}();
 					return d;
@@ -3132,7 +3582,7 @@ namespace RISE
 						cd.description = "Pure Lambertian (diffuse) material.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Albedo painter"; }
+						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Albedo painter"; p.semantics.pipe = ParameterPipe::Color; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3157,7 +3607,7 @@ namespace RISE
 						cd.description = "Perfect mirror reflector.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Reflectance painter"; }
+						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Reflectance painter"; p.semantics.pipe = ParameterPipe::Color; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3183,8 +3633,8 @@ namespace RISE
 						cd.description = "Perfect refractor (glass).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "refractance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance painter"; }
-						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "refractance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance painter"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "1.33"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 1.0, 3.0, 0.01 ); }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3198,7 +3648,19 @@ namespace RISE
 				{
 					std::string name        = bag.GetString( "name",        "noname" );
 					std::string reflectance = bag.GetString( "reflectance", "none" );
-					std::string tau         = bag.GetString( "tau",         "none" );
+					// tau is a physical SCALAR (IScalarPainter) -- "none" is the
+					// COLOUR manager's default painter name and does not resolve
+					// there (ISCALARPAINTER_REFACTOR wrong-pipe-default class; see
+					// CLAUDE.md).  "0.0" reproduces the exact pre-refactor
+					// behaviour: the historical default WAS the "none" IPainter,
+					// which is RISE_API_CreateUniformColorPainter(RISEPel(0,0,0))
+					// -- i.e. literal 0 on every channel -- so the numeric literal
+					// default below is bit-identical to what a bare
+					// `polished_material` (no `tau` line) rendered before the
+					// refactor: kray = tau*Rs = 0, so the dielectric coat
+					// contributes no specular lobe and the material reads as
+					// plain Lambertian (`reflectance`) until `tau` is set.
+					std::string tau         = bag.GetString( "tau",         "0.0" );
 					std::string ior         = bag.GetString( "ior",         "1.0" );
 					std::string scat        = bag.GetString( "scattering",  "64" );
 					bool hg                 = bag.GetBool(   "henyey-greenstein", false );
@@ -3213,13 +3675,411 @@ namespace RISE
 						cd.description = "Polished surface (Fresnel dielectric over Lambertian substrate).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "reflectance";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse substrate"; }
-						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
-						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
-						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "reflectance";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse substrate"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here).  0.0 (default) reproduces the pre-refactor \"none\" IPainter default (black) -- the dielectric coat contributes no specular lobe until this is set."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "1.0"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 1.0, 3.0, 0.01 ); }
+						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "64"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
+						MarkFrozen( cd, "coated_material over a lambertian_material (base = a lambertian_material with the same reflectance; coat_ior = ior; coat_roughness = 1/sqrt(2*scattering+1) (its lobe is cos^N about the reflection vector), the smallest coat_roughness (floored at 1e-3) for the delta case scattering >= 1e6; tau multiplies ONLY the coat reflection and has no coated_material equivalent -- tau 1 is a full coat, coat_weight is the nearest knob for less).  add_wetness already emits this shape." );
 						AddVariantTagParam( cd );
 						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//! `coated_material` -- docs/WETNESS_COAT_DESIGN.md Phase 2.
+			//!
+			//! OpenPBR-shaped coat names on purpose (7.2): OpenPBR is the
+			//! industry's converging interchange model, and GUI_ROADMAP.md
+			//! already records RISE's posture of adopting it as the
+			//! conceptual model.  Matching its coat parameter names costs
+			//! nothing and makes an eventual MaterialX/OpenPBR import a
+			//! rename rather than a redesign.
+			//!
+			//! There is deliberately NO `substrate_wet_exponent` (Phase 2
+			//! item 4).  The wet darkening is a property of the layered
+			//! TRANSPORT here -- the per-wavelength recycling
+			//! 1/(1 - r_i R(lambda)) -- so an additional R^k would
+			//! double-count the same physics.  Phase 1's `pow(base, k)`
+			//! recipe was an RGB fit standing in for exactly this term.
+			struct CoatedMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name       = bag.GetString( "name", "noname" );
+					std::string base       = bag.GetString( "base", "none" );
+					// Every coat parameter below the `base` is a physical
+					// SCALAR and rides IScalarPainter -- coverage, IOR,
+					// roughness, world length, 1/length.  "none" is the
+					// COLOUR manager's default painter name and does not
+					// resolve in the scalar manager (the wrong-pipe-default
+					// class in CLAUDE.md / ISCALARPAINTER_REFACTOR.md), so
+					// each default is a numeric literal.
+					//
+					// Defaults describe a WATER film at full coverage, which
+					// is the phenomenon this material was built for: n = 1.33
+					// and alpha = 0.02 are 7.2's own water values, and
+					// thickness/absorption at 0 make Beer-Lambert a no-op so
+					// a bare chunk is a clean, energy-conserving wet coat.
+					std::string weight     = bag.GetString( "coat_weight",     "1.0" );
+					std::string ior        = bag.GetString( "coat_ior",        "1.33" );
+					std::string roughness  = bag.GetString( "coat_roughness",  "0.02" );
+					std::string thickness  = bag.GetString( "coat_thickness",  "0.0" );
+					std::string absorption = bag.GetString( "coat_absorption", "0.0" );
+					// coat_tint IS genuinely a colour (a tinted lacquer), so
+					// it rides the IPainter colourspace + JH-uplift pipe.
+					// The default is the "none" sentinel, which
+					// Job::AddCoatedMaterial reads as UNTINTED and turns
+					// into white -- NOT as the "none" manager entry, which
+					// is black and would make an untinted coat opaque.  A
+					// genuinely black coat is authored by binding an
+					// explicit black painter by name.
+					std::string tint       = bag.GetString( "coat_tint",       "none" );
+
+					// DL-192: coat-lobe-only normal map, `normal_map_modifier`'s
+					// own "none" sentinel convention (unset = no perturbation).
+					std::string coat_normal = bag.GetString( "coat_normal", "none" );
+					double coat_normal_scale = bag.GetDouble( "coat_normal_scale", 1.0 );
+
+					return pJob.AddCoatedMaterialEx(
+						name.c_str(), base.c_str(), weight.c_str(), ior.c_str(),
+						roughness.c_str(), thickness.c_str(), absorption.c_str(),
+						tint.c_str(), coat_normal.c_str(), coat_normal_scale );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "coated_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Transparent dielectric film over a restricted substrate, with the film's coverage as a spatially varying slot.  Unlike composite_material and polished_material, its BSDF is the COMBINED layer response, so NEE and BDPT/VCM connections evaluate the coated surface rather than the bare substrate.  This is the wetness / clearcoat / varnish / oil-film material.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "base";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.required = true; p.semantics.pipe = ParameterPipe::Material;
+						  p.description = "Substrate material.  RESTRICTED, not any material: accepted are `lambertian_material`, `orennayar_material`, `ggx_material`, `pbr_metallic_roughness_material` (which resolves to a ggx_material at scene-build time), `fabric_material` and `weave_material` (DL-23: a coat over cloth -- waxed canvas, a varnished basket weave), and the substrate must not emit.  Anything else is refused at parse time.  The layered model needs the substrate's directional albedo to run its interreflection series, which a luminaire, a BSSRDF or a volumetric random walk cannot supply.  A `weave_material` base under `transmission thin` (or a `fabric_material` wrapping one) also makes the whole coated stack SEE-THROUGH: the coat forwards the substrate's transmission, attenuated by its own two-crossing Fresnel/absorption, rather than blocking it (mirrors `fabric_material`'s identical `base` forwarding).  `required`: unlike `composite_material`'s `top`/`bottom` or the luminaire materials' `material` slot, the built-in `none` null material is not a fallback here -- it fails the substrate allowlist just like any other unsupported material, so there is no valid default and this slot must always be authored."; }
+						{ auto& p = P(); p.name = "coat_weight";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "1.0"; p.SoftRange( 0.0, 1.0, 0.01 );
+						  p.description = "Coat COVERAGE fraction in [0,1] (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter: this slot is read as one value, so an `r g b` triple would silently drop g and b).  Clamped to [0,1].  This is the spatially varying slot: paint it to make a surface wet in the joints and dry on the crowns.  Semantically a sub-pixel AREA fraction, not a gloss knob -- at coverage c the response is the statistical mixture c*(coated) + (1-c)*(bare), and the bare branch reaches the substrate through AIR with no Fresnel transmission and no interreflection.  Both branches conserve energy, so partial coverage does not darken an otherwise-white surface."; }
+						{ auto& p = P(); p.name = "coat_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "1.33"; p.SoftRange( 1.0, 3.0, 0.01 );
+						  p.description = "Coat index of refraction (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter).  1.33 water, 1.5 varnish/lacquer, 1.4-1.6 oil.  CLAMPED to [1, 3]: values below the surrounding medium's IOR are raised to it (see the next sentence), and 3 is the top of the tabulated range (no dielectric coat anyone authors exceeds it).  Drives BOTH the coat's Fresnel lobe AND the internal reflectance that recycles light back into the substrate -- which is where wet darkening and the wet chroma boost actually come from.  Must exceed the surrounding medium's IOR; a lower value is clamped to it (the layer model assumes the coat is the denser medium)."; }
+						{ auto& p = P(); p.name = "coat_roughness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "0.02"; p.SoftRange( 0.001, 1.0, 0.005 );
+						  p.description = "GGX alpha of the coat lobe (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter).  0.01-0.05 for water, 0.03-0.1 for a clearcoat.  CLAMPED to [1e-3, 1] -- 1 is fully rough.  Floored at 1e-3: the coat lobe is never a delta distribution, deliberately, so that direct lighting and bidirectional connections can see it."; }
+						{ auto& p = P(); p.name = "coat_thickness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "0.0"; p.SoftRange( 0.0, 10.0, 0.05 );
+						  p.description = "Coat thickness in WORLD length units (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter).  Multiplies `coat_absorption` into a Beer-Lambert optical depth for one normal-incidence traversal; oblique paths lengthen correctly.  0 (default) makes absorption a no-op.  It does NOT scale `coat_tint`, which is defined per traversal."; }
+						{ auto& p = P(); p.name = "coat_absorption"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "0.0"; p.SoftRange( 0.0, 10.0, 0.05 );
+						  p.description = "Coat absorption coefficient in 1/length (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter).  Deliberately on the SCALAR pipe, not the colour pipe: a large coefficient routed through a colour painter would be silently clamped by the Jakob-Hanika spectral uplift.  Use `coat_tint` for a coloured coat.  0 (default) is a perfectly clear film."; }
+						{ auto& p = P(); p.name = "coat_tint";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.defaultValueHint = "none";
+						  p.description = "Colour transmitted by ONE normal-incidence traversal of the coat (COLOUR painter -- this is the one coat slot that is genuinely a colour, e.g. a tinted lacquer).  Applied on the way in and again on the way out, raised to the obliquity factor so grazing paths tint more.  Independent of `coat_thickness` by construction.  `none` (the default) means UNTINTED, i.e. white -- it is NOT read as the built-in black `none` painter, which would make a clear coat opaque.  Bind an explicit black painter by name if a fully absorbing coat is what you want."; }
+						{ auto& p = P(); p.name = "coat_normal";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.defaultValueHint = "none";
+						  p.description = "DL-192: optional coat-lobe-only tangent-space normal map (COLOUR painter -- an RGB [0,1] encoding of a tangent-space vector, the SAME convention `normal_map_modifier`'s own `normal_map` parameter decodes; load with `color_space Rec709RGB_Linear` for a verbatim store).  Applied ONLY to the coat's own GGX reflection lobe -- the substrate keeps its own (possibly separately normal-mapped) shading normal unchanged.  `none` (the default) means no perturbation, bit-identical to a bare `coated_material`."; }
+						{ auto& p = P(); p.name = "coat_normal_scale"; p.kind = ValueKind::Double; p.defaultValueHint = "1.0"; p.SoftRange( 0.0, 2.0, 0.01 );
+						  p.description = "DL-192: xy multiplier on the decoded tangent-space normal (glTF `normalTexture.scale`'s analogue; Blender's Normal Map node \"Strength\" slider binds here).  Ignored when `coat_normal` is unset."; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//! `fabric_material` -- docs/CLOTH_FABRIC_DESIGN.md Phase 1
+			//! (9.2 - 9.6).
+			//!
+			//! MULTI-SLOT PRESET SEEDING, WHICH IS NEW IN RISE.  RISE
+			//! already has per-parameter named quick-picks
+			//! (`ParameterDescriptor::presets`, e.g. `scene_unit`), but
+			//! those are an editor affordance on ONE scalar.  Nothing
+			//! anywhere seeded SEVERAL slots from one name, and no
+			//! material carried a preset of any kind.  `fabric <name>`
+			//! is that mechanism: it supplies the default for every slot
+			//! the author did not write, and ANY EXPLICITLY WRITTEN SLOT
+			//! WINS.
+			//!
+			//! `bag.GetString(name, default)` alone CANNOT express that
+			//! rule -- it cannot distinguish "the author omitted this"
+			//! from "the author wrote the default value" -- so the
+			//! seeding below goes through `ParseStateBag::Has()`.
+			//!
+			//! A PRESET CANNOT CONFIGURE THE SUBSTRATE, and pretending
+			//! otherwise is the trap.  This chunk holds a REFERENCE to
+			//! an already-constructed base material; `Finalize` can
+			//! neither retype it nor re-parameterise it, and it does not
+			//! even know its runtime class (it sees a NAME, a string).
+			//! So `fabric satin` over a Lambertian base yields chalk
+			//! with a faint sheen -- the tight anisotropic silk
+			//! highlight lives in a substrate this chunk cannot reach.
+			//! The WARN-level mismatch diagnostic therefore lives in
+			//! `Job::AddFabricMaterial`, where the material manager has
+			//! resolved the name to a pointer; the preset name is
+			//! forwarded there for exactly that purpose (and so the
+			//! preset's sheen COLOUR, an RGB triple rather than a
+			//! painter name, can be honoured by a layer able to
+			//! synthesise an owned painter).
+			//!
+			//! THERE IS NO `weave` ENUM IN PHASE 1, and its absence is
+			//! deliberate rather than an oversight: with anisotropy
+			//! delegated to the substrate (9.5), a weave enum has
+			//! nothing left to select -- the RATE of anisotropy is the
+			//! substrate's alphax/alphay and the PATTERN is whatever the
+			//! author's `weave_rotation` field says.  The name is
+			//! RESERVED, unused, for Phase 2's structured two-yarn-family
+			//! model, which will have real per-binding behaviour.
+			struct FabricMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				//! Format a preset scalar as an inline literal the
+				//! scalar-painter resolver accepts.  %.17g round-trips a
+				//! double exactly, so the seeded value is bit-identical
+				//! to the table's.
+				static std::string PresetScalarText( const Scalar v )
+				{
+					char buf[64];
+					std::snprintf( buf, sizeof(buf), "%.17g", (double)v );
+					return std::string( buf );
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string fabric = bag.GetString( "fabric", "custom" );
+					std::string base   = bag.GetString( "base",   "none" );
+
+					const RISE::Implementation::FabricPreset& P =
+						RISE::Implementation::LookupFabricPreset( fabric.c_str() );
+
+					// `sheen_color` is genuinely a COLOUR (the dye), so it
+					// rides the IPainter colourspace + JH-uplift pipe.  The
+					// default is the "none" sentinel, which
+					// Job::AddFabricMaterial reads as "use the preset's
+					// colour, else WHITE" -- NOT as the "none" manager
+					// entry, which is black and would switch the sheen lobe
+					// off entirely.  A genuinely black (disabled) sheen is
+					// authored by binding an explicit black painter by name.
+					std::string color = bag.GetString( "sheen_color", "none" );
+
+					// PRESET SEEDING, the `Has()` rule.  An author who
+					// writes `sheen_roughness` wins over the preset; an
+					// author who omits it gets the preset's calibrated
+					// value, not a fixed global default.
+					const std::string presetRough = PresetScalarText( P.sheenRoughness );
+					std::string rough = bag.Has( "sheen_roughness" )
+						? bag.GetString( "sheen_roughness", presetRough )
+						: presetRough;
+
+					// No preset sets a weave angle: the ANGLE is a spatial
+					// field the author paints (9.5), and a preset that
+					// baked in one constant rotation would be authoring
+					// geometry it cannot see.  0 = unrotated, which makes
+					// the substrate's frame byte-identical to the
+					// un-wrapped material's.
+					std::string rot = bag.GetString( "weave_rotation", "0.0" );
+
+					return pJob.AddFabricMaterial(
+						name.c_str(), fabric.c_str(), base.c_str(),
+						color.c_str(), rough.c_str(), rot.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "fabric_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Cloth: an ENERGY-COMPENSATED Charlie sheen lobe over a restricted substrate, with the weave direction delivered as a rotation of the frame the SUBSTRATE is evaluated in.  Unlike stacking `sheen_material` under `composite_material`, its BSDF is the COMBINED response -- so NEE and BDPT/VCM connections evaluate the fabric rather than the bare substrate -- and it SUBTRACTS the sheen's energy from the base via a baked directional-albedo table, so a white fabric no longer returns more light than it receives at grazing.  Pick a `fabric` preset and bind a `base`; everything else has a calibrated default.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "fabric"; p.kind = ValueKind::Enum;
+						  p.enumValues = {"cotton","denim","silk","satin","velvet","wool","linen","custom"};
+						  p.defaultValueHint = "custom";
+						  p.description = "Fabric PRESET.  Supplies the default for every slot below that you did not write; any slot you DO write wins.  Seeds `sheen_roughness` (cotton 0.55, linen 0.65, denim 0.45, wool 0.75, silk 0.20, satin 0.12, velvet 0.08, custom 0.50) and, for `velvet` only, a dark `sheen_color`.  IT CANNOT CONFIGURE THE SUBSTRATE: this chunk holds a reference to a base material it can neither retype nor re-parameterise, so `silk`, `satin` and `denim` -- whose whole look is an ANISOTROPIC ggx_material base (silk alphax 0.30 / alphay 0.10, satin 0.34 / 0.06, denim 0.34 / 0.22, all with `fresnel_mode schlick_f0` and `rs` bound to a ~0.04 dielectric-F0 painter) -- read as chalk with a faint sheen over a Lambertian.  Binding one of those presets over a base of the wrong class logs a WARNING naming the class it wanted; the composition is still legal.  cotton/linen/wool want an `orennayar_material` (sigma ~0.4 / 0.5 / 0.6); velvet wants a DARK `lambertian_material` and no anisotropy at all -- it is a pile, not a weave."; }
+						{ auto& p = P(); p.name = "base";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.required = true; p.semantics.pipe = ParameterPipe::Material;
+						  p.description = "Substrate material.  RESTRICTED, not any material: accepted are `lambertian_material`, `orennayar_material`, `ggx_material`, `pbr_metallic_roughness_material` (which resolves to a ggx_material at scene-build time) and `weave_material`, and the substrate must not emit.  Anything else is refused at parse time.  The layered model needs the substrate's hemispherical albedo to subtract the sheen's energy honestly, which a luminaire, a BSSRDF or a volumetric random walk cannot supply.  THIS IS WHERE ANISOTROPY LIVES: the sheen lobe is strictly isotropic (Charlie's normaliser and its Lambda visibility are isotropic-only fits), so a directional weave is either a `weave_material` base (a real two-thread-family draft with a pattern scale -- what silk/satin/denim want) or a `ggx_material` base with alphax != alphay, steered per-point by `weave_rotation`.  A `weave_material` base under `transmission thin` also makes the whole stack SEE-THROUGH: the sheen layer forwards its substrate's transmission, attenuated, rather than blocking it."; }
+						{ auto& p = P(); p.name = "sheen_color"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.defaultValueHint = "none";
+						  p.description = "The dye / fuzz tint (COLOUR painter -- this is the one fabric slot that is genuinely a colour).  Its max channel is also the ENERGY SPLIT: the base is scaled by 1 - max3(sheen_color)*E(alpha, cos), so a white sheen suppresses the substrate most and a black one not at all.  `none` (the default) means the PRESET's colour where the preset sets one (velvet) and otherwise WHITE -- it is NOT read as the built-in black `none` painter, which would switch the lobe off.  Bind an explicit black painter by name if a disabled sheen is what you want."; }
+						{ auto& p = P(); p.name = "sheen_roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0.5)"; p.SoftRange( 0.04, 1.0, 0.01 );
+						  p.description = "Charlie alpha of the sheen lobe (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter: this slot is read as one value, so an `r g b` triple would silently drop g and b).  Low = a tight grazing halo (velvet 0.08, satin 0.12), high = a broad soft sheen (wool 0.75).  CLAMPED to [0.04, 1] -- note the 0.04 floor, which is TIGHTER than `sheen_material`'s 1e-3: below ~0.035 the Charlie lobe's baked directional albedo exceeds 1 near grazing, and the base-energy subtraction would go negative.  Omit it to take the `fabric` preset's calibrated value."; }
+						{ auto& p = P(); p.name = "weave_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "0.0"; p.SoftRange( -3.14159, 3.14159, 0.01 );
+						  p.description = "Weave angle in RADIANS (physical SCALAR: a scalar_painter name or a single inline scalar; per-channel painters are refused).  Rotates the tangent frame handed to the SUBSTRATE -- not the sheen lobe, which is isotropic and unaffected.  Paint it to make an anisotropic `ggx_material` base follow the yarn: a twill wale, a satin float direction, the grain change across a seam.  It ADDS to the substrate's own `tangent_rotation` (both are rotations about the same normal, weave first), so a ggx base keeps its finer per-material offset.  It also gives `ward_material` and `ashikminshirley_material` -- which have no rotation slot of their own -- one, because the rotation happens in the frame rather than in the lobe.  0 (the default) is a no-op: the substrate's frame is byte-identical to the un-wrapped material's.  There is deliberately NO `weave` enum in Phase 1; that name is reserved for the structured two-yarn model."; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//! `weave_material` -- docs/CLOTH_FABRIC_DESIGN.md Phase 2
+			//! (slice P2-A), the structured two-thread-family cloth BSDF.
+			//!
+			//! WHY THIS PARSER SEEDS NOTHING, unlike its Phase-1 sibling.
+			//! `FabricMaterialAsciiChunkParser` above resolves the
+			//! preset's `sheen_roughness` HERE (via `bag.Has()`) while
+			//! leaving the preset's COLOUR to `Job::AddFabricMaterial`.
+			//! That split is fine for two slots and is a liability for
+			//! eighteen: it would mean two files that must agree, line by
+			//! line, about which slots the preset seeds and what "the
+			//! author omitted this" means.  So this parser forwards the
+			//! AUTHORED string or an EMPTY one, and
+			//! `Job::AddWeaveMaterial` does ALL the seeding in one place.
+			//!
+			//! `bag.GetString(name, "")` is therefore exactly right here
+			//! and would be exactly wrong in the sibling: an empty string
+			//! IS the wire protocol for "unset", and substituting a
+			//! parser-side default would silently give every `fabric
+			//! satin` the `plain` draft's numbers.
+			//!
+			//! THE TWO ENUMS ARE INDEPENDENT.  `weave` is the DRAFT
+			//! (which family is on top per cell) and `fabric` is the
+			//! PRESET (a named starting point that seeds every slot,
+			//! `weave` included).  `weave twill_2_1` under `fabric
+			//! custom` is a perfectly ordinary authoring; so is `fabric
+			//! denim` with an explicit `weave satin_5` overriding denim's
+			//! twill.
+			struct WeaveMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string weave  = bag.GetString( "weave",  "" );
+					std::string fabric = bag.GetString( "fabric", "custom" );
+					std::string transmission = bag.GetString( "transmission", "" );
+
+					// P2-B: `sheer` is an accepted ALIAS for `gap` -- the
+					// identical slot, under the more honest name once it can
+					// actually transmit (docs/CLOTH_FABRIC_DESIGN.md 10).
+					// `sheer` wins if both are authored; a scene that only
+					// ever wrote `gap` (every P2-A scene) is unaffected.
+					// R8 P3-3: authoring BOTH on the same chunk is legal
+					// (silently preferring `sheer` is not a parse error) but
+					// is very likely a mistake -- the two spellings binding
+					// the SAME slot means one of them does nothing, and an
+					// author who does not know that would reasonably expect
+					// them to combine.  Diagnose it rather than staying
+					// silent.
+					if( bag.Has( "gap" ) && bag.Has( "sheer" ) ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"weave_material `%s`: both `gap` and `sheer` are authored on the "
+							"same chunk -- they are the SAME slot (`sheer` is an alias for `gap`), "
+							"not two separate ones, so `sheer` (`%s`) wins and `gap` (`%s`) is "
+							"ignored.  Author only one.",
+							name.c_str(), bag.GetString( "sheer", "" ).c_str(), bag.GetString( "gap", "" ).c_str() );
+					}
+					std::string gap = bag.GetString( "sheer", "" );
+					if( gap.empty() ) {
+						gap = bag.GetString( "gap", "" );
+					}
+
+					return pJob.AddWeaveMaterial(
+						name.c_str(), weave.c_str(), fabric.c_str(), transmission.c_str(),
+						bag.GetString( "weave_scale",    "" ).c_str(),
+						bag.GetString( "weave_rotation", "" ).c_str(),
+						bag.GetString( "weft_skew",      "" ).c_str(),
+						bag.GetString( "coverage",       "" ).c_str(),
+						gap.c_str(),
+						bag.GetString( "warp_color",     "" ).c_str(),
+						bag.GetString( "weft_color",     "" ).c_str(),
+						bag.GetString( "warp_ior",       "" ).c_str(),
+						bag.GetString( "weft_ior",       "" ).c_str(),
+						bag.GetString( "warp_width",     "" ).c_str(),
+						bag.GetString( "weft_width",     "" ).c_str(),
+						bag.GetString( "warp_azimuth",   "" ).c_str(),
+						bag.GetString( "weft_azimuth",   "" ).c_str(),
+						bag.GetString( "warp_kd",        "" ).c_str(),
+						bag.GetString( "weft_kd",        "" ).c_str(),
+						bag.GetString( "warp_tilt",      "" ).c_str(),
+						bag.GetString( "weft_tilt",      "" ).c_str(),
+						bag.GetString( "warp_transmit",  "" ).c_str(),
+						bag.GetString( "weft_transmit",  "" ).c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "weave_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Cloth with STRUCTURE: two thread families (warp and weft), each with its own direction, its own dye and its own pair of fibre lobes, mixed by a weave-draft coverage field that says which yarn is on top at each point.  This is what makes satin's directional float sheen and denim's twill wale -- `fabric_material` cannot, because an isotropic sheen over one elliptical GGX lobe has no PATTERN SCALE (measured: 95-99 % of the substrate's anisotropy survives the sheen and it still reads as brushed metal).  Pick a `fabric` preset and a `weave` draft; everything else has a calibrated default.  It has NO sheen term of its own -- for the fuzz layer, wrap it in a `fabric_material` as the `base` (fuzz over weave is the physical stack).  Set `transmission thin` (or pick a `fabric` that defaults to it -- linen, silk, satin) for a backlit, see-through cloth: a delta lobe glows through the open weave and a Lambertian lobe glows through the yarn itself.  Default `transmission none` is reflection-only and bit-identical to the original Phase-2 slice.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "fabric"; p.kind = ValueKind::Enum;
+						  p.enumValues = {"denim","silk","satin","linen","custom"};
+						  p.defaultValueHint = "custom";
+						  p.description = "Fabric PRESET.  Supplies the default for EVERY slot below that you did not write -- including `weave` -- and any slot you DO write wins.  Unlike `fabric_material`'s preset, this one CAN configure the whole appearance, because this material owns its own BSDF rather than holding a reference to a substrate it cannot reach.  denim: 3/1 twill, indigo warp over undyed weft, cellulose IOR 1.46.  silk: 5-harness satin, a flat 5-degree warp against a twisted 18-degree weft, IOR 1.345 (Sadeghi et al. 2013 Table II crepe de chine).  satin: 5-harness satin, polyester IOR 1.539, a 2.5-degree flat float -- the tightest lobe in the reference table, and the reason satin looks like satin.  linen: plain weave, natural flax, and the one preset with a real `gap` (a plain linen weave is not watertight).  The numbers are calibrated starting points from the paper's fit, not measurements of your fabric; the DYES are representative rather than the paper's own captured samples."; }
+						{ auto& p = P(); p.name = "weave"; p.kind = ValueKind::Enum;
+						  p.enumValues = {"plain","twill_2_1","twill_3_1","satin_5","custom"};
+						  p.defaultValueHint = "per `fabric` (custom: plain)";
+						  p.description = "The DRAFT: which family is on top in each cell of the repeating unit, and therefore the warp's mean coverage.  plain = 1/1 alternation (mean 1/2); twill_2_1 = warp over two under one on a diagonal (2/3); twill_3_1 = the denim wale (3/4); satin_5 = 5-harness satin with step 2, long warp floats and no wale at all (4/5); custom = bind your own `coverage` field.  The diagonal is what makes a twill a twill -- the predicate reads (i - j), so the float run marches one cell across for every cell down.  The field is CONTINUOUS, not a per-cell lookup: yarn edges are smooth ramps and the whole pattern fades to its own mean as the pixel footprint outgrows the cell, so it anti-aliases instead of turning into a checkerboard."; }
+						{ auto& p = P(); p.name = "transmission"; p.kind = ValueKind::Enum;
+						  p.enumValues = {"none","thin"};
+						  p.defaultValueHint = "per `fabric` (custom: none)";
+						  p.description = "Phase-2 slice P2-B (docs/CLOTH_FABRIC_DESIGN.md 10): `none` (the original slice-A behaviour, bit-identical) or `thin` -- a thin, backlit-glowing cloth.  `thin` adds a DELTA transmission lobe through the open gaps (weighted by `gap`/`sheer`) and a Lambertian diffuse-transmission lobe through the yarn itself (weighted per family by `warp_transmit`/`weft_transmit`), and turns on full-sphere next-event estimation so a light BEHIND the cloth is sampled directly.  linen, silk and satin default to `thin`; denim and custom default to `none` (a 3/1 twill at typical weight is not sheer, and `custom` is the author's own canvas)."; }
+						{ auto& p = P(); p.name = "weave_scale"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 40)"; p.SoftRange( 1.0, 200.0, 1.0 );
+						  p.description = "Weave cells per unit of surface UV (physical SCALAR: a scalar_painter name or a single inline scalar).  Higher = finer cloth.  This is the knob that decides whether the weave READS at all: below roughly one cell per two pixels the footprint fade takes over and the surface becomes its own mean, which is correct but structureless.  Match it to the UV scale of your geometry, not to a physical thread count."; }
+						{ auto& p = P(); p.name = "weave_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "0.0"; p.SoftRange( -3.14159, 3.14159, 0.01 );
+						  p.description = "Warp direction in RADIANS about the shading normal (physical SCALAR), measured from the surface's own u-axis.  Rotates BOTH families together -- the weft stays perpendicular to the warp -- so this turns the whole cloth, it does not shear it (see `weft_skew` for that).  Paint it to make the grain follow a seam or a drape.  It uses the same helper `fabric_material`'s `weave_rotation` and `ggx_material`'s `tangent_rotation` use, so wrapping this material in a fabric_material makes the two rotations ADD.  0 (the default) aligns the warp with the u-axis."; }
+						{ auto& p = P(); p.name = "weft_skew"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "0.0"; p.SoftRange( -0.5, 0.5, 0.01 );
+						  p.description = "How far the weft departs from perpendicular to the warp, in RADIANS (physical SCALAR).  0 is the orthogonal weave every built-in draft assumes; a non-zero value is a sheared or bias-cut cloth.  Authored rather than derived, because nothing in a draft can imply it."; }
+						{ auto& p = P(); p.name = "coverage"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "none"; p.SoftRange( 0.0, 1.0, 0.01 );
+						  p.description = "`weave custom` ONLY: the warp's share of the surface at each point, in [0,1] (physical SCALAR).  1 = pure warp, 0 = pure weft, and intermediate values blend the two families' lobes.  Bind an expression or texture painter to author a draft the four built-ins do not cover, or to vary the weave across the surface.  IGNORED (with a warning) under a built-in draft, which computes its own field; and selecting `custom` WITHOUT binding this warns too, because the result is a structureless uniform 50/50 blend."; }
+						{ auto& p = P(); p.name = "gap"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0)"; p.SoftRange( 0.0, 0.3, 0.005 );
+						  p.description = "The fraction of the surface covered by NEITHER family -- the holes in an open weave (physical SCALAR).  CLAMPED to [0, 0.3].  Under `transmission none` (the default) a gap simply DARKENS the response: light that finds a hole is lost rather than passed through.  Under `transmission thin` this SAME field is ALSO the aperture of a delta transmission lobe -- light passes straight through the hole undeviated -- which is why `sheer` (below) is the more honest spelling for a thin-cloth author; both names bind the identical slot."; }
+						{ auto& p = P(); p.name = "sheer"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0)"; p.SoftRange( 0.0, 0.3, 0.005 );
+						  p.description = "ALIAS for `gap` -- the identical slot, under the name that actually describes it once `transmission thin` is set: the open-gap fraction that a delta transmission lobe lets straight through.  If both `gap` and `sheer` are authored on the same chunk, `sheer` wins.  Prefer this spelling for a thin/see-through weave; `gap` remains for the reflection-only, `transmission none` case and for back-compatibility with Phase-2 slice A scenes."; }
+						{ auto& p = P(); p.name = "warp_color"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.defaultValueHint = "none";
+						  p.description = "The warp's DYE (COLOUR painter -- one of only two genuinely-colour slots on this chunk).  It tints the VOLUME lobe ONLY: a dielectric's specular reflection preserves the incident spectrum, so the surface lobe stays untinted and a coloured fabric keeps a white highlight.  That is the physically correct behaviour and it is what lets a two-tone shot fabric work.  `none` (the default) means the PRESET's colour, or WHITE where the preset sets none -- it is NOT the built-in black `none` painter, which would switch the volume lobe off."; }
+						{ auto& p = P(); p.name = "weft_color"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.defaultValueHint = "none";
+						  p.description = "The weft's DYE (COLOUR painter).  Same rules as `warp_color`.  Giving the two families DIFFERENT dyes is what makes a shot fabric, a chambray or a denim: denim's whole look is an indigo warp floating over an undyed weft, and the draft decides how much of each you see."; }
+						{ auto& p = P(); p.name = "warp_ior"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 1.46)"; p.SoftRange( 1.001, 3.0, 0.01 );
+						  p.description = "Refractive index of the warp fibre (physical SCALAR).  Splits the two lobes: a higher IOR reflects more at the surface and admits less into the dyed volume, so it reads shinier and less saturated.  The reference table's whole range is 1.345 (silk) to 1.539 (polyester), with 1.46 for cellulose (cotton, linen); values outside 1.001-3 are clamped.  This is a FIBRE property consumed inside the lobe, not a boundary rays cross -- the material reports no refraction to SMS or the IOR stack."; }
+						{ auto& p = P(); p.name = "weft_ior"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 1.46)"; p.SoftRange( 1.001, 3.0, 0.01 );
+						  p.description = "Refractive index of the weft fibre (physical SCALAR).  See `warp_ior`."; }
+						{ auto& p = P(); p.name = "warp_width"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0.25)"; p.SoftRange( 0.005, 1.0, 0.005 );
+						  p.description = "LONGITUDINAL width of the warp's highlight, in RADIANS (physical SCALAR) -- the angular spread of the specular band ALONG the yarn.  This is the single most important appearance knob on the chunk: 0.044 (2.5 degrees) is a flat satin float and gives a tight, high-contrast band; 0.52 (30 degrees) is a twisted matte thread and gives a broad wash.  CLAMPED to [0.005, 1].  The volume lobe's width is DERIVED as twice this, which is the ratio that recurs in all six rows of the reference table, so there is deliberately no second slot for it."; }
+						{ auto& p = P(); p.name = "weft_width"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0.25)"; p.SoftRange( 0.005, 1.0, 0.005 );
+						  p.description = "LONGITUDINAL width of the weft's highlight, in RADIANS (physical SCALAR).  See `warp_width`.  Making the two families DIFFERENT is what the silk and satin presets do -- a flat shiny float crossing a twisted matte ground -- and it is a large part of why real satin reads as satin rather than as varnish."; }
+						{ auto& p = P(); p.name = "warp_azimuth"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 1.0)"; p.SoftRange( 0.02, 3.0, 0.02 );
+						  p.description = "AZIMUTHAL width of the warp's highlight, in RADIANS (physical SCALAR) -- how far AROUND the yarn the highlight spreads, as opposed to along it.  Broad by nature: a smooth cylinder scatters over most of its visible circumference, so the reference behaviour is around 1.2-1.4 and values below ~0.3 give an unnaturally wire-like thread.  CLAMPED to [0.02, 3].  Narrowing `warp_width` is what sharpens a highlight; narrowing this makes it retro-reflective."; }
+						{ auto& p = P(); p.name = "weft_azimuth"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 1.0)"; p.SoftRange( 0.02, 3.0, 0.02 );
+						  p.description = "AZIMUTHAL width of the weft's highlight, in RADIANS (physical SCALAR).  See `warp_azimuth`."; }
+						{ auto& p = P(); p.name = "warp_kd"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0.3)"; p.SoftRange( 0.0, 1.0, 0.01 );
+						  p.description = "How ISOTROPICALLY the warp's volume scatters, in [0,1] (physical SCALAR).  0 keeps the transmitted light in a forward cone about the yarn (silk, polyester); 1 spreads it evenly (cellulose fibres -- cotton, linen -- which really do scatter near-isotropically, which is why they read matte).  The reference table's range is 0.1 for a flat satin float to 0.7 for the matte twisted thread underneath it."; }
+						{ auto& p = P(); p.name = "weft_kd"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0.3)"; p.SoftRange( 0.0, 1.0, 0.01 );
+						  p.description = "How isotropically the weft's volume scatters, in [0,1] (physical SCALAR).  See `warp_kd`."; }
+						{ auto& p = P(); p.name = "warp_tilt"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0)"; p.SoftRange( -0.17, 0.17, 0.005 );
+						  p.description = "FLOAT TILT: how far the warp leans out of the surface plane, in RADIANS (physical SCALAR).  A woven yarn does not lie flat -- it rides over and under its crossings -- and tilting the two families in OPPOSITE directions is what gives a satin face its asymmetric highlight, the one a symmetric lobe cannot produce.  CLAMPED to [-0.17, 0.17] (~10 degrees) -- bounded there, not further out, because the masking term's per-family azimuth has a coordinate pole at view latitude (90 - tilt in degrees); beyond this clamp the pole would sit inside an ordinary, in-frame view angle instead of staying past 80 degrees.  Small opposite values (about +-0.08 to +-0.09) are what the satin and silk presets use.  Large tilts bury whole bands of the yarn below the horizon and cost the sampler a little efficiency, so prefer small ones."; }
+						{ auto& p = P(); p.name = "weft_tilt"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0)"; p.SoftRange( -0.17, 0.17, 0.005 );
+						  p.description = "Float tilt of the weft, in RADIANS (physical SCALAR).  See `warp_tilt` -- give it the OPPOSITE sign to the warp's."; }
+						{ auto& p = P(); p.name = "warp_transmit"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0)"; p.SoftRange( 0.0, 1.0, 0.01 );
+						  p.description = "`transmission thin` ONLY: the warp's share of its OWN volume-scattering budget that is redirected to diffuse transmission through the yarn, CLAMPED to [0,1] (physical SCALAR).  One budget, split -- the reflect-side volume lobe is scaled down by `(1 - warp_transmit)` so the two together never exceed the pre-P2-B total.  Ignored (and always 0) under `transmission none`.  Presets: linen 0.25, silk 0.35, satin 0.15, denim/custom 0.0."; }
+						{ auto& p = P(); p.name = "weft_transmit"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0)"; p.SoftRange( 0.0, 1.0, 0.01 );
+						  p.description = "`transmission thin` ONLY: the weft's diffuse-transmission share, in [0,1] (physical SCALAR).  See `warp_transmit`."; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct RoughDielectricMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize(const ParseStateBag& bag, IJob& job) const override
+				{
+					return job.AddRoughDielectricMaterial(bag.GetString("name","noname").c_str(),
+						bag.GetString("ior","1.5").c_str(), bag.GetString("alphax","0.2").c_str(),
+						bag.GetString("alphay","0.2").c_str());
+				}
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = [] {
+						ChunkDescriptor cd;
+						cd.keyword="rough_dielectric_material"; cd.category=ChunkCategory::Material;
+						cd.description="Single-scattering anisotropic GGX glass interface; bulk absorption uses a separate medium.";
+						cd.parameters.emplace_back();
+						cd.parameters.back().name="name"; cd.parameters.back().kind=ValueKind::String;
+						cd.parameters.back().defaultValueHint="noname";
+						for(const char* key : {"ior","alphax","alphay"}) {
+							cd.parameters.emplace_back(); auto& p=cd.parameters.back();
+							p.name=key; p.kind=ValueKind::Reference; p.referenceCategories={ChunkCategory::Painter};
+							p.semantics.pipe=ParameterPipe::Scalar;
+							const bool index=std::string(key)=="ior";
+							p.description=index ? "Single-scalar physical IOR; spectral curves retain NM/HWSS dispersion. No world-position IOR fields."
+								: "GGX alpha width in (0,1], not perceptual roughness. Both axes must be positive; use dielectric_material for smooth glass.";
+							p.defaultValueHint=index ? "1.5" : "0.2";
+							p.SoftRange(index ? 1.0 : 0.001,index ? 3.0 : 1.0,0.01);
+						}
+						AddVariantTagParam(cd); return cd;
 					}();
 					return d;
 				}
@@ -3230,7 +4090,13 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name = bag.GetString( "name",       "noname" );
-					std::string tau  = bag.GetString( "tau",        "none" );
+					// tau is a physical SCALAR (IScalarPainter) -- see the
+					// identical note on polished_material::tau.  "0.0"
+					// reproduces the pre-refactor "none" IPainter default
+					// (black) bit-for-bit: pow(0, distance) = 0, i.e. the
+					// medium fully absorbs over any nonzero path length until
+					// `tau` is set explicitly (as every real scene already does).
+					std::string tau  = bag.GetString( "tau",        "0.0" );
 					std::string ior  = bag.GetString( "ior",        "1.33" );
 					std::string scat = bag.GetString( "scattering", "10000" );
 					bool hg          = bag.GetBool(   "henyey-greenstein", false );
@@ -3309,13 +4175,13 @@ namespace RISE
 						cd.description = "Fresnel dielectric (reflect + refract) with optional volumetric scattering.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (scalar_painter, or inline `r g b` or scalar)"; }
-						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (scalar_painter, or inline `r g b` or scalar)"; }
-						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "10000"; }
+						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (scalar_painter, or inline `r g b` or scalar) in [0, 1] applied as pow(tau, distance).  0.0 (default) reproduces the pre-refactor \"none\" IPainter default (black) -- fully absorbing until this is set.  NOT an absorption coefficient: convert a published sigma_a table via tau = exp(-sigma_a * unitLength)."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.0, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "1.33"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 1.0, 3.0, 0.01 ); }
+						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "10000"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "ar_layer";           p.kind = ValueKind::String; p.repeatable = true; p.description = "One anti-reflective coating layer (repeatable, AMBIENT->SUBSTRATE / air-side first): `<n> <thickness_nm> [k]`, all positive (k optional, >=0).  One layer = the classic MgF2 quarter-wave (drops glare but leaves a purple bloom); a multi-layer broadband stack (e.g. quarter/half/quarter) reflects far fainter AND colour-neutral, as on real premium AR.  At most 8 layers (more is a parse error)."; }
-						{ auto& p = P(); p.name = "ar_film_ior";        p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR film index (e.g. MgF2 1.38); prefer ar_layer.  Honoured only when no ar_layer lines are present. 0 = no coating."; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "ar_film_thickness";  p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR thickness, nm (MgF2 quarter-wave ~99.6 at 550nm); prefer ar_layer. 0 = no coating."; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "ar_film_extinction"; p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR film extinction k (~0 for a transparent AR); prefer ar_layer."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_film_ior";        p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR film index (e.g. MgF2 1.38); prefer ar_layer.  Honoured only when no ar_layer lines are present. 0 = no coating."; p.defaultValueHint = "0"; p.SoftRange( 0.0, 3.0, 0.01 ); }
+						{ auto& p = P(); p.name = "ar_film_thickness";  p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR thickness, nm (MgF2 quarter-wave ~99.6 at 550nm); prefer ar_layer. 0 = no coating."; p.defaultValueHint = "0"; p.SoftRange( 0.0, 1000.0, 1.0 ); }
+						{ auto& p = P(); p.name = "ar_film_extinction"; p.kind = ValueKind::Double; p.description = "LEGACY single-layer AR film extinction k (~0 for a transparent AR); prefer ar_layer."; p.defaultValueHint = "0"; p.SoftRange( 0.0, 5.0, 0.01 ); }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
 						AddVariantTagParam( cd );
 						return cd;
@@ -3345,15 +4211,15 @@ namespace RISE
 						cd.description = "Diffusion-based subsurface scattering material.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
-						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
-						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "1.3"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( 1.0, 3.0, 0.01 ); }
+						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "0.1"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "1.0"; p.semantics.pipe = ParameterPipe::Scalar; }
 						// g / roughness are BAKED construction-time scalars (the SPF
 						// holds plain doubles) -- Double kind engages the registry's
 						// finite-numeric string gate; a painter name here previously
 						// slipped through and silently atof'd to 0.0.
-						{ auto& p = P(); p.name = "g";          p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g (baked scalar)"; p.defaultValueHint = "0.0"; }
-						{ auto& p = P(); p.name = "roughness";  p.kind = ValueKind::Double; p.description = "Surface roughness (baked scalar)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "g";          p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g (baked scalar)"; p.defaultValueHint = "0.0"; p.SoftRange( -0.99, 0.99, 0.01 ); }
+						{ auto& p = P(); p.name = "roughness";  p.kind = ValueKind::Double; p.description = "Surface roughness (baked scalar)"; p.defaultValueHint = "0.0"; p.SoftRange( 0.0, 1.0, 0.01 ); }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3383,14 +4249,14 @@ namespace RISE
 						cd.description = "Random-walk (path-traced) subsurface scattering.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
-						{ auto& p = P(); p.name = "absorption";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
-						{ auto& p = P(); p.name = "scattering";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "1.3"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( 1.0, 3.0, 0.01 ); }
+						{ auto& p = P(); p.name = "absorption";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "0.1"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "scattering";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "1.0"; p.semantics.pipe = ParameterPipe::Scalar; }
 						// g / roughness / max_bounces are BAKED construction-time
 						// scalars (see the subsurfacescattering_material note).
-						{ auto& p = P(); p.name = "g";           p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g (baked scalar)"; p.defaultValueHint = "0.0"; }
-						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Double; p.description = "Surface roughness (baked scalar)"; p.defaultValueHint = "0.0"; }
-						{ auto& p = P(); p.name = "max_bounces"; p.kind = ValueKind::UInt;   p.description = "Max volume bounces per ray (baked count)"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "g";           p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g (baked scalar)"; p.defaultValueHint = "0.0"; p.SoftRange( -0.99, 0.99, 0.01 ); }
+						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Double; p.description = "Surface roughness (baked scalar)"; p.defaultValueHint = "0.0"; p.SoftRange( 0.0, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "max_bounces"; p.kind = ValueKind::UInt;   p.description = "Max volume bounces per ray (baked count)"; p.defaultValueHint = "64"; p.SoftRange( 1.0, 256.0, 1.0 ); }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3417,9 +4283,9 @@ namespace RISE
 						cd.description = "Emissive Lambertian material (area light).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "exitance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emitted radiance"; }
-						{ auto& p = P(); p.name = "material"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Underlying material"; }
-						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Exitance multiplier"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "exitance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emitted radiance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "material"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Underlying material"; p.semantics.pipe = ParameterPipe::Material; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Exitance multiplier"; p.defaultValueHint = "1.0"; p.SoftRange( 0.0, 50.0, 0.1 ); }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3447,10 +4313,10 @@ namespace RISE
 						cd.description = "Emissive Phong (directional) luminaire.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "exitance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emitted radiance"; }
-						{ auto& p = P(); p.name = "material"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Underlying material"; }
-						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent"; }
-						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Exitance multiplier"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "exitance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emitted radiance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "material"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Underlying material"; p.semantics.pipe = ParameterPipe::Material; }
+						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent"; p.defaultValueHint = "16.0"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Exitance multiplier"; p.defaultValueHint = "1.0"; p.SoftRange( 0.0, 50.0, 0.1 ); }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3478,10 +4344,11 @@ namespace RISE
 						cd.description = "Ashikhmin-Shirley anisotropic Phong BRDF.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
-						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "nu";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "U-direction exponent (scalar_painter, or inline `r g b` or scalar)"; }
-						{ auto& p = P(); p.name = "nv";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "V-direction exponent (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "nu";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "U-direction exponent (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "10.0"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "nv";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "V-direction exponent (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "100.0"; p.semantics.pipe = ParameterPipe::Scalar; }
+						MarkFrozen( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = sqrt(2/(nu+2)), alphay = sqrt(2/(nv+2)); steer the brush direction with tangent_rotation_scalar)." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3508,9 +4375,10 @@ namespace RISE
 						cd.description = "Isotropic Phong BRDF.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
-						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "N";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "N";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "16.0"; p.semantics.pipe = ParameterPipe::Scalar; }
+						MarkFrozen( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = 1/sqrt(2N+1) from the Phong exponent N, because the Phong lobe is cos^N about the REFLECTION vector and the half-vector-equivalent exponent is 4N), or pbr_metallic_roughness_material." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3525,7 +4393,19 @@ namespace RISE
 					std::string name = bag.GetString( "name",       "noname" );
 					std::string ref  = bag.GetString( "ref",        "none" );
 					std::string tau  = bag.GetString( "tau",        "none" );
-					std::string ext  = bag.GetString( "ext",        "none" );
+					// ext (extinction) is a physical SCALAR (IScalarPainter) --
+					// see the identical note on polished_material::tau.  "0.0"
+					// reproduces the pre-refactor "none" IPainter default's
+					// NUMERIC VALUE bit-for-bit (black = RISEPel(0,0,0), i.e.
+					// 0.0 on every channel) -- but note what that number DOES
+					// here is the opposite of "opaque": TranslucentSPF applies
+					// it as exp(-extinction*distance) (see TranslucentSPF.cpp),
+					// so ext=0.0 means NO extinction, i.e. a fully clear
+					// interior, not a black one.  Still the historically
+					// correct default -- a bare chunk pre-refactor got the
+					// same fully-clear interior, it just failed to parse
+					// post-refactor before this fix.
+					std::string ext  = bag.GetString( "ext",        "0.0" );
 					std::string N    = bag.GetString( "N",          "1.0" );
 					std::string scat = bag.GetString( "scattering", "0.0" );
 
@@ -3591,11 +4471,11 @@ namespace RISE
 						cd.description = "Translucent material combining reflection and transmission.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "ref";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Reflectance"; }
-						{ auto& p = P(); p.name = "tau";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
-						{ auto& p = P(); p.name = "ext";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Extinction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
-						{ auto& p = P(); p.name = "N";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
-						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
+						{ auto& p = P(); p.name = "ref";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "tau";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "ext";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Extinction, applied as exp(-ext*distance) (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here).  0.0 (default) reproduces the pre-refactor \"none\" IPainter default's numeric value bit-for-bit -- which means NO extinction (a fully clear interior), not black/opaque."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "N";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "1.0"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Scalar; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3642,17 +4522,30 @@ namespace RISE
 						cd.keyword = "biospec_skin_material"; cd.category = ChunkCategory::Material;
 						cd.description = "BioSpec multi-layer skin model (Krishnaswamy & Baranoski).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						static const char* painterRefs[] = {
-							"thickness_SC","thickness_epidermis","thickness_papillary_dermis","thickness_reticular_dermis",
-							"ior_SC","ior_epidermis","ior_papillary_dermis","ior_reticular_dermis",
-							"concentration_eumelanin","concentration_pheomelanin","melanosomes_in_epidermis",
-							"hb_ratio","whole_blood_in_papillary_dermis","whole_blood_in_reticular_dermis",
-							"bilirubin_concentration","betacarotene_concentration_SC","betacarotene_concentration_epidermis","betacarotene_concentration_dermis",
-							"folds_aspect_ratio"
+						static const struct { const char* name; const char* defVal; } painterRefs[] = {
+							{ "thickness_SC",                        "0.001" },
+							{ "thickness_epidermis",                 "0.01" },
+							{ "thickness_papillary_dermis",          "0.02" },
+							{ "thickness_reticular_dermis",          "0.18" },
+							{ "ior_SC",                              "1.55" },
+							{ "ior_epidermis",                       "1.4" },
+							{ "ior_papillary_dermis",                "1.36" },
+							{ "ior_reticular_dermis",                "1.38" },
+							{ "concentration_eumelanin",             "80.0" },
+							{ "concentration_pheomelanin",           "12.0" },
+							{ "melanosomes_in_epidermis",            "0.10" },
+							{ "hb_ratio",                            "0.75" },
+							{ "whole_blood_in_papillary_dermis",     "0.012" },
+							{ "whole_blood_in_reticular_dermis",     "0.0091" },
+							{ "bilirubin_concentration",             "0.05" },
+							{ "betacarotene_concentration_SC",       "2.1e-4" },
+							{ "betacarotene_concentration_epidermis","2.1e-4" },
+							{ "betacarotene_concentration_dermis",   "7.0e-5" },
+							{ "folds_aspect_ratio",                  "0.75" }
 						};
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						for (const char* n : painterRefs) {
-							auto& p = P(); p.name = n; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Skin-model painter parameter";
+						for (const auto& entry : painterRefs) {
+							auto& p = P(); p.name = entry.name; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.defaultValueHint = entry.defVal; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.description = "Skin-model painter parameter";
 						}
 						{ auto& p = P(); p.name = "subdermal_layer"; p.kind = ValueKind::Bool; p.description = "Include subdermal fat layer"; p.defaultValueHint = "TRUE"; }
 						AddVariantTagParam( cd );
@@ -3696,16 +4589,22 @@ namespace RISE
 						// roughness is NOT in this list -- it is a BAKED construction-
 						// time scalar (plain double through the ctor), declared Double
 						// below so the finite-numeric string gate applies.
-						static const char* painterRefs[] = {
-							"melanin_fraction","melanin_blend","hemoglobin_epidermis","carotene_fraction",
-							"hemoglobin_dermis","epidermis_thickness","ior_epidermis","ior_dermis",
-							"blood_oxygenation"
+						static const struct { const char* name; const char* defVal; } painterRefs[] = {
+							{ "melanin_fraction",     "0.02" },
+							{ "melanin_blend",        "0.5" },
+							{ "hemoglobin_epidermis", "0.002" },
+							{ "carotene_fraction",    "0.001" },
+							{ "hemoglobin_dermis",    "0.005" },
+							{ "epidermis_thickness",  "0.025" },
+							{ "ior_epidermis",        "1.4" },
+							{ "ior_dermis",           "1.38" },
+							{ "blood_oxygenation",    "0.7" }
 						};
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						for (const char* n : painterRefs) {
-							auto& p = P(); p.name = n; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Skin-model painter parameter";
+						for (const auto& entry : painterRefs) {
+							auto& p = P(); p.name = entry.name; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.defaultValueHint = entry.defVal; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.description = "Skin-model painter parameter";
 						}
-						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Double; p.description = "Surface roughness (baked scalar)"; p.defaultValueHint = "0.35"; }
+						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Double; p.description = "Surface roughness (baked scalar)"; p.defaultValueHint = "0.35"; p.SoftRange( 0.0, 1.0, 0.01 ); }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3718,7 +4617,12 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name              = bag.GetString( "name",                      "noname" );
-					std::string g                 = bag.GetString( "g",                         "none" );
+					// g (HG asymmetry) is a physical SCALAR (IScalarPainter) --
+					// see the identical note on polished_material::tau.  "0.0"
+					// reproduces the pre-refactor "none" IPainter default
+					// (black) bit-for-bit, and happens to double as the
+					// physically sensible "isotropic phase function" default.
+					std::string g                 = bag.GetString( "g",                         "0.0" );
 					std::string sca               = bag.GetString( "sca",                       "0.85" );
 					double hb_ratio               = bag.GetDouble( "hb_ratio",                  0.75 );
 					double whole_blood            = bag.GetDouble( "whole_blood",               0.012 );
@@ -3736,12 +4640,12 @@ namespace RISE
 						cd.description = "Parametric human-tissue scattering material.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";                     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "sca";                      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering amplitude"; }
-						{ auto& p = P(); p.name = "g";                        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phase-function asymmetry"; }
-						{ auto& p = P(); p.name = "whole_blood";              p.kind = ValueKind::Double;    p.description = "Blood volume fraction"; p.defaultValueHint = "0.012"; }
-						{ auto& p = P(); p.name = "hb_ratio";                 p.kind = ValueKind::Double;    p.description = "Oxygenated hemoglobin ratio"; p.defaultValueHint = "0.75"; }
-						{ auto& p = P(); p.name = "bilirubin_concentration";  p.kind = ValueKind::Double;    p.description = "Bilirubin concentration"; p.defaultValueHint = "0.05"; }
-						{ auto& p = P(); p.name = "betacarotene_concentration";p.kind = ValueKind::Double;   p.description = "Beta-carotene concentration"; p.defaultValueHint = "7.0e-5"; }
+						{ auto& p = P(); p.name = "sca";                      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering amplitude"; p.defaultValueHint = "0.85"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( 0.0, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "g";                        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phase-function asymmetry.  0.0 (default) reproduces the pre-refactor \"none\" IPainter default (black) and doubles as isotropic scattering."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( -0.99, 0.99, 0.01 ); }
+						{ auto& p = P(); p.name = "whole_blood";              p.kind = ValueKind::Double;    p.description = "Blood volume fraction"; p.defaultValueHint = "0.012"; p.SoftRange( 0.0, 1.0, 0.005 ); }
+						{ auto& p = P(); p.name = "hb_ratio";                 p.kind = ValueKind::Double;    p.description = "Oxygenated hemoglobin ratio"; p.defaultValueHint = "0.75"; p.SoftRange( 0.0, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "bilirubin_concentration";  p.kind = ValueKind::Double;    p.description = "Bilirubin concentration"; p.defaultValueHint = "0.05"; p.SoftRange( 0.0, 1.0, 0.005 ); }
+						{ auto& p = P(); p.name = "betacarotene_concentration";p.kind = ValueKind::Double;   p.description = "Beta-carotene concentration"; p.defaultValueHint = "7.0e-5"; p.SoftRange( 0.0, 0.01, 1e-5 ); }
 						{ auto& p = P(); p.name = "diffuse";                  p.kind = ValueKind::Bool;      p.description = "Use diffuse approximation"; p.defaultValueHint = "TRUE"; }
 						AddVariantTagParam( cd );
 						return cd;
@@ -3763,7 +4667,12 @@ namespace RISE
 					unsigned int max_diff_recur= bag.GetUInt(   "max_diffuse_recursion",     3 );
 					unsigned int max_tran_recur= bag.GetUInt(   "max_translucent_recursion", 3 );
 					double thickness           = bag.GetDouble( "thickness",                 0.0 );
-					std::string extinction     = bag.GetString( "extinction",                "none" );
+					// Default "0.0", not the "none" IPainter sentinel: `extinction` is a
+					// physical-scalar slot now, and the null painter's numeric value WAS
+					// 0 -- so 0.0 reproduces the pre-refactor default bit-for-bit while
+					// resolving through the scalar-painter path.  Same move translucent
+					// _material's `ext` made.
+					std::string extinction     = bag.GetString( "extinction",                "0.0" );
 
 					return pJob.AddCompositeMaterial( name.c_str(), top.c_str(), bottom.c_str(), max_recur, max_refl_recur, max_refr_recur, max_diff_recur, max_tran_recur, thickness, extinction.c_str() );
 				}
@@ -3775,15 +4684,15 @@ namespace RISE
 						cd.description = "Layered composite of two materials separated by a translucent interior.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";                 p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "top";                  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Top material"; }
-						{ auto& p = P(); p.name = "bottom";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Bottom material"; }
-						{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt; p.description = "Max composite recursion"; p.defaultValueHint = "3"; }
-						{ auto& p = P(); p.name = "max_reflection_recursion"; p.kind = ValueKind::UInt; p.description = "Max reflection recursion"; p.defaultValueHint = "3"; }
-						{ auto& p = P(); p.name = "max_refraction_recursion"; p.kind = ValueKind::UInt; p.description = "Max refraction recursion"; p.defaultValueHint = "3"; }
-						{ auto& p = P(); p.name = "max_diffuse_recursion";    p.kind = ValueKind::UInt; p.description = "Max diffuse recursion"; p.defaultValueHint = "3"; }
-						{ auto& p = P(); p.name = "max_translucent_recursion";p.kind = ValueKind::UInt; p.description = "Max translucent recursion"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "top";                  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Top material"; p.semantics.pipe = ParameterPipe::Material; }
+						{ auto& p = P(); p.name = "bottom";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Bottom material"; p.semantics.pipe = ParameterPipe::Material; }
+						{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt; p.description = "Russian-roulette onset for the inter-layer walk, total events (since DL-24 a budget no longer truncates the walk; past it the walk continues under roulette)"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_reflection_recursion"; p.kind = ValueKind::UInt; p.description = "Russian-roulette onset, reflection events (DL-24: not a truncation)"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_refraction_recursion"; p.kind = ValueKind::UInt; p.description = "Russian-roulette onset, refraction events (DL-24: not a truncation)"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_diffuse_recursion";    p.kind = ValueKind::UInt; p.description = "Russian-roulette onset, diffuse events (DL-24: not a truncation)"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_translucent_recursion";p.kind = ValueKind::UInt; p.description = "Russian-roulette onset, translucent events (DL-24: not a truncation)"; p.defaultValueHint = "3"; }
 						{ auto& p = P(); p.name = "thickness";            p.kind = ValueKind::Double;    p.description = "Layer thickness"; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "extinction";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Interior extinction"; }
+						{ auto& p = P(); p.name = "extinction";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inter-layer extinction, applied as exp(-extinction*path) across the gap (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here).  0.0 (default) reproduces the pre-refactor \"none\" IPainter default's numeric value bit-for-bit -- NO extinction (a clear gap), not black/opaque."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Scalar; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3810,9 +4719,10 @@ namespace RISE
 						cd.description = "Ward isotropic Gaussian BRDF.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "rd";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
-						{ auto& p = P(); p.name = "rs";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "alpha"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface slope RMS (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "rd";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "rs";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "alpha"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface slope RMS (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "0.1"; p.semantics.pipe = ParameterPipe::Scalar; }
+						MarkFrozen( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = alpha as a starting point -- GGX has heavier tails than a Gaussian lobe of the same width)." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3840,10 +4750,11 @@ namespace RISE
 						cd.description = "Ward anisotropic elliptical-Gaussian BRDF.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "rd";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
-						{ auto& p = P(); p.name = "rs";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "alphax"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; }
-						{ auto& p = P(); p.name = "alphay"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "rd";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "rs";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "alphax"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "0.1"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "alphay"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "0.2"; p.semantics.pipe = ParameterPipe::Scalar; }
+						MarkFrozen( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax and alphay carry over as a starting point; steer the brush direction with tangent_rotation_scalar)." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3881,16 +4792,41 @@ namespace RISE
 					// BRDF already apply it (ResolveTangentONB/RotateTangent) -- this just
 					// stops ggx_material hard-coding "none".  Steers groove-aligned anisotropy.
 					std::string tangentRot    = bag.GetString( "tangent_rotation", "none" );
+					// DL-16: Scalar-pipe alias, preferred over `tangent_rotation` when
+					// both are set -- lets a `fabric_material`'s `weave_rotation` and
+					// this substrate's own rotation share ONE scalar_painter.  The
+					// legacy `tangent_rotation` stays working (deprecated) for
+					// pre-DL-16 scenes and the expression_function2d spatially-
+					// varying-groove idiom.  Both flow into Job's single
+					// `tangent_rotation` argument -- Job::AddGGXMaterial /
+					// AddGGXEmissiveMaterial resolve that ONE string against EITHER
+					// pipe (ResolveRotationPainterDual), so whichever field wins here
+					// still resolves correctly regardless of which manager the name
+					// lives in.
+					std::string tangentRotScalar = bag.GetString( "tangent_rotation_scalar", "none" );
+					const std::string& effectiveTangentRot =
+						( tangentRotScalar != "none" ) ? tangentRotScalar : tangentRot;
+					// Review round-2 P3: both fields authored is not an error
+					// (tangent_rotation_scalar deterministically wins) but is
+					// worth flagging -- an author who set the legacy field
+					// and then added the new one (or vice versa) most likely
+					// meant to replace it, not layer a silently-ignored value.
+					if( tangentRotScalar != "none" && tangentRot != "none" ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"ggx_material `%s`: both `tangent_rotation` (`%s`) and `tangent_rotation_scalar` "
+							"(`%s`) are set -- `tangent_rotation_scalar` wins and `tangent_rotation` is ignored.",
+							name.c_str(), tangentRot.c_str(), tangentRotScalar.c_str() );
+					}
 
 					if( emissive == "none" ) {
 						return pJob.AddGGXMaterial( name.c_str(), rd.c_str(), rs.c_str(),
 							alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str(),
-							fresnelMode.c_str(), tangentRot.c_str(),
+							fresnelMode.c_str(), effectiveTangentRot.c_str(),
 							filmIor.c_str(), filmExtinction.c_str(), filmThickness.c_str() );
 					}
 					return pJob.AddGGXEmissiveMaterial( name.c_str(), rd.c_str(), rs.c_str(),
 						alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str(),
-						emissive.c_str(), emissive_scale, fresnelMode.c_str(), tangentRot.c_str(),
+						emissive.c_str(), emissive_scale, fresnelMode.c_str(), effectiveTangentRot.c_str(),
 						filmIor.c_str(), filmExtinction.c_str(), filmThickness.c_str() );
 				}
 
@@ -3914,19 +4850,20 @@ namespace RISE
 							"`thinfilm` REQUIRES `film_ior` and `film_thickness` (`film_extinction` optional).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "rd";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
-						{ auto& p = P(); p.name = "rs";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance / F0"; }
-						{ auto& p = P(); p.name = "alphax";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X roughness (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
-						{ auto& p = P(); p.name = "alphay";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y roughness (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
-						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (ignored in schlick_f0 mode) (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
-						{ auto& p = P(); p.name = "extinction";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (ignored in schlick_f0 mode) (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; }
-						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter (LambertianEmitter folded in when present)"; }
-						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "fresnel_mode";   p.kind = ValueKind::String;    p.description = "Fresnel model: conductor | schlick_f0 | thinfilm"; p.defaultValueHint = "conductor"; }
-						{ auto& p = P(); p.name = "film_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide n (scalar_painter; eFresnelThinFilmConductor only)"; }
-						{ auto& p = P(); p.name = "film_extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide k (scalar_painter; eFresnelThinFilmConductor only; default 0/none = transparent film)"; }
-						{ auto& p = P(); p.name = "film_thickness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide thickness in nm (scalar_painter, may be spatially varying; eFresnelThinFilmConductor only)"; }
-						{ auto& p = P(); p.name = "tangent_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Anisotropy tangent-frame rotation in RADIANS: a colour-painter reference (an expression_function2d gives a SPATIALLY-VARYING field, e.g. groove direction) OR an inline scalar.  \"none\" = aligned with the geometry tangent.  Resolved in the colour-painter manager, so a scalar_painter does NOT bind here -- use expression_function2d or a scalar.  Steers alphax!=alphay anisotropy."; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "rd";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "rs";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance / F0"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "alphax";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X roughness (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "0.15"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.001, 1.0, 0.005 ); }
+						{ auto& p = P(); p.name = "alphay";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y roughness (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "0.15"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.001, 1.0, 0.005 ); }
+						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (ignored in schlick_f0 mode) (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "2.45"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 1.0, 3.0, 0.01 ); }
+						{ auto& p = P(); p.name = "extinction";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (ignored in schlick_f0 mode) (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "3.45"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.0, 10.0, 0.05 ); }
+						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter (LambertianEmitter folded in when present)"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; p.SoftRange( 0.0, 20.0, 0.1 ); }
+						{ auto& p = P(); p.name = "fresnel_mode";   p.kind = ValueKind::Enum;      p.enumValues = {"conductor", "schlick_f0", "thinfilm"}; p.description = "Fresnel model: conductor | schlick_f0 | thinfilm"; p.defaultValueHint = "conductor"; }
+						{ auto& p = P(); p.name = "film_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide n (scalar_painter; eFresnelThinFilmConductor only)"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 1.0, 3.0, 0.01 ); }
+						{ auto& p = P(); p.name = "film_extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide k (scalar_painter; eFresnelThinFilmConductor only; default 0/none = transparent film)"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.0, 5.0, 0.01 ); }
+						{ auto& p = P(); p.name = "film_thickness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide thickness in nm (scalar_painter, may be spatially varying; eFresnelThinFilmConductor only)"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.0, 1000.0, 1.0 ); }
+						{ auto& p = P(); p.name = "tangent_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "DEPRECATED (DL-16) -- use `tangent_rotation_scalar` unless you specifically need an expression_function2d spatially-varying field.  Anisotropy tangent-frame rotation in RADIANS: primarily a colour-painter reference (an expression_function2d gives a SPATIALLY-VARYING field, e.g. groove direction) OR an inline scalar; a single-valued scalar_painter name is ALSO accepted here (Job.cpp's ResolveRotationPainterDual resolves the Scalar pipe first, falling back to Color) but `tangent_rotation_scalar` is the preferred way to bind one.  \"none\" = aligned with the geometry tangent.  Steers alphax!=alphay anisotropy.  Ignored when `tangent_rotation_scalar` is also set (that one wins)."; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Color; p.semantics.colorAlsoAcceptsScalar = true; p.semantics.requireSingle = true; p.semantics.note = "The documented oddball (ISCALARPAINTER_REFACTOR.md / MATERIAL_EDITOR.md sect. 1): an angle in radians by MEANING, plumbed through the Color pipe (IPainter) by construction so an expression_function2d painter can drive a spatially-varying groove direction -- but DL-16's ResolveRotationPainterDual ALSO accepts a single-valued scalar_painter here (colorAlsoAcceptsScalar), deprecated in favour of `tangent_rotation_scalar` (DL-16's preferred Scalar-pipe alias)."; p.SoftRange( -3.14159, 3.14159, 0.01 ); }
+						{ auto& p = P(); p.name = "tangent_rotation_scalar"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "DL-16: Scalar-pipe alias for `tangent_rotation` -- a scalar_painter name (single-valued; a per-channel scalar_painter is refused) or an inline scalar, radians.  \"none\" (default) defers to `tangent_rotation`.  Preferred over `tangent_rotation`: lets a `fabric_material`'s `weave_rotation` and this GGX substrate's own rotation share ONE scalar_painter (both are Scalar-pipe, so the same painter binds to both).  When both this and `tangent_rotation` are set, THIS ONE wins."; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( -3.14159, 3.14159, 0.01 ); }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -3970,9 +4907,11 @@ namespace RISE
 							"composes the equivalent ggx_material under the hood.  The internal mapping is: "
 							"`F0 = lerp(0.04, baseColor, metallic)` for the GGX specular reflectance, "
 							"`baseColor * (1 - metallic)` for the diffuse colour painter, "
-							"`roughness * roughness` for the GGX α (isotropic).  The (1 - max(F0)) "
-							"diffuse-vs-specular energy split is applied by the BSDF at evaluation time "
-							"(not pre-multiplied into the diffuse painter).  Fresnel mode is forced to "
+							"`roughness * roughness` for the GGX α (isotropic).  The GGX BSDF "
+							"applies reciprocal single-pass interface transmission `(1-Ai)*(1-Ao)` "
+							"to diffuse at evaluation and selected sample throughput; it does not "
+							"pre-multiply a constant `(1-max(F0))` split or recycle diffuse returns. "
+							"Fresnel mode is forced to "
 							"`schlick_f0`, which treats `F0` as the Schlick-approximation F0 directly and "
 							"ignores the `ior` argument (preserved for API stability only).  "
 							"Internal painters live under prefix `__pbrmr_<name>__`; don't reference "
@@ -3982,16 +4921,16 @@ namespace RISE
 							"Full design + Phase 3 status in docs/GLTF_IMPORT.md §4 and §13.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "base_color";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.required = true; p.description = "Base color painter (sRGB-decoded RGB; texture or uniform)"; }
-						{ auto& p = P(); p.name = "metallic";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Metallic painter or scalar string (default 0.0)"; p.defaultValueHint = "0.0"; }
-						{ auto& p = P(); p.name = "roughness";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Roughness painter or scalar string (default 0.5)"; p.defaultValueHint = "0.5"; }
-						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Double;    p.description = "Preserved for API stability; ignored under the schlick_f0 Fresnel path that this chunk forces"; p.defaultValueHint = "1.5"; }
-						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter; pass \"none\" / omit for non-emissive"; }
-						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "specular_factor";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 7 / KHR_materials_specular: scalar in [0, 1] (or scalar painter) scaling the dielectric F0.  Default 1.0 = standard 0.04 dielectric F0; lower values reduce the dielectric specular highlight (matte plastic / paint).  Metals are unaffected (their F0 = baseColor).  Accepts a painter reference OR a literal scalar string like \"0.5\"."; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "specular_color";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 7 / KHR_materials_specular: RGB tint on dielectric F0.  Default \"none\" = white (untinted, F0 stays at 0.04 across all wavelengths).  Set to a non-white painter for measured dielectrics where the Fresnel response varies with wavelength.  Final F0 = 0.04 × specular_color × specular_factor."; p.defaultValueHint = "none"; }
-						{ auto& p = P(); p.name = "anisotropy_factor"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 8 / KHR_materials_anisotropy: scalar in [0, 1] (or scalar painter) controlling specular-lobe stretch along the tangent direction.  Default 0 = isotropic (αx = αy = roughness²; bit-identical to pre-L8 PBR-MR).  Larger values stretch the lobe: αt = mix(α, 1, anisotropy²), αb = α.  Useful for brushed metal, hair, fabric.  Accepts a painter reference OR a literal scalar string."; p.defaultValueHint = "0.0"; }
-						{ auto& p = P(); p.name = "anisotropy_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 8 / KHR_materials_anisotropy: tangent-frame rotation in RADIANS (or scalar painter).  Default 0 = aligned with the geometry's TANGENT attribute.  Phase 1 reads but does not yet APPLY the rotation; rotation is wired alongside the anisotropy_texture in L12.  Document for forward compatibility."; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "base_color";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.required = true; p.description = "Base color painter (sRGB-decoded RGB; texture or uniform)"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "metallic";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Metallic painter or scalar string (default 0.0)"; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Color; p.semantics.note = "Color pipe by construction, not by meaning: Job::AddPBRMetallicRoughnessMaterial's resolveOrSynth() checks pPntManager->GetItem() and falls back to atof()+a synthesized uniform-colour painter on a miss -- a scalar_painter name here is NOT found (wrong manager) and silently synthesizes a ZERO-valued painter rather than binding. MATERIAL_EDITOR.md sect. 6.4's \"pbr's colour-manager roughness\" oddball."; p.SoftRange( 0.0, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "roughness";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Roughness painter or scalar string (default 0.5)"; p.defaultValueHint = "0.5"; p.semantics.pipe = ParameterPipe::Color; p.semantics.note = "Color pipe by construction, not by meaning: Job::AddPBRMetallicRoughnessMaterial's resolveOrSynth() checks pPntManager->GetItem() and falls back to atof()+a synthesized uniform-colour painter on a miss -- a scalar_painter name here is NOT found (wrong manager) and silently synthesizes a ZERO-valued painter rather than binding. MATERIAL_EDITOR.md sect. 6.4's \"pbr's colour-manager roughness\" oddball."; p.SoftRange( 0.0, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Double;    p.description = "Preserved for API stability; ignored under the schlick_f0 Fresnel path that this chunk forces"; p.defaultValueHint = "1.5"; p.SoftRange( 1.0, 3.0, 0.01 ); }
+						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter; pass \"none\" / omit for non-emissive"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; p.SoftRange( 0.0, 20.0, 0.1 ); }
+						{ auto& p = P(); p.name = "specular_factor";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 7 / KHR_materials_specular: scalar in [0, 1] (or scalar painter) scaling the dielectric F0.  Default 1.0 = standard 0.04 dielectric F0; lower values reduce the dielectric specular highlight (matte plastic / paint).  Metals are unaffected (their F0 = baseColor).  Accepts a painter reference OR a literal scalar string like \"0.5\"."; p.defaultValueHint = "1.0"; p.semantics.pipe = ParameterPipe::Color; p.semantics.note = "Color pipe by construction, not by meaning: Job::AddPBRMetallicRoughnessMaterial's resolveOrSynth() checks pPntManager->GetItem() and falls back to atof()+a synthesized uniform-colour painter on a miss -- a scalar_painter name here is NOT found (wrong manager) and silently synthesizes a ZERO-valued painter rather than binding. MATERIAL_EDITOR.md sect. 6.4's \"pbr's colour-manager roughness\" oddball."; p.SoftRange( 0.0, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "specular_color";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 7 / KHR_materials_specular: RGB tint on dielectric F0.  Default \"none\" = white (untinted, F0 stays at 0.04 across all wavelengths).  Set to a non-white painter for measured dielectrics where the Fresnel response varies with wavelength.  Final F0 = 0.04 × specular_color × specular_factor."; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Color; p.semantics.note = "Color pipe by construction, not by meaning: Job::AddPBRMetallicRoughnessMaterial's resolveOrSynth() checks pPntManager->GetItem() and falls back to atof()+a synthesized uniform-colour painter on a miss -- a scalar_painter name here is NOT found (wrong manager) and silently synthesizes a ZERO-valued painter rather than binding. MATERIAL_EDITOR.md sect. 6.4's \"pbr's colour-manager roughness\" oddball."; }
+						{ auto& p = P(); p.name = "anisotropy_factor"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 8 / KHR_materials_anisotropy: scalar in [0, 1] (or scalar painter) controlling specular-lobe stretch along the tangent direction.  Default 0 = isotropic (αx = αy = roughness²; bit-identical to pre-L8 PBR-MR).  Larger values stretch the lobe: αt = mix(α, 1, anisotropy²), αb = α.  Useful for brushed metal, hair, fabric.  Accepts a painter reference OR a literal scalar string."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Color; p.semantics.note = "Color pipe by construction, not by meaning: Job::AddPBRMetallicRoughnessMaterial's resolveOrSynth() checks pPntManager->GetItem() and falls back to atof()+a synthesized uniform-colour painter on a miss -- a scalar_painter name here is NOT found (wrong manager) and silently synthesizes a ZERO-valued painter rather than binding. MATERIAL_EDITOR.md sect. 6.4's \"pbr's colour-manager roughness\" oddball."; p.SoftRange( 0.0, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "anisotropy_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 8 / KHR_materials_anisotropy: tangent-frame rotation in RADIANS.  Default 0 = aligned with the geometry's TANGENT attribute.  Applied to the GGX tangent frame (Job::AddPBRMetallicRoughnessMaterial forwards it to the underlying ggx_emissive_material's tangent_rotation).  DL-16/DL-17: resolved the same dual-pipe way as ggx_material.tangent_rotation -- a single-valued scalar_painter name (Scalar pipe, preferred; this is how GLTFSceneImporter binds a per-texel KHR_materials_anisotropy rotation built from an Atan2ScalarPainter), a named colour painter (Color pipe, e.g. an expression_function2d), or an inline scalar."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Color; p.semantics.colorAlsoAcceptsScalar = true; p.semantics.requireSingle = true; p.semantics.note = "Same oddball as GGX's tangent_rotation (see there): an angle by meaning, Color pipe by construction, with DL-16's ResolveRotationPainterDual also accepting a single-valued scalar_painter (colorAlsoAcceptsScalar) -- Job::AddPBRMetallicRoughnessMaterial resolves it via that same shared helper, not a raw pPntManager->GetItem any more."; p.SoftRange( -3.14159, 3.14159, 0.01 ); }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4037,12 +4976,13 @@ namespace RISE
 							"`thinfilm` is GGX-only and rejected with a diagnostic.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "rd";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
-						{ auto& p = P(); p.name = "rs";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "facets";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Microfacet slope distribution (scalar_painter, or inline `r g b` or scalar)"; }
-						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (scalar_painter, or inline `r g b` or scalar)"; }
-						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (scalar_painter, or inline `r g b` or scalar)"; }
-						{ auto& p = P(); p.name = "fresnel_mode"; p.kind = ValueKind::String; p.description = "Fresnel model: conductor (only).  `thinfilm` is GGX-only and rejected here."; p.defaultValueHint = "conductor"; }
+						{ auto& p = P(); p.name = "rd";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "rs";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "facets";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Microfacet slope distribution (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "0.15"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.001, 1.0, 0.005 ); }
+						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "2.45"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 1.0, 3.0, 0.01 ); }
+						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "1.0"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.0, 10.0, 0.05 ); }
+						{ auto& p = P(); p.name = "fresnel_mode"; p.kind = ValueKind::Enum; p.enumValues = {"conductor"}; p.description = "Fresnel model: conductor (only).  `thinfilm` is GGX-only and rejected here."; p.defaultValueHint = "conductor"; }
+						MarkFrozen( cd, "ggx_material with fresnel_mode conductor (rd, rs, ior, extinction carry over; alphax = alphay = facets -- the same GGX D, but G (separable vs height-correlated), the multiscatter LUT and the diffuse coupling differ, so a close starting point, not identical), or pbr_metallic_roughness_material for a glTF-style metal or dielectric." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4068,8 +5008,8 @@ namespace RISE
 						cd.description = "Oren-Nayar rough-diffuse BRDF.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Albedo"; }
-						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness sigma (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Albedo"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness sigma (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "0.5"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.0, 1.0, 0.01 ); }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4091,7 +5031,12 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "sheen_material"; cd.category = ChunkCategory::Material;
-						cd.description = "Charlie / Neubelt sheen BRDF for fabric / cloth surfaces.  "
+						// NOT "Charlie / Neubelt": CharlieSheen::V is the full
+						// Lambda-polynomial Estevez & Kulla visibility, and the
+						// cheap Neubelt closed form was REPLACED in 2026-05
+						// because it blew up to rho ~ 8.7 at grazing.  Corrected
+						// per docs/CLOTH_FABRIC_DESIGN.md section 2 debt 4.
+						cd.description = "Charlie sheen BRDF (Estevez & Kulla 2017, with the full Lambda-polynomial visibility) for fabric / cloth surfaces.  "
 							"Designed as the top layer in a CompositeMaterial(top=sheen, bottom=base) "
 							"pairing for glTF KHR_materials_sheen, but usable standalone.  No diffuse "
 							"or Fresnel — the layer just adds the colour-tinted grazing scatter "
@@ -4099,8 +5044,8 @@ namespace RISE
 							"the lobe is (low = sharp grazing highlights, high = diffuse-like sheen).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "sheen_color";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.required = true; p.description = "Sheen tint (typical 0..1)"; }
-						{ auto& p = P(); p.name = "sheen_roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Sheen roughness painter or scalar (clamped to >= 1e-3 internally)"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "sheen_color";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.required = true; p.description = "Sheen tint (typical 0..1)"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "sheen_roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Sheen roughness painter or scalar (clamped to >= 1e-3 internally)"; p.defaultValueHint = "0.5"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( 0.001, 1.0, 0.005 ); }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4128,10 +5073,11 @@ namespace RISE
 						cd.description = "Schlick BRDF approximation.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "rd";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
-						{ auto& p = P(); p.name = "rs";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness (scalar_painter, or inline `r g b` or scalar)"; }
-						{ auto& p = P(); p.name = "isotropy";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Isotropy factor (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "rd";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "rs";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "0.05"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "isotropy";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Isotropy factor (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "1"; p.semantics.pipe = ParameterPipe::Scalar; }
+						MarkFrozen( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = sqrt(roughness) because Schlick's roughness r is the GGX alpha squared; isotropy below 1 has no exact translation, pick alphax != alphay by eye), or pbr_metallic_roughness_material." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4157,6 +5103,73 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "filename"; p.kind = ValueKind::Filename; p.description = "BRDF data file"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// hair_material -- Chiang et al. 2016 near-field hair/fur BCSDF
+			// (docs/HAIR_FUR_DESIGN.md).  Registers `HairMaterial`
+			// (src/Library/Materials/HairMaterial.h), a real evaluable-anywhere
+			// IBSDF + ISPF pair.  The descriptor's `color` / `sigma_a` /
+			// `eumelanin` / `pheomelanin` defaults are all "none" (tier not
+			// bound); Job::AddHairMaterial enforces that EXACTLY one of the
+			// three tiers (melanin counts as one, whether one or both of
+			// eumelanin/pheomelanin are set) ends up bound, with a diagnostic
+			// naming all three options otherwise.
+			struct HairMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string color       = bag.GetString( "color",       "none" );
+					std::string sigma_a     = bag.GetString( "sigma_a",     "none" );
+					std::string eumelanin   = bag.GetString( "eumelanin",   "none" );
+					std::string pheomelanin = bag.GetString( "pheomelanin", "none" );
+					std::string beta_m      = bag.GetString( "beta_m",      "0.3" );
+					std::string beta_n      = bag.GetString( "beta_n",      "0.3" );
+					std::string alpha       = bag.GetString( "alpha",       "2.0" );
+					std::string ior         = bag.GetString( "ior",         "1.55" );
+					std::string medRatio    = bag.GetString( "medulla_ratio",   "0" );
+					std::string medScatter  = bag.GetString( "medulla_scatter", "0.5" );
+					std::string medG        = bag.GetString( "medulla_g",       "0.4" );
+
+					return pJob.AddHairMaterial( name.c_str(), color.c_str(), sigma_a.c_str(),
+						eumelanin.c_str(), pheomelanin.c_str(), beta_m.c_str(), beta_n.c_str(),
+						alpha.c_str(), ior.c_str(),
+						medRatio.c_str(), medScatter.c_str(), medG.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "hair_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Chiang et al. 2016 near-field hair/fur BCSDF (docs/HAIR_FUR_DESIGN.md).  "
+							"Exactly ONE colour tier must be bound: `color` (Tier 3, artist reflectance -- "
+							"inverted per Chiang's sigma_a = (ln C / D(beta_n))^2), `sigma_a` (Tier 2, direct "
+							"per-wavelength absorption -- power users / measured data), or `eumelanin` / "
+							"`pheomelanin` (Tier 1, melanin concentration -- physically-based, recommended "
+							"default; either or both may be set, counting as the SINGLE melanin tier).  "
+							"Zero tiers or two-or-more tiers bound is a parse-time error.  Hair lobes are "
+							"never delta (SMS never sees hair) and are all tagged eRayReflection.  "
+							"For ANIMAL FUR, `medulla_ratio` > 0 additionally enables the Yan et al. 2017 "
+							"scattering medulla (two extra lobes, TTs and TRTs); it is 0 by default, which "
+							"is the correct value for human hair and reproduces the plain Chiang model.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "color";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Tier 3: artist reflectance colour painter.  \"none\" (default) = tier not bound."; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "sigma_a";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Tier 2: direct absorption coefficient per unit fibre diameter, per RGB channel (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar).  \"none\" (default) = tier not bound."; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "eumelanin";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Tier 1: eumelanin concentration (physical SCALAR, single value, >= 0; ~1.3 ~= brown-black hair).  \"none\" (default) = not bound; combines with `pheomelanin` as ONE tier."; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; }
+						{ auto& p = P(); p.name = "pheomelanin"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Tier 1: pheomelanin concentration (physical SCALAR, single value, >= 0; redheads).  \"none\" (default) = not bound; combines with `eumelanin` as ONE tier."; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; }
+						{ auto& p = P(); p.name = "beta_m";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Longitudinal roughness (physical SCALAR, single value; clamped to [0.05, 1] at evaluation)."; p.defaultValueHint = "0.3"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( 0.05, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "beta_n";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Azimuthal roughness (physical SCALAR, single value; clamped to [0.05, 1] at evaluation)."; p.defaultValueHint = "0.3"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( 0.05, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "alpha";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Cuticle scale tilt, in DEGREES (physical SCALAR, single value)."; p.defaultValueHint = "2.0"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( -10.0, 10.0, 0.1 ); }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fibre index of refraction (physical SCALAR, single value)."; p.defaultValueHint = "1.55"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( 1.0, 3.0, 0.01 ); }
+						{ auto& p = P(); p.name = "medulla_ratio";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "ANIMAL FUR: Yan et al. 2017 medulla radius ratio kappa = r_medulla / r_fibre (physical SCALAR, single value; clamped to [0, 0.95], so a negative value reads as 0).  0 -- the DEFAULT -- disables the medulla entirely and reproduces the plain Chiang model bit for bit; human hair wants 0, animal fur wants ~0.5-0.9.  Turning it on splits the TT and TRT lobes into unscattered and medulla-scattered halves, which is what makes fur read soft and saturated instead of thin and shiny.  Cycles has no medulla analogue, so the Blender bridge never sets this."; p.defaultValueHint = "0"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( 0.0, 0.95, 0.01 ); }
+						{ auto& p = P(); p.name = "medulla_scatter"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "ANIMAL FUR: medulla scattering coefficient sigma_m, in the same per-fibre-diameter units as `sigma_a` (physical SCALAR, single value).  A value of 0 -- or any negative value -- disables the medulla just as `medulla_ratio` 0 does; it is not diagnosed, so check the sign if fur renders like plain hair.  Ignored entirely when `medulla_ratio` is 0."; p.defaultValueHint = "0.5"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( 0.0, 5.0, 0.05 ); }
+						{ auto& p = P(); p.name = "medulla_g";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "ANIMAL FUR: Henyey-Greenstein anisotropy of the medulla phase function (physical SCALAR, single value, in (-1, 1); the baked profile table spans +/- 0.8 and clamps).  Positive = forward scattering.  Ignored when `medulla_ratio` is 0."; p.defaultValueHint = "0.4"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.SoftRange( -0.8, 0.8, 0.01 ); }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4351,9 +5364,7 @@ namespace RISE
 					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
 
 					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
+					bag.GetVec2( "target_orientation", target_orientation );
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
@@ -4466,7 +5477,7 @@ namespace RISE
 						// width / height / pixelAR moved to the `film` chunk
 						// in scene format v6 (Phase B2 of the Camera/Film/Output
 						// split).  Camera chunks are now imaging-only.
-						{ auto& p = P(); p.name = "exposure";      p.kind = ValueKind::Double;     p.description = "Shutter exposure"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "exposure";      p.kind = ValueKind::Double;     p.description = "Shutter exposure time (motion blur in animation renders). The shutter is CENTRED on the frame time: each pixel sample draws its time in [t - exposure/2, t + exposure/2]. An animation frame with exposure > 0 renders multi-threaded under PT, BDPT and VCM when its keyframes animate only object transforms, cameras and point/spot/directional/ambient lights (each render thread poses its own copies, DL-465), and single-threaded otherwise (keyframed geometry, painters or materials, and the legacy rasterizers); VCM with vertex merging instead traces each progressive pass at one shutter time. 0 = no motion blur"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "scanning_rate"; p.kind = ValueKind::Double;     p.description = "Rolling-shutter rate"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "pixel_rate";    p.kind = ValueKind::Double;     p.description = "Per-pixel time offset"; p.defaultValueHint = "0"; }
 						return cd;
@@ -4531,6 +5542,25 @@ namespace RISE
 					unsigned int blades = bag.GetUInt(   "aperture_blades",   0 );
 					double rotation     = bag.GetDouble( "aperture_rotation", 0 );
 					double squeeze      = bag.GetDouble( "anamorphic_squeeze", 1.0 );
+					// The squeeze scales the aperture's x half-axis.
+					// `squeeze == 0` collapses the aperture to a line
+					// segment: `GetApertureWorldArea()` reads 0, so
+					// `BDPTCameraUtilities::HasFiniteAperture` is FALSE
+					// and BDPT/VCM would connect t==1 to the lens CENTRE
+					// while `GenerateRay` kept sampling the degenerate
+					// segment -- the eye and light layers imaging through
+					// different camera vertices (debt 28 review, A P2-3).
+					// A NEGATIVE squeeze is not that hazard (the area takes
+					// `fabs`, and both samplers mirror identically); it is
+					// rejected as nonsense authoring.  Reject both here
+					// rather than let a scene carry either.
+					if( squeeze <= 0.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"thinlens_camera:: `anamorphic_squeeze` must be > 0 (got %f) — it scales the aperture's "
+							"x half-axis, so 0 collapses the aperture to a line and a negative value mirrors it; "
+							"use a value in (0,1] for oval bokeh, 1.0 for circular.", squeeze );
+						return false;
+					}
 					// Tilt-shift (Phase 1.1).  Tilt is degrees in the
 					// scene file (parser converts to radians); shift is
 					// MILLIMETRES.  Defaults of 0 give a plain
@@ -4570,9 +5600,7 @@ namespace RISE
 					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
 
 					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
+					bag.GetVec2( "target_orientation", target_orientation );
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
@@ -4690,7 +5718,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "focus_distance";     p.kind = ValueKind::Double; p.required = true; p.description = "Focus plane distance in SCENE UNITS (matches geometry coords — e.g. `focus_distance 5` means 5 scene units, which is 5 metres in a default metres scene). No default — set per scene. Must be greater than focal_length-converted-to-scene-units."; p.unitLabel = "scene units"; }
 						{ auto& p = P(); p.name = "aperture_blades";    p.kind = ValueKind::UInt;   p.description = "Polygonal aperture blades; 0 = perfect disk, typical cinematic 5-9."; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "aperture_rotation";  p.kind = ValueKind::Double; p.description = "Polygon rotation in degrees."; p.defaultValueHint = "0"; p.unitLabel = "°"; }
-						{ auto& p = P(); p.name = "anamorphic_squeeze"; p.kind = ValueKind::Double; p.description = "Aperture x-axis scale for oval bokeh (1.0 = circular)."; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "anamorphic_squeeze"; p.kind = ValueKind::Double; p.description = "Aperture x-axis scale for oval bokeh (1.0 = circular).  Must be > 0."; p.defaultValueHint = "1.0"; }
 						// Tilt-shift (Phase 1.1).  Tilt rotates the
 						// FOCAL plane (Scheimpflug); shift translates
 						// the IMAGE plane (architectural correction).
@@ -4741,9 +5769,7 @@ namespace RISE
 					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
 
 					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
+					bag.GetVec2( "target_orientation", target_orientation );
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
@@ -4761,9 +5787,9 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "fisheye_camera"; cd.category = ChunkCategory::Camera;
-						cd.description = "Fisheye (equidistant) camera.";
+						cd.description = "Fisheye camera, ORTHOGRAPHIC projection: the image radius is the SINE of the angle off the optical axis (direction = (x, y, sqrt(1 - x*x - y*y)) for the image-plane point (x, y)), NOT the equidistant r = theta this description claimed until 2026-09-10.  `scale` is the image-plane extent across the FULL frame width in those sine units, not an angle: x runs over [-scale/2, +scale/2], a sample with radius > 1 is past the 90-degree limit and generates NO ray (the black corners of a circular fisheye), and AT pixelAR 1 scale 2.0 inscribes the full 180-degree circle in a square frame while scale 1.0 gives a 60-degree-wide field with no clipping.  A pixelAR other than 1 stretches the direction before it is renormalised, so it changes the realised angular field as well as the pixel shape.  Primary rays carry ray differentials; the rim band, where a pixel inside the disc has its +x/+y neighbour outside it, withholds them (fw reads 0 there).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "scale"; p.kind = ValueKind::Double; p.description = "Fisheye scale factor"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "scale"; p.kind = ValueKind::Double; p.description = "Image-plane extent across the full frame width, in sin(theta) units (NOT degrees or radians).  At pixelAR 1: 2.0 inscribes the full 180-degree circle (corners clipped black), 1.0 gives a 60-degree-wide field with no clipped corners; clipping begins above sqrt(2).  Samples past radius 1 generate no ray."; p.defaultValueHint = "1.0"; }
 						AddCameraCommonParams( P );
 						return cd;
 					}();
@@ -4790,8 +5816,14 @@ namespace RISE
 					bag.GetVec3( "up",       up );
 
 					double vpscale[2] = {1.0,1.0};
-					if( bag.Has( "viewport_scale" ) ) {
-						sscanf( bag.GetString( "viewport_scale" ).c_str(), "%lf %lf", &vpscale[0], &vpscale[1] );
+					{
+						std::string vpDiag;
+						const Vec2Resolution vr = ResolveVec2UniformBroadcast( bag, "orthographic_camera", name, "viewport_scale", vpscale, &vpDiag );
+						if( vr.present && !vr.ok ) {
+							GlobalLog()->PrintEx( eLog_Error, "%s", vpDiag.c_str() );
+							SetFinalizeDiagIfEmpty( vpDiag );
+							return false;
+						}
 					}
 
 					double orientation[3] = {0,0,0};
@@ -4803,9 +5835,7 @@ namespace RISE
 					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
 
 					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
+					bag.GetVec2( "target_orientation", target_orientation );
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
@@ -4825,7 +5855,7 @@ namespace RISE
 						cd.keyword = "orthographic_camera"; cd.category = ChunkCategory::Camera;
 						cd.description = "Orthographic (parallel-projection) camera.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "viewport_scale"; p.kind = ValueKind::Double; p.description = "Orthographic viewport scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "viewport_scale"; p.kind = ValueKind::DoubleVec2; p.description = "Orthographic viewport scale (U, V).  ONE number is accepted as an explicit uniform broadcast (`viewport_scale 2` -> (2, 2))."; p.defaultValueHint = "1.0 1.0"; p.allowsUniformScalarBroadcast = true; }
 						AddCameraCommonParams( P );
 						return cd;
 					}();
@@ -5073,6 +6103,65 @@ namespace RISE
 					return d;
 				}
 			};
+
+            // DL-213 native producer: independent position/normal/UV indices
+            // are available through IJob; inline authoring uses vertex-aligned
+            // attributes and expands tangents to triangle corners at this edge.
+            struct IndexedMeshGeometryAsciiChunkParser : public IAsciiChunkParser
+            {
+                bool Finalize(const ParseStateBag& bag, IJob& job) const override {
+                    auto read = [&bag](const char* key, unsigned int arity, std::vector<float>& out) {
+                        for (const auto& line : bag.GetRepeatable(key)) {
+                            std::istringstream stream(line);
+                            for (unsigned int k=0; k<arity; ++k) {
+                                double x=0; if (!(stream>>x) || !std::isfinite(x) || std::abs(x)>std::numeric_limits<float>::max()) return false;
+                                out.push_back(static_cast<float>(x));
+                            }
+                        }
+                        return true;
+                    };
+                    std::vector<float> vertices, normals, uv, tangents, corners;
+                    if (!read("vertex",3,vertices) || !read("normal",3,normals) ||
+                        !read("uv",2,uv) || !read("tangent",4,tangents)) return false;
+                    const size_t count=vertices.size()/3;
+                    if (!count || (!normals.empty() && normals.size()/3!=count) ||
+                        (!uv.empty() && uv.size()/2!=count) || (!tangents.empty() && tangents.size()/4!=count)) return false;
+                    std::vector<unsigned int> faces;
+                    for (const auto& line : bag.GetRepeatable("triangle")) {
+                        std::istringstream stream(line);
+                        for (unsigned int k=0; k<3; ++k) {
+                            double x=0; if (!(stream>>x) || x<0 || x>=count || std::floor(x)!=x) return false;
+                            const unsigned int v=static_cast<unsigned int>(x); faces.push_back(v);
+                            if (!tangents.empty()) corners.insert(corners.end(),tangents.begin()+v*4,tangents.begin()+v*4+4);
+                        }
+                    }
+                    if (faces.empty()) return false;
+                    std::vector<float> uv3;
+                    for (size_t v=0; v<uv.size()/2; ++v) { uv3.push_back(uv[v*2]); uv3.push_back(uv[v*2+1]); uv3.push_back(0); }
+                    return job.AddIndexedTriangleMeshGeometryWithTangents(bag.GetString("name","noname").c_str(),
+                        vertices.data(), normals.empty()?nullptr:normals.data(), uv3.empty()?nullptr:uv3.data(),
+                        faces.data(),uv3.empty()?nullptr:faces.data(),normals.empty()?nullptr:faces.data(),
+                        static_cast<unsigned int>(count),static_cast<unsigned int>(normals.size()/3),static_cast<unsigned int>(uv.size()/2),
+                        static_cast<unsigned int>(faces.size()/3),bag.GetBool("double_sided",true),bag.GetBool("face_normals",false),
+                        corners.empty()?nullptr:corners.data(),static_cast<unsigned int>(corners.size()/4));
+                }
+                const ChunkDescriptor& Describe() const override {
+                    static const ChunkDescriptor d=[] {
+                        ChunkDescriptor cd; cd.keyword="indexedmesh_geometry"; cd.category=ChunkCategory::Geometry;
+                        cd.description="Inline indexed triangle mesh, optional object-local xyz/sign tangents override the UV shading basis. All attributes are vertex-aligned; duplicate vertices at seams. Indices are zero-based.";
+                        auto P=[&cd]() -> ParameterDescriptor& {cd.parameters.emplace_back();return cd.parameters.back();};
+                        {auto& p=P();p.name="name";p.kind=ValueKind::String;p.description="Unique geometry name";}
+                        {auto& p=P();p.name="vertex";p.kind=ValueKind::DoubleVec3;p.repeatable=true;p.description="Position xyz; repeat per vertex";}
+                        {auto& p=P();p.name="normal";p.kind=ValueKind::DoubleVec3;p.repeatable=true;p.description="Optional shading normal xyz; one per vertex";}
+                        {auto& p=P();p.name="uv";p.kind=ValueKind::DoubleVec2;p.repeatable=true;p.description="Optional primary uv; one per vertex";}
+                        {auto& p=P();p.name="tangent";p.kind=ValueKind::DoubleVec4;p.repeatable=true;p.description="Optional object-local tangent xyz and handedness sign (+1/-1); one per vertex";}
+                        {auto& p=P();p.name="triangle";p.kind=ValueKind::DoubleVec3;p.repeatable=true;p.description="Three zero-based integral vertex indices";}
+                        {auto& p=P();p.name="double_sided";p.kind=ValueKind::Bool;p.defaultValueHint="TRUE";p.description="Intersect front and back faces";}
+                        {auto& p=P();p.name="face_normals";p.kind=ValueKind::Bool;p.defaultValueHint="FALSE";p.description="Use face normals";}
+                        return cd;
+                    }();return d;
+                }
+            };
 
 			struct Mesh3DSGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
@@ -5518,9 +6607,10 @@ namespace RISE
 
 					// Heightfield mode (analytic exact-surface twin of a displaced
 					// cartesian disk): when a heightfield_function is named, the SDF
-					// IS the surface z = heightfield_scale * f(u,v) over the square
-					// [-R,R]^2 -- sphere-traced, O(1) memory -- and the `part` / `file`
-					// path is bypassed entirely.
+					// IS the surface z = heightfield_scale * f(u,v), clipped to a DISK
+					// of radius R centred at the origin in the local XY plane (matching
+					// cartesian_disk_geometry's domain, not a square) -- sphere-traced,
+					// O(1) memory -- and the `part` / `file` path is bypassed entirely.
 					std::string hfFunction = bag.GetString( "heightfield_function", "none" );
 					double hfRadius = bag.GetDouble( "heightfield_radius", 1.0 );
 					double hfScale  = bag.GetDouble( "heightfield_scale", 0.0 );
@@ -5552,14 +6642,636 @@ namespace RISE
 						cd.description = "Signed-distance-field (implicit) surface: transformed primitives composed with smooth-min / boolean ops, sphere-traced.  For melded / filleted organic shapes (e.g. lugs flowing into a bezel).  Author the parts inline with repeatable `part` lines; use `file` only for very large SDFs.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "part";     p.kind = ValueKind::String;   p.repeatable = true; p.description = "One SDF part (repeatable; parts compose in order): <prim> <op> <k>  <px py pz>  <exDeg eyDeg ezDeg>  <sx sy sz>  <a b c>  <round>.  prim: sphere|box|roundbox|cylinder|torus|capsule|roundcone; op: union|smin|subtract|intersect (k = blend radius, 0 = hard).  Lines are forwarded verbatim to the shared SDF part grammar (SDFGeometry::ParsePartLines), so future shapes / ops extend without chunk changes.  The FIRST part must be union or smin (the field starts empty)"; }
+						{ auto& p = P(); p.name = "part";     p.kind = ValueKind::String;   p.repeatable = true; p.description = "One SDF part (repeatable; parts compose in order): <prim> <op> <k>  <px py pz>  <exDeg eyDeg ezDeg>  <sx sy sz>  <a b c>  <round>.  prim: sphere|box|roundbox|cylinder|torus|capsule|roundcone|superellipsoid; op: union|smin|subtract|intersect (k = blend radius, 0 = hard).  k IS A WORLD-UNIT RADIUS, not a fraction of the parts: a k comparable to the smallest part in the join DISSOLVES that part into its neighbour, so a small feature meeting a large mass -- a finial on a post, a handle on a pot -- wants k at about a third of that small part's radius or less.  PER-PRIMITIVE <a b c> (verified against SDFGeometry.cpp's primDist dispatch): sphere -- a = radius (b, c unused).  box -- a/b/c = HALF-EXTENTS along local x/y/z (full size is 2a x 2b x 2c; `round` unused).  roundbox -- a/b/c = the CORE box's half-extents before rounding; `round` shrinks them and re-inflates the corners, so the part still spans a/b/c overall but with radius-`round` corners.  cylinder -- a = radius, b = HALF-HEIGHT along local Y (c unused).  torus -- a = ring (major) radius in the local XZ plane, b = tube (minor) radius (c unused).  capsule -- a = radius, b = HALF-LENGTH of the core segment along local Y (c unused).  roundcone -- a = base radius at local y=0, b = tip radius at local y=h, c = h, the cone's own length along local Y.  superellipsoid is the CONTINUUM primitive: a = radius, b = e1 (north-south exponent), c = e2 (east-west), `round` unused, ellipsoidal proportions from <sx sy sz> -- b=c=1 an ellipsoid, both -> 0 a box, b -> 0 with c = 1 a cylinder, b=c=2 an octahedron, 0.4-0.7 the cushion/torso range; both exponents clamped to [0.1, 2].  <sx sy sz> IS A PRE-TRANSFORM SCALE, not the shape's size -- leave it 1 1 1 unless you deliberately mean to stretch the primitive after its own <a b c> already defines it.  A RECURRING AUTHORING SLIP: a box's dimensions go in <a b c>, NOT the scale slot -- putting a box's half-extents into <sx sy sz> while leaving <a b c> at 0 0 0 collapses that part to a single point (ParsePartLines warns when this happens, but does not reject the line).  Lines are forwarded verbatim to the shared SDF part grammar (SDFGeometry::ParsePartLines), so future shapes / ops extend without chunk changes.  The FIRST part must be union or smin (the field starts empty)"; }
 						{ auto& p = P(); p.name = "file";     p.kind = ValueKind::Filename; p.description = "External SDF parts file (same one-part-per-line grammar; for very large SDFs).  Provide either inline `part` lines or `file`, not both"; }
 						{ auto& p = P(); p.name = "maxsteps"; p.kind = ValueKind::UInt;     p.description = "Sphere-trace step cap"; p.defaultValueHint = "256"; }
 						{ auto& p = P(); p.name = "epsilon";  p.kind = ValueKind::Double;   p.description = "Surface hit epsilon as a fraction of the bbox diagonal (0 = auto)"; p.defaultValueHint = "0.0"; }
 						{ auto& p = P(); p.name = "sampling_detail"; p.kind = ValueKind::UInt; p.description = "Tessellation cells along the longest bbox axis for area-light / SSS surface sampling (clamped 8..256)"; p.defaultValueHint = "64"; }
-						{ auto& p = P(); p.name = "heightfield_function"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "HEIGHTFIELD MODE: a named IFunction2D giving f(u,v) in [0,1].  When set (not `none`), the SDF IS the exact analytic surface z = heightfield_scale*f(u,v) over the square [-heightfield_radius,heightfield_radius]^2 (sphere-traced, O(1) memory -- the exact-geometry twin of a displaced_geometry on a cartesian_disk_geometry); `part` / `file` are ignored"; p.defaultValueHint = "none"; }
-						{ auto& p = P(); p.name = "heightfield_radius"; p.kind = ValueKind::Double; p.description = "Heightfield mode: half-extent of the square domain (object units; u=(x+R)/2R)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "heightfield_function"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "HEIGHTFIELD MODE: a named IFunction2D giving f(u,v) in [0,1].  When set (not `none`), the SDF IS the exact analytic surface z = heightfield_scale*f(u,v), clipped to a DISK of radius heightfield_radius centred at the origin in the local XY plane -- not a square -- via u=(x+R)/2R, v=(y+R)/2R (both clamped to [0,1] at the rim); outside the disk the field is bounded by the vertical cylindrical rim wall (sphere-traced, O(1) memory -- the exact-geometry twin of a displaced_geometry on a cartesian_disk_geometry, which shares this circular domain); `part` / `file` are ignored.  Resolved via pFunc2DManager (Job::AddSDFHeightfieldGeometry), which holds `function`-category IFunction2D chunks (piecewise_linear_function2d) PLUS every dual-registered colour painter except expression_painter/scalar_painter -- declared Function2D-piped with {Painter, Function} since 2026-09-06 (was declared {Function} only, missing the colour-painter half of its real accepted set)"; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Function2D; }
+						{ auto& p = P(); p.name = "heightfield_radius"; p.kind = ValueKind::Double; p.description = "Heightfield mode: radius of the DISK domain the field is clipped to, centred at the origin in the local XY plane (object units; u=(x+R)/2R, v=(y+R)/2R)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "heightfield_scale"; p.kind = ValueKind::Double; p.description = "Heightfield mode: world amplitude of the field (surface z = heightfield_scale*f(u,v))"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//! `skeleton_geometry` (C1, docs/agentic-redesign/85-geometry-
+			//! expressiveness-candidates.md) -- a JOINT GRAPH that expands, at
+			//! PARSE TIME, into a single `sdf_geometry`: one `roundcone` part
+			//! per bone (parent -> child), joined with `smin`, registered
+			//! under THIS chunk's own `name` -- so CST incremental apply/
+			//! remove works generically via RemoveGeometry(name), exactly like
+			//! a hand-authored sdf_geometry, and unlike the `__geo`-suffix
+			//! chunks (shape_light, rect_light) that need a Cst.cpp special
+			//! case.  Creature flesh authored the way an animator thinks
+			//! (joints and bones), not sdf_geometry's raw part-line grammar.
+			//!
+			//! A BONE'S END CAPS ARE ITS TWO JOINTS.  A roundcone's local +Y
+			//! axis runs base -> tip, and RISE's SDF round cone
+			//! (SDFGeometry.cpp's sdRoundConeY, the Quilez sphere-swept cone)
+			//! includes hemispherical caps of radius `a` (base) and `b` (tip)
+			//! at the two ends.  So a non-root joint needs NO sphere of its
+			//! own -- the incoming bone's tip cap already sits exactly at its
+			//! position with exactly its radius -- and a root WITH CHILDREN
+			//! needs none either, for the mirror reason (each outgoing bone's
+			//! base cap already covers it).  Only a joint that is BOTH
+			//! parentless AND childless (an isolated joint) would otherwise be
+			//! invisible, so that one case alone gets an explicit `sphere`
+			//! part.  DO NOT "fix" this by adding a sphere at every joint --
+			//! that would double-cover every bone-adjacent joint with a
+			//! redundant, blend-interacting primitive nobody asked for.
+			//!
+			//! A BONE NEED NOT BE A PIPE: the optional 7th `joint` token,
+			//! `aspect`, is the bone's cross-section WIDTH-to-DEPTH ratio (1 =
+			//! the historical circular bone, and the ONLY value that existed
+			//! before doc 90 slice B; a 6-token line still expands
+			//! byte-for-byte identically).  Without it a skeleton could only
+			//! ever be a chain of tubes -- one radius per joint is a CIRCLE by
+			//! grammar -- which is exactly why creature limbs built this way
+			//! read as plumbing.  A thigh is aspect ~0.6, a wing-arm 1.0.
+			//!
+			//! WHICH AXIS FLATTENS, stated so an author can predict it.
+			//! `aspect` becomes the part's LOCAL X scale, `<aspect> 1 1`.  For
+			//! any CLEARLY LEANING bone (more than ~0.6 degrees off vertical)
+			//! the expansion solves for roll ez = 0, and the rotation's FIRST
+			//! column (the world direction local +X maps to) is then
+			//! (cos ey, 0, -sin ey) -- identically ZERO in world Y.  So the
+			//! flattening axis is ALWAYS HORIZONTAL and always perpendicular to
+			//! the bone: aspect narrows a bone SIDE-TO-SIDE in the ground
+			//! plane, and the perpendicular it leaves at full `radius` is the
+			//! one lying in the VERTICAL plane that contains the bone.  A bone
+			//! leaning less than ~0.6 degrees off vertical (the kNearVerticalHoriz
+			//! threshold in DirectionToEulerDeg) is TREATED AS VERTICAL and
+			//! flattens along world X too, but via a different, endpoint-exact
+			//! construction (that function's own comment has the derivation)
+			//! rather than ey = 0 -- a bone right at the boundary therefore
+			//! measures half as wide along world X as along world Z at aspect
+			//! 0.5, same as a truly vertical one, and the tip cap still lands
+			//! exactly on the declared child joint either side of the threshold.
+			//! An ISOLATED joint's `sphere` part flattens along world X
+			//! unconditionally too (no bone direction exists to derive an axis
+			//! from, so world X is the only sensible canonical choice).  Pinned
+			//! by SkeletonGeometryChunkTest's closed-form ellipse probe
+			//! (clearly-leaning and exactly-vertical), its near-vertical
+			//! endpoint/flatten-axis-stability probes, and its isolated-joint
+			//! aspect probe -- not by this paragraph.
+			//!
+			//! PURE SQUASH, NOT AREA-PRESERVING.  `<aspect> 1 1` and not
+			//! `<sqrt(aspect)> 1 <1/sqrt(aspect)>`, so that `radius` keeps
+			//! meaning what it always meant: the bone's cross-section is
+			//! `aspect * radius` across the flattened axis and EXACTLY `radius`
+			//! across the other.  Aspect only ever REMOVES material -- an
+			//! author who flattens a thigh never gets a thigh that bulges
+			//! DEEPER than the radius typed on the line, which is what
+			//! area-preserving would hand them (aspect 0.5 would swell the
+			//! other axis by 1.41x).  Local Y is left at 1 for a harder reason
+			//! than taste: the roundcone's `c` IS the bone length, so any Y
+			//! scale would move the tip cap off the child joint's declared
+			//! position.
+			//!
+			//! A JOINT'S ASPECT SHAPES THE BONE THAT ARRIVES AT IT (and, for an
+			//! isolated joint, its own sphere).  There is no inheritance: a
+			//! child does NOT pick up its parent's aspect, so a chain's
+			//! cross-section varies per joint.  One `roundcone` part carries
+			//! ONE scale, so a bone cannot taper from one aspect to another;
+			//! the arriving-bone rule is the one that leaves the FEWEST tokens
+			//! unused, since a tree has few roots and many leaves (the mirror
+			//! rule, "shapes the bones LEAVING it", would silently ignore the
+			//! aspect on every leaf).  A root WITH children has no arriving
+			//! bone and emits no part of its own, so a non-1 aspect there is
+			//! inert -- warned about, in the same non-rejecting style as the
+			//! degenerate-bone diagnostic below, rather than dropped in
+			//! silence.
+			//!
+			//! CONSERVATIVE UNDER SPHERE-TRACING, for free: SDFGeometry's
+			//! partEval divides into local space by the per-axis scale and
+			//! multiplies the primitive's distance back by `minScale` (the
+			//! smallest |scale| component), which caps the composed field at
+			//! 1-Lipschitz for ANY positive per-axis scale -- see the comment
+			//! above smaxP in SDFGeometry.cpp.  So a squashed bone smin-blended
+			//! against a round one still cannot overstep its own surface.  The
+			//! price is STEPS, not correctness: minScale = min(aspect, 1)
+			//! shrinks every step by that factor, so a very small aspect wants
+			//! a larger `maxsteps`.
+			//!
+			//! DECLARE-BEFORE-USE, STRUCTURALLY CYCLE-FREE: `parent` must name
+			//! `none` or a joint already declared on an EARLIER `joint` line.
+			//! A joint can therefore never (directly or transitively) become
+			//! its own ancestor -- there is no legal walk that revisits an
+			//! index behind the one being declared, so no cycle check is
+			//! needed beyond this one ordering rule.
+			struct SkeletonGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				//! Same one-place-both-diagnostics pattern as
+				//! ShapeLightAsciiChunkParser::Reject -- rect_light's Reject,
+				//! same reason.
+				static bool Reject( const std::string& why )
+				{
+					SetFinalizeDiagIfEmpty( why );
+					GlobalLog()->PrintEx( eLog_Error, "skeleton_geometry:: %s", why.c_str() );
+					return false;
+				}
+
+				//! One declared `joint <name> <parent|none> <x> <y> <z> <radius> [aspect] [blend]` line.
+				struct JointDecl
+				{
+					std::string name;
+					std::string parent;
+					double x, y, z, r;
+					double aspect;        // 7th, OPTIONAL token; 1 = today's circular bone
+					double blend;         // 8th, OPTIONAL token; the bone's OWN blend multiplier,
+					                      // overriding the chunk's `blend` for the bone that ARRIVES
+					                      // at this joint (same "shapes the bone that arrives at it"
+					                      // convention aspect already uses) -- see the struct-level
+					                      // "REGION-AWARE BLEND CONTROL" comment for why this is the
+					                      // grammar's answer to "these parts are spatially close but
+					                      // must NOT merge".
+					bool   hasBlend;      // false = inherit the chunk's `blend` (today's behaviour, unchanged)
+					int    parentIndex;   // resolved index into the joints vector; -1 = root (parent "none")
+					JointDecl() : x(0), y(0), z(0), r(0), aspect(1.0), blend(0.0), hasBlend(false), parentIndex(-1) {}
+				};
+
+				//! Formats a double with full IEEE-double round-trip precision.
+				//! This text is consumed ONCE, immediately, by
+				//! SDFGeometry::ParsePartLines -- it is never saved to disk or
+				//! shown to an author (the CST round-trip persists the SHORT
+				//! `skeleton_geometry` chunk, not this expansion) -- so exact
+				//! precision matters and brevity does not.
+				//! NB: this is the only place in this file that snprintf's a
+				//! double and hands the text straight back to a sscanf-based
+				//! parser (SDFGeometry::ParsePartLines).  Safe today because
+				//! both halves run under the same LC_NUMERIC (nothing in
+				//! src/ calls setlocale) -- '%.17g'/sscanf agree on '.' as
+				//! the decimal point only while that holds.  If a future
+				//! caller ever sets a locale with a different decimal
+				//! separator between format and parse, this round-trip
+				//! breaks silently.
+				static std::string Num( double v )
+				{
+					char buf[64];
+					std::snprintf( buf, sizeof(buf), "%.17g", v );
+					return buf;
+				}
+
+				// PLAIN `//`, not Doxygen `//!`: this documents a file-static
+				// helper inside an anonymous-namespace parser struct, not public
+				// API, and the grammar it has to quote contains `<a b c>` --
+				// which clang's -Wdocumentation-html (Xcode GUI build; the make
+				// build does not enable it) parses as an unclosed HTML <a> anchor
+				// inside a Doxygen comment.  Escaping the brackets would leave the
+				// one escaped code span in a file whose siblings are all
+				// unescaped; demoting the comment removes the whole class of
+				// problem instead, and loses nothing -- nothing generates docs
+				// from a local helper.
+				//
+				// One `part` line in SDFGeometry::ParsePartLines' 16-token
+				// grammar: `<prim> <op> <k> <px py pz> <exDeg eyDeg ezDeg>
+				// <sx sy sz> <a b c> <round>`.  Only the FIRST scale component
+				// is ever non-1: it carries the joint's `aspect` (see the
+				// struct-level "WHICH AXIS FLATTENS" block), while y stays 1
+				// because the roundcone's `c` is the bone LENGTH and z stays 1
+				// because the squash is a pure one.  aspect == 1 formats as
+				// "1" under %.17g, so a 6-token joint line still produces the
+				// byte-identical `1 1 1` this function used to hardcode --
+				// which SkeletonGeometryChunkTest's back-compat digest pins.
+				static std::string PartLine( const char* prim, double k,
+					double px, double py, double pz, double exDeg, double eyDeg, double ezDeg,
+					double sx, double a, double b, double c )
+				{
+					return std::string( prim ) + " smin " + Num(k) + " " +
+						Num(px) + " " + Num(py) + " " + Num(pz) + " " +
+						Num(exDeg) + " " + Num(eyDeg) + " " + Num(ezDeg) + " " +
+						Num(sx) + " 1 1 " +
+						Num(a) + " " + Num(b) + " " + Num(c) + " 0";
+				}
+
+				//! Every OTHER chunk in this file forwards author-typed
+				//! numbers verbatim; this one SYNTHESIZES new numbers (bone
+				//! length from coordinate deltas, blend width from a radius
+				//! product) that individually-finite inputs can still
+				//! combine into a non-finite result (e.g. `dx*dx` overflows
+				//! for absurd joint coordinates even though `dx` itself was
+				//! a finite authored value).  `%.17g` on an inf/nan value
+				//! prints "inf"/"nan", and SDFGeometry::ParsePartLines'
+				//! `sscanf "%lf"` ACCEPTS that spelling -- so this chunk owns
+				//! the finiteness check that the plain per-token text
+				//! validation upstream (AllTokensAreFiniteNumbers) cannot
+				//! cover, because it runs before this arithmetic exists.
+				static bool AllFiniteD( std::initializer_list<double> vals )
+				{
+					for( double v : vals ) if( !std::isfinite( v ) ) return false;
+					return true;
+				}
+
+				//! Euler DEGREES (ex, ey, ez) that rotate local +Y onto the
+				//! given UNIT direction (dx,dy,dz) under RISE's SDF part
+				//! convention R = Rz(ez)*Ry(ey)*Rx(ex) (SDFGeometry::
+				//! RecomputePartDerived).  ez is 0 for every CLEARLY LEANING
+				//! bone (horiz = sqrt(dx^2+dz^2) >= kNearVerticalHoriz,
+				//! unchanged since before the near-vertical fix below): the
+				//! rotation's SECOND column, the world direction local +Y
+				//! maps to, is then (sin(ey)sin(ex), cos(ex), cos(ey)sin(ex)),
+				//! so dy = cos(ex) and horiz = sin(ex) (ex chosen in [0,180],
+				//! sin(ex) >= 0), giving ex = atan2(horiz, dy); then
+				//! dx = sin(ey)sin(ex), dz = cos(ey)sin(ex), giving
+				//! ey = atan2(dx, dz).  With ez = 0 the FIRST column (world
+				//! direction local +X -- the `aspect` flatten axis) is
+				//! (cos(ey), 0, -sin(ey)): ALWAYS exactly horizontal.  Pinned
+				//! by SkeletonGeometryChunkTest's closed-form ellipse probe.
+				//!
+				//! NEAR-VERTICAL (horiz < kNearVerticalHoriz, ~0.6 degrees of
+				//! lean): that ey = atan2(dx, dz) is the hairy-ball problem
+				//! made concrete.  atan2 of a horizontal projection that is
+				//! shrinking to a point is maximally sensitive to WHICH
+				//! direction it is approached from, so a bone at
+				//! (0.001, 0.999999, 0) and one at (0, 0.999999, 0.001) --
+				//! indistinguishable to an author typing a third decimal --
+				//! flatten along perpendicular world axes.  Simply snapping
+				//! ex/ey to the canonical vertical values (0 or 180, ey = 0),
+				//! which is what this function did for horiz < 1e-9 before
+				//! this fix, throws away the POSITION claim: ex = 0 forces
+				//! local +Y onto world +Y exactly, which is only where the
+				//! bone actually points when horiz is EXACTLY 0.  For any
+				//! nonzero horiz inside a widened threshold that would move
+				//! the tip cap off the declared child joint by O(horiz) --
+				//! up to ~1% of the bone length right at the boundary -- not
+				//! the "identical to before" this chunk's whole design
+				//! promises (struct comment, "A BONE'S END CAPS ARE ITS TWO
+				//! JOINTS").
+				//!
+				//! So this band spends the THIRD Euler angle instead of
+				//! zeroing anything.  A rotation has exactly 3 degrees of
+				//! freedom; fixing local +Y's world direction uses 2 of them,
+				//! leaving exactly ONE free -- the ROLL around that
+				//! direction, i.e. ez, which the clearly-leaning formula
+				//! above always burns on 0.  Spend it here: solve for the
+				//! (ex,ey,ez) triple whose SECOND column is still EXACTLY
+				//! (dx,dy,dz) (endpoint exactness, UNCONDITIONAL) and whose
+				//! FIRST column is world +X Gram-Schmidt-projected
+				//! perpendicular to (dx,dy,dz) -- the closest horizontal-ish
+				//! axis to world X that is still orthogonal to the bone
+				//! direction.  That projection, normalize((1,0,0) -
+				//! dx*(dx,dy,dz)), has magnitude sqrt(1-dx^2) = sqrt(dy^2+dz^2)
+				//! -- BOUNDED AWAY FROM ZERO throughout the near-vertical band
+				//! (dy is close to +-1 there), so it is well-conditioned
+				//! exactly where atan2(dx,dz) alone is not, and it varies
+				//! CONTINUOUSLY as (dx,dz) -> (0,0) from any direction,
+				//! landing on exactly world +X at horiz = 0.  The price: for
+				//! a genuinely (tiny) leaning bone in this band the flatten
+				//! axis is no longer bit-exactly horizontal -- it tilts out
+				//! of the ground plane by an angle bounded by the lean
+				//! itself (at most ~kNearVerticalHoriz radians), invisible
+				//! next to the ~0.6 degree threshold that put it there.
+				//! Endpoint exactness is unconditional; horizontality is
+				//! exact for clearly-leaning bones and near-exact (bounded by
+				//! the lean) for near-vertical ones.  Verified analytically
+				//! (Cy reproduces the target direction to double-precision
+				//! roundoff for every direction tried, including right at the
+				//! threshold boundary) and pinned by
+				//! SkeletonGeometryChunkTest's near-vertical endpoint probe
+				//! and flatten-axis-stability probe.
+				static constexpr double kNearVerticalHoriz = 0.01;   // ~0.57 degrees of lean
+
+				static void DirectionToEulerDeg( double dx, double dy, double dz,
+					double& exDeg, double& eyDeg, double& ezDeg )
+				{
+					const double horiz = std::sqrt( dx*dx + dz*dz );
+					if( horiz < kNearVerticalHoriz ) {
+						// Gram-Schmidt: world +X projected perpendicular to the
+						// TRUE bone direction (dx,dy,dz) -- see the struct-level
+						// comment above for the derivation.  |v| bounded away
+						// from 0 throughout this band (dy ~= +-1 here).
+						const double vx = 1.0 - dx*dx, vy = -dx*dy, vz = -dx*dz;
+						const double vlen = std::sqrt( vx*vx + vy*vy + vz*vz );
+						const double xhx = vx / vlen, xhy = vy / vlen, xhz = vz / vlen;
+						// z-component of local +Z = cross(local +X, target) --
+						// the only component ex's solve needs.
+						const double zhz = xhx*dy - xhy*dx;
+						const double c2 = std::sqrt( xhx*xhx + xhy*xhy );   // cos(ey), > 0 here
+						eyDeg = std::atan2( -xhz, c2 ) * RAD_TO_DEG;
+						ezDeg = std::atan2( xhy, xhx ) * RAD_TO_DEG;
+						// atan2(dz/c2, zhz/c2) == atan2(dz, zhz) for c2 > 0.
+						exDeg = std::atan2( dz, zhz ) * RAD_TO_DEG;
+						return;
+					}
+					exDeg = std::atan2( horiz, dy ) * RAD_TO_DEG;
+					eyDeg = std::atan2( dx, dz ) * RAD_TO_DEG;
+					ezDeg = 0.0;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const std::string name   = bag.GetString( "name", "noname" );
+					const double blend        = bag.GetDouble( "blend", 0.35 );
+					const unsigned int maxSteps      = bag.GetUInt( "maxsteps", 256 );
+					const double eps                 = bag.GetDouble( "epsilon", 0.0 );
+					const unsigned int samplingDetail = bag.GetUInt( "sampling_detail", 64 );
+
+					const std::vector<std::string>& jointLines = bag.GetRepeatable( "joint" );
+					if( jointLines.empty() ) {
+						return Reject( "at least one `joint` is required" );
+					}
+					if( blend < 0.0 ) {
+						char buf[64];
+						std::snprintf( buf, sizeof(buf), "%g", blend );
+						return Reject( std::string( "`blend` (" ) + buf + ") must be >= 0" );
+					}
+
+					std::vector<JointDecl> joints;
+					joints.reserve( jointLines.size() );
+					std::map<std::string,int> nameToIndex;
+
+					for( std::size_t i = 0; i < jointLines.size(); ++i ) {
+						const std::string& line = jointLines[i];
+
+						// Tokenize on whitespace -- a mixed identifier/number
+						// line, so the strict all-numeric AllTokensAreFiniteNumbers
+						// helper is applied only to the trailing numeric run
+						// (same mixed-line idiom sweep_geometry's
+						// `profile_circle` uses elsewhere in this file), and an
+						// exact 6/7/8-token count catches both too few and too
+						// many (trailing garbage glued as its own token).  The
+						// 7th token is the OPTIONAL `aspect`; the 8th (blend-
+						// domain-control slice, 2026-08-25) is the OPTIONAL
+						// per-joint `blend` override -- see the struct-level
+						// "REGION-AWARE BLEND CONTROL" comment.  6 tokens is
+						// the pre-doc-90 grammar (aspect 1, inherited blend);
+						// 7 adds aspect; 8 adds the override, and REQUIRES
+						// aspect to be spelled too (no "skip aspect, give
+						// blend" positional gap -- the same reasoning
+						// AllTokensAreFiniteNumbers' contiguous-run design
+						// already forces: this grammar has no named/keyword
+						// tokens, only position).
+						std::vector<std::string> toks;
+						{
+							std::istringstream iss( line );
+							std::string t;
+							while( iss >> t ) toks.push_back( t );
+						}
+						if( toks.size() != 6 && toks.size() != 7 && toks.size() != 8 ) {
+							char buf[32];
+							std::snprintf( buf, sizeof(buf), "%u", (unsigned int)toks.size() );
+							return Reject( "joint `" + line + "` must be 6, 7 or 8 tokens "
+								"`<name> <parent|none> <x> <y> <z> <radius> [aspect] [blend]` -- got " + buf );
+						}
+						const bool haveAspect = ( toks.size() >= 7 );
+						const bool haveBlend  = ( toks.size() == 8 );
+						const int  nNumeric   = haveBlend ? 6 : ( haveAspect ? 5 : 4 );
+
+						std::string tail = toks[2] + " " + toks[3] + " " + toks[4] + " " + toks[5];
+						if( haveAspect ) tail += " " + toks[6];
+						if( haveBlend )  tail += " " + toks[7];
+						int nTok = 0;
+						if( !AllTokensAreFiniteNumbers( tail.c_str(), &nTok ) || nTok != nNumeric ) {
+							return Reject( "joint `" + line + "`: the last " +
+								( haveBlend ? "six fields (x y z radius aspect blend)"
+								            : haveAspect ? "five fields (x y z radius aspect)"
+								                         : "four fields (x y z radius)" ) +
+								" must be finite numbers, with no trailing garbage" );
+						}
+
+						// NB: `jd.aspect`/`jd.blend` are left at their
+						// constructed defaults when the line has fewer
+						// numeric fields -- sscanf simply stops, it does not
+						// zero an unmatched argument.
+						JointDecl jd;
+						jd.name = toks[0];
+						jd.parent = toks[1];
+						jd.hasBlend = haveBlend;
+						std::sscanf( tail.c_str(), "%lf %lf %lf %lf %lf %lf",
+							&jd.x, &jd.y, &jd.z, &jd.r, &jd.aspect, &jd.blend );
+
+						if( nameToIndex.find( jd.name ) != nameToIndex.end() ) {
+							return Reject( "joint `" + jd.name + "` is declared more than once" );
+						}
+						if( jd.parent == jd.name ) {
+							return Reject( "joint `" + jd.name + "` names itself as `parent` -- "
+								"a joint cannot be its own parent" );
+						}
+						if( jd.parent != "none" ) {
+							std::map<std::string,int>::const_iterator it = nameToIndex.find( jd.parent );
+							if( it == nameToIndex.end() ) {
+								return Reject( "joint `" + jd.name + "`: parent `" + jd.parent +
+									"` is not a joint declared EARLIER in this chunk (declare-before-use -- "
+									"forward references and unknown names are both rejected the same way, "
+									"and this rule is exactly what makes a parent cycle impossible)" );
+							}
+							jd.parentIndex = it->second;
+						}
+						if( !( jd.r > 0.0 ) ) {
+							char buf[64];
+							std::snprintf( buf, sizeof(buf), "%g", jd.r );
+							return Reject( "joint `" + jd.name + "`: radius (" + buf + ") must be > 0" );
+						}
+						// `aspect` is a RATIO, so 0 (a zero-thickness bone with
+						// no surface) and a negative (a mirrored bone) are both
+						// meaningless rather than merely extreme -- refused,
+						// naming the joint, the same shape as the radius check
+						// directly above.  Non-finite is already impossible
+						// here (AllTokensAreFiniteNumbers rejects nan/inf
+						// spellings upstream), but the `> 0` test is written in
+						// the negated idiom so a NaN that ever reached it would
+						// fail rather than pass.
+						if( !( jd.aspect > 0.0 ) ) {
+							char buf[64];
+							std::snprintf( buf, sizeof(buf), "%g", jd.aspect );
+							return Reject( "joint `" + jd.name + "`: aspect (" + buf + ") must be > 0 "
+								"-- it is the bone cross-section's width-to-depth RATIO (1 = a round "
+								"bone, 0.6 = a thigh), not a thickness" );
+						}
+						// Blend-domain-control slice: same `>= 0` rule the
+						// chunk-level `blend` enforces above, and for the
+						// identical reason -- 0 is a legal, INTENDED value
+						// here (a hard union at this one bone, the whole
+						// point of the override), a negative one is not.
+						if( jd.hasBlend && !( jd.blend >= 0.0 ) ) {
+							char buf[64];
+							std::snprintf( buf, sizeof(buf), "%g", jd.blend );
+							return Reject( "joint `" + jd.name + "`: blend (" + buf + ") must be >= 0" );
+						}
+						if( jd.parentIndex >= 0 ) {
+							const JointDecl& par = joints[jd.parentIndex];
+							const double dx = jd.x - par.x, dy = jd.y - par.y, dz = jd.z - par.z;
+							if( !( dx*dx + dy*dy + dz*dz > 1e-18 ) ) {
+								return Reject( "joint `" + jd.name + "` and its parent `" + par.name +
+									"` are at coincident positions -- a zero-length bone has no direction" );
+							}
+						}
+
+						nameToIndex[jd.name] = (int)joints.size();
+						joints.push_back( jd );
+					}
+
+					// Children count per joint -- ONLY a parentless, childless
+					// joint gets its own sphere part; see the struct-level
+					// comment for why every other joint needs none.
+					std::vector<int> childCount( joints.size(), 0 );
+					for( std::size_t i = 0; i < joints.size(); ++i )
+						if( joints[i].parentIndex >= 0 ) childCount[(std::size_t)joints[i].parentIndex]++;
+
+					// F6(b): a large skeleton (dozens of bones) with a
+					// systematically bad radius/length ratio would otherwise
+					// emit one eLog_Warning line per degenerate bone with no
+					// cap.  Follow the same first-N-then-summary shape as
+					// SDFGeometry.cpp's missed-feature-cells diagnostic
+					// (EnsureSamplingStructure): name the first few offenders
+					// so an author can start fixing immediately, then fold
+					// the rest into one summary line instead of flooding the
+					// log.
+					unsigned int degenerateBoneCount = 0;
+					static const unsigned int kMaxNamedDegenerateBones = 3;
+					// Same first-N-then-summary discipline for the one OTHER
+					// non-rejecting diagnostic this chunk owns: an `aspect`
+					// declared where nothing can consume it (see the emission
+					// loop's `else if` below).
+					unsigned int inertAspectCount = 0;
+					static const unsigned int kMaxNamedInertAspects = 3;
+
+					std::string parts;
+					for( std::size_t i = 0; i < joints.size(); ++i ) {
+						const JointDecl& j = joints[i];
+						if( j.parentIndex >= 0 ) {
+							const JointDecl& par = joints[(std::size_t)j.parentIndex];
+							const double dx = j.x - par.x, dy = j.y - par.y, dz = j.z - par.z;
+							const double len = std::sqrt( dx*dx + dy*dy + dz*dz );
+							// F6(a): `dx*dx` etc. can overflow to inf for absurd joint
+							// coordinates even though dx itself was finite -- see the
+							// AllFiniteD comment above for why this chunk owns the check.
+							if( !AllFiniteD( { dx, dy, dz, len } ) ) {
+								return Reject( "joint `" + par.name + "` -> `" + j.name +
+									"`: the synthesized bone length is not finite (joint "
+									"coordinates are too large) -- reduce the joint positions" );
+							}
+							// Non-rejecting diagnostic (not a Reject -- the geometry is
+							// still well-defined, see SDFGeometry.cpp primLocalAABB's
+							// roundcone case): when one cap sphere's radius so exceeds
+							// the other that it swallows it whole (|rp-rc| > bone
+							// length), the bone's visible surface collapses to a plain
+							// sphere at the larger joint -- the smaller joint and the
+							// taper between them contribute no visible geometry.  Name
+							// both joints so an author who wanted a visible taper learns
+							// which bone degenerated, same warn-not-reject style as
+							// glint_modifier's coverage/fill clamp diagnostics above.
+							if( std::fabs( par.r - j.r ) > len ) {
+								if( degenerateBoneCount < kMaxNamedDegenerateBones ) {
+									GlobalLog()->PrintEx( eLog_Warning,
+										"skeleton_geometry `%s`: bone `%s` -> `%s` is degenerate "
+										"(|radius delta| %g > bone length %g) -- the smaller joint's "
+										"sphere is entirely contained in the larger one's, so this "
+										"bone collapses to a plain sphere at `%s` with no visible taper",
+										name.c_str(), par.name.c_str(), j.name.c_str(),
+										std::fabs( par.r - j.r ), len,
+										( par.r > j.r ? par.name.c_str() : j.name.c_str() ) );
+								}
+								degenerateBoneCount++;
+							}
+							double exDeg = 0.0, eyDeg = 0.0, ezDeg = 0.0;
+							DirectionToEulerDeg( dx/len, dy/len, dz/len, exDeg, eyDeg, ezDeg );
+							// Blend-domain-control slice (2026-08-25): `j.blend`
+							// (the CHILD joint's own override -- "shapes the
+							// bone that arrives at it", same convention
+							// `j.aspect` already uses two lines below) replaces
+							// the chunk-level `blend` for THIS bone only when
+							// the joint line carried one.  This is the
+							// grammar's answer to "these parts are spatially
+							// close but must not merge": since Map()'s fold is
+							// sequential and GLOBAL (SDFGeometry.cpp's own
+							// comment -- a part's smin step compares against
+							// whatever the running field already is, not just
+							// its graph-neighbour), a bone's OWN k is what
+							// bounds how far THAT bone's own fold step can
+							// bridge, regardless of what the running field
+							// represents -- so overriding a specific bone's k
+							// down to (or toward) 0 makes THAT bone's fold
+							// step a hard union no matter what unrelated
+							// geometry happens to sit nearby when a pose
+							// brings two chain-distant regions close together.
+							const double kBlend = j.hasBlend ? j.blend : blend;
+							const double k = kBlend * std::min( par.r, j.r );
+							if( !AllFiniteD( { exDeg, eyDeg, ezDeg, k } ) ) {
+								return Reject( "joint `" + par.name + "` -> `" + j.name +
+									"`: a synthesized bone value is not finite (blend * radius "
+									"or the direction-to-Euler conversion overflowed) -- reduce "
+									"`blend` or the joint radii" );
+							}
+							// `j.aspect`, not the parent's: a joint's aspect
+							// shapes the bone that ARRIVES at it (struct
+							// comment, "A JOINT'S ASPECT SHAPES THE BONE THAT
+							// ARRIVES AT IT").  ezDeg is nonzero only in the
+							// near-vertical band (DirectionToEulerDeg's
+							// comment) -- everywhere else this is the same
+							// literal 0.0 it always was.
+							parts += PartLine( "roundcone", k, par.x, par.y, par.z,
+								exDeg, eyDeg, ezDeg, j.aspect, par.r, j.r, len );
+							parts += "\n";
+						} else if( childCount[i] == 0 ) {
+							// Blend-domain-control slice: an isolated joint's
+							// OWN blend override applies here too (the sphere
+							// IS the bone that "arrives" at it, in the sense
+							// that no other part supplies its cap) -- same
+							// `j.hasBlend ? j.blend : blend` rule as the bone
+							// branch above, for consistency.
+							const double kBlend = j.hasBlend ? j.blend : blend;
+							const double k = kBlend * j.r;
+							if( !AllFiniteD( { k } ) ) {
+								return Reject( "joint `" + j.name +
+									"`: the synthesized sphere blend width (blend * radius) is "
+									"not finite -- reduce `blend` or the joint radius" );
+							}
+							parts += PartLine( "sphere", k, j.x, j.y, j.z, 0.0, 0.0, 0.0, j.aspect, j.r, 0.0, 0.0 );
+							parts += "\n";
+						}
+						// else: root with children -- no part of its own (the
+						// struct-level comment explains why none is needed).
+						// Which is exactly why its `aspect` has nothing to
+						// shape: no bone ARRIVES at a root, and it emits no
+						// sphere either.  Say so rather than dropping the token
+						// in silence -- warn-not-reject, matching the
+						// degenerate-bone diagnostic above, because the
+						// geometry the author asked for is still perfectly
+						// well-defined.
+						else if( j.aspect != 1.0 ) {
+							if( inertAspectCount < kMaxNamedInertAspects ) {
+								GlobalLog()->PrintEx( eLog_Warning,
+									"skeleton_geometry `%s`: joint `%s` declares aspect %g, which shapes "
+									"NOTHING -- `%s` is a root WITH children, so no bone arrives at it and "
+									"it emits no part of its own. A joint's aspect shapes the bone that "
+									"arrives at it FROM its parent, so move this aspect onto the child "
+									"joint(s) the bone(s) run TO",
+									name.c_str(), j.name.c_str(), j.aspect, j.name.c_str() );
+							}
+							inertAspectCount++;
+						}
+					}
+					if( inertAspectCount > kMaxNamedInertAspects ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"skeleton_geometry `%s`: ...and %u more joints whose `aspect` shapes nothing",
+							name.c_str(), inertAspectCount - kMaxNamedInertAspects );
+					}
+					if( degenerateBoneCount > kMaxNamedDegenerateBones ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"skeleton_geometry `%s`: ...and %u more degenerate bones",
+							name.c_str(), degenerateBoneCount - kMaxNamedDegenerateBones );
+					}
+
+					return pJob.AddSDFGeometry( name.c_str(), "", parts.c_str(), maxSteps, eps, samplingDetail );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "skeleton_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "A JOINT GRAPH that expands into ONE sdf_geometry: a roundcone per bone (parent -> child), smin-blended -- creature flesh authored the way an animator thinks (joints and bones), not sdf_geometry's raw part-line grammar. Each `joint` line is `<name> <parent|none> <x> <y> <z> <radius> [aspect] [blend]`; every joint but a root must name an ALREADY-DECLARED joint as `parent` (declare-before-use), which is exactly what makes a parent cycle structurally impossible. A BONE NEED NOT BE A PIPE: the optional `aspect` is the bone cross-section's width-to-depth ratio, so a limb can be a FLATTENED strap rather than the tube one-radius-per-joint would otherwise force -- a thigh is aspect 0.6, a fin-arm 0.35, a wing-arm 1.0. REGION-AWARE BLEND CONTROL: the optional per-joint `blend` overrides the chunk-level `blend` for JUST the bone arriving at that joint -- because Map()'s smin fold is SEQUENTIAL and GLOBAL (every part blends against whatever the running field already is, not just its graph-neighbour), a bone's own k is what bounds how far THAT bone's own fold step can bridge, so a pose that brings two chain-distant regions into close proximity (a curled tail near a flank, a tucked muzzle near a haunch) can keep them visually distinct by giving the bone(s) near that seam a near-zero override, while every other bone keeps the chunk's normal, permissive blend -- no multi-chunk split needed. A bone's end caps ARE its two joints -- the roundcone's spherical caps sit exactly at the parent's and child's positions with exactly their radii -- so joints need NO separate sphere of their own; the one exception is a joint with neither parent nor children (otherwise invisible), which gets a `sphere` part instead. `blend` multiplies min(parent radius, child radius) to give each bone's smin blend width (0 = hard union, visible creases at every joint). Registers under this chunk's OWN `name`, exactly like a hand-authored sdf_geometry. COST: parts = bones + isolated joints, NOT one part per joint -- each bone (parent -> child edge) expands to one roundcone part, each parentless childless joint expands to one sphere part, and a joint with children contributes no part of its own (its caps are supplied by its outgoing bone(s)), and Map() is O(parts) per sphere-trace step with no acceleration structure over parts -- a skeleton is a render-time budget, not a free abstraction; a hand-authored sdf_geometry typically has a handful of parts, a skeleton invites 30-70.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "joint"; p.kind = ValueKind::String; p.repeatable = true; p.required = true;
+						  p.description = "One joint (repeatable; at least one required): `<name> <parent|none> <x> <y> <z> <radius> [aspect] [blend]`. `parent` is `none` for a root, or the name of a joint declared on an EARLIER `joint` line -- forward references and unknown names are both rejected, and this ordering is what makes a cycle impossible. `radius` must be > 0, and a non-root joint may not sit exactly on top of its parent (a zero-length bone has no direction). OPTIONAL `aspect` (> 0, default 1 = a round bone) is the cross-section's WIDTH-to-DEPTH ratio: it NARROWS the bone SIDE-TO-SIDE in the horizontal plane, leaving `radius` exact across the perpendicular that lies in the vertical plane containing the bone (a vertical bone with aspect 0.5 is half as wide along X as along Z), and it never makes a bone THICKER than its radius. A joint's aspect shapes the bone that ARRIVES at it from its parent -- there is no inheritance, so set it per joint along a chain, and on a root WITH children it shapes nothing and is warned about. A bone leaning less than ~0.6 degrees off vertical flattens along world X, same as one that is exactly vertical (near that threshold the flatten axis stays endpoint-exact via a different construction than the exactly-vertical case, but the effect an author sees is identical). An isolated joint (no parent, no children) flattens its `sphere` part along world X unconditionally, the same canonical choice, since no bone direction exists to derive an axis from. Flatten a thigh to ~0.6, a fin or paddle-limb to ~0.35; a very small aspect wants a larger `maxsteps`. OPTIONAL `blend` (>= 0, REQUIRES `aspect` to also be spelled -- purely positional grammar, no gap) overrides the chunk-level `blend` for JUST this joint's incoming bone -- same 'shapes the bone that ARRIVES at it, no inheritance' rule as aspect. Use it to keep a POSE-INDUCED proximity from smin-bridging: give the bone(s) nearest a deliberate cross-region seam (e.g. a curled tail's root, a tucked muzzle's neck bone) a small or 0 override (0 = hard union at that one bone) while every other bone keeps the chunk default -- see the chunk's own description for why this works despite the fold being global. DECLARATION ORDER MATTERS: two spatially-close, graph-unrelated joints bridge under the LATER-DECLARED one's own blend -- override the later-declared joint of the pair, not the earlier one, or the override does nothing."; }
+						{ auto& p = P(); p.name = "blend"; p.kind = ValueKind::Double;
+						  p.description = "Multiplier (unit-free) on min(parent radius, child radius) giving each bone's smin blend width in world units. 0 = hard union (visible creases at every joint); must be >= 0"; p.defaultValueHint = "0.35"; }
+						{ auto& p = P(); p.name = "maxsteps"; p.kind = ValueKind::UInt; p.description = "Sphere-trace step cap, passed through to the expanded sdf_geometry"; p.defaultValueHint = "256"; }
+						{ auto& p = P(); p.name = "epsilon"; p.kind = ValueKind::Double; p.description = "Surface hit epsilon as a fraction of the bbox diagonal (0 = auto), passed through to the expanded sdf_geometry"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "sampling_detail"; p.kind = ValueKind::UInt; p.description = "Tessellation cells along the longest bbox axis for area-light / SSS surface sampling (clamped 8..256), passed through to the expanded sdf_geometry"; p.defaultValueHint = "64"; }
 						return cd;
 					}();
 					return d;
@@ -5597,46 +7309,49 @@ namespace RISE
 				{
 					std::string name = bag.GetString( "name", "noname" );
 					std::string finalExpr = bag.GetString( "expr", "" );
-					if( finalExpr.empty() ) {
-						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: missing `expr` (the final value expression)", name.c_str() );
-						return false;
-					}
 
-					Implementation::ExpressionProgram::Builder builder;
-					// named numeric constants (all params precede all defs)
-					const std::vector<std::string>& params = bag.GetRepeatable( "param" );
-					for( std::size_t i = 0; i < params.size(); ++i ) {
-						char pn[128] = {0}; double pv = 0;
-						if( sscanf( params[i].c_str(), "%127s %lf", pn, &pv ) != 2 ) {
-							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param %u (`%s`) must be `<name> <number>`", name.c_str(), (unsigned)i, params[i].c_str() );
-							return false;
-						}
-						if( !Implementation::ExpressionProgram::IsFinite( (Scalar)pv ) ) {
-							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param `%s` must be finite (nan/inf rejected)", name.c_str(), pn );
-							return false;
-						}
-						builder.AddParam( pn, (Scalar)pv );
-					}
-					// named sub-expressions (let-bindings), in input order
-					const std::vector<std::string>& defs = bag.GetRepeatable( "def" );
-					for( std::size_t i = 0; i < defs.size(); ++i ) {
-						const std::string& line = defs[i];
-						std::size_t sp = line.find_first_of( " \t" );
-						if( sp == std::string::npos ) {
-							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: def %u (`%s`) must be `<name> <expression>`", name.c_str(), (unsigned)i, line.c_str() );
-							return false;
-						}
-						const std::string dname = line.substr( 0, sp );
-						const std::string dexpr = line.substr( sp + 1 );
-						if( !builder.AddDef( dname, dexpr ) ) {
-							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: def `%s`: %s", name.c_str(), dname.c_str(), builder.Error().c_str() );
-							return false;
-						}
-					}
-
+					// review-round unification (doc 88 sect. 7 decision 5): the
+					// param/def parsing + ExpressionProgram::Builder orchestration
+					// used to be reimplemented inline here (a plain `sscanf`
+					// `<name> <number>` scanner, no ExpressionParamSpec metadata
+					// grammar, its own copy of the def-splitting loop) instead of
+					// calling the SAME BuildExpressionProgramFromChunkFields
+					// (ExpressionPainter.h) helper `expression_painter` and
+					// `scalar_painter{expression}` already share -- two
+					// independently-maintained copies of the identical parsing
+					// logic, exactly the duplication doc 88 flagged for a later
+					// fold. Now calls the shared helper with
+					// enableContextVars=false, autoRegisterSeed=false -- see
+					// that function's own doc comment for why those two flags
+					// (not the evaluation engine, which was ALREADY shared via
+					// ExpressionProgram) are the one place this surface must
+					// differ from expression_painter's.
+					//
+					// BIT-IDENTICAL FOR EVERY EXISTING BODY: ParseParamSpecLine
+					// (ExpressionParamSpec.h) parses a plain `<name> <number>`
+					// line (the only form any in-tree scene's expression_function2d
+					// param line uses -- verified) to the SAME name/value the old
+					// sscanf scanner produced; the ONLY behavior difference is
+					// that trailing content past `<name> <number>` now has to be
+					// a well-formed `min`/`max`/`step`/`label` clause (the old
+					// scanner silently ignored trailing garbage) -- a stricter,
+					// not looser, validation, and the richer grammar this brings
+					// along is inert here (min/max/step/label are parsed but
+					// never read by ExpressionFunction2DPainter, exactly as
+					// undeclared-but-parsed metadata already sits inert on
+					// expression_painter -- no NEW evaluation capability, no new
+					// keyword, context vars still off).
 					Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
-					if( !builder.Finalize( finalExpr, prog ) ) {
-						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: expr: %s", name.c_str(), builder.Error().c_str() );
+					std::vector<Implementation::ParamSpec> specs;   // discarded -- this surface doesn't carry S4 introspection metadata (frozen, not extended)
+					const std::string context = std::string( "expression_function2d `" ) + name + "`";
+					std::string exprErr;
+					if( !Implementation::BuildExpressionProgramFromChunkFields(
+							context, bag.GetRepeatable( "param" ), bag.GetRepeatable( "def" ), Scalar( 0 ), finalExpr, prog, specs,
+							/*enableContextVars=*/false, /*autoRegisterSeed=*/false, &exprErr ) ) {
+						// See Job::AddExpressionPainter's twin site -- thread the
+						// specific compiler diagnostic into the CST sink instead
+						// of leaving the caller with the generic apply-failed text.
+						SetFinalizeDiagIfEmpty( exprErr );
 						return false;
 					}
 
@@ -5671,6 +7386,413 @@ namespace RISE
 				}
 			};
 
+			struct ExpressionPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string finalExpr = bag.GetString( "expr", "" );
+					const double seed = bag.GetDouble( "seed", 0.0 );
+					const double time = bag.GetDouble( "time", 0.0 );
+
+					const std::vector<std::string>& params = bag.GetRepeatable( "param" );
+					const std::vector<std::string>& defs = bag.GetRepeatable( "def" );
+
+					std::vector<const char*> paramPtrs;
+					paramPtrs.reserve( params.size() );
+					for( std::size_t i = 0; i < params.size(); ++i ) paramPtrs.push_back( params[i].c_str() );
+					std::vector<const char*> defPtrs;
+					defPtrs.reserve( defs.size() );
+					for( std::size_t i = 0; i < defs.size(); ++i ) defPtrs.push_back( defs[i].c_str() );
+
+					return pJob.AddExpressionPainter(
+						name.c_str(), finalExpr.c_str(),
+						paramPtrs.empty() ? nullptr : &paramPtrs[0], (unsigned int)paramPtrs.size(),
+						defPtrs.empty() ? nullptr : &defPtrs[0], (unsigned int)defPtrs.size(),
+						seed, time );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "expression_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "A procedural COLOUR field authored as a MATH EXPRESSION with the FULL 3D shading context -- the doc-88 texture-expression VM on the colour pipe.  Unlike expression_function2d (UV-only), the body sees u, v, P (world position), Po (object position), N (shading normal), fw (world-space filter width at the hit; 0.0 where no footprint is available -- secondary bounces, and the RIM BAND of a fisheye_camera render, where the neighbouring pixel falls outside the projection 180-degree disc so no honest differential exists.  Every camera RISE ships emits ray differentials, so a primary hit from any of them carries a real fw), fwo (the SAME footprint measured in Po's OBJECT space, so an object-space noise domain filters too -- see AUTOMATIC DOMAIN SCALE below), time, and curv / curvR (surface curvature; see below) -- plus the occlusion(radius) / convexity(radius) / thickness(radius) / proximity(radius) / interior(radius) BUILTINS (see below).  `curv` / `curvR` are SURFACE CURVATURE at the hit, the geometry-derived signal wear and grime masks key on: POSITIVE = convex (an edge), NEGATIVE = concave (a crevice), 0 = flat.  `curvR` is the raw signed MEAN curvature in 1/world-length; `curv` is that value normalized by the hit geometry's world bounding-box diagonal, so it reads O(1) at object scale and `clamp(curv,0,1)` is an edge-wear mask / `clamp(-curv,0,1)` a crevice mask on ANY scene scale -- prefer `curv` unless you genuinely want physical units.  Quality by geometry: EXACT on sdf_geometry / skeleton_geometry (a true differential quantity on an implicit surface), on the analytic curved primitives (sphere, ellipsoid, torus, cylinder), and on bezierpatch_geometry / bilinearpatch_geometry (analytic Weingarten map); FACETED on triangle meshes (it is only as good as the vertex normals, and jumps across shared edges); and correctly 0 on planar primitives.  Under NON-UNIFORM object scale the normalization is a documented geometric-mean approximation (no single length is right for a `scale 4 0.05 4` panel).  It is fine-scale and RADIUS-FREE -- the local differential curvature, not a radius-sampled \"wear the 2cm edges, ignore the 2mm ones\" signal.  BUMP / NORMAL MAPS DO NOT MOVE IT: it comes from the geometric normal field, so `curv` and `N` legitimately disagree on a bump-mapped surface -- that is correct (a wear mask wants the form, not the texture, and a bump-perturbed curvature would double-count detail the bump map already shades).  GEOMETRY SIGNALS -- `occlusion(radius)`, `convexity(radius)` and `thickness(radius)`, the three ARG-TAKING builtins that ask the hit geometry about itself.  `occlusion` returns [0,1] with 1 = UNOCCLUDED (the universal convention -- white is open, dark is cavity), `convexity` returns [0,1] with 0 = FLAT-OR-CONCAVE and 1 = a knife edge, `thickness` returns [0,1] with 1 = THICK, normalized by the query radius.  `occlusion` AND `convexity` PARTITION ONE QUESTION -- how open is the surface at scale `radius`, measured against what a FLAT surface would read -- with occlusion reporting how much LESS open than flat and convexity how much MORE.  Neither is ever a residual of the other, and that is the thing to rely on while authoring.  (1) A MERELY CONVEX EDGE READS occlusion EXACTLY 1, the same as a flat face; occlusion darkens only for real cavities, so `1 - occlusion(r)` is a usable crevice mask with NO thresholding needed to keep it off the arrises.  (Before 2026-09-06 it was not: the old estimator returned 0.707 on any convex edge a CSG `intersect`/`subtract` produced, and the SAME 0.707 in a concave 90-degree valley, so the two were indistinguishable and every such scene needed a hand-tuned smoothstep.)  (2) A FLAT FACE AND EVERY CAVITY READ convexity EXACTLY 0, and every value above that has a FIXED GEOMETRIC MEANING on any object at any scene scale -- 0.5 IS a 90-degree arris, 0.75 IS a three-face corner -- which is precisely what `curv` cannot offer, since `curv` is an unbounded differential quantity whose useful thresholds have to be probe-measured per object.  Reach for `convexity(r)` for edge wear (\"wear the edges about r across, ignore the rest\"), and for `curv` when you want the form's signed bending at no particular scale.  THEY ARE MEASURED DIFFERENTLY, which matters in two places: occlusion sphere-traces 12 cosine-weighted directions over the outward hemisphere, the set spun about the normal per hit so the answer is an expectation rather than a multiple of 1/12 (the same integral -- and since 2026-09-07 the same per-hit spin -- a mesh's baked AO computes) and therefore SEES NARROW APERTURES a crack, a slot, a fold; convexity samples the query BALL and therefore sees smooth bulges too (on a convex sphere of radius rho it reads 3*radius/(8*rho), where a purely directional measure would read 0).  On edges, creases and corners the two agree exactly.  Occlusion is also the more expensive of the two by roughly 3x (~91 field evaluations against convexity's 32) -- neither costs anything unless the body calls it.  `radius` is NOT a world length: it is a FRACTION of the hit geometry's own characteristic size (its bounding-box diagonal), so `occlusion(0.05)` means \"5% of the object\" and reads identically at any scene scale and on any instance of that geometry.  A LITERAL radius <= 0 is a COMPILE error; a computed one that lands <= 0 returns the neutral value.  TWO GEOMETRY FAMILIES ANSWER THEM, by different means.  The SDF family (`sdf_geometry`, `skeleton_geometry`) evaluates them LIVE from its distance field and accepts a DYNAMIC radius (any expression, recomputed per hit).  INDEXED TRIANGLE MESHES answer from a per-vertex field BAKED LAZILY -- the first query at a given radius pays the bake (it announces itself and its millisecond cost in the log), every later sample is a barycentric read of it -- which makes the radius on a mesh necessarily a LITERAL: a computed one reads the NEUTRAL fallback rather than silently borrowing a table baked at a different scale, and at most 8 distinct literal radii per signal per mesh are baked before further ones read neutral too.  Everything else returns the NEUTRAL fallback: the analytic primitives, non-indexed meshes, and heightfield-mode `sdf_geometry` (whose global Lipschitz bound would make a local answer systematically wrong).  That fallback is deliberately the do-nothing end of each range -- occlusion 1 (unoccluded), thickness 1 (thick), convexity 0 (flat) -- so a mask built on an unsupported geometry lights NOTHING up rather than lighting everything up.  Note that convexity's neutral sits at the OPPOSITE end of its range from the other two, for exactly that reason: an absent edge-wear signal must mean \"no edge here\", never \"knife edge everywhere\".  They cost nothing unless the body actually calls them.  CROSS-OBJECT PROXIMITY -- `proximity(radius)` and `interior(radius)`, the FOURTH and FIFTH signal builtins and the only two that look at the REST OF THE SCENE.  The three above ask the hit geometry about ITSELF; this one returns [0,1] with 1 = TOUCHING and 0 = nothing within `radius`, computed as `1 - d/radius` for `d` the shortest distance from the hit to the surface of any OTHER object.  It is the quantity contact grime actually is -- dirt collecting where a nail rests on a plank, dust where a wall meets a floor -- and it is NOT an occlusion: a thin object lying on a plane subtends only grazing directions, so `1 - occlusion(r)` reads a two-to-ten-pixel band there rather than a seam, which is why this exists as its own builtin rather than as a wider radius on that one.  The analogue is Unreal's DistanceToNearestSurface node and Houdini's xyzdist(), not Substance's AO baker.  ITS `radius` IS A WORLD LENGTH -- `proximity(0.002)` is 2 mm -- deliberately UNLIKE the other three, whose radius is a fraction of the hit object's own size: a fraction of the RECEIVER cannot describe how far away a NEIGHBOUR is, and authors already reason in world units for `fw` and feature sizes.  A literal radius <= 0 is a compile error naming that unit; a computed one that lands <= 0 returns the neutral.  TWO THINGS TO KNOW BEFORE AUTHORING WITH IT.  (1) IT CANNOT DRIVE RELIEF: `relief_modifier` holds the signal channel FIXED across its four taps by documented design, so a `proximity`-driven height expression has zero gradient and produces no displacement -- the seam is a colour and roughness signal.  (2) EMISSIVE OBJECTS NEVER COUNT: a `rect_light` panel parked millimetres off a wall must not paint grime on it, so any object whose material emits is skipped -- which also means a DECORATIVE emitter (a lava pool, a glowing rune) will not collect contact dirt either.  `casts_shadows FALSE` does NOT exempt a neighbour (this is geometry presence, not light visibility), a CSG composite's operands never count separately, two INSTANCED COPIES of one geometry do count against each other, and a point INSIDE another object reads 1 (interpenetration is contact).  Unlike the other three it works on EVERY receiver, including ones that publish no signal provider at all (a `box_geometry`, an infinite plane) -- what varies is which NEIGHBOURS can answer: the analytic primitives (plane, sphere, box, capped and open cylinder, disk, torus, and a clipped plane whose four corners are COPLANAR AND CONVEX -- every rect_light and every hand-authored panel) are exact, INDEXED TRIANGLE MESHES are exact too (every loader but RAW, every tessellated primitive, and `displaced_geometry`'s baked mesh -- answered by a bounded closest-point traversal of the mesh's own BVH, identical to a brute-force minimum over every triangle), the ellipsoid and `sdf_geometry` / `skeleton_geometry` are upper bounds (so the signal may UNDER-paint a seam and can never paint one that is not there), CSG COMPOSITES ANSWER TOO (a `union` reports the nearer of its operands; an `intersection` or a `subtraction` brackets the composed field and reports an upper bound), refusing only when an operand refuses -- an `intersection` or `subtraction` with a SHEET operand (a plane, a disk, an open cylinder, a mesh) refuses outright, since it cannot tell inside from outside there -- and RAW (non-indexed) meshes, patches, hair, heightfield-mode SDFs and non-convex or non-coplanar clipped planes contribute nothing and say so ONCE PER REFUSING OBJECT in the log, naming the chunk and its kind.  A MESH IS A SHEET for this query and every solid family is not: a point INSIDE a sphere, box, cylinder or SDF reads 1 (interpenetration is contact), while a point inside a closed MESH reads its honest distance to the nearest triangle -- a triangle soup carries no inside test, and reporting a distance rather than inventing one is the direction that can only under-paint.  HOW LOOSE THE BOUNDS ARE, since it changes the radius you author: an ECCENTRIC ELLIPSOID over-reports by up to its semi-axis ratio -- a 4:1 ellipsoid at a true distance of 2.75 reports 11.0 -- so against one you want roughly ratio-times the radius you actually mean, and an anisotropically SCALED object is bounded the same way (it says so in the log, with its factor).  `interior(radius)` IS THE SIGNED SIBLING, and the two together cover the signed distance without a sign convention to remember: it returns [0,1] with 0 = INSIDE NO NEIGHBOUR and 1 = at least `radius` deep inside one, computed as `depth/radius` for `depth` the deepest containment over every other object.  Its `radius` is a WORLD LENGTH too, and mandatory.  Reach for it when what you want to paint is BURIAL rather than contact -- the sunk shank of a nail, the embedded flank of a stone in mortar.  ONLY THE SOLID FAMILIES CONTRIBUTE TO IT: a sphere, box, capped cylinder, torus, ellipsoid, SDF or CSG composite of those can say whether a point is inside it, while every SHEET -- a plane, a disk, an open cylinder, a TRIANGLE MESH, a patch, hair -- cannot and contributes 0 silently (it would otherwise print a refusal for every mesh in the scene).  So a receiver buried inside a MESH neighbour reads `interior` 0 and `proximity` its honest distance to the nearest triangle.  ALL SIX SIGNALS (curv, occlusion, convexity, thickness, proximity, interior) ARE READ LIVE AT EVERY SURFACE VERTEX UNDER PATH TRACING, BDPT, VCM AND MLT ALIKE (since 2026-09-11 -- docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md): BDPT's and VCM's per-vertex rebuild carries the same derivatives/signals the live hit did, and hand-built emitter records (NEE light samples, the light-subpath root) read them through a gated normal-aligned probe on the luminary, under PT as well.  The remaining neutral reads are identical under every integrator, not a PT-vs-bidirectional split: a BSSRDF entry vertex (an IOR/Fresnel painter keyed on a signal there is integrator-consistent but neutral); an emitter whose probe refuses (a non-finite self-hit floor, or a standoff larger than the luminary -- reachable, for a uniformly-transformed luminary, only through a CSG luminary's uncapped floor (a non-uniformly scaled SDF luminary can reach it too, via its direction stretch) -- or a second surface of the same luminary within the standoff band AND beyond the acceptance tolerance along the normal, unreachable for any luminary with a self-hit floor <= 0.0089*D -- every analytic primitive and every SDF at its default or family-E epsilon); a second surface WITHIN that tolerance is not on this list at all -- it is ACCEPTED, reading the neighbour's own live channel, a silent bounded read (at most one standoff, <= 0.5% of D, away) rather than a neutral one; and GUI painter preview / realize-time displacement / HairGenerator / hand-built test records, none of which is transport.  `occlusion` / `convexity` complement `curv`: `curv` is fine-scale and radius-free (a sharp edge), `occlusion` is radius-sampled and sees real cavities (a deep fold two bumps wide), `convexity` is the radius-sampled edge mask whose thresholds port between objects.  A vec3-typed final expr is Rec.709 linear RGB; a scalar-typed expr broadcasts to grayscale.  Spectral rasterizers JH-uplift the evaluated RGB per-sample, same cost class as a texture lookup.  Declare `param <name> <number> [min <a>] [max <b>] [step <s>] [label \"text\"]` constants (repeatable; the min/max/step/label metadata is ignored by evaluation and exists for a future property-panel slider), `def <name> <expr>` named sub-expressions (repeatable, in order), then the final `expr`.  `seed` is auto-registered as a named scalar constant the body can reference for per-instance jitter without a separate param, e.g. `perlin(P + vec3(seed*17.0, seed*31.0, seed*13.0))`.  AUTOMATIC DOMAIN SCALE: fbm/turbulence/ridged fade the octaves the pixel footprint cannot resolve, and you never scale a width by hand -- the compiler differentiates each call's position argument with respect to BOTH P and Po and filters that call at scale_P*fw + scale_Po*fwo, so `fbm(P*40, ...)` fades at 40*fw and `fbm(Po*40, ...)` at 40*fwo.  It resolves anything affine (a scale carried through a `param` or `def` included); a domain warp keeps its affine part's scale; an argument with no provable relation to either position (one built from u/v) simply gets the unscaled fw.  Noise builtins: perlin/fbm/turbulence/ridged/worley_f1/f2/f2f1/id/cellhash/ramp (see ExpressionEval.h); geometry-signal builtins: occlusion(radius)/convexity(radius)/thickness(radius)/proximity(radius)/interior(radius); vec3 ops dot/cross/length/normalize/.x/.y/.z.  PAINTER-SAMPLING (DL-25, docs/WETNESS_COAT_DESIGN.md sec 4(g)): `sample(painter_name)` -> vec3 reads another already-declared COLOUR painter's `GetColor` at the CURRENT hit -- THE CALLER'S OWN HIT RECORD, so a sampled `png_painter` mip-filters against the real texture footprint, a sampled `iridescent_painter` sees the real view ray, a sampled `vertex_color_painter` sees the real vertex colour and a nested `expression_painter` sees the real `curv` / `fw` / occlusion channel -- and `sample_scalar(painter_name)` -> scalar does the same against a `scalar_painter` (no JH uplift -- the IScalarPainter pipe).  TWO THINGS EACH BUILTIN DELIBERATELY DOES NOT DO (DL-165, closed 2026-09-18: (1) below is now an attach-time REFUSAL, not a silent collapse -- see docs/DEBT_LEDGER.md).  (1) `sample()` calls `GetColor` -- the RGB entry point -- and ONLY that, so binding it to a SPECTRALLY DEFINED substrate (`IPainter::IsSpectrallyDefined()` true -- a `spectral_painter`, a `blackbody_painter`, or a `piecewise_linear_function` dual-registered as a colour painter) is a HARD ATTACH-TIME FAILURE naming the substrate, because collapsing its real SPD to RGB and then RE-UPLIFTING through the Jakob-Hanika LUT would silently render a DIFFERENT curve (measured 50-93% relative error at four wavelengths on a sharply-oscillating SPD); bind such a painter to the slot DIRECTLY instead.  An ordinary RGB-defined painter (image, procedural, uniform colour, blend, ...) samples normally -- `GetAlpha` is still dropped entirely for any of them (the VM has no alpha channel), so sampling an RGBA texture yields its colour only.  (2) `sample_scalar()` returns ONE value from the painter's RGB-wavelength triple -- `ScalarPainterRGB::kSingleSampleChannel`, the 549 nm green lane, the same representative every other single-scalar consumer in RISE takes -- so a wavelength-VARYING scalar painter (a Sellmeier / piecewise-linear / polynomial dispersion curve) reads achromatic through it.  The argument is a BARE NAME, not a quoted string or an expression, resolved once at ATTACH time against chunks ALREADY DECLARED earlier in the document (the same forward-only rule `function1d`/`function2d`/`base`/`painter` references already follow) -- a forward reference or a self-reference is a hard failure naming the missing/self chunk, never a silent neutral.  This is what lets a textured or procedural substrate (a `png_painter`, a `checker_painter`, another `expression_painter`) be darkened per-texel (e.g. `def base_color sample(rock_albedo)` then `pow(base_color.x, k)`) instead of only a flat `uniformcolor_painter` literal.  Registered ONLY as a colour painter -- NOT usable as a displaced_geometry `function` or any other IFunction2D slot (this is a 3D-context surface; use expression_function2d for a UV-only displacement/mask field).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "param"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Named numeric constant `<name> <number> [min <a>] [max <b>] [step <s>] [label \"text\"]` (repeatable); visible to every def and the final expr"; }
+						{ auto& p = P(); p.name = "def";   p.kind = ValueKind::String; p.repeatable = true; p.carriesExpressionSampleRefs = true; p.description = "Named sub-expression `<name> <expr>` (repeatable, in order); a let-binding referencing u, v, P, Po, N, fw, fwo, time, curv, curvR, the occlusion()/convexity()/thickness()/proximity()/interior() builtins, params, and earlier defs"; }
+						{ auto& p = P(); p.name = "expr";  p.kind = ValueKind::String; p.required = true; p.carriesExpressionSampleRefs = true; p.description = "The final value expression (vec3 -> RGB colour; scalar -> grayscale broadcast)"; }
+						{ auto& p = P(); p.name = "seed";  p.kind = ValueKind::Double; p.description = "Auto-registered named scalar constant `seed`, for deterministic per-instance variation"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "time";  p.kind = ValueKind::Double; p.description = "Initial `time` value (keyframeable at the scene level, like gerstnerwave_painter's `time`)"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// ramp_painter -- the universal scalar -> colour remap (doc 88
+			// P2.2, S3).  `input`'s channel at the hit drives `t`, which is
+			// clamped to the authored stop range and interpolated between
+			// the bracketing pair of `stop` lines per `interpolation`.
+			struct RampPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string input = bag.GetString( "input", "" );
+					if( input.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"ramp_painter `%s`: missing `input` (the painter whose channel drives t)",
+							name.c_str() );
+						return false;
+					}
+
+					unsigned int channel = 0;	// R default
+					if( bag.Has( "channel" ) ) {
+						const std::string chs = bag.GetString( "channel" );
+						if(      chs == "R" ) channel = 0;
+						else if( chs == "G" ) channel = 1;
+						else if( chs == "B" ) channel = 2;
+						else if( chs == "A" ) channel = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ramp_painter `%s`: unknown channel `%s` (expected R, G, B, or A)",
+								name.c_str(), chs.c_str() );
+							return false;
+						}
+					}
+
+					unsigned int interpolation = 0;	// linear default
+					if( bag.Has( "interpolation" ) ) {
+						const std::string interps = bag.GetString( "interpolation" );
+						if(      interps == "linear" )   interpolation = 0;
+						else if( interps == "constant" ) interpolation = 1;
+						else if( interps == "smooth" )   interpolation = 2;
+						else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ramp_painter `%s`: unknown interpolation `%s` (expected linear, constant, or smooth)",
+								name.c_str(), interps.c_str() );
+							return false;
+						}
+					}
+
+					const std::vector<std::string>& stopLines = bag.GetRepeatable( "stop" );
+					if( stopLines.size() < 2 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"ramp_painter `%s`: needs at least 2 `stop` lines (got %u)",
+							name.c_str(), (unsigned int)stopLines.size() );
+						return false;
+					}
+
+					std::vector<double> positions;
+					std::vector<double> colors;
+					positions.reserve( stopLines.size() );
+					colors.reserve( stopLines.size() * 3 );
+					for( std::size_t i = 0; i < stopLines.size(); ++i ) {
+						double pos = 0, r = 0, g = 0, b = 0;
+						if( sscanf( stopLines[i].c_str(), "%lf %lf %lf %lf", &pos, &r, &g, &b ) != 4 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ramp_painter `%s`: stop %u (`%s`) must be `<pos> <r> <g> <b>`",
+								name.c_str(), (unsigned int)i, stopLines[i].c_str() );
+							return false;
+						}
+						if( !Implementation::ExpressionProgram::IsFinite( (Scalar)pos ) ||
+							!Implementation::ExpressionProgram::IsFinite( (Scalar)r ) ||
+							!Implementation::ExpressionProgram::IsFinite( (Scalar)g ) ||
+							!Implementation::ExpressionProgram::IsFinite( (Scalar)b ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ramp_painter `%s`: stop %u must be finite (nan/inf rejected)",
+								name.c_str(), (unsigned int)i );
+							return false;
+						}
+						if( i > 0 && pos < positions.back() ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ramp_painter `%s`: stop %u position %g is less than stop %u position %g -- stop positions must be non-decreasing",
+								name.c_str(), (unsigned int)i, pos, (unsigned int)(i - 1), positions.back() );
+							return false;
+						}
+						positions.push_back( pos );
+						colors.push_back( r ); colors.push_back( g ); colors.push_back( b );
+					}
+
+					std::string colorSpace = bag.GetString( "color_space", "Rec709RGB_Linear" );
+
+					return pJob.AddRampPainter(
+						name.c_str(), input.c_str(), channel, interpolation,
+						&positions[0], &colors[0], (unsigned int)positions.size(),
+						colorSpace.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ramp_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "The universal scalar -> COLOUR remap (doc 88 P2.2) -- multi-stop colour ramp driven by `input`'s channel at each hit.  `input` can be ANY colour painter (a perlin3d_painter, worley3d_painter, expression_painter fbm field, etc.); its selected `channel` (R/G/B, or A via GetAlpha) supplies `t`, clamped to [first stop pos, last stop pos], then interpolated between the bracketing pair of `stop <pos> <r> <g> <b>` lines (>= 2 required, positions non-decreasing) per `interpolation`: `linear` (lerp), `constant` (step -- holds the lower stop's exact colour until the next stop's position), or `smooth` (smoothstep-eased lerp).  Every mode returns the exact authored stop colour AT that stop's position.  Stop colours are eagerly JH-uplifted once at construction (`color_space`-aware, like uniformcolor_painter) -- no per-sample uplift.  The composition-boundary idiom from doc 88 P5: put the FIELD in an expression/noise painter, put the COLOUR in the ramp -- e.g. `expression_painter` computing an fbm height field -> `ramp_painter` colourizing it deep-blue/sand/grass/snow for a terrain material.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "input";         p.kind = ValueKind::Reference;  p.required = true; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named colour painter whose channel drives t (ANY painter kind)"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "channel";       p.kind = ValueKind::Enum;       p.enumValues = {"R","G","B","A"}; p.description = "Which channel of `input` sources t (A reads GetAlpha)"; p.defaultValueHint = "R"; }
+						{ auto& p = P(); p.name = "interpolation"; p.kind = ValueKind::Enum;       p.enumValues = {"linear","constant","smooth"}; p.description = "Blend shape between bracketing stops"; p.defaultValueHint = "linear"; }
+						{ auto& p = P(); p.name = "stop";          p.kind = ValueKind::String;     p.repeatable = true; p.description = "Colour stop `<pos> <r> <g> <b>` (repeatable, in order; positions must be non-decreasing; at least 2 required)"; }
+						{ auto& p = P(); p.name = "color_space";   p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Interpretation of each stop's r g b (linear default; same value set as uniformcolor_painter's `colorspace`)"; p.defaultValueHint = "Rec709RGB_Linear"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// mapping_painter -- the author-facing scale/rotate/translate/
+			// reproject wrapper (doc 88 P2.3).  See MappingPainter.h for the
+			// full design rationale; NOT the glTF KHR_texture_transform
+			// bridge (UVTransformPainter stays that).
+			struct MappingPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name", "noname" );
+					std::string source = bag.GetString( "source", "" );
+					if( source.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"mapping_painter `%s`: missing `source` (the painter whose domain is transformed)",
+							name.c_str() );
+						return false;
+					}
+
+					unsigned int projection = 0;	// uv default
+					if( bag.Has( "projection" ) ) {
+						const std::string projStr = bag.GetString( "projection" );
+						if(      projStr == "uv" )        projection = 0;
+						else if( projStr == "world" )     projection = 1;
+						else if( projStr == "object" )    projection = 2;
+						else if( projStr == "triplanar" ) projection = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"mapping_painter `%s`: unknown projection `%s` (expected uv, world, object, or triplanar)",
+								name.c_str(), projStr.c_str() );
+							return false;
+						}
+					}
+
+					double scale[3] = { 1.0, 1.0, 1.0 };
+					bag.GetVec3( "scale", scale );	// leaves the 1,1,1 default untouched if absent
+
+					double rotateDeg[3] = { 0.0, 0.0, 0.0 };
+					bag.GetVec3( "rotate", rotateDeg );
+
+					double translate[3] = { 0.0, 0.0, 0.0 };
+					bag.GetVec3( "translate", translate );
+
+					const double blendSharpness = bag.GetDouble( "blend_sharpness", 4.0 );
+
+					return pJob.AddMappingPainter( name.c_str(), source.c_str(), projection,
+						scale, rotateDeg, translate, blendSharpness );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "mapping_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Wraps `source` and transforms the DOMAIN it is evaluated at before delegating (doc 88 P2.3) -- the author-facing scale/rotate/translate/reproject tool (NOT the glTF KHR_texture_transform bridge; that stays UVTransformPainter, importer-only).  `projection uv` (default) transforms the surface UV (`ptCoord`) -- 2D semantics: only `scale.x/y`, `rotate.z`, and `translate.x/y` apply, `scale.z`/`rotate.x`/`rotate.y`/`translate.z` are IGNORED.  `projection world`/`object` transform the WORLD (`ptIntersection`) / OBJECT (`ptObjIntersec`) position respectively before delegating to a 3D-domain source (perlin3d, worley3d, voronoi3d, ...) -- wrapping a UV-domain source in world/object is a silent no-op, since that source never reads the field being transformed.  `projection triplanar` is for a UV-CONSUMING source (an image painter, checker_painter, ...) on UV-LESS geometry: it samples `source` three times with ptCoord derived from (y,z)/(x,z)/(x,y) of the TRS-transformed WORLD position, blended by |N.axis|^blend_sharpness (world shading normal, normalized) -- always world position/normal, no object-space triplanar variant; the blend normal itself is used AS-IS, not rotated by `rotate` (axis dominance is a geometric fact about the surface, not part of the retiling -- rotating it too would double-apply the rotation on curved geometry).  TRS composes as scale, then rotate (Z then Y then X, matching standard_object's `orientation`), then translate.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "source";           p.kind = ValueKind::Reference;  p.required = true; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named source painter whose domain is transformed"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "projection";       p.kind = ValueKind::Enum;       p.enumValues = {"uv","world","object","triplanar"}; p.description = "Which domain field to transform: uv (ptCoord), world (ptIntersection), object (ptObjIntersec), or triplanar (three ptCoord samples blended by normal)"; p.defaultValueHint = "uv"; }
+						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale, applied FIRST.  uv projection uses x/y only"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "rotate";           p.kind = ValueKind::DoubleVec3; p.description = "Per-axis rotation in DEGREES, applied SECOND (Z then Y then X, matching standard_object orientation).  uv projection uses z only"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "translate";        p.kind = ValueKind::DoubleVec3; p.description = "Per-axis translation, applied LAST.  uv projection uses x/y only"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "blend_sharpness";  p.kind = ValueKind::Double;     p.description = "Triplanar-only: exponent on |N.axis| before normalizing the three per-axis blend weights.  Higher = sharper axis-aligned transitions"; p.defaultValueHint = "4.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// stochastic_tile_painter -- hex-tiling with histogram-
+			// preserving blending over `source` (doc 88 P3.1, S8).  See
+			// StochasticTilePainter.h for the full algorithm (Heitz &
+			// Neyret 2018; Burley JCGT 2019; Mikkelsen JCGT 2022 for the
+			// blend_gamma default).
+			struct StochasticTilePainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string source = bag.GetString( "source", "" );
+					if( source.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"stochastic_tile_painter `%s`: missing `source` (the painter to tile)",
+							name.c_str() );
+						return false;
+					}
+
+					const double tileScale = bag.GetDouble( "tile_scale", 4.0 );
+					if( !( tileScale > 0.0 ) || !Implementation::ExpressionProgram::IsFinite( (Scalar)tileScale ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"stochastic_tile_painter `%s`: tile_scale %g must be finite and > 0",
+							name.c_str(), tileScale );
+						return false;
+					}
+
+					const unsigned int seed = bag.GetUInt( "seed", 0 );
+
+					double mean[3] = { 0.5, 0.5, 0.5 };
+					bag.GetVec3( "mean", mean );
+					for( int k = 0; k < 3; ++k ) {
+						if( !Implementation::ExpressionProgram::IsFinite( (Scalar)mean[k] ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"stochastic_tile_painter `%s`: mean must be finite (nan/inf rejected)",
+								name.c_str() );
+							return false;
+						}
+					}
+
+					const double blendGamma = bag.GetDouble( "blend_gamma", 7.0 );
+					if( !Implementation::ExpressionProgram::IsFinite( (Scalar)blendGamma ) || blendGamma < 0.0 || blendGamma > 64.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"stochastic_tile_painter `%s`: blend_gamma %g must be in [0, 64] (negative would divide-by-zero on a zero barycentric weight; anything past the literature's range buys nothing but underflow risk)",
+							name.c_str(), blendGamma );
+						return false;
+					}
+
+					std::string colorSpace = bag.GetString( "color_space", "Rec709RGB_Linear" );
+
+					return pJob.AddStochasticTilePainter( name.c_str(), source.c_str(), tileScale, seed, mean, blendGamma, colorSpace.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "stochastic_tile_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Hex-tiling with histogram-preserving blending over `source` (doc 88 P3.1) -- breaks up the visible tile-grid repetition of a photographic source (one photo of bark/plaster/rust -> unbounded non-repeating cover) with no extra authored content (Heitz & Neyret 2018; Burley, JCGT 2019).  Partitions `ptCoord * tile_scale` into a triangular lattice; each of the 3 lattice vertices bounding the query point gets a deterministic (`seed`-derived) random UV offset, `source` is sampled at all three, and the samples are combined with sharpened barycentric weights (`blend_gamma`) via the variance-preserving formula out = mean + sum(w_i*(x_i-mean))/sqrt(sum(w_i^2)) -- this restores the source's original value spread, which a plain weighted average would blur toward `mean`.  `mean` is AUTHOR-SUPPLIED (not estimated from `source` -- painters have no statistics prepass in this codebase); pick it to match the source image/painter's actual average value for the sharpest restoration.  UV domain only (`ptCoord`) -- wrap in an outer `mapping_painter { projection triplanar }` for world-space / UV-less tiling rather than a separate projection parameter here.  GetAlpha uses the same sharpened weights but WITHOUT the variance restore (alpha is coverage, not a histogram).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "source";      p.kind = ValueKind::Reference;  p.required = true; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named painter to tile (typically an image painter)"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "tile_scale";  p.kind = ValueKind::Double;     p.description = "Lattice density -- larger means smaller, more numerous tiles"; p.defaultValueHint = "4.0"; }
+						{ auto& p = P(); p.name = "seed";        p.kind = ValueKind::UInt;       p.description = "Hash seed for per-vertex UV offsets"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "mean";        p.kind = ValueKind::DoubleVec3; p.description = "Source's mean value (r,g,b) -- author-supplied, used by the variance-preserving blend"; p.defaultValueHint = "0.5 0.5 0.5"; }
+						{ auto& p = P(); p.name = "blend_gamma"; p.kind = ValueKind::Double;     p.description = "Barycentric-weight sharpening exponent (higher = crisper triangle seams); [0, 64]"; p.defaultValueHint = "7.0"; }
+						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Interpretation of `mean`'s r g b"; p.defaultValueHint = "Rec709RGB_Linear"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// scatter_painter -- texture-bombing / FX-map-lite (doc 88
+			// P3.2, S8).  See ScatterPainter.h for the full algorithm and
+			// the neighbourhood-reach proof behind the stamp_scale /
+			// jitter_scale bound enforced below.
+			struct ScatterPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string source = bag.GetString( "source", "" );
+					if( source.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: missing `source` (the stamp painter)",
+							name.c_str() );
+						return false;
+					}
+					std::string background = bag.GetString( "background", "" );
+					if( background.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: missing `background`",
+							name.c_str() );
+						return false;
+					}
+
+					const double cellScale = bag.GetDouble( "cell_scale", 4.0 );
+					if( !( cellScale > 0.0 ) || !Implementation::ExpressionProgram::IsFinite( (Scalar)cellScale ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: cell_scale %g must be finite and > 0",
+							name.c_str(), cellScale );
+						return false;
+					}
+
+					const double stampScale = bag.GetDouble( "stamp_scale", 0.7 );
+					if( !( stampScale > 0.0 ) || !Implementation::ExpressionProgram::IsFinite( (Scalar)stampScale ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: stamp_scale %g must be finite and > 0",
+							name.c_str(), stampScale );
+						return false;
+					}
+
+					const double jitterPosition = bag.GetDouble( "jitter_position", 0.5 );
+					if( jitterPosition < 0.0 || jitterPosition > 1.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: jitter_position %g must be in [0, 1]",
+							name.c_str(), jitterPosition );
+						return false;
+					}
+
+					const double jitterRotationDeg = bag.GetDouble( "jitter_rotation", 15.0 );
+					if( jitterRotationDeg < 0.0 || jitterRotationDeg > 360.0 || !Implementation::ExpressionProgram::IsFinite( (Scalar)jitterRotationDeg ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: jitter_rotation %g must be in [0, 360] degrees",
+							name.c_str(), jitterRotationDeg );
+						return false;
+					}
+
+					const double jitterScale = bag.GetDouble( "jitter_scale", 0.2 );
+					if( jitterScale < 0.0 || jitterScale >= 1.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: jitter_scale %g must be in [0, 1)",
+							name.c_str(), jitterScale );
+						return false;
+					}
+
+					const double probability = bag.GetDouble( "probability", 1.0 );
+					if( probability < 0.0 || probability > 1.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: probability %g must be in [0, 1]",
+							name.c_str(), probability );
+						return false;
+					}
+
+					// Neighbourhood-reach bound (see ScatterPainter.h file
+					// header point 3): the 3x3 neighbourhood search is only
+					// provably sufficient when stamp_scale*(1+jitter_scale)
+					// <= sqrt(2).  Reject rather than silently clamp -- a
+					// silently-shrunk stamp would render smaller than
+					// authored with no visible diagnostic.
+					const double reach = stampScale * ( 1.0 + jitterScale );
+					const double kMaxReach = 1.4142135623730951;	// sqrt(2)
+					if( reach > kMaxReach ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scatter_painter `%s`: stamp_scale * (1 + jitter_scale) = %g exceeds the 3x3-neighbourhood-search bound of sqrt(2) (%g) -- the stamp could extend past the immediately adjacent cell and go unfound; reduce stamp_scale or jitter_scale",
+							name.c_str(), reach, kMaxReach );
+						return false;
+					}
+
+					const unsigned int seed = bag.GetUInt( "seed", 0 );
+
+					return pJob.AddScatterPainter( name.c_str(), source.c_str(), background.c_str(),
+						cellScale, stampScale, jitterPosition, jitterRotationDeg, jitterScale, probability, seed );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "scatter_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Texture-bombing / FX-map-lite (doc 88 P3.2): stamps `source` over `background` on a jittered square lattice -- the discrete-element richness (rivets, leaves, scratches, stains, screws) that noise cannot produce.  Each lattice cell may host one stamp instance (per-cell `probability` roll), jittered in position (`jitter_position`, stays within its owning cell), rotation (`jitter_rotation`, +/- degrees), and size (`stamp_scale` +/- `jitter_scale` relative).  A 3x3-cell neighbourhood search finds stamps that cross into an adjacent cell; among covering candidates the nearest stamp CENTER wins.  The winning stamp composites over `background` via `source`'s own alpha (Porter-Duff over) -- an RGBA stamp with alpha 0 at that texel shows background, the standard texture-bombing cutout idiom.  All jitter is deterministic (`seed`-hashed per cell), never random-per-render.  UV domain only; wrap in an outer `mapping_painter { projection triplanar }` for world-space scattering.  `stamp_scale * (1 + jitter_scale)` is capped at sqrt(2) (~1.414) -- the provable bound under which the 3x3 neighbourhood search can never miss a stamp; the parser rejects chunks that exceed it.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";               p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "source";             p.kind = ValueKind::Reference;  p.required = true; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named stamp painter, sampled in its own local [0,1]^2 frame"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "background";         p.kind = ValueKind::Reference;  p.required = true; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named background painter, shown outside every stamp"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "cell_scale";         p.kind = ValueKind::Double;     p.description = "Lattice density -- larger means smaller, more numerous cells"; p.defaultValueHint = "4.0"; }
+						{ auto& p = P(); p.name = "stamp_scale";        p.kind = ValueKind::Double;     p.description = "Base stamp size within a cell, as a fraction of the cell width"; p.defaultValueHint = "0.7"; }
+						{ auto& p = P(); p.name = "jitter_position";    p.kind = ValueKind::Double;     p.description = "Position jitter, [0, 1] (1 = center may reach the cell edge)"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "jitter_rotation";    p.kind = ValueKind::Double;     p.description = "Max rotation jitter, +/- degrees, [0, 360]"; p.defaultValueHint = "15.0"; }
+						{ auto& p = P(); p.name = "jitter_scale";       p.kind = ValueKind::Double;     p.description = "Relative +/- size jitter, [0, 1)"; p.defaultValueHint = "0.2"; }
+						{ auto& p = P(); p.name = "probability";        p.kind = ValueKind::Double;     p.description = "Per-cell occupancy probability, [0, 1] (0 = no stamps, 1 = every cell occupied)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "seed";               p.kind = ValueKind::UInt;       p.description = "Hash seed for all per-cell jitter draws"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct Function2DColorPainterAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -5694,7 +7816,7 @@ namespace RISE
 						cd.description = "Wraps a named IFunction2D as a greyscale COLOUR painter (out = bias + scale * f(u,v) on all channels).  The colour analogue of scalar_painter { function2d }: lets any procedural 2D field (Perlin, Worley, polynomial, composite, guilloché) feed a colour slot or a blend_painter mask -- e.g. the guilloché spall mask driving the matte oxide-scale blend.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction2D to wrap as greyscale colour"; }
+						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "Named IFunction2D to wrap as greyscale colour -- resolved via pFunc2DManager (Job::AddFunction2DColorPainter), which holds `function`-category IFunction2D chunks (piecewise_linear_function2d) PLUS every dual-registered colour painter except expression_painter/scalar_painter, hence the {Painter, Function} pair"; p.semantics.pipe = ParameterPipe::Function2D; }
 						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Output scale"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;    p.description = "Output bias (out = bias + scale * f)"; p.defaultValueHint = "0.0"; }
 						return cd;
@@ -5705,39 +7827,254 @@ namespace RISE
 
 			struct SweepGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
+				//! Expand ONE profile-source family -- the point / circle / rect
+				//! trio -- into a flat CCW (x, h) point list.  Both the primary
+				//! `profile_*` slot and the loft's `profile2_*` slot go through
+				//! this ONE function (doc 89 slice A), so the three forms cannot
+				//! drift apart between the two slots, and the factory only ever
+				//! sees plain point lists -- which is what collapses the nine
+				//! profile x profile2 authoring combinations to a single morph
+				//! code path.  `required` FALSE makes an unauthored family a
+				//! no-op (`present` FALSE) instead of an error.
+				static bool ExpandProfileFamily(
+						const ParseStateBag& bag, const std::string& name,
+						const char* pointKey, const char* circleKey, const char* rectKey,
+						const char* label, const bool required,
+						std::vector<double>& prof, bool& present )
+				{
+					present = false;
+					// A profile family is authored EXACTLY one of three ways:
+					// repeatable point lines (hand-authored polygon), OR the
+					// circle convenience (regular n-gon), OR the rect
+					// convenience (box, optionally rounded) -- named here by
+					// pointKey / circleKey / rectKey so this one body serves
+					// both the `profile_*` and the `profile2_*` family.
+					const std::vector<std::string>& profLines = bag.GetRepeatable( pointKey );
+					const bool hasCircle = bag.Has( circleKey );
+					const bool hasRect   = bag.Has( rectKey );
+					const int profileFormCount = ( profLines.empty() ? 0 : 1 ) + ( hasCircle ? 1 : 0 ) + ( hasRect ? 1 : 0 );
+					present = ( profileFormCount > 0 );
+					if( profileFormCount == 0 && !required ) {
+						return true;	// this family is OPTIONAL and was not authored
+					}
+					if( profileFormCount == 0 ) {
+						return SweepReject(
+							"sweep_geometry `%s`: missing %s -- supply repeatable `%s <x> <h>` lines, OR `%s <r> [n]`, OR `%s <w> <h> [r]`",
+							name.c_str(), label, pointKey, circleKey, rectKey );
+					}
+					if( profileFormCount > 1 ) {
+						return SweepReject(
+							"sweep_geometry `%s`: %s, %s, and %s are mutually exclusive -- author exactly ONE %s source",
+							name.c_str(), pointKey, circleKey, rectKey, label );
+					}
+
+					prof.clear();
+					if( !profLines.empty() ) {
+						if( profLines.size() < 3 ) {
+							return SweepReject(
+								"sweep_geometry `%s`: need at least 3 repeatable `%s <x> <h>` entries (a closed polygon; got %u)",
+								name.c_str(), pointKey, (unsigned int)profLines.size() );
+						}
+						prof.reserve( profLines.size() * 2 );
+						for( std::size_t i = 0; i < profLines.size(); ++i ) {
+							// TEXT-validate first, exactly as every sibling
+							// branch here (profile_circle / profile_rect) and
+							// lathe_geometry's own profile_point loop already
+							// do.  A bare sscanf conversion count is NOT that
+							// gate: sscanf happily converts `nan` and `inf`,
+							// so `profile_point inf 0` returned 2 and sailed
+							// through -- and a non-finite profile coordinate
+							// poisons the shoelace area, the arc-length
+							// parameters and every vertex, while each
+							// downstream gate is a COMPARISON that a NaN
+							// silently passes.
+							int nTok = 0;
+							if( !AllTokensAreFiniteNumbers( profLines[i].c_str(), &nTok ) || nTok != 2 ) {
+								return SweepReject(
+									"sweep_geometry `%s`: %s %u (`%s`) must be exactly two FINITE numbers `<x> <h>` "
+									"(no trailing garbage, no nan/inf)",
+									name.c_str(), pointKey, (unsigned int)i, profLines[i].c_str() );
+							}
+							double x = 0, h = 0;
+							sscanf( profLines[i].c_str(), "%lf %lf", &x, &h );
+							prof.push_back( x );
+							prof.push_back( h );
+						}
+					} else if( hasCircle ) {
+						// profile_circle <r> [n]: a regular CCW n-gon of radius r
+						// centred at the profile origin -- the same winding /
+						// (x,h)=(r cos, r sin) convention a hand-authored circular
+						// profile_point ring already uses elsewhere in the codebase.
+						const std::string cs = bag.GetString( circleKey, "" );
+						// profile_circle has OPTIONAL arity (`<r>` or `<r> <n>`), so a
+						// bare sscanf conversion count can't tell "n legitimately
+						// omitted" from "garbage glued onto r" (`1.0abc` stops %lf at
+						// `1.0`, leaving `abc` for the next %lf to fail on -- sscanf
+						// halts there instead of erroring, silently dropping the
+						// glued text).  AllTokensAreFiniteNumbers TEXT-validates the
+						// whole string first: exact whitespace-separated token count,
+						// no trailing garbage, no nan/inf spellings.
+						int nTok = 0;
+						if( !AllTokensAreFiniteNumbers( cs.c_str(), &nTok ) || nTok < 1 || nTok > 2 ) {
+							return SweepReject(
+								"sweep_geometry `%s`: %s `%s` must be `<r>` or `<r> <n>` (finite numbers, no trailing garbage)",
+								name.c_str(), circleKey, cs.c_str() );
+						}
+						double r = 0, nD = 24;
+						const int nf = sscanf( cs.c_str(), "%lf %lf", &r, &nD );
+						if( !( r > 0 ) ) {
+							return SweepReject(
+								"sweep_geometry `%s`: %s radius (%g) must be > 0", name.c_str(), circleKey, r );
+						}
+						// nD is already finite (AllTokensAreFiniteNumbers above), but an
+						// absurdly large magnitude is still UB to (int)-cast -- reject
+						// outright rather than clamp-and-warn like the in-range case.
+						if( nf == 2 && fabs( nD ) >= 1e9 ) {
+							return SweepReject(
+								"sweep_geometry `%s`: %s n (%g) is absurdly out of range", name.c_str(), circleKey, nD );
+						}
+						int n = ( nf == 2 ) ? (int)( nD + 0.5 ) : 24;
+						if( n < 3 || n > 512 ) {
+							const int clamped = n < 3 ? 3 : 512;
+							GlobalLog()->PrintEx( eLog_Warning,
+								"sweep_geometry `%s`: %s n (%d) clamped to %d", name.c_str(), circleKey, n, clamped );
+							n = clamped;
+						}
+						prof.reserve( (std::size_t)n * 2 );
+						for( int k = 0; k < n; ++k ) {
+							const double a = TWO_PI * k / n;
+							prof.push_back( r * cos( a ) );
+							prof.push_back( r * sin( a ) );
+						}
+					} else {
+						// profile_rect <w> <h> [r]: a CCW box of width w (binormal
+						// axis) and height h (normal axis) centred at the profile
+						// origin, with an optional corner radius r.  r > 0 rounds
+						// each corner with a 5-point (4-interval) quarter-circle arc;
+						// the four corners are emitted in CCW order BR -> TR -> TL ->
+						// BL, matching the sharp box's corner order at r == 0.
+						const std::string rs = bag.GetString( rectKey, "" );
+						// Same optional-arity trailing-garbage trap as profile_circle
+						// above (`2 2extra` -> w=2, h=2, the "extra" silently dropped
+						// because the 3rd %lf's parse failure halts sscanf before it
+						// ever reaches a trailing %s catch-all) -- TEXT-validate first.
+						int nTok = 0;
+						if( !AllTokensAreFiniteNumbers( rs.c_str(), &nTok ) || nTok < 2 || nTok > 3 ) {
+							return SweepReject(
+								"sweep_geometry `%s`: %s `%s` must be `<w> <h>` or `<w> <h> <r>` (finite numbers, no trailing garbage)",
+								name.c_str(), rectKey, rs.c_str() );
+						}
+						double w = 0, h = 0, r = 0;
+						const int nf = sscanf( rs.c_str(), "%lf %lf %lf", &w, &h, &r );
+						if( nf == 2 ) { r = 0; }
+						if( !( w > 0 ) || !( h > 0 ) ) {
+							return SweepReject(
+								"sweep_geometry `%s`: %s width/height (%g, %g) must both be > 0", name.c_str(), rectKey, w, h );
+						}
+						const double halfMin = ( w < h ? w : h ) * 0.5;
+						// C2 fix round (comment corrected 2026-08-14): a NaN corner
+						// radius (e.g. `profile_rect 2 2 nan`) is actually rejected
+						// ABOVE by AllTokensAreFiniteNumbers -- the TEXT-layer gate,
+						// since "nan" is not a finite-number token, never lets a NaN
+						// literal reach this line at all.  This negated-idiom range
+						// check (`!( r >= 0.0 && r <= halfMin )`, vs. the naive
+						// `r < 0 || r > halfMin` which passes a NaN r through both
+						// branches) is DEFENSE IN DEPTH, not the primary guard.
+						if( !( r >= 0.0 && r <= halfMin ) ) {
+							return SweepReject(
+								"sweep_geometry `%s`: %s corner radius (%g) must be in [0, min(w,h)/2] = [0, %g]",
+								name.c_str(), rectKey, r, halfMin );
+						}
+						const double hw = w * 0.5, hh = h * 0.5;
+						if( r <= 0 ) {
+							prof.push_back(  hw ); prof.push_back( -hh );
+							prof.push_back(  hw ); prof.push_back(  hh );
+							prof.push_back( -hw ); prof.push_back(  hh );
+							prof.push_back( -hw ); prof.push_back( -hh );
+						} else {
+							const double cx[4] = {  hw-r,  hw-r, -(hw-r), -(hw-r) };
+							const double cy[4] = { -(hh-r), hh-r,  hh-r, -(hh-r) };
+							const double startDeg[4] = { -90, 0, 90, 180 };
+							prof.reserve( 4 * 5 * 2 );
+							for( int c = 0; c < 4; ++c ) {
+								for( int k = 0; k <= 4; ++k ) {
+									const double a = ( startDeg[c] + 22.5 * k ) * DEG_TO_RAD;
+									prof.push_back( cx[c] + r * cos( a ) );
+									prof.push_back( cy[c] + r * sin( a ) );
+								}
+							}
+							// A corner arc's own closing point (its true 90-degree end,
+							// computed off ITS OWN centre) coincides EXACTLY with the
+							// following corner's opening point (computed off THAT
+							// corner's own, different, centre) only when the straight
+							// edge between them has collapsed to zero length -- which
+							// happens per-SIDE, not globally: at r == min(w,h)/2 the two
+							// sides along the SHORTER dimension collapse (a capsule),
+							// and if w == h too (a full circle from 4 quarter arcs
+							// sharing one centre) all four sides collapse.  A blanket
+							// "drop every corner's last sample" would also cut the real,
+							// still-finite sides on a capsule (e.g. profile_rect 4 2 1),
+							// so dedup CONDITIONALLY: drop a sample only when it is
+							// actually coincident with its predecessor, checked cyclically
+							// so the wrap edge (corner 3 -> corner 0) is covered too.
+							const double eps = 1e-9 * ( ( hw > hh ? hw : hh ) + r );
+							std::vector<double> deduped;
+							deduped.reserve( prof.size() );
+							for( std::size_t k = 0; k < prof.size(); k += 2 ) {
+								const double x = prof[k], y = prof[k+1];
+								if( !deduped.empty() ) {
+									const double px = deduped[ deduped.size() - 2 ];
+									const double py = deduped[ deduped.size() - 1 ];
+									if( fabs( x - px ) < eps && fabs( y - py ) < eps ) {
+										continue;
+									}
+								}
+								deduped.push_back( x );
+								deduped.push_back( y );
+							}
+							if( deduped.size() >= 4 ) {
+								const double x0 = deduped[0], y0 = deduped[1];
+								const double xn = deduped[ deduped.size() - 2 ], yn = deduped[ deduped.size() - 1 ];
+								if( fabs( x0 - xn ) < eps && fabs( y0 - yn ) < eps ) {
+									deduped.pop_back();
+									deduped.pop_back();
+								}
+							}
+							prof.swap( deduped );
+						}
+					}
+					return true;
+				}
+
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name = bag.GetString( "name", "noname" );
 
-					// repeatable 2D profile + 3D path lines
-					const std::vector<std::string>& profLines = bag.GetRepeatable( "profile_point" );
-					if( profLines.size() < 3 ) {
-						GlobalLog()->PrintEx( eLog_Error,
-							"sweep_geometry `%s`: need at least 3 repeatable `profile_point <x> <h>` entries (a closed polygon; got %u)",
-							name.c_str(), (unsigned int)profLines.size() );
+					// The profile is authored EXACTLY one of three ways: repeatable
+					// `profile_point` lines (hand-authored polygon), OR the
+					// `profile_circle` convenience (regular n-gon), OR the
+					// `profile_rect` convenience (box, optionally rounded).  The
+					// OPTIONAL second profile (`profile2_*`, doc 89 slice A) offers
+					// the identical trio with the identical mutual exclusion, and
+					// runs through the same expander.
+					std::vector<double> prof;
+					bool haveProfile = false;
+					if( !ExpandProfileFamily( bag, name, "profile_point", "profile_circle", "profile_rect",
+							"profile", true, prof, haveProfile ) ) {
 						return false;
 					}
-					std::vector<double> prof;
-					prof.reserve( profLines.size() * 2 );
-					for( std::size_t i = 0; i < profLines.size(); ++i ) {
-						double x = 0, h = 0;
-						char trailing[8] = {0};
-						if( sscanf( profLines[i].c_str(), "%lf %lf %7s", &x, &h, trailing ) != 2 ) {
-							GlobalLog()->PrintEx( eLog_Error,
-								"sweep_geometry `%s`: profile_point %u (`%s`) must be exactly two numbers `<x> <h>`",
-								name.c_str(), (unsigned int)i, profLines[i].c_str() );
-							return false;
-						}
-						prof.push_back( x );
-						prof.push_back( h );
+					std::vector<double> prof2;
+					bool haveProfile2 = false;
+					if( !ExpandProfileFamily( bag, name, "profile2_point", "profile2_circle", "profile2_rect",
+							"second profile", false, prof2, haveProfile2 ) ) {
+						return false;
 					}
 
 					const std::vector<std::string>& pointLines = bag.GetRepeatable( "point" );
 					if( pointLines.size() < 2 ) {
-						GlobalLog()->PrintEx( eLog_Error,
+						return SweepReject(
 							"sweep_geometry `%s`: need at least 2 repeatable `point <x> <y> <z>` path control points (got %u)",
 							name.c_str(), (unsigned int)pointLines.size() );
-						return false;
 					}
 					std::vector<double> pts;
 					pts.reserve( pointLines.size() * 3 );
@@ -5745,10 +8082,9 @@ namespace RISE
 						double x = 0, y = 0, z = 0;
 						char trailing[8] = {0};
 						if( sscanf( pointLines[i].c_str(), "%lf %lf %lf %7s", &x, &y, &z, trailing ) != 3 ) {
-							GlobalLog()->PrintEx( eLog_Error,
+							return SweepReject(
 								"sweep_geometry `%s`: point %u (`%s`) must be exactly three numbers `<x> <y> <z>`",
 								name.c_str(), (unsigned int)i, pointLines[i].c_str() );
-							return false;
 						}
 						pts.push_back( x ); pts.push_back( y ); pts.push_back( z );
 					}
@@ -5759,33 +8095,124 @@ namespace RISE
 					std::vector<double> widths;
 					if( !widthLines.empty() ) {
 						if( widthLines.size() > pointLines.size() ) {
-							GlobalLog()->PrintEx( eLog_Error,
+							return SweepReject(
 								"sweep_geometry `%s`: %u `point_width` entries exceed %u `point` path control points (one width per point; pad with 1.0)",
 								name.c_str(), (unsigned int)widthLines.size(), (unsigned int)pointLines.size() );
-							return false;
 						}
 						widths.reserve( widthLines.size() );
 						for( std::size_t i = 0; i < widthLines.size(); ++i ) {
 							double w = 0;
 							char trailing[8] = {0};
 							if( sscanf( widthLines[i].c_str(), "%lf %7s", &w, trailing ) != 1 ) {
-								GlobalLog()->PrintEx( eLog_Error,
+								return SweepReject(
 									"sweep_geometry `%s`: point_width %u (`%s`) must be exactly one number `<sx>`",
 									name.c_str(), (unsigned int)i, widthLines[i].c_str() );
-								return false;
 							}
 							if( !( w > 0 ) ) {
-								GlobalLog()->PrintEx( eLog_Error,
+								return SweepReject(
 									"sweep_geometry `%s`: point_width %u (%g) must be > 0", name.c_str(), (unsigned int)i, w );
-								return false;
 							}
 							widths.push_back( w );
 						}
 					}
 
+					// OPTIONAL repeatable per-control-point scale multipliers,
+					// one per `point` (the rest pad with 1.0).  TWO arities:
+					//   `point_scale <s>`       -- UNIFORM on both profile axes
+					//                              (the historical form; a round
+					//                              varying radius)
+					//   `point_scale <sx> <sy>` -- ANISOTROPIC (doc 89 slice A):
+					//                              sx along the profile's local x
+					//                              (binormal), sy along its local
+					//                              y (frame normal), so a section
+					//                              can be flatter than it is wide
+					//                              and change that ratio station
+					//                              to station.
+					// A 1-arg line inside an otherwise 2-arg track simply means
+					// sx == sy at that station, so the two forms mix freely; the
+					// y track is only handed to the factory when at least one
+					// line actually used the 2-arg form, which keeps every
+					// pre-slice-A scene on the byte-identical uniform path.
+					// Same optional-arity trailing-garbage trap profile_circle /
+					// profile_rect have, so TEXT-validate the token count first.
+					const std::vector<std::string>& scaleLines = bag.GetRepeatable( "point_scale" );
+					std::vector<double> scales, scalesY;
+					bool anyAnisotropic = false;
+					if( !scaleLines.empty() ) {
+						if( scaleLines.size() > pointLines.size() ) {
+							return SweepReject(
+								"sweep_geometry `%s`: %u `point_scale` entries exceed %u `point` path control points (one scale per point; pad with 1.0)",
+								name.c_str(), (unsigned int)scaleLines.size(), (unsigned int)pointLines.size() );
+						}
+						scales.reserve( scaleLines.size() );
+						scalesY.reserve( scaleLines.size() );
+						for( std::size_t i = 0; i < scaleLines.size(); ++i ) {
+							int nTok = 0;
+							if( !AllTokensAreFiniteNumbers( scaleLines[i].c_str(), &nTok ) || nTok < 1 || nTok > 2 ) {
+								return SweepReject(
+									"sweep_geometry `%s`: point_scale %u (`%s`) must be `<s>` (uniform) or `<sx> <sy>` (anisotropic) -- finite numbers, no trailing garbage",
+									name.c_str(), (unsigned int)i, scaleLines[i].c_str() );
+							}
+							double sx = 0, sy = 0;
+							const int nf = sscanf( scaleLines[i].c_str(), "%lf %lf", &sx, &sy );
+							if( nf < 2 ) { sy = sx; } else { anyAnisotropic = true; }
+							if( !( sx > 0 ) || !( sy > 0 ) ) {
+								return SweepReject(
+									"sweep_geometry `%s`: point_scale %u (%g %g) must be > 0 on both axes", name.c_str(), (unsigned int)i, sx, sy );
+							}
+							scales.push_back( sx );
+							scalesY.push_back( sy );
+						}
+					}
+					if( !anyAnisotropic ) {
+						scalesY.clear();
+					}
+
+					// OPTIONAL repeatable per-control-point MORPH blend factors
+					// (doc 89 slice A), one per `point` (the rest pad with 1.0 --
+					// "finish the morph").  t = 0 is `profile`, t = 1 is
+					// `profile2`; the two halves of the loft are useless apart,
+					// so authoring either one alone is an error that NAMES the
+					// missing half.
+					const std::vector<std::string>& morphLines = bag.GetRepeatable( "point_morph" );
+					std::vector<double> morphs;
+					if( !morphLines.empty() && !haveProfile2 ) {
+						return SweepReject(
+							"sweep_geometry `%s`: `point_morph` needs a SECOND profile to morph toward -- add profile2_point / profile2_circle / profile2_rect (or drop the point_morph lines)",
+							name.c_str() );
+					}
+					if( !morphLines.empty() ) {
+						if( morphLines.size() > pointLines.size() ) {
+							return SweepReject(
+								"sweep_geometry `%s`: %u `point_morph` entries exceed %u `point` path control points (one morph per point; pad with 1.0)",
+								name.c_str(), (unsigned int)morphLines.size(), (unsigned int)pointLines.size() );
+						}
+						morphs.reserve( morphLines.size() );
+						for( std::size_t i = 0; i < morphLines.size(); ++i ) {
+							int nTok = 0;
+							if( !AllTokensAreFiniteNumbers( morphLines[i].c_str(), &nTok ) || nTok != 1 ) {
+								return SweepReject(
+									"sweep_geometry `%s`: point_morph %u (`%s`) must be exactly one finite number `<t>` (no trailing garbage, no nan/inf)",
+									name.c_str(), (unsigned int)i, morphLines[i].c_str() );
+							}
+							double t = 0;
+							sscanf( morphLines[i].c_str(), "%lf", &t );
+							// negated idiom: refuse (rather than clamp) an
+							// authored value outside [0, 1] -- past either end
+							// there is no profile left to blend toward, so the
+							// author meant something else and should be told.
+							if( !( t >= 0.0 && t <= 1.0 ) ) {
+								return SweepReject(
+									"sweep_geometry `%s`: point_morph %u (%g) must be in [0, 1] (0 = profile, 1 = profile2)",
+									name.c_str(), (unsigned int)i, t );
+							}
+							morphs.push_back( t );
+						}
+					}
+
 					SweepDescriptor d;
 					d.profilePoints    = &prof[0];
-					d.numProfilePoints = (unsigned int)profLines.size();
+					d.numProfilePoints = (unsigned int)( prof.size() / 2 );
 					d.pathPoints       = &pts[0];
 					d.numPathPoints    = (unsigned int)pointLines.size();
 					d.nLen             = (int)bag.GetUInt( "n_len", (unsigned int)d.nLen );
@@ -5793,9 +8220,43 @@ namespace RISE
 					d.endScaleY        = bag.GetDouble( "end_scale_y", d.endScaleY );
 					d.capStart         = bag.GetBool( "cap_start", d.capStart );
 					d.capEnd           = bag.GetBool( "cap_end",   d.capEnd );
+					d.pathClosed       = bag.GetBool( "path_closed", d.pathClosed );
+					if( d.pathClosed ) {
+						// cap_start / cap_end are ignored for a closed loop (there is
+						// no start/end cross-section) -- bag.Has() distinguishes an
+						// explicitly-authored TRUE from the untouched TRUE default, so
+						// silently drop the default but reject an explicit contradiction
+						// rather than silently ignoring authored intent.
+						if( bag.Has( "cap_start" ) && bag.GetBool( "cap_start", true ) ) {
+							return SweepReject(
+								"sweep_geometry `%s`: cap_start TRUE is incompatible with path_closed (a closed loop has no start cross-section)",
+								name.c_str() );
+						}
+						if( bag.Has( "cap_end" ) && bag.GetBool( "cap_end", true ) ) {
+							return SweepReject(
+								"sweep_geometry `%s`: cap_end TRUE is incompatible with path_closed (a closed loop has no end cross-section)",
+								name.c_str() );
+						}
+					}
 					if( !widths.empty() ) {
 						d.pointWidths    = &widths[0];
 						d.numPointWidths = (unsigned int)widths.size();
+					}
+					if( !scales.empty() ) {
+						d.pointScales    = &scales[0];
+						d.numPointScales = (unsigned int)scales.size();
+					}
+					if( !scalesY.empty() ) {
+						d.pointScalesY    = &scalesY[0];
+						d.numPointScalesY = (unsigned int)scalesY.size();
+					}
+					if( !prof2.empty() ) {
+						d.profile2Points    = &prof2[0];
+						d.numProfile2Points = (unsigned int)( prof2.size() / 2 );
+					}
+					if( !morphs.empty() ) {
+						d.pointMorphs    = &morphs[0];
+						d.numPointMorphs = (unsigned int)morphs.size();
 					}
 					{
 						const std::string fh = bag.GetString( "frame_hint", "" );
@@ -5803,9 +8264,8 @@ namespace RISE
 							double hx = 0, hy = 0, hz = 0;
 							char trailing[8] = {0};
 							if( sscanf( fh.c_str(), "%lf %lf %lf %7s", &hx, &hy, &hz, trailing ) != 3 ) {
-								GlobalLog()->PrintEx( eLog_Error,
+								return SweepReject(
 									"sweep_geometry `%s`: frame_hint must be three numbers `<x> <y> <z>`", name.c_str() );
-								return false;
 							}
 							d.frameHintX = hx; d.frameHintY = hy; d.frameHintZ = hz;
 						}
@@ -5817,18 +8277,256 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "sweep_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "General profile sweep: an arbitrary CLOSED 2D profile polygon (repeatable profile_point lines) swept along an arbitrary 3D Catmull-Rom path (repeatable point lines) with rotation-minimizing frames, optional per-axis linear taper (linear in path parameter), optional NON-linear per-station width (repeatable point_width multipliers, Catmull-Rom interpolated, composed multiplicatively with end_scale_x), and ear-clipped end caps.  Tubes, rails, mouldings, straps, cables.  Profile x maps to the frame binormal, h to the frame normal; UV = (profile arc fraction, path parameter fraction; profile U wraps with no duplicated seam vertex).  OPEN paths only: a loop authored first==last seams (RMF holonomy + open-spline padding) -- use torus_geometry for true rings.  Catmull-Rom rounds sharp path corners; add control points to tighten.";
+						cd.description = "Sweeps (LOFTS) a CLOSED 2D profile along a 3D Catmull-Rom path (point lines) with rotation-minimizing frames.  x -> binormal, h -> normal; UV = (profile arc frac, path frac), U wraps seamlessly.  Optional ear-clipped caps.  The section is NOT stuck round and NOT stuck at one shape: `point_scale <sx> <sy>` scales the two profile axes INDEPENDENTLY per station -- a TORSO, fin, strap, hull, keel, seat rail: flatter than it is wide, and changing that ratio along the spine.  A second profile (profile2_*) plus per-station `point_morph <t>` changes the section's OUTLINE along the path -- a SNOUT (round skull -> narrow muzzle), a round-to-square furniture leg, a duct meeting a rectangular vent.  Order: morph shapes the section, THEN point_scale / point_width (x only) / end_scale size it, all multiplicative.  path_closed TRUE: seamless loop (periodic sampling, holonomy-corrected frame, no caps; end_scale forced 1.0; a loop may morph only with EXPLICIT point_morph values).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "profile_point"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Closed-profile vertex `<x> <h>` in the sweep frame (repeatable, polygon order; at least 3; CCW = outward normals).  Duplicate a point to harden an edge"; }
-						{ auto& p = P(); p.name = "point";         p.kind = ValueKind::String; p.repeatable = true; p.description = "Path control point `<x> <y> <z>` (repeatable, path order; at least 2).  The profile sweeps a Catmull-Rom spline through these"; }
-						{ auto& p = P(); p.name = "point_width";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-control-point width (x-axis) multiplier `<sx>` (repeatable, path order; one per `point`, missing padded with 1.0; > 0).  Catmull-Rom interpolated along the path and composed MULTIPLICATIVELY with end_scale_x -- a NON-linear width profile (e.g. neck in at one end).  Catmull-Rom can over/undershoot between non-monotone widths (add path points to tighten; interpolated widths are floored to > 0).  Omit = uniform 1.0"; }
-						{ auto& p = P(); p.name = "n_len";         p.kind = ValueKind::UInt;   p.description = "Requested samples along the path (clamped 2..4096; actual = (points-1)*max(2, n_len/(points-1)) + 1)"; p.defaultValueHint = "64"; }
-						{ auto& p = P(); p.name = "end_scale_x";   p.kind = ValueKind::Double; p.description = "Profile x scale at the path end (linear taper from 1 at the start)"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "end_scale_y";   p.kind = ValueKind::Double; p.description = "Profile h scale at the path end (linear taper from 1 at the start)"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "cap_start";     p.kind = ValueKind::Bool;   p.description = "Close the start cross-section (ear-clipped cap)"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "cap_end";       p.kind = ValueKind::Bool;   p.description = "Close the end cross-section (ear-clipped cap)"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "frame_hint";    p.kind = ValueKind::String; p.description = "Initial binormal hint `<x> <y> <z>` for the rotation-minimizing frame (omit = world axis most perpendicular to the start tangent)"; }
+						{ auto& p = P(); p.name = "profile_point"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Closed-profile vertex `<x> <h>` (repeatable, >= 3, CCW = outward normals).  Exclusive with profile_circle/profile_rect"; }
+						{ auto& p = P(); p.name = "profile_circle"; p.kind = ValueKind::String; p.description = "Convenience profile `<r> [n]`: CCW n-gon, r > 0, n default 24 (clamped 3..512).  Exclusive with profile_point/profile_rect"; }
+						{ auto& p = P(); p.name = "profile_rect";  p.kind = ValueKind::String; p.description = "Convenience profile `<w> <h> [r]`: CCW rect, w/h > 0, optional corner radius r (default 0, <= min(w,h)/2).  Exclusive with profile_point/profile_circle"; }
+						{ auto& p = P(); p.name = "profile2_point"; p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL SECOND profile vertex `<x> <h>` (repeatable, >= 3, same CCW rule).  Its presence LOFTS the sweep: the section morphs profile -> profile2 along the path.  Exclusive with the other profile2_*"; }
+						{ auto& p = P(); p.name = "profile2_circle"; p.kind = ValueKind::String; p.description = "OPTIONAL second profile, circle form `<r> [n]` (as profile_circle).  Exclusive with the other profile2_*"; }
+						{ auto& p = P(); p.name = "profile2_rect";  p.kind = ValueKind::String; p.description = "OPTIONAL second profile, rect form `<w> <h> [r]` (as profile_rect).  Exclusive with the other profile2_*"; }
+						{ auto& p = P(); p.name = "point";         p.kind = ValueKind::String; p.repeatable = true; p.description = "Path control point `<x> <y> <z>` (repeatable; >= 2, or >= 3 when path_closed).  Catmull-Rom spline through these"; }
+						{ auto& p = P(); p.name = "point_width";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-point x-axis width `<sx>` (repeatable, > 0, missing padded 1.0; periodic when path_closed).  HISTORICAL x-only control -- prefer `point_scale <sx> <sy>`, which states both axes.  Composed with end_scale_x and point_scale.  Omit = uniform 1.0"; }
+						{ auto& p = P(); p.name = "point_scale";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-point section scale: `<s>` (UNIFORM, a round taper) or `<sx> <sy>` (ANISOTROPIC -- x = binormal axis, y = normal axis; the RECOMMENDED form for any non-circular body, e.g. a torso 1.0 0.55 flattening to 0.6 0.4).  Repeatable, > 0, missing padded 1.0, periodic when path_closed; arities mix freely.  Composed with point_width and end_scale, applied AFTER the morph.  Omit = uniform 1.0"; }
+						{ auto& p = P(); p.name = "point_morph";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-point morph blend `<t>` in [0, 1]: 0 = profile, 1 = profile2 (repeatable).  A SHORT track is padded with 1.0 -- i.e. FULLY profile2 -- so the remaining stations finish the morph rather than holding the last authored value.  The morphed section is anchored at profile's VERTEX MEAN (not its area centroid), so a profile2 whose vertices are clustered along one side anchors off its visual centre.  Requires a profile2_* source.  Omit = a linear 0 -> 1 ramp along the stations, which path_closed refuses (a ramp jumps at the seam) -- give a loop explicit values like 0/1/0 instead"; }
+						{ auto& p = P(); p.name = "n_len";         p.kind = ValueKind::UInt;   p.description = "Requested samples along the path (clamped 2..4096)"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "end_scale_x";   p.kind = ValueKind::Double; p.description = "Profile x scale at path end (taper from 1).  Must stay 1.0 when path_closed"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "end_scale_y";   p.kind = ValueKind::Double; p.description = "Profile h scale at path end (taper from 1).  Must stay 1.0 when path_closed"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "cap_start";     p.kind = ValueKind::Bool;   p.description = "Close the start cross-section (ear-clipped).  Must not be explicitly TRUE when path_closed"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "cap_end";       p.kind = ValueKind::Bool;   p.description = "Close the end cross-section (ear-clipped).  Must not be explicitly TRUE when path_closed"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "frame_hint";    p.kind = ValueKind::String; p.description = "Initial binormal hint `<x> <y> <z>` (omit = world axis most perpendicular to the start tangent)"; }
+						{ auto& p = P(); p.name = "path_closed";   p.kind = ValueKind::Bool;   p.description = "Sweep a seamless CLOSED loop: periodic path sampling, holonomy-corrected frame (no seam twist), cyclic ring stitching, no caps.  Needs >= 3 point entries, first/last not coincident.  end_scale must stay 1.0; cap_start/cap_end must not be TRUE"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct LatheGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				//! Same one-place-both-diagnostics pattern as
+				//! SkeletonGeometryAsciiChunkParser::Reject -- the specific
+				//! reason reaches the CST diag sink AND the log, so an author
+				//! (or the agent surface) is told which profile_point is at
+				//! fault rather than "the chunk failed".
+				static bool Reject( const std::string& why )
+				{
+					SetFinalizeDiagIfEmpty( why );
+					GlobalLog()->PrintEx( eLog_Error, "lathe_geometry:: %s", why.c_str() );
+					return false;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const std::string name = bag.GetString( "name", "noname" );
+
+					const std::vector<std::string>& profLines = bag.GetRepeatable( "profile_point" );
+					if( profLines.size() < 2 ) {
+						char buf[32];
+						std::snprintf( buf, sizeof(buf), "%u", (unsigned int)profLines.size() );
+						return Reject( "`" + name + "`: need at least 2 repeatable `profile_point <r> <h>` "
+							"entries (the silhouette to revolve) -- got " + buf );
+					}
+
+					std::vector<double> prof;
+					prof.reserve( profLines.size() * 2 );
+					bool anyPositiveRadius = false;
+					for( std::size_t i = 0; i < profLines.size(); ++i ) {
+						// TEXT-validate first: an exact 2-token all-finite-numeric
+						// check catches wrong arity, non-numeric fields, glued
+						// trailing garbage (`0.35abc`, which a bare sscanf would
+						// silently truncate), and nan/inf spellings in one shot --
+						// the same gate sweep_geometry's optional-arity
+						// profile_circle/profile_rect were moved onto in the C2
+						// fix round.
+						int nTok = 0;
+						if( !AllTokensAreFiniteNumbers( profLines[i].c_str(), &nTok ) || nTok != 2 ) {
+							char buf[32];
+							std::snprintf( buf, sizeof(buf), "%u", (unsigned int)i );
+							return Reject( "`" + name + "`: profile_point " + buf + " (`" + profLines[i] +
+								"`) must be exactly two finite numbers `<r> <h>` (no trailing garbage, no nan/inf)" );
+						}
+						double r = 0, h = 0;
+						std::sscanf( profLines[i].c_str(), "%lf %lf", &r, &h );
+						if( !( r >= 0.0 ) ) {
+							char buf[96];
+							std::snprintf( buf, sizeof(buf), "%u (%g)", (unsigned int)i, r );
+							return Reject( "`" + name + "`: profile_point " + buf + " has a NEGATIVE radius -- "
+								"the profile is a silhouette in the HALF-plane, so r must be >= 0 "
+								"(r = 0 puts the point ON the axis, which is how a vase closes)" );
+						}
+						if( r > 0.0 ) {
+							anyPositiveRadius = true;
+						}
+						prof.push_back( r );
+						prof.push_back( h );
+					}
+					if( !anyPositiveRadius ) {
+						return Reject( "`" + name + "`: every profile_point has radius 0 -- the whole profile "
+							"lies ON the axis and revolves to zero area; at least one point needs r > 0" );
+					}
+
+					LatheDescriptor d;
+
+					{
+						// LOWER-CASE ONLY, exactly matching the `enumValues`
+						// this parameter advertises: the descriptor IS the
+						// accepted set (that is the whole point of the
+						// descriptor-driven parsers), so accepting `Y` while
+						// the schema, autocomplete and read_schema all say
+						// `y` would understate what parses and let the two
+						// drift.
+						const std::string axisStr = bag.GetString( "axis", "y" );
+						if     ( axisStr == "x" ) d.axis = 0;
+						else if( axisStr == "y" ) d.axis = 1;
+						else if( axisStr == "z" ) d.axis = 2;
+						else {
+							return Reject( "`" + name + "`: axis `" + axisStr + "` must be x, y or z (lower case)" );
+						}
+					}
+
+					d.sweepDegrees = bag.GetDouble( "sweep_degrees", d.sweepDegrees );
+					// Negated idiom on purpose (matches sweep_geometry's
+					// profile_rect range check): a NaN fails BOTH halves and
+					// is rejected, where `< 0 || > 360` would pass it through.
+					// Defense in depth -- the dispatcher's numeric ValueKind
+					// gate already rejects a `nan` token before Finalize runs.
+					if( !( d.sweepDegrees > 0.0 && d.sweepDegrees <= 360.0 ) ) {
+						char buf[64];
+						std::snprintf( buf, sizeof(buf), "%g", d.sweepDegrees );
+						return Reject( std::string( "`" ) + name + "`: sweep_degrees (" + buf +
+							") must be in (0, 360] -- 360 is a full turn, less is a section/cutaway" );
+					}
+
+					d.profilePoints    = &prof[0];
+					d.numProfilePoints = (unsigned int)( prof.size() / 2 );
+					d.nRadial          = (int)bag.GetUInt( "n_radial", (unsigned int)d.nRadial );
+					d.smooth           = bag.GetBool( "smooth", d.smooth );
+
+					return pJob.AddLatheGeometry( name.c_str(), d );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "lathe_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "A SURFACE OF REVOLUTION: an open 2D profile polyline (repeatable `profile_point <r> <h>`, r = radius from the axis, h = height along it) spun about a world axis.  Vases, bottles, goblets, turned table/chair legs, lamp bases, pedestals, finials, knobs -- the furniture-and-vessel vocabulary, authored as the one thing a silhouette already is: an outline.  A profile point with r = 0 sits ON the axis, so its ring collapses to a single POLE vertex fanned to its neighbour -- a profile that starts and ends at r = 0 is a closed, watertight vessel with NO caps needed and no zero-area triangles.  `sweep_degrees` below 360 makes a section/cutaway and adds two flat ear-clipped caps on the cut half-planes; at exactly 360 the last radial column stitches straight back to the first (no duplicated seam column).  UV = (angle fraction, normalized ARC LENGTH along the profile), so texture density stays even ALONG the profile however unevenly it is sampled -- with one exception, the single wrap-around band of a full 360 turn, where U runs the whole range backwards across that one band (the same seam convention sweep_geometry uses for its wrapped profile).  Outward orientation is DERIVED from the profile's signed volume of revolution, so a profile authored bottom-to-top or top-to-bottom both face outward.  A cutaway's cap is the profile closed back through the AXIS, which is the body's cross-section for a SOLID silhouette; for a TUBE/shell profile whose two ends sit at DIFFERENT heights that cap also fills the bore (when the two ends are level the cross-section is instead closed directly, so no zero-area spur is emitted).  The baked mesh is DOUBLE-SIDED (as sweep_geometry's is), so a luminaire material on a lathe radiates from the inside face as well as the outside -- worth knowing when a vase or a lamp shade IS the light.  One interaction to plan around: displaced_geometry over a PINCHED (waisted/hourglass) lathe keeps the waist closed: the two pinch poles are coincident but carry opposite normals (sharing one vertex would put one band's shading normal in the wrong half-space), and displacement moves coincident vertices to one shared position (mean of their displacement vectors) while each pole keeps its own normal.  Contrast sweep_geometry, which moves a CLOSED profile polygon along an arbitrary 3D path; a lathe spins an OPEN polyline about one fixed straight axis.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "profile_point"; p.kind = ValueKind::String; p.repeatable = true; p.required = true;
+						  p.description = "One silhouette vertex `<r> <h>` (repeatable; at least 2 required).  `r` is the radius from the axis and must be >= 0; r = 0 puts the point ON the axis, collapsing that ring to a single pole vertex (how a vase closes at top and bottom).  A radius within 1e-9 of the profile's own bounding extent is SNAPPED to the axis, so a GENERATED silhouette (whose `sin(pi)` endpoint is 1.5e-16, not 0) still reads as a pole rather than as a ring of sliver triangles.  `h` is the height along the axis.  Not every point may be r = 0.  Duplicate a point to HARDEN that edge (the zero-length segment splits the two normals), exactly as in sweep_geometry"; }
+						{ auto& p = P(); p.name = "axis";          p.kind = ValueKind::Enum;   p.enumValues = {"x","y","z"};
+						  p.description = "World axis to revolve about.  `y` matches cylinder_geometry and the SDF roundcone/capsule local-Y convention, so a lathe drops straight into a scene alongside them"; p.defaultValueHint = "y"; }
+						{ auto& p = P(); p.name = "sweep_degrees"; p.kind = ValueKind::Double;
+						  p.description = "Angular extent of the revolution, in (0, 360].  360 = a full closed turn (no duplicated seam column, no radial caps); anything less is a section/cutaway and gets a flat ear-clipped cap on each cut half-plane"; p.defaultValueHint = "360"; }
+						{ auto& p = P(); p.name = "n_radial";      p.kind = ValueKind::UInt;
+						  p.description = "Radial SEGMENTS around the axis (clamped 3..2048, with a warning when clamped).  A full turn emits n_radial columns; a partial sweep emits n_radial + 1"; p.defaultValueHint = "48"; }
+						{ auto& p = P(); p.name = "smooth";        p.kind = ValueKind::Bool;
+						  p.description = "TRUE: one row per profile point carrying the AVERAGE of its two adjacent segment normals -- a straight-sided section still shades flat, a curved one reads like a turned surface, and duplicating a profile point hardens just that edge.  FALSE: two rows per profile segment carrying that segment's flat normal (fully faceted)"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SkinGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				//! Same one-place-both-diagnostics pattern as
+				//! LatheGeometryAsciiChunkParser::Reject -- the specific
+				//! reason reaches the CST diag sink AND the log, so an author
+				//! (or the agent surface) is told WHICH rail point is at fault
+				//! rather than "the chunk failed".
+				static bool Reject( const std::string& why )
+				{
+					SetFinalizeDiagIfEmpty( why );
+					GlobalLog()->PrintEx( eLog_Error, "skin_geometry:: %s", why.c_str() );
+					return false;
+				}
+
+				//! One rail's repeatable `<x> <y> <z>` lines -> a flat triple
+				//! list.  TEXT-validates first: an exact 3-token all-finite
+				//! numeric check catches wrong arity, non-numeric fields,
+				//! glued trailing garbage (`0.35abc`, which a bare sscanf
+				//! silently truncates) and every nan/inf spelling in one shot.
+				//! That gate is the C2-round lesson applied from the start
+				//! here rather than retrofitted: sweep_geometry's `point`
+				//! lines still reach the factory through a bare sscanf, which
+				//! is exactly the hole this avoids.
+				static bool ReadRail( const ParseStateBag& bag, const std::string& name,
+				                      const char* key, std::vector<double>& out )
+				{
+					const std::vector<std::string>& lines = bag.GetRepeatable( key );
+					if( lines.size() < 2 ) {
+						char buf[32];
+						std::snprintf( buf, sizeof(buf), "%u", (unsigned int)lines.size() );
+						return Reject( "`" + name + "`: need at least 2 repeatable `" + key +
+							" <x> <y> <z>` entries (one of the sheet's two boundary curves) -- got " + buf );
+					}
+					out.reserve( lines.size() * 3 );
+					for( std::size_t i = 0; i < lines.size(); ++i ) {
+						int nTok = 0;
+						if( !AllTokensAreFiniteNumbers( lines[i].c_str(), &nTok ) || nTok != 3 ) {
+							char buf[32];
+							std::snprintf( buf, sizeof(buf), "%u", (unsigned int)i );
+							return Reject( std::string( "`" ) + name + "`: " + key + " " + buf + " (`" + lines[i] +
+								"`) must be exactly three finite numbers `<x> <y> <z>` (no trailing garbage, no nan/inf)" );
+						}
+						double x = 0, y = 0, z = 0;
+						std::sscanf( lines[i].c_str(), "%lf %lf %lf", &x, &y, &z );
+						out.push_back( x ); out.push_back( y ); out.push_back( z );
+					}
+					return true;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const std::string name = bag.GetString( "name", "noname" );
+
+					std::vector<double> railA, railB;
+					if( !ReadRail( bag, name, "rail_a", railA ) ) { return false; }
+					if( !ReadRail( bag, name, "rail_b", railB ) ) { return false; }
+
+					SkinDescriptor d;
+					d.railAPoints    = &railA[0];
+					d.numRailAPoints = (unsigned int)( railA.size() / 3 );
+					d.railBPoints    = &railB[0];
+					d.numRailBPoints = (unsigned int)( railB.size() / 3 );
+					d.nLen           = (int)bag.GetUInt( "n_len",    (unsigned int)d.nLen );
+					d.nAcross        = (int)bag.GetUInt( "n_across", (unsigned int)d.nAcross );
+					d.billow         = bag.GetDouble( "billow", d.billow );
+					// Defense in depth -- the dispatcher's numeric ValueKind
+					// gate already rejects a `nan` token before Finalize runs,
+					// and the factory re-checks for the direct-API caller.
+					// The negated idiom is deliberate: a NaN fails the compare
+					// where `== HUGE_VAL` would let it through.
+					if( !( fabs( d.billow ) < 1e300 ) ) {
+						char buf[64];
+						std::snprintf( buf, sizeof(buf), "%g", d.billow );
+						return Reject( std::string( "`" ) + name + "`: billow (" + buf +
+							") must be a finite number (no nan, no inf)" );
+					}
+
+					return pJob.AddSkinGeometry( name.c_str(), d );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "skin_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "A SKIN: the open sheet stretched between TWO boundary curves (`rail_a` and `rail_b`, each a repeatable `<x> <y> <z>` polyline).  WINGS and wing membranes, FINS, WEBBING between fingers or toes, SAILS, LEAVES and petals, AWNINGS and tarps, LAMPSHADE PANELS, kites, capes -- the whole \"thin surface bounded by curves\" family, which is the one shape class neither sweep_geometry (a closed section along a path) nor lathe_geometry (a silhouette about an axis) can state at all.  Pair it with skeleton_geometry to finish a limb: the bones are the skeleton, the membrane between them is the skin.  The two rails need NOT have the same number of points -- they are resampled onto the UNION of their arc-length parameters, so every authored vertex of BOTH rails appears in the mesh verbatim and an authored kink stays a kink instead of being chamfered away.  The base surface is RULED (each station is a straight span from rail_a to rail_b); `billow` then inflates the INTERIOR along the sheet's own normal with a falloff that is exactly zero at both rails, so the rails themselves never move -- that is the difference between a flat tarp and a wind-filled sail.  UV = (arc length ALONG the rails, 0 at rail_a to 1 at rail_b ACROSS), so a feather or vein texture lines up with the rails without a mapping chunk.  The bake is ONE double-sided sheet with no thickness: each face shades correctly from ITS OWN side, so the order the two rails are named -- which is what decides which way the surface normal points -- never creates a black side (verified per-ray: the same sheet authored rail_a-first and rail_b-first takes the SAME ray to a front-face hit, with the double-sided flip firing on exactly one of the two).  An opaque membrane lit only from the FAR side is dark, which is correct and is exactly what a thin solid slab would also do; thickness is not what makes a backlit wing glow, a transmitting MATERIAL is.  Rails that MEET at one or both ends are supported and are how a leaf or a pinched sail is authored: the meeting point collapses to ONE shared vertex and the tip becomes a connected fan, so there are no slivers, no duplicate vertices and no torn perimeter there.  Rails that merely come CLOSE (within 1e-9 of the sheet's own extent, the tolerance a generated rail needs) are snapped to that exact meeting first.  Rails that describe the SAME curve are refused: a skin needs two distinct boundaries to span.  A rail that only follows a companion chain's joint positions traces the BONE, not the body, and leaves the sheet touching its neighbor at one point instead of growing from it; run the attaching rail INTO the adjacent mass, not just up to its surface.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rail_a";   p.kind = ValueKind::String; p.repeatable = true; p.required = true;
+						  p.description = "One point `<x> <y> <z>` of the FIRST boundary curve (repeatable, in order along the curve; at least 2 required).  This rail is v = 0 in the UVs.  For a wing this is typically the LEADING edge, traced root to tip.  Duplicate a point to HARDEN that crease (the zero-length segment splits the two normals), exactly as in sweep_geometry and lathe_geometry"; }
+						{ auto& p = P(); p.name = "rail_b";   p.kind = ValueKind::String; p.repeatable = true; p.required = true;
+						  p.description = "One point `<x> <y> <z>` of the SECOND boundary curve (repeatable, at least 2; the count need NOT match rail_a).  This rail is v = 1.  For a wing this is the TRAILING edge, traced in the SAME direction as rail_a -- tracing it backwards spans the sheet as an hourglass"; }
+						{ auto& p = P(); p.name = "n_len";    p.kind = ValueKind::UInt;
+						  p.description = "Requested stations ALONG the rails (clamped 2..4096, with a warning when clamped).  A MINIMUM, not an exact count: every authored rail vertex is a station whether or not n_len asked for one, so the real count is at least the number of DISTINCT arc-length parameters across the two rails (a parameter both rails share is one station carrying both their points), and never fewer than n_len.  Raise it only to smooth a billowed or strongly curved sheet"; p.defaultValueHint = "32"; }
+						{ auto& p = P(); p.name = "n_across"; p.kind = ValueKind::UInt;
+						  p.description = "Vertex rows ACROSS the sheet, rail_a to rail_b (clamped 2..1024, with a warning when clamped).  2 is the two rails alone -- a flat ruled sheet with no interior, so `billow` has nothing to displace and is reported inert.  8 is plenty for a gently billowed membrane; raise it for a deep sail"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "billow";   p.kind = ValueKind::Double;
+						  p.description = "Inflation of the sheet's INTERIOR, as a FRACTION of each station's own rail-to-rail span (so a tapering wing billows proportionally and a pinched corner stays pinched), along the ruled sheet's normal, with a sin^2 falloff that is exactly zero and tangent at BOTH rails.  0 = a flat ruled surface (a tarp pulled tight).  0.1-0.25 = a filled sail or a wind-caught membrane.  POSITIVE inflates toward the sheet's own normal -- the direction of `d/du x d/dv`, i.e. rail-direction crossed into the rail_a-to-rail_b direction; NEGATIVE inflates the other way, which is the one-character fix when the bulge comes out on the wrong side.  A LARGE billow across a SHARP authored crease pinches at the crease (inflating a folded sheet folds it further -- that is the surface, not an artifact), and if it folds the sheet THROUGH itself the bake still happens but a warning names how many faces folded and where the first one is: keep billow modest on a kinked rail, round the kink, or raise n_len near it"; p.defaultValueHint = "0.0"; }
 						return cd;
 					}();
 					return d;
@@ -5897,7 +8595,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "path_instances_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "Along-path instancing: a named TEMPLATE geometry (tessellated once through the universal TessellateToMesh contract -- any first-class geometry works, e.g. an sdf_geometry capsule) stamped along a 3D Catmull-Rom path at arc-length pitch with optional slant and scale.  Fence posts, rivets, beads, stitching, chain links.  Template +Y aligns with the path tangent (positive slant rotates the tangent toward the binormal about the frame normal), +Z with the frame normal, +X with the binormal.  Instances BANK with the path (no world-up mode); steer roll with frame_hint.  Alternating twists (chain links) = two chunks at 2x pitch with offset phase and pre-rotated templates.";
+						cd.description = "Along-path instancing: a named TEMPLATE geometry (tessellated once through the universal TessellateToMesh contract -- any first-class geometry works, e.g. an sdf_geometry capsule) stamped along a 3D Catmull-Rom path at arc-length pitch with optional slant and scale.  Fence posts, rivets, beads, stitching, chain links.  Template +Y aligns with the path tangent (positive slant rotates the tangent toward the binormal about the frame normal), +Z with the frame normal, +X with the binormal.  Instances BANK with the path (no world-up mode); steer roll with frame_hint.  Alternating twists (chain links) = two chunks at 2x pitch with offset phase and pre-rotated templates.  Verified (doc 89 slice D) against a lathe_geometry template (a turned bead stamped along a curved path with the documented +Y/+Z/+X alignment holding) and against a displaced_geometry template (the template is Realize()'d before tessellation, so a row of dimpled/bark-textured beads is one displaced_geometry chunk plus this one, not N hand-placed copies) -- both derive and render with zero diagnostics.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "geometry"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.description = "Named template geometry to instance (must support TessellateToMesh -- every first-class RISE geometry does)"; }
@@ -5952,6 +8650,7 @@ namespace RISE
 					std::string base_geometry = bag.GetString( "base_geometry", "" );
 					unsigned int detail       = bag.GetUInt(   "detail",        32 );
 					std::string displacement  = bag.GetString( "displacement",  "none" );
+					std::string height        = bag.GetString( "height",        "none" );
 					double disp_scale         = bag.GetDouble( "disp_scale",    1.0 );
 					bool double_sided         = bag.GetBool(   "double_sided",  false );
 					bool face_normals         = bag.GetBool(   "face_normals",  false );
@@ -5963,11 +8662,17 @@ namespace RISE
 						return false;
 					}
 
-					return pJob.AddDisplacedGeometry(
+					// The two height routes' mutual exclusion, the scalar-pipe
+					// resolution of `height` and the Function2D resolution of
+					// `displacement` all live in Job::AddDisplacedGeometryWith-
+					// Height -- one home, so the CLI, the agent verbs and any
+					// future caller get the same wording.
+					return pJob.AddDisplacedGeometryWithHeight(
 						name.c_str(),
 						base_geometry.c_str(),
 						detail,
 						displacement == "none" ? 0 : displacement.c_str(),
+						height == "none" ? 0 : height.c_str(),
 						disp_scale,
 						double_sided,
 						face_normals,
@@ -5978,16 +8683,19 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "displaced_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "Tessellated geometry with painter-driven vertex displacement.";
+						cd.description = "Tessellated geometry with painter-driven vertex displacement.  TWO HEIGHT ROUTES, spell exactly one (naming both is a parse error): `displacement` samples an `IFunction2D` as `f(u,v)` (the original UV route, unchanged), while `height` evaluates a `scalar_painter` as a 3D FIELD at each vertex's OBJECT-space position -- which is what lets ONE `scalar_painter` drive `displaced_geometry { height F  disp_scale S }` for the coarse shape AND `relief_modifier { height F }` on the same object for the fine shading-normal relief (docs/RELIEF_MODIFIER_DESIGN.md section 5.3).  `disp_scale` applies to either.  `base_geometry` is a plain reference to ANY already-declared geometry -- doc 89 slice D audited every builder output against it: analytic primitives (sphere/box/torus/...), `sdf_geometry` (including a `skeleton_geometry`-expanded creature body and a `superellipsoid` part), `lathe_geometry`, `sweep_geometry` and `skin_geometry` all DERIVE, BAKE and RENDER cleanly with zero diagnostics, and `path_instances_geometry` can itself take a `displaced_geometry` as its template.  Scales/dimples/hammered-metal detail over any of those is one composition away.  A `lathe_geometry`/`sweep_geometry`/`skin_geometry` or indexed-mesh import (`3dsmesh_geometry`, `rawmesh2_geometry`, `plymesh_geometry`, `gltfmesh_geometry`, `risemesh_geometry`, `indexedmesh_geometry`) base keeps its shared vertex topology through the bake and the base's own smooth shading normals are carried through the displacement (rotated with the displaced surface), so it SHADES smooth under relief like an `sdf_geometry` base.  `detail` also sets how finely a MESH base is displaced -- a mesh ignores `detail` in its own tessellation, so the target spacing is (the base's bounding-box diagonal / `detail`).  REFINEMENT NEVER CHANGES THE AUTHORED SURFACE: it adds sample density for the displacement to act on, and every new vertex lies on the authored polygon (a chord between authored vertices / a point inside an authored triangle) with its normal and UV interpolated from the authored ones, creases only where the author made them and loft pairing as authored -- so the silhouette is the AUTHORED polygon (a 6-sided column stays hexagonal; to get a rounder base, author it denser) and as `disp_scale` approaches 0 the geometry renders as the undisplaced base up to a stated tolerance (a refined vertex inside a non-planar authored quad is placed on the triangle covering it, so refined sub-triangles can cross the quad's fold by up to ~0.1% of its diagonal).  (1) a lathe/sweep/skin subdivides its OWN AUTHORED GRID (each family of profile rows / radial columns / path stations subdivided by its own length), giving regular quads in about the triangle count of a hand-authored grid at that spacing -- the 6-row stress vase at detail 48 goes from 384 to ~9.6k triangles, and a base already at least that dense is left alone -- with the builder's own creases, caps, poles, pinches and chart wrap; (2) any other indexed mesh (an import, path instances) is subdivided UNIFORMLY in whole 1->4 levels (edges stay parallel to the base's; positions and UVs linear), the level count taken from the base's MEDIAN edge length so one long outlier edge cannot drive it; an imported mesh's UV chart is never wrapped.  Both are capped (1.5M triangles; 6 uniform levels) with a warning when the cap bites.  The rest of the policy: a sweep's or lathe's END CAP is refined on its rim only (its rim points match the wall's vertex for vertex, closed by a centroid fan), so a cap carries relief at its rim and one centroid point, not across its interior; a pole (or skin pinch) is displaced by the average of its neighbours' displacements, not by the field at its placeholder UV; a DISPLACED base is already baked at its own detail and is not refined again; nothing is refined when `disp_scale` is 0; the legacy non-indexed `rawmesh_geometry` has no shared topology to keep, so it is neither refined nor smooth under displacement (per-triangle flat-shaded); an indexed mesh imported with `face_normals TRUE` is flattened per corner too: it displaces along each triangle's face normal, cracks at every edge and is not refined; and crease / cap / duplicated-point / pinch vertices are SEPARATE vertices in the base (that is what keeps their crease and each band's shading normal), but under displacement coincident vertices are WELDED to ONE shared position (the mean of the group's displacement vectors) while each keeps its own shading normal, by the base mesh's own rule: a lathe / sweep / skin welds EVERY coincident group (its creases, cap rims, duplicated profile points, pinch poles, skin crease stations stay watertight); an imported / hand-built mesh welds only members whose base normals are within a 120-degree crease cone (a UV seam, a cube edge), so coincident OPPOSITE-facing sheets (a two-sided leaf, cloth) stay independent surfaces that keep their full relief and may separate; path_instances_geometry welds WITHIN each instance by its template's own rule (a creased template stays closed in every instance) and never across instances (touching instances are separate bodies).  It applies at every layer (a displaced base is welded again by its own base's rule) and does not depend on this chunk's `face_normals` (which only chooses how the result shades) -- but a base that is itself face-normal, an analytic primitive used DIRECTLY as the base and an SDF are never welded (a box's per-face corner duplicates still crack -- unless the box is the template of a path_instances_geometry, whose instances weld by the crease cone).  A pinch's poles are averaged against each other, so the relief at that ring is ~zero.  If the refinement of an animated displacement comes out different, the displaced mesh is rebuilt rather than refit.  Triangles grow with `detail`, so do not ask for more detail than the relief's wavelength needs.  An INTERIOR-pinch `lathe_geometry` profile (waisted to `r 0` partway along, not just at an end) used to TEAR at the pinch under displacement -- its two coincident, oppositely-normalled pole vertices were pushed apart by `2 * disp_scale`; the coincident-vertex weld above now closes it (the poles share one displaced position and each band keeps its own normal), though a pinch is still a point where the field's relief is averaged away.  A `skeleton_geometry`/multi-part `sdf_geometry` base has NO per-limb UV: every part shares one cylindrical wrap around the WHOLE body's own bounding box (`u` = angle about local Y, `v` = normalized height), not a per-part frame, so scale the displacement painter for the whole silhouette rather than one limb.  See object-modeling-recipes Recipe 6.  Curvature convention: by default, ray intersections and shading expressions (`curv`, `curvR`) report the displaced surface curvature (`smoothing=0`, what rays hit and wear masks see). Base surface curvature is accessible via the analytical query `ComputeAnalyticalDerivatives` at `smoothing=1` (or base geometry query), while `smoothing=0` evaluates the full displaced analytic surface.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Unique name"; p.required = true; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "base_geometry"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to displace"; }
 						{ auto& p = P(); p.name = "detail";        p.kind = ValueKind::UInt;      p.description = "Subdivision detail level"; p.defaultValueHint = "32"; }
-						{ auto& p = P(); p.name = "displacement";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Displacement painter"; }
-						{ auto& p = P(); p.name = "disp_scale";    p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "displacement";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "UV ROUTE (one of two, mutually exclusive with `height` -- see `height` below for the FIELD route, a 3D `scalar_painter` alternative).  An `IFunction2D` -- `expression_function2d`, `piecewise_linear_function2d`, `heightfield_function`, a dual-registered colour painter -- sampled as `f(u, v)` once per vertex.  Use it when the field is genuinely a function of texcoords, or for any pre-2026-09-06 scene (this route is unchanged).  Naming BOTH this and `height` is a parse error.  Resolved via pFunc2DManager (Job::AddDisplacedGeometry), which holds `function`-category IFunction2D chunks (piecewise_linear_function2d) PLUS every dual-registered colour painter except expression_painter/scalar_painter -- declared Function2D-piped with {Painter, Function} since 2026-09-06 (was declared {Painter} only, missing the plf2d/Function half of its real accepted set -- ChunkDescriptor.h's ParameterPipe doc comment)."; p.semantics.pipe = ParameterPipe::Function2D; }
+						{ auto& p = P(); p.name = "height";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter};
+						  p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true;
+						  p.description = "FIELD ROUTE (one of two, mutually exclusive with `displacement`).  A `scalar_painter` evaluated as a 3D FIELD at each vertex -- so `expression`, `voronoi3d`, ramps, noise and every other 3D painter can drive displacement, which `displacement`'s UV sampling cannot (a 3D painter bound THERE goes through a fake hit and is a CONSTANT).  THE POINT: bind ONE `scalar_painter` to this AND to a `relief_modifier { height ... }` on the same object, and the same field gives coarse silhouette-changing displacement plus fine shading-normal relief -- docs/RELIEF_MODIFIER_DESIGN.md section 5.3.  That sharing is of the field's STATISTICS (same look, same scale, same seed), NOT point-for-point registration: this route samples the field at the PRE-displacement vertex while `relief_modifier` samples it at the POST-displacement hit, up to `disp_scale` times the field's own range apart along the normal -- see section 5.3 for the measured gap on the shipped fixture.  OBJECT SPACE: the mesh is baked BEFORE the geometry is bound to an object, so the geometry does not know its own transform; the synthetic hit carries the vertex's OBJECT-space position in BOTH `P` and `Po` (they COINCIDE here), and a `P`-authored field therefore does NOT follow the object's placement -- author against `Po`.  `u`/`v` ARE available and get the same `uv_seam_fold` treatment as the UV route, so a UV-domain field reads identically through either.  No pixel footprint exists at bake time (`fw` = 0), so noise octaves all resolve -- correct for a mesh built once at no particular viewing distance.  The synthetic bake-time hit also has no derivatives (`derivatives.valid` = FALSE) and no signal state: `curv`/`curvR` read 0 and the `occlusion()`/`thickness()` builtins read their neutral fallback (1/1), so a field that keys on them (e.g. `mix(a, b, clamp(curv,0,1))`) displaces FLAT through this route even where a `relief_modifier` bound to the same field would see real curvature/occlusion/thickness and tilt the normal.  A COLOUR painter bound here is refused with the standing scalar-pipe diagnostic: wrap it as `scalar_painter { name X_h  painter X  channel R }`.  Height is a LENGTH, not a colour, so it must never pass through JH spectral uplift -- which is exactly what the scalar pipe guarantees."; }
+						{ auto& p = P(); p.name = "disp_scale";    p.kind = ValueKind::Double;    p.description = "Displacement scale, applied identically to whichever of `displacement` / `height` is bound"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "double_sided";  p.kind = ValueKind::Bool;      p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "face_normals";  p.kind = ValueKind::Bool;      p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "uv_seam_fold";  p.kind = ValueKind::Bool;     p.description = "Tent-fold UV before displacement -- keeps a wrapped field continuous across the u=0/u=1 seam of CLOSED surfaces (sphere/torus/cylinder).  FALSE for an OPEN field on a non-wrapping Cartesian UV (e.g. a guilloché expression on a flat disk)"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "uv_seam_fold";  p.kind = ValueKind::Bool;     p.description = "Tent-fold UV before displacement -- keeps a wrapped field continuous across the u=0/u=1 seam of CLOSED surfaces (sphere/torus/cylinder).  FALSE for an OPEN field on a non-wrapping Cartesian UV (e.g. a guilloché expression on a flat disk).  Applies to BOTH height routes: the `height` route's synthetic hit carries the folded (u,v) in `ptCoord`, so a UV-reading field folds identically whichever route it arrives by"; p.defaultValueHint = "TRUE"; }
 						// Retired: accepted for backward compat with pre-A2 scene files; ignored.
 						{ auto& p = P(); p.name = "maxpolygons";   p.kind = ValueKind::UInt;      p.description = "Retired (BVH is sole accelerator)"; }
 						{ auto& p = P(); p.name = "maxdepth";      p.kind = ValueKind::UInt;      p.description = "Retired (BVH is sole accelerator)"; }
@@ -5998,66 +8706,330 @@ namespace RISE
 				}
 			};
 
-			//////////////////////////////////////////
-			// Modifiers
-			//////////////////////////////////////////
+			// `hair_geometry` (slice D, docs/HAIR_FUR_DESIGN.md section
+			// 5.3) -- a painter-driven GROOM: strands generated on the
+			// surface of another named geometry.  The chunk is a RECIPE,
+			// not a strand list: generation runs later, once,
+			// single-threaded, inside IGeometry::Realize(), so a groom
+			// bound to no rendered object is never generated at all.
+			//
+			// GROW-ON-A-SURFACE ONLY: this chunk never accepts a strand
+			// POSITION.  Explicit per-strand authoring lives in the
+			// separate `hair_guides` chunk (below), which authors SHAPE
+			// -- polylines the generator interpolates onto its own
+			// area-sampled roots.  Authoring an individual rendered
+			// strand's position remains a C++-only path (HairGeometry's
+			// explicit-strand constructor, for tools and tests).
+			//! The `hair_geometry` grow-mode-only parameters, in one list:
+			//! everything that describes how to GENERATE strands, and
+			//! therefore has nothing to say about strands read out of a
+			//! file.  Refused (not ignored) in `file` mode -- a silently
+			//! ignored `count` or `comb` is the failure mode this list
+			//! exists to prevent.  `name`, `file`, `width_root`,
+			//! `width_tip` and `root_uv_mode` are the only parameters
+			//! file mode accepts, so they are exactly the ones absent
+			//! here.
+			//!
+			//! A FREE FUNCTION, not a private struct static (residual
+			//! wave 2 item C, 2026-08-27, closing a documented drift-
+			//! guard gap): declared in ChunkParserRegistry.h so
+			//! HairFileImportTest's drift guard can call the REAL
+			//! production list directly instead of maintaining its own
+			//! byte-copied mirror that could silently drift from it.
+			const char* const* HairGeometryGrowOnlyParameters( unsigned int& n )
+			{
+				static const char* const kGrowOnly[] = {
+					"base_geometry", "count", "length", "segments", "seed", "base_detail",
+					"density", "length_painter", "comb", "guides",
+					"gravity", "frizz", "clump", "clump_size", "curl_radius", "curl_step"
+				};
+				n = (unsigned int)( sizeof(kGrowOnly) / sizeof(kGrowOnly[0]) );
+				return kGrowOnly;
+			}
 
-			struct BumpmapModifierAsciiChunkParser : public IAsciiChunkParser
+			struct HairGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string name     = bag.GetString( "name",       "noname" );
-					std::string function = bag.GetString( "function",   "none" );
-					double scale         = bag.GetDouble( "scale",      1.0 );
-					double window        = bag.GetDouble( "windowsize", 0.01 );
-					bool normalize       = bag.GetBool(   "normalize_gradient", false );
+					std::string name          = bag.GetString( "name",          "noname" );
+					std::string base_geometry  = bag.GetString( "base_geometry", "" );
+					std::string file           = bag.GetString( "file",          "" );
 
-					if( !normalize ) {
-						// Default / legacy path, signature-frozen IJob virtual.
-						return pJob.AddBumpMapModifier( name.c_str(), function.c_str(), scale, window );
+					// The scene-language "not bound" spellings, matching
+					// Job::AddHairGeometry's own `bound` lambda.
+					auto bound = []( const std::string& s ) -> bool {
+						return !s.empty() && s != "none";
+					};
+
+					const bool bFileMode = bound( file );
+					const bool bGrowMode = bound( base_geometry );
+
+					if( bFileMode && bGrowMode ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"hair_geometry:: `%s`: `file` and `base_geometry` are mutually exclusive -- a groom is "
+							"either GROWN on a surface (`base_geometry` + `count` + `length`) or IMPORTED from a "
+							".hair file (`file`), never both",
+							name.c_str() );
+						return false;
+					}
+					if( !bFileMode && !bGrowMode ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"hair_geometry:: `%s`: needs a strand source -- either `base_geometry` (grow the groom "
+							"on a surface) or `file` (import a Cem Yuksel .hair file)",
+							name.c_str() );
+						return false;
 					}
 
-					// normalize_gradient TRUE: `scale` becomes the window-independent
-					// gradient multiplier.  The IJob::AddBumpMapModifier virtual is
-					// frozen for ABI (out-of-tree callers + the Blender bridge), so the
-					// flag is carried by RISE_API_CreateBumpMapModifierEx and the
-					// modifier is registered through the privileged IJobPriv channel
-					// (the same pattern expression_function2d uses to self-register).
-					IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
-					if( !pPriv ) {
-						GlobalLog()->PrintEx( eLog_Error, "bumpmap_modifier `%s`: IJobPriv unavailable", name.c_str() );
+					if( bFileMode ) {
+						// Every grow-mode parameter is refused rather than
+						// ignored, so an author who imported a file and then
+						// typed `count 50000` learns that it does nothing
+						// instead of wondering why it had no effect.
+						unsigned int nGrowOnly = 0;
+						const char* const* growOnly = HairGeometryGrowOnlyParameters( nGrowOnly );
+						for( unsigned int i = 0; i < nGrowOnly; ++i ) {
+							if( bag.Has( growOnly[i] ) ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"hair_geometry:: `%s`: `%s` describes how to GENERATE a groom and has no meaning "
+									"in `file` mode -- an imported .hair file supplies its own strands.  File mode "
+									"accepts only `name`, `file`, `width_root`, `width_tip` and `root_uv_mode`",
+									name.c_str(), growOnly[i] );
+								return false;
+							}
+						}
+
+						HairFileGroomDescriptor fd;
+						fd.file           = file.c_str();
+						// MULTIPLIERS in file mode, not absolute widths --
+						// see the parameter descriptions below.
+						fd.widthRootScale = bag.GetDouble( "width_root", 1.0 );
+						fd.widthTipScale  = bag.GetDouble( "width_tip",  1.0 );
+
+						const std::string rootUVModeStr = bag.GetString( "root_uv_mode", "zero" );
+						if( rootUVModeStr == "zero" ) {
+							fd.rootUVMode = HairFileRootUVMode::Zero;
+						} else if( rootUVModeStr == "scatter" ) {
+							fd.rootUVMode = HairFileRootUVMode::Scatter;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"hair_geometry:: `%s`: unknown root_uv_mode `%s` (expected zero or scatter)",
+								name.c_str(), rootUVModeStr.c_str() );
+							return false;
+						}
+
+						return pJob.AddHairGeometryFromFile( name.c_str(), fd );
+					}
+
+					// `root_uv_mode` selects how an IMPORTED groom's
+					// per-strand UV is assigned (see the `file` branch
+					// above) -- a GROWN strand's root UV already comes from
+					// the base surface's own UV map, so grow mode has
+					// nothing to select between and refuses it symmetrically
+					// with `HairGeometryGrowOnlyParameters` above, rather than silently
+					// ignoring it.
+					if( bag.Has( "root_uv_mode" ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"hair_geometry:: `%s`: `root_uv_mode` describes how an IMPORTED groom's per-strand UV is "
+							"assigned and has no meaning in grow mode -- a grown strand's root UV already comes from "
+							"the base surface's own UV map",
+							name.c_str() );
 						return false;
 					}
-					IFunction2D* pFunc = pPriv->GetFunction2Ds()->GetItem( function.c_str() );
-					if( !pFunc ) {
-						GlobalLog()->PrintEx( eLog_Error, "bumpmap_modifier `%s`: function2d `%s` not found", name.c_str(), function.c_str() );
+
+					if( !bag.Has( "count" ) ) {
+						GlobalLog()->Print( eLog_Error, "hair_geometry:: `count` is required (the strand budget)" );
 						return false;
 					}
-					IRayIntersectionModifier* pMod = 0;
-					if( !RISE_API_CreateBumpMapModifierEx( &pMod, *pFunc, scale, window, true ) ) {
+					if( !bag.Has( "length" ) ) {
+						GlobalLog()->Print( eLog_Error, "hair_geometry:: `length` is required (nominal strand length in scene units)" );
 						return false;
 					}
-					pPriv->GetModifiers()->AddItem( pMod, name.c_str() );
-					pMod->release();
-					return true;
+
+					std::string density        = bag.GetString( "density",        "none" );
+					std::string length_painter = bag.GetString( "length_painter", "none" );
+					std::string comb           = bag.GetString( "comb",           "none" );
+					std::string guides         = bag.GetString( "guides",         "none" );
+
+					HairGroomDescriptor desc;
+					desc.baseGeometry  = base_geometry.c_str();
+					desc.density       = density.c_str();
+					desc.lengthPainter = length_painter.c_str();
+					desc.comb          = comb.c_str();
+					desc.guides        = guides.c_str();
+
+					desc.p.count       = bag.GetUInt(   "count" );
+					desc.p.segments    = bag.GetUInt(   "segments",    8 );
+					desc.p.seed        = bag.GetUInt(   "seed",        1 );
+					desc.p.baseDetail  = bag.GetUInt(   "base_detail", 32 );
+					desc.p.length      = bag.GetDouble( "length" );
+					desc.p.widthRoot   = bag.GetDouble( "width_root",  0.0001 );
+					desc.p.widthTip    = bag.GetDouble( "width_tip",   0.00003 );
+					desc.p.gravity     = bag.GetDouble( "gravity",     0.0 );
+					desc.p.frizz       = bag.GetDouble( "frizz",       0.0 );
+					desc.p.clump       = bag.GetDouble( "clump",       0.0 );
+					desc.p.clumpSize   = bag.GetDouble( "clump_size",  0.0 );
+					desc.p.curlRadius  = bag.GetDouble( "curl_radius", 0.0 );
+					desc.p.curlStep    = bag.GetDouble( "curl_step",   0.0 );
+
+					return pJob.AddHairGeometry( name.c_str(), desc );
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
-						cd.keyword = "bumpmap_modifier"; cd.category = ChunkCategory::Modifier;
-						cd.description = "Bump-map modifier perturbing the surface normal from the gradient of a heightfield function2d, sampled at the hit's TEXCOORD_0 (u,v) by central difference.  Works on any geometry that supplies texcoords + a normal (analytic primitives AND triangle meshes such as cartesian_disk_geometry; the ONB tangents are built from the shading normal).";
+						cd.keyword = "hair_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "A HAIR / FUR GROOM: many thin curve strands GROWN on the surface of another named geometry, held in one primitive with its own segment BVH (docs/HAIR_FUR_DESIGN.md section 5.2E / 5.3).  Bind it to a `standard_object` with a `hair_material` for Chiang-model fibre shading.  "
+							"THE CHUNK IS A RECIPE, NOT A STRAND LIST: nothing is generated at parse time.  The base is tessellated and roots are AREA-WEIGHT sampled on it during the render's realize pass, so a groom nothing renders costs nothing, and everything below is deterministic from `seed` -- the same scene reproduces the same groom on every frame and every re-render, and to floating-point tolerance on every machine.  Explicit per-strand authoring is not accepted here; this chunk is grow-on-a-surface only.  "
+							"AUTHORING IN ONE LINE: `count` roots at `length` long along the surface normal, then style them with the optional fields -- `gravity` droops, `comb` combs, `clump`/`clump_size` gather, `curl_radius`/`curl_step` curl, `frizz` roughens.  Each is inert at its default, so start with count/length/width and add one at a time.  "
+							"UNITS ARE SCENE UNITS throughout (metres by default, see `scene_options scene_unit`): the width defaults are real human-hair numbers (0.1 mm root, 0.03 mm tip), so a groom authored on a scene-scale head needs no width tuning, and one on a stylised 1-unit sphere will want widths raised until the strands are visible at all.  "
+							"NOT AN AREA LIGHT and NOT TESSELLATABLE: a groom cannot emit (emissive fur is out of scope) and cannot be a `displaced_geometry` base -- both refuse it with a diagnostic rather than approximating.  "
+							"TWO SOURCES, EXACTLY ONE OF THEM: either GROW mode (`base_geometry` + `count` + `length`, everything described above) or IMPORT mode (`file` -- a Cem Yuksel `.hair` groom exported from Blender / Houdini / XGen, or one of the published research hair models).  Authoring both is an error, and in `file` mode every grow-mode parameter is REFUSED rather than quietly ignored: an imported file brings its own strands, so `count`, `length`, `segments`, `seed`, `density`, `comb`, `guides`, `gravity`, `frizz`, `clump*` and `curl*` have nothing to act on.  File mode accepts `name`, `file`, `width_root`, `width_tip` and `root_uv_mode` only, and the two widths change meaning there (they become MULTIPLIERS on the file's own thickness).  `root_uv_mode` is symmetrically refused in grow mode, where a strand's root UV already comes from the base surface.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "function";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter (an IFunction2D, e.g. expression_function2d / perlin2d_painter)"; }
-						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Bump amplitude.  With normalize_gradient FALSE (default) the perturbation is scale*(f(+w)-f(-w)), so its magnitude couples to windowsize (~scale*2*windowsize*slope) -- a fine window needs a proportionally larger scale.  With normalize_gradient TRUE, scale is the window-independent slope multiplier."; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "windowsize"; p.kind = ValueKind::Double;    p.description = "Central-difference half-step in (u,v) texture space; smaller = finer detail captured"; p.defaultValueHint = "0.01"; }
-						{ auto& p = P(); p.name = "normalize_gradient"; p.kind = ValueKind::Bool; p.description = "Divide the central difference by 2*windowsize so `scale` is the true, window-INDEPENDENT gradient amplitude (decouples bump strength from the sampling step).  Default FALSE preserves legacy coupled behaviour byte-for-byte."; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.required = true; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "base_geometry";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.description = "Geometry to grow the hair ON.  It must be TESSELLATABLE (any analytic primitive, mesh, sdf_geometry, lathe/sweep/skin, or a displaced_geometry -- displace a scalp, then grow on the displaced surface).  An infinite plane, or another hair_geometry, is refused.  REQUIRED IN GROW MODE, AND REFUSED IN `file` MODE: an imported groom brings its own strands and grows on nothing"; }
+						{ auto& p = P(); p.name = "count";          p.kind = ValueKind::UInt;      p.description = "Strand budget, BEFORE the density mask.  The `density` painter only ever removes candidates, so the realised strand count is <= this.  Capped at 2000000 with an error (a groom that large is gigabytes of control points); a full human scalp is ~100000-150000, convincing fur is ~50000+ per patch, and a few thousand is enough to judge a look.  Grow mode only -- refused in `file` mode"; }
+						{ auto& p = P(); p.name = "length";         p.kind = ValueKind::Double;    p.description = "Nominal strand length in SCENE UNITS, multiplied per-strand by `length_painter`.  Must be > 0.  Grow mode only -- refused in `file` mode, where each strand's length is whatever the file says it is"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "file";           p.kind = ValueKind::Filename;  p.description = "IMPORT MODE: a Cem Yuksel `.hair` binary groom to read strands from verbatim (path resolved against $RISE_MEDIA_PATH, like every other `file` parameter).  This is how a production groom gets in -- a Blender / Houdini / XGen export or a downloaded hair model -- since a six-figure strand count is megabytes of control points and belongs in a binary file next to the scene rather than inline in it.  Mutually exclusive with `base_geometry`, and it refuses every grow-mode parameter.  "
+							"WHAT IS HONOURED: per-strand segment counts, control points, and per-point thickness (the format's thickness is read as a FULL WIDTH -- the published specification never says whether it means a radius or a diameter, so no conversion factor is invented; use `width_root` / `width_tip` to correct it).  Only each strand's FIRST and LAST thickness are used, because a RISE strand tapers linearly from one root width to one tip width.  "
+							"WHAT IS NOT: per-point transparency and per-point colours are read for their length and discarded with a warning (fibre colour comes from the bound `hair_material`, and per-strand opacity is not modelled), and the format carries no root UVs -- so every imported strand's rootUV comes from `root_uv_mode` instead (default `zero`, every strand at (0,0), so a `hair_material` painter driven by the root UV will NOT vary across the groom unless `root_uv_mode scatter` is set).  "
+							"UNITS AND AXES ARE THE FILE'S OWN: `.hair` declares neither, so nothing is rescaled or reoriented -- place the groom with the `standard_object`'s `scale` / `orientation` / `matrix`, exactly as for an imported mesh"; }
+						{ auto& p = P(); p.name = "root_uv_mode";   p.kind = ValueKind::Enum;      p.enumValues = {"zero","scatter"}; p.description = "IMPORT MODE ONLY (refused in grow mode, where a strand's root UV already comes from the base surface's own UV map): how each imported strand's `ptCoord1` root UV is assigned, since the `.hair` format carries none of its own.  `zero` (default, and the ONLY behaviour before this parameter existed) assigns (0,0) to every strand, so a `hair_material` painter driven by the root UV (a scalp-space tint or roughness map) evaluates at one constant point and does not vary across the groom.  `scatter` assigns each strand its OWN deterministic pseudo-random UV in [0,1)^2, keyed on the strand's position in the file and a fixed internal seed -- the SAME file always scatters to the SAME per-strand UVs, but the values do not reconstruct the file's real scalp position (the format doesn't carry one); use it to give a root-UV-driven painter (a calico/patch pattern, a per-strand tint noise) something to vary against on an imported groom"; p.defaultValueHint = "zero"; }
+						{ auto& p = P(); p.name = "segments";       p.kind = ValueKind::UInt;      p.description = "Control points per strand (>= 2).  2 is a perfectly straight quill; a curl or a strong comb needs 8-16 to read as a smooth curve rather than a polyline.  Cost is linear in this.  Grow mode only -- refused in `file` mode, where the file's own segment counts decide"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "width_root";     p.kind = ValueKind::Double;    p.description = "GROW MODE: the FULL fibre width (not radius) at the root, in scene units; the default is real human hair (0.1 mm).  FILE MODE: a MULTIPLIER on the imported file's own thickness at each strand's first point, defaulting to 1.0 = verbatim -- write 2 if the file's thickness means a radius, or 0.001 to bring a millimetre-scale file into a metre-scale scene.  (If the file carries no thickness at all -- no array and a non-positive header default -- the groom falls back to these same human-hair numbers, with a warning, and the multiplier then scales THOSE)"; p.defaultValueHint = "0.0001 (grow) / 1.0 (file)"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "width_tip";      p.kind = ValueKind::Double;    p.description = "GROW MODE: the FULL fibre width at the tip, linearly interpolated from the root in arc-length fraction; tapering to about a third of the root width is what reads as hair rather than as wire.  FILE MODE: a MULTIPLIER on the imported file's own thickness at each strand's LAST point, defaulting to 1.0 = verbatim"; p.defaultValueHint = "0.00003 (grow) / 1.0 (file)"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "seed";           p.kind = ValueKind::UInt;      p.description = "Seeds every random draw (root placement, density rejection, frizz, curl phase).  Change it to re-roll the same groom recipe into a different arrangement; keep it fixed and the groom is identical on every frame and every re-render (and identical to floating-point tolerance across machines -- the random stream is bit-exact everywhere, the growth arithmetic that consumes it is not).  Placement and jitter are keyed PER CANDIDATE, so editing `density` or dropping one strand never re-rolls the strands around it"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "base_detail";    p.kind = ValueKind::UInt;      p.description = "Tessellation detail requested from the base geometry.  Roots are sampled on THAT mesh, so this quantises where hair can grow and how faithfully the interpolated normals follow the real surface -- raise it for a curved base whose hair looks faceted at the silhouette"; p.defaultValueHint = "32"; }
+						{ auto& p = P(); p.name = "density";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.description = "Optional [0,1] REJECTION MASK evaluated at each candidate root over the base surface's UV (physical SCALAR: a scalar_painter name or an inline numeric).  1 = keep every candidate here, 0 = bare skin.  This is where a bald patch, a hairline, an eyebrow shape or a fur pattern comes from -- any of the procedural painters (perlin, voronoi, expression, an image) works"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "length_painter"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.description = "Optional per-root MULTIPLIER on `length` (physical SCALAR).  Short around the ears, long on top; a value of 0 drops the strand entirely"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "comb";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.description = "Optional COMB DIRECTION FIELD -- a colour painter whose RGB encodes a TANGENT-SPACE direction by d = 2*rgb - 1, in the frame {surface tangent, bitangent, normal}.  Neutral grey (0.5 0.5 0.5) is exactly no comb.  The vector's MAGNITUDE is the push expressed as a fraction of the strand's own length -- so `1 0.5 0.5` (d = (1,0,0)) sweeps the tip a full strand-length along the surface tangent.  The bend is weighted t^2 along the strand, so the root always leaves along the normal.  "
+								"IT IS A FLOW MAP, NOT A NORMAL MAP: only the part TANGENT to the surface is used (a comb must not push hair into the scalp), so the BLUE channel is projected straight back out and has NO effect -- a normal map's `flat` pixel 0.5 0.5 1.0 means NO COMB here, not `comb upward`.  Author it as a two-channel direction field in red/green.  "
+								"THE TANGENT FRAME IS DERIVED FROM THE BASE'S UV MAP (dP/du, orthogonalised against the shading normal), so it is continuous wherever the UV map is: a constant comb painter sweeps the whole surface ONE way, and a hand-painted comb map keeps meaning the same thing when `base_detail` re-tessellates the base.  A base with NO texture coordinates has no parameterization to derive from and falls back to each triangle's first edge, which is PER-TRIANGLE -- adjacent triangles disagree by tens of degrees, so a comb field on a UV-less base combs incoherently.  Give the base UVs before relying on `comb`"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "gravity";        p.kind = ValueKind::Double;    p.description = "Downward (world -Y) droop at the TIP, as a fraction of the strand's own length; weighted t^2 so the root stays normal-aligned.  0 = no droop, 1 = the tip falls a full strand-length.  This is a styling knob, not a simulation -- it does not know about collisions"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "frizz";          p.kind = ValueKind::Double;    p.description = "Per-control-point random jitter, as a fraction of the strand's own control-point spacing, weighted LINEARLY along the strand.  Small values (0.05-0.3) break up the machine-perfect look; large values shred the strand into noise.  Deterministic from `seed`, per strand, so editing an unrelated parameter does not re-roll it"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "clump";          p.kind = ValueKind::Double;    p.description = "Clump attraction strength in [0,1]: how far a strand's TIP is pulled toward its clump centre's tip (weighted t^2, so roots never move).  Needs `clump_size` > 0 to do anything.  This is what turns an even fur coat into wet-looking or styled locks"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "clump_size";     p.kind = ValueKind::Double;    p.description = "Clump CELL SIZE in scene units.  Roots are quantised onto a grid of this side and each occupied cell's first strand becomes that cell's clump centre; 0 disables clumping entirely.  Cell-shaped clumps are a Phase-1 simplification of a true nearest-centre-within-radius search -- two strands either side of a cell boundary join different clumps"; p.defaultValueHint = "0.0"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "curl_radius";    p.kind = ValueKind::Double;    p.description = "Helix radius in scene units, superposed on the strand in the root's tangent frame and weighted t^2 so the curl opens out of the follicle instead of lifting the root off the surface.  0 = straight.  Requires `curl_step` > 0; each strand gets its own random starting phase so curls do not line up into a corduroy pattern"; p.defaultValueHint = "0.0"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "curl_step";      p.kind = ValueKind::Double;    p.description = "Helix PITCH: arc length per full turn, in scene units.  Small relative to `length` = tight ringlets, large = a lazy wave.  Must be > 0 whenever `curl_radius` is > 0 (a helix with no pitch is not a curve)"; p.defaultValueHint = "0.0"; p.unitLabel = "scene units"; }
+						// THE ONE PORT A `hair_guides` NAME MAY BIND.  `referenceCategories`
+						// is `{ChunkCategory::HairGuides}` -- the category `hair_guides`
+						// registers under -- so the legality checker, the reference graph
+						// and jump-to-definition all agree that a guide set, and ONLY a
+						// guide set, resolves here.  The `keywordAllowlist` below is kept
+						// as defence-in-depth (it is what the pre-category-split build
+						// relied on, and it still guards a future second chunk registered
+						// under HairGuides that this slot would not want).
+						{ auto& p = P(); p.name = "guides";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::HairGuides}; p.semantics.pipe = ParameterPipe::Other; p.semantics.keywordAllowlist = {"hair_guides"}; p.semantics.note = "Resolves against the Job's `hair_guides` table, not the geometry manager -- guides are data, not a scene entity"; p.description = "Optional named `hair_guides` set.  BOUND, IT REPLACES THE STRAIGHT-ALONG-THE-NORMAL GROWTH and nothing else: every strand's SHAPE is interpolated from its THREE NEAREST guides (nearest by root-to-guide-root distance; weights are inverse distance, normalised; K drops to the guide count when the set has fewer than three, so a ONE-guide set means every strand copies that guide).  "
+								"GUIDES ARE SHAPES, NOT ROOTS.  `count`, `density` and the base surface still decide where hair grows and how much of it; a guide never places a strand, and a guide's own point count never decides `segments` -- each guide is resampled by ARC-LENGTH FRACTION onto this groom's control-point count.  Nor does a guide's own SIZE carry over: the interpolated shape is normalised by the guide's arc length and re-scaled by `length` / `length_painter`, so lengthening a guide restyles the groom without lengthening it.  "
+								"THE TRANSPORT IS RIGID.  A guide is read in the base surface's frame at the point of the base CLOSEST TO THE GUIDE'S ROOT -- the same {tangent, bitangent, normal} frame a strand uses -- and replayed in the strand's own frame at the strand's own root.  So a guide swept `back along the scalp's UV` stays swept back everywhere it is used, around a curved base as much as a flat one; author guides ON or NEAR the surface they groom, because that projection is what attaches them.  A guide that is perfectly straight along its root normal reproduces the unguided groom exactly.  "
+								"STYLING STILL COMPOSES: `comb`, `gravity`, `curl_radius`/`curl_step`, `frizz` and `clump` all apply ON TOP of the interpolated shape, and no random draw is spent on the interpolation -- a guided groom and an unguided one at the same `seed` share their roots and their jitter exactly, so binding or unbinding `guides` restyles without re-rolling.  An unknown name is an error, not a silent fall-back to straight growth"; p.defaultValueHint = "none"; }
 						return cd;
 					}();
 					return d;
 				}
 			};
+
+			// `hair_guides` (Phase 2, docs/HAIR_FUR_DESIGN.md section 5.3)
+			// -- an AUTHORED GUIDE-STRAND SET, and the one place in the
+			// hair system where explicit per-strand points are accepted.
+			//
+			// FLAT GRAMMAR, ONE GUIDE PER LINE.  The design sketches a
+			// nested `strand { point ... }` block, but the scene language
+			// binds parameters only at brace depth 1 (Cst.cpp's chunk
+			// scan) -- a nested block survives a round-trip as opaque
+			// tokens and never reaches a descriptor at all.  Repeating a
+			// whole polyline on one `guide` line is the shape the language
+			// already has for exactly this (skin_geometry's `rail_a` /
+			// `rail_b`, sweep_geometry's `point`), so guides use it rather
+			// than growing the grammar a nesting level for one chunk.
+			struct HairGuidesAsciiChunkParser : public IAsciiChunkParser
+			{
+				static bool Reject( const std::string& msg )
+				{
+					GlobalLog()->PrintEx( eLog_Error, "hair_guides:: %s", msg.c_str() );
+					return false;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const std::string name = bag.GetString( "name", "noname" );
+
+					const std::vector<std::string>& lines = bag.GetRepeatable( "guide" );
+					if( lines.empty() ) {
+						return Reject( "`" + name + "`: needs at least one repeatable `guide <x> <y> <z> <x> <y> <z> ...` line" );
+					}
+
+					std::vector<double>       points;
+					std::vector<unsigned int> counts;
+					counts.reserve( lines.size() );
+
+					for( std::size_t i = 0; i < lines.size(); ++i ) {
+						int nTok = 0;
+						if( !AllTokensAreFiniteNumbers( lines[i].c_str(), &nTok ) ) {
+							char buf[32];
+							std::snprintf( buf, sizeof(buf), "%u", (unsigned int)i );
+							return Reject( "`" + name + "`: guide " + buf + " (`" + lines[i] +
+								"`) must be finite numbers only (no trailing garbage, no nan/inf)" );
+						}
+						if( nTok % 3 != 0 || nTok < 6 ) {
+							char buf[64];
+							std::snprintf( buf, sizeof(buf), "%u", (unsigned int)i );
+							char cnt[32];
+							std::snprintf( cnt, sizeof(cnt), "%d", nTok );
+							return Reject( std::string( "`" ) + name + "`: guide " + buf + " has " + cnt +
+								" numbers -- a guide is a whole polyline on one line, `<x> <y> <z>` per point, "
+								"and needs at least 2 points (6 numbers)" );
+						}
+
+						// Re-scan the line for the values themselves; the
+						// gate above already proved every token parses.
+						const char* s = lines[i].c_str();
+						for( int t = 0; t < nTok; ++t ) {
+							char* end = 0;
+							const double v = std::strtod( s, &end );
+							points.push_back( v );
+							s = end;
+						}
+						counts.push_back( (unsigned int)( nTok / 3 ) );
+					}
+
+					HairGuidesDescriptor d;
+					d.points      = &points[0];
+					d.pointCounts = &counts[0];
+					d.numGuides   = (unsigned int)counts.size();
+					return pJob.AddHairGuides( name.c_str(), d );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						// ChunkCategory::HairGuides, NOT ::Geometry.  A guide set is
+						// DATA a `hair_geometry` reads, never a renderable entity --
+						// it is registered into `Job::hairGuidesMap`, never into the
+						// IGeometryManager.  Its own category is what makes a guide
+						// name structurally ineligible for an ordinary Geometry-typed
+						// port (`standard_object.geometry` declares
+						// `referenceCategories = {ChunkCategory::Geometry}` and a
+						// HairGuides candidate is simply not in that set), instead of
+						// that wiring only failing late in Job::AddHairGeometry.
+						cd.keyword = "hair_guides"; cd.category = ChunkCategory::HairGuides;
+						cd.description = "AN AUTHORED GUIDE-STRAND SET for `hair_geometry` (docs/HAIR_FUR_DESIGN.md section 5.3).  A handful of hand-placed strands that state the STYLE -- the sweep of a fringe, the lie of a coat, the flick of a tail -- which the groom then interpolates across its thousands of generated strands.  This is the chunk to reach for when `comb` / `gravity` / `curl` cannot say what you mean: those are FIELDS, uniform in their own terms, whereas a guide states one exact curve at one exact place.  "
+							"IT IS DATA, NOT A SHAPE.  A guide set renders nothing, intersects nothing and is never bound to a `standard_object`; its only consumer is a `hair_geometry`'s `guides` field, and a set nothing references costs nothing.  "
+							"AUTHOR GUIDES ON OR NEAR THE SURFACE THEY GROOM.  Each guide is attached to the base by projecting its ROOT (its first point) onto the base surface, and it is read in the surface's frame there -- that projection is what lets the same guide mean `swept back along the scalp` at every strand it later steers, including around curvature.  A guide floating far off the surface still attaches (to the nearest point), but it pays TWICE for the distance, not once: the projection makes a worse guess at the local frame the farther it is from the surface it's meant to describe, AND -- separately -- every strand's nearest-three SELECTION is by raw root-to-root distance (the guide's OWN authored root, not its surface projection), so a lofted guide's inverse-distance weight shrinks UNIFORMLY across the whole groom, diluting its influence everywhere rather than only where the framing is locally poor.  "
+							"SCALE AND SHAPE ARE SEPARATE: a guide's own length is normalised away (the groom's `length` / `length_painter` set the real length), so guides may be authored at whatever size is convenient to type.  Point counts likewise -- a guide is resampled by arc-length fraction onto the groom's `segments`, so a 3-point guide and a 30-point guide both work and neither changes the strand's control-point count.  "
+							"HOW MANY: tens to a few hundred, placed where the style CHANGES (crown, part, nape, ear).  Three guides already give a groom a real haircut; a hundred give it a hairstyle.  Capped at 4096, because every strand scans the whole set for its nearest three.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name, referenced by a `hair_geometry`'s `guides` field"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "guide"; p.kind = ValueKind::String; p.repeatable = true; p.required = true;
+						  p.description = "ONE WHOLE GUIDE on one line: `<x> <y> <z>` per point, root FIRST and tip LAST, at least 2 points (6 numbers) and at most 4096.  Repeatable -- one line per guide.  Points are in the same space as the base geometry.  The root is what gets projected onto the base to attach the guide, so put it on (or just above) the surface; every later point is free to go wherever the style does.  A guide whose points all coincide is refused: it has no direction to align and no length to normalise by.  Adding a mid-strand point is how a guide gets a kink -- but what SURVIVES resampling is the guide's SHAPE and a kink's position as a FRACTION of the guide's total arc length, not the literal spacing you typed between points: the polyline is resampled at UNIFORM arc-length fractions onto the groom's own control-point count, so a kink authored a third of the way along stays a third of the way along regardless of how its neighbouring points are spaced, while two guides with the same points but different spacing between them produce the identical interpolated strand"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// Modifiers
+			//////////////////////////////////////////
 
 			struct NormalMapModifierAsciiChunkParser : public IAsciiChunkParser
 			{
@@ -6090,8 +9062,120 @@ namespace RISE
 							"decode and break the [0,1] vector domain.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "normal_map"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-map painter (load with `color_space Rec709RGB_Linear` for verbatim store; see chunk description)"; }
+						{ auto& p = P(); p.name = "normal_map"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.description = "Normal-map painter (load with `color_space Rec709RGB_Linear` for verbatim store; see chunk description)"; }
 						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "glTF normalTexture.scale (xy multiplier)"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ReliefModifierAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string height = bag.GetString( "height", "none" );
+					double scale       = bag.GetDouble( "scale",  1.0 );
+					std::string domain = bag.GetString( "domain", "surface" );
+					double step        = bag.GetDouble( "step",   0.0 );
+					double maxSlope    = bag.GetDouble( "max_slope", 0.0 );
+
+					// Domain validation, the `max_slope` range check, the
+					// height resolution and its three-way scalar-pipe
+					// diagnostic all live in Job::AddReliefModifierEx --
+					// one home, so the CLI, the agent verbs and any future
+					// caller get the same wording.  The `Ex` entry point,
+					// not the plain one: IJob's vtable is append-only, so
+					// the clamp arrived as a new tail virtual and the plain
+					// `AddReliefModifier` now forwards here with 0.
+					return pJob.AddReliefModifierEx( name.c_str(), height.c_str(), scale,
+						domain.c_str(), step, maxSlope );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "relief_modifier"; cd.category = ChunkCategory::Modifier;
+						cd.description = "Painter-driven micro-relief: perturbs the shading normal "
+							"from the gradient of ANY scalar height field, by central difference in "
+							"the hit's tangent plane.  Works on ANY geometry that has a normal -- "
+							"analytic primitives, SDFs, meshes, displaced meshes -- and in the "
+							"default `surface` domain needs NO TEXCOORDS at all, so the same 3D "
+							"field that drives a colour ramp and a roughness slot can also emboss "
+							"the surface (the fix for authored variation that reads as paint on "
+							"plastic).  `height` is a scalar_painter, not a colour painter: wrap a "
+							"colour painter with `scalar_painter { name X_h  painter X  channel R }` "
+							"and bind that.  POSITIVE HEIGHT RISES ALONG +N (Blinn / PBRT-v4) -- the "
+							"OPPOSITE sign of the REMOVED `bumpmap_modifier` (removed 2026-09-06), which treated its "
+							"field as depth; negate `scale` to sink instead of raise.  On a FINE field, raise "
+							"`scale` for legibility and set `max_slope` (0.5-1.0) to hold the tilt -- an unbounded "
+							"tilt shades BLACK, see that parameter.  Attach via "
+							"the object's `modifier` parameter.  See "
+							"docs/RELIEF_MODIFIER_DESIGN.md.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "height"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter};
+						  p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true;
+						  p.description = "Height field -- a `scalar_painter` (expression / voronoi / ramp / texture / function2d), or an inline numeric literal (which is constant, hence flat and pointless).  A COLOUR painter bound here is refused with the standing scalar-pipe diagnostic: wrap it as `scalar_painter { name X_h  painter X  channel R }`.  Height is a LENGTH, not a colour, so it must never pass through JH spectral uplift -- which is exactly what the scalar pipe guarantees.  NOT SUPPORTED: a height parameterised on the SECOND UV set (`texcoord1_painter`, TEXCOORD_1).  Neither domain moves `ptCoord1` -- the surface domain's chain rule has only TEXCOORD_0's dpdu/dpdv to work with -- so such a field reads FLAT and produces no relief in either domain.  Author the height against TEXCOORD_0, or use a 3D field in `surface`."; }
+						{ auto& p = P(); p.name = "scale";  p.kind = ValueKind::Double;    p.description = "Amplitude: field units -> world units in `surface` domain, UV units in `uv`.  Positive raises along +N; NEGATIVE sinks (cracks, pores, engraving).  0 makes the modifier inert."; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "domain"; p.kind = ValueKind::Enum;      p.enumValues = {"surface","uv"};
+						  p.description = "`surface` (RECOMMENDED, and the default): the height is a function of the 3D hit and the step is taken in the tangent plane in world units -- any geometry with a normal, texcoords NOT required, and the result does not depend on which tangent the frame happened to pick.  `uv`: the height is a function of (u,v) and the step is taken in texture units along the ONB tangents -- for scenes migrated off the removed `bumpmap_modifier` (tools/migrate_scenes_relief.py) and for image heightfields authored in UV, and it inherits that path's dependence on the surface's UV parameterisation."; p.defaultValueHint = "surface"; }
+						{ auto& p = P(); p.name = "step";   p.kind = ValueKind::Double;    p.description = "Central-difference HALF-step.  In `uv` it is used as given (default 0.01, matching the removed `bumpmap_modifier`'s windowsize, so a migrated scene that omitted the window lands on the same span).  In `surface` the rule DEFERS to the pixel footprint whenever the hit has one (2026-09-06 fix): the step is max(step, HALF the hit's pixel footprint), so an EXPLICIT step is a FLOOR that is raised whenever half the footprint is larger, and `step 0` resolves to exactly half the footprint -- however small that is, with NO 1e-3 minimum.  Half, because this is the HALF-step and the difference spans twice it: the stencil then spans exactly ONE footprint.  Differencing over at least a footprint measures the footprint-averaged slope, so relief fades toward flat at distance instead of sparkling -- but only where a footprint exists.  EVERY geometry populates one -- analytic primitives, SDFs, boxes, disks, planes and meshes alike -- but only on PRIMARY hits, since no ray carries screen-space differentials after a scatter.  So the fade is universal on directly-visible surfaces; on a hit reached through a bounce the footprint is unknown (not just small -- ABSENT), and there the rule is `step > 0 ? step : 1e-3` with no distance fade -- the 1e-3 floor applies ONLY in this no-footprint case, never as a competitor to a real, smaller footprint.  Practical effect: a close-up primary hit whose footprint is below 2e-3 world units used to still floor at a 2mm-wide stencil regardless of how tight the footprint was; now `step 0` tracks the footprint down to whatever it measures, so millimetre-scale relief on a close-up shot no longer needs an explicit sub-1e-3 `step` to avoid being smeared -- author it only for secondary/bounce hits, or to raise the floor above what the footprint alone would give."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "max_slope"; p.kind = ValueKind::Double; p.description = "Upper bound on the tangent-plane tilt |scale*grad h| (a SLOPE: 1.0 = 45 degrees, 0.577 = 30).  When the scaled gradient exceeds it, the gradient is rescaled to this magnitude with its DIRECTION PRESERVED -- the relief keeps facing the way the field points and only stops leaning further, which is what makes this different from lowering `scale` (that flattens the shallow parts of the field along with the steep ones).  WHAT IT PREVENTS: an unbounded tilt takes the shading normal past the GEOMETRIC HORIZON as seen from the ray or the light -- it never crosses the surface plane itself, the perturbation is perpendicular to N -- and the materials' geometric-horizon gate then rejects nearly every sampled direction, so the surface shades BLACK (bands and speckle on a fine field).  So: RAISE `scale` for legibility and let this hold the tilt, rather than dialling `scale` down until the black goes away, which puts the detail back below the pixel footprint.  0.5-1.0 is the useful band on a near-face-on surface; on a surface seen at grazing angle phi the tilt budget before N' faces away from the ray shrinks to roughly tan(phi) -- weathered_workbench's grazing-viewed bench top needed 0.30, not 0.5-1.0 (docs/RELIEF_MODIFIER_DESIGN.md section 12 addendum).  0 = no clamp (the legacy/migration behaviour, and the default).  A negative or non-finite value is a parse-time error naming this parameter."; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ModifierStackAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+
+					// GetRepeatable's precedent is standard_shader's `shaderop` --
+					// same ValueKind::Reference + repeatable=true pattern, same
+					// "all values, in input order" accessor.  An empty result
+					// (no `modifier` lines authored) is diagnosed by
+					// Job::AddModifierStack, one home for the wording so the
+					// CLI, the agent verbs and any future caller agree.
+					const std::vector<std::string>& mods = bag.GetRepeatable( "modifier" );
+					if( mods.size() > std::numeric_limits<unsigned int>::max() ) return false;
+					std::vector<const char*> names;
+					names.reserve( mods.size() );
+					for( const std::string& member : mods ) names.push_back( member.c_str() );
+					return pJob.AddModifierStack( name.c_str(), names.data(), static_cast<unsigned int>(names.size()) );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "modifier_stack"; cd.category = ChunkCategory::Modifier;
+						cd.description = "ORDERED COMPOSITION of other modifiers: `Object::pModifier` is a single "
+							"pointer, so a single object could bind `normal_map_modifier` OR `relief_modifier` OR "
+							"`glint_modifier` but never a combination -- this chunk is the smallest fix.  Each "
+							"member is applied in AUTHORED ORDER and sees the PREVIOUS member's vNormal/onb, "
+							"exactly as if the object's modifier slot held a hand-written chain of `Modify` calls.  "
+							"ORDER SEMANTICS: `normal_map` then `relief` -- relief perturbs the NORMAL-MAPPED "
+							"frame (fine procedural detail on top of a baked map, the usual case).  `relief` then "
+							"`normal_map` -- the map is decoded in the RELIEF-TILTED frame; rarely wanted.  "
+							"`... then glint` -- glint should always be LAST: it replaces the normal with a facet "
+							"normal drawn about the CURRENT one, so it must see the final smooth frame.  `relief` "
+							"twice with different height fields is legitimate (a coarse+fine two-frequency split).  "
+							"NESTING is allowed -- a stack may name another stack -- and is algebraically flat: "
+							"`stack{A, stack{B,C}}` applies A, B, C in that order, identically to `stack{A,B,C}`.  "
+							"SELF-REFERENCE IS IMPOSSIBLE: member names resolve through the modifier manager at "
+							"PARSE time, before this stack itself is registered, so there is no cycle to detect.  "
+							"An EMPTY stack (no `modifier` lines) is a parse-time ERROR, not a no-op -- matching "
+							"`glint_modifier`'s stance that an authored no-op chunk is a mistake.  Attach via the "
+							"object's `modifier` parameter, exactly like any other modifier.  See "
+							"docs/RELIEF_MODIFIER_DESIGN.md section 4.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "modifier"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.repeatable = true; p.required = true;
+						  p.description = "Modifier to apply, in order (repeatable) -- at least one is required; an empty stack is a parse error."; }
 						return cd;
 					}();
 					return d;
@@ -6229,8 +9313,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::DoubleVec3; p.description = "Absorption coefficient (R G B), RGB/preview path"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::DoubleVec3; p.description = "Scattering coefficient (R G B), RGB/preview path"; p.defaultValueHint = "0 0 0"; }
-						{ auto& p = P(); p.name = "absorption_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Name of a sigma_a(lambda) IFunction1D curve (e.g. piecewise_linear_function) for the spectral NM path.  Once EITHER spectral curve is bound the NM path is curve-driven: an unbound coefficient is ZERO in NM (bind both curves, or accept zero).  Only when BOTH are empty does NM fall back to RGB luminance"; }
-						{ auto& p = P(); p.name = "scattering_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Name of a sigma_s(lambda) IFunction1D curve for the spectral NM path.  Once EITHER spectral curve is bound the NM path is curve-driven: an unbound coefficient is ZERO in NM (bind both curves, or accept zero).  Only when BOTH are empty does NM fall back to RGB luminance"; }
+						{ auto& p = P(); p.name = "absorption_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.semantics.pipe = ParameterPipe::Function1D; p.description = "Name of a sigma_a(lambda) IFunction1D curve (e.g. piecewise_linear_function) for the spectral NM path.  Once EITHER spectral curve is bound the NM path is curve-driven: an unbound coefficient is ZERO in NM (bind both curves, or accept zero).  Only when BOTH are empty does NM fall back to RGB luminance"; }
+						{ auto& p = P(); p.name = "scattering_spectral"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.semantics.pipe = ParameterPipe::Function1D; p.description = "Name of a sigma_s(lambda) IFunction1D curve for the spectral NM path.  Once EITHER spectral curve is bound the NM path is curve-driven: an unbound coefficient is ZERO in NM (bind both curves, or accept zero).  Only when BOTH are empty does NM fall back to RGB luminance"; }
 						{ auto& p = P(); p.name = "phase";      p.kind = ValueKind::String;     p.description = "Phase function: either `isotropic` or `hg <g>` (Henyey-Greenstein with asymmetry g)"; p.tupleKinds = {ValueKind::Enum, ValueKind::Double}; p.enumValues = {"isotropic","hg"}; p.defaultValueHint = "isotropic"; }
 						return cd;
 					}();
@@ -6430,7 +9514,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "scattering";      p.kind = ValueKind::DoubleVec3; p.description = "Max scattering coefficient (R G B)"; }
 						{ auto& p = P(); p.name = "emission";        p.kind = ValueKind::DoubleVec3; p.description = "Volumetric emission (R G B)"; }
 						{ auto& p = P(); p.name = "phase";           p.kind = ValueKind::String;     p.description = "Phase function: either `isotropic` or `hg <g>` (Henyey-Greenstein with asymmetry g)"; p.tupleKinds = {ValueKind::Enum, ValueKind::Double}; p.enumValues = {"isotropic","hg"}; p.defaultValueHint = "isotropic"; }
-						{ auto& p = P(); p.name = "density_painter"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Density painter"; }
+						{ auto& p = P(); p.name = "density_painter"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.description = "Density painter"; }
 						{ auto& p = P(); p.name = "resolution";      p.kind = ValueKind::UInt;       p.description = "Voxel resolution"; p.defaultValueHint = "64"; }
 						{ auto& p = P(); p.name = "color_to_scalar"; p.kind = ValueKind::Enum;       p.enumValues = {"luminance","max","red"}; p.description = "RGB→scalar rule"; p.defaultValueHint = "luminance"; }
 						{ auto& p = P(); p.name = "bbox_min";        p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox min"; }
@@ -6677,7 +9761,64 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name     = bag.GetString( "name",     "noname" );
+
+					// 87 step 3a: a node carries at most ONE of `geometry` (a leaf
+					// shape) and `source` (an instance of another node).  Count the
+					// forms and refuse BEFORE any mutation, exactly as sweep_geometry
+					// does for profile_point / profile_circle / profile_rect -- with
+					// the one difference that ZERO forms is LEGAL here: that is the
+					// CONTAINER node.
+					const bool hasGeometryForm = bag.Has( "geometry" ) && bag.GetString( "geometry", "none" ) != "none";
+					const bool hasSourceForm   = bag.Has( "source" )   && bag.GetString( "source",   "none" ) != "none";
+					if( hasGeometryForm && hasSourceForm ) {
+						const std::string diag = "standard_object `" + name + "`: `geometry` and `source` are mutually "
+							"exclusive -- a node is EITHER a leaf shape (`geometry`) OR an instance of another node "
+							"(`source`), never both.  Drop one.";
+						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
+						SetFinalizeDiagIfEmpty( diag );
+						return false;
+					}
+					// A LONE `source` must never reach here: Cst::DeriveToJob EXPANDS it
+					// at the instancing chunk's own position in PASS-2 and hands this
+					// Finalize a bag with `source` already consumed.  Arriving with one
+					// still on the bag means the chunk was applied by a path that does
+					// NOT expand instances -- which would silently build a CONTAINER
+					// where the author asked for a copy.  Refuse loudly instead.
+					// (DeriveToJobIncremental refuses such a chunk up front, so this is
+					// a backstop against a future third apply path, not a live case.)
+					if( hasSourceForm ) {
+						const std::string diag = "standard_object `" + name + "`: `source` reached the parser UNEXPANDED "
+							"-- this chunk was applied by a path that does not expand instances (Cst::DeriveToJob PASS-2 is "
+							"the only one that does).  Re-derive the whole scene.";
+						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
+						SetFinalizeDiagIfEmpty( diag );
+						return false;
+					}
+					// 87 step 3c: `count_u` / `count_v` REPEAT AN INSTANCE, so they mean
+					// nothing without a `source` to repeat.  Unlike the backstop above this
+					// one is genuinely REACHABLE: a chunk with counts and no `source` is not
+					// an instancing chunk, so PASS-2 hands it to this Finalize like any
+					// other object.  Silently ignoring the counts would derive ONE object
+					// from a chunk the author wrote expecting N.
+					if( bag.Has( "count_u" ) || bag.Has( "count_v" ) ) {
+						const std::string diag = "standard_object `" + name + "`: `count_u` / `count_v` repeat an "
+							"INSTANCE, so they need a `source` naming the node to repeat.  On a chunk with a "
+							"`geometry` (or with neither) there is nothing to repeat, and the counts would be "
+							"silently ignored.  Add a `source`, or drop the counts.";
+						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
+						SetFinalizeDiagIfEmpty( diag );
+						return false;
+					}
+
+					// 87: `geometry` is OPTIONAL.  Absent (or the universal
+					// no-reference sentinel `none`) means this object is a
+					// CONTAINER node -- a pure transform other objects parent
+					// to.  Job::AddObject turns that into a geometry-less,
+					// world-INVISIBLE object.  NB this is a real semantic
+					// change: before 87 an object chunk with no `geometry`
+					// hard-failed with "Geometry not found `none`".
 					std::string geometry = bag.GetString( "geometry", "none" );
+					std::string parent   = bag.GetString( "parent",   "" );
 					std::string material = bag.GetString( "material", "none" );
 					std::string modifier = bag.GetString( "modifier", "none" );
 					std::string shader   = bag.GetString( "shader",   "none" );
@@ -6712,6 +9853,24 @@ namespace RISE
 							name.c_str() );
 					}
 
+					// DL-32: resolve `scale` ONCE, before the transform-mode
+					// branch, so both the quaternion and Euler paths below
+					// read the same validated value.  Skipped entirely under
+					// `matrix` -- `scale` is subsumed there (the descriptor
+					// says so) and never reaches AddObjectMatrix, so a
+					// malformed value alongside an explicit `matrix` would be
+					// refusing the chunk over a field the transform ignores.
+					double scale[3] = {1.0, 1.0, 1.0};
+					if( !hasMatrix ) {
+						std::string scaleDiag;
+						const ScaleResolution sr = ResolveScaleVec3( bag, "standard_object", name, scale, &scaleDiag );
+						if( sr.present && !sr.ok ) {
+							GlobalLog()->PrintEx( eLog_Error, "%s", scaleDiag.c_str() );
+							SetFinalizeDiagIfEmpty( scaleDiag );
+							return false;
+						}
+					}
+
 					bool bRet = false;
 					if( hasMatrix ) {
 						double mat[16];
@@ -6732,10 +9891,8 @@ namespace RISE
 						// ComposeTRS_QuaternionGltf (§8.10).
 						double pos[3]   = {0,0,0};
 						double q[4]     = {0,0,0,1};	// xyzw, glTF convention
-						double scale[3] = {1,1,1};
 						bag.GetVec3( "position",   pos );
 						bag.GetVec4( "quaternion", q );
-						bag.GetVec3( "scale",      scale );
 
 						double M[16];
 						ComposeTRS_QuaternionGltf( pos, q, scale, M );
@@ -6750,14 +9907,12 @@ namespace RISE
 					} else {
 						double pos[3]    = {0,0,0};
 						double orient[3] = {0,0,0};
-						double scale[3]  = {1.0,1.0,1.0};
 						bag.GetVec3( "position", pos );
 						if( bag.GetVec3( "orientation", orient ) ) {
 							orient[0] *= DEG_TO_RAD;
 							orient[1] *= DEG_TO_RAD;
 							orient[2] *= DEG_TO_RAD;
 						}
-						bag.GetVec3( "scale", scale );
 
 						bRet = pJob.AddObject( name.c_str(), geometry.c_str(),
 							material=="none"?0:material.c_str(),
@@ -6766,8 +9921,85 @@ namespace RISE
 							radianceMapConfig, pos, orient, scale, bCastsShadows, bReceivesShadows );
 					}
 
-					if( bRet && !(interior_medium == "none") ) {
+					// A CONTAINER has no interior either -- it has no surface to be
+					// inside of.  Job::AddObject drops the other four surface
+					// bindings; `interior_medium` comes through a separate call, so
+					// it is skipped here, keeping "a container takes no surface
+					// bindings" literally true.
+					const bool isContainer = ( geometry.empty() || geometry == "none" );
+					if( bRet && !isContainer && !(interior_medium == "none") ) {
 						bRet = pJob.SetObjectInteriorMedium( name.c_str(), interior_medium.c_str() );
+					} else if( bRet && isContainer && !(interior_medium == "none") ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"standard_object `%s`: names no `geometry`, so it is a CONTAINER node -- its "
+							"`interior_medium` binding is IGNORED (a container has no surface to be inside of)",
+							name.c_str() );
+					}
+
+					// doc 89 slice C: the LOCAL MIRROR.  ALWAYS called, mirror line or
+					// not, for the reason `parent` is (below): this Finalize also runs on
+					// an INCREMENTAL re-apply, where the edit may have DELETED the
+					// `mirror` line, and skipping the call would leave the object
+					// rendering reflected until a save + reload silently un-reflected it.
+					//
+					// LEGAL ON A CONTAINER, unlike `interior_medium` above, and the
+					// asymmetry is not an oversight.  `interior_medium` on a container is
+					// WARNED-AND-IGNORED there (the chunk still derives) because a
+					// container has no SURFACE to be inside of -- it is a binding with no
+					// referent.  A mirror is a TRANSFORM, and a container
+					// is nothing BUT a transform: `position`, `orientation`, `scale` and
+					// `matrix` are all honoured on one, and every object parented under it
+					// composes through the result.  Refusing the reflection alone would
+					// mean the one transform an assembly most wants (mirror the whole
+					// left arm into a right arm, in one edit) is the one it cannot have,
+					// while `scale -1 1 1` -- the same negative-determinant matrix, spelled
+					// obscurely -- kept working.  So: children compose through it, exactly
+					// once, and that IS the feature.
+					if( bRet && !pJob.SetObjectMirror( name.c_str(), bag.GetString( "mirror", "none" ).c_str() ) ) {
+						const std::string diag = "standard_object `" + name + "`: `mirror " +
+							bag.GetString( "mirror", "none" ) + "` -- the axis must be `x`, `y` or `z` "
+							"(lower case).  A mirror reflects the object across the plane through its OWN "
+							"origin perpendicular to that axis.";
+						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
+						SetFinalizeDiagIfEmpty( diag );
+						bRet = false;
+					}
+
+					// 87 recursive scene graph: record the parent LINK.  Nothing
+					// is composed here -- `world = parent.world * local` is baked
+					// by the derive's tail walk -- which is what makes editing a
+					// container an ordinary one-chunk param edit, and is what
+					// will make hierarchical animation fall out for free once
+					// the per-frame re-bake lands (87 step 2; not yet).
+					//
+					// A refused link FAILS the chunk rather than silently
+					// dropping the object out of its tree.  IJob::SetObjectParent
+					// logs the SPECIFIC reason (undeclared parent, self-parent,
+					// cycle, CSG operand at either end); the diagnostic sink below
+					// cannot reach it -- the bool return is all that comes back --
+					// so it enumerates the whole refusal set and points at the log
+					// line.  An earlier wording asserted three conditions as if
+					// they were the only ones, which read as a lie whenever the
+					// cause was the fourth.
+					// ALWAYS call, including with no parent: this Finalize also runs
+					// on an INCREMENTAL re-apply, where the edit may have REMOVED
+					// the `parent` line.  Skipping the call in that case would
+					// leave the old link in the authored graph -- the object would
+					// keep rendering under a parent its own chunk no longer names,
+					// until a save + reload silently moved it.  `parent none` is
+					// the explicit form of the same request, matching `geometry
+					// none`'s "no reference" sentinel.
+					const bool wantsParent = !parent.empty() && parent != "none";
+					if( bRet ) {
+						if( !pJob.SetObjectParent( name.c_str(), wantsParent ? parent.c_str() : 0 ) && wantsParent ) {
+							RISE::SetFinalizeDiagIfEmpty(
+								"standard_object `" + name + "`: `parent " + parent +
+									"` was refused.  A `parent` must be a DECLARED-EARLIER object; must not be this "
+									"object; must not already be one of its descendants; and must not be a CSG "
+									"operand (parent the csg_object instead).  The log line immediately above names "
+									"WHICH of those it was." );
+							bRet = false;
+						}
 					}
 
 					return bRet;
@@ -6777,25 +10009,38 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "standard_object"; cd.category = ChunkCategory::Object;
-						cd.description = "Scene object instancing a geometry with material, modifier, and shader.  "
+						cd.description = "Scene-graph node.  With a `geometry` it is a LEAF shape (with material, "
+							"modifier and shader); with no `geometry` it is a pure CONTAINER -- a transform that "
+							"other objects are parented to, invisible to the renderer itself.  `parent` names "
+							"another object, declared EARLIER in the file, whose transform this one composes "
+							"into: the node's world transform is `parent.world * local`, so moving a parent moves "
+							"its whole subtree.  Nesting is arbitrary; a cycle is refused.  "
 							"Transform precedence: `matrix` > `quaternion` > `orientation` (Euler).  "
 							"`matrix` (16 doubles, column-major) bypasses the position / orientation / scale "
 							"composition entirely; `quaternion` (xyzw, glTF convention) replaces Euler "
-							"rotation but still composes with `position` and `scale`.";
+							"rotation but still composes with `position` and `scale`.  All of them describe "
+							"the node's LOCAL transform, relative to its parent.  "
+							"`source` instead of `geometry` makes the node an INSTANCE of another node's "
+							"subtree -- see that parameter.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "geometry";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to instance"; }
+						{ auto& p = P(); p.name = "geometry";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.description = "Geometry to instance; omit for a pure container node"; }
+						{ auto& p = P(); p.name = "source";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object (declared EARLIER) to INSTANCE: this node takes a copy of that object's bindings -- geometry / material / modifier / shader / radiance map / interior medium / shadow flags -- while its OWN position, orientation and scale say where the copy goes.  If the source has CHILDREN its whole SUBTREE is copied too: each descendant becomes one further object named `<this name>.<that node's name>`, parented to the copy of its own parent, so the assembly arrives intact and moving this node moves all of it.  The source keeps rendering; `source` copies, it does not move or hide anything.  The whole subtree must be declared before this chunk.  Mutually exclusive with `geometry`"; }
+						{ auto& p = P(); p.name = "count_u";          p.kind = ValueKind::UInt;      p.description = "REPEAT this instance `count_u` times along the first axis (87 step 3c).  Needs a `source`; refused without one.  Each repetition is a whole copy of the instance -- root plus subtree -- named `<this name>[i,j]` and `<this name>[i,j].<member>`.  Every OTHER parameter on this chunk may then be a PER-COMPONENT `expr(...)` over the instance variables `i`/`j` (the indices) and `u`/`v` (the same, normalized into [0,1]; 0 when the count is 1), e.g. `position expr(i*3) 0 0`.  The counts vary THIS chunk's own parameters only -- a member of the copied subtree is not per-instance variable.  PRESENCE selects the repeated form: `count_u 1` names its one entry `[0,0]`, it does not fall back to the plain name.  A fractional, negative, non-finite or > 1e6 count is refused (never rounded)"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "count_v";          p.kind = ValueKind::UInt;      p.description = "Second axis of the `count_u` repetition (default 1).  Needs `count_u`"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "parent";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent this one to (must be declared earlier)"; }
 						{ auto& p = P(); p.name = "material";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Surface material"; }
 						{ auto& p = P(); p.name = "modifier";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Geometry modifier"; }
 						{ auto& p = P(); p.name = "shader";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Shader override"; }
-						{ auto& p = P(); p.name = "position";         p.kind = ValueKind::DoubleVec3;p.description = "World-space position"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "position";         p.kind = ValueKind::DoubleVec3;p.description = "Position, LOCAL to `parent` (world-space when unparented)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "orientation";      p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "quaternion";       p.kind = ValueKind::DoubleVec4;p.description = "Rotation quaternion (xyzw, glTF convention)"; p.defaultValueHint = "0 0 0 1"; }
-						{ auto& p = P(); p.name = "matrix";           p.kind = ValueKind::DoubleMat4;p.description = "Full 4x4 world transform, column-major (overrides position/orientation/quaternion/scale)"; }
-						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "matrix";           p.kind = ValueKind::DoubleMat4;p.description = "Full 4x4 transform, column-major, LOCAL to `parent` (overrides position/orientation/quaternion/scale)"; }
+						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale (`Sx Sy Sz`).  ONE number is accepted as a UNIFORM-scale shorthand (`scale 0.35` broadcasts to (0.35, 0.35, 0.35), with a log warning) -- anything else that is not exactly one or three finite numbers is a hard parse error (DL-32, docs/DEBT_LEDGER.md): a partial fill used to derive a silently DEGENERATE transform (the object would vanish and refuse every proximity() query)"; p.defaultValueHint = "1 1 1"; p.allowsUniformScalarBroadcast = true; }
+						{ auto& p = P(); p.name = "mirror";           p.kind = ValueKind::Enum;      p.enumValues = {"x","y","z","none"}; p.description = "REFLECT this node across the plane through its OWN origin perpendicular to the named LOCAL axis -- author one wing, hand, fin or shoe and mirror the other instead of building both.  Applied INNERMOST, before this node's `position` / `orientation` / `scale`, so `mirror x  position 3 0 0` puts the reflected shape AT +3 (it does not move it to -3).  With `source` the whole cloned SUBTREE arrives reflected, which is the headline use: `standard_object { name right_wing  source left_wing  mirror x }` off an UN-mirrored `left_wing`; with `count_u` every repetition is mirrored.  `mirror` is INSTANCE-OWN, never inherited through `source` -- exactly like `position` / `orientation` / `scale`.  So if the SOURCE itself carries a `mirror`, a plain `source` copy DROPS it and comes out as the source's mirror image; repeat the same `mirror <axis>` on the copy to reproduce the source exactly (the derive warns when you have not).  Legal on a geometry-less CONTAINER too -- everything parented under it composes through the reflection, exactly once, so a mirrored arm's own children are not double-mirrored.  `none` (or omitting the line) means no mirror"; }
 						{ auto& p = P(); p.name = "casts_shadows";    p.kind = ValueKind::Bool;      p.description = "Participates in shadow casting"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "receives_shadows"; p.kind = ValueKind::Bool;      p.description = "Receives shadows from other objects"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "radiance_map";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Per-object radiance map"; }
+						{ auto& p = P(); p.name = "radiance_map";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Per-object radiance map"; p.deprecated = true; p.replacement = "the rasterizer's own radiance_map"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "radiance_scale";   p.kind = ValueKind::Double;    p.description = "Radiance-map scale"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "radiance_orient";  p.kind = ValueKind::DoubleVec3;p.description = "Radiance-map orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "interior_medium";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Medium}; p.description = "Interior participating medium"; }
@@ -6822,9 +10067,18 @@ namespace RISE
 						return false;
 					}
 					struct NumericArity { const char* key; int count; };
+					// DL-32: `scale` is deliberately NOT in this strict-arity
+					// list any more -- it has its own broadcast-aware
+					// resolver (ResolveScaleVec3) below, shared with
+					// StandardObjectAsciiChunkParser so the two chunks'
+					// "matches standard_object semantics" descriptor claim
+					// stays true rather than aspirational: before this fix,
+					// `override_object`'s `scale` hard-refused the SAME
+					// single-number shorthand `standard_object` silently
+					// degenerated on -- two different bugs on one field.
 					const NumericArity numericArities[] = {
 						{ "position", 3 }, { "orientation", 3 }, { "quaternion", 4 },
-						{ "matrix", 16 }, { "scale", 3 }
+						{ "matrix", 16 }
 					};
 					for( const NumericArity& arity : numericArities ) {
 						if( !HasExactNumericArity( bag, arity.key, arity.count ) ) {
@@ -6833,6 +10087,17 @@ namespace RISE
 								name.c_str(), arity.key, arity.count );
 							return false;
 						}
+					}
+					double resolvedScale[3] = {1.0, 1.0, 1.0};
+					bool scalePresent = false;
+					{
+						std::string scaleDiag;
+						const ScaleResolution sr = ResolveScaleVec3( bag, "override_object", name, resolvedScale, &scaleDiag );
+						if( sr.present && !sr.ok ) {
+							GlobalLog()->PrintEx( eLog_Error, "%s", scaleDiag.c_str() );
+							return false;
+						}
+						scalePresent = sr.present;
 					}
 					IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );
 					if( !priv ) {
@@ -6875,12 +10140,11 @@ namespace RISE
 						}
 						any = true;
 					} else if( hasQuaternion ) {
-						double pos[3]={0,0,0}, q[4]={0,0,0,1}, s[3]={1,1,1};
+						double pos[3]={0,0,0}, q[4]={0,0,0,1};
 						bag.GetVec3( "position",   pos );
 						bag.GetVec4( "quaternion", q );
-						bag.GetVec3( "scale",      s );
 						double M[16];
-						ComposeTRS_QuaternionGltf( pos, q, s, M );
+						ComposeTRS_QuaternionGltf( pos, q, resolvedScale, M );
 						const Matrix4 transform = BuildMatrix4FromColumnMajor( M );
 						if( Implementation::Transformable* concrete =
 							dynamic_cast<Implementation::Transformable*>( obj ) ) {
@@ -6914,14 +10178,13 @@ namespace RISE
 								v[0]*DEG_TO_RAD, v[1]*DEG_TO_RAD, v[2]*DEG_TO_RAD ) );
 							any = true;
 						}
-						double scl[3];
-						if( bag.GetVec3( "scale", scl ) ) {
+						if( scalePresent ) {
 							// R2 fix (pinned 2.7): ALWAYS use
 							// SetStretch — `scale` Vec3 routes to
 							// SetStretch in standard_object too
 							// (its parser in this file → AddObject
 							// → IObjectPriv::SetStretch).
-							obj->SetStretch( Vector3( scl[0], scl[1], scl[2] ) );
+							obj->SetStretch( Vector3( resolvedScale[0], resolvedScale[1], resolvedScale[2] ) );
 							any = true;
 						}
 					}
@@ -6963,13 +10226,17 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.required = true;
 						  p.description = "Name of the existing object to override."; }
 						{ auto& p = P(); p.name = "position";    p.kind = ValueKind::DoubleVec3; p.required = false;
-						  p.description = "World-space position; matches standard_object semantics."; }
+						  p.description = "Position, in the TARGET's own local frame -- world-space unless the "
+						                  "target's own chunk declares a `parent`.  This chunk has no `parent` "
+						                  "of its own; it edits the target's transform.  Matches "
+						                  "standard_object semantics."; }
 						{ auto& p = P(); p.name = "orientation"; p.kind = ValueKind::DoubleVec3; p.required = false;
 						  p.description = "Euler orientation in DEGREES; matches standard_object semantics."; }
 						{ auto& p = P(); p.name = "quaternion";  p.kind = ValueKind::DoubleVec4; p.required = false;
 						  p.description = "Rotation quaternion (xyzw, glTF); matches standard_object semantics."; }
 						{ auto& p = P(); p.name = "matrix";      p.kind = ValueKind::DoubleMat4; p.required = false;
-						  p.description = "Full 4x4 world transform, column-major; overrides "
+						  p.description = "Full 4x4 transform, column-major, in the TARGET's own local frame "
+						                  "(world-space unless the target's chunk declares a `parent`); overrides "
 						                  "position/orientation/quaternion/scale.  The pre-CST "
 						                  "byte-splice save (deleted in Slice 6d) emitted this for "
 						                  "objects whose transform was not decomposable into "
@@ -6977,7 +10244,11 @@ namespace RISE
 						                  "nothing emits override_object today, but older scene "
 						                  "files that contain it remain parseable."; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.required = false;
-						  p.description = "Per-axis scale; matches standard_object semantics."; }
+						  p.description = "Per-axis scale; matches standard_object semantics -- including the "
+						                  "DL-32 uniform-scale broadcast (ONE number scales all three axes; "
+						                  "anything else that is not exactly one or three finite numbers is a "
+						                  "hard parse error).";
+						  p.allowsUniformScalarBroadcast = true; }
 						return cd;
 					}();
 					return d;
@@ -7031,7 +10302,35 @@ namespace RISE
 					bool bCastsShadows    = bag.GetBool( "casts_shadows",    true );
 					bool bReceivesShadows = bag.GetBool( "receives_shadows", true );
 
-					return pJob.AddCSGObject( name.c_str(), obja.c_str(), objb.c_str(), op, material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, bCastsShadows, bReceivesShadows );
+					// Acknowledgment idiom mirroring `allow_non_sampling_emitter` on this same
+					// chunk (below) -- except this flag is NOT inert: it is threaded through to
+					// Job::AddCSGObject, which reads it to suppress its operand-rebase advisory
+					// (see that function's comment) for a csg_object that deliberately re-bases
+					// already-transformed operands.
+					bool bAllowTransformedOperands = bag.GetBool( "allow_transformed_operands", false );
+
+					if( !pJob.AddCSGObject( name.c_str(), obja.c_str(), objb.c_str(), op, material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, bCastsShadows, bReceivesShadows, bAllowTransformedOperands ) ) {
+						return false;
+					}
+
+					// 87: a csg_object is an ordinary scene-graph node -- it is
+					// world-visible and its final matrix really is its world
+					// transform, so it can be parented (its OPERANDS cannot; see
+					// ObjectManager::SetObjectParent).  Same unconditional call as
+					// standard_object, so deleting the line detaches on an
+					// incremental re-apply.
+					const std::string csgParent = bag.GetString( "parent", "" );
+					const bool csgWantsParent = !csgParent.empty() && csgParent != "none";
+					if( !pJob.SetObjectParent( name.c_str(), csgWantsParent ? csgParent.c_str() : 0 ) && csgWantsParent ) {
+						RISE::SetFinalizeDiagIfEmpty(
+							"csg_object `" + name + "`: `parent " + csgParent +
+								"` was refused.  A `parent` must be a DECLARED-EARLIER object; must not be this "
+								"object; must not already be one of its descendants; and must not be a CSG operand "
+								"(parent that csg_object instead).  The log line immediately above names WHICH of "
+								"those it was." );
+						return false;
+					}
+					return true;
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -7041,17 +10340,18 @@ namespace RISE
 						cd.description = "Constructive solid geometry combining two objects by a boolean operation.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "parent";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent this composite to (must be declared earlier); its transform is LOCAL, relative to that parent"; }
 						{ auto& p = P(); p.name = "obja";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "First operand object"; }
 						{ auto& p = P(); p.name = "objb";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Second operand object"; }
 						{ auto& p = P(); p.name = "operation";   p.kind = ValueKind::Enum;      p.enumValues = {"union","intersection","subtraction"}; p.description = "CSG operation"; }
 						{ auto& p = P(); p.name = "material";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Override material"; }
 						{ auto& p = P(); p.name = "modifier";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Override modifier"; }
 						{ auto& p = P(); p.name = "shader";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Override shader"; }
-						{ auto& p = P(); p.name = "position";        p.kind = ValueKind::DoubleVec3;p.description = "World-space position"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "position";        p.kind = ValueKind::DoubleVec3;p.description = "Position, LOCAL to `parent` (world-space when unparented)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "orientation";     p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "casts_shadows";   p.kind = ValueKind::Bool;      p.description = "Casts shadows"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "receives_shadows";p.kind = ValueKind::Bool;      p.description = "Receives shadows"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "radiance_map";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Per-object radiance map"; }
+						{ auto& p = P(); p.name = "radiance_map";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Per-object radiance map"; p.deprecated = true; p.replacement = "the rasterizer's own radiance_map"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "radiance_scale";  p.kind = ValueKind::Double;    p.description = "Radiance-map scale"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "radiance_orient"; p.kind = ValueKind::DoubleVec3;p.description = "Radiance-map orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
 						// Post-arc enforcement E1 (docs/agentic-redesign/75-expressive-surface-arc.md
@@ -7065,6 +10365,20 @@ namespace RISE
 						// Finalize) to silence the LUMINAIRE_NULL_GEOMETRY Warning and the agent-
 						// edit creation gate for an object that carries it TRUE.
 						{ auto& p = P(); p.name = "allow_non_sampling_emitter"; p.kind = ValueKind::Bool; p.description = "Acknowledges that this object's emissive material intentionally will not light-sample (a csg_object has no directly-owned geometry, so it is never selected for next-event estimation) -- it only glows on direct view."; p.defaultValueHint = "FALSE"; }
+						// 87 review: an operand's `position`/`orientation` is interpreted in THIS
+						// csg_object's LOCAL frame, so when the csg_object ALSO carries its own
+						// `position`/`orientation`, that transform RE-BASES every already-positioned
+						// operand -- a valid, supported construction (an already-authored
+						// sub-assembly rebased as a unit; the "two half-spheres offset locally,
+						// assembly positioned as a unit" lens idiom, e.g.
+						// scenes/FeatureBased/Combined/crystal_lens.RISEscene), but one
+						// Job::AddCSGObject otherwise flags with a parse-time advisory in case it
+						// was accidental (see docs/SCENE_CONVENTIONS.md sec 5.5).  This flag has a
+						// single purpose: let an author ACKNOWLEDGE the rebase is intentional.
+						// UNLIKE `allow_non_sampling_emitter` above, this one is NOT semantically
+						// inert here -- it is threaded straight through to Job::AddCSGObject, which
+						// reads it to suppress that advisory.
+						{ auto& p = P(); p.name = "allow_transformed_operands"; p.kind = ValueKind::Bool; p.description = "Acknowledges that this csg_object deliberately re-bases already-transformed operands -- its own transform composes with each operand's transform, which is interpreted in this csg_object's local frame; suppresses the operand-rebase warning."; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;
@@ -7079,6 +10393,33 @@ namespace RISE
 			//////////////////////////////////////////
 			// Lights
 			//////////////////////////////////////////
+
+			// COLOUR CONVENTION (2026-09-02) shared by all four zero-area lights.
+			//
+			// A light's `color` is a LINEAR Rec.709 triple by default -- the same
+			// reading `uniformcolor_painter` and every emissive material's
+			// `exitance` already had.  Before this date the four Job::Add*Light
+			// entry points silently gamma-DECODED the triple as sRGB, so an
+			// authored `color 1.0 0.2 0.2` lit the scene with (1.0, 0.033, 0.033)
+			// while the SAME triple on a painter meant what it said.  Authors who
+			// picked their colour in an sRGB colour picker now say so explicitly
+			// with `colorspace sRGB`; `tools/migrate_scenes_light_colorspace.py`
+			// adds exactly that line to pre-existing scenes so their look is
+			// preserved bit-for-bit.
+			//
+			// The accepted value set is `uniformcolor_painter`'s (Job.cpp routes
+			// both through the one ColorSpaceNameToRISEPel switch), minus the
+			// internal "RISERGB" passthrough which is not an authoring colour
+			// space.  Job still ACCEPTS "RISERGB" if some caller passes it; it is
+			// simply not offered in the enum a scene author / highlighter sees.
+			const std::vector<std::string> kLightColorSpaceValues =
+				{ "sRGB", "Rec709RGB_Linear", "ROMMRGB_Linear", "ProPhotoRGB" };
+			const char* const kLightDefaultColorSpace = "Rec709RGB_Linear";
+			const char* const kLightColorDescription =
+				"R G B emission colour -- LINEAR Rec.709 unless `colorspace` says otherwise";
+			const char* const kLightColorSpaceDescription =
+				"Interpretation of `color` (linear default; same value set as uniformcolor_painter's `colorspace`).  "
+				"Use `sRGB` for a value read off a colour picker";
 
 			// AmbientLight — descriptor-driven (reference pattern for migrations).
 			// State holds the accumulator values; apply functions below populate
@@ -7095,7 +10436,8 @@ namespace RISE
 					double power = bag.GetDouble( "power", 1.0 );
 					double color[3] = {0,0,0};
 					bag.GetVec3( "color", color );
-					return pJob.AddAmbientLight( name.c_str(), power, color );
+					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+					return pJob.AddAmbientLight( name.c_str(), power, color, cspace.c_str() );
 				}
 
 				const ChunkDescriptor& Describe() const override
@@ -7108,7 +10450,8 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String;     p.description = "Unique name for this light";  p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "power"; p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "color"; p.kind = ValueKind::DoubleVec3; p.description = "R G B in scene colour space"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "color"; p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "colorspace"; p.kind = ValueKind::Enum; p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
 						return cd;
 					}();
 					return d;
@@ -7125,7 +10468,8 @@ namespace RISE
 					double position[3] = {0,0,0}; bag.GetVec3( "position", position );
 					double color[3]    = {0,0,0}; bag.GetVec3( "color",    color );
 					bool shootphotons  = bag.GetBool( "shootphotons", true );
-					return pJob.AddPointOmniLight( name.c_str(), power, color, position, shootphotons );
+					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+					return pJob.AddPointOmniLight( name.c_str(), power, color, cspace.c_str(), position, shootphotons );
 				}
 
 				const ChunkDescriptor& Describe() const override
@@ -7138,7 +10482,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";        p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";   p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";             p.defaultValueHint = "0 0 0"; }
-						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";            p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription;             p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "colorspace";   p.kind = ValueKind::Enum;       p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
 						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
@@ -7162,7 +10507,8 @@ namespace RISE
 					double target[3]   = {0,0,0};  bag.GetVec3( "target",   target );
 					double color[3]    = {0,0,0};  bag.GetVec3( "color",    color );
 					bool shootphotons  = bag.GetBool( "shootphotons", true );
-					return pJob.AddPointSpotLight( name.c_str(), power, color, target, inner, outer, position, shootphotons );
+					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+					return pJob.AddPointSpotLight( name.c_str(), power, color, cspace.c_str(), target, inner, outer, position, shootphotons );
 				}
 
 				const ChunkDescriptor& Describe() const override
@@ -7178,7 +10524,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "outer";        p.kind = ValueKind::Double;     p.description = "Outer cone half-angle (degrees)"; p.defaultValueHint = "90"; }
 						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";            p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "target";       p.kind = ValueKind::DoubleVec3; p.description = "World-space target point";        p.defaultValueHint = "0 0 -1"; }
-						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";           p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription;            p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "colorspace";   p.kind = ValueKind::Enum;       p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
 						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
@@ -7242,7 +10589,8 @@ namespace RISE
 					double power = bag.GetDouble( "power", 1.0 );
 					double dir[3]   = {0,0,0}; bag.GetVec3( "direction", dir );
 					double color[3] = {0,0,0}; bag.GetVec3( "color",     color );
-					return pJob.AddDirectionalLight( name.c_str(), power, color, dir );
+					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+					return pJob.AddDirectionalLight( name.c_str(), power, color, cspace.c_str(), dir );
 				}
 
 				const ChunkDescriptor& Describe() const override
@@ -7255,7 +10603,578 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;     p.description = "Unique name for this light";      p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "power";     p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "direction"; p.kind = ValueKind::DoubleVec3; p.description = "Direction vector";                p.defaultValueHint = "0 -1 0"; }
-						{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";           p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription;           p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "colorspace"; p.kind = ValueKind::Enum;      p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//======================================================================
+			// RectLight -- a first-class ONE-CHUNK PHYSICAL light (2026-08-12).
+			//
+			// WHY IT EXISTS.  docs/agentic-redesign/83-staged-construction-plan.md
+			// sec 9: three separate mechanism families (palette order + sole worked
+			// example; one completion per light; source-first enumeration) each
+			// failed to get an agent to author an area light, because the category
+			// of the task summons the category of the chunk -- asked for LIGHTING,
+			// a model writes chunks from the lighting category, and until now every
+			// chunk in that category was a zero-area idealization.  The fix is a
+			// lighting-category chunk that IS an area light.
+			//
+			// WHAT IT IS.  Pure PARSE-TIME SUGAR over the canonical four-chunk area
+			// light (docs/SCENE_CONVENTIONS.md sec 3.5): this Finalize makes exactly
+			// the four IJob calls a hand-authored chain makes, in the same order.
+			// The renderer core learns NO new concept -- there is no RectLight
+			// entity, no new ILight, nothing downstream to teach.  The DOCUMENT
+			// keeps the compact `rect_light` text (the CST stores the chunk as
+			// authored, so save round-trips it verbatim) and every derive expands it
+			// identically.  Because scene load and the agent insert path both run
+			// through this same registry, both get the chunk with no second edit.
+			//
+			// EXITANCE ONLY.  There is deliberately no `power` parameter and no
+			// alias for one (project owner, 2026-08-12).  `exitance` is brightness
+			// PER UNIT AREA -- it is what `scale` means on the underlying
+			// lambertian_luminaire_material -- so the same number on a panel twice
+			// the size delivers twice the light.  A `power` knob would invite the
+			// zero-area lights' `color * power` reading, which is a different
+			// quantity.
+			//
+			// SIDEDNESS.  The panel emits toward `facing` and nowhere else.  Two
+			// facts make that work, and BOTH are load-bearing:
+			//   * LambertianEmitter::emittedRadiance returns black when
+			//     Dot(out, N) <= 0 (LambertianEmitter.cpp) -- emission is
+			//     one-sided about the surface normal.
+			//   * ClippedPlaneGeometry derives that normal from the corner winding:
+			//     N = normalize(Cross(dpdu, dpdv)) with dpdu = ptb - pta and
+			//     dpdv = ptd - pta for a planar parallelogram (the (u,v) layout is
+			//     pta->(0,0), ptb->(1,0), ptc->(1,1), ptd->(0,1); see
+			//     ClippedPlaneGeometry.cpp's header block and IntersectRay).
+			// So the corner order below is chosen to make Cross(ptb-pta, ptd-pta)
+			// point along `facing`, and `doublesided` is FALSE: with it TRUE a
+			// back-face hit flips the normal toward the ray, Dot(out, N) becomes
+			// positive again, and the panel would emit from BOTH faces.
+			//
+			// DERIVED NAMES.  The chunk's `name` names the OBJECT; the three
+			// entities it also creates are `<name>__pnt` (painter), `<name>__mat`
+			// (luminaire material) and `<name>__geo` (quad).  A collision on any of
+			// the four fails the derive with the manager's ordinary duplicate-name
+			// error -- never silently.
+			//======================================================================
+			const char* const kRectLightPainterSuffix  = "__pnt";
+			const char* const kRectLightMaterialSuffix = "__mat";
+			const char* const kRectLightGeometrySuffix = "__geo";
+
+			struct RectLightAsciiChunkParser : public IAsciiChunkParser
+			{
+				//! One place both the log line and the CST derive diagnostic are
+				//! written from, so an author sees the same sentence wherever the
+				//! failure surfaces.
+				static bool Reject( const std::string& why )
+				{
+					SetFinalizeDiagIfEmpty( why );
+					GlobalLog()->PrintEx( eLog_Error, "rect_light:: %s", why.c_str() );
+					return false;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					// ---- REQUIRED PARAMETERS.  `required` in a ParameterDescriptor
+					// is metadata for the schema/editor surfaces; the dispatcher does
+					// not enforce it, so every required parameter is checked here (the
+					// same shape thinlens_camera's validation block uses).
+					const std::string name = bag.GetString( "name", std::string() );
+					if( name.empty() ) {
+						return Reject( "`name` is required -- it names the object this light becomes" );
+					}
+
+					double center[3] = {0,0,0};
+					if( !bag.GetVec3( "center", center ) ) {
+						return Reject( "`center` is required -- the world-space centre of the panel" );
+					}
+
+					double facing[3] = {0,0,0};
+					if( !bag.GetVec3( "facing", facing ) ) {
+						return Reject( "`facing` is required -- the direction the panel emits toward" );
+					}
+
+					if( !bag.Has( "size" ) ) {
+						return Reject( "`size` is required -- two numbers, width and height" );
+					}
+					if( !HasExactNumericArity( bag, "size", 2 ) ) {
+						return Reject( "`size` takes exactly two numbers (width height); got `" +
+						               bag.GetString( "size" ) + "`" );
+					}
+					double width = 0.0, height = 0.0;
+					sscanf( bag.GetString( "size" ).c_str(), "%lf %lf", &width, &height );
+					if( width <= 0.0 || height <= 0.0 ) {
+						char buf[128];
+						std::snprintf( buf, sizeof(buf),
+							"`size` must be two POSITIVE numbers (width height); got %g %g", width, height );
+						return Reject( buf );
+					}
+
+					if( !bag.Has( "exitance" ) ) {
+						return Reject( "`exitance` is required -- emitted radiance per unit area, "
+						               "so a panel twice the size at the same exitance delivers twice the light" );
+					}
+					const double exitance = bag.GetDouble( "exitance", 0.0 );
+					if( !( exitance > 0.0 ) ) {
+						char buf[128];
+						std::snprintf( buf, sizeof(buf),
+							"`exitance` must be greater than zero; got %g (a light that emits nothing is not a light)",
+							exitance );
+						return Reject( buf );
+					}
+
+					double color[3] = { 1.0, 1.0, 1.0 };
+					bag.GetVec3( "color", color );
+
+					// ---- THE PANEL BASIS.  `facing` becomes the quad's geometric
+					// normal exactly; U and V are its in-plane width / height axes.
+					// Cross(U, V) == F by construction: V = Cross(F, U) with U unit
+					// and perpendicular to F gives Cross(U, Cross(F, U)) =
+					// F(U.U) - U(U.F) = F.
+					const Vector3 rawFacing( facing[0], facing[1], facing[2] );
+					const Scalar  facingLen = Vector3Ops::Magnitude( rawFacing );
+					if( !( facingLen > 1e-12 ) ) {
+						return Reject( "`facing` is degenerate (zero-length) -- it must be the "
+						               "direction the panel emits toward, e.g. `facing 0 -1 0` for a "
+						               "ceiling panel pointing at the floor" );
+					}
+					const Vector3 F = rawFacing * ( 1.0 / facingLen );
+
+					// The helper axis picks the in-plane frame.  World up is the
+					// natural choice -- it makes `height` the vertical axis for any
+					// horizontally-facing panel -- but it degenerates when `facing`
+					// IS (anti)parallel to up, so a floor / ceiling panel falls back
+					// to world +Z and gets width along X, height along Z.
+					const Vector3 kWorldUp( 0.0, 1.0, 0.0 );
+					const Vector3 kWorldFwd( 0.0, 0.0, 1.0 );
+					const Vector3 helper =
+						( fabs( Vector3Ops::Dot( F, kWorldUp ) ) < 0.999999 ) ? kWorldUp : kWorldFwd;
+					const Vector3 U = Vector3Ops::Normalize( Vector3Ops::Cross( helper, F ) );
+					const Vector3 V = Vector3Ops::Cross( F, U );
+
+					const Scalar hw = 0.5 * width;
+					const Scalar hh = 0.5 * height;
+					const Vector3 du = U * hw;
+					const Vector3 dv = V * hh;
+
+					// Winding pta -> ptb -> ptc -> ptd walks (-U,-V) (+U,-V) (+U,+V)
+					// (-U,+V), so ptb - pta = width*U and ptd - pta = height*V, and
+					// Cross(ptb - pta, ptd - pta) = width*height*F -- the geometric
+					// normal IS `facing`.
+					double pta[3], ptb[3], ptc[3], ptd[3];
+					for( int k = 0; k < 3; ++k ) {
+						const double c  = center[k];
+						const double eu = ( k == 0 ? du.x : ( k == 1 ? du.y : du.z ) );
+						const double ev = ( k == 0 ? dv.x : ( k == 1 ? dv.y : dv.z ) );
+						pta[k] = c - eu - ev;
+						ptb[k] = c + eu - ev;
+						ptc[k] = c + eu + ev;
+						ptd[k] = c - eu + ev;
+					}
+
+					// ---- THE FOUR CALLS.  Same order, same arguments as the
+					// hand-authored chain in docs/SCENE_CONVENTIONS.md sec 3.5.
+					const std::string pntName = name + kRectLightPainterSuffix;
+					const std::string matName = name + kRectLightMaterialSuffix;
+					const std::string geoName = name + kRectLightGeometrySuffix;
+
+					// `Rec709RGB_Linear` matches uniformcolor_painter's own default:
+					// a hand-typed light tint is a physical number, not a
+					// display-referred one.
+					if( !pJob.AddUniformColorPainter( pntName.c_str(), color, "Rec709RGB_Linear" ) ) {
+						return Reject( "could not create the emitted-colour painter `" + pntName +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+					// Mirror uniformcolor_painter's cache write so a downstream chunk
+					// that reads a painter's colour sees this one too.
+					{
+						PainterColor pc = { { color[0], color[1], color[2] } };
+						s_painterColors[pntName] = pc;
+					}
+
+					if( !pJob.AddLambertianLuminaireMaterial( matName.c_str(), pntName.c_str(), "none", exitance ) ) {
+						return Reject( "could not create the luminaire material `" + matName +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+
+					if( !pJob.AddClippedPlaneGeometry( geoName.c_str(), pta, ptb, ptc, ptd, false ) ) {
+						return Reject( "could not create the panel geometry `" + geoName +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+
+					RadianceMapConfig radianceMapConfig;
+					double pos[3]    = { 0.0, 0.0, 0.0 };
+					double orient[3] = { 0.0, 0.0, 0.0 };
+					double scl[3]    = { 1.0, 1.0, 1.0 };
+					if( !pJob.AddObject( name.c_str(), geoName.c_str(), matName.c_str(), 0, 0,
+					                     radianceMapConfig, pos, orient, scl, true, true ) ) {
+						return Reject( "could not create the object `" + name +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+
+					// 87: the object this chunk synthesizes is an ordinary
+					// scene-graph node, so a lamp can be carried by an assembly.
+					// Unconditional, so deleting the line detaches.
+					{
+						const std::string lightParent = bag.GetString( "parent", "" );
+						const bool wants = !lightParent.empty() && lightParent != "none";
+						if( !pJob.SetObjectParent( name.c_str(), wants ? lightParent.c_str() : 0 ) && wants ) {
+							return Reject( "`" + name + "`: `parent " + lightParent + "` was refused.  A `parent` "
+							               "must be a DECLARED-EARLIER object; must not be this object; must not "
+							               "already be one of its descendants; and must not be a CSG operand (parent "
+							               "the csg_object instead).  The log line immediately above names WHICH of "
+							               "those it was." );
+						}
+					}
+
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "rect_light"; cd.category = ChunkCategory::Light;
+						cd.description =
+							"A rectangular AREA light: a real emitting surface in the scene, and the "
+							"physically based way to light one.  It is expanded at parse time into the "
+							"four chunks an area light is otherwise written as -- a uniformcolor_painter "
+							"holding `color`, a lambertian_luminaire_material whose exitance is that "
+							"painter and whose scale is `exitance`, a clippedplane_geometry whose four "
+							"corners come from center/size/facing, and a standard_object binding them.  "
+							"Those three helper entities are named `<name>__pnt`, `<name>__mat` and "
+							"`<name>__geo`; the standard_object takes `<name>` itself, so `<name>` is "
+							"what render-time tools (solo, object map, isolate) report.  A collision on "
+							"any of the four names fails the load with the ordinary duplicate-name "
+							"error.  The panel emits toward `facing` ONLY -- the back face is not hit at "
+							"all.  Being an ordinary object it is rendered like one: the camera sees its "
+							"surface wherever it is, so it is both a light and a thing the picture shows.  "
+							"It has real area, so it casts soft shadows and falls off with distance.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;     p.required = true;
+						  p.description = "Unique name.  Names the OBJECT; the painter, material and geometry this chunk also creates are `<name>__pnt`, `<name>__mat` and `<name>__geo`"; }
+						{ auto& p = P(); p.name = "parent"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent the emitted object to (must be declared earlier); its transform is then LOCAL to that parent"; }
+						{ auto& p = P(); p.name = "center";   p.kind = ValueKind::DoubleVec3; p.required = true;
+						  p.description = "Centre of the panel, LOCAL to `parent` (world-space when unparented)"; }
+						{ auto& p = P(); p.name = "size";     p.kind = ValueKind::Double;     p.required = true;
+						  p.tupleKinds = {ValueKind::Double, ValueKind::Double};
+						  p.description = "Two positive numbers: width and height, in scene units"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "facing";   p.kind = ValueKind::DoubleVec3; p.required = true;
+						  p.description = "The direction the panel EMITS toward (a ceiling panel lighting the floor is `0 -1 0`).  It becomes the quad's normal exactly; the back face does not emit.  Need not be unit length, but must not be zero"; }
+						{ auto& p = P(); p.name = "exitance"; p.kind = ValueKind::Double;     p.required = true;
+						  p.description = "Emitted radiance PER UNIT AREA, so the same number on a panel twice the size delivers twice the light.  Must be greater than zero.  Existing scenes span four orders of magnitude: tens for a soft interior fill panel, thousands for a small window reading as daylight"; }
+						{ auto& p = P(); p.name = "color";    p.kind = ValueKind::DoubleVec3;
+						  p.description = "R G B tint of the emitted light, linear Rec.709"; p.defaultValueHint = "1 1 1"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//======================================================================
+			// ShapeLight -- the CLOSED-SOLID sibling of rect_light (2026-08-12).
+			//
+			// WHY IT EXISTS.  `rect_light` (above) closed the one-chunk gap for a
+			// PANEL, and the first live run using it recorded the remaining half
+			// (docs/agentic-redesign/83-staged-construction-plan.md sec 11): the
+			// glowing creatures of an imagined scene still became omni_lights,
+			// because a jellyfish is not a rectangle and the only one-chunk light
+			// with real area was.  `shape_light` is the same mechanism for the
+			// shapes a glowing THING is: a bulb, an orb, a lamp body, a glowing
+			// volume.  Owner-approved 2026-08-12, together with the zero-area
+			// budget that makes reaching for an idealization cost something.
+			//
+			// WHAT IT IS.  Pure PARSE-TIME SUGAR, exactly as rect_light is: this
+			// Finalize makes the same four IJob calls the hand-authored area-light
+			// chain makes (docs/SCENE_CONVENTIONS.md sec 3.5) -- painter,
+			// lambertian luminaire material, geometry, object.  The renderer core
+			// learns NO new concept, the CST keeps the compact authored text, and
+			// scene load and the agent insert path both get it through this one
+			// registry.  rect_light is NOT folded into it: a rectangle needs a
+			// `facing`, a closed solid emits every way at once, and the two
+			// parameter sets do not want to be one.
+			//
+			// SIDEDNESS IS FREE HERE, AND THIS IS THE INTERESTING DIFFERENCE.
+			// rect_light needed a `facing` parameter, a corner winding chosen to
+			// make Cross(ptb-pta, ptd-pta) point along it, and `doublesided FALSE`,
+			// all so that LambertianEmitter's one-sidedness (emittedRadiance
+			// returns black when Dot(out, N) <= 0) pointed the right way.  Every
+			// shape below is a CLOSED SOLID whose surface normal already points
+			// OUTWARD at every point -- SphereGeometry / EllipsoidGeometry return
+			// the outward radial normal, BoxGeometry the outward face normal,
+			// CylinderGeometry the outward radial normal on the wall and the
+			// outward axial normal on each cap.  Composed with the same one-sided
+			// emitter that gives exactly "emits outward everywhere, inward
+			// nowhere", which is what a bulb does, so there is NO facing parameter
+			// and nothing for an author to get backwards.
+			//
+			// SIZE IS PER-SHAPE, and its arity is what selects the shape's own
+			// constructor.  sphere = one radius; ellipsoid = three radii (the
+			// semi-axes, like ellipsoid_geometry's `radii`); box = width height
+			// depth (the X, Y and Z extents of box_geometry, which is centred on
+			// the origin); cylinder = radius height, built on the +Y axis so it
+			// stands upright, because `orientation` can turn it anywhere and the
+			// upright reading is the one an author can hold in their head.
+			//
+			// DERIVED NAMES.  The same three suffixes rect_light uses, and
+			// deliberately the same: the two chunks produce the same kind of
+			// entity set, so an author who has learned one set of derived names
+			// has learned both.  A collision on any of the four fails the derive
+			// with the manager's ordinary duplicate-name error.
+			//======================================================================
+			const char* const kShapeLightPainterSuffix  = kRectLightPainterSuffix;
+			const char* const kShapeLightMaterialSuffix = kRectLightMaterialSuffix;
+			const char* const kShapeLightGeometrySuffix = kRectLightGeometrySuffix;
+
+			//! The four shapes, their `size` arity and what those numbers mean.
+			//! ONE table: the validator, the geometry switch and the descriptor's
+			//! own text are all written from it, so a fifth shape cannot be added
+			//! to one and forgotten in another.
+			struct ShapeLightShape_
+			{
+				const char* keyword;
+				int         sizeArity;
+				const char* sizeMeaning;   //!< for the descriptor and the diagnostics
+			};
+			const ShapeLightShape_ kShapeLightShapes[] = {
+				{ "sphere",    1, "one radius" },
+				{ "ellipsoid", 3, "three radii -- the semi-axes, X Y Z" },
+				{ "box",       3, "width height depth -- the X, Y and Z extents" },
+				{ "cylinder",  2, "radius height -- the cylinder stands on the +Y axis" }
+			};
+			const std::size_t kShapeLightShapeCount =
+				sizeof( kShapeLightShapes ) / sizeof( kShapeLightShapes[0] );
+
+			//! "`sphere` (one radius), `ellipsoid` (...), ..." -- the valid set,
+			//! spelled the same way in every diagnostic that names it.
+			inline std::string ShapeLightValidShapes()
+			{
+				std::string s;
+				for( std::size_t i = 0; i < kShapeLightShapeCount; ++i ) {
+					if( i ) s += ( i + 1 == kShapeLightShapeCount ) ? " and " : ", ";
+					s += std::string( "`" ) + kShapeLightShapes[i].keyword + "` (" +
+					     kShapeLightShapes[i].sizeMeaning + ")";
+				}
+				return s;
+			}
+
+			struct ShapeLightAsciiChunkParser : public IAsciiChunkParser
+			{
+				//! One place both the log line and the CST derive diagnostic are
+				//! written from -- rect_light's Reject, same reason.
+				static bool Reject( const std::string& why )
+				{
+					SetFinalizeDiagIfEmpty( why );
+					GlobalLog()->PrintEx( eLog_Error, "shape_light:: %s", why.c_str() );
+					return false;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					// ---- REQUIRED PARAMETERS.  `required` in a ParameterDescriptor
+					// is metadata for the schema / editor surfaces; the dispatcher
+					// does not enforce it, so every required parameter is checked
+					// here (rect_light's block, and thinlens_camera's before it).
+					const std::string name = bag.GetString( "name", std::string() );
+					if( name.empty() ) {
+						return Reject( "`name` is required -- it names the object this light becomes" );
+					}
+
+					// ---- THE SHAPE, which also fixes what `size` means.  The
+					// dispatcher does NOT validate an Enum parameter's value (it
+					// only type-checks numeric kinds), so an unknown shape has to
+					// fail here, naming the whole valid set rather than just
+					// saying no.
+					const std::string shape = bag.GetString( "shape", std::string() );
+					if( shape.empty() ) {
+						return Reject( "`shape` is required -- one of " + ShapeLightValidShapes() );
+					}
+					const ShapeLightShape_* chosen = 0;
+					for( std::size_t i = 0; i < kShapeLightShapeCount; ++i )
+						if( shape == kShapeLightShapes[i].keyword ) { chosen = &kShapeLightShapes[i]; break; }
+					if( !chosen ) {
+						return Reject( "`shape " + shape + "` is not a shape this chunk builds -- it is one of " +
+						               ShapeLightValidShapes() );
+					}
+
+					double center[3] = {0,0,0};
+					if( !bag.GetVec3( "center", center ) ) {
+						return Reject( "`center` is required -- the world-space centre of the emitting solid" );
+					}
+
+					if( !bag.Has( "size" ) ) {
+						return Reject( std::string( "`size` is required -- for `shape " ) + chosen->keyword +
+						               "` it is " + chosen->sizeMeaning );
+					}
+					if( !HasExactNumericArity( bag, "size", chosen->sizeArity ) ) {
+						char buf[64];
+						std::snprintf( buf, sizeof(buf), "%d", chosen->sizeArity );
+						return Reject( std::string( "`size` takes exactly " ) + buf + " number" +
+						               ( chosen->sizeArity == 1 ? "" : "s" ) + " for `shape " + chosen->keyword +
+						               "` -- " + chosen->sizeMeaning + "; got `" + bag.GetString( "size" ) + "`" );
+					}
+					double sz[3] = { 0.0, 0.0, 0.0 };
+					{
+						std::istringstream iss( bag.GetString( "size" ) );
+						for( int k = 0; k < chosen->sizeArity; ++k ) iss >> sz[k];
+					}
+					for( int k = 0; k < chosen->sizeArity; ++k ) {
+						if( !( sz[k] > 0.0 ) ) {
+							char buf[192];
+							std::snprintf( buf, sizeof(buf),
+								"`size` must be %d POSITIVE number%s (%s); got `%s`",
+								chosen->sizeArity, chosen->sizeArity == 1 ? "" : "s",
+								chosen->sizeMeaning, bag.GetString( "size" ).c_str() );
+							return Reject( buf );
+						}
+					}
+
+					if( !bag.Has( "exitance" ) ) {
+						return Reject( "`exitance` is required -- emitted radiance per unit area, "
+						               "so the same number on a bigger solid delivers more light" );
+					}
+					const double exitance = bag.GetDouble( "exitance", 0.0 );
+					if( !( exitance > 0.0 ) ) {
+						char buf[128];
+						std::snprintf( buf, sizeof(buf),
+							"`exitance` must be greater than zero; got %g (a light that emits nothing is not a light)",
+							exitance );
+						return Reject( buf );
+					}
+
+					double color[3] = { 1.0, 1.0, 1.0 };
+					bag.GetVec3( "color", color );
+
+					// `orientation` is Euler DEGREES on the standard_object this
+					// expands into, exactly as an author would write it there --
+					// same parameter, same units, same axis order.
+					double orient[3] = { 0.0, 0.0, 0.0 };
+					if( bag.GetVec3( "orientation", orient ) ) {
+						orient[0] *= DEG_TO_RAD;
+						orient[1] *= DEG_TO_RAD;
+						orient[2] *= DEG_TO_RAD;
+					}
+
+					// ---- THE FOUR CALLS.  Same order and same arguments as the
+					// hand-authored chain, and as rect_light's Finalize.
+					const std::string pntName = name + kShapeLightPainterSuffix;
+					const std::string matName = name + kShapeLightMaterialSuffix;
+					const std::string geoName = name + kShapeLightGeometrySuffix;
+
+					if( !pJob.AddUniformColorPainter( pntName.c_str(), color, "Rec709RGB_Linear" ) ) {
+						return Reject( "could not create the emitted-colour painter `" + pntName +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+					{
+						PainterColor pc = { { color[0], color[1], color[2] } };
+						s_painterColors[pntName] = pc;
+					}
+
+					if( !pJob.AddLambertianLuminaireMaterial( matName.c_str(), pntName.c_str(), "none", exitance ) ) {
+						return Reject( "could not create the luminaire material `" + matName +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+
+					// Every one of these constructors builds its solid CENTRED ON
+					// THE ORIGIN (BoxGeometry spans +-w/2, CylinderGeometry spans
+					// +-height/2 along its axis), so `center` is carried entirely
+					// by the object's position below -- there is no half-extent
+					// offset to apply here and none to get wrong.
+					bool geoOk = false;
+					if( shape == "sphere" ) {
+						geoOk = pJob.AddSphereGeometry( geoName.c_str(), sz[0] );
+					} else if( shape == "ellipsoid" ) {
+						const double radii[3] = { sz[0], sz[1], sz[2] };
+						geoOk = pJob.AddEllipsoidGeometry( geoName.c_str(), radii );
+					} else if( shape == "box" ) {
+						geoOk = pJob.AddBoxGeometry( geoName.c_str(), sz[0], sz[1], sz[2] );
+					} else {
+						// CAPPED, and that is load-bearing: an open tube has no end
+						// caps, so it would emit from the wall only and a camera
+						// looking down the axis would see straight through a light.
+						geoOk = pJob.AddCylinderGeometry( geoName.c_str(), 'y', sz[0], sz[1], true );
+					}
+					if( !geoOk ) {
+						return Reject( "could not create the `" + shape + "` geometry `" + geoName +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+
+					RadianceMapConfig radianceMapConfig;
+					double scl[3] = { 1.0, 1.0, 1.0 };
+					if( !pJob.AddObject( name.c_str(), geoName.c_str(), matName.c_str(), 0, 0,
+					                     radianceMapConfig, center, orient, scl, true, true ) ) {
+						return Reject( "could not create the object `" + name +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+
+					// 87: the object this chunk synthesizes is an ordinary
+					// scene-graph node, so a lamp can be carried by an assembly.
+					// Unconditional, so deleting the line detaches.
+					{
+						const std::string lightParent = bag.GetString( "parent", "" );
+						const bool wants = !lightParent.empty() && lightParent != "none";
+						if( !pJob.SetObjectParent( name.c_str(), wants ? lightParent.c_str() : 0 ) && wants ) {
+							return Reject( "`" + name + "`: `parent " + lightParent + "` was refused.  A `parent` "
+							               "must be a DECLARED-EARLIER object; must not be this object; must not "
+							               "already be one of its descendants; and must not be a CSG operand (parent "
+							               "the csg_object instead).  The log line immediately above names WHICH of "
+							               "those it was." );
+						}
+					}
+
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "shape_light"; cd.category = ChunkCategory::Light;
+						cd.description =
+							"A SOLID AREA light: a real emitting sphere, ellipsoid, box or cylinder in the "
+							"scene -- the form a bulb, an orb, a lamp body or a glowing volume takes, and "
+							"the physically based way to light one.  It is the closed-solid sibling of "
+							"`rect_light` (a rectangular panel) and is expanded at parse time into the "
+							"same four chunks an area light is otherwise written as -- a "
+							"uniformcolor_painter holding `color`, a lambertian_luminaire_material whose "
+							"exitance is that painter and whose scale is `exitance`, the shape's own "
+							"geometry chunk, and a standard_object placing it at `center`.  Those three "
+							"helper entities are named `<name>__pnt`, `<name>__mat` and `<name>__geo`; "
+							"the standard_object takes `<name>` itself, so `<name>` is what render-time "
+							"tools (solo, object map, isolate) report.  A collision on any of the four "
+							"names fails the load with the ordinary duplicate-name error.  IT EMITS "
+							"OUTWARD IN EVERY DIRECTION AND THERE IS NO FACING PARAMETER: each of these "
+							"shapes is a closed solid whose surface normal points outward everywhere, and "
+							"lambertian emission is one-sided about that normal, so the whole surface "
+							"emits away from the solid and nothing emits into it.  (That is the one place "
+							"it differs from rect_light, which is an open quad and therefore needs a "
+							"`facing`.)  Being an ordinary object it is rendered like one: the camera sees "
+							"its surface wherever it is, so it is both a light and a thing the picture "
+							"shows.  It has real area, so it casts soft shadows and falls off with "
+							"distance.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.required = true;
+						  p.description = "Unique name.  Names the OBJECT; the painter, material and geometry this chunk also creates are `<name>__pnt`, `<name>__mat` and `<name>__geo`"; }
+						{ auto& p = P(); p.name = "parent"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent the emitted object to (must be declared earlier); its transform is then LOCAL to that parent"; }
+						{ auto& p = P(); p.name = "shape";       p.kind = ValueKind::Enum;       p.required = true;
+						  p.enumValues = {"sphere","ellipsoid","box","cylinder"};
+						  p.description = "Which closed solid emits.  It also fixes how many numbers `size` takes: " + ShapeLightValidShapes(); }
+						{ auto& p = P(); p.name = "center";      p.kind = ValueKind::DoubleVec3; p.required = true;
+						  p.description = "Centre of the solid, LOCAL to `parent` (world-space when unparented).  Every shape is built centred on its own origin and placed here"; }
+						{ auto& p = P(); p.name = "size";        p.kind = ValueKind::Double;     p.required = true;
+						  p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Double};
+						  p.description = "Positive numbers in scene units, as many as the chosen `shape` takes: " + ShapeLightValidShapes(); p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "exitance";    p.kind = ValueKind::Double;     p.required = true;
+						  p.description = "Emitted radiance PER UNIT AREA, so the same number on a bigger solid delivers more light.  Must be greater than zero.  Existing scenes span four orders of magnitude: tens for a soft glowing body, thousands for a small bright bulb"; }
+						{ auto& p = P(); p.name = "orientation"; p.kind = ValueKind::DoubleVec3;
+						  p.description = "Euler orientation in DEGREES, applied to the solid about `center` -- the same parameter standard_object takes.  A sphere is unchanged by it; it is what turns a cylinder off its default +Y axis, and what tilts a box or an ellipsoid"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "color";       p.kind = ValueKind::DoubleVec3;
+						  p.description = "R G B tint of the emitted light, linear Rec.709"; p.defaultValueHint = "1 1 1"; }
 						return cd;
 					}();
 					return d;
@@ -7451,7 +11370,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "ambientocclusion_shaderop"; cd.category = ChunkCategory::ShaderOp;
-						cd.description = "Screen-space / hemisphere ambient occlusion.";
+						cd.description = "Screen-space / hemisphere ambient occlusion. A geometry-presence query -- an occluder's `casts_shadows FALSE` does NOT exempt it from occluding here.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "numtheta";         p.kind = ValueKind::UInt;   p.description = "Elevation samples"; p.defaultValueHint = "5"; }
@@ -7655,9 +11574,9 @@ namespace RISE
 						for (const char* n : doubles) {
 							auto& p = P(); p.name = n; p.kind = ValueKind::Double; p.description = "Donner-Jensen skin parameter";
 						}
-						{ auto& p = P(); p.name = "melanin_fraction_offset";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Spatial melanin offset"; }
-						{ auto& p = P(); p.name = "hemoglobin_epidermis_offset";p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Spatial hb-epi offset"; }
-						{ auto& p = P(); p.name = "hemoglobin_dermis_offset";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Spatial hb-derm offset"; }
+						{ auto& p = P(); p.name = "melanin_fraction_offset";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.description = "Spatial melanin offset"; }
+						{ auto& p = P(); p.name = "hemoglobin_epidermis_offset";p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.description = "Spatial hb-epi offset"; }
+						{ auto& p = P(); p.name = "hemoglobin_dermis_offset";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.description = "Spatial hb-derm offset"; }
 						return cd;
 					}();
 					return d;
@@ -7708,9 +11627,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "dir";      p.kind = ValueKind::DoubleVec3; p.description = "Rectangle normal"; p.defaultValueHint = "0 -1 0"; }
 						{ auto& p = P(); p.name = "make_dir"; p.kind = ValueKind::DoubleVec3; p.description = "Derive dir from target = make_dir - location"; }
 						{ auto& p = P(); p.name = "samples";  p.kind = ValueKind::UInt;       p.description = "Samples per shade"; p.defaultValueHint = "9"; }
-						{ auto& p = P(); p.name = "emission"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emission colour"; p.defaultValueHint = "color_white"; }
+						{ auto& p = P(); p.name = "emission"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.description = "Emission colour"; p.defaultValueHint = "color_white"; }
 						{ auto& p = P(); p.name = "power";    p.kind = ValueKind::Double;     p.description = "Radiant power"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Directionality exponent"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Directionality (Phong) exponent (physical SCALAR, single value: a scalar_painter name, or an inline scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "1.0"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; }
 						{ auto& p = P(); p.name = "hotspot";  p.kind = ValueKind::Double;     p.description = "Hotspot half-angle (degrees)"; p.defaultValueHint = "180"; }
 						{ auto& p = P(); p.name = "cache";    p.kind = ValueKind::Bool;       p.description = "Cache direct-light estimate"; p.defaultValueHint = "FALSE"; }
 						return cd;
@@ -7737,7 +11656,7 @@ namespace RISE
 						cd.description = "Alpha-transparency shader op.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "transparency"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Alpha painter"; p.defaultValueHint = "color_white"; }
+						{ auto& p = P(); p.name = "transparency"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.description = "Alpha painter"; p.defaultValueHint = "color_white"; }
 						{ auto& p = P(); p.name = "one_sided";    p.kind = ValueKind::Bool;      p.description = "Transparent from one side only"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
@@ -7766,7 +11685,7 @@ namespace RISE
 							"MLT, and photon tracers treat the surface as fully opaque.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "alpha";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Alpha painter"; p.defaultValueHint = "color_white"; }
+						{ auto& p = P(); p.name = "alpha";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.description = "Alpha painter"; p.defaultValueHint = "color_white"; }
 						{ auto& p = P(); p.name = "cutoff"; p.kind = ValueKind::Double;    p.description = "Alpha threshold (alpha < cutoff continues the ray past the surface)"; p.defaultValueHint = "0.5"; }
 						return cd;
 					}();
@@ -7785,23 +11704,11 @@ namespace RISE
 					std::string name = bag.GetString( "name", "noname" );
 
 					const std::vector<std::string>& shaderops = bag.GetRepeatable( "shaderop" );
-					const unsigned int num = static_cast<unsigned int>(shaderops.size());
-
-					char* shmem = new char[num*256];
-					memset( shmem, 0, num*256 );
-					char** shops = new char*[num];
-
-					for( unsigned int i=0; i<num; i++ ) {
-						shops[i] = &shmem[i*256];
-						strncpy( shops[i], shaderops[i].c_str(), 255 );
-					}
-
-					bool bRet = pJob.AddStandardShader( name.c_str(), num, (const char**)shops );
-
-					delete [] shops;
-					delete [] shmem;
-
-					return bRet;
+					if( shaderops.size() > std::numeric_limits<unsigned int>::max() ) return false;
+					std::vector<const char*> names;
+					names.reserve( shaderops.size() );
+					for( const std::string& member : shaderops ) names.push_back( member.c_str() );
+					return pJob.AddStandardShader( name.c_str(), static_cast<unsigned int>(names.size()), names.data() );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -7824,39 +11731,47 @@ namespace RISE
 				{
 					std::string name = bag.GetString( "name", "noname" );
 
-					std::vector<String> shaderops;
+					std::vector<std::string> shaderops;
 					std::vector<unsigned int> mins, maxs;
 					std::vector<char> operations;
 
 					// Repeatable composite tokens: "<shaderop-name> <min-depth> <max-depth> <op>"
 					const std::vector<std::string>& sops = bag.GetRepeatable( "shaderop" );
-					for( size_t k = 0; k < sops.size(); ++k ) {
-						char buf[256] = {0};
+					const auto readDepth = []( const std::string& token, unsigned int& value ) {
+						const char* begin = token.data();
+						const char* end = begin + token.size();
+						if( begin != end && *begin == '+' ) ++begin;
+						const auto parsed = std::from_chars( begin, end, value );
+						return parsed.ec == std::errc{} && parsed.ptr == end;
+					};
+					for( const std::string& row : sops ) {
+						std::istringstream fields( row );
+						std::vector<std::string> tokens;
+						std::string token;
+						while( fields >> token && token[0] != '#' ) {
+							tokens.push_back( token );
+						}
 						unsigned int min=1, max=10000;
-						char operation = '+';
-						sscanf( sops[k].c_str(), "%s %u %u %c", buf, &min, &max, &operation );
-						shaderops.push_back( String(buf) );
+						if( tokens.empty() || tokens.size() > 4 ||
+							(tokens.size() > 1 && !readDepth( tokens[1], min )) ||
+							(tokens.size() > 2 && !readDepth( tokens[2], max )) ||
+							(tokens.size() > 3 && tokens[3].size() != 1) ) {
+							SetFinalizeDiagIfEmpty( "advanced_shader expects a shader-op name with optional minimum depth, maximum depth, and operation" );
+							return false;
+						}
+						shaderops.push_back( std::move(tokens[0]) );
 						mins.push_back( min );
 						maxs.push_back( max );
-						operations.push_back( operation );
+						operations.push_back( tokens.size() > 3 ? tokens[3][0] : '+' );
 					}
 
 					const unsigned int num = static_cast<unsigned int>(shaderops.size());
-					char* shmem = new char[num*256];
-					memset( shmem, 0, num*256 );
-					char** shops = new char*[num];
-
-					for( unsigned int i=0; i<num; i++ ) {
-						shops[i] = &shmem[i*256];
-						strncpy( shops[i], shaderops[i].c_str(), 255 );
+					std::vector<const char*> shops;
+					shops.reserve( num );
+					for( const std::string& opName : shaderops ) {
+						shops.push_back( opName.c_str() );
 					}
-
-					bool bRet = pJob.AddAdvancedShader( name.c_str(), num, (const char**)shops, (unsigned int*)(&(*(mins.begin()))), (unsigned int*)(&(*(maxs.begin()))), (char*)(&(*(operations.begin()))) );
-
-					delete [] shops;
-					delete [] shmem;
-
-					return bRet;
+					return pJob.AddAdvancedShader( name.c_str(), num, shops.data(), mins.data(), maxs.data(), operations.data() );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -7926,10 +11841,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "threshold_end";   p.kind = ValueKind::Double;   p.description = "High opacity cutoff"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "sampler";         p.kind = ValueKind::Enum;     p.enumValues = {"u","s"}; p.description = "Ray sampler"; p.defaultValueHint = "u"; }
 						{ auto& p = P(); p.name = "samples";         p.kind = ValueKind::UInt;     p.description = "Samples along ray"; p.defaultValueHint = "50"; }
-						{ auto& p = P(); p.name = "transfer_red";    p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "R transfer function"; }
-						{ auto& p = P(); p.name = "transfer_green";  p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "G transfer function"; }
-						{ auto& p = P(); p.name = "transfer_blue";   p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "B transfer function"; }
-						{ auto& p = P(); p.name = "transfer_alpha";  p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "A transfer function"; }
+						{ auto& p = P(); p.name = "transfer_red";    p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Function}; p.semantics.pipe = ParameterPipe::Function1D; p.description = "R transfer function"; }
+						{ auto& p = P(); p.name = "transfer_green";  p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Function}; p.semantics.pipe = ParameterPipe::Function1D; p.description = "G transfer function"; }
+						{ auto& p = P(); p.name = "transfer_blue";   p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Function}; p.semantics.pipe = ParameterPipe::Function1D; p.description = "B transfer function"; }
+						{ auto& p = P(); p.name = "transfer_alpha";  p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Function}; p.semantics.pipe = ParameterPipe::Function1D; p.description = "A transfer function"; }
 						{ auto& p = P(); p.name = "iso_shader";      p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Shader}; p.description = "Iso-surface shader"; }
 						return cd;
 					}();
@@ -7988,8 +11903,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "threshold_end";     p.kind = ValueKind::Double;   p.description = "High opacity cutoff"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "sampler";           p.kind = ValueKind::Enum;     p.enumValues = {"u","s"}; p.description = "Ray sampler"; p.defaultValueHint = "u"; }
 						{ auto& p = P(); p.name = "samples";           p.kind = ValueKind::UInt;     p.description = "Samples along ray"; p.defaultValueHint = "50"; }
-						{ auto& p = P(); p.name = "transfer_alpha";    p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Alpha transfer function"; }
-						{ auto& p = P(); p.name = "transfer_spectral"; p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Function}; p.description = "Spectral transfer function"; }
+						{ auto& p = P(); p.name = "transfer_alpha";    p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Function}; p.semantics.pipe = ParameterPipe::Function1D; p.description = "Alpha transfer function"; }
+						{ auto& p = P(); p.name = "transfer_spectral"; p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.semantics.pipe = ParameterPipe::Function2D; p.description = "Spectral transfer function"; }
 						{ auto& p = P(); p.name = "iso_shader";        p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Shader}; p.description = "Iso-surface shader"; }
 						return cd;
 					}();
@@ -8119,7 +12034,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "luminary_sampler_param";p.kind = ValueKind::Double;    p.description = "Luminary sampler parameter";     p.defaultValueHint = to_hint(dflt.luminarySamplerParam); }
 						{ auto& p = P(); p.name = "show_luminaires";       p.kind = ValueKind::Bool;      p.description = "Show direct-visible luminaires"; p.defaultValueHint = to_hint(dflt.showLuminaires); }
 						{ auto& p = P(); p.name = "oidn_denoise";          p.kind = ValueKind::Bool;      p.description = "Enable OIDN denoiser";           p.defaultValueHint = to_hint(dflt.oidnDenoise); }
-						{ auto& p = P(); p.name = "oidn_quality";          p.kind = ValueKind::Enum;      p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = to_hint(dflt.oidnQuality); }
+						{ auto& p = P(); p.name = "oidn_quality";          p.kind = ValueKind::Enum;      p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto uses the scene sampling budget)"; p.defaultValueHint = to_hint(dflt.oidnQuality); }
 						{ auto& p = P(); p.name = "oidn_device";           p.kind = ValueKind::Enum;      p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = to_hint(dflt.oidnDevice); }
 					{ auto& p = P(); p.name = "oidn_prefilter";        p.kind = ValueKind::Enum;      p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(dflt.oidnPrefilter); }
 						{ auto& p = P(); p.name = "choose_one_light";      p.kind = ValueKind::Bool;      p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
@@ -8128,7 +12043,6 @@ namespace RISE
 						AddPathGuidingParams( P );
 						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
-						{ auto& p = P(); p.name = "filter_glossy";                    p.kind = ValueKind::Double; p.description = "Glossy roughness floor (0 disables)";                     p.defaultValueHint = to_hint(stabilityDflt.filterGlossy); }
 						AddOptimalMISParams( P );
 						AddProgressiveParams( P );
 						return cd;
@@ -8284,7 +12198,6 @@ namespace RISE
 						AddRadianceMapParams( P );
 						AddSpectralConfigParams( P );
 						AddStabilityConfigParams( P );
-						{ auto& p = P(); p.name = "filter_glossy"; p.kind = ValueKind::Double; p.description = "Glossy roughness floor (0 disables)"; p.defaultValueHint = to_hint(stabilityDflt.filterGlossy); }
 						return cd;
 					}();
 					return d;
@@ -8396,8 +12309,8 @@ namespace RISE
 						cd.description = "RGB bidirectional path-tracing integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddBaseRasterizerParams( P, dflt );
-						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max eye subpath depth";   p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
-						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max light subpath depth"; p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max surface hits on the eye subpath; BDPT/VCM/MLT estimate exactly the paths with at least one connectible split within the caps; in an all-diffuse scene that is K <= max_eye_depth + max_light_depth surfaces (VCM since DL-467; SCENE_CONVENTIONS 8.10)";   p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max surface hits on the light subpath; BDPT/VCM/MLT estimate the paths with at least one connectible split within the caps; only the sum matters in an all-diffuse scene (SCENE_CONVENTIONS 8.10)"; p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool; p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
@@ -8528,8 +12441,8 @@ namespace RISE
 						cd.description = "Spectral bidirectional path-tracing integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddBaseRasterizerParams( P, dflt );
-						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max eye subpath depth";   p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
-						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max light subpath depth"; p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max surface hits on the eye subpath; BDPT/VCM/MLT estimate exactly the paths with at least one connectible split within the caps; in an all-diffuse scene that is K <= max_eye_depth + max_light_depth surfaces (VCM since DL-467; SCENE_CONVENTIONS 8.10)";   p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max surface hits on the light subpath; BDPT/VCM/MLT estimate the paths with at least one connectible split within the caps; only the sum matters in an all-diffuse scene (SCENE_CONVENTIONS 8.10)"; p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool; p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
@@ -8640,8 +12553,8 @@ namespace RISE
 						cd.description = "RGB vertex-connection-and-merging integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddBaseRasterizerParams( P, dflt );
-						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";         p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
-						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";       p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max surface hits on the eye subpath; BDPT/VCM/MLT estimate exactly the paths with at least one connectible split within the caps; in an all-diffuse scene that is K <= max_eye_depth + max_light_depth surfaces (VCM since DL-467; SCENE_CONVENTIONS 8.10)";         p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max surface hits on the light subpath; BDPT/VCM/MLT estimate the paths with at least one connectible split within the caps; only the sum matters in an all-diffuse scene (SCENE_CONVENTIONS 8.10)";       p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = to_hint(dflt.mergeRadius); }
 						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = to_hint(dflt.enableVC); }
 						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = to_hint(dflt.enableVM); }
@@ -8748,8 +12661,8 @@ namespace RISE
 						cd.description = "Spectral vertex-connection-and-merging integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddBaseRasterizerParams( P, dflt );
-						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";         p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
-						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";       p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max surface hits on the eye subpath; BDPT/VCM/MLT estimate exactly the paths with at least one connectible split within the caps; in an all-diffuse scene that is K <= max_eye_depth + max_light_depth surfaces (VCM since DL-467; SCENE_CONVENTIONS 8.10)";         p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max surface hits on the light subpath; BDPT/VCM/MLT estimate the paths with at least one connectible split within the caps; only the sum matters in an all-diffuse scene (SCENE_CONVENTIONS 8.10)";       p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = to_hint(dflt.mergeRadius); }
 						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = to_hint(dflt.enableVC); }
 						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = to_hint(dflt.enableVM); }
@@ -9069,6 +12982,7 @@ namespace RISE
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 					if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
 					if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
+					if( bag.Has("sms_extended") )         smsConfig.extended        = bag.GetBool("sms_extended");
 					if( bag.Has("sms_seeding") ) {
 						std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
 						std::transform( sv.begin(), sv.end(), sv.begin(),
@@ -9153,7 +13067,7 @@ namespace RISE
 						// Transparent (Fresnel-attenuated) shadow rays — PT-only
 						// opt-in; not part of the shared StabilityConfig params
 						// because BDPT/VCM/auto don't honour it.
-						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "NEE shadow rays pass through specular dielectrics with Fresnel transmittance (PT only)"; p.defaultValueHint = to_hint(false); }
+						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "Delta-light (omni/spot/directional) NEE shadow rays pass straight through clear specular dielectrics with Fresnel transmittance (PT only; area/env lights keep binary shadows; with sms_enabled, omni/spot do not see through at the surface points SMS evaluates, DL-344)"; p.defaultValueHint = to_hint(false); }
 						AddOptimalMISParams( P );
 						AddProgressiveParams( P );
 						return cd;
@@ -9218,6 +13132,7 @@ namespace RISE
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
 				if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
+				if( bag.Has("sms_extended") )         smsConfig.extended        = bag.GetBool("sms_extended");
 				if( bag.Has("sms_seeding") ) {
 					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
 					std::transform( sv.begin(), sv.end(), sv.begin(),
@@ -9296,7 +13211,7 @@ namespace RISE
 						AddStabilityConfigParams( P );
 						// Transparent (Fresnel-attenuated) shadow rays — PT-only
 						// opt-in; honoured on the spectral NEE path too.
-						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "NEE shadow rays pass through specular dielectrics with Fresnel transmittance (PT only)"; p.defaultValueHint = to_hint(false); }
+						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "Delta-light (omni/spot/directional) NEE shadow rays pass straight through clear specular dielectrics with Fresnel transmittance (PT only; area/env lights keep binary shadows; with sms_enabled, omni/spot do not see through at the surface points SMS evaluates, DL-344)"; p.defaultValueHint = to_hint(false); }
 						// Intentionally NO AddOptimalMISParams: spectral
 						// parent doesn't allocate the accumulator.  See
 						// Finalize note and SPECTRAL_PARITY_AUDIT.md §2.4.
@@ -9360,6 +13275,16 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("light_bvh") )           stabilityConfig.useLightBVH        = bag.GetBool("light_bvh");
 
+					// MLT normalizes by the bootstrap mean: zero samples is invalid
+					// (division by zero, empty CDF).  Hard error, DL-32 convention.
+					if( bootstrapSamples == 0 ) {
+						static const char* const msg =
+							"bootstrap_samples must be at least 1 (got 0)";
+						GlobalLog()->PrintEx( eLog_Error, "mlt_rasterizer:: %s", msg );
+						RISE::SetFinalizeDiagIfEmpty( msg );
+						return false;
+					}
+
 					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
 						defaultshader.c_str(), showLuminaires, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
@@ -9376,15 +13301,15 @@ namespace RISE
 						cd.description = "Metropolis Light Transport (RGB).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = to_hint(dflt.defaultShader); }
-						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
-						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";                p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max surface hits on the eye subpath; BDPT/VCM/MLT estimate exactly the paths with at least one connectible split within the caps; in an all-diffuse scene that is K <= max_eye_depth + max_light_depth surfaces (VCM since DL-467; SCENE_CONVENTIONS 8.10)";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max surface hits on the light subpath; BDPT/VCM/MLT estimate the paths with at least one connectible split within the caps; only the sum matters in an all-diffuse scene (SCENE_CONVENTIONS 8.10)";                p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "bootstrap_samples";p.kind = ValueKind::UInt;   p.description = "Bootstrap samples";                      p.defaultValueHint = to_hint(dflt.nBootstrap); }
 						{ auto& p = P(); p.name = "chains";           p.kind = ValueKind::UInt;   p.description = "Number of Markov chains";                p.defaultValueHint = to_hint(dflt.nChains); }
 						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = to_hint(dflt.nMutationsPerPixel); }
 						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = to_hint(dflt.largeStepProb); }
 						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = to_hint(dflt.showLuminaires); }
 						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = to_hint(dflt.oidnDenoise); }
-						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = to_hint(dflt.oidnQuality); }
+						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto uses the scene sampling budget)"; p.defaultValueHint = to_hint(dflt.oidnQuality); }
 						{ auto& p = P(); p.name = "oidn_device";      p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = to_hint(dflt.oidnDevice); }
 					{ auto& p = P(); p.name = "oidn_prefilter";   p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(dflt.oidnPrefilter); }
 						{ auto& p = P(); p.name = "choose_one_light"; p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
@@ -9434,6 +13359,16 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("light_bvh") )           stabilityConfig.useLightBVH        = bag.GetBool("light_bvh");
 
+					// MLT normalizes by the bootstrap mean: zero samples is invalid
+					// (division by zero, empty CDF).  Hard error, DL-32 convention.
+					if( bootstrapSamples == 0 ) {
+						static const char* const msg =
+							"bootstrap_samples must be at least 1 (got 0)";
+						GlobalLog()->PrintEx( eLog_Error, "mlt_spectral_rasterizer:: %s", msg );
+						RISE::SetFinalizeDiagIfEmpty( msg );
+						return false;
+					}
+
 					return pJob.SetMLTSpectralRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
 						defaultshader.c_str(), showLuminaires,
@@ -9452,15 +13387,15 @@ namespace RISE
 						cd.description = "Metropolis Light Transport (spectral).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = to_hint(dflt.defaultShader); }
-						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
-						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";                p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max surface hits on the eye subpath; BDPT/VCM/MLT estimate exactly the paths with at least one connectible split within the caps; in an all-diffuse scene that is K <= max_eye_depth + max_light_depth surfaces (VCM since DL-467; SCENE_CONVENTIONS 8.10)";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max surface hits on the light subpath; BDPT/VCM/MLT estimate the paths with at least one connectible split within the caps; only the sum matters in an all-diffuse scene (SCENE_CONVENTIONS 8.10)";                p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "bootstrap_samples";p.kind = ValueKind::UInt;   p.description = "Bootstrap samples";                      p.defaultValueHint = to_hint(dflt.nBootstrap); }
 						{ auto& p = P(); p.name = "chains";           p.kind = ValueKind::UInt;   p.description = "Number of Markov chains";                p.defaultValueHint = to_hint(dflt.nChains); }
 						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = to_hint(dflt.nMutationsPerPixel); }
 						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = to_hint(dflt.largeStepProb); }
 						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = to_hint(dflt.showLuminaires); }
 						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = to_hint(dflt.oidnDenoise); }
-						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = to_hint(dflt.oidnQuality); }
+						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto uses the scene sampling budget)"; p.defaultValueHint = to_hint(dflt.oidnQuality); }
 						{ auto& p = P(); p.name = "oidn_device";      p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = to_hint(dflt.oidnDevice); }
 					{ auto& p = P(); p.name = "oidn_prefilter";   p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(dflt.oidnPrefilter); }
 						AddPixelFilterParams( P );
@@ -9483,6 +13418,7 @@ namespace RISE
 					std::string pattern   = bag.GetString( "pattern",  "none" );
 					bool        multiple  = bag.GetBool(   "multiple", false );
 					int         bpp       = bag.GetInt(    "bpp",      8 );
+					if( bag.HadHardError() ) return false;
 
 					char type = 0;
 					if( bag.Has("type") ) {
@@ -10095,7 +14031,8 @@ namespace RISE
 					const std::vector<std::string>& iparams = bag.GetRepeatable( "interpolator_params" );
 
 					for( size_t i = 0; i < values.size(); ++i ) {
-						double time = (i < times.size()) ? RISE::String(times[i].c_str()).toDouble() : 0.0;
+						double time = 0.0;
+						if( i < times.size() && !ParseStateBag::ReadScalar( times[i], time ) ) return false;
 						const char* interp_c  = interps.empty() ? 0 :
 							(interps[std::min(i, interps.size()-1)] == "none" ? 0 : interps[std::min(i, interps.size()-1)].c_str());
 						const char* iparams_c = iparams.empty() ? 0 :
@@ -10248,6 +14185,160 @@ namespace RISE
 		}
 	}
 
+    // Coverage is orthogonal to a material's scattering model. Decorating
+    // each material parser keeps one descriptor and one construction path.
+    class AlphaMaterialParser final : public IAsciiChunkParser {
+        std::unique_ptr<IAsciiChunkParser> base_;
+        ChunkDescriptor descriptor_;
+    public:
+        explicit AlphaMaterialParser(std::unique_ptr<IAsciiChunkParser> base) :
+            base_(std::move(base)), descriptor_(base_->Describe()) {
+            ParameterDescriptor alpha;
+            alpha.name = "alpha_coverage"; alpha.kind = ValueKind::Reference;
+            alpha.referenceCategories = {ChunkCategory::Painter};
+            alpha.semantics.pipe = ParameterPipe::Scalar;
+            alpha.semantics.requireSingle = true;
+            alpha.defaultValueHint = "1";
+            alpha.description = "Scalar surface coverage in [0,1], independent of wavelength";
+            alpha.SoftRange( 0.0, 1.0, 0.01 );
+            descriptor_.parameters.push_back(alpha);
+            ParameterDescriptor mode;
+            mode.name = "alpha_mode"; mode.kind = ValueKind::Enum;
+            mode.enumValues = {"opaque", "mask", "blend"}; mode.defaultValueHint = "opaque";
+            mode.description = "Opaque, threshold mask, or stochastic coverage";
+            descriptor_.parameters.push_back(mode);
+            ParameterDescriptor cutoff;
+            cutoff.name = "alpha_cutoff"; cutoff.kind = ValueKind::Double;
+            cutoff.defaultValueHint = "0.5"; cutoff.description = "Mask threshold (keep alpha >= cutoff)";
+            cutoff.SoftRange( 0.0, 1.0, 0.01 );
+            descriptor_.parameters.push_back(cutoff);
+        }
+        const ChunkDescriptor& Describe() const override { return descriptor_; }
+        bool Finalize(const ParseStateBag& bag, IJob& job) const override {
+            if (!base_->Finalize(bag, job)) return false;
+            const std::string mode = bag.GetString("alpha_mode", "opaque");
+            if (mode == "opaque") return true;
+            return job.SetMaterialAlpha(bag.GetString("name", "noname").c_str(),
+                bag.GetString("alpha_coverage", "1").c_str(), mode.c_str(), bag.GetDouble("alpha_cutoff", 0.5));
+        }
+    };
+
+	//////////////////////////////////////////////////
+	// Legacy tiers (legacy-deprecation Phase 1, 2026-10-09)
+	//////////////////////////////////////////////////
+	//
+	// docs/LEGACY_DEPRECATION_ASSESSMENT.md §10 (policy) and §13 (owner rulings).
+	// ONE auditable table of every chunk type that is not SUPPORTED, applied
+	// centrally by CreateAllChunkParsers() through LegacyTierParser below so the
+	// per-chunk Describe() bodies stay untouched.  (The seven legacy BRDF
+	// materials carry their long translation hints in their own Describe() via
+	// MarkFrozen and are therefore NOT listed here.)  Two tiers:
+	//
+	//   * DEPRECATED -- parses and renders exactly as before; one warning per
+	//     type per load; the agent may still insert it.
+	//   * FROZEN     -- legacy and UNSUPPORTED: parses and renders exactly as
+	//     before, but receives no fixes (ledger rows close as won't-fix), the
+	//     warning says so, and the agent tool surface refuses to insert a new
+	//     one.  Removal is ON HOLD by owner ruling (2026-10-09).
+	//
+	// Phase 1 is a marking pass ONLY: a wrapper copies the descriptor, changes
+	// the flags / description, and forwards Finalize unchanged, so no frozen or
+	// deprecated chunk renders any differently.
+	namespace
+	{
+		struct LegacyTierEntry
+		{
+			const char* keyword;
+			bool        frozen;       // false = deprecated (warn) only
+			const char* replacement;  // non-empty: names the modern keyword(s) first
+		};
+
+		static const LegacyTierEntry kLegacyTierTable[] = {
+			// ---- R1/R2: legacy shader-op rasterizers ----------------------------------
+			{ "pixelpel_rasterizer",                  true,  "pathtracing_pel_rasterizer (leave oidn_denoise as it was -- the legacy rasterizers denoise by default too; for a direct-lighting-only render use max_diffuse_bounce 0; tools/migrate_scenes_legacy_rasterizer.py converts a scene)." },
+			{ "pixelintegratingspectral_rasterizer",  true,  "pathtracing_spectral_rasterizer (leave oidn_denoise as it was -- the legacy rasterizers denoise by default too; tools/migrate_scenes_legacy_rasterizer.py converts a scene)." },
+			// ---- R3: legacy shader-op chain ops (meaningful only under R1/R2) ---------
+			{ "distributiontracing_shaderop",         true,  "pathtracing_pel_rasterizer / pathtracing_spectral_rasterizer (the pure integrators do distribution ray tracing themselves)." },
+			{ "finalgather_shaderop",                 true,  "pathtracing_pel_rasterizer (with OIDN) for global illumination." },
+			{ "directlighting_shaderop",              true,  "pathtracing_pel_rasterizer (NEE is built in; max_diffuse_bounce 0 for a direct-only look)." },
+			{ "arealight_shaderop",                   true,  "rect_light or shape_light (or an emissive lambertian_luminaire_material object) under pathtracing_pel_rasterizer." },
+			// ---- R6: point-cloud SSS shader ops ---------------------------------------
+			{ "simple_sss_shaderop",                  true,  "subsurfacescattering_material or randomwalk_sss_material under pathtracing_pel_rasterizer." },
+			{ "diffusion_approximation_sss_shaderop", true,  "subsurfacescattering_material or randomwalk_sss_material under pathtracing_pel_rasterizer." },
+			{ "donner_jensen_skin_sss_shaderop",      true,  "donner_jensen_skin_bssrdf_material or randomwalk_sss_material under pathtracing_pel_rasterizer." },
+			// ---- R7: ambient occlusion op (owner ruling #6: no replacement) -----------
+			{ "ambientocclusion_shaderop",            true,  "nothing equivalent -- no state-of-the-art render mode produces an AO pass; painters can read the `occlusion` signal.  Planned for removal (on hold)." },
+			// ---- R8: alpha ops (legacy-pipeline-only) ---------------------------------
+			{ "alpha_test_shaderop",                  true,  "the material parameters alpha_coverage / alpha_mode mask / alpha_cutoff (DL-214), honoured by every integrator." },
+			{ "transparency_shaderop",                true,  "the material parameters alpha_coverage / alpha_mode blend (DL-214), honoured by every integrator." },
+			// ---- R5: photon mapping, gathers, irradiance cache ------------------------
+			{ "caustic_pel_photonmap",                true,  "vcm_pel_rasterizer for caustics." },
+			{ "caustic_spectral_photonmap",           true,  "vcm_spectral_rasterizer for caustics." },
+			{ "global_pel_photonmap",                 true,  "pathtracing_pel_rasterizer (with OIDN) or bdpt/vcm for global illumination." },
+			{ "global_spectral_photonmap",            true,  "pathtracing_spectral_rasterizer (with OIDN) for global illumination." },
+			{ "translucent_pel_photonmap",            true,  "pathtracing_pel_rasterizer with translucent_material / an SSS material." },
+			{ "shadow_photonmap",                     true,  "pathtracing_pel_rasterizer (shadows come from NEE)." },
+			{ "caustic_pel_gather",                   true,  "vcm_pel_rasterizer for caustics." },
+			{ "caustic_spectral_gather",              true,  "vcm_spectral_rasterizer for caustics." },
+			{ "global_pel_gather",                    true,  "pathtracing_pel_rasterizer (with OIDN) for global illumination." },
+			{ "global_spectral_gather",               true,  "pathtracing_spectral_rasterizer (with OIDN) for global illumination." },
+			{ "translucent_pel_gather",               true,  "pathtracing_pel_rasterizer with translucent_material / an SSS material." },
+			{ "shadow_gather",                        true,  "pathtracing_pel_rasterizer (shadows come from NEE)." },
+			{ "irradiance_cache",                     true,  "pathtracing_pel_rasterizer (with OIDN) for global illumination." },
+			// ---- R12: MLT -------------------------------------------------------------
+			{ "mlt_rasterizer",                       true,  "bdpt_pel_rasterizer or vcm_pel_rasterizer (or auto_rasterizer)." },
+			{ "mlt_spectral_rasterizer",              true,  "bdpt_spectral_rasterizer or vcm_spectral_rasterizer (or auto_spectral_rasterizer)." },
+			// ---- R15 (owner ruling #10), R17 (§12 #18) --------------------------------
+			{ "composite_material",                   true,  "coated_material (a coat over any base material) for layered looks." },
+			{ "phong_luminaire_material",             true,  "lambertian_luminaire_material (cosine emission); the cos^N emission profile has no modern equivalent." },
+			// ---- R10: direct volume rendering (owner ruling #7: kept frozen) ----------
+			{ "directvolumerendering_shader",         true,  "nothing equivalent -- a medical transfer-function renderer; heterogeneous_medium under pathtracing_pel_rasterizer is the physically based volume path." },
+			{ "spectraldirectvolumerendering_shader", true,  "nothing equivalent -- a medical transfer-function renderer; heterogeneous_medium under pathtracing_spectral_rasterizer is the physically based volume path." },
+			// ---- DEPRECATED (warn only) -----------------------------------------------
+			{ "ambient_light",                        false, "a uniform environment: the rasterizer's radiance_map (a uniformcolor_painter) -- unlike ambient_light it is occluded, so creases darken (owner ruling #5)." },
+			{ "iridescent_painter",                   false, "ggx_material with fresnel_mode thinfilm (the physical thin-film model; this painter is a view-angle colour look-alike)." },
+			{ "onb_pinhole_camera",                   false, "pinhole_camera (same projection, location/lookat/up parametrisation)." },
+			{ "3dsmesh_geometry",                     false, "plymesh_geometry or gltf_import." },
+			{ "sms_shaderop",                         false, "the sms_* parameters of pathtracing_pel_rasterizer / pathtracing_spectral_rasterizer." },
+		};
+
+		const LegacyTierEntry* FindLegacyTier( const std::string& keyword )
+		{
+			for( const LegacyTierEntry& e : kLegacyTierTable )
+				if( keyword == e.keyword ) return &e;
+			return nullptr;
+		}
+
+		//! Wraps a registered parser with a COPY of its descriptor carrying the
+		//! legacy tier.  Finalize forwards unchanged, so the derived scene (and
+		//! every render of it) is bit-identical to the unwrapped parser's.
+		class LegacyTierParser final : public IAsciiChunkParser
+		{
+			std::unique_ptr<IAsciiChunkParser> base_;
+			ChunkDescriptor descriptor_;
+		public:
+			LegacyTierParser( std::unique_ptr<IAsciiChunkParser> base, const LegacyTierEntry& tier ) :
+				base_( std::move(base) ), descriptor_( base_->Describe() )
+			{
+				if( tier.frozen ) Implementation::ChunkParsers::MarkFrozen( descriptor_, tier.replacement );
+				else              Implementation::ChunkParsers::MarkDeprecated( descriptor_, tier.replacement );
+			}
+			const ChunkDescriptor& Describe() const override { return descriptor_; }
+			bool Finalize( const ParseStateBag& bag, IJob& job ) const override { return base_->Finalize( bag, job ); }
+		};
+	}
+
+	const char* DeprecatedChunkAliasReplacement( const std::string& keyword )
+	{
+		// R4: `mis_pathtracing_shaderop` is a legacy ALIAS registered with the SAME
+		// parser class as `pathtracing_shaderop` (which stays SUPPORTED: PT's SSS
+		// continuation shades through it), so the two must keep sharing one
+		// descriptor (SceneGrammar / SchemaGen dedupe by it).  The alias is
+		// therefore deprecated by its DISPATCH keyword, here, not by a flag.
+		if( keyword == "mis_pathtracing_shaderop" ) return "pathtracing_shaderop (same operation; rename the chunk keyword).";
+		return nullptr;
+	}
+
 	// Factory that creates one instance of every chunk parser the scene
 	// grammar supports.  Ownership transfers to the caller; when the
 	// returned vector goes out of scope all parsers are destroyed.  The
@@ -10259,210 +14350,230 @@ namespace RISE
 		std::vector<ChunkParserEntry> entries;
 		entries.reserve( 128 );
 
-		auto add = [&entries]( const char* keyword, IAsciiChunkParser* parser ) {
-			ChunkParserEntry e;
-			e.keyword = keyword;
-			e.parser.reset( parser );
-			entries.push_back( std::move(e) );
+		auto add = [&entries]( const char* keyword, std::unique_ptr<IAsciiChunkParser> parser ) {
+			if( parser->Describe().category == ChunkCategory::Material )
+				parser = std::make_unique<AlphaMaterialParser>( std::move(parser) );
+			if( const LegacyTierEntry* tier = FindLegacyTier( keyword ) )
+				parser = std::make_unique<LegacyTierParser>( std::move(parser), *tier );
+			entries.push_back( { keyword, std::move(parser) } );
 		};
 
 		// Painters
-		add( "uniformcolor_painter",                  new UniformColorPainterAsciiChunkParser() );
-		add( "vertex_color_painter",                  new VertexColorPainterAsciiChunkParser() );
-		add( "spectral_painter",                      new SpectralPainterAsciiChunkParser() );
-		add( "scalar_painter",                        new ScalarPainterAsciiChunkParser() );
-		add( "png_painter",                           new PngPainterAsciiChunkParser() );
-		add( "jpg_painter",                           new JpegPainterAsciiChunkParser() );
-		add( "hdr_painter",                           new HdrPainterAsciiChunkParser() );
-		add( "exr_painter",                           new ExrPainterAsciiChunkParser() );
-		add( "tiff_painter",                          new TiffPainterAsciiChunkParser() );
-		add( "checker_painter",                       new CheckerPainterAsciiChunkParser() );
-		add( "lines_painter",                         new LinesPainterAsciiChunkParser() );
-		add( "mandelbrot_painter",                    new MandelbrotPainterAsciiChunkParser() );
-		add( "perlin2d_painter",                      new Perlin2DPainterAsciiChunkParser() );
-		add( "controlled_smoothness2d_painter",       new ControlledSmoothness2DPainterAsciiChunkParser() );
-		add( "polynomial_function2d_painter",         new PolynomialFunction2DPainterAsciiChunkParser() );
-		add( "composite_function2d_painter",          new CompositeFunction2DPainterAsciiChunkParser() );
-		add( "gerstnerwave_painter",                  new GerstnerWavePainterAsciiChunkParser() );
-		add( "perlin3d_painter",                      new Perlin3DPainterAsciiChunkParser() );
-		add( "turbulence3d_painter",                  new Turbulence3DPainterAsciiChunkParser() );
-		add( "wavelet3d_painter",                     new Wavelet3DPainterAsciiChunkParser() );
-		add( "reactiondiffusion3d_painter",           new ReactionDiffusion3DPainterAsciiChunkParser() );
-		add( "gabor3d_painter",                       new Gabor3DPainterAsciiChunkParser() );
-		add( "simplex3d_painter",                     new Simplex3DPainterAsciiChunkParser() );
-		add( "sdf3d_painter",                         new SDF3DPainterAsciiChunkParser() );
-		add( "curlnoise3d_painter",                   new CurlNoise3DPainterAsciiChunkParser() );
-		add( "domainwarp3d_painter",                  new DomainWarp3DPainterAsciiChunkParser() );
-		add( "perlinworley3d_painter",                new PerlinWorley3DPainterAsciiChunkParser() );
-		add( "worley3d_painter",                      new Worley3DPainterAsciiChunkParser() );
-		add( "voronoi2d_painter",                     new Voronoi2DPainterAsciiChunkParser() );
-		add( "voronoi3d_painter",                     new Voronoi3DPainterAsciiChunkParser() );
-		add( "iridescent_painter",                    new IridescentPainterAsciiChunkParser() );
-		add( "blackbody_painter",                     new BlackBodyPainterAsciiChunkParser() );
-		add( "blend_painter",                         new BlendPainterAsciiChunkParser() );
-		add( "function2d_painter",                    new Function2DColorPainterAsciiChunkParser() );
-		add( "expression_function2d",                 new ExpressionFunction2DPainterAsciiChunkParser() );
-		add( "channel_painter",                       new ChannelPainterAsciiChunkParser() );
+		add( "uniformcolor_painter",                  std::make_unique<UniformColorPainterAsciiChunkParser>() );
+		add( "vertex_color_painter",                  std::make_unique<VertexColorPainterAsciiChunkParser>() );
+		add( "spectral_painter",                      std::make_unique<SpectralPainterAsciiChunkParser>() );
+		add( "scalar_painter",                        std::make_unique<ScalarPainterAsciiChunkParser>() );
+		add( "png_painter",                           std::make_unique<PngPainterAsciiChunkParser>() );
+		add( "jpg_painter",                           std::make_unique<JpegPainterAsciiChunkParser>() );
+		add( "hdr_painter",                           std::make_unique<HdrPainterAsciiChunkParser>() );
+		add( "exr_painter",                           std::make_unique<ExrPainterAsciiChunkParser>() );
+		add( "tiff_painter",                          std::make_unique<TiffPainterAsciiChunkParser>() );
+		add( "checker_painter",                       std::make_unique<CheckerPainterAsciiChunkParser>() );
+		add( "lines_painter",                         std::make_unique<LinesPainterAsciiChunkParser>() );
+		add( "mandelbrot_painter",                    std::make_unique<MandelbrotPainterAsciiChunkParser>() );
+		add( "perlin2d_painter",                      std::make_unique<Perlin2DPainterAsciiChunkParser>() );
+		add( "controlled_smoothness2d_painter",       std::make_unique<ControlledSmoothness2DPainterAsciiChunkParser>() );
+		add( "polynomial_function2d_painter",         std::make_unique<PolynomialFunction2DPainterAsciiChunkParser>() );
+		add( "composite_function2d_painter",          std::make_unique<CompositeFunction2DPainterAsciiChunkParser>() );
+		add( "gerstnerwave_painter",                  std::make_unique<GerstnerWavePainterAsciiChunkParser>() );
+		add( "perlin3d_painter",                      std::make_unique<Perlin3DPainterAsciiChunkParser>() );
+		add( "turbulence3d_painter",                  std::make_unique<Turbulence3DPainterAsciiChunkParser>() );
+		add( "wavelet3d_painter",                     std::make_unique<Wavelet3DPainterAsciiChunkParser>() );
+		add( "reactiondiffusion3d_painter",           std::make_unique<ReactionDiffusion3DPainterAsciiChunkParser>() );
+		add( "gabor3d_painter",                       std::make_unique<Gabor3DPainterAsciiChunkParser>() );
+		add( "simplex3d_painter",                     std::make_unique<Simplex3DPainterAsciiChunkParser>() );
+		add( "sdf3d_painter",                         std::make_unique<SDF3DPainterAsciiChunkParser>() );
+		add( "curlnoise3d_painter",                   std::make_unique<CurlNoise3DPainterAsciiChunkParser>() );
+		add( "domainwarp3d_painter",                  std::make_unique<DomainWarp3DPainterAsciiChunkParser>() );
+		add( "perlinworley3d_painter",                std::make_unique<PerlinWorley3DPainterAsciiChunkParser>() );
+		add( "worley3d_painter",                      std::make_unique<Worley3DPainterAsciiChunkParser>() );
+		add( "voronoi2d_painter",                     std::make_unique<Voronoi2DPainterAsciiChunkParser>() );
+		add( "voronoi3d_painter",                     std::make_unique<Voronoi3DPainterAsciiChunkParser>() );
+		add( "iridescent_painter",                    std::make_unique<IridescentPainterAsciiChunkParser>() );
+		add( "blackbody_painter",                     std::make_unique<BlackBodyPainterAsciiChunkParser>() );
+		add( "blend_painter",                         std::make_unique<BlendPainterAsciiChunkParser>() );
+		add( "function2d_painter",                    std::make_unique<Function2DColorPainterAsciiChunkParser>() );
+		add( "expression_function2d",                 std::make_unique<ExpressionFunction2DPainterAsciiChunkParser>() );
+		add( "expression_painter",                    std::make_unique<ExpressionPainterAsciiChunkParser>() );
+		add( "ramp_painter",                          std::make_unique<RampPainterAsciiChunkParser>() );
+		add( "mapping_painter",                       std::make_unique<MappingPainterAsciiChunkParser>() );
+		add( "stochastic_tile_painter",               std::make_unique<StochasticTilePainterAsciiChunkParser>() );
+		add( "scatter_painter",                       std::make_unique<ScatterPainterAsciiChunkParser>() );
+		add( "channel_painter",                       std::make_unique<ChannelPainterAsciiChunkParser>() );
 
 		// Functions
-		add( "piecewise_linear_function",             new PiecewiseLinearFunctionChunkParser() );
-		add( "piecewise_linear_function2d",           new PiecewiseLinearFunction2DChunkParser() );
+		add( "piecewise_linear_function",             std::make_unique<PiecewiseLinearFunctionChunkParser>() );
+		add( "piecewise_linear_function2d",           std::make_unique<PiecewiseLinearFunction2DChunkParser>() );
 
 		// Materials
-		add( "null_boundary_material",                 new NullBoundaryMaterialAsciiChunkParser() );
-		add( "lambertian_material",                   new LambertianMaterialAsciiChunkParser() );
-		add( "perfectreflector_material",             new PerfectReflectorMaterialAsciiChunkParser() );
-		add( "perfectrefractor_material",             new PerfectRefractorMaterialAsciiChunkParser() );
-		add( "polished_material",                     new PolishedMaterialAsciiChunkParser() );
-		add( "dielectric_material",                   new DielectricMaterialAsciiChunkParser() );
-		add( "subsurfacescattering_material",         new SubSurfaceScatteringMaterialAsciiChunkParser() );
-		add( "randomwalk_sss_material",               new RandomWalkSSSMaterialAsciiChunkParser() );
-		add( "lambertian_luminaire_material",         new LambertianLuminaireMaterialAsciiChunkParser() );
-		add( "phong_luminaire_material",              new PhongLuminaireMaterialAsciiChunkParser() );
-		add( "ashikminshirley_anisotropicphong_material", new AshikminShirleyAnisotropicPhongMaterialAsciiChunkParser() );
-		add( "isotropic_phong_material",              new IsotropicPhongMaterialAsciiChunkParser() );
-		add( "translucent_material",                  new TranslucentMaterialAsciiChunkParser() );
-		add( "biospec_skin_material",                 new BioSpecSkinMaterialAsciiChunkParser() );
-		add( "donner_jensen_skin_bssrdf_material",    new DonnerJensenSkinBSSRDFMaterialAsciiChunkParser() );
-		add( "generic_human_tissue_material",         new GenericHumanTissueMaterialAsciiChunkParser() );
-		add( "composite_material",                    new CompositeMaterialAsciiChunkParser() );
-		add( "ward_isotropic_material",               new WardIsotropicGaussianMaterialAsciiChunkParser() );
-		add( "ward_anisotropic_material",             new WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser() );
-		add( "ggx_material",                          new GGXMaterialAsciiChunkParser() );
-		add( "pbr_metallic_roughness_material",       new PBRMetallicRoughnessMaterialAsciiChunkParser() );
-		add( "cooktorrance_material",                 new CookTorranceMaterialAsciiChunkParser() );
-		add( "orennayar_material",                    new OrenNayarMaterialAsciiChunkParser() );
-		add( "sheen_material",                        new SheenMaterialAsciiChunkParser() );
-		add( "schlick_material",                      new SchlickMaterialAsciiChunkParser() );
-		add( "datadriven_material",                   new DataDrivenMaterialAsciiChunkParser() );
+		add( "null_boundary_material",                 std::make_unique<NullBoundaryMaterialAsciiChunkParser>() );
+		add( "lambertian_material",                   std::make_unique<LambertianMaterialAsciiChunkParser>() );
+		add( "perfectreflector_material",             std::make_unique<PerfectReflectorMaterialAsciiChunkParser>() );
+		add( "perfectrefractor_material",             std::make_unique<PerfectRefractorMaterialAsciiChunkParser>() );
+		add( "polished_material",                     std::make_unique<PolishedMaterialAsciiChunkParser>() );
+		add( "dielectric_material",                   std::make_unique<DielectricMaterialAsciiChunkParser>() );
+		add( "rough_dielectric_material",             std::make_unique<RoughDielectricMaterialAsciiChunkParser>() );
+		add( "subsurfacescattering_material",         std::make_unique<SubSurfaceScatteringMaterialAsciiChunkParser>() );
+		add( "randomwalk_sss_material",               std::make_unique<RandomWalkSSSMaterialAsciiChunkParser>() );
+		add( "lambertian_luminaire_material",         std::make_unique<LambertianLuminaireMaterialAsciiChunkParser>() );
+		add( "phong_luminaire_material",              std::make_unique<PhongLuminaireMaterialAsciiChunkParser>() );
+		add( "ashikminshirley_anisotropicphong_material", std::make_unique<AshikminShirleyAnisotropicPhongMaterialAsciiChunkParser>() );
+		add( "isotropic_phong_material",              std::make_unique<IsotropicPhongMaterialAsciiChunkParser>() );
+		add( "translucent_material",                  std::make_unique<TranslucentMaterialAsciiChunkParser>() );
+		add( "biospec_skin_material",                 std::make_unique<BioSpecSkinMaterialAsciiChunkParser>() );
+		add( "donner_jensen_skin_bssrdf_material",    std::make_unique<DonnerJensenSkinBSSRDFMaterialAsciiChunkParser>() );
+		add( "generic_human_tissue_material",         std::make_unique<GenericHumanTissueMaterialAsciiChunkParser>() );
+		add( "coated_material",                       std::make_unique<CoatedMaterialAsciiChunkParser>() );
+		add( "fabric_material",                       std::make_unique<FabricMaterialAsciiChunkParser>() );
+		add( "weave_material",                        std::make_unique<WeaveMaterialAsciiChunkParser>() );
+		add( "composite_material",                    std::make_unique<CompositeMaterialAsciiChunkParser>() );
+		add( "ward_isotropic_material",               std::make_unique<WardIsotropicGaussianMaterialAsciiChunkParser>() );
+		add( "ward_anisotropic_material",             std::make_unique<WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser>() );
+		add( "ggx_material",                          std::make_unique<GGXMaterialAsciiChunkParser>() );
+		add( "pbr_metallic_roughness_material",       std::make_unique<PBRMetallicRoughnessMaterialAsciiChunkParser>() );
+		add( "cooktorrance_material",                 std::make_unique<CookTorranceMaterialAsciiChunkParser>() );
+		add( "orennayar_material",                    std::make_unique<OrenNayarMaterialAsciiChunkParser>() );
+		add( "sheen_material",                        std::make_unique<SheenMaterialAsciiChunkParser>() );
+		add( "schlick_material",                      std::make_unique<SchlickMaterialAsciiChunkParser>() );
+		add( "datadriven_material",                   std::make_unique<DataDrivenMaterialAsciiChunkParser>() );
+		add( "hair_material",                         std::make_unique<HairMaterialAsciiChunkParser>() );
 
 		// Cameras
-		add( "scene_options",                         new SceneOptionsAsciiChunkParser() );
-		add( "camera_defaults",                       new CameraDefaultsAsciiChunkParser() );
+		add( "scene_options",                         std::make_unique<SceneOptionsAsciiChunkParser>() );
+		add( "camera_defaults",                       std::make_unique<CameraDefaultsAsciiChunkParser>() );
 		// Film — pixel-grid descriptor.  See FilmAsciiChunkParser
 		// definition for the contract; the chunk should be authored
 		// BEFORE any camera chunk in the scene file.
-		add( "film",                                  new FilmAsciiChunkParser() );
+		add( "film",                                  std::make_unique<FilmAsciiChunkParser>() );
 
-		add( "pinhole_camera",                        new PinholeCameraAsciiChunkParser() );
-		add( "onb_pinhole_camera",                    new ONBPinholeCameraAsciiChunkParser() );
-		add( "thinlens_camera",                       new ThinlensCameraAsciiChunkParser() );
+		add( "pinhole_camera",                        std::make_unique<PinholeCameraAsciiChunkParser>() );
+		add( "onb_pinhole_camera",                    std::make_unique<ONBPinholeCameraAsciiChunkParser>() );
+		add( "thinlens_camera",                       std::make_unique<ThinlensCameraAsciiChunkParser>() );
 		// realistic_camera reserved for Phase 4 (multi-element lens).
-		add( "fisheye_camera",                        new FisheyeCameraAsciiChunkParser() );
-		add( "orthographic_camera",                   new OrthographicCameraAsciiChunkParser() );
+		add( "fisheye_camera",                        std::make_unique<FisheyeCameraAsciiChunkParser>() );
+		add( "orthographic_camera",                   std::make_unique<OrthographicCameraAsciiChunkParser>() );
 
 		// Geometry
-		add( "sphere_geometry",                       new SphereGeometryAsciiChunkParser() );
-		add( "ellipsoid_geometry",                    new EllipsoidGeometryAsciiChunkParser() );
-		add( "cylinder_geometry",                     new CylinderGeometryAsciiChunkParser() );
-		add( "torus_geometry",                        new TorusGeometryAsciiChunkParser() );
-		add( "infiniteplane_geometry",                new InfinitePlaneGeometryAsciiChunkParser() );
-		add( "box_geometry",                          new BoxGeometryAsciiChunkParser() );
-		add( "clippedplane_geometry",                 new ClippedPlaneGeometryAsciiChunkParser() );
-		add( "3dsmesh_geometry",                      new Mesh3DSGeometryAsciiChunkParser() );
-		add( "rawmesh_geometry",                      new RAWMeshGeometryAsciiChunkParser() );
-		add( "rawmesh2_geometry",                     new RAWMesh2GeometryAsciiChunkParser() );
-		add( "risemesh_geometry",                     new RISEMeshGeometryAsciiChunkParser() );
-		add( "plymesh_geometry",                      new PLYMeshGeometryAsciiChunkParser() );
-		add( "gltfmesh_geometry",                     new GLTFMeshGeometryAsciiChunkParser() );
-		add( "gltf_import",                           new GLTFImportAsciiChunkParser() );
-		add( "circulardisk_geometry",                 new CircularDiskGeometryAsciiChunkParser() );
-		add( "bezierpatch_geometry",                  new BezierPatchGeometryAsciiChunkParser() );
-		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );
-		add( "sdf_geometry",                          new SDFGeometryAsciiChunkParser() );
-		add( "cartesian_disk_geometry",               new CartesianDiskGeometryAsciiChunkParser() );
-		add( "sweep_geometry",                        new SweepGeometryAsciiChunkParser() );
-		add( "path_instances_geometry",               new PathInstancesGeometryAsciiChunkParser() );
-		add( "displaced_geometry",                    new DisplacedGeometryAsciiChunkParser() );
+		add( "sphere_geometry",                       std::make_unique<SphereGeometryAsciiChunkParser>() );
+		add( "ellipsoid_geometry",                    std::make_unique<EllipsoidGeometryAsciiChunkParser>() );
+		add( "cylinder_geometry",                     std::make_unique<CylinderGeometryAsciiChunkParser>() );
+		add( "torus_geometry",                        std::make_unique<TorusGeometryAsciiChunkParser>() );
+		add( "infiniteplane_geometry",                std::make_unique<InfinitePlaneGeometryAsciiChunkParser>() );
+		add( "box_geometry",                          std::make_unique<BoxGeometryAsciiChunkParser>() );
+		add( "clippedplane_geometry",                 std::make_unique<ClippedPlaneGeometryAsciiChunkParser>() );
+		add( "indexedmesh_geometry",                  std::make_unique<IndexedMeshGeometryAsciiChunkParser>() );
+		add( "3dsmesh_geometry",                      std::make_unique<Mesh3DSGeometryAsciiChunkParser>() );
+		add( "rawmesh_geometry",                      std::make_unique<RAWMeshGeometryAsciiChunkParser>() );
+		add( "rawmesh2_geometry",                     std::make_unique<RAWMesh2GeometryAsciiChunkParser>() );
+		add( "risemesh_geometry",                     std::make_unique<RISEMeshGeometryAsciiChunkParser>() );
+		add( "plymesh_geometry",                      std::make_unique<PLYMeshGeometryAsciiChunkParser>() );
+		add( "gltfmesh_geometry",                     std::make_unique<GLTFMeshGeometryAsciiChunkParser>() );
+		add( "gltf_import",                           std::make_unique<GLTFImportAsciiChunkParser>() );
+		add( "circulardisk_geometry",                 std::make_unique<CircularDiskGeometryAsciiChunkParser>() );
+		add( "bezierpatch_geometry",                  std::make_unique<BezierPatchGeometryAsciiChunkParser>() );
+		add( "bilinearpatch_geometry",                std::make_unique<BilinearPatchGeometryAsciiChunkParser>() );
+		add( "sdf_geometry",                          std::make_unique<SDFGeometryAsciiChunkParser>() );
+		add( "skeleton_geometry",                     std::make_unique<SkeletonGeometryAsciiChunkParser>() );
+		add( "cartesian_disk_geometry",               std::make_unique<CartesianDiskGeometryAsciiChunkParser>() );
+		add( "sweep_geometry",                        std::make_unique<SweepGeometryAsciiChunkParser>() );
+		add( "lathe_geometry",                        std::make_unique<LatheGeometryAsciiChunkParser>() );
+		add( "skin_geometry",                         std::make_unique<SkinGeometryAsciiChunkParser>() );
+		add( "path_instances_geometry",               std::make_unique<PathInstancesGeometryAsciiChunkParser>() );
+		add( "displaced_geometry",                    std::make_unique<DisplacedGeometryAsciiChunkParser>() );
+		add( "hair_geometry",                         std::make_unique<HairGeometryAsciiChunkParser>() );
+		add( "hair_guides",                           std::make_unique<HairGuidesAsciiChunkParser>() );
 
 		// Modifiers
-		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );
-		add( "normal_map_modifier",                   new NormalMapModifierAsciiChunkParser() );
-		add( "glint_modifier",                        new GlintModifierAsciiChunkParser() );
+		add( "relief_modifier",                       std::make_unique<ReliefModifierAsciiChunkParser>() );
+		add( "modifier_stack",                        std::make_unique<ModifierStackAsciiChunkParser>() );
+		add( "normal_map_modifier",                   std::make_unique<NormalMapModifierAsciiChunkParser>() );
+		add( "glint_modifier",                        std::make_unique<GlintModifierAsciiChunkParser>() );
 
 		// Media
-		add( "homogeneous_medium",                    new HomogeneousMediumAsciiChunkParser() );
-		add( "global_medium",                         new GlobalMediumAsciiChunkParser() );
-		add( "light_rr_threshold",                   new LightRRThresholdAsciiChunkParser() );
-		add( "heterogeneous_medium",                  new HeterogeneousMediumAsciiChunkParser() );
-		add( "painter_heterogeneous_medium",          new PainterHeterogeneousMediumAsciiChunkParser() );
-		add( "multichannel_heterogeneous_medium",     new MultichannelHeterogeneousMediumAsciiChunkParser() );
-		add( "fire_medium",                          new FireMediumAsciiChunkParser() );
+		add( "homogeneous_medium",                    std::make_unique<HomogeneousMediumAsciiChunkParser>() );
+		add( "global_medium",                         std::make_unique<GlobalMediumAsciiChunkParser>() );
+		add( "light_rr_threshold",                   std::make_unique<LightRRThresholdAsciiChunkParser>() );
+		add( "heterogeneous_medium",                  std::make_unique<HeterogeneousMediumAsciiChunkParser>() );
+		add( "painter_heterogeneous_medium",          std::make_unique<PainterHeterogeneousMediumAsciiChunkParser>() );
+		add( "multichannel_heterogeneous_medium",     std::make_unique<MultichannelHeterogeneousMediumAsciiChunkParser>() );
+		add( "fire_medium",                          std::make_unique<FireMediumAsciiChunkParser>() );
 
 		// Objects
-		add( "standard_object",                       new StandardObjectAsciiChunkParser() );
-		add( "override_object",                       new OverrideObjectAsciiChunkParser() );
-		add( "csg_object",                            new CSGObjectAsciiChunkParser() );
+		add( "standard_object",                       std::make_unique<StandardObjectAsciiChunkParser>() );
+		add( "override_object",                       std::make_unique<OverrideObjectAsciiChunkParser>() );
+		add( "csg_object",                            std::make_unique<CSGObjectAsciiChunkParser>() );
 
 		// Shader ops
-		add( "ambientocclusion_shaderop",             new AmbientOcclusionShaderOpAsciiChunkParser() );
-		add( "directlighting_shaderop",               new DirectLightingShaderOpAsciiChunkParser() );
-		add( "pathtracing_shaderop",                  new PathTracingShaderOpAsciiChunkParser() );
-		add( "mis_pathtracing_shaderop",              new PathTracingShaderOpAsciiChunkParser() );  // Legacy alias
-		add( "sms_shaderop",                          new SMSShaderOpAsciiChunkParser() );
-		add( "distributiontracing_shaderop",          new DistributionTracingShaderOpAsciiChunkParser() );
-		add( "finalgather_shaderop",                  new FinalGatherShaderOpAsciiChunkParser() );
-		add( "simple_sss_shaderop",                   new SimpleSubSurfaceScatteringShaderOpAsciiChunkParser() );
-		add( "diffusion_approximation_sss_shaderop",  new DiffusionApproximationSubSurfaceScatteringShaderOpAsciiChunkParser() );
-		add( "donner_jensen_skin_sss_shaderop",       new DonnerJensenSkinSSSShaderOpAsciiChunkParser() );
-		add( "arealight_shaderop",                    new AreaLightShaderOpAsciiChunkParser() );
-		add( "transparency_shaderop",                 new TransparencyShaderOpAsciiChunkParser() );
-		add( "alpha_test_shaderop",                   new AlphaTestShaderOpAsciiChunkParser() );
+		add( "ambientocclusion_shaderop",             std::make_unique<AmbientOcclusionShaderOpAsciiChunkParser>() );
+		add( "directlighting_shaderop",               std::make_unique<DirectLightingShaderOpAsciiChunkParser>() );
+		add( "pathtracing_shaderop",                  std::make_unique<PathTracingShaderOpAsciiChunkParser>() );
+		add( "mis_pathtracing_shaderop",              std::make_unique<PathTracingShaderOpAsciiChunkParser>() );  // Legacy alias
+		add( "sms_shaderop",                          std::make_unique<SMSShaderOpAsciiChunkParser>() );
+		add( "distributiontracing_shaderop",          std::make_unique<DistributionTracingShaderOpAsciiChunkParser>() );
+		add( "finalgather_shaderop",                  std::make_unique<FinalGatherShaderOpAsciiChunkParser>() );
+		add( "simple_sss_shaderop",                   std::make_unique<SimpleSubSurfaceScatteringShaderOpAsciiChunkParser>() );
+		add( "diffusion_approximation_sss_shaderop",  std::make_unique<DiffusionApproximationSubSurfaceScatteringShaderOpAsciiChunkParser>() );
+		add( "donner_jensen_skin_sss_shaderop",       std::make_unique<DonnerJensenSkinSSSShaderOpAsciiChunkParser>() );
+		add( "arealight_shaderop",                    std::make_unique<AreaLightShaderOpAsciiChunkParser>() );
+		add( "transparency_shaderop",                 std::make_unique<TransparencyShaderOpAsciiChunkParser>() );
+		add( "alpha_test_shaderop",                   std::make_unique<AlphaTestShaderOpAsciiChunkParser>() );
 
 		// Shaders
-		add( "standard_shader",                       new StandardShaderAsciiChunkParser() );
-		add( "advanced_shader",                       new AdvancedShaderAsciiChunkParser() );
-		add( "directvolumerendering_shader",          new DirectVolumeRenderingShaderAsciiChunkParser() );
-		add( "spectraldirectvolumerendering_shader",  new SpectralDirectVolumeRenderingShaderAsciiChunkParser() );
+		add( "standard_shader",                       std::make_unique<StandardShaderAsciiChunkParser>() );
+		add( "advanced_shader",                       std::make_unique<AdvancedShaderAsciiChunkParser>() );
+		add( "directvolumerendering_shader",          std::make_unique<DirectVolumeRenderingShaderAsciiChunkParser>() );
+		add( "spectraldirectvolumerendering_shader",  std::make_unique<SpectralDirectVolumeRenderingShaderAsciiChunkParser>() );
 
 		// Rasterizers
-		add( "pixelpel_rasterizer",                   new PixelPelRasterizerAsciiChunkParser() );
-		add( "pixelintegratingspectral_rasterizer",   new PixelIntegratingSpectralRasterizerAsciiChunkParser() );
-		add( "bdpt_pel_rasterizer",                   new BDPTPelRasterizerAsciiChunkParser() );
-		add( "bdpt_spectral_rasterizer",              new BDPTSpectralRasterizerAsciiChunkParser() );
-		add( "vcm_pel_rasterizer",                    new VCMPelRasterizerAsciiChunkParser() );
-		add( "vcm_spectral_rasterizer",               new VCMSpectralRasterizerAsciiChunkParser() );
-		add( "pathtracing_pel_rasterizer",            new PathTracingPelRasterizerAsciiChunkParser() );
-		add( "pathtracing_spectral_rasterizer",       new PathTracingSpectralRasterizerAsciiChunkParser() );
-		add( "auto_rasterizer",                       new AutoRasterizerAsciiChunkParser() );
-		add( "auto_spectral_rasterizer",              new AutoSpectralRasterizerAsciiChunkParser() );
-		add( "mlt_rasterizer",                        new MLTRasterizerAsciiChunkParser() );
-		add( "mlt_spectral_rasterizer",               new MLTSpectralRasterizerAsciiChunkParser() );
+		add( "pixelpel_rasterizer",                   std::make_unique<PixelPelRasterizerAsciiChunkParser>() );
+		add( "pixelintegratingspectral_rasterizer",   std::make_unique<PixelIntegratingSpectralRasterizerAsciiChunkParser>() );
+		add( "bdpt_pel_rasterizer",                   std::make_unique<BDPTPelRasterizerAsciiChunkParser>() );
+		add( "bdpt_spectral_rasterizer",              std::make_unique<BDPTSpectralRasterizerAsciiChunkParser>() );
+		add( "vcm_pel_rasterizer",                    std::make_unique<VCMPelRasterizerAsciiChunkParser>() );
+		add( "vcm_spectral_rasterizer",               std::make_unique<VCMSpectralRasterizerAsciiChunkParser>() );
+		add( "pathtracing_pel_rasterizer",            std::make_unique<PathTracingPelRasterizerAsciiChunkParser>() );
+		add( "pathtracing_spectral_rasterizer",       std::make_unique<PathTracingSpectralRasterizerAsciiChunkParser>() );
+		add( "auto_rasterizer",                       std::make_unique<AutoRasterizerAsciiChunkParser>() );
+		add( "auto_spectral_rasterizer",              std::make_unique<AutoSpectralRasterizerAsciiChunkParser>() );
+		add( "mlt_rasterizer",                        std::make_unique<MLTRasterizerAsciiChunkParser>() );
+		add( "mlt_spectral_rasterizer",               std::make_unique<MLTSpectralRasterizerAsciiChunkParser>() );
 
 		// Rasterizer output
-		add( "file_rasterizeroutput",                 new FileRasterizerOutputAsciiChunkParser() );
+		add( "file_rasterizeroutput",                 std::make_unique<FileRasterizerOutputAsciiChunkParser>() );
 
 		// Lights
-		add( "ambient_light",                         new AmbientLightAsciiChunkParser() );
-		add( "omni_light",                            new OmniLightAsciiChunkParser() );
-		add( "spot_light",                            new SpotLightAsciiChunkParser() );
-		add( "directional_light",                     new DirectionalLightAsciiChunkParser() );
-		add( "hosek_wilkie_skylight",                 new HosekWilkieSkylightAsciiChunkParser() );
+		add( "ambient_light",                         std::make_unique<AmbientLightAsciiChunkParser>() );
+		add( "omni_light",                            std::make_unique<OmniLightAsciiChunkParser>() );
+		add( "spot_light",                            std::make_unique<SpotLightAsciiChunkParser>() );
+		add( "directional_light",                     std::make_unique<DirectionalLightAsciiChunkParser>() );
+		add( "hosek_wilkie_skylight",                 std::make_unique<HosekWilkieSkylightAsciiChunkParser>() );
+		add( "rect_light",                            std::make_unique<RectLightAsciiChunkParser>() );
+		add( "shape_light",                           std::make_unique<ShapeLightAsciiChunkParser>() );
 
 		// Photon maps & gather
-		add( "caustic_pel_photonmap",                 new CausticPelPhotonMapGenerateAsciiChunkParser() );
-		add( "translucent_pel_photonmap",             new TranslucentPelPhotonMapGenerateAsciiChunkParser() );
-		add( "caustic_spectral_photonmap",            new CausticSpectralPhotonMapGenerateAsciiChunkParser() );
-		add( "global_pel_photonmap",                  new GlobalPelPhotonMapGenerateAsciiChunkParser() );
-		add( "global_spectral_photonmap",             new GlobalSpectralPhotonMapGenerateAsciiChunkParser() );
-		add( "shadow_photonmap",                      new ShadowPhotonMapGenerateAsciiChunkParser() );
-		add( "caustic_pel_gather",                    new CausticPelPhotonMapGatherAsciiChunkParser() );
-		add( "translucent_pel_gather",                new TranslucentPelPhotonMapGatherAsciiChunkParser() );
-		add( "caustic_spectral_gather",               new CausticSpectralPhotonMapGatherAsciiChunkParser() );
-		add( "global_pel_gather",                     new GlobalPelPhotonMapGatherAsciiChunkParser() );
-		add( "global_spectral_gather",                new GlobalSpectralPhotonMapGatherAsciiChunkParser() );
-		add( "shadow_gather",                         new ShadowPhotonMapGatherAsciiChunkParser() );
+		add( "caustic_pel_photonmap",                 std::make_unique<CausticPelPhotonMapGenerateAsciiChunkParser>() );
+		add( "translucent_pel_photonmap",             std::make_unique<TranslucentPelPhotonMapGenerateAsciiChunkParser>() );
+		add( "caustic_spectral_photonmap",            std::make_unique<CausticSpectralPhotonMapGenerateAsciiChunkParser>() );
+		add( "global_pel_photonmap",                  std::make_unique<GlobalPelPhotonMapGenerateAsciiChunkParser>() );
+		add( "global_spectral_photonmap",             std::make_unique<GlobalSpectralPhotonMapGenerateAsciiChunkParser>() );
+		add( "shadow_photonmap",                      std::make_unique<ShadowPhotonMapGenerateAsciiChunkParser>() );
+		add( "caustic_pel_gather",                    std::make_unique<CausticPelPhotonMapGatherAsciiChunkParser>() );
+		add( "translucent_pel_gather",                std::make_unique<TranslucentPelPhotonMapGatherAsciiChunkParser>() );
+		add( "caustic_spectral_gather",               std::make_unique<CausticSpectralPhotonMapGatherAsciiChunkParser>() );
+		add( "global_pel_gather",                     std::make_unique<GlobalPelPhotonMapGatherAsciiChunkParser>() );
+		add( "global_spectral_gather",                std::make_unique<GlobalSpectralPhotonMapGatherAsciiChunkParser>() );
+		add( "shadow_gather",                         std::make_unique<ShadowPhotonMapGatherAsciiChunkParser>() );
 
 		// Irradiance cache
-		add( "irradiance_cache",                      new IrradianceCacheAsciiChunkParser() );
+		add( "irradiance_cache",                      std::make_unique<IrradianceCacheAsciiChunkParser>() );
 
 		// Animation
-		add( "keyframe",                              new KeyframeAsciiChunkParser() );
-		add( "timeline",                              new TimelineAsciiChunkParser() );
-		add( "animation_options",                     new AnimationOptionsAsciiChunkParser() );
-		add( "animation",                             new AnimationAsciiChunkParser() );
-		add( "scene_variant",                         new SceneVariantAsciiChunkParser() );
-		add( "active_scene_variant",                  new ActiveSceneVariantAsciiChunkParser() );
+		add( "keyframe",                              std::make_unique<KeyframeAsciiChunkParser>() );
+		add( "timeline",                              std::make_unique<TimelineAsciiChunkParser>() );
+		add( "animation_options",                     std::make_unique<AnimationOptionsAsciiChunkParser>() );
+		add( "animation",                             std::make_unique<AnimationAsciiChunkParser>() );
+		add( "scene_variant",                         std::make_unique<SceneVariantAsciiChunkParser>() );
+		add( "active_scene_variant",                  std::make_unique<ActiveSceneVariantAsciiChunkParser>() );
 
 		return entries;
 	}
@@ -10501,7 +14612,12 @@ namespace RISE
 				return true;
 			}
 		}
-		return Finalize( bag, pJob );
+		// DL-32: Finalize() may have hit a wrong-arity DoubleVec3/DoubleVec4/
+		// DoubleMat4 value via GetVec3/GetVec4/GetMat4 -- that is a hard
+		// parse error (already logged by ReportVectorArity), not a value
+		// Finalize() should silently apply, so it fails the chunk here
+		// even when Finalize() itself returned true.
+		return Finalize( bag, pJob ) && !bag.HadHardError();
 	}
 
 	// Public wrapper (declared in IAsciiChunkParser.h) over the inline

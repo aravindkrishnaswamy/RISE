@@ -206,6 +206,7 @@ omni_light
 	name				l001
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 50
 }
 
@@ -214,6 +215,7 @@ omni_light
 	name				l002
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 150
 }
 
@@ -222,6 +224,7 @@ omni_light
 	name				l003
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 250
 }
 

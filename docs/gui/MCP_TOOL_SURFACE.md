@@ -9,12 +9,10 @@
 >
 > References below to `SourceSpanIndex`, byte-splice persistence, Phase B/C, and `SaveEngineTest.cpp` are pre-cutover history; targeted corrections are marked inline.
 
-**Status:** **SUBSTANTIALLY IMPLEMENTED.** `src/Library/Agent/` now provides
-schema/read/validate/edit/chunk CRUD, render and image/viewport observation,
-object queries, reference comparison, proposals, JSON-RPC/stdio, MCP, and
-loopback HTTP surfaces. The body remains the original catalog/design and
-contains superseded names and phase boundaries; current wire truth is
-`AgentRpc.h` plus `AgentMcpAdapter.cpp`.
+**Status:** **SUBSTANTIALLY IMPLEMENTED (`AgentRpc` + `AgentMcpAdapter`).**
+- **Shipped:** 38+ JSON-RPC / MCP verbs in `src/Library/Agent/` (`AgentRpc.{h,cpp}`, `AgentMcpAdapter.{h,cpp}`, `AgentSession.{h,cpp}`) covering grammar/schema introspection, scene/entity/graph read, side-effect-free `validate` (`AgentSession::ValidateText`), parameter edit + chunk CRUD (`insert_chunk`, `remove_chunk`, `set_parameter`) with integer `headVersion` optimistic CAS and exact-byte CST undo, `Owner` vs `External` staged proposals (`list_proposals`, `resolve_proposal`), render & viewport/image observation + reference comparison, object spatial queries, CLI `--mcp` stdio server, and `AgentLoopbackHttpServer` (`--agent-http` `127.0.0.1` Bearer-authenticated loopback).
+- **Unbuilt:** MCP `resources/subscribe` push notifications, `prompts/list` & `prompts/get`, `export_movie` tool verb, `ProjectRootJail` canonical path confinement, standalone `SecretRedactor`, automated `SchemaConformanceTest` fuzzing every `ChunkDescriptor` against `ValidateText`, and Android JNI exposure.
+The body below retains the original catalog/design and contains superseded phase names; current wire truth is `AgentRpc.h` plus `AgentMcpAdapter.cpp`.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Design the first-party **RISE agent tool surface** (the MCP-protocol server) that lives in the shared C++ library (`src/Library/Agent/`), the full **resource** and **tool** catalog it exposes, the central reliability mechanism (**tool/resource schemas auto-generated from `SceneGrammar::Describe()`** as a first-pass filter held honest by a conformance test — see [VALIDATION_ARCHITECTURE.md](VALIDATION_ARCHITECTURE.md) §5), the keystone **`validate(scene_text)`** dry-run, the permission/scope tiers, the LLM-correctable error format, and the transport choices that let the in-app chat client and external clients (Claude Desktop, IDEs) share one engine instance. Excludes the agent loop, provider adapters, and chat UX — those are [LLM_AGENT_RUNTIME.md](LLM_AGENT_RUNTIME.md).
 

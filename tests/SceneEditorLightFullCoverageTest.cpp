@@ -92,7 +92,7 @@ static void TestAmbientLightFullMatrix()
 
 	Job* pJob = MakeMinimalJob();
 	double col[3] = { 0.5, 0.5, 0.5 };
-	pJob->AddAmbientLight( "amb", 2.0, col );
+	pJob->AddAmbientLight( "amb", 2.0, col, "Rec709RGB_Linear" );
 
 	{
 	SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
@@ -197,7 +197,7 @@ static void TestPointLightFullMatrix()
 	Job* pJob = MakeMinimalJob();
 	double pos[3] = { 1, 2, 3 };
 	double col[3] = { 1, 1, 1 };
-	pJob->AddPointOmniLight( "key", 1.0, col, pos, true );
+	pJob->AddPointOmniLight( "key", 1.0, col, "Rec709RGB_Linear", pos, true );
 
 	{
 	SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
@@ -282,7 +282,7 @@ static void TestSpotLightFullMatrix()
 	double pos[3] = { 1, 2, 3 };
 	double tgt[3] = { 4, 5, 6 };
 	double col[3] = { 1, 1, 1 };
-	pJob->AddPointSpotLight( "spot", 1.0, col, tgt, 30.0 * DEG, 60.0 * DEG, pos, true );
+	pJob->AddPointSpotLight( "spot", 1.0, col, "Rec709RGB_Linear", tgt, 30.0 * DEG, 60.0 * DEG, pos, true );
 
 	{
 	SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
@@ -383,7 +383,7 @@ static void TestDirectionalLightFullMatrix()
 	Job* pJob = MakeMinimalJob();
 	double col[3] = { 1, 1, 1 };
 	double dir[3] = { 0, 1, 0 };
-	pJob->AddDirectionalLight( "sun", 1.0, col, dir );
+	pJob->AddDirectionalLight( "sun", 1.0, col, "Rec709RGB_Linear", dir );
 
 	{
 	SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
@@ -452,7 +452,7 @@ static void TestChunkVocabularyDispatch()
 	double pos[3] = { 0, 0, 0 };
 	double tgt[3] = { 1, 0, 0 };
 	double col[3] = { 1, 1, 1 };
-	pJob->AddPointSpotLight( "spot", 1.0, col, tgt, 10.0 * DEG, 20.0 * DEG, pos, true );
+	pJob->AddPointSpotLight( "spot", 1.0, col, "Rec709RGB_Linear", tgt, 10.0 * DEG, 20.0 * DEG, pos, true );
 
 	{
 	SceneEditController c( *pJob, /*interactiveRasterizer*/0 );

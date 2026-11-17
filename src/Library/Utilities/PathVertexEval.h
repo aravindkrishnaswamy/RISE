@@ -51,6 +51,53 @@ namespace RISE
 {
 	namespace PathVertexEval
 	{
+		// Radiance is integrated against the shading-frame projected solid
+		// angle: f_s(wi,wo) |Ns.wi| dwi. Connections and photon density
+		// estimates instead carry geometric-area measure, so their response
+		// is f_A = f_s |Ns.wi|/|Ng.wi|. Keep the geometric Jacobians intact.
+		// A zero geometric cosine is a zero-measure direction, not a place
+		// to clamp a finite ratio. Medium vertices have no surface measure.
+		inline Scalar RadianceShadingNormalFactor(
+			const Vector3& shadingNormal, const Vector3& geometricNormal,
+			const Vector3& wi )
+		{
+			const Scalar ng = fabs( Vector3Ops::Dot( geometricNormal, wi ) );
+			return ng > Scalar(0)
+				? fabs( Vector3Ops::Dot( shadingNormal, wi ) ) / ng : Scalar(0);
+		}
+
+		inline Scalar RadianceShadingNormalFactor(
+			const BDPTVertex& vertex, const Vector3& wi )
+		{
+			return vertex.type == BDPTVertex::SURFACE
+				? RadianceShadingNormalFactor( vertex.normal, vertex.geomNormal, wi )
+				: Scalar(1);
+		}
+
+		// A light walk samples wo, whereas the radiance kernel's cosine is
+		// on wi. Its SPF kray already contains |Ns.wo|/pdf(wo); the adjoint
+		// weight therefore needs |Ns.wi||Ng.wo|/(|Ng.wi||Ns.wo|).
+		// This is wavelength-independent and belongs to importance walks
+		// only. PDFs remain densities of the unmodified sampling procedure.
+		inline Scalar ImportanceShadingNormalFactor(
+			const Vector3& shadingNormal, const Vector3& geometricNormal,
+			const Vector3& wi, const Vector3& wo )
+		{
+			const Scalar ngIn = fabs( Vector3Ops::Dot( geometricNormal, wi ) );
+			const Scalar nsOut = fabs( Vector3Ops::Dot( shadingNormal, wo ) );
+			if( ngIn == Scalar(0) || nsOut == Scalar(0) ) return Scalar(0);
+			return ( fabs( Vector3Ops::Dot( shadingNormal, wi ) ) *
+				fabs( Vector3Ops::Dot( geometricNormal, wo ) ) ) / ( ngIn * nsOut );
+		}
+
+		inline Scalar ImportanceShadingNormalFactor(
+			const BDPTVertex& vertex, const Vector3& wi, const Vector3& wo )
+		{
+			return vertex.type == BDPTVertex::SURFACE
+				? ImportanceShadingNormalFactor( vertex.normal, vertex.geomNormal, wi, wo )
+				: Scalar(1);
+		}
+
 		//////////////////////////////////////////////////////////////////////
 		// IOR Stack Reconstruction
 		//////////////////////////////////////////////////////////////////////
@@ -101,9 +148,78 @@ namespace RISE
 		//      (and the spectral / VCM equivalents).
 		//   3. Add the copy below.
 		//   4. Extend tests/BDPTVertexRIGRebuildTest.cpp with a sentinel
-		//      assertion for the new field.
+		//      assertion for the new field -- one per SCALAR, POINTER and
+		//      FLAG, not one per struct: a nested struct copied by
+		//      assignment still has to be checked member by member, or a
+		//      hand-rolled field-by-field copy could drop one silently.
 		// The cross-reference comment in BDPTVertex.h points the next
 		// developer at this contract.
+		//
+		// THE PAINTER-INPUT FIELDS ARE CARRIED (2026-09-11,
+		// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3).  This block
+		// used to say the opposite -- `derivatives`, `signals` and
+		// `txFootprint` were DECLINED, so an expression evaluated at a
+		// BDPT / VCM / MLT vertex read the documented neutral for `curv`,
+		// `curvR`, `occlusion`, `thickness`, `convexity`, `proximity` and
+		// `interior`.  That was a BIAS, not a flat mask: the forward walk
+		// SAMPLES its continuation direction against the live record the
+		// object manager stamped and then PRICES that same sample -- and
+		// every (s,t) connection, every MIS reverse pdf, every VCM merge
+		// at the eye vertex -- against the record rebuilt here.  One
+		// material, one vertex, one path, sampled with the true roughness
+		// and weighted with the neutral one (design §1).  All three are
+		// now copied below.
+		//
+		// WHY THE COPY IS SAFE UNDER THE HYGIENE INVARIANT (§3.1).
+		// SourceHygieneTest pins the set of files that assign `signals`,
+		// and the invariant it protects is "nothing puts a
+		// DEFAULT-CONSTRUCTED channel over `ObjectManager::IntersectRay`'s
+		// stamp".  This copy does the reverse: it FORWARDS that stamp.
+		// The chain is `ObjectManager::IntersectRay` stamps
+		// `ri.geometric.signals` -> the subpath generator copies it onto
+		// the vertex -> this function copies it back into the rebuilt
+		// record.  The value a painter finally reads is the object
+		// manager's own, two hops later, never a default over a stamp.
+		// `PathVertexEval.h` and `BDPTIntegrator.cpp` are in the allowed
+		// writer set for exactly that reason.
+		//
+		// TWO HONEST DEFAULTS REMAIN, and they are defaults because no
+		// stamp exists to forward -- not because the copy declines one:
+		//
+		//   * BSSRDF ENTRY VERTICES.  Their record is built from
+		//     `BSSRDFSampling::SampleResult` (entry point, normals, ONB),
+		//     which is a sampled point on a surface, not an intersection
+		//     the object manager resolved.  PT builds its entry record by
+		//     hand the same way, so an IOR or Fresnel painter keyed on a
+		//     signal at a subsurface entry reads neutral under EVERY
+		//     integrator alike -- integrator-consistent, and disclosed as
+		//     a residual in docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md
+		//     §10.  Closing it means a probe record in
+		//     `BSSRDFSampling::SampleResult`; out of scope here.
+		//   * NON-SURFACE VERTICES -- camera, env and medium.  There is no
+		//     surface to publish signals for, so the defaults are the
+		//     whole truth.  (A rebuild is only ever handed to a
+		//     BSDF / painter at a SURFACE vertex; medium vertices go to
+		//     the phase function, which reads none of these.)
+		//   * A `type == LIGHT` ROOT VERTEX is NOT in that list any more.
+		//     It was until 2026-09-11: a mesh luminary's root IS a
+		//     surface, and `LuminaryRadiance` (BDPT's t=1 light-to-camera
+		//     splat and s=1 connections; MLT shares the generator) prices
+		//     it through THIS function -- NOT VCM: `SplatLightSubpathToCameraImpl`
+		//     skips the LIGHT root and `EvaluateS0Impl` prices a real ray
+		//     hit (DL-44 review correction, 2026-09-14) -- so leaving it
+		//     default made an emissive material keyed on a signal read
+		//     neutral there.  Slice S3
+		//     (docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5) has
+		//     `GenerateLightSubpathImpl` copy a PROBED payload onto it,
+		//     from `LightSample::surface`, so this function replays that
+		//     too.  A DELTA light's root, and an env root, still carry the
+		//     defaults -- correctly: neither has a surface.
+		//
+		// Camera rays carry differentials under PT, BDPT, VCM and MLT.
+		// The first eye hit therefore has a live footprint; subsequent
+		// scattering rays currently carry none (DL-14). Forward either
+		// state verbatim so relief and filtered painters see the real hit.
 		//////////////////////////////////////////////////////////////////////
 		inline void PopulateRIGFromVertex(
 			const BDPTVertex& vertex,
@@ -111,16 +227,40 @@ namespace RISE
 			)
 		{
 			ri.bHit            = true;
+			ri.ray.origin      = Point3Ops::mkPoint3( vertex.position, -(ri.ray.Dir() * vertex.scatterIncomingDistance) );
 			ri.ptIntersection  = vertex.position;
 			ri.vNormal         = vertex.normal;
 			ri.vGeomNormal     = vertex.geomNormal;
+			// DL-341 review round 2: the surface-identity flags, so the
+			// rebuilt record's true side (UnflippedGeomNormal), open-sheet
+			// and no-interior certificates match the live hit's.
+			ri.bGeomNormalOrientedToRay = vertex.bGeomNormalOrientedToRay;
+			ri.bGeomNormalRayDerived    = vertex.bGeomNormalRayDerived;
+			ri.bOpenSheet               = vertex.bOpenSheet;
+			ri.bProvablyNoInterior      = vertex.bProvablyNoInterior;
+			// DL-341 round 6: this record's ray is aimed per query, so the
+			// live hit's arrival facing is replayed rather than re-derived.
+			ri.arrivalGeomFacing        = vertex.bGeomNormalOpposesArrival ? -1 : 1;
 			ri.onb             = vertex.onb;
+			// DL-302: the coat normal decodes from the same frame as the live hit.
+			ri.bHasCoatDecodeOnb = vertex.bHasCoatDecodeOnb;
+			if( vertex.bHasCoatDecodeOnb ) ri.coatDecodeOnb = vertex.coatDecodeOnb;
 			ri.ptCoord         = vertex.ptCoord;
 			ri.ptCoord1        = vertex.ptCoord1;
 			ri.bHasTexCoord1   = vertex.bHasTexCoord1;
 			ri.ptObjIntersec   = vertex.ptObjIntersec;
 			ri.vColor          = vertex.vColor;
 			ri.bHasVertexColor = vertex.bHasVertexColor;
+			// The painter-input triple.  `signals` here is the object
+			// manager's own stamp arriving two hops later (stamped on the
+			// live record, copied onto the vertex by the subpath
+			// generator, copied back out here) -- never a
+			// default-constructed channel placed over a stamp, which is
+			// the invariant SourceHygieneTest's writer-set check protects.
+			// See the contract block above.
+			ri.derivatives     = vertex.derivatives;
+			ri.signals         = vertex.signals;
+			ri.txFootprint     = vertex.txFootprint;
 			// G6: replay the enclosing (ambient) medium IOR captured at trace
 			// time (BDPTVertex::mediumIOR = IORStack::top() at hit production;
 			// SetCurrentObject does NOT push, so this is the medium the ray was
@@ -188,24 +328,31 @@ namespace RISE
 						Ray( vertex.position, -wi ), nullRasterizerState );
 					PopulateRIGFromVertex( vertex, rig );
 
+					// DL-49: `rig.ambientIOR` is the vertex's exterior
+					// index (`BDPTVertex::mediumIOR`, replayed by
+					// PopulateRIGFromVertex); Fresnel and its Sw
+					// normalization use the RELATIVE index against it.
 					const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, rig );
-					const Scalar eta = pProfile->GetIOR( rig );
+					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
+						pProfile->GetIOR( rig ), BSSRDFSampling::ExteriorIOR( rig ) );
 					const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 					return RISEPel( Sw, Sw, Sw );
 				}
 
-				// Random-walk SSS: Sw with Schlick Fresnel
+				// Random-walk SSS: Sw with the exact dielectric transmission (DL-306)
 				const RandomWalkSSSParams* pRW = vertex.pMaterial->GetRandomWalkSSSParams();
 				if( pRW ) {
 					const Scalar cosTheta = Vector3Ops::Dot( wi, vertex.normal );
 					if( cosTheta <= NEARZERO ) {
 						return RISEPel( 0, 0, 0 );
 					}
-					const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
-						((pRW->ior - 1.0) / (pRW->ior + 1.0));
-					const Scalar FSchlick = F0 + (1.0 - F0) * pow( 1.0 - cosTheta, 5.0 );
-					const Scalar FtEntry = 1.0 - FSchlick;
-					const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, pRW->ior );
+					// DL-49: relative to the vertex's exterior index
+					// (`mediumIOR`, the IOR-stack top at the exit hit).
+					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
+						pRW->ior, ( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0 );
+					const Scalar FtEntry = BSSRDFSampling::BoundaryTransmission( cosTheta, pRW->ior,
+						( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0 );
+					const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 					return RISEPel( Sw, Sw, Sw );
 				}
 
@@ -219,16 +366,243 @@ namespace RISE
 
 			// Build a RayIntersectionGeometric for the BSDF evaluation.
 			// Negate wo to get ri.ray.Dir() toward the surface.
-			Ray evalRay( vertex.position, -wo );
+			Ray evalRay( vertex.position, vertex.isLightSubpathVertex ? -wi : -wo );
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 			PopulateRIGFromVertex( vertex, ri );
 
-			return pBSDF->value( wi, ri );
+			// DL-157: a stateful BSDF (`translucent_material`) prices a hit
+			// by which side of the surface the walk is on, and the vertex
+			// carries that -- `BDPTVertex::insideObject`, the same bit
+			// `EvalPdfAtVertex` already rebuilds a stack from.  Handing it
+			// over matters MORE here than it does for PT, because the
+			// rebuilt `evalRay` above is NOT the walk's own incoming
+			// segment on the light side (`GenerateLightSubpathImpl` passes
+			// `(wi, wo)` in the opposite roles from the eye walk), so a
+			// stateful BSDF that inferred the side from that ray would
+			// invert its whole lobe frame there.  Every other BSDF ignores
+			// the argument (IBSDF's default forwards to `value`).
+			IORStack vertexStack( 1.0 );
+			BuildVertexIORStack( vertex, vertexStack );
+
+			const Vector3& evalDir = vertex.isLightSubpathVertex ? wo : wi;
+			// DL-472 (1): a light-subpath vertex is an IMPORTANCE query.
+			const BSDFImportanceScope transportMode( vertex.isLightSubpathVertex );
+			return pBSDF->valueStateful( evalDir, ri, &vertexStack );
 		}
+
+		/// DL-481: `EvalBSDFAtVertex`'s surface value split by the lobe
+		/// label the material's SPF stamps (IBSDF::valueByScatterType),
+		/// for a connection / merge endpoint under a per-type bounce cap.
+		/// Same record, stack and transport mode as `EvalBSDFAtVertex`.
+		/// False (out all zero) unless the vertex is a plain surface vertex
+		/// whose material declares the split (IMaterial::HasConnectionTypeSplit).
+		inline bool EvalBSDFByTypeAtVertex(
+			const BDPTVertex& vertex,
+			const Vector3& wi,
+			const Vector3& wo,
+			RISEPel out[5]
+			)
+		{
+			for( int k = 0; k < 5; k++ ) out[k] = RISEPel( 0, 0, 0 );
+			if( vertex.type != BDPTVertex::SURFACE || vertex.isBSSRDFEntry || !vertex.pMaterial ||
+				!vertex.pMaterial->HasConnectionTypeSplit() ) {
+				return false;
+			}
+			const IBSDF* pBSDF = vertex.pMaterial->GetBSDF();
+			if( !pBSDF ) {
+				return false;
+			}
+			Ray evalRay( vertex.position, vertex.isLightSubpathVertex ? -wi : -wo );
+			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
+			PopulateRIGFromVertex( vertex, ri );
+			IORStack vertexStack( 1.0 );
+			BuildVertexIORStack( vertex, vertexStack );
+			const Vector3& evalDir = vertex.isLightSubpathVertex ? wo : wi;
+			const BSDFImportanceScope transportMode( vertex.isLightSubpathVertex );
+			return pBSDF->valueByScatterType( evalDir, ri, &vertexStack, out );
+		}
+
+		/// Spectral twin of `EvalBSDFByTypeAtVertex`.
+		inline bool EvalBSDFByTypeAtVertexNM(
+			const BDPTVertex& vertex,
+			const Vector3& wi,
+			const Vector3& wo,
+			const Scalar nm,
+			Scalar out[5]
+			)
+		{
+			for( int k = 0; k < 5; k++ ) out[k] = 0;
+			if( vertex.type != BDPTVertex::SURFACE || vertex.isBSSRDFEntry || !vertex.pMaterial ||
+				!vertex.pMaterial->HasConnectionTypeSplit() ) {
+				return false;
+			}
+			const IBSDF* pBSDF = vertex.pMaterial->GetBSDF();
+			if( !pBSDF ) {
+				return false;
+			}
+			Ray evalRay( vertex.position, vertex.isLightSubpathVertex ? -wi : -wo );
+			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
+			PopulateRIGFromVertex( vertex, ri );
+			IORStack vertexStack( 1.0 );
+			BuildVertexIORStack( vertex, vertexStack );
+			const Vector3& evalDir = vertex.isLightSubpathVertex ? wo : wi;
+			const BSDFImportanceScope transportMode( vertex.isLightSubpathVertex );
+			return pBSDF->valueByScatterTypeNM( evalDir, ri, nm, &vertexStack, out );
+		}
+
+		//////////////////////////////////////////////////////////////////////
+		// VertexPdfContext
+		//
+		// The reconstructed evaluation state of ONE vertex, shared across
+		// the several `EvalPdfAtVertex` / `EvalPdfAtVertexNM` queries a
+		// caller makes at that same vertex.
+		//
+		// WHY.  `EvalPdfAtVertex` has to rebuild a
+		// `RayIntersectionGeometric` (via `PopulateRIGFromVertex`, which
+		// copies the whole surface-state block including `onb`,
+		// `derivatives`, `signals` and `txFootprint`) and an `IORStack`
+		// from the stored vertex before it can ask the SPF anything.
+		// Since DL-69 both subpath generators query the SAME vertex TWICE
+		// per non-delta scatter -- once for this vertex's own `pdfFwd`
+		// (wi = -incoming, wo = scattered) and once for the predecessor's
+		// `pdfRev` (the same two directions with their roles swapped) --
+		// so that rebuild ran twice per vertex per subpath.  Measured on
+		// an all-`schlick_material` 256x256 / 256-spp BDPT render, the
+		// duplicated rebuild is worth a few percent of whole-render CPU.
+		//
+		// WHAT IS SHARED AND WHAT IS NOT.  Everything
+		// `PopulateRIGFromVertex` writes, plus the IOR stack, is a
+		// function of the VERTEX alone and is built once.  The record's
+		// `ray` is NOT: it encodes `wi` (the SPFs read `ri.ray.Dir()` to
+		// anchor their geometric frame), so it is re-aimed per query by
+		// `RecordFor`.  A context is therefore only valid while the
+		// vertex it was built from is alive and unmodified -- it stores a
+		// reference, so it must not outlive a `push_back` that could
+		// reallocate the vertex array.
+		//
+		// The state is built LAZILY, on the first query that actually
+		// needs it, so a vertex that short-circuits (MEDIUM, no material,
+		// BSSRDF entry, or a material with no SPF) pays nothing -- the
+		// same early-outs the standalone functions have always had.
+		//////////////////////////////////////////////////////////////////////
+		class VertexPdfContext
+		{
+		public:
+			explicit VertexPdfContext( const BDPTVertex& vertex ) :
+			  m_vertex( vertex ),
+			  m_ri( Ray( vertex.position, Vector3( 0, 0, 1 ) ), nullRasterizerState ),
+			  m_stack( 1.0 ),
+			  m_pSPF( 0 ),
+			  m_built( false )
+			{}
+
+			//! The vertex this context was built from.
+			inline const BDPTVertex& Vertex() const { return m_vertex; }
+
+			//! The vertex's SPF, or null when it has no material or the
+			//! material has no SPF.  Builds the shared record and IOR
+			//! stack on the first call that returns non-null.
+			inline const ISPF* PrepareSPF()
+			{
+				if( !m_built ) {
+					m_built = true;
+					if( m_vertex.pMaterial ) {
+						m_pSPF = m_vertex.pMaterial->GetSPF();
+					}
+					if( m_pSPF ) {
+						PopulateRIGFromVertex( m_vertex, m_ri );
+						BuildVertexIORStack( m_vertex, m_stack );
+					}
+				}
+				return m_pSPF;
+			}
+
+			inline RayIntersectionGeometric& RecordFor( const Vector3& wi )
+			{
+				const Vector3 inDir = -wi;
+				m_ri.ray = Ray( Point3Ops::mkPoint3( m_vertex.position, -(inDir * m_vertex.scatterIncomingDistance) ), inDir );
+				return m_ri;
+			}
+
+			inline const IORStack& Stack() const { return m_stack; }
+
+		private:
+			// Non-copyable: it holds a reference and a heavy record, and
+			// every use is a short-lived local.
+			VertexPdfContext( const VertexPdfContext& );
+			VertexPdfContext& operator=( const VertexPdfContext& );
+
+			const BDPTVertex&			m_vertex;
+			RayIntersectionGeometric	m_ri;
+			IORStack					m_stack;
+			const ISPF*					m_pSPF;
+			bool						m_built;
+		};
 
 		//////////////////////////////////////////////////////////////////////
 		// RGB PDF Evaluation
 		//////////////////////////////////////////////////////////////////////
+
+		/// The vertex kinds whose sampling PDF needs no reconstructed
+		/// record at all.  Shared by the Pel and NM evaluators and by both
+		/// their context-carrying and standalone forms, so the standalone
+		/// form never builds a `VertexPdfContext` (and therefore never a
+		/// `RayIntersectionGeometric`) for a vertex that would not use it
+		/// -- which is what the pre-context code did.  The three cases are
+		/// wavelength-independent, which is why one helper serves both.
+		///
+		/// \return true when `outPdf` is the answer; false when the caller
+		///         must go on to query the SPF.
+		inline bool EvalPdfAtVertexShortCircuit(
+			const BDPTVertex& vertex,
+			const Vector3& wi,
+			const Vector3& wo,
+			Scalar& outPdf
+			)
+		{
+			// Medium scatter vertex: phase function sampling PDF.
+			if( vertex.type == BDPTVertex::MEDIUM ) {
+				outPdf = vertex.pPhaseFunc ? vertex.pPhaseFunc->Pdf( -wi, wo ) : Scalar( 0 );
+				return true;
+			}
+
+			if( !vertex.pMaterial ) {
+				outPdf = 0;
+				return true;
+			}
+
+			// BSSRDF entry vertex: cosine-weighted hemisphere PDF.
+			if( vertex.isBSSRDFEntry ) {
+				outPdf = fabs( Vector3Ops::Dot( wo, vertex.normal ) ) * INV_PI;
+				return true;
+			}
+
+			return false;
+		}
+
+		/// Evaluates the SPF sampling PDF at a path vertex, reusing a
+		/// context's already-reconstructed record and IOR stack.
+		///
+		/// Semantically identical to the standalone overload below.
+		inline Scalar EvalPdfAtVertex(
+			VertexPdfContext& ctx,
+			const Vector3& wi,
+			const Vector3& wo
+			)
+		{
+			Scalar shortCircuit = 0;
+			if( EvalPdfAtVertexShortCircuit( ctx.Vertex(), wi, wo, shortCircuit ) ) {
+				return shortCircuit;
+			}
+
+			const ISPF* pSPF = ctx.PrepareSPF();
+			if( !pSPF ) {
+				return 0;
+			}
+
+			// Negate wi to get toward-surface direction for ri.ray.Dir()
+			return pSPF->Pdf( ctx.RecordFor( wi ), wo, ctx.Stack() );
+		}
 
 		/// Evaluates the SPF sampling PDF at a path vertex.
 		///
@@ -242,37 +616,13 @@ namespace RISE
 			const Vector3& wo
 			)
 		{
-			// Medium scatter vertex: phase function sampling PDF.
-			if( vertex.type == BDPTVertex::MEDIUM ) {
-				if( !vertex.pPhaseFunc ) {
-					return 0;
-				}
-				return vertex.pPhaseFunc->Pdf( -wi, wo );
+			Scalar shortCircuit = 0;
+			if( EvalPdfAtVertexShortCircuit( vertex, wi, wo, shortCircuit ) ) {
+				return shortCircuit;
 			}
 
-			if( !vertex.pMaterial ) {
-				return 0;
-			}
-
-			// BSSRDF entry vertex: cosine-weighted hemisphere PDF.
-			if( vertex.isBSSRDFEntry ) {
-				const Scalar cosTheta = fabs( Vector3Ops::Dot( wo, vertex.normal ) );
-				return cosTheta * INV_PI;
-			}
-
-			const ISPF* pSPF = vertex.pMaterial->GetSPF();
-			if( !pSPF ) {
-				return 0;
-			}
-
-			// Negate wi to get toward-surface direction for ri.ray.Dir()
-			Ray evalRay( vertex.position, -wi );
-			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-			PopulateRIGFromVertex( vertex, ri );
-
-			IORStack stack( 1.0 );
-			BuildVertexIORStack( vertex, stack );
-			return pSPF->Pdf( ri, wo, stack );
+			VertexPdfContext ctx( vertex );
+			return EvalPdfAtVertex( ctx, wi, wo );
 		}
 
 		//////////////////////////////////////////////////////////////////////
@@ -315,15 +665,17 @@ namespace RISE
 						Ray( vertex.position, -wi ), nullRasterizerState );
 					PopulateRIGFromVertex( vertex, rig );
 
-					const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, rig );
-					const Scalar eta = pProfile->GetIOR( rig );
+					// DL-49: relative index, as in the RGB twin above.
+					const Scalar FtEntry = pProfile->FresnelTransmissionNM( cosTheta, rig, nm );
+					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
+						pProfile->GetIORNM( rig, nm ), BSSRDFSampling::ExteriorIOR( rig ) );
 					return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 				}
 
-				// Random-walk SSS: Sw with Schlick Fresnel
+				// Random-walk SSS: Sw with the exact dielectric transmission (DL-306)
 				const RandomWalkSSSParams* pRW = vertex.pMaterial->GetRandomWalkSSSParams();
 				RandomWalkSSSParams rwParamsNM;
-				if( !pRW && vertex.pMaterial->GetRandomWalkSSSParamsNM( nm, rwParamsNM ) ) {
+				if( vertex.pMaterial->GetRandomWalkSSSParamsNM( nm, rwParamsNM ) ) {
 					pRW = &rwParamsNM;
 				}
 				if( pRW ) {
@@ -331,11 +683,12 @@ namespace RISE
 					if( cosTheta <= NEARZERO ) {
 						return 0;
 					}
-					const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
-						((pRW->ior - 1.0) / (pRW->ior + 1.0));
-					const Scalar FSchlick = F0 + (1.0 - F0) * pow( 1.0 - cosTheta, 5.0 );
-					const Scalar FtEntry = 1.0 - FSchlick;
-					return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, pRW->ior );
+					// DL-49: relative index, as in the RGB twin above.
+					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
+						pRW->ior, ( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0 );
+					const Scalar FtEntry = BSSRDFSampling::BoundaryTransmission( cosTheta, pRW->ior,
+						( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0 );
+					return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 				}
 
 				return 0;
@@ -346,16 +699,45 @@ namespace RISE
 				return 0;
 			}
 
-			Ray evalRay( vertex.position, -wo );
+			Ray evalRay( vertex.position, vertex.isLightSubpathVertex ? -wi : -wo );
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 			PopulateRIGFromVertex( vertex, ri );
 
-			return pBSDF->valueNM( wi, ri, nm );
+			// DL-157, spectral twin of the RGB path above.
+			IORStack vertexStack( 1.0 );
+			BuildVertexIORStack( vertex, vertexStack );
+
+			const Vector3& evalDir = vertex.isLightSubpathVertex ? wo : wi;
+			const BSDFImportanceScope transportMode( vertex.isLightSubpathVertex );
+			return pBSDF->valueStatefulNM( evalDir, ri, nm, &vertexStack );
 		}
 
 		//////////////////////////////////////////////////////////////////////
 		// Spectral (NM) PDF Evaluation
 		//////////////////////////////////////////////////////////////////////
+
+		/// Evaluates the SPF sampling PDF at a vertex for a single
+		/// wavelength, reusing a context's reconstructed record and IOR
+		/// stack.  Semantically identical to the standalone overload below.
+		inline Scalar EvalPdfAtVertexNM(
+			VertexPdfContext& ctx,
+			const Vector3& wi,
+			const Vector3& wo,
+			const Scalar nm
+			)
+		{
+			Scalar shortCircuit = 0;
+			if( EvalPdfAtVertexShortCircuit( ctx.Vertex(), wi, wo, shortCircuit ) ) {
+				return shortCircuit;
+			}
+
+			const ISPF* pSPF = ctx.PrepareSPF();
+			if( !pSPF ) {
+				return 0;
+			}
+
+			return pSPF->PdfNM( ctx.RecordFor( wi ), wo, nm, ctx.Stack() );
+		}
 
 		/// Evaluates the SPF sampling PDF at a vertex for a single wavelength.
 		inline Scalar EvalPdfAtVertexNM(
@@ -365,36 +747,13 @@ namespace RISE
 			const Scalar nm
 			)
 		{
-			// Medium scatter vertex: phase function PDF
-			if( vertex.type == BDPTVertex::MEDIUM ) {
-				if( !vertex.pPhaseFunc ) {
-					return 0;
-				}
-				return vertex.pPhaseFunc->Pdf( -wi, wo );
+			Scalar shortCircuit = 0;
+			if( EvalPdfAtVertexShortCircuit( vertex, wi, wo, shortCircuit ) ) {
+				return shortCircuit;
 			}
 
-			if( !vertex.pMaterial ) {
-				return 0;
-			}
-
-			// BSSRDF entry vertex: cosine hemisphere PDF
-			if( vertex.isBSSRDFEntry ) {
-				const Scalar cosTheta = fabs( Vector3Ops::Dot( wo, vertex.normal ) );
-				return cosTheta * INV_PI;
-			}
-
-			const ISPF* pSPF = vertex.pMaterial->GetSPF();
-			if( !pSPF ) {
-				return 0;
-			}
-
-			Ray evalRay( vertex.position, -wi );
-			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-			PopulateRIGFromVertex( vertex, ri );
-
-			IORStack stack( 1.0 );
-			BuildVertexIORStack( vertex, stack );
-			return pSPF->PdfNM( ri, wo, nm, stack );
+			VertexPdfContext ctx( vertex );
+			return EvalPdfAtVertexNM( ctx, wi, wo, nm );
 		}
 		//////////////////////////////////////////////////////////////////////
 		// PT-compatible overloads
@@ -414,10 +773,17 @@ namespace RISE
 		inline RISEPel EvalBSDFAtSurface(
 			const IBSDF* pBRDF,
 			const Vector3& wi,
-			const RayIntersectionGeometric& ri
+			const RayIntersectionGeometric& ri,
+			//! DL-157 P1: the LIVE stack where the caller has one.  A
+			//! stateful BSDF (`translucent_material`) prices a hit by which
+			//! side of the surface the walk is on, and PT's guiding
+			//! candidate sites hold the same `iorStack` they already hand
+			//! to `EvalPdfAtSurface` one line away.  Null reproduces
+			//! `value` exactly (IBSDF's default forwards).
+			const IORStack* pIORStack = 0
 			)
 		{
-			return pBRDF->value( wi, ri );
+			return pBRDF->valueStateful( wi, ri, pIORStack );
 		}
 
 		/// Evaluate PDF at a PT surface point.
@@ -448,10 +814,12 @@ namespace RISE
 			const IBSDF* pBRDF,
 			const Vector3& wi,
 			const RayIntersectionGeometric& ri,
-			const Scalar nm
+			const Scalar nm,
+			//! DL-157 P1 -- see the RGB twin.
+			const IORStack* pIORStack = 0
 			)
 		{
-			return pBRDF->valueNM( wi, ri, nm );
+			return pBRDF->valueStatefulNM( wi, ri, nm, pIORStack );
 		}
 
 		/// Evaluate PDF at a PT surface point (spectral).

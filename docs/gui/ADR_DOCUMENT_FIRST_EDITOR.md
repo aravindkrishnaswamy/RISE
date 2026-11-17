@@ -1,6 +1,6 @@
 # ADR: The Document-First Editor
 
-**Status: ACCEPTED 2026-07-22** (phases 1–3 landing with this commit; phase 4 deferred).
+**Status: ACCEPTED & SHIPPED 2026-07-22** (Phases 1–3 shipped in July 2026; Phase 4 undo fidelity resolved 2026-10-17 via exact-byte CST undo `Cst::DocReplaceChunkIfText`).
 **Decision owner:** Aravind.  **Context:** the GUI-redesign review arc
 ([PROPERTIES_AND_REFERENCES.md](PROPERTIES_AND_REFERENCES.md) §7) — four
 adversarial review rounds produced 12 P1s on one slice, and 11 of them
@@ -81,36 +81,38 @@ The 12 P1s cluster (full table in PROPERTIES_AND_REFERENCES.md §6–7):
 
 ## 4. Phases
 
-- **Phase 1 (this commit): derived dirty + deferred notification.**
+- **Phase 1 (shipped 2026-07-22): derived dirty + deferred notification.**
   `SceneEditor` records `mSavedHeadVersion` at bind + successful save;
   `HasUnsavedChanges()` gains the revision-diff floor; the dirty listener
   becomes pending-flag + post-unlock drain.  Kills the false-clean class
   permanently and retires the fire-under-lock hazard at the root.
-- **Phase 2 (this commit): unified snapshot read surface.**  The
+  *(Pre-CST byte-splice span bookkeeping such as `SourceSpanIndex` /
+  `OverrideSpanIndex` had already been deleted in Model-B P5 Slice 6d.)*
+- **Phase 2 (shipped 2026-07-22): unified snapshot read surface.**  The
   piecemeal snapshots (`mProperties`, `mPropertiesByCategory`, the
-  round-4 enumeration snapshots) consolidate into one
+  round-4 enumeration snapshots) consolidated into one
   `EditorUiSnapshot` behind one leaf mutex with one publish function.
   Cadences are unchanged (shell-driven `RefreshProperties` per frame;
   getter-driven opportunistic refresh); the point is one structure to
   extend and one pattern to follow.
-- **Phase 3 (this commit): transaction path addresses singletons; the
-  Rasterizer arm migrates.**  `Job::ApplyCstParamEditImpl_` generalizes
+- **Phase 3 (shipped 2026-07-22): transaction path addresses singletons; the
+  Rasterizer arm migrated.**  `Job::ApplyCstParamEditImpl_` generalized
   its unnamed-unique-fallback (previously camera-only) to any kind
   addressed with an empty name; `SceneEditController::SetProperty`'s
-  Rasterizer arm becomes a plain `ApplyAgentParamEdit("", <kind>, …)`
+  Rasterizer arm became a plain `ApplyAgentParamEdit("", <kind>, …)`
   call — deleting the bespoke pre-flight/record/mark sequence and gaining
-  undo/redo for rasterizer edits for free.  **Deliberately NOT migrated
-  yet:** the Film arm (post-clamp value recording + FrameStore/camera
+  undo/redo for rasterizer edits for free.  **Deliberately NOT migrated in
+  that slice:** the Film arm (post-clamp value recording + FrameStore/camera
   resync side-effects deserve their own slice), the Film preset pick
   (two-param atomic edit; the transaction path is single-param), and the
   Environment arm (`radiance_map` erase is a multi-param REMOVE the
-  single-param path cannot express).  All three are coherent today
-  (round-4 pre-flight + gated marks) and are the phase-3b work list.
-- **Phase 4 (deferred): Document-state undo.**  Persistent value
-  Documents make N previous heads cheap; undo becomes "swap head back and
-  re-derive", retiring the per-op inverse machinery.  Deferred until the
-  inverse-op code next causes real pain; needs the gesture-coalescing
-  design first.
+  single-param path cannot express).  All three are coherent
+  (round-4 pre-flight + gated marks) and remain the phase-3b follow-up list.
+- **Phase 4 (resolved 2026-10-17 via exact-byte CST undo): Document-level undo.**
+  Instead of full-Document head cloning, `Cst::DocReplaceChunkIfText` +
+  the per-object gizmo spelling journal shipped (`e74ed91e3`..`a699e7415`;
+  `tests/AgentChunkCrudTest.cpp` BR24), restoring byte-exact pre-edit chunk
+  source (comments, formatting, numeric spellings) on undo/redo.
 
 ## 5. What this does not fix
 

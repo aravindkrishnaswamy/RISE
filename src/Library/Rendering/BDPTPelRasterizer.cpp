@@ -20,6 +20,7 @@
 #include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
 #include "ProgressiveFilm.h"
+#include "../Cameras/CameraUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -128,6 +129,17 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	// Accurate guides at the first selected non-delta surface while the real
 	// trace-time intersection and incoming ray are still available.
 
+	// Debt 28: the point on the camera's entrance APERTURE that the
+	// t==1 light-tracing connections land on.  Its own sampler stream
+	// so it stays stratified across pixels.  A camera whose aperture
+	// is a point (pinhole / fisheye / orthographic) consumes NOTHING
+	// here -- see DrawApertureSample -- so those renders draw the same
+	// dimensions they did before debt 28.  For a thin lens this is
+	// what gives the splat layer the depth of field the eye layer has.
+	const Point2 cameraLensSample =
+		BDPTCameraUtilities::DrawApertureSample( camera, sampler,
+			BDPTCameraUtilities::APERTURE_DEDICATED_STREAM );
+
 	RISEPel sampleColor( 0, 0, 0 );
 
 	// Single-subpath EvaluateAllStrategies call.  No per-branch loop —
@@ -144,6 +156,7 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 				pScene,
 				*pCaster,
 				camera,
+				cameraLensSample,
 				&sampler );
 
 		for( unsigned int r=0; r<results.size(); r++ )
@@ -204,14 +217,15 @@ void BDPTPelRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
 	}
 
-	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
+	const bool bMultiSample = sampling && rc.UsesPixelSampling();
 	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+	const unsigned int batchSize = bMultiSample ? sampling->GetNumSamples() : 1;
 	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 	// Progressive rendering: check if this pixel has already converged
@@ -264,6 +278,10 @@ void BDPTPelRasterizer::IntegratePixel(
 	}
 
 	// In progressive mode, restore persistent state from the film.
+	// Accumulate ONLY this pass's RGB samples into `colAccrued` and add the
+	// pass delta once into `px.colorSum` (XYZPel) at pass end so prior-pass
+	// totals never undergo repeated XYZ->RGB->XYZ round-trips or intermediate
+	// gamut clipping across progressive passes.
 	RISEPel colAccrued( 0, 0, 0 );
 	Scalar weights = 0;
 	Scalar alphas = 0;
@@ -275,7 +293,7 @@ void BDPTPelRasterizer::IntegratePixel(
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		colAccrued = px.colorSum;
+		colAccrued = px.LoadPelPassInit();
 		weights = px.weightSum;
 		alphas = px.alphaSum;
 		wMean = px.wMean;
@@ -298,7 +316,7 @@ void BDPTPelRasterizer::IntegratePixel(
 	{
 		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 		} else {
 			samples.push_back( Point2( 0, 0 ) );
 		}
@@ -322,16 +340,14 @@ void BDPTPelRasterizer::IntegratePixel(
 			// → SplatFilm::SplatFiltered which still uses the filter's
 			// EvaluateFilter for cross-pixel reconstruction.
 			if( bMultiSample ) {
-				ptOnScreen = Point2(
-					static_cast<Scalar>(x) + (*m).x - 0.5,
-					static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+				ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 			} else {
-				ptOnScreen = Point2( x, height-y );
+				ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 			}
 			weights += weight;
 
 			if( temporal_samples && !pScene.FireTemporalHold() ) {
-				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+				AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 			}
 
 			// For ZSobol, remap the sample index via Morton code so that
@@ -420,7 +436,7 @@ void BDPTPelRasterizer::IntegratePixel(
 	// Write back persistent state for progressive rendering
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		px.colorSum = colAccrued;
+		colAccrued = px.StorePelPassDelta( colAccrued );
 		px.weightSum = weights;
 		px.alphaSum = alphas;
 		px.wMean = wMean;
@@ -430,17 +446,13 @@ void BDPTPelRasterizer::IntegratePixel(
 		px.converged = converged;
 	}
 
-	// Track total adaptive samples for splat film normalization.
-	// Use the delta (samples rendered THIS pass) to avoid double-counting
-	// across progressive passes.  Gated on `adaptive` only: in non-
-	// adaptive progressive mode every pixel takes the full configured
-	// SPP, so the static mSplatTotalSamples set in BDPTRasterizerBase::
-	// RasterizeScene is the correct splat divisor.  Tracking the live
-	// per-pass count made sense only when adaptive convergence could
-	// give pixels different sample counts.
-	if( adaptive ) {
-		AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
-	}
+	// Track total completed samples for splat film (`t == 1`) normalization.
+	// Use the delta (samples rendered THIS pass) unconditionally across
+	// both adaptive and non-adaptive passes so intermediate progressive
+	// previews, regional renders, and mid-render cancellations divide
+	// `pSplatFilm` by the exact completed sample count rather than the
+	// full-render target SPP.
+	AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
 
 	if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphas );

@@ -1,0 +1,11 @@
+{
+  "//": "Altar stress-test rerun on gemini-3.7-flash (matching the original GUI trajectory's driving model), post-hardening (a71313e4..4d603822). N=2, token-lean single run per user direction. Compare against GUI trajectory 20260830T170134Z-75b8b2fa: guardian/plinth expression painters silently flattened by opaque rejections, degenerate plinth SDF (box extents in the scale slot), lantern thickness never attempted, add_wear never called.",
+  "scenarios": [
+    "evals/scenarios/altar_stress.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.7-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 2,
+  "runDir": "evals/runs/altar_stress"
+}

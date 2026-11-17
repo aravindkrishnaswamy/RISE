@@ -2,12 +2,10 @@
 
 > **⚠ ERRATUM (2026-07-02, post-CST-cutover).** The Model-B P5 CST cutover (completed 2026-07-01) delivered most of what this spec calls the "parse → IR" seam: **`Cst::ParseToCst(const std::string&)` is a string-input, construction-free parse** to a CST `Document`, and entity construction happens only in the separate **`DeriveToJob`** step ([../../src/Library/Cst/Cst.cpp](../../src/Library/Cst/Cst.cpp)) — so "the parser builds as it parses / no parse-only seam" (§1.1) and "there is no string-input parser" are **no longer true at the parse layer** (they remain true of the *derive* layer, where `Finalize` → `pJob.Add*` still runs — the throwaway-`Job` tier below still applies to construction-level checks). Also deleted since this spec was written: `AsciiSceneParser.cpp` and `ISceneParser::ParseAndLoadScene` (Slice 6c — the descriptor-driven chunk parsers live in `IAsciiChunkParser.h` / `ChunkParserRegistry.cpp`, driven by `DeriveToJob`), and the round-trip-save span types `SourceSpanIndex.h` `RawTokenSpan`/`ParameterSpan` (Slice 6d — the byte-splice save engine is gone; the CST `Document` itself is the span/IR substrate now). An F5 slice-0 `validate` over `ParseToCst` has shipped in `src/Library/Agent/`. The two-tier design (IR-level gutter + sandboxed throwaway `Job`) remains the right shape — the IR tier should be **the CST Document**, not a new IR.
 
-**Status:** **CORE VALIDATION SHIPPED; HARDENING PLAN PARTIAL.**
-`AgentSession::ValidateText` performs CST parse plus throwaway-`Job` derive
-without mutating the live scene and backs the agent `validate` verb. The
-broader editor-gutter, resource-jail, limit, and out-of-process hardening in
-this document remains design work. This doc supersedes the original capturing
-`ValidationJob` sketch in [MCP_TOOL_SURFACE.md](MCP_TOOL_SURFACE.md) §6.
+**Status:** **PARTIALLY IMPLEMENTED.**
+- **Shipped:** `AgentSession::ValidateText` (`src/Library/Agent/AgentSession.{h,cpp}`, covered by `tests/AgentReadValidateTest.cpp`) performs construction-free `Cst::ParseToCst` + isolated throwaway-`Job` `DeriveToJob` without mutating the live scene, refuses `>` barrier directives under validation policy, emits structured `AgentDiagnostic` records, and combines with `ParameterSemantics.pipe` (`ParameterPipe`) + `ConnectionLegality`.
+- **Unbuilt:** Live inline text-editor squiggle gutters on macOS/Windows, `ProjectRootJail` canonical path confinement + time/memory caps + out-of-process asset-decode child sandbox (§3.5), open-vs-closed enum flags on `ParameterSemantics`, and an automated `SchemaConformanceTest` fuzzing every `ChunkDescriptor` against `ValidateText` (§5.4).
+This doc supersedes the original capturing `ValidationJob` sketch in [MCP_TOOL_SURFACE.md](MCP_TOOL_SURFACE.md) §6.
 **Owner:** Aravind Krishnaswamy
 **Scope:** A safe, side-effect-free scene-validation path for the agent/MCP tool surface and the GUI editor's inline diagnostics — what "validation" can honestly mean given the current parser, the command policy that keeps validation from terminating the process or kicking a render, a **two-tier** v1 (a parse-only **IR** path that backs the fast editor gutter, and a deeper isolated-and-**sandboxed** throwaway `Job` that backs the `validate` tool's construction-level checks), a principled end-state (`parse → IR → validate IR → apply IR`), the descriptor-vs-real-schema gap (and the conformance test that keeps a generated schema honest), and the diagnostic format that powers both the MCP `validate` tool and editor squiggles. **Out of scope:** the rest of the tool/resource catalog, transports, provider adapters, the agent loop (those are [MCP_TOOL_SURFACE.md](MCP_TOOL_SURFACE.md) / [LLM_AGENT_RUNTIME.md](LLM_AGENT_RUNTIME.md)).
 
@@ -17,7 +15,7 @@ this document remains design work. This doc supersedes the original capturing
 
 This doc honors the [GUI_ROADMAP.md](../GUI_ROADMAP.md) §1 principles — **#1 text is the source of truth**, **#2 maximize shared C++** (the validator is library code), **#6 everything routes through one mutation path** (validation never becomes a second write path) — and the §16 confirmed decisions: the adopted **`ParameterSemantics` structure on `ParameterDescriptor`** (separate fields, not one overloaded enum), the **`src/Library/Agent/`** subsystem name, and "**avoid the bare `MCP` token**" in type/dir names.
 
-> **Ground-truth basis.** Every code claim cites `file:line` against the tree at the time of writing and was re-derived from source per [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) (which is the authority where any plan-doc `Status:` header disagrees). `.claude/worktrees/` was ignored.
+> **Historical basis note.** Pre-cutover `file:line` citations in the body below were derived against the June 2026 baseline ([CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md)); see the 2026-07-02 erratum and Status banner above for what shipped since. `.claude/worktrees/` was ignored.
 
 ---
 

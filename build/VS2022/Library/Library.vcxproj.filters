@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Utilities">
@@ -234,9 +234,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\..\src\Library\Utilities\BitField.cpp">
-      <Filter>Utilities</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\CPU_Count.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -252,13 +249,7 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\RenderParallelScope.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Utilities\DynamicProperties.cpp">
-      <Filter>Utilities</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\GeometricUtilities.cpp">
-      <Filter>Utilities</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Utilities\LoadLibraryWin32.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\MediaPathLocator.cpp">
@@ -334,6 +325,9 @@
       <Filter>Utilities</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\Reference.cpp">
@@ -415,6 +409,12 @@
       <Filter>Sampling</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Sampling\SincPixelFilter.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\SobolDirectionNumbers.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\SobolSampling2D.cpp">
       <Filter>Sampling</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Sampling\StratifiedSampling2D.cpp">
@@ -502,6 +502,21 @@
       <Filter>Painters</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Painters\GerstnerWavePainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\ExpressionPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\RampPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\MappingPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\StochasticTilePainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\ScatterPainter.cpp">
       <Filter>Painters</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Painters\Perlin3DPainter.cpp">
@@ -594,6 +609,9 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp">
       <Filter>Geometry</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\MeshSignalBake.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Agent\AgentChatCodecs.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
@@ -636,6 +654,12 @@
     <ClCompile Include="..\..\..\src\Library\Cst\Cst.cpp">
       <Filter>Cst</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\HairGenerator.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\HairGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\SDFGeometry.cpp">
       <Filter>Geometry</Filter>
     </ClCompile>
@@ -649,6 +673,9 @@
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Importers\GLTFSceneImporter.cpp">
+      <Filter>Importers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Importers\HairFileLoader.cpp">
       <Filter>Importers</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.cpp">
@@ -705,9 +732,6 @@
     <ClCompile Include="..\..\..\src\Library\Intersection\RayTriangleIntersection.cpp">
       <Filter>Intersection</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Intersection\RayTriangleIntersectionWithDisplacement.cpp">
-      <Filter>Intersection</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Objects\CSGObject.cpp">
       <Filter>Object</Filter>
     </ClCompile>
@@ -716,6 +740,33 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Objects\SnapshotLeafClone.cpp">
       <Filter>Object</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HairBSDF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HairMedullaProfile.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HairMedullaProfile_LUTData.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\CoatedBRDF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\CoatedSPF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\FabricBRDF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\FabricSPF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\WeaveBRDF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\WeaveSPF.cpp">
+      <Filter>Materials</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeSPF.cpp">
       <Filter>Materials</Filter>
@@ -750,6 +801,9 @@
     <ClCompile Include="..\..\..\src\Library\Materials\DielectricSPF.cpp">
       <Filter>Materials\Dielectrics</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\RoughDielectricMaterial.cpp">
+      <Filter>Materials\Dielectrics</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.cpp">
       <Filter>Materials\BioSpec</Filter>
     </ClCompile>
@@ -767,6 +821,9 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\LambertianSPF.cpp">
       <Filter>Materials\Lambertian</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\PolishedBRDF.cpp">
+      <Filter>Materials\Polished</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\PolishedSPF.cpp">
       <Filter>Materials\Polished</Filter>
@@ -813,11 +870,23 @@
     <ClCompile Include="..\..\..\src\Library\Materials\DataDrivenBSDF.cpp">
       <Filter>Materials\Data Driven</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\DataDrivenSPF.cpp">
+      <Filter>Materials\Data Driven</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\SheenBRDF.cpp">
       <Filter>Materials</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\SheenSPF.cpp">
       <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo_LUTData.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SchlickDirectionalAlbedo_LUTData.cpp">
+      <Filter>Materials\Schlick</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Scene.cpp">
       <Filter>Scene</Filter>
@@ -882,7 +951,31 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\CstIntrospection.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\PainterIntrospection.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\PainterPreview.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\MaterialPreview.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\SceneEditor\EntityTemplates.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\ReferenceGraph.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\ConnectionLegality.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\OwnershipClosure.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\GraphLayout.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\GraphLayoutSidecar.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp">
@@ -928,6 +1021,9 @@
       <Filter>Rendering</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedRasterizerHelper.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\TimeIndexedMotionBlur.cpp">
       <Filter>Rendering\Rasterizers</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\Rasterizer.cpp">
@@ -999,13 +1095,16 @@
     <ClCompile Include="..\..\..\src\Library\Job.cpp">
       <Filter>Job</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Modifiers\BumpMap.cpp">
-      <Filter>Modifiers</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Modifiers\GlintModifier.cpp">
       <Filter>Modifiers</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Modifiers\ModifierStack.cpp">
+      <Filter>Modifiers</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Modifiers\NormalMap.cpp">
+      <Filter>Modifiers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Modifiers\ReliefModifier.cpp">
       <Filter>Modifiers</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Managers\LightManager.cpp">
@@ -1087,9 +1186,6 @@
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiScriptParser.cpp">
-      <Filter>Parser</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp">
@@ -1228,11 +1324,155 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\RenderETAEstimator.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Animation\KeyframableHelper.cpp">
+      <Filter>Animation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Cameras\CameraUtilities.cpp">
+      <Filter>Camera</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Lights\LightBVH.cpp">
+      <Filter>Non Mesh Lights</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Lights\LightSampler.cpp">
+      <Filter>Non Mesh Lights</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\BurleyNormalizedDiffusionProfile.cpp">
+      <Filter>Materials\BioSpec</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\CompositeEmitter.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\DonnerJensenSkinDiffusionProfile.cpp">
+      <Filter>Materials\BioSpec</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\GGXBRDF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\GGXSPF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HeterogeneousMedium.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HomogeneousMedium.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\IMaterial.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\MultipoleDiffusion.cpp">
+      <Filter>Materials\BioSpec</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SubSurfaceScatteringBSDF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SubSurfaceScatteringSPF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\ReactionDiffusion3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\WaveletNoise3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\ReactionDiffusion3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\Wavelet3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\AOVBuffers.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\BDPTPelRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\BDPTRasterizerBase.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\BDPTSpectralRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\EnvironmentSampler.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\Film.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\FilteredFilm.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\MLTRasterizer.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\MLTSpectralRasterizer.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\OIDNDenoiser.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\PathTracingPelRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\PathTracingSpectralRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizerRGB.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\SplatFilm.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\BDPTIntegrator.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\PathTracingIntegrator.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\SMSShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\SSS\DonnerJensenSkinSSSShaderOp.cpp">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\BSSRDFSampling.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\CompletePathGuide.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\MajorantGrid.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\ManifoldSolver.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Math3D\Math3D.cpp">
+      <Filter>Utilities\Math3D</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\MediumTransport.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\OptimalMISAccumulator.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\PSSMLTSampler.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\PathGuidingField.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Profiling.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\RandomWalkSSS.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\..\..\src\Library\Utilities\BitField.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\BoundingBox.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -1245,6 +1485,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskBuffer.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\LittleEndian.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -1254,10 +1497,10 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\RenderParallelScope.h">
       <Filter>Utilities</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\DynamicProperties.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
 	<ClInclude Include="..\..\..\src\Library\Utilities\FiniteMath.h">
+	  <Filter>Utilities</Filter>
+	</ClInclude>
+	<ClInclude Include="..\..\..\src\Library\Utilities\CheckedSize.h">
 	  <Filter>Utilities</Filter>
 	</ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\GeometricUtilities.h">
@@ -1272,7 +1515,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\IORStackSeeding.h">
       <Filter>Utilities</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\LoadLibrary.h">
+    <ClInclude Include="..\..\..\src\Library\Utilities\GradedIndexMedium.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\math_utils.h">
@@ -1285,9 +1528,6 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\MersenneTwister.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\MRUCache.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.h">
@@ -1356,6 +1596,15 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\SurfaceCurvature.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ExpressionMemo.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomNumbers.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -1381,12 +1630,6 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\SimpleInterpolators.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\SimpleNotification.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\stl_utils.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Transformable.h">
@@ -1506,9 +1749,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ShiftColorOperator.h">
       <Filter>Utilities\Color</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\Color\SmartColor.h">
-      <Filter>Utilities\Color</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\SpectralPacket.h">
       <Filter>Utilities\Color</Filter>
     </ClInclude>
@@ -1516,9 +1756,6 @@
       <Filter>Utilities\Color</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\sRGB.h">
-      <Filter>Utilities\Color</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\Color\WardToneMappingOperator.h">
       <Filter>Utilities\Color</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Threads\Threads.h">
@@ -1776,10 +2013,37 @@
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionFunction2DPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionParamSpec.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\RampPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\MappingPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\StochasticTilePainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\ScatterPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\PainterChannelScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\MultiplyScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\AddScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Atan2ScalarPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\VertexColorPainter.h">
@@ -1851,7 +2115,16 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.h">
       <Filter>Geometry</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\MeshSignalBake.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Polygon.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\HairGenerator.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\HairGeometry.h">
       <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\SDFGeometry.h">
@@ -1912,6 +2185,9 @@
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Importers\GLTFSceneImporter.h">
+      <Filter>Importers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Importers\HairFileLoader.h">
       <Filter>Importers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\ChannelPainter.h">
@@ -1983,6 +2259,45 @@
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeMaterial.h">
       <Filter>Materials</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedBRDF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedLayer.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedSPF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricBRDF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricPresets.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricSPF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\FibreLobeMath.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\WeaveBRDF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\WeaveMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\WeavePresets.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\WeaveSPF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeSPF.h">
       <Filter>Materials</Filter>
     </ClInclude>
@@ -2043,6 +2358,9 @@
     <ClInclude Include="..\..\..\src\Library\Materials\DielectricSPF.h">
       <Filter>Materials\Dielectrics</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\RoughDielectricMaterial.h">
+      <Filter>Materials\Dielectrics</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinData.h">
       <Filter>Materials\BioSpec</Filter>
     </ClInclude>
@@ -2062,6 +2380,9 @@
       <Filter>Materials\Lambertian</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedMaterial.h">
+      <Filter>Materials\Polished</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\PolishedBRDF.h">
       <Filter>Materials\Polished</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedSPF.h">
@@ -2091,6 +2412,9 @@
     <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianSPF.h">
       <Filter>Materials\Ward</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\WardSelectionQuadrature.h">
+      <Filter>Materials\Ward</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\CookTorranceBRDF.h">
       <Filter>Materials\Cook Torrance</Filter>
     </ClInclude>
@@ -2112,6 +2436,12 @@
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickBRDF.h">
       <Filter>Materials\Schlick</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickMasking.h">
+      <Filter>Materials\Schlick</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickDirectionalAlbedo.h">
+      <Filter>Materials\Schlick</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickMaterial.h">
       <Filter>Materials\Schlick</Filter>
     </ClInclude>
@@ -2131,6 +2461,9 @@
       <Filter>Materials\Data Driven</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\DataDrivenMaterial.h">
+      <Filter>Materials\Data Driven</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\DataDrivenSPF.h">
       <Filter>Materials\Data Driven</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Scene.h">
@@ -2202,7 +2535,31 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditor\CstIntrospection.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\PainterIntrospection.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\PainterPreview.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\MaterialPreview.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\EntityTemplates.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\ReferenceGraph.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\ConnectionLegality.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\OwnershipClosure.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\GraphLayout.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\GraphLayoutSidecar.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h">
@@ -2242,6 +2599,9 @@
       <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedRasterizerHelper.h">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\TimeIndexedMotionBlur.h">
       <Filter>Rendering\Rasterizers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\RasterizeDispatchers.h">
@@ -2490,6 +2850,12 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainter.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ISurfaceSignalProvider.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\SurfaceSignalProximity.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainterManager.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
@@ -2625,13 +2991,19 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IWriteBuffer.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Modifiers\BumpMap.h">
-      <Filter>Modifiers</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Modifiers\GlintModifier.h">
       <Filter>Modifiers</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierFrame.h">
+      <Filter>Modifiers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierStack.h">
+      <Filter>Modifiers</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Modifiers\NormalMap.h">
+      <Filter>Modifiers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Modifiers\ReliefModifier.h">
       <Filter>Modifiers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Managers\DeletedCallbackDispatcher.h">
@@ -2733,9 +3105,6 @@
     <ClInclude Include="..\..\..\src\Library\Parsers\IAsciiChunkParser.h">
       <Filter>Parser</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.h">
-      <Filter>Parser</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\StdOutProgress.h">
       <Filter>Parser</Filter>
     </ClInclude>
@@ -2799,6 +3168,9 @@
     <ClInclude Include="..\..\..\src\Library\Shaders\AlphaTestShaderOp.h">
       <Filter>Shaders\Shader Ops</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShaderWiring.h">
+      <Filter>Shaders</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Shaders\SSS\DiffusionApproximationExtinction.h">
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClInclude>
@@ -2836,6 +3208,9 @@
       <Filter>Animation</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Animation\Timeline.h">
+      <Filter>Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Animation\TimeIndexedView.h">
       <Filter>Animation</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\IrradianceCache.h">
@@ -2957,6 +3332,15 @@
     <ClInclude Include="..\..\..\src\Library\Materials\GGXSPF.h">
       <Filter>Materials</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HairBSDF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HairMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HairMedullaProfile.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\CharlieSheen.h">
       <Filter>Materials</Filter>
     </ClInclude>
@@ -2967,6 +3351,9 @@
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\SheenSPF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo.h">
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.h">
@@ -3203,6 +3590,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\BSSRDFSampling.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ExteriorIndexCache.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGB.h">
       <Filter>Utilities\Color</Filter>
     </ClInclude>
@@ -3210,9 +3600,6 @@
       <Filter>Utilities\Color</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\CompletePathGuide.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\CoreUtils.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\EquiangularSampler.h">
@@ -3258,9 +3645,6 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\MortonCode.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\NullScatteringTracker.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\OidnConfig.h">

@@ -402,7 +402,7 @@ namespace FireProductionRoundoffWalker
 	{
 		inline double NextUp(const double value)
 		{
-			return std::nextafter(value,std::numeric_limits<double>::infinity());
+			return std::nextafter(value,std::numeric_limits<double>::infinity()); // HYGIENE-OK: intentional +inf bound; compiled with -fno-fast-math (build/make/rise/Makefile fire test rules)
 		}
 
 		inline double RoundRadius(const double magnitude)

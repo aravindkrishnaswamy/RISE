@@ -51,6 +51,8 @@
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Interfaces/IRasterImageReader.h"
 #include "../src/Library/RasterImages/RasterImage.h"
+#include "../src/Library/RasterImages/PNGWriter.h"
+#include "../src/Library/Rendering/DisplayTransform.h"
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
@@ -71,6 +73,7 @@
 	#include <unistd.h>			// getpid()
 #endif
 #include <vector>
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -78,7 +81,11 @@ using namespace RISE::Agent;
 static int g_pass = 0, g_fail = 0;
 static void Check( bool c, const std::string& w )
 {
-	if( c ) ++g_pass;
+	if( c ) {
+		++g_pass;
+		const char* marker=std::getenv("RISE_RED_PROVE_MARKER");
+		if(marker && w.find(marker)!=std::string::npos)std::printf("  PASS: %s\n",w.c_str());
+	}
 	else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); }
 }
 
@@ -176,8 +183,7 @@ static const char* const kScene =
 // Write `text` to a temp file and return its path (or "" on failure).
 static std::string WriteTemp( const char* name, const std::string& text )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
@@ -225,6 +231,50 @@ static std::string Req( double id, const std::string& method, const JsonValue& p
 	r.set( "method", JsonValue::MakeString( method ) );
 	r.set( "params", params );
 	return JsonSerialize( r );
+}
+
+static void TestPNGEncodeFailureBoundaries()
+{
+#ifndef NO_PNG_SUPPORT
+	struct FailureScope {
+		bool previous;
+		explicit FailureScope(bool enabled):previous(Implementation::ForTest_SetPNGWriteFailureAfterHeader(enabled)){}
+		~FailureScope(){Implementation::ForTest_SetPNGWriteFailureAfterHeader(previous);}
+	};
+	FailureScope ordinary(false);
+	const RISEColor color(.25,.5,.75,1);
+	const std::vector<RISEColor> pixels(4,color);
+	auto* image=new RISERasterImage(2,2,color);
+	auto* sink=new InMemoryRasterizerOutput();
+	sink->SetOutputColorSpace(eColorSpace_Rec709RGB_Linear);sink->OutputImage(*image,nullptr,0);
+	const char* labels[]={"sink identity","sink display wrapper","sink downscaled","session passthrough"};
+	for(unsigned int mode=0;mode<4;++mode) {
+		sink->SetDisplayTransform(mode==1?1.0:0.0,eDisplayTransform_None);
+		const auto encode=[&]() {
+			if(mode==3)return AgentSession::ForTest_EncodeLinearPassthroughPng(pixels,2,2);
+			if(mode==2){unsigned int w=0,h=0;return sink->ToPngDownscaled(1,w,h);}
+			return sink->ToPng();
+		};
+		bool escaped=false;std::vector<unsigned char> failed;
+		{
+			FailureScope fault(true);
+			try{failed=encode();}catch(...){escaped=true;}
+		}
+		const std::string label=std::string("agent PNG failure ")+labels[mode];
+		Check(!escaped && failed.empty(),label+": codec exception is contained and partial PNG bytes are discarded");
+		std::vector<unsigned char> healthy;bool retryEscaped=false;
+		try{healthy=encode();}catch(...){retryEscaped=true;}
+		DecodedPng decoded;const bool opened=DecodePng(healthy,decoded);
+		const unsigned int edge=mode==2?1:2;
+		bool exact=!retryEscaped && opened && decoded.width==edge && decoded.height==edge && decoded.pixels.size()==edge*edge;
+		const DecodedPixel expected=mode==1?DecodedPixel{127,255,255,255}:DecodedPixel{63,127,191,255};
+		if(exact)for(const auto& pixel:decoded.pixels)exact &= pixel==expected;
+		Check(exact,label+": healthy retry preserves every independently expected RGBA pixel");
+	}
+	sink->release();image->release();
+#else
+	std::printf("SKIP: agent PNG failure boundaries require PNG support\n");
+#endif
 }
 
 static void TestPerceptionAtlasColorSpace()
@@ -456,9 +506,22 @@ static void TestBDPTPathGuidingTrainingDoesNotContaminatePerception()
 	std::remove( scenePath.c_str() );
 }
 
-int main()
+int main(int argc,char** argv)
 {
+	if(argc==2 && std::string(argv[1])=="--png-failure-only") {
+		TestPNGEncodeFailureBoundaries();
+		std::printf("=== AgentFirstSliceTest PNG failures: %d passed, %d failed ===\n",g_pass,g_fail);
+		return g_fail==0?0:1;
+	}
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentFirstSliceTest (Facet 5 slice 0c: JSON-RPC end-to-end loop) ===\n" );
+	TestPNGEncodeFailureBoundaries();
 	TestPerceptionAtlasColorSpace();
 	TestAccurateHWSSGuideAfterPrimaryMediumScatter();
 	TestAccurateMLTFallbackGuideThroughTransparency();
@@ -574,6 +637,62 @@ int main()
 		const std::string doc2 = env2.get( "result" ).get( "document" ).asString();
 		Check( doc2.find( "0.9 0.1 0.1" ) != std::string::npos,
 		       "read_document after propose_patch carries the new value (head mutated through the loop)" );
+	}
+
+	//----------------------------------------------------------------------
+	// propose_patch `occurrence` (1b, 2026-08-25) -- the WIRE round-trip:
+	// a repeatable `joint` param on a skeleton_geometry chunk, patched by
+	// occurrence over the RAW JSON-RPC surface (not the C++ AgentSetPatch
+	// struct directly -- AgentChunkCrudTest.cpp::TestProposePatchOccurrence
+	// covers that half; this proves the JSON param actually parses and
+	// reaches it).
+	//----------------------------------------------------------------------
+	std::printf( "[propose_patch] `occurrence` addresses one line of a repeatable param over JSON-RPC\n" );
+	{
+		JsonValue insParams = JsonValue::MakeObject();
+		insParams.set( "chunkText", JsonValue::MakeString(
+			"skeleton_geometry\n{\n\tname occ_wire_skel\n"
+			"\tjoint root none 0 0 0 0.11\n"
+			"\tjoint mid root 0 1 0 0.12\n"
+			"\tjoint tip mid 0 2 0 0.13\n"
+			"}\n" ) );
+		const std::string insResp = rpc.HandleLine( Req( 100, "insert_chunk", insParams ) );
+		JsonValue insEnv = ParseResponse( insResp, 100 );
+		Check( insEnv.get( "result" ).get( "applied" ).asBool(),
+		       "occurrence wire test: skeleton_geometry fixture inserts cleanly" );
+
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "target",     JsonValue::MakeString( "occ_wire_skel" ) );
+		params.set( "kind",       JsonValue::MakeString( "skeleton_geometry" ) );
+		params.set( "param",      JsonValue::MakeString( "joint" ) );
+		params.set( "value",      JsonValue::MakeString( "mid root 0 1 0 0.999" ) );
+		params.set( "occurrence", JsonValue::MakeNumber( 1.0 ) );   // 0=root, 1=mid, 2=tip
+		const std::string resp = rpc.HandleLine( Req( 101, "propose_patch", params ) );
+		JsonValue env = ParseResponse( resp, 101 );
+		Check( env.get( "result" ).get( "applied" ).asBool(),
+		       "occurrence wire test: occurrence-addressed patch applies" );
+
+		const std::string resp2 = rpc.HandleLine( Req( 102, "read_document", JsonValue::MakeObject() ) );
+		JsonValue env2 = ParseResponse( resp2, 102 );
+		const std::string doc2 = env2.get( "result" ).get( "document" ).asString();
+		Check( doc2.find( "joint mid root 0 1 0 0.999" ) != std::string::npos,
+		       "occurrence wire test: joint `mid` (occurrence 1) carries the new value" );
+		Check( doc2.find( "joint root none 0 0 0 0.11" ) != std::string::npos,
+		       "occurrence wire test: joint `root` (occurrence 0) is UNTOUCHED" );
+		Check( doc2.find( "joint tip mid 0 2 0 0.13" ) != std::string::npos,
+		       "occurrence wire test: joint `tip` (occurrence 2) is UNTOUCHED" );
+
+		// A non-integer `occurrence` is a wire-shape error, not a silent
+		// coercion -- same "Invalid params" idiom baseHeadVersion's own
+		// malformed-object case uses.
+		JsonValue badParams = JsonValue::MakeObject();
+		badParams.set( "target",     JsonValue::MakeString( "occ_wire_skel" ) );
+		badParams.set( "param",      JsonValue::MakeString( "joint" ) );
+		badParams.set( "value",      JsonValue::MakeString( "mid root 0 1 0 0.5" ) );
+		badParams.set( "occurrence", JsonValue::MakeNumber( 1.5 ) );
+		const std::string badResp = rpc.HandleLine( Req( 103, "propose_patch", badParams ) );
+		JsonValue badEnv = ParseResponse( badResp, 103 );
+		Check( badEnv.has( "error" ), "occurrence wire test: a non-integer occurrence is a JSON-RPC error" );
 	}
 
 	//----------------------------------------------------------------------
@@ -770,13 +889,17 @@ int main()
 
 	//----------------------------------------------------------------------
 	// Preview-render wire tests (F5 the cheap multi-angle observe loop):
-	// width/height clamping [16,512], camera param shape validation, and
-	// read_image maxEdge clamping [16,1024].  All driven through the SAME
-	// live dispatcher `rpc` used above, so the head carries whatever the
-	// coherence block left it at (irrelevant here -- we only check dims /
-	// param-shape behaviour, not pixel content).
+	// width/height clamping [16,256] (R1b, 2026-08-09: tightened from
+	// [16,512] -- an agent-surface cost cap, see AgentSession::
+	// kAgentSurfaceMaxRenderEdge's doc), camera param shape validation, and
+	// read_image maxEdge clamping [16,1024] (UNCHANGED -- imageMaxEdge only
+	// downscales the returned PNG, it never bounds render cost, so R1b left
+	// it alone).  All driven through the SAME live dispatcher `rpc` used
+	// above, so the head carries whatever the coherence block left it at
+	// (irrelevant here -- we only check dims / param-shape behaviour, not
+	// pixel content).
 	//----------------------------------------------------------------------
-	std::printf( "[preview-render wire] width/height clamp to [16,512]\n" );
+	std::printf( "[preview-render wire] width/height clamp to [16,256]\n" );
 	{
 		// Below the floor: 4x4 requested -> clamped to 16x16 (never rejected).
 		JsonValue params = JsonValue::MakeObject();
@@ -794,17 +917,26 @@ int main()
 		       "previewHeight echoes the clamped 16" );
 	}
 	{
-		// Above the ceiling: 9999x9999 requested -> clamped to 512x512.
+		// Above the ceiling: 9999x9999 requested -> clamped to 256x256
+		// (R1b, 2026-08-09: tightened from 512 -- see AgentSession::
+		// kAgentSurfaceMaxRenderEdge's doc).  The result also carries an
+		// `agentRenderCap` fact naming the caller's original 9999x9999
+		// request -- see AgentRpc.cpp's BuildAgentRenderCapJson.
 		JsonValue params = JsonValue::MakeObject();
 		params.set( "width",  JsonValue::MakeNumber( 9999.0 ) );
 		params.set( "height", JsonValue::MakeNumber( 9999.0 ) );
 		const std::string resp = rpc.HandleLine( Req( 31, "render", params ) );
 		JsonValue env = ParseResponse( resp, 31 );
 		Check( env.has( "result" ), "render(width=9999) returns a success result (clamped, not rejected)" );
-		Check( env.get( "result" ).get( "width" ).asNumber() == 512.0,
-		       "render(width=9999) is CLAMPED DOWN to the ceiling (512)" );
-		Check( env.get( "result" ).get( "height" ).asNumber() == 512.0,
-		       "render(height=9999) is CLAMPED DOWN to the ceiling (512)" );
+		Check( env.get( "result" ).get( "width" ).asNumber() == 256.0,
+		       "render(width=9999) is CLAMPED DOWN to the ceiling (256)" );
+		Check( env.get( "result" ).get( "height" ).asNumber() == 256.0,
+		       "render(height=9999) is CLAMPED DOWN to the ceiling (256)" );
+		const JsonValue& cap = env.get( "result" ).get( "agentRenderCap" );
+		Check( cap.isObject() && cap.get( "resolutionCapped" ).asBool(),
+		       "R1b: an explicit over-ceiling request reports the agentRenderCap fact" );
+		Check( cap.get( "requestedWidth" ).asNumber( -1 ) == 9999.0 && cap.get( "requestedHeight" ).asNumber( -1 ) == 9999.0,
+		       "R1b: the fact echoes the caller's original (pre-clamp) 9999x9999 request" );
 	}
 	{
 		// width WITHOUT height (ambiguous pairing) -> no override applied;

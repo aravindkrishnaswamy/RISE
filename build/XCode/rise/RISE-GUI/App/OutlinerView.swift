@@ -1,19 +1,30 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  OutlinerView.swift - Top of the right panel: a per-category tree
-//    of the scene's entities (Rasterizer / Cameras / Lights / Objects
-//    / Materials / Media / Output Settings / Animation / Variants).
+//  OutlinerView.swift - Top of the right panel: a per-category
+//    RECURSIVE TREE over the scene's AUTHORED graph (Rasterizer /
+//    Cameras / Lights / Objects / Materials / Painters / Media /
+//    Geometry / Output Settings / Animation / Variants).
 //
-//    Replaces the old stacked nine-section accordion's navigation
-//    role.  Clicking a category header toggles that category's
-//    expansion; clicking a child row selects it.  Both actions route
-//    through the SAME RISEViewportBridge selection/expansion calls
-//    the pre-redesign accordion used (RISEViewportBridge is the
-//    single source of truth for "what's expanded" and "what's
-//    selected" so viewport click-to-pick and outliner clicks stay in
-//    sync automatically) — see PropertiesPanel.swift, which reads the
-//    bridge's PRIMARY selection (selectionCategory / selectionName)
-//    to drive the inspector below this view.
+//    87 §5 step 4b.  This used to be a hand-rolled TWO-LEVEL list
+//    (category header + one flat row per entity).  It now draws
+//    whatever depth the authored graph has, over the generic
+//    node-children API 4a added to SceneEditController: an Object with
+//    parts has its parts nested under it, and a category whose entities
+//    have no hierarchy is N ROOTS WITH NO CHILDREN, so there is no
+//    per-category branch anywhere below — the flat categories render
+//    through the identical code path they always did.
+//
+//    Clicking a category header toggles that category's expansion;
+//    clicking a child row selects it; clicking a child row's disclosure
+//    glyph expands that node.  The first two route through the SAME
+//    RISEViewportBridge selection/expansion calls the pre-redesign
+//    accordion used (the bridge is the single source of truth for
+//    "what's expanded" and "what's selected" so viewport click-to-pick
+//    and outliner clicks stay in sync automatically) — see
+//    PropertiesPanel.swift, which reads the bridge's PRIMARY selection
+//    (selectionCategory / selectionName) to drive the inspector below
+//    this view.  Per-NODE expansion is the one piece of state the
+//    bridge does not model, and is held here (see `expandedPaths`).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -64,10 +75,223 @@ private let kOutlinerCategories: [OutlinerCategoryDef] = [
     OutlinerCategoryDef(title: "Variants",        category: .sceneVariant, tag: "VAR", tagColor: Theme.catVariant),
 ]
 
+// MARK: - Tree model
+
+/// One row of a category's authored tree, already resolved to the two
+/// things the view needs that the bridge does not carry: the row's
+/// DEPTH and its expand-state PATH KEY.
+///
+/// WHY A SWIFT-SIDE VALUE COPY PER REFRESH.  SceneEditController hands
+/// out generation-tagged node HANDLES that are valid only WITHIN ONE
+/// WALK against the generation observed — an incremental edit
+/// republishes a whole category's tree and refuses every outstanding
+/// handle, and for Geometry that happens on every tick of a radius drag
+/// (SceneEditController.h, "HANDLE CHURN").  So no handle, and no index
+/// into the bridge's array, is ever parked across an event-loop turn:
+/// one `categoryTree(_:)` call rebuilds this whole array and the view
+/// draws only that.  Selection is BY NAME, which survives a republish.
+private struct OutlinerNode {
+    /// The entity name — the row's label AND the identity passed to
+    /// `setSelection`, `revealEntityInSceneText`, `duplicateSelectedOrNamed`
+    /// and `removeEntity`.  The bridge applies the same `NamedViewDisplayName`
+    /// decode the flat `categoryEntities(_:)` path applies, and that decode
+    /// is a UTF-8→String conversion rather than a cosmetic transform, so
+    /// there is no display/raw split to keep apart here.
+    let name: String
+    /// Expand-state key AND the row's `ForEach` id: this node's ANCESTRY
+    /// within its category, plus a disambiguator when a sibling shares its
+    /// name.  See `outlinerPathKey` for the encoding, for why a name key is
+    /// wrong, and for the honest scope of the injectivity claim.
+    let path: String
+    /// 0 for a root; the nesting level the row is drawn at.
+    let depth: Int
+    /// Whether the node has children — drives the disclosure glyph.  A
+    /// childless node draws no glyph at all, which is exactly what every
+    /// row of a flat category is.
+    let hasChildren: Bool
+}
+
+/// The key a category's ROOTS extend.  Every node's key starts here, so the
+/// category qualifies the whole tree (see `outlinerPathKey`).
+private func outlinerPathRoot(_ category: RISEViewportCategory) -> String {
+    return "\(category.rawValue)"
+}
+
+/// Extend a PARENT's key by one component, naming this node.
+///
+/// 87 §5 step 4 keys expand state on the tree PATH, NOT on the node
+/// name, and both halves of that matter:
+///
+///  - A NAME KEY WOULD COLLIDE.  A name is unique only within one
+///    manager, and this view draws eleven categories side by side — a
+///    Material and an Object may both be called `glass`.  One
+///    `Set<String>` keyed by bare name would tie unrelated rows'
+///    disclosure state together, so the key is category-qualified and
+///    then ancestry-qualified.
+///  - A PATH KEY IS WHAT SURVIVES A REFRESH.  The array is rebuilt from
+///    scratch on every epoch bump, so any key derived from a position —
+///    a node index, a row number — names a different node afterwards.
+///    Ancestry is stable across a rebuild for exactly the same reason
+///    selection is: it is made of names.
+///
+/// The encoding is LENGTH-PREFIXED (`<byteCount>:<name>` per component)
+/// rather than separator-joined, because names may legitimately contain
+/// any separator one might pick — 87 §5 step 3 records that an author
+/// may write `name my.object`, and step 3's instanced descendants are
+/// named `I.X` by construction.
+///
+/// NAMES ALONE ARE NOT INJECTIVE OVER NODES, which is why `occurrence` is
+/// here and not an afterthought.  `RISEViewportCategoryPainter` is a UNION
+/// of two managers (colour + physical-scalar, CLAUDE.md's IScalarPainter
+/// split) and `CollectPainterUnionEntries` deliberately does NOT dedup, so
+/// `uniformcolor_painter { name DUP }` + `scalar_painter { name DUP }` are
+/// two DIFFERENT, separately-addressable entities that arrive as two
+/// same-named sibling roots (SceneGraphNodeApiTest case T).  A key made of
+/// names alone gives them ONE string — and `ForEach(rows, id: \.path)` with
+/// a duplicated id is undefined behaviour in SwiftUI, so one of the two rows
+/// would simply not be drawn while the header counted both.  So the k-th
+/// node to claim a given `<parent>/<len>:<name>` stem gets `#k` appended
+/// (k > 0).  That suffix cannot be confused with part of a name: the length
+/// prefix already fixes where the name ends.
+///
+/// The counter is per-STEM, so it is per-sibling-list (a stem embeds the
+/// parent's whole key, which is node-unique).  DELIBERATELY not a plain
+/// sibling ordinal: a bare ordinal would re-key every later sibling when an
+/// unrelated one is inserted ahead of it, silently collapsing their
+/// disclosure state.  Only rows that actually share a name with an earlier
+/// sibling carry a suffix, so the common case is insertion-stable.
+///
+/// HONEST SCOPE OF THE INJECTIVITY CLAIM: the composition is injective over
+/// the key BYTES.  Keys are compared as Swift `String`s, which compare by
+/// Unicode CANONICAL EQUIVALENCE, so two byte-distinct but canonically
+/// equivalent names of equal UTF-8 length — `q` + U+0307 + U+0323 against
+/// `q` + U+0323 + U+0307, five bytes either way — still produce keys Swift
+/// treats as equal, and their two nodes would share disclosure state.  So
+/// the guarantee is byte-injectivity, NOT `String`-injectivity.  Exotic, and
+/// pre-existing — the flat `ForEach(children, id: \.self)` this replaced
+/// compared bare names the same way — so it is recorded here rather than
+/// claimed away; a byte-array key type would not earn its cost.
+private func outlinerPathKey(base: String,
+                             name: String,
+                             occurrence: inout [String: Int]) -> String {
+    let stem = base + "/\(name.utf8.count):\(name)"
+    let seen = occurrence[stem, default: 0]
+    occurrence[stem] = seen + 1
+    return seen == 0 ? stem : stem + "#\(seen)"
+}
+
+/// Flatten one category's tree into DEPTH-FIRST display order.
+///
+/// Iterative, with an explicit stack, for the same reason
+/// `SceneEditController::BuildAuthoredTree` is: a pathologically deep
+/// parent chain must not be able to overflow the stack in the UI layer
+/// after the core went to the trouble of not overflowing in its own.
+///
+/// Roots and each child list are consumed IN THE ORDER THE BRIDGE GIVES
+/// THEM — that order is 87 §2's "child order for display comes from
+/// declaration order" and is not re-sorted here.
+///
+/// The stack carries the parent's ROW INDEX, not a copy of its ancestry:
+/// a key is built by appending ONE component to the parent's already-built
+/// key, which is still in `out` and cannot move (the array only grows).
+/// Ancestry copies made this O(depth²) in both time AND live stack memory
+/// on a deep chain — SceneGraphNodeApiTest case E4 pins 4096 levels as
+/// supported.  Now the stack is O(depth) and the total key-building work
+/// equals the size of the keys themselves, which path keying makes
+/// unavoidable.
+private func outlinerFlatten(_ tree: RISESceneTree,
+                             category: RISEViewportCategory) -> [OutlinerNode] {
+    let bridgeNodes = tree.nodes
+    var out: [OutlinerNode] = []
+    out.reserveCapacity(bridgeNodes.count)
+
+    // (index, depth, parent's row in `out`; -1 for a root).  Reversed pushes
+    // so the stack pops siblings in declaration order.
+    var stack: [(index: Int, depth: Int, parentRow: Int)] = []
+    for root in tree.roots.reversed() {
+        stack.append((Int(truncating: root), 0, -1))
+    }
+    var visited = Set<Int>()
+    // Same-name-sibling disambiguation; see `outlinerPathKey`.  One entry per
+    // emitted row, so it is the same order of memory as `out` itself.
+    var occurrence: [String: Int] = [:]
+
+    while let top = stack.popLast() {
+        guard top.index >= 0 && top.index < bridgeNodes.count else { continue }
+        // The core guarantees every node is reached exactly once (pinned by
+        // SceneGraphNodeApiTest case Y); this only stops a hypothetical
+        // malformed tree from spinning here rather than failing visibly.
+        guard visited.insert(top.index).inserted else { continue }
+
+        let node = bridgeNodes[top.index]
+        let base = top.parentRow >= 0 ? out[top.parentRow].path : outlinerPathRoot(category)
+        let row = out.count
+        out.append(OutlinerNode(name: node.name,
+                                path: outlinerPathKey(base: base,
+                                                      name: node.name,
+                                                      occurrence: &occurrence),
+                                depth: top.depth,
+                                hasChildren: !node.children.isEmpty))
+        for child in node.children.reversed() {
+            stack.append((Int(truncating: child), top.depth + 1, row))
+        }
+    }
+
+    // TOTALITY, defensively.  `BuildAuthoredTree`'s contract is that nothing
+    // is ever dropped — a dangling parent is rooted and a cycle is broken so
+    // that every node stays visible — and case Y pins that the roots+children
+    // walk really does reach all of them.  If that ever stopped holding, an
+    // entity would silently VANISH from the outliner, which reads as a
+    // deleted object rather than as a bug.  So anything the walk missed is
+    // shown as a root instead of being lost.
+    // A salvaged row keys as a root, and goes through the SAME `occurrence`
+    // counter as the walk did — so if it collides with a real root's name it
+    // gets a `#k` suffix rather than a duplicate `ForEach` id.
+    if visited.count != bridgeNodes.count {
+        for index in bridgeNodes.indices where !visited.contains(index) {
+            let node = bridgeNodes[index]
+            out.append(OutlinerNode(name: node.name,
+                                    path: outlinerPathKey(base: outlinerPathRoot(category),
+                                                          name: node.name,
+                                                          occurrence: &occurrence),
+                                    depth: 0,
+                                    hasChildren: false))
+        }
+    }
+    return out
+}
+
+/// The rows actually drawn: every node whose ancestors are all expanded.
+///
+/// A single forward pass over the depth-first array — when a collapsed
+/// node is emitted, everything deeper than it is skipped until the depth
+/// comes back down.  No recursion, and no per-row ancestor walk.
+private func outlinerVisibleRows(_ nodes: [OutlinerNode],
+                                 expanded: Set<String>) -> [OutlinerNode] {
+    var out: [OutlinerNode] = []
+    out.reserveCapacity(nodes.count)
+    var hiddenBelowDepth: Int?
+    for node in nodes {
+        if let depth = hiddenBelowDepth {
+            if node.depth > depth { continue }
+            hiddenBelowDepth = nil
+        }
+        out.append(node)
+        if node.hasChildren && !expanded.contains(node.path) {
+            hiddenBelowDepth = node.depth
+        }
+    }
+    return out
+}
+
 // MARK: - OutlinerView
 
 struct OutlinerView: View {
-    let bridge: RISEViewportBridge
+    /// Weak: RenderViewModel owns the live bridge for the whole scene
+    /// lifetime, so a nil read means the scene was torn down and this
+    /// panel is leaving the tree — the last-drawn rows stand until it
+    /// does, which is what the user already sees.
+    weak var bridge: RISEViewportBridge?
     @Binding var refreshTrigger: Int
     // "Reveal in scene file" context-menu item routes through the shared
     // view model (same bridge call PropertiesPanel's ⌗ chip uses) —
@@ -75,11 +299,29 @@ struct OutlinerView: View {
     // it up, since both live under ContentView's rightPanel.
     @EnvironmentObject var viewModel: RenderViewModel
 
-    @State private var entitiesByCategory: [Int: [String]] = [:]
+    /// Per-category authored tree, depth-first, rebuilt on every epoch bump.
+    @State private var nodesByCategory: [Int: [OutlinerNode]] = [:]
     @State private var activeByCategory: [Int: String] = [:]
     @State private var expandedByCategory: [Int: Bool] = [:]
+    /// Per-NODE disclosure state, keyed by tree PATH (87 §5 step 4).
+    ///
+    /// Held here rather than in the bridge because the bridge models
+    /// expansion per CATEGORY only (`isSectionExpanded(for:)` /
+    /// `collapseSection(for:)`, which PropertiesPanel also reads) and has no
+    /// per-node concept.  Keeping it as view state is what makes it survive a
+    /// refresh: the node array is thrown away and rebuilt, this is not.
+    ///
+    /// Not pruned when a node disappears.  A stale key costs one string and
+    /// re-creating the same node under the same parent restores its
+    /// disclosure state, which is the behaviour a user expects from an undo.
+    @State private var expandedPaths: Set<String> = []
     @State private var selectionCategory: RISEViewportCategory = .none
-    @State private var selectionName: String = ""
+    /// The ROW the selection highlights.  Equal to `selectionName` for every
+    /// ordinary entity; for a SYNTHESIZED instancing entry (`I[1,0]`, which
+    /// is what a viewport pick returns) it is the instancing CHUNK's row,
+    /// because that is the row this outliner actually draws.  Matching
+    /// `selectionName` here highlighted nothing at all for such a pick.
+    @State private var selectionRowName: String = ""
     @State private var lastEpoch: UInt = 0
 
     var body: some View {
@@ -90,7 +332,6 @@ struct OutlinerView: View {
                     ForEach(kOutlinerCategories, id: \.category.rawValue) { cat in
                         categoryRow(cat)
                         if expandedByCategory[cat.category.rawValue] == true {
-                            let children = entitiesByCategory[cat.category.rawValue] ?? []
                             // Rasterizer/Film rows have no chunk address
                             // (registry/preset names, not chunk names) —
                             // the SAME guard that gates "Reveal in scene
@@ -99,17 +340,23 @@ struct OutlinerView: View {
                             let canMutate = viewModel.isSceneEditableForAgents
                                 && cat.category != .rasterizer
                                 && cat.category != .film
-                            ForEach(children, id: \.self) { child in
+                            let rows = outlinerVisibleRows(nodesByCategory[cat.category.rawValue] ?? [],
+                                                           expanded: expandedPaths)
+                            ForEach(rows, id: \.path) { node in
                                 OutlinerChildRow(
-                                    name: child,
-                                    isSelected: selectionCategory == cat.category && selectionName == child,
-                                    isActive: isActiveEntity(cat: cat, name: child),
+                                    name: node.name,
+                                    depth: node.depth,
+                                    hasChildren: node.hasChildren,
+                                    isExpanded: expandedPaths.contains(node.path),
+                                    isSelected: selectionCategory == cat.category && selectionRowName == node.name,
+                                    isActive: isActiveEntity(cat: cat, name: node.name),
                                     canReveal: canMutate,
                                     canMutate: canMutate,
-                                    onSelect: { selectChild(cat: cat, name: child) },
-                                    onReveal: { viewModel.revealEntityInSceneText(category: cat.category, name: child) },
-                                    onDuplicate: { viewModel.duplicateSelectedOrNamed(category: cat.category, name: child) },
-                                    onDelete: { viewModel.removeEntity(category: cat.category, name: child) }
+                                    onToggle: { toggleNode(path: node.path) },
+                                    onSelect: { selectChild(cat: cat, name: node.name) },
+                                    onReveal: { viewModel.revealEntityInSceneText(category: cat.category, name: node.name) },
+                                    onDuplicate: { viewModel.duplicateSelectedOrNamed(category: cat.category, name: node.name) },
+                                    onDelete: { viewModel.removeEntity(category: cat.category, name: node.name) }
                                 )
                             }
                         }
@@ -151,13 +398,20 @@ struct OutlinerView: View {
         .padding(.bottom, 6)
     }
 
+    /// Every node at every depth, across every category.
+    ///
+    /// Counts AUTHORED nodes, which for Objects is no longer the same as the
+    /// flat entity count: 87 step 3's instancing expansions fold into the
+    /// chunk that produced them, so an 8×8 array counts 1 here and 64 in the
+    /// render list.  That is the point of drawing the authored graph — the
+    /// count now matches what the author can actually edit.
     private var totalEntityCount: Int {
-        entitiesByCategory.values.reduce(0) { $0 + $1.count }
+        nodesByCategory.values.reduce(0) { $0 + $1.count }
     }
 
     private func categoryRow(_ cat: OutlinerCategoryDef) -> some View {
         let expanded = expandedByCategory[cat.category.rawValue] ?? false
-        let count = entitiesByCategory[cat.category.rawValue]?.count ?? 0
+        let count = nodesByCategory[cat.category.rawValue]?.count ?? 0
         // Entity-creation slice: templates are queried live (cheap —
         // the bridge call is a couple of small C-API round-trips) so
         // the "+" affordance disappears automatically for categories
@@ -216,6 +470,7 @@ struct OutlinerView: View {
     }
 
     private func toggleCategory(_ cat: OutlinerCategoryDef) {
+        guard let bridge else { return }
         let expanded = expandedByCategory[cat.category.rawValue] ?? false
         if expanded {
             bridge.collapseSection(for: cat.category)
@@ -227,7 +482,18 @@ struct OutlinerView: View {
         refreshTrigger &+= 1
     }
 
+    /// Per-node disclosure.  Purely local — see `expandedPaths` for why the
+    /// bridge is not involved, and why nothing needs to be re-read here.
+    private func toggleNode(path: String) {
+        if expandedPaths.contains(path) {
+            expandedPaths.remove(path)
+        } else {
+            expandedPaths.insert(path)
+        }
+    }
+
     private func selectChild(cat: OutlinerCategoryDef, name: String) {
+        guard let bridge else { return }
         _ = bridge.setSelection(cat.category, name: name)
         refreshTrigger &+= 1
     }
@@ -239,8 +505,8 @@ struct OutlinerView: View {
     /// on chunk CRUD too, so the non-forced path also catches structural
     /// changes — including agent-driven ones.)
     private func reload(force: Bool = false) {
+        guard let bridge else { return }
         selectionCategory = bridge.selectionCategory
-        selectionName = bridge.selectionName
 
         var freshExpanded: [Int: Bool] = [:]
         var freshActive: [Int: String] = [:]
@@ -251,18 +517,32 @@ struct OutlinerView: View {
         expandedByCategory = freshExpanded
         activeByCategory = freshActive
 
-        // Entity lists only need re-pulling when the scene structure
-        // actually changed (add/remove) — cheap epoch check mirrors
-        // the pre-redesign accordion's caching.
+        // Trees only need re-pulling when the scene structure actually
+        // changed (add/remove/re-parent) — cheap epoch check mirrors the
+        // pre-redesign accordion's caching.
+        //
+        // A DRAG-TO-REPARENT gesture, when one is added, must bump the scene
+        // epoch itself: re-parenting changes the TREE without changing any
+        // category's entity LIST, so nothing else in the pipeline would
+        // notice and this short-circuit would keep the old shape on screen.
+        // SceneEditController.h says the same thing at ReadTree.
         let epoch = UInt(bridge.sceneEpoch)
         if force || epoch != lastEpoch {
             lastEpoch = epoch
-            var fresh: [Int: [String]] = [:]
+            var fresh: [Int: [OutlinerNode]] = [:]
             for cat in kOutlinerCategories {
-                fresh[cat.category.rawValue] = bridge.categoryEntities(cat.category)
+                fresh[cat.category.rawValue] = outlinerFlatten(bridge.categoryTree(cat.category),
+                                                               category: cat.category)
             }
-            entitiesByCategory = fresh
+            nodesByCategory = fresh
         }
+
+        // AFTER the tree pull, deliberately.  `selectionRowName` answers
+        // against the tree the core has PUBLISHED (it does not refresh one --
+        // see SceneEditController::ResolveTreeRowName), so reading it before
+        // the pull above would resolve against the previous shape for one
+        // cycle whenever an edit changed the tree and the selection together.
+        selectionRowName = bridge.selectionRowName
     }
 }
 
@@ -270,6 +550,13 @@ struct OutlinerView: View {
 
 private struct OutlinerChildRow: View {
     let name: String
+    /// Nesting level; 0 is a root of its category.  Leaf rows at depth 0
+    /// land at exactly the x-position the pre-4b flat rows did (the
+    /// disclosure gutter is carved out of the old 30pt leading inset, not
+    /// added to it), so a flat category looks unchanged.
+    let depth: Int
+    let hasChildren: Bool
+    let isExpanded: Bool
     let isSelected: Bool
     let isActive: Bool
     /// Mirrors `RenderViewModel.isSceneEditableForAgents` — gates the
@@ -287,6 +574,7 @@ private struct OutlinerChildRow: View {
     /// directly in the menu) so a future divergence between the two
     /// gates doesn't require touching every call site.
     let canMutate: Bool
+    let onToggle: () -> Void
     let onSelect: () -> Void
     let onReveal: () -> Void
     let onDuplicate: () -> Void
@@ -294,8 +582,37 @@ private struct OutlinerChildRow: View {
 
     @State private var hovering = false
 
+    /// 15 + 8 (glyph) + 7 (HStack spacing) puts a depth-0 name at x = 30,
+    /// which is where every child row sat before this view became a tree.
+    private var leadingInset: CGFloat { 15 + CGFloat(depth) * 13 }
+
     var body: some View {
         HStack(spacing: 7) {
+            // Same ▸/▾ glyph the category header uses, so one visual
+            // language covers both levels of disclosure.  Childless rows
+            // reserve the width and draw nothing, which keeps names in a
+            // column instead of jittering by whether a node has parts.
+            Group {
+                if hasChildren {
+                    Text(isExpanded ? "▾" : "▸")
+                        .font(.system(size: 8))
+                        .foregroundColor(Theme.textDim)
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(width: 8, alignment: .center)
+            .contentShape(Rectangle())
+            // The inner gesture WINS over the row-level one below, so this
+            // closure must handle BOTH cases: on a childless row the gutter
+            // is still hit-tested (the `Color.clear` branch fills it and
+            // `contentShape` makes it tappable), the tap is recognised HERE,
+            // and an `if hasChildren`-only body would swallow it — the row
+            // would refuse to select anywhere in the 8pt gutter.  That is not
+            // a corner: EVERY row of all ten flat categories is childless,
+            // and so is every leaf Object.  Pre-4b the same x-range was part
+            // of the row's own 30pt leading inset and selected normally.
+            .onTapGesture { if hasChildren { onToggle() } else { onSelect() } }
             Text(name)
                 .font(Theme.sans(11.5))
                 .foregroundColor(isSelected ? .white : Theme.textMuted)
@@ -309,7 +626,7 @@ private struct OutlinerChildRow: View {
             }
         }
         .padding(.vertical, 4)
-        .padding(.leading, 30)
+        .padding(.leading, leadingInset)
         .padding(.trailing, 8)
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusSmall)

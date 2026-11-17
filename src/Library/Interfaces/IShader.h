@@ -41,7 +41,7 @@ namespace RISE
 			const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 			const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 			RISEPel& c,									///< [out] IFXPel value at the point
-			const IORStack& ior_stack					///< [in/out] Index of refraction stack
+			const IORStack& ior_stack					///< [in] Index of refraction stack (const: not modified; DL-315)
 			) const = 0;
 
 		//! Tells the shader to apply shade to the given intersection point for the given wavelength
@@ -52,7 +52,7 @@ namespace RISE
 			const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 			const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 			const Scalar nm,							///< [in] Wavelength to shade
-			const IORStack& ior_stack					///< [in/out] Index of refraction stack
+			const IORStack& ior_stack					///< [in] Index of refraction stack (const: not modified; DL-315)
 			) const = 0;
 
 		//! Tells the shader to apply shade for a bundle of HWSS wavelengths.
@@ -69,7 +69,7 @@ namespace RISE
 			const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 			Scalar c[SampledWavelengths::N],				///< [out] Per-wavelength shading results
 			SampledWavelengths& swl,					///< [in/out] Wavelength bundle
-			const IORStack& ior_stack					///< [in/out] Index of refraction stack
+			const IORStack& ior_stack					///< [in] Index of refraction stack (const: not modified; DL-315)
 			) const
 		{
 			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
@@ -87,6 +87,14 @@ namespace RISE
 
 		//! Tells the shader to reset itself
 		virtual void ResetRuntimeData() const = 0;
+
+		//! DL-465: does this shader keep runtime data that ResetRuntimeData()
+		//! must drop when its object moves (a shader op's object-space point
+		//! cache)?  A time-indexed motion-blur pass cannot reset shared
+		//! shader state per thread and per sample, so an object that moves
+		//! with such a shader keeps the single-threaded path.  Conservative
+		//! default for an unknown shader: yes.
+		virtual bool HasRuntimeData() const { return true; }
 	};
 }
 

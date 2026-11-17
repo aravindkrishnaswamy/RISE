@@ -1,0 +1,15 @@
+{
+ "//": "Arc-83 source-first lighting run (2026-08-12): light_scene now enumerates WHAT PHYSICALLY EMITS in the world (owner design) then builds all of it in one go (~2 completions). THE LAST PROMPT-LEVEL FALSIFIER: the undersea answer should be dominated by things -- light through the water surface, glowing creatures -- so (1) does the enumeration name THINGS not instruments; (2) does the build author area/emissive/sky forms for them. If sources are things and the build still writes only omni/spot/directional, vocabulary was not the lever and the one-chunk physical light goes into the scene language. Prior: single-call 1/0/0/0/2 area; per-intent 0 of 11.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_undersea_mermaid.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_s11_sourcefirst"
+}

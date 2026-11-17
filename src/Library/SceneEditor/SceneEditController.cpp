@@ -37,6 +37,7 @@
 #include "../Cst/Cst.h"                   // Shared-undo U1: DocFindByNameAnyRole / DocResolveNodeId (prior-value capture)
 #include "../Parsers/ChunkParserRegistry.h"  // source-traceability reverse: authoritative keyword -> ChunkCategory
 #include <map>                            // source-traceability reverse: cached keyword -> Category map
+#include <set>                            // 87 step 4a: the object-tree fold's visible-name set
 #include "../Utilities/Transformable.h"   // F6: CaptureTransformState at gizmo drag-start
 #include "../Animation/KeyframableHelper.h"
 #include "ObjectIntrospection.h"
@@ -46,7 +47,13 @@
 #include "MaterialIntrospection.h"
 #include "MediaIntrospection.h"
 #include "CstIntrospection.h"         // Generic descriptor+CST property rows (Painter, Geometry, ...) -- GUI redesign 2026-07-22
+#include "PainterIntrospection.h"     // Painter rows: pipe + repeatable occurrences + ParamSpec metadata -- doc 88 S4
+#include "PainterPreview.h"           // Tier-2 painter/def-stage/ramp-strip preview thumbnails -- doc 88 S10
+#include "MaterialPreview.h"          // Material Editor Slice 5: 3D shaderball material preview thumbnails
 #include "ChunkDescriptorRegistry.h"  // DescriptorForKeyword -- dangling-reference guard (external-review P1, 2026-07-22)
+#include "ReferenceGraph.h"           // doc-88 Phase 3 S11: SceneReferenceGraph::FindReferencesTo/Edges -- the Painter/Material DAG's edge source
+#include "GraphLayout.h"              // doc-88 Phase 3 S12/S14: GraphLayout::LayoutGraph -- the rank-by-dependency auto-layout fill-in
+#include "GraphLayoutSidecar.h"       // doc-88 Phase 3 S13/S14: GraphLayoutSidecar::Read/WriteSidecar -- the `<scenePath>.risegraph.json` position store
 #include "EntityTemplates.h"          // Entity-creation slice: Add-Entity template registry
 #include "FileIdentity.h"             // immutable loaded-file identity captured with save snapshots
 #include "../Agent/AgentSession.h"    // Post-arc enforcement E1 / P1-3: CheckNonSamplingEmitterGateFor{Patch,Insert} -- ResolveProposal's stale-staged-proposal re-check (no header cycle: AgentSession.h forward-declares SceneEditController, does not include this header)
@@ -54,6 +61,7 @@
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IPainterManager.h"
 #include "../Interfaces/IScalarPainterManager.h"
+#include "../Painters/ExpressionPainter.h"     // doc-88 Phase 3 S11: ExpressionProgram::DefCount() for a node's def-strip count
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IScenePriv.h"
 #include "../Interfaces/IObjectManager.h"
@@ -62,6 +70,7 @@
 #include "../Interfaces/IKeyframable.h"
 #include "../Interfaces/ICamera.h"
 #include "../Interfaces/ICameraManager.h"
+#include "../Interfaces/IGeometryManager.h"   // 87 step 4a: GetItemSerial for the Geometry category's tree seeds
 #include "../Interfaces/IFilm.h"
 #include "../RISE_API.h"			// for RISE_API_CreateFilm (preview-scale Film swap)
 #include "../Cameras/CameraCommon.h"
@@ -80,11 +89,14 @@
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/RuntimeContext.h"
 #include "../Utilities/FiniteMath.h"
+#include "../Utilities/MediaPathLocator.h"
 #include <algorithm>      // Model-B F2 slice S2a: std::min for WaitForRenderJob's bounded wait_until slices
 #include <chrono>
 #include <cstdio>
+#include <cstring>        // 87 step 4a: strcmp in TreesEquivalent -- an allocation-free name compare under two locks
 #include <ctime>          // for time() used by CloneActiveCamera dedup fallback
 #include <exception>      // Model-B F2 slice S2a: std::exception_ptr / current_exception / rethrow_exception
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -349,6 +361,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mDirectRenderStopping( false )
 , mDirectRenderCancelRequested( false )
 , mCancelCount( 0 )
+, mAgentCancelRequestCount( 0 )
 , mRenderCount( 0 )
 // Model-B F2 slice S2a fix: every mint site does `mNextRenderJobId +=
 // kControllerRenderJobIdStride` BEFORE using the result (see
@@ -607,8 +620,9 @@ inline bool ParsePropertyBool( const String& valueStr, bool& out )
 // the object on screen during the drag's low-res frames.
 //
 // Derivation (intermediate values in mxTrans's source space —
-// current-pixel-Y-UP per `PixelBasedPelRasterizer.cpp:614`'s
-// `Point2(x, height - y)` feed of `GenerateRay`):
+// current-pixel-Y-UP: the rasterizers feed `GenerateRay` screen points
+// from `RasterConvention::PixelToScreen` (ICamera.h, DL-368), pixel
+// (x, row) at [x, x+1) x [H-1-row, H-row), i.e. y up):
 //
 //   `mxTrans` maps screen point S=(sx,sy_image,0) → world point T.
 //   The ray fired through S has origin O and direction (O - T) (see
@@ -923,11 +937,15 @@ SceneEditController::~SceneEditController()
 	// touching the partially-retired live scene/register state; lock-free getters
 	// continue to return their last coherent snapshot.
 	{
-		// Publish terminal closure under the ordinary mutation-admission mutex.
+		// Publish terminal closure under the ordinary mutation-admission mutex,
+		// and also take mMutex so any try_to_lock preview reader (GetPainterPreview /
+		// GetRampStripPreview / GetMaterialPreview / GetThinFilmAngleStrip /
+		// EvaluateThinFilmAtAngle) that entered before closure is drained first.
 		// The owner is still responsible for quiescing external callers before
 		// beginning C++ object destruction; this barrier serializes admission but
 		// does not replace the language-level lifetime rule.
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		std::lock_guard<std::mutex> drainPreviewLk( mMutex );
 		mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
 		mRenderOwnsScene.store( true, std::memory_order_release );
 	}
@@ -1352,11 +1370,14 @@ bool SceneEditController::PrepareForDestructionClaimed_()
 	// Prepared->Destroying fast path would skip.
 	{
 		// Serialize gate publication with the admission phase of ordinary
-		// mutators.  As with every C++ object lifetime boundary, the owner must
-		// already have stopped/joined external callers; some mutation wrappers
-		// intentionally perform a state-only dirty-notification drain after
-		// releasing admission, so this is not a substitute for owner quiescence.
+		// mutators, and also take mMutex to drain any in-flight try_to_lock
+		// preview reader before PrepareForDestruction returns.  As with every
+		// C++ object lifetime boundary, the owner must already have stopped/joined
+		// external callers; some mutation wrappers intentionally perform a
+		// state-only dirty-notification drain after releasing admission, so this
+		// is not a substitute for owner quiescence.
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		std::lock_guard<std::mutex> drainPreviewLk( mMutex );
 		mAgentRenderBlocksInteractive.store( true, std::memory_order_release );
 		mRenderOwnsScene.store( true, std::memory_order_release );
 	}
@@ -1979,6 +2000,19 @@ bool SceneEditController::ForTest_ProjectWorldToScreen(
 		outSx, outSy );
 }
 
+bool SceneEditController::ForTest_TranslateSelectedObjectWorld( double dx, double dy, double dz )
+{
+	if( mInDestructorTeardown.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::mutex> lk( mMutex );
+	CancelAndParkRender_( lk );
+	if( mSelectionCategory != Category::Object || mSelectionName.empty() ) return false;
+	SceneEdit edit;
+	edit.op         = SceneEdit::TranslateObject;
+	edit.objectName = mSelectionName;
+	edit.v3a        = Vector3( dx, dy, dz );
+	return mEditor.Apply( edit );
+}
+
 bool SceneEditController::ForTest_GetSelectionPivotWorld(
 	double& wx, double& wy, double& wz ) const
 {
@@ -2431,7 +2465,20 @@ void SceneEditController::OnPointerDown( const Point2& px )
 					const IObjectManager* objs = sceneForObj ? sceneForObj->GetObjects() : 0;
 					IObjectPriv* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
 					if( obj ) {
-						mGizmoDrag.dragStartMatrix = obj->GetFinalTransformMatrix();
+						// LOCAL (87): this anchor is fed to SceneEdit::ScaleObjectFromAnchor,
+						// whose Apply does `anchor * Stretch(factor)` and installs the result
+						// as the object's LOCAL transform.  A world anchor would bake the
+						// parent's transform into the child on the first scale drag.
+						//
+						// KNOWN, and unchanged by 87: `factor` is derived from screen motion
+						// against WORLD-projected handles, while the stretch is applied on the
+						// right, i.e. along the object's LOCAL axes.  Under a rotated or
+						// non-uniformly-scaled frame the object therefore does not track the
+						// pointer exactly.  That is the pre-87 behaviour for an object with
+						// its OWN rotation; hierarchy merely adds ancestors as a second source
+						// of the same mismatch.  Reconciling the scale gizmo with a
+						// parent-relative frame belongs with the tree UI (87 section 5 step 4).
+						mGizmoDrag.dragStartMatrix = obj->GetLocalTransformMatrix();
 						// Capture exact stack representation and authoritative metadata
 						// so undo restores subsequent Push/Pop and setter semantics.
 						mGizmoDrag.dragStartStateValid = false;
@@ -2496,7 +2543,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 				const IScene* sceneForObj = mJob.GetScene();
 				const IObjectManager* objs = sceneForObj ? sceneForObj->GetObjects() : 0;
 				IObjectPriv* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
-				mGizmoDrag.dragStartMatrix = obj ? obj->GetFinalTransformMatrix() : Matrix4Ops::Identity();
+				mGizmoDrag.dragStartMatrix = obj ? obj->GetLocalTransformMatrix() : Matrix4Ops::Identity();   // LOCAL -- see the handle-drag capture above
 				mGizmoDrag.dragStartStateValid = false;
 				if( Implementation::Transformable* tt = dynamic_cast<Implementation::Transformable*>( obj ) ) {
 					mGizmoDrag.dragStartState = tt->CaptureTransformStateV2();
@@ -3352,16 +3399,16 @@ void SceneEditController::DropStaleSelection_()
 	}
 }
 
-void SceneEditController::UndoInner_()
+bool SceneEditController::UndoInner_()
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	// Latent-guard (re-review): refuse user Undo while a transaction is open --
 	// undoing PAST the baseline would break RollbackTransaction's revert
 	// guarantee (and ClearRedo would then drop a pre-baseline edit).  The
 	// rollback path uses mEditor.Undo() directly, bypassing this guard.
 	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Undo refused: a transaction is open; use Rollback/EndTransaction." );
-		return;
+		return false;
 	}
 	// Cancel-and-park around Undo: many ops mutate state the render
 	// thread reads per-pixel (camera pointers via AddCamera/RemoveCamera,
@@ -3374,7 +3421,7 @@ void SceneEditController::UndoInner_()
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Undo refused: a transaction opened before the undo acquired the mutation lock." );
-		return;
+		return false;
 	}
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
@@ -3383,6 +3430,7 @@ void SceneEditController::UndoInner_()
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
 	const unsigned int beforeUndoDepth = mEditor.History().UndoDepth();
+	mEditor.ClearHistoryNotice();   // a notice only ever describes the immediately preceding Undo/Redo
 	const bool ok = mEditor.Undo();
 	// P1-#2 follow-up: mEditor.Undo() returns false on a PARTIAL composite revert,
 	// but the scene WAS mutated (the undo stack advanced) so we must still refresh.
@@ -3422,19 +3470,20 @@ void SceneEditController::UndoInner_()
 		lk.unlock();
 		mCV.notify_one();
 	}
+	return ok;
 }
 
-void SceneEditController::RedoInner_()
+bool SceneEditController::RedoInner_()
 {
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;  // render-owns-scene guard
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
 	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction is open." );
-		return;
+		return false;
 	}
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( mTxnOpen.load( std::memory_order_acquire ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction opened before the redo acquired the mutation lock." );
-		return;
+		return false;
 	}
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
@@ -3443,6 +3492,7 @@ void SceneEditController::RedoInner_()
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
 	const unsigned int beforeRedoDepth = mEditor.History().RedoDepth();
+	mEditor.ClearHistoryNotice();
 	const bool ok = mEditor.Redo();
 	// P1-#2 follow-up: see Undo -- a partial composite redo still mutated the scene.
 	const bool didWork = ok || ( mEditor.History().RedoDepth() != beforeRedoDepth );
@@ -3468,6 +3518,7 @@ void SceneEditController::RedoInner_()
 		lk.unlock();
 		mCV.notify_one();
 	}
+	return ok;
 }
 
 Scalar SceneEditController::LastSceneTime() const
@@ -3862,14 +3913,71 @@ public:
 // (CategoryEntityCount then repeated CategoryEntityName(idx)) is
 // deterministic across calls even though neither manager's own
 // EnumerateItemNames documents a stable order.
+//! One row of the Painter union, WITH the manager it came from and that
+//! manager's registration serial for it.
+//!
+//! 87 step 4a round-4 (P1-B).  The union is NOT a set: `CollectPainterUnionNames`
+//! concatenates without dedup, and it is right not to dedup -- `Cst::ChunkNamePath`
+//! keys the document index as `role + "/" + name`, so `uniformcolor_painter/P` and
+//! `scalar_painter/P` are DIFFERENT document entities and both must get a row.  A
+//! same-named pair therefore produces TWO rows, and which manager a given row
+//! denotes is decided by POSITION, not by the name.  Re-deriving the serial from
+//! the name afterwards ("probe the colour manager, then the scalar one, first that
+//! answers wins") hands BOTH rows the colour painter's serial -- so a replacement
+//! on the scalar side moves nothing the tree can see, the generation stands, and a
+//! stale handle keeps resolving.  (Measured; case T.)  So the origin is captured
+//! HERE, at the one place that knows it.
+struct PainterUnionEntry
+{
+	String             name;
+	//! The serial as reported by the manager that ENUMERATED this row -- which is
+	//! the whole point of the struct.  Deliberately no `fromScalar` flag beside it:
+	//! nothing reads one, and an unread field invites the next reader to believe
+	//! the origin is recoverable downstream.  It is not, and it does not need to
+	//! be -- the origin is consumed HERE, by pairing the serial with the name in
+	//! the same loop iteration.
+	unsigned long long serial = 0;
+};
+
+std::vector<PainterUnionEntry> CollectPainterUnionEntries( IJobPriv& job )
+{
+	std::vector<PainterUnionEntry> out;
+	if( IPainterManager* m = job.GetPainters() ) {
+		CollectNamesCallback cb;
+		m->EnumerateItemNames( cb );
+		for( std::size_t i = 0; i < cb.names.size(); ++i ) {
+			PainterUnionEntry e;
+			e.name   = cb.names[i];
+			e.serial = m->GetItemSerial( cb.names[i].c_str() );
+			out.push_back( e );
+		}
+	}
+	if( IScalarPainterManager* m = job.GetScalarPainters() ) {
+		CollectNamesCallback cb;
+		m->EnumerateItemNames( cb );
+		for( std::size_t i = 0; i < cb.names.size(); ++i ) {
+			PainterUnionEntry e;
+			e.name   = cb.names[i];
+			e.serial = m->GetItemSerial( cb.names[i].c_str() );
+			out.push_back( e );
+		}
+	}
+	// STABLE sort on the name alone, exactly as before: the pre-sort order is
+	// colour-painters-then-scalars, so a duplicated name keeps the colour row
+	// first and the flat surface's byte-for-byte order is unchanged.
+	std::stable_sort( out.begin(), out.end(),
+		[]( const PainterUnionEntry& a, const PainterUnionEntry& b ) {
+			return std::string( a.name.c_str() ) < std::string( b.name.c_str() ); } );
+	return out;
+}
+
 std::vector<String> CollectPainterUnionNames( IJobPriv& job )
 {
-	CollectNamesCallback cb;
-	if( IPainterManager* m = job.GetPainters() ) m->EnumerateItemNames( cb );
-	if( IScalarPainterManager* m = job.GetScalarPainters() ) m->EnumerateItemNames( cb );
-	std::stable_sort( cb.names.begin(), cb.names.end(),
-		[]( const String& a, const String& b ) { return std::string( a.c_str() ) < std::string( b.c_str() ); } );
-	return cb.names;
+	const std::vector<PainterUnionEntry> entries = CollectPainterUnionEntries( job );
+	std::vector<String> names;
+	names.reserve( entries.size() );
+	for( std::size_t i = 0; i < entries.size(); ++i ) names.push_back( entries[i].name );
+	return names;
 }
 
 }  // namespace
@@ -3892,9 +4000,7 @@ void SceneEditController::RefreshEnumSnapshot_( Category cat ) const
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return;                                      // contended (or re-entrant): serve stale
 	std::vector<String> names;
-	const unsigned int n = CategoryEntityCountLocked_( cat );
-	names.reserve( n );
-	for( unsigned int i = 0; i < n; ++i ) names.push_back( CategoryEntityNameLocked_( cat, i ) );
+	CategoryEntityNamesLocked_( cat, names );   // ONE pass -- see the header note on the O(N^2) it replaces
 	String active = CategoryActiveNameLocked_( cat );
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );              // leaf lock: never held across mMutex
 	mUi.entityNames[ci].swap( names );
@@ -4101,6 +4207,132 @@ String SceneEditController::CategoryEntityNameLocked_( Category cat, unsigned in
 	}
 }
 
+void SceneEditController::CategoryEntityNamesLocked_( Category cat, std::vector<String>& out ) const
+{
+	out.clear();
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return;
+	// The manager-backed categories: ONE EnumerateItemNames each.  These are
+	// exactly the cases where the per-index getter re-enumerates, so they are
+	// the ones that turn an N-name build into O(N^2).
+	switch( cat ) {
+	case Category::Camera: {
+		const ICameraManager* m = scene->GetCameras();
+		if( !m ) return;
+		CollectNamesCallback cb; m->EnumerateItemNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Object: {
+		const IObjectManager* m = scene->GetObjects();
+		if( !m ) return;
+		CollectNamesCallback cb; m->EnumerateItemNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Light: {
+		const ILightManager* m = scene->GetLights();
+		if( !m ) return;
+		CollectNamesCallback cb; m->EnumerateItemNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Material: {
+		const IMaterialManager* m = mJob.GetMaterials();
+		if( !m ) return;
+		CollectNamesCallback cb; m->EnumerateItemNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Medium: {
+		CollectNamesCallback cb; mJob.EnumerateMediumNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Geometry: {
+		CollectNamesCallback cb; mJob.EnumerateGeometryNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Painter: {
+		out = CollectPainterUnionNames( mJob );
+		return;
+	}
+	default:
+		break;
+	}
+	// Rasterizer / Film / Animation / SceneVariant are genuinely
+	// index-addressed -- their per-index getter is O(1), so the plain loop is
+	// already O(N) and going through it keeps ONE definition of what those
+	// lists contain.
+	const unsigned int n = CategoryEntityCountLocked_( cat );
+	out.reserve( n );
+	for( unsigned int i = 0; i < n; ++i ) out.push_back( CategoryEntityNameLocked_( cat, i ) );
+}
+
+unsigned long long SceneEditController::CategoryEntitySerialLocked_( Category cat, const String& name ) const
+{
+	// NO EMPTY-NAME SHORT CIRCUIT.  An earlier `if( name.size() <= 1 ) return 0;`
+	// was removed in round 4: `String::c_str()` on an empty String yields `""`,
+	// `GenericManager::GetItemSerial( "" )` simply misses and returns 0, so the
+	// guard bought nothing -- and `GenericManager::AddItem` PERMITS an entity
+	// named `""`, for which the guard manufactured a serial-0 hole (a category
+	// row that could never be told apart from its own replacement) out of a case
+	// the managers handle correctly.
+	const IScene* scene = mJob.GetScene();
+	switch( cat ) {
+	case Category::Camera: {
+		const ICameraManager* m = scene ? scene->GetCameras() : 0;
+		return m ? m->GetItemSerial( name.c_str() ) : 0;
+	}
+	case Category::Object: {
+		const IObjectManager* m = scene ? scene->GetObjects() : 0;
+		return m ? m->GetItemSerial( name.c_str() ) : 0;
+	}
+	case Category::Light: {
+		const ILightManager* m = scene ? scene->GetLights() : 0;
+		return m ? m->GetItemSerial( name.c_str() ) : 0;
+	}
+	case Category::Material: {
+		const IMaterialManager* m = mJob.GetMaterials();
+		return m ? m->GetItemSerial( name.c_str() ) : 0;
+	}
+	case Category::Geometry: {
+		const IGeometryManager* m = mJob.GetGeometries();
+		return m ? m->GetItemSerial( name.c_str() ) : 0;
+	}
+	case Category::Painter:
+		// NOT ANSWERABLE FROM A NAME, and round 4 removed the code that pretended
+		// otherwise.  It probed the colour manager then the scalar one and took
+		// the first hit, on a comment claiming "a name lives in exactly one of
+		// them (CollectPainterUnionNames concatenates), so the two counters never
+		// have to be reconciled."  THAT COMMENT WAS FALSE.  The concatenation is
+		// exactly what lets a name live in BOTH: it does not dedup, and it is
+		// right not to -- `Cst::ChunkNamePath` keys on `role + "/" + name`, so
+		// `uniformcolor_painter/P` and `scalar_painter/P` are two distinct
+		// document entities that both deserve a row.  With both present the probe
+		// handed the SCALAR row the COLOUR entity's serial, so replacing the
+		// scalar painter moved nothing the tree could see.  (Measured; case T.)
+		//
+		// A Painter row's serial is decided by the row's ORIGIN, which is
+		// positional -- see PainterUnionEntry and BuildCategoryTreeLocked_'s
+		// Painter branch, which is the only path that builds Painter seeds.
+		// Reaching HERE for Category::Painter would be a routing bug, and the 0
+		// it now returns is the same "no identity available" answer the
+		// serial-less categories below get.
+		return 0;
+	case Category::Medium:
+	case Category::Rasterizer:
+	case Category::Film:
+	case Category::Animation:
+	case Category::SceneVariant:
+	case Category::None:
+	default:
+		// NO SERIAL AVAILABLE, and that is a real limitation rather than an
+		// oversight: none of these is reached through an IManager from here
+		// (Medium goes through IJob::EnumerateMediumNames; the rest are
+		// index-addressed lists).  A remove + re-add under the same name in
+		// one of them leaves the tree equivalent and does NOT invalidate an
+		// outstanding handle.  Closing it means exposing those stores as
+		// managers, which is a bigger change than this API.
+		return 0;
+	}
+}
+
 String SceneEditController::CategoryActiveNameLocked_( Category cat ) const
 {
 	switch( cat ) {
@@ -4152,6 +4384,1612 @@ String SceneEditController::CategoryActiveNameLocked_( Category cat ) const
 	default:
 		return String();
 	}
+}
+
+// =====================================================================
+// 87 §5 step 4a -- the AUTHORED-GRAPH node tree.
+//
+// Three layers, deliberately separated:
+//   1. BuildAuthoredTree      -- PURE.  Seeds -> AuthoredTree.  Owns the
+//                                dangling-parent and cycle guards, and is
+//                                the only layer a test can hand a hostile
+//                                input to (see its header doc).
+//   2. Build*TreeSeedsLocked_ -- reads the live managers under mMutex and
+//                                produces the seeds.  Category::Object is
+//                                where the instancing fold lives.
+//   3. RefreshTreeSnapshot_   -- the SAME stale-fallback publish discipline
+//                                RefreshEnumSnapshot_ uses.
+// =====================================================================
+
+namespace {
+
+//! Structural equality of two published trees, IGNORING `generation`.  Drives
+//! RefreshTreeSnapshot_'s compare-then-publish: if the rebuilt tree says the
+//! same thing as the published one, nothing is republished and no outstanding
+//! handle is invalidated.  Compares everything a reader can observe -- name,
+//! parent, child slice, the flattened child index, the root list -- PLUS the
+//! registration serial, which a reader cannot observe but which is the only
+//! thing that separates a REPLACED entity from an untouched one.  Anything
+//! left out here would be a change that silently keeps the old generation,
+//! i.e. a stale handle that resolves.
+//!
+//! The NAME and SERIAL comparisons are not decoration.  They are the two
+//! members that carry CONTENT rather than shape, and each has a mutation that
+//! nothing else in the suite catches.
+//!
+//! SERIAL is IDENTITY.  A remove plus a re-add under the SAME name -- an
+//! object REPLACED -- keeps the name, the parent, the sort position and every
+//! index in the tree.  Without the serial the rebuild compares equivalent, the
+//! generation stands, and a handle captured before the swap keeps resolving,
+//! now denoting an instance the manager no longer holds.  Selection is by
+//! name, so a shell that only SELECTS through a stale handle would still hit
+//! the live object -- which is why this looks benign and is not: anything
+//! keyed on the handle itself (4b/4c expand state, a selection cache held
+//! across event-loop turns) transfers silently across the replacement.
+//! `IManager::GetItemSerial` exists for exactly this distinction and
+//! `SceneEditor.cpp`'s capture/apply gate already refuses an op whose target
+//! serial moved, so a name-only equivalence here would be a weaker identity
+//! relation than the layer below enforces.  (Measured; case S.)
+//!
+//! The NAME comparison is not decoration either.  A rename that leaves the tree's
+//! SHAPE alone -- drop an entity and re-register it under a new name, which is
+//! what a rename IS at the manager level -- produces a rebuilt tree with the
+//! same size, parents, roots and child slices.  Without the name compare the
+//! republish is skipped, the generation stands, and every outstanding handle
+//! keeps resolving to the OLD name while the flat surface reports the new one.
+//! (Measured; case Q.)
+//!
+//! `strcmp` and not two `std::string`s: this runs once per node on every
+//! refresh, with the leaf lock nested inside a still-held `mMutex`, so a pair
+//! of allocations per node lengthens a hold that every other snapshot getter
+//! `try_to_lock`s against.  `String` is NUL-terminated, so the meaning is
+//! identical.
+bool TreesEquivalent( const SceneEditController::AuthoredTree& a,
+                      const SceneEditController::AuthoredTree& b )
+{
+	// THE REBUILD COUNTER, compared FIRST because it subsumes everything below.
+	// A serial is unique only within one manager INSTANCE, so it cannot tell a
+	// rebuilt store from the original -- see AuthoredTree::rebuildCount, which
+	// says why, and IJobPriv::GetContainerRebuildCount, which is where it comes
+	// from.  Without this the whole per-row comparison is defeated by any
+	// ClearAll + re-derive, which reproduces the same names in the same order
+	// with the same freshly-restarted serials.  (Measured; case U.)
+	if( a.rebuildCount != b.rebuildCount ) return false;
+	// A BOUNDS GUARD for the loop below, not a discriminator -- deleting this
+	// line alone leaves the whole suite green, because every node is either a
+	// root or somebody's child, so a changed node count always shows up in
+	// `roots` or in `childIndices` first.
+	//
+	// An earlier version of this comment justified the guard by claiming the
+	// loop would otherwise read `b.nodes[i]` past the end.  IT WOULD NOT.
+	// `BuildAuthoredTree` maintains `nodes.size() == roots.size() +
+	// childIndices.size()` (every node is pushed to `roots` or counted into
+	// exactly one parent's slice, and the prefix sum sizes `childIndices` to
+	// that count) -- and it holds for a default-constructed tree too, at
+	// 0 == 0 + 0.  So by the time control reaches the loop, `childIndices` and
+	// `roots` have already compared EQUAL on both size and content, which
+	// determines `nodes.size()`, and the out-of-bounds read is unreachable
+	// rather than merely untestable.
+	//
+	// It stays anyway: it is a LOCAL bound on a loop whose safety would
+	// otherwise depend on an invariant maintained in another function, and it
+	// is one integer compare.
+	if( a.nodes.size() != b.nodes.size() ) return false;
+	if( a.childIndices != b.childIndices ) return false;
+	if( a.roots        != b.roots )        return false;
+	for( std::size_t i = 0; i < a.nodes.size(); ++i ) {
+		const SceneEditController::TreeNodeRow& x = a.nodes[i];
+		const SceneEditController::TreeNodeRow& y = b.nodes[i];
+		if( x.parent != y.parent || x.firstChild != y.firstChild || x.childCount != y.childCount ) return false;
+		if( x.serial != y.serial ) return false;
+		if( std::strcmp( x.name.c_str(), y.name.c_str() ) != 0 ) return false;
+	}
+	return true;
+}
+
+//! The snapshot-generation source, PROCESS-GLOBAL and shared by every
+//! SceneEditController and every category.
+//!
+//! Round-4 P3-1: it used to be a per-controller member seeded at 1, so a handle
+//! minted on controller A decoded cleanly against controller B and named B's
+//! node at the same index -- and `HandleFor`'s doc actively sold that ("does not
+//! care which controller the copy came from").  Not reachable in the Mac GUI
+//! today (the bridge is torn down before the replacement is built), but a 4b
+//! model that caches handles across a document reload is the realistic shape,
+//! and one shared counter makes it DETECTABLE for the cost of an atomic
+//! increment on a path that already takes two mutexes.  Same idiom the
+//! process-global scene-epoch seed uses.  Cross-CATEGORY aliasing was already
+//! impossible for the same reason (one counter served all categories); this
+//! extends that to controllers.
+std::atomic<unsigned long long>& NextTreeGeneration()
+{
+	static std::atomic<unsigned long long> g( 1 );
+	return g;
+}
+
+//! Handle encoding: generation in the high 32 bits, node index in the low 32.
+//! The ONLY two places that know the layout.
+SceneEditController::TreeNodeHandle EncodeTreeHandle( unsigned long long generation, unsigned int index )
+{
+	return ( generation << 32 ) | static_cast<unsigned long long>( index );
+}
+
+//! Decode `h` AGAINST `t`.  Returns false -- and leaves `outIndex` untouched
+//! -- when the handle was minted from a different snapshot (or is out of
+//! range, or is kInvalidTreeNode).  This is the check that turns "silently
+//! resolves to some OTHER object after a republish" into a clean failure the
+//! caller can see.
+bool DecodeTreeHandle( const SceneEditController::AuthoredTree& t,
+                       SceneEditController::TreeNodeHandle h, unsigned int& outIndex )
+{
+	// BELT-AND-BRACES, and DEAD as the code stands -- kept, labelled, the way
+	// TreeChildNode's `slot >= childIndices.size()` bound is.  Only
+	// RefreshTreeSnapshot_ ever writes a tree and it always stamps >= 1, and a
+	// default-constructed tree has `nodes.empty()`, so the index check below
+	// already rejects every handle against one.  It is here because "generation
+	// 0 means nothing is published" is a rule this file states in three places
+	// and a future edit that publishes an empty-but-real tree, or that seeds
+	// the counter from 0, would make it live.
+	if( t.generation == 0 ) return false;                 // nothing published yet
+	// The tag is the generation's LOW 32 BITS on both sides -- Encode shifts
+	// them up, this masks them off -- so the comparison is exact for the first
+	// 2^32 republishes of a category and aliases after that.  A republish
+	// happens only on a real change, so that bound is not reachable in a
+	// session; it is stated because it is the one way a stale handle could
+	// resolve again.
+	if( ( h >> 32 ) != ( t.generation & 0xFFFFFFFFull ) ) return false;   // a handle from another snapshot
+	const unsigned int idx = static_cast<unsigned int>( h & 0xFFFFFFFFull );
+	if( idx >= t.nodes.size() ) return false;
+	outIndex = idx;
+	return true;
+}
+
+}  // namespace
+
+SceneEditController::AuthoredTree SceneEditController::BuildAuthoredTree(
+	const std::vector<TreeNodeSeed>& seeds )
+{
+	AuthoredTree out;
+	const std::size_t n = seeds.size();
+	if( n == 0 ) return out;
+
+	// Presentation order, computed FIRST so every index below is already in
+	// the order a shell renders: by `order` (the registration serial, which
+	// on a full derive IS document order -- 87 §2 "child order for display
+	// comes from declaration order"), ties broken by name so the result is
+	// deterministic even when two entities share a serial (they cannot today;
+	// the tiebreak is what makes that not worth relying on).
+	std::vector<std::size_t> perm( n );
+	for( std::size_t i = 0; i < n; ++i ) perm[i] = i;
+	std::stable_sort( perm.begin(), perm.end(),
+		[&seeds]( std::size_t a, std::size_t b ) {
+			if( seeds[a].order != seeds[b].order ) return seeds[a].order < seeds[b].order;
+			return std::string( seeds[a].name.c_str() ) < std::string( seeds[b].name.c_str() );
+		} );
+
+	// name -> node index.  A DUPLICATE name keeps the FIRST occurrence in
+	// presentation order; the caller is responsible for not producing one
+	// (the object manager cannot hold two items of one name), and silently
+	// re-pointing every later reference at one of them is the least
+	// surprising degradation if it ever happens.
+	std::map<std::string, unsigned int> byName;
+	out.nodes.resize( n );
+	for( std::size_t k = 0; k < n; ++k ) {
+		const TreeNodeSeed& s = seeds[ perm[k] ];
+		out.nodes[k].name       = s.name;
+		out.nodes[k].parent     = kInvalidNodeIndex;
+		out.nodes[k].firstChild = 0;
+		out.nodes[k].childCount = 0;
+		out.nodes[k].serial     = s.serial;
+		byName.insert( std::make_pair( std::string( s.name.c_str() ), static_cast<unsigned int>( k ) ) );
+	}
+
+	// Resolve parent NAMES to indices.  An unresolvable name -- empty, or one
+	// that no seed answers to -- is a ROOT.  That is the same answer
+	// ObjectManager::ComposeWorldTransforms gives a dangling link, and it is
+	// the only one that keeps the node VISIBLE: dropping it would make an
+	// authoring mistake look like a deleted object.
+	std::vector<unsigned int> parentOf( n, kInvalidNodeIndex );
+	for( std::size_t k = 0; k < n; ++k ) {
+		const TreeNodeSeed& s = seeds[ perm[k] ];
+		if( s.parent.size() <= 1 ) continue;                 // String carries its NUL: <=1 is empty
+		const std::map<std::string, unsigned int>::const_iterator p =
+			byName.find( std::string( s.parent.c_str() ) );
+		if( p == byName.end() ) continue;                     // dangling -> root
+		// A SELF-parent is deliberately NOT special-cased here.  It is a
+		// 1-cycle, and the cycle break below cuts it exactly as it cuts any
+		// other -- an explicit guard here was measured to be dead code
+		// (removing it leaves the self-parent fixture green).  One guard, one
+		// mechanism, one thing to keep right.
+		parentOf[k] = p->second;
+	}
+
+	// CYCLE BREAK.  Iterative three-colour walk UP the parent chain, O(n)
+	// total: each node is coloured once.  When a walk re-enters a node that
+	// is grey (i.e. on the chain currently being walked) that node closes a
+	// cycle, so ITS link is cut and it becomes a root.  Cutting exactly one
+	// link per cycle keeps every node reachable from exactly one root, which
+	// is what makes the child-list build below total.
+	//
+	// No recursion anywhere in this function, so a pathologically deep chain
+	// cannot overflow the stack either.
+	{
+		enum { kWhite = 0, kGrey = 1, kBlack = 2 };
+		std::vector<unsigned char> colour( n, kWhite );
+		std::vector<unsigned int>  path;
+		for( std::size_t i = 0; i < n; ++i ) {
+			if( colour[i] != kWhite ) continue;
+			path.clear();
+			unsigned int c = static_cast<unsigned int>( i );
+			while( c != kInvalidNodeIndex && colour[c] == kWhite ) {
+				colour[c] = kGrey;
+				path.push_back( c );
+				c = parentOf[c];
+			}
+			if( c != kInvalidNodeIndex && colour[c] == kGrey ) parentOf[c] = kInvalidNodeIndex;
+			for( std::size_t q = 0; q < path.size(); ++q ) colour[ path[q] ] = kBlack;
+		}
+	}
+
+	// Child counts, then a prefix sum, then a second pass that fills the
+	// flattened slices.  `perm` order is already the display order, so
+	// walking k ascending emits each child list in it -- no per-list sort.
+	std::vector<unsigned int> cursor( n, 0 );
+	for( std::size_t k = 0; k < n; ++k ) {
+		if( parentOf[k] != kInvalidNodeIndex ) ++out.nodes[ parentOf[k] ].childCount;
+		else                                   out.roots.push_back( static_cast<unsigned int>( k ) );
+	}
+	unsigned int running = 0;
+	for( std::size_t k = 0; k < n; ++k ) {
+		out.nodes[k].firstChild = running;
+		cursor[k]               = running;
+		running += out.nodes[k].childCount;
+	}
+	out.childIndices.assign( running, 0u );
+	for( std::size_t k = 0; k < n; ++k ) {
+		const unsigned int p = parentOf[k];
+		if( p == kInvalidNodeIndex ) continue;
+		out.nodes[k].parent          = p;
+		out.childIndices[ cursor[p]++ ] = static_cast<unsigned int>( k );
+	}
+	return out;
+}
+
+void SceneEditController::BuildObjectTreeSeedsLocked_( std::vector<TreeNodeSeed>& outSeeds ) const
+{
+	outSeeds.clear();
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return;
+	// Every manager call this function makes -- EnumerateItemNames,
+	// GetObjectProvenance, GetItemSerial, GetObjectParent -- is const, so the
+	// const pointer is used directly.  An earlier version const_cast'd it,
+	// which falsely signalled that reading the tree mutates the scene.
+	const IObjectManager* m = scene->GetObjects();
+	if( !m ) return;
+
+	CollectNamesCallback cb;
+	m->EnumerateItemNames( cb );
+
+	// PASS 1 -- classify every live entry as an authored node or as a
+	// synthesized entry that folds away.
+	//
+	// The discriminator is 87 step 3a's COLLAPSE case: an instancing chunk
+	// whose source is a single node produces ONE entry under the chunk's own
+	// name, so `entry == instancingChunk` means this entry IS the authored
+	// node and stays visible.  Everything else with a provenance row (`I.X`,
+	// `I[i,j]`, `I[i,j].X`) is a copy that has no chunk of its own, and folds
+	// into the chunk named by the row.  Read from the provenance MAP only --
+	// see the header for why the name itself is off limits.
+	std::map<std::string, std::string> foldOf;      // folded entry -> instancing chunk
+	std::vector<std::string>           visible;     // entries that stay as nodes
+	std::set<std::string>              ownsItsChunk; // the collapse case: entry name IS its chunk
+	for( std::size_t i = 0; i < cb.names.size(); ++i ) {
+		const std::string nm( cb.names[i].c_str() );
+		const char* chunk = 0;
+		if( m->GetObjectProvenance( nm.c_str(), &chunk, /*outSourceNode*/ 0 ) ) {
+			const std::string ch( chunk ? chunk : "" );
+			if( !ch.empty() && ch != nm ) { foldOf[nm] = ch; continue; }
+			if( !ch.empty() ) ownsItsChunk.insert( nm );
+		}
+		visible.push_back( nm );
+	}
+
+	std::set<std::string> visibleSet( visible.begin(), visible.end() );
+
+	// PASS 1b -- REFUSE a fold whose target is a live object that is NOT the
+	// collapse case, because then the target is some OTHER object that merely
+	// shares the name.
+	//
+	// TWO KEYSPACES THAT DO NOT AGREE, and this is the seam between them.
+	// The fold reads the LIVE MANAGER's names.  The derive-time guard that is
+	// supposed to make a fold target unambiguous -- ExpandSourceInstance's
+	// document-level collision scan (Cst.cpp) -- reads the DOCUMENT's `name`
+	// PARAM names.  Whenever a live entry name has no `name` param behind it,
+	// that guard is blind to it, the derive sees no collision, and a counted
+	// instancing chunk that happens to share the name folds its whole array
+	// into an unrelated object -- and, with the target visible, the synth
+	// pass below would skip it too, so the array AND the chunk the author
+	// wrote would get no row at all, while `Z parent I[0,0]` would resolve
+	// onto the stranger.
+	//
+	// So: unfold.  The folded entries stay VISIBLE as their own nodes.  That
+	// degrades to a NOISY outliner (one row per repetition instead of one per
+	// chunk) which an author can see and recover from; the alternative is an
+	// array that silently does not exist, which they cannot.
+	//
+	// THE `noname` WITNESS IS GONE, AND THIS PASS IS STILL LOAD-BEARING.
+	// A `standard_object` / `csg_object` with no `name` line used to be the
+	// witness: Finalize DEFAULTS its entry to `noname` (ChunkParserRegistry.cpp)
+	// while the document held nothing.  That decision HAS NOW BEEN TAKEN in
+	// Cst.cpp -- `RoleDefaultedEntryName` indexes the defaulted name, and the
+	// two-keyspace `noname` document is REFUSED at derive time rather than
+	// reaching here.  It did change derive-time refusal behaviour; 0 of the
+	// tracked scenes were affected.
+	//
+	// What that fix CANNOT reach is `gltf_import`, a FIFTH object-producing
+	// route: `Job::ImportGLTFScene` registers `<name_prefix>.obj.n<node>.p<prim>`
+	// per mesh primitive (GLTFSceneImporter.cpp) and those names are spelled by
+	// NO `name` param in the document, so no document-level scan can see them.
+	// An import whose object name a counted instancing chunk also carries loads
+	// with ZERO diagnostics today and lands here -- which is what cases M and AA
+	// in SceneGraphNodeApiTest now pin.  Keep the test "the target is genuinely
+	// the collapse case" rather than any name-shaped special case: the witness
+	// changed once already.
+	{
+		std::set<std::string> unfold;
+		for( std::map<std::string, std::string>::const_iterator f = foldOf.begin();
+			f != foldOf.end(); ++f ) {
+			if( !visibleSet.count( f->second ) ) continue;    // no live entry -> synthesized below
+			if( ownsItsChunk.count( f->second ) ) continue;   // the collapse case -> a real fold target
+			unfold.insert( f->second );
+		}
+		if( !unfold.empty() ) {
+			std::map<std::string, std::string> kept;
+			for( std::map<std::string, std::string>::const_iterator f = foldOf.begin();
+				f != foldOf.end(); ++f ) {
+				if( unfold.count( f->second ) ) { visible.push_back( f->first ); visibleSet.insert( f->first ); }
+				else                            { kept.insert( *f ); }
+			}
+			foldOf.swap( kept );
+		}
+	}
+
+	// PASS 2 -- the fold TARGETS that have no live entry of their own.
+	//
+	// A COUNTED instancing chunk (87 step 3c) is exactly this case: `I
+	// count_u 2` produces `I[0,0]` and `I[1,0]` and NO entry named `I`, so
+	// every one of its entries folds into a chunk the manager has never heard
+	// of.  Without a node for it the whole array would vanish from the tree
+	// and the author would have no row for the chunk they wrote -- while the
+	// stated reason for folding is the opposite: keep the row that HAS a
+	// chunk and drop the ones that do not.  So the chunk gets one node.
+	//
+	// Its order key and its parent come from the entry with the LOWEST
+	// REGISTRATION SERIAL among those folding into it -- which by
+	// construction is the first REPETITION ROOT the expansion built
+	// (`ExpandSourceInstance` applies `I[i,j]` and only then its clones), so
+	// the parent read here is the instancing chunk's own `parent` line.
+	//
+	// The serial, NOT enumeration order, and that is load-bearing rather
+	// than tidy.  Enumeration is by name, and a CLONE's parent is its
+	// repetition root -- which folds into this very node -- so picking a
+	// clone would give the synthesized node ITSELF as its parent and silently
+	// drop the chunk's real parent link.  Today `I[0,0]` happens to sort
+	// before `I[0,0].X`, which would make a name-ordered pick right by
+	// accident; the serial is right by the expansion's own ordering.
+	std::map<std::string, unsigned long long> synthOrder;
+	std::map<std::string, std::string>        synthParent;
+	for( std::size_t i = 0; i < cb.names.size(); ++i ) {
+		const std::string nm( cb.names[i].c_str() );
+		const std::map<std::string, std::string>::const_iterator f = foldOf.find( nm );
+		if( f == foldOf.end() ) continue;
+		// A target that IS live is the collapse case and already has its own
+		// node -- PASS 1b has removed every other visible-target fold from
+		// the map, so this test no longer has to stand in for "is this
+		// genuinely the same object?".  It was that conflation (live-manager
+		// keyspace vs document `name`-param keyspace) that made an unrelated
+		// same-named object swallow a whole counted array; see PASS 1b.
+		if( visibleSet.count( f->second ) ) continue;
+		const unsigned long long serial = m->GetItemSerial( nm.c_str() );
+		const std::map<std::string, unsigned long long>::const_iterator have = synthOrder.find( f->second );
+		if( have != synthOrder.end() && have->second <= serial ) continue;
+		synthOrder[ f->second ]  = serial;
+		const char* pp = m->GetObjectParent( nm.c_str() );
+		synthParent[ f->second ] = pp ? pp : "";
+	}
+
+	// A fold target resolves to the node an entry is folded INTO, so a
+	// document node parented onto a synthesized entry (`Z parent I.B`, which
+	// 87 step 3b supports) lands under `I` rather than becoming a stray root.
+	//
+	// ITERATED, not a single hop, and BOUNDED.  A single hop is enough for
+	// every shape reachable today -- a fold target is an instancing chunk
+	// name, and an entry under that name is the collapse case, whose own
+	// provenance row names itself and so does not fold.  The loop costs
+	// nothing on that path (one probe, one miss) and means a future
+	// expansion that folds one synthesized entry into another does not
+	// silently strand a branch at the root.  The bound is the fold-map size,
+	// so a fold CYCLE degrades to "treat as a root" instead of spinning.
+	struct Resolve {
+		const std::map<std::string, std::string>& fold;
+		std::string operator()( const std::string& raw ) const {
+			std::string cur = raw;
+			for( std::size_t guard = fold.size() + 1; guard > 0; --guard ) {
+				const std::map<std::string, std::string>::const_iterator f = fold.find( cur );
+				if( f == fold.end() ) return cur;
+				cur = f->second;
+			}
+			return std::string();
+		}
+	} resolve{ foldOf };
+
+	outSeeds.reserve( visible.size() + synthOrder.size() );
+	for( std::size_t i = 0; i < visible.size(); ++i ) {
+		const char* pp = m->GetObjectParent( visible[i].c_str() );
+		const std::string parent = resolve( std::string( pp ? pp : "" ) );
+		TreeNodeSeed s;
+		s.name   = String( visible[i].c_str() );
+		s.parent = String( parent.c_str() );
+		// ONE read, TWO jobs: for Objects the registration serial is both the
+		// declaration-order key (87 section 2) and the identity that tells a
+		// replacement from the original.  They are separate FIELDS because
+		// they are separate ideas -- the flat categories below have an order
+		// that is not a serial -- but here they are the same number.
+		s.order  = m->GetItemSerial( visible[i].c_str() );
+		s.serial = s.order;
+		outSeeds.push_back( s );
+	}
+	for( std::map<std::string, unsigned long long>::const_iterator s = synthOrder.begin();
+		s != synthOrder.end(); ++s ) {
+		TreeNodeSeed seed;
+		seed.name   = String( s->first.c_str() );
+		seed.parent = String( resolve( synthParent[ s->first ] ).c_str() );
+		// A SYNTHESIZED chunk node has no live entry of its own, so it
+		// borrows the identity of the lowest-serial repetition that folds
+		// into it -- which is the first entry the expansion built.  A
+		// re-expansion re-registers those repetitions and moves that serial,
+		// which is exactly when the chunk row's handle should stop resolving.
+		seed.order  = s->second;
+		seed.serial = s->second;
+		outSeeds.push_back( seed );
+	}
+}
+
+SceneEditController::AuthoredTree SceneEditController::BuildCategoryTreeLocked_( Category cat ) const
+{
+	std::vector<TreeNodeSeed> seeds;
+	if( cat == Category::Object ) {
+		BuildObjectTreeSeedsLocked_( seeds );
+	} else if( cat == Category::Painter ) {
+		// THE ONE CATEGORY WHOSE ROWS DO NOT COME FROM ONE STORE.  Painter is the
+		// union of the colour-painter and physical-scalar-painter managers, and a
+		// name may legitimately appear in BOTH (see PainterUnionEntry).  A row's
+		// serial therefore has to be taken from the manager the row CAME from,
+		// which is positional -- `CategoryEntitySerialLocked_` cannot answer it
+		// from a name and no longer pretends to.  Same enumeration and same order
+		// as the flat surface, because both go through
+		// `CollectPainterUnionEntries`.
+		const std::vector<PainterUnionEntry> entries = CollectPainterUnionEntries( mJob );
+		seeds.reserve( entries.size() );
+		for( std::size_t i = 0; i < entries.size(); ++i ) {
+			TreeNodeSeed s;
+			s.name   = entries[i].name;
+			s.order  = i;                    // preserve the flat list's own order exactly
+			s.serial = entries[i].serial;
+			seeds.push_back( s );
+		}
+	} else {
+		// EVERY OTHER CATEGORY IS FLAT, and is modelled here as N roots with
+		// no children rather than special-cased in each shell -- which is the
+		// whole point of a generic node-children API (87 §5 step 4).  Built
+		// from the SAME *Locked_ body the flat getters use, so the two
+		// surfaces cannot report different entity sets.
+		//
+		// ONE bulk enumeration, not N calls to the per-index getter: that
+		// getter re-enumerates the whole manager every time, so the obvious
+		// loop is O(N^2) -- the flat API's worst property, which the API that
+		// REPLACES it must not inherit.
+		std::vector<String> names;
+		CategoryEntityNamesLocked_( cat, names );
+		seeds.reserve( names.size() );
+		for( std::size_t i = 0; i < names.size(); ++i ) {
+			TreeNodeSeed s;
+			s.name   = names[i];
+			s.order  = i;                    // preserve the flat list's own order exactly
+			// NOT `i`.  The order key above is a POSITION, which is stable
+			// across a replacement and so says nothing about identity; the
+			// serial is what makes a remove + re-add republish.  0 where the
+			// store has no serial -- see TreeNodeSeed::serial.
+			s.serial = CategoryEntitySerialLocked_( cat, names[i] );
+			seeds.push_back( s );
+		}
+	}
+	AuthoredTree t = BuildAuthoredTree( seeds );
+	// STAMP THE REBUILD COUNTER, unconditionally and for every category
+	// including an empty one.  This is the only member of the tree that does not
+	// come from the seeds, because it is not about the entities -- it is about
+	// which INSTANCE of the stores they were read out of.  See
+	// AuthoredTree::rebuildCount.
+	t.rebuildCount = mJob.GetContainerRebuildCount();
+	return t;
+}
+
+void SceneEditController::RefreshTreeSnapshot_( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;   // render owns the scene: serve stale
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return;                                      // contended (or re-entrant): serve stale
+	AuthoredTree built = BuildCategoryTreeLocked_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );                // leaf lock: never held across mMutex
+	// COMPARE, THEN PUBLISH.  An unchanged tree is not republished and the
+	// generation does not move, so a handle a shell is holding survives every
+	// idle count call -- without this the handle tag would invalidate
+	// everything on every poll and the API would be unusable.  It also makes
+	// the "another thread refreshed mid-walk" case benign whenever the scene
+	// did not actually change: there is no writer at all.
+	if( TreesEquivalent( built, mUi.trees[ci] ) ) return;
+	// The whole struct is assigned under this lock, and every reader holds
+	// the same lock for its whole read -- that, and not the assignment being
+	// one statement, is what stops a torn read.  See AuthoredTree's comment.
+	built.generation = NextTreeGeneration().fetch_add( 1, std::memory_order_relaxed );
+	mUi.trees[ci]    = std::move( built );
+}
+
+void SceneEditController::ReadTree( Category cat, AuthoredTree& out ) const
+{
+	out = AuthoredTree();
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return;
+	RefreshTreeSnapshot_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	out = mUi.trees[ci];              // ONE locked pass: the copy cannot mix two trees
+}
+
+// =====================================================================
+// doc-88 Phase 3 S11 -- the multi-parent Painter/Material DAG.  See the
+// three-layer split documented on the type/method declarations in
+// SceneEditController.h just above GraphNodeSeed.
+// =====================================================================
+
+namespace
+{
+	//! Structural equality of two ports, IGNORING nothing -- every field is
+	//! observable content (unlike TreeNodeRow there is no separate "identity"
+	//! field like `serial`; a port's identity IS its content). Mirrors
+	//! TreesEquivalent's per-row comparison style.
+	bool GraphPortsEqual( const SceneEditController::GraphPort& a, const SceneEditController::GraphPort& b )
+	{
+		if( std::strcmp( a.paramName.c_str(), b.paramName.c_str() ) != 0 ) return false;
+		if( a.occurrence != b.occurrence ) return false;
+		if( a.otherNode  != b.otherNode  ) return false;
+		if( std::strcmp( a.otherName.c_str(), b.otherName.c_str() ) != 0 ) return false;
+		if( a.portPipe != b.portPipe || a.portColorAlsoAcceptsScalar != b.portColorAlsoAcceptsScalar ) return false;
+		if( a.portCategories != b.portCategories ) return false;   // vector<ChunkCategory>: enum operator== is builtin
+		return true;
+	}
+	bool GraphPortListsEqual( const std::vector<SceneEditController::GraphPort>& a,
+	                          const std::vector<SceneEditController::GraphPort>& b )
+	{
+		if( a.size() != b.size() ) return false;
+		for( std::size_t i = 0; i < a.size(); ++i ) if( !GraphPortsEqual( a[i], b[i] ) ) return false;
+		return true;
+	}
+	//! `handle` is DELIBERATELY NOT COMPARED here (doc-88 S11 review round 2
+	//! P1) -- it is a DERIVED field, not content. `a` is always the freshly
+	//! `BuildPainterMaterialGraph`-assembled candidate (every node's handle
+	//! still `kInvalidGraphNode`, the pure assembler has no generation to
+	//! stamp with) and `b` is the PREVIOUSLY PUBLISHED graph (every node's
+	//! handle real, stamped from the OLD generation). Comparing them would
+	//! disagree on every single call regardless of whether anything actually
+	//! changed, which would defeat compare-then-publish entirely -- the
+	//! candidate's handles are stamped from a NEW generation only once this
+	//! comparison has already decided one is needed, in
+	//! RefreshPainterMaterialGraphSnapshot_, same ordering AuthoredTree's
+	//! own `generation` field requires of TreesEquivalent's caller.
+	bool GraphNodesEqual( const SceneEditController::GraphNode& a, const SceneEditController::GraphNode& b )
+	{
+		if( std::strcmp( a.name.c_str(), b.name.c_str() ) != 0 ) return false;
+		if( std::strcmp( a.chunkKeyword.c_str(), b.chunkKeyword.c_str() ) != 0 ) return false;
+		if( a.category != b.category ) return false;
+		if( a.outputPipe != b.outputPipe ) return false;
+		if( a.serial   != b.serial   ) return false;
+		if( a.defCount != b.defCount ) return false;
+		if( a.repeatCount != b.repeatCount ) return false;   // Object Graph slice: painter nodes always 0 == 0, a no-op there
+		if( !GraphPortListsEqual( a.outEdges, b.outEdges ) ) return false;
+		if( !GraphPortListsEqual( a.inEdges,  b.inEdges  ) ) return false;
+		return true;
+	}
+	//! Mirrors TreesEquivalent: drives RefreshPainterMaterialGraphSnapshot_'s
+	//! compare-then-publish so an unchanged graph does not bump the
+	//! generation (which would invalidate any outstanding `GraphNode::handle`
+	//! a caller is still holding -- doc-88 S11 review round 2 P1 shipped the
+	//! per-node handle this comment used to call a future S14+ addition).
+	bool PainterMaterialGraphsEquivalent( const SceneEditController::PainterMaterialGraph& a,
+	                                      const SceneEditController::PainterMaterialGraph& b )
+	{
+		if( a.rebuildCount != b.rebuildCount ) return false;
+		if( a.nodes.size() != b.nodes.size() ) return false;
+		for( std::size_t i = 0; i < a.nodes.size(); ++i ) if( !GraphNodesEqual( a.nodes[i], b.nodes[i] ) ) return false;
+		return true;
+	}
+
+	//! ExpressionProgram::DefCount() for `painterName`, probed through the
+	//! SAME colour-then-scalar manager dance + dynamic_cast
+	//! PainterPreview::RenderDefStagePreview already uses (PainterPreview.cpp)
+	//! -- not re-derived logic, the SAME accessor pattern, because
+	//! ExpressionProgram is reached only through the concrete
+	//! ExpressionPainter/ExpressionScalarPainter classes, not through
+	//! IPainter/IScalarPainter. 0 for every non-expression-family painter
+	//! (including a plain `scalar_painter` with no `expression` block, and
+	//! every Function-category chunk -- neither registers in either painter
+	//! manager).
+	int DefCountForPainter( IJobPriv& job, const String& painterName )
+	{
+		if( IPainterManager* pm = job.GetPainters() ) {
+			if( IPainter* p = pm->GetItem( painterName.c_str() ) ) {
+				if( const Implementation::ExpressionPainter* ep = dynamic_cast<const Implementation::ExpressionPainter*>( p ) )
+					return ep->GetProgram().DefCount();
+			}
+		}
+		if( IScalarPainterManager* spm = job.GetScalarPainters() ) {
+			if( IScalarPainter* p = spm->GetItem( painterName.c_str() ) ) {
+				if( const Implementation::ExpressionScalarPainter* ep = dynamic_cast<const Implementation::ExpressionScalarPainter*>( p ) )
+					return ep->GetProgram().DefCount();
+			}
+		}
+		return 0;
+	}
+}
+
+SceneEditController::PainterMaterialGraph SceneEditController::BuildPainterMaterialGraph(
+	const std::vector<GraphNodeSeed>& nodeSeeds, const std::vector<GraphEdgeSeed>& edgeSeeds )
+{
+	PainterMaterialGraph out;
+	const std::size_t n = nodeSeeds.size();
+	if( n == 0 ) return out;
+
+	// Presentation order: (order, name) tie-break, exactly BuildAuthoredTree's
+	// own discipline, computed FIRST so `byId` below indexes into the FINAL
+	// display order.
+	//
+	// IDENTITY-PERMUTATION INVARIANT: `perm` starts as the identity
+	// permutation of [0,n) (perm[i] == i) and `stable_sort` only REORDERS
+	// its elements in place -- it neither drops nor duplicates any index,
+	// so after the sort `perm` is still a BIJECTION [0,n) -> [0,n), just
+	// under a different order. That is what makes the loop below ("for k in
+	// [0,n): consider nodeSeeds[perm[k]]") a walk over every seed EXACTLY
+	// once, in presentation order -- not an artifact of the sort that could
+	// skip or repeat a seed.
+	std::vector<std::size_t> perm( n );
+	for( std::size_t i = 0; i < n; ++i ) perm[i] = i;
+	std::stable_sort( perm.begin(), perm.end(),
+		[&nodeSeeds]( std::size_t a, std::size_t b ) {
+			if( nodeSeeds[a].order != nodeSeeds[b].order ) return nodeSeeds[a].order < nodeSeeds[b].order;
+			return std::string( nodeSeeds[a].name.c_str() ) < std::string( nodeSeeds[b].name.c_str() );
+		} );
+
+	// GraphNodeSeed::id -> node index (doc-88 S11 review round 1 P1-2: node
+	// identity is the chunk's OWN Cst::NodeId, not (category,name) -- see
+	// GraphNodeSeed's and this function's own header comment for why).  A
+	// DUPLICATE `id` seed keeps the FIRST occurrence in presentation order
+	// and is DROPPED FROM `out.nodes` TOO, not just from this map -- round-1
+	// review found the prior version only deduped the lookup map, leaving a
+	// second same-key seed as a permanently-unreachable orphan node (a
+	// synthetic 2-duplicate-seed input produced 3 nodes instead of 1).
+	std::map<RISE::Cst::NodeId, unsigned int> byId;
+	out.nodes.reserve( n );
+	for( std::size_t k = 0; k < n; ++k ) {
+		const GraphNodeSeed& s = nodeSeeds[ perm[k] ];
+		if( byId.find( s.id ) != byId.end() ) continue;   // duplicate id: drop, keep the first
+		GraphNode node;
+		// node.handle stays kInvalidGraphNode: this is the PURE assembler,
+		// which has no generation to stamp a handle with -- see
+		// GraphNode::handle's own comment. RefreshPainterMaterialGraphSnapshot_
+		// stamps the real handles once it has decided to publish this graph.
+		node.name         = s.name;
+		node.chunkKeyword = s.chunkKeyword;
+		node.category     = s.category;
+		node.outputPipe   = s.outputPipe;
+		node.order        = s.order;
+		node.serial       = s.serial;
+		node.defCount     = s.defCount;
+		node.repeatCount  = s.repeatCount;   // Object Graph slice: painter/material seeders never set this, stays 0
+		byId.insert( std::make_pair( s.id, static_cast<unsigned int>( out.nodes.size() ) ) );
+		out.nodes.push_back( node );
+	}
+
+	// EDGES.  Unlike BuildAuthoredTree this assembler never WALKS the graph
+	// it builds -- each edge seed is classified ONCE against `byId` above,
+	// so a crafted cycle (or a longer loop) becomes two ordinary adjacency
+	// rows, never a traversal that could hang. See the header comment.
+	for( const GraphEdgeSeed& e : edgeSeeds ) {
+		const std::map<RISE::Cst::NodeId, unsigned int>::const_iterator fromIt = byId.find( e.fromId );
+		if( fromIt == byId.end() ) continue;   // referrer not a seeded node: not this function's contract to guess at
+		const unsigned int fromIdx = fromIt->second;
+
+		GraphPort outPort;
+		outPort.paramName      = e.paramName;
+		outPort.occurrence     = e.occurrence;
+		outPort.portCategories = e.portCategories;
+		outPort.portPipe = e.portPipe;
+		outPort.portColorAlsoAcceptsScalar = e.portColorAlsoAcceptsScalar;
+		outPort.otherName      = e.toName;
+
+		const std::map<RISE::Cst::NodeId, unsigned int>::const_iterator toIt =
+			( e.toId == 0 ) ? byId.end() : byId.find( e.toId );
+		if( toIt == byId.end() ) {
+			// DANGLING or out-of-scope target: a node-less port -- recorded,
+			// never dropped, never a crash.
+			outPort.otherNode = kInvalidNodeIndex;
+			out.nodes[fromIdx].outEdges.push_back( outPort );
+			continue;
+		}
+		const unsigned int toIdx = toIt->second;
+		outPort.otherNode = toIdx;
+		out.nodes[fromIdx].outEdges.push_back( outPort );
+
+		// MIRROR onto the target's inEdges: the "parents is a LIST" half of
+		// the shared-painter fan-out contract (NODE_GRAPH_CANVAS.md §1.2).  A
+		// self-reference (fromIdx == toIdx) is not special-cased -- the node
+		// simply gets one row in each list, same cost-free non-special-case
+		// posture BuildAuthoredTree's self-parent handling documents.
+		GraphPort inPort;
+		inPort.paramName      = e.paramName;
+		inPort.occurrence     = e.occurrence;
+		inPort.portCategories = e.portCategories;
+		inPort.portPipe = e.portPipe;
+		inPort.portColorAlsoAcceptsScalar = e.portColorAlsoAcceptsScalar;
+		inPort.otherNode      = fromIdx;
+		inPort.otherName      = e.fromName;
+		out.nodes[toIdx].inEdges.push_back( inPort );
+	}
+	return out;
+}
+
+std::vector<SceneEditController::GraphEdgeSeed> SceneEditController::BuildDanglingGraphEdgeSeeds(
+	const std::vector<GraphNodeSeed>& nodes,
+	const std::vector<Cst::UnresolvedReference>& unresolved,
+	size_t* sourceLookups )
+{
+	// Node identities already contain source names. This API deliberately
+	// accepts no CST Document or chunk nodes, so unresolved records cannot
+	// trigger repeated parameter-child scans while recovering that name.
+	if( unresolved.empty() ) return {};
+	std::map<Cst::NodeId, const GraphNodeSeed*> byId;
+	for( const GraphNodeSeed& node : nodes ) byId.emplace( node.id, &node );
+	std::vector<GraphEdgeSeed> out;
+	for( const RISE::Cst::UnresolvedReference& u : unresolved ) {
+		const ChunkDescriptor* desc = DescriptorForKeyword( String( u.chunkKeyword.c_str() ) );
+		if( !desc || ( desc->category != ChunkCategory::Painter && desc->category != ChunkCategory::Material ) ) continue;
+		const ParameterDescriptor* pd = nullptr;
+		for( const ParameterDescriptor& p : desc->parameters ) if( p.name == u.param ) { pd = &p; break; }
+		if( pd && pd->carriesExpressionSampleRefs ) continue; // typed expression edges are emitted separately
+		if( sourceLookups ) ++*sourceLookups;
+		const auto source = byId.find( u.sourceChunkId );
+		if( source == byId.end() ) continue;
+		GraphEdgeSeed s;
+		s.fromId       = u.sourceChunkId;
+		s.fromCategory = desc->category;
+		s.fromName     = source->second->name;
+		s.paramName    = String( u.param.c_str() );
+		// UnresolvedReference (Cst.h) carries no occurrence index -- 0 is the
+		// best-effort default; a dangling value on occurrence > 0 of a
+		// repeatable param therefore surfaces as occurrence 0 until a future
+		// Cst.h change adds one. Documented, not silently assumed.
+		s.occurrence   = 0;
+		if( pd ) {
+			s.portCategories = pd->referenceCategories;
+			s.portPipe = pd->semantics.pipe;
+			s.portColorAlsoAcceptsScalar = pd->semantics.colorAlsoAcceptsScalar;
+		}
+		// s.toId stays 0 (the dangling sentinel -- see GraphEdgeSeed's comment).
+		s.toCategory = ChunkCategory::Painter;   // arbitrary: toId==0 already marks this dangling, toCategory is unused by the assembler in that case
+		s.toName     = String( u.value.c_str() );
+		out.push_back( s );
+	}
+	return out;
+}
+
+void SceneEditController::ExpandFunctionPromotionFrontier(
+	const std::multimap<RISE::Cst::NodeId, const ReferenceEdge*>& edgesByReferrer,
+	std::set<RISE::Cst::NodeId>& promotedFunctionIds,
+	std::vector<std::pair<RISE::Cst::NodeId, String> >& functionFrontier )
+{
+	// `functionFrontier.size()` is RE-READ every iteration, so an entry a
+	// PRIOR iteration of this same loop appended (`promotedFunctionIds
+	// .insert(...).second` below) gets walked too -- this is the whole
+	// mechanism that carries the walk to a fixpoint in ONE call, not a
+	// caller-driven repeat. And it is the whole mechanism that TERMINATES
+	// on a cycle: a chunk id can enter `promotedFunctionIds` at most once
+	// (`std::set::insert` refuses a duplicate), so `functionFrontier` can
+	// grow to at most the number of distinct Function-category ids
+	// reachable at all, no matter how its edges are wired -- a
+	// Function->Function cycle just means two ids each point back at an
+	// already-visited id on their second encounter, which the `.second`
+	// check silently drops rather than re-queuing.
+	for( std::size_t fi = 0; fi < functionFrontier.size(); ++fi ) {
+		const RISE::Cst::NodeId fid = functionFrontier[fi].first;
+		const std::pair<std::multimap<RISE::Cst::NodeId,const ReferenceEdge*>::const_iterator,
+		                 std::multimap<RISE::Cst::NodeId,const ReferenceEdge*>::const_iterator>
+			range = edgesByReferrer.equal_range( fid );
+		for( std::multimap<RISE::Cst::NodeId,const ReferenceEdge*>::const_iterator it = range.first; it != range.second; ++it ) {
+			const ReferenceEdge& e = *it->second;
+			if( e.targetCategory != ChunkCategory::Function ) continue;
+			if( promotedFunctionIds.insert( e.targetId ).second )
+				functionFrontier.push_back( std::make_pair( e.targetId, e.targetName ) );
+		}
+	}
+}
+
+void SceneEditController::BuildPainterMaterialGraphSeedsLocked_(
+	std::vector<GraphNodeSeed>& outNodes, std::vector<GraphEdgeSeed>& outEdges ) const
+{
+	outNodes.clear();
+	outEdges.clear();
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return;   // no retained CST head (a Job that never CST-loaded, or post-ClearAll): empty graph, not a crash
+
+	// ---- ONE document scan, reused for EVERY seeding step below (doc-88
+	// S11 review round 1 P1-1). The prior version called
+	// SceneReferenceGraph::ResolveChunk -- itself a full O(N log N) document
+	// scan -- once PER live-manager painter/material NAME, turning an
+	// O(N log N) refresh into O(nodes * N log N) (measured 24s under
+	// mMutex on sombrero.RISEscene, 7442 chunks). This scan plus the ONE
+	// EdgesAndDangling call below reuse chunk identities. Reference metadata
+	// is recovered in structural passes, without per-name document queries;
+	// dangling expression recovery reads each parameter node directly. ----
+	const std::vector<SceneReferenceGraph::DocumentChunk> chunks = SceneReferenceGraph::AllChunks( *doc );
+
+	unsigned long long order = 0;
+
+	// ---- Painter + Material nodes: seeded from the DOCUMENT's own chunks,
+	// NOT the live Painter/Material managers (doc-88 S11 review round 1
+	// P1-2/P2-1/P2-2).
+	//
+	// WHY THE DOCUMENT AND NOT THE MANAGERS.  A live-manager NAME is not a
+	// chunk identity. Two problems the manager-union design (the prior
+	// version of this method) had baked in:
+	//   (a) a colour painter and a `scalar_painter` may LEGALLY share a
+	//       name (both ChunkCategory::Painter, two different managers) --
+	//       the manager union enumerates BOTH as same-named rows, and the
+	//       old (category,name)-keyed dedup collapsed the second into the
+	//       first, so only ONE of the two ever became a node, silently
+	//       merging their edges under whichever chunkKeyword `ResolveChunk`
+	//       (category-exact, so it saw the ambiguity and returned nothing)
+	//       happened to leave standing.
+	//   (b) a `piecewise_linear_function{,2d}` chunk is DUAL-REGISTERED --
+	//       its descriptor category is ChunkCategory::Function, but it can
+	//       still enumerate through a live "painter" accessor depending on
+	//       how it is bound. `ResolveChunk( Painter, name )` then correctly
+	//       refuses to attribute a Painter chunkKeyword to a name that is
+	//       not a Painter-category chunk, leaving a NODE WITH A BLANK
+	//       KEYWORD AND NO EDGES (measured 9/53 on enamel_watch.RISEscene).
+	// Seeding straight from `chunks` sidesteps both: every seed here came
+	// from a real top-level `Cst::NodeKind::Chunk` item, so `keyword` and
+	// `category` are correct BY CONSTRUCTION -- no re-resolution, no alias
+	// collapse -- and two same-name same-category chunks are simply two
+	// DocumentChunk rows, hence two GraphNodeSeed rows, each carrying its
+	// OWN `id`. Node identity in this graph is therefore
+	// `GraphNodeSeed::id` (the chunk's Cst::NodeId), NOT (category,name) --
+	// see BuildPainterMaterialGraph's own comment for the assembler side of
+	// this.
+	//
+	// EDGE-ATTACHMENT AMBIGUITY IS NOT IMPROVED, AND IS NOT THIS
+	// ASSEMBLER'S TO FIX.  When two same-category chunks share a name, a
+	// reference BY that name can still only resolve to ONE of them --
+	// Cst::BuildReferenceGraph's own documented first-wins "conservative
+	// same-name ALIAS" (see ReferenceGraph.h's "CATEGORY IS EXACT" note and
+	// Cst.h's TraceReferences comment). This graph does not second-guess
+	// that: an edge targeting an ambiguous name attaches to whichever chunk
+	// BuildReferenceGraph resolved it to (carried through unchanged as
+	// GraphEdgeSeed::toId below) -- the EXACT resolution the renderer
+	// itself uses, so the canvas never draws a wire the engine would not
+	// also draw. The unlucky sibling is never dropped as a NODE (both
+	// same-name chunks are always seeded), only as a possible EDGE target
+	// for that one ambiguous reference.
+	//
+	// MANAGER LOOKUPS REMAIN, but ONLY as ENRICHMENT (serial, defCount),
+	// never as the node SOURCE. Pipe metadata uses the chunk keyword/category
+	// and the parameter descriptor, without manager probes. Both
+	// probes are BY NAME (colour-manager-then-scalar-manager, the same
+	// order DefCountForPainter uses) and therefore share DefCountForPainter's
+	// own coarseness: when a colour and a scalar chunk share a name, BOTH
+	// of that name's two nodes read the SAME manager probe and can get the
+	// SAME (possibly wrong-for-one-of-them) serial/defCount. This is
+	// strictly an enrichment-field imprecision, not a node-identity one --
+	// `GraphNodeSeed::id` (unambiguous, from the chunk itself) is what this
+	// graph's correctness actually rests on.
+	for( const SceneReferenceGraph::DocumentChunk& c : chunks ) {
+		if( !c.hasCategory ) continue;
+		if( c.category != ChunkCategory::Painter && c.category != ChunkCategory::Material ) continue;
+		if( c.name.size() <= 1 ) continue;   // unnamed top-level chunk: unaddressable, can never be a reference target -- skip (String's <=1-is-empty convention)
+		GraphNodeSeed s;
+		s.id           = c.id;
+		s.name         = c.name;
+		s.chunkKeyword = c.keyword;
+		s.category     = c.category;
+		s.order        = order++;
+		if( c.category == ChunkCategory::Painter ) {
+			s.defCount = DefCountForPainter( mJob, c.name );
+			if( IPainterManager* pm = mJob.GetPainters() ) s.serial = pm->GetItemSerial( c.name.c_str() );
+			if( s.serial == 0 ) if( IScalarPainterManager* spm = mJob.GetScalarPainters() ) s.serial = spm->GetItemSerial( c.name.c_str() );
+		} else {
+			s.serial = CategoryEntitySerialLocked_( Category::Material, c.name );
+		}
+		s.outputPipe = ConnectionLegality::OutputPipe( s.chunkKeyword.c_str(), s.category );
+		outNodes.push_back( s );
+	}
+
+	// ---- Edges + dangling refs: ONE Cst::BuildReferenceGraph pass (doc-88
+	// S11 review round 1 P1-1), reusing the SAME `chunks` scan above --
+	// where the prior version called Edges() and then DanglingReferences()
+	// as two SEPARATE full passes. ----
+	const SceneReferenceGraph::Snapshot snapshot = SceneReferenceGraph::EdgesAndDangling( *doc, &chunks );
+
+	// Index snapshot.edges by referrer, for the transitive Function-node
+	// promotion walk below -- an in-memory adjacency lookup over data
+	// already computed above, not a further document scan.
+	std::multimap<RISE::Cst::NodeId, const ReferenceEdge*> edgesByReferrer;
+	for( const ReferenceEdge& e : snapshot.edges ) edgesByReferrer.insert( std::make_pair( e.referrerId, &e ) );
+
+	// Promote every Function-category chunk reachable from an in-scope
+	// (Painter/Material) referrer into a node of its own -- NODE_GRAPH_
+	// CANVAS.md §1.1's "the Function2D painters that are canvas-relevant":
+	// relevance is DEFINED as "reachable from a Painter/Material edge", not
+	// "every Function chunk in the document" (an untouched Function chunk
+	// would just be graph clutter with no wire attached to it).
+	//
+	// TRANSITIVE, not one-hop (doc-88 S11 review round 1 P2-3): if a
+	// promoted Function chunk itself references ANOTHER Function chunk
+	// (composition -- e.g. a piecewise_linear_function2d built from a
+	// warped domain another Function chunk supplies), that chunk promotes
+	// too, and so on to a fixpoint. Chosen over a one-hop cutoff because
+	// the closure is CHEAP here: `snapshot.edges` is already the full
+	// document-wide edge list from the ONE BuildReferenceGraph pass above,
+	// so walking it a second time (this time as the `edgesByReferrer`
+	// adjacency map) is a bounded, already-deduped in-memory graph walk
+	// (each chunk id enters the frontier at most once -- `promotedFunctionIds
+	// .insert` guards it, so even a crafted Function->Function CYCLE
+	// terminates), not another O(N log N) document scan. A one-hop cutoff
+	// would additionally need an "unshown inputs" count on the node payload
+	// so the canvas could badge the truncation -- transitive promotion
+	// needs no such field, because nothing reachable is ever hidden.
+	// defCount stays 0 for every promoted node: a pure Function chunk
+	// (piecewise_linear_function{,2d}, image_function2d, ...) never
+	// registers in the Painter/ScalarPainter managers DefCountForPainter
+	// probes.
+	std::set<RISE::Cst::NodeId> promotedFunctionIds;
+	std::vector<std::pair<RISE::Cst::NodeId, String> > functionFrontier;   // (id, name), in discovery order
+	auto tryPromoteFunction = [&]( RISE::Cst::NodeId id, const String& name ) {
+		if( promotedFunctionIds.insert( id ).second ) functionFrontier.push_back( std::make_pair( id, name ) );
+	};
+	for( const ReferenceEdge& e : snapshot.edges ) {
+		if( e.referrerCategory != ChunkCategory::Painter && e.referrerCategory != ChunkCategory::Material ) continue;
+		if( e.targetCategory != ChunkCategory::Function ) continue;
+		tryPromoteFunction( e.targetId, e.targetName );
+	}
+	// The BFS closure itself -- doc-88 S11 review round 2 P2-b factored
+	// this out of the inline loop that used to live here so a synthetic
+	// Function->Function CYCLE can drive the exact visited-set guard that
+	// makes it terminate, in a test, without a real parsed scene. Same
+	// three pieces of state (`edgesByReferrer`, `promotedFunctionIds`,
+	// `functionFrontier`) threaded through by reference -- behavior here is
+	// unchanged from the inline version.
+	ExpandFunctionPromotionFrontier( edgesByReferrer, promotedFunctionIds, functionFrontier );
+	for( const std::pair<RISE::Cst::NodeId, String>& pf : functionFrontier ) {
+		GraphNodeSeed s;
+		s.id       = pf.first;
+		s.name     = pf.second;
+		s.category = ChunkCategory::Function;
+		s.order    = order++;
+		// No live-manager registration serial reachable from this controller
+		// for a Function chunk (no IFunction1D/2DManager accessor on this
+		// path) -- 0, the same "store cannot tell a replacement from the
+		// original" posture TreeNodeSeed::serial documents for
+		// Medium/Rasterizer/Film/Animation/SceneVariant.
+		s.serial   = 0;
+		if( const RISE::Cst::NodeRef item = RISE::Cst::DocResolveNodeId( *doc, pf.first ) )
+			s.chunkKeyword = String( item->role.c_str() );
+		s.outputPipe = ConnectionLegality::OutputPipe( s.chunkKeyword.c_str(), s.category );
+		outNodes.push_back( s );
+	}
+
+	// ---- Edge seeds: every resolved edge whose REFERRER is in scope --
+	// Painter/Material (this graph's primary node categories) OR a
+	// promoted Function node (so a promoted node's OWN outgoing references
+	// show up too; the transitive-promotion loop above only walked
+	// `snapshot.edges` to DISCOVER which Function chunks to promote, it did
+	// not emit their edge seeds). ----
+	for( const auto* edges : { &snapshot.edges, &snapshot.danglingExpressionEdges } ) {
+		for( const ReferenceEdge& e : *edges ) {
+			const bool referrerInScope = e.referrerCategory == ChunkCategory::Painter
+				|| e.referrerCategory == ChunkCategory::Material
+				|| promotedFunctionIds.find( e.referrerId ) != promotedFunctionIds.end();
+			if( !referrerInScope ) continue;
+			GraphEdgeSeed s;
+			s.fromId         = e.referrerId;
+			s.fromCategory    = e.referrerCategory;
+			s.fromName        = e.referrerName;
+			s.paramName       = e.paramName;
+			s.occurrence      = e.occurrence;
+			s.portCategories  = e.portCategories;
+			s.portPipe = e.portPipe;
+			s.portColorAlsoAcceptsScalar = e.portColorAlsoAcceptsScalar;
+			s.toId            = e.targetId;
+			s.toCategory      = e.targetCategory;
+			s.toName          = e.targetName;
+			outEdges.push_back( s );
+		}
+
+	}
+
+	// The remaining dangling ports reuse cached source identities. Expression
+	// records were emitted above with their exact call pipes and occurrences.
+	const auto dangling = BuildDanglingGraphEdgeSeeds( outNodes, snapshot.unresolved );
+	outEdges.insert( outEdges.end(), dangling.begin(), dangling.end() );
+}
+
+bool SceneEditController::RefreshPainterMaterialGraphSnapshot_() const
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;   // render owns the scene: serve stale
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;                                      // contended (or re-entrant): serve stale
+	std::vector<GraphNodeSeed> nodeSeeds;
+	std::vector<GraphEdgeSeed> edgeSeeds;
+	BuildPainterMaterialGraphSeedsLocked_( nodeSeeds, edgeSeeds );
+	PainterMaterialGraph built = BuildPainterMaterialGraph( nodeSeeds, edgeSeeds );
+	built.rebuildCount = mJob.GetContainerRebuildCount();
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );   // leaf lock: acquired WHILE mMutex is still held, never the reverse (RefreshTreeSnapshot_'s own nesting order)
+	if( PainterMaterialGraphsEquivalent( built, mUi.painterMaterialGraph ) ) return true;
+	built.generation = NextTreeGeneration().fetch_add( 1, std::memory_order_relaxed );
+	// Stamp every node's HANDLE now that a real generation exists to stamp
+	// it with (doc-88 S11 review round 2 P1) -- reuses the SAME
+	// EncodeTreeHandle the object tree's TreeRootNode/TreeChildNode/
+	// TreeNodeParent getters mint from, so a GraphNodeHandle and a
+	// TreeNodeHandle share one bit layout and one generation space (both
+	// typedef unsigned long long; EncodeTreeHandle's signature is already
+	// generation+index only, with no AuthoredTree-specific state, so it
+	// needs no graph-specific twin). This is deliberately AFTER the
+	// equivalence check above, not folded into the assembly loop in
+	// BuildPainterMaterialGraph: that function is PURE and has no
+	// generation to mint against (see GraphNode::handle's own comment), and
+	// stamping here -- only on the branch that actually republishes --
+	// keeps a steady-state refresh (the common case) from paying an O(n)
+	// re-stamp for a graph it is about to discard anyway.
+	for( std::size_t i = 0; i < built.nodes.size(); ++i )
+		built.nodes[i].handle = EncodeTreeHandle( built.generation, static_cast<unsigned int>( i ) );
+	mUi.painterMaterialGraph = std::move( built );
+	return true;
+}
+
+void SceneEditController::ReadPainterMaterialGraph( PainterMaterialGraph& out ) const
+{
+	out = PainterMaterialGraph();
+	const bool fresh = RefreshPainterMaterialGraphSnapshot_();
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	out = mUi.painterMaterialGraph;
+	out.snapshotFresh = fresh;
+}
+
+unsigned int SceneEditController::ResolveGraphNodeHandle( const PainterMaterialGraph& g, GraphNodeHandle handle )
+{
+	// Mirrors DecodeTreeHandle exactly (same layout, same refusal rule) --
+	// a second function exists only because the container being decoded
+	// against differs (PainterMaterialGraph::nodes vs AuthoredTree::nodes),
+	// not because the discipline does. See DecodeTreeHandle's own comment
+	// for why the belt-and-braces `generation == 0` check stays even though
+	// the index bound below already rejects a handle against a
+	// never-published (and therefore empty) graph.
+	if( g.generation == 0 ) return kInvalidNodeIndex;
+	if( ( handle >> 32 ) != ( g.generation & 0xFFFFFFFFull ) ) return kInvalidNodeIndex;   // a handle from another snapshot
+	const unsigned int idx = static_cast<unsigned int>( handle & 0xFFFFFFFFull );
+	if( idx >= g.nodes.size() ) return kInvalidNodeIndex;
+	return idx;
+}
+
+int SceneEditController::ResolveUniqueGraphNodeIndex( const PainterMaterialGraph& g, ChunkCategory category,
+                                                        const String& name, int* outMatches )
+{
+	int firstIdx = -1;
+	int matches = 0;
+	for( std::size_t i = 0; i < g.nodes.size(); ++i ) {
+		if( g.nodes[i].category != category || g.nodes[i].name != name ) continue;
+		if( matches == 0 ) firstIdx = static_cast<int>( i );
+		++matches;
+	}
+	if( outMatches ) *outMatches = matches;
+	return ( matches == 1 ) ? firstIdx : -1;
+}
+
+// =====================================================================
+// doc-88 Phase 3 S17 -- connection-legality passthrough. See the
+// declarations' own comments in SceneEditController.h.
+// =====================================================================
+
+ConnectionVerdict SceneEditController::CheckConnection(
+	ChunkCategory targetCategory, const String& targetName,
+	const String& paramName,
+	ChunkCategory candidateCategory, const String& candidateName ) const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return { false, "no document loaded" };
+	return ConnectionLegality::CheckConnectionByName(
+		*doc, targetCategory, targetName, paramName, candidateCategory, candidateName );
+}
+
+bool SceneEditController::WouldCycle(
+	ChunkCategory fromCategory, const String& fromName,
+	ChunkCategory toCategory, const String& toName ) const
+{
+	std::lock_guard<std::mutex> lk( mMutex );
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+	const Cst::NodeId fromId = SceneReferenceGraph::ResolveChunk( *doc, fromCategory, fromName );
+	const Cst::NodeId toId   = SceneReferenceGraph::ResolveChunk( *doc, toCategory, toName );
+	if( fromId == 0 || toId == 0 ) return false;
+	return ConnectionLegality::WouldCycle( *doc, fromId, toId );
+}
+
+// =====================================================================
+// doc-88 Phase 3 S14 -- see the declarations' own comments in
+// SceneEditController.h for the full design (scene-path contract, why
+// position is not folded into the compare-then-publish graph snapshot,
+// the flat-accessor / bulk-read two-surface split).
+// =====================================================================
+
+bool SceneEditController::GetCurrentScenePath_( std::string& outPath, bool blocking ) const
+{
+	outPath.clear();
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;   // render owns the scene: refuse (see header comment)
+	if( blocking ) {
+		std::lock_guard<std::mutex> lk( mMutex );
+		outPath = mJob.GetCstLoadFileIdentity().filePath;
+		return true;
+	}
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;                                       // contended: serve stale (see header comment)
+	outPath = mJob.GetCstLoadFileIdentity().filePath;
+	return true;
+}
+
+void SceneEditController::ReadPainterMaterialGraphLaidOut( PainterMaterialGraphLaidOut& out ) const
+{
+	out = PainterMaterialGraphLaidOut();
+	ReadPainterMaterialGraph( out.graph );
+
+	std::string scenePath;
+	GraphLayout::Positions saved;   // stays empty on an unsaved scene or a contended path read -- LayoutGraph then auto-lays-out every node
+	if( GetCurrentScenePath_( scenePath, /*blocking=*/false ) && !scenePath.empty() ) {
+		saved = GraphLayoutSidecar::ReadSidecar( scenePath );
+	}
+
+	const GraphLayout::Positions full = GraphLayout::LayoutGraph( out.graph, saved );
+	out.positions.assign( out.graph.nodes.size(), GraphNodePosition() );
+	for( std::size_t i = 0; i < out.graph.nodes.size(); ++i ) {
+		const std::string key( out.graph.nodes[i].name.c_str() );
+		GraphLayout::Positions::const_iterator it = full.find( key );
+		if( it == full.end() ) continue;   // empty node name -- LayoutGraph's own documented skip; position stays (0,0)
+		out.positions[i].x = it->second.x;
+		out.positions[i].y = it->second.y;
+	}
+}
+
+bool SceneEditController::WriteGraphLayoutPositions(
+	const std::vector<GraphNodePositionUpdate>& updates, std::string& outError ) const
+{
+	outError.clear();
+
+	// doc-88 S14 review round P2(1): scenePath and the live-node-name set
+	// MUST come from the SAME snapshot of `mJob` -- fold both reads into
+	// ONE blocking critical section, rather than the two SEPARATE critical
+	// sections this used to take: `GetCurrentScenePath_( blocking=true )`
+	// (lock mMutex, read the path, UNLOCK) followed by `ReadPainterMaterialGraph`
+	// -> `RefreshPainterMaterialGraphSnapshot_` (a SEPARATE, NON-blocking
+	// `try_lock` that serves the STALE `mUi.painterMaterialGraph` under any
+	// contention at all). A concurrent edit landing in the window between
+	// those two locks -- e.g. a just-added node -- could be reflected in
+	// neither read, or in the path read but not (yet, or ever, if the
+	// refresh keeps losing the try_lock race) the graph read: either way
+	// `liveNodeNames` below would not yet know about a node this very call's
+	// `updates` might be positioning, and `WriteSidecar`'s ORPHAN-DROP rule
+	// (GraphLayoutSidecar.h) would silently prune that position right back
+	// out. Same `mRenderOwnsScene` pre-check and lock order
+	// `GetCurrentScenePath_`'s blocking branch used (check-then-lock,
+	// mMutex only) -- this function no longer calls that helper for its own
+	// use (a NON-blocking, `false`-on-contention API cannot express "read
+	// the path AND the graph together"), but `ReadPainterMaterialGraphLaidOut`'s
+	// polled path still does, unchanged.
+	std::string scenePath;
+	std::set<std::string> liveNodeNames;
+	{
+		if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {
+			outError = "layout write refused: a render is in progress";
+			return false;
+		}
+		std::lock_guard<std::mutex> lk( mMutex );
+		scenePath = mJob.GetCstLoadFileIdentity().filePath;
+
+		std::vector<GraphNodeSeed> nodeSeeds;
+		std::vector<GraphEdgeSeed> edgeSeeds;
+		BuildPainterMaterialGraphSeedsLocked_( nodeSeeds, edgeSeeds );   // REQUIRES mMutex held -- see its own comment
+		for( const GraphNodeSeed& n : nodeSeeds ) {
+			if( n.name.size() <= 1 ) continue;   // BuildPainterMaterialGraphSeedsLocked_ never seeds an unnamed chunk; belt-and-braces
+			liveNodeNames.insert( std::string( n.name.c_str() ) );
+		}
+	}
+	// scenePath empty (unsaved scene) is NOT special-cased here -- it flows
+	// straight through to WriteSidecar, which already implements exactly
+	// that refusal (returns true, touches no file) -- see this function's
+	// own header comment for why the rule lives in one place only.
+
+	GraphLayout::Positions positions = GraphLayoutSidecar::ReadSidecar( scenePath );   // merge onto what's already saved
+	for( const GraphNodePositionUpdate& u : updates ) {
+		if( u.name.size() <= 1 ) continue;   // nothing to key a sidecar entry by
+		GraphLayoutPoint pt;
+		pt.x = u.x;
+		pt.y = u.y;
+		positions[ std::string( u.name.c_str() ) ] = pt;
+	}
+
+	return GraphLayoutSidecar::WriteSidecar( scenePath, positions, liveNodeNames, outError );
+}
+
+unsigned int SceneEditController::PainterGraphNodeCount() const
+{
+	RefreshPainterMaterialGraphSnapshot_();
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return static_cast<unsigned int>( mUi.painterMaterialGraph.nodes.size() );
+}
+
+unsigned long long SceneEditController::PainterGraphGeneration() const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return mUi.painterMaterialGraph.generation;
+}
+
+SceneEditController::GraphNodeHandle SceneEditController::PainterGraphNodeHandleAt( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	if( idx >= g.nodes.size() ) return kInvalidGraphNode;
+	return g.nodes[idx].handle;
+}
+
+String SceneEditController::PainterGraphNodeName( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return String();
+	return g.nodes[idx].name;
+}
+
+String SceneEditController::PainterGraphNodeKeyword( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return String();
+	return g.nodes[idx].chunkKeyword;
+}
+
+int SceneEditController::PainterGraphNodeCategory( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return -1;
+	return static_cast<int>( g.nodes[idx].category );
+}
+
+int SceneEditController::PainterGraphNodeOutputPipe( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	return idx == kInvalidNodeIndex ? -1 : static_cast<int>( g.nodes[idx].outputPipe );
+}
+
+bool SceneEditController::PainterGraphNodePortPipe( GraphNodeHandle node, unsigned int portIdx,
+	bool incoming, int& outPipe, bool& outColorAlsoAcceptsScalar ) const
+{
+	outPipe = -1;
+	outColorAlsoAcceptsScalar = false;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return false;
+	const std::vector<GraphPort>& ports = incoming ? g.nodes[idx].inEdges : g.nodes[idx].outEdges;
+	if( portIdx >= ports.size() ) return false;
+	outPipe = static_cast<int>( ports[portIdx].portPipe );
+	outColorAlsoAcceptsScalar = ports[portIdx].portColorAlsoAcceptsScalar;
+	return true;
+}
+
+int SceneEditController::PainterGraphNodeDefCount( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return -1;
+	return g.nodes[idx].defCount;
+}
+
+bool SceneEditController::PainterGraphNodePosition( GraphNodeHandle node, double& outX, double& outY ) const
+{
+	PainterMaterialGraphLaidOut laidOut;
+	ReadPainterMaterialGraphLaidOut( laidOut );
+	const unsigned int idx = ResolveGraphNodeHandle( laidOut.graph, node );
+	if( idx == kInvalidNodeIndex || idx >= laidOut.positions.size() ) return false;
+	outX = laidOut.positions[idx].x;
+	outY = laidOut.positions[idx].y;
+	return true;
+}
+
+unsigned int SceneEditController::PainterGraphNodeOutEdgeCount( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return 0;
+	return static_cast<unsigned int>( g.nodes[idx].outEdges.size() );
+}
+
+unsigned int SceneEditController::PainterGraphNodeInEdgeCount( GraphNodeHandle node ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return 0;
+	return static_cast<unsigned int>( g.nodes[idx].inEdges.size() );
+}
+
+namespace {
+	//! Shared body for PainterGraphNodeOutEdge/InEdge -- the only
+	//! difference between the two is which port vector is indexed.
+	bool ReadGraphPortLocked(
+		const SceneEditController::PainterMaterialGraph& g, unsigned int nodeIdx,
+		const std::vector<SceneEditController::GraphPort>& ports, unsigned int portIdx,
+		SceneEditController::GraphNodeHandle& outOtherNode, String& outParamName,
+		int& outOccurrence, String& outOtherName )
+	{
+		( void )nodeIdx;
+		if( portIdx >= ports.size() ) return false;
+		const SceneEditController::GraphPort& p = ports[portIdx];
+		outOtherNode = ( p.otherNode == SceneEditController::kInvalidNodeIndex )
+			? SceneEditController::kInvalidGraphNode
+			: g.nodes[p.otherNode].handle;
+		outParamName  = p.paramName;
+		outOccurrence = p.occurrence;
+		outOtherName  = p.otherName;
+		return true;
+	}
+}
+
+bool SceneEditController::PainterGraphNodeOutEdge( GraphNodeHandle node, unsigned int portIdx,
+	GraphNodeHandle& outOtherNode, String& outParamName, int& outOccurrence, String& outOtherName ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return false;
+	return ReadGraphPortLocked( g, idx, g.nodes[idx].outEdges, portIdx, outOtherNode, outParamName, outOccurrence, outOtherName );
+}
+
+bool SceneEditController::PainterGraphNodeInEdge( GraphNodeHandle node, unsigned int portIdx,
+	GraphNodeHandle& outOtherNode, String& outParamName, int& outOccurrence, String& outOtherName ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const PainterMaterialGraph& g = mUi.painterMaterialGraph;
+	const unsigned int idx = ResolveGraphNodeHandle( g, node );
+	if( idx == kInvalidNodeIndex ) return false;
+	return ReadGraphPortLocked( g, idx, g.nodes[idx].inEdges, portIdx, outOtherNode, outParamName, outOccurrence, outOtherName );
+}
+
+SceneEditController::TreeNodeHandle SceneEditController::HandleFor(
+	const AuthoredTree& t, unsigned int index )
+{
+	if( index >= t.nodes.size() ) return kInvalidTreeNode;
+	// A tree that was never PUBLISHED (BuildAuthoredTree leaves `generation`
+	// 0) cannot address anything: a handle minted from it would be refused by
+	// every getter anyway, so mint nothing rather than hand back a value that
+	// looks like a handle and is not.
+	if( t.generation == 0 ) return kInvalidTreeNode;
+	return EncodeTreeHandle( t.generation, index );
+}
+
+// Is `name` a row in `cat`'s CURRENTLY PUBLISHED tree?  Leaf lock only, and
+// the caller is expected to have refreshed already -- this asks about what is
+// published, which is what a shell has drawn.
+//
+// A linear scan, not an index.  The trees this runs against are outliner-sized
+// and the call happens ONCE per outliner reload (both shells resolve the
+// selection, not each row), so an auxiliary name map inside AuthoredTree would
+// be a second thing to keep consistent with `nodes` across every publish for
+// no measurable gain -- and AuthoredTree's own comment is explicit that
+// members which must agree with `nodes` are a hazard, not a convenience.
+bool SceneEditController::TreeContainsName_( Category cat, const std::string& name ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return false;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const AuthoredTree& t = mUi.trees[ci];
+	for( std::size_t i = 0; i < t.nodes.size(); ++i )
+		if( std::string( t.nodes[i].name.c_str() ) == name ) return true;
+	return false;
+}
+
+String SceneEditController::ResolveTreeRowName( Category cat, const String& entityName ) const
+{
+	if( entityName.size() <= 1 ) return entityName;          // String carries its NUL: <=1 is empty
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return entityName;
+
+	// ASK ABOUT THE PUBLISHED TREE, AND DO NOT REFRESH IT.  This is a
+	// deliberate departure from `TreeNodeCount` / `ReadTree`, and it is
+	// load-bearing twice over.
+	//
+	// CORRECTNESS: the question is "which of the rows the shell HAS DRAWN
+	// should be highlighted?"  The published tree is exactly that set.  If it
+	// is stale relative to the scene, so is what the user is looking at, and
+	// answering against a fresher tree would name a row that is not on screen.
+	//
+	// COST: both shells re-read the selection on EVERY refresh, and the Qt
+	// outliner's refresh is wired to `imageUpdated` -- i.e. it runs once per
+	// preview frame.  Both gate their tree PULL on the scene epoch precisely
+	// so a per-frame refresh does not rebuild the tree; a refresh here would
+	// defeat that gate from underneath them and put an O(n) rebuild + compare
+	// back on every frame of every drag.
+	//
+	// The one exception is a category NOTHING has published yet
+	// (`generation == 0`), which is a cold controller rather than a stale one
+	// -- there are no drawn rows to be consistent with, so publish once.  That
+	// keeps this usable on its own (a test, or a C-ABI caller that never walks
+	// the tree) without putting a rebuild on the per-frame path.
+	if( TreeGeneration( cat ) == 0 ) RefreshTreeSnapshot_( cat );
+
+	const std::string raw( entityName.c_str() );
+	if( TreeContainsName_( cat, raw ) ) return entityName;
+
+	// Not a row.  Only Objects can be synthesized, so only Objects have a
+	// chain to walk -- every other category ends here with the name it came
+	// in with.
+	if( cat != Category::Object ) return entityName;
+
+	// Build the fold CHAIN under the mutation lock, then release it before
+	// testing membership: the tree snapshot's leaf lock is never taken across
+	// this one from here, which keeps this method out of the lock-order graph
+	// entirely (RefreshTreeSnapshot_ above is the one place that nests them,
+	// and it is unchanged).
+	std::vector<std::string> chain;
+	{
+		if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return entityName;
+		std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+		if( !lk.owns_lock() ) return entityName;              // contended -> no highlight this frame
+		const IScene* scene = mJob.GetScene();
+		const IObjectManager* m = scene ? scene->GetObjects() : 0;
+		if( !m ) return entityName;
+		std::set<std::string> seen;
+		seen.insert( raw );
+		std::string cur = raw;
+		for( ;; ) {
+			const char* chunk = 0;
+			if( !m->GetObjectProvenance( cur.c_str(), &chunk, /*outSourceNode*/ 0 ) ) break;
+			const std::string next( chunk ? chunk : "" );
+			// A row whose provenance names ITSELF is 87 step 3a's collapse
+			// case; it is a fold target, not a fold source, so the chain ends.
+			if( next.empty() || next == cur ) break;
+			if( !seen.insert( next ).second ) break;          // fold cycle -> stop, do not spin
+			chain.push_back( next );
+			cur = next;
+		}
+	}
+
+	for( std::size_t i = 0; i < chain.size(); ++i )
+		if( TreeContainsName_( cat, chain[i] ) ) return String( chain[i].c_str() );
+
+	// Nothing on the chain is a row.  Hand back what we were given: the
+	// caller highlights nothing, which is what it did before this existed.
+	return entityName;
+}
+
+String SceneEditController::SelectionRowName() const
+{
+	return ResolveTreeRowName( mSelectionCategory, mSelectionName );
+}
+
+unsigned long long SceneEditController::TreeGeneration( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return 0;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return mUi.trees[ci].generation;
+}
+
+unsigned int SceneEditController::TreeNodeCount( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return 0;
+	RefreshTreeSnapshot_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return static_cast<unsigned int>( mUi.trees[ci].nodes.size() );
+}
+
+unsigned int SceneEditController::TreeRootCount( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return 0;
+	RefreshTreeSnapshot_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return static_cast<unsigned int>( mUi.trees[ci].roots.size() );
+}
+
+SceneEditController::TreeNodeHandle SceneEditController::TreeRootNode( Category cat, unsigned int rootIdx ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return kInvalidTreeNode;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const AuthoredTree& t = mUi.trees[ci];
+	if( rootIdx >= t.roots.size() ) return kInvalidTreeNode;
+	return EncodeTreeHandle( t.generation, t.roots[rootIdx] );
+}
+
+unsigned int SceneEditController::TreeChildCountByHandle( Category cat, TreeNodeHandle node ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return 0;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const AuthoredTree& t = mUi.trees[ci];
+	unsigned int idx = 0;
+	if( !DecodeTreeHandle( t, node, idx ) ) return 0;
+	return t.nodes[idx].childCount;
+}
+
+SceneEditController::TreeNodeHandle SceneEditController::TreeChildNode(
+	Category cat, TreeNodeHandle node, unsigned int childIdx ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return kInvalidTreeNode;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const AuthoredTree& t = mUi.trees[ci];
+	unsigned int idx = 0;
+	if( !DecodeTreeHandle( t, node, idx ) ) return kInvalidTreeNode;
+	const TreeNodeRow& r = t.nodes[idx];
+	if( childIdx >= r.childCount ) return kInvalidTreeNode;
+	const unsigned int slot = r.firstChild + childIdx;
+	// Belt-and-braces: `nodes` and `childIndices` are published together under
+	// this lock, so this cannot fire -- but an out-of-bounds READ is the exact
+	// failure that publishing them separately would produce, and a bounds
+	// check is cheaper than trusting a future edit to preserve the invariant.
+	if( slot >= t.childIndices.size() ) return kInvalidTreeNode;
+	return EncodeTreeHandle( t.generation, t.childIndices[slot] );
+}
+
+SceneEditController::TreeNodeHandle SceneEditController::TreeNodeParent( Category cat, TreeNodeHandle node ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return kInvalidTreeNode;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const AuthoredTree& t = mUi.trees[ci];
+	unsigned int idx = 0;
+	if( !DecodeTreeHandle( t, node, idx ) ) return kInvalidTreeNode;
+	const unsigned int p = t.nodes[idx].parent;
+	if( p == kInvalidNodeIndex ) return kInvalidTreeNode;      // a ROOT: no parent, not an error
+	return EncodeTreeHandle( t.generation, p );
+}
+
+String SceneEditController::TreeNodeNameByHandle( Category cat, TreeNodeHandle node ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return String();
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const AuthoredTree& t = mUi.trees[ci];
+	unsigned int idx = 0;
+	if( !DecodeTreeHandle( t, node, idx ) ) return String();
+	return t.nodes[idx].name;
 }
 
 namespace {
@@ -4250,6 +6088,695 @@ void SceneEditController::ResyncObjectBoundSections_()
 	const int medIdx = static_cast<int>( Category::Medium );
 	mSelectionByCategory[ matIdx ] = FindObjectMaterialName( mJob, objName );
 	mSelectionByCategory[ medIdx ] = FindObjectInteriorMediumName( mJob, objName );
+}
+
+// =====================================================================
+// Node-graph "spotlight" query -- see the declaration's own comment in
+// SceneEditController.h for the full contract.
+// =====================================================================
+
+// Resolve the object's LIVE bound material name, OR degrade -- factored
+// out of AppearanceClosureForObject (focused-view slice) so the SAME
+// locking-safe object->material resolution serves BOTH that method and
+// ReadPainterMaterialGraphLaidOutFocused's Object-category case, rather
+// than two independently-maintained copies of this exact lock discipline.
+// See AppearanceClosureForObject's own (former, now-shared) comment below
+// for the full rationale: FindObjectMaterialName over the retained
+// `material` param because the latter is wrong for an instancing chunk,
+// and the try_to_lock-and-degrade pattern because this is a POLLED,
+// UI-thread-reached call that must never block behind a render.
+//
+// Returns empty String either way on a non-degraded miss (unknown object,
+// no material bound) -- `*outDegraded` is what tells that apart from
+// contention; never null-unsafe (outDegraded may be null, matching every
+// other out-param on this surface).
+String SceneEditController::ResolveObjectMaterialNameLocked_( const String& objectName, bool* outDegraded ) const
+{
+	if( outDegraded ) *outDegraded = false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {
+		if( outDegraded ) *outDegraded = true;   // a render owns the scene -- this is contention, report it
+		return String();
+	}
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) {
+		if( outDegraded ) *outDegraded = true;   // lock contended -- not a block, and not a real answer
+		return String();
+	}
+	return FindObjectMaterialName( mJob, objectName );
+}
+
+// BFS from `startIdx` over `g`, following outEdges ONLY -- the SAME
+// "downstream reference" direction a material's own outEdges walk toward
+// its input painters (a material's outEdges point AT the painters it
+// references; see GraphNode's own outEdges/inEdges comment). Returns the
+// visited indices in discovery order, `startIdx` itself first. A
+// node-less port (dangling, or pointing outside this graph's modeled
+// categories) is skipped, never followed and never a crash.
+//
+// Shared by AppearanceClosureForObject (walks from a resolved material)
+// and ReadPainterMaterialGraphLaidOutFocused (walks from either a
+// resolved material -- Object-category selection -- or directly from a
+// selected Painter/Function/Material canvas node) -- ONE BFS
+// implementation for this graph, not two independently maintained walks.
+// PURE and static: no controller state, no lock, testable against a
+// synthetic graph exactly like BuildPainterMaterialGraph.
+std::vector<unsigned int> SceneEditController::BFSGraphClosure( const PainterMaterialGraph& g, unsigned int startIdx )
+{
+	std::vector<unsigned int> frontier;
+	if( startIdx >= g.nodes.size() ) return frontier;
+	std::vector<bool> visited( g.nodes.size(), false );
+	visited[ startIdx ] = true;
+	frontier.push_back( startIdx );
+
+	std::size_t head = 0;
+	while( head < frontier.size() ) {
+		const unsigned int cur = frontier[head++];
+		for( const GraphPort& p : g.nodes[cur].outEdges ) {
+			if( p.otherNode == kInvalidNodeIndex ) continue;             // dangling / node-less port -- skip (design: "none"/unbound slots are skipped)
+			if( p.otherNode >= g.nodes.size() ) continue;                // defensive; never true for a snapshot BuildPainterMaterialGraph produced
+			if( visited[ p.otherNode ] ) continue;
+			visited[ p.otherNode ] = true;
+			frontier.push_back( p.otherNode );
+		}
+	}
+	return frontier;
+}
+
+// Filter `g` down to exactly the nodes named by `keep` (indices into
+// `g.nodes`, in the caller's own presentation order -- e.g. BFSGraphClosure's
+// discovery order), remapping every port's `otherNode` index into the NEW
+// (filtered) index space, or to `kInvalidNodeIndex` (node-less) when the
+// port's target is not itself in `keep` -- e.g. a kept node's inEdges row
+// from a referrer OUTSIDE the focused subgraph becomes a node-less port,
+// never a crash, never a silently dropped port (same "never drop an edge,
+// only node-less it" convention BuildPainterMaterialGraph itself
+// documents). This is what lets a focused-view node still show an
+// accurate fan-out badge (`inEdges.size() > 1`) even when most of its
+// referrers are out of view.
+//
+// Each kept node's ORIGINAL GraphNodeHandle is preserved VERBATIM -- this
+// function invents no new identity space, so the returned graph carries
+// `g.generation`/`g.rebuildCount` unchanged and a handle from a full read
+// resolves identically against a focused read of the same generation (and
+// vice versa) via the ordinary ResolveGraphNodeHandle.
+//
+// PURE and static, same testability posture as BFSGraphClosure.
+// TOLERATES OUT-OF-RANGE ENTRIES IN `keep` (review-round P3-1 fix on
+// 0562b9c4): `remap[idx]` is keyed off the ACTUAL count of entries pushed
+// so far, not `keep`'s own index `i` -- computed with a dedicated pre-pass
+// that mirrors the exact same bounds-skip condition the push loop below
+// uses, so an out-of-range entry that gets skipped can never shift every
+// LATER remap value by the skip count (the bug: with the old "remap[keep[i]]=i"
+// scheme, keep=[5,999,3] on a 6-node graph would still record remap[3]=2
+// even though index 999 gets skipped and node 3 actually lands at
+// out.nodes[1] -- any port pointing at old index 3 would then resolve to
+// the WRONG new node). (BFSGraphClosure's own output is already clean --
+// no out-of-range indices -- so this had no observable effect on the one
+// caller that exists today; it matters only because this helper is
+// explicitly extracted for reuse by future callers that may not share
+// that guarantee. Duplicate indices in `keep` are NOT specifically
+// handled -- `keep` is documented as a set of node indices, and a caller
+// that violates that by repeating one gets an unspecified but non-crashing
+// remap for that index's incoming edges, same as before this fix.)
+SceneEditController::PainterMaterialGraph SceneEditController::FilterPainterMaterialGraph(
+	const PainterMaterialGraph& g, const std::vector<unsigned int>& keep )
+{
+	PainterMaterialGraph out;
+	out.generation   = g.generation;
+	out.rebuildCount = g.rebuildCount;
+	out.snapshotFresh = g.snapshotFresh;
+
+	std::vector<int> remap( g.nodes.size(), -1 );   // old index -> new index, -1 = not kept
+	{
+		int pushedSoFar = 0;
+		for( unsigned int idx : keep ) {
+			if( idx >= g.nodes.size() ) continue;   // MUST mirror the push loop's own skip below
+			remap[ idx ] = pushedSoFar++;
+		}
+	}
+
+	auto remapPorts = [&]( const std::vector<GraphPort>& ports ) {
+		std::vector<GraphPort> mapped;
+		mapped.reserve( ports.size() );
+		for( const GraphPort& p : ports ) {
+			GraphPort np = p;
+			if( np.otherNode != kInvalidNodeIndex && np.otherNode < remap.size() && remap[ np.otherNode ] >= 0 ) {
+				np.otherNode = static_cast<unsigned int>( remap[ np.otherNode ] );
+			} else {
+				np.otherNode = kInvalidNodeIndex;   // out-of-subgraph target -- node-less, never dropped, otherName preserved
+			}
+			mapped.push_back( np );
+		}
+		return mapped;
+	};
+
+	out.nodes.reserve( keep.size() );
+	for( unsigned int idx : keep ) {
+		if( idx >= g.nodes.size() ) continue;   // MUST mirror the remap pre-pass's own skip above
+		GraphNode n   = g.nodes[idx];
+		n.outEdges    = remapPorts( n.outEdges );
+		n.inEdges     = remapPorts( n.inEdges );
+		out.nodes.push_back( n );
+	}
+	return out;
+}
+
+// =====================================================================
+// Node-graph "spotlight" query -- see the declaration's own comment in
+// SceneEditController.h for the full contract.
+// =====================================================================
+
+std::vector<SceneEditController::AppearanceClosureEntry> SceneEditController::AppearanceClosureForObject(
+	const String& objectName, bool* outDegraded ) const
+{
+	std::vector<AppearanceClosureEntry> result;
+	// Default: NOT degraded. Only ResolveObjectMaterialNameLocked_'s two
+	// `mRenderOwnsScene`/`try_to_lock` refusals (review-round P1 fix) ever
+	// set this true -- every other early return (empty name, unknown
+	// object, no material bound, ambiguous material) is a REAL, resolved
+	// answer, not contention, and must not be reported as degraded (see
+	// this method's own declaration comment for why that distinction
+	// matters to a polling caller).
+	if( outDegraded ) *outDegraded = false;
+	if( objectName.size() <= 1 ) return result;
+
+	// Step 1: resolve the object's LIVE bound material -- see
+	// ResolveObjectMaterialNameLocked_'s own comment for the full
+	// rationale (instancing-correctness, locking discipline).
+	bool degraded = false;
+	const String matName = ResolveObjectMaterialNameLocked_( objectName, &degraded );
+	if( degraded ) {
+		if( outDegraded ) *outDegraded = true;
+		return result;
+	}
+	if( matName.size() <= 1 ) return result;   // unknown object, or no material bound
+
+	// Step 2: BFS the ALREADY-PUBLISHED S11 PainterMaterialGraph -- the SAME
+	// edges ReadPainterMaterialGraphLaidOut composes and the canvas itself
+	// draws from. No second reference-resolution mechanism: this
+	// deliberately does NOT re-derive edges from SceneReferenceGraph/
+	// Cst::BuildReferenceGraph itself. See this method's own declaration
+	// comment (SceneEditController.h) for the eventual-consistency caveat
+	// between this read and the one just above.
+	PainterMaterialGraph g;
+	ReadPainterMaterialGraph( g );
+
+	// Node lookup by (category, name), addressing the material node the
+	// SAME way CheckConnection/WouldCycle already do for this graph
+	// (GraphNodeHandle's own comment: a published GraphNode carries no raw
+	// Cst::NodeId for a caller to key off instead).
+	//
+	// AMBIGUITY (review-round P1 fix): unlike a live IMaterialManager --
+	// which cannot register two materials under one name -- the CST
+	// Document backing this graph CAN legally contain two
+	// `ChunkCategory::Material` chunks sharing `matName` (BuildPainter
+	// MaterialGraph's node identity is `GraphNodeSeed::id`, the chunk's own
+	// Cst::NodeId, NOT (category,name) -- "two same-category chunks... each
+	// gets its OWN node" is the documented behavior, not a corner case this
+	// graph avoids). The previous draft's "materials live in one flat
+	// IMaterialManager" comment claimed this could not happen on this path;
+	// that was FALSE precisely because the graph's node SEEDS come from the
+	// Document (every declared chunk), not from what actually derived
+	// successfully into the live manager -- a duplicate-name pair can sit
+	// in the Document even though only one of them (or neither) is what
+	// `FindObjectMaterialName`'s live answer above actually resolved to.
+	// `ResolveUniqueGraphNodeIndex` is the shared "refuse rather than
+	// guess" helper (see its own comment) -- matches
+	// `SceneReferenceGraph::ResolveChunk`'s established "ambiguous name ->
+	// refuse" convention (ReferenceGraph.h). A future refinement could
+	// resolve the tie by cross-referencing the live IMaterial pointer (the
+	// way `FindObjectMaterialName` itself does for the object->material
+	// step), but that needs a second live pointer-identity probe this
+	// method does not otherwise need; refusing is the honest,
+	// immediately-correct answer for what is, in practice, a hand-authored
+	// or hostile scene-authoring degenerate, not a normal scene shape.
+	const int matIdx = ResolveUniqueGraphNodeIndex( g, ChunkCategory::Material, matName );
+	if( matIdx < 0 ) return result;   // not in the graph at all, or ambiguous -- refuse rather than guess
+
+	const std::vector<unsigned int> keep = BFSGraphClosure( g, static_cast<unsigned int>( matIdx ) );
+	result.reserve( keep.size() );
+	for( unsigned int idx : keep ) {
+		AppearanceClosureEntry e;
+		e.category = g.nodes[idx].category;
+		e.name     = g.nodes[idx].name;
+		result.push_back( e );   // matIdx (the primary material) is keep[0] -- BFSGraphClosure's own contract
+	}
+	return result;
+}
+
+// =====================================================================
+// Node-graph FOCUSED-VIEW read -- user-requested slice on top of the
+// spotlight query above: "show all nodes" vs "show only the selection's
+// subgraph" (docs, if any, TODO -- see the declaration's own comment in
+// SceneEditController.h for the full contract). Reuses
+// ResolveObjectMaterialNameLocked_ + BFSGraphClosure -- the SAME
+// resolution and walk AppearanceClosureForObject uses -- rather than a
+// second graph-filtering mechanism.
+// =====================================================================
+
+void SceneEditController::ReadPainterMaterialGraphLaidOutFocused(
+	ChunkCategory cat, const String& name, PainterMaterialGraphLaidOut& out, bool* outDegraded ) const
+{
+	out = PainterMaterialGraphLaidOut();
+	if( outDegraded ) *outDegraded = false;
+	if( name.size() <= 1 ) return;
+
+	PainterMaterialGraph g;
+	ReadPainterMaterialGraph( g );
+	out.graph.snapshotFresh = g.snapshotFresh;
+	if( !g.snapshotFresh ) { if( outDegraded ) *outDegraded = true; return; }
+
+	int startIdx = -1;
+	if( cat == ChunkCategory::Object ) {
+		// SAME resolution AppearanceClosureForObject's own Step 1 uses --
+		// an object's live bound material, instancing-correct, locking-safe.
+		bool degraded = false;
+		const String matName = ResolveObjectMaterialNameLocked_( name, &degraded );
+		if( degraded ) {
+			if( outDegraded ) *outDegraded = true;
+			return;
+		}
+		if( matName.size() <= 1 ) return;   // unknown object, or no material bound -- empty, not degraded
+		startIdx = ResolveUniqueGraphNodeIndex( g, ChunkCategory::Material, matName );
+	} else {
+		// A canvas node itself (Painter/Function/Material): resolve
+		// directly by (category, name) against the already-published
+		// graph. The freshness gate above already refused a cached read,
+		// so an unknown node here is a resolved empty result, not contention.
+		startIdx = ResolveUniqueGraphNodeIndex( g, cat, name );
+	}
+	if( startIdx < 0 ) return;   // unknown or ambiguous -- refuse rather than guess, same convention as ResolveUniqueGraphNodeIndex itself
+
+	const std::vector<unsigned int> keep = BFSGraphClosure( g, static_cast<unsigned int>( startIdx ) );
+	const PainterMaterialGraph filtered = FilterPainterMaterialGraph( g, keep );
+
+	// TRANSIENT layout (design decision: focused mode never touches the
+	// .risegraph.json sidecar). `GraphLayout::LayoutGraph` is called with
+	// an ALWAYS-EMPTY saved-positions map -- every node in the focused
+	// subgraph gets a fresh auto-layout position on EVERY call, and
+	// nothing here ever reads OR writes the sidecar. Toggling back to the
+	// all-view goes through the ordinary `ReadPainterMaterialGraphLaidOut`,
+	// whose own sidecar-backed positions are completely untouched by this
+	// method -- there is no shared mutable state between the two paths at
+	// all, so the all-view is byte-for-byte exactly as it was before a
+	// focused excursion.
+	const GraphLayout::Positions empty;
+	const GraphLayout::Positions laidOut = GraphLayout::LayoutGraph( filtered, empty );
+	out.graph = filtered;
+	out.positions.assign( filtered.nodes.size(), GraphNodePosition() );
+	for( std::size_t i = 0; i < filtered.nodes.size(); ++i ) {
+		const std::string key( filtered.nodes[i].name.c_str() );
+		GraphLayout::Positions::const_iterator it = laidOut.find( key );
+		if( it == laidOut.end() ) continue;   // empty node name -- LayoutGraph's own documented skip; position stays (0,0)
+		out.positions[i].x = it->second.x;
+		out.positions[i].y = it->second.y;
+	}
+}
+
+// =====================================================================
+// Object Graph slice (S1 core) -- see ReadObjectGraph's own header
+// comment in SceneEditController.h for the full node-set/edge-taxonomy/
+// rank-direction design; this block is the implementation.
+// =====================================================================
+
+void SceneEditController::BuildObjectGraphSeedsLocked_(
+	std::vector<GraphNodeSeed>& outNodes, std::vector<GraphEdgeSeed>& outEdges ) const
+{
+	outNodes.clear();
+	outEdges.clear();
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return;   // no retained CST head: empty graph, not a crash -- same posture BuildPainterMaterialGraphSeedsLocked_ takes
+
+	// ONE document scan, reused for both nodes and edges below -- see
+	// BuildPainterMaterialGraphSeedsLocked_'s own comment for why (avoids
+	// turning an O(N log N) refresh into O(nodes * N log N)).
+	const std::vector<SceneReferenceGraph::DocumentChunk> chunks = SceneReferenceGraph::AllChunks( *doc );
+
+	unsigned long long order = 0;
+	// Every node this seeder emits, by Cst::NodeId -- used below to scope
+	// the edge scan to "referrer is one of OUR nodes" without a second
+	// document walk (a plain std::set lookup over data this same loop
+	// already produces).
+	std::set<RISE::Cst::NodeId> inScopeIds;
+	// review-round fix: the RE-CATEGORIZED category (Object for a
+	// rect_light/shape_light node, matching `GraphNodeSeed::category`
+	// above) by id -- so GraphEdgeSeed::fromCategory/toCategory below can
+	// agree with the NODE they address rather than repeating the raw
+	// document category (Light for a light-sugar chunk). Unused by
+	// BuildPainterMaterialGraph itself (it matches edges to nodes by id
+	// only, never by these fields), but a future reader of a
+	// GraphEdgeSeed in isolation should not be able to observe a node
+	// addressed as Object over here and as Light over there.
+	std::map<RISE::Cst::NodeId, ChunkCategory> nodeCategoryById;
+
+	for( const SceneReferenceGraph::DocumentChunk& c : chunks ) {
+		if( !c.hasCategory ) continue;
+		// `override_object`: ChunkCategory::Object by descriptor, but a
+		// legacy pre-CST round-trip chunk nothing emits today (see its own
+		// Describe() comment) whose target is a STRING param, not a
+		// Reference -- it produces no edges and is excluded as a NODE too
+		// (a node with no useful edges is just clutter here).
+		const bool isObject = ( c.category == ChunkCategory::Object
+		                      && std::string( c.keyword.c_str() ) != "override_object" );
+		const bool isGeometry = ( c.category == ChunkCategory::Geometry );
+		// rect_light/shape_light: ChunkCategory::Light by descriptor, but
+		// object-PRODUCING sugar (their own descriptor comment: they
+		// desugar into a painter+material+geometry+standard_object quartet
+		// at scene-DERIVE time) -- the RETAINED document this seeder reads
+		// still holds exactly the one authored chunk, so it is included by
+		// KEYWORD and re-categorized as Object below (see this method's
+		// declaration comment in the .h for the full rationale).
+		const bool isLightSugar = ( std::string( c.keyword.c_str() ) == "rect_light"
+		                          || std::string( c.keyword.c_str() ) == "shape_light" );
+		if( !isObject && !isGeometry && !isLightSugar ) continue;
+		if( c.name.size() <= 1 ) continue;   // unnamed: unaddressable, never a reference target -- skip (String's <=1-is-empty convention)
+
+		GraphNodeSeed s;
+		s.id           = c.id;
+		s.name         = c.name;
+		s.chunkKeyword = c.keyword;
+		s.category     = isLightSugar ? ChunkCategory::Object : c.category;
+		s.order        = order++;
+		s.serial       = CategoryEntitySerialLocked_( isGeometry ? Category::Geometry : Category::Object, c.name );
+
+		// repeatCount: standard_object's count_u/count_v repeat sugar (87
+		// step 3c) -- see GraphNode::repeatCount's own header comment.
+		// review-round fix: counts are documented to accept `expr(...)`
+		// over a document `let` (Cst.cpp's ExpandSourceInstance, SCENE_
+		// CONVENTIONS.md's instancing section), so this MUST go through
+		// the real derive-time evaluator (`RISE::Cst::EvaluateObjectRepeatCounts`,
+		// itself a thin public seam onto Cst.cpp's private EvalInstanceCount/
+		// EvalInstanceValue) rather than a bare strtoull on the raw param
+		// text -- a first draft of this seeder did the latter, and
+		// `strtoull("expr(3+2)", ...)` silently reads 0, publishing
+		// repeatCount 0 ("not a repeat chunk") for a genuine 5-way repeat.
+		// EvaluateObjectRepeatCounts itself returns false (leaving
+		// cu/cv at their pre-set 1/1, never consulted below) when `c.item`
+		// carries no `count_u` at all -- exactly the "not a repeat chunk"
+		// case this seeder already needs to leave at 0.
+		//
+		// AMBIGUITY, ACCEPTED: `count_u 0` (with or without `count_v`) is a
+		// LEGAL authoring that synthesizes ZERO entries (Cst.cpp's own
+		// comment: "A count of ZERO is legal and produces NO entries").
+		// Its product is therefore ALSO 0 -- indistinguishable here from
+		// "not a repeat chunk at all". This is a deliberate, accepted fold,
+		// not a bug: a chunk that synthesizes nothing has nothing for a
+		// shell's "xN" badge to usefully report either way, so publishing
+		// the same 0 a plain non-repeat chunk gets is the honest answer,
+		// not a distortion of one into the other.
+		if( c.item && std::string( c.keyword.c_str() ) == "standard_object" ) {
+			int cu = 1, cv = 1;
+			if( doc && RISE::Cst::EvaluateObjectRepeatCounts( *doc, c.item, cu, cv ) )
+				s.repeatCount = cu * cv;
+		}
+
+		inScopeIds.insert( c.id );
+		nodeCategoryById[ c.id ] = s.category;
+		s.outputPipe = ConnectionLegality::OutputPipe( s.chunkKeyword.c_str(), s.category );
+		outNodes.push_back( s );
+	}
+
+	// ---- Edges: ONE Cst::BuildReferenceGraph pass, reusing the SAME
+	// `chunks` scan above -- see BuildPainterMaterialGraphSeedsLocked_'s
+	// own comment for why this is one pass, not Edges()+DanglingReferences()
+	// as two. Dangling references are NOT surfaced here (unlike the
+	// Painter/Material graph): a dangling hierarchy/geometry reference on
+	// an object simply shows that object with no edge for that slot --
+	// documented limitation, not a silent drop of a NODE (the referrer
+	// itself is always seeded regardless). ----
+	const SceneReferenceGraph::Snapshot snapshot = SceneReferenceGraph::EdgesAndDangling( *doc, &chunks );
+
+	for( const ReferenceEdge& e : snapshot.edges ) {
+		if( inScopeIds.find( e.referrerId ) == inScopeIds.end() ) continue;   // referrer not one of our nodes (also excludes override_object, unnamed chunks, out-of-scope categories)
+
+		// review-round fix: prefer the RE-CATEGORIZED category (falls back
+		// to the raw document category for a target outside this graph's
+		// node set, e.g. a dangling/out-of-scope toId -- there is no
+		// re-categorized value to look up for a node we never seeded) --
+		// see nodeCategoryById's own comment above.
+		const std::map<RISE::Cst::NodeId, ChunkCategory>::const_iterator fromCatIt = nodeCategoryById.find( e.referrerId );
+		const ChunkCategory referrerCat = ( fromCatIt != nodeCategoryById.end() ) ? fromCatIt->second : e.referrerCategory;
+		const std::map<RISE::Cst::NodeId, ChunkCategory>::const_iterator toCatIt = nodeCategoryById.find( e.targetId );
+		const ChunkCategory targetCat = ( toCatIt != nodeCategoryById.end() ) ? toCatIt->second : e.targetCategory;
+
+		const std::string pn( e.paramName.c_str() );
+		if( pn == "parent" || pn == "source" || pn == "obja" || pn == "objb" ) {
+			// HIERARCHY family: seeded AS-IS (referrer -> target) -- the
+			// document's own direction already IS child->parent /
+			// instance->source / composite->operand, exactly the direction
+			// this graph's RANK/LAYOUT DIRECTION design wants (see
+			// ReadObjectGraph's own header comment).
+			GraphEdgeSeed s;
+			s.fromId         = e.referrerId;
+			s.fromCategory    = referrerCat;
+			s.fromName        = e.referrerName;
+			s.paramName       = e.paramName;
+			s.occurrence      = e.occurrence;
+			s.portCategories  = e.portCategories;
+			s.portPipe = e.portPipe;
+			s.portColorAlsoAcceptsScalar = e.portColorAlsoAcceptsScalar;
+			s.toId            = e.targetId;
+			s.toCategory      = targetCat;
+			s.toName          = e.targetName;
+			outEdges.push_back( s );
+		} else if( pn == "geometry" || pn == "base_geometry" ) {
+			// GEOMETRY family: FLIPPED at seeding (geometry-chunk ->
+			// consumer) -- see ReadObjectGraph's own RANK/LAYOUT DIRECTION
+			// header comment. paramName/occurrence/portCategories stay
+			// faithful to the DOCUMENT's actual param even though fromId/
+			// toId are swapped, so a shell drawing a wire still labels the
+			// port correctly.
+			GraphEdgeSeed s;
+			s.fromId         = e.targetId;      // FLIPPED: the geometry chunk becomes the "referrer" here
+			s.fromCategory    = targetCat;
+			s.fromName        = e.targetName;
+			s.paramName       = e.paramName;
+			s.occurrence      = e.occurrence;
+			s.portCategories  = e.portCategories;
+			s.portPipe = e.portPipe;
+			s.portColorAlsoAcceptsScalar = e.portColorAlsoAcceptsScalar;
+			s.toId            = e.referrerId;   // FLIPPED: the consumer (an object, or another geometry chunk) becomes the "target"
+			s.toCategory      = referrerCat;
+			s.toName          = e.referrerName;
+			outEdges.push_back( s );
+		}
+		// Every other paramName on an in-scope referrer (material,
+		// modifier, shader, radiance_map, interior_medium, ...) is simply
+		// never matched above -- DROPPED, not seeded as an edge at all, by
+		// omission from this allowlist (see this method's own .h comment).
+	}
+}
+
+bool SceneEditController::RefreshObjectGraphSnapshot_() const
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;   // render owns the scene: serve stale
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;                                      // contended (or re-entrant): serve stale
+	std::vector<GraphNodeSeed> nodeSeeds;
+	std::vector<GraphEdgeSeed> edgeSeeds;
+	BuildObjectGraphSeedsLocked_( nodeSeeds, edgeSeeds );
+	SceneGraphModel built = BuildPainterMaterialGraph( nodeSeeds, edgeSeeds );
+	built.rebuildCount = mJob.GetContainerRebuildCount();
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );   // leaf lock: acquired WHILE mMutex is still held, never the reverse
+	if( PainterMaterialGraphsEquivalent( built, mUi.objectGraph ) ) return true;
+	built.generation = NextTreeGeneration().fetch_add( 1, std::memory_order_relaxed );
+	// Same handle space as the Painter/Material graph (GraphNodeHandle /
+	// EncodeTreeHandle / kInvalidGraphNode) -- see SceneGraphModel's own
+	// header comment for why reusing it (rather than minting a THIRD
+	// sentinel/typedef pair) is deliberate: both graphs draw generations
+	// from the SAME process-global NextTreeGeneration() counter, so no two
+	// publishes across EITHER graph (or AuthoredTree) ever share a
+	// generation, and ResolveGraphNodeHandle already refuses a handle
+	// whose generation does not match the graph it is resolved against --
+	// a handle minted here can never be silently mistaken for one minted
+	// by RefreshPainterMaterialGraphSnapshot_, or vice versa.
+	for( std::size_t i = 0; i < built.nodes.size(); ++i )
+		built.nodes[i].handle = EncodeTreeHandle( built.generation, static_cast<unsigned int>( i ) );
+	mUi.objectGraph = std::move( built );
+	return true;
+}
+
+void SceneEditController::ReadObjectGraph( SceneGraphModel& out ) const
+{
+	out = SceneGraphModel();
+	const bool fresh = RefreshObjectGraphSnapshot_();
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	out = mUi.objectGraph;
+	out.snapshotFresh = fresh;
+}
+
+void SceneEditController::ReadObjectGraphLaidOut( ObjectGraphLaidOut& out ) const
+{
+	out = ObjectGraphLaidOut();
+	ReadObjectGraph( out.graph );
+
+	// TRANSIENT layout, ALWAYS (design decision, not a degrade path) --
+	// see ReadObjectGraphLaidOut's own .h header comment for why this
+	// graph has no sidecar to read at all (the sidecar is keyed by bare
+	// node name with no per-graph-kind partition).
+	const GraphLayout::Positions empty;
+	const GraphLayout::Positions laidOut = GraphLayout::LayoutGraph( out.graph, empty );
+	out.positions.assign( out.graph.nodes.size(), GraphNodePosition() );
+	for( std::size_t i = 0; i < out.graph.nodes.size(); ++i ) {
+		const std::string key( out.graph.nodes[i].name.c_str() );
+		GraphLayout::Positions::const_iterator it = laidOut.find( key );
+		if( it == laidOut.end() ) continue;   // empty node name -- LayoutGraph's own documented skip; position stays (0,0)
+		out.positions[i].x = it->second.x;
+		out.positions[i].y = it->second.y;
+	}
+}
+
+std::vector<unsigned int> SceneEditController::ObjectGraphFocusedClosure(
+	const SceneGraphModel& g, unsigned int startIdx )
+{
+	std::vector<unsigned int> keep;
+	if( startIdx >= g.nodes.size() ) return keep;
+
+	std::vector<bool> visited( g.nodes.size(), false );
+	auto include = [&]( unsigned int idx ) -> bool {
+		if( idx >= g.nodes.size() || visited[idx] ) return false;
+		visited[idx] = true;
+		keep.push_back( idx );
+		return true;
+	};
+	include( startIdx );
+
+	// ---- UP: transitive ancestors. A SEPARATE worklist from DOWN below,
+	// applying ONLY the two "climb" rules -- an ancestor this phase
+	// discovers gets ITS OWN parent/owning-composite explored further (so
+	// a deep chain still climbs to the root), but NEVER the "find my
+	// children" or "find my own operands" rules DOWN uses. This separation
+	// is load-bearing, not a style choice: a combined worklist applying
+	// all four rules to every popped node would, the instant an ancestor
+	// (say a container two levels up) entered it via UP's rule, ALSO run
+	// DOWN's "children" rule against that ancestor when popped -- pulling
+	// in every OTHER child it has, i.e. an entire UNRELATED SIBLING
+	// SUBTREE of the original target, not just the path back down to it.
+	// Two independent worklists, each applying only its own direction's
+	// rules, is what keeps this to true ancestors and true descendants. ----
+	{
+		std::vector<unsigned int> frontier( 1, startIdx );
+		std::size_t head = 0;
+		while( head < frontier.size() ) {
+			const unsigned int cur = frontier[head++];
+			for( const GraphPort& p : g.nodes[cur].outEdges ) {
+				const std::string pn( p.paramName.c_str() );
+				if( pn == "parent" && p.otherNode != kInvalidNodeIndex && include( p.otherNode ) )
+					frontier.push_back( p.otherNode );
+			}
+			for( const GraphPort& p : g.nodes[cur].inEdges ) {
+				const std::string pn( p.paramName.c_str() );
+				if( ( pn == "obja" || pn == "objb" ) && p.otherNode != kInvalidNodeIndex && include( p.otherNode ) )
+					frontier.push_back( p.otherNode );
+			}
+		}
+	}
+
+	// ---- DOWN: transitive descendants (reverse parent chain), plus
+	// operand expansion for any csg_object that is ITSELF a descendant (or
+	// `start`) -- see the UP block's own comment for why this is a
+	// SEPARATE worklist rather than sharing UP's. ----
+	{
+		std::vector<unsigned int> frontier( 1, startIdx );
+		std::size_t head = 0;
+		while( head < frontier.size() ) {
+			const unsigned int cur = frontier[head++];
+			for( const GraphPort& p : g.nodes[cur].inEdges ) {
+				const std::string pn( p.paramName.c_str() );
+				if( pn == "parent" && p.otherNode != kInvalidNodeIndex && include( p.otherNode ) )
+					frontier.push_back( p.otherNode );
+			}
+			for( const GraphPort& p : g.nodes[cur].outEdges ) {
+				const std::string pn( p.paramName.c_str() );
+				if( ( pn == "obja" || pn == "objb" ) && p.otherNode != kInvalidNodeIndex && include( p.otherNode ) )
+					frontier.push_back( p.otherNode );
+			}
+		}
+	}
+
+	// UP + DOWN + start, before GEO/SOURCE add anything -- both of the
+	// loops below iterate over exactly this snapshot (by INDEX, not by a
+	// re-read `keep.size()`), so a geometry node GEO adds is never itself
+	// treated as a candidate SOURCE/GEO root, and a SOURCE one-hop target
+	// is never itself walked for ITS OWN geometry -- both intentional (see
+	// ReadObjectGraphLaidOutFocused's own header comment on SOURCE being
+	// "one hop only").
+	const std::size_t objectSetCount = keep.size();
+
+	// ---- GEO: every node in the object set's full geometry chain -- one
+	// hop via a geometry/base_geometry inEdge, then continued from THAT
+	// node (so a displaced_geometry's own base surfaces too), however deep
+	// the chain runs. ----
+	for( std::size_t k = 0; k < objectSetCount; ++k ) {
+		unsigned int cur = keep[k];
+		for( ;; ) {
+			unsigned int nextGeo = kInvalidNodeIndex;
+			for( const GraphPort& p : g.nodes[cur].inEdges ) {
+				const std::string pn( p.paramName.c_str() );
+				if( ( pn == "geometry" || pn == "base_geometry" ) && p.otherNode != kInvalidNodeIndex ) {
+					nextGeo = p.otherNode;
+					break;   // at most one geometry-kind inEdge per node
+				}
+			}
+			if( nextGeo == kInvalidNodeIndex || !include( nextGeo ) ) break;
+			cur = nextGeo;
+		}
+	}
+
+	// ---- SOURCE: one hop only -- the direct `source` target of any node
+	// in the object set, NOT further expanded. ----
+	for( std::size_t k = 0; k < objectSetCount; ++k ) {
+		for( const GraphPort& p : g.nodes[ keep[k] ].outEdges ) {
+			const std::string pn( p.paramName.c_str() );
+			if( pn == "source" && p.otherNode != kInvalidNodeIndex ) { include( p.otherNode ); break; }
+		}
+	}
+
+	return keep;
+}
+
+void SceneEditController::ReadObjectGraphLaidOutFocused(
+	const String& name, ObjectGraphLaidOut& out, bool* outDegraded ) const
+{
+	out = ObjectGraphLaidOut();
+	if( outDegraded ) *outDegraded = false;
+	if( name.size() <= 1 ) return;
+
+	// This method touches no live manager. ReadObjectGraph reports when its
+	// refresh serves a cached graph under contention; propagate that below.
+	// The explicit mRenderOwnsScene check here mirrors
+	// ResolveObjectMaterialNameLocked_'s FIRST guard so a caller polling
+	// during a parked render gets an honest degraded signal rather than a
+	// stale-but-unflagged graph.
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) {
+		if( outDegraded ) *outDegraded = true;
+		return;
+	}
+
+	SceneGraphModel g;
+	ReadObjectGraph( g );
+	out.graph.snapshotFresh = g.snapshotFresh;
+	if( !g.snapshotFresh ) { if( outDegraded ) *outDegraded = true; return; }
+
+	const int startIdx = ResolveUniqueGraphNodeIndex( g, ChunkCategory::Object, name );
+	if( startIdx < 0 ) return;   // unknown or ambiguous -- refuse rather than guess
+
+	const std::vector<unsigned int> keep = ObjectGraphFocusedClosure( g, static_cast<unsigned int>( startIdx ) );
+	const SceneGraphModel filtered = FilterPainterMaterialGraph( g, keep );
+
+	// TRANSIENT layout -- this graph has no sidecar at all, focused or not
+	// (ReadObjectGraphLaidOut's own header comment).
+	const GraphLayout::Positions empty;
+	const GraphLayout::Positions laidOut = GraphLayout::LayoutGraph( filtered, empty );
+	out.graph = filtered;
+	out.positions.assign( filtered.nodes.size(), GraphNodePosition() );
+	for( std::size_t i = 0; i < filtered.nodes.size(); ++i ) {
+		const std::string key( filtered.nodes[i].name.c_str() );
+		GraphLayout::Positions::const_iterator it = laidOut.find( key );
+		if( it == laidOut.end() ) continue;   // empty node name -- LayoutGraph's own documented skip; position stays (0,0)
+		out.positions[i].x = it->second.x;
+		out.positions[i].y = it->second.y;
+	}
 }
 
 String SceneEditController::GetSelectionNameForCategory( Category cat ) const
@@ -4535,6 +7062,135 @@ bool SceneEditController::GetHasAnimation( bool& hasAnimation ) const
 	return true;
 }
 
+bool SceneEditController::GetPainterPreview( const String& painterName, int defIndex,
+                                             unsigned int w, unsigned int h,
+                                             std::vector<unsigned char>& outRGBA,
+                                             bool* outWasScalar,
+                                             double* outRangeMin, double* outRangeMax ) const
+{
+	// Same render-owns-scene / non-blocking try_lock discipline as
+	// GetAnimationOptions/GetHasAnimation above (and PainterIntrospection's
+	// PipesFor, the doc 88 S4 precedent this module's header cites):
+	// a preview reads live painter-manager state, which a concurrent D2
+	// re-derive can free out from under it.  Refuse rather than block --
+	// this is a one-shot bridge call on the UI/agent-RPC thread, not a
+	// per-frame poll, so there is no "shows stale data next frame" self-
+	// heal; the caller (both shells) treats a refusal as "keep the last
+	// cached thumbnail, try again later."
+	outRGBA.clear();
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
+
+	const PainterPreview::Result r = ( defIndex < 0 )
+		? PainterPreview::RenderPainterPreview( mJob, painterName, w, h )
+		: PainterPreview::RenderDefStagePreview( mJob, painterName, defIndex, w, h );
+	if( r.status != PainterPreview::Status::Ok ) return false;
+
+	outRGBA = r.rgba;
+	if( outWasScalar ) *outWasScalar = r.wasScalar;
+	if( outRangeMin )  *outRangeMin  = r.scalarRangeMin;
+	if( outRangeMax )  *outRangeMax  = r.scalarRangeMax;
+	return true;
+}
+
+bool SceneEditController::GetRampStripPreview( const String& painterName,
+                                               unsigned int w, unsigned int h,
+                                               std::vector<unsigned char>& outRGBA ) const
+{
+	// Same discipline as GetPainterPreview above.
+	outRGBA.clear();
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
+
+	const PainterPreview::Result r = PainterPreview::RenderRampStripPreview( mJob, painterName, w, h );
+	if( r.status != PainterPreview::Status::Ok ) return false;
+
+	outRGBA = r.rgba;
+	return true;
+}
+
+bool SceneEditController::GetMaterialPreview( const String& materialName,
+                                              unsigned int w, unsigned int h,
+                                              std::vector<unsigned char>& outRGBA ) const
+{
+	outRGBA.clear();
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
+
+	const MaterialPreview::Result r = MaterialPreview::RenderMaterialPreview( mJob, materialName, w, h );
+	if( r.status != MaterialPreview::Status::Ok ) return false;
+
+	outRGBA = r.rgba;
+	return true;
+}
+
+bool SceneEditController::GetThinFilmAngleStrip( const String& materialName,
+                                                 unsigned int w, unsigned int h,
+                                                 std::vector<unsigned char>& outRGBA,
+                                                 double* outThicknessNm,
+                                                 double* outFilmIor ) const
+{
+	outRGBA.clear();
+	if( outThicknessNm ) *outThicknessNm = 0.0;
+	if( outFilmIor )     *outFilmIor     = 1.0;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
+
+	const MaterialPreview::Result r = MaterialPreview::RenderThinFilmAngleStrip(
+		mJob, materialName, w, h, outThicknessNm, outFilmIor );
+	if( r.status != MaterialPreview::Status::Ok ) return false;
+
+	outRGBA = r.rgba;
+	return true;
+}
+
+bool SceneEditController::EvaluateThinFilmAtAngle( const String& materialName,
+                                                   double angleDeg,
+                                                   unsigned char outRGBA[4],
+                                                   double* outThicknessNm,
+                                                   double* outFilmIor ) const
+{
+	if( outRGBA ) { outRGBA[0] = 0; outRGBA[1] = 0; outRGBA[2] = 0; outRGBA[3] = 255; }
+	if( outThicknessNm ) *outThicknessNm = 0.0;
+	if( outFilmIor )     *outFilmIor     = 1.0;
+	if( !outRGBA ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire )
+	 || mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return false;
+
+	return MaterialPreview::EvaluateThinFilmAtAngle(
+		mJob, materialName, angleDeg, outRGBA, outThicknessNm, outFilmIor );
+}
+
 
 bool SceneEditController::GetCameraDimensions( unsigned int& w, unsigned int& h ) const
 {
@@ -4600,6 +7256,11 @@ void SceneEditController::ForTest_SetSelection( Category cat, const String& name
 unsigned int SceneEditController::ForTest_GetCancelCount() const
 {
 	return mCancelCount.load( std::memory_order_acquire );
+}
+
+unsigned int SceneEditController::ForTest_GetAgentCancelRequestCount() const
+{
+	return mAgentCancelRequestCount.load( std::memory_order_acquire );
 }
 
 unsigned int SceneEditController::ForTest_GetRenderCount() const
@@ -4793,6 +7454,11 @@ void SceneEditController::CancelAndParkRender_( std::unique_lock<std::mutex>& lk
 //     (an interrupting newer intent) doesn't need it.
 void SceneEditController::CancelAgentRender_()
 {
+	// Test observability (see ForTest_GetAgentCancelRequestCount's doc):
+	// counted unconditionally, BEFORE the pending/running narrowing below,
+	// because the property under test is "the drain path never even
+	// REQUESTS a cancel it doesn't own", not "the request found a target".
+	mAgentCancelRequestCount.fetch_add( 1, std::memory_order_acq_rel );
 	// Serialize the target choice with submit/slot-release. The shared
 	// progress flag still handles a currently-running render immediately;
 	// the per-occupant bit closes the queued-before-start window where the
@@ -4813,65 +7479,19 @@ void SceneEditController::CancelAgentRender_()
 	mCancelProgress.RequestCancel();
 }
 
-namespace {
-
-// Shared-undo U1: the value of a chunk's first `pname` param, mirroring the exact CST tree shape ParseChunk
-// builds (a Param kid whose first Token kid is the pname/role and whose subsequent kids are the pvalue Token(s)
-// interleaved with inter-value Trivia) -- this is the SAME shape Job.cpp's file-local S2ChunkParamValue walks;
-// duplicated here (rather than exposed from Job.cpp) because it is a pure Cst::Node tree read with no Job state
-// dependency, and the controller already holds a `const RISE::Cst::Document*` via IJob::GetCstDocument().
-// `*outPresent` reports whether the param was found AT ALL (distinct from "found but empty" -- occ=0 only,
-// matching the agent path's fixed occ=0 convention).
-//
-// P1-1 fix (round 1): a multi-token value (e.g. `color 1 1 1`, a vector/tuple) is SEVERAL pvalue Token kids, one
-// per whitespace-separated token, each preceded by an inter-value Trivia kid holding the separating whitespace
-// (see the anonymous-namespace ParseChunk loop in Cst.cpp ~150-161). The old walk kept only the FIRST pvalue
-// token ("1" out of "1 1 1"), so an Undo of a multi-token param re-set it to a truncated single-component value
-// (measured: a `color 1 1 1` emitter param round-tripped through capture+undo landed as r=5 g=0 b=0 instead of
-// 5 5 5). Cst::ParamNodeValue (Cst.cpp ~183, file-local to that TU) is the correct accessor -- it is NOT
-// reachable from here (anonymous-namespace / not declared in Cst.h) -- so this walk is rewritten to match its
-// join semantics EXACTLY, token-by-token: once the first pvalue Token is seen, every subsequent kid's `text`
-// (Trivia AND Token alike) is appended verbatim until the Param node ends, reproducing "1 1 1" (not "111" or
-// "1") for a 3-token value.
-std::string AgentReadFirstParamValue( const RISE::Cst::NodeRef& chunk, const char* pname, bool* outPresent )
-{
-	if( outPresent ) *outPresent = false;
-	if( !chunk ) return std::string();
-	for( const auto& kid : chunk->kids )
-	{
-		if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
-		std::string nm, val;
-		bool inVal = false;
-		for( const auto& tk : kid->kids )
-		{
-			if( !tk ) continue;
-			if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pname" && nm.empty() ) { nm = tk->text; continue; }
-			if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pvalue" ) inVal = true;
-			if( inVal ) val += tk->text;
-		}
-		if( nm == pname )
-		{
-			if( outPresent ) *outPresent = true;
-			return val;
-		}
-	}
-	return std::string();
-}
-
-}  // namespace
-
 // Shared-undo U1: capture the CURRENT value of `param` on the entity resolved by (entityName, entityKind) from
 // the retained CST Document -- BEFORE an agent edit mutates it.  `*outPresent` = false means the param is
 // ABSENT (a defaulted slot the scene text omits; the coming edit will INSERT it, so the inverse is a REMOVE, not
 // a re-SET -- see SceneEdit::prevValueWasAbsent).  Resolution uses the SAME DocFindByNameAnyRole call and
-// camera-unique-fallback rule as Job::ApplyCstParamEditImpl_, so a value read here always matches whatever the
+// camera-unique-fallback rule as Job::ApplyCstParamEditImpl_ -- AND its `override_object` owner walk
+// (Cst::DocTransformOwnerId) -- so a value read here always matches whatever the
 // upcoming ApplyCstParamEditChecked call will resolve against (both run under the SAME mMutex hold in
 // ApplyAgentParamEdit -- no TOCTOU between the read and the apply).  Returns false (no capture) if there is no
 // retained Document or the entity does not resolve -- callers must not push a history record in that case (the
 // caller's ApplyCstParamEditChecked will independently reject with code 0, so no mutation happens either).
 bool SceneEditController::CaptureAgentPriorParamValue_(
 	const String& entityName, const String& entityKind, const String& param,
-	String& outPrevValue, bool& outWasAbsent )
+	String& outPrevValue, bool& outWasAbsent, int occ )
 {
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	if( !doc ) return false;
@@ -4889,14 +7509,125 @@ bool SceneEditController::CaptureAgentPriorParamValue_(
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
 		*doc, bareName, nullptr, ekind, uniqueFallback );
 	if( id == 0 ) return false;
-	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+	// ... and the same OWNER WALK, for the same lockstep reason.  A transform param on an object that
+	// carries a same-named `override_object` is written to the OVERRIDE (Cst::DocTransformOwnerId), so
+	// the prior value has to be read from there too: capturing the base chunk's value would make Undo
+	// restore a pose the object never had, or -- when the base has the param and the override does not
+	// -- report the value as PRESENT when the coming edit will INSERT one, so the inverse would be a
+	// re-set instead of a remove and the undone transform would stay live.
+	const RISE::Cst::NodeId ownerId = RISE::Cst::DocTransformOwnerId( *doc, id, std::string( param.c_str() ) );
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, ownerId );
 	if( !chunk ) return false;
 	bool present = false;
-	const std::string val = AgentReadFirstParamValue( chunk, param.c_str(), &present );
+	// OCCURRENCE-ADDRESSED read, in lockstep with the coming write.  This is
+	// deliberately NOT Cst::ParamValueAsParsed: that one answers "what does the
+	// PARSE see" (a repeated param's LAST occurrence wins), while the question
+	// here is "which line will Job::ApplyCstParamEditImpl_'s occ-th write land
+	// on".  The two only coincide when the param appears once.  Reading through
+	// the parse-flavoured accessor would make an Undo restore the prior value of
+	// a DIFFERENT occurrence than the edit wrote -- silently, and only on
+	// repeated params, which is exactly where S4b now edits.  `occ` is 0 for the
+	// agent surface and for every single-occurrence panel edit; a painter's
+	// `<role>[<index>]` row passes its own index.  The multi-token join is
+	// ParamNodeValue's (`color 1 1 1` reads back whole, not as its first token) --
+	// the historical truncation P1, now unforgeable because there is one reader.
+	const std::string val = RISE::Cst::ParamValueAtOccurrence(
+		chunk, std::string( param.c_str() ), occ, &present );
 	outWasAbsent = !present;
 	outPrevValue = present ? String( val.c_str() ) : String();
 	return true;
 }
+
+// 87: is the agent's target a CONTAINER node -- a `standard_object` that names no
+// `geometry`?  Answered from the DOCUMENT rather than the live managers, because
+// the Document is what this path is about to mutate, and because it resolves the
+// SAME chunk the edit will: the resolution below is CaptureAgentPriorParamValue_'s
+// verbatim (including the gated camera-unique fallback), so the two cannot drift.
+//
+// Fails SAFE in every ambiguous direction: an unresolvable target, a chunk of any
+// other role (a `csg_object` has no `geometry` param either, and is NOT a
+// container), or no retained Document all answer FALSE, leaving the edit to the
+// checks that already exist.
+namespace {
+// The Cst param readers concatenate the value TOKENS verbatim, so a value can
+// arrive with the separating / trailing trivia attached.  Compare on the bare
+// word.
+std::string TrimAsciiSpace_( const std::string& s )
+{
+	size_t b = 0, e = s.size();
+	while( b < e && ( s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n' ) ) ++b;
+	while( e > b && ( s[e-1] == ' ' || s[e-1] == '\t' || s[e-1] == '\r' || s[e-1] == '\n' ) ) --e;
+	return s.substr( b, e - b );
+}
+}  // namespace
+
+namespace {
+// 87: the value the PARSER will see for `pname` on a chunk -- the LAST occurrence,
+// not the first -- is Cst::ParamValueAsParsed, which this file used to carry its own
+// copy of.  Exported (2026-08-16) so the properties panel could stop reading occurrence
+// 0 and start agreeing with the renderer; the copy is gone rather than kept in sync.
+// The distinction it turns on still matters here: Cst::ParamValueAtOccurrence (the
+// reader CaptureAgentPriorParamValue_ uses) answers a DIFFERENT question -- "which
+// occurrence does an occ=N edit address" -- and using it to predict the parse is a
+// two-line bypass (`material none` followed by `material mv` reads as a clear and
+// derives as a bind), so the two must not be swapped for each other.
+
+// 87: does this candidate INSERT text declare a CONTAINER `standard_object`
+// (no `geometry`, or `geometry none`) that ALSO names a surface binding?
+// Returns the offending param's name, or empty for "fine".
+//
+// Parsed into a throwaway Document exactly as Job::ApplyCstInsertChunk will
+// parse it, so the two agree on what the text says.  Anything that does not
+// parse to a single `standard_object` chunk answers "fine" and is left to the
+// refusals ApplyCstInsertChunk already has.
+std::string ContainerBindingInChunkText_( const String& chunkText )
+{
+	if( chunkText.size() <= 1 ) return std::string();
+	RISE::Cst::Document doc = RISE::Cst::ParseToCst( std::string( chunkText.c_str() ) );
+	const int nItems = RISE::Cst::DocItemCount( doc );
+	RISE::Cst::NodeRef chunk;
+	for( int i = 0; i < nItems; ++i ) {
+		const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+		if( it && it->kind == RISE::Cst::NodeKind::Chunk ) {
+			if( chunk ) return std::string();   // more than one chunk -- ApplyCstInsertChunk refuses it anyway
+			chunk = it;
+		}
+	}
+	if( !chunk || chunk->role != "standard_object" ) return std::string();
+
+	bool present = false;
+	const std::string geom = TrimAsciiSpace_( RISE::Cst::ParamValueAsParsed( chunk, "geometry", &present ) );
+	const bool isContainer = !present || geom.empty() || geom == "none";
+	if( !isContainer ) return std::string();
+
+	// Walk the chunk's OWN params and ask the shared predicate, rather than
+	// re-listing the binding names here.  The duplicate this replaces sat ~200
+	// lines above a call to that very predicate -- which is precisely the
+	// failure its doc comment warns about.
+	for( const auto& kid : chunk->kids ) {
+		if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+		const String pname( kid->role.c_str() );
+		if( !RISE::IsObjectSurfaceBindingParamName( pname ) ) continue;
+		bool bound = false;
+		const std::string v = TrimAsciiSpace_( RISE::Cst::ParamValueAsParsed( chunk, kid->role, &bound ) );
+		if( bound && !v.empty() && v != "none" ) return kid->role;
+	}
+	return std::string();
+}
+}  // namespace
+
+
+bool SceneEditController::AgentTargetIsContainerObject_( const String& entityName, const String& entityKind )
+{
+	// The rule lives in ONE place, Job::CstTargetIsContainerObject, which the batch path also evaluates against
+	// its evolving document -- so the single and batch routes cannot drift on what a container is.
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+	return mJob.CstTargetIsContainerObject( *doc,
+	                                        entityName.size() > 1 ? entityName.c_str() : "",
+	                                        entityKind.size() > 1 ? entityKind.c_str() : nullptr );
+}
+
 
 // Shared-undo U2: capture the exact bytes + top-level index of the chunk `ApplyAgentRemoveChunk` is about to
 // erase -- BEFORE the coming `Job::ApplyCstRemoveChunk` call mutates the Document.  Resolution mirrors Job's
@@ -4968,7 +7699,9 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	const String& entityKind,
 	const String& param,
 	const String& value,
-	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+	int occ,
+	bool occAddressed )
 {
 	AgentCommitResult r;
 
@@ -5067,6 +7800,39 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 		}
 	}
 
+	// 87: a CONTAINER node (a `standard_object` naming no `geometry`) is a pure
+	// transform with no surface, so it takes no surface binding.  The derive
+	// DROPS one with a log warning and still reports success -- a warning is not
+	// a diagnostic, so the full-derivability gate below passes and the edit
+	// commits.  The end state is the one the GUI paths refuse to create: the
+	// retained Document permanently carrying a param that can never take
+	// effect and re-warns on every load, with the agent told "applied".
+	//
+	// Refused here rather than at the Job primitive because this is where the
+	// agent gets a MESSAGE back; the GUI's twin lives in
+	// SceneEditor::ApplyForwardMutation, and the undo twin in
+	// ApplyRevertMutation.  A CLEAR ("none", the unbind sentinel on this route)
+	// stays ALLOWED -- an object that BECAME a container must still be
+	// tidyable, and refusing the clear would refuse the one edit that removes
+	// the line the derive warns about.
+	if( IsObjectSurfaceBindingParamName( param )
+	 && value != String( "none" )
+	 && AgentTargetIsContainerObject_( entityName, entityKind ) )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		char buf[320];
+		std::snprintf( buf, sizeof( buf ),
+			"`%s` is a container node (it names no `geometry`), so it takes no `%s` -- a container is a pure "
+			"transform with no surface.  Put the binding on a child object that has geometry, or give this "
+			"object a `geometry`.",
+			entityName.size() > 1 ? entityName.c_str() : "(unnamed)", param.c_str() );
+		r.message = String( buf );
+		return r;
+	}
+
 	// Shared-undo U1: capture the entity's CURRENT value of `param` (or its
 	// ABSENCE) from the retained Document BEFORE the coming apply mutates it --
 	// under the SAME mMutex hold as the apply itself (no TOCTOU: nothing else
@@ -5075,9 +7841,18 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	// entity does not resolve -- in that case ApplyCstParamEditChecked below
 	// will independently reject with code 0 (no mutation, so no history push
 	// either); the capture failing is never itself a reason to refuse the edit.
+	//
+	// doc 88 S4b: captured at the SAME `occ` the write below addresses -- the
+	// lockstep the whole occurrence-addressed undo pair rests on.
 	String prevValue;
 	bool   prevWasAbsent = false;
-	const bool haveCapture = CaptureAgentPriorParamValue_( entityName, entityKind, param, prevValue, prevWasAbsent );
+	const bool haveCapture = CaptureAgentPriorParamValue_( entityName, entityKind, param, prevValue, prevWasAbsent, occ );
+	// Undo fidelity (2026-10-17): the EXACT text of the chunk the write will land on, so Undo can swap it back
+	// byte for byte (see SceneEdit::agentOwnerPreText).  Same lock hold, same owner resolution as the write.
+	std::string ownerPreText;
+	if( !mJob.CstParamEditOwnerChunkText( entityName.c_str(), entityKind.size() <= 1 ? nullptr : entityKind.c_str(),
+	                                      param.c_str(), ownerPreText ) )
+		ownerPreText.clear();
 
 	// The SAME edit the GUI property panel makes, but routed directly (we
 	// already hold the park the GUI path takes via mEditor.Apply) and through
@@ -5087,14 +7862,17 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	// validation cannot see -- the head's bytes would fail to reload).  The
 	// GUI SetProperty / gizmo path (mEditor.Apply -> ApplyCstParamEdit) keeps
 	// the UNGATED fast path: its edits are value-only and latency-sensitive.
-	// `occ = 0` = the first occurrence of the param on the entity.  The call
+	// `occ` = which occurrence of the param on the entity (0 = first, the
+	// default every caller but the painter occurrence-row route uses).  The call
 	// re-derives the live Job itself (incremental or D2 full re-derive) and
-	// bumps the head revision on success.
+	// bumps the head revision on success.  An out-of-range `occ` makes
+	// DocSetOrAddParamValue a no-op (its INSERT arm is occurrence-0-only), which
+	// surfaces here as code 0 -- a plain rejection with the head untouched.
 	const int code = mJob.ApplyCstParamEditChecked(
 		entityName.c_str(),
 		entityKind.size() <= 1 ? nullptr : entityKind.c_str(),
 		param.c_str(),
-		/*occ=*/0,
+		occ,
 		value.c_str() );
 
 	// A D2 full re-derive (codes 2 AND 3) ClearAll'd + rebuilt the Scene +
@@ -5136,6 +7914,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 		default:
 			r.applied = false;
 			r.status  = String( "rejected" );
+			r.wouldNotDerive = true;   // Job's checked code 0: not found OR would not derive (structured, for retries)
 			r.message = String( "edit rejected (entity/param not found or the edit would not derive) -- head unchanged" );
 			break;
 	}
@@ -5155,6 +7934,24 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	// (code 3 remains applied=false / "diagnosed"); this only decouples the render-kick from success.
 	if( code == 1 || code == 2 || code == 3 )
 	{
+		// S15 review fix: this path (panel painter-param edits AND agent
+		// propose_patch, INCLUDING reference params like blend_painter's
+		// colora/mask/source) can REWIRE a graph edge, which the node-graph
+		// canvas only re-pulls when `bridge.sceneEpoch` advances
+		// (NodeGraphCanvas.swift's `performReload` epoch-cache short-circuit,
+		// mirroring OutlinerView's).  Undo/Redo already bump unconditionally
+		// here ("cheap to bump unconditionally", see UndoInner_/RedoInner_
+		// above) whenever their own mutation landed; this site was the gap --
+		// a rewire committed here refreshed on a LATER undo of it, never on
+		// the rewire itself.  `code == 1 || 2 || 3` is exactly "rawCode >= 1",
+		// i.e. the Document WAS mutated (code 3 is diagnosed-but-mutated, see
+		// its case arm above) -- bump unconditionally rather than trying to
+		// classify which params are graph-structural; every consumer
+		// (OutlinerView / NodeGraphCanvas / the Windows OutlinerWidget) is
+		// epoch-gated but content-diffs before doing real work, so an extra
+		// bump on a non-structural param edit is a no-op, not a regression.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+
 		// F5 slice 1b (data-loss fix): the agent path mutated the retained
 		// CST head DIRECTLY via ApplyCstParamEdit -- it bypassed
 		// mEditor.Apply, so the GUI's per-edit dirty-mark
@@ -5208,7 +8005,17 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 		// skip-with-log guards against ever pushing a garbage/empty capture.
 		if( haveCapture )
 		{
-			mEditor.PushAgentCstParamEdit( entityName, entityKind, param, value, prevValue, prevWasAbsent );
+			// ...and the owner's text AFTER the write, resolved by the entity's post-write name (a `name` patch
+			// renamed it -- the batch record's postEntityName rule).  Empty when it does not resolve: the record
+			// then keeps the value-replay inverse alone.
+			const String postName = ( param == String( "name" ) ) ? value : entityName;
+			std::string ownerPostText;
+			if( ownerPreText.empty()
+			 || !mJob.CstParamEditOwnerChunkText( postName.c_str(), entityKind.size() <= 1 ? nullptr : entityKind.c_str(),
+			                                      param.c_str(), ownerPostText ) )
+				ownerPostText.clear();
+			mEditor.PushAgentCstParamEdit( entityName, entityKind, param, value, prevValue, prevWasAbsent,
+			                               occ, occAddressed, ownerPreText, ownerPostText );
 		}
 		else
 		{
@@ -5325,6 +8132,843 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 			return r;
 		}
 		r = ApplyAgentChunkCrud_( /*isInsert*/ false, target, kind, baseVersionOrNull );
+	}
+	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
+	return r;
+}
+
+// R1a (2026-08-09, batched remove_chunks): split a '\n'-packed AgentProposal list field (see AgentProposal's
+// doc -- a RemoveChunks proposal packs its N target names into `target` and its N kinds into `entityKind`)
+// back into per-element Strings.  Deliberately preserves EMPTY entries: an empty kind element means "no kind
+// narrowing" for that target and must keep its positional alignment with the target list, so this is a plain
+// split on every separator, never a "skip blanks" tokenizer.  An empty input yields an empty vector.
+static void SplitPackedProposalList_( const String& packed, std::vector<String>& out )
+{
+	out.clear();
+	// RString::size() counts the trailing NUL; size <= 1 is the empty case.
+	if( packed.size() <= 1 ) return;
+	const std::string text( packed.c_str() );
+	std::size_t at = 0;
+	for( ;; )
+	{
+		const std::size_t nl = text.find( '\n', at );
+		const std::string piece = text.substr( at, ( nl == std::string::npos ) ? std::string::npos : nl - at );
+		out.push_back( String( piece.c_str() ) );
+		if( nl == std::string::npos ) break;
+		at = nl + 1;
+	}
+}
+
+// R1a (2026-08-09, batched remove_chunks): the ATOMIC batch remove.  Structurally the SAME critical section
+// ApplyAgentChunkCrud_ runs (mTxnOpen refusal -> cancel-and-park under mMutex -> pre-flight -> conflict gate ->
+// ONE Job call -> rebind -> dirty -> ONE history push -> epoch bump -> kick), deliberately written out here
+// rather than folded into that helper: the batch takes a LIST (not one `a`/`b` pair), captures a WHOLE-document
+// undo payload (not a per-chunk bytes+index capture), and pushes a DIFFERENT history op -- a shared four-way
+// branch would obscure both paths.  Everything that IS shared -- the atomic resolve-then-erase, the
+// intra-batch reference behaviour, the all-or-nothing refusal -- lives one level down in
+// Job::ApplyCstRemoveChunks, so the two verbs cannot drift on the semantics that matter.
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChunksCrud_(
+	const std::vector<String>& targets,
+	const std::vector<String>& kinds,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	AgentCommitResult r;
+
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent batch chunk remove refused while an editor transaction/gesture is open." );
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = true;
+		r.message = String( "editor transaction or gesture in progress -- retry after it completes" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+	CancelAndParkRender_( lk );
+
+	if( !mJob.HasRetainedCstDocument() )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "no retained CST Document -- agent commit needs a CST-loaded head" );
+		return r;
+	}
+	if( targets.empty() )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "targets must be non-empty" );
+		return r;
+	}
+
+	// Optimistic-concurrency CONFLICT precondition, under the lock -- identical rule and wording to
+	// ApplyAgentChunkCrud_'s (a stale batch must never touch the Document).
+	if( baseVersionOrNull )
+	{
+		const RISE::Cst::CstHeadVersion cur = mJob.GetCstHeadVersion();
+		if( *baseVersionOrNull != cur )
+		{
+			r.applied     = false;
+			r.conflict    = true;
+			r.rawCode     = 0;
+			r.status      = String( "conflict" );
+			r.headVersion = cur;
+			char buf[160];
+			std::snprintf( buf, sizeof( buf ),
+				"baseHeadVersion does not match the current head (revision %llu) -- re-read and re-propose",
+				static_cast<unsigned long long>( cur.revision ) );
+			r.message = String( buf );
+			return r;
+		}
+	}
+
+	// Flatten the (target, kind) lists into the C arrays the Job primitive takes.  `kinds` may be shorter
+	// than `targets` (or carry empty entries) -- both mean "no kind narrowing" for that element, matching
+	// the singular verb's own empty-kind convention.
+	std::vector<std::string> targetStore, kindStore;
+	targetStore.reserve( targets.size() );
+	kindStore.reserve( targets.size() );
+	std::string displayList;      // comma-joined, for the result + the history record's label
+	std::string redoLines;        // "kind\tname" per line, for the history record's Redo descriptor
+	for( std::size_t i = 0; i < targets.size(); ++i )
+	{
+		// RString::size() counts the trailing NUL; size <= 1 is the empty case.
+		targetStore.push_back( targets[i].size() > 1 ? std::string( targets[i].c_str() ) : std::string() );
+		const bool haveKind = ( i < kinds.size() && kinds[i].size() > 1 );
+		kindStore.push_back( haveKind ? std::string( kinds[i].c_str() ) : std::string() );
+		if( i ) { displayList += ", "; redoLines += '\n'; }
+		displayList += targetStore.back();
+		redoLines   += kindStore.back();
+		redoLines   += '\t';
+		redoLines   += targetStore.back();
+	}
+	std::vector<const char*> targetPtrs, kindPtrs;
+	targetPtrs.reserve( targetStore.size() );
+	kindPtrs.reserve( kindStore.size() );
+	for( std::size_t i = 0; i < targetStore.size(); ++i )
+	{
+		targetPtrs.push_back( targetStore[i].c_str() );
+		kindPtrs.push_back( kindStore[i].empty() ? nullptr : kindStore[i].c_str() );
+	}
+
+	// R1a UNDO capture: the byte-exact serialization of the Document as it stands RIGHT NOW, before the
+	// erase -- taken under this same mMutex hold as the erase itself, so there is no TOCTOU.  This is the
+	// whole undo payload (see SceneEdit::AgentRemoveChunks' doc for why the batch records the document
+	// rather than N per-chunk bytes+index captures).  Also note, for the history record's
+	// `restoreActiveRasterizer` inverse, whether ANY target is a `*_rasterizer` chunk -- computed from the
+	// PRE-erase Document, the only place that answer exists.
+	//! FIX 3 (P2, 2026-08-09 R1 fix round): this re-derives a SUBSET of `Job.cpp`'s (file-local, static)
+	//! `CstResolveRemoveTarget_` resolution rules -- a plain `DocFindByNameAnyRole` with `uniqueFallback=false`
+	//! -- rather than reusing that shared resolver, because the resolver isn't exposed outside Job.cpp and
+	//! this is a read-only PRE-erase lookup for the undo record's `restoreActiveRasterizer` inverse, not a
+	//! removal decision itself.  This CANNOT diverge from `CstResolveRemoveTarget_` today: every call site here
+	//! passes empty per-target `kinds` (bare names only, see targetStore/kindStore above), and a `*_rasterizer`
+	//! chunk is never `unnamedRepeatable` nor camera-positional, so the resolver's extra unique-fallback /
+	//! ambiguity-refusal machinery never engages for a rasterizer lookup either way.  DO NOT let that stay
+	//! true by accident: if `remove_chunks`'s per-target `kinds` ever become non-empty (kind narrowing wired
+	//! through to this verb), this lookup must be re-audited against `CstResolveRemoveTarget_`'s current rules
+	//! -- or replaced by a shared resolver -- before it can be trusted again.
+	std::string priorDocText;
+	bool anyWasRasterizer = false;
+	if( const RISE::Cst::Document* doc = mJob.GetCstDocument() )
+	{
+		priorDocText = RISE::Cst::SerializeCst( *doc );
+		for( std::size_t i = 0; i < targetStore.size(); ++i )
+		{
+			const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
+				*doc, targetStore[i], nullptr, kindStore[i], /*uniqueFallback*/ false );
+			if( id == 0 ) continue;
+			const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+			if( !chunk ) continue;
+			const std::string& role = chunk->role;
+			if( role.size() > 11 && role.compare( role.size() - 11, 11, "_rasterizer" ) == 0 )
+				{ anyWasRasterizer = true; break; }
+		}
+	}
+
+	char kwBuf[1024];  kwBuf[0]   = '\0';
+	char diagBuf[512]; diagBuf[0] = '\0';
+	int  failIndex = -1;
+	const int code = mJob.ApplyCstRemoveChunks( &targetPtrs[0], &kindPtrs[0],
+	                                            static_cast<int>( targetPtrs.size() ),
+	                                            kwBuf, sizeof( kwBuf ),
+	                                            diagBuf, sizeof( diagBuf ), &failIndex );
+	r.chunkKeyword = String( kwBuf );            // '\n'-joined resolved keywords, one per INPUT target
+	r.chunkName    = String( displayList.c_str() );
+
+	// A chunk CRUD that landed is ALWAYS a D2 full re-derive (codes 2/3) -- re-point the editor's cached
+	// pointers BEFORE releasing the lock (same rebind rule as every other agent commit).
+	if( code == 2 || code == 3 )
+		RebindEditorToJob();
+
+	r.rawCode = ( code < 0 ) ? 0 : code;
+	switch( code )
+	{
+		case 2:
+			r.applied = true;
+			r.status  = String( "applied" );
+			r.message = String( "chunks removed via a single full re-derive (Scene + managers were replaced)" );
+			break;
+		case 3:
+			r.applied = false;
+			r.status  = String( "diagnosed" );
+			r.message = String( "batch remove NOT a clean success: the Document was mutated and the live managers were "
+			                    "replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied" );
+			break;
+		case -1:
+		{
+			r.applied = false;
+			r.status  = String( "rejected" );
+			std::string m = "batch remove rejected (NOTHING was removed): target";
+			if( failIndex >= 0 && failIndex < static_cast<int>( targetStore.size() ) )
+				m += " '" + targetStore[static_cast<std::size_t>( failIndex )] + "'";
+			m += diagBuf[0] ? std::string( " -- " ) + diagBuf : std::string( " was not found" );
+			m += " -- head unchanged";
+			r.message = String( m.c_str() );
+			break;
+		}
+		case -2:
+		{
+			r.applied = false;
+			r.status  = String( "rejected" );
+			std::string m = "batch remove rejected (NOTHING was removed): target";
+			if( failIndex >= 0 && failIndex < static_cast<int>( targetStore.size() ) )
+				m += " '" + targetStore[static_cast<std::size_t>( failIndex )] + "'";
+			m += " is ambiguous -- pass a `kind` for it";
+			if( diagBuf[0] ) { m += " ("; m += diagBuf; m += ")"; }
+			r.message = String( m.c_str() );
+			break;
+		}
+		case 0:
+		default:
+		{
+			r.applied = false;
+			r.status  = String( "rejected" );
+			// Same honest two-cause wording the singular verb uses, restated for a batch: with EVERY target
+			// erased before the single derive ran, an intra-batch reference can NOT be the cause here -- so
+			// the referrer, if there is one, is necessarily OUTSIDE the batch.
+			std::string m = "batch remove rejected (NOTHING was removed): the remaining document would not derive "
+			                "(one of the targets is likely still REFERENCED by a chunk OUTSIDE this batch, or the "
+			                "remaining document no longer derives in order -- read_document and validate to inspect) "
+			                "-- head unchanged";
+			if( diagBuf[0] ) { m += ": "; m += diagBuf; }
+			r.message = String( m.c_str() );
+			break;
+		}
+	}
+
+	r.headVersion = mJob.GetCstHeadVersion();
+
+	if( code == 2 || code == 3 )
+	{
+		// Empty name -> the boolean CST-head dirty channel (the batch has no single addressable entity).
+		mEditor.MarkCstHeadDirty( "", nullptr );
+
+		// ONE history record for the WHOLE batch -- the headline property of this verb (one Cmd-Z restores
+		// everything).  A capture failure (no retained Document at capture time) should be impossible here:
+		// the capture ran under this same lock hold against the SAME Document the erase just mutated.  A
+		// defensive skip-with-log guards against ever pushing an empty, un-restorable payload.
+		if( !priorDocText.empty() )
+		{
+			mEditor.PushAgentRemoveChunksEdit( String( displayList.c_str() ),
+			                                   String( priorDocText.c_str() ),
+			                                   String( redoLines.c_str() ),
+			                                   anyWasRasterizer );
+		}
+		else
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: agent batch chunk remove of `%s` applied (code %d) but the prior-document "
+				"capture was empty -- NO undo history record was pushed for this batch (should not happen: the "
+				"capture ran under the same lock hold as the erase).",
+				displayList.c_str(), code );
+		}
+
+		// The entity set changed -- bump the epoch live GUI outliners cache against.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+	}
+	return r;
+}
+
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChunks(
+	const std::vector<String>& targets,
+	const std::vector<String>& kinds,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	AgentCommitResult r;
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			// Latched-vs-transient split (C4) and the current-head report (C3) -- see
+			// ApplyAgentInsertChunk for the full rationale; identical here.
+			r.status = String( "rejected" );
+			if( mInDestructorTeardown.load( std::memory_order_acquire )
+			 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+			{
+				r.retriable = false;
+				r.message = String( "controller is being destroyed -- no further agent edit will be admitted" );
+				return r;
+			}
+			r.retriable = true;
+			r.message = String( "render queued or in progress -- retry after it completes" );
+			r.headVersion = mJob.GetCstHeadVersion();
+			return r;
+		}
+		r = ApplyAgentRemoveChunksCrud_( targets, kinds, baseVersionOrNull );
+	}
+	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
+	return r;
+}
+
+// Batched agent edits (2026-10-16): see the header doc.  The admission gate is the single verbs' own,
+// verbatim (latched-vs-transient split C4, current-head report C3) -- applied to EVERY element of the batch.
+std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAgentEditBatch(
+	const std::vector<CstBatchEdit>& edits )
+{
+	std::vector<AgentCommitResult> out;
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			AgentCommitResult r;
+			r.status = String( "rejected" );
+			if( mInDestructorTeardown.load( std::memory_order_acquire )
+			 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+			{
+				r.retriable = false;
+				r.message = String( "controller is being destroyed -- no further agent edit will be admitted" );
+			}
+			else
+			{
+				r.retriable = true;
+				r.message = String( "render queued or in progress -- retry after it completes" );
+				r.headVersion = mJob.GetCstHeadVersion();
+			}
+			out.assign( edits.size(), r );
+			return out;
+		}
+		out = ApplyAgentEditBatchCrud_( edits );
+	}
+	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
+	return out;
+}
+
+std::vector<SceneEditController::AgentCommitResult> SceneEditController::ApplyAgentEditBatchCrud_(
+	const std::vector<CstBatchEdit>& edits )
+{
+	std::vector<AgentCommitResult> out( edits.size() );
+	if( edits.empty() ) return out;
+
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent edit batch refused while an editor transaction/gesture is open." );
+		AgentCommitResult r;
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = true;
+		r.message = String( "editor transaction or gesture in progress -- retry after it completes" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		out.assign( edits.size(), r );
+		return out;
+	}
+	CancelAndParkRender_( lk );
+
+	if( !mJob.HasRetainedCstDocument() )
+	{
+		AgentCommitResult r;
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "no retained CST Document -- agent commit needs a CST-loaded head" );
+		out.assign( edits.size(), r );
+		return out;
+	}
+
+	// The per-element CONTROLLER-level refusals the single verbs make before reaching Job (see
+	// ApplyAgentChunkCrud_ / ApplyAgentParamEditInner_ for each rule's rationale).  Only the text-local ones
+	// are judged here; the container gate on a surface-binding param depends on the DOCUMENT, so it is handed
+	// to Job and judged against the batch's evolving document (review P2-A: `X.geometry none` earlier in the
+	// same batch makes X a container; `C.geometry g` earlier makes a container C a leaf).
+	std::vector<CstBatchEdit> admitted;
+	std::vector<std::size_t>  admittedIndex;
+	admitted.reserve( edits.size() );
+	admittedIndex.reserve( edits.size() );
+	for( std::size_t i = 0; i < edits.size(); ++i )
+	{
+		const CstBatchEdit& e = edits[i];
+		AgentCommitResult& r = out[i];
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		if( e.isInsert )
+		{
+			if( e.chunkText.empty() ) {
+				r.message = String( "chunkText must be non-empty" );
+				continue;
+			}
+			const std::string offending = ContainerBindingInChunkText_( String( e.chunkText.c_str() ) );
+			if( !offending.empty() ) {
+				char buf[320];
+				std::snprintf( buf, sizeof( buf ),
+					"the chunk names no `geometry`, so it is a container node -- a pure transform with no surface -- "
+					"and a container takes no `%s`.  Either give it a `geometry`, or drop the binding and put it on a "
+					"child object that has one.",
+					offending.c_str() );
+				r.message = String( buf );
+				continue;
+			}
+			admitted.push_back( e );
+		}
+		else
+		{
+			if( ( e.entityName.empty() && e.entityKind.empty() ) || e.role.empty() || e.value.empty() ) {
+				r.message = String( "param and value must be non-empty, and target may be empty only with a kind (singleton addressing)" );
+				continue;
+			}
+			CstBatchEdit gated = e;
+			gated.refuseSurfaceBindingOnContainer =
+				IsObjectSurfaceBindingParamName( String( e.role.c_str() ) ) && e.value != "none";
+			admitted.push_back( gated );
+		}
+		admittedIndex.push_back( i );
+	}
+
+	std::vector<CstBatchOutcome> outcomes;
+	const int code = admitted.empty() ? 0 : mJob.ApplyCstEditBatch( admitted, outcomes );
+
+	if( code == kCstEditBatchNeedsSequential )
+	{
+		// Nothing was committed.  The caller (AgentSession::FlushEditBatch_) commits the elements one at a time
+		// through the single verbs instead, so this lock is released between elements (review P2-C).
+		for( std::size_t k = 0; k < admitted.size(); ++k ) {
+			AgentCommitResult& r = out[ admittedIndex[k] ];
+			r.status = String( "sequential" );
+			r.needsSequential = true;
+			r.message = String( "batch isolation budget exceeded -- commit this element on its own" );
+		}
+		const RISE::Cst::CstHeadVersion head = mJob.GetCstHeadVersion();
+		for( std::size_t i = 0; i < out.size(); ++i ) out[i].headVersion = head;
+		return out;
+	}
+
+	// A landed batch is ALWAYS a D2 full re-derive (codes 2/3) -- re-point the editor's cached pointers
+	// BEFORE releasing the lock, ONCE for the whole batch.
+	if( code == 2 || code == 3 )
+		RebindEditorToJob();
+
+	bool anyRasterizerLanded = false;
+	// Review round 3: a diagnosed (code 3) batch re-derive is attributed to an element ONLY when a diagnostic OPENS
+	// with that element's own `<keyword> `<name>`` (CstBatchDiagnosticIsFor); when nothing is attributed, EVERY
+	// landed element is reported diagnosed (callers count diagnosed as landed, so over-flagging is harmless).
+	auto ownIdentity = [&]( std::size_t k, std::string& kw, std::string& nm ) {
+		const CstBatchOutcome& o = outcomes[k];
+		if( admitted[k].isInsert ) { kw = o.keyword; nm = o.name; }
+		else { kw = o.undo.ownerKeyword; nm = CstNameFromPath( o.undo.ownerNamePath ); }
+	};
+	bool anyAttributed = false;
+	for( std::size_t k = 0; k < admitted.size() && k < outcomes.size(); ++k ) {
+		if( outcomes[k].code != 3 ) continue;
+		std::string kw, nm;
+		ownIdentity( k, kw, nm );
+		if( CstBatchDiagnosticIsFor( outcomes[k].diag, kw, nm ) ) anyAttributed = true;
+	}
+	std::string label;
+	for( std::size_t k = 0; k < admitted.size(); ++k )
+	{
+		const CstBatchEdit&    e  = admitted[k];
+		const CstBatchOutcome& oc = outcomes[k];
+		AgentCommitResult&     r  = out[ admittedIndex[k] ];
+		r.rawCode = ( oc.code < 0 ) ? 0 : oc.code;
+		if( e.isInsert )
+		{
+			r.chunkKeyword = String( oc.keyword.c_str() );
+			r.chunkName    = String( oc.name.c_str() );
+		}
+		const char* diag = oc.diag.c_str();
+		// The per-element folds are the SINGLE verbs' own wording, so a model reading a batch result
+		// learns exactly what it would have learned from the single call.
+		switch( oc.code )
+		{
+			case 2:
+				r.applied = true;
+				r.status  = String( "applied" );
+				r.message = e.isInsert
+					? String( kCstChunkInsertedMessage )
+					: String( "applied via a full re-derive (Scene + managers were replaced)" );
+				break;
+			case 3:
+			{
+				// ONE re-derive realized the whole batch (its dry-run of the identical document was clean).
+				std::string kw, nm;
+				ownIdentity( k, kw, nm );
+				const bool offender = !anyAttributed || CstBatchDiagnosticIsFor( oc.diag, kw, nm );
+				if( offender ) {
+					r.applied = false;
+					r.status  = String( "diagnosed" );
+					std::string m = anyAttributed
+						? "edit NOT a clean success: the Document was mutated and the live managers were replaced, BUT "
+						  "the batch's full re-derive reported a diagnostic for THIS element -- do NOT treat it as applied: "
+						: "edit NOT a clean success: the chunk/edit IS in the Document and the live managers were replaced, "
+						  "BUT the batch's full re-derive reported diagnostics it could not attribute to one element -- "
+						  "do NOT treat it as applied: ";
+					m += oc.diag;
+					r.message = String( m.c_str() );
+				} else {
+					r.applied = true;
+					r.status  = String( "applied" );
+					std::string m = e.isInsert ? std::string( kCstChunkInsertedMessage )
+					                           : "applied via a full re-derive (Scene + managers were replaced)";
+					m += "; note: the batch's re-derive reported a diagnostic for ANOTHER element: ";
+					m += oc.diag;
+					r.message = String( m.c_str() );
+				}
+				break;
+			}
+			case -1:
+			{
+				r.applied = false;
+				r.status  = String( "rejected" );
+				std::string m = "insert rejected: chunkText must parse to exactly ONE complete chunk (`keyword { ... }`, braces on their own lines; no scene header/directives)";
+				if( diag[0] ) { m += ": "; m += diag; }
+				r.message = String( m.c_str() );
+				break;
+			}
+			case -2:
+			{
+				r.applied = false;
+				r.status  = String( "rejected" );
+				const std::string dstr = diag;
+				std::string m;
+				if( dstr.compare( 0, 13, "reserved name" ) == 0 ) {
+					m = "insert rejected: " + dstr + " -- head unchanged";
+				} else {
+					m = "insert rejected: a chunk with the same kind and name already exists";
+					if( diag[0] ) { m += " ("; m += diag; m += ")"; }
+					m += " -- head unchanged";
+				}
+				r.message = String( m.c_str() );
+				break;
+			}
+			case 0:
+			default:
+			{
+				r.applied = false;
+				r.status  = String( "rejected" );
+				if( oc.refusedContainer ) {
+					char buf[320];
+					std::snprintf( buf, sizeof( buf ),
+						"`%s` is a container node (it names no `geometry`), so it takes no `%s` -- a container is a pure "
+						"transform with no surface.  Put the binding on a child object that has geometry, or give this "
+						"object a `geometry`.",
+						e.entityName.empty() ? "(unnamed)" : e.entityName.c_str(), e.role.c_str() );
+					r.message = String( buf );
+				} else if( e.isInsert ) {
+					r.wouldNotDerive = oc.wouldNotDerive || oc.code == 0;
+					std::string m = "insert rejected: the chunk would not derive in context -- head unchanged";
+					if( diag[0] ) { m += ": "; m += diag; }
+					r.message = String( m.c_str() );
+				} else {
+					r.wouldNotDerive = true;
+					r.message = String( "edit rejected (entity/param not found or the edit would not derive) -- head unchanged" );
+				}
+				break;
+			}
+		}
+		if( ( oc.code == 2 || oc.code == 3 ) )
+		{
+			if( e.isInsert && oc.isRasterizer ) anyRasterizerLanded = true;
+			if( !label.empty() ) label += ", ";
+			label += e.isInsert ? ( oc.name.empty() ? oc.keyword : oc.name )
+			                    : ( e.entityName + "." + e.role );
+		}
+	}
+
+	const RISE::Cst::CstHeadVersion head = mJob.GetCstHeadVersion();
+	for( std::size_t i = 0; i < out.size(); ++i ) out[i].headVersion = head;
+
+	if( code == 2 || code == 3 )
+	{
+		// Dirty marks + the per-element side effects the single verbs run on a mutating code, for every
+		// LANDED element (same calls, same arguments).
+		for( std::size_t k = 0; k < admitted.size(); ++k )
+		{
+			const CstBatchOutcome& oc = outcomes[k];
+			if( oc.code != 2 && oc.code != 3 ) continue;
+			const CstBatchEdit& e = admitted[k];
+			if( e.isInsert )
+			{
+				mEditor.MarkCstHeadDirty( oc.name.c_str(), oc.keyword.empty() ? nullptr : oc.keyword.c_str() );
+			}
+			else
+			{
+				const char* kind = e.entityKind.empty() ? nullptr : e.entityKind.c_str();
+				mEditor.MarkCstHeadDirty( e.entityName.c_str(), kind );
+				mEditor.BumpSceneLightGenerationForAgentParamEdit( e.entityName.c_str(), kind );
+				if( e.entityKind.empty() )
+					InvalidateAllSceneCameraNamedPanesLocked_();
+				else if( IsCameraChunkKind( String( e.entityKind.c_str() ) ) )
+					InvalidatePanesBoundToSceneCameraLocked_( String( e.entityName.c_str() ) );
+			}
+		}
+
+		// ONE history record for the WHOLE batch (one Cmd-Z undoes it -- the remove_chunks rule): the landed
+		// elements' OPERATION-LEVEL inverses in landing order (see CstBatchUndoOp and the AgentEditBatch op doc
+		// for why per-element records are not an exact inverse of a batch) -- never a document snapshot, so an
+		// Undo/Redo touches only what the batch touched.
+		std::vector< std::pair<int, CstBatchUndoOp> > ordered;
+		for( std::size_t k = 0; k < admitted.size() && k < outcomes.size(); ++k )
+			if( outcomes[k].code == 2 || outcomes[k].code == 3 )
+				ordered.push_back( std::make_pair( outcomes[k].landOrder, outcomes[k].undo ) );
+		std::stable_sort( ordered.begin(), ordered.end(),
+			[]( const std::pair<int, CstBatchUndoOp>& x, const std::pair<int, CstBatchUndoOp>& y ) { return x.first < y.first; } );
+		std::vector<CstBatchUndoOp> ops;
+		for( std::size_t k = 0; k < ordered.size(); ++k ) ops.push_back( ordered[k].second );
+		mEditor.PushAgentEditBatchEdit( String( label.c_str() ), ops, anyRasterizerLanded );
+
+		// The entity set and/or graph edges changed -- bump the epoch live GUI outliners cache against.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+	}
+	return out;
+}
+
+// R2 (2026-08-10, replace_geometry_scaffold): the whole-document composite commit -- see the header doc.
+// Structurally identical to ApplyAgentRemoveChunksCrud_ above (same refusal order, same conflict gate, same
+// rebind-on-2/3, same one-history-push + kick tail); the differences are the Job primitive, the undo/redo
+// payload pair, and the code fold's wording.
+//
+// doc-88 Phase 3 S20: GENERALIZED (parameterized, not copied) so the canvas's positioned Duplicate-node --
+// which needs exactly this undo shape and no other, see PushAgentDuplicateNodeEdit -- rides the SAME commit
+// block rather than a second copy of the mTxnOpen refusal + cancel-and-park + conflict gate + rebind +
+// one-history-push + epoch-bump + kick sequence.  `entityKind` / `noun` / `appliedPhrase` /
+// `duplicateNodeOp` are the ONLY per-verb differences -- and the three result strings stay BYTE-IDENTICAL
+// to AgentSession.cpp's own hand-copy of them for the geometry verb (see the code-2 fold's note).
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeometryCrud_(
+	const String& objectName,
+	const String& candidateDocText,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+	const char* verbLabel,
+	const char* entityKind,
+	const char* noun,
+	const char* appliedPhrase,
+	bool duplicateNodeOp )
+{
+	AgentCommitResult r;
+	r.chunkName    = objectName;
+	r.chunkKeyword = String( entityKind ? entityKind : "" );
+
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mTxnOpen.load( std::memory_order_acquire )
+	 || mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: agent %s refused while an editor transaction/gesture is open.", noun );
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = true;
+		r.message = String( "editor transaction or gesture in progress -- retry after it completes" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	}
+	CancelAndParkRender_( lk );
+
+	if( !mJob.HasRetainedCstDocument() )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "no retained CST Document -- agent commit needs a CST-loaded head" );
+		return r;
+	}
+	// RString::size() counts the trailing NUL; size <= 1 is the empty case.
+	if( candidateDocText.size() <= 1 )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		r.message = String( "candidate document text must be non-empty" );
+		return r;
+	}
+
+	// Optimistic-concurrency CONFLICT precondition, under the lock -- identical rule and wording to
+	// ApplyAgentRemoveChunksCrud_'s.  LOAD-BEARING for this verb specifically: the candidate was computed
+	// against a head snapshot taken OUTSIDE this lock, so without the gate a concurrent co-editor's edit
+	// would be silently overwritten by the whole-document swap (see the header doc).
+	if( baseVersionOrNull )
+	{
+		const RISE::Cst::CstHeadVersion cur = mJob.GetCstHeadVersion();
+		if( *baseVersionOrNull != cur )
+		{
+			r.applied     = false;
+			r.conflict    = true;
+			r.rawCode     = 0;
+			r.status      = String( "conflict" );
+			r.headVersion = cur;
+			char buf[160];
+			std::snprintf( buf, sizeof( buf ),
+				"baseHeadVersion does not match the current head (revision %llu) -- re-read and re-propose",
+				static_cast<unsigned long long>( cur.revision ) );
+			r.message = String( buf );
+			return r;
+		}
+	}
+
+	// UNDO capture: the byte-exact serialization of the Document as it stands RIGHT NOW, taken under this
+	// same mMutex hold as the swap itself, so there is no TOCTOU (the SAME discipline
+	// ApplyAgentRemoveChunksCrud_'s capture follows).
+	std::string priorDocText;
+	if( const RISE::Cst::Document* doc = mJob.GetCstDocument() )
+		priorDocText = RISE::Cst::SerializeCst( *doc );
+
+	char diagBuf[512]; diagBuf[0] = '\0';
+	// `restoreActiveRasterizer` TRUE: the candidate never adds or removes a `*_rasterizer` chunk (the caller
+	// gates on exactly that -- the geometry verb by construction, and DuplicateGraphNode because it only
+	// forks a Painter/Function/Material-category graph node), so the pre-swap active rasterizer is still the
+	// one a reload would activate.
+	const int code = mJob.ApplyCstReplaceDocumentText( candidateDocText.c_str(),
+	                                                    /*restoreActiveRasterizer*/ true,
+	                                                    diagBuf, sizeof( diagBuf ),
+	                                                    verbLabel ? verbLabel : ( duplicateNodeOp ? "duplicate_graph_node"
+	                                                                                            : "replace_geometry_scaffold" ) );
+
+	// A whole-document swap that landed is ALWAYS a D2 full re-derive (codes 2/3) -- re-point the editor's
+	// cached pointers BEFORE releasing the lock (same rebind rule as every other agent commit).
+	if( code == 2 || code == 3 )
+		RebindEditorToJob();
+
+	r.rawCode = ( code < 0 ) ? 0 : code;
+	switch( code )
+	{
+		case 2:
+		{
+			r.applied = true;
+			r.status  = String( "applied" );
+			// `appliedPhrase`, not `noun`, ONLY here: the code-3 and code-0 folds
+			// below read naturally off the noun ("geometry replacement NOT a clean
+			// success", "... rejected"), but the success line does not ("geometry
+			// replacement committed via ..." reads worse than "geometry replaced
+			// via ...") -- and, load-bearingly, `AgentSession.cpp`'s
+			// replace_geometry_scaffold keeps its OWN hand-copy of all three
+			// strings for the no-controller path it takes.  Parameterizing this
+			// one line separately is what keeps ALL THREE byte-identical to that
+			// copy for the geometry verb, so generalizing this block for S20 did
+			// not silently drift a pair the file elsewhere warns about.
+			const std::string m = std::string( appliedPhrase ) + " via a single full re-derive (Scene + managers were replaced)";
+			r.message = String( m.c_str() );
+			break;
+		}
+		case 3:
+		{
+			r.applied = false;
+			r.status  = String( "diagnosed" );
+			const std::string m = std::string( noun ) + " NOT a clean success: the Document was mutated and the live managers "
+			                      "were replaced, BUT the full re-derive emitted diagnostics (see log) -- do NOT treat as applied";
+			r.message = String( m.c_str() );
+			break;
+		}
+		case 0:
+		default:
+		{
+			r.applied = false;
+			r.status  = String( "rejected" );
+			std::string m = std::string( noun ) + " rejected (NOTHING changed): the candidate document would not derive "
+			                "-- head unchanged";
+			if( diagBuf[0] ) { m += ": "; m += diagBuf; }
+			r.message = String( m.c_str() );
+			break;
+		}
+	}
+
+	r.headVersion = mJob.GetCstHeadVersion();
+
+	if( code == 2 || code == 3 )
+	{
+		mEditor.MarkCstHeadDirty( objectName.c_str(), entityKind );
+
+		// ONE history record for the WHOLE composite -- the headline property of this verb.  A capture
+		// failure (no retained Document at capture time) should be impossible here: the capture ran under
+		// this same lock hold against the SAME Document the swap just replaced.  A defensive skip-with-log
+		// guards against ever pushing an empty, un-restorable payload.
+		if( !priorDocText.empty() )
+		{
+			if( duplicateNodeOp )
+				mEditor.PushAgentDuplicateNodeEdit( objectName, String( entityKind ? entityKind : "" ),
+				                                    String( priorDocText.c_str() ), candidateDocText );
+			else
+				mEditor.PushAgentReplaceGeometryEdit( objectName,
+				                                      String( priorDocText.c_str() ),
+				                                      candidateDocText );
+		}
+		else
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: agent %s on `%s` applied (code %d) but the prior-document "
+				"capture was empty -- NO undo history record was pushed (should not happen: the capture ran under "
+				"the same lock hold as the swap).",
+				noun, objectName.c_str(), code );
+		}
+
+		// The entity set changed (the geometry verb adds chunks and erases one; the duplicate adds one) --
+		// bump the epoch live GUI outliners, and the S15 node-graph canvas, cache against.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+	}
+	return r;
+}
+
+SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeometry(
+	const String& objectName,
+	const String& candidateDocText,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+	const char* verbLabel,
+	const char* entityKind )
+{
+	AgentCommitResult r;
+	{
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		{
+			// Latched-vs-transient split (C4) and the current-head report (C3) -- see ApplyAgentInsertChunk
+			// for the full rationale; identical here.
+			r.status = String( "rejected" );
+			if( mInDestructorTeardown.load( std::memory_order_acquire )
+			 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen )
+			{
+				r.retriable = false;
+				r.message = String( "controller is being destroyed -- no further agent edit will be admitted" );
+				return r;
+			}
+			r.retriable = true;
+			r.message = String( "render queued or in progress -- retry after it completes" );
+			r.headVersion = mJob.GetCstHeadVersion();
+			return r;
+		}
+		r = ApplyAgentReplaceGeometryCrud_( objectName, candidateDocText, baseVersionOrNull, verbLabel,
+		                                    entityKind );
 	}
 	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
 	return r;
@@ -5543,7 +9187,8 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 	// against the head as it was then -- it cannot see this.
 	//
 	// Only ParamEdit and InsertChunk proposals can create this construct
-	// (RemoveChunk cannot introduce a new binding).  LOCK DISCIPLINE:
+	// (RemoveChunk -- and R1a's batch RemoveChunks -- cannot introduce a
+	// new binding; the E1 gate is creation-only).  LOCK DISCIPLINE:
 	// ReadAgentSceneSnapshot takes mMutex itself for a brief, non-
 	// reentrant read and releases before returning -- called here with
 	// ONLY mRenderAdmissionMutex held (a DIFFERENT, recursive mutex; see
@@ -5563,12 +9208,70 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 		ReadAgentSceneSnapshot( hasDoc, headText, headVer );
 		if( hasDoc )
 		{
-			const std::string clause = ( snapshot.kind == AgentProposalKind::ParamEdit )
+			std::string clause = ( snapshot.kind == AgentProposalKind::ParamEdit )
 				? RISE::Agent::CheckNonSamplingEmitterGateForPatch( headText,
 					std::string( snapshot.target.c_str() ), std::string( snapshot.entityKind.c_str() ),
 					std::string( snapshot.param.c_str() ), std::string( snapshot.value.c_str() ) )
 				: RISE::Agent::CheckNonSamplingEmitterGateForInsert( headText,
 					std::string( snapshot.chunkText.c_str() ) );
+			// R1c (2026-08-09, agent rasterizer allowlist): the SECOND re-check,
+			// for the SAME reason E1's exists and on the SAME two proposal kinds
+			// (RemoveChunk / RemoveChunks cannot introduce or re-activate a
+			// rasterizer -- a rasterizer chunk declares no `name`, so neither
+			// remove verb can even resolve one).  A proposal staged BEFORE this
+			// gate shipped, or staged while its own arm was innocent (an
+			// auto_rasterizer that was not yet pinned to bdpt when the world
+			// moved underneath it), must not slip through on approval.  Its
+			// arms are pure functions over `headText` with no derive at all,
+			// so the lock discipline documented above for the E1 pair applies
+			// unchanged and this adds no controller re-entry.
+			if( clause.empty() )
+			{
+				clause = ( snapshot.kind == AgentProposalKind::ParamEdit )
+					? RISE::Agent::CheckRasterizerAllowlistGateForPatch( headText,
+						std::string( snapshot.target.c_str() ), std::string( snapshot.entityKind.c_str() ),
+						std::string( snapshot.param.c_str() ), std::string( snapshot.value.c_str() ) )
+					: RISE::Agent::CheckRasterizerAllowlistGateForInsert(
+						std::string( snapshot.chunkText.c_str() ) );
+			}
+			// G2 fix-round (2026-08-10, build-plan gate): the THIRD re-check,
+			// and the only CONDITIONAL one -- see
+			// AgentProposal::buildPlanGateArmedAtStage for why it has to be
+			// (the gate is SESSION state; this controller has no handle on
+			// the session that staged the proposal, so the armed-ness is
+			// carried on the proposal itself while the DELTA stays stateless).
+			//
+			// PARAMEDIT ONLY, deliberately.  An InsertChunk proposal needs no
+			// re-check: its chunk text is FIXED, so the insert-side classifier
+			// gives the identical answer at stage and at resolve, and all four
+			// insert verbs gate BEFORE their External staging branch -- a
+			// geometry-creating insert staged while armed is impossible.
+			// RemoveChunk / RemoveChunks cannot create a chunk at all.  A
+			// ParamEdit is the one kind whose effect is HEAD-DEPENDENT (a
+			// target that did not resolve at stage time can resolve later),
+			// which is exactly the staleness window this closes.
+			//
+			// The gate's COUNTER is deliberately NOT touched here.  The
+			// 3-refusal budget belongs to the staging session; incrementing
+			// anything from the controller would be a SECOND budget, which is
+			// the bug this fix-round exists to avoid.  This is a stale-proposal
+			// rejection, not a gate refusal.
+			if( clause.empty() && snapshot.buildPlanGateArmedAtStage &&
+			    snapshot.kind == AgentProposalKind::ParamEdit )
+			{
+				std::string introducedName;
+				const std::string introducedKind = RISE::Agent::DescribeBuildPlanGeometryDeltaForPatch(
+					headText, std::string( snapshot.target.c_str() ),
+					std::string( snapshot.entityKind.c_str() ),
+					std::string( snapshot.param.c_str() ),
+					std::string( snapshot.value.c_str() ), &introducedName );
+				if( !introducedKind.empty() )
+					clause = "this proposal was staged before any build plan was filed, and applying it to "
+					         "the head as it stands now would introduce a `" + introducedKind + "` chunk" +
+					         ( introducedName.empty() ? std::string() : ( " named `" + introducedName + "`" ) ) +
+					         " -- it did not when it was staged. Nothing in the document was changed. The "
+					         "proposing session must call file_build_plan and reissue the patch.";
+			}
 			if( !clause.empty() )
 			{
 				gateRefused    = true;
@@ -5595,6 +9298,18 @@ bool SceneEditController::ResolveProposal( std::uint64_t id, bool approve, Agent
 			case AgentProposalKind::RemoveChunk:
 				cr = ApplyAgentRemoveChunk( snapshot.target, snapshot.entityKind, &snapshot.baseVersion );
 				break;
+			case AgentProposalKind::RemoveChunks:
+			{
+				// R1a (2026-08-09): ONE proposal, WHOLE batch -- split the '\n'-packed target/kind lists
+				// back apart (see AgentProposal's doc) and replay through the ATOMIC batch verb, so an
+				// approval lands exactly the all-or-nothing edit the agent proposed rather than a partial
+				// one it never asked for.
+				std::vector<String> batchTargets, batchKinds;
+				SplitPackedProposalList_( snapshot.target,     batchTargets );
+				SplitPackedProposalList_( snapshot.entityKind, batchKinds );
+				cr = ApplyAgentRemoveChunks( batchTargets, batchKinds, &snapshot.baseVersion );
+				break;
+			}
 		}
 	}
 
@@ -6953,6 +10668,38 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 		}
 	}
 
+	// 87: an INSERT is the most likely way an agent produces a container that
+	// names a surface binding -- writing a whole `standard_object` chunk is one
+	// call, and the param-edit gate can never see it.  The derive would resolve
+	// the binding, DROP it with a log warning, and still report success, so the
+	// agent would be told `applied` while the Document permanently carries a
+	// param that can never take effect.  Refuse it here, where there is a
+	// message to hand back.
+	//
+	// SCOPE, stated honestly: this covers `insert_chunk`.  A whole-document
+	// replace can still introduce the same shape, and is left alone
+	// deliberately -- that path is equivalent to loading a scene file, where
+	// warn-and-drop is the established contract for every file ever authored.
+	if( isInsert )
+	{
+		const std::string offending = ContainerBindingInChunkText_( a );
+		if( !offending.empty() )
+		{
+			r.applied = false;
+			r.rawCode = 0;
+			r.status  = String( "rejected" );
+			r.headVersion = mJob.GetCstHeadVersion();
+			char buf[320];
+			std::snprintf( buf, sizeof( buf ),
+				"the chunk names no `geometry`, so it is a container node -- a pure transform with no surface -- "
+				"and a container takes no `%s`.  Either give it a `geometry`, or drop the binding and put it on a "
+				"child object that has one.",
+				offending.c_str() );
+			r.message = String( buf );
+			return r;
+		}
+	}
+
 	// Shared-undo U2: for a REMOVE, capture the exact bytes + position of the chunk about to be erased --
 	// BEFORE the coming Job::ApplyCstRemoveChunk call mutates the Document (no TOCTOU: both run under this
 	// same mMutex hold).  Also snapshot the pre-remove item count so the post-remove trim below knows exactly
@@ -7043,7 +10790,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 			r.applied = true;
 			r.status  = String( "applied" );
 			r.message = isInsert
-				? String( "chunk inserted via a full re-derive (Scene + managers were replaced)" )
+				? String( kCstChunkInsertedMessage )
 				: String( "chunk removed via a full re-derive (Scene + managers were replaced)" );
 			break;
 		case 3:
@@ -7114,6 +10861,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 			// Round-2 P1-A: name BOTH would-not-derive causes honestly -- the
 			// old "likely still REFERENCED" wording sent agents chasing a
 			// phantom consumer when the real cause was an order-invalid head.
+			if( isInsert ) r.wouldNotDerive = true;   // Job's code 0 for an insert IS would-not-derive
 			std::string m = isInsert
 				? std::string( "insert rejected: the chunk would not derive in context -- head unchanged" )
 				: std::string( "remove rejected: removing '" ) + a.c_str() + "' would not derive (it is likely still REFERENCED by another chunk, or the remaining document no longer derives in order -- read_document and validate to inspect) -- head unchanged";
@@ -7377,6 +11125,28 @@ SaveResult SceneEditController::RequestSave( const std::string& filePath )
 	// Save button disables promptly on the dirty->clean flip.
 	mEditor.DrainDirtyNotification();
 
+	// doc-88 S14 review round P2(2): Save-As sidecar migration -- see
+	// GraphLayoutSidecar.h's own "SAVE-AS SIDECAR MIGRATION" note on
+	// `MigrateSidecarOnSaveAs` for the full contract. Deliberately OUTSIDE
+	// mMutex (pure filesystem I/O -- same "don't stall the render thread"
+	// posture Step 2's own comment gives for the heavier `SaveEngine::Save`
+	// call above); `loadedFileIdentitySnapshot.filePath` was captured under
+	// Step 1's lock BEFORE this save, so comparing it against `filePath`
+	// (the path just saved to) is exactly "did this save move the scene to
+	// a new path" -- an ordinary same-path save is `==` and no-ops inside
+	// `MigrateSidecarOnSaveAs` itself. A migration failure is logged and
+	// swallowed: the scene file itself is already saved and correct by this
+	// point, so a stranded/un-migrated sidecar is never allowed to fail the
+	// save the caller is waiting on.
+	if( Succeeded( result.status ) && filePath != loadedFileIdentitySnapshot.filePath ) {
+		std::string sidecarError;
+		if( !GraphLayoutSidecar::MigrateSidecarOnSaveAs( loadedFileIdentitySnapshot.filePath, filePath, sidecarError ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController::RequestSave: graph-layout sidecar migration for Save-As failed: %s",
+				sidecarError.c_str() );
+		}
+	}
+
 	return result;
 }
 
@@ -7432,6 +11202,30 @@ void SceneEditController::ReadAgentSceneSnapshot( bool& outHasDocument,
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
 	outDocument    = doc ? RISE::Cst::SerializeCst( *doc ) : std::string();
 	outVersion     = mJob.GetCstHeadVersion();
+}
+
+// Batched agent edits (2026-10-16): see the header doc -- ReadAgentSceneSnapshot's lifecycle refusal and lock,
+// handing back a persistent-structure COPY of the head (no serialization).
+void SceneEditController::CopyAgentHeadDocument( bool& outHasDocument,
+                                                 RISE::Cst::Document& outDocument,
+                                                 RISE::Cst::CstHeadVersion& outVersion ) const
+{
+	outHasDocument = false;
+	outVersion = RISE::Cst::CstHeadVersion{};
+	if( mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return;
+	std::lock_guard<std::mutex> lk( mMutex );
+	outHasDocument = mJob.CopyCstDocument( outDocument );
+	outVersion     = mJob.GetCstHeadVersion();
+}
+
+int SceneEditController::ApplyAgentBatchElementToDocument( RISE::Cst::Document& doc, const CstBatchEdit& edit,
+                                                           CstBatchOutcome& outcome ) const
+{
+	if( mInDestructorTeardown.load( std::memory_order_acquire )
+	 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) return 0;
+	std::lock_guard<std::mutex> lk( mMutex );   // the element reads live Job state (e.g. the active camera)
+	return mJob.ApplyCstBatchElement( doc, edit, outcome );
 }
 
 RISE::Cst::CstHeadVersion SceneEditController::ReadAgentHeadVersion() const
@@ -7506,14 +11300,38 @@ namespace {
 // round-7 gated camera fallback (DocCameraUniqueFallbackPermitted).
 RISE::Cst::NodeId ResolveSourceChunkId( const RISE::Cst::Document& doc,
 	SceneEditController::Category cat, const std::string& name, const std::string& activeRasterizerKind,
-	const std::string& activeCameraName )
+	const std::string& activeCameraName, const IObjectManager* objMgr )
 {
 	std::string suffix; bool uf = false;
+	// 87 step 3: a SYNTHESIZED entry has no chunk of its own name -- it was produced
+	// by an expansion.  Its editable chunk is the INSTANCING chunk, and the manager's
+	// provenance map is the only sanctioned way to get there.  Resolve through it
+	// FIRST, so a picked instance traces to text the author can actually edit.
+	// (In 3a's collapse case the two names are equal and this is an identity step;
+	// it is 3b's `name[i]` entries that need it to be here.)
+	std::string lookupName = name;
+	if( objMgr && cat == SceneEditController::Category::Object && !name.empty() ) {
+		const char* instancing = 0;
+		if( objMgr->GetObjectProvenance( name.c_str(), &instancing, 0 ) && instancing && instancing[0] )
+			lookupName = instancing;
+	}
 	if( RoleKindSuffixForCategory( cat, suffix, uf ) ) {
 		if( cat == SceneEditController::Category::Camera && uf )
 			uf = RISE::Cst::DocCameraUniqueFallbackPermitted( doc, name, activeCameraName );
-		if( name.empty() && !uf ) return 0;   // an empty name resolves only via the unique-fallback
-		return RISE::Cst::DocFindByNameAnyRole( doc, name, nullptr, suffix, uf );
+		if( lookupName.empty() && !uf ) return 0;   // an empty name resolves only via the unique-fallback
+		const RISE::Cst::NodeId direct = RISE::Cst::DocFindByNameAnyRole( doc, lookupName, nullptr, suffix, uf );
+		if( direct != 0 || lookupName == name ) return direct;
+		// The instancing chunk exists but its ROLE does not carry this category's
+		// keyword suffix.  DEFENSIVE since 87 step 3d: the only expansion left is a
+		// `standard_object` carrying `source`, whose role DOES carry the `object`
+		// suffix, so the direct lookup above always answers and this line is
+		// unreachable today.  It was live for the `instance_array` generator, whose
+		// entries were Objects while its own chunk was neither `*_object` nor anything
+		// else the suffix map knew.  Kept for the next expansion that mints entries
+		// from a chunk of some other role: a role-agnostic name lookup is right here
+		// because provenance already established that this name IS the producing
+		// chunk, so there is nothing to disambiguate.
+		return RISE::Cst::DocFindByNameAnyRole( doc, lookupName, nullptr, std::string(), false );
 	}
 	// Singletons RoleKindSuffixForCategory rejects.  Film is a single unnamed
 	// chunk (resolve by kind).  Rasterizer chunks are unnamed and identified by
@@ -7648,7 +11466,7 @@ bool SceneEditController::ResolveSourceSpan( Category cat, const String& name, c
 	const std::string activeRast = mJob.GetActiveRasterizerName();
 	const RISE::Cst::NodeId chunkId =
 		ResolveSourceChunkId( *doc, cat, std::string( name.c_str() ), activeRast,
-		                      mJob.GetActiveCameraName() );
+		                      mJob.GetActiveCameraName(), mJob.GetObjects() );
 	if( chunkId == 0 ) return false;   // unresolvable ref (removed entity / ambiguous / no such singleton)
 
 	size_t off = 0, len = 0;
@@ -8807,7 +12625,27 @@ void SceneEditController::RefreshProperties()
 			IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
 			if( !objs ) break;
 			const IObject* obj = objs->GetItem( selName.c_str() );
-			if( !obj ) break;
+			// 87 step 4b: A SELECTABLE OBJECT ROW NEED NOT HAVE A LIVE ENTRY.
+			// The outliner draws the AUTHORED graph, and a COUNTED instancing
+			// chunk (`I count_u 2`) is a node named `I` while the manager holds
+			// only `I[0,0]` / `I[1,0]` -- see BuildObjectTreeSeedsLocked_ PASS 2,
+			// which mints that node precisely so the chunk the author wrote gets
+			// a row.  Selecting it is by NAME (handles never leave a walk), so
+			// this arm is reached with a name no live object carries, and the
+			// live-introspection path below has nothing to inspect.  Before this
+			// fallback the panel then showed an Object section with ZERO rows --
+			// the row was selectable and inspected to nothing.
+			//
+			// The honest inspection of a synthesized node is its CHUNK, which is
+			// exactly what the generic descriptor+CST surface reports (the same
+			// one Painter / Geometry use, and the same descriptor the parser
+			// validates against).  Fixed HERE rather than in a shell so both
+			// outliners get it -- the Qt tree (87 step 4c) has the same node.
+			if( !obj ) {
+				out = CstIntrospection::Inspect( mJob.GetCstDocument(), mJob, selName,
+					"standard_object", "Object chunk keyword" );
+				break;
+			}
 			out = ObjectIntrospection::Inspect( selName, *obj,
 				mJob.GetMaterials(), mJob.GetShaders(), &mJob );
 			// GUI redesign 2026-07-22: jump-to-definition metadata only
@@ -8820,7 +12658,10 @@ void SceneEditController::RefreshProperties()
 			if( !lights ) break;
 			const ILightPriv* light = lights->GetItem( selName.c_str() );
 			if( !light ) break;
-			out = LightIntrospection::Inspect( selName, *light );
+			// The Document is threaded in for the `colorspace` row alone -- a load-time
+			// interpretation the live ILight cannot answer (see LightIntrospection's
+			// ReadLightColorSpace).  Every other row still comes off the live light.
+			out = LightIntrospection::Inspect( selName, *light, mJob.GetCstDocument() );
 			// GUI redesign 2026-07-22: jump-to-definition metadata only
 			// (no value/editability change) -- see AnnotateReferenceRows.
 			CstIntrospection::AnnotateReferenceRows( out, mJob.GetCstDocument(), selName, "light" );
@@ -8882,9 +12723,19 @@ void SceneEditController::RefreshProperties()
 			// Entity-creation slice: rows are CST-chunk-sourced (there is
 			// no live per-parameter getter surface on IPainter/
 			// IScalarPainter) -- see CstIntrospection.h's header doc.
+			//
+			// doc 88 S4: routed through PainterIntrospection rather than
+			// straight at the generic surface.  Same generic rows underneath
+			// (PainterIntrospection::Inspect CALLS CstIntrospection::Inspect
+			// -- one descriptor consumer, not two), plus the three things
+			// that need to know this is a painter: the pipe row, one
+			// read-only row per REPEATABLE-param occurrence (a ramp's `stop`
+			// lines and an expression's `param`/`def` lines are the chunk's
+			// actual content, and the generic surface skips every repeatable
+			// param), and the ExpressionParamSpec min/max/step/label
+			// metadata folded onto the `param` rows.
 			if( selName.size() <= 1 ) break;
-			out = CstIntrospection::Inspect( mJob.GetCstDocument(), mJob, selName,
-				"painter", "Painter chunk keyword" );
+			out = PainterIntrospection::Inspect( mJob.GetCstDocument(), mJob, selName );
 			break;
 		}
 		case Category::Geometry: {
@@ -9036,6 +12887,58 @@ String SceneEditController::PropertyUnitLabel( unsigned int idx ) const
 	return mUi.properties[idx].unitLabel;
 }
 
+// doc 88 S4b: the range trio.  Same leaf-lock + bounds-check shape as every other
+// per-row reader above; an out-of-range index answers "no range" / 0 rather than
+// throwing, matching PropertyUnitLabel's empty-string convention.
+bool SceneEditController::PropertyHasRange( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() && mUi.properties[idx].hasRange;
+}
+
+double SceneEditController::PropertyRangeMin( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() ? (double)mUi.properties[idx].rangeMin : 0.0;
+}
+
+double SceneEditController::PropertyRangeMax( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() ? (double)mUi.properties[idx].rangeMax : 0.0;
+}
+
+double SceneEditController::PropertyRangeStep( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() ? (double)mUi.properties[idx].rangeStep : 0.0;
+}
+
+bool SceneEditController::PropertyTargetsPainter( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() && mUi.properties[idx].targetsPainter;
+}
+
+int SceneEditController::PropertyInlinePainterKind( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size()
+		? static_cast<int>( mUi.properties[idx].inlinePainterKind ) : 0;
+}
+
+String SceneEditController::PropertyInlinePainterValue( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() ? mUi.properties[idx].inlinePainterValue : String();
+}
+
+unsigned int SceneEditController::PropertyInlinePainterRefCount( unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return idx < mUi.properties.size() ? mUi.properties[idx].inlinePainterRefCount : 0u;
+}
+
 // -------------------------------------------------------------------
 // Jump-to-definition (GUI redesign, 2026-07-22).  See the header doc.
 // -------------------------------------------------------------------
@@ -9167,7 +13070,7 @@ bool SceneEditController::WouldPersistDanglingReference_(
 	// Resolve the entity's chunk + the edited param's descriptor.
 	const RISE::Cst::NodeId id = ResolveSourceChunkId(
 		*doc, cat, std::string( entityName.c_str() ), std::string(),
-		mJob.GetActiveCameraName() );
+		mJob.GetActiveCameraName(), mJob.GetObjects() );
 	if( id == 0 ) return false;
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
 	if( !chunk ) return false;
@@ -9195,6 +13098,15 @@ bool SceneEditController::WouldPersistDanglingReference_(
 		if( RISE::Cst::DocNodeIdAt( *doc, i ) == id ) { refIdx = i; break; }
 	if( refIdx < 0 ) return false;   // cannot locate the referencer -> defer to the derive path
 	auto categorySatisfies = [&]( ChunkCategory chunkCat, const std::string& role, ChunkCategory rc ) {
+		if( pd->semantics.pipe == ParameterPipe::Scalar )
+			return role == "scalar_painter";
+		if( pd->semantics.pipe == ParameterPipe::Color && !pd->semantics.colorAlsoAcceptsScalar )
+			return ( chunkCat == ChunkCategory::Painter && role != "scalar_painter" )
+				|| role == "piecewise_linear_function";
+		if( pd->semantics.pipe == ParameterPipe::Function1D )
+			return role == "piecewise_linear_function";
+		if( pd->semantics.pipe == ParameterPipe::Function2D )
+			return ConnectionLegality::IsFunction2DCapable( role.c_str(), chunkCat );
 		if( chunkCat == rc ) return true;
 		if( rc == ChunkCategory::Function && chunkCat == ChunkCategory::Painter
 		 && role != "scalar_painter" ) return true;   // colour painter dual-registers as Function2D
@@ -9219,12 +13131,38 @@ bool SceneEditController::WouldPersistDanglingReference_(
 	}
 
 	// No category-correct, earlier-declared CST target.  Reject ONLY if `value`
-	// is a RUNTIME-registered entity
-	// of an allowed referenceCategory -- that confirms it is a reference NAME (not
-	// an inline literal like `ior 1.7`) that renders now but would DANGLE on
-	// save/reload.  A value resolving in NEITHER the CST nor a manager is an
-	// inline literal / not-yet-created name; leave it to the existing derive path
-	// (conservative -- never a false rejection of a legitimate edit).
+	// is a RUNTIME-registered entity of the parameter's pipe / allowed
+	// referenceCategory -- that confirms it is a reference NAME (not an inline
+	// literal like `ior 1.7`) that renders now in that pipe's manager but would
+	// DANGLE on save/reload.  Scoping by `pd->semantics.pipe` ensures a
+	// CST-authored colour painter passed to a `Scalar` parameter (or a
+	// `scalar_painter` passed to a strict `Color` parameter) is NOT misclassified
+	// as a runtime-only dangling reference and instead reaches the derive path's
+	// pipe-mismatch diagnostic.
+	if( pd->semantics.pipe == ParameterPipe::Scalar )
+	{
+		if( IScalarPainterManager* spm = mJob.GetScalarPainters() )
+			return spm->GetItem( value.c_str() ) != nullptr;
+		return false;
+	}
+	if( pd->semantics.pipe == ParameterPipe::Color && !pd->semantics.colorAlsoAcceptsScalar )
+	{
+		if( IPainterManager* pm = mJob.GetPainters() )
+			return pm->GetItem( value.c_str() ) != nullptr;
+		return false;
+	}
+	if( pd->semantics.pipe == ParameterPipe::Function1D )
+	{
+		if( IFunction1DManager* fm = mJob.GetFunction1Ds() )
+			return fm->GetItem( value.c_str() ) != nullptr;
+		return false;
+	}
+	if( pd->semantics.pipe == ParameterPipe::Function2D )
+	{
+		if( IFunction2DManager* fm = mJob.GetFunction2Ds() )
+			return fm->GetItem( value.c_str() ) != nullptr;
+		return false;
+	}
 	for( ChunkCategory rc : pd->referenceCategories )
 	{
 		const std::vector<String> names =
@@ -9333,15 +13271,80 @@ String SceneEditController::PropertyUnitLabelFor( Category cat, unsigned int idx
 	return ( v && idx < v->size() ) ? (*v)[idx].unitLabel : String();
 }
 
+// doc 88 S4b: the per-category twins of the range trio -- the form BOTH GUI shells
+// actually read (they snapshot by category, not through the legacy single-selection
+// list).  Same "absent answers 0 / false" convention as PropertyUnitLabelFor.
+bool SceneEditController::PropertyHasRangeFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].hasRange : false;
+}
+
+double SceneEditController::PropertyRangeMinFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (double)(*v)[idx].rangeMin : 0.0;
+}
+
+double SceneEditController::PropertyRangeMaxFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (double)(*v)[idx].rangeMax : 0.0;
+}
+
+double SceneEditController::PropertyRangeStepFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (double)(*v)[idx].rangeStep : 0.0;
+}
+
+bool SceneEditController::PropertyTargetsPainterFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].targetsPainter : false;
+}
+
+int SceneEditController::PropertyInlinePainterKindFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? static_cast<int>( (*v)[idx].inlinePainterKind ) : 0;
+}
+
+String SceneEditController::PropertyInlinePainterValueFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].inlinePainterValue : String();
+}
+
+unsigned int SceneEditController::PropertyInlinePainterRefCountFor( Category cat, unsigned int idx ) const
+{
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const auto* v = PropsForCat( mUi.propertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].inlinePainterRefCount : 0u;
+}
+
 namespace {
 
-// Convert a UI-provided camera label into one token the CST scene grammar can
-// write without quoting.  Camera names are later emitted as `name <value>`;
+// Convert a UI- or agent-provided label into one token the CST scene grammar
+// can write without quoting.  Names are later emitted as `name <value>`;
 // whitespace, comments, and braces would otherwise alter the generated chunk
-// and leave the live manager and retained Document with different cameras.
-// Keep this at the one shared clone/stamp/promote choke point so every
-// externally proposed camera name obeys the same serialization contract.
-String CanonicalCameraName( const String& proposed )
+// and leave the live manager and retained Document out of sync with each
+// other.  Keep this at the ONE shared choke point every externally proposed
+// name funnels through -- originally camera clone/stamp/promote, and since
+// S18 round-1 P1 also CreateChunkNode's base-name pick -- so every caller
+// obeys the same serialization contract instead of each hand-rolling its own
+// (and drifting).  `emptyFallback` is caller-specific (a camera clone wants
+// "camera_copy"; a graph node wants its own keyword, so the created chunk's
+// name still says what it is) -- everything else about the transform is
+// shared.
+String CanonicalCameraName( const String& proposed, const char* emptyFallback = "camera_copy" )
 {
 	std::string out;
 	for( const char* p = proposed.c_str(); *p; ++p ) {
@@ -9351,7 +13354,7 @@ String CanonicalCameraName( const String& proposed )
 			( c >= '0' && c <= '9' ) || c == '_' || c == '-' || c == '.';
 		out += safe ? static_cast<char>( c ) : '_';
 	}
-	return out.empty() ? String( "camera_copy" ) : String( out.c_str() );
+	return out.empty() ? String( emptyFallback ) : String( out.c_str() );
 }
 
 // Generate a unique camera name from a canonicalized user-proposed base + the
@@ -12534,6 +16537,1411 @@ SceneEditController::AgentCommitResult SceneEditController::InstantiateEntityTem
 	return last;
 }
 
+// S18 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): see the header doc for the
+// landscape rationale -- this is a THIN COMPOSER over the two shipped
+// pieces (EntityTemplates::BuildNodeChunkText for the body,
+// ApplyAgentInsertChunk for the commit), never a third insert paradigm.
+std::vector<SceneEditController::ChunkNodeRequirement>
+SceneEditController::ChunkNodeRequirements( const String& keyword ) const
+{
+	std::vector<ChunkNodeRequirement> out;
+	const std::vector<EntityTemplates::ChunkNodeRequirement> src =
+		EntityTemplates::NodeRequirements( std::string( keyword.c_str() ) );
+	out.reserve( src.size() );
+	for( const EntityTemplates::ChunkNodeRequirement& r : src )
+	{
+		ChunkNodeRequirement o;
+		o.param       = String( r.param.c_str() );
+		o.description = String( r.description.c_str() );
+		// round-1 P3: read the authoritative flag, not
+		// `!r.referenceCategories.empty()` -- an unrestricted reference
+		// (legal, empty category list) would otherwise read back as a
+		// literal.  See EntityTemplates::ChunkNodeRequirement::isReference.
+		o.isReference = r.isReference;
+		// Carry the category set through too -- see this file's own
+		// ChunkNodeRequirement doc comment.  Previously dropped here,
+		// which left every caller of this API (this wrapper is the ONE
+		// production entry point outside EntityTemplates itself) with no
+		// way to tell a Painter-typed required reference from a
+		// Material-typed one.
+		o.referenceCategories = r.referenceCategories;
+		out.push_back( o );
+	}
+	return out;
+}
+
+std::vector<String> SceneEditController::PaletteKeywords( ChunkCategory category ) const
+{
+	// DL-401: DEPRECATED chunk types (descriptor `deprecated`, DL-323
+	// follow-through) sort AFTER every modern keyword -- each group stays
+	// lexicographic, so a search palette still filters a stable order, and
+	// the legacy models stay reachable (they still parse and render) but
+	// never lead the list.  `AllKeywordsForCategory` itself is untouched:
+	// the agent surface and the tests read its plain alphabetical order.
+	std::vector<String> all = AllKeywordsForCategory( category );
+	std::vector<String>::iterator legacyBegin = std::stable_partition( all.begin(), all.end(), []( const String& kw ) {
+		const ChunkDescriptor* d = DescriptorForKeyword( kw );
+		return !( d && d->deprecated );
+	} );
+	// Legacy-deprecation Phase 1: within the legacy group, FROZEN (unsupported)
+	// types sort after the merely deprecated ones.
+	std::stable_partition( legacyBegin, all.end(), []( const String& kw ) {
+		const ChunkDescriptor* d = DescriptorForKeyword( kw );
+		return !( d && d->frozen );
+	} );
+	return all;
+}
+
+bool SceneEditController::PaletteKeywordIsFrozen( const String& keyword ) const
+{
+	const ChunkDescriptor* d = DescriptorForKeyword( keyword );
+	return d && d->frozen;
+}
+
+std::string SceneEditController::PaletteKeywordDeprecation( const String& keyword ) const
+{
+	const ChunkDescriptor* d = DescriptorForKeyword( keyword );
+	return ( d && d->deprecated ) ? d->replacement : std::string();
+}
+
+SceneEditController::AgentCommitResult SceneEditController::CreateChunkNode(
+	const String& keyword, const String& baseName,
+	const std::vector<ChunkNodeArg>& args, String* outName )
+{
+	// Same preamble as InstantiateEntityTemplate: defer the dirty
+	// notification until after the lock hold, then take the admission
+	// lock so the render-locked gate is evaluated exactly once for the
+	// whole pick-then-insert sequence (and so a concurrent agent render
+	// cannot start between the name pick and the insert).
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+
+	// Refusal helper, defined BEFORE the render-locked gate below so that
+	// gate can use it too instead of hand-rolling a bare AgentCommitResult
+	// that skips headVersion/retriable -- every early exit must leave the
+	// Document BYTE-IDENTICAL and still report the CURRENT head, exactly
+	// like ApplyAgentInsertChunk's own refusals (a {0,0} head on the wire
+	// earns the caller a guaranteed conflict on its next commit), AND must
+	// tell the caller whether retrying the identical request could ever
+	// succeed.  `retriable` defaults to false: an unknown keyword, a
+	// missing required arg, or a name-space exhaustion will fail again on
+	// retry.  The render-locked gate is the one caller that passes true --
+	// a queued/in-flight render clears on its own, matching
+	// ApplyAgentInsertChunk / ApplyAgentRemoveChunk's identical gate.
+	auto reject = [&]( const std::string& why, bool retriable = false ) {
+		AgentCommitResult r;
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.retriable = retriable;
+		r.message = String( ( "create node rejected: " + why + " -- head unchanged" ).c_str() );
+		std::lock_guard<std::mutex> hlk( mMutex );
+		r.headVersion = mJob.GetCstHeadVersion();
+		return r;
+	};
+
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return reject( "scene is render-locked", /*retriable=*/true );
+	if( outName ) *outName = String();
+
+	const std::string kw( keyword.c_str() );
+
+	// Classify the keyword up front: the dedup below needs the right
+	// in-category name namespace, and an unknown / out-of-scope keyword
+	// must be refused BEFORE any name is burned.
+	const ChunkDescriptor* desc = DescriptorForKeyword( keyword );
+	if( !desc ) return reject( "unknown chunk keyword `" + kw + "`" );
+	Category cat = Category::None;
+	if(      desc->category == ChunkCategory::Painter )  cat = Category::Painter;
+	else if( desc->category == ChunkCategory::Material ) cat = Category::Material;
+	else return reject( "`" + kw + "` is not a painter or material chunk -- this verb creates node-graph nodes only" );
+
+	// Pick a name whose top-level (in-category) AND doc-wide namespace is
+	// free, under mMutex so the Document read is coherent.  Verbatim the
+	// InstantiateEntityTemplate pick, minus the multi-chunk sub-name set
+	// (a node is exactly ONE chunk, so its name set is the singleton).
+	std::string chosen;
+	std::string exhaustedBase;   // set (and the refusal deferred) when no free name exists
+	{
+		std::lock_guard<std::mutex> nlk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		std::vector<std::string> inCat;
+		const unsigned int nc = CategoryEntityCountLocked_( cat );
+		inCat.reserve( nc );
+		for( unsigned int i = 0; i < nc; ++i ) inCat.emplace_back( CategoryEntityNameLocked_( cat, i ).c_str() );
+		auto candidateClear = [&]( const std::string& cand ) {
+			if( std::find( inCat.begin(), inCat.end(), cand ) != inCat.end() ) return false;
+			if( doc && AnyNameTakenDocWide( *doc, std::vector<std::string>{ cand } ) ) return false;
+			return true;
+		};
+		// S18 round-1 P1: canonicalize the externally-proposed base through
+		// the SAME choke point CloneActiveCamera's name pick uses
+		// (CanonicalCameraName, above) BEFORE the dedup pick -- an agent-
+		// supplied base can carry whitespace, comment-like text, or brace
+		// characters that would otherwise alter the generated chunk text
+		// and desync the live manager from the retained Document, exactly
+		// the hazard that helper's own rationale comment describes.  Only
+		// a genuinely EMPTY base (before or after canonicalization) falls
+		// back to the KEYWORD, which is always a legal identifier and
+		// tells the user what the node is; a 1-char canonicalized base is
+		// left alone (round-1 P3: a base has no length floor beyond
+		// non-empty -- the old `< 2` check refused a perfectly usable
+		// single-char base the header never documented refusing).
+		std::string base( CanonicalCameraName( baseName, kw.c_str() ).c_str() );
+		if( base.empty() ) base = kw;
+
+		// Reserve suffix bytes BEFORE truncating the base -- mirrors
+		// UniqueCameraName's identical discipline above.  Formatting a
+		// suffix onto an unreserved 255-byte base would erase the suffix
+		// digits, return the already-occupied base, and make every
+		// subsequent collision unresolvable; the 256-byte cap matches the
+		// C ABI's outName buffer (RISE_API_SceneEditController_CreateChunkNode).
+		const size_t kMaxPayloadBytes = 255;
+		base = base.substr( 0, kMaxPayloadBytes );
+		chosen = base;
+		if( !candidateClear( chosen ) )
+		{
+			chosen.clear();
+			for( int i = 2; i < 1000; ++i )
+			{
+				const std::string suffix = "_" + std::to_string( i );
+				const std::string candidate =
+					base.substr( 0, kMaxPayloadBytes - suffix.size() ) + suffix;
+				if( candidateClear( candidate ) ) { chosen = candidate; break; }
+			}
+			if( chosen.empty() )
+			{
+				// EXHAUSTION.  InstantiateEntityTemplate falls back to a
+				// timestamp suffix here; this verb refuses instead.  The
+				// timestamp fallback is UNCHECKED (it never re-runs
+				// candidateClear), so it can hand back a colliding name
+				// that then fails the insert with a raw duplicate message
+				// naming a name the caller never chose.  A canvas node
+				// creation that cannot find a free name in 998 tries is
+				// pathological; refusing honestly, without mutating, is
+				// the better contract -- and it keeps the byte-identical
+				// -on-refusal invariant unconditional.
+				//
+				// DEFERRED, not returned here: `reject` re-takes mMutex to
+				// read the post-call head, and mMutex is a plain
+				// std::mutex -- refusing inside this scope self-deadlocks.
+				exhaustedBase = base;
+			}
+		}
+	}
+	if( !exhaustedBase.empty() )
+		return reject( "could not find a free name for base `" + exhaustedBase
+		             + "` (tried `" + exhaustedBase + "_2` .. `" + exhaustedBase + "_999`)" );
+
+	// Compose the body.  Pure text construction off the descriptor -- no
+	// scene mutation yet, so every refusal below is byte-identical too.
+	std::vector<EntityTemplates::ChunkNodeArg> targs;
+	targs.reserve( args.size() );
+	for( const ChunkNodeArg& a : args )
+	{
+		EntityTemplates::ChunkNodeArg t;
+		t.param = std::string( a.param.c_str() );
+		t.value = std::string( a.value.c_str() );
+		targs.push_back( t );
+	}
+	std::string chunkText, diag;
+	if( !EntityTemplates::BuildNodeChunkText( kw, chosen, targs, chunkText, diag ) )
+		return reject( diag );
+
+	// Commit through the shared agent-insert critical section.  No
+	// baseVersion: this verb composed its chunk under the admission lock
+	// it still holds, so there is no snapshot-then-commit window for a
+	// stale head to slip through -- and a caller that DOES want
+	// optimistic concurrency has ApplyAgentInsertChunk directly.
+	// (ApplyAgentInsertChunk re-takes the admission mutex; it is a
+	// recursive_mutex and this is the same thread, matching
+	// InstantiateEntityTemplate's own nested acquisition.)
+	AgentCommitResult r = ApplyAgentInsertChunk( String( chunkText.c_str() ), nullptr );
+	// S18 round-1 P1/P2-b: source *outName from r.chunkName -- the name
+	// ApplyCstInsertChunk (via ApplyAgentChunkCrud_) itself parsed back out
+	// of the committed chunk text -- rather than the locally-composed
+	// `chosen`.  r.chunkName is the SSOT for what actually landed; `chosen`
+	// is only what this function ASKED for.  Fill it whenever the Document
+	// was mutated, which is rawCode 2 (clean apply) OR 3 (diagnosed: the
+	// splice landed and the managers were rebuilt, but the full re-derive
+	// also emitted diagnostics) -- gating on `r.applied` alone left
+	// *outName empty for a code-3 landing even though the caller's node
+	// now exists in the Document and the canvas needs its name to select
+	// it / show the diagnostic against it.
+	if( outName && r.rawCode >= 1 ) *outName = r.chunkName;
+	return r;
+}
+
+// =====================================================================
+// doc-88 Phase 3 S19 -- the ownership-closure rewrite + REFUSE path.
+// See the declaration's own comment in SceneEditController.h for the
+// gate order and the scoping; OwnershipClosure.h for sect. 3.7a's rule.
+//
+// RewireConnection and InsertScalarAdapterAndRewire share endpoint, legality,
+// cycle, occurrence, ownership and edit-addressing validation. Ordinary rewires
+// commit through ApplyAgentParamEditInner_; the adapter path dry-run derives
+// a candidate document and records insertion + slot edit as one operation batch.
+// =====================================================================
+
+// The (ChunkCategory -> UI Category) direction this verb needs -- S17's
+// legality/graph surface addresses by ChunkCategory (a node's identity is
+// its DECLARED descriptor category), while the Document edit path
+// addresses by the UI Category's CST role-kind suffix
+// (RoleKindSuffixForCategory, above) -- is ALREADY in this TU as
+// `UiCategoryForChunkCategory` (the jump-to-definition helper, ~line
+// 11687, file-static).  Reused verbatim rather than re-declared: it
+// already maps Function -> Painter through exactly the UI union
+// DocFindByNameAnyRole's own narrowing predicate applies
+// (RoleMatchesKindConstraint: "painter accepts Painter|Function"), and it
+// already answers Category::None for the kinds with no chunk-name
+// addressing scheme (Shader / ShaderOp / Rasterizer / Film / ...), which
+// this verb refuses honestly rather than guessing a suffix for.  A second
+// copy here would be a second policy free to drift.
+
+SceneEditController::RewireResult SceneEditController::RewireConnection(
+	ChunkCategory targetCategory, const String& targetName,
+	const String& param, int occurrence,
+	ChunkCategory newRefCategory, const String& newRefName,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	return RewireConnectionInner_( targetCategory, targetName, param, occurrence,
+		newRefCategory, newRefName, baseVersionOrNull, false, nullptr );
+}
+
+SceneEditController::RewireResult SceneEditController::InsertScalarAdapterAndRewire(
+	ChunkCategory targetCategory, const String& targetName, const String& param, int occurrence,
+	ChunkCategory sourceCategory, const String& sourceName, String* outAdapterName,
+	const Cst::CstHeadVersion* baseVersionOrNull )
+{
+	if( outAdapterName ) *outAdapterName = String();
+	return RewireConnectionInner_( targetCategory, targetName, param, occurrence,
+		sourceCategory, sourceName, baseVersionOrNull, true, outAdapterName );
+}
+
+SceneEditController::RewireResult SceneEditController::RewireConnectionInner_(
+	ChunkCategory targetCategory, const String& targetName,
+	const String& param, int occurrence,
+	ChunkCategory newRefCategory, const String& newRefName,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+	bool insertScalarAdapter, String* outAdapterName )
+{
+	RewireResult out;
+
+	// Same preamble as CreateChunkNode: defer the dirty notification until
+	// after the lock hold, then take the admission lock so the WHOLE
+	// resolve-check-commit sequence is serialized against every other
+	// Document-mutating entry point (Undo, Redo, the agent verbs, the GUI
+	// SetProperty path -- all of them take this same recursive mutex).
+	// That is what keeps the pure-read validation below from going stale
+	// before either commit path writes: mMutex alone would NOT, since
+	// it is released between the two (see the identical rationale on
+	// SetPropertyInner_'s occurrence-validation block).
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+
+	// Every early exit must leave the Document byte-identical AND still
+	// report the CURRENT head (a {0,0} head on the wire earns the caller a
+	// guaranteed conflict on its next commit), AND say whether retrying the
+	// identical request could ever succeed -- CreateChunkNode's contract,
+	// verbatim.  DEFERRED head read for the same reason it defers there:
+	// mMutex is a plain std::mutex, so reading the head from inside a scope
+	// that already holds it self-deadlocks.
+	bool  headRead = false;
+	auto reject = [&]( const std::string& why, bool retriable ) {
+		out.commit.applied  = false;
+		out.commit.conflict = false;
+		out.commit.rawCode  = 0;
+		out.commit.status   = String( "rejected" );
+		out.commit.retriable = retriable;
+		out.commit.message  = String( ( "rewire rejected: " + why + " -- head unchanged" ).c_str() );
+		// P2-1 (S19 review round 1): a refusal reached AFTER the closure step
+		// already ran (e.g. the edit-path addressing-seam mismatch below,
+		// which checks something the closure never inspected) must not leave
+		// a Clean closure's `nowUnreferenced` report standing -- that report
+		// describes what WOULD become unreferenced if this edit committed,
+		// and this edit did not commit.  Every refusal clears it here so
+		// `commit.applied == false` implies `nowUnreferenced.empty()`
+		// unconditionally, never just on the refusal paths that happen to
+		// run before the closure step populates it.
+		out.nowUnreferenced.clear();
+		if( !headRead ) {
+			std::lock_guard<std::mutex> hlk( mMutex );
+			out.commit.headVersion = mJob.GetCstHeadVersion();
+		}
+	};
+
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) {
+		if( mInDestructorTeardown.load( std::memory_order_acquire )
+		 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) {
+			// Latched teardown: no head to report and no retry will ever be
+			// admitted -- the same split ApplyAgentParamEdit draws.
+			//
+			// P3 (S19 review round 1): `headRead` is set true here WITHOUT
+			// an actual read -- its name says "was the head already read",
+			// but its real job is "should `reject` attempt one at all".
+			// During teardown it deliberately does NOT: `mJob` may be
+			// mid-destruction, so touching it here is exactly what this
+			// branch exists to avoid.  Skipping the read leaves
+			// `out.commit.headVersion` at its default `{0,0}` -- which is
+			// fine, not an oversight, because the file's opening comment
+			// already documents `{0,0}` as a head that "earns the caller a
+			// guaranteed conflict on its next commit", and a caller who
+			// hits latched teardown has no next commit to make anyway.
+			headRead = true;
+			reject( "controller is being destroyed -- no further edit will be admitted", false );
+			return out;
+		}
+		reject( "scene is render-locked (render queued or in progress)", /*retriable=*/true );
+		return out;
+	}
+
+	// -----------------------------------------------------------------
+	// Pure-read validation.  NOTHING here mutates; every refusal below
+	// therefore leaves the retained Document byte-identical by
+	// construction, not by cleanup.
+	// -----------------------------------------------------------------
+	// Every refusal produced by this block is PERMANENT (retriable=false):
+	// an ambiguous name, an illegal binding, a cycle, a shared closure, an
+	// out-of-range occurrence -- resubmitting the identical request can
+	// never succeed.  The only TRANSIENT refusals this verb can produce are
+	// the render-locked gate above and the mid-transaction gate inside
+	// the selected commit path, both of which set the flag themselves.
+	std::string  refusal;                 // non-empty => refuse with this
+	std::string  adapterMismatch;         // deferred until all admission checks have run
+	bool adapterValidated = false;
+	String       entityKind;              // the CST role-kind suffix the edit addresses through
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		char buf[1024];
+
+		if( !doc ) {
+			refusal = "no retained CST document to edit";
+		} else if( param.size() <= 1 ) {
+			refusal = "no parameter named";
+		} else if( occurrence < 0 ) {
+			refusal = "occurrence index must be >= 0";
+		} else {
+			// ---- step 2: resolve BOTH endpoints, ambiguity-aware --------
+			//
+			// SceneReferenceGraph::ResolveChunk is the S11 contract built for
+			// exactly this: it refuses an ambiguous (category, name) rather
+			// than handing back one of the matches, and its `outOccurrences`
+			// distinguishes "no such chunk" (0) from "refused, ambiguous"
+			// (>1).  Reading an ambiguous refusal as "not found" would let a
+			// rewire aim at whichever of a colour/`scalar_painter` same-name
+			// pair the resolver happened to reach first.
+			int tOccs = 0, cOccs = 0;
+			const RISE::Cst::NodeId targetId =
+				SceneReferenceGraph::ResolveChunk( *doc, targetCategory, targetName, &tOccs );
+			const RISE::Cst::NodeId candidateId =
+				SceneReferenceGraph::ResolveChunk( *doc, newRefCategory, newRefName, &cOccs );
+
+			if( targetId == 0 && tOccs > 1 ) {
+				out.closure = ClosureClassification::AmbiguousTargetName;
+				std::snprintf( buf, sizeof( buf ), kClosureAmbiguousFmt, targetName.c_str(), tOccs );
+				refusal = buf;
+			} else if( targetId == 0 ) {
+				out.closure = ClosureClassification::UnresolvedTarget;
+				std::snprintf( buf, sizeof( buf ), kClosureUnresolvedFmt, targetName.c_str() );
+				refusal = buf;
+			} else if( candidateId == 0 && cOccs > 1 ) {
+				// P3 (S19 review round 1): the TARGET-side twin of this branch
+				// (above) sets `out.closure`; this candidate-side one used to
+				// leave it at the struct's default `Clean` -- a refused commit
+				// reporting a Clean closure.  Same enum value as the
+				// target-side case (there is no separate "ambiguous candidate"
+				// classification) for consistency.
+				out.closure = ClosureClassification::AmbiguousTargetName;
+				std::snprintf( buf, sizeof( buf ), kClosureAmbiguousFmt, newRefName.c_str(), cOccs );
+				refusal = buf;
+			} else if( candidateId == 0 ) {
+				// A DETACH reaches here too (empty newRefName resolves to
+				// nothing).  Named explicitly so the user is told the verb's
+				// scope rather than "no such chunk `\0`".
+				if( newRefName.size() <= 1 ) {
+					refusal = "this verb rewires a slot to another chunk; it does not UNBIND one "
+					          "(the `none` literal itself commits fine -- the real blocker is that "
+					          "ConnectionLegality's per-slot check is NodeId-addressed and `none` has "
+					          "no NodeId to check; that gap is reference-safe delete's job to close)";
+				} else {
+					// P3: same consistency fix as the ambiguous-candidate arm
+					// above -- an unresolved CANDIDATE is still an unresolved
+					// name, reusing the same classification the target-side
+					// unresolved case (above) already uses.
+					out.closure = ClosureClassification::UnresolvedTarget;
+					std::snprintf( buf, sizeof( buf ), kClosureUnresolvedFmt, newRefName.c_str() );
+					refusal = buf;
+				}
+			}
+
+			// ---- step 3: LEGALITY and CYCLE, before ownership -----------
+			if( refusal.empty() ) {
+				const ConnectionVerdict v =
+					ConnectionLegality::CheckConnection( *doc, targetId, param, candidateId );
+				if( !v.legal ) {
+					out.legalityRefused = true;
+					refusal = v.diagnostic;
+					const Cst::NodeRef tc = Cst::DocResolveNodeId( *doc, targetId );
+					const Cst::NodeRef sc = Cst::DocResolveNodeId( *doc, candidateId );
+					const ChunkDescriptor* td = tc ? DescriptorForKeyword( String( tc->role.c_str() ) ) : nullptr;
+					const ParameterDescriptor* pd = nullptr;
+					if( td ) for( const ParameterDescriptor& p : td->parameters )
+						if( p.name == param.c_str() ) { pd = &p; break; }
+					if( pd && pd->kind == ValueKind::Reference && pd->semantics.pipe == ParameterPipe::Scalar
+					 && sc && sc->role != "scalar_painter"
+					 && ConnectionLegality::IsColorCapable( sc->role, newRefCategory )
+					 && ( newRefCategory == ChunkCategory::Painter || newRefCategory == ChunkCategory::Function )
+					 && ConnectionLegality::CheckConnectionByKeyword( tc->role, param.c_str(), "scalar_painter", ChunkCategory::Painter ).legal ) {
+						// Recognize the adaptable pipe mismatch independently of
+						// admission. Both verbs must validate the same full path.
+						adapterMismatch = v.diagnostic;
+						refusal.clear();
+						if( insertScalarAdapter ) out.legalityRefused = false;
+					}
+				}
+			}
+			if( refusal.empty() && ConnectionLegality::WouldCycle( *doc, targetId, candidateId ) ) {
+				out.cycleRefused = adapterMismatch.empty() || insertScalarAdapter;
+				std::snprintf( buf, sizeof( buf ),
+					"binding `%s` into `%s`.`%s` would create a reference cycle -- `%s` already "
+					"reaches `%s` along existing references, and the renderer walks painter "
+					"references without a cycle guard.",
+					newRefName.c_str(), targetName.c_str(), param.c_str(),
+					newRefName.c_str(), targetName.c_str() );
+				refusal = buf;
+			}
+
+			// ---- the tuple / occurrence contract ------------------------
+			//
+			// Runs AFTER legality (which already proved the param exists and
+			// is reference-typed) so these messages are only ever reached by
+			// a param that IS bindable -- just not by THIS verb.
+			const ChunkDescriptor* tDesc = nullptr;
+			const ParameterDescriptor* pDesc = nullptr;
+			RISE::Cst::NodeRef tChunk;
+			if( refusal.empty() ) {
+				tChunk = RISE::Cst::DocResolveNodeId( *doc, targetId );
+				tDesc  = tChunk ? DescriptorForKeyword( String( tChunk->role.c_str() ) ) : nullptr;
+				if( !tDesc ) {
+					refusal = "the target chunk's descriptor did not resolve";
+				} else {
+					for( size_t i = 0; i < tDesc->parameters.size(); ++i )
+						if( tDesc->parameters[i].name == std::string( param.c_str() ) )
+							{ pDesc = &tDesc->parameters[i]; break; }
+					if( !pDesc ) {
+						refusal = "the target parameter's descriptor did not resolve";
+					} else if( pDesc->kind != ValueKind::Reference ) {
+						// ConnectionLegality accepts a TUPLE that merely
+						// CONTAINS a Reference token (voronoi_painter's `gen
+						// <x> <y> <painter>`) -- correctly, since binding one
+						// IS legal.  But rewriting it means re-emitting the
+						// whole tuple, coordinates included, which this verb
+						// does not do; writing the bare name would corrupt the
+						// line.  Refuse honestly rather than silently mangle.
+						std::snprintf( buf, sizeof( buf ),
+							"`%s` on `%s` carries its reference inside a multi-token value, so a rewire "
+							"would have to re-emit the whole line (coordinates and all) -- edit that "
+							"parameter's value directly instead.",
+							param.c_str(), tChunk->role.c_str() );
+						refusal = buf;
+					} else {
+						const int count = RISE::Cst::ParamOccurrenceCount( tChunk, std::string( param.c_str() ) );
+						if( occurrence > 0 && occurrence >= count ) {
+							// occurrence 0 on an UNSPELLED param (count == 0) is
+							// NOT out of range: DocSetOrAddParamValue's INSERT arm
+							// (Cst.h) exists precisely for this case -- the
+							// property panel surfaces every defaulted material
+							// slot and editing one must take effect + persist by
+							// inserting a new `role value` line. Only a positive
+							// occurrence past the end is a genuine out-of-range
+							// request (INSERT is occurrence-0-only), which would
+							// otherwise surface as a silent no-op / bare code 0
+							// naming nothing.  Refuse with the count, matching
+							// SetPropertyInner_'s own occurrence-row refusal
+							// wording.
+							std::snprintf( buf, sizeof( buf ),
+								"`%s` has %d occurrence(s) on `%s`, so index %d is out of range",
+								param.c_str(), count, targetName.c_str(), occurrence );
+							refusal = buf;
+						} else if( occurrence == 0 && !pDesc->repeatable && count > 1 ) {
+							refusal = "the non-repeatable parameter is authored more than once; editing its first occurrence would leave the live binding unchanged";
+						} else if( occurrence > 0 && !pDesc->repeatable ) {
+							std::snprintf( buf, sizeof( buf ),
+								"`%s` is not a repeatable parameter on `%s`, so it has no occurrence %d",
+								param.c_str(), tChunk->role.c_str(), occurrence );
+							refusal = buf;
+						}
+					}
+				}
+			}
+
+			// ---- step 4: the OWNERSHIP CLOSURE (sect. 3.7a) --------------
+			if( refusal.empty() ) {
+				TopologyEditIntent intent;
+				intent.kind        = TopologyEditKind::Rewire;
+				intent.targetChunk = targetId;
+				intent.paramName   = std::string( param.c_str() );
+				intent.occurrence  = occurrence;
+				intent.newRefChunk = candidateId;
+				const OwnershipClosureResult cr = OwnershipClosure::Compute( *doc, intent );
+				// Ordinary pipe refusals keep their original presentation:
+				// publishing SharedTarget would offer Duplicate & Retry,
+				// which cannot resolve a Color-to-Scalar mismatch. Explicit
+				// adapter requests report the underlying closure instead.
+				if( adapterMismatch.empty() || insertScalarAdapter ) {
+					out.closure                = cr.classification;
+					out.sharedChunks           = cr.sharedChunks;
+					out.outOfClosureReferrers  = cr.outOfClosureReferrers;
+					out.owners                 = cr.owners;
+					out.nowUnreferenced        = cr.nowUnreferenced;
+				}
+				if( !cr.Clean() ) refusal = cr.diagnostic;
+			}
+
+			// ---- the edit-path addressing seam --------------------------
+			//
+			// Everything above addressed the chunk by its DECLARED descriptor
+			// category (the node's identity).  The commit addresses it by the
+			// UI Category's CST role-kind suffix.  Verify the two agree on
+			// WHICH chunk before committing: a mismatch means the edit would
+			// land somewhere the checks never inspected, and there is no
+			// honest way to proceed.  Cheap, and it closes the one gap
+			// between "what was validated" and "what gets written".
+			if( refusal.empty() ) {
+				const Category uiCat = UiCategoryForChunkCategory( targetCategory );
+				std::string suffix; bool uf = false;
+				if( uiCat == Category::None || !RoleKindSuffixForCategory( uiCat, suffix, uf ) ) {
+					refusal = "this chunk category has no name-addressed edit path in the editor";
+				} else {
+					entityKind = String( suffix.c_str() );
+					const RISE::Cst::NodeId editId = ResolveSourceChunkId(
+						*doc, uiCat, std::string( targetName.c_str() ),
+						mJob.GetActiveRasterizerName(), mJob.GetActiveCameraName(), mJob.GetObjects() );
+					if( editId != targetId ) {
+						std::snprintf( buf, sizeof( buf ),
+							"`%s` resolves to a different chunk through the editor's `%s` addressing than "
+							"through the graph's -- refusing rather than writing to an unvalidated chunk",
+							targetName.c_str(), suffix.c_str() );
+						refusal = buf;
+					}
+				}
+			}
+			if( refusal.empty() && !adapterMismatch.empty() ) {
+				if( Cst::DocIndexOfNodeId( *doc, candidateId, nullptr ) >= Cst::DocIndexOfNodeId( *doc, targetId, nullptr ) ) {
+					refusal = "the scalar adapter's source must be declared before its target";
+				} else if( tChunk->role == "scalar_painter" && param == "base" ) {
+					// These are the form selectors counted by ScalarPainter's
+					// Finalize. `scale` is a companion, not a separate form.
+					for( const char* form : { "value", "values", "file", "sellmeier", "polynomial",
+					                         "function1d", "function2d", "multiply", "add", "texture", "expression", "painter" } ) {
+						if( Cst::ParamOccurrenceCount( tChunk, form ) > 0 ) {
+							refusal = "scalar_painter.base conflicts with the existing scalar form `" + std::string( form ) + "`";
+							break;
+						}
+					}
+				}
+				adapterValidated = refusal.empty();
+				out.canInsertScalarAdapter = adapterValidated
+					&& !mTxnOpen.load( std::memory_order_acquire ) && !mEditor.IsCompositeOpen()
+					&& ( !baseVersionOrNull || *baseVersionOrNull == mJob.GetCstHeadVersion() );
+			}
+		}
+	}
+
+	// A normal drop still reports its pipe mismatch, after computing an
+	// honest adapter offer. Explicit insertion reports the underlying gate.
+	if( !insertScalarAdapter && !adapterMismatch.empty() ) refusal = adapterMismatch;
+	if( !refusal.empty() ) { reject( refusal, /*retriable=*/false ); return out; }
+
+	if( insertScalarAdapter ) {
+		out.canInsertScalarAdapter = false;
+		if( !adapterValidated ) {
+			reject( "this connection does not require a scalar_painter adapter", false );
+			return out;
+		}
+		// The admission lock above keeps validation and this atomic batch on the same head.
+		std::unique_lock<std::mutex> lk( mMutex );
+		out.commit.headVersion = mJob.GetCstHeadVersion();
+		headRead = true;
+		if( mTxnOpen.load( std::memory_order_acquire ) || mEditor.IsCompositeOpen() ) {
+			reject( "editor transaction or gesture in progress -- retry after it completes", true );
+			return out;
+		}
+		CancelAndParkRender_( lk );
+		if( baseVersionOrNull && *baseVersionOrNull != mJob.GetCstHeadVersion() ) {
+			out.commit.status = String( "conflict" );
+			out.commit.conflict = true;
+			out.commit.message = String( "baseHeadVersion does not match the current head -- re-read and re-propose" );
+			out.nowUnreferenced.clear();
+			return out;
+		}
+		const Cst::Document& doc = *mJob.GetCstDocument();
+		const Cst::NodeId sourceId = SceneReferenceGraph::ResolveChunk( doc, newRefCategory, newRefName );
+		const Cst::NodeId targetId = SceneReferenceGraph::ResolveChunk( doc, targetCategory, targetName );
+		const Cst::NodeRef source = Cst::DocResolveNodeId( doc, sourceId );
+		const Cst::NodeRef target = Cst::DocResolveNodeId( doc, targetId );
+		std::string base = CanonicalCameraName( String( ( std::string( newRefName.c_str() ) + "_scalar" ).c_str() ) ).c_str();
+		base = base.substr( 0, 255 );
+		std::string chosen = base;
+		for( unsigned int i = 2; AnyNameTakenDocWide( doc, { chosen } ); ++i ) {
+			const std::string suffix = "_" + std::to_string( i );
+			chosen = base.substr( 0, 255 - suffix.size() ) + suffix;
+		}
+		const bool raster = source->role == "png_painter" || source->role == "jpg_painter"
+			|| source->role == "hdr_painter" || source->role == "exr_painter" || source->role == "tiff_painter";
+		const std::string text = "\nscalar_painter\n{\n    name " + chosen + "\n    "
+			+ ( raster ? "texture " : "painter " ) + newRefName.c_str() + "\n    channel R\n}\n";
+		const Cst::Document parsed = Cst::ParseToCst( text );
+		Cst::NodeRef adapter;
+		for( int i = 0; i < Cst::DocItemCount( parsed ); ++i ) {
+			const Cst::NodeRef item = Cst::DocResolveNodeId( parsed, Cst::DocNodeIdAt( parsed, i ) );
+			if( item && item->kind == Cst::NodeKind::Chunk ) adapter = item;
+		}
+		if( !adapter ) { reject( "could not construct scalar_painter adapter", false ); return out; }
+		int at = Cst::DocIndexOfNodeId( doc, sourceId, nullptr ) + 1;
+		while( at < Cst::DocItemCount( doc ) ) {
+			const Cst::NodeRef item = Cst::DocResolveNodeId( doc, Cst::DocNodeIdAt( doc, at ) );
+			if( item && item->kind == Cst::NodeKind::Chunk ) break;
+			++at;
+		}
+		CstBatchUndoOp insertOp;
+		insertOp.isInsert = true;
+		insertOp.chunkText = Cst::SerializeNode( adapter );
+		insertOp.keyword = "scalar_painter";
+		insertOp.namePath = Cst::ChunkNamePath( adapter );
+		insertOp.chunkIndex = at + 1;
+		insertOp.hasAnchor = true;
+		insertOp.anchorKeyword = source->role;
+		insertOp.anchorNamePath = Cst::ChunkNamePath( source );
+
+		CstBatchUndoOp slotOp;
+		slotOp.entityName = targetName.c_str();
+		slotOp.entityKind = target->role;
+		slotOp.editRole = param.c_str();
+		slotOp.postEntityName = targetName.c_str();
+		slotOp.occAddressed = occurrence > 0;
+		slotOp.ownerKeyword = target->role;
+		slotOp.ownerNamePath = Cst::ChunkNamePath( target );
+		slotOp.ownerPreText = Cst::SerializeNode( target );
+		CstBatchUndoOp::Slot slot;
+		slot.role = param.c_str();
+		slot.occ = occurrence;
+		slot.priorAbsent = Cst::ParamOccurrenceCount( target, param.c_str() ) == 0;
+		slot.priorValue = Cst::ParamValueAtOccurrence( target, param.c_str(), occurrence );
+		slot.postAbsent = false;
+		slot.postValue = chosen;
+		slotOp.slots.push_back( slot );
+		Cst::Document candidate = Cst::DocSetOrAddParamValue( doc, targetId, param.c_str(), occurrence, chosen );
+		slotOp.ownerPostText = Cst::SerializeNode( Cst::DocResolveNodeId( candidate, targetId ) );
+		if( slotOp.ownerPreText.size() > kCstUndoOwnerTextCap || slotOp.ownerPostText.size() > kCstUndoOwnerTextCap ) {
+			slotOp.ownerPreText.clear();
+			slotOp.ownerPostText.clear();
+		}
+		const Cst::Document nlA = Cst::ParseToCst( "\n" );
+		const Cst::Document nlB = Cst::ParseToCst( "\n" );
+		candidate = Cst::DocInsertItem( candidate, at, Cst::DocResolveNodeId( nlA, Cst::DocNodeIdAt( nlA, 0 ) ) );
+		candidate = Cst::DocInsertItem( candidate, at + 1, adapter );
+		candidate = Cst::DocInsertItem( candidate, at + 2, Cst::DocResolveNodeId( nlB, Cst::DocNodeIdAt( nlB, 0 ) ) );
+		const Cst::NodeId adapterId = SceneReferenceGraph::ResolveChunk( candidate, ChunkCategory::Painter, String( chosen.c_str() ) );
+		const ConnectionVerdict verdict = ConnectionLegality::CheckConnection( candidate, targetId, param, adapterId );
+		if( !verdict.legal ) { reject( verdict.diagnostic, false ); return out; }
+		char diag[1024] = {0};
+		const int code = mJob.ApplyCstReplaceDocument( candidate, true, diag, sizeof( diag ), "insert_scalar_adapter" );
+		if( code == 2 || code == 3 ) RebindEditorToJob();
+		out.commit.rawCode = code;
+		out.commit.headVersion = mJob.GetCstHeadVersion();
+		out.commit.applied = code == 2;
+		out.commit.status = String( code == 2 ? "applied" : code == 3 ? "diagnosed" : "rejected" );
+		out.commit.message = code == 3
+			? String( "The Document changed, but the live re-derive emitted diagnostics (see log). Undo is available." )
+			: String( diag );
+		out.canInsertScalarAdapter = false;
+		if( code == 2 || code == 3 ) {
+			mEditor.MarkCstHeadDirty( chosen.c_str(), "scalar_painter" );
+			mEditor.MarkCstHeadDirty( targetName.c_str(), target->role.c_str() );
+			mEditor.BumpSceneLightGenerationForAgentParamEdit( targetName.c_str(), target->role.c_str() );
+			std::vector<CstBatchUndoOp> ops;
+			ops.push_back( std::move( insertOp ) );
+			ops.push_back( std::move( slotOp ) );
+			mEditor.PushAgentEditBatchEdit( String( "Insert scalar_painter Adapter & Wire" ), ops, false );
+			if( outAdapterName ) *outAdapterName = String( chosen.c_str() );
+		}
+		if( !out.commit.applied ) out.nowUnreferenced.clear();
+		if( code == 2 || code == 3 ) {
+			mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+			// Match KickRender while the commit lock is still held.
+			mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+			mPolishState.store( static_cast<int>( PolishState::None ), std::memory_order_release );
+			mEditPending.store( true, std::memory_order_release );
+		}
+		lk.unlock();
+		if( code == 2 || code == 3 ) mCV.notify_one();
+		mEditor.DrainDirtyNotification();
+		return out;
+	}
+
+	// -----------------------------------------------------------------
+	// Step 5: THE one mutating call.  Everything the commit discipline
+	// owes -- mid-transaction refusal, the baseVersion conflict gate, the
+	// U1 prior-value capture at THIS occurrence (so undo restores the
+	// wire, not a sibling's), the full-derivability check, the D2 rebind,
+	// MarkCstHeadDirty, the scene-epoch bump the canvas re-enumerates on,
+	// and the render kick -- lives in there and is deliberately NOT
+	// re-derived here.
+	//
+	// NOTE on the epoch: no explicit bump belongs here.
+	// ApplyAgentParamEditInner_ already bumps mSceneEpoch on every
+	// rawCode >= 1 (the S15 canvas-refresh gap, closed at that call site,
+	// with a rewire named as the motivating case in its comment).  Adding
+	// a second bump here would be a redundant no-op at best and a divergent
+	// second policy at worst.
+	// -----------------------------------------------------------------
+	out.commit = ApplyAgentParamEditInner_(
+		targetName, entityKind, param, newRefName, baseVersionOrNull,
+		occurrence, /*occAddressed=*/occurrence > 0 );
+	// P2-1 (S19 review round 1): this call, not `reject` above, is what can
+	// refuse a closure that computed Clean -- mid-transaction, a stale
+	// baseVersion conflict, a full-derivability failure.  Same invariant:
+	// nothing committed, so nothing may be reported as newly unreferenced.
+	if( !out.commit.applied ) out.nowUnreferenced.clear();
+	return out;
+}
+
+// =====================================================================
+// doc-88 Phase 3 S20 -- reference-safe delete + the positioned Duplicate-node
+// fork.  See the declarations in SceneEditController.h for the gate orders,
+// the placement justification (why these are NOT `RemoveEntity` /
+// `DuplicateEntity` grown a policy), and the U2 reasoning; OwnershipClosure.h
+// for the shared refusal formats.
+//
+// Both are THIN COMPOSERS over shipped machinery, exactly like
+// RewireConnection above -- which is what makes their byte-identical-on-
+// refusal guarantee cheap: every gate runs BEFORE the single call that can
+// mutate anything.
+//
+// ON CYCLES, since S20 owns "cycle enforcement" and the answer bounds the
+// scope (verified by probe against this tree, not reasoned about):
+//   * A CYCLIC DOCUMENT NEVER BECOMES A LIVE HEAD.  `DeriveToJob` binds
+//     references in DECLARATION ORDER, so a cycle needs at least one FORWARD
+//     reference, and a forward reference simply does not resolve -- the
+//     derive REFUSES ("apply failed (e.g. unresolved reference)"), it does not
+//     hang and it does not silently accept a half-bound graph.  A hand-edited
+//     cyclic scene file fails to LOAD.
+//   * EVERY reference-edge-creating path is already gated on that same rule:
+//     the agent/canvas param edit through `ApplyCstParamEditChecked`'s
+//     full-derivability dry-run; the GUI property panel through
+//     `WouldPersistDanglingReference_`, whose "declared BEFORE the referencing
+//     chunk" clause is exactly the forward-reference test; `insert_chunk` /
+//     the duplicate below through `ApplyCstInsertChunk`'s own dry-run.
+//   * `ConnectionLegality::WouldCycle` (S17), which `RewireConnection` runs, is
+//     therefore DEFENSE IN DEPTH FOR THE CANVAS -- its value is the precise
+//     "`X` already reaches `Y`" diagnostic in place of an opaque "would not
+//     derive", not a hole it closes.  The agent surface needs no cycle check
+//     added, and none is added here.
+// `DeleteGraphNodeTest` PART 5 pins each of those findings so the day one of
+// them stops being true is the day a test fails, not the day a scene corrupts.
+// =====================================================================
+
+namespace {
+
+//! The display name S20's refusals use for a chunk: its `name`, or
+//! `<keyword>` for an unnamed one -- the SAME angle-bracket convention
+//! `OwnershipClosureResult::owners` already uses, so a canvas never renders
+//! "shared between  and ".
+std::string GraphChunkDisplayName( const SceneReferenceGraph::DocumentChunk& c )
+{
+	// RString::size() counts the trailing NUL; size <= 1 is the empty case.
+	if( c.name.size() > 1 ) return std::string( c.name.c_str() );
+	return "<" + std::string( c.keyword.c_str() ) + ">";
+}
+
+//! Comma-join with a trailing " and ", matching OwnershipClosure.cpp's own
+//! owner/referrer joins so the two refusal families read alike.
+std::string JoinNamesForDiagnostic( const std::vector<String>& names )
+{
+	std::string out;
+	for( std::size_t i = 0; i < names.size(); ++i ) {
+		if( i ) out += ( i + 1 == names.size() ) ? " and " : ", ";
+		out += names[i].c_str();
+	}
+	return out;
+}
+
+}  // namespace
+
+SceneEditController::DeleteResult SceneEditController::DeleteGraphNode(
+	ChunkCategory category, const String& name,
+	GraphDeleteMode mode,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	DeleteResult out;
+
+	// Same preamble as RewireConnection: defer the dirty notification until
+	// after the lock hold, then take the admission lock so the WHOLE
+	// resolve-check-commit sequence is serialized against every other
+	// Document-mutating entry point.  That is what keeps the pure-read
+	// validation below from going stale before the remove verb writes --
+	// mMutex alone would NOT, since it is released in between.
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+
+	bool headRead = false;
+	auto reject = [&]( const std::string& why, bool retriable ) {
+		out.commit.applied  = false;
+		out.commit.conflict = false;
+		out.commit.rawCode  = 0;
+		out.commit.status   = String( "rejected" );
+		out.commit.retriable = retriable;
+		out.commit.message  = String( ( "delete rejected: " + why + " -- head unchanged" ).c_str() );
+		if( !headRead ) {
+			std::lock_guard<std::mutex> hlk( mMutex );
+			out.commit.headVersion = mJob.GetCstHeadVersion();
+		}
+	};
+
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) {
+		if( mInDestructorTeardown.load( std::memory_order_acquire )
+		 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) {
+			// Latched teardown: no head to read (mJob may be mid-destruction) and
+			// no retry will ever be admitted -- RewireConnection's split, verbatim.
+			headRead = true;
+			reject( "controller is being destroyed -- no further edit will be admitted", false );
+			return out;
+		}
+		reject( "scene is render-locked (render queued or in progress)", /*retriable=*/true );
+		return out;
+	}
+
+	// -----------------------------------------------------------------
+	// Pure-read validation.  NOTHING here mutates; every refusal below
+	// therefore leaves the retained Document byte-identical by
+	// construction, not by cleanup.  Every refusal it produces is
+	// PERMANENT (retriable=false): an ambiguous name, a live referrer, a
+	// shared cascade member, an unaddressable member -- resubmitting the
+	// identical request can never succeed.  The only TRANSIENT refusals
+	// this verb can produce are the render-locked gate above and the
+	// mid-transaction gate inside the remove verb, which sets its own flag.
+	// -----------------------------------------------------------------
+	std::string          refusal;
+	std::vector<String>  removeTargets, removeKinds;   // parallel, DOCUMENT order
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		char buf[1536];
+
+		if( !doc ) {
+			refusal = "no retained CST document to edit";
+		} else if( name.size() <= 1 ) {
+			refusal = "no chunk named";
+		} else {
+			// ---- step 2: resolve, AMBIGUITY-AWARE ----------------------
+			//
+			// The S11 contract exists for exactly this: reading an ambiguous
+			// refusal as "not found" would delete whichever of a colour /
+			// `scalar_painter` same-name pair the resolver reached first.
+			// NEVER delete on a guess.
+			int occs = 0;
+			const RISE::Cst::NodeId targetId =
+				SceneReferenceGraph::ResolveChunk( *doc, category, name, &occs );
+			if( targetId == 0 && occs > 1 ) {
+				out.closure = ClosureClassification::AmbiguousTargetName;
+				std::snprintf( buf, sizeof( buf ), kClosureAmbiguousFmt, name.c_str(), occs );
+				refusal = buf;
+			} else if( targetId == 0 ) {
+				out.closure = ClosureClassification::UnresolvedTarget;
+				std::snprintf( buf, sizeof( buf ), kClosureUnresolvedFmt, name.c_str() );
+				refusal = buf;
+			} else {
+				// ---- step 3: REFERRERS (ENTITY_CREATION.md sect. 5's Block rule)
+				//
+				// `FindReferencesTo` is the query this whole module was built
+				// for (see ReferenceGraph.h's header: "ONE implementation, TWO
+				// consumers ... and reference-safe delete").  Its own
+				// `outOccurrences` ambiguity contract is already satisfied by
+				// the ResolveChunk above, which refused every non-unique name.
+				int refOccs = 0;
+				const std::vector<ReferenceEdge> referrers =
+					SceneReferenceGraph::FindReferencesTo( *doc, category, name, &refOccs );
+				for( std::size_t i = 0; i < referrers.size(); ++i ) {
+					const ReferenceEdge& e = referrers[i];
+					std::string disp = ( e.referrerName.size() > 1 )
+						? std::string( e.referrerName.c_str() )
+						: ( "<" + std::string( e.referrerKeyword.c_str() ) + ">" );
+					disp += ".";
+					disp += e.paramName.c_str();
+					out.referrers.push_back( String( disp.c_str() ) );
+				}
+				if( !out.referrers.empty() ) {
+					out.referenceRefused = true;
+					const std::string joined = JoinNamesForDiagnostic( out.referrers );
+					std::snprintf( buf, sizeof( buf ), kDeleteReferencedFmt,
+						name.c_str(), joined.c_str(), name.c_str() );
+					refusal = buf;
+				}
+
+				// ---- step 4: the SWEEP (Cascade only) ---------------------
+				const std::vector<SceneReferenceGraph::DocumentChunk> chunks =
+					SceneReferenceGraph::AllChunks( *doc );
+				if( refusal.empty() ) {
+					std::map<RISE::Cst::NodeId, const SceneReferenceGraph::DocumentChunk*> byId;
+					for( std::size_t i = 0; i < chunks.size(); ++i ) byId[chunks[i].id] = &chunks[i];
+
+					std::set<RISE::Cst::NodeId> sweep;
+					sweep.insert( targetId );
+
+					if( mode == GraphDeleteMode::Cascade ) {
+						const SceneReferenceGraph::Snapshot snap =
+							SceneReferenceGraph::EdgesAndDangling( *doc, &chunks );
+
+						// GROW TO FIXPOINT rather than one BFS pass: whether a
+						// candidate may join depends on whether ALL of its
+						// referrers are already in the sweep, and a referrer can
+						// itself join later in the same pass.  A single pass
+						// would under-sweep depending on edge order; repeating
+						// until nothing changes is order-independent and, for a
+						// graph this size, free.
+						bool changed = true;
+						while( changed ) {
+							changed = false;
+							for( std::size_t i = 0; i < snap.edges.size(); ++i ) {
+								const ReferenceEdge& e = snap.edges[i];
+								if( sweep.find( e.referrerId ) == sweep.end() ) continue;
+								if( sweep.find( e.targetId ) != sweep.end() )   continue;
+								// Only INTERIOR nodes (Painter / Function) ever cascade.
+								// A Material / Geometry / Light is a ROOT -- it is a graph
+								// of its own even when only this target names it, and
+								// sweeping it would delete an entity the user never
+								// pointed at.  This is the same Painter/Function-vs-root
+								// split OwnershipClosure's whole ownership rule rests on,
+								// read through its single definition rather than re-listed.
+								if( !OwnershipClosure::IsInteriorCategory( e.targetCategory ) ) continue;
+								bool everyReferrerInSweep = true;
+								for( std::size_t k = 0; k < snap.edges.size(); ++k ) {
+									if( snap.edges[k].targetId != e.targetId ) continue;
+									if( sweep.find( snap.edges[k].referrerId ) == sweep.end() ) {
+										everyReferrerInSweep = false;
+										break;
+									}
+								}
+								if( !everyReferrerInSweep ) continue;
+								sweep.insert( e.targetId );
+								changed = true;
+							}
+						}
+
+						// THE LOAD-BEARING CROSS-CHECK.  The sweep above was built
+						// by a REACHABILITY worklist; this re-derives each member's
+						// ownership through OwnershipClosure::OwnersOf -- a
+						// different function, over the same document -- and demands
+						// the target be its SOLE owner.  A shared chunk must never
+						// cascade (ENTITY_CREATION.md sect. 5.2's Block rule applies
+						// just as much to a chunk swept as collateral as to the one
+						// the user named), and this is what enforces it rather than
+						// merely intending it.
+						const OwnershipClosure::Adjacency adj =
+							OwnershipClosure::BuildAdjacencyFor( *doc, &chunks, &snap );
+						for( std::size_t i = 0; i < chunks.size() && refusal.empty(); ++i ) {
+							if( chunks[i].id == targetId ) continue;
+							if( sweep.find( chunks[i].id ) == sweep.end() ) continue;
+							const std::vector<RISE::Cst::NodeId> owners =
+								OwnershipClosure::OwnersOf( *doc, chunks[i].id, &chunks, &snap, &adj );
+							if( owners.size() == 1 && owners[0] == targetId ) continue;
+							std::vector<String> ownerNames;
+							for( std::size_t k = 0; k < owners.size(); ++k ) {
+								std::map<RISE::Cst::NodeId, const SceneReferenceGraph::DocumentChunk*>::const_iterator
+									it = byId.find( owners[k] );
+								ownerNames.push_back( String( it == byId.end()
+									? "<unknown>" : GraphChunkDisplayName( *it->second ).c_str() ) );
+							}
+							out.cascadeRefused = true;
+							const std::string member = GraphChunkDisplayName( chunks[i] );
+							const std::string ownerList = ownerNames.empty()
+								? std::string( "no resolvable root" ) : JoinNamesForDiagnostic( ownerNames );
+							std::snprintf( buf, sizeof( buf ), kDeleteCascadeSharedFmt,
+								name.c_str(), member.c_str(), ownerList.c_str(), name.c_str() );
+							refusal = buf;
+						}
+					}
+
+					// ---- ADDRESSABILITY, for every member incl. the target ----
+					//
+					// The graph addressed by (declared category, name); the remove
+					// verb addresses by the UI Category's CST role-kind suffix
+					// through Cst::DocFindByNameAnyRole.  Verify the two agree on
+					// WHICH chunk before erasing anything -- the same edit-path
+					// seam RewireConnection checks, and for the same reason: a
+					// mismatch means the erase would land somewhere the checks
+					// never inspected.  An UNNAMED chunk has no name address at
+					// all and is refused rather than skipped.
+					for( std::size_t i = 0; i < chunks.size() && refusal.empty(); ++i ) {
+						if( sweep.find( chunks[i].id ) == sweep.end() ) continue;
+						const SceneReferenceGraph::DocumentChunk& c = chunks[i];
+						const std::string disp = GraphChunkDisplayName( c );
+						std::string why;
+						String kindSuffix;
+						if( !c.hasCategory ) {
+							why = "its keyword has no registered descriptor";
+						} else if( c.name.size() <= 1 ) {
+							why = "it is unnamed, and the editor removes by name";
+						} else {
+							const Category uiCat = UiCategoryForChunkCategory( c.category );
+							std::string suffix; bool uf = false;
+							if( uiCat == Category::None || !RoleKindSuffixForCategory( uiCat, suffix, uf ) ) {
+								why = "its chunk category has no name-addressed edit path in the editor";
+							} else {
+								kindSuffix = String( suffix.c_str() );
+								int occ2 = 0;
+								const RISE::Cst::NodeId editId = RISE::Cst::DocFindByNameAnyRole(
+									*doc, std::string( c.name.c_str() ), &occ2, suffix, /*uniqueFallback*/ false );
+								if( editId != c.id )
+									why = "it resolves to a different chunk through the editor's `"
+									    + suffix + "` addressing than through the graph's";
+							}
+						}
+						if( !why.empty() ) {
+							std::snprintf( buf, sizeof( buf ), kDeleteUnaddressableFmt, disp.c_str(), why.c_str() );
+							refusal = buf;
+							break;
+						}
+						removeTargets.push_back( c.name );
+						removeKinds.push_back( kindSuffix );
+						out.removed.push_back( String( disp.c_str() ) );
+					}
+				}
+			}
+		}
+	}
+
+	if( !refusal.empty() ) {
+		// A refusal removed NOTHING, so the target list must not survive as a
+		// commit instruction, and neither may `removed`: an earlier draft of
+		// this guard preserved it specifically on a `cascadeRefused` outcome
+		// (as a "here is what the sweep would have taken" preview), but that
+		// preview can never actually be populated -- `removed` has exactly
+		// ONE writer (the addressability loop above), and that loop's own
+		// condition is `refusal.empty()`, which is already false by the time
+		// the shared-cascade guard sets `cascadeRefused` and its own
+		// `refusal`.  So the guarded branch was always clearing an
+		// already-empty vector; unconditional clear is the same observable
+		// behaviour with the dead condition removed (S20 review round 1
+		// P2-2 -- see DeleteResult::removed's header comment for the
+		// corrected contract).
+		removeTargets.clear();
+		removeKinds.clear();
+		out.removed.clear();
+		reject( refusal, /*retriable=*/false );
+		return out;
+	}
+
+	// -----------------------------------------------------------------
+	// Step 5: THE one mutating call.  Everything the commit discipline
+	// owes -- the mid-transaction refusal, the baseVersion conflict gate,
+	// cancel-and-park, the dry-run-guarded re-derive (so a still-referenced
+	// target STILL refuses at the engine layer even if the policy above
+	// somehow missed it), the rebind, MarkCstHeadDirty, the U2 EditHistory
+	// record, the scene-epoch bump the canvas re-enumerates on, and the
+	// render kick -- lives in there and is deliberately NOT re-derived here.
+	//
+	// ONE target -> the singular verb (its U2 record is the identity-checked
+	// bytes+index restore).  MANY -> the batch, which is the atomic composite:
+	// one erase pass against one pre-erase Document, ONE re-derive, ONE undo
+	// step.  See the header for why this and not BeginTransaction/EndTransaction.
+	// -----------------------------------------------------------------
+	if( removeTargets.size() == 1 )
+		out.commit = ApplyAgentRemoveChunk( removeTargets[0], removeKinds[0], baseVersionOrNull );
+	else
+		out.commit = ApplyAgentRemoveChunks( removeTargets, removeKinds, baseVersionOrNull );
+
+	// The same APPLIED GUARD RewireResult carries: this call, not `reject`
+	// above, is what can still refuse -- mid-transaction, a stale baseVersion
+	// conflict, a re-derive failure.  Nothing was removed, so nothing may be
+	// reported as removed.
+	if( !out.commit.applied ) out.removed.clear();
+	return out;
+}
+
+SceneEditController::DuplicateResult SceneEditController::DuplicateGraphNode(
+	ChunkCategory category, const String& name,
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+{
+	DuplicateResult out;
+
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+
+	bool headRead = false;
+	auto reject = [&]( const std::string& why, bool retriable ) {
+		out.commit.applied  = false;
+		out.commit.conflict = false;
+		out.commit.rawCode  = 0;
+		out.commit.status   = String( "rejected" );
+		out.commit.retriable = retriable;
+		out.commit.message  = String( ( "duplicate rejected: " + why + " -- head unchanged" ).c_str() );
+		out.newName = String();
+		out.originalIndex = -1;
+		if( !headRead ) {
+			std::lock_guard<std::mutex> hlk( mMutex );
+			out.commit.headVersion = mJob.GetCstHeadVersion();
+		}
+	};
+
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) {
+		if( mInDestructorTeardown.load( std::memory_order_acquire )
+		 || mDestructionState.load( std::memory_order_acquire ) != DestructionOpen ) {
+			headRead = true;
+			reject( "controller is being destroyed -- no further edit will be admitted", false );
+			return out;
+		}
+		reject( "scene is render-locked (render queued or in progress)", /*retriable=*/true );
+		return out;
+	}
+
+	// ---- phase A (mMutex): resolve + validate + capture the bytes -------
+	std::string refusal;
+	std::string originalBytes;
+	std::string originalKeyword;
+	Category    uiCat = Category::None;
+	int         originalIndex = -1;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		char buf[1024];
+		if( !doc ) {
+			refusal = "no retained CST document to edit";
+		} else if( name.size() <= 1 ) {
+			refusal = "no chunk named";
+		} else {
+			int occs = 0;
+			const RISE::Cst::NodeId targetId =
+				SceneReferenceGraph::ResolveChunk( *doc, category, name, &occs );
+			if( targetId == 0 && occs > 1 ) {
+				out.closure = ClosureClassification::AmbiguousTargetName;
+				std::snprintf( buf, sizeof( buf ), kClosureAmbiguousFmt, name.c_str(), occs );
+				refusal = buf;
+			} else if( targetId == 0 ) {
+				out.closure = ClosureClassification::UnresolvedTarget;
+				std::snprintf( buf, sizeof( buf ), kClosureUnresolvedFmt, name.c_str() );
+				refusal = buf;
+			} else {
+				const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, targetId );
+				const ChunkDescriptor* cd = chunk
+					? DescriptorForKeyword( String( chunk->role.c_str() ) ) : nullptr;
+				if( !chunk || !cd ) {
+					refusal = "the chunk's descriptor did not resolve";
+				} else if( cd->category != ChunkCategory::Painter
+				        && cd->category != ChunkCategory::Function
+				        && cd->category != ChunkCategory::Material ) {
+					// The canvas's node kinds, and the ONLY kinds whose copy is
+					// guaranteed to derive one slot after the original: a graph
+					// node's references all point BACKWARD by construction.  A
+					// rasterizer / film / camera copy would also have to reason
+					// about last-wins activation and singleton-ness, which this
+					// verb does not -- refuse honestly rather than guess.
+					std::snprintf( buf, sizeof( buf ),
+						"`%s` is a `%s`, not a painter / function / material -- this verb forks GRAPH NODES; "
+						"use the outliner's Duplicate for other entity kinds",
+						name.c_str(), chunk->role.c_str() );
+					refusal = buf;
+				} else {
+					uiCat = UiCategoryForChunkCategory( cd->category );
+					if( uiCat == Category::None ) {
+						refusal = "this chunk category has no name-addressed edit path in the editor";
+					} else {
+						originalIndex = RISE::Cst::DocIndexOfNodeId( *doc, targetId, nullptr );
+						if( originalIndex < 0 ) {
+							refusal = "the chunk occupies no top-level document index";
+						} else {
+							originalBytes   = RISE::Cst::SerializeNode( chunk );
+							originalKeyword = chunk->role;
+						}
+					}
+				}
+			}
+		}
+	}
+	if( !refusal.empty() ) { reject( refusal, /*retriable=*/false ); return out; }
+
+	// ---- phase B/C (mMutex): pick the copy's name AND build the candidate
+	// document in ONE locked pass.
+	//
+	// S20 review round 1 P2-3: the previous split (UniqueEntityName picked a
+	// name OUTSIDE mMutex, using only the target's OWN category's live-
+	// manager enumeration; a separate AnyNameTakenDocWide probe then ran
+	// under mMutex, doc-wide) wedged on a CROSS-CATEGORY name squat.
+	// UniqueEntityName has no visibility into other categories, so it could
+	// happily hand back e.g. `sphere_geometry_2` -- a name that sailed
+	// through the in-category check because it is a Painter being
+	// duplicated, but that a `sphere_geometry` chunk ELSEWHERE in the
+	// document already holds.  AnyNameTakenDocWide then caught the
+	// collision, but by then there was no retry left: the doc-wide check ran
+	// exactly once, against exactly the one name UniqueEntityName had
+	// already committed to, so the whole verb refused outright -- without
+	// even naming the colliding chunk -- instead of trying the next numeric
+	// suffix the way every other name-picking verb on this surface does.
+	//
+	// Fix: adopt CreateChunkNode's `candidateClear` pattern (S18) VERBATIM --
+	// AND the in-category check with `AnyNameTakenDocWide` in one predicate,
+	// retry through a `_2`.._999` suffix loop, and refuse honestly (naming
+	// the base) only on genuine exhaustion.  The in-category enumeration
+	// reads the `Locked_` accessors directly (mMutex is already held here)
+	// rather than going through UniqueEntityName's own internal locking,
+	// which is also what lets this run in the SAME locked pass as the
+	// doc-wide check instead of two passes with a TOCTOU gap between them.
+	std::string candidateText;
+	String      landedName;
+	String      chosenName;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		std::string exhaustedBase;
+		if( !doc ) {
+			refusal = "no retained CST document to edit";
+		} else {
+			std::vector<std::string> inCat;
+			const unsigned int nc = CategoryEntityCountLocked_( uiCat );
+			inCat.reserve( nc );
+			for( unsigned int i = 0; i < nc; ++i )
+				inCat.emplace_back( CategoryEntityNameLocked_( uiCat, i ).c_str() );
+			auto candidateClear = [&]( const std::string& cand ) {
+				if( std::find( inCat.begin(), inCat.end(), cand ) != inCat.end() ) return false;
+				if( AnyNameTakenDocWide( *doc, std::vector<std::string>{ cand } ) ) return false;
+				return true;
+			};
+			// Reserve suffix bytes BEFORE truncating the base -- CreateChunkNode's
+			// identical discipline (its own comment explains why: formatting a
+			// suffix onto an unreserved 255-byte base would erase the suffix
+			// digits and make every subsequent collision unresolvable).
+			const size_t kMaxPayloadBytes = 255;
+			std::string base( name.c_str() );
+			base = base.substr( 0, kMaxPayloadBytes );
+			std::string chosen = base;
+			if( !candidateClear( chosen ) ) {
+				chosen.clear();
+				for( int i = 2; i < 1000; ++i ) {
+					const std::string suffix = "_" + std::to_string( i );
+					const std::string candidate =
+						base.substr( 0, kMaxPayloadBytes - suffix.size() ) + suffix;
+					if( candidateClear( candidate ) ) { chosen = candidate; break; }
+				}
+				if( chosen.empty() ) exhaustedBase = base;   // EXHAUSTION: refuse honestly, naming the base
+			}
+			if( exhaustedBase.empty() ) chosenName = String( chosen.c_str() );
+		}
+		if( !exhaustedBase.empty() ) {
+			refusal = "could not find a free name for base `" + exhaustedBase
+			        + "` (tried `" + exhaustedBase + "_2` .. `" + exhaustedBase + "_999`)";
+		}
+
+		std::string copyBytes;
+		if( refusal.empty() ) {
+			copyBytes = originalBytes;
+			if( !ReplaceFirstNameParamLine( copyBytes, std::string( chosenName.c_str() ) ) )
+				refusal = "could not locate a `name` parameter to substitute in the duplicated chunk";
+		}
+
+		if( refusal.empty() ) {
+			// Re-resolve the ORIGINAL's index against the document as it stands
+			// now.  Nothing can have moved it (the admission lock has been held
+			// throughout), but reading it here rather than trusting phase A's
+			// value keeps the splice index and the document one statement apart.
+			int occs = 0;
+			const RISE::Cst::NodeId targetId =
+				SceneReferenceGraph::ResolveChunk( *doc, category, name, &occs );
+			const int idx = ( targetId != 0 )
+				? RISE::Cst::DocIndexOfNodeId( *doc, targetId, nullptr ) : -1;
+			if( idx < 0 || idx != originalIndex ) {
+				refusal = "the original chunk moved between validation and commit";
+			} else {
+				// THE POSITION.  Immediately after the original: [sep][sep][copy]
+				// spliced at idx+1.  The copy's references are the original's, and
+				// the original derives where it sits, so the copy derives one slot
+				// later -- and EVERY consumer declared after the original (which,
+				// by declaration order, is every consumer it has) can legally be
+				// re-pointed at it.  That is the whole S19 handoff gap
+				// (RewireConnectionTest 1c'), closed.
+				//
+				// TWO separator items, not one "\n\n" parse, because ParseToCst's
+				// one-item-per-"\n" guarantee is the one Job::ApplyCstInsertChunk
+				// already relies on; and they go BEFORE the copy so the original's
+				// closing `}` can never be glued to the copy's keyword.  The
+				// original's own trailing separator (still sitting after the
+				// splice) becomes the copy's, so the inter-chunk spacing matches
+				// the document's existing style exactly.
+				RISE::Cst::Document sepA  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				RISE::Cst::Document sepB  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				RISE::Cst::Document sepC  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				RISE::Cst::Document copyD = RISE::Cst::ParseToCst( copyBytes );
+				RISE::Cst::NodeRef  sepAI = RISE::Cst::DocResolveNodeId( sepA, RISE::Cst::DocNodeIdAt( sepA, 0 ) );
+				RISE::Cst::NodeRef  sepBI = RISE::Cst::DocResolveNodeId( sepB, RISE::Cst::DocNodeIdAt( sepB, 0 ) );
+				RISE::Cst::NodeRef  sepCI = RISE::Cst::DocResolveNodeId( sepC, RISE::Cst::DocNodeIdAt( sepC, 0 ) );
+				RISE::Cst::NodeRef  copyI;
+				int copyChunks = 0;
+				const int nCopyItems = RISE::Cst::DocItemCount( copyD );
+				for( int i = 0; i < nCopyItems; ++i ) {
+					const RISE::Cst::NodeRef it =
+						RISE::Cst::DocResolveNodeId( copyD, RISE::Cst::DocNodeIdAt( copyD, i ) );
+					if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { ++copyChunks; if( !copyI ) copyI = it; }
+				}
+				if( !sepAI || !sepBI || !sepCI || !copyI || copyChunks != 1 ) {
+					refusal = "internal: the duplicated chunk text did not re-parse to exactly one chunk";
+				} else {
+					const std::string np = RISE::Cst::ChunkNamePath( copyI );
+					landedName = ( np.size() > originalKeyword.size() )
+						? String( np.substr( originalKeyword.size() + 1 ).c_str() ) : chosenName;
+
+					RISE::Cst::Document d = *doc;
+					const int at = idx + 1;
+					d = RISE::Cst::DocInsertItem( d, at,     sepAI );
+					d = RISE::Cst::DocInsertItem( d, at + 1, sepBI );
+					d = RISE::Cst::DocInsertItem( d, at + 2, copyI );
+					// If the original was the document's LAST item the copy is now
+					// the last, and a Chunk node's bytes end at `}` -- give the file
+					// its trailing newline back rather than shipping a `}`-terminated
+					// document no authored scene has.
+					if( at + 3 >= RISE::Cst::DocItemCount( d ) )
+						d = RISE::Cst::DocInsertItem( d, at + 3, sepCI );
+					candidateText = RISE::Cst::SerializeCst( d );
+				}
+			}
+		}
+	}
+	if( !refusal.empty() ) { reject( refusal, /*retriable=*/false ); return out; }
+
+	// ---- phase D: the one mutating call ---------------------------------
+	out.commit = ApplyAgentReplaceGeometryCrud_(
+		landedName, String( candidateText.c_str() ), baseVersionOrNull,
+		/*verbLabel*/ "duplicate_graph_node",
+		/*entityKind*/ originalKeyword.c_str(),
+		/*noun*/ "graph-node duplicate",
+		/*appliedPhrase*/ "the graph node was duplicated",
+		/*duplicateNodeOp*/ true );
+	// A DIAGNOSED commit (code 3) mutated the Document too -- report the name
+	// and index whenever the splice LANDED, not only on a clean apply, matching
+	// CreateChunkNode's own outName rule.
+	const bool landed = out.commit.applied
+	                 || std::string( out.commit.status.c_str() ) == "diagnosed";
+	if( landed ) {
+		out.newName       = landedName;
+		out.originalIndex = originalIndex;
+	}
+	// Document-first phase 1 drain.  NOT "post-unlock" in the sense every
+	// other site's identical comment means (S20 review round 1 P3 --
+	// corrected): `admissionLk` and `dirtyNotificationDeferral`, both taken
+	// at this function's TOP, are still in scope here and release only when
+	// this function RETURNS, one statement after this call -- mMutex is the
+	// lock that is actually free by this point (every `lock_guard<mutex>`
+	// hold above is scoped to its own `{ }` block, all already closed).
+	// Safe anyway: `mRenderAdmissionMutex` is a `std::recursive_mutex`
+	// specifically so a composed same-thread re-entry (a listener calling
+	// back into another public controller verb) does not deadlock on it --
+	// see its own declaration comment -- and `DrainDirtyNotification`'s "no
+	// controller locks held" contract is about the non-recursive leaf
+	// `mMutex`, which this call does not hold.
+	mEditor.DrainDirtyNotification();
+	return out;
+}
+
 SceneEditController::AgentCommitResult SceneEditController::DuplicateEntity(
 	Category cat, const String& name, String* outName )
 {
@@ -12712,8 +18120,14 @@ bool SceneEditController::GetEnvironment( EnvironmentInfo& out ) const
 				RISE::Cst::DocFindByNameAnyRole( *doc, mapName, nullptr, "painter", false );
 			if( pid != 0 ) {
 				const RISE::Cst::NodeRef pchunk = RISE::Cst::DocResolveNodeId( *doc, pid );
+				// LAST occurrence: this is a DISPLAY read -- "which file is the
+				// live environment actually using" -- not the agent's occ=0
+				// capture/restore convention, so it asks the parse's question.
+				// (The occ=0 readers a few thousand lines up are deliberate and
+				// stay; see Cst::ParamValueAsParsed's doc for why the two are
+				// not interchangeable.)
 				bool present = false;
-				const std::string f = AgentReadFirstParamValue( pchunk, "file", &present );
+				const std::string f = RISE::Cst::ParamValueAsParsed( pchunk, "file", &present );
 				if( present ) out.file = String( f.c_str() );
 			}
 		}
@@ -12997,12 +18411,16 @@ bool SceneEditController::SetPropertyForCategory( Category cat, const String& na
 {
 	const int idx = static_cast<int>( cat );
 	if( idx < 0 || idx >= kNumCategories ) return false;
-	const String targetName = mSelectionByCategory[idx];
 	bool ok = false;
 	{
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
 			return false;
+		String targetName;
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			targetName = mSelectionByCategory[idx];
+		}
 		ok = SetPropertyInner_( cat, targetName, name, valueStr );
 	}
 	// The primary selection was never overwritten, so a synchronous dirty
@@ -13010,6 +18428,1035 @@ bool SceneEditController::SetPropertyForCategory( Category cat, const String& na
 	// remains authoritative.
 	mEditor.DrainDirtyNotification();
 	return ok;
+}
+
+namespace {
+
+bool IsSingleFiniteDecimalNumber( const char* s )
+{
+	if( !s || !s[0] ) return false;
+	const char* p = s;
+	while( *p == ' ' || *p == '\t' ) ++p;
+	if( *p == '\0' ) return false;
+	const char* q = ( *p == '+' || *p == '-' ) ? ( p + 1 ) : p;
+	if( q[0] == '0' && ( q[1] == 'x' || q[1] == 'X' ) ) return false;
+	char* end = nullptr;
+	errno = 0;
+	const double v = std::strtod( p, &end );
+	if( end == p || errno == ERANGE || !std::isfinite( v ) ) return false;
+	while( *end == ' ' || *end == '\t' ) ++end;
+	return *end == '\0';
+}
+
+bool IsThreeFiniteDecimalNumbers( const char* s )
+{
+	if( !s || !s[0] ) return false;
+	const char* p = s;
+	for( int i = 0; i < 3; ++i )
+	{
+		while( *p == ' ' || *p == '\t' ) ++p;
+		if( *p == '\0' ) return false;
+		const char* q = ( *p == '+' || *p == '-' ) ? ( p + 1 ) : p;
+		if( q[0] == '0' && ( q[1] == 'x' || q[1] == 'X' ) ) return false;
+		char* end = nullptr;
+		errno = 0;
+		const double v = std::strtod( p, &end );
+		if( end == p || errno == ERANGE || !std::isfinite( v ) ) return false;
+		if( i < 2 && end && *end != ' ' && *end != '\t' ) return false;
+		p = end;
+	}
+	while( *p == ' ' || *p == '\t' ) ++p;
+	return *p == '\0';
+}
+
+bool SlotParamTargetsPainter( const ParameterDescriptor& pd )
+{
+	if( pd.kind != ValueKind::Reference || pd.repeatable ) return false;
+	for( ChunkCategory rc : pd.referenceCategories )
+	{
+		if( rc == ChunkCategory::Painter || rc == ChunkCategory::Function )
+			return true;
+	}
+	return false;
+}
+
+bool SlotParamDomainMatchesChunk(
+	const SceneReferenceGraph::DocumentChunk& dc,
+	const ParameterDescriptor& pd )
+{
+	if( !dc.hasCategory ) return false;
+	switch( pd.semantics.pipe )
+	{
+	case ParameterPipe::Scalar:
+		return dc.keyword == String( "scalar_painter" );
+	case ParameterPipe::Color:
+		if( ConnectionLegality::IsColorCapable( dc.keyword.c_str(), dc.category ) )
+			return true;
+		if( pd.semantics.colorAlsoAcceptsScalar && dc.keyword == String( "scalar_painter" ) )
+			return true;
+		return false;
+	case ParameterPipe::Function1D:
+		return dc.keyword == String( "piecewise_linear_function" );
+	case ParameterPipe::Function2D:
+		return ConnectionLegality::IsFunction2DCapable( dc.keyword.c_str(), dc.category );
+	case ParameterPipe::Material:
+		return dc.category == ChunkCategory::Material;
+	case ParameterPipe::Geometry:
+		return dc.category == ChunkCategory::Geometry;
+	default:
+		if( pd.referenceCategories.empty() ) return true;
+		for( ChunkCategory rc : pd.referenceCategories )
+		{
+			if( dc.category == rc ) return true;
+			if( rc == ChunkCategory::Function && dc.category == ChunkCategory::Painter
+				&& dc.keyword != String( "scalar_painter" ) )
+				return true;
+			if( rc == ChunkCategory::Painter && dc.keyword == String( "piecewise_linear_function" ) )
+				return true;
+		}
+		return false;
+	}
+}
+
+const SceneReferenceGraph::DocumentChunk* SelectSingleBoundSlotPainterChunk(
+	const std::vector<const SceneReferenceGraph::DocumentChunk*>& matches,
+	const ParameterDescriptor& pd )
+{
+	if( matches.size() == 1 ) return matches[0];
+	if( matches.size() > 1
+		&& pd.semantics.pipe == ParameterPipe::Color
+		&& pd.semantics.colorAlsoAcceptsScalar )
+	{
+		std::vector<const SceneReferenceGraph::DocumentChunk*> scalarMatches;
+		for( const SceneReferenceGraph::DocumentChunk* dc : matches )
+		{
+			if( dc && dc->keyword == String( "scalar_painter" ) )
+				scalarMatches.push_back( dc );
+		}
+		if( scalarMatches.size() == 1 ) return scalarMatches[0];
+	}
+	return nullptr;
+}
+
+bool IsInlineEditableConstantPainterChunk(
+	const RISE::Cst::NodeRef& chunk,
+	std::string& outParamName )
+{
+	outParamName.clear();
+	if( !chunk || RISE::Cst::ParamOccurrenceCount( chunk, "name" ) != 1 )
+		return false;
+	if( chunk->role == "uniformcolor_painter" )
+	{
+		if( RISE::Cst::ParamOccurrenceCount( chunk, "color" ) != 1 )
+			return false;
+		for( const RISE::Cst::NodeRef& kid : chunk->kids )
+		{
+			if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+			if( kid->role != "name" && kid->role != "color" && kid->role != "colorspace" )
+				return false;
+		}
+		if( RISE::Cst::ParamOccurrenceCount( chunk, "colorspace" ) > 0 )
+		{
+			if( RISE::Cst::ParamOccurrenceCount( chunk, "colorspace" ) != 1 )
+				return false;
+			bool csPresent = false;
+			const std::string cs = RISE::Cst::ParamValueAsParsed( chunk, "colorspace", &csPresent );
+			if( !csPresent || cs != "Rec709RGB_Linear" )
+				return false;
+		}
+		bool present = false;
+		const std::string val = RISE::Cst::ParamValueAsParsed( chunk, "color", &present );
+		if( !present || !IsThreeFiniteDecimalNumbers( val.c_str() ) )
+			return false;
+		outParamName = "color";
+		return true;
+	}
+	if( chunk->role == "scalar_painter" )
+	{
+		if( RISE::Cst::ParamOccurrenceCount( chunk, "value" ) != 1 )
+			return false;
+		for( const RISE::Cst::NodeRef& kid : chunk->kids )
+		{
+			if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+			if( kid->role != "name" && kid->role != "value" )
+				return false;
+		}
+		bool present = false;
+		const std::string val = RISE::Cst::ParamValueAsParsed( chunk, "value", &present );
+		if( !present || !IsSingleFiniteDecimalNumber( val.c_str() ) )
+			return false;
+		outParamName = "value";
+		return true;
+	}
+	return false;
+}
+
+}   // namespace
+
+bool SceneEditController::SetReferenceSlotPainterValue(
+	Category cat, const String& slotParam, const String& valueStr )
+{
+	const int catIdx = static_cast<int>( cat );
+	if( catIdx <= 0 || catIdx >= kNumCategories ) return false;
+	if( slotParam.size() <= 1 || valueStr.size() <= 1 ) return false;
+
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) )
+		return false;
+
+	String painterName;
+	String painterKeyword;
+	String painterParam;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		String ownerName = mSelectionByCategory[catIdx];
+		if( ownerName.size() <= 1 && mSelectionCategory == cat )
+			ownerName = mSelectionName;
+		if( ownerName.size() <= 1 ) return false;
+
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		if( !doc ) return false;
+
+		const RISE::Cst::NodeId ownerId = ResolveSourceChunkId(
+			*doc, cat, std::string( ownerName.c_str() ), std::string(),
+			mJob.GetActiveCameraName(), mJob.GetObjects() );
+		if( ownerId == 0 ) return false;
+		const RISE::Cst::NodeRef ownerChunk = RISE::Cst::DocResolveNodeId( *doc, ownerId );
+		if( !ownerChunk ) return false;
+		if( RISE::Cst::ParamOccurrenceCount( ownerChunk, slotParam.c_str() ) != 1 )
+			return false;
+
+		const ChunkDescriptor* ownerCd = DescriptorForKeyword( String( ownerChunk->role.c_str() ) );
+		if( !ownerCd ) return false;
+		const ParameterDescriptor* pd = nullptr;
+		const std::string wantSlot( slotParam.c_str() );
+		for( const ParameterDescriptor& p : ownerCd->parameters )
+		{
+			if( p.name == wantSlot ) { pd = &p; break; }
+		}
+		if( !pd || !SlotParamTargetsPainter( *pd ) ) return false;
+
+		bool present = false;
+		const std::string boundName = RISE::Cst::ParamValueAsParsed( ownerChunk, wantSlot, &present );
+		if( !present || boundName.empty() || boundName == "none" ) return false;
+
+		const std::vector<SceneReferenceGraph::DocumentChunk> allChunks =
+			SceneReferenceGraph::AllChunks( *doc );
+		std::vector<const SceneReferenceGraph::DocumentChunk*> matches;
+		for( const SceneReferenceGraph::DocumentChunk& dc : allChunks )
+		{
+			if( dc.id == ownerId ) break;
+			if( dc.name == String( boundName.c_str() ) && SlotParamDomainMatchesChunk( dc, *pd ) )
+			{
+				matches.push_back( &dc );
+			}
+		}
+		const SceneReferenceGraph::DocumentChunk* targetDc =
+			SelectSingleBoundSlotPainterChunk( matches, *pd );
+		if( !targetDc || !targetDc->item ) return false;
+		if( RISE::Cst::DocFindByNameAnyRole(
+			*doc, boundName.c_str(), nullptr, std::string( targetDc->keyword.c_str() ), /*uniqueFallback=*/false ) != targetDc->id )
+		{
+			return false;
+		}
+
+		std::string resolvedParam;
+		if( !IsInlineEditableConstantPainterChunk( targetDc->item, resolvedParam ) )
+			return false;
+		if( resolvedParam == "color" && !IsThreeFiniteDecimalNumbers( valueStr.c_str() ) )
+			return false;
+		if( resolvedParam == "value" && !IsSingleFiniteDecimalNumber( valueStr.c_str() ) )
+			return false;
+
+		painterName    = String( boundName.c_str() );
+		painterKeyword = targetDc->keyword;
+		painterParam   = String( resolvedParam.c_str() );
+	}
+
+	const AgentCommitResult r = ApplyAgentParamEditInner_(
+		painterName, painterKeyword, painterParam, valueStr, nullptr );
+	mEditor.DrainDirtyNotification();
+	return r.applied;
+}
+
+bool SceneEditController::ForkReferenceSlotPainter(
+	Category cat, const String& slotParam, String* outNewPainterName )
+{
+	if( outNewPainterName ) *outNewPainterName = String();
+	const int catIdx = static_cast<int>( cat );
+	if( catIdx <= 0 || catIdx >= kNumCategories ) return false;
+	if( slotParam.size() <= 1 ) return false;
+
+	auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return false;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) )
+		return false;
+
+	String landedName;
+	bool   applied = false;
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mTxnOpen.load( std::memory_order_acquire )
+		 || mEditor.IsCompositeOpen() )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: fork reference slot painter refused while an editor transaction/gesture is open." );
+			return false;
+		}
+		CancelAndParkRender_( lk );
+
+		String ownerName = mSelectionByCategory[catIdx];
+		if( ownerName.size() <= 1 && mSelectionCategory == cat )
+			ownerName = mSelectionName;
+		if( ownerName.size() <= 1 ) return false;
+
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		if( !doc ) return false;
+
+		const RISE::Cst::NodeId ownerId = ResolveSourceChunkId(
+			*doc, cat, std::string( ownerName.c_str() ), std::string(),
+			mJob.GetActiveCameraName(), mJob.GetObjects() );
+		if( ownerId == 0 ) return false;
+		const RISE::Cst::NodeRef ownerChunk = RISE::Cst::DocResolveNodeId( *doc, ownerId );
+		if( !ownerChunk ) return false;
+		if( RISE::Cst::ParamOccurrenceCount( ownerChunk, slotParam.c_str() ) != 1 )
+			return false;
+
+		const ChunkDescriptor* ownerCd = DescriptorForKeyword( String( ownerChunk->role.c_str() ) );
+		if( !ownerCd ) return false;
+		const ParameterDescriptor* pd = nullptr;
+		const std::string wantSlot( slotParam.c_str() );
+		for( const ParameterDescriptor& p : ownerCd->parameters )
+		{
+			if( p.name == wantSlot ) { pd = &p; break; }
+		}
+		if( !pd || !SlotParamTargetsPainter( *pd ) ) return false;
+
+		const std::string ownerKeyword = ownerChunk->role;
+		const std::string ownerNamePath = RISE::Cst::ChunkNamePath( ownerChunk );
+		const std::string ownerCstName = ( ownerNamePath.size() > ownerKeyword.size() )
+			? ownerNamePath.substr( ownerKeyword.size() + 1 )
+			: std::string();
+		const bool ownerUniqueFallback = ( ownerKeyword == "camera" )
+			? RISE::Cst::DocCameraUniqueFallbackPermitted( *doc, ownerCstName, mJob.GetActiveCameraName() )
+			: ( ownerCstName.empty() && !ownerKeyword.empty() );
+		const RISE::Cst::NodeId resolvedOwnerTarget = RISE::Cst::DocFindByNameAnyRole(
+			*doc, ownerCstName.c_str(), nullptr, ownerKeyword, ownerUniqueFallback );
+		if( resolvedOwnerTarget == 0
+		 || RISE::Cst::DocTransformOwnerId( *doc, resolvedOwnerTarget, wantSlot ) != ownerId )
+		{
+			return false;
+		}
+
+		bool present = false;
+		const std::string boundName = RISE::Cst::ParamValueAsParsed( ownerChunk, wantSlot, &present );
+		if( !present || boundName.empty() || boundName == "none" ) return false;
+
+		const std::vector<SceneReferenceGraph::DocumentChunk> allChunks =
+			SceneReferenceGraph::AllChunks( *doc );
+		std::vector<const SceneReferenceGraph::DocumentChunk*> matches;
+		for( const SceneReferenceGraph::DocumentChunk& dc : allChunks )
+		{
+			if( dc.id == ownerId ) break;
+			if( dc.name == String( boundName.c_str() ) && SlotParamDomainMatchesChunk( dc, *pd ) )
+			{
+				matches.push_back( &dc );
+			}
+		}
+		const SceneReferenceGraph::DocumentChunk* targetDc =
+			SelectSingleBoundSlotPainterChunk( matches, *pd );
+		if( !targetDc || !targetDc->item ) return false;
+		if( targetDc->category != ChunkCategory::Painter && targetDc->category != ChunkCategory::Function )
+			return false;
+		if( RISE::Cst::DocFindByNameAnyRole(
+			*doc, boundName.c_str(), nullptr, std::string( targetDc->keyword.c_str() ), /*uniqueFallback=*/false ) != targetDc->id )
+		{
+			return false;
+		}
+		std::string resolvedParam;
+		if( !IsInlineEditableConstantPainterChunk( targetDc->item, resolvedParam ) )
+			return false;
+
+		const int originalIndex = RISE::Cst::DocIndexOfNodeId( *doc, targetDc->id, nullptr );
+		if( originalIndex < 0 ) return false;
+
+		const std::string originalKeyword = targetDc->keyword.c_str();
+		const std::string copyBytes = RISE::Cst::SerializeNode( targetDc->item );
+
+		std::vector<std::string> inCat;
+		const unsigned int nc = CategoryEntityCountLocked_( Category::Painter );
+		inCat.reserve( nc );
+		for( unsigned int i = 0; i < nc; ++i )
+			inCat.emplace_back( CategoryEntityNameLocked_( Category::Painter, i ).c_str() );
+		auto candidateClear = [&]( const std::string& cand ) {
+			if( std::find( inCat.begin(), inCat.end(), cand ) != inCat.end() ) return false;
+			if( AnyNameTakenDocWide( *doc, std::vector<std::string>{ cand } ) ) return false;
+			return true;
+		};
+		const size_t kMaxPayloadBytes = 255;
+		std::string base = boundName.substr( 0, kMaxPayloadBytes );
+		std::string chosen = base;
+		if( !candidateClear( chosen ) )
+		{
+			chosen.clear();
+			for( int i = 2; i < 1000; ++i )
+			{
+				const std::string suffix = "_" + std::to_string( i );
+				const std::string candidate =
+					base.substr( 0, kMaxPayloadBytes - suffix.size() ) + suffix;
+				if( candidateClear( candidate ) ) { chosen = candidate; break; }
+			}
+		}
+		if( chosen.empty() ) return false;
+
+		RISE::Cst::Document sepA  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		RISE::Cst::Document sepB  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		RISE::Cst::Document copyD = RISE::Cst::ParseToCst( copyBytes );
+		RISE::Cst::NodeRef  sepAI = RISE::Cst::DocResolveNodeId( sepA, RISE::Cst::DocNodeIdAt( sepA, 0 ) );
+		RISE::Cst::NodeRef  sepBI = RISE::Cst::DocResolveNodeId( sepB, RISE::Cst::DocNodeIdAt( sepB, 0 ) );
+		RISE::Cst::NodeId   copyChunkId = 0;
+		int copyChunks = 0;
+		const int nCopyItems = RISE::Cst::DocItemCount( copyD );
+		for( int i = 0; i < nCopyItems; ++i )
+		{
+			const RISE::Cst::NodeId cid = RISE::Cst::DocNodeIdAt( copyD, i );
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( copyD, cid );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { ++copyChunks; if( copyChunkId == 0 ) copyChunkId = cid; }
+		}
+		if( !sepAI || !sepBI || copyChunkId == 0 || copyChunks != 1 )
+			return false;
+
+		copyD = RISE::Cst::DocSetParamValue( copyD, copyChunkId, "name", 0, chosen );
+		RISE::Cst::NodeRef copyI = RISE::Cst::DocResolveNodeId( copyD, copyChunkId );
+		if( !copyI ) return false;
+
+		const std::string np = RISE::Cst::ChunkNamePath( copyI );
+		landedName = ( np.size() > originalKeyword.size() )
+			? String( np.substr( originalKeyword.size() + 1 ).c_str() )
+			: String( chosen.c_str() );
+
+		// Build operation-level undo ops (CstBatchUndoOp) rather than a
+		// whole-document snapshot so Undo/Redo removes/restores ONLY the
+		// cloned painter chunk and the rebound reference slot, preserving
+		// unrelated in-place edits (such as film width/height/pixelAR).
+		const int nDocItems = RISE::Cst::DocItemCount( *doc );
+		int at = nDocItems;
+		for( int i = originalIndex + 1; i < nDocItems; ++i )
+		{
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *doc, RISE::Cst::DocNodeIdAt( *doc, i ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { at = i; break; }
+		}
+
+		CstBatchUndoOp insertOp;
+		insertOp.isInsert       = true;
+		insertOp.chunkText      = RISE::Cst::SerializeNode( copyI );
+		insertOp.keyword        = originalKeyword;
+		insertOp.namePath       = np;
+		insertOp.chunkIndex     = at + 1;
+		insertOp.appendedAtEnd  = ( at >= nDocItems );
+		insertOp.hasAnchor      = true;
+		insertOp.anchorKeyword  = originalKeyword;
+		insertOp.anchorNamePath = RISE::Cst::ChunkNamePath( targetDc->item );
+		insertOp.anchorOrdinal  = 0;
+		for( int k = 0; k < originalIndex; ++k )
+		{
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *doc, RISE::Cst::DocNodeIdAt( *doc, k ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == originalKeyword &&
+			    RISE::Cst::ChunkNamePath( it ) == insertOp.anchorNamePath )
+			{
+				++insertOp.anchorOrdinal;
+			}
+		}
+
+		CstBatchUndoOp slotOp;
+		slotOp.isInsert       = false;
+		slotOp.entityName     = ownerCstName;
+		slotOp.entityKind     = ownerKeyword;
+		slotOp.editRole       = wantSlot;
+		slotOp.postEntityName = ownerCstName;
+		slotOp.occAddressed   = false;
+		slotOp.wholeTransform = false;
+		slotOp.ownerKeyword   = ownerKeyword;
+		slotOp.ownerNamePath  = ownerNamePath;
+		slotOp.ownerPreText   = RISE::Cst::SerializeNode( ownerChunk );
+		if( slotOp.ownerPreText.size() > kCstUndoOwnerTextCap )
+			slotOp.ownerPreText.clear();
+
+		CstBatchUndoOp::Slot sl;
+		sl.role        = wantSlot;
+		sl.occ         = 0;
+		sl.priorAbsent = false;
+		sl.priorValue  = RISE::Cst::ParamValueAtOccurrence( ownerChunk, wantSlot, 0 );
+
+		RISE::Cst::Document d = *doc;
+		d = RISE::Cst::DocSetParamValue(
+			d, ownerId, wantSlot, 0, std::string( landedName.c_str() ) );
+		const RISE::Cst::NodeRef ownerAfter = RISE::Cst::DocResolveNodeId( d, ownerId );
+		if( !ownerAfter ) return false;
+
+		slotOp.ownerPostText = RISE::Cst::SerializeNode( ownerAfter );
+		if( slotOp.ownerPreText.empty() || slotOp.ownerPostText.size() > kCstUndoOwnerTextCap )
+		{
+			slotOp.ownerPreText.clear();
+			slotOp.ownerPostText.clear();
+		}
+		sl.postAbsent = false;
+		sl.postValue  = RISE::Cst::ParamValueAtOccurrence( ownerAfter, wantSlot, 0 );
+		slotOp.slots.push_back( sl );
+
+		d = RISE::Cst::DocInsertItem( d, at,     sepAI );
+		d = RISE::Cst::DocInsertItem( d, at + 1, copyI );
+		d = RISE::Cst::DocInsertItem( d, at + 2, sepBI );
+
+		char diagBuf[512]; diagBuf[0] = '\0';
+		const int code = mJob.ApplyCstReplaceDocument(
+			d, /*restoreActiveRasterizer=*/true,
+			diagBuf, sizeof( diagBuf ),
+			"fork_reference_slot_painter" );
+		if( code == 2 || code == 3 )
+			RebindEditorToJob();
+		if( code != 2 )
+		{
+			if( code == 3 )
+			{
+				mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+				mEditPending.store( true, std::memory_order_release );
+				lk.unlock();
+				mCV.notify_one();
+			}
+			return false;
+		}
+
+		mEditor.MarkCstHeadDirty( landedName.c_str(), originalKeyword.c_str() );
+		mEditor.MarkCstHeadDirty(
+			ownerCstName.c_str(), ownerKeyword.empty() ? nullptr : ownerKeyword.c_str() );
+		mEditor.BumpSceneLightGenerationForAgentParamEdit(
+			ownerCstName.c_str(), ownerKeyword.empty() ? nullptr : ownerKeyword.c_str() );
+
+		std::vector<CstBatchUndoOp> ops;
+		ops.reserve( 2 );
+		ops.push_back( std::move( insertOp ) );
+		ops.push_back( std::move( slotOp ) );
+		const std::string label = std::string( landedName.c_str() ) + ", " +
+			( ownerCstName.empty() ? ownerKeyword : ownerCstName ) + "." + wantSlot;
+		mEditor.PushAgentEditBatchEdit( String( label.c_str() ), ops, /*landedRasterizerInsert=*/false );
+
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+		mEditPending.store( true, std::memory_order_release );
+		applied = true;
+		lk.unlock();
+		mCV.notify_one();
+	}
+
+	if( applied && outNewPainterName )
+	{
+		*outNewPainterName = landedName;
+	}
+	mEditor.DrainDirtyNotification();
+	return applied;
+}
+
+bool SceneEditController::ApplySpectralPreset( Category cat, const String& presetId )
+{
+	const int catIdx = static_cast<int>( cat );
+	if( catIdx <= 0 || catIdx >= kNumCategories ) return false;
+	if( presetId.size() <= 1 ) return false;
+
+	String delegatedBlackbodyKelvin;
+	bool   applied = false;
+	{
+		auto dirtyNotificationDeferral = mEditor.DeferDirtyNotifications();
+		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+			return false;
+		if( mRenderOwnsScene.load( std::memory_order_acquire ) )
+			return false;
+
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mTxnOpen.load( std::memory_order_acquire )
+		 || mEditor.IsCompositeOpen() )
+		{
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditController: apply spectral preset refused while an editor transaction/gesture is open." );
+			return false;
+		}
+		CancelAndParkRender_( lk );
+
+		String ownerName = mSelectionByCategory[catIdx];
+		if( ownerName.size() <= 1 && mSelectionCategory == cat )
+			ownerName = mSelectionName;
+		if( ownerName.size() <= 1 ) return false;
+
+		const RISE::Cst::Document* doc = mJob.GetCstDocument();
+		if( !doc ) return false;
+
+		const RISE::Cst::NodeId ownerId = ResolveSourceChunkId(
+			*doc, cat, std::string( ownerName.c_str() ), std::string(),
+			mJob.GetActiveCameraName(), mJob.GetObjects() );
+		if( ownerId == 0 ) return false;
+		const RISE::Cst::NodeRef ownerChunk = RISE::Cst::DocResolveNodeId( *doc, ownerId );
+		if( !ownerChunk ) return false;
+
+		const std::string ownerKeyword = ownerChunk->role;
+		const std::string ownerNamePath = RISE::Cst::ChunkNamePath( ownerChunk );
+		const std::string ownerCstName = ( ownerNamePath.size() > ownerKeyword.size() )
+			? ownerNamePath.substr( ownerKeyword.size() + 1 )
+			: std::string();
+		if( ownerCstName.empty() ) return false;
+		const RISE::Cst::NodeId resolvedOwnerTarget = RISE::Cst::DocFindByNameAnyRole(
+			*doc, ownerCstName.c_str(), nullptr, ownerKeyword, /*uniqueFallback=*/false );
+		if( resolvedOwnerTarget != ownerId ) return false;
+
+		// Case 1: `blackbody_painter` Kelvin quick-pick preset
+		if( ownerKeyword == "blackbody_painter" )
+		{
+			std::string s( presetId.c_str() );
+			while( !s.empty() && ( s.back() == ' ' || s.back() == 'K' || s.back() == 'k' ) )
+				s.pop_back();
+			char* endp = nullptr;
+			const double kVal = std::strtod( s.c_str(), &endp );
+			if( endp == s.c_str() || !std::isfinite( kVal ) || kVal <= 0.0 )
+				return false;
+			char buf[64];
+			std::snprintf( buf, sizeof( buf ), "%.6g", kVal );
+			delegatedBlackbodyKelvin = String( buf );
+		}
+		// Case 2: `scalar_painter` Sellmeier optical glass preset
+		else if( ownerKeyword == "scalar_painter" )
+		{
+			std::string sellmeierCoeffs;
+			if( !MaterialPreview::LookupSellmeierGlassPreset( presetId, sellmeierCoeffs ) )
+				return false;
+
+			CstBatchUndoOp slotOp;
+			slotOp.isInsert       = false;
+			slotOp.entityName     = ownerCstName;
+			slotOp.entityKind     = ownerKeyword;
+			slotOp.editRole       = "sellmeier";
+			slotOp.postEntityName = ownerCstName;
+			slotOp.occAddressed   = false;
+			slotOp.wholeTransform = false;
+			slotOp.ownerKeyword   = ownerKeyword;
+			slotOp.ownerNamePath  = ownerNamePath;
+			slotOp.ownerPreText   = RISE::Cst::SerializeNode( ownerChunk );
+			if( slotOp.ownerPreText.size() > kCstUndoOwnerTextCap )
+				slotOp.ownerPreText.clear();
+
+			RISE::Cst::Document d = *doc;
+			const char* const competingRoles[] = { "value", "file", "polynomial", "texture", "painter" };
+			for( size_t ri = 0; ri < sizeof( competingRoles ) / sizeof( competingRoles[0] ); ++ri )
+			{
+				const std::string role( competingRoles[ri] );
+				if( RISE::Cst::ParamOccurrenceCount( ownerChunk, role ) > 0 )
+				{
+					CstBatchUndoOp::Slot sl;
+					sl.role        = role;
+					sl.occ         = 0;
+					sl.priorAbsent = false;
+					sl.priorValue  = RISE::Cst::ParamValueAtOccurrence( ownerChunk, role, 0 );
+					sl.postAbsent  = true;
+					sl.postValue   = std::string();
+					slotOp.slots.push_back( sl );
+					d = RISE::Cst::DocRemoveParamOcc( d, ownerId, role, 0 );
+				}
+			}
+			{
+				CstBatchUndoOp::Slot sl;
+				sl.role        = "sellmeier";
+				sl.occ         = 0;
+				sl.priorAbsent = ( RISE::Cst::ParamOccurrenceCount( ownerChunk, "sellmeier" ) == 0 );
+				sl.priorValue  = sl.priorAbsent
+					? std::string()
+					: RISE::Cst::ParamValueAtOccurrence( ownerChunk, "sellmeier", 0 );
+				d = RISE::Cst::DocSetOrAddParamValue( d, ownerId, "sellmeier", 0, sellmeierCoeffs );
+				const RISE::Cst::NodeRef ownerAfter = RISE::Cst::DocResolveNodeId( d, ownerId );
+				if( !ownerAfter ) return false;
+				sl.postAbsent = false;
+				sl.postValue  = RISE::Cst::ParamValueAtOccurrence( ownerAfter, "sellmeier", 0 );
+				slotOp.slots.push_back( sl );
+
+				slotOp.ownerPostText = RISE::Cst::SerializeNode( ownerAfter );
+				if( slotOp.ownerPreText.empty() || slotOp.ownerPostText.size() > kCstUndoOwnerTextCap )
+				{
+					slotOp.ownerPreText.clear();
+					slotOp.ownerPostText.clear();
+				}
+			}
+
+			char diagBuf[512]; diagBuf[0] = '\0';
+			const int code = mJob.ApplyCstReplaceDocument(
+				d, /*restoreActiveRasterizer=*/true,
+				diagBuf, sizeof( diagBuf ),
+				"apply_spectral_preset_scalar" );
+			if( code == 2 || code == 3 )
+				RebindEditorToJob();
+			if( code != 2 )
+			{
+				if( code == 3 )
+				{
+					mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+					mEditPending.store( true, std::memory_order_release );
+					lk.unlock();
+					mCV.notify_one();
+				}
+				return false;
+			}
+
+			mEditor.MarkCstHeadDirty( ownerCstName.c_str(), ownerKeyword.c_str() );
+			std::vector<CstBatchUndoOp> ops;
+			ops.push_back( std::move( slotOp ) );
+			const std::string label = ownerCstName + ".sellmeier (" + std::string( presetId.c_str() ) + ")";
+			mEditor.PushAgentEditBatchEdit( String( label.c_str() ), ops, /*landedRasterizerInsert=*/false );
+
+			mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+			mEditPending.store( true, std::memory_order_release );
+			applied = true;
+			lk.unlock();
+			mCV.notify_one();
+		}
+		// Case 3 & 4: material presets (`dielectric_material`/`agx_dielectric` Sellmeier glass, or `ggx_material` measured metal)
+		else if( ownerKeyword == "dielectric_material"
+		      || ownerKeyword == "agx_dielectric"
+		      || ownerKeyword == "ggx_material" )
+		{
+			std::vector<std::string> inCat;
+			const unsigned int nc = CategoryEntityCountLocked_( Category::Painter );
+			inCat.reserve( nc );
+			for( unsigned int i = 0; i < nc; ++i )
+				inCat.emplace_back( CategoryEntityNameLocked_( Category::Painter, i ).c_str() );
+
+			auto pickUniqueScalarPainterName = [&]( const RISE::Cst::Document& curDoc,
+			                                        const std::string& rawBase,
+			                                        const std::string& extraForbidden ) -> std::string {
+				std::string base( CanonicalCameraName( String( rawBase.c_str() ), "scalar_painter" ).c_str() );
+				if( base.empty() ) base = "scalar_painter";
+				const size_t kMaxPayloadBytes = 255;
+				base = base.substr( 0, kMaxPayloadBytes );
+				auto isFree = [&]( const std::string& cand ) {
+					if( !extraForbidden.empty() && cand == extraForbidden ) return false;
+					if( std::find( inCat.begin(), inCat.end(), cand ) != inCat.end() ) return false;
+					if( AnyNameTakenDocWide( curDoc, std::vector<std::string>{ cand } ) ) return false;
+					return true;
+				};
+				if( isFree( base ) ) return base;
+				for( int i = 2; i < 1000; ++i )
+				{
+					const std::string suffix = "_" + std::to_string( i );
+					const std::string cand = base.substr( 0, kMaxPayloadBytes - suffix.size() ) + suffix;
+					if( isFree( cand ) ) return cand;
+				}
+				return std::string();
+			};
+
+			auto spliceChunkBeforeOwner = []( RISE::Cst::Document& curDoc,
+			                                  RISE::Cst::NodeId targetOwnerId,
+			                                  const std::string& chunkText,
+			                                  CstBatchUndoOp& outInsertOp ) -> bool {
+				const int where = RISE::Cst::DocIndexOfNodeId( curDoc, targetOwnerId, nullptr );
+				if( where < 0 ) return false;
+				const RISE::Cst::Document parsed = RISE::Cst::ParseToCst( chunkText );
+				RISE::Cst::NodeRef chunk;
+				for( int i = 0; i < RISE::Cst::DocItemCount( parsed ); ++i )
+				{
+					const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( parsed, RISE::Cst::DocNodeIdAt( parsed, i ) );
+					if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunk = it; break; }
+				}
+				if( !chunk ) return false;
+
+				outInsertOp = CstBatchUndoOp();
+				outInsertOp.isInsert      = true;
+				outInsertOp.chunkText     = RISE::Cst::SerializeNode( chunk );
+				outInsertOp.keyword       = chunk->role;
+				outInsertOp.namePath      = RISE::Cst::ChunkNamePath( chunk );
+				outInsertOp.chunkIndex    = where + 1;
+				outInsertOp.appendedAtEnd = ( where >= RISE::Cst::DocItemCount( curDoc ) );
+				int anchorAt = -1;
+				for( int k = where - 1; k >= 0; --k )
+				{
+					const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( curDoc, RISE::Cst::DocNodeIdAt( curDoc, k ) );
+					if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					outInsertOp.hasAnchor      = true;
+					outInsertOp.anchorKeyword  = it->role;
+					outInsertOp.anchorNamePath = RISE::Cst::ChunkNamePath( it );
+					anchorAt = k;
+					break;
+				}
+				for( int k = 0; k < anchorAt; ++k )
+				{
+					const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( curDoc, RISE::Cst::DocNodeIdAt( curDoc, k ) );
+					if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == outInsertOp.anchorKeyword &&
+					    RISE::Cst::ChunkNamePath( it ) == outInsertOp.anchorNamePath )
+					{
+						++outInsertOp.anchorOrdinal;
+					}
+				}
+
+				const RISE::Cst::Document leadDoc = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				const RISE::Cst::NodeRef  leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+				const RISE::Cst::Document sepDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				const RISE::Cst::NodeRef  sepItem = RISE::Cst::DocResolveNodeId( sepDoc, RISE::Cst::DocNodeIdAt( sepDoc, 0 ) );
+				if( !leadItem || !sepItem ) return false;
+				curDoc = RISE::Cst::DocInsertItem( curDoc, where,     leadItem );
+				curDoc = RISE::Cst::DocInsertItem( curDoc, where + 1, chunk );
+				curDoc = RISE::Cst::DocInsertItem( curDoc, where + 2, sepItem );
+				return true;
+			};
+
+			if( ownerKeyword == "dielectric_material" || ownerKeyword == "agx_dielectric" )
+			{
+				std::string sellmeierCoeffs;
+				if( !MaterialPreview::LookupSellmeierGlassPreset( presetId, sellmeierCoeffs ) )
+					return false;
+
+				std::string slug;
+				for( const char* p = presetId.c_str(); *p; ++p )
+				{
+					const char c = *p;
+					if( c >= 'A' && c <= 'Z' ) slug.push_back( static_cast<char>( c - 'A' + 'a' ) );
+					else if( ( c >= 'a' && c <= 'z' ) || ( c >= '0' && c <= '9' ) ) slug.push_back( c );
+				}
+				if( slug.empty() ) slug = "glass";
+
+				const std::string chosenIor = pickUniqueScalarPainterName(
+					*doc, ownerCstName + "_" + slug + "_ior", std::string() );
+				if( chosenIor.empty() ) return false;
+
+				const std::string chunkText =
+					"scalar_painter\n{\n\tname\t\t" + chosenIor + "\n\tsellmeier\t" + sellmeierCoeffs + "\n}";
+
+				RISE::Cst::Document d = *doc;
+				CstBatchUndoOp insertOp;
+				if( !spliceChunkBeforeOwner( d, ownerId, chunkText, insertOp ) )
+					return false;
+
+				const RISE::Cst::NodeRef ownerBefore = RISE::Cst::DocResolveNodeId( d, ownerId );
+				if( !ownerBefore ) return false;
+
+				CstBatchUndoOp slotOp;
+				slotOp.isInsert       = false;
+				slotOp.entityName     = ownerCstName;
+				slotOp.entityKind     = ownerKeyword;
+				slotOp.editRole       = "ior";
+				slotOp.postEntityName = ownerCstName;
+				slotOp.occAddressed   = false;
+				slotOp.wholeTransform = false;
+				slotOp.ownerKeyword   = ownerKeyword;
+				slotOp.ownerNamePath  = ownerNamePath;
+				slotOp.ownerPreText   = RISE::Cst::SerializeNode( ownerBefore );
+				if( slotOp.ownerPreText.size() > kCstUndoOwnerTextCap )
+					slotOp.ownerPreText.clear();
+
+				CstBatchUndoOp::Slot sl;
+				sl.role        = "ior";
+				sl.occ         = 0;
+				sl.priorAbsent = ( RISE::Cst::ParamOccurrenceCount( ownerBefore, "ior" ) == 0 );
+				sl.priorValue  = sl.priorAbsent
+					? std::string()
+					: RISE::Cst::ParamValueAtOccurrence( ownerBefore, "ior", 0 );
+
+				d = RISE::Cst::DocSetOrAddParamValue( d, ownerId, "ior", 0, chosenIor );
+				const RISE::Cst::NodeRef ownerAfter = RISE::Cst::DocResolveNodeId( d, ownerId );
+				if( !ownerAfter ) return false;
+
+				sl.postAbsent = false;
+				sl.postValue  = RISE::Cst::ParamValueAtOccurrence( ownerAfter, "ior", 0 );
+				slotOp.slots.push_back( sl );
+
+				slotOp.ownerPostText = RISE::Cst::SerializeNode( ownerAfter );
+				if( slotOp.ownerPreText.empty() || slotOp.ownerPostText.size() > kCstUndoOwnerTextCap )
+				{
+					slotOp.ownerPreText.clear();
+					slotOp.ownerPostText.clear();
+				}
+
+				char diagBuf[512]; diagBuf[0] = '\0';
+				const int code = mJob.ApplyCstReplaceDocument(
+					d, /*restoreActiveRasterizer=*/true,
+					diagBuf, sizeof( diagBuf ),
+					"apply_spectral_preset_dielectric" );
+				if( code == 2 || code == 3 )
+					RebindEditorToJob();
+				if( code != 2 )
+				{
+					if( code == 3 )
+					{
+						mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+						mEditPending.store( true, std::memory_order_release );
+						lk.unlock();
+						mCV.notify_one();
+					}
+					return false;
+				}
+
+				mEditor.MarkCstHeadDirty( chosenIor.c_str(), "scalar_painter" );
+				mEditor.MarkCstHeadDirty( ownerCstName.c_str(), ownerKeyword.c_str() );
+				mEditor.BumpSceneLightGenerationForAgentParamEdit( ownerCstName.c_str(), ownerKeyword.c_str() );
+
+				std::vector<CstBatchUndoOp> ops;
+				ops.reserve( 2 );
+				ops.push_back( std::move( insertOp ) );
+				ops.push_back( std::move( slotOp ) );
+				const std::string label = chosenIor + ", " + ownerCstName + ".ior";
+				mEditor.PushAgentEditBatchEdit( String( label.c_str() ), ops, /*landedRasterizerInsert=*/false );
+
+				mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+				mEditPending.store( true, std::memory_order_release );
+				applied = true;
+				lk.unlock();
+				mCV.notify_one();
+			}
+			else if( ownerKeyword == "ggx_material" )
+			{
+				std::string fileN, fileK, polyN, polyK;
+				unsigned char swatch[4] = { 0, 0, 0, 255 };
+				if( !MaterialPreview::LookupMeasuredMetalPreset( presetId, fileN, fileK, polyN, polyK, swatch ) )
+					return false;
+
+				auto fileReadable = []( const std::string& relPath ) -> bool {
+					if( relPath.empty() ) return false;
+					const String resolved = GlobalMediaPathLocator().Find( relPath.c_str() );
+					std::ifstream f( resolved.c_str() );
+					return f.good();
+				};
+				const bool useFiles = fileReadable( fileN ) && fileReadable( fileK );
+
+				std::string slug;
+				for( const char* p = presetId.c_str(); *p; ++p )
+				{
+					const char c = *p;
+					if( c >= 'A' && c <= 'Z' ) slug.push_back( static_cast<char>( c - 'A' + 'a' ) );
+					else if( ( c >= 'a' && c <= 'z' ) || ( c >= '0' && c <= '9' ) ) slug.push_back( c );
+				}
+				if( slug.empty() ) slug = "metal";
+
+				const std::string chosenN = pickUniqueScalarPainterName(
+					*doc, ownerCstName + "_" + slug + "_n", std::string() );
+				if( chosenN.empty() ) return false;
+				const std::string chosenK = pickUniqueScalarPainterName(
+					*doc, ownerCstName + "_" + slug + "_k", chosenN );
+				if( chosenK.empty() ) return false;
+
+				const std::string chunkTextN = useFiles
+					? ( "scalar_painter\n{\n\tname\t\t" + chosenN + "\n\tfile\t\t" + fileN + "\n}" )
+					: ( "scalar_painter\n{\n\tname\t\t" + chosenN + "\n\tpolynomial\t" + polyN + "\n}" );
+				const std::string chunkTextK = useFiles
+					? ( "scalar_painter\n{\n\tname\t\t" + chosenK + "\n\tfile\t\t" + fileK + "\n}" )
+					: ( "scalar_painter\n{\n\tname\t\t" + chosenK + "\n\tpolynomial\t" + polyK + "\n}" );
+
+				RISE::Cst::Document d = *doc;
+				CstBatchUndoOp insertOpN, insertOpK;
+				if( !spliceChunkBeforeOwner( d, ownerId, chunkTextN, insertOpN ) )
+					return false;
+				if( !spliceChunkBeforeOwner( d, ownerId, chunkTextK, insertOpK ) )
+					return false;
+
+				const RISE::Cst::NodeRef ownerBefore = RISE::Cst::DocResolveNodeId( d, ownerId );
+				if( !ownerBefore ) return false;
+
+				CstBatchUndoOp slotOp;
+				slotOp.isInsert       = false;
+				slotOp.entityName     = ownerCstName;
+				slotOp.entityKind     = ownerKeyword;
+				slotOp.editRole       = "ior";
+				slotOp.postEntityName = ownerCstName;
+				slotOp.occAddressed   = false;
+				slotOp.wholeTransform = false;
+				slotOp.ownerKeyword   = ownerKeyword;
+				slotOp.ownerNamePath  = ownerNamePath;
+				slotOp.ownerPreText   = RISE::Cst::SerializeNode( ownerBefore );
+				if( slotOp.ownerPreText.size() > kCstUndoOwnerTextCap )
+					slotOp.ownerPreText.clear();
+
+				auto applySlot = [&]( const std::string& role, const std::string& newVal ) -> bool {
+					const RISE::Cst::NodeRef cur = RISE::Cst::DocResolveNodeId( d, ownerId );
+					if( !cur ) return false;
+					CstBatchUndoOp::Slot sl;
+					sl.role        = role;
+					sl.occ         = 0;
+					sl.priorAbsent = ( RISE::Cst::ParamOccurrenceCount( cur, role ) == 0 );
+					sl.priorValue  = sl.priorAbsent
+						? std::string()
+						: RISE::Cst::ParamValueAtOccurrence( cur, role, 0 );
+					d = RISE::Cst::DocSetOrAddParamValue( d, ownerId, role, 0, newVal );
+					const RISE::Cst::NodeRef aft = RISE::Cst::DocResolveNodeId( d, ownerId );
+					if( !aft ) return false;
+					sl.postAbsent = false;
+					sl.postValue  = RISE::Cst::ParamValueAtOccurrence( aft, role, 0 );
+					slotOp.slots.push_back( sl );
+					return true;
+				};
+
+				if( !applySlot( "ior", chosenN ) ) return false;
+				if( !applySlot( "extinction", chosenK ) ) return false;
+
+				bool fmPresent = false;
+				const std::string curFm = RISE::Cst::ParamValueAsParsed( ownerBefore, "fresnel_mode", &fmPresent );
+				if( fmPresent && curFm == "schlick_f0" )
+				{
+					if( !applySlot( "fresnel_mode", "conductor" ) ) return false;
+				}
+
+				const RISE::Cst::NodeRef ownerAfter = RISE::Cst::DocResolveNodeId( d, ownerId );
+				if( !ownerAfter ) return false;
+				slotOp.ownerPostText = RISE::Cst::SerializeNode( ownerAfter );
+				if( slotOp.ownerPreText.empty() || slotOp.ownerPostText.size() > kCstUndoOwnerTextCap )
+				{
+					slotOp.ownerPreText.clear();
+					slotOp.ownerPostText.clear();
+				}
+
+				char diagBuf[512]; diagBuf[0] = '\0';
+				const int code = mJob.ApplyCstReplaceDocument(
+					d, /*restoreActiveRasterizer=*/true,
+					diagBuf, sizeof( diagBuf ),
+					"apply_spectral_preset_metal" );
+				if( code == 2 || code == 3 )
+					RebindEditorToJob();
+				if( code != 2 )
+				{
+					if( code == 3 )
+					{
+						mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+						mEditPending.store( true, std::memory_order_release );
+						lk.unlock();
+						mCV.notify_one();
+					}
+					return false;
+				}
+
+				mEditor.MarkCstHeadDirty( chosenN.c_str(), "scalar_painter" );
+				mEditor.MarkCstHeadDirty( chosenK.c_str(), "scalar_painter" );
+				mEditor.MarkCstHeadDirty( ownerCstName.c_str(), ownerKeyword.c_str() );
+				mEditor.BumpSceneLightGenerationForAgentParamEdit( ownerCstName.c_str(), ownerKeyword.c_str() );
+
+				std::vector<CstBatchUndoOp> ops;
+				ops.reserve( 3 );
+				ops.push_back( std::move( insertOpN ) );
+				ops.push_back( std::move( insertOpK ) );
+				ops.push_back( std::move( slotOp ) );
+				const std::string label = chosenN + ", " + chosenK + ", " + ownerCstName + " (" + std::string( presetId.c_str() ) + ")";
+				mEditor.PushAgentEditBatchEdit( String( label.c_str() ), ops, /*landedRasterizerInsert=*/false );
+
+				mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+				mEditPending.store( true, std::memory_order_release );
+				applied = true;
+				lk.unlock();
+				mCV.notify_one();
+			}
+		}
+	}
+
+	if( delegatedBlackbodyKelvin.size() > 1 )
+	{
+		return SetPropertyForCategory( cat, String( "temperature" ), delegatedBlackbodyKelvin );
+	}
+	mEditor.DrainDirtyNotification();
+	return applied;
 }
 
 // ---------------------------------------------------------------------
@@ -13045,31 +19492,42 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 	return ok;
 }
 
-void SceneEditController::Undo()
+bool SceneEditController::Undo()
 {
+	bool ok = false;
 	{
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
-			return;
-		UndoInner_();
+			return false;
+		ok = UndoInner_();
 	}
 	mEditor.DrainDirtyNotification();
+	return ok;
 }
 
-void SceneEditController::Redo()
+bool SceneEditController::Redo()
 {
+	bool ok = false;
 	{
 		std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 		if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
-			return;
-		RedoInner_();
+			return false;
+		ok = RedoInner_();
 	}
 	mEditor.DrainDirtyNotification();
+	return ok;
+}
+
+std::string SceneEditController::ConsumeHistoryNotice()
+{
+	std::lock_guard<std::mutex> lk( mMutex );   // the notice is written by Undo/Redo under this lock
+	return mEditor.ConsumeHistoryNotice();
 }
 
 SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 	const String& entityName, const String& entityKind, const String& param,
-	const String& value, const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+	const String& value, const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+	int occ, bool occAddressed )
 {
 	AgentCommitResult r;
 	{
@@ -13092,7 +19550,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 			return r;
 		}
 		r = ApplyAgentParamEditInner_(
-			entityName, entityKind, param, value, baseVersionOrNull );
+			entityName, entityKind, param, value, baseVersionOrNull, occ, occAddressed );
 	}
 	mEditor.DrainDirtyNotification();
 	return r;
@@ -13181,6 +19639,36 @@ bool SceneEditController::SetPropertyInner_(
 		// redo work end-to-end alongside drag-driven transform edits.
 		if( targetName.size() <= 1 ) return false;
 
+		// 87 step 4b: A SYNTHESIZED NODE HAS NO LIVE OBJECT TO EDIT.  The
+		// counted-instancing row (`I count_u 2` -> nodes `I`, entries
+		// `I[0,0]` / `I[1,0]`) is a real, selectable Object row whose panel
+		// rows come from the CHUNK, not from live introspection -- see the
+		// matching fallback in RefreshProperties' Object arm.  Every SceneEdit
+		// op below addresses a LIVE object by name, so without this the rows
+		// the panel just offered would all fail: the author would type a new
+		// `count_u` and watch nothing happen.  Route them the way Painter and
+		// Geometry (which have no live setter surface either) already do --
+		// the generic agent CST param-edit path, which cancel-and-parks,
+		// captures the prior value for undo/redo, re-derives, and kicks the
+		// re-render itself.  `standard_object` is the same role suffix this
+		// category's chunk addressing uses everywhere else
+		// (RoleKindSuffixForCategory), and it is the only chunk kind that
+		// mints synthesized entries today (87 step 3d).
+		{
+			bool live = false;
+			{
+				std::lock_guard<std::mutex> lk( mMutex );
+				const IScene* sc = mJob.GetScene();
+				IObjectManager* om = sc ? const_cast<IObjectManager*>( sc->GetObjects() ) : 0;
+				live = om && om->GetItem( targetName.c_str() ) != 0;
+			}
+			if( !live ) {
+				const AgentCommitResult r = ApplyAgentParamEditInner_(
+					targetName, String( "standard_object" ), name, valueStr, nullptr );
+				return r.applied;
+			}
+		}
+
 		SceneEdit edit;
 		edit.objectName = targetName;
 		bool shadowEdit = false;
@@ -13241,6 +19729,25 @@ bool SceneEditController::SetPropertyInner_(
 		else if( name == String( "interior_medium" ) ) {
 			edit.op = SceneEdit::SetObjectInteriorMedium;
 			edit.propertyValue = valueStr;
+		}
+		else if( name == String( "mirror" ) ) {
+			// doc 89 slice C: the transform panel's `mirror` row.  Without this arm
+			// the row READ back a value (ObjectIntrospection::ReadObjectParam has
+			// answered `mirror` since the slice landed) that no writer could commit,
+			// so the panel offered an edit it would then reject with "unknown
+			// property" -- the drift this else-chain and the descriptor are supposed
+			// to be two views of.
+			//
+			// EMPTY normalises to "none" because empty is exactly what the read path
+			// returns for an un-mirrored object (deliberately, so the row looks like
+			// every other omitted optional param); re-committing an untouched blank
+			// row must therefore be a no-op clear, not a refusal.  The AXIS itself is
+			// NOT validated here: `Job::SetObjectMirror` is the single decode shared
+			// with the derive path, and it refuses a bad axis with a diagnostic that
+			// names the accepted set.  Duplicating the check here is how the parser
+			// and the panel start disagreeing about what `mirror X` means.
+			edit.op = SceneEdit::SetObjectMirror;
+			edit.propertyValue = ( valueStr.size() <= 1 ) ? String( "none" ) : valueStr;
 		}
 		else if( name == String( "casts_shadows" ) || name == String( "receives_shadows" ) ) {
 			if( !ParsePropertyBool( valueStr, shadowValue ) ) return false;
@@ -13539,12 +20046,56 @@ bool SceneEditController::SetPropertyInner_(
 			const MaterialSlotRef slot = mat
 				? MaterialIntrospection::GetSlot( *mat, name )
 				: MaterialSlotRef();
+			const RISE::Cst::Document* doc = mJob.GetCstDocument();
+			const RISE::Cst::NodeId matNodeId = doc
+				? RISE::Cst::DocFindByNameAnyRole(
+					*doc, targetName.c_str(), nullptr, "material", /*uniqueFallback=*/false )
+				: 0;
+			const bool hasCst = ( matNodeId != 0 );
+			const RISE::Cst::NodeRef matChunk = hasCst
+				? RISE::Cst::DocResolveNodeId( *doc, matNodeId )
+				: RISE::Cst::NodeRef();
+			// Require the parameter to be explicitly authored (exactly 1 occurrence)
+			// in the CST chunk before taking the SetMaterialProperty fast path: when
+			// a parameter was omitted in the CST chunk (e.g. `ggx_material.rd`
+			// defaulting to the registered `"none"` painter), routing through
+			// ApplyAgentParamEditInner_ records `prevValueWasAbsent = true` on the
+			// Undo entry so Undo removes the added line instead of leaving `rd none`.
+			const bool paramAuthoredInCst = matChunk
+				&& RISE::Cst::ParamOccurrenceCount( matChunk, name.c_str() ) == 1;
+			const bool composed = mJob.IsMaterialComposed( targetName.c_str() );
+
+			auto isRegisteredInPainterMgr = []( IPainterManager* pm, const IPainter* ptr ) -> bool
+			{
+				if( !pm || !ptr ) return false;
+				CollectNamesCallback cb;
+				pm->EnumerateItemNames( cb );
+				for( const String& nm : cb.names )
+				{
+					if( pm->GetItem( nm.c_str() ) == ptr ) return true;
+				}
+				return false;
+			};
+			auto isRegisteredInScalarMgr = []( IScalarPainterManager* spm, const IScalarPainter* ptr ) -> bool
+			{
+				if( !spm || !ptr ) return false;
+				CollectNamesCallback cb;
+				spm->EnumerateItemNames( cb );
+				for( const String& nm : cb.names )
+				{
+					if( spm->GetItem( nm.c_str() ) == ptr ) return true;
+				}
+				return false;
+			};
+
 			if( slot.kind == MaterialSlotRef::Painter ) {
 				IPainterManager* pm = mJob.GetPainters();
-				rebindSlot = pm && pm->GetItem( valueStr.c_str() ) != nullptr;
+				const bool curIsNamed = !hasCst || ( paramAuthoredInCst && isRegisteredInPainterMgr( pm, slot.painter ) );
+				rebindSlot = !composed && curIsNamed && pm && pm->GetItem( valueStr.c_str() ) != nullptr;
 			} else if( slot.kind == MaterialSlotRef::ScalarPainter ) {
 				IScalarPainterManager* spm = mJob.GetScalarPainters();
-				rebindSlot = spm && spm->GetItem( valueStr.c_str() ) != nullptr;
+				const bool curIsNamed = !hasCst || ( paramAuthoredInCst && isRegisteredInScalarMgr( spm, slot.scalarPainter ) );
+				rebindSlot = !composed && curIsNamed && spm && spm->GetItem( valueStr.c_str() ) != nullptr;
 			}
 		}
 		if( !rebindSlot ) {
@@ -13571,6 +20122,17 @@ bool SceneEditController::SetPropertyInner_(
 		// diagnosed CST re-derive (Job code 3) replaced the Scene+managers, so the viewport must repaint.  Kick on
 		// `ok || changed`, return the unchanged success bool.
 		if( !ok && !mEditor.CstLiveSceneChangedInLastApply() ) return false;
+
+		// S15 review fix: this arm REBINDS a material slot to a different
+		// painter/scalar-painter -- exactly the graph-edge rewire the
+		// node-graph canvas exists to show, and its epoch-gated reload
+		// (NodeGraphCanvas.swift) never re-pulled without this.  Mirrors the
+		// same "mutation landed" test the kick above just used (`ok ||
+		// changed`, not the return value alone) -- a diagnosed code-3 still
+		// rewired the slot before the re-derive flagged it.  See the
+		// ApplyAgentParamEditInner_ bump above for the "cheap to bump
+		// unconditionally" precedent and the consumer no-op argument.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
 
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
@@ -13621,8 +20183,134 @@ bool SceneEditController::SetPropertyInner_(
 		// generation if needed, and kicks the re-render itself, so no
 		// separate park/SceneEdit/Apply dance is needed here.
 		if( targetName.size() <= 1 ) return false;
+		// doc 88 S4b: OCCURRENCE-ADDRESSED editing of a repeatable painter
+		// parameter.  `name` arrives either as a plain param role (`octaves`) or
+		// as one of PainterIntrospection's synthetic occurrence-row names
+		// (`stop[2]`, `param[1]`, `def[0]`).  This block resolves which, and --
+		// for the bracketed form -- validates the pair before anything mutates.
+		//
+		// SCOPED TO PAINTER ON PURPOSE.  Occurrence rows exist only on the
+		// Painter panel today (PainterIntrospection is the only producer), so
+		// the bracket vocabulary lives in this arm alone.  Do NOT hoist it above
+		// the switch: a bracketed name reaching, say, the Object arm should keep
+		// failing as the nonsense param role it is there, not acquire a meaning
+		// no introspection surface ever offered.
+		//
+		// ASYMMETRY WITH THE AGENT SURFACE, stated rather than left to be
+		// discovered: `propose_patch` (SceneEditController::ApplyAgentParamEdit
+		// -> ApplyAgentParamEditInner_ with the default occ = 0) is UNCHANGED by
+		// this slice -- an agent still addresses occurrence 0 and knows nothing
+		// about `[i]` names.  That is deliberate: an agent that wants a
+		// different ramp has the whole-chunk verbs, whereas a human scrubbing
+		// one authored knob needs exactly this.  Giving the agent an occurrence
+		// vocabulary is S5+ scope and would need its own schema + teaching.
+		std::string occRole;
+		int         occIndex   = 0;
+		bool        occAddressed = false;
+		if( PainterIntrospection::IsOccurrenceRowName( name ) ) {
+			if( !PainterIntrospection::ParseOccurrenceRowName( name, occRole, occIndex ) ) {
+				// Has the bracket SHAPE but is not well-formed (`stop[]`,
+				// `stop[x]`, `stop[1]x`, `stop[-1]`).  Refuse rather than
+				// salvage an index: a loose parse would route the edit to a line
+				// the user never named.
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditController: painter property edit of `%s`.`%s` refused -- that is not a "
+					"well-formed occurrence row name (expected `<param>[<index>]` with a decimal index).",
+					targetName.c_str(), name.c_str() );
+				return false;
+			}
+			occAddressed = true;
+		}
+
+		// Descriptor + document validation for BOTH shapes, under one short
+		// mMutex hold (a doc/descriptor read only, released before the heavier
+		// edit route below takes its own lock).
+		//
+		// P3-d fix (round 1): that short mMutex hold is NOT what keeps this
+		// validation from going stale before ApplyAgentParamEditInner_ actually
+		// writes a few lines down -- mMutex is released well before then.  The
+		// real guarantee is mRenderAdmissionMutex, which SetPropertyInner_'s
+		// caller (SetPropertyForCategory / SetProperty) holds RECURSIVELY across
+		// this entire function body -- see their bodies above.  Every OTHER
+		// Document-mutating entry point (Undo, Redo, ApplyAgentParamEdit, the
+		// chunk-CRUD verbs) takes that same admission mutex before touching the
+		// Document, so none of them can land a layout-shifting edit (an insert
+		// that changes which line occurrence `occIndex` names, or a remove that
+		// drops it) between the validation block below and the write it guards.
+		// The short mMutex hold only protects the READ itself (GetCstDocument /
+		// GetObjects) from tearing against the render thread's own concurrent
+		// access; it has nothing to do with same-caller-serialized TOCTOU safety.
+		//
+		//   bracketed   -- the role must be REPEATABLE on this chunk kind, and
+		//                  the index must be within the occurrences the document
+		//                  actually spells.  Out of range is a clean refusal
+		//                  here rather than a silent no-op inside
+		//                  DocSetOrAddParamValue (whose INSERT arm is
+		//                  occurrence-0-only, so `stop[99]` would just do
+		//                  nothing and report a bare code 0).
+		//   bare        -- unchanged from S4 (review fix P2-a): a repeatable
+		//                  role with NO index is still refused, because
+		//                  honouring it would silently mean "occurrence 0" and
+		//                  the panel would edit the first ramp stop while the
+		//                  user meant the list.
+		{
+			std::lock_guard<std::mutex> lk( mMutex );
+			const RISE::Cst::Document* doc = mJob.GetCstDocument();
+			if( occAddressed && !doc ) return false;   // cannot validate the index; refuse rather than write blind
+			if( doc ) {
+				const RISE::Cst::NodeId id = ResolveSourceChunkId(
+					*doc, Category::Painter, std::string( targetName.c_str() ), std::string(),
+					mJob.GetActiveCameraName(), mJob.GetObjects() );
+				const RISE::Cst::NodeRef chunk = id != 0 ? RISE::Cst::DocResolveNodeId( *doc, id ) : nullptr;
+				const ChunkDescriptor* cd = chunk ? DescriptorForKeyword( String( chunk->role.c_str() ) ) : nullptr;
+				if( occAddressed ) {
+					if( !cd ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"SceneEditController: painter property edit of `%s`.`%s` refused -- the chunk or its "
+							"descriptor did not resolve, so the occurrence index cannot be validated.",
+							targetName.c_str(), name.c_str() );
+						return false;
+					}
+					const ParameterDescriptor* pd = nullptr;
+					for( const ParameterDescriptor& p : cd->parameters )
+						if( p.name == occRole ) { pd = &p; break; }
+					if( !pd || !pd->repeatable ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"SceneEditController: painter property edit of `%s`.`%s` refused -- `%s` is %s on "
+							"chunk kind `%s`, so it has no occurrences to address.",
+							targetName.c_str(), name.c_str(), occRole.c_str(),
+							pd ? "NOT a repeatable parameter" : "not a parameter", chunk->role.c_str() );
+						return false;
+					}
+					const int count = RISE::Cst::ParamOccurrenceCount( chunk, occRole );
+					if( occIndex < 0 || occIndex >= count ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"SceneEditController: painter property edit of `%s`.`%s` refused -- `%s` has %d "
+							"occurrence(s) on this chunk, so index %d is out of range.",
+							targetName.c_str(), name.c_str(), occRole.c_str(), count, occIndex );
+						return false;
+					}
+				} else if( cd ) {
+					const std::string want( name.c_str() );
+					for( const ParameterDescriptor& p : cd->parameters ) {
+						if( p.name != want ) continue;
+						if( p.repeatable ) {
+							GlobalLog()->PrintEx( eLog_Warning,
+								"SceneEditController: painter property edit of `%s`.`%s` refused -- `%s` is "
+								"a REPEATABLE parameter on this chunk kind, so a bare name does not say WHICH "
+								"line to edit.  Use the occurrence-addressed row (`%s[i]`) instead.",
+								targetName.c_str(), name.c_str(), name.c_str(), name.c_str() );
+							return false;
+						}
+						break;
+					}
+				}
+			}
+		}
 		const AgentCommitResult r = ApplyAgentParamEditInner_(
-			targetName, String( "painter" ), name, valueStr, nullptr );
+			targetName, String( "painter" ),
+			occAddressed ? String( occRole.c_str() ) : name,
+			valueStr, nullptr, occAddressed ? occIndex : 0, occAddressed );
 		return r.applied;
 	}
 

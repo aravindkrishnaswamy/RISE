@@ -1316,15 +1316,27 @@ void RiseBridge::viewportEndPropertyScrub(uint64_t ownerToken) {
     if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportController) RISE::RISE_API_SceneEditController_EndPropertyScrub(m_viewportController);
 }
+// A refused undo/redo leaves a user-facing notice (e.g. an agent batch edit whose inverse would not derive).
+// Consume it on every call so it can never go stale and describe a later step; the Android shell has no
+// notice surface for undo yet, so it is logged.
+static void LogHistoryNotice(RISE::SceneEditController* c, const char* what) {
+    char buf[1024] = {0};
+    if (RISE::RISE_API_SceneEditController_ConsumeHistoryNotice(c, buf, sizeof(buf)))
+        LOGE("%s refused: %s", what, buf);
+}
 void RiseBridge::viewportUndo(uint64_t ownerToken) {
     std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
     if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
-    if (m_viewportController) RISE::RISE_API_SceneEditController_Undo(m_viewportController);
+    if (!m_viewportController) return;
+    RISE::RISE_API_SceneEditController_Undo(m_viewportController);
+    LogHistoryNotice(m_viewportController, "undo");
 }
 void RiseBridge::viewportRedo(uint64_t ownerToken) {
     std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
     if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
-    if (m_viewportController) RISE::RISE_API_SceneEditController_Redo(m_viewportController);
+    if (!m_viewportController) return;
+    RISE::RISE_API_SceneEditController_Redo(m_viewportController);
+    LogHistoryNotice(m_viewportController, "redo");
 }
 bool RiseBridge::viewportProductionRender(uint64_t ownerToken) {
     std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);

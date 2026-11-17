@@ -30,7 +30,7 @@ ThreadPool::ThreadPool( unsigned int numWorkers,
 	workers.reserve( numWorkers );
 	for( unsigned int i = 0; i < numWorkers; i++ ) {
 		RISETHREADID tid = 0;
-		Threading::riseCreateThread( WorkerProc, this, 0, 0, &tid );
+		Threading::riseCreateThread( WorkerProc, this, kWorkerStackBytes, 0, &tid );
 		workers.push_back( tid );
 	}
 }
@@ -203,32 +203,60 @@ void ThreadPool::ParallelFor( unsigned int n, std::function<void( unsigned int )
 	// the lifetime-race rationale).
 	auto sync = std::make_shared<ParallelForLatchState>( n );
 
+	// Transactional enqueue.  Every task captures `body` BY REFERENCE (it
+	// lives on this frame), so a submission that fails part-way must leave
+	// NONE of its tasks behind: if push k throws (std::bad_alloc from the
+	// std::function heap allocation or from deque block growth), tasks
+	// 0..k-1 would otherwise stay queued holding a dangling reference to
+	// `body` while the exception unwinds this frame.  `tasksMut` is held
+	// for the whole loop and the queue only ever grows at the back, so
+	// this call's tasks are exactly the last `pushed` entries; on failure
+	// they are popped (still under the lock, so no worker can have dequeued
+	// one) and the exception is rethrown.  Guarantee: a failed submission
+	// runs no task, notifies nobody, and leaves unrelated queued tasks
+	// untouched and in their original order.  Destroying the popped
+	// std::function objects under the lock is safe: each only releases a
+	// shared_ptr to the latch (which is not otherwise contended yet) and
+	// cannot re-enter the pool.  (`std::make_shared` above already throws
+	// before anything is queued.)
 	{
 		std::lock_guard<std::mutex> lk( tasksMut );
-		for( unsigned int i = 0; i < n; i++ ) {
-			tasks.push_back( [i, &body, sync] {
-				// The decrement below MUST run on every exit from this task
-				// (success OR throw), otherwise the latch never reaches zero
-				// and the ParallelFor caller hangs forever.  Catch the
-				// body's exception, stash the first one, and fall through to
-				// the always-run decrement.  Re-thrown to the caller after
-				// the barrier (see ParallelFor's tail).
-				try {
-					body( i );
-				}
-				catch( ... ) {
-					std::lock_guard<std::mutex> exlk( sync->mut );
-					if( !sync->firstEx ) {
-						sync->firstEx = std::current_exception();
+		unsigned int pushed = 0;
+		try {
+			for( unsigned int i = 0; i < n; i++ ) {
+				tasks.push_back( [i, &body, sync] {
+					// The decrement below MUST run on every exit from this task
+					// (success OR throw), otherwise the latch never reaches zero
+					// and the ParallelFor caller hangs forever.  Catch the
+					// body's exception, stash the first one, and fall through to
+					// the always-run decrement.  Re-thrown to the caller after
+					// the barrier (see ParallelFor's tail).
+					try {
+						body( i );
 					}
-				}
-				if( sync->remaining.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
-					{
-						std::lock_guard<std::mutex> lk2( sync->mut );
+					catch( ... ) {
+						std::lock_guard<std::mutex> exlk( sync->mut );
+						if( !sync->firstEx ) {
+							sync->firstEx = std::current_exception();
+						}
 					}
-					sync->cv.notify_all();
-				}
-			} );
+					if( sync->remaining.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
+						{
+							std::lock_guard<std::mutex> lk2( sync->mut );
+						}
+						sync->cv.notify_all();
+					}
+				} );
+				++pushed;
+			}
+		}
+		catch( ... ) {
+			// Roll back exactly this call's tasks (the last `pushed`
+			// entries; std::deque::pop_back does not throw).
+			for( ; pushed > 0; --pushed ) {
+				tasks.pop_back();
+			}
+			throw;
 		}
 	}
 	tasksCv.notify_all();

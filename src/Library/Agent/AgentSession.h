@@ -38,6 +38,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,8 @@
 
 #include "../Cst/Cst.h"   // Facet 5 slice 1a: RISE::Cst::CstHeadVersion (the (uuid,revision) optimistic-concurrency identity)
 #include "../Rendering/InteractivePelRasterizer.h"   // GUI render modes P1: RISE::Implementation::ViewportRenderMode (AgentRenderTarget::ViewMode's payload -- needs the complete enum for AgentRenderParams::viewMode's default member initializer)
+#include "../Interfaces/IJobPriv.h"   // Batched agent edits (2026-10-16): RISE::CstBatchEdit, held by value in PendingBatchEdit_
+#include "../Geometry/SDFGeometry.h"   // Creature scaffold slice: RISE::Implementation::SDFGeometry::Part, for ForTest_ScanDerivedSdfParts's signature
 
 namespace RISE
 {
@@ -105,8 +108,8 @@ namespace RISE
 		};
 
 		//! Secure-MCP slice 5a: the structured result of a STAGED mutating
-		//! call -- any of the 5 mutating verbs (propose_patch/propose_patches/
-		//! insert_chunk/insert_chunks/remove_chunk); the batch forms stage per
+		//! call -- any of the 6 mutating verbs (propose_patch/propose_patches/
+		//! insert_chunk/insert_chunks/remove_chunk/remove_chunks); the batch forms stage per
 		//! element through the same single-item path (External
 		//! authority + Propose autonomy, with a live controller attached).
 		//! Deliberately narrow -- a stage is INERT, so there is no
@@ -144,6 +147,33 @@ namespace RISE
 			//! false (the default), the edit is UNCONDITIONAL (slice-0 back-compat: no gating).
 			bool                     hasBaseVersion = false;
 			RISE::Cst::CstHeadVersion baseVersion;   //!< the head-version the patch was built against (checked iff hasBaseVersion)
+
+			//! 1b (2026-08-25, the joint-level re-posing gap): OPTIONAL
+			//! occurrence addressing for a REPEATABLE param -- `param` names a
+			//! role that can appear more than once on one chunk
+			//! (skeleton_geometry's `joint`, sdf_geometry's `part`), and
+			//! without this every patch silently targeted occurrence 0 no
+			//! matter which one the caller meant, so re-posing joint #12 of
+			//! 23 either overwrote joint #1 or (when the replacement text
+			//! didn't fit joint #1's context) failed to derive -- exactly the
+			//! "entity/param not found or the edit would not derive" failure
+			//! mode a model re-posing a curled quadruped hit 0/5 times.  Same
+			//! `has*`/plain-field pairing as `hasBaseVersion`/`baseVersion`
+			//! directly above, for the identical reason: a bare `occurrence`
+			//! field could not distinguish "target occurrence 0 explicitly"
+			//! from "didn't say -- use the legacy single-occurrence
+			//! resolution", and those two cases behave differently on a
+			//! REJECTED occurrence-out-of-range patch (see
+			//! ApplyAgentParamEditInner_'s own doc).  0-based, matching
+			//! ChunkParamOccurrences_'s ordering (document order of the
+			//! repeated param) -- the SAME ordering `read_document` shows a
+			//! repeatable param's lines in, so "the 5th `joint` line" means
+			//! occurrence 4.  Absent (the default) -> occurrence 0,
+			//! `occAddressed=false`, BYTE-IDENTICAL to every patch built
+			//! before this field existed.  Meaningless (silently ignored) on
+			//! a param that occurs at most once on its chunk.
+			bool hasOccurrence = false;
+			int  occurrence    = 0;
 		};
 
 		//! The structured result of ProposePatch.  `applied` means CLEAN
@@ -163,6 +193,16 @@ namespace RISE
 		//!            mutated and the managers replaced -- so `message` states
 		//!            that nuance plainly (a caller must not assume nothing
 		//!            changed either).
+		//!            BATCHES (propose_patches / insert_chunks, 2026-10-16):
+		//!            a batch is realized by ONE re-derive, so its diagnostics
+		//!            are shared.  An element a diagnostic is attributed to
+		//!            (it OPENS with that element's own `<keyword> `<name>``)
+		//!            is "diagnosed"; every OTHER landed element is then
+		//!            applied=TRUE, status="applied", rawCode=3, with the
+		//!            diagnostics quoted in `message` -- it did land.  When
+		//!            no diagnostic can be attributed, EVERY landed element is
+		//!            "diagnosed".  A caller that needs "is it in the document"
+		//!            must test applied OR status=="diagnosed".
 		//!   * 0   -> applied=false, status="rejected": edit refused; the head
 		//!            is byte-identical (nothing changed).  The pre-flight
 		//!            guards (no Document / empty target/param/value, and --
@@ -182,7 +222,8 @@ namespace RISE
 		//! `rawCode` preserves the underlying contract value (0/1/2/3) for a
 		//! caller that wants the raw code (0 for a conflict, since nothing was
 		//! applied); `status` is the recommended gate:
-		//!   applied  <=> a CLEAN apply (rawCode 1 or 2);
+		//!   applied  <=> a CLEAN apply (rawCode 1 or 2) -- except batch siblings
+		//!            (see BATCHES above: applied=true with rawCode 3);
 		//!   status   in {"applied","rejected","diagnosed","conflict"}.
 		//! `headVersion` is the Job's head-version AFTER the call: the POST-COMMIT
 		//! head on a clean apply (its revision bumped), and the CURRENT (unchanged)
@@ -214,8 +255,8 @@ namespace RISE
 		{
 			bool        applied = false;
 			bool        retriable = false;   //!< always emitted on the wire; meaningful for status="rejected" only: true = transient refusal (open editor transaction) -- retry the SAME patch later; false = permanent
-			int         rawCode = 0;         //!< 0 reject/conflict / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed
-			std::string status;              //!< "applied" (clean) / "rejected" (head intact) / "diagnosed" (mutated but re-derive diagnosed) / "conflict" (stale baseVersion, head intact)
+			int         rawCode = 0;         //!< 0 reject/conflict / 1 incremental / 2 D2 full re-derive / 3 replaced-but-diagnosed (in a propose_patches batch, rawCode 3 can ride with applied=true: see the BATCHES note above)
+			std::string status;              //!< "applied" (clean -- or, in a diagnosed BATCH, landed while ANOTHER element was diagnosed) / "rejected" (head intact) / "diagnosed" (mutated but re-derive diagnosed) / "conflict" (stale baseVersion, head intact)
 			RISE::Cst::CstHeadVersion headVersion;   //!< the head-version AFTER the call (post-commit on success; current head on reject/diagnosed/conflict)
 			std::string message;
 			//! Secure-MCP slice 6: set true ONLY for an External-authority
@@ -250,13 +291,34 @@ namespace RISE
 			//! by AgentRpc.cpp as `issues`, OMITTED entirely when empty (same
 			//! back-compat posture as AgentChunkResult::issues).
 			std::vector<AgentChunkIssue> issues;
+			//! Doc 90 R3 (2026-08-23): orphan pressure on a Reference rebind
+			//! -- populated ONLY on a CLEAN apply (`applied` true) of a patch
+			//! whose `param` is a descriptor `ValueKind::Reference` slot AND
+			//! whose OLD target chunk became unreferenced by the whole
+			//! document AS A RESULT of this one edit (something else still
+			//! referencing it, or the param not being Reference-kind at all,
+			//! is SILENCE -- empty). "keyword/name" form, same shape as
+			//! ReplaceGeometryScaffold::reportedOrphans (see that field's
+			//! doc) -- this is propose_patch's sibling of the identical
+			//! mechanism, sharing its message formatter (AppendOrphanSentence_
+			//! in AgentSession.cpp) but NOT its removal behaviour: propose_
+			//! patch never deletes anything, so the old target is always
+			//! LEFT IN PLACE, reported here so a model can hand it to
+			//! remove_chunks. `message` carries the same "Now unreferenced
+			//! and NOT removed ... pass them to remove_chunks" sentence
+			//! ProposePatch's own scaffold sibling appends -- EXCEPT via
+			//! ProposePatches (the batch form), which folds every element's
+			//! report into ONE combined sentence on the batch's last result
+			//! instead of one per element (see ProposePatches's doc); this
+			//! field itself stays populated per element either way.
+			std::vector<std::string> reportedOrphans;
 		};
 
 		//! Model-B F5 slice S3 (actionable insert_chunk diagnostics), extended by
 		//! a later slice to propose_patch and remove_chunk: ONE shape for EVERY
-		//! per-parameter / per-chunk diagnostic signal the 5 mutating verbs
+		//! per-parameter / per-chunk diagnostic signal the 6 mutating verbs
 		//! (propose_patch / propose_patches / insert_chunk / insert_chunks /
-		//! remove_chunk -- the batch forms surface it PER ELEMENT, through the
+		//! remove_chunk/remove_chunks -- the batch forms surface it PER ELEMENT, through the
 		//! same single-item delegates) can return -- a NON-BLOCKING WARNING
 		//! attached to a SUCCESSFUL
 		//! insert_chunk (the chunk landed but names something not yet defined --
@@ -431,10 +493,13 @@ namespace RISE
 		//! camera's current values.  Values are the SAME string forms
 		//! CameraIntrospection::SetProperty accepts ("x y z" for the Vec3
 		//! fields, a plain number in DEGREES for fov).  Render captures the
-		//! camera's CURRENT value of every overridden field via
-		//! CameraIntrospection::GetPropertyValue BEFORE applying any override,
-		//! and restores every captured field after the render -- the active
-		//! camera's properties are IDENTICAL before and after a Render call,
+		//! camera's CURRENT value of every overridden field BEFORE applying any
+		//! override -- bit-exactly (CameraIntrospection::CaptureExactValue: the
+		//! stored doubles, radians, no text), the panel's `%.6g` GetPropertyValue
+		//! string only as the fallback for a field that has no exact form -- and
+		//! restores every captured field after the render
+		//! (CameraIntrospection::RestoreExactValue), so the active camera's
+		//! properties are IDENTICAL before and after a Render call,
 		//! whether or not an override was requested (see AgentSession.cpp for
 		//! the capture-set-render-restore sequencing and the LIVE-mode safety
 		//! note).
@@ -464,12 +529,52 @@ namespace RISE
 		//! its outputs -- see AgentRenderParams::quality's doc and
 		//! AgentRenderResult::renderMode's doc for the full honesty
 		//! contract (a draft render is geometry/composition/camera-
-		//! accurate but IGNORES the scene's authored materials and
-		//! lighting; never judge those from a draft).
+		//! accurate and shades each hit with the material's own BSDF --
+		//! colour/roughness response, not just albedo, so an
+		//! expression-driven painter, e.g. one querying `proximity`/
+		//! `occlusion`, DOES run, and relief/bump/normal modifiers still
+		//! apply -- but IGNORES the scene's authored
+		//! LIGHTING -- a fixed synthetic studio rig stands in for it, with
+		//! no shadows/GI, and it does not show emission, transmission/
+		//! refraction, or subsurface scattering;
+		//! never judge true lighting/exposure/colour from a draft).
+		//!
+		//! MaterialLook (2026-08-24, the lit material look) is the THIRD
+		//! fidelity, and the only one whose subject is APPEARANCE.  It renders
+		//! through a wholly SEPARATE, EPHEMERAL fixed path-tracing pipeline
+		//! (CreateMaterialLookPipeline -- real per-object materials, real BSDF
+		//! evaluation, fixed spp and bounce cap) under a CANONICAL STUDIO
+		//! LIGHT RIG that exists only for the duration of that one render:
+		//! the scene's own light manager and environment are swapped out and
+		//! restored (see AgentSession.cpp's StudioRigRestoreGuard), so the
+		//! image is a pure function of the object's GEOMETRY and MATERIALS and
+		//! says nothing about how the scene happens to be lit -- which is
+		//! exactly what makes two of them, taken in different sessions and
+		//! different build phases, comparable.
+		//!
+		//! WHY IT EXISTS ALONGSIDE Draft rather than instead of it.  Draft is
+		//! lighting-independent BY CONSTRUCTION, so it answers "is the form I
+		//! authored there" in an unlit scene where a production render would
+		//! come back black -- and, for the same reason, it structurally
+		//! CANNOT show specular rolloff, a roughness read, fresnel, or
+		//! transmission.  The three worst material failures the trajectory
+		//! diagnosis behind this slice turned up -- "glass" bottles that read
+		//! opaque, a "translucent" jellyfish faked with emission, and no
+		//! specular anywhere -- would look IDENTICAL in a draft frame, which
+		//! is why draft-only review kept passing them.  Materials are judged
+		//! under light; this is the light.
+		//!
+		//! NOT REACHABLE FROM THE WIRE.  AgentRpc's `quality` parser accepts
+		//! only "draft" and "production"; nothing sets this value except
+		//! FinishElement's own second render.  It is a fidelity the session
+		//! spends on the model's behalf, not a knob the model turns -- and
+		//! keeping it off the wire keeps the rig's canonical-ness a
+		//! guarantee rather than a default a caller could talk around.
 		enum class AgentRenderQuality
 		{
 			Production,   //!< today's exact behaviour -- the head's active rasterizer (default)
-			Draft         //!< a cheap, ephemeral studio-preview render -- see the class doc above
+			Draft,        //!< a cheap, ephemeral studio-preview render -- see the class doc above
+			MaterialLook  //!< an ephemeral fixed-PT render under the canonical studio rig -- see the block above
 		};
 
 		//! Toolkit slice 3a: `render`'s optional SEGMENTATION selector,
@@ -519,9 +624,14 @@ namespace RISE
 		//! Preview-render params (all optional; every field at its default
 		//! reproduces EXACTLY today's Render(-1) behaviour -- wire-additive).
 		//! `width`/`height` are a TRANSIENT film-dims override (both must be
-		//! set together; clamped to [16,512] by the caller -- AgentRpc.cpp --
-		//! before reaching here); 0 means "no override, use the Document's
-		//! authored dims".  `camera` is the optional ephemeral camera-pose
+		//! set together; clamped to [16,kAgentSurfaceMaxRenderEdge] by the
+		//! caller -- AgentRpc.cpp -- before reaching here); 0 means "no
+		//! override" -- for a DIRECT C++ caller (fromAgentSurface false, the
+		//! default) that still means "use the Document's authored dims",
+		//! unchanged; for an agent-RPC-originated call (fromAgentSurface
+		//! true) it instead means the R1b implicit resolution default --
+		//! see fromAgentSurface's own doc a few fields down for the full
+		//! mechanism.  `camera` is the optional ephemeral camera-pose
 		//! override above.
 		//!
 		//! Model-B F2 slice S3 (EffectiveRenderConfig): `samples` is now
@@ -677,11 +787,225 @@ namespace RISE
 			//! evaluate scene lighting at all, matching the quality/samples/
 			//! xray-ignored precedent used throughout this struct.
 			std::string          light;
+			//! G1 (2026-08-10, "the isolated part look"): OPTIONAL
+			//! single-object isolation -- "" (default) = no isolation, the
+			//! whole scene renders exactly as today.  A non-empty name is
+			//! resolved against the scene's OBJECT manager (a
+			//! `standard_object` name, the same name space `objectmap`'s
+			//! legend and `query_object_at` report) and makes that object
+			//! the ONLY geometry in the frame for THIS render: every other
+			//! object is transiently marked world-invisible, so it is
+			//! intersected by no camera, secondary, or shadow ray, and --
+			//! because a fresh caster's LuminaryManager collects luminaries
+			//! through the SAME world-visible filter -- an emissive object
+			//! that is hidden also stops acting as a light.  Explicit
+			//! `*_light` chunks and the environment are UNTOUCHED, so a
+			//! scene lit by real lights still lights the isolated part; a
+			//! scene lit ONLY by other objects' emissive materials
+			//! isolates DARK (this is why the tool text points at
+			//! `mode:"normals"` / `mode:"facets"`, which read form with no
+			//! lighting at all).
+			//!
+			//! CAMERA: absent an explicit `camera` override AND an explicit
+			//! `view`, the camera is AUTO-FRAMED on the object's world
+			//! bounding box -- a fixed three-quarter vantage (35 deg
+			//! azimuth off +Z toward +X, 25 deg elevation) at the distance
+			//! that fits the object's whole world AABB into 85% of BOTH
+			//! frame half-extents (the exact 8-corner fit -- see
+			//! AgentSession.cpp's IsolateFitDistance).  A caller-supplied `camera` or
+			//! `view` WINS (no auto-framing at all), reported honestly via
+			//! AgentRenderResult::isolateAutoFramed.
+			//!
+			//! Composes with EVERY render target (beauty, objectmap, the
+			//! false-colour data modes, the BeautyVariant transport modes)
+			//! and with `quality:"draft"` -- isolation is Scene-level
+			//! object state, not rasterizer-specific, so unlike `light` it
+			//! is never "silently ignored" anywhere.  An unresolvable name,
+			//! an ambiguous generator prefix (e.g. "grid" when the scene
+			//! only has "grid[0,0]"...), a name that is not an object at
+			//! all, or an object that is not independently renderable (a
+			//! CSG operand) FAILS the render (res.ok=false) with the
+			//! available-name list in res.message -- the same
+			//! fail-loud contract `view` and `light` already use.
+			//!
+			//! EPHEMERAL: the prior world-visible flag of EVERY object is
+			//! captured and restored on every exit path including an
+			//! exception (see AgentSession.cpp's ObjectSoloRestoreGuard),
+			//! and the Scene's light-topology generation is bumped on both
+			//! the apply and the restore so no caster is left holding a
+			//! luminary list built against the isolated set.  Nothing is
+			//! written to the document, the GUI viewport, or the user's
+			//! camera.
+			std::string          isolate;
+			//! Doc 91 V2 (2026-10-17, "the zoom look"): OPTIONAL name of ONE
+			//! object to look at CLOSE UP from the SCENE camera's own position.
+			//! "" (default) = no zoom.  Unlike `isolate`, nothing is hidden: every
+			//! other object, every light and the environment stay in place, so
+			//! the frame is a crop of what a viewer of THIS scene would see of
+			//! that object -- occlusion included -- at a size where its material
+			//! and surface detail read.  The camera keeps its LOCATION, is
+			//! aimed at the centre of the object's SURFACE points (a tessellation
+			//! of its real geometry, falling back to its bounding box only where
+			//! no surface points exist) and its vertical field of view is
+			//! narrowed so those points fill ~kIsolateFrameFill of the frame
+			//! (never below 2 deg, never wider than the scene's own fov -- an
+			//! object that already fills the frame keeps the scene fov and the
+			//! result says so).  Any extra camera orientation/target-orientation
+			//! on the scene camera is cleared for this one render (it would
+			//! swing the aim off the object); nothing is written to the document
+			//! or the user's camera.
+			//!
+			//! MUTUALLY EXCLUSIVE with `isolate` (which owns the camera and the
+			//! visibility), with `view` and with an explicit `camera` -- see
+			//! ZoomConflictMessage.  Needs a PINHOLE active camera.  The scene
+			//! camera's REALIZED up (its own roll included) is kept.
+			//!
+			//! FAILS the render (res.ok=false, no `zoom` block, message names the
+			//! alternative) when: the name is unknown or not independently
+			//! renderable (available names listed -- the `isolate` contract); the
+			//! object is NOT IN VIEW of the scene camera (its surface-point centre
+			//! is behind the camera, or past the frame edge by more than the 10%
+			//! margin the inventory's zoom hint also applies, to a different point
+			//! (the largest object's bbox centre) -- DirectionInSceneView);
+			//! any point of its surface lies on or behind the plane through the eye
+			//! (the camera is inside or beside it -- a floor or room around the
+			//! camera); or its extent is degenerate or unbounded.
+			//!
+			//! BUILD CHECKLIST: like `isolate`, a zoom render is an inspection look
+			//! at one object, so it is NOT held behind the compose-phase build
+			//! checklist.  Accepted loophole, documented rather than closed: the
+			//! gate runs before the camera is solved, so a zoom on an object that
+			//! fills the frame (and so keeps the scene fov) is a near-full-scene
+			//! frame that is not refused -- but the checklist is a ONE-refusal
+			//! nudge ("after which every render proceeds"), and such a frame
+			//! carries no inventory, anchor, sceneTarget or tonal fact, so
+			//! nothing else is bypassed.  TONAL FACT: not attached to a zoom frame (a close crop of
+			//! one object would read as a statement about the scene's picture).
+			std::string          zoom;
+			//! G3b (2026-08-10, "the sketch comparison"): OPTIONAL name of a
+			//! element in the CURRENTLY FILED build plan (see FileBuildPlan /
+			//! ElementSketches).  "" (default) = no comparison, the render
+			//! behaves exactly as G1 shipped it.
+			//!
+			//! REQUIRES `isolate` -- a comparison measures ONE object's
+			//! silhouette against ONE sketch, and the plan-to-object join is
+			//! made BY THE CALLER here, at comparison time, rather than by
+			//! any naming convention or authoring-time field (design doc
+			//! docs/agentic-redesign/77-imagination-target-design.md §5.1).
+			//! `target` without `isolate` FAILS the render (res.ok=false)
+			//! stating the requirement; a name that is not in the filed plan
+			//! FAILS listing the filed element names; no plan filed at all FAILS
+			//! saying so -- the same fail-loud contract `view`/`light`/
+			//! `isolate` already use, never a silent skip.
+			//!
+			//! VANTAGE: when `target` resolves and the caller supplied NO
+			//! camera/view, the auto-framing uses the AXIS-ALIGNED vantage
+			//! matching the sketch's declared `view` (front/side/top -- see
+			//! AgentSession.cpp's IsolateVantageOffset) instead of G1's fixed
+			//! three-quarter one, because an axis-aligned silhouette is what
+			//! a human sketch actually is.  Everything else about the framing
+			//! (the exact 8-corner fit at kIsolateFrameFill) is unchanged.  A
+			//! caller-supplied camera still WINS, and the result then reports
+			//! vantage "caller-camera".
+			//!
+			//! The comparison itself costs ONE EXTRA internal render -- an
+			//! ephemeral objectmap identity pass at the same pose and dims,
+			//! so the compared mask is exact and mode-independent (it is
+			//! never read out of the beauty pixels).  On success the result
+			//! carries the `target*` fields below plus the
+			//! [sketch | silhouette | overlay] composite PNG.
+			std::string          target;
 			//! Opt-in for direct C++ callers.  The JSON-RPC/MCP render verb
 			//! defaults this to true for production beauty renders, requesting
 			//! albedo+normal+depth sidecars without changing beauty pixels.
 			bool                 perception = false;
+			//! R1b (2026-08-09, docs/agentic-redesign/75-expressive-surface-arc.md):
+			//! true iff this render request originated from the model-facing
+			//! agent RPC surface (AgentRpc.cpp's `render`/`render_async`
+			//! handlers -- the ONLY two call sites that set this true; every
+			//! other field on this struct is set alongside it there).  Gates
+			//! the IMPLICIT agent-surface resolution/sample DEFAULTS applied
+			//! inside RenderCore_ for a production BEAUTY render (never
+			//! draft/objectmap/view-mode, which have their own fixed
+			//! fidelities already): an ABSENT width/height pair renders at the
+			//! scene's own aspect ratio scaled so the long edge is
+			//! kAgentSurfaceMaxRenderEdge (never the scene's full authored Film
+			//! resolution), and an ABSENT `samples` override on a rasterizer
+			//! whose CURRENT (scene-authored) sample count exceeds
+			//! kAgentSurfaceMaxSamples -- OR whose sample count is unknown/
+			//! unreported (GetSampleCountOverride returns -1 for every
+			//! rasterizer outside the PixelBasedRasterizerHelper family: MLT,
+			//! photon-map-only, AutoRasterizer's outer wrapper) -- is
+			//! force-capped to it.  FIX 1 (P1, 2026-08-09): the unknown case
+			//! is included precisely because "unknown" must never be read as
+			//! "already cheap" -- an MLT scene's authored
+			//! `mutations_per_pixel` could be arbitrarily high with no way to
+			//! introspect it here.
+			//! These exist so the agent surface is STRUCTURALLY unable to
+			//! trigger a full-resolution / full-sample-count production
+			//! render just because a model-issued `render` call omitted
+			//! dims/samples -- see AgentRenderResult::agentResolutionCapped /
+			//! ::agentSamplesCapped for the honest fact reported back when
+			//! either default actually reduced the render below what an
+			//! uncapped call would have produced.
+			//!
+			//! DEFAULT FALSE: every existing/internal C++ caller of
+			//! Render/RenderAsync (AgentEvalRunner.cpp's CheckRenderKind grading
+			//! render chief among them -- its pinned-`samples` measurement
+			//! needs FULL requested fidelity, never silently degraded; also
+			//! CompareToReference's and QueryObjectAt's own internal Render()
+			//! calls) is completely UNAFFECTED unless it explicitly opts in --
+			//! matches every other field's "default reproduces today's exact
+			//! behaviour" contract on this struct.  An explicit width/height/
+			//! samples value is UNCHANGED by this flag either way -- the RPC
+			//! layer (AgentRpc.cpp) already clamps those to
+			//! [16,kAgentSurfaceMaxRenderEdge] / [1,kAgentSurfaceMaxSamples]
+			//! at parse time, before RenderCore_ ever sees them, so this flag
+			//! only ever governs the two ABSENT-value defaults above.
+			bool                 fromAgentSurface = false;
+			//! Arc 77 Phase 2b (2026-08-11): the wire's `imageMaxEdge`, relayed
+			//! so the SESSION can size the scene-target composite.  0 (the
+			//! default, and what every internal C++ caller leaves it at) means
+			//! "no inline image was requested".
+			//!
+			//! WHY THE SESSION NEEDS IT.  AgentRpc returns the plain frame by
+			//! calling ReadImage(imageMaxEdge), but the scene-target composite
+			//! is BUILT HERE, and Phase 2b's hard requirement is that the
+			//! render tile inside that composite is never smaller than the
+			//! plain frame would have been.  The only way to guarantee that is
+			//! for the composite to be sized by the SAME number, applying the
+			//! SAME never-upscale rule (see ApplySceneTargetComparison_).
+			//! Nothing else reads this: it does not affect what is rendered,
+			//! only how the scene-target composite is scaled, so a caller that
+			//! leaves it 0 gets exactly today's behaviour minus the composite.
+			unsigned int         imageMaxEdge = 0;
+			//! Arc 80 (2026-08-12): INTERNAL-ONLY, and there is no wire
+			//! parameter for it -- no RPC, MCP or chat surface can set it,
+			//! and none should ever be added.  It marks a render this file
+			//! issues for its OWN measurement (currently only the scene
+			//! inventory's identity pass) rather than one a caller asked
+			//! for, and its single effect is to suppress
+			//! AdoptAgentRenderImageParked: a flat identity segmentation
+			//! must NEVER land in the GUI's Last Render pane in place of
+			//! the beauty frame the user is looking at.  That is a
+			//! user-visible surface, distinct from the session image cache
+			//! EphemeralRenderCacheGuard already protects, and the census
+			//! runs on EVERY qualifying render rather than on request, so
+			//! leaving it unguarded would replace the user's picture with a
+			//! segmentation map every time the agent rendered.
+			bool                 internalEphemeral = false;
 		};
+
+		//! R1b (2026-08-09): the agent RPC surface's resolution/sample caps for
+		//! a production BEAUTY render -- see AgentRenderParams::fromAgentSurface's
+		//! doc for the full mechanism and rationale (a live GUI trajectory once
+		//! called `render {imageMaxEdge:512}` with no width/height and rendered
+		//! a full-resolution, full-authored-sample-count production frame).
+		//! Named constants (not raw literals) so AgentRpc.cpp's explicit-value
+		//! parse-time clamps and RenderCore_'s implicit-absent-value defaults
+		//! can never drift apart.
+		static constexpr unsigned int kAgentSurfaceMaxRenderEdge = 256;
+		static constexpr int          kAgentSurfaceMaxSamples    = 16;
 
 		struct AgentPerceptionInfo
 		{
@@ -722,8 +1046,8 @@ namespace RISE
 		//! Toolkit slice 3a: one entry of an objectmap render's colour
 		//! LEGEND -- the mapping a caller uses to decode the segmentation
 		//! PNG.  `name` is the object's manager name (its scene-file chunk
-		//! `name`, or the `<gen>[i,j]` synthesized name for an
-		//! instance_array element); `colorHex` is the EXACT "#RRGGBB" 8-bit
+		//! `name`, or the `<chunk>[i,j]` synthesized name for one repetition
+		//! of a counted `source`); `colorHex` is the EXACT "#RRGGBB" 8-bit
 		//! sRGB byte triple that object's pixels carry in the PNG (byte-for-
 		//! byte -- match on these bytes, at NATIVE image size); `pixelCount`
 		//! is how many pixels that object covers in this render.
@@ -748,6 +1072,40 @@ namespace RISE
 		//! shift measurably under a visible edit.  Callers wanting to compare
 		//! images robustly (edit-changed-the-render, not-all-black) should use
 		//! these, not raw PNG bytes.
+
+		//! Arc 81 (2026-08-12): the half-width, in 0-255 luma levels, of the
+		//! band the tonal fact's CONCENTRATION figure counts around the
+		//! frame's most common luma value (see
+		//! AgentRenderResult::tonalModeConcentration).  Five levels is 2% of
+		//! the range; a FIXED band is what makes the figure comparable
+		//! between two frames, and the text always states the band it used
+		//! rather than leaving the reader to assume one.
+		static constexpr unsigned int kTonalConcentrationBand = 5;
+
+		//! Arc 83 (2026-08-14): ONE emissive object that this render's
+		//! LuminaryManager did NOT register as an NEE area light, and why --
+		//! see LuminaryManager::AddToLuminaryList's two refusal branches (no
+		//! directly-owned geometry, e.g. a csg_object; or
+		//! IGeometry::CanBeAreaLight() == false, e.g. an sdf_geometry whose
+		//! sampling mesh provably missed a feature).  The object still
+		//! renders -- it contributes emission on direct camera view and on a
+		//! BSDF-sampled hit -- it is just never SELECTED by light sampling.
+		//! This is MIRRORED, not read: the inventory walk does not call
+		//! LuminaryManager::getLuminaries() and re-evaluates the same two
+		//! refusal branches independently against the live object/material
+		//! (LuminaryManager.cpp is the AUTHORITY on the gate; the mirrored
+		//! predicate at the inventory walk's call site carries a pointer
+		//! back so a THIRD refusal branch added there gets mirrored here
+		//! too, not silently desynced).  Still evaluated fresh per render
+		//! rather than predicted from the CST at insert time, because
+		//! whether an SDF's sampling mesh resolves a thin feature is not
+		//! knowable before a real render tessellates and checks it.
+		struct AgentSceneNotAreaSampledEntry
+		{
+			std::string name;
+			std::string reason;
+		};
+
 		struct AgentRenderResult
 		{
 			bool                       ok = false;
@@ -862,9 +1220,16 @@ namespace RISE
 			//! Use `renderMode` to tell which shading actually produced
 			//! THIS image: "draft" means the pixels came from a fixed
 			//! studio-preview shader that IGNORES the scene's authored
-			//! materials and lighting entirely (geometry, composition, and
-			//! camera framing are representative; materials, lighting,
-			//! exposure, and colour are NOT) -- never judge those from a
+			//! LIGHTING entirely (a fixed synthetic studio rig stands in
+			//! for it, no shadows/GI; geometry, composition, and camera framing are
+			//! representative, but true lighting, exposure, and colour
+			//! balance are NOT) -- it DOES shade with the material's own
+			//! BSDF (colour/roughness, not just albedo) under that fixed
+			//! rig, so an expression-driven painter (e.g. one querying
+			//! `proximity`/`occlusion`) still runs, though it does NOT
+			//! show emission, transmission/refraction, or subsurface
+			//! scattering -- never judge true
+			//! lighting/exposure/colour from a
 			//! draft image; render at quality:"production" (the default)
 			//! or use ReadViewport for what the user actually sees.
 			//! Toolkit slice 3a adds a THIRD value "objectmap" (set when
@@ -878,6 +1243,14 @@ namespace RISE
 			//! produced this image without cross-referencing the request.
 			//! `legend` stays empty for these (view modes have no per-object
 			//! identity registry -- that is ObjectMap's own thing).
+			//! 2026-08-24 (the lit material look) adds a FIFTH value,
+			//! "material" (set when params.quality == MaterialLook): real
+			//! per-object materials and real BSDF evaluation -- the OPPOSITE
+			//! of "draft" in exactly the way that matters -- but under a
+			//! CANONICAL STUDIO RIG that replaces the scene's own lights and
+			//! environment for that render alone.  So the MATERIALS in it are
+			//! the scene's and can be judged; the LIGHTING is not the scene's
+			//! and must not be.  `legend` stays empty.
 			std::string                renderMode;
 			//! Toolkit slice 3a: the object-colour legend of an OBJECTMAP
 			//! render -- one LegendEntry per registered scene object,
@@ -901,6 +1274,524 @@ namespace RISE
 			//! finds neither measured deficit, or the render did not
 			//! qualify for the scan at all.
 			std::string                note;
+			//! GPT slice item 1 (2026-08-24): the COVERAGE-DELTA advisory --
+			//! populated on the FIRST qualifying render (ApplyVisibilityCensus_'s
+			//! own gate: ok, renderMode production/draft, not isolate) AFTER a
+			//! propose_patch/propose_patches call APPLIED a framing-relevant
+			//! pinhole_camera/thinlens_camera parameter following a successful
+			//! `frame_scene` call this session (AgentSession::
+			//! mCameraFramingPatchedSinceBaseline).  Names, bounded, any object
+			//! that was ONSCREEN in frame_scene's own "after" measurement and is
+			//! NOT onscreen in THIS render's inventory -- the SAME inventory
+			//! ApplyVisibilityCensus_ already computes for `inventoryText`
+			//! below, read a second time rather than re-measured.  EMPTY (and
+			//! omitted from the wire result, same convention as `note`) when
+			//! nothing qualifies, OR when it did qualify but nothing dropped out
+			//! of frame -- a camera patch that keeps coverage gets no note.
+			//! This is a ONE-SHOT advisory: it fires once per triggering patch,
+			//! then the flag that arms it is cleared, whether or not anything
+			//! actually dropped -- a second render off the same patch (no new
+			//! camera edit in between) carries nothing.
+			std::string                coverageDeltaNote;
+			//! R1b (2026-08-09): honest facts about the agent-surface caps --
+			//! see AgentRenderParams::fromAgentSurface's doc.  Both default
+			//! false/0 and stay that way for EVERY render that didn't actually
+			//! get reduced by one of the two implicit defaults (an explicit
+			//! width/height/samples value is clamped at the RPC parse layer,
+			//! before RenderCore_ ever runs, so it never sets these -- the RPC
+			//! layer reports THAT case itself, from the raw pre-clamp value it
+			//! alone has).  `agentResolutionCapped` is true iff
+			//! `fromAgentSurface` was set, this was a production BEAUTY render
+			//! with NO explicit width/height pair, AND the scene's authored
+			//! Film's long edge exceeded kAgentSurfaceMaxRenderEdge -- i.e. an
+			//! implicit resolution default actually changed what got rendered
+			//! (never true for a Film already at or under the cap: the default
+			//! renders it unchanged, honestly nothing to report).
+			//! `filmWidth`/`filmHeight` are the scene's authored Film dims at
+			//! render time, populated IFF `agentResolutionCapped` -- the only
+			//! way a caller who supplied no dims can learn what the UNCAPPED
+			//! render would have been.  `agentSamplesCapped` is true iff
+			//! `fromAgentSurface` was set, no `samples` override was
+			//! requested, and the active rasterizer's own (scene-authored)
+			//! sample count exceeded kAgentSurfaceMaxSamples, so one was
+			//! force-applied -- `effectiveSamples` above already carries the
+			//! resulting (capped) count via the existing samplesOverridden/
+			//! effectiveSamples honesty contract; this field just distinguishes
+			//! "the caller asked for an override" from "we silently forced
+			//! one", which `samplesOverridden` alone does not.
+			bool                       agentResolutionCapped = false;
+			unsigned int               filmWidth = 0;
+			unsigned int               filmHeight = 0;
+			bool                       agentSamplesCapped = false;
+			//! G1 (2026-08-10): the measured facts about an `isolate` render.
+			//! ALL default to the "no isolation happened" values and stay
+			//! there for every render that did not pass `isolate` (and for
+			//! one that passed it but FAILED to resolve -- that render
+			//! returns ok=false with the reason in `message`, and reports no
+			//! numbers it did not actually measure).
+			//!
+			//! `isolateApplied` is true iff the named object resolved AND
+			//! every other object was actually hidden for this render.
+			//! `isolateObject` echoes the RESOLVED object name (identical to
+			//! the request today -- resolution is exact-name -- but echoed so
+			//! a caller never has to assume that).
+			//! `isolateBBoxUsable` (G1 fix-round, 2026-08-10) is true iff the
+			//! object's world bbox is finite with non-negative, bounded
+			//! extents and a positive diagonal.  False is reachable ONLY via
+			//! a caller-supplied `camera` (an isolate render with no caller
+			//! camera refuses up front on a degenerate/unbounded box -- see
+			//! the render() refusal path); when false, `isolateBBoxMin`/
+			//! `isolateBBoxMax`/`isolateLongestEdge` are left at their
+			//! default-constructed 0/0/0 values, which are NOT measurements
+			//! -- AgentRpc.cpp omits all three wire fields in that case
+			//! (same convention as `isolateBBoxCoverage`'s -1.0 sentinel)
+			//! rather than serializing NaN/Inf-clamped-to-0 numbers that
+			//! would look like a genuinely point-sized object.
+			//! `isolateBBoxMin`/`isolateBBoxMax` are the object's WORLD
+			//! bounding box, in scene units, AFTER Realize() (so a displaced
+			//! or otherwise deferred geometry reports its real baked extent,
+			//! not a zero box); `isolateLongestEdge` is the longest of the
+			//! three box edges -- the single number that says how big the
+			//! part actually is.  Both are meaningful ONLY when
+			//! `isolateBBoxUsable` is true.
+			//! `isolateAutoFramed` is true iff THIS call computed the
+			//! three-quarter framing camera; false means the caller's own
+			//! `camera`/`view` was used instead (it wins -- see
+			//! AgentRenderParams::isolate).
+			//! `isolateBBoxCoverage` is the fraction of the frame [0,1]
+			//! covered by the object's projected world bounding box: the 8
+			//! corners projected through the render's actual camera pose,
+			//! FOV and aspect ratio, axis-aligned in screen space and
+			//! clipped to the frame -- ONLY when the ACTIVE camera is a
+			//! PinholeCamera (the projection this formula assumes); a
+			//! caller-supplied `camera` overrides POSE on the already-active
+			//! camera (CameraIntrospection::SetProperty never re-types it),
+			//! so a thin-lens/fisheye/orthographic active camera still
+			//! renders through ITS OWN projection regardless of what pose
+			//! the caller or the auto-framer supplied, and this tan-based
+			//! formula would be the WRONG projection model for it, not an
+			//! approximation.  It is an UPPER BOUND on the object's
+			//! silhouette coverage, not a per-pixel hit count -- deliberately
+			//! so, because it is exact, deterministic and identical across
+			//! every render mode, whereas a pixel count would be a different
+			//! (and in some modes unavailable) measurement per mode.  For an
+			//! EXACT per-pixel count, render `mode:"objectmap"` and read the
+			//! legend's `pixelCount`.  -1.0 means "not computed"; ALL the
+			//! sources of that sentinel: no isolation; a degenerate/unusable
+			//! bbox (`!isolateBBoxUsable`); part of the box lies behind the
+			//! camera plane so a screen-space area is undefined; or the
+			//! active camera is not a pinhole (see above) -- the message
+			//! accompanying the render states which one applied.
+			bool                       isolateApplied = false;
+			std::string                isolateObject;
+			bool                       isolateBBoxUsable = false;
+			double                     isolateBBoxMin[3] = { 0.0, 0.0, 0.0 };
+			double                     isolateBBoxMax[3] = { 0.0, 0.0, 0.0 };
+			double                     isolateLongestEdge = 0.0;
+			bool                       isolateAutoFramed = false;
+			double                     isolateBBoxCoverage = -1.0;
+			//! Doc 91 V1 (2026-10-17): what the isolate fit (and the coverage
+			//! figure above) was computed from.  "surface" = points ON the
+			//! object's real geometry (a tessellation, transformed to world --
+			//! `isolateSurfacePointCount` of them, gathered in
+			//! `isolateFitMillis`); in that case `isolateBBoxCoverage` is the
+			//! frame fraction of the projected bounds of THOSE points (still an
+			//! upper bound on the silhouette, but not inflated by the
+			//! geometry's conservative bounds or by rotating a local box into
+			//! world axes).  "bbox" = no surface points were available (a CSG
+			//! composite, an infinite plane, a geometry that cannot tessellate)
+			//! and the world AABB corners were fitted, exactly as before V1.
+			//! Empty when no isolate render ran.
+			std::string                isolateFitBasis;
+			unsigned int               isolateSurfacePointCount = 0;
+			double                     isolateFitMillis = 0.0;
+			//! Doc 91 V2: the measured facts of a `zoom` render.  `zoomApplied`
+			//! is true iff the zoom camera was solved and applied; it gates the
+			//! whole `zoom` block on the wire together with `ok`, for the same
+			//! reason `isolateApplied` does.  `zoomFovDegrees` is the vertical
+			//! fov the render used, `zoomSceneFovDegrees` the scene camera's own;
+			//! `zoomKeptSceneFov` is true when the object already fills the
+			//! frame at the scene fov so it was not narrowed.  `zoomCoverage` is
+			//! the frame fraction of the projected bounds of the object's
+			//! surface points through the camera that rendered (-1 = not
+			//! computed), an upper bound on its silhouette exactly like
+			//! `isolateBBoxCoverage`.  `zoomFitBasis`/`zoomSurfacePointCount`/
+			//! `zoomFitMillis` mirror the isolate trio.
+			bool                       zoomApplied = false;
+			std::string                zoomObject;
+			double                     zoomFovDegrees = 0.0;
+			double                     zoomSceneFovDegrees = 0.0;
+			bool                       zoomKeptSceneFov = false;
+			double                     zoomCoverage = -1.0;
+			//! The eye the zoom render used (the scene camera's real, post-orbit
+			//! position -- unchanged by the zoom, reported so that is checkable).
+			double                     zoomEye[3] = { 0.0, 0.0, 0.0 };
+			std::string                zoomFitBasis;
+			unsigned int               zoomSurfacePointCount = 0;
+			double                     zoomFitMillis = 0.0;
+			//! G3b (2026-08-10): the measured facts of a `target` comparison
+			//! -- the isolated object's rendered silhouette against the
+			//! element's filed sketch.  ALL default to the "no comparison
+			//! happened" values.
+			//!
+			//! `targetApplied` is true ONLY when the render SUCCEEDED and the
+			//! comparison actually produced a measurement.  It gates the
+			//! whole block on the wire (AgentRpc.cpp), for exactly the reason
+			//! G1's fix-round gated the isolate block on `ok`: facts about an
+			//! image that never happened are the one defect this payload
+			//! cannot afford, since this project has measured that models ACT
+			//! on result facts.  A failed render, a failed internal identity
+			//! pass, or an unresolvable `target` all leave every field here
+			//! at its default and emit NO block.
+			//!
+			//! `targetElement` echoes the resolved element name; `targetView` is
+			//! the sketch's declared view (front/side/top); `targetVantage`
+			//! is what the comparison render ACTUALLY looked from --
+			//! "front"/"side"/"top" when this call auto-framed, or
+			//! "caller-camera" when the caller's own camera/view won (in
+			//! which case the silhouette is NOT the axis-aligned one the
+			//! sketch describes, and the number says so by naming the
+			//! vantage rather than by any adjective).
+			//!
+			//! `targetIou` and `targetMirroredIou` are intersection-over-
+			//! union in [0,1] of two 0/1 masks on the SHARED 256x256
+			//! normalized canvas: the filed sketch, and the rendered
+			//! silhouette cropped to its own pixel bounding box and fitted by
+			//! the SAME transform (kElementSketchFillFraction, aspect preserved,
+			//! centered -- see AgentSession.cpp's SketchFitTransform_, the
+			//! ONE definition both sites call).  The metric is therefore
+			//! translation- and scale-invariant BY CONSTRUCTION: it measures
+			//! SHAPE, not placement.  `targetMirroredIou` is the same number
+			//! with the silhouette flipped in X.  Both are pure integer pixel
+			//! counts over deterministic masks.
+			//!
+			//! `targetSketchAreaFraction` / `targetSilhouetteAreaFraction`
+			//! are each mask's filled-pixel fraction OF THAT SHARED CANVAS
+			//! (not of the render frame -- `isolateBBoxCoverage` is the frame
+			//! measurement), so the two are directly comparable to each
+			//! other.  `targetSketchAspect` is the AUTHORED outline bbox's
+			//! width/height; `targetSilhouetteAspect` is the rendered
+			//! silhouette's PIXEL bounding box width/height, or -1.0 when the
+			//! silhouette is empty (nothing rendered inside the frame) and an
+			//! aspect is undefined -- omitted on the wire in that case.
+			//!
+			//! `targetThinnestAxisRatio` is the isolated object's SMALLEST 3D
+			//! bounding-box extent over its largest, in [0,1] -- 1.0 for a
+			//! cube, near 0 for a plane or a billboard.  -1.0 means "not
+			//! computed" (the bbox was not usable -- see isolateBBoxUsable),
+			//! omitted on the wire, same sentinel convention as
+			//! `isolateBBoxCoverage`.
+			//!
+			//! `targetCompositePng` is the [sketch | silhouette | overlay]
+			//! strip: three kElementSketchCanvas-square tiles side by side.  It
+			//! is a REQUIREMENT of this slice, not a convenience -- the
+			//! transport keeps only the most recent tool-result image live,
+			//! so this composite is HOW the filed sketch re-enters the
+			//! model's context at the moment of consultation (design doc
+			//! §4.3 "Retention interaction").  Empty when !targetApplied or
+			//! when the encode failed.
+			bool                       targetApplied = false;
+			std::string                targetElement;
+			std::string                targetView;
+			std::string                targetVantage;
+			double                     targetIou = 0.0;
+			double                     targetMirroredIou = 0.0;
+			double                     targetSketchAreaFraction = 0.0;
+			double                     targetSilhouetteAreaFraction = 0.0;
+			double                     targetSketchAspect = 0.0;
+			double                     targetSilhouetteAspect = -1.0;
+			double                     targetThinnestAxisRatio = -1.0;
+			std::vector<unsigned char> targetCompositePng;
+			unsigned int               targetCompositeWidth = 0;
+			unsigned int               targetCompositeHeight = 0;
+			//! Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b (2026-08-11):
+			//! the WHOLE-SCENE target -- this render shown against the image
+			//! the model asked the provider to generate from its own
+			//! description (`imagine_scene`).
+			//! ALL default to the "no target was in force" values, and stay
+			//! there for every render on a session that never imagined a
+			//! scene, so a session that does not use the mechanism produces
+			//! byte-identical results to before this slice.
+			//!
+			//! WHERE IT ATTACHES, and why exactly there.  ONLY on a
+			//! SUCCEEDED, FULL-FRAME, PRODUCTION BEAUTY render that did NOT
+			//! isolate and did NOT carry an element `target`.  The three
+			//! exclusions are not conservatism, they are honesty:
+			//!   * DRAFT ignores the scene's authored LIGHTING entirely (a
+			//!     fixed synthetic studio rig stands in for it, no shadows/GI),
+			//!     so setting it
+			//!     beside a coloured, lit target invites reading a shading
+			//!     difference as a scene difference -- even though draft DOES
+			//!     shade with the material's own BSDF under that fixed rig.
+			//!   * OBJECTMAP / VIEW MODE paint identity or data colours, not
+			//!     appearance -- same objection, more starkly.
+			//!   * ISOLATE deletes the rest of the scene: it is a look at ONE
+			//!     PART, and the whole-scene target is not what it is a look
+			//!     at.  (An element look has its own criterion -- `target`.)
+			//! The battery that selected this mechanism measured models
+			//! visiting the full-frame render surface 64/64 times and every
+			//! per-part consultation surface 0/64, which is why the
+			//! comparison rides the surface that is actually visited rather
+			//! than waiting to be asked for.
+			//!
+			//! `sceneTargetApplied` gates the whole block on the wire and is
+			//! set ONLY when a target really was in force for this render
+			//! (same rule, same reason, as `targetApplied`).
+			//!
+			//! PHASE 2b (2026-08-11) -- THERE IS NO SCORE HERE, DELIBERATELY,
+			//! AND NONE MAY BE ADDED.  The shipped Phase 2 reported an RMSE of
+			//! the render against the target plus both sides' per-channel
+			//! means.  A live run measured what that did: 16 consultations
+			//! followed by 23 emissive_scale / 10 power / 9 radiance_scale
+			//! edits, emissive_scale cranked to 25.0, light power to 80 -- a
+			//! blown-out frame, worse than the pre-Phase-2 baseline.  The
+			//! diagnosis is structural, not a tuning miss: RMSE over full-frame
+			//! RGB is a TONE metric.  It is dominated by large flat areas, so
+			//! the only axis it exposes a gradient on is global exposure /
+			//! emission / fog -- nothing in it can ever reward a better wing.
+			//! A reproduction metric was shipped to serve a progress-check
+			//! purpose (design doc sec 1/sec 2 say that was never the intent).
+			//! Models act on facts, and a fact whose only movable axis degrades
+			//! the picture is worse than no fact.  THE COMPOSITE IMAGE IS THE
+			//! COMPARISON: a vision model can judge two pictures side by side
+			//! without a number.  So what remains is only what cannot be
+			//! chased -- that a target exists, its pixel size, and the
+			//! composite's size.  Do NOT reintroduce a similarity measure here
+			//! under any name.  (The RMSE machinery itself is untouched and
+			//! still serves compare_to_reference and the eval grader, where a
+			//! host-registered reference IS a reproduction spec.)
+			//!
+			//! `sceneTargetCompositePng` is the composite: the imagined target
+			//! ABOVE this render, separated by a thin grey rule, on a canvas
+			//! exactly as wide as the render tile.  It is a REQUIREMENT, not a
+			//! convenience, for the reason G3b's composite is: the transport
+			//! keeps only the MOST RECENT tool-result image live, so this is
+			//! HOW the imagined target re-enters the model's context at the
+			//! moment it looks (design doc
+			//! docs/agentic-redesign/77-imagination-target-design.md sec 4.3
+			//! "Retention interaction").
+			//!
+			//! PHASE 2b, THE SIZE CONTRACT.  Phase 2 stacked the two panels
+			//! SIDE BY SIDE on a shared canvas that was the per-axis minimum of
+			//! render and target -- so the model saw its own frame at half the
+			//! width of an already-shrunken strip, less resolution to spot its
+			//! own defects than it would have had with no target at all.  The
+			//! render tile is now the FULL image AgentRpc would have returned
+			//! for this call: same dimensions, by the same never-upscale rule
+			//! ReadImage(imageMaxEdge) applies (see
+			//! ApplySceneTargetComparison_).  The target is scaled to that
+			//! width -- never UP; a target narrower than the tile is centred on
+			//! a black band at its own size -- and sits above.  Consequence:
+			//! the composite exists ONLY when the caller asked for an inline
+			//! image (AgentRenderParams::imageMaxEdge != 0); a render that
+			//! wanted no picture still gets the (numberless) facts and no
+			//! bytes, exactly as it did before this mechanism existed.
+			//! `sceneTargetApplied` can therefore be true with an EMPTY
+			//! composite, and AgentRpc falls back to the plain frame then.
+			bool                       sceneTargetApplied = false;
+			unsigned int               sceneTargetWidth = 0;
+			unsigned int               sceneTargetHeight = 0;
+			std::vector<unsigned char> sceneTargetCompositePng;
+			unsigned int               sceneTargetCompositeWidth = 0;
+			unsigned int               sceneTargetCompositeHeight = 0;
+			//! Doc 90 slice R1 (2026-08-22): THE ITERATION RATCHET -- this
+			//! render shown beneath the session's ANCHOR RENDER, both panes
+			//! labelled with the head revision they were rendered at.
+			//!
+			//! THE FAILURE IT ANSWERS (doc 90 sec 1, measured on the dragon
+			//! probe): render 00 was the best picture of the session and
+			//! twelve self-directed edit rounds made it strictly worse.  The
+			//! model judges only the CURRENT frame against the prompt; nothing
+			//! anchors best-so-far, so every regression is permanent.  The
+			//! anchor composite puts the earlier picture back in front of the
+			//! model at the exact moment it looks at the new one.
+			//!
+			//! THERE IS NO NUMBER HERE, DELIBERATELY, AND NONE MAY BE ADDED
+			//! -- not a score, not a difference percentage, not under any
+			//! other name.  This is Phase 2b's law (see `sceneTargetApplied`
+			//! above), and doc 90 sec 2's history note records what happened
+			//! to the scored form of this very slice: the original R1 spec'd a
+			//! target/best SCALAR, and a harness over the real scorer showed
+			//! the metric INVERTS in the operative regime -- against a
+			//! divergent generated target, DELETING the hero object improves
+			//! it, so a ratchet on that scalar would pin "best" to the most
+			//! mangled document.  A PAIRWISE PICTURE cannot be gamed that way:
+			//! a vision model comparing two frames sees the missing dragon.
+			//!
+			//! WHERE IT ATTACHES: the scene target's qualification rule -- a
+			//! SUCCEEDED, FULL-FRAME, PRODUCTION BEAUTY render that did NOT
+			//! isolate and carried no element `target` -- plus ONE exclusion
+			//! of its own.  The shared three are the same honesty
+			//! requirements, for the same reasons, and they matter more here:
+			//! a draft frame beside a production anchor would read as a
+			//! regression that is really a quality setting.  The extra one is
+			//! `fromAgentSurface`: the anchor is a bookmark in the MODEL's own
+			//! sequence of looks, so a render it never issued (notably
+			//! compare_to_reference's internal grading pass, which passes
+			//! every other test) must not silently re-point it.
+			//!
+			//! WHICH RENDER IS THE ANCHOR: the FIRST qualifying render at or
+			//! after the session enters the COMPOSE phase (in the failed
+			//! dragon run, exactly the render that was best), or -- for a
+			//! session where the phase machinery is not in force -- the first
+			//! qualifying render of the session.  `set_render_anchor` re-pins
+			//! it to the most recent qualifying render whenever the model
+			//! judges the new one better.  See AgentSession::SetRenderAnchor.
+			//!
+			//! `anchorEstablished` is the call that BECAME the anchor: it
+			//! reports the facts and carries NO composite, because there is
+			//! nothing yet to compare it against.  `anchorApplied` covers
+			//! both that call and every later one.
+			//!
+			//! `anchorCompositePng` follows the scene target's geometry and
+			//! its size contract exactly: panes STACKED (never side by side)
+			//! so THIS RENDER keeps the full width the plain frame would have
+			//! had, the anchor scaled to that width and never UP, a thin grey
+			//! rule between them, and a labelled strip above each pane naming
+			//! the revision that pane was rendered at.  When a scene-target
+			//! composite was also built for this call, THAT composite is the
+			//! lower pane (so the stack reads anchor / imagined target / this
+			//! render, and the label above it says so) -- the two mechanisms
+			//! compose instead of one silently suppressing the other, which
+			//! matters because the run this slice exists for had a scene
+			//! target held for its entire length.  Like the scene target's,
+			//! this composite exists ONLY when the caller asked for an inline
+			//! image (`AgentRenderParams::imageMaxEdge != 0`); a render that
+			//! wanted no picture still gets the facts and no bytes.  AT THE
+			//! IMAGEMAXEDGE FLOOR the label strip has no room to say much --
+			//! at 16px wide a label truncates to roughly 4 characters (see
+			//! DrawAnchorLabel_'s drop-not-wrap rule) -- and that is left as
+			//! is rather than built out into text wrapping: the note text
+			//! carries both revisions in full prose regardless of composite
+			//! width, so the floor's job is only "don't crash, don't read
+			//! garbage", not "stay legible at any size".
+			bool                       anchorApplied = false;
+			bool                       anchorEstablished = false;
+			std::uint64_t              anchorRevision = 0;
+			std::uint64_t              anchorCurrentRevision = 0;
+			std::vector<unsigned char> anchorCompositePng;
+			unsigned int               anchorCompositeWidth = 0;
+			unsigned int               anchorCompositeHeight = 0;
+			//! Arc 80 (2026-08-12): THE SCENE INVENTORY, riding the render
+			//! result as a PAYLOAD FACT.  It answers "where is everything?"
+			//! for the frame just rendered: every scene object, its screen
+			//! footprint, and where it is -- in the frame for the ones that
+			//! covered pixels, in the world plus a direction for the ones
+			//! that did not.
+			//!
+			//! WHY IT IS NOT A TOOL.  Every voluntary consultation surface
+			//! this workstream shipped measured 0/64 uses (arcs 76-77), so a
+			//! "where is everything?" verb would go unread.  It therefore
+			//! rides the result of the `render` call the model already
+			//! makes.  (`scene_inventory` exposes the same computation as an
+			//! explicit verb through the SAME code path -- see
+			//! AgentSession::SceneInventory -- but no behaviour depends on
+			//! anyone calling it.)
+			//!
+			//! WHAT IT COST arc 79 NOT to have: a composed scene rendered
+			//! empty, `query_object_at` answered "no object at this pixel"
+			//! on four of five probes, and the model concluded its GEOMETRY
+			//! was broken and replaced 80 of 82 hand-built SDF parts with
+			//! primitives.  The geometry was fine.  An inverse (pixel ->
+			//! object) query cannot say so; a forward inventory can.
+			//!
+			//! WHERE IT ATTACHES: a SUCCEEDED, full-scene BEAUTY render
+			//! (`renderMode` "production" or "draft") of a scene with at
+			//! least one object.  NOT for `isolate` (one object by
+			//! construction), NOT for objectmap / normals / depth / facets /
+			//! wireframe (already diagnostics), and NOT for the
+			//! production-transport modes deep_reflect / direct / indirect /
+			//! clay_lights -- see ApplyVisibilityCensus_ in AgentSession.cpp
+			//! for why each exclusion is a truthfulness requirement rather
+			//! than conservatism.
+			//!
+			//! `inventoryApplied` gates the whole block on the wire (same
+			//! convention as `targetApplied` / `sceneTargetApplied`).
+			//! `inventoryObjectCount` is how many world-visible objects the
+			//! scene has; `inventoryCoveredCount` how many of them covered
+			//! at least one pixel of the identity pass;
+			//! `inventoryPassWidth`/`Height` are that pass's own dims (it is
+			//! a small fixed-size one-ray-per-pixel identity render, NOT the
+			//! beauty frame -- so "covered no pixels" is a statement about
+			//! THAT resolution, which the text states outright).
+			//! `inventoryText` is the whole inventory as the model reads it.
+			bool                       inventoryApplied = false;
+			int                        inventoryObjectCount = 0;
+			int                        inventoryCoveredCount = 0;
+			unsigned int               inventoryPassWidth = 0;
+			unsigned int               inventoryPassHeight = 0;
+			std::string                inventoryText;
+			//! Arc 83 (2026-08-14): emissive objects THIS render measured as
+			//! not selected by NEE area-light sampling, and why -- see
+			//! AgentSceneNotAreaSampledEntry.  Meaningful only when
+			//! `inventoryApplied` is true (same gate as every other
+			//! `inventory*` field); empty when every emissive object in the
+			//! scene passed CanBeAreaLight().  `inventoryText` already states
+			//! this fact in prose -- this is the same fact in machine form.
+			std::vector<AgentSceneNotAreaSampledEntry> inventoryNotAreaSampled;
+			//! Arc 81 (2026-08-12): THE TONAL FACT -- the frame's own luma
+			//! distribution, riding the render result beside the inventory.
+			//!
+			//! WHY IT EXISTS.  Arc 80 sec 6.1 pointed the brand-new inventory at
+			//! the arc-79 scene that "renders empty" and found 17 of 19
+			//! objects covering pixels, every one sensibly placed.  The
+			//! picture was one flat blue: luma stdev 3.5 on a mean of 101,
+			//! about 3% contrast across the whole frame.  The inventory says
+			//! WHERE things are; it cannot say whether they are
+			//! DISTINGUISHABLE.  This is that second fact, and arc 80 recorded
+			//! it as the named candidate.
+			//!
+			//! IT COSTS NO RENDER.  Every number here is computed from the
+			//! pixels this call ALREADY produced (`png`), decoded once -- in
+			//! deliberate contrast to the inventory, which fires its own
+			//! identity pass.
+			//!
+			//! WHERE IT ATTACHES -- a strict SUBSET of the inventory's rule:
+			//! a SUCCEEDED render whose `renderMode` is "production" and
+			//! which did not `isolate`.  The three surfaces the inventory
+			//! also skips are skipped here for a sharper reason -- an
+			//! objectmap or a normals/depth/facets/wireframe frame carries
+			//! identity or data COLOURS, so its luma distribution is a
+			//! histogram of a palette and nothing about light; an `isolate`
+			//! frame is one object on an emptied scene, so its distribution
+			//! is mostly the background the isolation created.  DRAFT is
+			//! additionally excluded, where the inventory allows it: a draft
+			//! frame comes from a fixed studio-preview shader that ignores
+			//! the scene's authored lighting entirely (see `renderMode`), so
+			//! a tonal fact there would describe the preview's tone while
+			//! reading as a statement about the scene's.  The
+			//! production-transport modes (deep_reflect / direct / indirect /
+			//! clay_lights) are excluded by the same `renderMode` test that
+			//! excludes them from the inventory.
+			//!
+			//! FACTS ONLY.  `tonalText` states the distribution and stops.
+			//! There is no threshold, no verdict, and nothing here is called
+			//! flat, dull, low or wrong -- the model draws the conclusion.  A
+			//! judgement would both contaminate the behaviour this arc
+			//! measures and break the rule arc 79 sec 8.1 records the cost of
+			//! breaking.
+			//!
+			//! `tonalApplied` gates the whole block on the wire (same
+			//! convention as `inventoryApplied`).  Every other field is
+			//! meaningful ONLY when it is true.  Luma is the Rec.709
+			//! weighting (0.2126 R + 0.7152 G + 0.0722 B) of the DISPLAYED
+			//! 8-bit pixels -- the bytes a viewer and a vision model actually
+			//! see, after the scene's exposure, tone curve and colour space.
+			//! `tonalLumaP1`/`P99` are the 1st and 99th percentile luma
+			//! levels; `tonalLumaMode` is the most common level;
+			//! `tonalModeConcentration` is the fraction of the frame in [0,1]
+			//! whose luma lies within kTonalConcentrationBand levels of that
+			//! mode.  `tonalPixelsMeasured` is how many pixels were counted
+			//! (the frame's own, not a sample).
+			bool                       tonalApplied = false;
+			double                     tonalLumaMean = 0.0;
+			double                     tonalLumaStdDev = 0.0;
+			unsigned int               tonalLumaP1 = 0;
+			unsigned int               tonalLumaP99 = 0;
+			unsigned int               tonalLumaMode = 0;
+			double                     tonalModeConcentration = 0.0;
+			unsigned int               tonalPixelsMeasured = 0;
+			std::string                tonalText;
 		};
 
 		//! compare_to_reference params.  `reference` is REQUIRED -- the
@@ -919,9 +1810,12 @@ namespace RISE
 		//! the comparison renders at AgentRenderQuality::Draft -- cheap
 		//! (capped at 4 samples, fixed studio-preview shading), good enough
 		//! to iterate on GEOMETRY/COMPOSITION/CAMERA alignment against the
-		//! reference, but IGNORES the scene's authored materials and
-		//! lighting entirely -- a low draft-mode RMSE says nothing about
-		//! material/colour/lighting match.  Supplying `samples` (>=1)
+		//! reference, but IGNORES the scene's authored LIGHTING entirely
+		//! (a fixed synthetic studio rig stands in for it, no shadows/GI)
+		//! -- it DOES shade with the material's own BSDF (colour/roughness,
+		//! not just albedo) under that fixed rig, so an expression-driven
+		//! painter still runs, but a low draft-mode RMSE says nothing about
+		//! true lighting/exposure/colour match.  Supplying `samples` (>=1)
 		//! switches to AgentRenderQuality::Production at that sample count
 		//! -- the real grader-equivalent measurement, and materially more
 		//! expensive.  The intended loop: iterate cheaply under the Draft
@@ -1277,6 +2171,41 @@ namespace RISE
 		//!     (typically the RPC dispatcher's serving thread), same as the
 		//!     original slice-0a contract -- no mutex protects them, and
 		//!     none is added by this fix.
+		//!     G3b fix-round (2026-08-10): the PART-PLAN state
+		//!     (mBuildPlan / mElementSketches -- written by FileBuildPlan, read
+		//!     by FindElementSketch / ResolveTargetSketch) lives in THIS
+		//!     bucket, and the async render path honours that by SNAPSHOT
+		//!     rather than by a new lock: RenderAsync resolves
+		//!     `params.target` on the SUBMITTING thread and threads the
+		//!     resolved AgentElementSketch COPY into the worker closure, so
+		//!     nothing running on the controller's render worker ever
+		//!     touches mElementSketches.  See the `resolvedTarget` parameters
+		//!     on RenderCore_ / ApplyTargetComparison_.
+		//!     Arc 77 Phase 2 (2026-08-11): the SCENE-TARGET state
+		//!     (mSceneTarget -- written by ImagineScene, read by the
+		//!     whole-scene render comparison) is in this bucket too and
+		//!     honours it the SAME way, deliberately reusing the discipline
+		//!     rather than inventing a second one: Render() and RenderAsync
+		//!     each COPY the shared_ptr on the submitting thread and pass the
+		//!     copy to ApplySceneTargetComparison_, and ImagineScene publishes
+		//!     by REPLACING the pointer (never mutating a published pointee),
+		//!     so a worker holding a snapshot is reading immutable bytes.
+		//!     S1 (2026-08-11): the STAGED-BUILD-PROTOCOL state
+		//!     (mBuildPhase / mActiveElement / mElementFinished /
+		//!     mChunkAttribution / the phase-refusal counters) is in this
+		//!     bucket too, and needs NO snapshot discipline at all --
+		//!     nothing on the controller's render worker reads or writes any
+		//!     of it.  ENUMERATED rather than asserted: the writers are
+		//!     FileBuildPlan, FinishElement, ReopenElement, the attribution
+		//!     hooks inside the creating verbs and the two phase checks
+		//!     inside the editing verbs -- every one of them a
+		//!     dispatcher-thread entry point; the readers are those plus the
+		//!     four observers (BuildPhase / ActiveElement / ElementChunks /
+		//!     ChunkElement).  FinishElement's isolate render resolves its
+		//!     object and issues its render ON THE CALLING THREAD through the
+		//!     ordinary synchronous Render entry point, handing the worker
+		//!     nothing but an AgentRenderParams by value -- so the race the
+		//!     G3b fix-round closed has no surface here to reappear on.
 		//!     THIS IS A CONTRACT ON THIS OBJECT, NOT ON THE HEAD IT WRAPS.
 		//!     The Job behind mJob is SHARED: with a controller attached the
 		//!     GUI main thread commits to the same head while this session
@@ -1376,6 +2305,297 @@ namespace RISE
 		//! skips the candidate-derive too).
 		std::string CheckNonSamplingEmitterGateForInsert( const std::string& headText,
 		                                                   const std::string& chunkText );
+
+		//! R1c (2026-08-09, agent rasterizer allowlist).  USER DIRECTIVE: a
+		//! scene-editing agent must never select the MLT rasterizer ("its a
+		//! specialized rasterizer"), narrowed by the user to "agents may use
+		//! PT and VCM only".  This enum is the classification every arm of
+		//! the gate keys off, and it is an ALLOWLIST, not a denylist:
+		//!
+		//!   * Allowed        -- the FOUR integrator kinds an agent may
+		//!                       select: pathtracing_pel_rasterizer,
+		//!                       pathtracing_spectral_rasterizer,
+		//!                       vcm_pel_rasterizer, vcm_spectral_rasterizer.
+		//!   * (Retired 2026-10-09, legacy-deprecation Phase 1: there used to
+		//!     be an UngatedUtility class for pixelpel_rasterizer /
+		//!     pixelintegratingspectral_rasterizer, on the premise that
+		//!     pixelpel was required for alpha-mask scenes.  That premise is
+		//!     stale since DL-214 -- material alpha coverage works in every
+		//!     integrator -- and both kinds are now FROZEN (legacy, unsupported),
+		//!     so they are Blocked like every other non-allowed kind.)
+		//!   * Blocked        -- EVERYTHING ELSE that is a rasterizer chunk.
+		//!                       Today that is exactly bdpt_pel /
+		//!                       bdpt_spectral / mlt / mlt_spectral / auto /
+		//!                       auto_spectral, but the classifier does NOT
+		//!                       read off a hard-coded blocked list at
+		//!                       runtime: anything that is a rasterizer chunk
+		//!                       and is in neither named set falls through to
+		//!                       Blocked, so a NEWLY ADDED rasterizer kind is
+		//!                       refused by default rather than silently
+		//!                       admitted.
+		//!   * NotARasterizer -- the keyword is not a rasterizer chunk at all
+		//!                       (including `light_rr_threshold`, which is
+		//!                       ChunkCategory::Rasterizer but is not a
+		//!                       rasterizer -- see the `_rasterizer` suffix
+		//!                       test in AgentSession.cpp, the same predicate
+		//!                       SceneEditController uses).
+		//!
+		//! DERIVATION: "is this a rasterizer chunk" comes from the PARSER's own
+		//! descriptor (DescriptorForKeyword -> ChunkCategory::Rasterizer) plus
+		//! the `_rasterizer` suffix, never from a hand-maintained keyword list.
+		//! The two named sets are hand-maintained by necessity (they encode a
+		//! POLICY the parser knows nothing about), and
+		//! AgentRasterizerKindIsExplicitlyClassified below exists precisely so
+		//! a test can fail when the parser gains a rasterizer kind this policy
+		//! has never considered.
+		enum class AgentRasterizerPolicy
+		{
+			NotARasterizer,
+			Allowed,
+			Blocked
+		};
+
+		//! Classify a chunk keyword under the R1c policy above.
+		AgentRasterizerPolicy ClassifyAgentRasterizerKind( const std::string& keyword );
+
+		//! TRUE iff `keyword` appears in one of the TWO hand-maintained R1c
+		//! policy sets (allowed / known-blocked).  A
+		//! rasterizer keyword the parser registers but this policy never
+		//! named comes back FALSE -- it still BLOCKS at runtime (allowlist
+		//! semantics), but the coverage test in tests/AgentChunkCrudTest.cpp
+		//! fails so the omission is a decision someone makes deliberately
+		//! rather than a default nobody noticed.
+		bool AgentRasterizerKindIsExplicitlyClassified( const std::string& keyword );
+
+		//! R1c: does inserting `chunkText` introduce a BLOCKED rasterizer?
+		//! "" when it does not; the actionable refusal clause when it does.
+		//!
+		//! No head text is needed and none is taken: an insert is purely
+		//! ADDITIVE, so a blocked rasterizer chunk anywhere in `chunkText` is
+		//! by construction a NEWLY introduced one.  That is also the answer to
+		//! the state-vs-delta question for this arm -- inserting a SECOND
+		//! blocked rasterizer into a scene that already carries one is still a
+		//! new agent-originated selection and is still refused.  EVERY
+		//! top-level chunk in `chunkText` is scanned, not just the first, so a
+		//! multi-chunk text cannot smuggle one past.
+		std::string CheckRasterizerAllowlistGateForInsert( const std::string& chunkText );
+
+		//! R1c: would this param edit newly introduce or newly ACTIVATE a
+		//! BLOCKED rasterizer?  "" when it would not.  Two arms:
+		//!
+		//!   (a) INTEGRATOR PIN.  `auto_rasterizer` / `auto_spectral_rasterizer`
+		//!       take an `integrator` enum {auto,pt,bdpt,vcm} (the full
+		//!       accepted value domain, per both chunks' descriptor in
+		//!       ChunkParserRegistry.cpp).  STATELESS ALLOWLIST (R1c round-3
+		//!       FIX A, 2026-08-09): `pt`, `vcm`, and `auto` are ALLOWED;
+		//!       `bdpt` -- and anything else the descriptor might accept in
+		//!       future that this policy hasn't named -- is REFUSED
+		//!       UNCONDITIONALLY, with NO comparison against the head's
+		//!       current value.  Refusing a genuine no-op (re-pinning `bdpt`
+		//!       on a chunk already pinned to `bdpt`) costs the agent
+		//!       nothing, and the stateless form is race-free by
+		//!       construction: the prior state-comparing form read the
+		//!       head's existing value and skipped the refusal when it was
+		//!       already `bdpt`, which is a TOCTOU hazard when the caller
+		//!       omits baseHeadVersion -- a co-editor can move the pin off
+		//!       `bdpt` between this gate check and ApplyAgentParamEdit's
+		//!       commit, landing the "inert" write and actually
+		//!       re-selecting BDPT.  Every OTHER param on the chunk remains
+		//!       freely editable (unaffected by this arm).
+		//!
+		//!   (b) DOCUMENT DELTA.  The candidate document (head with the edit
+		//!       applied) is compared against the head by rasterizer-keyword
+		//!       MULTISET and by which rasterizer is ACTIVE (last-declared
+		//!       wins, IJob's documented rule).  A blocked keyword whose count
+		//!       goes UP, or an active rasterizer that flips from non-blocked
+		//!       to blocked, is refused.  This arm exists because a param
+		//!       VALUE is spliced into the document as text: it is what closes
+		//!       a chunk-injection bypass generically, without this gate having
+		//!       to reason about what any particular value string might mean.
+		//!
+		//! STATE-VS-DELTA (the E1 lesson, applied) -- for arm (b) and for
+		//! everything on the chunk OTHER than the `integrator` param itself:
+		//! a scene the USER authored containing mlt/bdpt/auto stays fully
+		//! editable -- unrelated chunks, and the offending rasterizer's OWN
+		//! params, both patch cleanly, because neither changes the
+		//! head-vs-candidate delta.  Arm (a) is the one deliberate exception
+		//! to that rule (see above): the `integrator` pin is judged
+		//! statelessly, not by delta, because delta-judging it is exactly
+		//! the TOCTOU hole FIX A closed.
+		std::string CheckRasterizerAllowlistGateForPatch( const std::string& headText,
+		                                                   const std::string& target,
+		                                                   const std::string& kind,
+		                                                   const std::string& param,
+		                                                   const std::string& value );
+
+		//! ARC 81 FIX-ROUND (2026-08-12, house lighting policy): the refusal
+		//! text for `ambient_light`, shared VERBATIM by every path that can
+		//! create a chunk, so the model reads one message wherever it hits it.
+		//!
+		//! FACTS ONLY, and every clause TRUE of this renderer.  What
+		//! AmbientLight.h's ComputeDirectLighting actually does is add
+		//! `color * power` scaled only by the shading point's own BSDF; the
+		//! descriptor gives it no position and no direction (name / power /
+		//! color are its only parameters); and RayCaster.h's shadow-routing
+		//! doc records that ambient is the one light kind that casts no
+		//! shadow ray.  So "no shadow, no falloff" is a statement about the
+		//! implementation, not a judgement of it.  The message names the
+		//! AREA-LIGHT chain that fills the role and stops -- no "you should",
+		//! no advice.
+		std::string DescribeAmbientLightBan();
+
+		//! ARC 81 FIX-ROUND: does `chunkText` create an `ambient_light` chunk?
+		//! "" when it does not; DescribeAmbientLightBan() when it does, with
+		//! (when non-null) `outName` receiving that chunk's bare `name` so a
+		//! refusal can still carry the identity echo.
+		//!
+		//! UNCONDITIONAL, and deliberately NOT part of the staged-build-protocol
+		//! phase machinery: it is a permanent property of what this surface
+		//! authors, not a sequencing gate.  It therefore does NOT go through
+		//! RefuseForPhase_, does not consume the shared 3-refusal cap, cannot
+		//! trigger the give-up, and is NOT disabled by --agent-build-protocol=off.
+		//!
+		//! EVERY top-level chunk in `chunkText` is scanned, not just the first
+		//! -- the same no-smuggling rule CheckRasterizerAllowlistGateForInsert
+		//! follows, and for the same reason.  An insert is purely ADDITIVE, so
+		//! no head text is needed: an ambient_light chunk in `chunkText` is by
+		//! construction a newly created one.
+		std::string CheckAmbientLightBanForInsert( const std::string& chunkText,
+		                                            std::string* outName = nullptr );
+
+		//! ARC 81 FIX-ROUND: would this PARAM EDIT introduce an `ambient_light`
+		//! chunk through the VALUE-SPLICE mechanism R1c's arm (b) and the
+		//! build-plan gate's patch arm both close for their own kinds?  "" when
+		//! it would not.
+		//!
+		//! DELTA, NOT STATE: head and candidate are compared by `ambient_light`
+		//! COUNT, so a scene that already carries one the USER authored stays
+		//! fully editable -- every param on it patches cleanly, because editing
+		//! it changes no count.  Only a count that GOES UP is a creation.
+		//!
+		//! Two cheap pre-filters bound the cost so this does not put a
+		//! serialize/reparse round trip on every patch for a whole build: the
+		//! value must contain a `}` (closing the current chunk is a NECESSARY
+		//! step of the splice -- chunk syntax has no brace-free form) AND the
+		//! literal text `ambient_light` (the keyword has to appear verbatim in
+		//! the spliced bytes for the parse to produce that chunk).  Neither can
+		//! produce a false negative.
+		std::string CheckAmbientLightBanForPatch( const std::string& headText,
+		                                           const std::string& target,
+		                                           const std::string& kind,
+		                                           const std::string& param,
+		                                           const std::string& value );
+
+		//! Legacy-deprecation Phase 1 (2026-10-09, docs/LEGACY_DEPRECATION_
+		//! ASSESSMENT.md §10.1): the FROZEN-chunk insert ban.  Does `chunkText`
+		//! create a chunk whose descriptor is `frozen` (legacy and UNSUPPORTED)?
+		//! "" when it does not; otherwise a refusal naming the keyword and its
+		//! replacement, with `outKind` / `outName` (when non-null) receiving the
+		//! offending chunk's keyword and bare `name`.  Same contract as the
+		//! ambient_light ban above: unconditional, no phase budget, every
+		//! top-level chunk scanned, additive (no head text needed).  FROZEN
+		//! RASTERIZER kinds are NOT reported here -- the R1c rasterizer allowlist
+		//! already blocks every one of them with its own message (see
+		//! kAgentBlockedRasterizers_), so a rasterizer insert keeps exactly one
+		//! refusal text.  Loading and EDITING an existing frozen chunk is never
+		//! refused.
+		//! Legacy Phase 1 follow-up: TEST SEAM for the (now dormant on the live
+		//! insert path) unresolved-reference warning.  Runs exactly what
+		//! InsertChunk runs after a successful insert: given `r` with
+		//! applied/kind/name set, attributes `doc`'s dangling references from
+		//! that chunk to r.issues and r.message.  See AgentSession.cpp.
+		void AttachChunkIssueWarningsForTest( AgentChunkResult& r, const RISE::Cst::Document& doc,
+		                                      const std::string& chunkText );
+
+		std::string CheckFrozenChunkBanForInsert( const std::string& chunkText,
+		                                          std::string* outKind = nullptr,
+		                                          std::string* outName = nullptr );
+
+		//! Legacy Phase 1: the PATCH arm of the frozen-chunk ban.  DELTA, NOT
+		//! STATE, like CheckAmbientLightBanForPatch: refuses only when the
+		//! value-splice would RAISE the number of frozen (non-rasterizer)
+		//! chunks, so a scene that already carries frozen chunks stays fully
+		//! editable.  Same `}` pre-filter.
+		std::string CheckFrozenChunkBanForPatch( const std::string& headText,
+		                                         const std::string& target,
+		                                         const std::string& kind,
+		                                         const std::string& param,
+		                                         const std::string& value );
+
+		//! Legacy Phase 1 deferred (docs/LEGACY_DEPRECATION_ASSESSMENT.md §10.1):
+		//! the parameter-level DEPRECATION ban.  Refuses to insert a chunk that sets
+		//! a ParameterDescriptor::deprecated parameter, or to patch a deprecated parameter.
+		std::string CheckDeprecatedParamBanForInsert( const std::string& chunkText,
+		                                              std::string* outKind = nullptr,
+		                                              std::string* outName = nullptr,
+		                                              std::string* outParam = nullptr );
+
+		std::string CheckDeprecatedParamBanForPatch( const std::string& headText,
+		                                             const std::string& target,
+		                                             const std::string& kind,
+		                                             const std::string& param,
+		                                             const std::string& value );
+
+		//! G2 fix-round (2026-08-10): would this PARAM EDIT newly introduce a
+		//! chunk whose registry ChunkCategory is Geometry?  Returns that
+		//! chunk's KEYWORD (and, via `outName`, its bare `name` param) -- ""
+		//! when the edit introduces none.
+		//!
+		//! WHY A PARAM EDIT CAN CREATE A CHUNK AT ALL, and why this exists as a
+		//! separate arm rather than being argued away: DocSetOrAddParamValue
+		//! splices `value` into the target param's value token VERBATIM, so a
+		//! value carrying `}` followed by a complete `box_geometry { ... }`
+		//! block (and a trailing `#` to comment out the orphaned brace) becomes
+		//! a REAL new geometry chunk the moment the document is serialized.
+		//! That is the identical VALUE-SPLICE mechanism R1c's arm (b) was built
+		//! to close for rasterizer chunks; before this fix the build-plan gate
+		//! -- which guards the four INSERT verbs -- had no equivalent, so
+		//! propose_patch / propose_patches could land geometry with no plan
+		//! filed and the gate's refusal counter still reading zero, i.e. the
+		//! instrument measured nothing.
+		//!
+		//! DELTA, NOT STATE (the E1 lesson): the head and the candidate are
+		//! compared by geometry-keyword MULTISET, so editing an EXISTING
+		//! geometry chunk's params -- or renaming one -- is never a creation
+		//! and never trips the gate.  Only a keyword whose count GOES UP does.
+		//! The candidate is built ROUND-TRIPPED THROUGH BYTES, for the reason
+		//! R1c's arm (b) documents at length: the in-memory edit result still
+		//! has exactly the head's chunks; it is the serialized bytes where the
+		//! splice becomes a chunk.
+		//!
+		//! REGISTRY-DRIVEN classification (DescriptorForKeyword ->
+		//! ChunkCategory::Geometry), matching AgentSession::
+		//! ChunkTextCreatesGeometry_ -- NOT a `_geometry` suffix match -- so a
+		//! geometry kind added to the registry later is covered automatically
+		//! (`gltf_import` is Geometry today and carries no such suffix).
+		//!
+		//! A FREE function (external linkage) for the same cross-TU reason E1's
+		//! and R1c's patch arms are: SceneEditController::ResolveProposal's
+		//! stale-staged-proposal re-check calls this identical delta.  It is
+		//! PURE -- it never touches the gate's counter or its disarm flags;
+		//! deciding what to DO about a positive answer is the caller's job
+		//! (AgentSession::ProposePatch routes it through the ONE shared
+		//! CheckBuildPlanGate_ budget).
+		std::string DescribeBuildPlanGeometryDeltaForPatch( const std::string& headText,
+		                                                    const std::string& target,
+		                                                    const std::string& kind,
+		                                                    const std::string& param,
+		                                                    const std::string& value,
+		                                                    std::string* outName = nullptr );
+
+		//! R1c round-3 FIX A (2026-08-09).  TRUE iff `pin` (already run
+		//! through the same lower-case/quote-strip/synonym normalization
+		//! CheckRasterizerAllowlistGateForPatch's arm (a) uses) is one of the
+		//! integrator-pin values this policy has EXPLICITLY classified
+		//! (allowed: `auto`/`pt`/`vcm`; blocked: `bdpt`).  A pin value the
+		//! auto_rasterizer / auto_spectral_rasterizer descriptor accepts that
+		//! this policy never named comes back FALSE -- it still REFUSES at
+		//! runtime (allowlist semantics: unclassified defaults to refused),
+		//! but the coverage test in tests/AgentChunkCrudTest.cpp fails so a
+		//! newly accepted enum value is a decision someone makes
+		//! deliberately, mirroring AgentRasterizerKindIsExplicitlyClassified
+		//! above (R1c(i)) for rasterizer KINDS.
+		bool AgentIntegratorPinIsExplicitlyClassified( const std::string& pin );
 
 		class AgentSession
 		{
@@ -1552,7 +2772,21 @@ namespace RISE
 			//! makes that thread the sole caller.  (The render's own worker
 			//! POOL touches the derived Scene during that synchronous call,
 			//! but the call has not returned, so no read can interleave.)
+			//!
+			//! Batched agent edits (2026-10-16): while an InsertChunks /
+			//! ProposePatches batch holds DEFERRED elements (see
+			//! FlushEditBatch_), this returns the document AS THOSE ELEMENTS
+			//! WILL LEAVE IT (the Job's own preview, with the REAL head
+			//! version) -- so every pre-commit gate judges element i against
+			//! elements 0..i-1, exactly as it did when each element committed
+			//! before the next was considered.  ReadDocumentSnapshotReal_ is
+			//! the unpreviewed read.
 			AgentDocumentSnapshot ReadDocumentSnapshot() const;
+
+			//! Test seam (2026-10-16): called with the element index after each element an InsertChunks /
+			//! ProposePatches batch DEFERS (null = none).  Lets a test move the head mid-batch.
+			void ForTest_SetAfterDeferHook( std::function<void( std::size_t )> hook ) { mForTestAfterDeferHook = hook; }
+			AgentDocumentSnapshot ReadDocumentSnapshotReal_() const;
 
 			//! The head-version alone, read with the SAME discipline as
 			//! ReadDocumentSnapshot (controller-mediated under mMutex when
@@ -1565,6 +2799,70 @@ namespace RISE
 			//! The descriptor-generated JSON schema (charter L6): one chunk
 			//! when `keyword` is non-empty, else the whole grammar.
 			std::string ReadSchema( const std::string& keyword = std::string() ) const;
+
+			//! ONE light's LAST `light_scene` solo measurement, retained for
+			//! design-note condition N (DESIGN_DIM_HERO_LIGHT -- a light
+			//! authored bright that measured near-nothing).  See that code's
+			//! doc in AgentDiagnostic.h for the whole condition; this struct is
+			//! only the record it speaks from.  Declared HERE, well above the
+			//! `light_scene` block that writes it, because the validate/design-
+			//! note declarations just below take the map by pointer and a
+			//! member declaration may only name a nested type already declared.
+			//!
+			//! `chunkText` is the VALIDITY KEY: the light's own document chunk,
+			//! verbatim (RISE::Cst::SerializeNode), as it read at measurement
+			//! time.  A cached entry is USED only while the light's current
+			//! chunk text is byte-identical to it -- retune the light and the
+			//! entry is silently dropped rather than quoted at a document it no
+			//! longer describes.  The key is deliberately the light's OWN bytes
+			//! and nothing wider: keying on the whole document would drop every
+			//! measurement on any edit anywhere (the note would never speak
+			//! twice), and the honest cost of the narrow key -- an edit
+			//! ELSEWHERE that changes this light's real contribution without
+			//! touching its chunk -- is stated in the clause the note prints.
+			struct AgentLightSoloMeasurement
+			{
+				std::string name;
+				//! The AUTHORED chunk keyword at measurement time: one of
+				//! `omni_light` / `spot_light` / `rect_light` / `shape_light`.
+				//! Nothing else is recorded -- see the condition's SCOPE note.
+				std::string kind;
+				//! `AgentLightContribution::shareOfSoloedTotal` [0,1], recorded
+				//! ONLY when the soloed total was strictly positive (an
+				//! all-black audit measures nothing, and a 0/0 share is not a
+				//! measurement this note may speak from).
+				double      share = 0.0;
+				//! The solo frame's mean Rec.709 luma (0-255), and the
+				//! all-lights frame's, exactly as the audit reported them --
+				//! kept so the record carries the raw pair the trajectory that
+				//! motivated this condition printed (1.3 against 67.9).
+				double      meanLuma = 0.0;
+				double      allLightsMeanLuma = 0.0;
+				//! The AUTHORED intensity at measurement time and the parameter
+				//! it was read from ("power" for omni/spot, "exitance" for
+				//! rect/shape).  Redundant with re-reading the chunk -- the
+				//! validity key guarantees the bytes are unchanged -- but kept
+				//! so the record is self-describing at the point it is written.
+				double      authoredIntensity = 0.0;
+				std::string intensityParam;
+				//! The largest channel of the light's `color` at measurement
+				//! time (0.0 when the parameter was absent and the kind
+				//! defaults it to black), read the SAME way condition N's own
+				//! (ii) colour test does.  Kept here -- not just re-derivable
+				//! from `chunkText` -- so condition O (DESIGN_DIM_LIGHT_
+				//! REMEASURE, AgentDiagnostic.h) can evaluate N's whole
+				//! qualification predicate against this RECORDED SNAPSHOT
+				//! after the light's chunk has since changed, when there is no
+				//! longer a live document node for this measurement to read a
+				//! colour off.
+				double      authoredColorMax = 0.0;
+				std::string chunkText;
+			};
+
+			//! light name -> its last solo measurement.  Small by construction
+			//! (one entry per soloed light, and a whole audit REPLACES the map),
+			//! so a plain std::map is the right shape.
+			typedef std::map<std::string, AgentLightSoloMeasurement> AgentLightSoloMeasurementMap;
 
 			//! THE KEYSTONE.  Validate a CANDIDATE scene text with NO side
 			//! effects on this session's Job.  A candidate that declares NO
@@ -1590,7 +2888,31 @@ namespace RISE
 			//! REPAIRING a scene from scratch (the CLI's `--agent-stdio` with
 			//! no scene loaded) must be able to `validate` a candidate BEFORE
 			//! any head exists.  Identical result to `Validate()`.
-			static std::vector<AgentDiagnostic> ValidateText( const std::string& candidateText );
+			//!
+			//! `inPiecesPhase` (doc 91): true when the CALLER's session is
+			//! mid-build (`BuildProtocolActive() && BuildPhase() ==
+			//! AgentBuildPhase::Pieces`).  Being static, this function has no
+			//! session of its own to ask, so a caller that HAS one (`Validate()`
+			//! below; AgentRpc.cpp's `validate` handler) passes its own
+			//! answer through; a caller with no session (the no-head
+			//! bootstrap this function exists for) leaves the default
+			//! `false`, which is the conservative choice -- it can only make
+			//! the unbound-material note fire MORE often, never silence a
+			//! real one.  See AgentDiagnosticCode::DESIGN_UNBOUND_MATERIAL's
+			//! doc for why this ONE condition is phase-sensitive when none
+			//! of the others are.
+			//!
+			//! `soloCache` (condition N, 2026-08-30) is the calling session's
+			//! `light_scene` solo-measurement cache, or null.  Being static,
+			//! this function has no session state of its own -- so a caller
+			//! WITH one passes it (`Validate()` below does), and the no-head
+			//! bootstrap leaves it null, in which case condition N is simply
+			//! SILENT.  Exactly condition M's `derivedJob` arrangement, and for
+			//! the same reason: a condition whose input the caller does not
+			//! have is absent, never guessed.
+			static std::vector<AgentDiagnostic> ValidateText( const std::string& candidateText,
+			                                                  bool inPiecesPhase = false,
+			                                                  const AgentLightSoloMeasurementMap* soloCache = nullptr );
 
 			//! Creative-richness P2 (73-creative-richness-design.md sec 2 P2,
 			//! RE-TARGETED by sec 7): the shared engine-side "design note"
@@ -1611,7 +2933,19 @@ namespace RISE
 			//! "DESIGN NOTE: ..." string carrying every firing clause plus
 			//! a load-bearing anti-churn escape clause.  See
 			//! AgentSession.cpp for the exact scan and wording.
-			static std::string ComputeDesignNote( const std::string& documentText );
+			//!
+			//! `inPiecesPhase` -- same contract as ValidateText's own
+			//! parameter above (doc 91); default `false` for the same
+			//! conservative reason.
+			//!
+			//! `soloCache` -- same contract as ValidateText's own parameter
+			//! just above (condition N): null means N is silent here.  A caller
+			//! that has a session passes `LightSoloMeasurements()` so this
+			//! carrier and the diagnostic carrier cannot disagree about whether
+			//! N fired on the same bytes.
+			static std::string ComputeDesignNote( const std::string& documentText,
+			                                      bool inPiecesPhase = false,
+			                                      const AgentLightSoloMeasurementMap* soloCache = nullptr );
 
 			//! Facet 5 slice S1: read_skill -- STATELESS, like ReadSchema /
 			//! ValidateText (references NO member state; exposed static so the
@@ -1747,8 +3081,11 @@ namespace RISE
 			//! parameter edits across one or several named entities in ONE call
 			//! instead of one round-trip per patch.
 			//!
-			//! Semantics are SEQUENTIAL and BEST-EFFORT, delegating to ProposePatch
-			//! for each element in `patches`.  `baseOrNull` is checked against the
+			//! Semantics are SEQUENTIAL and BEST-EFFORT, delegating to ProposePatch's
+			//! body for each element in `patches` -- with the commits deferred and
+			//! the batch realized by ONE full re-derive, as InsertChunks does (see
+			//! its doc; a lone element and the element carrying `baseOrNull`
+			//! commit exactly as a single call).  `baseOrNull` is checked against the
 			//! FIRST element only; subsequent elements pass nullptr to apply
 			//! against the evolving head.  A REJECTED element does NOT stop the
 			//! batch -- later elements are still attempted so their own results
@@ -1768,6 +3105,18 @@ namespace RISE
 			//! corresponds to patches[i]); the unattempted tail carries
 			//! applied=false, status="conflict" and a message saying so.
 			//! Re-read the head and resubmit the batch.
+			//!
+			//! Doc 90 R3 (2026-08-23): orphan-pressure reporting is BATCH-
+			//! AWARE.  Each element's own AgentPatchResult::reportedOrphans
+			//! is still populated per element (structured data, unchanged),
+			//! but the human-readable "Now unreferenced and NOT removed ..."
+			//! sentence ProposePatch appends to a single-call `message` is
+			//! NOT repeated once per orphaning element here -- every
+			//! element's report is folded into ONE combined sentence naming
+			//! every newly-orphaned chunk across the WHOLE call, appended to
+			//! the LAST result's `message` only.  A model reading N results
+			//! back from one propose_patches call therefore sees the orphan
+			//! notice exactly once, not once per rebind that caused it.
 			std::vector<AgentPatchResult> ProposePatches( const std::vector<AgentSetPatch>& patches,
 			                                              const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
@@ -1796,6 +3145,10 @@ namespace RISE
 			AgentChunkResult InsertChunk( const std::string& chunkText,
 			                              const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! How many InsertChunks calls this session has made (diagnostic; tests use it
+			//! to prove a batch lands in one call).
+			unsigned int InsertChunksCallCount() const { return mInsertChunksCalls; }
+
 			//! BATCH form of InsertChunk (insert_chunks): apply MULTIPLE
 			//! complete chunks in ONE call instead of one round-trip per
 			//! chunk.  Motivation: a scene assembled one insert_chunk at a
@@ -1805,16 +3158,27 @@ namespace RISE
 			//! ONE call.
 			//!
 			//! Semantics are SEQUENTIAL and BEST-EFFORT, and this method
-			//! does NOT duplicate InsertChunk's logic -- it simply calls
-			//! InsertChunk once per element of `chunkTexts`, IN ORDER, and
+			//! does NOT duplicate InsertChunk's logic -- it runs InsertChunk's
+			//! own body once per element of `chunkTexts`, IN ORDER, and
 			//! collects one AgentChunkResult per input (same size and order
-			//! as `chunkTexts`).  Because each call lands (or is rejected)
-			//! before the next one runs, a chunk EARLIER in the batch that
-			//! is referenced by a LATER chunk resolves cleanly -- e.g. a
+			//! as `chunkTexts`).  A chunk EARLIER in the batch that is
+			//! referenced by a LATER chunk resolves cleanly -- e.g. a
 			//! painter at index 0 followed by a material at index 1 that
 			//! references it -- exactly as if the two had been separate
 			//! insert_chunk calls in the same order, without the caller
 			//! having to round-trip in between.
+			//!
+			//! Batched agent edits (2026-10-16): every element still runs
+			//! every gate in order (each judged against the document its
+			//! predecessors leave -- see ReadDocumentSnapshot), but the
+			//! COMMITS are deferred and the whole batch is realized with ONE
+			//! full re-derive (SceneEditController::ApplyAgentEditBatch /
+			//! Job::ApplyCstEditBatch) instead of one per element; an element
+			//! that would not derive is still refused on its own.  Every
+			//! element reports the same post-call headVersion (the revision
+			//! is bumped once), and in LIVE mode the batch is ONE undo step --
+			//! except when its failure isolation exceeds Job's budget: the
+			//! elements are then committed one at a time (one undo step EACH).
 			//!
 			//! A REJECTED element does NOT stop the batch: the remaining
 			//! elements are still attempted in order.  If a later element
@@ -1950,16 +3314,39 @@ namespace RISE
 			                                            double scale,
 			                                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
-			//! Arc-75 slice S3b (insert_geometry_scaffold): the one of FOUR
-			//! geometry-family templates this call expanded -- pin the
-			//! strings, they are the wire/tool-schema enum.  The geometry
-			//! sibling of MaterialScaffoldFamily above; same conventions.
+			//! Arc-75 slice S3b (insert_geometry_scaffold), extended by
+			//! slice E3: the one of SIX geometry-family templates this call
+			//! expanded -- pin the strings, they are the wire/tool-schema
+			//! enum.  The geometry sibling of MaterialScaffoldFamily above;
+			//! same conventions.  E3 added BlendedChain (a smin-blended
+			//! sphere chain swept along a model-authored path -- the
+			//! family whose "creative essence" is the path, so it takes
+			//! `points`/`taper` instead of `aspect`) and VolumeBank (an
+			//! elongated atmospheric volume -- container + near-invisible
+			//! dielectric shell + painter-driven heterogeneous medium,
+			//! ready-wired -- the one family that DOES emit a material and
+			//! a standard_object; see InsertGeometryScaffold's doc for
+			//! why).  See docs/agentic-redesign/75-expressive-surface-arc.md
+			//! slice E3 for the design.
+			//! Creature scaffold slice (2026-08-25): Quadruped added, a
+			//! SEVENTH family and the first to emit a `skeleton_geometry`
+			//! chunk rather than a raw `sdf_geometry`/other primitive --
+			//! see BuildQuadrupedSkeleton's own comment for why (the
+			//! measured, twice-proven "mechanized verbs convert, prose
+			//! doesn't" law: condition J's own creature-steer ADVICE was
+			//! read and ignored on the SAME session that then converted
+			//! fix_blend_scale on first opportunity).  Takes `build`
+			//! (a 2-3-preset stance knob) INSTEAD of `detail`/`aspect` --
+			//! see InsertGeometryScaffold's header doc for the param table.
 			enum class GeometryScaffoldFamily
 			{
 				DisplacedSlab,
 				SweepRail,
 				BlendedVessel,
 				SdfColumn,
+				BlendedChain,
+				VolumeBank,
+				Quadruped,
 			};
 
 			//! The structured result of InsertGeometryScaffold.  Same
@@ -1992,50 +3379,245 @@ namespace RISE
 			//! `displacement` slot, which resolves through the Function2D
 			//! manager (Job::AddDisplacedGeometry), not the colour pipe --
 			//! so there is no `boundSlots`-equivalent field here.
+			//! E3 addendum: `materialName`/`materialKind`, `mediumName`/
+			//! `mediumKind`, and `objectName`/`objectKind` are empty for
+			//! every family except `volume_bank`, the ONE family that
+			//! emits a material, a medium, AND a standard_object (see
+			//! InsertGeometryScaffold's doc for why that family alone
+			//! deviates from the graph-only convention).  When populated,
+			//! `message` ALSO carries a factual (non-advisory) note on an
+			//! `ok==true` volume_bank result -- see InsertGeometryScaffold's
+			//! doc -- unlike every other family, where `message` stays
+			//! empty on success.
+			//! R2 (2026-08-10, replace_geometry_scaffold) addendum: the four
+			//! `replaced*` fields below are populated ONLY by
+			//! ReplaceGeometryScaffold and stay empty/false for every
+			//! InsertGeometryScaffold result -- the struct is shared
+			//! deliberately (the two verbs produce the SAME chunk graph and the
+			//! SAME per-chunk reporting; only the disposition of the OLD
+			//! geometry differs) rather than forking a near-duplicate type.
+			//! See ReplaceGeometryScaffold's doc for the orphan-cleanup policy
+			//! these fields report.
+			//! R2 fix-round (2026-08-10, P1) addendum: `status`/`retriable`/
+			//! `headVersion` below are ReplaceGeometryScaffold-only (empty/false/
+			//! default for every InsertGeometryScaffold result, which has no
+			//! single composite commit to report) -- mirror
+			//! AgentRemoveBatchResult's identically-named fields, field-for-field,
+			//! so the two composite-commit verbs read alike.  For
+			//! ReplaceGeometryScaffold, `ok` is redefined precisely (see the
+			//! field's own doc below): it now means the request reached a
+			//! commit-stage disposition (attempted, whatever the outcome), NOT
+			//! that the commit applied -- `status` carries the outcome.
 			struct AgentGeometryScaffoldResult
 			{
+				//! For InsertGeometryScaffold: unchanged (pre-flight request
+				//! validity -- see the struct's main doc above).
+				//! For ReplaceGeometryScaffold (R2 fix-round): true once the
+				//! request passed pre-flight validation AND a base-head/commit
+				//! disposition was reached -- applied, rejected, conflict,
+				//! diagnosed, or a transient retriable reject ALL set ok=true,
+				//! exactly like InsertGeometryScaffold's "well-formed and
+				//! submitted, not a promise every chunk landed" hedge.  `status`/
+				//! `retriable`/`headVersion` (and each `chunkResults` entry's own
+				//! `applied`) carry the actual disposition.  ok stays false ONLY
+				//! for a genuine pre-commit refusal that never reached that point:
+				//! bad/missing params, unknown family, the volume_bank refusal,
+				//! target-resolution failure, name collision, no retained
+				//! Document, or the External-authority hard refusal.
 				bool        ok = false;
 				std::string message;
 				std::string family;
 				std::string geometryName;
 				std::string geometryKind;
+				std::string materialName;
+				std::string materialKind;
+				std::string mediumName;
+				std::string mediumKind;
+				std::string objectName;
+				std::string objectKind;
 				std::vector<AgentChunkResult> chunkResults;
+
+				//! R2: the `standard_object` whose `geometry` slot was rebound.
+				std::string replacedObject;
+				//! R2: the geometry chunk that slot pointed at BEFORE the call
+				//! (name + keyword), whether or not it was removed.
+				std::string previousGeometryName;
+				std::string previousGeometryKind;
+				//! R2: true iff the previous geometry chunk was UNREFERENCED
+				//! after the rebind and was therefore erased in the same atomic
+				//! mutation.  False means it was RETAINED because something else
+				//! still references it -- `previousGeometryReferrers` names what.
+				bool        previousGeometryRemoved = false;
+				//! R2: the chunks that STILL reference the previous geometry
+				//! (empty when it was removed).  Bare names where the referrer
+				//! is named, else its keyword.
+				std::vector<std::string> previousGeometryReferrers;
+				//! R2: chunks that the removal left UNREFERENCED but that this
+				//! verb deliberately did NOT chase (e.g. the noise Function2D
+				//! that fed a removed displaced_geometry).  Reported as
+				//! "keyword/name" so a model can hand them straight to
+				//! remove_chunks -- see ReplaceGeometryScaffold's doc for why
+				//! v1 reports rather than removes them.
+				std::vector<std::string> reportedOrphans;
+
+				//! R2 fix-round (2026-08-10, P1): ReplaceGeometryScaffold-only --
+				//! see the struct's addendum above and `ok`'s own doc.  Empty/
+				//! false/default for every InsertGeometryScaffold result and for
+				//! a pre-commit ReplaceGeometryScaffold refusal (ok==false).
+				//! `status`: "applied" / "rejected" / "conflict" / "diagnosed" --
+				//! the SAME four values AgentPatchResult::status and
+				//! SceneEditController::AgentCommitResult::status use.
+				//! `retriable`: meaningful for status=="rejected" only -- true
+				//! means the reject is TRANSIENT (an open editor transaction/
+				//! gesture, or the render-admission gate) and the IDENTICAL call
+				//! can succeed later with no change; false means permanent.  A
+				//! CONFLICT does NOT set this -- see AgentCommitResult::retriable's
+				//! doc for why (its own status IS the retry signal, via re-read/
+				//! rebase/re-propose, not verbatim resubmission).
+				//! `headVersion`: the head AFTER the call on applied/diagnosed, or
+				//! the CURRENT head (the one that refused the request) on
+				//! rejected/conflict.
+				std::string               status;
+				bool                      retriable = false;
+				RISE::Cst::CstHeadVersion headVersion;
 			};
 
-			//! Expand geometry `family` into a small GEOMETRY-ONLY chunk
-			//! graph (1-3 chunks: displaced_slab is base box + noise
-			//! Function2D source + displaced_geometry bolt-on; sweep_rail,
-			//! blended_vessel, and sdf_column are each a SINGLE geometry
-			//! chunk, every chunk named `tmpl_<name>_<role>`) and submit it
-			//! through InsertChunks -- so an advanced geometric form costs
-			//! ONE tool call instead of hand-composing a displaced_geometry/
-			//! sweep_geometry/sdf_geometry chunk from scratch.  See
-			//! docs/agentic-redesign/75-expressive-surface-arc.md S3b for
+			//! Expand geometry `family` into a small chunk graph (1-3 chunks
+			//! for the ORIGINAL four families: displaced_slab is base box +
+			//! noise Function2D source + displaced_geometry bolt-on;
+			//! sweep_rail, blended_vessel, and sdf_column are each a SINGLE
+			//! geometry chunk; every chunk named `tmpl_<name>_<role>`) and
+			//! submit it through InsertChunks -- so an advanced geometric
+			//! form costs ONE tool call instead of hand-composing a
+			//! displaced_geometry/sweep_geometry/sdf_geometry chunk from
+			//! scratch.  See docs/agentic-redesign/75-expressive-surface-arc.md
+			//! S3b (original four) and E3 (blended_chain, volume_bank) for
 			//! the design and AgentSession.cpp's BuildGeometryScaffoldGraph
 			//! for the per-family chunk design + the param-flow rationale.
-			//! Deliberately emits GEOMETRY chunks ONLY (plus, for
-			//! displaced_slab, the one Function2D noise source it bolts
-			//! on) -- the model wires the `standard_object` (and any
-			//! material) itself, the exact division S2's census proved
-			//! models handle.  ALL THREE params are REQUIRED -- `family`
-			//! (one of the GeometryScaffoldFamily strings), `name` (a
-			//! fresh, unique prefix), `size` (>0, overall scale), `detail`
-			//! (0..1: displacement amplitude / profile complexity / smin
-			//! tightness / tessellation, whichever is honest for that
-			//! family -- see each BuildXxx's own comment), `aspect` (>0:
-			//! elongation).  Internal graph constants (noise phase/
-			//! frequency, profile-point phase, path bow, smin blend radii,
-			//! segment counts) are jittered DETERMINISTICALLY from a hash
-			//! of `name` (the SAME ScaffoldFnv1a64/ScaffoldJitter* helpers
-			//! insert_material_scaffold uses -- see ScaffoldFnv1a64's doc
-			//! for the distinctive-salt-per-knob avalanche caveat, which
-			//! applies identically here) -- no RNG, no clock, so two calls
-			//! with the SAME name produce byte-identical chunk text and two
-			//! DIFFERENT names visibly differ beyond their explicit params.
-			//! Routes entirely through InsertChunks (see that method's
-			//! doc): AUTHORITY (Owner vs External) staging-vs-commit,
-			//! conflict detection, and per-chunk `issues` diagnostics are
-			//! ALL inherited unchanged for a caller at THIS C++ API --
+			//!
+			//! PARAM SHAPE VARIES BY FAMILY (E3 widened the signature to the
+			//! union of every family's params; each family validates and
+			//! uses only its own subset -- unused params for a given family
+			//! are silently ignored, never validated):
+			//!   - displaced_slab / sweep_rail / blended_vessel / sdf_column
+			//!     (unchanged from S3b): REQUIRE `family`, `name`, `size`
+			//!     (>0, overall scale), `detail` (0..1: displacement
+			//!     amplitude / profile complexity / smin tightness /
+			//!     tessellation, whichever is honest for that family --
+			//!     see each BuildXxx's own comment), `aspect` (>0:
+			//!     elongation).  `points`/`taper`/`tone` are ignored.
+			//!     Deliberately emit GEOMETRY chunks ONLY (plus, for
+			//!     displaced_slab, the one Function2D noise source it
+			//!     bolts on) -- the model wires the `standard_object`
+			//!     (and any material) itself, the exact division S2's
+			//!     census proved models handle.
+			//!   - blended_chain (E3): a smin-blended chain of spheres
+			//!     swept along a model-authored path -- the path IS this
+			//!     family's creative essence, so it takes `points`
+			//!     (REQUIRED: 2-6 semicolon-separated "x y z" triplets,
+			//!     each a finite number -- e.g. "0 0 0; 0.5 1.2 -0.3; 1 3 0")
+			//!     and `taper` (REQUIRED, 0..1: end-to-end radius falloff
+			//!     from the first point to the last) INSTEAD of `aspect`
+			//!     (ignored).  `size` (>0: base radius at the first point)
+			//!     and `detail` (0..1: node density along the path -- more
+			//!     nodes = smoother -- and smin-k tightness) are still
+			//!     REQUIRED.  Emits ONE sdf_geometry chunk (continuity by
+			//!     construction: every node-to-node joint's smin blend
+			//!     radius is floored at the EXACT polynomial-smin bridging
+			//!     threshold derived from the REALIZED post-jitter radii
+			//!     and spacing at that joint -- not a coarse spacing-only
+			//!     guess -- so the chain can never show a visible gap
+			//!     regardless of size/taper/detail; node count also scales
+			//!     with a geometric density estimate so a heavily-tapered/
+			//!     sparse chain adds more, closer nodes near the thin end
+			//!     rather than ballooning the blend into an oversized
+			//!     bulge there.  See BuildBlendedChain's own comment for
+			//!     the full sminP derivation.)  The path is interpolated
+			//!     with a clamped Catmull-Rom spline through
+			//!     every given point (so the FIRST and LAST nodes land
+			//!     EXACTLY on the first/last given point -- a model's
+			//!     documented attachment mechanism: end a chain exactly at
+			//!     another part's surface by naming that surface's
+			//!     coordinate as an endpoint).  See BuildBlendedChain's own
+			//!     comment for the interpolation + jitter details.
+			//!   - volume_bank (E3): an elongated atmospheric volume --
+			//!     container geometry + a near-invisible dielectric
+			//!     boundary material + a painter-driven heterogeneous
+			//!     medium, ready-wired.  REQUIRES `family`, `name`, `size`
+			//!     (>0, overall scale), `aspect` (>0: elongation), `detail`
+			//!     (0..1: density-field wispiness/swirl -- modulates the
+			//!     domain-warped noise density painter's warp amplitude
+			//!     and frequency), `tone` (REQUIRED, "r g b" each 0..1: the
+			//!     medium's scatter tint).  `points`/`taper` are ignored.
+			//!     THE ONE FAMILY THAT DEVIATES from the graph-only
+			//!     convention -- it ALSO emits a dielectric_material and a
+			//!     standard_object (not just geometry) -- for two reasons,
+			//!     both explained in BuildVolumeBank's own comment: (1) a
+			//!     bare volume graph does nothing until an object binds it
+			//!     via `interior_medium`, and (2) more importantly,
+			//!     painter_heterogeneous_medium's `bbox_min`/`bbox_max` are
+			//!     WORLD-SPACE and fixed at chunk-parse time (see
+			//!     HeterogeneousMedium.cpp's LookupDensity) -- they are NOT
+			//!     re-derived from the interior_medium object's transform,
+			//!     so this scaffold can only guarantee a correctly-aligned
+			//!     density field by choosing the object's placement itself
+			//!     (identity transform at the origin) and computing the
+			//!     bbox to match.  On an `ok==true` volume_bank result,
+			//!     `message` carries a FACTUAL (not advisory) reminder of
+			//!     this: repositioning/rescaling the emitted
+			//!     `standard_object` needs a matching hand-edit to the
+			//!     medium chunk's `bbox_min`/`bbox_max`, or the density
+			//!     field will no longer align with the container.
+			//!   - quadruped (creature scaffold slice): a generic
+			//!     four-legged animal skeleton -- spine (hips -> mid ->
+			//!     chest), neck, head, muzzle, two ears, a tail chain,
+			//!     and four legs (upper/lower/paw).  REQUIRES `family`,
+			//!     `name`, `size` (>0, overall scale).  `detail`/`aspect`
+			//!     are NOT required (silently ignored if given -- unlike
+			//!     every other family, this one has no honest use for
+			//!     either: there is no displacement/tessellation/profile-
+			//!     complexity knob a joint graph could apply `detail` to,
+			//!     and no single elongation axis `aspect` could apply to
+			//!     a body that already has a hips-to-chest length AND a
+			//!     stand height AND a tail length).  `points`/`taper`/
+			//!     `tone` are likewise ignored.  Takes ONE family-specific
+			//!     param `build` (OPTIONAL, default "average"): "lean" /
+			//!     "average" / "stocky", a small stance preset that
+			//!     rescales leg length/girth and body girth together --
+			//!     an unrecognized value is refused, naming the three
+			//!     legal ones.  `family:"creature"` is accepted as an
+			//!     alias for `family:"quadruped"` (both resolve to the
+			//!     identical generator; the result's own `family` field
+			//!     echoes back whichever spelling was passed).  Emits ONE
+			//!     `skeleton_geometry` chunk (NOT `sdf_geometry` -- see
+			//!     BuildQuadrupedSkeleton's own comment for why this is
+			//!     the family's whole point: a skeleton's blend radius is
+			//!     `blend * min(parent radius, child radius)` PER BONE,
+			//!     so it cannot fall into the fixed-world-unit-k trap
+			//!     condition J's DESIGN_SDF_BLEND_SCALE advisory exists
+			//!     to catch -- structurally, not by calibration).  Every
+			//!     preset/size/name combination is swept against the
+			//!     SAME shared scan that advisory uses (on the fully
+			//!     expanded bones, via SDFGeometry::GetParts() on a real
+			//!     derived Job -- not the document-level scan, which is
+			//!     blind to skeleton_geometry by design) and asserted
+			//!     offender-free and proportion-caveat-free; see
+			//!     tests/AgentQuadrupedScaffoldTest.cpp's sweep case.
+			//!
+			//! Internal graph constants (noise phase/frequency, profile-
+			//! point phase, path bow, smin blend radii, segment counts,
+			//! per-node path/radius jitter) are jittered DETERMINISTICALLY
+			//! from a hash of `name` (the SAME ScaffoldFnv1a64/
+			//! ScaffoldJitter* helpers insert_material_scaffold uses -- see
+			//! ScaffoldFnv1a64's doc for the distinctive-salt-per-knob
+			//! avalanche caveat, which applies identically here) -- no RNG,
+			//! no clock, so two calls with the SAME name (and same other
+			//! params) produce byte-identical chunk text and two DIFFERENT
+			//! names visibly differ beyond their explicit params.  Routes
+			//! entirely through InsertChunks (see that method's doc):
+			//! AUTHORITY (Owner vs External) staging-vs-commit, conflict
+			//! detection, and per-chunk `issues` diagnostics are ALL
+			//! inherited unchanged for a caller at THIS C++ API --
 			//! including the Secure-MCP External-authority staging
 			//! behaviour.
 			//!
@@ -2060,7 +3642,2648 @@ namespace RISE
 			                                                    double size,
 			                                                    double detail,
 			                                                    double aspect,
+			                                                    const std::string& points = std::string(),
+			                                                    double taper = 0.0,
+			                                                    const std::string& tone = std::string(),
+			                                                    //! Creature scaffold slice: tail-appended,
+			                                                    //! quadruped-only -- "" resolves to "average"
+			                                                    //! (see that family's own doc above for the
+			                                                    //! three legal values).  Every OTHER family
+			                                                    //! ignores it, matching the established
+			                                                    //! per-family "unused params silently
+			                                                    //! ignored" convention.
+			                                                    const std::string& build = std::string(),
 			                                                    const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! R2 (2026-08-10, replace_geometry_scaffold): expand `family` into
+			//! the SAME chunk graph InsertGeometryScaffold produces (identical
+			//! validation, identical generators, identical deterministic
+			//! jitter -- one shared code path, not a copy) and REBIND the
+			//! `geometry` slot of the EXISTING `standard_object` named `target`
+			//! to the new geometry chunk, ALL IN ONE CALL.
+			//!
+			//! WHY THIS VERB EXISTS (the R1 trajectory census): models revise
+			//! what a ONE-PARAMETER patch can revise.  A rich MATERIAL is one
+			//! chunk bound to a slot, so models iterate on materials freely; a
+			//! rich FORM is a multi-chunk composition, so re-forming a part
+			//! today costs "author a new geometry chunk + patch the object's
+			//! geometry slot + remove the orphan" -- three calls -- and the
+			//! measured consequence is ZERO geometry revisions across a whole
+			//! build+render+revise trajectory.  This verb makes form revision
+			//! cost exactly what a colour tweak costs.
+			//!
+			//! WHAT IT PRESERVES: ONLY the `geometry` param changes.  The
+			//! object's `position` / `orientation` / `scale` / `material` /
+			//! every other slot is left byte-identical -- placement the model
+			//! tuned BY LOOKING must survive a form change, which is the whole
+			//! point of the verb.
+			//!
+			//! ONE CALL = ONE MUTATION: the new chunks, the slot rebind, and the
+			//! old chunk's removal are computed into ONE candidate document and
+			//! committed by ONE dry-run-guarded re-derive -- so ONE head-version
+			//! bump, ONE history entry, ONE Cmd-Z, and ONE mutation as far as the
+			//! chat loop's E4 blind-edit streak is concerned.  ALL-OR-NOTHING:
+			//! on ANY refusal (and on a candidate that would not derive) the
+			//! document, the head version, the history and the proposal queue
+			//! are completely unmutated.  Note that this is NOT
+			//! InsertGeometryScaffold's route: that verb submits through
+			//! InsertChunks, which is SEQUENTIAL and BEST-EFFORT (N head bumps,
+			//! N history entries) -- correct for a purely ADDITIVE batch, wrong
+			//! for a composite whose intermediate states are incoherent (a
+			//! rebound slot pointing at a chunk that did not land, an orphan
+			//! removed before its replacement exists).
+			//!
+			//! CONCURRENCY: the candidate is computed against a head SNAPSHOT
+			//! read outside the commit lock, so this verb ALWAYS commits under
+			//! optimistic concurrency -- even when the caller omits
+			//! `baseOrNull`, the snapshot's own head version is passed to the
+			//! commit and a head that moved in between yields `status ==
+			//! "conflict"`, never a silent clobber of a co-editor's edit.  An
+			//! explicit `baseOrNull` that does not match the snapshot is a
+			//! conflict up front.  R2 fix-round (2026-08-10, P1): a CONFLICT --
+			//! whether the up-front `baseOrNull` mismatch or a race lost at the
+			//! actual commit -- is NOT a request-validity failure: `ok` stays
+			//! true (a commit-stage disposition WAS reached) and
+			//! `status`/`retriable`/`headVersion` carry it, the SAME distinction
+			//! ProposePatch's identical precondition draws
+			//! (AgentPatchResult::status=="conflict" with `applied`==false).
+			//!
+			//! PARAMS: `target` (REQUIRED) plus the EXACT param set
+			//! InsertGeometryScaffold takes, with the SAME per-family shape and
+			//! the SAME validation messages (only the verb name in the refusal
+			//! text differs).  `target` is resolved by the ProposePatch/
+			//! remove_chunk rules (bare name, unique-or-refuse; no kind
+			//! narrowing parameter -- `standard_object` IS the kind constraint).
+			//!
+			//! REFUSALS (blocking, actionable, document byte-identical):
+			//!   * `family == "volume_bank"` -- that family emits its OWN
+			//!     `standard_object` (see InsertGeometryScaffold's doc), so
+			//!     there is no existing object's geometry slot to rebind;
+			//!     the message points at insert_geometry_scaffold.
+			//!   * `target` resolves to nothing (with near-miss suggestions),
+			//!     or is AMBIGUOUS (with the disambiguation hint ProposePatch
+			//!     gives).
+			//!   * `target` resolves to a GEOMETRY chunk rather than an object
+			//!     -- diagnosed SPECIFICALLY, naming the `standard_object`(s)
+			//!     that consume it, because that is the likely model mistake
+			//!     and a generic "not found" would cost a whole turn.
+			//!   * `target` resolves to some OTHER kind, or to a
+			//!     `standard_object` with no `geometry` param.
+			//!   * a generated chunk name collides with an existing (kind,name).
+			//!
+			//! ORPHAN CLEANUP (conservative v1, deliberately): after the
+			//! rebind, the PREVIOUS geometry chunk is removed IF AND ONLY IF
+			//! nothing else references it; if something does, it is RETAINED and
+			//! the result names the remaining referrers.  Chunks that the
+			//! removal leaves unreferenced ONE HOP DEEPER (e.g. the perlin2d
+			//! Function2D that only fed a removed displaced_geometry) are NOT
+			//! chased -- they are REPORTED by name in `reportedOrphans` so the
+			//! model can remove them with remove_chunks if it wants.  Rationale:
+			//! a transitive sweep would have to decide, without the author's
+			//! intent, whether a shared painter/function is "part of" the
+			//! discarded form or a scene-wide asset the author will rebind in a
+			//! moment -- and silently deleting the latter is a one-way door,
+			//! whereas an unreferenced leftover chunk is inert and one call away
+			//! from gone.
+			//!
+			//! GATES: the E1 non-sampling-emitter gate and the R1c rasterizer
+			//! allowlist gate are BOTH evaluated against the CANDIDATE document
+			//! (delta-against-head, the same state-vs-delta rule
+			//! CheckNonSamplingEmitterGateForPatch's arm C applies), so this
+			//! creation path cannot bypass either.  Neither can fire through
+			//! THIS verb's own mutation as of R2 -- no geometry family emits a
+			//! rasterizer chunk, and no family emits or edits a `csg_object` --
+			//! but they are evaluated rather than argued away, so a future
+			//! family or a widened `target` domain cannot silently open a hole.
+			//!
+			//! AUTHORITY: unlike the InsertChunks-routed scaffolds, an
+			//! External-authority session does NOT stage this verb -- it is
+			//! REFUSED with an actionable message pointing at the two-call
+			//! route (insert_geometry_scaffold, then propose_patch on the
+			//! `geometry` slot), because a composite whole-document swap has no
+			//! representation in the AgentProposalKind set an Owner approves
+			//! card-by-card.  See the .cpp for the full rationale.
+			//!
+			//! AUTONOMY CAVEAT: identical to InsertGeometryScaffold's -- this
+			//! method has no autonomy gate at all; a WIRE caller running under
+			//! AgentAutonomy::Propose is refused with kAutonomyRefused BEFORE
+			//! reaching it, via the same MakeProposeAutonomyRefusedError branch,
+			//! mirrored for `m == "replace_geometry_scaffold"`.
+			AgentGeometryScaffoldResult ReplaceGeometryScaffold( const std::string& target,
+			                                                     const std::string& family,
+			                                                     const std::string& name,
+			                                                     double size,
+			                                                     double detail,
+			                                                     double aspect,
+			                                                     const std::string& points = std::string(),
+			                                                     double taper = 0.0,
+			                                                     const std::string& tone = std::string(),
+			                                                     //! Creature scaffold slice: same tail-append,
+			                                                     //! same quadruped-only meaning as
+			                                                     //! InsertGeometryScaffold's own `build`.
+			                                                     const std::string& build = std::string(),
+			                                                     const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! Creature scaffold slice: ONE offender as ForTest_
+			//! ScanDerivedSdfParts reports it -- a public-header-safe
+			//! copy of the two fields tests/AgentQuadrupedScaffoldTest.cpp
+			//! needs (the internal SDFBlendScaleOffender_ struct stays
+			//! anonymous-namespace-local to AgentSession.cpp, matching
+			//! every other scan-internal type in this file).
+			struct AgentBlendScaleProbeOffender
+			{
+				std::string formattedLine;
+				bool        proportionCaveat = false;
+			};
+
+			//! TEST HOOK (creature scaffold slice, 2026-08-25): runs the
+			//! IDENTICAL shared blend-scale scan
+			//! (ScanSdfGeometryBlendScaleOffenders_ -- the SAME function
+			//! condition J's note/diagnostic clauses and fix_blend_scale
+			//! all read) against an ALREADY-DERIVED part list, e.g. a
+			//! skeleton_geometry chunk's own expanded bones
+			//! (SDFGeometry::GetParts() on a real derived Job).  This is
+			//! the ONLY way to check a skeleton's OWN generated bones
+			//! against that math: the document-level scan
+			//! (ComputeDesignNoteConditionsFromDoc_, which condition J and
+			//! validate() both read) is STRUCTURALLY BLIND to
+			//! skeleton_geometry by design -- it only sees the chunk's
+			//! ROLE at the CST layer, before derive expands it -- so
+			//! calling ValidateText on a document containing a generated
+			//! skeleton_geometry chunk would trivially report zero
+			//! offenders regardless of whether the skeleton's actual
+			//! proportions are sound.  Returns every offender found
+			//! (empty = clean).  NOT part of the wire surface; exists
+			//! solely for BuildQuadrupedSkeleton's own quality sweep (see
+			//! that function's header doc) so the scaffold's generated
+			//! geometry is verified against the SAME math a human
+			//! reading condition J's advisory would apply by hand,
+			//! without a second, driftable copy of that math living in
+			//! the test file.
+			static std::vector<AgentBlendScaleProbeOffender> ForTest_ScanDerivedSdfParts(
+				const std::string& geoName,
+				const std::vector<RISE::Implementation::SDFGeometry::Part>& parts );
+
+			//----------------------------------------------------------------
+			// G2 (2026-08-10): the PART-PLAN GATE.
+			//
+			// WHAT IT IS.  A blocking REFUSE-UNTIL-FILED interception of every
+			// geometry-creating call (insert_chunk / insert_chunks carrying
+			// any Geometry-category chunk, insert_geometry_scaffold,
+			// replace_geometry_scaffold) on a session that has not filed a
+			// build plan.  The refusal names `file_build_plan` and the closed
+			// `construction` enum; the Document is COMPLETELY untouched.
+			//
+			// WHY.  A census of 48 GUI agent trajectories found 252 bare
+			// primitives against ~57 advanced geometry chunks and not one
+			// triangle mesh -- but the SAME models compose a 14-part CSG gear
+			// and a properly swept retort neck when the subject has an obvious
+			// operational reading.  The gap is REPRESENTATION CHOICE, not
+			// vocabulary and not skill.  This gate makes that choice happen
+			// explicitly, at the moment of decision.  It is PRIMING at
+			// decision time, NOT policing.
+			//
+			// NON-BINDING IN v1, DELIBERATELY.  The declaration constrains
+			// nothing: declaring `sweep` for a part and then inserting a
+			// `box_geometry` is allowed and is NOT refused, anywhere.  If
+			// models declare richly and then author primitives anyway, that
+			// is the FINDING (compliance without competence) -- enforcing
+			// would hide exactly the signal the gate exists to produce.
+			//
+			// REFUSE-UNTIL-FILED, CAPPED AT kBuildPlanGateMaxRefusals (3) PER
+			// SESSION (2026-08-10 supervisor overrule of the original
+			// once-per-session design).  A gate a model can clear by simply
+			// re-issuing the SAME call without filing anything yields zero
+			// plans to measure -- so the gate stays armed across the 1st,
+			// 2nd and 3rd geometry-creating call and refuses every one of
+			// them, with the SAME document-untouched guarantee each time.
+			// On the 4th interception it GIVES UP: that call is let through
+			// and the gate disarms permanently for the rest of the session.
+			// The cap exists because clearing this gate, unlike the shipped
+			// E4 render-cadence gate (any cheap render satisfies E4's
+			// condition), requires discovering a brand-new tool and
+			// producing a valid schema for it -- an uncapped refuse-until-
+			// filed could strand a session that genuinely cannot form that
+			// call.  The cap bounds that failure mode while still forcing
+			// the choice on any model that can make it.  The give-up is not
+			// silent: the call that trips it carries a factual notice in its
+			// own result (see CheckBuildPlanGate_'s doc) so the event is
+			// visible in the payload a trajectory census reads.
+			//
+			// ANTI-GOODHART BY CONSTRUCTION.  ANY plan is accepted:
+			// `primitive` for every element is a complete, legal plan.  Filing
+			// disarms the gate PERMANENTLY and immediately, at any point --
+			// after 0, 1 or 2 refusals -- so it cannot be farmed for a
+			// compliance score, and a session that plans first is never
+			// intercepted at all.  Every refusal states, accurately, how
+			// many more calls will still be refused before the gate stops
+			// intercepting -- never a claim the code does not honour.
+			//
+			//----------------------------------------------------------------
+			// G3a (2026-08-10): the SKETCH ARTIFACT -- build-plan SCHEMA v2.
+			//
+			// WHAT CHANGED.  Every part entry now carries a REQUIRED 2D
+			// `outline` (a closed polygon, authored as "x y; x y; ..." with
+			// >= 3 points) and an OPTIONAL `view` (front|side|top, default
+			// front).  The harness rasterizes each outline into a
+			// deterministic 256x256 silhouette mask, keeps the masks as
+			// SESSION-LIFETIME targets (AgentElementSketch / mElementSketches), and
+			// echoes them back in the filing result as ONE composite PNG plus
+			// per-part facts.  Nothing else about the gate changes: same
+			// trigger set, same shared counter, same 3-refusal cap, same
+			// give-up, same launch switch.
+			//
+			// WHY.  The looking loop already fires and the fix is already
+			// cheap (R2/G1), but neither supplies a CRITERION -- "does this
+			// read as a wing?" is a judgement, and this workstream has
+			// measured that models act on FACTS, not judgements.  A
+			// self-authored sketch converts the judgement into a fact
+			// (distance from the thing the model said it was making).  The
+			// comparison that consumes these targets is slice G3b; G3a builds
+			// the artifact and nothing else.
+			//
+			// FORCE LEVEL: STRICTLY REQUIRED, no `"none"` escape (user
+			// decision 2026-08-10).  ANY polygon is accepted -- fog gets a
+			// blob and a blob is LEGAL -- so the gate still forces a DECISION
+			// rather than a particular answer, and the anti-Goodhart freedom
+			// moves from the presence dimension to the SHAPE dimension (a
+			// degenerate-sketch strategy is a measurable census outcome, not
+			// a hidden failure).  Two properties keep it bounded: a schema
+			// rejection is a -32602 that NEVER touches the gate's refusal
+			// counter, and the gate's own 3-refusal give-up is still the
+			// session-level escape valve.
+			//
+			// WIRE SECURITY IS PRESERVED BY CONSTRUCTION.  The wire carries
+			// only NUMBERS and NAMES -- never bytes, never paths.  Every mask
+			// byte originates HOST-SIDE, computed here from model-authored
+			// numbers, so `SetReferenceImages`' host-only-bytes rationale is
+			// untouched: no caller-supplied image data enters the process.
+			// The targets are session-lifetime state exactly like the plan
+			// itself -- NEVER written into the scene document, never
+			// persisted, gone when the session is.
+			//----------------------------------------------------------------
+
+			//! One declared ELEMENT of the subject being built.  `construction`
+			//! is REQUIRED and every entry comes from the closed enum
+			//! kBuildPlanConstructionValues; `note` is optional free text.
+			//! G3a: `outline` is REQUIRED (see ValidateElementOutline for the
+			//! accepted grammar) and `view` is optional, defaulting to
+			//! kBuildPlanDefaultView when left empty.
+			//!
+			//! S1 (2026-08-11, the staged build protocol): `part` became
+			//! `element` and `pieces` joined it as a REQUIRED, >= 1 entry list.
+			//! The ELEMENT is the unit of the build window (see the
+			//! AgentBuildPhase block below); the PIECES are the element's own
+			//! declared breakdown -- a CHECKLIST that finish_element reports
+			//! against by NAME, never a gated sub-unit and never scored.  A
+			//! piece-level window would forbid exactly the whole-figure
+			//! construction the wizard probe measured as the good one (one
+			//! sdf_geometry carrying eleven parts), which is why the window is
+			//! the element and the pieces are declarative.
+			struct AgentBuildPlanEntry
+			{
+				std::string element;        //!< free-string element name
+				//! S1: REQUIRED, at least one entry -- this element's own
+				//! breakdown, in the model's words.  Declarative: nothing
+				//! validates, gates or scores them; finish_element reports
+				//! which piece names appear inside an attributed chunk name.
+				std::vector<std::string> pieces;
+				//! C4 (2026-08-19): ONE OR MORE of kBuildPlanConstructionValues,
+				//! at most kBuildPlanMaxConstructionMethods of them, no
+				//! duplicates.  It became a LIST because real elements are
+				//! multi-method and one value could not say so: a copper still
+				//! is a `lathe` pot AND a `sweep` condenser coil, and with one
+				//! slot whichever the planner named made the other verb's
+				//! gated schema unreachable for the WHOLE element (measured:
+				//! two runs of the same prompt, one declaring `csg`+`sweep`
+				//! and emitting 10 sweep_geometry chunks, the other declaring
+				//! `lathe` and hand-approximating the helix as four stacked
+				//! tori -- exactly the pre-sweep workaround the sweep arc
+				//! existed to delete).
+				//!
+				//! ORDER IS THE CALLER'S and is preserved verbatim: it is
+				//! echoed back and restated to the builder, so re-ordering it
+				//! would make the echo a paraphrase rather than a fact.  The
+				//! gated schema blocks in ComposeBuilderPrompt_ are emitted in
+				//! the file's own sweep/chain/lathe order regardless, so the
+				//! prompt is a pure function of the SET.
+				//!
+				//! A single-value list is the complete, unremarkable case --
+				//! `{"primitive"}` for every element is still a complete plan.
+				std::vector<std::string> construction;
+				std::string note;           //!< optional, may be empty
+				//! G3a: REQUIRED closed polygon, "x y; x y; x y[; ...]",
+				//! >= 3 points, stored verbatim as the model authored it.
+				std::string outline;
+				//! G3a: one of kBuildPlanViewValues, or empty for the
+				//! kBuildPlanDefaultView default.  Recorded with the target
+				//! for G3b's comparison vantage; G3a only echoes it.
+				std::string view;
+
+				//! C4: does this element declare `method`?  The ONE predicate
+				//! every gated-schema decision uses, so no site can
+				//! reintroduce the `construction == "sweep"` equality that
+				//! made the field effectively single-valued.
+				bool HasConstruction( const std::string& method ) const
+				{
+					for( std::size_t i = 0; i < construction.size(); ++i )
+						if( construction[i] == method ) return true;
+					return false;
+				}
+			};
+
+			//! G3a: one rasterized imagination TARGET -- the session-lifetime
+			//! artifact produced from one AgentBuildPlanEntry's `outline`.
+			//! `mask` is exactly kElementSketchCanvas*kElementSketchCanvas bytes,
+			//! each 0 (outside) or 1 (inside), row-major from the TOP row.
+			struct AgentElementSketch
+			{
+				//! S1 (2026-08-11): the entry's ELEMENT name -- the key every
+				//! sketch lookup (FindElementSketch, a render's `target`) uses.
+				std::string                element;
+				std::string                view;          //!< RESOLVED view (never empty)
+				std::string                outline;       //!< the raw authored outline string
+				std::size_t                pointCount = 0;//!< parsed polygon vertices
+				double                     areaFraction = 0.0; //!< filled pixels / canvas pixels
+				double                     aspect = 0.0;  //!< the OUTLINE bbox's width/height
+				std::vector<unsigned char> mask;          //!< 0/1 per pixel, row-major
+			};
+
+			//! The structured result of FileBuildPlan.  `ok` is true whenever
+			//! the plan was recorded.  G3a adds ONE rejection path reachable
+			//! from the C++ API: an `outline` this class cannot rasterize
+			//! (see ValidateElementOutline).  That is NOT schema policing -- it
+			//! is a PRECONDITION of the artifact, because the whole point of
+			//! the call is to produce a target and a plan whose outline does
+			//! not parse has no target to produce.  A rejected filing changes
+			//! NOTHING: the previous plan and targets stand, the gate is not
+			//! disarmed, and the gate's refusal counter is untouched.  On the
+			//! WIRE that path is unreachable -- AgentRpc validates every
+			//! outline first and answers a defect with -32602 naming the part
+			//! index (which, being a schema error, likewise never touches the
+			//! counter).
+			struct AgentBuildPlanResult
+			{
+				bool                            ok = false;
+				bool                            replacedPreviousPlan = false;
+				std::vector<AgentBuildPlanEntry> elements;
+				std::string                     message;
+				//! G3a: one entry per element, in filing order (empty when !ok).
+				std::vector<AgentElementSketch>    sketches;
+				//! G3a: the ONE composite PNG tiling every mask left-to-right,
+				//! wrapping every kElementSketchTilesPerRow tiles.  ONE image, not
+				//! N -- N inline images is N times the vision-token cost for a
+				//! model that can see them and N times the waste for one that
+				//! cannot.  Empty when !ok or when the encode failed.
+				std::vector<unsigned char>      compositePng;
+				unsigned int                    compositeWidth = 0;
+				unsigned int                    compositeHeight = 0;
+			};
+
+			//! The CLOSED `construction` enum, in declaration order.  Seven
+			//! values naming the seven ways RISE can build a part; the model
+			//! picks one -- or, since C4, up to
+			//! kBuildPlanMaxConstructionMethods of them -- per element.
+			//! Order is the order they are listed to the
+			//! model everywhere (refusal text, tool schemas), so it is part of
+			//! the contract, not an implementation detail.
+			//!
+			//! C3 (2026-08-18): `lathe` joined the enum next to `sweep`, once
+			//! lathe_geometry existed to serve it -- a surface of revolution
+			//! is the ONE construction the previous six had no honest home
+			//! for (the old advice sent it to sdf roundcone+smin, which is
+			//! now the fallback, not the answer).  It sits beside `sweep`
+			//! because the two are the profile-driven pair and a model
+			//! choosing between them should read them together.
+			static const char* const kBuildPlanConstructionValues[7];
+			static const std::size_t kBuildPlanConstructionCount = 7;
+
+			//! C4 (2026-08-19): MOST construction methods one element may
+			//! declare.  TWO, and the number is argued from measurement, not
+			//! taste -- this is the one cap in this class that is a DESIGN
+			//! limit rather than an allocation guard, because what it bounds
+			//! is PROMPT VOLUME, and prompt volume is the quantity the whole
+			//! gated-schema mechanism exists to protect (18.0 SDF parts at
+			//! short context, 7.7 with 60k of skills prepended).
+			//!
+			//! The MEASURED sizes.  The schema halves come from the
+			//! descriptor registry itself (SchemaGenForChunk, the exact text
+			//! ComposeBuilderPrompt_ sends); the example halves are the
+			//! literal blocks in that function -- specifically, the ones
+			//! AgentChunkCrudTest's S2j/S2k/S2m/S2l lift out of a REAL composed
+			//! prompt the same way the model reads them (element
+			//! "tentacle"/"critter"/"critter"/"vase", each test's own fixture --
+			//! the prefix is interpolated into every chunk name inside the
+			//! example, so a different element name changes these bytes; the
+			//! fixture names above ARE the comparison baseline, not an
+			//! arbitrary choice).  RE-MEASURED 2026-08-23 (doc 90 R4's
+			//! de-tubing slice -- skeleton_geometry's descriptor gloss grew by
+			//! the near-vertical-stability and isolated-joint-aspect sentences,
+			//! and slice A rewrote both the sweep and chain worked examples),
+			//! superseding the 2026-08-22 figures below:
+			//!
+			//!   GATED schema + worked example, per method
+			//!     sweep   5570 +  549             =  6119 B  (was 6077)
+			//!     chain   4503 +  801 + 5399 + 399 = 11102 B  (was 8783)
+			//!     lathe   4595 +  440             =  5035 B  (was 5089)
+			//!   UNCONDITIONAL grammar (kBuilderGrammarKeywords, six kinds,
+			//!   unchanged this slice)   14589 B
+			//!
+			//! Only THREE of the seven values carry a gated block at all
+			//! (primitive / csg / displaced / mesh add nothing), so an
+			//! UNCAPPED list delivers at most all three -- 22256 B, i.e. 153 %
+			//! of the entire unconditional grammar added on top of it (was
+			//! 137 %).  That is the grammar dump this mechanism exists to
+			//! prevent, reachable by writing three words.  It also means a cap
+			//! of 3 would today be indistinguishable from NO cap: it would
+			//! bound nothing that is not already bounded by the gated-kind
+			//! count.
+			//!
+			//! TWO bounds the worst case at chain+sweep = 17221 B (118 % of the
+			//! unconditional grammar, was 102 %) and admits the case that
+			//! motivated the change -- a copper still is a lathe pot and a
+			//! sweep coil, and two is what it needs.  An element that genuinely
+			//! needs three construction methods is two elements; the plan's
+			//! unit of work IS the element, so splitting it is free and each
+			//! half then gets a focused prompt rather than one diluted one.
+			//!
+			//! NOTE the direction of travel: the worst pair was 63 % of the
+			//! unconditional grammar in 2026-08, 102 % on 2026-08-22, and is
+			//! 118 % now -- still entirely from descriptor/example GROWTH
+			//! rather than from the cap, and still climbing.  The cap is still
+			//! doing its job (it is what keeps the third block out), but the
+			//! next slice that widens one of these three descriptors should
+			//! re-measure here and ask whether the gloss, not the cap, is the
+			//! number to argue about -- the same one-line answer
+			//! AgentSession.cpp's chain-gate comment (~line 15851) restates for
+			//! that specific gate: the relevant denominator for the
+			//! context-volume law is the WHOLE composed prompt (~32.7 KB for
+			//! the chain-gate fixture), not this ratio in isolation, so a gate
+			//! running past 2x is a signal to re-argue the gloss, not yet the
+			//! richness-collapse failure itself.
+			//!
+			//! Raising this is a MEASUREMENT decision, not a schema tweak: it
+			//! must be argued against the same volume law, with the block
+			//! sizes re-measured (they grow whenever a descriptor gains
+			//! parameters).
+			static constexpr std::size_t kBuildPlanMaxConstructionMethods = 2;
+
+			//! True iff `v` is exactly one of kBuildPlanConstructionValues.
+			static bool IsValidElementConstruction( const std::string& v );
+
+			//! C4: is `v` a well-formed `construction` LIST?  The ONE
+			//! predicate both layers use -- AgentRpc validates the wire with
+			//! it and FileBuildPlan re-checks with it -- for the same reason
+			//! ValidateElementOutline is shared: the wire error and the
+			//! session's own precondition can never disagree about what a
+			//! valid declaration is.  Rejects an empty list, an unknown
+			//! value, a DUPLICATE (a repeat is not a second method, and
+			//! letting it through would make "at most N methods" ambiguous),
+			//! and more than kBuildPlanMaxConstructionMethods entries.
+			//! `outError` gets a model-facing clause naming the defect; it is
+			//! untouched on success.
+			static bool ValidateConstructionList( const std::vector<std::string>& v,
+			                                      std::string& outError );
+
+			//! "primitive, csg, sweep, lathe, chain, displaced, mesh" -- the ONE
+			//! rendering of the enum every message that names it uses, so the
+			//! refusal, the -32602 and both tool schemas cannot drift apart.
+			static std::string BuildPlanConstructionList();
+
+			//! C4: one element's DECLARED list rendered for display -- "lathe"
+			//! for a single method, "lathe + sweep" for two.  Used by the
+			//! filing echo and by the builder prompt's restatement, so those
+			//! two can never render the same declaration differently.
+			static std::string JoinConstruction( const std::vector<std::string>& v );
+
+			//! G3a: the CLOSED `view` enum, in declaration order -- which
+			//! axis-aligned direction the part's `outline` was drawn from.
+			//! G3a only RECORDS it (and echoes it back); G3b turns it into
+			//! the comparison render's vantage.
+			static const char* const kBuildPlanViewValues[3];
+			static const std::size_t kBuildPlanViewCount = 3;
+			//! The value an omitted `view` resolves to.  A default rather
+			//! than a required field because a front elevation is what a
+			//! human sketches unless they say otherwise, and forcing the
+			//! choice would add a second decision to a call that already
+			//! carries the one being measured.
+			static const char* const kBuildPlanDefaultView;
+			//! True iff `v` is exactly one of kBuildPlanViewValues.
+			static bool IsValidElementView( const std::string& v );
+			//! "front, side, top" -- the ONE rendering of the view enum, same
+			//! anti-drift reason as BuildPlanConstructionList.
+			static std::string BuildPlanViewList();
+
+			//! G3a: the sketch canvas edge, in pixels.  256 matches R1b's
+			//! agent render cap (kAgentSurfaceMaxRenderEdge), so a target and
+			//! an agent-surface render are the same size by construction.
+			static constexpr int kElementSketchCanvas = 256;
+			//! G3a: the fraction of the canvas the outline's own bbox is fit
+			//! into, aspect preserved and letterboxed.  G1's auto-framing
+			//! kIsolateFrameFill (AgentSession.cpp) aliases this constant
+			//! directly so G3b's target mask and isolate render silhouette
+			//! are always framed at the same fill by construction.
+			static constexpr double kElementSketchFillFraction = 0.85;
+			//! G3a: how many sketch tiles the composite PNG puts in one row
+			//! before wrapping.  4 keeps an 8-build plan at 1024x512 -- inside
+			//! every provider's inline-image budget and readable at a glance.
+			static constexpr int kElementSketchTilesPerRow = 4;
+
+			//----------------------------------------------------------------
+			// G3a RESOURCE BOUNDS.  Three caps, because the plan's SIZE is
+			// wire-reachable while G2's fields were all O(1): a part list, a
+			// point list and a composite canvas all grow with whatever the
+			// caller sends.  None of them is reachable by an honest plan (the
+			// census's richest observed subject was a 14-part gear and its
+			// outlines would be tens of points), so each is a guard against
+			// an unbounded allocation, not a design limit anyone will meet.
+			//----------------------------------------------------------------
+
+			//! Most elements one plan may declare.  64 masks is ~4 MB of
+			//! session-lifetime state; without the cap a single call can ask
+			//! for arbitrarily many.
+			static constexpr std::size_t kBuildPlanMaxElements = 64;
+			//! S1 (2026-08-11): most `pieces` one element may declare.  Same
+			//! kind of guard as the element cap and reachable only from the
+			//! wire: the piece list is stored verbatim and echoed back, so an
+			//! unbounded list is an unbounded allocation.  32 is far past the
+			//! richest observed decomposition (the wizard probe named seven).
+			static constexpr std::size_t kBuildPlanMaxPiecesPerElement = 32;
+			//! Most vertices one outline may carry.  The scanline fill is
+			//! O(canvas rows x edges), so an unbounded point list is a CPU
+			//! cost multiplied by the part count -- 512 keeps the worst case
+			//! at ~8M edge tests for a whole maximal plan, i.e. milliseconds.
+			static constexpr std::size_t kElementOutlineMaxPoints = 512;
+			//! Most tiles the composite PNG draws.  Every target is still
+			//! STORED (they are cheap and G3b needs them) -- this bounds only
+			//! the image, whose pixel buffer grows with the tile count.  16
+			//! tiles is a 1024x1024 composite, which covers any realistic
+			//! plan whole; past that the filing says, factually, how many
+			//! were drawn.
+			static constexpr std::size_t kElementSketchMaxCompositeTiles = 16;
+
+			//! G3a: is `outline` a rasterizable closed polygon?  The ONE
+			//! definition of outline validity, shared by the wire layer (which
+			//! turns a false into a -32602 naming the part index) and by
+			//! FileBuildPlan (which will not record a target it cannot draw),
+			//! so the two cannot drift.  Accepts semicolon-separated "x y"
+			//! pairs, a trailing/leading blank segment tolerated; REJECTS
+			//! fewer than 3 points, a segment that is not exactly two numbers,
+			//! a non-finite or absurdly large coordinate, and a zero-area
+			//! bounding box.  A SELF-INTERSECTING polygon is ACCEPTED: the
+			//! even-odd fill rule makes it well-defined, so rejecting it would
+			//! refuse a legal (if unusual) imagination.  On false, `outError`
+			//! receives a lowercase phrase naming the defect, ready to be
+			//! appended after "elements[i].outline ".
+			static bool ValidateElementOutline( const std::string& outline, std::string& outError );
+
+			//! Record `elements` as this session's build plan and DISARM the
+			//! gate permanently.  Any non-empty list of well-formed entries is
+			//! accepted -- including `primitive` for every element.  Re-filing is
+			//! allowed and REPLACES the previous plan (reported in
+			//! `replacedPreviousPlan`); it is never refused, because a refusal
+			//! here would be an over-refusal on a call that costs the document
+			//! nothing (the E1 review's P1).  Touches the Document not at all.
+			//!
+			//! G3a: also rasterizes every entry's `outline` into a
+			//! session-lifetime target and returns the whole set, plus ONE
+			//! composite PNG, in the result.  The target set follows the
+			//! plan's REPLACE semantics exactly -- a re-filing drops every
+			//! previous target, so an element dropped from the plan leaves no
+			//! stale sketch behind.  The ONLY failure mode is an
+			//! unrasterizable outline (see AgentBuildPlanResult), and it is
+			//! all-or-nothing: on a defect NOTHING is recorded and the gate
+			//! is NOT disarmed.
+			//!
+			//! S1 (2026-08-11): a successful filing also ENTERS THE PIECES
+			//! PHASE with the FIRST element active, and drops every chunk
+			//! attribution recorded under a previous plan (the plan's own
+			//! REPLACE semantics, extended to the state keyed by element name
+			//! -- a re-filing that renames or drops an element must not leave
+			//! attributions pointing at an element the plan no longer has).
+			//! Both facts are stated in the result message.  When the phase
+			//! machinery is off (see BuildProtocolEnabled) the phase stays
+			//! Plan and nothing is attributed, and this method is exactly what
+			//! G3a shipped.
+			AgentBuildPlanResult FileBuildPlan( const std::vector<AgentBuildPlanEntry>& elements );
+
+			//! Has this session filed a build plan?  Observation only -- no
+			//! gating decision reads this from outside the class.
+			bool BuildPlanFiled() const { return mBuildPlanFiled; }
+
+			//! The plan as filed (empty before the first FileBuildPlan).
+			const std::vector<AgentBuildPlanEntry>& BuildPlan() const { return mBuildPlan; }
+
+			//! G3a: the rasterized imagination targets, one per element, in
+			//! filing order (empty before the first successful FileBuildPlan).
+			//! Session-lifetime and read-only from outside: G3b's comparison
+			//! reads this, and nothing writes it but FileBuildPlan.
+			const std::vector<AgentElementSketch>& ElementSketches() const { return mElementSketches; }
+
+			//! G3b (2026-08-10): the filed sketch whose `element` is EXACTLY
+			//! `element`, or nullptr when no plan is filed or no entry matches.
+			//! Exact-name match, no normalization -- the element name is
+			//! free text the model authored, and a fuzzy match here would
+			//! silently compare against a sketch the caller did not name.
+			//! The pointer is into mElementSketches and is invalidated by the
+			//! next FileBuildPlan; callers copy what they need.
+			const AgentElementSketch* FindElementSketch( const std::string& element ) const;
+
+			//! G3b: the filed element names, quoted and comma-separated, in
+			//! filing order -- the ONE rendering used by every `target`
+			//! failure message, so the list a caller is shown can never
+			//! disagree with the set FindElementSketch actually searches.
+			//! Empty string when no plan is filed.
+			std::string ElementSketchNameList() const;
+
+			//! G3b: resolve a render's `target`/`isolate` pair against the
+			//! filed plan.  Returns false with a complete, factual
+			//! `outError` (already a whole sentence, ready to be a render's
+			//! `message`) for the three refusals: `target` without
+			//! `isolate`; no plan filed; a name that is not in the plan.
+			//! Returns true and fills `out` otherwise.  The ONE definition,
+			//! shared by RenderCore_ (which fails the render) and by the
+			//! wire layer's own pre-check, so the two cannot drift.
+			//! `target` empty is a programming error -- callers test that
+			//! first; this function then returns false with a generic error.
+			//!
+			//! G3b fix-round (2026-08-10) FIX 1: this reads mElementSketches, so
+			//! it is SINGLE-THREADED-CALLER like the rest of the build-plan
+			//! state -- call it only from the thread that owns this session
+			//! (the RPC dispatcher / GUI serving thread), NEVER from the
+			//! controller's render worker.  The async render path calls it
+			//! ONCE, at submission, and carries the resolved copy into the
+			//! worker; see RenderAsync.
+			bool ResolveTargetSketch( const std::string& target, const std::string& isolate,
+			                          AgentElementSketch& out, std::string& outError ) const;
+
+			//! G3b: the ONE sentence stating that `target` requires
+			//! `isolate`, with `target`'s value interpolated.  Shared by the
+			//! wire layer (which answers the missing pairing with a -32602 --
+			//! it is a pure param-SHAPE defect, checkable with no live scene)
+			//! and by ResolveTargetSketch (which answers it with a failed
+			//! render for a direct C++ caller that bypassed the wire), so a
+			//! caller cannot be told the requirement two different ways.
+			static std::string TargetRequiresIsolateMessage( const std::string& target );
+
+			//! Doc 91 V2: the ONE sentence for `zoom` combined with a param that
+			//! also owns the camera (`isolate`, `view`, an explicit `camera`
+			//! override).  Returns "" when `params` has no conflict (including
+			//! when `zoom` is empty).  Decidable with no live scene, so the RPC
+			//! layer rejects with it as a clean -32602 and RenderCore_ fails the
+			//! render with the same text for a direct C++ caller -- the
+			//! TargetRequiresIsolateMessage shared-validator discipline.
+			static std::string ZoomConflictMessage( const AgentRenderParams& params );
+
+			//! Has the gate refused at least one call in this session?
+			//! Observation only.  True from the FIRST refusal onward, whether
+			//! the session is still being refused (count 1 or 2), about to
+			//! give up (count 3), or has already given up -- see
+			//! BuildPlanGateRefusalCount / BuildPlanGateGaveUp for the finer
+			//! state.
+			bool BuildPlanGateHasFired() const { return mBuildPlanGateRefusalCount > 0; }
+
+			//! How many times the gate has REFUSED a call this session, 0..
+			//! kBuildPlanGateMaxRefusals.  Stops incrementing once the gate
+			//! gives up -- the 4th interception is a give-up, not a 4th
+			//! refusal.  Observation only.
+			int BuildPlanGateRefusalCount() const { return mBuildPlanGateRefusalCount; }
+
+			//! Has the gate given up?  True once the
+			//! (kBuildPlanGateMaxRefusals+1)'th interception let its call
+			//! through and disarmed the gate for the rest of the session.
+			//! Observation only.
+			bool BuildPlanGateGaveUp() const { return mBuildPlanGateGaveUp; }
+
+			//! Is the gate armed for THIS session (the process default
+			//! snapshotted at construction)?
+			bool BuildPlanGateEnabled() const { return mBuildPlanGateEnabled; }
+
+			//! The PROCESS-WIDE default every AgentSession snapshots at
+			//! construction.  Defaults to TRUE (fail-safe: a construction site
+			//! nobody remembered to touch gets the gate, rather than silently
+			//! opting out of it), and is resolved at LAUNCH TIME only --
+			//! src/RISE/commandconsole.cpp's `--agent-part-plan-gate=on|off`,
+			//! parsed and validated before any session runs.  NOTHING
+			//! reachable from the wire (a JSON-RPC param, an MCP tools/call, a
+			//! scene file) can reach this: it is not exposed by AgentRpc at
+			//! all.  Test binaries that are not testing the gate call
+			//! SetBuildPlanGateDefaultEnabled(false) once in main().
+			//!
+			//! Atomic because sessions are constructed from several threads in
+			//! the GUI hosts; the value itself never changes after launch.
+			static void SetBuildPlanGateDefaultEnabled( bool enabled );
+			static bool BuildPlanGateDefaultEnabled();
+
+			//----------------------------------------------------------------
+			// S1 (2026-08-11): the STAGED BUILD PROTOCOL -- three phases, one
+			// active element at a time, everything created attributed to it.
+			// Design: docs/agentic-redesign/78-staged-build-protocol.md.
+			//
+			// WHAT IT IS.
+			//   PLAN     the session starts here.  file_build_plan declares the
+			//            elements (each broken into named pieces) and enters:
+			//   PIECES   ONE element is ACTIVE, in plan order.  Every chunk
+			//            created while it is active is ATTRIBUTED to it.  An
+			//            EDIT aimed at a chunk attributed to a DIFFERENT
+			//            element is REFUSED, naming the active element and
+			//            finish_element.  finish_element advances to the next
+			//            unfinished element, or, after the last one, enters:
+			//   COMPOSE  arrangement, lighting, camera, materials and edits to
+			//            ANY element's chunks are allowed; CREATING new
+			//            geometry is refused, naming reopen_element.
+			// reopen_element re-enters an element's window from ANY phase.
+			//
+			// WHY.  The wizard probe (design doc sec 1) settled that neither
+			// conception nor expression is the gap: asked for a robed wizard
+			// alone, the model named the right construction and wrote eleven
+			// correct SDF parts first try; asked for the same wizard as one of
+			// six things in a scene, it produced a cone twelve times out of
+			// twelve.  What differs is the ATTENTION BUDGET, so this mechanism
+			// buys SERIALIZATION and nothing else -- no new information, no
+			// judgement, no score.
+			//
+			// ATTRIBUTION DISSOLVES THE JOIN PROBLEM.  G2's review established
+			// that a gate cannot know which element a chunk belongs to.  While
+			// element E is active, every chunk created belongs to E -- no
+			// naming convention, no volunteered field, no heuristic.
+			//
+			// WHAT IS DELIBERATELY NOT REFUSED.  Lights, cameras, film and
+			// rasterizer edits are allowed in EVERY phase (design sec 2.3):
+			// over-refusal was E1's review P1 and is the failure mode to fear
+			// here -- a model that cannot light its own isolated element cannot
+			// see it.  Chunks with NO attribution (pre-existing scene content,
+			// or anything created in the PLAN phase) are freely editable in
+			// every phase, always.
+			//
+			// NEVER STRANDING.  The phase refusals share ONE counter with a
+			// 3-refusal cap and the same give-up transition the build-plan gate
+			// uses: the 4th interception is let through, the phase machinery
+			// disarms permanently for the session, and the call that trips it
+			// carries a factual notice in its own result.
+			//----------------------------------------------------------------
+
+			//! Which stage of the staged build protocol this session is in.
+			enum class AgentBuildPhase
+			{
+				Plan,     //!< no build plan filed yet (the session starts here)
+				Pieces,   //!< one element is active; creations are attributed to it
+				Compose   //!< every element finished; geometry CREATION is refused
+			};
+
+			//! The ONE wire/prose rendering of a phase -- "plan", "pieces",
+			//! "compose".  Shared by every result and refusal so a caller can
+			//! never be shown two spellings of the same state.
+			static const char* BuildPhaseName( AgentBuildPhase p );
+
+			//! The session's phase.  Plan until a build plan is filed; Pieces
+			//! while an element is active; Compose after the last element is
+			//! finished.  Stays Plan forever when the phase machinery is off.
+			AgentBuildPhase BuildPhase() const { return mBuildPhase; }
+
+			//! The active element's name, or "" when the session is not in the
+			//! Pieces phase.  Observation only.
+			std::string ActiveElement() const;
+
+			//! Is the phase machinery in force for THIS session?  Requires BOTH
+			//! launch switches (see SetBuildProtocolDefaultEnabled) and stays
+			//! false once the phase refusals have given up.
+			bool BuildProtocolActive() const { return BuildProtocolActive_(); }
+
+			//! Snapshot of BuildProtocolDefaultEnabled() taken at construction.
+			bool BuildProtocolEnabled() const { return mBuildProtocolEnabled; }
+
+			//! How many phase refusals (cross-element edits + compose-phase
+			//! geometry creations) this session has issued, 0..
+			//! kBuildPhaseMaxRefusals.  Observation only.
+			int BuildPhaseRefusalCount() const { return mBuildPhaseRefusalCount; }
+
+			//! Have the phase refusals given up (the cap was reached and the
+			//! phase machinery disarmed for the session)?  Observation only.
+			bool BuildPhaseGaveUp() const { return mBuildPhaseGaveUp; }
+
+			//! The chunks attributed to `element`, in creation order.  Empty for
+			//! an unknown element, for an element nothing was created under, and
+			//! for every session with the phase machinery off.
+			std::vector<std::string> ElementChunks( const std::string& element ) const;
+
+			//! The element `chunk` is attributed to, or "" when it has none
+			//! (pre-existing scene content, anything created in the Plan phase,
+			//! or any session with the phase machinery off).  Observation only.
+			std::string ChunkElement( const std::string& chunk ) const;
+
+			//! The PROCESS-WIDE default every AgentSession snapshots at
+			//! construction, resolved at LAUNCH TIME only --
+			//! src/RISE/commandconsole.cpp's `--agent-build-protocol=on|off`,
+			//! parsed and validated exactly like `--agent-part-plan-gate`.
+			//! BOTH switches are respected: the phase machinery needs this one
+			//! AND the gate's own, so `--agent-part-plan-gate=off` turns off the
+			//! gate and the phases together and there is no combination in which
+			//! the phases run without the plan that defines them.  Nothing
+			//! reachable from the wire can reach this.  Defaults to TRUE, the
+			//! same fail-safe posture the gate's default takes.
+			static void SetBuildProtocolDefaultEnabled( bool enabled );
+			static bool BuildProtocolDefaultEnabled();
+
+			//----------------------------------------------------------------
+			// ARC 83 sec 4.1 (2026-08-13): THE SESSION MODE.
+			//
+			// COMPULSION BELONGS TO THE FIRST BUILD; AVAILABILITY IS FOREVER.
+			//
+			// Before this, the construction gates keyed on the launch switches
+			// ALONE (BuildProtocolActive_).  Nothing asked whether the scene
+			// already existed and nothing ever ended the protocol, so a user
+			// who opened a FINISHED scene got the PLAN phase with every gate
+			// armed: "move the jellyfish left" could be refused toward
+			// file_build_plan, "delete the manta ray" hit the compose
+			// delete-ban, and "just show me a render" was answered with a
+			// demand for populate_scene.  A harness that refuses what the user
+			// just asked for is worse than one that never gated anything.
+			//
+			// THE RULE, one-way and coarse on purpose (sec 4.2: sniffing user
+			// intent out of chat text is an intent classifier in the refusal
+			// path, and it fails open or closed at the worst moment):
+			//   BUILDING   the scene STARTED EMPTY, and the agent has not yet
+			//              produced its first final answer.
+			//   REFINING   every other case, and forever after the transition.
+			//              Never flips back -- not by a second build plan, not
+			//              by reopen_element, not by anything.
+			//
+			// WHAT REFINING TURNS OFF: COMPULSION ONLY.  Every
+			// RefuseForPhase_ arm (cross-element edit, compose-phase create,
+			// compose-phase remove, both forced clean rooms, the
+			// populate-before-render gate) and the build-plan gate are inert.
+			// EVERY VERB STAYS AVAILABLE -- build_element, light_scene,
+			// populate_scene and place_element all still work when called, and
+			// should be called for a substantial addition; nothing is
+			// COMPELLED.
+			//
+			// WHAT REFINING DOES NOT TOUCH, deliberately.  The ambient_light
+			// BAN and the zero-area light CONFIRMATION are RENDERER POLICY,
+			// not build protocol: a refining user's "add a spotlight" costs
+			// one bounce, and that is the intended price (arc 83 sec 13).
+			// Also untouched: render caps, the rasterizer allowlist, autonomy
+			// postures, and attribution bookkeeping -- recording stays
+			// harmless and useful for the census; only the REFUSALS go inert.
+			//
+			// WHICH SURFACES FLIP THE MODE, and which cannot.
+			//   * FLIPS: any host that drives the model loop itself and can
+			//     see a turn end with prose rather than a tool call, i.e. a
+			//     host holding an AgentChatLoop and reaching
+			//     ChatStepResult::Kind::FinalText.  Today: the eval runner
+			//     (AgentEvalRunner::RunScenario's FinalText arm), the macOS
+			//     GUI (ChatViewModel's `.finalText` case, through
+			//     RISEViewportBridge -agentNoteFinalAnswer) and the Windows
+			//     GUI (ChatPanel::networkFinished's FinalText arm, through
+			//     ViewportBridge::agentNoteFinalAnswer).
+			//   * CANNOT FLIP: the MCP surfaces -- AgentMcpAdapter (stdio) and
+			//     AgentLoopbackHttpServer.  There the EXTERNAL client owns the
+			//     model loop; nothing about a turn ending crosses the wire, and
+			//     MCP has no notification for it.  Such a session that started
+			//     empty therefore stays in BUILDING for its whole life.  That
+			//     is stated rather than papered over: the alternative would be
+			//     a heuristic (wall-clock, call counts, sniffing text), and a
+			//     wrong guess in the refusal path is worse than a predictable
+			//     one-way rule.  An MCP session that opens a NON-EMPTY scene --
+			//     the overwhelmingly common case -- is REFINING from
+			//     construction and never needed the transition at all.
+			//
+			// RESIDUAL RISK, named (sec 4.3): a user interjecting MID-BUILD
+			// ("no, remove that") is still in BUILDING and can still hit a gate
+			// for up to three turns, which is what the shared 3-refusal cap
+			// and give-up bound.  Accepted; revisit if it shows up in practice.
+			//----------------------------------------------------------------
+
+			//! Which mode this session is in.  One-way: Building -> Refining.
+			enum class AgentSessionMode
+			{
+				Building,   //!< started empty, no final answer yet -- gates armed
+				Refining    //!< every other case -- no construction gate fires
+			};
+
+			//! The ONE wire/prose rendering of a mode -- "building",
+			//! "refining".  Shared by every surface, exactly as
+			//! BuildPhaseName is for the phase.
+			static const char* SessionModeName( AgentSessionMode m );
+
+			//! This session's mode.  Decided at CONSTRUCTION from the document
+			//! actually loaded (see StartedEmpty) and moved to Refining, once
+			//! and permanently, by NoteFinalAnswer.
+			AgentSessionMode SessionMode() const { return mSessionMode; }
+
+			//! Did the document this session was constructed over carry NO
+			//! form?  Snapshotted in a const member at construction and never
+			//! recomputed -- a count taken later would see a build in progress
+			//! and answer the wrong question.  A session with no retained CST
+			//! document at all reads TRUE (the fail-safe direction: gates on,
+			//! matching both launch switches' defaults).
+			bool StartedEmpty() const { return mStartedEmpty; }
+
+			//! THE TRANSITION.  Call this when a conversation turn ended with
+			//! the model's own prose rather than a tool call -- the host's
+			//! ChatStepResult::Kind::FinalText arm.  Idempotent and one-way: a
+			//! session already in Refining is unaffected, and nothing ever
+			//! returns a session to Building.  Safe to call from a host that
+			//! cannot tell whether the protocol is on; with the protocol off
+			//! the mode is recorded and changes nothing.
+			void NoteFinalAnswer();
+
+			//! Does `sceneText` carry FORM -- at least one top-level chunk
+			//! whose registry descriptor is ChunkCategory::Geometry or
+			//! ChunkCategory::Object (a standard_object)?  This is the
+			//! emptiness rule, stated positively: cameras, film, rasterizers,
+			//! shaders, painters, materials and lights in a starter template
+			//! do NOT make a scene non-empty, because none of them is a thing
+			//! the agent was asked to build.  The registry is the classifier
+			//! (KindIsFormBearing_), so a geometry kind added later is covered
+			//! with no edit here.  Public so a caller (and a test) can classify
+			//! a scene file without standing up a session.
+			static bool SceneTextCarriesForm( const std::string& sceneText );
+
+			//! WrapJob, with the session mode PINNED instead of classified
+			//! from the document.  WrapJob and LoadFromFile -- every product
+			//! surface -- classify; this exists for a caller that must place a
+			//! session in a KNOWN mode over a document that would classify the
+			//! other way.  Today that caller is the ONE test binary whose
+			//! subject IS the construction gates: a gate test needs a fixture
+			//! carrying chunks the session did NOT author (that is what a
+			//! cross-element refusal and a "pre-existing content is never
+			//! attributed" RED-PROVE are about), and such a fixture classifies
+			//! REFINING, which would make every gate under test inert and the
+			//! suite green for the wrong reason.
+			//!
+			//! Nothing on the wire can reach this, and it exempts the session
+			//! from nothing: a session pinned to Building still transitions on
+			//! NoteFinalAnswer, and one pinned to Refining still never gates.
+			//! StartedEmpty() keeps reporting the DOCUMENT's real answer, so a
+			//! pinned session cannot lie about what it opened.
+			static std::unique_ptr<AgentSession> WrapJobWithSessionMode(
+				IJobPriv* job, AgentSessionMode mode,
+				AgentAuthority authority = AgentAuthority::Owner,
+				std::shared_ptr<AgentImageCache> sharedImageCache =
+					std::shared_ptr<AgentImageCache>() );
+
+			//! The structured result of FinishElement.  `ok` false means the
+			//! call did nothing at all -- no phase change, no attribution
+			//! change -- and `message` says why (no plan filed; already in the
+			//! compose phase).
+			struct AgentFinishElementResult
+			{
+				bool        ok = false;
+				std::string element;        //!< the element that was closed ("" when !ok)
+				std::string phase;          //!< the phase AFTER this call
+				std::string nextElement;    //!< the newly active element, "" when Compose
+				//! Every chunk attributed to the closed element, creation order.
+				std::vector<std::string> chunks;
+				//! The declared pieces whose name appears (case-insensitive
+				//! substring) inside at least one attributed chunk NAME, and
+				//! those that do not.  A NAMING observation about chunk names,
+				//! never a statement about what was built -- the result says so.
+				std::vector<std::string> piecesNamed;
+				std::vector<std::string> piecesNotNamed;
+				//! The object the isolate render used, "" when the element has
+				//! no renderable object attributed to it.
+				std::string  isolateObject;
+				//! How many attributed objects were candidates; > 1 means the
+				//! largest-bounding-box one was picked and the message says so.
+				unsigned int isolateCandidates = 0;
+				//! true iff at least one isolate render was attempted and
+				//! SUCCEEDED, i.e. iff `png` carries pixels.
+				bool         rendered = false;
+				//! 2026-08-24 (the lit material look): true iff the SECOND,
+				//! studio-lit render also succeeded and its panel is in `png`.
+				//! false means the caller is looking at the draft panel alone
+				//! -- the material pipeline could not be built, the rig could
+				//! not be installed, or that render failed; the message says
+				//! which.  Tail-appended, and reported on the wire as its own
+				//! boolean, so nothing that already read this struct changes
+				//! shape.
+				bool         materialLookRendered = false;
+				//! THE ATTACHED IMAGE, and since 2026-08-24 it is normally a
+				//! TWO-PANEL COMPOSITE: the draft (form) look on the LEFT, the
+				//! studio-lit material look on the RIGHT, separated by a thin
+				//! grey rule -- built the way every other multi-image result
+				//! in this surface is built (the sketch tiling, the target
+				//! comparison, the scene-target stack), because the chat
+				//! transports carry exactly ONE image block per tool result
+				//! (AgentChatCodecs' IsImageResult keys on a single
+				//! `png_base64`, and the retention policy keeps exactly one
+				//! live image) -- a second field would never reach the model
+				//! at all.  With only one panel available it is that panel
+				//! alone, at its own size.  `width`/`height` describe the
+				//! composite, not a panel.
+				std::vector<unsigned char> png;
+				unsigned int width = 0;
+				unsigned int height = 0;
+				std::string  message;
+			};
+
+			//! Close the active element and advance: to the next element with
+			//! no finish recorded, in plan order, or -- when none remains -- to
+			//! the COMPOSE phase.  Returns the FACTS of the element just closed
+			//! (what was attributed, which declared pieces are named by an
+			//! attributed chunk name, the new phase) AND an ISOLATE RENDER of
+			//! it, so the model gets a look it did not have to ask for.
+			//!
+			//! THE RENDER reuses G1's isolate machinery unchanged: it resolves
+			//! the element's attributed OBJECT chunks against the scene's object
+			//! manager and isolates ONE of them -- the one with the largest
+			//! world bounding box when several were attributed, stated in the
+			//! message.  With no attributed object there is no image, and the
+			//! message says exactly that.  A FAILED render never fails the call:
+			//! the advance already happened and the failure is reported as a
+			//! fact.
+			//!
+			//! IT IS A DRAFT, EXPLICITLY SIZED (2026-08-23).  This render fires
+			//! in the PIECES phase, where lighting is not yet the model's job --
+			//! a production isolate of a not-yet-lit scene is a black frame that
+			//! reads as "your element is missing".  The draft pipeline's
+			//! studio-preview shading is independent of the SCENE's authored
+			//! lighting (a fixed synthetic rig stands in, with no shadows and
+			//! no GI), so the form reads regardless of how the scene is lit;
+			//! it DOES shade with the element's own material (BSDF colour,
+			//! roughness, and any procedural/expression painter it drives),
+			//! but with no true light response -- no shadows, no
+			//! reflection/refraction rays, no emission -- so the message
+			//! discloses that the frame says nothing about the scene's
+			//! lighting or about full material response (glass, membranes,
+			//! specular highlights, glow).  Dims are set
+			//! explicitly because the agent surface's absent-dims default only
+			//! covers production beauty renders.  The message also carries ONE
+			//! advisory sentence -- reopen_element if authored detail is missing
+			//! or melted -- and, per the Phase 2b law, NO score of any kind.
+			//!
+			//! AND SINCE 2026-08-24 THERE ARE TWO RENDERS, NOT ONE -- because a
+			//! draft frame, shading under a crude fixed rig with no true light
+			//! transport, cannot show a material's full appearance (glass,
+			//! membranes, subsurface, emission all read wrong or flat).  The same isolate,
+			//! the same framing, the same caps, rendered a SECOND time at
+			//! AgentRenderQuality::MaterialLook (see that enum's doc): a fixed
+			//! ephemeral path tracer, real BSDFs, under a CANONICAL STUDIO
+			//! RIG installed for that render alone.  The two panels are
+			//! composited into the one image this result carries -- draft
+			//! left, material right -- because the chat transports carry
+			//! exactly one image per tool result (see `png`'s doc).  The
+			//! advisory grows one clause to match: the right panel is this
+			//! element's MATERIALS under studio light, and a surface that
+			//! reads as one flat colour, or a thing meant to be glass or
+			//! membrane or liquid that reads opaque, is a material to fix
+			//! before moving on.  Still NO score of any kind, in either
+			//! clause.  A failed material render never fails the call and
+			//! never costs the draft panel: the draft alone is attached and
+			//! the message states the omission.
+			//!
+			//! NEITHER RENDER EVER BECOMES THE RENDER ANCHOR, and each is held
+			//! out by TWO independent exclusions in RenderQualifiesForAnchor_
+			//! rather than one: `isolate` covers both, and then `draft` covers
+			//! the first while `material-look` covers the second.  See
+			//! AgentRenderResult::anchorApplied's doc for why an anchor made of
+			//! an isolated, draft or rig-lit frame would make the comparison a
+			//! comparison of render settings.
+			//!
+			//! Never gated, never counted against any cap.  Touches the Document
+			//! not at all.
+			AgentFinishElementResult FinishElement();
+
+			//! The structured result of ReopenElement.
+			struct AgentReopenElementResult
+			{
+				bool        ok = false;
+				std::string element;        //!< the reopened element ("" when !ok)
+				std::string previousPhase;  //!< the phase BEFORE this call
+				std::string phase;          //!< the phase AFTER this call
+				std::vector<std::string> chunks;   //!< already attributed to it
+				std::vector<std::string> unfinished; //!< elements with no finish recorded, plan order
+				std::string message;
+			};
+
+			//! Re-enter `element`'s window from ANY phase, including Compose.
+			//! The element becomes active, its finish (if any) is dropped, and
+			//! the session is in the Pieces phase.  Legal at any time, never
+			//! gated, never counted against any cap -- it is the escape the
+			//! compose-phase creation refusal names, so refusing it would strand
+			//! exactly the session that needs it.  Fails (ok:false, nothing
+			//! changed) only when no plan is filed, when the phase machinery is
+			//! off, or when `element` is not in the filed plan; the failure
+			//! lists the filed element names.  Touches the Document not at all.
+			AgentReopenElementResult ReopenElement( const std::string& element );
+
+			//----------------------------------------------------------------
+			// Arc 77 PHASE 2 (2026-08-11): the WHOLE-SCENE IMAGINED TARGET.
+			//
+			// WHAT IT IS.  `imagine_scene {description}` -- the model writes
+			// its own visual description of the finished scene (writing it IS
+			// the imagining act), the HOST asks the session's provider to
+			// generate ONE image from exactly that text, and the image is
+			// held session-side as THE scene target and returned inline so
+			// the model sees its own imagination.  From then on every
+			// full-frame production beauty render carries a factual
+			// `sceneTarget` block (see AgentRenderResult::sceneTargetApplied)
+			// and, when that call asked for an inline image, shows the target
+			// ABOVE the render in one composite.  Re-imagining REPLACES the
+			// target, exactly as re-filing replaces the build plan.
+			//
+			// PHASE 2b (2026-08-11), THE REACHABILITY HALF.  The description
+			// the model writes is the SUBJECT; the host appends a fixed STYLE
+			// directive asking for a simple, flat-shaded 3D-render-like image
+			// (see Agent::ChatImageStyleDirective in AgentChatCodecs.h).
+			// Without it providers return cinematic concept art -- painterly
+			// texture, volumetric god-rays, photographic depth of field --
+			// which a path tracer driving SDF primitives cannot approach, so
+			// the target was an unreachable ideal rather than a thing to aim
+			// at.  The imagining stays the model's act; only the rendering
+			// style is constrained.
+			//
+			// WHY THIS SHAPE, from the battery that selected it (design doc
+			// docs/agentic-redesign/77-imagination-target-design.md sec 13):
+			// across 9 runs / 64 renders, models visited the FULL-FRAME
+			// render surface 64/64 times and every per-part consultation
+			// surface -- isolate, render{target}, replace_geometry_scaffold
+			// -- exactly 0/64.  A criterion nobody asks for is not a
+			// criterion.  The same battery measured 9/9 PROACTIVE compliance
+			// with a stated BLOCKING precondition and zero refusals, which is
+			// why the imagine step joins the existing gate rather than being
+			// offered as advice: this workstream has measured advice at ~0.
+			//
+			// CAPABILITY-CONDITIONAL, NEVER STRANDING.  On a provider with no
+			// image generation the tool answers with an honest capability
+			// statement and the gate is EXACTLY today's plan-only gate.  On a
+			// capable provider the gate stays armed until BOTH a plan is
+			// filed AND a target exists -- same shared 3-refusal counter,
+			// same give-up.  And if an attempt fails for PROVIDER reasons
+			// (HTTP error, quota, missing key, timeout) the imagine
+			// REQUIREMENT DISARMS for the session with a factual note in that
+			// result: a network blip must never strand a session.  A
+			// SCHEMA-invalid call (missing `description`) is a -32602 and
+			// disarms nothing, exactly as a malformed file_build_plan does not
+			// burn a refusal.
+			//
+			// WIRE DIRECTION.  Outbound the wire carries only the model's
+			// description STRING; the image bytes are received host-side from
+			// the provider and never leave the session (no scene document, no
+			// disk, no persistence).  `SetReferenceImages`' host-only-bytes
+			// rationale is untouched -- and this target is deliberately NOT
+			// stored there: that registry is the eval harness's GRADING
+			// reference set and is replaced wholesale, so writing into it
+			// would collide with an image_reconstruct scenario's own
+			// references.  Only the RMSE MACHINERY is shared.
+			//----------------------------------------------------------------
+
+			//! The session's imagined whole-scene target: the model's own
+			//! description plus the image the provider generated from it,
+			//! normalized to ONE representation (see ImagineScene) --
+			//! `rgb` is tightly-packed 8-bit RGB, `width*height*3` bytes,
+			//! and `png` is that same image re-encoded, which is what rides
+			//! back inline.  Session-lifetime and IMMUTABLE once published:
+			//! re-imagining swaps the whole object behind a new shared_ptr
+			//! rather than mutating this one, which is what lets an async
+			//! render hold a snapshot without a lock (see RenderAsync).
+			struct AgentSceneTarget
+			{
+				std::string                description;   //!< the model's own text, verbatim
+				std::vector<unsigned char> rgb;           //!< width*height*3, row-major
+				unsigned int               width = 0;
+				unsigned int               height = 0;
+				std::vector<unsigned char> png;           //!< the same image, PNG-encoded
+				std::string                providerName;  //!< which provider generated it
+				std::string                modelId;       //!< which image model
+				std::string                sourceMimeType;//!< what the provider actually sent
+			};
+
+			//! One image-generation attempt's outcome, as the HOST reports it
+			//! back to this class.  `ok` true REQUIRES non-empty `bytes`.
+			//! `error` must be a HEADER-FREE, BODY-FREE category (the
+			//! IChatHttpTransport contract) -- it is echoed to the model.
+			struct AgentImageGenOutcome
+			{
+				bool                       ok = false;
+				std::vector<unsigned char> bytes;      //!< the generated image, as the provider sent it
+				std::string                mimeType;   //!< e.g. "image/png"
+				std::string                error;      //!< factual category on failure
+			};
+
+			//! The HOST-INSTALLED image-generation capability -- the same
+			//! shape of dependency as SetReferenceImages (host-provided, no
+			//! wire verb can reach it) but a callable rather than data,
+			//! because performing the POST needs the host's transport and the
+			//! session's chat credentials, neither of which this class has or
+			//! should have.  Left unset (the default at EVERY existing
+			//! construction site) the session honestly reports no capability
+			//! and the imagine half of the gate never arms -- back-compat by
+			//! construction.
+			struct AgentImageGenerator
+			{
+				//! Does this provider generate images at all?  When false the
+				//! other fields are informational and `generate` is not called.
+				bool        supported = false;
+				std::string providerName;   //!< e.g. "gemini" -- named in the capability statement
+				std::string modelId;        //!< e.g. "gemini-3.1-flash-image"
+				//! Perform ONE blocking generation of `description`.  Called
+				//! on the dispatcher thread inside tool dispatch; a generous
+				//! transport timeout is the host's to set.  Never throws.
+				std::function<AgentImageGenOutcome( const std::string& description )> generate;
+			};
+
+			//! Install (or replace) the host's image-generation capability.
+			//! HOST-PROVIDED ONLY -- there is no wire verb that can set,
+			//! change or inspect the endpoint, the model or the credentials.
+			//! Call once, before the session serves requests.
+			void SetImageGenerator( AgentImageGenerator generator )
+			{
+				mImageGenerator = std::move( generator );
+			}
+
+			//! The structured result of ImagineScene.  On `ok` the target was
+			//! REPLACED (or created) and `png`/`width`/`height` describe it.
+			//! On !ok NOTHING about the session's target changed -- a failed
+			//! imagine never drops a target the model already has.
+			struct AgentImagineResult
+			{
+				bool                       ok = false;
+				bool                       replacedPreviousTarget = false;
+				//! true iff the failure was a PROVIDER failure that disarmed
+				//! the imagine requirement (see the anti-stranding rule).
+				bool                       requirementDisarmed = false;
+				//! true iff the refusal was "this provider cannot generate
+				//! images" rather than a failed attempt.
+				bool                       capabilityRefusal = false;
+				std::string                description;
+				std::string                providerName;
+				std::string                modelId;
+				unsigned int               width = 0;
+				unsigned int               height = 0;
+				std::vector<unsigned char> png;
+				std::string                message;
+			};
+
+			//! Ask the provider for an image of `description` and hold it as
+			//! this session's scene target.  Touches the Document not at all.
+			//! Blocking: it performs one provider round trip through the
+			//! host-installed generator.  See the block above for the
+			//! capability, replacement and anti-stranding contracts.
+			AgentImagineResult ImagineScene( const std::string& description );
+
+			//! The current scene target, or null when none has been imagined.
+			//! SINGLE-THREADED-CALLER, exactly like the build-plan state: the
+			//! async render path COPIES this shared_ptr on the submitting
+			//! thread and carries the copy into the worker (see RenderAsync),
+			//! so nothing on the controller's render worker ever reads this
+			//! member.  The pointee is immutable, so a held snapshot stays
+			//! valid across a re-imagine.
+			std::shared_ptr<const AgentSceneTarget> SceneTarget() const { return mSceneTarget; }
+
+			//! Does this session have a scene target?  Observation only.
+			bool HasSceneTarget() const { return mSceneTarget != nullptr; }
+
+			//! Doc 90 slice R1 (2026-08-22): the structured result of
+			//! SetRenderAnchor.  `ok` is false only when there is nothing to
+			//! pin (no qualifying render has completed in this session yet);
+			//! the message says so plainly and nothing changes.
+			struct AgentSetRenderAnchorResult
+			{
+				bool          ok = false;
+				bool          pinned = false;
+				//! The revision the newly pinned anchor was rendered at.
+				std::uint64_t anchorRevision = 0;
+				//! The revision of the anchor this call REPLACED, meaningful
+				//! only with `hadPreviousAnchor`.
+				std::uint64_t previousAnchorRevision = 0;
+				bool          hadPreviousAnchor = false;
+				std::string   message;
+			};
+
+			//! Doc 90 slice R1 (2026-08-22): re-pin the session's ANCHOR
+			//! RENDER to the MOST RECENT qualifying render.  Touches the
+			//! Document not at all -- per-session bookkeeping only, exactly
+			//! like file_build_plan and imagine_scene, and read-safe on the
+			//! same test (see AgentRpc.cpp's IsReadSafeVerb).
+			//!
+			//! IT TAKES NO ARGUMENT, and that is a decision, not an omission.
+			//! A revision argument would mean "re-pin to any render I still
+			//! remember", which requires retaining EVERY render's pixels for
+			//! the life of the session; this shape needs exactly two frames
+			//! held at any moment (the anchor and the latest).  It is also
+			//! the shape the measured failure asks for: the dragon run needed
+			//! "this new one is better, keep it", never arbitrary time travel
+			//! -- and time travel on the DOCUMENT is slice R2's verb, not
+			//! this one's.
+			//!
+			//! "Qualifying" is the render-result rule (see
+			//! AgentRenderResult::anchorApplied): a succeeded, full-frame,
+			//! production beauty render, made from the agent surface, that
+			//! did not isolate and carried no element target.  A session that
+			//! has only ever drafted, or only ever looked at isolated parts,
+			//! has nothing to pin and is told so.
+			//!
+			//! It may be called BEFORE the Compose phase.  The automatic
+			//! anchor waits for compose (a render of parts being built is not
+			//! a render of the scene), but an EXPLICIT pin is the model
+			//! saying it knows what it is keeping, and refusing that would be
+			//! the mechanism overruling the judgment it exists to support.
+			AgentSetRenderAnchorResult SetRenderAnchor();
+
+			//! Doc 90 R1: is an anchor render pinned?  Observation only.
+			bool HasRenderAnchor() const;
+
+			//! Doc 90 R1: the pinned anchor's head revision, 0 when none is
+			//! pinned.  Observation only.
+			std::uint64_t RenderAnchorRevision() const;
+
+			//! Does this session's provider generate images (i.e. did the
+			//! host install a capable generator)?  Observation only -- this
+			//! is what makes the gate's imagine half conditional.
+			bool ImagineCapable() const { return mImageGenerator.supported && mImageGenerator.generate != nullptr; }
+
+			//! Has a PROVIDER failure disarmed the imagine requirement for
+			//! this session?  Observation only.
+			bool ImagineRequirementDisarmed() const { return mImagineRequirementDisarmed; }
+			//! Phase 2 (P2-2 spend cap): generator-reaching imagine_scene calls
+			//! allowed per session.  Capability/schema refusals never count.
+			static constexpr int kSceneImagineMaxPerSession = 10;
+
+			//! The longest edge the stored scene target is kept at.  A
+			//! provider image arrives at 1024 or larger; every agent-surface
+			//! render is capped at kAgentSurfaceMaxRenderEdge (256), so the
+			//! comparison canvas can never exceed that anyway and storing the
+			//! full-size original would only inflate the inline image the
+			//! filing echo returns.  512 keeps the echo legible to a vision
+			//! model while staying well inside every provider's inline-image
+			//! budget.
+			static constexpr unsigned int kSceneTargetMaxEdge = 512;
+
+			//----------------------------------------------------------------
+			// Arc 79 slice S2 (2026-08-11): CLEAN-ROOM CONSTRUCTION -- the two
+			// verbs `build_element` and `place_element`.
+			// Design: docs/agentic-redesign/79-clean-room-construction.md.
+			//
+			// THE MEASUREMENT THIS EXPLOITS (design sec 1).  The same request
+			// to the same model produced 18.0 SDF parts in a SHORT context,
+			// 7.7 with 60k of the agent's own skills prepended, and 1-2 inside
+			// a live session.  A hand simulation that built each element in a
+			// FRESH minimal context produced 67 parts across a scene (wizard
+			// 15) against the live run's ~10 (wizard 2).  Construction
+			// richness is bounded by CONTEXT VOLUME, not by knowledge -- so
+			// `build_element` asks the session's OWN provider, through the
+			// host-mediated `imagine_scene` pattern (text instead of image),
+			// for ONE element in ONE fresh minimal completion.
+			//
+			// THAT SIMULATION FAILED AT COMPOSITION, structurally: each
+			// builder invented its own coordinate conventions, the glue was
+			// string concatenation with no validation (it silently dropped an
+			// unbalanced chunk, every light and the scene header), and the
+			// assembler was handed a screenshot rather than an inventory.
+			// The two contracts below are exactly those three gaps:
+			//
+			//   LOCAL FRAME (LocalFrameContract, sent to the builder verbatim)
+			//     -- base-centre at the origin, +Y up, facing +Z, a height
+			//     budget, a name prefix, self-contained, and no world
+			//     placement.  `place_element` is what the frame exists to
+			//     enable.  It USED to be the operation RISE's flat scene graph
+			//     could not express natively; since 87 the graph is recursive
+			//     and the element is a real subtree, so the verb writes ONE
+			//     local transform onto the element's root node instead of
+			//     composing arithmetically into every object it created.
+			//
+			//   VALIDATED INSERTION -- never string concatenation.  A real
+			//     balanced-brace extractor (ExtractChunkTexts, which REPORTS
+			//     an unbalanced chunk instead of dropping it), a name-prefix
+			//     check that REJECTS rather than renames (renaming would break
+			//     the internal references the builder just wrote), submission
+			//     through the SAME InsertChunks path any agent-authored chunk
+			//     takes, ONE capped repair retry, and a factual report of what
+			//     landed, what was rejected and why.
+			//
+			// ATTRIBUTION is the arc-78 machinery, unchanged: everything that
+			// lands is recorded against the active element because it landed
+			// while that element was active.  Nothing here reads or writes
+			// attribution directly.
+			//----------------------------------------------------------------
+
+			//! One blocking text-completion attempt's outcome, as the HOST
+			//! reports it back to this class.  `ok` true REQUIRES non-empty
+			//! `text`.  `error` must be a HEADER-FREE, BODY-FREE category (the
+			//! IChatHttpTransport contract) -- it is echoed to the model.
+			//! Mirrors Agent::ChatTextCompletionOutcome field for field.
+			struct AgentTextCompletionOutcome
+			{
+				bool        ok = false;
+				std::string text;
+				std::string error;
+			};
+
+			//! The HOST-INSTALLED text-completion capability -- the exact
+			//! sibling of AgentImageGenerator, and host-provided for the same
+			//! reason: performing the POST needs the host's transport and the
+			//! session's chat credentials, neither of which this class has or
+			//! should have.  Left unset (the default at EVERY existing
+			//! construction site) the session honestly reports no capability,
+			//! `build_element` answers with a capability statement, and the
+			//! clean-room refusal never arms -- back-compat by construction.
+			struct AgentTextCompleter
+			{
+				bool        supported = false;
+				std::string providerName;   //!< e.g. "gemini" -- named in the capability statement
+				std::string modelId;        //!< e.g. "gemini-4-argon"
+				//! Perform ONE blocking completion of `prompt`.  Called on the
+				//! dispatcher thread inside tool dispatch; a generous transport
+				//! timeout is the host's to set.  Never throws.
+				std::function<AgentTextCompletionOutcome( const std::string& prompt )> complete;
+			};
+
+			//! Install (or replace) the host's text-completion capability.
+			//! HOST-PROVIDED ONLY -- there is no wire verb that can set,
+			//! change or inspect the endpoint, the model or the credentials.
+			//! Call once, before the session serves requests; a credential
+			//! change is satisfied by building a fresh completer and calling
+			//! this again (see Agent::MakeChatTextCompleter).
+			void SetTextCompleter( AgentTextCompleter completer )
+			{
+				mTextCompleter = std::move( completer );
+			}
+
+			//! Can this session run a builder completion (i.e. did the host
+			//! install a capable completer)?  Observation only -- this is what
+			//! makes both `build_element` and the clean-room refusal
+			//! conditional, exactly as ImagineCapable does for its half of the
+			//! build-plan gate.
+			bool BuildCapable() const
+			{
+				return mTextCompleter.supported && mTextCompleter.complete != nullptr;
+			}
+
+			//! THE LOCAL-FRAME CONTRACT, sent to the builder VERBATIM and
+			//! exposed here so a test can pin the exact text without building
+			//! a prompt.  Facts and requirements only -- no advice about what
+			//! to build, no judgement, no score.
+			static const char* LocalFrameContract();
+
+			//! Generator-reaching `build_element` calls allowed per session.
+			//! Capability, phase and schema refusals never count.  Same
+			//! motivation as kSceneImagineMaxPerSession: this is a verb whose
+			//! cost is real, billed provider money rather than local compute,
+			//! and the interactive surface has no call budget.  ONE call can
+			//! reach the provider TWICE (the build plus its single repair
+			//! retry), which the cap deliberately does not distinguish -- it
+			//! bounds calls, and the retry is bounded at one by construction.
+			static constexpr int kBuildElementMaxPerSession = 16;
+
+			//! The longest `notes` string a `build_element` call may carry.
+			//! `notes` is interpolated into the host-composed builder prompt
+			//! (clearly labelled, after the frame contract), so it is the ONE
+			//! model-supplied span in that prompt; the cap bounds what a
+			//! runaway call can spend, and over-long notes are TRUNCATED with
+			//! the truncation stated, never silently.
+			static constexpr std::size_t kBuildElementMaxNotes = 2000;
+
+			//! One chunk the builder returned that was NOT inserted, with the
+			//! reason.  Never a silent drop -- the simulation's most damaging
+			//! failure mode (design sec 2.2).
+			struct AgentBuildElementRejection
+			{
+				std::string name;    //!< the chunk `name` when it had one, else ""
+				std::string kind;    //!< the chunk keyword when it parsed, else ""
+				std::string reason;  //!< factual, actionable, no advice
+				//! Doc 91 review round 4: which builder attempt produced this
+				//! rejection (1 = the first answer, 2 = the one repair retry),
+				//! so a reader can tell "refused in the same answer that landed
+				//! it" from "refused, then landed by the retry" without
+				//! inferring order from name membership.
+				int         attempt = 1;
+			};
+
+			//! The structured result of BuildElement.  `ok` means the builder
+			//! ANSWERED and its answer was processed -- NOT that everything
+			//! landed; `landed` / `rejected` carry that, and a partial outcome
+			//! is a first-class, honestly-reported result.
+			struct AgentBuildElementResult
+			{
+				bool        ok = false;
+				//! true iff the refusal was "this provider cannot run a
+				//! builder completion" rather than a failed attempt.
+				bool        capabilityRefusal = false;
+				std::string element;        //!< the element this built for ("" when !ok)
+				std::string providerName;
+				std::string modelId;
+				//! Chunks the extractor recovered from the builder's answer,
+				//! across BOTH attempts (see `retryRan`).
+				unsigned int chunksExtracted = 0;
+				//! Chunk names that actually landed in the document, in
+				//! insertion order.
+				std::vector<std::string> landed;
+				//! Doc 91 L1 review round 1: the chunk KIND of each `landed`
+				//! entry, index-parallel -- the builder (not the model) wrote
+				//! these chunks, and once a clean success no longer gets a
+				//! chunkResults entry, this is the only place its kind rides.
+				std::vector<std::string> landedKinds;
+				//! Doc 91 review round 4: the builder attempt (1 or 2) that
+				//! landed each `landed` entry, index-parallel.
+				std::vector<int> landedAttempts;
+				std::vector<AgentBuildElementRejection> rejected;
+				//! One AgentChunkResult per chunk SUBMITTED (both attempts, in
+				//! submission order) -- the same per-element shape
+				//! InsertChunks returns, so a caller can see each chunk's own
+				//! status without re-reading the document.
+				std::vector<AgentChunkResult> chunkResults;
+				bool        retryRan = false;      //!< the ONE repair retry was issued
+				bool        retrySucceeded = false;//!< ... and it landed at least one more chunk
+				//! `part` lines across the geometry chunks that LANDED -- the
+				//! arc's headline measurement (design sec 6 item 1).  A plain
+				//! count, never a target and never scored.
+				unsigned int sdfPartCount = 0;
+				//! The element's realised WORLD bounding box: the union over
+				//! the standard_objects attributed to it that the scene can
+				//! resolve.  `bboxValid` false when it has none.
+				bool        bboxValid = false;
+				double      bboxMin[3] = { 0.0, 0.0, 0.0 };
+				double      bboxMax[3] = { 0.0, 0.0, 0.0 };
+				std::string message;
+			};
+
+			//! Build ONE element in a FRESH minimal provider context and
+			//! validated-insert the result.  Requires the arc-78 PIECES phase
+			//! with `element` ACTIVE -- a mismatch, a missing plan, a compose-
+			//! phase call or a provider with no completion capability all come
+			//! back ok:false having changed NOTHING (no document mutation, no
+			//! phase change, no refusal counted).
+			//!
+			//! `height` is the requested Y extent, a REQUEST and not a gate:
+			//! the harness MEASURES the realised bbox and reports it rather
+			//! than enforcing it.  `notes` is optional free text from the
+			//! caller, interpolated into the host-composed prompt (see
+			//! kBuildElementMaxNotes); the model NEVER supplies raw prompt
+			//! text -- the grammar, the frame contract, the element's declared
+			//! pieces, its filed outline and the output instruction are all
+			//! composed HERE.
+			//!
+			//! Blocking: one provider round trip, plus at most ONE repair
+			//! retry when the first insertion rejects anything.
+			AgentBuildElementResult BuildElement( const std::string& element,
+			                                      double height,
+			                                      const std::string& notes = std::string() );
+
+			//! One object recorded against the element that the element root's
+			//! transform does NOT carry, and why.
+			//!
+			//! 87 STEP 5 (2026-08-18): the three PRE-ROOT skip causes -- an
+			//! object authored with `matrix`, one authored with `quaternion`,
+			//! and one whose `position` was unparseable -- are GONE, because
+			//! all three were artefacts of patching each object's own params.
+			//! A child's `matrix` or `quaternion` is its LOCAL transform and
+			//! composes through the parent untouched.  What remains is the one
+			//! cause that is real under hierarchy: an object recorded against
+			//! the element whose `parent` chain does not reach the element
+			//! root (it was authored with an explicit `parent` pointing
+			//! elsewhere, or it is a CSG operand, which cannot be parented).
+			struct AgentPlaceElementSkip
+			{
+				std::string object;
+				std::string reason;
+			};
+
+			//! The structured result of PlaceElement.  `ok` false means the
+			//! call did NOTHING -- no patch was submitted and the document is
+			//! byte-identical -- and `message` says why.
+			struct AgentPlaceElementResult
+			{
+				bool        ok = false;
+				std::string element;
+				//! 87 step 5: the element root node the transform landed on,
+				//! or "" when there is none (which is also the only reason
+				//! this verb now refuses on a well-formed element).
+				std::string root;
+				//! The objects the root's transform carries, in attribution
+				//! order.  They are NOT patched -- their authored params are
+				//! untouched -- so this is a statement about what MOVED, not
+				//! about what was written.
+				std::vector<std::string> objects;
+				std::vector<AgentPlaceElementSkip> skipped;
+				//! One AgentPatchResult per patch submitted, in submission
+				//! order: position, scale, orientation -- all three on the
+				//! element ROOT, so this is exactly three entries.
+				std::vector<AgentPatchResult> patchResults;
+				unsigned int patchesApplied = 0;
+				unsigned int patchesRejected = 0;
+				//! The element's world bounding box AFTER the placement, when
+				//! it has resolvable objects.
+				bool        bboxValid = false;
+				double      bboxMin[3] = { 0.0, 0.0, 0.0 };
+				double      bboxMax[3] = { 0.0, 0.0, 0.0 };
+				std::string message;
+			};
+
+			//! Place `element` by writing ONE local transform onto its ROOT
+			//! NODE (see ElementRootName) -- the container every object the
+			//! element created is parented to.  The engine composes
+			//! `world = parent.world * local` for the whole subtree, so the
+			//! placement is EXACT and the author's own numbers are never
+			//! touched.  Legal in the PIECES and COMPOSE phases; ok:false
+			//! (nothing submitted) with the protocol off, with no plan filed,
+			//! for an element not in the plan, or for an element that has no
+			//! root node.
+			//!
+			//! PLACEMENT SEMANTICS -- ABSOLUTE, not compounding.  All three
+			//! params are written to the root every call, defaults included,
+			//! so a second call with the same arguments is a NO-OP rather than
+			//! a doubling.  That is the whole of defect 4: the pre-87 verb
+			//! read each object's CURRENT position and added to it, so
+			//! re-placing an element compounded the error and placement could
+			//! not be separated from construction.
+			//!   * `position` is the element's base-centre in world space,
+			//!     written to the root's `position`.  Each object's own offset
+			//!     inside the element is scaled, rotated and then added to it
+			//!     by the engine's composition -- so the internal arrangement
+			//!     is rigid, which is the whole point.
+			//!   * `orientation` is Euler DEGREES about the element's own
+			//!     origin, default "0 0 0", written to the root's
+			//!     `orientation`.  EXACT for every child, including children
+			//!     that carry a rotation of their own and children authored
+			//!     with `quaternion` or `matrix`: a child's transform is its
+			//!     LOCAL one and composes as a matrix.  The pre-87 verb added
+			//!     Euler triples per axis (exact only about one shared axis)
+			//!     and could not rotate a `quaternion` child at all; both
+			//!     approximations are gone with the arithmetic that forced
+			//!     them.
+			//!   * `scale` is ONE uniform factor or THREE per-axis factors,
+			//!     default 1, written to the root's `scale`.  Non-uniform is
+			//!     admitted now because a parent node can express it (the
+			//!     pre-87 refusal existed because multiplying a child's own
+			//!     `scale` per axis and then rotating its offset is not a
+			//!     similarity transform).  Every component must be finite and
+			//!     > 0: a zero component makes the composed matrix singular
+			//!     for the WHOLE SUBTREE, and Matrix4Ops::Inverse returns its
+			//!     input unchanged at det == 0 (87 §4, "a rank-deficient
+			//!     container").
+			//!
+			//! WHAT IS REPORTED.  `objects` names what the root's transform
+			//! carries -- established by walking `IObjectManager::
+			//! GetObjectParent` from each attributed object, not assumed.
+			//! `skipped` names an attributed object whose ancestry does NOT
+			//! reach the root; the three pre-87 skip causes (`matrix`,
+			//! `quaternion`, an unparseable `position`) are gone.
+			//!
+			//! Routes entirely through ProposePatches, so authority, autonomy
+			//! staging, conflict detection and per-patch diagnostics are
+			//! inherited unchanged.  ONE head bump and ONE undo step: the
+			//! whole placement is submitted as a single ProposePatches batch
+			//! -- and it is now three patches on one chunk rather than up to
+			//! three per object.
+			AgentPlaceElementResult PlaceElement( const std::string& element,
+			                                      const std::string& position,
+			                                      const std::string& scale = std::string(),
+			                                      const std::string& orientation = std::string() );
+
+			//----------------------------------------------------------------
+			// ARC 81 (2026-08-12): `light_scene` -- A CLEAN-ROOM LIGHTING PASS.
+			// Design: docs/agentic-redesign/81-creative-lighting-arc.md.
+			//
+			// THE MEASUREMENT.  Against the hand-authored frontier benchmark
+			// on the same prompt (scenes/Benchmarks/dreamscape_coral_queens_hour
+			// .RISEscene), every agent run in this workstream has produced 3-5
+			// lights spanning about 40x in power, and has used ONLY omni_light,
+			// spot_light and directional_light.  The benchmark uses 8 lights
+			// spanning ~1000x.  RISE also offers ambient_light,
+			// hosek_wilkie_skylight and area/mesh lighting via an emissive
+			// material; NO agent run has ever used any of the three.
+			//
+			// WHY A CLEAN ROOM.  Arc 79's fresh minimal context is the ONE
+			// mechanism in this workstream that ever moved a number (the
+			// wizard, 4 -> 10 SDF parts, after twelve runs of information and
+			// feedback mechanisms moved it none).  Lighting is authored in
+			// exactly the diluted-context regime arc 79 relieved -- in the
+			// compose phase, 60-70 turns deep.  So it gets the same treatment:
+			// ONE fresh, minimal provider completion, through the session's
+			// own credentials and transport, validated-inserted.
+			//
+			// WHAT THE LIGHTING BUILDER GETS THAT build_element COULD NOT: the
+			// arc-80 SCENE INVENTORY.  The lighting is designed against where
+			// the objects actually are -- their names, world bbox centres and
+			// sizes -- plus the camera, the scene's world bounds, the session's
+			// imagined subject/mood if it has one, and the lights that already
+			// exist.  That composition is what makes this arc possible at all.
+			//
+			// WHAT IT IS NOT TOLD: to be dramatic, to use many lights, or to
+			// spread its power range.  That is advice, advice measures ~0 in
+			// this workstream, and it would contaminate the very thing being
+			// measured.  It gets the palette, the scene, the mood and the
+			// syntax.
+			//----------------------------------------------------------------
+
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 2 (2026-08-12): ENUMERATE THE SOURCES, THEN BUILD
+			// THEM ALL IN ONE GO.  Owner's direct design, verbatim: "What if
+			// we asked the model to think about the most physically correct
+			// lighting for the scenario and then build that in one go. So for
+			// a lamp on a desk it would be a light bulb that glows, for an
+			// outdoor scene it would be the hokie sky, for an interior room
+			// it would likely be a series of rectangles to emulate a bunch of
+			// ceiling lights."
+			// Design: docs/agentic-redesign/83-staged-construction-plan.md
+			// sec 7 and its correction block.
+			//
+			// WHY SLICE 1 FAILED, AND WHY THE FAILURE WAS IN THE QUESTION, NOT
+			// THE LOOP.  83 sec 7's planning step asked a CINEMATOGRAPHY
+			// question -- "what lighting intents does this scene need" --
+			// whose native vocabulary is key/fill/rim, studio-instrument
+			// words.  Every measured run answered in that vocabulary even
+			// with the palette withheld from the planner and kind-naming
+			// forbidden in the prompt, so slice 1 shipped ZERO area lights
+			// across six planned intents where the single-call design it
+			// replaced had managed a few.  The question selects the
+			// vocabulary of the answer, and no amount of prompt engineering
+			// downstream of a bad question fixes that.
+			//
+			// THE OWNER'S QUESTION HAS THINGS AS ANSWERS.  "What in this
+			// world physically emits light?" is answered with a bulb, a
+			// window opening, the sky, a row of ceiling panels, a glowing
+			// creature -- nouns, not instruments.  Things become emissive
+			// objects; the physics falls out of the vocabulary, with no
+			// preference language anywhere.
+			//
+			// THE NEW SHAPE.  `light_scene` is still ONE model-facing verb
+			// with the same name; the wire result keeps every field that
+			// still means something.  Internally there are exactly TWO
+			// completions on the happy path, not a loop:
+			//   1. THE SOURCE ENUMERATION -- one cheap completion that lists
+			//      what physically emits light in this scenario, bounded at
+			//      kLightSourceBudget, forbidden from naming a renderer light
+			//      kind.
+			//   2. THE BUILD -- one completion that receives the source list
+			//      VERBATIM and writes the chunks for ALL of it in one
+			//      answer, with the palette, the inventory, the camera, the
+			//      world bounds and the lights that already exist.  The
+			//      one-light-per-answer rule slice 1 enforced is GONE: that
+			//      rule belonged to the per-intent loop, and the loop is what
+			//      is being replaced.  Admissibility, the ambient ban,
+			//      validated insertion and the ONE repair retry apply to the
+			//      WHOLE build answer, exactly as arc 81's original
+			//      single-call design worked before slice 1 split it.
+			//
+			// WHAT DID NOT CHANGE: kLightPalette's prose, the ambient
+			// refusal, the tonal fact, the forced-first-use gate, the
+			// per-session cap (now counting a smaller, bounded completion
+			// range per call), and the phase seams.
+			//----------------------------------------------------------------
+
+			//! Provider-reaching `light_scene` CALLS allowed per session.
+			//! Capability and schema refusals never count.  Lower than
+			//! kBuildElementMaxPerSession because there is one lighting design
+			//! per scene, not one per element -- the same real-provider-money
+			//! rationale, a smaller natural number of calls.
+			//!
+			//! ARC 83 SLICE 2: one call spends ONE enumeration completion plus
+			//! ONE build completion, and the build may spend ONE repair retry
+			//! -- so a single call reaches the provider between 1 (a failed
+			//! enumeration, which has no retry) and 3 times, and a session's
+			//! four calls reach it at most 12 times.  Every call reports the
+			//! completions it actually spent, so the real figure is a
+			//! measured number rather than an inferred one.
+			static constexpr int kLightSceneMaxPerSession = 4;
+
+			//! How many LIGHT SOURCES one `light_scene` call will enumerate
+			//! and then build.  RAISED 6 -> 16 (2026-08-13): 6 was sized to the
+			//! dead per-intent loop where each source cost a completion; under
+			//! the source-first design (this comment block, arc 83 slice 2)
+			//! the enumeration length costs almost nothing -- one build
+			//! completion regardless of how many sources it authors, so the
+			//! only per-source cost left is the solo measurement
+			//! (kLightSceneMaxSolos, moved with it below).  At 6 this was a
+			//! RICHNESS cap: an interior with windows plus a lamp row plus a
+			//! few practicals legitimately exceeds it.  At 16 it is a runaway
+			//! backstop, sized so no legitimate scene meets it -- the same
+			//! philosophy kBuildElementMaxPerSession uses.  A bound sized to
+			//! typical scenes is a cap; a bound sized so nothing legitimate
+			//! hits it is a backstop.  The number is stated in the enumeration
+			//! prompt, and a longer list is TRUNCATED with the truncation
+			//! stated in the result, never silently.
+			static constexpr int kLightSourceBudget = 16;
+
+			//! The longest ONE enumerated source line may be.  A source is
+			//! provider-supplied text that this harness then interpolates
+			//! into the build prompt, so it is capped exactly as `notes` is,
+			//! and any truncation is STATED rather than silent.
+			static constexpr std::size_t kLightSourceMaxChars = 240;
+
+			//! The longest `notes` string a `light_scene` call may carry --
+			//! the ONE model-supplied span in the host-composed lighting
+			//! prompt, capped for kBuildElementMaxNotes' reason and TRUNCATED
+			//! with the truncation stated, never silently.
+			static constexpr std::size_t kLightSceneMaxNotes = 2000;
+
+			//! How many lights `light_scene` will SOLO to measure their
+			//! contribution.  RAISED 8 -> 16 (2026-08-13), IN STEP WITH
+			//! kLightSourceBudget above: the solo pass is the one place a
+			//! larger source budget actually costs more (one small render per
+			//! light), so its cap moves with the enumeration cap rather than
+			//! being left behind at the old ceiling.  Each solo is one small
+			//! real render, affordable ONLY because this verb runs once per
+			//! scene rather than once per render.  When the scene has more
+			//! soloable lights than this the cap is applied to the
+			//! largest-power-first order and the result text SAYS a cap
+			//! applied and how many were skipped -- never a silent truncation.
+			static constexpr int kLightSceneMaxSolos = 16;
+
+			//! The long edge of each contribution-measuring solo render.
+			//! Small on purpose: the measurement is a whole-frame mean, which
+			//! converges far faster than a picture does.
+			static constexpr unsigned int kLightSceneSoloLongEdge = 64;
+
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13 -- THE ZERO-AREA
+			// LIGHT CONFIRMATION.
+			//
+			// Owner, verbatim (2026-08-12): "penalize the model for choosing
+			// omni, spot or ambient over shape light."  `ambient_light` was
+			// already banned absolutely (DescribeAmbientLightBan above) and
+			// stays that way.  The other three -- omni_light, spot_light,
+			// directional_light -- are legitimate for the special cases that
+			// want a zero-area idealization, so they are not banned; they
+			// are CONFIRMED.
+			//
+			// THE FREE BUDGET OF 2 IS REMOVED (owner, 2026-08-13, verbatim
+			// reasoning in docs/agentic-redesign/83-staged-construction-
+			// plan.md sec 13): a free allowance exempted the first two uses
+			// of a session from exactly the deliberateness test this
+			// mechanism exists to apply.  The gate is now unconditional --
+			// EVERY zero-area light creation request is refused once, with
+			// the facts, and lands the moment it is re-issued unchanged, from
+			// the FIRST one.  A model that means it pays one turn; a model
+			// reaching by reflex is shown the area-light forms at the moment
+			// it reaches, on every reach, not just past a free allowance.
+			//
+			// UNCONDITIONAL, exactly like the ambient ban and for the same
+			// reasons: it is a permanent property of what this surface
+			// authors, not a sequencing gate.  It does NOT go through
+			// RefuseForPhase_, does not consume the shared 3-refusal phase cap,
+			// cannot trigger the give-up, and is NOT disabled by
+			// --agent-build-protocol=off.
+			//----------------------------------------------------------------
+
+			//! The refusal text, shared VERBATIM by every path that can create
+			//! a zero-area light chunk, so the model reads one message wherever
+			//! it hits it (DescribeAmbientLightBan's rule).
+			//!
+			//! FACTS ONLY -- what a zero-area light physically is, which light
+			//! forms carry no confirmation requirement at all, and that
+			//! re-issuing this exact request inserts it.  No should/prefer/
+			//! avoid wording: the advice-vocabulary ban this workstream
+			//! enforces on the prompts covers the refusals too.  Takes no
+			//! parameters -- unlike the superseded budget text, nothing here
+			//! varies by how many zero-area lights the document or the
+			//! request carries; the message is the same fact every time.
+			static std::string DescribeZeroAreaLightConfirmationRefusal();
+
+			//! One chunk the lighting builder returned that was NOT inserted,
+			//! with the reason.  Never a silent drop -- the same contract
+			//! AgentBuildElementRejection carries, and the same struct shape.
+			struct AgentLightSceneRejection
+			{
+				std::string name;
+				std::string kind;
+				std::string reason;
+			};
+
+			//! ONE light's measured contribution to the frame.  `soloed` false
+			//! means the solo render did not happen or did not succeed, in
+			//! which case `meanLuma` is NOT a measurement and `reason` says
+			//! what happened -- the same "omit rather than fabricate" rule the
+			//! inventory's frame positions follow.
+			struct AgentLightContribution
+			{
+				std::string name;
+				//! "light" (an ILightManager entry), "emissive object" (a mesh
+				//! luminary), or "environment" (the scene's radiance map --
+				//! the reserved solo name RayCaster::SetSoloLightByName
+				//! accepts).
+				std::string kind;
+				bool        soloed = false;
+				//! Mean Rec.709 luma, 0-255, of the frame rendered with ONLY
+				//! this light active.  Meaningful only when `soloed`.
+				double      meanLuma = 0.0;
+				//! `meanLuma` as a fraction [0,1] of the SUM of every soloed
+				//! light's mean luma -- a share, deliberately NOT a fraction
+				//! of the all-lights frame (light transport is not additive
+				//! through a path tracer's MIS and shadowing, so claiming the
+				//! solos sum to the whole frame would be a false clause).
+				double      shareOfSoloedTotal = 0.0;
+				std::string reason;   //!< why it was not soloed; empty when it was
+			};
+
+			//! The structured result of LightScene.  `ok` means the builder
+			//! ANSWERED and its answer was processed -- NOT that everything
+			//! landed.  Partial success is first-class and honestly reported,
+			//! exactly as in AgentBuildElementResult.
+			struct AgentLightSceneResult
+			{
+				bool        ok = false;
+				bool        capabilityRefusal = false;
+				std::string providerName;
+				std::string modelId;
+				unsigned int chunksExtracted = 0;
+				std::vector<std::string> landed;
+				//! Doc 91 L1 review round 3: the chunk KIND of each `landed`
+				//! entry, index-parallel -- this pass (not the model) chose the
+				//! kinds, and a clean chunk no longer gets a chunkResults entry.
+				std::vector<std::string> landedKinds;
+				std::vector<AgentLightSceneRejection> rejected;
+				std::vector<AgentChunkResult> chunkResults;
+				//! TRUE when the build spent its one repair retry, and when
+				//! that retry landed something further -- kept because the
+				//! wire and the GUI have carried these two since arc 81.
+				bool        retryRan = false;
+				bool        retrySucceeded = false;
+
+				//---- ARC 83 SLICE 2: the enumeration step and the one build.
+				//! The light sources this call enumerated and then built,
+				//! AFTER the kLightSourceBudget cut -- verbatim, in the order
+				//! the enumeration completion wrote them.
+				std::vector<std::string> sources;
+				//! How many source lines the enumeration completion returned
+				//! BEFORE the budget was applied, so a truncation is visible
+				//! as two numbers rather than inferred from a short list.
+				int         sourcesReturned = 0;
+				//! The enumeration was longer than kLightSourceBudget and was
+				//! cut to its first kLightSourceBudget entries.
+				bool        sourcesTruncated = false;
+				//! At least one source line was longer than
+				//! kLightSourceMaxChars and was cut.
+				bool        sourceLinesTruncated = false;
+				//! Provider completions this ONE call spent: 1 for the
+				//! enumeration, plus 1-2 for the build (2 when the one repair
+				//! retry ran).  1 total when the enumeration itself failed --
+				//! the build never runs without a source list.  Reported
+				//! because the per-session cap bounds CALLS, not completions.
+				int         completionsSpent = 0;
+				//! How the lights this call built are FORMED, counted from
+				//! what actually LANDED across the whole build (not from what
+				//! was asked for): one landed emissive material is one area
+				//! light, one landed hosek_wilkie_skylight is one sky light,
+				//! one landed omni/spot/directional is one zero-area light,
+				//! any other landed Light chunk is "other".
+				int         areaLightsBuilt = 0;
+				int         zeroAreaLightsBuilt = 0;
+				int         skyLightsBuilt = 0;
+				int         otherLightsBuilt = 0;
+				//! Why the ENUMERATION completion failed, empty when it did
+				//! not.  When this is set the build never ran and no build
+				//! completion was spent.
+				std::string enumerationFailure;
+
+				//! Every soloable light in the scene AFTER the pass, in
+				//! descending measured contribution, capped at
+				//! kLightSceneMaxSolos.
+				std::vector<AgentLightContribution> contributions;
+				//! How many soloable lights the scene has, and how many of
+				//! them were actually soloed -- so a cap is visible as a
+				//! number rather than inferred from a short list.
+				int         soloableLightCount = 0;
+				int         soloedCount = 0;
+				//! Mean Rec.709 luma (0-255) of the SAME small frame with
+				//! every light active, so each solo has something to be read
+				//! against.  Meaningful only when `soloedCount > 0`.
+				double      allLightsMeanLuma = 0.0;
+				std::string message;
+			};
+
+			//! THE CACHE SEAM condition N reads from, and the ONE place it is
+			//! written.  `light_scene`'s own measurement pass
+			//! (MeasureLightContributions_) calls this at its tail with the
+			//! result it just measured; it REPLACES whatever was cached (a fresh
+			//! audit measures every soloable light, so a merge could only
+			//! preserve figures the new audit already superseded).
+			//!
+			//! Public because it is the seam the condition-N test battery drives
+			//! directly: building an AgentLightSceneResult by hand and recording
+			//! it is how the note's predicate is unit-tested without a provider
+			//! and N solo renders.  It is advisory state only -- nothing in the
+			//! document, the derived scene or any render depends on it, and the
+			//! worst a wrong record can do is make one Info-severity note fire
+			//! or stay silent.
+			//!
+			//! THREAD SAFETY: none of its own, deliberately.  The write runs
+			//! inside a `light_scene` tool turn and the reads run inside
+			//! `validate` / a render's own tail -- both on the dispatcher's
+			//! single-caller thread (AgentRpc.h's contract), and the render's
+			//! note is computed synchronously inside the parked closure before
+			//! RenderCore_ returns, so no read can interleave with the write.
+			void RecordLightSoloMeasurements( const AgentLightSceneResult& measured );
+
+			//! Read-only view of the cache above, for the carriers that must
+			//! pass it into the shared design-note scan (and for the tests that
+			//! assert `light_scene` really populated it).
+			const AgentLightSoloMeasurementMap& LightSoloMeasurements() const { return mLightSoloMeasurements; }
+
+			//! Design this scene's lighting in FRESH minimal provider
+			//! contexts and validated-insert the result.
+			//!
+			//! ARC 83 SLICE 2: ONE call is exactly TWO completions on the
+			//! happy path.  First, THE SOURCE ENUMERATION: what in this
+			//! world physically emits light, bounded at kLightSourceBudget,
+			//! forbidden from naming a renderer light kind.  Second, THE
+			//! BUILD: given that source list verbatim, write the chunks for
+			//! ALL of it in one answer -- the one-light-per-answer rule
+			//! slice 1 enforced is gone.  Insertion, admissibility, the
+			//! ambient ban and the ONE repair retry apply to the WHOLE build
+			//! answer and reuse the arc-79 validated insertion path
+			//! unchanged.  A failed enumeration does not run the build at
+			//! all -- there is nothing to build without a source list, and
+			//! the enumeration step has no retry of its own.
+			//!
+			//! CALLABLE IN EVERY PHASE, and with the staged build protocol
+			//! off.  Unlike `build_element` it needs no active element --
+			//! lights are scene-global (arc 78 sec 2.3 exempts the whole Light
+			//! category from element-window rules), and a protocol-off session
+			//! has no phases at all, so refusing it there would be exactly the
+			//! over-refusal arc 78 names as this design family's worst failure
+			//! mode.  What IS phase-scoped is the gate that forces its first
+			//! use -- see CheckFirstLightThroughCleanRoom_.
+			//!
+			//! NAMING: there is NO name-prefix requirement, deliberately --
+			//! see CheckFirstLightThroughCleanRoom_'s doc for why the
+			//! `<element>_` idiom's precondition does not hold here and what
+			//! replaces it.
+			//!
+			//! ONE STATED CONSEQUENCE of being callable in every phase: called
+			//! from inside an element window, whatever it inserts is
+			//! ATTRIBUTED to the active element, by arc 78's universal
+			//! attribute-everything rule and its machinery, unchanged.  For a
+			//! light chunk that is inert (the whole Light category is exempt
+			//! from every element-window refusal, and a delta light declares
+			//! no `parent`, so it joins no element subtree).  For a `rect_light`
+			//! or `shape_light` it means the element's root node carries that
+			//! emissive object along with the element -- correct behaviour for
+			//! a lamp built as part of a lamp element, surprising for a key
+			//! light.  (87 step 5 made that carry REAL rather than notional:
+			//! those two roles declare a `parent`, so they are auto-parented to
+			//! the element root like any other object, where the pre-87
+			//! `place_element` patched `standard_object` chunks only and left
+			//! them behind.)  The phase this
+			//! verb is designed for, and the one its gate forces it in, is
+			//! COMPOSE, where no element is active and nothing is attributed.
+			//!
+			//! `notes` is optional free text from the caller, interpolated
+			//! into the host-composed prompts (see kLightSceneMaxNotes); the
+			//! model NEVER supplies raw prompt text -- the inventory, the
+			//! camera, the world bounds, the palette, the syntax examples and
+			//! the output instruction are all composed HERE.  The enumerated
+			//! sources are provider-supplied text that the build prompt then
+			//! carries verbatim, so they are capped and stated exactly as
+			//! `notes` is (see kLightSourceMaxChars).
+			//!
+			//! Blocking: ONE enumeration round trip, then ONE build round
+			//! trip and at most ONE repair retry, then up to
+			//! kLightSceneMaxSolos + 1 small internal renders.
+			AgentLightSceneResult LightScene( const std::string& notes = std::string() );
+
+			//----------------------------------------------------------------
+			// ARC 82 (2026-08-12): `populate_scene` -- A CLEAN-ROOM
+			// POPULATION PASS.
+			// Design: docs/agentic-redesign/82-population-arc.md.
+			//
+			// THE MEASUREMENT.  The hand-authored frontier benchmark on the
+			// same prompt (scenes/Benchmarks/dreamscape_coral_queens_hour
+			// .RISEscene) has 47 objects built from 18 distinct geometries:
+			// 38 of the 47 are REPEATS of a geometry another object already
+			// uses (fish x14, motes x5, rock_crag x3, staghorn x3,
+			// kelp_blade x3, jelly_bell x3, jelly_tentacles x3, sea_fan x2,
+			// brain_coral x2).  It uses no generator or instancing chunk of
+			// any kind -- every repeat is an ordinary standard_object naming
+			// the same geometry and material at a different transform.  The
+			// best agent run to date has 16 objects and almost no reuse.
+			//
+			// So the gap is not modelling -- the elements the builders
+			// produce are good -- it is that the session builds ONE of each
+			// and stops.  Population is placement, and placement is cheap.
+			//
+			// HARD CONTRACT: this pass may create ONLY `standard_object`
+			// chunks, each naming a geometry and a material that ALREADY
+			// EXIST.  No geometry, no material, no painter, no light, no
+			// camera.  New FORM belongs to `build_element`; keeping the two
+			// disjoint is what stops this becoming a second builder.
+			//----------------------------------------------------------------
+
+			//! Provider-reaching `populate_scene` calls allowed per session.
+			//! kLightSceneMaxPerSession's number and rationale exactly: one
+			//! population pass per scene, and a real-provider spend bound
+			//! that a repair retry deliberately does not distinguish.
+			static constexpr int kPopulateSceneMaxPerSession = 4;
+			//! Per-chunk cap on objects a `source` clone may create (count_u * count_v * source subtree).
+			static constexpr int kPopulateSceneMaxCloneObjects = 256;
+			//! Per-CALL cap on objects accepted (clones expanded, plus ordinary
+			//! placements). Population targets tens to low hundreds of objects
+			//! (the best hand-built reference scene has 47); 1024 leaves ample
+			//! headroom while keeping one call far from a runaway scene.
+			static constexpr int kPopulateSceneMaxObjectsPerCall = 1024;
+
+
+			//! The longest `notes` string a `populate_scene` call may carry
+			//! -- the ONE model-supplied span in the host-composed prompt,
+			//! TRUNCATED with the truncation stated, never silently.
+			static constexpr std::size_t kPopulateSceneMaxNotes = 2000;
+
+			//! How many geometries the prompt's "what this scene already
+			//! has" listing names, and how many users it names under each.
+			//! Bounded for arc 79 sec 1's reason (prepended text competes
+			//! with construction richness), and any truncation is STATED.
+			static constexpr std::size_t kPopulateSceneMaxGeometriesListed = 40;
+			static constexpr std::size_t kPopulateSceneMaxUsersPerGeometry = 6;
+
+			//! One chunk the population pass returned that was NOT inserted,
+			//! with the reason.  Never a silent drop -- the same contract and
+			//! the same struct shape AgentLightSceneRejection carries.
+			struct AgentPopulateSceneRejection
+			{
+				std::string name;
+				std::string kind;
+				std::string reason;
+			};
+
+			//! ONE object this pass created, and what it repeats.  `geometry`
+			//! and `material` are the names it referenced -- both guaranteed
+			//! to have existed before the call, because a chunk naming an
+			//! unknown one is rejected rather than inserted.
+			struct AgentPopulateSceneCreation
+			{
+				//! Doc 91 L1 review round 3: the chunk keyword that landed
+				//! (this pass chose it; the clean chunk has no chunkResults
+				//! entry any more).
+				std::string kind;
+				std::string name;
+				std::string geometry;
+				std::string material;
+				//! Non-empty for a `source` clone: the cloned object (and then
+				//! `geometry` is empty). `expandedCount` is how many objects
+				//! the chunk makes (count_u * count_v * source subtree).
+				std::string source;
+				int         expandedCount = 1;
+			};
+
+			//! The structured result of PopulateScene.  `ok` means the pass
+			//! ANSWERED and its answer was processed -- NOT that everything
+			//! landed.  Partial success is first-class and honestly reported,
+			//! exactly as in AgentLightSceneResult.
+			struct AgentPopulateSceneResult
+			{
+				bool         ok = false;
+				bool         capabilityRefusal = false;
+				std::string  providerName;
+				std::string  modelId;
+				unsigned int chunksExtracted = 0;
+				std::vector<AgentPopulateSceneCreation> created;
+				std::vector<AgentPopulateSceneRejection> rejected;
+				std::vector<AgentChunkResult> chunkResults;
+				bool         retryRan = false;
+				bool         retrySucceeded = false;
+				//! The scene's world-visible object count before and after
+				//! this call -- measured, both times, from the object
+				//! manager, so the difference is a fact about the scene
+				//! rather than a count of what this pass believes it did.
+				int          objectCountBefore = 0;
+				int          objectCountAfter = 0;
+				std::string  message;
+			};
+
+			//! Populate this scene in a FRESH minimal provider context:
+			//! place MORE standard_objects using the geometries and
+			//! materials it already has, and validated-insert the result.
+			//!
+			//! CALLABLE IN EVERY PHASE, and with the staged build protocol
+			//! off, for LightScene's reasons exactly: it needs no active
+			//! element, and a protocol-off session has no phases at all, so
+			//! refusing it there would be the over-refusal arc 78 sec 2.3
+			//! names as this design family's worst failure mode.  What IS
+			//! phase-scoped is the gate that forces its first use -- see
+			//! CheckBuildChecklistBeforeComposeRender_.
+			//!
+			//! WHAT THE PASS IS GIVEN: arc 80's scene inventory (so a repeat
+			//! is placed in relation to real geometry), the camera and the
+			//! scene's world bounds (so it fills the FRAME rather than
+			//! scattering into space), an explicit list of the geometries and
+			//! materials already in the scene with the objects currently
+			//! using each, the imagined description if the session has one,
+			//! and ONE worked example -- a `standard_object` repeat built
+			//! from THIS scene's own geometry and material names, so the
+			//! example is not merely illustrative but literally insertable
+			//! here.
+			//!
+			//! WHAT IT IS NOT TOLD: how many objects to make, or to fill the
+			//! scene.  Object count is exactly what this arc MEASURES, so a
+			//! number in the prompt would manufacture the result.
+			//!
+			//! `notes` is optional free text from the caller, interpolated
+			//! into the host-composed prompt (see kPopulateSceneMaxNotes);
+			//! the model NEVER supplies raw prompt text.
+			//!
+			//! Blocking: one provider round trip, at most ONE repair retry.
+			//! It fires NO render of its own.
+			AgentPopulateSceneResult PopulateScene( const std::string& notes = std::string() );
+
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 5 (2026-08-13): `environment_scene` -- A CLEAN-ROOM
+			// ENVIRONMENT PASS.
+			// Design: docs/agentic-redesign/83-staged-construction-plan.md
+			// sec 3.2 and the sec 15 AS BUILT block.
+			//
+			// THE MEASUREMENT.  No agent run has EVER authored an environment
+			// gradient, fog, or god-rays.  Agent scenes sit on flat colour
+			// fields or a black void (82 sec 8's gpt run), while the
+			// hand-authored frontier benchmark has graded water with depth
+			// falloff.  In the latest dragon run the figures stand against a
+			// flat backdrop.
+			//
+			// SINGLE-UNIT STEP.  There is ONE environment, so ONE completion
+			// is the correct unit (83 sec 1's sizing rule) -- no enumeration,
+			// no loop, unlike `light_scene`'s two-completion source-first
+			// shape.
+			//
+			// WHAT THE ENVIRONMENT ACTUALLY IS IN THIS SCENE LANGUAGE, and
+			// why the verb has to do more than insert chunks: there is no
+			// `environment` chunk.  The surround is TWO things --
+			//   (1) THE DOME: a PAINTER, bound as the active rasterizer's
+			//       `radiance_map` (+ `radiance_background`), which is a
+			//       PARAMETER GROUP on the rasterizer chunk and not a chunk of
+			//       its own.  So this verb inserts the painter(s) and then
+			//       makes the BINDING itself, by patching the rasterizer --
+			//       the same division of labour `rect_light` uses, where the
+			//       model writes the intent and the harness performs the
+			//       mechanical expansion.
+			//   (2) THE MEDIUM: a `homogeneous_medium` /
+			//       `painter_heterogeneous_medium` plus a `global_medium`
+			//       chunk naming it, which is how this renderer spells fog,
+			//       haze and god-rays.
+			//
+			// THE HOSEK DECISION, stated once and enforced.
+			// `hosek_wilkie_skylight` is a LIGHT-category chunk that installs
+			// a global radiance map ITSELF (Job::AddHosekWilkieSkylight calls
+			// the same SetGlobalRadianceMap the rasterizer's `radiance_map`
+			// does -- LAST WRITER WINS, so a scene carrying both silently
+			// discards one).  It belongs to `light_scene`, which already
+			// carries it in kLightPalette with its schema and worked example,
+			// and it is REFUSED here by name.  The two verbs share it by ONE
+			// of them owning it: environment_scene is TOLD whether the
+			// document already carries a hosek chunk, and when it does this
+			// call makes NO dome binding at all -- it confines itself to the
+			// medium half rather than replacing a sky another verb authored.
+			//----------------------------------------------------------------
+
+			//! Provider-reaching `environment_scene` calls allowed per
+			//! session.  TWO, not four: there is exactly ONE environment per
+			//! scene, so this is a per-session BACKSTOP that allows one redo
+			//! and nothing more -- a bound sized so nothing legitimate hits
+			//! it, the philosophy kBuildElementMaxPerSession uses.
+			static constexpr int kEnvironmentSceneMaxPerSession = 2;
+
+			//! The longest `notes` string an `environment_scene` call may
+			//! carry -- the ONE model-supplied span in the host-composed
+			//! prompt, capped for kLightSceneMaxNotes' reason and TRUNCATED
+			//! with the truncation stated, never silently.
+			static constexpr std::size_t kEnvironmentSceneMaxNotes = 2000;
+
+			//! The long edge of the two tonal-measurement renders (before and
+			//! after).  Small on purpose, for kLightSceneSoloLongEdge's reason
+			//! exactly: the measurement is a whole-frame distribution, which
+			//! converges far faster than a picture does.
+			static constexpr unsigned int kEnvironmentSceneToneLongEdge = 64;
+
+			//! One chunk the environment pass returned that was NOT inserted,
+			//! with the reason.  Never a silent drop -- the same contract and
+			//! the same struct shape AgentLightSceneRejection carries.
+			struct AgentEnvironmentSceneRejection
+			{
+				std::string name;
+				std::string kind;
+				std::string reason;
+			};
+
+			//! The frame's tonal distribution at ONE moment, as
+			//! ComputeFrameTone_ measures it.  `measured` false means the
+			//! render or the decode did not succeed, in which case NO field
+			//! here is a measurement and `reason` says what happened -- the
+			//! same omit-rather-than-fabricate rule the inventory's frame
+			//! positions follow.
+			struct AgentFrameToneReading
+			{
+				bool        measured = false;
+				double      lumaMean = 0.0;
+				double      lumaStdDev = 0.0;
+				double      lumaP1 = 0.0;
+				double      lumaP99 = 0.0;
+				std::string reason;
+			};
+
+			//! The structured result of EnvironmentScene.  `ok` means the
+			//! pass ANSWERED and its answer was processed -- NOT that
+			//! everything landed.  Partial success is first-class and
+			//! honestly reported, exactly as in AgentLightSceneResult.
+			struct AgentEnvironmentSceneResult
+			{
+				bool         ok = false;
+				bool         capabilityRefusal = false;
+				std::string  providerName;
+				std::string  modelId;
+				unsigned int chunksExtracted = 0;
+				std::vector<std::string> landed;
+				//! Doc 91 L1 review round 3: the chunk KIND of each `landed`
+				//! entry, index-parallel -- this pass (not the model) chose the
+				//! kinds, and a clean chunk no longer gets a chunkResults entry.
+				std::vector<std::string> landedKinds;
+				std::vector<AgentEnvironmentSceneRejection> rejected;
+				std::vector<AgentChunkResult> chunkResults;
+				//! The two parameter edits the DOME BINDING is made of, when
+				//! this call made one -- empty when it did not (see
+				//! `bindingReason`).
+				std::vector<AgentPatchResult> patchResults;
+				bool         retryRan = false;
+				bool         retrySucceeded = false;
+				//! Provider completions this ONE call spent: 1, or 2 when the
+				//! one repair retry ran.
+				int          completionsSpent = 0;
+
+				//---- THE DOME.  `boundPainter` is the painter this call bound
+				//! as the scene's environment radiance map -- by the stated
+				//! contract, the LAST painter chunk the answer landed.  Empty
+				//! when nothing was bound, in which case `bindingReason` says
+				//! why (no painter landed; the scene's sky is a
+				//! hosek_wilkie_skylight; the active rasterizer takes no
+				//! radiance_map; the patch itself was rejected).
+				std::string  boundPainter;
+				bool         bindingApplied = false;
+				std::string  bindingReason;
+				//! The active rasterizer's chunk keyword at the time of the
+				//! binding, so the reader can see WHAT was patched.
+				std::string  rasterizerKind;
+				//! Did the live scene carry a global radiance map before this
+				//! call, and does it after?  Measured from the scene, both
+				//! times, so the difference is a fact about the renderer
+				//! rather than a count of what this pass believes it did.
+				bool         radianceMapBefore = false;
+				bool         radianceMapAfter = false;
+				//! The same, for the global participating medium.
+				bool         globalMediumBefore = false;
+				bool         globalMediumAfter = false;
+				//! How many Medium-category chunks this call landed.
+				int          mediaBuilt = 0;
+				//! How many Painter/Function chunks this call landed.
+				int          paintersBuilt = 0;
+
+				//---- THE HEADLINE (83 sec 6: "tonal spread for environment").
+				//! The same small frame, measured before the pass and after
+				//! it.  Facts only: a mean, a spread and the 1st/99th
+				//! percentiles, with no verdict and no target.
+				AgentFrameToneReading toneBefore;
+				AgentFrameToneReading toneAfter;
+				std::string  message;
+			};
+
+			//! Author this scene's SURROUND in a FRESH minimal provider
+			//! context and validated-insert the result: what fills the frame
+			//! where no object is, and the medium light travels through.
+			//!
+			//! ONE completion (plus at most ONE repair retry) -- there is one
+			//! environment, so one completion is the correct unit.
+			//!
+			//! WHAT THE PASS IS GIVEN: arc 80's scene inventory, the camera,
+			//! the scene's world bounds, the lights that already exist, the
+			//! imagined description if the session has one, WHAT ENVIRONMENT
+			//! STATE ALREADY EXISTS (a bound radiance map, a global medium, a
+			//! hosek sky), and the environment palette -- the gradient dome
+			//! (an `expression_function2d` ramp over the direction-derived
+			//! u,v plus a `blend_painter`), the image dome (`hdr_painter` /
+			//! `exr_painter`), and the atmosphere (`homogeneous_medium` or
+			//! `painter_heterogeneous_medium`, plus `global_medium`) -- each
+			//! with the descriptor registry's own parameter list and ONE
+			//! literal worked example proven to parse.
+			//!
+			//! ADMISSIBILITY: Painter, Function and Medium chunks, and
+			//! nothing else.  A GEOMETRY or an OBJECT is refused by name --
+			//! a backdrop plane or a sky dome built as a mesh is FORM, and
+			//! form belongs to `build_element`.  A camera, a film, a
+			//! rasterizer, a shader op and `hosek_wilkie_skylight` are each
+			//! refused by name too (see the block comment above for the
+			//! hosek decision).
+			//!
+			//! THE BINDING IS THE HARNESS'S, not the model's: after the
+			//! insert, this call patches the ACTIVE rasterizer's
+			//! `radiance_map` to the LAST painter the answer landed and sets
+			//! `radiance_background TRUE`, so the dome is what the camera
+			//! sees where no object is.  The contract is STATED in the prompt
+			//! and the painter actually bound is reported.
+			//!
+			//! `notes` is optional free text from the caller, interpolated
+			//! into the host-composed prompt (see kEnvironmentSceneMaxNotes);
+			//! the model NEVER supplies raw prompt text.
+			//!
+			//! Blocking: one provider round trip, at most ONE repair retry,
+			//! plus TWO small internal tonal renders (before and after).
+			AgentEnvironmentSceneResult EnvironmentScene( const std::string& notes = std::string() );
+
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 6 (2026-08-13): `frame_scene` -- A CLEAN-ROOM
+			// CAMERA / FRAMING PASS.
+			// Design: docs/agentic-redesign/83-staged-construction-plan.md
+			// sec 3.2 and the sec 15 AS BUILT block.
+			//
+			// THE MEASUREMENT.  In trajectory 20260813T231623Z, 13 of 54
+			// objects covered ZERO pixels and the dragon overshot its height
+			// budget by 4x -- a quarter of the built scene is not in the
+			// picture.  Framing is authored inline today, never as a
+			// considered step, and arc 80's inventory -- which knows exactly
+			// which objects miss the frame and why -- exists precisely to
+			// feed this.
+			//
+			// SINGLE-UNIT STEP.  There is ONE camera, so ONE completion.
+			//
+			// WHAT COMES BACK IS A CAMERA AND NOTHING ELSE.  No geometry, no
+			// lights, and no `film`: film is RASTER-SIZE policy (width /
+			// height / pixelAR, scene format v6's Camera/Film split), not
+			// framing, and a pass that could change it would silently
+			// re-budget every render this session makes.
+			//
+			// PATCH OR REPLACE.  The answer's chunk keyword decides: the same
+			// kind as the scene's active camera is applied as a PATCH of that
+			// chunk's parameters (one batch, one head bump, one undo step); a
+			// DIFFERENT kind is INSERTED and the old camera chunk then
+			// REMOVED -- in that order, so a failed insert can never leave the
+			// scene with no camera at all.
+			//
+			// THE RESULT IS MEASURED, NOT ASSERTED.  The arc-80 inventory is
+			// run BEFORE the edit and again AFTER it, so the payload states
+			// how many objects the reframe actually brought into the picture
+			// -- and states it plainly when the new camera covers FEWER.  It
+			// does NOT auto-revert: a deliberate close-up covers fewer
+			// objects on purpose, and a harness that undid it would be
+			// overriding the judgement it just asked for.
+			//----------------------------------------------------------------
+
+			//! Provider-reaching `frame_scene` calls allowed per session.
+			//! TWO, for kEnvironmentSceneMaxPerSession's reason exactly: one
+			//! camera per scene, and one redo.
+			static constexpr int kFrameSceneMaxPerSession = 2;
+
+			//! The longest `notes` string a `frame_scene` call may carry.
+			static constexpr std::size_t kFrameSceneMaxNotes = 2000;
+
+			//! How many inventory lines the FRAMING prompt prints, per group
+			//! (covered / covered-nothing).  Far larger than the render
+			//! payload's own caps (12 / 40) and deliberately so: for every
+			//! other consumer the inventory is context beside a picture,
+			//! while for THIS one the per-object list IS the input -- an
+			//! object cut from the listing is an object the reframe cannot
+			//! know it is missing.  Still bounded (arc 79 sec 1: prepended
+			//! text competes with what follows it), and any truncation is
+			//! STATED by the formatter itself.
+			static constexpr std::size_t kFrameSceneInventoryLines = 120;
+
+			//! One chunk the framing pass returned that was NOT inserted,
+			//! with the reason.  Never a silent drop.
+			struct AgentFrameSceneRejection
+			{
+				std::string name;
+				std::string kind;
+				std::string reason;
+			};
+
+			//! The structured result of FrameScene.
+			struct AgentFrameSceneResult
+			{
+				bool         ok = false;
+				bool         capabilityRefusal = false;
+				std::string  providerName;
+				std::string  modelId;
+				unsigned int chunksExtracted = 0;
+				std::vector<AgentFrameSceneRejection> rejected;
+				std::vector<AgentPatchResult> patchResults;
+				std::vector<AgentChunkResult> chunkResults;
+				bool         retryRan = false;
+				bool         retrySucceeded = false;
+				int          completionsSpent = 0;
+
+				//! What this call did to the camera: "patched", "replaced",
+				//! "inserted", or "" when nothing was applied.
+				std::string  action;
+				//! The camera chunk keyword and name before and after.  A
+				//! name is empty when the chunk declares none (an unnamed
+				//! camera is addressed by KIND, which is what this call then
+				//! patches through).
+				std::string  cameraKindBefore;
+				std::string  cameraNameBefore;
+				std::string  cameraKindAfter;
+				std::string  cameraNameAfter;
+				//! The parameter names actually applied, in the order they
+				//! were applied.  A parameter the answer did not name keeps
+				//! whatever value it had.
+				std::vector<std::string> paramsApplied;
+
+				//---- THE MEASUREMENT (83 sec 6: "subject coverage for
+				//! camera").  The arc-80 inventory, run before the edit and
+				//! again after it.  `measuredBefore` / `measuredAfter` false
+				//! means that identity pass did not succeed, in which case
+				//! the counts beside it are NOT measurements.
+				bool         measuredBefore = false;
+				bool         measuredAfter = false;
+				int          objectsBefore = 0;
+				int          objectsAfter = 0;
+				int          coveredBefore = 0;
+				int          coveredAfter = 0;
+				//! Objects that covered NO pixels before and DO after, and
+				//! the reverse -- by name, so the claim is checkable.
+				std::vector<std::string> broughtIntoFrame;
+				std::vector<std::string> pushedOutOfFrame;
+				//! The frame's tonal distribution as this call measured it
+				//! BEFORE the edit -- the same reading it put in the prompt,
+				//! reported so a census can see the fact the pass was given
+				//! rather than having to re-derive it.
+				AgentFrameToneReading toneBefore;
+				std::string  message;
+			};
+
+			//! Frame this scene in a FRESH minimal provider context: decide
+			//! where the camera goes and what it looks at, and apply that as
+			//! ONE camera edit.
+			//!
+			//! WHAT THE PASS IS GIVEN: the FULL arc-80 inventory (every
+			//! object, its footprint, its in-frame position and, for the ones
+			//! that covered nothing, WHY -- behind the camera, off-frame in a
+			//! named direction, straddling the camera plane), the current
+			//! camera chunk VERBATIM plus its resolved pose, the scene's
+			//! world bounds, the frame's TONAL FACT measured just now (the
+			//! same MeasureFrameTone_ reading environment_scene takes, rather
+			//! than "whatever the last render happened to be" -- a stale
+			//! figure beside a live inventory would be the false-clause class
+			//! arc 79 sec 8.1 records the cost of), the imagined subject if
+			//! this session has one, and the camera palette with the
+			//! descriptor registry's own parameter list per kind and ONE
+			//! literal worked example.
+			//!
+			//! IT RETURNS CAMERA PARAMETERS ONLY.  Exactly one camera chunk
+			//! is admissible; a second is rejected with that reason, and a
+			//! chunk of any other kind -- geometry, a light, a `film` -- is
+			//! rejected by name.
+			//!
+			//! `notes` is optional free text from the caller (see
+			//! kFrameSceneMaxNotes); the model NEVER supplies raw prompt text.
+			//!
+			//! Blocking: one provider round trip, at most ONE repair retry,
+			//! plus TWO small internal identity passes (before and after).
+			AgentFrameSceneResult FrameScene( const std::string& notes = std::string() );
+
+			//! The balanced-brace CHUNK EXTRACTOR (design sec 2.2), exposed
+			//! static so a test can drive it on hostile input without a
+			//! session or a provider.  Splits `text` -- a builder's whole
+			//! answer, prose and markdown fences included -- into complete
+			//! chunk texts, each re-emitted in the CANONICAL form InsertChunk
+			//! requires (`keyword\n{\n<body>\n}`).
+			//!
+			//! THE ALGORITHM.  Markdown fence lines are removed first.  The
+			//! scan then walks the text once, skipping `#`-to-end-of-line and
+			//! `/* ... */` comments exactly as the CST lexer does, looking for
+			//! a `{` at depth 0; the chunk KEYWORD is the identifier token
+			//! immediately before it.  From that brace it counts `{` and `}`
+			//! until depth returns to 0 -- that span is the chunk body.
+			//!
+			//! MALFORMED INPUT IS REPORTED, NEVER DROPPED (this is the whole
+			//! reason it is not a line regex -- the hand simulation's regex
+			//! extractor silently dropped an unbalanced chunk):
+			//!   * an opening brace whose chunk is never closed -> one
+			//!     `outProblems` entry naming the keyword and the line;
+			//!   * a `{` with no identifier before it -> one entry naming the
+			//!     line;
+			//!   * a stray `}` at depth 0 -> one entry naming the line.
+			//! Text outside any chunk (the builder's prose) is IGNORED
+			//! silently -- it is not malformed, it is just not a chunk.
+			static void ExtractChunkTexts( const std::string& text,
+			                               std::vector<std::string>& outChunks,
+			                               std::vector<std::string>& outProblems );
+
+			//! The chunk-name prefix every chunk of `element` must start with:
+			//! the element name lowercased with every non-alphanumeric run
+			//! collapsed to one `_`, trimmed, plus a trailing `_` (so element
+			//! "Left Wing" gives "left_wing_").  An element name with no
+			//! alphanumeric character at all gives "element_".  Static so the
+			//! prompt, the check and a test all read the SAME rule.
+			static std::string ElementChunkNamePrefix( const std::string& element );
+
+			//! 87 STEP 5 (2026-08-18): the name of the element's ROOT NODE --
+			//! the geometry-less `standard_object` CONTAINER every object the
+			//! element creates is parented to, and the ONE chunk
+			//! `place_element` transforms.
+			//!
+			//! WHY A NODE AT ALL.  Before 87 shipped a recursive scene graph
+			//! there was nowhere to put an element's pose, so `place_element`
+			//! composed the placement arithmetically into EVERY object it had
+			//! recorded: it added Euler triples (exact only about one shared
+			//! axis), it could not rotate a `quaternion`-authored object at
+			//! all, it refused a non-uniform scale, and it OVERWROTE the
+			//! author's own numbers so re-placing compounded the error.  All
+			//! four defects existed only because there was no parent to move.
+			//! With one, the placement is a single local transform on this
+			//! node and the engine composes `world = parent.world * local`
+			//! exactly (`IObjectManager::ComposeWorldTransforms`).
+			//!
+			//! `<prefix>element_root`, so it satisfies the element's own
+			//! name-prefix rule (a builder's chunk named this is refused as a
+			//! duplicate, the ordinary way) and reads unmistakably as the
+			//! harness's node rather than a part of the model.
+			static std::string ElementRootName( const std::string& element );
 
 			//! Model-B F5 slice S2 (remove_chunk): REMOVE the chunk resolved
 			//! by bare name `target` (+ optional `kind` keyword-suffix
@@ -2082,6 +6305,1268 @@ namespace RISE
 			                              const std::string& kind = std::string(),
 			                              const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! R1a (2026-08-09, batched remove_chunks): the structured result of RemoveChunks.  Batch-level
+			//! verdict fields (the SAME meanings AgentChunkResult gives them) PLUS one AgentChunkResult per
+			//! UNIQUE target, so a model that gets a refusal can see WHICH target caused it without re-reading
+			//! the document.
+			//!
+			//! ALL-OR-NOTHING: `applied` is true only when EVERY target was removed; on any failure NOTHING
+			//! was removed and `headVersion` is byte-for-byte the head the call started from.  There is no
+			//! partial outcome to represent, which is why the batch verdict lives at the top level and the
+			//! per-target entries are diagnostics rather than independent verdicts -- every entry's
+			//! `applied`/`status` mirrors the batch's, and the entry that caused a refusal is the one carrying
+			//! the specific `message`/`issues`.
+			//!
+			//! `targetResults` is one entry per UNIQUE target in FIRST-OCCURRENCE order -- NOT one per input
+			//! element.  Duplicates in the request are collapsed (a chunk cannot be removed twice), and the
+			//! collapse is reported honestly in `note` rather than refused; match entries back to the request
+			//! by `name`, not by index.
+			//!
+			//! `note` is a batch-level factual remark or "" when there is nothing to say.  Today it carries
+			//! exactly one fact -- the dedupe -- in the form
+			//! `"deduped: 'a' listed 2x, 'b' listed 3x -- each chunk is removed once"`.
+			struct AgentRemoveBatchResult
+			{
+				bool        applied = false;    //!< true iff EVERY target was removed (clean success)
+				bool        retriable = false;  //!< meaningful for status=="rejected": the LIVE open-transaction / render-gate transient
+				bool        queueFull = false;  //!< External-authority staging refused by the pending-proposal cap
+				int         rawCode = 0;        //!< {0,1,2,3}, same wire contract as AgentChunkResult
+				std::string status;             //!< "applied" / "rejected" / "diagnosed" / "conflict" / "staged"
+				RISE::Cst::CstHeadVersion headVersion;   //!< the head AFTER the call
+				std::string message;
+				std::string note;               //!< batch-level factual remark ("" when none) -- see above
+				std::vector<AgentChunkResult> targetResults;   //!< one per UNIQUE target, first-occurrence order
+			};
+
+			//! R1a (2026-08-09, batched remove_chunks): remove N chunks in ONE call, ATOMICALLY.
+			//!
+			//! MOTIVATION (measured): a live GUI trajectory spent 20 separate `remove_chunk` calls tearing
+			//! down and rebuilding scene subassemblies -- 40 of its 93 trajectory records -- each costing a
+			//! full LLM round-trip over an ~83k-token prompt, plus a head-version bump and a history entry
+			//! per chunk.  This verb collapses all of that to one call, one bump, one undo step.
+			//!
+			//! This is NOT InsertChunks' shape and deliberately so.  InsertChunks is SEQUENTIAL and
+			//! BEST-EFFORT (N calls to InsertChunk, N head bumps, a rejected element does not stop the batch)
+			//! because an insert is ADDITIVE -- a partially-landed insert batch is a coherent, inspectable,
+			//! extendable state.  A partially-landed REMOVE batch is not: the model asked to tear down a
+			//! subassembly, and half a torn-down subassembly is a state it never reasoned about and now has
+			//! to diagnose.  So RemoveChunks is ALL-OR-NOTHING: every target resolves and the remainder
+			//! derives, or nothing is removed and the head is byte-identical.
+			//!
+			//! INTRA-BATCH REFERENCES: a chunk still referenced ONLY by other chunks in the SAME batch IS
+			//! removable, in ANY listed order.  There is no dependency-ordering pass -- the atomicity
+			//! delivers it for free, because Job::ApplyCstRemoveChunks erases every target from the Document
+			//! BEFORE the single re-derive runs, so an intra-batch referrer is already gone by the time
+			//! derivation looks for it.  `still_referenced` therefore fires ONLY for referrers OUTSIDE the
+			//! batch, and names them.
+			//!
+			//! DUPLICATES are deduped silently-but-honestly: the chunk is removed once and the collapse is
+			//! stated in `note` (never a refusal -- a model listing the same name twice has made a harmless
+			//! bookkeeping slip, not a semantic error).
+			//!
+			//! NO PER-TARGET `kind`.  v1 takes bare names only; the singular remove_chunk keeps exclusive
+			//! ownership of the `kind` disambiguator, INCLUDING the sole-unnamed-camera special case
+			//! (`remove_chunk kind:"camera"`).  A target that is ambiguous without a kind refuses the batch
+			//! and names itself, so the escape hatch is one singular call, not a silent wrong deletion.
+			//!
+			//! ONE head-version bump and ONE EditHistory entry (a single Cmd-Z restores every removed chunk).
+			//! Both come from the layer below -- Job::ApplyCstRemoveChunks does one Document mutation and one
+			//! dry-run-guarded re-derive; SceneEditController::ApplyAgentRemoveChunks pushes one
+			//! SceneEdit::AgentRemoveChunks record.
+			//!
+			//! `baseOrNull` is the OPTIONAL optimistic-concurrency precondition for the batch as a whole
+			//! (see ProposePatch); a mismatch is a CONFLICT with nothing removed.
+			//!
+			//! AUTHORITY / autonomy: the SAME matrix as RemoveChunk.  An External-authority session with a
+			//! live controller STAGES the batch as ONE proposal (applied=false, status="staged") so an Owner
+			//! approves or rejects exactly the atomic edit that was proposed -- never N cards that could be
+			//! partially approved; with no controller attached it is refused.  A SINGLE-element batch is
+			//! semantically identical to the singular verb (with no `kind`).
+			AgentRemoveBatchResult RemoveChunks( const std::vector<std::string>& targets,
+			                                     const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! 88 step 2 (2026-08-19): what CollapseToInstances did, or the
+			//! reason it declined.
+			//!
+			//! `ok` follows the ReplaceGeometryScaffold convention exactly: it
+			//! is true once the request was well-formed AND reached a
+			//! commit-stage disposition, so `status` carries the actual
+			//! outcome ("applied"/"rejected"/"diagnosed"/"conflict").  A
+			//! PRE-COMMIT refusal -- no run found, an unfittable arrangement,
+			//! a referenced member, a colliding name -- leaves `ok` false and
+			//! `status` empty, with the whole reason in `message`.  Every one
+			//! of those leaves the document, the head version, the history and
+			//! the proposal queue byte-identical.
+			struct AgentCollapseResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				std::string sourceObject;    //!< the copy that was KEPT and is now the `source` (it still renders)
+				std::string geometry;        //!< the geometry every copy in the run shares
+				int         collapsedCount = 0;   //!< how many copies the run held (N -- the source plus the N-1 replaced)
+				int         countU = 0;      //!< the fitted arrangement's first axis
+				int         countV = 0;      //!< its second axis (1 for a plain line)
+				std::vector<std::string> instanceChunks;   //!< the instancing chunk(s) minted, in document order
+				std::vector<std::string> removedObjects;   //!< the N-1 copies erased (empty unless the commit landed)
+			};
+
+			//! 88 step 2 (2026-08-19): collapse a run of hand-authored copies
+			//! into ONE `source` + `count_u` instancing chunk -- the VERB half
+			//! of design-note condition C.
+			//!
+			//! WHY A VERB AND NOT MORE ADVICE.  Step 1 shipped the clause; a
+			//! live gemini-3.7-flash run received it five times, read it
+			//! correctly, and then made ZERO attempts at `source`/`count_u`
+			//! across three further propose_patches rounds.  Advice that asks
+			//! for a multi-chunk hand rewrite loses to its own anti-churn
+			//! escape, so the clause now names this call instead.
+			//!
+			//! THE CONTRACT IS "NO-OP ON THE RENDERED SCENE".  It keeps the
+			//! FIRST copy (in document order) exactly as authored, mints the
+			//! other N-1 from it, and refuses -- changing nothing -- whenever
+			//! it cannot prove the copies land where they already were:
+			//!   * the positions must fit an exact arithmetic progression, as
+			//!     a line or as a rectangular grid, verified against the
+			//!     DECIMAL TEXT that will actually be written;
+			//!   * `orientation` / `quaternion` / `scale` must be constant
+			//!     across the run (they are NOT inherited through `source`, so
+			//!     the instancing chunk states them once for every copy);
+			//!   * a `matrix` anywhere in the run refuses it (a matrix
+			//!     overrides `position`, so the differing positions are not
+			//!     what places the copies);
+			//!   * no chunk outside the run may NAME a member -- an erased
+			//!     copy's referrer would dangle, and a child of the kept copy
+			//!     would be cloned into every minted one, because `source`
+			//!     copies a whole SUBTREE.
+			//!
+			//! `target` names any ONE copy in the run; omit it to take the
+			//! largest qualifying run in the document (the same one condition
+			//! C names).  `name` names the instancing chunk; omit it for
+			//! `<source>_array`.  A GRID takes TWO chunks, and that is the
+			//! language, not a shortcut: `source` copies rather than moves or
+			//! hides, so a countU x countV grid plus the still-visible source
+			//! would be one object too many -- the run is expressed as the
+			//! rest of row zero plus every later row.
+			//!
+			//! ONE whole-document swap, ONE head bump, ONE undo step -- the
+			//! same commit path ReplaceGeometryScaffold uses, and for the same
+			//! reason it has no staged-proposal form under External authority.
+			AgentCollapseResult CollapseToInstances( const std::string& target = std::string(),
+			                                         const std::string& name   = std::string(),
+			                                         const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! 88 S5 (2026-08-20): what VaryMaterial did, or the reason it
+			//! declined.
+			//!
+			//! `ok` follows the AgentCollapseResult convention EXACTLY (which
+			//! follows ReplaceGeometryScaffold's): true once the request was
+			//! well-formed AND reached a commit-stage disposition, so `status`
+			//! carries the real outcome ("applied"/"rejected"/"diagnosed"/
+			//! "conflict").  A PRE-COMMIT refusal -- nothing qualifies, the named
+			//! material is not readable, a zero roughness, a name collision, an
+			//! External-authority session -- leaves `ok` false and `status`
+			//! EMPTY, with the whole reason in `message`.  Every one of those
+			//! leaves the document, the head version, the history and the
+			//! proposal queue byte-identical.
+			struct AgentVaryMaterialResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				std::string material;        //!< the material whose roughness now varies
+				std::string materialKind;    //!< its chunk keyword
+				std::string painterChunk;    //!< the scalar_painter minted (empty unless the commit landed)
+				std::vector<std::string> reboundSlots;   //!< the slot(s) repointed at it (ditto)
+				double      previousRoughness = 0.0;     //!< the constant that was there (the band's centre)
+				int         qualifyingMaterials = 0;     //!< how many materials the shared predicate found
+				int         boundObjects = 0;            //!< how many standard_objects bind the chosen material
+			};
+
+			//! 88 S5 (2026-08-20): give ONE material's microsurface a spatially-
+			//! varying roughness field -- the VERB half of design-note condition D.
+			//!
+			//! WHY A VERB AND NOT MORE ADVICE.  Doc 88 sec 2 records the measured
+			//! result of the advice route: 0/24 lifetime adoptions of
+			//! spatially-varying microsurface scalars, across two models, against
+			//! advisories that fired up to 30x/session and were demonstrably read.
+			//! The barrier is a slot-typing prior ("roughness is a number"), which
+			//! prose and worked examples do not override -- the same shape
+			//! `collapse_to_instances` was built for, and this is the same answer:
+			//! ONE call the model can make.
+			//!
+			//! ZERO REQUIRED ARGUMENTS.  Called bare it takes the material
+			//! design-note condition D names -- most `standard_object`s bound,
+			//! ties broken lexicographically -- so the advice and the call are one
+			//! act.  Note and verb read ONE shared qualifying predicate
+			//! (ComputeDesignNoteConditionsFromDoc_), so the note can never
+			//! advertise a call that then edits a different material.
+			//!
+			//! WHAT IT WRITES.  One `scalar_painter { expression ... }` chunk
+			//! spliced in AHEAD of the material (declare-before-use), holding an
+			//! fbm wear field CLAMPED into a band derived from the roughness that
+			//! is already authored (roughly 0.7x .. 1.4x, floored at 0.02; above
+			//! an authored roughness of 1 the ceiling is 1.15x instead, so the
+			//! band always keeps real headroom past 1 rather than collapsing to
+			//! the authored value itself) -- so the surface it produces is the
+			//! one the author asked for plus variation, never a different
+			//! material.  Every knob is a named `param` with
+			//! min/max/step/label metadata (doc 88 P5 Tier 1), so the property
+			//! panel gets sliders and `propose_patch` can retune it by name; the
+			//! verb's own output obeys the rule the skills teach.  The field
+			//! scale, contrast and `seed` are hashed from the MATERIAL NAME
+			//! (FNV-1a, no clock, no PRNG state), so two runs on the same document
+			//! produce BYTE-IDENTICAL text.
+			//!
+			//! ROUGHNESS ONLY.  Tint variation is deliberately out of scope for
+			//! this slice (doc 88 P4.2 lists it as optional); a verb that also
+			//! repainted base colour would change what the material LOOKS like,
+			//! not just how its microsurface reads.
+			//!
+			//! REFUSALS, each leaving the document byte-identical: no material
+			//! whose microsurface slots are all uniform numeric constants with at
+			//! least one roughness slot spelled out; a named `material` that is
+			//! not such a material (the message distinguishes "no such chunk" from
+			//! "cannot read its microsurface"); a roughness of zero or less (a
+			//! deliberate mirror, not a flat surface); an underivable candidate.
+			//!
+			//! ONE whole-document swap, ONE head bump, ONE undo step -- the same
+			//! commit path CollapseToInstances and ReplaceGeometryScaffold use,
+			//! and for the same reason it has no staged-proposal form under
+			//! External authority (there is no AgentProposalKind an Owner could
+			//! approve card-by-card for a composite swap).
+			AgentVaryMaterialResult VaryMaterial( const std::string& material = std::string(),
+			                                      const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! Materials-realism item 2 (2026-08-24): what vary_material
+			//! {all:true} did -- ONE bounded summary of a LOOP of ordinary
+			//! VaryMaterial calls (see the .cpp's own doc: this is a loop
+			//! around proven per-material machinery, never a second material
+			//! rewrite path).
+			struct AgentVaryMaterialBatchResult
+			{
+				bool ok = false;                    //!< true iff at least one material was applied
+				//! Review-round P2-2 (2026-08-24): the SAME status convention
+				//! VaryMaterial's own AgentVaryMaterialResult and
+				//! AgentCollapseResult use -- "" for a normal outcome (batch
+				//! ran, whatever it applied/refused), "conflict" for a stale
+				//! baseHeadVersion, "rejected" for a STRUCTURAL pre-commit
+				//! refusal (no retained document, or zero qualifying
+				//! materials).  Set so the wire's generic status=="conflict"/
+				//! "rejected" interception (AgentChatLoop.cpp's ToolOutcomeLine
+				//! rules 2/3) can catch a batch refusal BEFORE the vary_material-
+				//! specific rule 4b-3 ever runs -- the bug this field closes:
+				//! without it, a stale-head or zero-qualifying batch call fell
+				//! through to "0 applied, 0 refused", silently losing the
+				//! reason in `message`.
+				std::string status;
+				int  qualifyingMaterials = 0;        //!< how many materials were flagged at batch START
+				int  appliedCount        = 0;
+				int  refusedCount        = 0;
+				int  remainingCount      = 0;        //!< qualifyingMaterials beyond the cap -- "call again"
+				//! One entry per material actually attempted (applied or
+				//! refused), most-referenced-first, capped at
+				//! kVaryMaterialBatchCap -- see AgentVaryMaterialResult for
+				//! the per-entry shape.
+				std::vector<AgentVaryMaterialResult> perMaterial;
+				std::string message;
+			};
+
+			//! Materials-realism item 2: apply VaryMaterial's exact per-
+			//! material idiom to EVERY currently-flagged constant-
+			//! microsurface material in ONE call, instead of the model
+			//! having to name each one across separate calls (measured
+			//! motivation: coverage-per-call was 1, against 17-20 flagged
+			//! materials per underwater-session document).  NOT a second
+			//! rewrite path -- a bounded loop over the SAME VaryMaterial(name)
+			//! this file already ships, most-referenced-first (the same
+			//! tie-break SelectMaterialToVary_ uses for the bare-call pick),
+			//! capped at kVaryMaterialBatchCap (24) so a pathological
+			//! document cannot blow up one tool result -- `remainingCount`
+			//! names how many are left; call again to continue.  `baseOrNull`
+			//! is checked ONCE, against the head this call started from
+			//! (each per-material sub-call then commits against whatever the
+			//! PRIOR sub-call just landed, deliberately -- a batch is
+			//! multiple intentional commits, not one atomic swap).
+			AgentVaryMaterialBatchResult VaryMaterialAll( const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! Cat plan item 1 (2026-08-25): what fix_blend_scale did, or the
+			//! reason it declined -- the CALLABLE VERB half of design-note
+			//! condition J (the blend-scale law), mirroring VaryMaterial's
+			//! own "ADVICE ALONE DOES NOT CONVERT" motivation: the note has
+			//! fired since Fix 2 and named the ~1/3 bound, but a model reading
+			//! it still has to compute the safe k itself and re-author the
+			//! `part` line by hand -- the same slot-typing-prior barrier
+			//! VaryMaterial's own doc cites, just for a numeric param instead
+			//! of a colour one.
+			//!
+			//! `ok` follows the SAME convention as every other composite verb
+			//! in this file (AgentCollapseResult / AgentVaryMaterialResult /
+			//! AgentRevertResult): true once the request was well-formed AND
+			//! reached a commit-stage disposition, so `status` carries the
+			//! real outcome ("applied"/"rejected"/"diagnosed"/"conflict"). A
+			//! PRE-COMMIT refusal -- no retained document, a named `target`
+			//! that does not resolve to an sdf_geometry chunk, zero offenders
+			//! in scope, an External-authority session -- leaves `ok` false
+			//! and `status` EMPTY, with the whole reason in `message`, and
+			//! leaves the document, the head version, the history and the
+			//! proposal queue byte-identical.
+			struct AgentFixBlendScaleResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				//! How many offending smin joints ScanSdfGeometryBlendScale
+				//! Offenders_ found across the scope this call resolved to
+				//! (the whole document, or just `target`'s chunk) -- a fact
+				//! about the document, set even on the "nothing to fix"
+				//! refusal.
+				int offendersFound  = 0;
+				//! How many of those were actually clamped THIS call --
+				//! bounded by kFixBlendScaleBatchCap, same "cap now, call
+				//! again" idiom VaryMaterialAll uses.
+				int fixedCount      = 0;
+				//! offendersFound beyond the cap -- 0 unless a single call
+				//! could not cover every offender in scope.
+				int remainingCount  = 0;
+				//! One bounded line per joint actually clamped, most-
+				//! offending-first: "`<geo>` part <N>: k <old> -> <new>".
+				//! Empty on any refusal (nothing was clamped).
+				std::vector<std::string> perJointSummary;
+			};
+
+			//! ZERO REQUIRED ARGUMENTS.  Called bare, it scans the WHOLE
+			//! document via ScanSdfGeometryBlendScaleOffenders_ (the SAME
+			//! scan condition J's note and diagnostic read -- see that
+			//! function's own doc: sharing it is the point, so the verb can
+			//! never disagree with the advisory that named it) and clamps
+			//! EVERY flagged joint's k down to its safe bound in ONE call.
+			//! Optional `target` (an sdf_geometry chunk's `name`) scopes the
+			//! scan-and-fix to just that one chunk, leaving every other
+			//! chunk's offenders (if any) untouched -- `target` narrows what
+			//! `offendersFound` counts in the first place, the same way
+			//! VaryMaterial's `material` argument narrows what
+			//! SelectMaterialToVary_ considers rather than what it reports.
+			//! `remainingCount` is reserved for batch-cap overflow WITHIN the
+			//! chosen scope.
+			//!
+			//! THE CLAMP TARGET.  Per-joint, `min(reportedMaxK, detectionMaxK)`
+			//! -- see SDFBlendScaleOffender_::clampTargetK's own doc for why:
+			//! GUARANTEED to silence a re-scan (detectionMaxK is the exact
+			//! bound the scan's own fire/silent test uses), even though it is
+			//! occasionally a touch stricter than the REPORTED bound the
+			//! message shows (only under anisotropic scale; the two are
+			//! numerically equal, and the fix matches the message exactly,
+			//! for the common isotropic case).
+			//!
+			//! WHAT IT WRITES.  For each clamped joint, ONE `RISE::Cst::
+			//! DocSetParamValue` call on the owning sdf_geometry chunk's
+			//! NodeId, occurrence = the joint's `partIndex` (ChunkParamOccurrences_'s
+			//! ordering over repeated `part` params IS ParsePartLines' parts[]
+			//! ordering, by construction -- both walk the same repeat group in
+			//! document order), replacing ONLY the k token (index 2 of the
+			//! 16-token `part` grammar) in that line's ORIGINAL text -- every
+			//! other token (position, euler, scale, a/b/c, round) is preserved
+			//! byte-identical, so this can never perturb anything about the
+			//! part except the one number condition J flagged.
+			//!
+			//! BATCH-CAPPED at kFixBlendScaleBatchCap, same "cap now, call
+			//! again" idiom VaryMaterialAll uses -- `remainingCount` names how
+			//! many offenders in scope are still unclamped.
+			//!
+			//! REFUSALS, each leaving the document byte-identical: no
+			//! retained CST Document; a named `target` that does not resolve
+			//! to an `sdf_geometry` chunk (message distinguishes "no such
+			//! chunk" from "exists but is a different kind"); zero offenders
+			//! found in scope (a clean, honest "nothing to fix" -- not an
+			//! error); a stale `baseOrNull` (`status` = "conflict"); an
+			//! External-authority session (no staged-proposal form, same
+			//! reasoning VaryMaterial's own refusal gives -- a composite
+			//! multi-occurrence document swap is not one AgentProposalKind an
+			//! Owner could approve card-by-card).
+			//!
+			//! ONE whole-document swap, ONE dry-run-guarded re-derive, ONE
+			//! head bump, ONE undo step -- the SAME composite commit path
+			//! VaryMaterial / CollapseToInstances / ReplaceGeometryScaffold
+			//! all share, for the same reason: every joint clamped by one call
+			//! lands together or not at all, so a single Cmd-Z always undoes
+			//! the whole batch.
+			AgentFixBlendScaleResult FixBlendScale( const std::string& target = std::string(),
+			                                        const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md sec 11 / sec 13 Phase 4
+			//! (2026-08-30): what add_wear did, or the reason it declined.
+			//!
+			//! `ok` follows the AgentVaryMaterialResult / AgentCollapseResult /
+			//! AgentFixBlendScaleResult convention EXACTLY: true once the request
+			//! was well-formed AND reached a commit-stage disposition, so `status`
+			//! carries the real outcome ("applied"/"rejected"/"diagnosed"/
+			//! "conflict").  Every PRE-COMMIT refusal -- nothing qualifies, a named
+			//! material that is not a candidate, a name collision, an
+			//! External-authority session -- leaves `ok` false and `status` EMPTY
+			//! with the whole reason in `message`, and leaves the document, the
+			//! head version, the history and the proposal queue byte-identical.
+			struct AgentAddWearResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				std::string material;        //!< the material that now wears
+				std::string materialKind;    //!< its chunk keyword
+				std::string colorSlot;       //!< the colour slot repointed at the wear field (empty unless the commit landed)
+				std::string colorPainter;    //!< the `expression_painter` minted for colour (ditto)
+				//! The microsurface slot(s) ALSO repointed, and the
+				//! scalar_painter/expression_painter minted for them -- empty when
+				//! the material carries no readable constant roughness (a
+				//! lambertian, say), which is not a refusal: the colour half is
+				//! the verb's core and the roughness half is opportunistic.
+				std::vector<std::string> roughnessSlots;
+				std::string roughnessPainter;
+				double      previousRoughness = 0.0;
+				//! The constant RGB the composition was banded around -- a fact
+				//! about the DOCUMENT, so set on refusals that got far enough to
+				//! read it, exactly as `previousRoughness` is on vary_material.
+				double      baseR = 0.0, baseG = 0.0, baseB = 0.0;
+				//! One representative geometry kind the chosen material's objects
+				//! sit on, so the caller can see WHY the signal will read.
+				std::string geometryKind;
+				int         qualifyingMaterials = 0;   //!< how many materials the shared predicate found
+				int         boundObjects = 0;          //!< how many standard_objects bind the chosen material
+			};
+
+			//! GEOMETRY_SHADING_SIGNALS sec 11's C-VERB escalation, and the VERB
+			//! half of design-note condition L: rewrite ONE material into the
+			//! census-proven CURVATURE WEAR composition -- edges lightened, crevices
+			//! darkened and deepened by ambient occlusion, both broken up by noise,
+			//! all of it banded around the colour that is already there.
+			//!
+			//! WHY A VERB AND NOT MORE ADVICE.  Design sec 11's CENSUS RUN
+			//! (2026-08-29) is the measurement: the `curv` descriptor text reached
+			//! 6/6 trajectories through `read_schema`, the worked patina example in
+			//! `materials-and-media-basics` was READ in every gpt run, and adoption
+			//! was 1 of 6 -- gemini once (textbook), gpt never, shipping `P.z`
+			//! position proxies in its place.  That is the identical profile doc 88
+			//! measured for spatially-varying roughness before `vary_material`
+			//! existed: a typing prior ("masks are made of positions") that prose
+			//! and worked examples do not override.  The pre-committed escalation
+			//! rule for a census miss is a verb, and this is that verb.
+			//!
+			//! ZERO REQUIRED ARGUMENTS, for vary_material's reason: a verb that
+			//! first asks the model to pick a material reintroduces exactly the
+			//! decision the advice already failed to get made.  Called bare it
+			//! takes the material condition L names -- most `standard_object`s
+			//! bound, ties broken lexicographically -- so the advice and the call
+			//! are one act, over ONE shared predicate
+			//! (ComputeDesignNoteConditionsFromDoc_'s `wearCandidateMaterials`).
+			//!
+			//! WHAT IT WRITES.  One `expression_painter` spliced in AHEAD of the
+			//! material (declare-before-use) holding
+			//! `mix(mix(base, edge_tint, wear_mask), patina_tint, crevice_mask)`,
+			//! where `wear_mask = clamp(curv*k_w + a*fbm(P*f,4,0.5,2.0), 0, 1)` and
+			//! `crevice_mask` is its `-curv` twin multiplied by an
+			//! `occlusion(0.08)`-derived cavity boost and re-clamped to [0,1].
+			//! `edge_tint` and `patina_tint` are DERIVED FROM THE BASE in the
+			//! expression itself (desaturate + lift toward white; desaturate +
+			//! darken), never hardcoded verdigris -- so the verb works on wood,
+			//! stone and painted steel as well as on bronze.  When the material
+			//! ALSO carries a readable constant microsurface, a second chunk
+			//! (`scalar_painter`, or `expression_painter` for the one colour-pipe
+			//! kind) rebinds it to the SAME two masks: smoother on the edges,
+			//! rougher in the crevices, banded by VaryBandFor_ -- the identical
+			//! band rule vary_material uses, deliberately shared.
+			//!
+			//! Every art-directable number is a named `param` with min/max/step/
+			//! label (doc 88 P5 Tier 1).  The ONE deliberate exception is the
+			//! `occlusion(0.08)` radius, which must stay a NUMERIC LITERAL: the
+			//! expression compiler emits the `...DynR` twin for any radius it
+			//! cannot prove literal (ExpressionEval.h's `literalRadiusArg`), and
+			//! that twin reads the NEUTRAL fallback on every triangle mesh -- so a
+			//! `param`-bound radius would silently disable the cavity term on the
+			//! whole mesh family.  Field scales and `seed` are hashed from the
+			//! MATERIAL NAME (FNV-1a, no clock, no PRNG state), so two runs on the
+			//! same document produce BYTE-IDENTICAL text.
+			//!
+			//! REFUSALS, each leaving the document byte-identical: no material
+			//! whose colour is a readable flat constant on curv-bearing geometry;
+			//! a named `material` that is not such a material (the message
+			//! distinguishes "no such chunk" from the specific rule it tripped --
+			//! already varying, an unreadable base, already worn, planar-only
+			//! geometry); an underivable candidate; a name collision.
+			//!
+			//! ONE whole-document swap, ONE head bump, ONE undo step -- the same
+			//! commit path VaryMaterial / CollapseToInstances /
+			//! ReplaceGeometryScaffold use, and for the same reason it has no
+			//! staged-proposal form under External authority (there is no
+			//! AgentProposalKind an Owner could approve card-by-card for a
+			//! composite swap).
+			//! `contactRadius` is a WORLD LENGTH and defaults to 0 = OFF, at
+			//! which every output of this verb -- the chosen material, the
+			//! emitted chunk text, the messages -- is byte-identical to what
+			//! it was before Phase 3 of the cross-object arc
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6), with exactly two
+			//! pinned exceptions (clause (d)'s corrected decline string and
+			//! the bare-call message's appended clause).  Above 0 it folds a
+			//! `proximity(contact_r)` term into the crevice endpoint of the
+			//! SHARED mask prelude, and it opens a second candidate source:
+			//! materials whose every bound object sits on FLAT geometry,
+			//! which the curvature-only verb has always had to refuse.
+			//!
+			//! `contactGrime` is that term's weight, clamped to [0, 1] here;
+			//! the bound that actually HOLDS in the emitted body is the outer
+			//! `clamp(..., 0, 1)` on the `crevice_mask` line, since a `param`'s
+			//! `min`/`max` is slider metadata the VM ignores.
+			AgentAddWearResult AddWear( const std::string& material = std::string(),
+			                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr,
+			                            double contactRadius = 0.0,
+			                            double contactGrime = 0.5 );
+
+			//! docs/WETNESS_COAT_DESIGN.md sec 6/13 (2026-08-31): what
+			//! `AgentSession::AddWetness` did, or the reason it declined.
+			//! Mirrors `AgentAddWearResult` field-for-field where the two
+			//! verbs share shape (the whole-document-swap commit, the
+			//! qualifying-materials count, the bound-object count §6.9 item 14
+			//! requires reporting), and adds the fields wetness's OWN recipe
+			//! needs: which of the three field chunks actually got written (the
+			//! Lambertian branch writes all three; the GGX/PBR in-place branch
+			//! writes reflectance + a roughness field but no `tau`; a metallic-
+			//! named material writes ONLY the roughness field, per §6.4 clause 1;
+			//! an Oren-Nayar base writes ONLY the reflectance field, per §6.2).
+			struct AgentAddWetnessResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				std::string material;        //!< the material now made wet
+				std::string materialKind;    //!< its chunk keyword (the Lambertian branch does NOT rewrite it -- see `wrappedInCoat`)
+
+				//! Item 8 (2026-08-31, coated_material re-target): true iff a
+				//! Lambertian base was WRAPPED -- the original chunk is left
+				//! byte-for-byte untouched, a new `coated_material` chunk
+				//! (`coatedMaterial`) is minted with `base` naming it, and
+				//! every bound object's `material` reference is rebound to the
+				//! new chunk (`rebindObjectCount` of them).  Renamed from the
+				//! Phase 1 `rewroteToPolished`, which no longer describes what
+				//! happens: nothing is rewritten any more, `materialKind`
+				//! keeps reporting the true current kind of `material` itself.
+				bool        wrappedInCoat = false;
+
+				//! Populated only when `wrappedInCoat` is true.
+				std::string coatedMaterial;         //!< name of the minted `coated_material` chunk
+				std::string coatWeightPainter;      //!< its `coat_weight` scalar_painter (the `wet` mask straight through)
+				std::string coatRoughnessPainter;   //!< its `coat_roughness` scalar_painter (the pooling-keyed gloss band, re-expressed as a GGX alpha -- sec 6.3)
+				int         rebindObjectCount = 0;  //!< how many bound objects' `material` slot was moved to `coatedMaterial`
+
+				//! The reflectance/darkening half -- an `expression_painter`
+				//! mixing toward `pow(base, k)` under the `damp` mask.  Empty
+				//! `reflectanceSlot` means this half was SKIPPED: either the
+				//! material is metallic and was named explicitly (§6.4 clause 1,
+				//! `isMetallic` true), the branch is the Lambertian coat wrap
+				//! (`wrappedInCoat` true -- `coated_material`'s own layered
+				//! transport performs the darkening now, sec 7.1, so a second
+				//! painter here would double-count it), or the commit did not
+				//! land.
+				std::string reflectanceSlot;
+				std::string reflectancePainter;
+				//! DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g)/6.9 item 6b):
+				//! true when `reflectancePainter`'s darkening expression reads
+				//! the substrate PER-TEXEL via `sample(name)` (a textured or
+				//! procedural base) rather than the original literal
+				//! `base_r`/`base_g`/`base_b` constants (a flat
+				//! `uniformcolor_painter` base).  False, including when
+				//! `reflectanceSlot` is empty (the darkening half was skipped
+				//! entirely -- see that field's own doc comment).
+				bool        texturedAlbedo = false;
+
+				//! The gloss/roughness half of the GGX/PBR IN-PLACE branch
+				//! ONLY (§6.2's stopgap, unchanged by item 8): `alphax`+
+				//! `alphay` (GGX) or `roughness` (PBR-MR, an
+				//! `expression_painter` -- §6.2's colour-pipe trap) -- ONE
+				//! painter PER slot (parallel arrays), not one shared painter
+				//! across both GGX slots: sharing one field would flatten an
+				//! authored alphax!=alphay anisotropy even at `dryness=1`
+				//! (fully dry), not only where sec 6.2's caveat says wetness
+				//! legitimately destroys it.  Empty on the Lambertian coat-wrap
+				//! branch (its gloss half is `coatRoughnessPainter` instead)
+				//! and on the Oren-Nayar branch (damp-only, no microsurface
+				//! touch at all).
+				std::vector<std::string> scatteringSlots;
+				std::vector<std::string> scatteringPainters;
+
+				//! The constant RGB the darkening was banded from -- a fact
+				//! about the document, set whenever the reflectance half
+				//! read a LITERAL base (regardless of whether the commit
+				//! landed), exactly as `AgentAddWearResult::baseR/G/B` is.
+				//!
+				//! `hasBaseColor` IS THE GATE, and reading the triple without
+				//! it is a lie on two different branches (DL-25 review P1-2).
+				//! It is false when the material is metallic-named (the
+				//! darkening half is skipped, there is no base to report) AND
+				//! when `texturedAlbedo` is true (the substrate is a texture
+				//! or a procedural painter, which HAS no single triple -- the
+				//! darkening samples it per-texel instead).  Before that
+				//! review the textured branch left these at 0 while claiming
+				//! they were read, so the RPC/MCP surface emitted
+				//! `baseColor: [0, 0, 0]` and the success message offered to
+				//! have darkened "the 0 0 0 that was there" -- neither a fact
+				//! about the document.  Both surfaces now OMIT the field
+				//! rather than emit a zero triple.
+				bool        hasBaseColor = false;
+				double baseR = 0.0, baseG = 0.0, baseB = 0.0;
+
+				//! One representative geometry kind the chosen material's
+				//! objects sit on, so the caller can see whether the pooling/
+				//! ridge variation reads or the surface will be uniformly wet
+				//! (§6.4 clause 3's deliberately weaker geometry bar -- unlike
+				//! `add_wear`, a curv-barren geometry does not refuse, it just
+				//! makes `geometryUniform` true).
+				std::string geometryKind;
+				bool        geometryUniform = false;
+
+				bool isMetallic  = false;   //!< §6.4 clause 1: darkening was skipped, coat/gloss only
+				bool isOrenNayar = false;   //!< §6.2: damp-only, no coat/gloss touch at all
+
+				int qualifyingMaterials = 0;   //!< how many materials the shared predicate found (non-metallic + metallic-named-reachable)
+				int boundObjects        = 0;   //!< how many standard_objects bind the chosen material -- §6.9 item 14's blast-radius figure
+			};
+
+			//! docs/WETNESS_COAT_DESIGN.md Phase 1 (§5 Track 1, §6, §13) + Phase 2
+			//! item 8 (§13, 2026-08-31): apply the two-mask (`damp`/`wet`)
+			//! wetness composition to ONE qualifying material -- for a
+			//! Lambertian base, WRAP it: the original chunk is left byte-for-
+			//! byte untouched, a new `coated_material` chunk is minted with
+			//! `base` naming it, `coat_weight` bound to the `wet` mask and
+			//! `coat_roughness` to a pooling-keyed gloss band (re-expressed in
+			//! GGX-alpha terms, §6.3), and every bound object's `material`
+			//! reference is moved to the new chunk -- strictly less
+			//! destructive than Phase 1's `polished_material` rewrite, and
+			//! with no separate darkening painter: `coated_material`'s own
+			//! layered transport performs the recycling-driven darkening
+			//! (§7.1), so a `pow(base, k)` painter on top would double-count
+			//! it.  For a GGX/PBR base: in-place roughness + reflectance
+			//! modulation (no new material class, §6.2's stopgap, UNCHANGED by
+			//! item 8). Darkening only for an Oren-Nayar base (§6.2's damp-only
+			//! branch, also UNCHANGED by item 8 -- evaluated for the same
+			//! coat-wrap re-target and declined for this slice on scope; see
+			//! the design doc's item 8 note). Coat/gloss only, no darkening,
+			//! for an explicitly-named metallic base.
+			//!
+			//! SHARES ONE QUALIFYING PREDICATE with design-note condition P
+			//! (DESIGN_DRY_RAIN_SCENE) -- `WetnessMaterial_`'s clauses, read by
+			//! `ComputeDesignNoteConditionsFromDoc_` into `wetCandidateMaterials`
+			//! -- the same one-predicate-two-consumers discipline `add_wear` /
+			//! condition L established, so the note can never advertise a call
+			//! this verb then declines to make.
+			//!
+			//! ZERO REQUIRED ARGUMENTS: called bare it takes the most-referenced
+			//! qualifying material (`SelectMaterialToWet_`, ties broken
+			//! lexicographically), skipping metallic candidates entirely (§6.4
+			//! clause 1) -- a bare call never silently produces the lesser
+			//! coat-only result. Naming a metallic material explicitly opts into
+			//! that lesser result on purpose.
+			//!
+			//! EVERY EMITTED param carries min/max/step/label, and the shared
+			//! `dryness`/`base_wetness`/`pool_gain`/`ridge_shed`/`gravity_bias`/
+			//! `film_amount`/`film_gloss_lo`/`breakup_amp`/`breakup_scale`/`seed`
+			//! prelude is written BYTE-IDENTICAL into every field chunk this call
+			//! emits (§6.1, §6.3) -- the mechanism that makes `wet <= damp`
+			//! hold by construction rather than by careful editing, mirroring
+			//! `add_wear`'s identical discipline for `wear_mask`/`crevice_mask`.
+			//! `occlusion(0.08)`'s radius is a numeric LITERAL for the same
+			//! reason `add_wear`'s is (ExpressionEval.h's DynR-fallback trap on
+			//! any non-literal radius argument). `breakup_scale` and `seed` are
+			//! FNV-1a hashed from the material name (`ScaffoldJitterRange`, the
+			//! same primitive `add_wear` uses) so two calls on the same document
+			//! produce byte-identical text; every OTHER default is the literal
+			//! §6.3 number.
+			//!
+			//! REFUSALS, each leaving the document byte-identical: nothing
+			//! qualifies; a named material fails a specific clause (the message
+			//! says which, and names `add_wear` when the failure is that the
+			//! material's colour or another slot already carries `add_wear`'s
+			//! own composition, or names `add_wetness` back when it is already
+			//! wet -- §6.4's "make it loud" collision rule, both directions);
+			//! the material is metallic and was not named explicitly; the base
+			//! colour is unreadable or a painter rather than a constant; a
+			//! minted chunk name collides; the material's `metallic` slot
+			//! is unreadable (a textured mask -- "cannot tell whether darkening
+			//! applies", the same decline §6.4 clause 2 gives a textured
+			//! colour albedo); or the composed candidate would be
+			//! byte-identical to the current document (a metallic material
+			//! with no rebindable microsurface slot has nothing left to
+			//! write).
+			//!
+			//! ONE whole-document swap, ONE head bump, ONE undo step -- the
+			//! same commit path `AddWear` / `VaryMaterial` / `CollapseToInstances`
+			//! use, and for the same reason it has no staged-proposal form under
+			//! External authority.
+			AgentAddWetnessResult AddWetness( const std::string& material = std::string(),
+			                                   const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! docs/CLOTH_FABRIC_DESIGN.md 9.7 (2026-09-02): what
+			//! `AgentSession::MakeFabric` did, or the reason it declined.
+			//! Mirrors `AgentAddWetnessResult` field-for-field where the two
+			//! verbs share shape (the whole-document-swap commit fields, the
+			//! qualifying count, the bound-object count) and adds the four
+			//! fields this verb's own SUBSTRATE DECISION needs -- which is the
+			//! part of its behaviour an author most needs to see, because it
+			//! is the one place `make_fabric` deviates from `add_wetness`'s
+			//! pure wrap: it can MINT a substrate.
+			struct AgentMakeFabricResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				std::string material;        //!< the material that was converted (the ORIGINAL chunk's name -- never edited, see `originalNowUnreferenced`)
+				std::string materialKind;    //!< its chunk keyword, unchanged by this call
+				std::string fabricPreset;    //!< the `fabric` value that was used -- the argument, the inference, or the `cotton` fallback (`message` says which)
+
+				//! The name of the minted `fabric_material` chunk -- the
+				//! wrapper every bound object now points at.  Empty unless the
+				//! commit landed.
+				std::string fabricMaterial;
+
+				//! What the wrapper's `base` slot binds.  Either
+				//! `mintedSubstrate` (the mint path) or `material` itself (the
+				//! pure-wrap path, `substrateWasReused` true).
+				std::string baseMaterial;
+
+				//! 9.7 step 1: the substrate chunk this call created, and its
+				//! keyword (`ggx_material` / `orennayar_material` /
+				//! `lambertian_material` -- the preset's recommended class).
+				//! BOTH empty on the pure-wrap path.
+				std::string mintedSubstrate;
+				std::string mintedSubstrateKind;
+
+				//! True when the bound base ALREADY matched the preset's
+				//! recommended class, so nothing was minted and the original
+				//! material became the wrapper's substrate directly.  Its own
+				//! parameters are NOT retuned to the preset's -- the original
+				//! chunk is never edited, on either path.
+				bool substrateWasReused = false;
+
+				//! True on the MINT path: the original chunk is still in the
+				//! document, still byte-identical, and NOTHING REFERENCES IT
+				//! ANY MORE (its colour painter was re-homed onto the minted
+				//! substrate and every bound object moved to the wrapper).
+				//! That is a different and more surprising outcome than
+				//! `add_wetness`'s wrap, which leaves the original as the
+				//! substrate, so it is reported as its own field rather than
+				//! buried in the message.
+				bool originalNowUnreferenced = false;
+
+				//! 9.7 step 2's weave field.  `weavePainter` is the
+				//! `scalar_painter` chunk this call minted for the weave (only
+				//! for a preset whose look is SUBSTRATE anisotropy -- denim,
+				//! silk, satin; the isotropic presets mint none).
+				//! `rotationPainter` is what the wrapper's `weave_rotation`
+				//! slot actually binds, so it equals `weavePainter` when one
+				//! was minted and is EMPTY when the slot was left unwritten and
+				//! takes the chunk's own 0.0 default.  The minted painter is a
+				//! CONSTANT 0 -- a no-op rotation: the point is that the SLOT
+				//! exists, already wired, for the author to rebind to a real
+				//! angle field.
+				std::string weavePainter;
+				std::string rotationPainter;
+
+				//! Round 9 (reviewer P2.4): the `weftColor` ARGUMENT's own
+				//! outcome.  EMPTY unless the call both (a) took a
+				//! `weftColor` argument and (b) minted a `weave_material`
+				//! substrate for it to land on -- i.e. it is empty on every
+				//! path the pre-round-9 behaviour already covered (no
+				//! argument, a non-weave preset, or a reused weave base),
+				//! so an existing caller that never passes the argument
+				//! sees this field stay unset, byte-for-byte the same as
+				//! before the argument existed.  When set, it is the
+				//! painter now bound to the minted substrate's
+				//! `weft_color` -- either `pick->colorPainter` (the
+				//! warp's own painter, for `weftColor == "match"`) or the
+				//! named painter chunk itself.
+				std::string weftColorPainter;
+
+				int rebindObjectCount = 0;   //!< how many bound objects' `material` slot moved to `fabricMaterial`
+
+				//! One representative geometry kind the chosen material's
+				//! objects sit on, and whether EVERY one of them is curv-barren
+				//! (planar/patch).  The second drives refusal 3, but only for a
+				//! preset whose look is a grazing halo -- see MakeFabric's own
+				//! doc.
+				std::string geometryKind;
+				bool        geometryUniform = false;
+
+				int qualifyingMaterials = 0;   //!< how many materials this verb's predicate found
+				int boundObjects        = 0;   //!< how many objects bind the chosen material -- the blast radius
+			};
+
+			//! docs/CLOTH_FABRIC_DESIGN.md 9.7 (2026-09-02): convert ONE
+			//! material into a FABRIC -- a `fabric_material` wrapper over a
+			//! substrate of the preset's recommended class -- in one composite
+			//! document swap.
+			//!
+			//! NAMED `make_fabric`, NOT `add_fabric`: this CONVERTS a material
+			//! rather than adding a layer of weather to it, and the `add_*`
+			//! prefix is load-bearing for the two weathering verbs that lock
+			//! each other out.
+			//!
+			//! TWO DELIBERATE DEVIATIONS from the `add_wear` / `add_wetness`
+			//! template, both flagged in 9.7 and both real:
+			//!
+			//!  1. THE ARGUMENT SHAPE.  Both precedent verbs take exactly an
+			//!     optional `material` and a `baseHeadVersion`; no enum-typed
+			//!     argument exists on either.  `fabric` is a closed ENUM for
+			//!     the same reason the chunk's own `fabric` slot is one: an
+			//!     enumerated value list surfaces in the tool schema and
+			//!     constrains the model toward a value that exists, where a
+			//!     free string invites "crushed burgundy velour" and a refusal.
+			//!     The verb's list is the chunk's list MINUS `custom`, which
+			//!     has no recommended substrate to mint and is already what an
+			//!     unnamed preset resolves to.
+			//!
+			//!  2. IT MINTS A SUBSTRATE.  `add_wetness` performs a pure wrap.
+			//!     A pure wrap is not sufficient here, for 9.3's reason: a
+			//!     preset CANNOT configure the substrate.  Wrapping a
+			//!     Lambertian in `fabric_material { fabric satin }` produces
+			//!     chalk with a faint sheen -- the tight, directional,
+			//!     anisotropic highlight that IS satin lives in a substrate the
+			//!     wrapper cannot reach.  So when the bound base does not match
+			//!     the preset's recommended class this call MINTS one, carrying
+			//!     the preset's calibrated parameters and RE-HOMING the colour
+			//!     painter that was already there, so the author's dye, texture
+			//!     or expression graph survives the conversion untouched.
+			//!
+			//! WHAT IT EMITS (9.7 steps 0-4), all in ONE swap:
+			//!   0. Find the original's colour painter by trying
+			//!      `reflectance`, then `base_color`, then `rd` -- the three
+			//!      names the four convertible kinds spell the albedo with,
+			//!      in class-frequency order.  NONE present is a refusal, not
+			//!      a mint with no dye.
+			//!   1. `<name>_fabric_base`, of the preset's class.  A minted
+			//!      `ggx_material` ALSO gets `fresnel_mode schlick_f0` and an
+			//!      `rs` binding, because `ggx_material.fresnel_mode` defaults
+			//!      to `conductor` and `rs` is a REQUIRED colour-painter
+			//!      reference resolved BY NAME (Job::AddGGXMaterial) -- a base
+			//!      with only `rd`/`alphax`/`alphay` renders with no dielectric
+			//!      specular at all, i.e. no highlight, which is the entire
+			//!      reason GGX was chosen for those presets.  `rs` cannot be
+			//!      written inline, so a fourth chunk `<name>_fabric_f0` (a
+			//!      `uniformcolor_painter` at 0.04 0.04 0.04, Rec709RGB_Linear)
+			//!      is minted for it.
+			//!   2. `<name>_fabric_weave`, a constant-0 `scalar_painter`, for
+			//!      the presets whose look is substrate anisotropy.  The 0 is a
+			//!      bit-exact no-op; the point is that the slot exists, wired,
+			//!      for the author to rebind to a real angle field.
+			//!   3. `<name>_fabric`, the `fabric_material` itself.
+			//!   4. Every bound object's `material` reference moves to it.
+			//!
+			//! So a `satin` conversion of a Lambertian mints FOUR chunks plus
+			//! the rebinds; a `wool` conversion mints TWO (an Oren-Nayar base
+			//! needs no F0 painter and an isotropic preset needs no weave
+			//! rotation).  When the bound base already matches the preset's
+			//! class the call does the PURE WRAP instead and says so
+			//! (`substrateWasReused`).
+			//!
+			//! THE ORIGINAL CHUNK IS NEVER EDITED on either path -- but on the
+			//! mint path NOTHING REFERENCES IT ANY MORE, which `add_wetness`'s
+			//! wrap cannot say.  Both facts are in `message` and the second is
+			//! `originalNowUnreferenced`.
+			//!
+			//! ZERO REQUIRED ARGUMENTS, for `vary_material`'s reason.  Called
+			//! bare it takes the most-referenced qualifying material (ties
+			//! broken lexicographically -- the identical rule
+			//! `SelectMaterialToWear_` / `SelectMaterialToWet_` use) and infers
+			//! the preset from the bound objects' own names where that is
+			//! unambiguous (`denim_jacket` -> denim; `cushion` -> nothing, so
+			//! `cotton`, and the message SAYS so).
+			//!
+			//! FIVE REFUSALS, each a no-op leaving the document, the head, the
+			//! history and the proposal queue byte-identical: (1) nothing
+			//! qualifies; (2) the material is already a `fabric_material` (or
+			//! already the substrate of one); (3) every bound object is planar
+			//! AND the requested preset's look is a grazing halo that a
+			//! constant normal field cannot show; (4) the base cannot be
+			//! converted into an allowlisted substrate -- a dielectric, an
+			//! emissive/luminaire, a hair material, a BSSRDF/subsurface
+			//! material, an existing coated/composite stack, or a material
+			//! carrying none of the three colour slots -- and the refusal NAMES
+			//! the allowlist; (5) collision with an `add_wetness` coat on the
+			//! same material (wet fabric is a legitimate composition, but it
+			//! needs `coated_material` to accept `fabric_material` as a
+			//! substrate, which is a separate slice, so Phase 1 refuses).
+			//!
+			//! OPTIONAL `weftColor` (round 9, reviewer P2.4): C-VERB law --
+			//! the zero-argument call keeps working unchanged, and this
+			//! argument may never become required or change the default
+			//! path's output.  It ONLY has somewhere to land on the MINT
+			//! side of the weave branch (denim/silk/satin, no bound base
+			//! already a `weave_material`): `"match"` binds the minted
+			//! substrate's `weft_color` to the SAME painter `warp_color`
+			//! took (a uniform dye across both thread families, overriding
+			//! the preset's own two-tone weft), or a bare painter chunk
+			//! name binds that painter instead.  Three MORE no-op refusals
+			//! guard it, validated before the composite swap like every
+			//! other refusal above: the preset does not mint a weave at
+			//! all (cotton/linen/wool/velvet); the weave base was REUSED
+			//! rather than minted (this verb never edits an existing
+			//! chunk, so the refusal names `weft_color` on that chunk as
+			//! the route instead); or the named value is neither `match`
+			//! nor an existing COLOUR painter chunk -- the gate is
+			//! colour-PIPE-aware, not just Painter-category-aware, so a
+			//! `scalar_painter` name (IScalarPainter, Painter-category but
+			//! the wrong pipe) is refused too (round 9, reviewer P2.4 fix:
+			//! it used to pass a category-only check and fail later,
+			//! opaquely, inside `Job::AddWeaveMaterial`).
+			//! `weftColorPainter` reports the outcome, and the success message names the
+			//! painter the weft took in place of the no-argument path's
+			//! own "weft_color was left unwritten" disclosure.
+			//!
+			//! ONE whole-document swap, ONE head bump, ONE undo step -- the
+			//! same commit path `AddWetness` / `AddWear` / `VaryMaterial` use,
+			//! and for the same reason it has no staged-proposal form under
+			//! External authority.
+			AgentMakeFabricResult MakeFabric( const std::string& material = std::string(),
+			                                   const std::string& fabric = std::string(),
+			                                   const std::string& weftColor = std::string(),
+			                                   const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! CLOTH_FABRIC_DESIGN 9.7: the `fabric` ARGUMENT's closed value
+			//! list, published here so the two hand-authored tool texts
+			//! (AgentMcpAdapter.cpp's schema and AgentChatCodecs.cpp's
+			//! kToolDefs) and the verb's own validation read ONE array
+			//! rather than three copies -- kBuildPlanConstructionValues'
+			//! anti-drift arrangement, applied to this verb.
+			//!
+			//! It is `fabric_material`'s own descriptor enum MINUS `custom`:
+			//! that row's recommended substrate is `eFabricSubstrateAny`, so
+			//! there is nothing for this verb to mint, and it is already what
+			//! an omitted `fabric` resolves to inside the chunk.
+			//!
+			//! Order matches `FabricPresetTable()`'s row for row, so the tool
+			//! schema, the refusal messages and the table all read in one
+			//! order -- and `AgentMakeFabricTest`'s preset-parity case
+			//! ASSERTS that row by row rather than leaving it as a comment
+			//! that a reorder of the table would quietly falsify.
+			static const char* const kMakeFabricPresetValues[7];
+			static const std::size_t kMakeFabricPresetCount = 7;
+
+			//! kMakeFabricPresetValues, comma-separated -- for a refusal
+			//! message or a description, so neither restates the list.
+			static std::string MakeFabricPresetList();
+
+			//! docs/CLOTH_FABRIC_DESIGN.md Phase 3 (2026-09-03): what
+			//! `AgentSession::AddFuzz` did, or the reason it declined.  A
+			//! SILHOUETTE FUZZ SHELL -- a sparse `hair_geometry`/
+			//! `hair_material` pair grown over a fabric's own substrate --
+			//! rather than a material edit, so its shape is closer to
+			//! `AgentMakeFabricResult`'s MINT half than to
+			//! `AgentAddWetnessResult`'s pure wrap: this verb never edits or
+			//! rebinds the target material or its bound objects, it only ADDS
+			//! new sibling chunks alongside them.
+			struct AgentAddFuzzResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				std::string material;       //!< the fabric_material / weave_material / (named) plain-diffuse material the fuzz was grown from
+				std::string materialKind;   //!< its chunk keyword, unchanged by this call
+				std::string amount;         //!< "light" / "medium" / "heavy" -- the argument, or the "medium" default
+
+				//! The FIRST minted triad's names -- the common one-object
+				//! case reads these directly.  When the target material is
+				//! bound to more than one object, every bound object gets its
+				//! OWN triad (`mintedObjectCount` says how many); these three
+				//! plus `strandCount` describe the first one, in
+				//! `boundObjectNames` scan order.
+				std::string fuzzGeometry;   //!< the minted `hair_geometry` chunk
+				std::string fuzzMaterial;   //!< the minted `hair_material` chunk
+				std::string fuzzObject;     //!< the minted `standard_object` binding the two, `parent`-ed to the target so it inherits its transform exactly
+				int strandCount = 0;        //!< the first minted `hair_geometry`'s realized `count`
+
+				int mintedObjectCount = 0;  //!< how many fuzz triads this call minted (usually 1)
+				int boundObjects      = 0;  //!< how many objects are bound to `material` -- the blast radius
+				int qualifyingMaterials = 0;
+			};
+
+			//! docs/CLOTH_FABRIC_DESIGN.md Phase 3 (2026-09-03): grow a SPARSE
+			//! `hair_geometry` fuzz shell over every object bound to a
+			//! fabric-like material, giving its silhouette a fibrous fringe
+			//! that no BSDF term can produce (the Phase 3 evaluation measured
+			//! the fringe extending 3.7 px PAST the analytic silhouette, with
+			//! 14.6x more edge non-monotonicity than the bare material).
+			//!
+			//! ZERO REQUIRED ARGUMENTS, `vary_material`'s reason: called bare
+			//! it takes the most-referenced qualifying material (ties broken
+			//! lexicographically, `SelectMaterialToMakeFabric_`'s own rule)
+			//! from the BARE-CALL POOL -- `fabric_material` and
+			//! `weave_material` chunks only.  A plain diffuse substrate
+			//! (`orennayar_material` / `lambertian_material`) is eligible ONLY
+			//! when `material` names it explicitly: fuzz on an arbitrary
+			//! diffuse surface is a much bigger claim than fuzz on something
+			//! already declared to be cloth, and a silent bare-call pick
+			//! should never reach past that boundary.
+			//!
+			//! WHAT IT EMITS, per bound object of the picked material: a
+			//! `hair_geometry` (`<obj>_fuzz`) grown on THAT object's own
+			//! `geometry`, a `hair_material` (`<obj>_fuzz_material`) whose
+			//! `color` tier reads the fabric's own dye -- `fabric_material
+			//! .sheen_color` when bound, else the chunk's own documented
+			//! default (the PRESET's colour where the preset sets one --
+			//! velvet only -- and otherwise WHITE, never the wrapped
+			//! `base`'s own reflectance); `weave_material`'s `warp_color`;
+			//! or the named plain-diffuse material's own colour slot.  The
+			//! VALUE is never re-typed, but `hair_material.color` resolves
+			//! STRICTLY by name (no inline-literal fallback the way
+			//! `fabric_material.sheen_color` has), so a value that is an
+			//! inline literal rather than a bare chunk name is minted into
+			//! its own one-line `uniformcolor_painter` first and every
+			//! `hair_material` binds THAT by name -- a name-shaped value is
+			//! bound directly, with no mint at all.  A `standard_object`
+			//! (`<obj>_fuzz_object`) binding the two with `parent <obj>` and
+			//! no transform fields of its own, so it inherits the target's
+			//! placement exactly and keeps inheriting it across any later
+			//! edit to that placement.  `count` scales with the object's own
+			//! REAL live surface area (`IObject::GetArea()`, falling back to
+			//! an equivalent-sphere estimate off its bounding box only when
+			//! the real area is unavailable) so `light`/`medium`/`heavy`
+			//! mean the same strands-per-unit-area on a flat object and a
+			//! round one alike; `length`/`width_root`/`width_tip` scale with
+			//! the SMALLEST extent of the object's own world-space bounding
+			//! box -- off the Phase 3 evaluation's tuned recipe (a
+			//! 0.15-unit-radius sphere, 24000 strands, 3.5 mm strands) so
+			//! `light` looks the same fuzz on a cushion and on a sofa;
+			//! `amount` scales density/length/width by a fixed multiplier
+			//! (`medium` reproduces the evaluation's own recipe unscaled).
+			//! `segments`, `base_detail`
+			//! and `frizz` stay at the evaluation's tuned constants regardless
+			//! of `amount` -- no comb/clump/gravity/curl is written, the
+			//! "cheapest possible groom recipe" the evaluation itself
+			//! measured.  THE TARGET MATERIAL AND ITS BOUND OBJECTS ARE NEVER
+			//! EDITED -- this verb only adds.
+			//!
+			//! FOUR REFUSALS, each leaving the document byte-identical: (1)
+			//! nothing qualifies (no fabric/weave material bound to an
+			//! object, and no explicitly-named diffuse material either); (2)
+			//! a `<obj>_fuzz` / `<obj>_fuzz_material` / `<obj>_fuzz_object`
+			//! name already exists for a bound object (an existing fuzz
+			//! shell -- re-run add_fuzz only after removing or renaming it);
+			//! (3) a bound object's own geometry cannot host a groom (an
+			//! `infiniteplane_geometry`, another `hair_geometry`, or no
+			//! resolvable geometry at all -- hair_geometry's own base
+			//! requirement); (4) the picked material resolves to the `silk`
+			//! or `satin` fabric preset (a tight, glossy structural sheen a
+			//! fibrous fringe reads as wrong on, per the design doc's own
+			//! recommendation).  A scene with fewer than two non-ambient light
+			//! chunks is NOT refused -- it WARNS in the message instead, because the
+			//! fuzz shell mints correctly either way and only its LOOK
+			//! depends on a rim/back light being present.
+			//!
+			//! ONE whole-document swap, ONE head bump, ONE undo step --
+			//! `MakeFabric`'s own commit path, and for the same reason it has
+			//! no staged-proposal form under External authority.
+			AgentAddFuzzResult AddFuzz( const std::string& material = std::string(),
+			                            const std::string& amount = std::string(),
+			                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! `AddFuzz`'s `amount` argument's closed value list -- kept next
+			//! to `kMakeFabricPresetValues` for the same anti-drift reason
+			//! (AgentMcpAdapter.cpp's schema, AgentChatCodecs.cpp's kToolDefs,
+			//! and the verb's own validation read ONE array).
+			static const char* const kAddFuzzAmountValues[3];
+			static const std::size_t kAddFuzzAmountCount = 3;
+
+			//! kAddFuzzAmountValues, comma-separated.
+			static std::string AddFuzzAmountList();
+
+			//! Doc 90 slice R2 (2026-08-23): what RevertToRevision did, or the
+			//! reason it declined.
+			//!
+			//! `ok` follows the AgentCollapseResult / AgentVaryMaterialResult
+			//! convention EXACTLY (which follows ReplaceGeometryScaffold's):
+			//! true once the request was well-formed AND reached a commit-stage
+			//! disposition, so `status` carries the real outcome
+			//! ("applied"/"rejected"/"diagnosed"/"conflict").  Every PRE-COMMIT
+			//! refusal -- an unknown, future, evicted or unrecorded revision,
+			//! the current head, an External-authority session, no retained
+			//! head -- leaves `ok` false and `status` EMPTY, with the whole
+			//! reason in `message`, and leaves the document, the head version,
+			//! the history and the proposal queue byte-identical.
+			struct AgentRevertResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;   //!< the head AFTER the call
+				std::string message;
+
+				//! The revision that was asked for (echoed on every outcome,
+				//! refusals included -- a model that mis-typed a number should
+				//! see which number this session read).
+				std::uint64_t requestedRevision = 0;
+				//! The head this call started from (the revision the revert
+				//! moved AWAY from), so the model can revert the revert without
+				//! re-reading anything.  Set on every outcome.
+				std::uint64_t previousRevision = 0;
+				//! The OLDEST revision this session can still restore, for the
+				//! eviction refusal to name and for a caller to bound its own
+				//! choices by.  0 when nothing is recorded.
+				std::uint64_t oldestAvailableRevision = 0;
+				//! How many chunk attributions were dropped because the chunk
+				//! they name is not in the restored document (see the method's
+				//! LEDGER paragraph).  0 unless the commit landed.
+				int droppedAttributions = 0;
+				//! How many chunk attributions were RESTORED because the
+				//! restored document brings back a chunk that the target
+				//! revision's own ledger recorded against a build element
+				//! (see the method's LEDGER paragraph).  The counterpart to
+				//! `droppedAttributions`, and what keeps a revert-of-a-revert
+				//! from stranding a reappeared chunk unattributed.  0 unless
+				//! the commit landed.
+				int restoredAttributions = 0;
+			};
+
+			//! Doc 90 slice R2 (2026-08-23): RESTORE THE DOCUMENT to its text
+			//! as of an earlier head revision of THIS session.
+			//!
+			//! WHY THIS EXISTS.  docs/agentic-redesign/90-iteration-ratchet.md
+			//! sec 1: the dragon probe rendered its best picture FIRST and
+			//! spent twelve self-directed edit rounds making it worse, because
+			//! nothing anchored best-so-far and there was no way back.  R1 gave
+			//! the loop a MEMORY (the anchor composite, a picture beside the
+			//! current render).  This is the other half -- the way back -- and
+			//! the two are one mechanism: the anchor note names this verb and
+			//! the revision to pass it, so the model that judges "the anchor
+			//! was better" has exactly one call to make.
+			//!
+			//! REVERT-AS-NEW-COMMIT.  The restore is ONE new edit producing a
+			//! NEW head revision whose CONTENT equals revision `revision`'s.
+			//! History is append-only: nothing rewinds the undo stack, nothing
+			//! rewrites the past, the revision counter only ever goes up, and a
+			//! single Cmd-Z in the GUI undoes the revert exactly as it undoes
+			//! any other agent edit.  It is ONE whole-document swap, ONE head
+			//! bump, ONE undo step -- the same commit path
+			//! ReplaceGeometryScaffold / CollapseToInstances / VaryMaterial
+			//! use, and for the same reason it has no staged-proposal form
+			//! under External authority (there is no AgentProposalKind an Owner
+			//! could approve card-by-card for a composite swap).
+			//!
+			//! WHAT IS RESTORABLE.  The session RECORDS (revision -> document
+			//! text) as it goes: at the head every mutating verb starts from,
+			//! and at the head every render was made from (see
+			//! RecordRevisionSnapshot_ for the capture rule and why observation
+			//! -- not just the session's own mutations -- has to be one of the
+			//! capture points).  The record is a bounded ring
+			//! (kRevisionRingMaxEntries / kRevisionRingMaxBytes); once it
+			//! overflows, the oldest recorded revision is dropped and a revert
+			//! to it is REFUSED naming the oldest one still available.
+			//!
+			//! REFUSALS, each leaving the document byte-identical: revision 0;
+			//! a revision ABOVE the current head (it does not exist yet); the
+			//! CURRENT head (there is nothing to restore -- a "success" that
+			//! moved nothing would read as a revert that happened); a revision
+			//! this session never recorded; a recorded-then-EVICTED revision
+			//! (the message names the oldest still available); an
+			//! External-authority session; no retained CST Document.  A head
+			//! that moved under a caller-supplied `baseOrNull`, or under the
+			//! call itself, is a CONFLICT (ok=true, status="conflict").
+			//!
+			//! LEDGER.  After a landed revert, the chunk-attribution ledger
+			//! (mChunkAttribution) is reconciled against the restored document
+			//! in BOTH directions, because a whole-document swap can make a
+			//! chunk vanish OR reappear and a one-way prune is only half of
+			//! that.
+			//!
+			//! DROP: every attribution naming a chunk that is NOT in the
+			//! restored document is dropped -- the same rule, for the same
+			//! reason, that
+			//! ReplaceGeometryScaffold applies to the geometry chunk it erases:
+			//! CheckElementWindowForEdit_ is a pure attribution lookup that
+			//! runs BEFORE any document read, so an attribution outliving its
+			//! chunk refuses a later edit naming a chunk that does not exist --
+			//! a refusal the recommended reopen_element cannot fix, spending
+			//! one of three shared phase-refusal slots.
+			//!
+			//! RESTORE: every attribution the TARGET revision's own recorded
+			//! ledger held (RevisionSnapshot_::attribution) whose chunk IS in
+			//! the restored document and which the live ledger does NOT
+			//! currently carry is added back.  Without it, reverting a revert
+			//! brings a chunk's TEXT back but not its attribution, leaving it
+			//! visibly in the document yet recorded against no element --
+			//! freely editable from another element's window and not
+			//! form-protected, when it is really that element's own content.
+			//! It is a UNION, and CURRENT STATE WINS: an attribution already
+			//! present is never overwritten, even if the snapshot disagrees,
+			//! because the live entry reflects the LATER creation window (the
+			//! same "last creation wins" rule AttributeChunkToActiveElement_
+			//! applies).  A restored attribution may name an element that is
+			//! now FINISHED, and that needs no special case: the ledger
+			//! readers (FindChunkAttribution_, CheckElementWindowForEdit_,
+			//! TargetIsFormBearing_) compare against the ACTIVE element by
+			//! name and never consult mElementFinished, and reopen_element is
+			//! the documented route back into a finished element's window.
+			//!
+			//! The two passes run BEFORE the new head is recorded into the
+			//! ring, so the ring entry for the revert's OWN head carries the
+			//! POST-reconcile ledger -- which is what keeps a chain of reverts
+			//! coherent instead of each one restoring the state before the
+			//! last.  The PHASES themselves
+			//! (mBuildPhase / mActiveElement / mElementFinished) are NOT
+			//! rewound: they record what the MODEL did, not what the document
+			//! contains, and FileBuildPlan remains the only thing that resets
+			//! them.  An active element whose chunks all vanished is left in
+			//! exactly the state a freshly opened window is in -- every ledger
+			//! READER already re-resolves against the live document and skips
+			//! what it cannot find (FinishElement's isolate pick,
+			//! ElementWorldBounds_, PlaceElement's root-carry walk), so nothing
+			//! is stranded.
+			AgentRevertResult RevertToRevision( std::uint64_t revision,
+			                                     const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! Doc 90 R2: how many (revision -> text) records the ring holds.
+			//! Observation only -- for tests and diagnostics.
+			std::size_t RecordedRevisionCount() const;
+
+			//! Doc 90 R2: the OLDEST revision still restorable, 0 when the ring
+			//! is empty.  Observation only.
+			std::uint64_t OldestRecordedRevision() const;
+
+			//! Doc 90 R2: is this revision's text still held?  Observation only.
+			bool HasRecordedRevision( std::uint64_t revision ) const;
+
 			//! Secure-MCP slice 5a: one entry of ListProposals -- a wire-
 			//! friendly flattening of SceneEditController::AgentProposal (see
 			//! that struct's doc for field meaning; `kind` here is the
@@ -2092,7 +7577,7 @@ namespace RISE
 			struct AgentProposalEntry
 			{
 				std::uint64_t             id = 0;
-				std::string               kind;          //!< "param_edit" / "insert_chunk" / "remove_chunk"
+				std::string               kind;          //!< "param_edit" / "insert_chunk" / "remove_chunk" / "remove_chunks" (R1a: the batch remove stages as ONE entry; its `target` carries the '\n'-separated target-name list)
 				std::string               target;
 				std::string               entityKind;
 				std::string               param;
@@ -2259,10 +7744,11 @@ namespace RISE
 			//! mutation of the derived Scene -- it does NOT touch the CST
 			//! Document; see Job::SetFilm / ScaleFilmToFit), Rasterize, then
 			//! SetFilm back to the captured dims.  Camera override: capture
-			//! every requested field's CURRENT value via
-			//! CameraIntrospection::GetPropertyValue, SetProperty the
-			//! overrides onto the ACTIVE camera, Rasterize, then SetProperty
-			//! every captured field back.  Restoration is RAII-guarded (an
+			//! every requested field's CURRENT value bit-exactly
+			//! (CameraIntrospection::CaptureExactValue), SetProperty the
+			//! overrides onto the ACTIVE camera, Rasterize, then put every
+			//! captured field back with RestoreExactValue (a formatted string
+			//! through SetProperty only for a field with no exact form).  Restoration is RAII-guarded (an
 			//! internal RenderOverrideRestoreGuard, see AgentSession.cpp) so
 			//! it runs on EVERY exit from the render window -- including an
 			//! exception unwinding out of Rasterize() itself (OIDN denoise is
@@ -2858,6 +8344,215 @@ namespace RISE
 			AgentQueryObjectResult QueryObjectAt( int x, int y,
 			                                       const AgentQueryObjectParams& params = AgentQueryObjectParams() );
 
+			//! Arc 80 (2026-08-12): ONE object's row in the scene inventory
+			//! (see AgentRenderResult::inventoryApplied for the mechanism and
+			//! the evidence behind it).  Every field is a MEASUREMENT or a
+			//! classification of one; nothing here is a judgement, and no
+			//! field says an object is "missing" or "wrong".
+			struct AgentSceneInventoryEntry
+			{
+				//! The object's legend name -- the SAME identity a
+				//! mode:"objectmap" legend and `query_object_at` report.
+				std::string   name;
+				//! Pixels this object covered in the identity pass (see
+				//! AgentSceneInventoryResult::passWidth): exact, one ray per
+				//! pixel, no lighting and no materials involved.
+				std::uint32_t pixelCount = 0;
+				//! pixelCount / (passWidth * passHeight), in [0,1].
+				double        frameFraction = 0.0;
+				//! pixelCount > 0.
+				bool          onScreen = false;
+				//! WHERE IT IS IN THE FRAME -- a fraction of the frame
+				//! measured from the LEFT (`frameX`) and from the TOP
+				//! (`frameY`), both in [0,1].  MEANINGFUL ONLY WHEN
+				//! `framePositionKnown`; both are 0 otherwise and are
+				//! omitted on the wire, because a fabricated 0,0 reads as
+				//! "top-left corner" and this payload cannot afford a false
+				//! clause.
+				//!
+				//! `framePositionFromPixels` says WHICH measurement it is,
+				//! and the two are genuinely different facts:
+				//!   * TRUE  -- the centre of the object's PIXEL bounding
+				//!     box in the identity pass.  Exact, and needs no camera
+				//!     model, so it is available under any projection.
+				//!   * FALSE -- the centre of the object's projected WORLD
+				//!     BOUNDING BOX, clipped to the frame.  The fallback
+				//!     when no pixel of the pass carried this object's
+				//!     registered identity colour -- which really happens:
+				//!     the identity image loses byte-exactness on a scene
+				//!     with a transmissive surface between the camera and
+				//!     the scene, and then NO object can be located by
+				//!     pixel.  A bounding box is not a silhouette, so this
+				//!     is the coarser answer and the text says which one it
+				//!     is reporting.
+				bool          framePositionKnown = false;
+				bool          framePositionFromPixels = false;
+				double        frameX = 0.0;
+				double        frameY = 0.0;
+				//! The centre of the object's world bounding box -- the
+				//! "where is it, then?" for an object that covered no
+				//! pixels.  `worldCentreKnown` is false when the object's
+				//! bbox is not finite/bounded, in which case the three
+				//! numbers are NOT measurements and are omitted on the wire.
+				bool          worldCentreKnown = false;
+				double        worldCentre[3] = { 0.0, 0.0, 0.0 };
+				//! HOW THIS OBJECT SITS RELATIVE TO THE VIEW.  Exactly one
+				//! of:
+				//!   "onscreen"   -- it covered at least one pixel.
+				//!   "behind"     -- its whole world bbox is behind the
+				//!                   camera plane.
+				//!   "offframe"   -- its whole bbox is in front of the
+				//!                   camera and projects entirely outside
+				//!                   the frame; `offFrameDirection` names
+				//!                   which way.
+				//!   "overlaps"   -- its bbox is in front of the camera and
+				//!                   its projection overlaps the frame, yet
+				//!                   no pixel of it was hit (occluded,
+				//!                   smaller than a pass pixel, or the bbox
+				//!                   overlaps where the object itself does
+				//!                   not -- this does NOT distinguish those,
+				//!                   and the text does not claim to).
+				//!   "straddles"  -- its bbox crosses the camera plane, so a
+				//!                   screen-space position is undefined.
+				//!   "unknown"    -- frame position was not computed at all;
+				//!                   see AgentSceneInventoryResult::
+				//!                   framePositionSuppressedReason.
+				std::string   placement;
+				//! For "offframe" only: "left", "right", "above", "below",
+				//! or a pair joined by " and ".  Empty otherwise.
+				std::string   offFrameDirection;
+				//! 87 STEP 5 (2026-08-18): WHERE THIS OBJECT SITS IN THE
+				//! AUTHORED TREE -- the name of its `parent` node, or "" when
+				//! it is a root.
+				//!
+				//! Everything else in this struct is measured off the RENDER
+				//! LIST, which 87 §2 makes deliberately flat: every entry
+				//! carries a fully composed world transform and no structure
+				//! at all.  That is right for "what does the camera see" and
+				//! wrong for "what is this thing part of", and an agent that
+				//! can only read the flat list cannot navigate an assembly it
+				//! just built.  Read from `IObjectManager::GetObjectParent`,
+				//! the live link map, so it answers for a SYNTHESIZED entry
+				//! (which has no chunk of its own to read) exactly as it does
+				//! for an authored one.
+				//!
+				//! A named parent may not appear as a row of its own: a pure
+				//! CONTAINER is world-invisible by construction and covers no
+				//! pixel, so it is not in the identity pass.  That is the
+				//! point rather than a gap -- siblings sharing a parent name
+				//! are what identifies the assembly, and the container's own
+				//! chunk is in the document for anyone who wants its pose.
+				std::string   parent;
+				//! 87 STEP 5: for a SYNTHESIZED entry (one repetition of a
+				//! `source` / `count_u` instancing chunk), the name of the
+				//! chunk an author can actually edit; "" for an ordinary
+				//! authored object.
+				//!
+				//! From `IObjectManager::GetObjectProvenance`, which its own
+				//! header calls "THE ONLY SANCTIONED WAY to map a rendered
+				//! entry back to an editable chunk" -- callers must not
+				//! reconstruct it by splitting the name on `.` or probing for
+				//! `[`.  Without it, an agent that sees `grid[3,1]` in the
+				//! inventory and tries to patch that name is editing something
+				//! that does not exist as a chunk.
+				std::string   instancedFrom;
+			};
+
+			//! Arc 80 (2026-08-12): the whole inventory -- what
+			//! `scene_inventory` returns and what the render payload's
+			//! `inventory` block is formatted from.  ONE code path builds
+			//! both (AgentSession.cpp's ComputeSceneInventory_).
+			struct AgentSceneInventoryResult
+			{
+				//! True iff the inventory was actually measured.  False
+				//! leaves every count at 0 and puts the reason in `message`
+				//! -- no head, no objects, or the identity pass failed.
+				bool         ok = false;
+				//! The ONE not-ok case that is not a failure: the scene has
+				//! no world-visible objects, so there is no "where is
+				//! everything" to answer.  The render payload attaches
+				//! NOTHING in that case (rather than an empty inventory);
+				//! every other not-ok case is stated in the render message.
+				bool         noObjects = false;
+				//! The identity pass's own dims (NOT the beauty frame's).
+				unsigned int passWidth = 0;
+				unsigned int passHeight = 0;
+				int          objectCount = 0;
+				int          coveredCount = 0;
+				//! True iff the analytic pinhole classification ran, i.e.
+				//! `placement` can be "behind"/"offframe"/"overlaps"/
+				//! "straddles" rather than "unknown".  When false,
+				//! `framePositionSuppressedReason` says why in one clause --
+				//! honouring ProjectedBBoxCoverage's contract that a
+				//! non-pinhole camera gets NO tan-based verdict rather than
+				//! a wrong-model one.
+				bool         framePositionComputed = false;
+				std::string  framePositionSuppressedReason;
+				//! How many on-screen entries got their in-frame position
+				//! from the pass's own PIXELS (the rest, if any, fell back
+				//! to the projected bounding box -- see
+				//! AgentSceneInventoryEntry::framePositionFromPixels).
+				int          pixelLocatedCount = 0;
+				//! ARC 82 (2026-08-12): THE POPULATION FACT.  How many
+				//! DISTINCT geometries the counted objects draw on, and how
+				//! many of those geometries are drawn on by more than one
+				//! object.  Free: the inventory's walk already visits every
+				//! object, and geometry identity is a pointer compare
+				//! (IObject::GetGeometry), so two objects naming the same
+				//! geometry chunk are the same geometry here by construction.
+				//! `geometryUnreadCount` is how many objects were NOT counted
+				//! because their geometry could not be read -- an object kind
+				//! that exposes none (IObject::GetGeometry() returning null
+				//! is not itself an error; see IsNullGeometryEmitter_'s doc
+				//! comment in AgentSession.cpp for the csg_object case), or
+				//! the rarer case of a legend name that does not resolve to
+				//! a manager item at all (a generator-synthesized instance
+				//! name DOES resolve to a real manager item -- see the F9(c)
+				//! comment on that lookup in AgentSession.cpp -- so this is
+				//! some other, rarer non-resolution).  Stated in the text
+				//! rather than folded away, the same omit-rather-than-
+				//! fabricate rule the frame positions follow.
+				int          distinctGeometryCount = 0;
+				int          sharedGeometryCount = 0;
+				int          geometryUnreadCount = 0;
+				//! ARC 83 (2026-08-14): emissive objects the walk below found
+				//! NOT selected for NEE area-light sampling, and why -- see
+				//! AgentSceneNotAreaSampledEntry.  Also free: the same walk
+				//! already reads each object's material and geometry.
+				std::vector<AgentSceneNotAreaSampledEntry> notAreaSampled;
+				//! One entry per world-visible object, in DESCENDING pixel
+				//! count then ascending name -- so the objects that covered
+				//! nothing are last and complete.
+				std::vector<AgentSceneInventoryEntry> entries;
+				//! The formatted inventory, exactly as a model reads it (see
+				//! FormatSceneInventory_ for the bounding rules).
+				std::string  text;
+				std::string  message;
+			};
+
+			//! Arc 80 (2026-08-12): `scene_inventory` -- "where is
+			//! everything?", asked directly.
+			//!
+			//! Runs ONE small one-ray-per-pixel identity render through the
+			//! ACTIVE camera and reports, for every world-visible object,
+			//! its pixel footprint and its position: in the frame when it
+			//! covered pixels, in the world (plus which way it lies relative
+			//! to the view) when it did not.
+			//!
+			//! THIS VERB IS NOT WHERE THE MECHANISM LIVES.  The same
+			//! computation rides every full-scene beauty render's result
+			//! automatically (AgentRenderResult::inventoryApplied), because
+			//! every voluntary consultation surface this workstream shipped
+			//! measured 0/64 uses.  The verb exists because the inventory is
+			//! worth being able to ask for; nothing depends on it being
+			//! asked for.
+			//!
+			//! Like `query_object_at`, the internal identity render is
+			//! EPHEMERAL: it never becomes "the last render", so a following
+			//! `read_image` still serves the caller's own frame
+			//! (EphemeralRenderCacheGuard), and the Document is untouched.
+			AgentSceneInventoryResult SceneInventory();
+
 			//! Round-2 P1-1 test hook: override DrainAsyncRender_'s per-chunk
 			//! wait duration for THIS session instance (default 0 = "use
 			//! whatever chunkMs the caller/default passes").  Exists so a
@@ -2975,6 +8670,35 @@ namespace RISE
 			//! concurrently.
 			void ForTest_SetThrowBeforeRasterize( bool on ) { mThrowBeforeRasterizeForTest = on; }
 
+			//! Exercise the production passthrough encoder without a render so
+			//! codec failure/retry coverage reaches comparison-image encoding.
+			static std::vector<unsigned char> ForTest_EncodeLinearPassthroughPng(
+				const std::vector<RISEColor>& pels, unsigned int width, unsigned int height );
+
+			//! 2026-08-24 fix-round test hook: run `fn` inside FinishElement at
+			//! the EXACT point each panel render returns -- i.e. the window a
+			//! shared-image-cache read used to occupy, and the window a sibling
+			//! session's render can land in on a live host.
+			//!
+			//! It exists to make a NEGATIVE provable.  FinishElement now takes
+			//! its panel bytes from AgentRenderResult::png rather than from
+			//! ReadImage/mImageCache, precisely because that cache is
+			//! deliberately shared across the sessions a GUI stands up over one
+			//! Job and nothing can hold a lock across "Render returns" and "read
+			//! the cache".  A test installs a hook that renders something
+			//! visibly different through a SIBLING session sharing this
+			//! session's cache; the composite must be unchanged.  Without this
+			//! seam that assertion could only be written as a thread race, which
+			//! would prove the fix only probabilistically.
+			//!
+			//! Default empty; production code never sets it.  Single-threaded,
+			//! like the throw seam above: set it before the FinishElement call
+			//! that will observe it, never concurrently.
+			void ForTest_SetFinishElementBetweenRendersHook( std::function<void()> fn )
+			{
+				mFinishElementBetweenRendersHookForTest = std::move( fn );
+			}
+
 			//! Toolkit slice 3a fix-round P2-1 test hook: exercise the objectmap
 			//! identity-palette generator standalone (it is otherwise a file-
 			//! static in AgentSession.cpp).  Fills `outBytes` with `count`
@@ -3066,6 +8790,15 @@ namespace RISE
 			static bool IsAnalysableRejection_( const AgentPatchResult& r );
 			static bool IsAnalysableRejection_( const AgentChunkResult& r );
 
+			//! What RenderCore_ stamps from inside the park: the head a render
+			//! was made from AND the document that head is, captured in one
+			//! statement pair so the two can never describe different heads.
+			struct RenderHeadCapture_
+			{
+				RISE::Cst::CstHeadVersion version;
+				std::string               text;
+			};
+
 			//! The shared core of both Render overloads: legacy Render(int) is a
 			//! thin forwarder that builds an all-absent AgentRenderParams (so
 			//! it is BYTE-COMPATIBLE with the pre-preview-render behaviour).
@@ -3082,9 +8815,276 @@ namespace RISE
 			//! (equivalent to the headless branch) and reports the
 			//! `forcedJobId` the caller already minted, rather than minting
 			//! or routing its own.
+			//! G3b fix-round (2026-08-10) FIX 1: `resolvedTarget` is the
+			//! CALLER-THREAD SNAPSHOT of `params.target`'s filed sketch --
+			//! nullptr whenever `params.target` is empty, and REQUIRED
+			//! (non-null) whenever it is not.  This function NEVER resolves a
+			//! target by name any more, because it runs on the controller's
+			//! render worker thread on the async path and `mElementSketches` is
+			//! single-threaded-caller state (see the class contract above).
+			//! A non-empty `target` with a null snapshot is a programming
+			//! error in a private caller and fails the render loudly rather
+			//! than silently skipping the comparison.
+			//! Doc 90 slice R1 (2026-08-22): `outHeadRevision`, when non-null,
+			//! receives THE HEAD REVISION THIS RENDER WAS MADE FROM, stamped
+			//! INSIDE the parked closure beside `res.integrator`.
+			//!
+			//! IT IS READ THERE AND NOWHERE ELSE, and both halves of that are
+			//! load-bearing.  Inside the park the render OWNS the scene, so
+			//! the unsynchronized read is not merely safe but exact -- no
+			//! commit can be in flight to tear the 16 non-atomic bytes, and
+			//! the answer is precisely the revision the pixels came from.
+			//! OUTSIDE it, both obvious alternatives are wrong: the
+			//! controller-mediated ReadHeadVersion() takes the very mutex a
+			//! live render holds, so calling it before RenderCore_ DEADLOCKS
+			//! the synchronous path against the render loop and makes the
+			//! async submit block instead of returning (both measured against
+			//! AgentRenderAsyncTest, 2026-08-22); and a raw HeadVersion()
+			//! outside the park races the GUI thread's commits.
+			//!
+			//! Left at 0 by every path that bails before the closure runs --
+			//! which is every path that also leaves `ok` false, so the one
+			//! consumer (ApplyRenderAnchorComparison_) never sees it.
+			//! Doc 90 slice R2 (2026-08-23): `outHeadCapture`, when non-null,
+			//! receives THE HEAD THIS RENDER WAS MADE FROM AND THE DOCUMENT
+			//! THAT HEAD IS, stamped in the same place and for the same three
+			//! reasons as `outHeadRevision` -- inside the park the render owns
+			//! the scene, so serializing the retained Document there is exact
+			//! rather than merely safe, while outside it the
+			//! controller-mediated read deadlocks against the render loop and
+			//! the raw read races the GUI thread's commits.  Version and text
+			//! are stamped in ONE statement pair because the ring's whole
+			//! correctness rests on the two describing the same head (see
+			//! RevisionSnapshot_).  It duplicates `outHeadRevision`'s number
+			//! rather than replacing that parameter: R1's out-param is a
+			//! shipped, separately tested contract, and widening it to serve a
+			//! second consumer would put the ratchet's label and the ring's
+			//! key on one wire for no gain.
+			//! Left EMPTY by every path that bails before the closure runs.
 			AgentRenderResult RenderCore_( const AgentRenderParams& params,
 			                                bool assumeParked = false,
-			                                std::uint64_t forcedJobId = 0 );
+			                                std::uint64_t forcedJobId = 0,
+			                                const AgentElementSketch* resolvedTarget = nullptr,
+			                                std::uint64_t* outHeadRevision = nullptr,
+			                                RenderHeadCapture_* outHeadCapture = nullptr );
+
+			//! G3b (2026-08-10): measure the just-completed isolate render's
+			//! silhouette against `params.target`'s filed sketch and fill
+			//! `rr`'s `target*` fields.  A NO-OP unless `params.target` is
+			//! non-empty AND `rr.ok` -- the ok gate is the whole point (see
+			//! AgentRenderResult::targetApplied).
+			//!
+			//! Runs ONE extra internal render: an ephemeral
+			//! AgentRenderTarget::ObjectMap pass with the SAME `isolate`,
+			//! `target`, `camera`/`view`, width/height and
+			//! `fromAgentSurface` flag, so it resolves to bit-identical
+			//! framing and dims by construction rather than by a copied
+			//! constant.  The identity pass is used INSTEAD of the beauty
+			//! pixels because it is exact (one ray per pixel, flat identity
+			//! colours, background is the reserved #000000) and works under
+			//! every mode and quality -- a beauty silhouette would depend on
+			//! lighting, materials and tone mapping.  Wrapped in
+			//! EphemeralRenderCacheGuard so the segmentation frame never
+			//! displaces the caller's own last render in the image cache,
+			//! exactly like QueryObjectAt's identity pass.
+			//!
+			//! `assumeParked` is forwarded verbatim to the nested
+			//! RenderCore_: false from the synchronous Render() (its park has
+			//! already released by the time RenderCore_ returned), true from
+			//! RenderAsync's worker closure (still inside the worker's park,
+			//! where re-parking would self-deadlock) -- the SAME reasoning
+			//! RenderCore_'s own `assumeParked` doc gives.
+			//!
+			//! Never throws out; a failed identity pass leaves every
+			//! `target*` field at its default, emits no block, and appends a
+			//! factual note to `rr.message`.
+			//!
+			//! G3b fix-round (2026-08-10) FIX 1 -- THE SNAPSHOT.  `sketch` is
+			//! the resolved AgentElementSketch COPY the CALLER took, on the
+			//! CALLER's thread, at SUBMISSION time; this function no longer
+			//! calls ResolveTargetSketch/FindElementSketch at all.  Three
+			//! reasons, in order of weight:
+			//!   (a) THREAD SAFETY.  On the async path this runs on the
+			//!       controller's render worker while the dispatcher thread
+			//!       may be inside FileBuildPlan reassigning `mElementSketches`
+			//!       -- an unsynchronized read of a std::vector being
+			//!       reallocated (UB, use-after-free).  A snapshot closes it
+			//!       without inventing a lock convention this state has never
+			//!       had, and without rejecting the (legal) async wire shape.
+			//!   (b) SEMANTICS, independent of the race: an async comparison
+			//!       must describe the plan AS IT WAS WHEN THE CALLER
+			//!       SUBMITTED, not whichever plan happens to be filed when
+			//!       the worker gets around to finishing.
+			//!   (c) it removes the redundant double-resolve -- RenderCore_
+			//!       and this function each used to resolve the same name.
+			//! Passed as a pointer purely so the no-target case (the common
+			//! one) needs no dummy object; null with a non-empty
+			//! `params.target` is a programming error and is reported in
+			//! `rr.message` rather than measured around.
+			void ApplyTargetComparison_( const AgentRenderParams& params,
+			                              AgentRenderResult& rr,
+			                              bool assumeParked,
+			                              const AgentElementSketch* resolvedTarget );
+
+			//! Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: attach the
+			//! WHOLE-SCENE target to a render that qualifies for it -- see
+			//! AgentRenderResult::sceneTargetApplied for the qualification
+			//! rule, the no-score decision and the composite's size contract.
+			//!
+			//! Unlike ApplyTargetComparison_ this runs NO EXTRA RENDER: it
+			//! reads the frame the caller's render already produced
+			//! (`rr.png`), so it costs one PNG decode, one box-downscale of
+			//! each side and one PNG encode -- microseconds at the agent
+			//! surface's 256-pixel cap, and nothing at all on a session with
+			//! no target or on a call that asked for no inline image.
+			//!
+			//! `target` is the shared_ptr SNAPSHOT the CALLER copied on the
+			//! CALLER's thread, for exactly the reason ApplyTargetComparison_
+			//! takes a sketch snapshot: on the async path this runs on the
+			//! controller's render worker while the dispatcher thread may be
+			//! inside ImagineScene replacing mSceneTarget.  A null snapshot
+			//! (the common case) is a silent no-op; the pointee is immutable,
+			//! so a snapshot taken before a re-imagine still describes the
+			//! target the caller submitted against.
+			//!
+			//! A failure anywhere in building the composite (undecodable
+			//! frame, degenerate dims, failed encode) leaves the composite
+			//! empty and appends a factual note to `rr.message`; the facts
+			//! still ride and AgentRpc falls back to the plain frame.  It
+			//! NEVER fails the render, which succeeded on its own terms.
+			void ApplySceneTargetComparison_( const AgentRenderParams& params,
+			                                   AgentRenderResult& rr,
+			                                   const std::shared_ptr<const AgentSceneTarget>& target );
+
+			//! Doc 90 slice R1 (2026-08-22): THE ITERATION RATCHET -- record
+			//! this render as the session's latest, establish the anchor if
+			//! there is none yet, and (once there is one) attach the anchor
+			//! composite.  See AgentRenderResult::anchorApplied for the
+			//! qualification rule, the anchor definition and the composite's
+			//! geometry, and doc 90 sec 2 for why there is no number in it.
+			//!
+			//! Runs NO EXTRA RENDER, exactly like ApplySceneTargetComparison_
+			//! -- it reads the frame `rr` already carries.  It MUST run AFTER
+			//! ApplySceneTargetComparison_: when a scene-target composite was
+			//! built, that composite is the lower pane of this one, so this
+			//! function has to see the final state of `rr`.
+			//!
+			//! `anchorArmed` is a SNAPSHOT the CALLER took on the CALLER's
+			//! thread at submission time, for exactly the reason the sketch
+			//! and scene-target snapshots are taken there: on the async path
+			//! this runs on the controller's render worker, where
+			//! `mBuildPhase` may be being reassigned by a FinishElement on the
+			//! dispatcher thread.  It means "the anchor may be ESTABLISHED by
+			//! this render" -- true once the session has entered the Compose
+			//! phase, or immediately for a session whose phase machinery is
+			//! not in force.
+			//!
+			//! `currentRevision` is the head revision this render was made
+			//! from, stamped by RenderCore_ from INSIDE the park (see its
+			//! `outHeadRevision` doc).  It is deliberately NOT read on either
+			//! caller's thread: the controller-mediated read deadlocks
+			//! against a live render, and the raw read races the GUI's
+			//! commits.
+			//!
+			//! The anchor frames themselves live under mAsyncCacheMutex (no
+			//! new lock: that is the mutex this session already uses for
+			//! render bookkeeping the worker thread writes, and the
+			//! worker-side nesting mMutex -> mAsyncCacheMutex is the one
+			//! RenderCore_'s cache-population tail already establishes).
+			//!
+			//! A failure anywhere in building the composite leaves it empty
+			//! and appends a factual note to `rr.message`; the facts still
+			//! ride and AgentRpc falls back to whatever image would otherwise
+			//! have gone out.  It NEVER fails the render.
+			void ApplyRenderAnchorComparison_( const AgentRenderParams& params,
+			                                    AgentRenderResult& rr,
+			                                    bool anchorArmed,
+			                                    std::uint64_t currentRevision );
+
+			//! Doc 90 R1: is this render one the ratchet measures?  The
+			//! qualification rule of AgentRenderResult::anchorApplied, in one
+			//! place, shared by the capture and the composite so the two can
+			//! never disagree about which frames the anchor is drawn from.
+			static bool RenderQualifiesForAnchor_( const AgentRenderParams& params,
+			                                        const AgentRenderResult& rr );
+
+			//! Doc 90 R1: is the anchor allowed to be ESTABLISHED by a render
+			//! happening now?  Read on the dispatcher thread only (it reads
+			//! mBuildPhase), snapshotted into the async closure.
+			bool RenderAnchorArmed_() const;
+
+			//! Arc 80 (2026-08-12): THE SHARED INVENTORY CORE -- the one code
+			//! path behind both the render payload's `inventory` block and
+			//! the `scene_inventory` verb, so the two can never drift.
+			//!
+			//! Runs ONE ephemeral mode:"objectmap" render (the existing
+			//! identity pipeline, tally and legend -- no new rendering code)
+			//! at a small fixed long edge, decodes its pixels for each
+			//! object's footprint and pixel-bbox centre, and classifies every
+			//! object that covered nothing against the camera analytically.
+			//!
+			//! `source` supplies the camera/view override the caller's own
+			//! render used, so the inventory describes THAT view; the dims
+			//! are replaced by the pass's own (aspect taken from
+			//! `frameW`/`frameH`).  `assumeParked` has exactly the meaning
+			//! ApplyTargetComparison_ gives it -- the async worker is already
+			//! inside the park and must not re-park.
+			//!
+			//! Never throws on a failed pass: `ok` stays false and `message`
+			//! says why.
+			AgentSceneInventoryResult ComputeSceneInventory_( const AgentRenderParams& source,
+			                                                   unsigned int frameW,
+			                                                   unsigned int frameH,
+			                                                   bool assumeParked );
+
+			//! Arc 80 (2026-08-12): attach the inventory to a render result
+			//! that qualifies for it -- see AgentRenderResult::
+			//! inventoryApplied for the qualification rule.  A no-op for
+			//! every render that does not qualify, so a non-qualifying call
+			//! is byte-identical to before this mechanism existed.
+			//!
+			//! Doc 91 V2 reach: `attribution` is the dispatcher-thread chunk ->
+			//! element ledger SNAPSHOT the caller took at submission (never the
+			//! live member -- this runs on the async worker too).  When it names
+			//! plan elements whose objects cover under ~1% of a full-frame
+			//! PRODUCTION render in total, ONE sentence is appended to the
+			//! inventory text naming up to three of them with their measured
+			//! coverage and the `render{zoom:}` call that shows each at full
+			//! resolution.  Null / empty (no plan) -> no sentence.
+			struct ChunkAttribution_;   // defined below (hoisted there for RevisionSnapshot_); only a pointer to it appears here
+			void ApplyVisibilityCensus_( const AgentRenderParams& params,
+			                              AgentRenderResult& rr,
+			                              bool assumeParked,
+			                              const std::vector<ChunkAttribution_>* attribution = nullptr );
+
+			//! Arc 81 (2026-08-12): attach the TONAL FACT to a render result
+			//! that qualifies for it -- see AgentRenderResult::tonalApplied
+			//! for the qualification rule and the reasoning behind each
+			//! exclusion.  Reads `rr.png` (the pixels this call already
+			//! produced) and NOTHING else: no render, no scene access, no
+			//! lock, no document.  A no-op for every render that does not
+			//! qualify and for one whose bytes will not decode, so a
+			//! non-qualifying call is byte-identical to before this mechanism
+			//! existed.
+			void ApplyTonalFact_( const AgentRenderParams& params, AgentRenderResult& rr );
+
+			//! Arc 80 (2026-08-12): resolve the pinhole eye/target/up/FOV and
+			//! aspect the render described by `params` actually used, for the
+			//! analytic off-screen classification.  Returns false -- with a
+			//! one-clause reason in `outSuppressReason` -- rather than
+			//! guessing, whenever the pose cannot be reconstructed EXACTLY:
+			//! a named `view` (resolved inside RenderCore_ from a controller
+			//! store this function does not re-enter), an orientation-only
+			//! camera override, an unparseable override, no snapshottable
+			//! active camera, or an active camera that is not a PinholeCamera
+			//! (ProjectedBBoxCoverage's tan-based formula would be the WRONG
+			//! projection model, not an approximation -- the same rule G1's
+			//! fix-round applied to `isolateBBoxCoverage`).
+			bool ResolveInventoryCamera_( const AgentRenderParams& params,
+			                               unsigned int frameW, unsigned int frameH,
+			                               double outEye[3], double outTarget[3], double outUp[3],
+			                               double& outTanHalfV, double& outAspect,
+			                               std::string& outSuppressReason ) const;
 
 			//! Resolve the effective BEAUTY display transform (exposure EV +
 			//! tone-curve enum) the agent's in-memory PNG encode must apply so
@@ -3299,6 +9299,260 @@ namespace RISE
 			std::uint64_t     mLastAsyncRenderResultJobId = 0;
 			AgentRenderResult mLastAsyncRenderResult;
 
+			//! Doc 90 slice R1 (2026-08-22): ONE remembered render -- the
+			//! frame's own PNG bytes and the head revision it was rendered
+			//! at.  Two of these exist per session and never more (see
+			//! mRenderAnchor / mRenderAnchorLatest below), which is the whole
+			//! reason `set_render_anchor` takes no revision argument.
+			struct RenderAnchorFrame
+			{
+				bool                       set = false;
+				std::uint64_t              revision = 0;
+				std::vector<unsigned char> png;
+			};
+
+			//! Doc 90 R1: the biggest frame the ratchet will remember.
+			//!
+			//! MEASURED (2026-08-22, the demo scene): a 96x96 beauty PNG from
+			//! this pipeline is 4.7 KB and a 256x256 one -- the agent
+			//! surface's own cap, kAgentSurfaceMaxRenderEdge -- is 25.6 KB.
+			//! Two frames are held at any moment (the anchor and the latest,
+			//! which is what makes `set_render_anchor` need no revision
+			//! argument), so the ratchet's real cost on a wire-driven session
+			//! is ~51 KB, and 8 MB is ~320x headroom -- roughly a 3000x3000
+			//! noisy beauty frame.
+			//!
+			//! IT IS THEREFORE BELT-AND-BRACES, not a live limit: the
+			//! qualification rule already requires `fromAgentSurface`, and
+			//! AgentRpc clamps those dims to the 256 cap.  What it covers is
+			//! a DIRECT C++ caller that sets `fromAgentSurface` itself and
+			//! asks for megapixel dims.  A frame above the bound is simply
+			//! not remembered (the ratchet skips that render and says
+			//! nothing); it is never downscaled behind the caller's back,
+			//! because a silently shrunken anchor would make the pane
+			//! comparison partly a comparison of two resolutions.
+			static constexpr std::size_t kRenderAnchorMaxPngBytes = 8u * 1024u * 1024u;
+
+			//! Doc 90 R1: THE ANCHOR -- the render the ratchet compares
+			//! against, established by the first qualifying render at or
+			//! after the Compose phase begins and re-pinned by
+			//! `set_render_anchor`.  Guarded by mAsyncCacheMutex: the async
+			//! render worker writes it, the dispatcher thread reads and
+			//! re-pins it.  No new lock -- this is render bookkeeping, which
+			//! is exactly what that mutex already guards.
+			RenderAnchorFrame mRenderAnchor;
+
+			//! Doc 90 R1: the MOST RECENT qualifying render, which is what
+			//! `set_render_anchor` promotes.  Same guard, same reasoning.
+			RenderAnchorFrame mRenderAnchorLatest;
+
+			//----------------------------------------------------------------
+			// Doc 90 slice R2 (2026-08-23): THE REVISION RING -- the memory
+			// `revert_to_revision` restores from.  See that method's doc for
+			// the verb; this is the storage and the capture rule.
+			//----------------------------------------------------------------
+
+			//! One created chunk and the element it was created under.
+			//!
+			//! HOISTED here (from the phase-machinery block below, where
+			//! `mChunkAttribution` still lives) purely for DECLARATION ORDER:
+			//! RevisionSnapshot_ holds a `std::vector<ChunkAttribution_>` and
+			//! a nested class must be complete where a member names it.  It
+			//! is phase-machinery state, not ring state -- see
+			//! mChunkAttribution for what it means and who writes it.
+			struct ChunkAttribution_
+			{
+				std::string chunk;    //!< the chunk's bare `name`
+				std::string element;  //!< the element active when it was created
+				std::string kind;     //!< the chunk keyword, for the category exemption
+			};
+
+			//! One recorded head: a head VERSION, the document text that WAS
+			//! that head, and the chunk-attribution ledger AS OF that head.
+			//! The trio is always captured together from one coherent read
+			//! (ReadDocumentSnapshot, or the park-stamped pair RenderCore_
+			//! hands back plus a dispatcher-thread ledger copy taken at
+			//! submission) -- a revision paired with another revision's bytes
+			//! would restore a document that never existed.
+			//!
+			//! WHY THE LEDGER RIDES ALONG.  A revert restores TEXT; without
+			//! the ledger it can only ever DROP attributions (the chunks that
+			//! vanished), never bring back the ones that REAPPEAR.  Reverting
+			//! a revert would then leave a chunk visibly in the document but
+			//! recorded against no build element -- freely editable across
+			//! element windows and not form-protected, when it is really that
+			//! element's own content.  The copy is cheap: a build's
+			//! attribution count is in the hundreds at the very most (see
+			//! mChunkAttribution), three small strings each.
+			//!
+			//! THE WHOLE HEAD VERSION IS RECORDED, not just the revision.
+			//! `revision` restarts at 1 on every fresh load and the uuid is
+			//! what distinguishes one head lineage from the next.  A session
+			//! cannot in fact outlive its lineage today (a Job refuses a
+			//! second load -- AgentRevertRevisionTest case I pins it), so
+			//! carrying the uuid is what makes RecordRevisionSnapshot_'s
+			//! lineage guard possible rather than something the lookup needs.
+			struct RevisionSnapshot_
+			{
+				RISE::Cst::CstHeadVersion      version;
+				std::string                    text;
+				std::vector<ChunkAttribution_> attribution;
+			};
+
+
+			//! The cap, in ENTRIES.  Real sessions measured 8-57 KB per
+			//! document (doc 90 sec 1: the dragon run's final document was
+			//! 57 KB) and the failed run made 179 revisions in 12 edit rounds,
+			//! so 256 covers a session of that shape whole.  Generous on
+			//! purpose: the ring's job is to still hold the good revision
+			//! after a long bad stretch, which is exactly the case where a
+			//! tight cap would have thrown it away.
+			static constexpr std::size_t kRevisionRingMaxEntries = 256;
+
+			//! The cap, in BYTES of held document text, whichever bites first.
+			//! At the 57 KB high-water mark the entry cap costs ~14.6 MB, so
+			//! this bound is the one that fires on a session whose documents
+			//! run bigger than any measured so far -- an entry count alone
+			//! would let an unbounded document size become unbounded memory.
+			static constexpr std::size_t kRevisionRingMaxBytes = 16u * 1024u * 1024u;
+
+			//! The ring, ASCENDING by revision (oldest first).  A vector, not
+			//! a map: it is walked whole on eviction and probed once per
+			//! revert, and it is bounded at kRevisionRingMaxEntries.
+			//! Guarded by mRevisionRingMutex.
+			std::vector<RevisionSnapshot_> mRevisionRing;
+
+			//! Sum of `text.size()` across the ring, maintained incrementally
+			//! so the byte cap costs no walk.  Guarded by mRevisionRingMutex.
+			std::size_t mRevisionRingBytes = 0;
+
+			//! EVERY revision this session ever actually RECORDED, ascending,
+			//! never evicted.  What separates "revision 4 aged out, the oldest
+			//! still here is 40" from "revision 4 was never recorded at all"
+			//! -- two refusals a model must be able to tell apart, because one
+			//! says pick a later revision and the other says this session
+			//! never saw that head at all (a run of hand edits in the GUI
+			//! between two agent turns).
+			//!
+			//! A SET, NOT A HIGH-WATER MARK, and that is the whole point.
+			//! This started life as `mRevisionRingEvictedThrough`, a single
+			//! "highest revision ever evicted" integer, and it LIED: a
+			//! revision that was never captured at all -- a genuine gap --
+			//! sits numerically below every later eviction, so the
+			//! high-water test called it "aged out" and told the model to
+			//! pick a later revision, when the truth is that this session
+			//! never held that head and never will.  A membership test
+			//! cannot make that mistake, because it asks the question the
+			//! refusal actually means ("did we ever have it?") rather than a
+			//! proxy for it.
+			//!
+			//! UNBOUNDED ON PURPOSE, unlike the ring beside it.  This holds 8
+			//! bytes per revision, not a document: the worst measured real
+			//! session made 179 revisions (doc 90 sec 1), so even a session an
+			//! order of magnitude longer costs a couple of kilobytes.  Capping
+			//! it would re-introduce exactly the forgetting that makes the
+			//! high-water mark wrong.
+			//!
+			//! CLEARED WITH THE RING on a lineage change, and it must be:
+			//! `revision` restarts at 1 per lineage, so a set carried over
+			//! from a previous document would answer "yes, captured" for the
+			//! NEW document's low revision numbers and hand back the aged-out
+			//! refusal for revisions the new lineage genuinely never had.
+			//! Guarded by mRevisionRingMutex.
+			std::vector<std::uint64_t> mRevisionRingCaptured;
+
+			//! Guards mRevisionRing / mRevisionRingBytes / mRevisionRingCaptured.
+			//! A dedicated LEAF mutex, and both halves matter.  DEDICATED: the
+			//! writers are the dispatcher thread (every mutating verb records
+			//! the head it starts from) and the async render worker (every
+			//! render records the head it was made from), which is a different
+			//! pairing from any existing lock's.  LEAF: nothing else is ever
+			//! locked while it is held, so it can be taken from either thread
+			//! in any order without a rank to reason about -- in particular
+			//! the record call sites sit OUTSIDE
+			//! ApplyRenderAnchorComparison_'s mAsyncCacheMutex hold, and
+			//! RenderAnchorRevision() (which takes that mutex) is called from
+			//! outside this one.  `mutable` because the three observation
+			//! accessors are const and taking a lock in a const method is
+			//! const-correctness's own first legitimate case -- the LOCK is
+			//! mutable, the ring is not, and no const method writes it.
+			mutable std::mutex mRevisionRingMutex;
+
+			//! Record (revision -> text), evicting oldest-first past either
+			//! cap.  Idempotent per revision: re-recording a revision already
+			//! held is a no-op (the bytes cannot differ -- a revision names
+			//! exactly one document), which is what lets every capture point
+			//! call it unconditionally.
+			//!
+			//! CAPTURE POINTS, and why these two:
+			//!   * the head every MUTATING verb starts from
+			//!     (CaptureHeadRevisionSnapshot_).  This is the doc's own rule
+			//!     ("at every mutation the agent performs") and it covers USER
+			//!     co-edits for free: the head a verb starts from is whatever
+			//!     it is, agent-made or hand-made in the GUI, and the session
+			//!     has no other way to learn a co-editor moved it (there is no
+			//!     observer or callback -- every agent read re-reads the live
+			//!     head).  It records the PRE-commit head rather than the
+			//!     post-commit one because the post-commit head is reachable
+			//!     only through a second read that would BLOCK on the
+			//!     re-render the commit just kicked; the ring therefore lags
+			//!     by exactly one revision, and the revision it lags on is the
+			//!     CURRENT HEAD, which is the one revert refuses anyway.
+			//!   * the head every RENDER was made from.  Not an optimization:
+			//!     the anchor is BY DEFINITION a rendered revision, and R1's
+			//!     note now tells the model to pass that revision to this
+			//!     verb.  A note that names a revision the ring cannot restore
+			//!     is the "stale promise burns the repair budget" failure doc
+			//!     90 sec 2 warns about, one level down -- so the revisions
+			//!     the model is told about and the revisions it can restore
+			//!     are made the same set at the source.
+			//!
+			//! THE ANCHOR IS PINNED against eviction while it lives: an entry
+			//! whose revision equals RenderAnchorRevision() is skipped by the
+			//! evictor and the next-oldest goes instead.  Capture makes the
+			//! anchor's revision PRESENT; the pin keeps it present.  Copying
+			//! the text into the anchor state instead was rejected -- the
+			//! anchor is pinned from inside the render park, where a
+			//! SerializeCst is affordable but the state it would write is
+			//! guarded by a different mutex, and it would put two copies of
+			//! the same document in two places that could then disagree.
+			//! `attribution` is the chunk-attribution ledger AS OF `version`,
+			//! passed IN rather than read from `mChunkAttribution` here --
+			//! and that is a THREAD-SAFETY requirement, not a style choice.
+			//! Two of the four call sites are on the RENDER WORKER (the
+			//! synchronous render path and the async render closure), where
+			//! `mChunkAttribution` is dispatcher-thread state that must not
+			//! be read at all -- exactly the hazard RenderInner_'s
+			//! `sceneTargetSnapshot` / `anchorArmedSnapshot` comments already
+			//! spell out for `mBuildPhase`, its sibling in the same block.
+			//! Those two sites therefore snapshot the ledger on the
+			//! DISPATCHER thread before the render starts and thread the copy
+			//! through, the same discipline and for the same reason; the two
+			//! dispatcher-thread sites pass `mChunkAttribution` live.  Making
+			//! it a REQUIRED parameter is what stops a future call site
+			//! quietly re-opening the race.
+			void RecordRevisionSnapshot_( const RISE::Cst::CstHeadVersion& version,
+			                               const std::string& text,
+			                               const std::vector<ChunkAttribution_>& attribution );
+
+			//! Read the live head coherently and record it.  The one-line form
+			//! every mutating verb calls on entry.  A no-op without a document.
+			void CaptureHeadRevisionSnapshot_();
+
+			//! Copy out the recorded text for `revision`, and (when
+			//! `outAttribution` is non-null) the attribution ledger recorded
+			//! alongside it.  Returns false when the ring does not hold it
+			//! (never recorded, or evicted -- RevertToRevision distinguishes
+			//! those two for the message, using RevisionWasCaptured_).
+			bool LookupRevisionText_( std::uint64_t revision, std::string& outText,
+			                           std::vector<ChunkAttribution_>* outAttribution = nullptr ) const;
+
+			//! Was `revision` EVER recorded by this session (whether or not
+			//! the ring still holds it)?  The authority behind the
+			//! aged-out-vs-never-seen split -- see mRevisionRingCaptured for
+			//! why a membership test and not a high-water mark.
+			bool RevisionWasCaptured_( std::uint64_t revision ) const;
+
 			//! Model-B F2 slice S1: SESSION-LOCAL render-id counter, used
 			//! whenever this call does NOT route through a
 			//! SceneEditController's coordinator-tracked RunPreviewRenderParked
@@ -3383,12 +9637,1650 @@ namespace RISE
 			//! const-escape is needed here.
 			std::function<void()> mEphemeralCacheGuardOpenHookForTest;
 
+			//----------------------------------------------------------------
+			// G2 (2026-08-10): the build-plan gate's per-session state.  See
+			// the public block above FileBuildPlan for the mechanism.
+			//
+			// REFUSE-UNTIL-FILED, CAPPED: mBuildPlanGateRefusalCount counts
+			// refusals (0..kBuildPlanGateMaxRefusals) and does NOT disarm the
+			// gate by itself -- the gate stays armed and keeps refusing while
+			// the count is below the cap.  Two INDEPENDENT permanent-disarm
+			// flags: mBuildPlanFiled (a plan was filed -- the intended exit)
+			// and mBuildPlanGateGaveUp (the cap was reached and the gate
+			// stopped intercepting anyway -- the bounded-failure exit).  The
+			// gate is armed iff  mBuildPlanGateEnabled && !mBuildPlanFiled &&
+			// !mBuildPlanGateGaveUp.
+			//
+			// Single-threaded like the rest of this class's non-Render surface
+			// (see mDrainChunkMsForTest) -- an agent surface serves one call
+			// at a time.
+			//----------------------------------------------------------------
+
+			//! Snapshot of BuildPlanGateDefaultEnabled() taken at construction,
+			//! so a mid-session change of the process default cannot alter a
+			//! running session's posture.
+			bool mBuildPlanGateEnabled = true;
+			//! Set by FileBuildPlan; disarms the gate permanently.
+			bool mBuildPlanFiled = false;
+			//! How many calls the gate has refused this session, 0..
+			//! kBuildPlanGateMaxRefusals.  Does NOT by itself disarm the gate --
+			//! see mBuildPlanGateGaveUp for the cap's actual disarm flag.
+			int mBuildPlanGateRefusalCount = 0;
+			//! Set once the gate GIVES UP -- the interception that would have
+			//! been the (kBuildPlanGateMaxRefusals+1)'th refusal is let through
+			//! instead, and this disarms the gate permanently for the rest of
+			//! the session (same permanence as mBuildPlanFiled).
+			bool mBuildPlanGateGaveUp = false;
+			//! The refusal cap.  See CheckBuildPlanGate_'s doc for why the gate
+			//! is capped at all (the E4-vs-G2 asymmetry: any cheap render
+			//! satisfies E4's condition, but clearing G2 requires discovering
+			//! a new tool and producing a valid schema for it) and why 3 --
+			//! enough attempts that a bare-retry model still gets refused more
+			//! than once, bounded enough that a session which genuinely cannot
+			//! form the file_build_plan call is not stranded.
+			static const int kBuildPlanGateMaxRefusals = 3;
+			//! The plan as filed, in the order the caller listed it.
+			std::vector<AgentBuildPlanEntry> mBuildPlan;
+			//! G3a: the rasterized targets, index-parallel to mBuildPlan.
+			//! REPLACED wholesale by every successful FileBuildPlan, exactly
+			//! like mBuildPlan -- the two are written together and must never
+			//! disagree about which elements exist.  Session-lifetime: never
+			//! serialized into the Document, never persisted anywhere.
+			std::vector<AgentElementSketch> mElementSketches;
+
+			//----------------------------------------------------------------
+			// S1 (2026-08-11): the STAGED BUILD PROTOCOL's per-session state.
+			// See the public block above FinishElement for the mechanism.
+			//
+			// SINGLE-THREADED-CALLER, exactly like the build-plan and
+			// scene-target state it sits between: every reader and writer below
+			// runs on the thread that owns this session (the RPC dispatcher /
+			// GUI serving thread).  NOTHING here is read on the controller's
+			// render worker -- FinishElement resolves its isolate object and
+			// issues its render on the CALLING thread, through the ordinary
+			// synchronous Render entry point, so the async path's snapshot
+			// discipline (RenderAsync copying resolved state into the worker
+			// closure) has nothing new to carry.
+			//----------------------------------------------------------------
+
+			//! Snapshot of BuildProtocolDefaultEnabled() taken at construction,
+			//! so a mid-session change of the process default cannot alter a
+			//! running session's posture (the gate flag's discipline exactly).
+			bool mBuildProtocolEnabled = true;
+			//! Plan until a plan is filed, then Pieces, then Compose.  Stays
+			//! Plan for the whole session when the phase machinery is off.
+			AgentBuildPhase mBuildPhase = AgentBuildPhase::Plan;
+			//! Index into mBuildPlan of the ACTIVE element.  Meaningful only in
+			//! the Pieces phase; always < mBuildPlan.size() there, because the
+			//! only writers are FileBuildPlan (0), FinishElement (the next
+			//! unfinished index) and ReopenElement (a resolved index).
+			std::size_t mActiveElement = 0;
+			//! Index-parallel to mBuildPlan: has FinishElement closed this
+			//! element?  Written together with mBuildPlan, so the two can never
+			//! disagree about which elements exist.
+			std::vector<bool> mElementFinished;
+			//! (`ChunkAttribution_` itself is declared ABOVE, next to the
+			//! revision ring -- see the hoist note there.  It stays a
+			//! phase-machinery type; only its DECLARATION moved, because
+			//! RevisionSnapshot_ holds a vector of it and a nested class must
+			//! be complete at the point a member names it.)
+			//!
+			//! Every chunk created while an element was active, in creation
+			//! order.  A LINEAR vector rather than a map because it is walked
+			//! whole (finish_element lists an element's chunks in order) far
+			//! more often than it is probed, and a build's chunk count is in
+			//! the hundreds at the very most.  A chunk name created twice
+			//! (removed, then re-created under another element) keeps ONE
+			//! entry, re-pointed at the later element -- last creation wins,
+			//! because that is the window the chunk in the document came from.
+			std::vector<ChunkAttribution_> mChunkAttribution;
+			//! Phase refusals issued this session (cross-element edits +
+			//! compose-phase geometry creations share ONE counter, exactly as
+			//! the gate's two conditions share one), 0..kBuildPhaseMaxRefusals.
+			int mBuildPhaseRefusalCount = 0;
+			//! Set once the phase refusals GIVE UP -- the interception that
+			//! would have been the (kBuildPhaseMaxRefusals+1)'th is let through
+			//! and no further phase refusal fires for the rest of the session.
+			//! Attribution and the phase transitions keep running: the give-up
+			//! stops the REFUSING, not the measuring.
+			bool mBuildPhaseGaveUp = false;
+			//! The phase-refusal cap.  Same number and same reasoning as
+			//! kBuildPlanGateMaxRefusals: enough that a model which simply
+			//! re-issues gets refused more than once, bounded enough that a
+			//! model which cannot work the protocol proceeds with a factual
+			//! notice instead of being stranded.
+			static const int kBuildPhaseMaxRefusals = 3;
+
+			//! Is the phase machinery in force?  BOTH launch switches, and the
+			//! plan-gate switch is included so `--agent-part-plan-gate=off`
+			//! turns the phases off with it -- the phases are defined by the
+			//! plan, so running them without the gate that produces one has no
+			//! meaning.  Deliberately does NOT consult mBuildPhaseGaveUp: a
+			//! give-up disarms the REFUSALS (the two Check* helpers test it
+			//! themselves), while attribution, the transitions and
+			//! finish/reopen keep working, so a session that gave up still
+			//! yields the census facts the design measures.
+			bool BuildProtocolActive_() const
+			{
+				return mBuildProtocolEnabled && mBuildPlanGateEnabled;
+			}
+
+			//----------------------------------------------------------------
+			// ARC 83 sec 4.1 (2026-08-13): the SESSION MODE's private half.
+			// The contract, the surfaces and the residual risk are in the
+			// public block above SessionMode.
+			//----------------------------------------------------------------
+
+			//! Did the document this session was constructed over carry no
+			//! form?  CONST: decided once, from the document actually loaded,
+			//! and never recomputed -- inferring it later from chunk counts
+			//! would see a build in progress and answer the wrong question.
+			const bool mStartedEmpty;
+			//! Building iff mStartedEmpty at construction; moved to Refining,
+			//! once and permanently, by NoteFinalAnswer.
+			AgentSessionMode mSessionMode;
+
+			//! The construction-time classifier behind mStartedEmpty.  Reads
+			//! `job`'s RETAINED CST head; a Job with no retained head (or a
+			//! null Job) reads "started empty", the fail-safe direction that
+			//! matches both launch switches' TRUE defaults.  A static taking
+			//! the constructor's own parameter so the initializer list can
+			//! run it without depending on member-initialization order.
+			static bool JobStartedEmpty_( IJobPriv* job );
+
+			//! Does `doc` carry at least one form-bearing top-level chunk?
+			//! The ONE walk both SceneTextCarriesForm (which parses first) and
+			//! JobStartedEmpty_ (which reads the retained head directly) run,
+			//! so the public classifier and the constructor can never disagree
+			//! about what "empty" means.
+			static bool DocumentCarriesForm_( const RISE::Cst::Document& doc );
+
+			//! IS COMPULSION IN FORCE?  The ONE predicate every construction
+			//! gate adds to its own armed-ness test -- the build-plan gate
+			//! (BuildPlanGateArmed_) and every RefuseForPhase_ arm.  It is
+			//! DELIBERATELY not folded into BuildProtocolActive_: that
+			//! predicate also governs attribution, the phase transitions and
+			//! finish/reopen, all of which keep running in REFINING because
+			//! the census still wants them and no user is refused by them.
+			bool ConstructionCompulsionActive_() const
+			{
+				return mSessionMode == AgentSessionMode::Building;
+			}
+
+			//! Record `name` (kind `kind`) as created under the ACTIVE element.
+			//! A no-op outside the Pieces phase, with the protocol off, or on an
+			//! empty name -- so a chunk created in the PLAN phase, or by a
+			//! session with the machinery off, stays UNATTRIBUTED and therefore
+			//! freely editable forever.
+			void AttributeChunkToActiveElement_( const std::string& name, const std::string& kind );
+
+			//! The attribution entry for `chunk`, or nullptr when it has none.
+			const ChunkAttribution_* FindChunkAttribution_( const std::string& chunk ) const;
+
+			//----------------------------------------------------------------
+			// 87 STEP 5 (2026-08-18): THE ELEMENT ROOT NODE.
+			//
+			// LAZY, AT THE ELEMENT'S FIRST OBJECT -- not eager at the window
+			// and not at placement time.  The three candidates and why this
+			// one:
+			//
+			//  * AT PLACEMENT is ruled out by DOCUMENT ORDER, not by taste.
+			//    `parent` is declare-before-use and `Job::ApplyCstInsertChunk`
+			//    APPENDS every Object-tier chunk at the document END (Job.cpp,
+			//    "INSERT POSITION"), so a root minted after the element's
+			//    objects lands BELOW them and every `parent` line pointing at
+			//    it is a forward reference the derive refuses.  It also gives
+			//    the outliner nothing to show for the whole build, and gives
+			//    an element that is never placed no grouping at all -- and
+			//    place_element is optional, so that is the common case, not
+			//    the corner.
+			//  * EAGER AT THE WINDOW would make `file_build_plan` -- today a
+			//    pure planning call -- mutate the document and bump the head,
+			//    and would leave one empty container per element that built
+			//    nothing.
+			//  * AT THE FIRST OBJECT gives the outliner a real tree from the
+			//    first shape onward (which is what 87 step 4 built the tree
+			//    for), guarantees the ordering by construction (the root is
+			//    inserted immediately before its first child, and both append
+			//    at the end), and mints nothing for an element that produces
+			//    no object at all.
+			//
+			// Returns the root's name in `outRoot` on success.  On failure
+			// `outWhyNot` carries a caller-facing clause and NOTHING is
+			// parented -- the insert still proceeds, unparented, because a
+			// harness convenience must never cost the model its geometry.
+			bool EnsureElementRootChunk_( const std::string& element,
+			                              std::string& outRoot,
+			                              std::string& outWhyNot );
+
+			//! The ONE definition of when InsertChunk auto-parents a chunk to the
+			//! active element's root (87 step 5).  InsertChunk applies exactly this;
+			//! populate_scene's pre-check asks it too, so the size check sees the
+			//! parent the chunk will really land with.
+			bool InsertAutoParentActive_() const;
+			bool InsertWouldAutoParent_( const std::string& role, const std::string& name,
+			                             const std::string& existingParent,
+			                             std::string* outRootName ) const;
+
+			//! Re-entrancy guard for EnsureElementRootChunk_'s own InsertChunk
+			//! call: the root is itself a `standard_object`, so without this
+			//! the auto-parent hook would try to give it a parent.
+			bool mCreatingElementRoot = false;
+
+			//! Does `chunk` (a live document chunk of role `role`) reach the
+			//! element root by walking `parent` links in the LIVE object
+			//! manager?  This is what `place_element` reports on: an object
+			//! recorded against the element whose ancestry does NOT reach the
+			//! root is not moved by the root's transform, and is named.
+			bool ObjectReachesElementRoot_( const std::string& object,
+			                                const std::string& root ) const;
+
+			//! 87 STEP 5: which of the `csg_object` chunk `chunkText`'s operands
+			//! does `headText` currently show parented to the ACTIVE element's
+			//! root?  Empty for every other chunk kind, outside an element
+			//! window, and when no root exists.
+			//!
+			//! `Job::AddCSGObject` REFUSES a parented operand -- "an operand's
+			//! transform is interpreted in this csg_object's frame, not the
+			//! world's.  Parent the csg_object instead" -- and an operand is an
+			//! ordinary `standard_object` declared BEFORE the composite, so it
+			//! was already auto-parented by the time the composite arrives.
+			//! The insert therefore has to detach them and parent the COMPOSITE
+			//! instead, which is exactly what that message prescribes.
+			//!
+			//! IT IS A PLAN, NOT AN EDIT, AND THAT IS THE POINT.  Two callers
+			//! need the same answer at two different times: the E1
+			//! non-sampling-emitter gate, which DERIVES a candidate document
+			//! and would otherwise derive one with parented operands -- i.e. a
+			//! document that cannot derive at all, leaving the gate silently
+			//! blind on exactly the chunk kind it exists for -- and the
+			//! auto-parent arm, which applies the detach for real once every
+			//! gate has passed.  A refused insert must still leave the document
+			//! byte-identical, so the gate gets a computed head and never a
+			//! mutated one.
+			std::vector<std::string> PlanElementRootOperandDetach_( const std::string& headText,
+			                                                        const std::string& chunkText ) const;
+
+			//! `headText` with `parent none` written onto each named
+			//! `standard_object` -- the candidate head PlanElementRootOperandDetach_'s
+			//! first caller judges.  Pure; touches no document.
+			static std::string HeadTextWithOperandsDetached_( const std::string& headText,
+			                                                  const std::vector<std::string>& detach );
+
+			//! S1 fix-round (2026-08-11): DID THIS CALL LAND?  The ONE
+			//! predicate every attribution hook below keys off, and the reason
+			//! it exists is that `applied` is the WRONG question to ask here.
+			//!
+			//! The `diagnosed` outcome (rawCode 3) reports `applied == false`
+			//! -- deliberately, and that stays true on the wire: the full
+			//! re-derive emitted diagnostics, so a caller gating on
+			//! `applied == true` must not proceed.  But the Document WAS
+			//! mutated and the live managers WERE replaced: the chunk really
+			//! is in the head.  Keying ATTRIBUTION off `applied` therefore
+			//! (a) left a diagnosed insert unattributed -- breaking the
+			//! design's "while element E is active, every chunk created
+			//! belongs to E" invariant and hiding the chunk from
+			//! finish_element and the census -- and (b) left a diagnosed
+			//! remove's attribution behind, a stale entry that can only refuse
+			//! a LATER edit on behalf of a chunk that no longer exists.
+			//!
+			//! A TEMPLATE rather than three overloads so the five hook sites
+			//! cannot drift apart again (exactly one of the five was correct
+			//! before this round); every result type it is instantiated with
+			//! -- AgentChunkResult, AgentPatchResult, AgentRemoveBatchResult
+			//! -- carries the same {applied, status} pair with the same
+			//! contract.  This changes NOTHING about what `applied` means:
+			//! it is the attribution trigger only.
+			template< typename ResultT >
+			static bool ResultMutatedDocument_( const ResultT& r )
+			{
+				return r.applied || r.status == "diagnosed";
+			}
+
+			//! S1: attributes a chunk a creating verb actually LANDED, on
+			//! whatever return path that verb takes.  A destructor-time hook for
+			//! the same reason BuildPlanGiveUpFold_ is one -- InsertChunk has
+			//! eleven returns and two of them commit, so a hook at each is a
+			//! hook that a twelfth return will silently miss.
+			//!
+			//! ResultMutatedDocument_ is the ONLY condition (S1 fix-round
+			//! 2026-08-11: it was `applied`, which missed `diagnosed`): a
+			//! STAGED insert (External authority) has not created anything yet,
+			//! so it is not attributed here -- SceneEditController::ResolveProposal
+			//! is where a staged chunk becomes real, and it runs on the OWNER's
+			//! action, in a phase this session may no longer be in.  Attributing
+			//! at stage time would record a chunk that may never exist; the
+			//! honest reading is that an approved-later chunk carries no
+			//! element, which makes it freely editable -- the safe direction
+			//! (see the never-refuse-on-unattributed rule).
+			struct AttributeOnApply_
+			{
+				AgentSession&           session;
+				const AgentChunkResult& result;
+				~AttributeOnApply_()
+				{
+					if( ResultMutatedDocument_( result ) )
+						session.AttributeChunkToActiveElement_( result.name, result.kind );
+				}
+			};
+
+			//! S1: the same hook for the ONE editing verb that can CREATE a
+			//! chunk -- propose_patch's value splice (see
+			//! DescribeBuildPlanGeometryDeltaForPatch for the mechanism).  The
+			//! caller fills `name`/`kind` from that delta before the patch runs;
+			//! an empty `name` (the overwhelming common case: an ordinary param
+			//! edit) makes this a no-op.  Attributing the SPLICED chunk closes
+			//! the hole a patch-only builder would otherwise open -- geometry in
+			//! the document that belongs to no element and is therefore exempt
+			//! from every window rule.
+			struct AttributePatchOnApply_
+			{
+				AgentSession&           session;
+				const AgentPatchResult& result;
+				std::string             name;
+				std::string             kind;
+				~AttributePatchOnApply_()
+				{
+					// S1 fix-round (2026-08-11): the SHARED landed-predicate,
+					// not `applied` -- a diagnosed splice put the chunk in the
+					// document just as surely as a clean one did.
+					if( ResultMutatedDocument_( result ) && !name.empty() )
+						session.AttributeChunkToActiveElement_( name, kind );
+				}
+			};
+
+			//! S1: forget `chunk`'s attribution.  Called when a remove actually
+			//! LANDS: the chunk is gone, so an attribution naming it would only
+			//! be able to refuse a LATER, unrelated chunk that happens to reuse
+			//! the name -- and would refuse it on behalf of an element that
+			//! never created it.  A no-op for a chunk that has none.
+			void DropChunkAttribution_( const std::string& chunk );
+
+			//! S1: the remove-side sibling of AttributeOnApply_, on the same
+			//! destructor-time contract and for the same many-returns reason,
+			//! and (S1 fix-round 2026-08-11) on the same shared landed-predicate:
+			//! a diagnosed remove DID erase the chunk, so leaving its
+			//! attribution behind would refuse a later, unrelated edit on
+			//! behalf of an element that no longer owns anything by that name.
+			struct DropAttributionOnRemove_
+			{
+				AgentSession&           session;
+				const AgentChunkResult& result;
+				~DropAttributionOnRemove_()
+				{
+					if( ResultMutatedDocument_( result ) )
+						session.DropChunkAttribution_( result.name );
+				}
+			};
+
+			//! S1: the BATCH remove's sibling.  remove_chunks is ALL-OR-NOTHING,
+			//! so one landed-verdict covers every target it names.
+			struct DropAttributionOnRemoveBatch_
+			{
+				AgentSession&                 session;
+				const AgentRemoveBatchResult& result;
+				~DropAttributionOnRemoveBatch_()
+				{
+					if( !ResultMutatedDocument_( result ) ) return;
+					for( std::size_t i = 0; i < result.targetResults.size(); ++i )
+						session.DropChunkAttribution_( result.targetResults[i].name );
+				}
+			};
+
+			//! True for the chunk kinds whose edits are allowed in EVERY phase
+			//! regardless of attribution -- registry categories Light, Camera,
+			//! Film, Rasterizer, RasterizerOutput and (S1 fix-round 2026-08-11)
+			//! Material and Painter (design sec 2.3).  The governing rule is
+			//! ATTRIBUTE EVERYTHING, REFUSE ONLY ON FORM-BEARING CHUNKS -- see
+			//! the definition for why sharing a material or a painter across
+			//! two elements is ordinary authoring, not an edge case.  The
+			//! REGISTRY is the classifier, the same rule
+			//! ChunkTextCreatesGeometry_ follows, so a light kind added later
+			//! is exempt with no edit here.
+			static bool KindIsPhaseExemptCategory_( const std::string& kind );
+
+			//! The shared refusal/cap/give-up body for BOTH phase refusals.
+			//! `body` is the middle of the message -- the part that differs
+			//! between a cross-element edit and a compose-phase creation.
+			//! Returns "" when the phase machinery is off, when it has already
+			//! given up, or when this call IS the give-up (in which case
+			//! `*outGiveUpNotice`, when non-null, receives the factual notice
+			//! the caller folds into its own result, exactly as
+			//! CheckBuildPlanGate_ does); otherwise returns the whole refusal.
+			std::string RefuseForPhase_( const char* verb, const std::string& body,
+			                             std::string* outGiveUpNotice );
+
+			//! Would this EDIT reach into another element's window?  "" when the
+			//! edit is allowed: the protocol is off or gave up, the session is
+			//! not in the Pieces phase, `target` is empty (a kind-addressed
+			//! singleton -- film, rasterizer, the sole camera), the target chunk
+			//! has NO attribution (pre-existing content, or created in the Plan
+			//! phase), it is attributed to the ACTIVE element, or its kind is
+			//! phase-exempt.  Otherwise the refusal, naming the active element
+			//! and finish_element.
+			std::string CheckElementWindowForEdit_( const char* verb, const std::string& target,
+			                                        std::string* outGiveUpNotice );
+
+			//! Is CREATING geometry refused right now?  "" unless the session is
+			//! in the Compose phase; there, the refusal naming reopen_element.
+			//! Call it ONLY once the caller has established that this call really
+			//! does create geometry -- the same precondition CheckBuildPlanGate_
+			//! carries, for the same reason (a call refused for being malformed
+			//! must not also burn a phase refusal).
+			std::string CheckComposePhaseForCreate_( const char* verb, std::string* outGiveUpNotice );
+
+			//! Arc 80 (2026-08-12): the DELETE arm of the compose-phase rules
+			//! -- is REMOVING this chunk refused because the compose phase
+			//! places rather than destroys?  "" unless ALL of: the protocol
+			//! is on and has not given up, the session is in the Compose
+			//! phase, and `target` names a FORM-BEARING chunk
+			//! (KindIsFormBearing_).  Otherwise the refusal, naming
+			//! reopen_element.  Shares RefuseForPhase_'s counter, cap and
+			//! give-up with the other three arms, so a model can never be
+			//! stranded.
+			//!
+			//! WHY IT EXISTS: arc 79 sec 8.2 measured a compose phase that
+			//! removed all 31 objects, re-inserted them twice, removed 18
+			//! more and rebuilt with primitives -- 80 of 82 hand-built SDF
+			//! parts destroyed by their own author, every operation clean and
+			//! deliberate.  Compose is for placing.
+			//!
+			//! TAKES THE WHOLE TARGET LIST, and refuses the WHOLE CALL when
+			//! ANY target is form-bearing -- `remove_chunks` is all-or-nothing
+			//! everywhere else in this file (its cross-element arm, its
+			//! authority gate, its engine apply), and a policy refusal that
+			//! tore down the non-form-bearing half of a batch would leave a
+			//! scene the model never asked for.  The refusal text says so
+			//! outright, and names which targets triggered it, so the model
+			//! knows exactly what happened to the rest.  `remove_chunk` passes
+			//! a one-element list.
+			//!
+			//! `kinds` is PARALLEL to `targets` (same size; an empty entry
+			//! means "no kind constraint", exactly like `RemoveChunk`'s own
+			//! `kind` parameter) -- P1-1 fix round (2026-08-13): threaded
+			//! through so `TargetIsFormBearing_`'s Document resolution can
+			//! narrow by kind the SAME WAY the real remove resolver
+			//! (`Job.cpp`'s `CstResolveRemoveTarget_`) does, so the gate's
+			//! verdict and the delete's target can never diverge on a
+			//! cross-category name collision.  `remove_chunk` passes the
+			//! caller's one `kind`; `remove_chunks` has no per-target kind at
+			//! all (its engine call always passes `nullptr` per target --
+			//! "bare names only"), so it passes an all-empty parallel vector.
+			std::string CheckComposePhaseForRemove_( const char* verb,
+			                                         const std::vector<std::string>& targets,
+			                                         const std::vector<std::string>& kinds,
+			                                         std::string* outGiveUpNotice );
+
+			//! Arc 80: true for the FORM-BEARING registry categories --
+			//! Geometry and Object.  The exact complement, within what a
+			//! model authors, of KindIsPhaseExemptCategory_ above: lights,
+			//! cameras, film, rasterizers, rasterizer outputs, materials and
+			//! painters are NOT form-bearing and stay removable in compose,
+			//! per the governing "ATTRIBUTE EVERYTHING, REFUSE ONLY ON
+			//! FORM-BEARING CHUNKS" rule (arc 78 sec 2.3).  The REGISTRY is
+			//! the classifier, so a geometry kind added later is covered with
+			//! no edit here.
+			static bool KindIsFormBearing_( const std::string& kind );
+
+			//! Arc 80, extended by the arc 80 postscript (2026-08-13, light-
+			//! object exemption) and its P1-1 fix round (2026-08-13): does
+			//! `target` name a form-bearing chunk?  `kind` is the caller's
+			//! OPTIONAL kind constraint ("" = none, exactly `RemoveChunk`'s
+			//! own `kind` parameter) -- REQUIRED so this resolves the
+			//! Document the SAME WAY the real remove resolver does; see (2)
+			//! below for why an unthreaded kind is a correctness bug, not
+			//! just an imprecision.  Answers from three sources, in order:
+			//!  (1) the session's own chunk-to-element attribution (which
+			//!      records the KIND of every chunk created in an element
+			//!      window) -- a recorded form-bearing kind is FINAL, no
+			//!      light-object override, so element-attributed form stays
+			//!      protected even if emissive;
+			//!  (2) for an UNATTRIBUTED name, a READ of the retained CST head
+			//!      (`mJob->GetCstDocument()` -- the document already parsed
+			//!      once at load, not a re-parse), resolved via
+			//!      `RISE::Cst::DocFindByNameAnyRole` with the SAME
+			//!      (name, kind) arguments `Job.cpp`'s `CstResolveRemoveTarget_`
+			//!      passes to it for the real remove -- RISE chunk names are
+			//!      unique only PER CATEGORY (a separate `GenericManager` per
+			//!      category; the insert-time collision check is per-kind+
+			//!      name), so a `uniformcolor_painter` and a `standard_object`
+			//!      can legally share a name, and resolving by first-match-
+			//!      any-category (the pre-fix behaviour) could silently
+			//!      classify the WRONG chunk.  A chunk whose descriptor
+			//!      category is neither Geometry nor Object is never form-
+			//!      bearing (fixes the rect_light / shape_light "shadow
+			//!      trap" -- their Light-category CST chunk expands into a
+			//!      same-named live OBJECT, which (3) below would otherwise
+			//!      find and refuse); an Object-category chunk is form-
+			//!      bearing UNLESS it is a LIGHT-OBJECT (a luminaire material
+			//!      wrapping no other material -- see the light-object rule
+			//!      at TargetIsFormBearing_'s definition, cpp, and the arc 80
+			//!      postscript in docs/agentic-redesign/80-composition-arc.md
+			//!      sec 4); a Geometry-category chunk is form-bearing UNLESS
+			//!      every Document chunk that references it is itself a
+			//!      light-object Object chunk (zero references stays form-
+			//!      bearing -- a decided conservative bound, not an
+			//!      oversight).  When the resolver reports AMBIGUITY (more
+			//!      than one Document chunk shares the name, and `kind` does
+			//!      not narrow to a single match), this function is
+			//!      CONSERVATIVE rather than falling through to (3):  every
+			//!      same-named Document chunk is classified, and the target
+			//!      is form-bearing if ANY of them is a non-exempt Geometry/
+			//!      Object chunk -- the real remove will itself refuse the
+			//!      same ambiguity honestly, or act on the one kind-narrowed
+			//!      match, but this gate must never UNDER-protect just
+			//!      because the name happens to collide;
+			//!  (3) the DEFENSIVE FALLBACK for a name the Document does not
+			//!      carry at all (or no Document at all): the live scene's
+			//!      object and geometry managers (the same caller-thread
+			//!      manager reads ElementWorldBounds_ and QueryObjectAt
+			//!      already do).
+			//! An unresolvable name returns false, i.e. it is never refused --
+			//! under-refusing is the correct direction of error for a phase
+			//! rule.  `outWhat` receives a short factual noun for the refusal
+			//! text ("the geometry chunk `sdf_geometry`", "an object in the
+			//! scene").
+			bool TargetIsFormBearing_( const std::string& target, const std::string& kind,
+			                           std::string& outWhat ) const;
+
+			//! S2 (2026-08-11): the THIRD arm of the phase refusals (design
+			//! sec 4) -- is HAND-AUTHORING this geometry chunk refused because
+			//! the active element has no chunk of its own yet?  "" unless ALL
+			//! of: the protocol is on and has not given up, the session is in
+			//! the Pieces phase, the host installed a text completer (a path
+			//! that does not exist cannot be forced), this call is not
+			//! BuildElement's own insertion, and the active element has NO
+			//! chunk recorded against it.  Otherwise the refusal, naming
+			//! `build_element`.  Shares RefuseForPhase_'s counter, cap and
+			//! give-up with the other two arms.
+			//!
+			//! Call it ONLY once the caller has established that this call
+			//! really does create geometry -- the same precondition the other
+			//! two arms carry, for the same reason.
+			std::string CheckFirstGeometryThroughCleanRoom_( const char* verb,
+			                                                 std::string* outGiveUpNotice );
+
+			//! Arc 81 (2026-08-12): the FOURTH arm of the phase refusals --
+			//! is HAND-AUTHORING this light chunk refused because
+			//! `light_scene` has not run yet?  "" unless ALL of: the protocol
+			//! is on and has not given up, the session is in the COMPOSE
+			//! phase, the host installed a text completer (a path that does
+			//! not exist cannot be forced), this call is not LightScene's own
+			//! insertion, and LightScene has not reached the provider in this
+			//! session.  Otherwise the refusal, naming `light_scene`.  Shares
+			//! RefuseForPhase_'s counter, cap and give-up with the other three
+			//! arms, so a model can never be stranded, and dies with
+			//! `--agent-build-protocol=off` like all of them.
+			//!
+			//! THE SEAM, stated because getting it wrong would break a
+			//! shipped rule.  Arc 78 sec 2.3 DELIBERATELY allows lights during
+			//! element windows -- a model that cannot light a part cannot see
+			//! it -- so this arm returns "" outside the COMPOSE phase and
+			//! never reaches back into PIECES.  And those pieces-phase lights
+			//! must NOT disarm it: the condition is "has light_scene run",
+			//! not "does the scene have lights", so a scene that entered
+			//! compose already carrying four element-window work lights still
+			//! gets its lighting designed in a clean room.
+			//!
+			//! Call it ONLY once the caller has established that this call
+			//! really does create a LIGHT chunk -- the same precondition the
+			//! other three arms carry, for the same reason.
+			std::string CheckFirstLightThroughCleanRoom_( const char* verb,
+			                                              std::string* outGiveUpNotice );
+
+			//! Arc 81: true iff `chunkText` parses to at least one top-level
+			//! chunk whose registry descriptor is ChunkCategory::Light -- the
+			//! exact sibling of ChunkTextCreatesGeometry_, registry-classified
+			//! for the same reason, so a light kind added later is covered
+			//! with no edit here.  Deliberately does NOT try to detect a
+			//! hand-authored MESH light (an emissive material bound to an
+			//! object): that is a material plus a geometry plus an object, no
+			//! one of which is a light chunk, and a gate that guessed at the
+			//! combination would refuse ordinary material authoring.  The gate
+			//! therefore covers the light CHUNK kinds and says so.
+			static bool ChunkTextCreatesLight_( const std::string& chunkText,
+			                                    std::string* outKind = nullptr,
+			                                    std::string* outName = nullptr );
+
+			//! Arc 81: true while LightScene is submitting its own extracted
+			//! chunks through InsertChunks.  Consulted by BOTH the arm above
+			//! (so the mechanism cannot refuse the verb it names) and by
+			//! CheckComposePhaseForCreate_ -- a lighting pass that returns an
+			//! emissive quad legitimately creates geometry, and the compose
+			//! phase's creation ban exists to stop a model REPLACING form, not
+			//! to stop the clean room adding a light source.  Set by an RAII
+			//! guard around the ONE InsertChunks call, exactly like
+			//! BuildElementInsertGuard_.
+			bool mInLightSceneInsert = false;
+			struct LightSceneInsertGuard_
+			{
+				AgentSession& session;
+				explicit LightSceneInsertGuard_( AgentSession& s ) : session( s )
+				{
+					session.mInLightSceneInsert = true;
+				}
+				~LightSceneInsertGuard_() { session.mInLightSceneInsert = false; }
+			};
+
+			//! Arc 81 spend cap: LightScene calls that actually reached the
+			//! completer this session.  Capability and schema refusals never
+			//! count.  See kLightSceneMaxPerSession.
+			int mLightSceneCalls = 0;
+
+			//! Arc 81: has `light_scene` reached the provider in this session?
+			//! This -- not "does the scene have lights", and not "did anything
+			//! land" -- is what lifts the compose-phase light refusal.  A pass
+			//! whose chunks were all rejected still lifts it: refusing hand
+			//! authoring after the clean room has had its one turn would
+			//! strand exactly the session whose builder failed.
+			bool mLightSceneRan = false;
+
+			//! Condition N (DESIGN_DIM_HERO_LIGHT): the last `light_scene` solo
+			//! audit's per-light measurements, keyed by light name.  Written
+			//! ONLY by RecordLightSoloMeasurements (see its doc for the seam,
+			//! the replace-not-merge rule and the thread-safety argument); read
+			//! ONLY by the design-note carriers, which pass a const pointer to
+			//! it into the shared scan.
+			//!
+			//! LIFETIME is the session's.  Nothing prunes it when a light chunk
+			//! is deleted -- an orphaned entry is harmless, because the validity
+			//! check looks the light's chunk up in the CURRENT document and a
+			//! name that no longer resolves simply fails to match, so the entry
+			//! can never speak.  Bounded by construction: an audit replaces the
+			//! whole map and measures at most kLightSceneMaxSolos lights, with a
+			//! defensive cap in the writer besides.
+			AgentLightSoloMeasurementMap mLightSoloMeasurements;
+
+			//! Arc 81, arc 83 slices 2 and 5: the SCENE FACTS a clean-room
+			//! prompt opens with -- the session's imagined subject/mood, the
+			//! arc-80 inventory, the camera, the world bounds and the lights
+			//! that already exist.  Shared by BOTH lighting prompts (the
+			//! enumeration and the build) and by `environment_scene`'s single
+			//! prompt, so no two of them can drift about what the scene is.
+			//! (`frame_scene` deliberately does NOT use it: its inventory is
+			//! printed at a far larger line cap and its camera is shown as the
+			//! chunk's own text rather than as a resolved pose -- see
+			//! ComposeFramingPrompt_.)
+			//!
+			//! WHY THE LIGHTS BELONG HERE EVEN FOR THE ENVIRONMENT PASS: a
+			//! `hosek_wilkie_skylight` in that list IS the scene's sky, and
+			//! the environment prompt's dome half turns on whether one exists.
+			//!
+			//! `inventoryWhen` says WHEN the inventory was measured; it is a
+			//! parameter rather than a literal purely so every call site can
+			//! pass its own honest phrase -- nothing mutates the scene between
+			//! the two completions a lighting call spends, so the one
+			//! measurement stays accurate for both, and a false clause in a
+			//! model-facing payload is the class arc 79 sec 8.1 records the
+			//! cost of.
+			void AppendSceneFacts_( std::string& p,
+			                        const std::string& inventoryText,
+			                        const char* inventoryWhen ) const;
+
+			//! Arc 83 slice 2: compose the SOURCE ENUMERATION prompt
+			//! host-side -- the scene facts above, the caller's
+			//! (already length-capped) notes, the source budget stated as a
+			//! number, and the output instruction.  It asks WHAT IN THIS
+			//! WORLD PHYSICALLY EMITS LIGHT -- things, not instruments -- and
+			//! writes no scene text at all: it carries NO palette, since
+			//! nothing it returns is a chunk, and no advice about how many
+			//! lights or what kind, only the FACT that every real scenario is
+			//! lit by the sun/sky, an opening, a fixture, or something that
+			//! itself glows.  Naming a renderer light kind is forbidden here
+			//! by rule -- see the owner's design note above LightScene's
+			//! declaration for why the question, not the loop, was slice 1's
+			//! defect.
+			std::string ComposeLightSourceEnumerationPrompt_( const std::string& inventoryText,
+			                                                  const std::string& notes ) const;
+
+			//! Arc 81, rebuilt for arc 83 slice 2: compose the WHOLE build
+			//! prompt host-side -- the enumerated `sources` verbatim, the
+			//! scene facts, the light palette with its registry grammar (area
+			//! light FIRST and with the one complete worked example -- see
+			//! kLightPalette's doc for why the three zero-area kinds carry
+			//! none, and why ambient_light is absent), the caller's notes,
+			//! and the output instruction.  Asks for the chunks of EVERY
+			//! source in `sources`, all in ONE answer -- there is no
+			//! one-light-per-answer cap here; that rule belonged to slice 1's
+			//! per-intent loop and does not survive it.  `rejectionText`
+			//! empty builds the FIRST prompt; non-empty builds the ONE repair
+			//! retry's, which is the first plus the exact rejection text and
+			//! a request for the corrected set whole -- ComposeBuilderPrompt_'s
+			//! contract, unchanged.
+			std::string ComposeLightingPrompt_( const std::string& inventoryText,
+			                                    const std::string& notes,
+			                                    const std::string& rejectionText,
+			                                    const std::vector<std::string>& sources ) const;
+
+			//! Arc 81: fill LightScene's `contributions` / `soloableLightCount`
+			//! / `soloedCount` / `allLightsMeanLuma` by SOLOING each light --
+			//! one small real render per light plus one all-lights reference,
+			//! affordable only because `light_scene` runs once per scene rather
+			//! than once per render.  Capped at kLightSceneMaxSolos, with the
+			//! cap stated in the report rather than shown as a short list; a
+			//! rasterizer that cannot solo (light solo is a path-tracing
+			//! mechanism -- see RasterizerSupportsLightSolo) costs exactly ONE
+			//! failed render, after which every remaining entry carries the
+			//! same stated reason and no further render is spent.  Every pass
+			//! is internal and ephemeral: none reaches the GUI's Last Render
+			//! pane or the session image cache.
+			void MeasureLightContributions_( AgentLightSceneResult& out );
+
+			//----------------------------------------------------------------
+			// ARC 82 (2026-08-12): the population pass's private surface.
+			//----------------------------------------------------------------
+
+			//! Arc 82, WIDENED BY ARC 83 SLICE 5 (2026-08-13): the FIFTH arm of
+			//! the phase refusals -- is this full-scene RENDER refused because
+			//! the BEFORE-YOU-JUDGE CHECKLIST is not yet satisfied?  "" unless
+			//! ALL of: the protocol is on and has not given up, the session is
+			//! in the COMPOSE phase, the host installed a text completer (a
+			//! path that does not exist cannot be forced; and both checklist
+			//! verbs answer with a capability statement there), this arm has
+			//! not already fired once in this session, and at least ONE of the
+			//! checklist verbs has not reached the provider.  Otherwise the
+			//! refusal, naming exactly the ones that have NOT run.
+			//!
+			//! THE CHECKLIST, in the order the refusal names them:
+			//!   * `populate_scene` (arc 82) -- a composed scene is POPULATED
+			//!     before it is judged.
+			//!   * `environment_scene` (arc 83 slice 5) -- and it has a
+			//!     SURROUND before it is judged; the measured defect is a
+			//!     finished scene standing against a black void.
+			//! Each item lifts INDEPENDENTLY and PERMANENTLY the moment its own
+			//! verb reaches the provider, for mPopulateSceneRan's reason
+			//! exactly (a pass whose chunks were all rejected still had its
+			//! turn).  A refusal names only the outstanding ones, so a model
+			//! that has run one of the two is never told to run it again.
+			//!
+			//! WHY A RENDER AND NOT AN EDIT.  Population and the surround both
+			//! belong BEFORE you judge the picture, and the first compose
+			//! render is the exact moment the model turns to judging it.
+			//! Neither has a "creating edit" to hang a gate on the way the
+			//! light arm hangs on a light chunk: a repeat is an ordinary
+			//! standard_object indistinguishable from a first placement, and
+			//! an environment is a painter plus a rasterizer parameter.
+			//!
+			//! IT IS STILL EXACTLY ONE REFUSAL FOR THE WHOLE CHECKLIST
+			//! (mPopulateRenderGateFired), not one per item, and that is
+			//! load-bearing rather than lenient: 82 sec 6 measured that a
+			//! repeat-refusable render arm burns the whole shared 3-refusal
+			//! budget by itself and trips the give-up, silently disarming
+			//! every sibling gate.  A refused EDIT leaves a model able to look
+			//! at its scene; a refused RENDER leaves it blind.  One refusal
+			//! names whatever is outstanding; every render after that proceeds
+			//! whether or not either verb ran.  The direct consequence for the
+			//! shared budget is unchanged: this arm consumes AT MOST ONE of
+			//! the three refusals, however many checklist items are added to
+			//! it.
+			//!
+			//! THE SEAM: PIECES-phase renders are untouched (the arm returns
+			//! "" outside COMPOSE) -- arc 78 sec 2.3's rule that a model must
+			//! always be able to look at the part it is building.
+			std::string CheckBuildChecklistBeforeComposeRender_( const char* verb,
+			                                                     std::string* outGiveUpNotice );
+
+			//! Arc 82: everything Render(params) did before the population gate
+			//! was put in front of it -- the target resolve, the scene-target
+			//! snapshot, RenderCore_, and the four payload facts.  Split out so
+			//! the gate has ONE place to stand and every existing return path
+			//! below it is untouched.  Never call this to serve a model's
+			//! `render`: call Render(params), which is the gated entry.
+			AgentRenderResult RenderInner_( const AgentRenderParams& params );
+
+			//! Arc 82: has the render arm above already refused once in this
+			//! session?  See its doc for why one is the whole budget.
+			bool mPopulateRenderGateFired = false;
+
+			//! ARC 82 HAS NO `mInPopulateSceneInsert` GUARD, and the absence
+			//! is a checked fact rather than an oversight.  Its two siblings
+			//! need one because what they insert is exactly what some phase
+			//! arm refuses: BuildElement inserts GEOMETRY (the build-plan
+			//! gate, the compose-creation ban and the first-geometry arm all
+			//! fire on it) and LightScene can insert an emissive quad's
+			//! geometry.  PopulateScene inserts `standard_object` and nothing
+			//! else, and NO arm on the insert path fires on an Object chunk:
+			//! the build-plan gate, CheckComposePhaseForCreate_ and
+			//! CheckFirstGeometryThroughCleanRoom_ are each entered only
+			//! behind ChunkTextCreatesGeometry_ (ChunkCategory::Geometry
+			//! only), and the arc-81 arm only behind ChunkTextCreatesLight_.
+			//! Placing objects is precisely what arc 80 says the compose
+			//! phase is FOR.  Its own gate is on RENDER, which this verb
+			//! never calls.  If a future arm is ever made to fire on Object
+			//! creation, this is the note that says a guard became necessary.
+
+			//! Arc 82 spend cap: PopulateScene calls that actually reached
+			//! the completer this session.  Capability and schema refusals
+			//! never count.  See kPopulateSceneMaxPerSession.
+			int mPopulateSceneCalls = 0;
+
+			//! Arc 82: has `populate_scene` reached the provider in this
+			//! session?  This -- not "did anything land" -- is what lifts the
+			//! compose-phase render refusal, for mLightSceneRan's reason
+			//! exactly: a pass whose chunks were all rejected still had its
+			//! turn, and a failed pass must not strand the session.
+			bool mPopulateSceneRan = false;
+
+			//! Number of InsertChunks calls made on this session (diagnostic).
+			unsigned int mInsertChunksCalls = 0;
+
+			//! Arc 82: ONE geometry the scene already has, and the objects
+			//! currently drawn with it -- the RAW MATERIAL a repeat is made
+			//! from.  Read from the retained CST's `standard_object` chunks,
+			//! because what a repeat must name is a chunk NAME.
+			struct PopulationStock_
+			{
+				std::string              geometry;
+				//! Distinct material names used with this geometry, in first
+				//! appearance order.
+				std::vector<std::string> materials;
+				//! The objects drawn with it, in document order.
+				std::vector<std::string> users;
+			};
+
+			//! Arc 82: collect PopulationStock_ for this scene, in descending
+			//! user count then ascending geometry name.  Empty when the scene
+			//! has no `standard_object` naming both a geometry and a material
+			//! -- the one state in which a population pass has nothing to
+			//! work from, and PopulateScene does nothing rather than send a
+			//! prompt with no raw material in it.
+			std::vector<PopulationStock_> CollectPopulationStock_() const;
+
+			//! Arc 82: the ONE worked example, built from THIS scene's own
+			//! stock so it is literally insertable here rather than merely
+			//! illustrative -- a `standard_object` naming an existing
+			//! geometry and material at a different position, orientation and
+			//! scale.  `outName` receives the object name it uses, chosen not
+			//! to collide with anything currently in the scene.  Returns ""
+			//! when `stock` is empty.
+			std::string ComposePopulationExample_( const std::vector<PopulationStock_>& stock,
+			                                       std::string& outName ) const;
+
+			//! Arc 82: compose the ENTIRE population prompt host-side -- the
+			//! session's imagined subject, the arc-80 inventory, the camera,
+			//! the world bounds, the stock listing, the standard_object
+			//! grammar from the registry, the ONE worked example, the
+			//! caller's (already length-capped) notes and the output
+			//! instruction.  `rejectionText` empty builds the FIRST prompt;
+			//! non-empty builds the ONE repair retry's.  It states the
+			//! CONTRACT (standard_object only, existing geometry and material
+			//! only) and never a count: object count is what this arc
+			//! measures, so a number here would manufacture the result.
+			std::string ComposePopulationPrompt_( const std::string& inventoryText,
+			                                      const std::vector<PopulationStock_>& stock,
+			                                      const std::string& example,
+			                                      const std::string& notes,
+			                                      const std::string& rejectionText ) const;
+
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 5 (2026-08-13): the environment pass's private
+			// surface.
+			//----------------------------------------------------------------
+
+			//! Arc 83 slice 5: true while EnvironmentScene is submitting its
+			//! own extracted chunks through InsertChunks, and while it is
+			//! patching the rasterizer to bind the dome.  Consulted by the
+			//! rasterizer-allowlist gate's PATCH arm for the same reason
+			//! LightSceneInsertGuard_ exists: the binding IS this verb's
+			//! mechanism, and a gate that refused it would refuse the verb it
+			//! names.  Set by an RAII guard, exactly like its two siblings.
+			bool mInEnvironmentSceneEdit = false;
+			struct EnvironmentSceneEditGuard_
+			{
+				AgentSession& session;
+				explicit EnvironmentSceneEditGuard_( AgentSession& s ) : session( s )
+				{
+					session.mInEnvironmentSceneEdit = true;
+				}
+				~EnvironmentSceneEditGuard_() { session.mInEnvironmentSceneEdit = false; }
+			};
+
+			//! Arc 83 slice 5 spend cap: EnvironmentScene calls that actually
+			//! reached the completer this session.  Capability and schema
+			//! refusals never count.  See kEnvironmentSceneMaxPerSession.
+			int mEnvironmentSceneCalls = 0;
+
+			//! Arc 83 slice 5: has `environment_scene` reached the provider in
+			//! this session?  This -- not "did anything land" -- is one of the
+			//! two items the compose-render checklist reads, for
+			//! mPopulateSceneRan's reason exactly.
+			bool mEnvironmentSceneRan = false;
+
+			//! Arc 83 slice 5: compose the ENTIRE environment prompt
+			//! host-side -- the shared scene facts, WHAT ENVIRONMENT STATE
+			//! ALREADY EXISTS, the environment palette with the registry's own
+			//! grammar and its literal worked examples, the stated binding
+			//! contract, the caller's (already length-capped) notes and the
+			//! output instruction.  `rejectionText` empty builds the FIRST
+			//! prompt; non-empty builds the ONE repair retry's.
+			//! `hosekPresent` suppresses the dome half entirely -- see the
+			//! hosek decision above EnvironmentScene's declaration.
+			std::string ComposeEnvironmentPrompt_( const std::string& inventoryText,
+			                                       const std::string& notes,
+			                                       const std::string& rejectionText,
+			                                       bool hosekPresent ) const;
+
+			//! Arc 83 slice 5: render ONE small frame and read its tonal
+			//! distribution, for the before/after headline.  Internal and
+			//! ephemeral -- it reaches neither the GUI's Last Render pane nor
+			//! the session image cache, exactly like the inventory's identity
+			//! pass and light_scene's solos.  Never throws and never refuses:
+			//! a failed render or decode comes back `measured == false` with
+			//! the reason stated.
+			AgentFrameToneReading MeasureFrameTone_();
+
+			//! Arc 83 slice 5: does the retained CST carry a
+			//! `hosek_wilkie_skylight` chunk?  The one question the dome half
+			//! of this verb is gated on -- asked of the DOCUMENT rather than
+			//! of the live scene, because what collides is the chunk's
+			//! SetGlobalRadianceMap call on the next derive, not the map
+			//! currently installed.
+			bool DocumentCarriesHosekSkylight_() const;
+
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 6 (2026-08-13): the framing pass's private surface.
+			//----------------------------------------------------------------
+
+			//! Arc 83 slice 6: the SIXTH arm of the phase refusals -- is this
+			//! CAMERA-authoring edit refused because `frame_scene` has not run
+			//! yet?  "" unless ALL of: the protocol is on and has not given
+			//! up, the session is in the COMPOSE phase, the host installed a
+			//! text completer (a path that does not exist cannot be forced),
+			//! this call is not FrameScene's own edit, this arm has not
+			//! already fired once in this session, and FrameScene has not
+			//! reached the provider.  Otherwise the refusal, naming
+			//! `frame_scene`.  Shares RefuseForPhase_'s counter, cap and
+			//! give-up with the other five arms, and dies with
+			//! `--agent-build-protocol=off` like all of them.
+			//!
+			//! IT FIRES AT MOST ONCE PER SESSION (mCameraEditGateFired), which
+			//! is the RENDER arm's rule rather than the light arm's, and the
+			//! reason is 82 sec 6's measured finding applied in advance: a
+			//! repeat-refusable arm on a call a model makes CONSTANTLY burns
+			//! the whole shared 3-refusal budget by itself and trips the
+			//! give-up, silently disarming its siblings (arc 80's delete ban,
+			//! arc 81's light gate, arc 82's render gate) for the rest of the
+			//! session.  Every measured run patches the camera repeatedly, so
+			//! this arm is exactly that hazard; one refusal names the verb and
+			//! every camera edit after it proceeds.
+			//!
+			//! THE SEAM: PIECES-phase camera edits are untouched (the arm
+			//! returns "" outside COMPOSE) -- arc 78 sec 2.3 exempts the whole
+			//! Camera category from element-window rules precisely because a
+			//! model that cannot re-aim at the part it is building cannot see
+			//! it, and this must not take that back.
+			std::string CheckFrameSceneBeforeCameraEdit_( const char* verb,
+			                                              std::string* outGiveUpNotice );
+
+			//! Arc 83 slice 6: has the camera arm above already refused once in
+			//! this session?  See its doc for why one is the whole budget.
+			bool mCameraEditGateFired = false;
+
+			//! Arc 83 slice 6: true while FrameScene is applying its own camera
+			//! edit (the patch batch, or the insert-then-remove of a
+			//! replacement).  The arm above consults it so the mechanism cannot
+			//! refuse the verb it names -- LightSceneInsertGuard_'s rule.
+			bool mInFrameSceneEdit = false;
+			struct FrameSceneEditGuard_
+			{
+				AgentSession& session;
+				explicit FrameSceneEditGuard_( AgentSession& s ) : session( s )
+				{
+					session.mInFrameSceneEdit = true;
+				}
+				~FrameSceneEditGuard_() { session.mInFrameSceneEdit = false; }
+			};
+
+			//! Arc 83 slice 6 spend cap: FrameScene calls that actually reached
+			//! the completer this session.  See kFrameSceneMaxPerSession.
+			int mFrameSceneCalls = 0;
+
+			//! Arc 83 slice 6: has `frame_scene` reached the provider in this
+			//! session?  This -- not "did the camera change" -- is what lifts
+			//! the camera arm, for mLightSceneRan's reason exactly.
+			bool mFrameSceneRan = false;
+
+			//! GPT slice item 1 (2026-08-24): the COVERAGE-DELTA note's
+			//! baseline -- the set of object names that were ONSCREEN in
+			//! FrameScene's own "after" measurement (the SAME
+			//! AgentSceneInventoryResult it already computes -- see
+			//! FrameScene's "THE AFTER MEASUREMENT" block; this is stamped
+			//! from THAT SAME `inv`, never a second identity pass).  Reused
+			//! rather than invented: this workstream exists because a later
+			//! camera patch can crop an object frame_scene had framed in,
+			//! and the model kept claiming success (trajectory
+			//! 20260824T224346Z: frame_scene covered the cat, a later
+			//! fov-42 patch cropped it, the render response said nothing,
+			//! and the model reported success anyway).
+			//!
+			//! REVIEW-ROUND C, P3-b: this and its two sibling flags below
+			//! carry NO document/head-version identity of their own -- they
+			//! implicitly trust that `mJob` (this session's ONE document,
+			//! for its whole lifetime) never gets silently replaced with a
+			//! DIFFERENT scene out from under them.  That invariant holds
+			//! today by construction: grep confirms `mJob` is assigned
+			//! exactly once, at WrapJob/construction, and cleared to
+			//! nullptr only on teardown -- AgentSession is 1:1 with the
+			//! document it was built against ("session-per-document-
+			//! load"), never repointed at a second one.  If a future slice
+			//! ever adds a "load a different document into this SAME
+			//! session" verb, that verb MUST also reset these three fields
+			//! (mirroring EmitSession's reset on ChatTrajectoryRecorder's
+			//! dedup baseline for exactly the same reason) -- otherwise a
+			//! stale baseline from the OLD document could name an object
+			//! that means nothing in the new one, or worse, coincidentally
+			//! collide with a same-named object in it.
+			std::set<std::string> mFrameSceneBaselineCovered;
+			//! True once mFrameSceneBaselineCovered has been stamped by a
+			//! successful FrameScene "after" measurement.  Distinct from
+			//! mFrameSceneRan: that flag lifts unrelated camera-arm gates
+			//! the moment the call REACHES the provider, even on a
+			//! provider failure with nothing applied; this one requires
+			//! the after-measurement to have actually SUCCEEDED, which is
+			//! the one thing the coverage delta below is allowed to trust.
+			bool mFrameSceneHasCoverageBaseline = false;
+			//! True from the moment a propose_patch/propose_patches call
+			//! APPLIES a framing-relevant pinhole_camera/thinlens_camera
+			//! parameter (see CameraFramingParamNames_) while
+			//! mFrameSceneHasCoverageBaseline is true, until the NEXT
+			//! qualifying render (ApplyVisibilityCensus_'s own gate --
+			//! production/draft, ok, not isolate) reports on it and clears
+			//! this flag -- ONE note per triggering patch, not one on
+			//! every render thereafter.  A patch that does not apply
+			//! (staged, rejected, conflict) never sets this: the camera
+			//! has not actually moved in the live document.
+			bool mCameraFramingPatchedSinceBaseline = false;
+
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 6 POSTSCRIPT (2026-08-14): frame_scene now runs
+			// AFTER populate_scene.  The owner's dragon+wizard run (journal
+			// Postscript 2, trajectory 20260814T125800Z) measured the gap
+			// this closes: frame_scene ran against a 21-object scene,
+			// populate_scene then added 11 more, and the final inventory
+			// showed 10 of 28 objects off-frame because the reframe was
+			// judged against a scene that no longer existed.  Framing frames
+			// what the scene CONTAINS, so it has to run after the pass that
+			// changes what the scene contains.
+			//----------------------------------------------------------------
+
+			//! Is `frame_scene` itself refused because `populate_scene` has
+			//! not reached the provider yet?  "" unless ALL of: the protocol
+			//! is on and has not given up, the session is in the COMPOSE
+			//! phase (frame_scene carries no phase check of its own, so this
+			//! arm supplies the one that matters -- population is a
+			//! COMPOSE-phase concept and this ordering rule exists only
+			//! where that concept applies), the host installed a text
+			//! completer (a path that does not exist cannot be forced; and
+			//! FrameScene's own capability check already returned its own
+			//! message before this arm is ever reached, so this repeats that
+			//! test only for the same defense-in-depth reason every sibling
+			//! arm does), this arm has not already fired once in this
+			//! session, and `populate_scene` has not reached the provider.
+			//! Otherwise the refusal, naming `populate_scene`.  Shares
+			//! RefuseForPhase_'s counter, cap and give-up with the other six
+			//! arms, and dies with `--agent-build-protocol=off` like all of
+			//! them.
+			//!
+			//! IT FIRES AT MOST ONCE PER SESSION (mFrameScenePopulateGateFired),
+			//! the render arm's and the camera arm's rule rather than the
+			//! light arm's: `frame_scene` is itself a repeat-refusable call
+			//! (up to kFrameSceneMaxPerSession passes), so a repeat-refusable
+			//! arm here would burn the whole shared 3-refusal budget on
+			//! attempt after attempt and trip the give-up, silently
+			//! disarming every sibling gate for the rest of the session.
+			//!
+			//! THE PING-PONG WORST CASE this bounds: a camera edit is refused
+			//! toward frame_scene (CheckFrameSceneBeforeCameraEdit_, one
+			//! slot), frame_scene is then refused toward populate_scene (this
+			//! arm, one slot), populate_scene runs, and frame_scene succeeds.
+			//! Two slots spent, not a loop -- both arms are one-shot, so a
+			//! third attempt at either proceeds regardless of what ran.  Left
+			//! as the accepted bound rather than engineered around further.
+			//!
+			//! THE SEAM: a frame_scene call outside COMPOSE (unusual, since
+			//! nothing routes one there, but the verb itself carries no
+			//! phase check) is untouched -- population is a compose-phase
+			//! concept and this ordering rule exists only where that concept
+			//! applies.
+			std::string CheckPopulateSceneBeforeFrameScene_( const char* verb,
+			                                                 std::string* outGiveUpNotice );
+
+			//! Arc 83 slice 6 postscript: has the ordering arm above already
+			//! refused once in this session?  See its doc for why one is the
+			//! whole budget.
+			bool mFrameScenePopulateGateFired = false;
+
+			//! Arc 83 slice 6: true iff `chunkText` parses to at least one
+			//! top-level chunk whose keyword is one of the five CAMERA chunk
+			//! kinds -- the exact sibling of ChunkTextCreatesLight_, and a
+			//! NAMED LIST rather than a category test for the reason
+			//! IsZeroAreaLightKeyword_ is one: `ChunkCategory::Camera` also
+			//! covers the non-camera helper chunks `scene_options` (world
+			//! scale) and `camera_defaults` (thinlens fallbacks), and refusing
+			//! a scene-unit declaration on behalf of a framing verb would be
+			//! exactly the over-refusal arc 78 names as this design family's
+			//! worst failure mode.
+			static bool ChunkTextCreatesCamera_( const std::string& chunkText,
+			                                     std::string* outKind = nullptr,
+			                                     std::string* outName = nullptr );
+
+			//! Arc 83 slice 6: does this `propose_patch` aim at a CAMERA
+			//! chunk?  The patch-path sibling of ChunkTextCreatesCamera_ --
+			//! needed because the ordinary way a model re-aims is a PATCH, not
+			//! an insert, so a camera gate wired only to the insert verbs
+			//! would be a gate with a one-word bypass.
+			//!
+			//! Two routes, in order.  (1) THE KIND the caller supplied:
+			//! `camera` -- the generic suffix constraint
+			//! RISE::Cst::RoleMatchesKindConstraint honours, and the ONLY way
+			//! an UNNAMED camera is addressable at all -- or any of the five
+			//! camera keywords.  (2) THE DOCUMENT, for a bare `target`:
+			//! resolved through RISE::Cst::DocFindByNameAnyRole, the same
+			//! resolver the real patch uses, with the caller's own `kind`
+			//! passed through so this cannot narrow differently from the edit
+			//! it is gating.  An unresolvable target is NOT a camera -- under-
+			//! refusing is the correct direction of error for a phase rule.
+			bool PatchTargetIsCamera_( const std::string& target, const std::string& kind ) const;
+
+			//! GPT slice item 1 (2026-08-24): PatchTargetIsCamera_'s resolver,
+			//! but returning the RESOLVED chunk keyword instead of a bool --
+			//! the coverage-delta hook needs to know WHICH camera kind a
+			//! bare-`target` or `kind:"camera"` patch actually landed on,
+			//! since the framing-relevant parameter SET differs by kind
+			//! (pinhole's `fov` vs thinlens's `focal_length`/`sensor_size`).
+			//! Same two routes as PatchTargetIsCamera_, same resolver
+			//! (RISE::Cst::DocFindByNameAnyRole) -- so this cannot resolve
+			//! differently from the edit it is describing.  Returns "" when
+			//! `kind` already names a specific non-generic keyword (the
+			//! caller already knows it) or when nothing resolves to a
+			//! camera at all.
+			std::string ResolveCameraPatchKind_( const std::string& target, const std::string& kind ) const;
+
+			//! GPT slice item 1: ProposePatch's real body, renamed so the
+			//! public entry point can wrap it with
+			//! NoteCameraFramingPatchIfQualifying_ without threading that
+			//! call through every one of this function's early-return
+			//! branches (bans, confirmations, phase refusals, the several
+			//! chunk-resolution routes) -- the wrapper sees the ONE
+			//! `AgentPatchResult` every route eventually produces, so it
+			//! cannot miss a route or double-count one.  Byte-identical
+			//! behaviour to before this split; see ProposePatch's own doc
+			//! comment for everything this does.
+			//! Batched agent edits (2026-10-16): `deferIndex` != kNoDeferIndex
+			//! lets a batch caller (ProposePatches) DEFER the commit: once every
+			//! gate has passed, the edit is queued on mEditBatch instead of
+			//! committed, and the result -- written into the batch's output
+			//! slot `deferIndex` -- is completed by FlushEditBatch_.  The
+			//! returned value is then a placeholder the caller must not read.
+			AgentPatchResult ProposePatchImpl_( const AgentSetPatch& patch,
+			                                    std::size_t deferIndex = kNoDeferIndex );
+
+			//! Batched agent edits (2026-10-16): InsertChunk's real body, with
+			//! the same `deferIndex` contract as ProposePatchImpl_ (InsertChunks
+			//! is the batch caller).  InsertChunk itself never defers.
+			AgentChunkResult InsertChunkImpl_( const std::string& chunkText,
+			                                   const RISE::Cst::CstHeadVersion* baseOrNull,
+			                                   std::size_t deferIndex );
+
+			//! Batched agent edits (2026-10-16): "do not defer" sentinel.
+			static const std::size_t kNoDeferIndex = static_cast<std::size_t>( -1 );
+
+			//! Batched agent edits (2026-10-16): one DEFERRED element of an
+			//! InsertChunks / ProposePatches batch -- everything the single
+			//! verb's commit tail needs, captured at the moment the element
+			//! passed its gates.  The notices are the single verb's
+			//! destructor-time folds (BuildPlanGiveUpFold_ x2, the auto-parent
+			//! notice), moved here so they are folded AFTER the commit result
+			//! exists, in the single verb's own order.
+			struct PendingBatchEdit_
+			{
+				bool                 isInsert = false;
+				std::size_t          outIndex = 0;
+				CstBatchEdit         edit;              //!< what the Job sees
+				std::string          applyText;         //!< insert: the (possibly auto-parented) chunk text
+				AgentSetPatch        patch;             //!< patch: the element as submitted
+				bool                 haveOrphanPreDoc = false;
+				RISE::Cst::Document  orphanPreDoc;      //!< patch: the preview immediately BEFORE it
+				RISE::Cst::Document  orphanPostDoc;     //!< patch: the preview immediately AFTER it (shares NodeIds)
+				std::string          autoParentNotice;  //!< insert only
+				std::string          s1Notice;
+				std::string          g2Notice;
+				std::string          attrName;          //!< patch: AttributePatchOnApply_'s name/kind
+				std::string          attrKind;
+			};
+
+			//! Batched agent edits (2026-10-16): the batch an InsertChunks /
+			//! ProposePatches call has open.  Exactly one output vector is set.
+			struct EditBatchCollector_
+			{
+				std::vector<AgentChunkResult>*  chunkOut = nullptr;
+				std::vector<AgentPatchResult>*  patchOut = nullptr;
+				std::vector<PendingBatchEdit_>  pending;
+				bool                            flushedAny = false;
+				//! The INCREMENTAL preview (review P2-E): a persistent copy of
+				//! the head as of `previewBase`, with every deferred element
+				//! applied as it was deferred; `previewText` caches its
+				//! serialization for `previewTextFor` pending elements.
+				bool                            havePreview = false;
+				RISE::Cst::Document             previewDoc;
+				RISE::Cst::CstHeadVersion       previewBase;
+				std::size_t                     previewTextFor = static_cast<std::size_t>( -1 );
+				std::string                     previewText;
+			};
+
+			//! Batched agent edits (2026-10-16): COMMIT every deferred element
+			//! of the open batch -- ONE SceneEditController::ApplyAgentEditBatch
+			//! (live) / Job::ApplyCstEditBatch (headless) call, i.e. ONE full
+			//! re-derive, instead of one per element (a lone element goes
+			//! through the single verb, byte-identical to before) -- then
+			//! complete each element's result with the single verb's own commit
+			//! tail (result mapping, issue/rejection analysis, orphan check,
+			//! attribution, notice folds, camera-framing note).  Called at the
+			//! end of the batch AND before any IMMEDIATE commit made while
+			//! elements are still deferred (a nested InsertChunk / ProposePatch
+			//! from inside a gate -- e.g. the element-root mint), so document
+			//! order always equals call order.  No-op when nothing is deferred.
+			void FlushEditBatch_();
+			static bool LaterLandedPatchWritesSameSlot_( const std::vector<PendingBatchEdit_>& pend,
+			                                             const std::vector<char>& landed, std::size_t k );
+
+			//! Batched agent edits (2026-10-16): the incremental preview
+			//! (review P2-E).  EnsureBatchPreview_ makes sure the open batch's
+			//! preview exists and is based on the CURRENT head (rebuilding it
+			//! -- head copy + every pending element -- only if a co-editor
+			//! moved the head); ApplyToBatchPreview_ applies one element to it;
+			//! DeferBatchEdit_ queues an element, capturing a patch's orphan
+			//! pre/post documents from the preview around its application.
+			bool EnsureBatchPreview_() const;
+			void ApplyToBatchPreview_( const CstBatchEdit& edit ) const;
+			void DeferBatchEdit_( PendingBatchEdit_& pe );
+
+			EditBatchCollector_* mEditBatch = nullptr;
+			std::function<void( std::size_t )> mForTestAfterDeferHook;
+
+			//! GPT slice item 1: the coverage-delta note's camera-patch
+			//! detector, called after EVERY ProposePatch call (applied or
+			//! not) via the ProposePatch wrapper.  A no-op unless ALL of:
+			//! the patch actually APPLIED (a staged/rejected/conflicted
+			//! patch never moved the live camera), a coverage baseline
+			//! exists (mFrameSceneHasCoverageBaseline -- frame_scene ran
+			//! and its after-measurement succeeded), the patch resolves to
+			//! pinhole_camera or thinlens_camera specifically (scope: the
+			//! two kinds FrameScene itself ever produces), and `patch.param`
+			//! is one of that kind's framing-relevant parameters (location /
+			//! lookat / up / orientation / pitch / roll / yaw / theta / phi /
+			//! target_orientation, plus `fov` for pinhole or `focal_length` /
+			//! `sensor_size` for thinlens -- see CameraFramingParamNames_).
+			//! Sets mCameraFramingPatchedSinceBaseline; never clears it --
+			//! only ApplyVisibilityCensus_'s own render-side consumption
+			//! does that, so several qualifying patches in a row before the
+			//! next render still yield exactly one note off the CURRENT
+			//! state, not one per patch.
+			void NoteCameraFramingPatchIfQualifying_( const AgentSetPatch& patch, bool applied );
+
+			//! GPT slice item 1: the framing-relevant parameter names for
+			//! ONE camera kind, cross-checked against that kind's REAL
+			//! descriptor (DescriptorForKeyword) so a future rename of any
+			//! of these can only ever narrow this set, never silently keep
+			//! comparing against a name the parser no longer accepts.
+			//! Deliberately EXCLUDES exposure / scanning_rate / pixel_rate /
+			//! iso / fstop (pinhole) and every thinlens DOF/tilt-shift
+			//! parameter (aperture_*, focus_distance, tilt_*, shift_*) --
+			//! those change how the frame LOOKS, not WHAT IS IN IT, which is
+			//! the one fact this note is honest about measuring.
+			static const std::set<std::string>& CameraFramingParamNames_( const std::string& cameraKind );
+
+			//! GPT slice item 1: builds `rr.coverageDeltaNote` from the
+			//! ALREADY-COMPUTED inventory `inv` (ApplyVisibilityCensus_'s own
+			//! `inv` -- never a second identity pass) against
+			//! mFrameSceneBaselineCovered.  Called only when
+			//! mCameraFramingPatchedSinceBaseline is true; always clears
+			//! that flag (one-shot) regardless of whether anything dropped.
+			void ApplyCoverageDeltaNote_( const AgentSceneInventoryResult& inv, AgentRenderResult& rr );
+
+			//! Arc 83 slice 6: the scene's ACTIVE camera chunk, as the
+			//! retained CST holds it.  `outKeyword` is its chunk keyword,
+			//! `outName` its `name` parameter (EMPTY when it declares none --
+			//! an unnamed camera is addressed by KIND, which is what
+			//! ProposePatch's own resolver does), and `outText` the chunk
+			//! serialized back to text so the framing prompt can show it
+			//! VERBATIM.  False when the document carries no camera chunk at
+			//! all.
+			//!
+			//! RESOLUTION ORDER, and why: the live active camera NAME first
+			//! (Job::GetActiveCameraName, the name the render actually uses),
+			//! then -- when no chunk carries that name, which is the ordinary
+			//! case for an unnamed camera whose derived name is "default" --
+			//! the LAST camera chunk in the document, because Scene::AddCamera
+			//! is "last added wins" and a full derive walks the document in
+			//! order.
+			bool FindActiveCameraChunk_( std::string& outKeyword, std::string& outName,
+			                             std::string& outText ) const;
+
+			//! Arc 83 slice 6: compose the ENTIRE framing prompt host-side --
+			//! the subject, the FULL inventory (see kFrameSceneInventoryLines),
+			//! the current camera chunk verbatim and its resolved pose, the
+			//! world bounds, the last render's tonal fact if there is one, the
+			//! camera palette with the registry's own grammar, the caller's
+			//! (already length-capped) notes and the output instruction.
+			//! `rejectionText` empty builds the FIRST prompt; non-empty builds
+			//! the ONE repair retry's.
+			std::string ComposeFramingPrompt_( const std::string& inventoryText,
+			                                   const std::string& cameraText,
+			                                   const std::string& toneText,
+			                                   const std::string& notes,
+			                                   const std::string& rejectionText ) const;
+
+			//! S2: true while BuildElement is submitting its own extracted
+			//! chunks through InsertChunks.  The clean-room refusal above
+			//! consults it so the mechanism cannot refuse the very verb it
+			//! names.  Set by an RAII guard around the ONE InsertChunks call
+			//! (BuildElement is synchronous and single-caller, like every
+			//! other session method), so it is always cleared on every path.
+			bool mInBuildElementInsert = false;
+			struct BuildElementInsertGuard_
+			{
+				AgentSession& session;
+				explicit BuildElementInsertGuard_( AgentSession& s ) : session( s )
+				{
+					session.mInBuildElementInsert = true;
+				}
+				~BuildElementInsertGuard_() { session.mInBuildElementInsert = false; }
+			};
+
+			//! S2: the host-installed text-completion capability; default-
+			//! constructed (supported=false, no callable) at every existing
+			//! construction site, so a host that never installs one gets a
+			//! session where `build_element` states its absence and the
+			//! clean-room refusal never arms.
+			AgentTextCompleter mTextCompleter;
+
+			//! S2 spend cap: BuildElement calls that actually reached the
+			//! completer this session.  Capability, phase and schema refusals
+			//! never count.  See kBuildElementMaxPerSession.
+			int mBuildElementCalls = 0;
+
+			//! S2: compose the ENTIRE builder prompt host-side for `element`
+			//! -- the grammar, the element's declared pieces, its filed
+			//! outline, the height budget, the local-frame contract verbatim,
+			//! the caller's (already length-capped) notes, and the output
+			//! instruction.  The model never supplies raw prompt text; it
+			//! supplies the element name, the height and the notes only.
+			//! `rejectionText` empty builds the FIRST prompt; non-empty builds
+			//! the ONE repair retry's prompt, which is the first prompt plus
+			//! the exact rejection text and a request for the corrected set
+			//! whole.
+			std::string ComposeBuilderPrompt_( const std::string& element,
+			                                   double height,
+			                                   const std::string& notes,
+			                                   const std::string& rejectionText ) const;
+
+			//! S2: the element's realised WORLD bounding box -- the union over
+			//! the standard_objects attributed to it that the scene's object
+			//! manager can resolve (the SAME ResolveIsolateObject filter
+			//! FinishElement's isolate pick uses, so "renderable" means one
+			//! thing in this class).  Returns false when it has none.
+			bool ElementWorldBounds_( const std::string& element,
+			                          double outMin[3], double outMax[3] ) const;
+
+			//----------------------------------------------------------------
+			// Arc 77 Phase 2 (2026-08-11): the scene-target state.  Lives in
+			// the SAME single-threaded-caller bucket as the build-plan state
+			// above (see the class contract) and is honoured across the async
+			// render boundary by the SAME snapshot discipline, not by a new
+			// lock: RenderAsync copies the shared_ptr on the submitting
+			// thread and the worker reads only its copy.
+			//----------------------------------------------------------------
+
+			//! The host-installed image-generation capability; default-
+			//! constructed (supported=false, no callable) at every existing
+			//! construction site.
+			AgentImageGenerator mImageGenerator;
+			//! The imagined whole-scene target, or null.  Written ONLY by
+			//! ImagineScene, and always by REPLACING the pointer -- the
+			//! pointee is never mutated after publication, which is what
+			//! makes a held snapshot safe.
+			std::shared_ptr<const AgentSceneTarget> mSceneTarget;
+			//! ANTI-STRANDING: set when an imagine attempt fails for PROVIDER
+			//! reasons, permanently dropping the imagine half of the gate for
+			//! this session.  A schema error never sets it (it never reaches
+			//! this class), and a capability refusal never sets it (the half
+			//! was never armed on an incapable provider).
+			bool mImagineRequirementDisarmed = false;
+			//! Phase 2 review round (P2-2): calls that actually reached the
+			//! image generator this session -- the billed ones.  See the cap
+			//! block in ImagineScene for the full rationale (first read-safe
+			//! verb costing real provider money; interactive surface has no
+			//! call budget) and the proof cap-hit can never strand the gate.
+			int  mSceneImagineCalls = 0;
+
+			//! Is the imagine half of the gate in force?  Only on a provider
+			//! that can actually generate images, only while the gate itself
+			//! is enabled (so --agent-part-plan-gate=off disables BOTH halves
+			//! with no second switch), and only until a provider failure
+			//! disarms it.
+			bool ImagineRequirementActive_() const
+			{
+				return mBuildPlanGateEnabled && !mImagineRequirementDisarmed &&
+				       mImageGenerator.supported && mImageGenerator.generate != nullptr;
+			}
+
+			//! Is the gate armed?  A pure bool/int test with no parse, no
+			//! lock and no document access -- checked BEFORE the CST parse
+			//! ChunkTextCreatesGeometry_ needs, so that once the gate is
+			//! disarmed (the common case for the whole rest of a session)
+			//! every insert pays exactly nothing for it.
+			//!
+			//! Arc 77 Phase 2: the gate now has TWO satisfaction conditions
+			//! on a capable provider -- a filed plan AND an imagined scene
+			//! target -- and stays armed until BOTH hold.  The give-up flag
+			//! still disarms everything, so the 3-refusal cap bounds the
+			//! two-condition form exactly as it bounded the one-condition
+			//! form; there is no second counter and no second cap.  On a
+			//! provider with no image capability ImagineRequirementActive_
+			//! is false and this reduces, term for term, to the shipped
+			//! plan-only gate.
+			bool BuildPlanGateArmed_() const
+			{
+				// ARC 83 sec 4.1: REFINING disarms the gate outright, ahead of
+				// every other term -- so the hot call sites skip their CST
+				// parse too, and a user tweaking a finished scene is never
+				// pushed toward file_build_plan for a scene already built.
+				if( !ConstructionCompulsionActive_() ) return false;
+				if( !mBuildPlanGateEnabled || mBuildPlanGateGaveUp ) return false;
+				if( !mBuildPlanFiled ) return true;
+				return ImagineRequirementActive_() && !mSceneTarget;
+			}
+
+			//! True iff `chunkText` parses to at least one top-level chunk
+			//! whose registry descriptor is ChunkCategory::Geometry -- the
+			//! registry IS the classifier, so a geometry kind added later is
+			//! covered without touching this gate.  A chunk text that does not
+			//! parse, or carries only non-geometry chunks, is NOT
+			//! geometry-creating (the gate never fires on a call that was
+			//! going to be refused for being malformed anyway).
+			//! On a true return, `outKind`/`outName` (when non-null) receive
+			//! the FIRST geometry chunk's keyword and its bare `name` param --
+			//! so a refusal can still stamp the identity echo every other
+			//! InsertChunk guard honours.
+			static bool ChunkTextCreatesGeometry_( const std::string& chunkText,
+			                                       std::string* outKind = nullptr,
+			                                       std::string* outName = nullptr );
+
+			//! The build-plan gate check for `verb`.  Call it ONLY once the
+			//! caller has established that this call really does create
+			//! geometry.  Three outcomes:
+			//!   * gate disarmed (disabled for this session, a plan already
+			//!     filed, or it already gave up) -- returns "", touches
+			//!     nothing, `outGiveUpNotice` left UNTOUCHED.
+			//!   * gate armed and the refusal count is below
+			//!     kBuildPlanGateMaxRefusals -- REFUSES: increments the count
+			//!     and returns the full refusal message (accurately stating
+			//!     how many more calls will still be refused).
+			//!   * gate armed and the refusal count has reached the cap --
+			//!     GIVES UP: sets mBuildPlanGateGaveUp (permanently disarming
+			//!     the gate, read by BuildPlanGateArmed_) and returns "" so the
+			//!     call proceeds, but first writes a factual give-up notice to
+			//!     `*outGiveUpNotice` (when non-null) for the caller to fold
+			//!     into THIS call's own result -- the whole reason for the
+			//!     out-param is that the give-up event must be visible in the
+			//!     payload a trajectory census reads, not only in a log line.
+			std::string CheckBuildPlanGate_( const char* verb, std::string* outGiveUpNotice = nullptr );
+
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13: the ZERO-AREA
+			// LIGHT CONFIRMATION's per-session half.  The contract and the
+			// reasoning are in the public block above
+			// DescribeZeroAreaLightConfirmationRefusal; what lives here is the
+			// one thing the confirmation needs a session for -- remembering
+			// which exact requests have already been refused once, so the
+			// re-issue lands.
+			//
+			// THERE IS NO COUNTING LEFT AT ALL (2026-08-13).  The free budget
+			// of 2 that used to be read off the live document is gone -- see
+			// docs/agentic-redesign/83-staged-construction-plan.md sec 13 for
+			// the owner's reasoning.  The decision is now purely "has every
+			// fingerprint in this request already been refused once this
+			// session" -- no document snapshot, no per-request running total.
+			//
+			// WHAT A CONFIRM IS KEYED ON -- a CANONICAL CONTENT FINGERPRINT of
+			// the chunk, not its name and not a hash:
+			//
+			//     `<keyword>|<param>=<value>|<param>=<value>|...`
+			//
+			// with the params SORTED BY NAME and each value's internal
+			// whitespace collapsed to single spaces.  Three properties, each
+			// one a bug avoided:
+			//   * ROBUST TO REORDERING AND REFORMATTING.  A model that
+			//     re-issues "the same request" rarely re-emits the same bytes
+			//     -- it moves `power` above `color`, switches tabs for spaces,
+			//     re-indents.  Sorting the params and collapsing whitespace
+			//     makes all of those the same request, which is what the
+			//     confirm-once contract promises.
+			//   * NOT KEYED ON `name`.  A name-keyed confirm would let a
+			//     reflexive model land an unlimited number of zero-area lights
+			//     by renaming, and would also refuse a genuine re-issue that
+			//     the model renamed to dodge a collision.  `name` IS one of the
+			//     params in the fingerprint, so it participates -- but as
+			//     content, not as identity.
+			//   * A STRING, NOT A HASH.  The set is bounded by how many
+			//     distinct zero-area lights one session asks for (single
+			//     digits), so there is nothing to gain from hashing and a
+			//     collision -- which would silently pre-confirm a request the
+			//     model never made -- to lose.  It also reads in a debugger.
+			//----------------------------------------------------------------
+
+			//! Canonical fingerprints of every zero-area light chunk `text`
+			//! would create, in document order.  Empty when it creates none
+			//! (the common case, answered by a literal pre-filter before any
+			//! parse).
+			static std::vector<std::string> ZeroAreaLightFingerprintsForText_( const std::string& text );
+
+			//! The confirmation decision, and the ONE place the confirm set is
+			//! written.  "" when EVERY fingerprint in `fps` has already been
+			//! refused once this session, which is what makes an identical
+			//! re-issue land.  Otherwise the refusal text, and every
+			//! fingerprint in `fps` is RECORDED so the next identical request
+			//! is the one that lands.  `fps` empty is also "" -- a request
+			//! that creates no zero-area light has nothing to confirm.
+			std::string CheckZeroAreaLightConfirmation_( const std::vector<std::string>& fps );
+
+			//! The whole check for a set of chunk texts: fingerprints every
+			//! zero-area light the texts would create and calls
+			//! CheckZeroAreaLightConfirmation_ once for the lot.  "" when they
+			//! may proceed.  `outOffender`, when non-null, receives the index
+			//! of the FIRST text carrying a zero-area light, so a batch
+			//! refusal can name it the way R1c's and the ambient ban's batch
+			//! arms do.
+			std::string CheckZeroAreaLightConfirmationForTexts_( const std::vector<std::string>& texts,
+			                                                     std::size_t* outOffender = nullptr );
+
+			//! The PATCH arm -- the value-splice mechanism R1c's arm (b), the
+			//! build-plan gate's patch arm and the ambient ban's patch arm each
+			//! close for their own kinds.  Judged as a DELTA against the head:
+			//! the fingerprints charged are the ones the candidate document has
+			//! and the head does not, so editing a zero-area light that already
+			//! exists is free, confirmed or not.
+			std::string CheckZeroAreaLightConfirmationForPatch_( const std::string& headText,
+			                                                     const std::string& target,
+			                                                     const std::string& kind,
+			                                                     const std::string& param,
+			                                                     const std::string& value );
+
+			//! Requests refused once by the confirmation gate, as canonical
+			//! fingerprints.  Single-threaded-caller like every other member
+			//! in the phase / gate blocks above.  Session-lifetime: never
+			//! serialized into the Document, never persisted, and never
+			//! cleared -- a confirm is a promise that the re-issue lands, and
+			//! taking it back would make the refusal text false.
+			std::set<std::string> mZeroAreaLightConfirms;
+
 			//! Offscreen-isolation fix-round P1-A test hook -- see
 			//! ForTest_SetThrowBeforeRasterize's doc. false = disabled
 			//! (doRenderWork calls mJob->Rasterize() normally); read/set
 			//! only from doRenderWork and the test-hook setter above,
 			//! single-threaded like mDrainChunkMsForTest.
 			bool mThrowBeforeRasterizeForTest = false;
+
+			//! 2026-08-24 (the cycling close look): what finish_element showed
+			//! for an element last time, and the FORM the element had when it
+			//! did.  Keyed by element name.
+			//!
+			//! WHY IT EXISTS.  The close look picks ONE object out of an
+			//! element that may hold several, so a re-finish of an UNCHANGED
+			//! element used to return a word-for-word identical composite --
+			//! and the advisory that sends a model back for another look
+			//! ("reopen_element and adjust") therefore had a failure mode where
+			//! following it in good faith bought nothing.  It was observed:
+			//! reopen -> read_document -> finish, byte-identical document,
+			//! byte-identical result, and the object that actually needed
+			//! looking at shipped unexamined because a SIBLING object won the
+			//! pick.  With this, the second look shows the next object instead.
+			//!
+			//! SCOPE, stated because it is deliberately narrow: SESSION-LOCAL.
+			//! It is not persisted, not serialized into any wire result, and
+			//! does not survive a session restart -- a fresh session shows
+			//! every element's primary (most-authored) object again, which is
+			//! the right answer for a reader who has seen nothing yet.  The
+			//! `formDigest` covers exactly what RESETS the cycle, and the
+			//! scope is narrower than "the element's chunks" in two ways that
+			//! both matter (fix round 2026-08-24):
+			//!
+			//!   * ONLY Geometry and Object chunks are digested at all -- a
+			//!     material, painter or shader the element also owns is not
+			//!     form.
+			//!   * AND AN OBJECT CHUNK CONTRIBUTES ONLY ITS FORM-BEARING
+			//!     PARAMS.  standard_object carries `material`, `shader`,
+			//!     `modifier`, `radiance_*` and `interior_medium` on the SAME
+			//!     chunk as `geometry` and the transform, so digesting it
+			//!     whole made REASSIGNING A MATERIAL reset the cycle -- which
+			//!     is the opposite of the rule.  See
+			//!     ObjectParamIsFormBearing_ for the exact predicate: a
+			//!     reference to a Geometry / Object / Modifier is form, a
+			//!     reference to a Painter / Material / Shader / Medium is not,
+			//!     and the transform + instancing vocabulary (`position`,
+			//!     `orientation`, `quaternion`, `matrix`, `scale`, `mirror`,
+			//!     `count_u`, `count_v`, csg's `operation`) is form.
+			//!
+			//! So: editing a geometry, re-pointing an object at a different
+			//! geometry, or MOVING one resets to the primary object.
+			//! Recolouring it does not, and the next finish shows the next
+			//! object instead.
+			//!
+			//! Dispatcher-thread only, exactly like mBuildPhase / mActiveElement
+			//! beside it: written by FinishElement and read by nothing else.
+			struct ElementLookState_
+			{
+				std::string lastObject;   //!< the object the last finish showed
+				std::string formDigest;   //!< the element's form fingerprint at that finish
+			};
+			std::map<std::string, ElementLookState_> mElementLookState;
+
+			//! 2026-08-24 fix-round test hook -- see
+			//! ForTest_SetFinishElementBetweenRendersHook's doc.  Empty =
+			//! disabled (FinishElement composes straight through); read/set
+			//! only from FinishElement and that setter, single-threaded.
+			std::function<void()> mFinishElementBetweenRendersHookForTest;
 		};
 	}
 }

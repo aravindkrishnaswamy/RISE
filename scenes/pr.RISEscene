@@ -8,6 +8,11 @@ RISE ASCII SCENE 7
 #   Birthdate:      January 23, 2004                                                                        #
 #                                                                                                           #
 #############################################################################################################
+#
+# PERFORMANCE RATING NOTE: this is the scene the CLI's performance rating renders (DoPerformanceRating,
+# src/RISE/commandconsole.cpp).  From legacy-deprecation Phase 2 slice B1 (2026-10-10) on, it renders with
+# pathtracing_pel_rasterizer (max_diffuse_bounce 0) instead of the frozen pixelpel_rasterizer, so ratings
+# measured from this change onwards are NOT comparable with earlier ones.
 
 ##################################################
 # Setup a renderer
@@ -16,16 +21,14 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name			global
-	shaderop		DefaultDirectLighting
-	shaderop		DefaultReflection
-	shaderop		DefaultEmission
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				4
-	lum_samples			9
+	samples				16
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput
@@ -293,13 +296,15 @@ lambertian_material
 	reflectance			color_gold
 }
 
-ashikminshirley_anisotropicphong_material
+# Legacy phase 2 slice B2: was ashikminshirley_anisotropicphong_material; ashikmin-shirley nu 4000 nv 100 -> alphax 0.02236 alphay 0.14 (sqrt(2/(n+2))), rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				psilver
-	nu					4000
-	nv					100
 	rd					pnt_aniso_Rd
 	rs					pnt_aniso_Rs
+	alphax				0.022355
+	alphay				0.14003
+	fresnel_mode		schlick_f0
 }
 
 lambertian_luminaire_material

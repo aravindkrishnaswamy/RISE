@@ -53,6 +53,7 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
+#include "TestTempDir.h"
 
 using namespace RISE;
 
@@ -172,8 +173,7 @@ static const char* const kSharedDirectScene =
 // gets the identical treatment instead of hardcoding a fixed name.
 static std::string WriteTempPath( const char* name )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	return dir + std::to_string( (long)getpid() ) + "_" + name;
 }
@@ -2380,10 +2380,9 @@ static void RunPaneIndexedGestureTest()
 	Check( f.ctrl->OnPanePointerUp( 1, Point2( 60, 34 ) ), "pane-indexed Up accepted" );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
 	       "orbit release drains its two-pane final/polish sequence" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( kSettleMs ) );
-	const std::size_t orbitReleaseCount = f.ctrl->Sequence().size();
-	Check( orbitReleaseCount >= 4
-	    && f.ctrl->SettlesAt( orbitReleaseCount, kSettleMs ),
+	std::size_t orbitReleaseCount = 0;
+	Check( f.ctrl->WaitForSequenceQuiescence( kSettleMs, kWaitMs, orbitReleaseCount )
+	    && orbitReleaseCount >= 4,
 	       "orbit release sequence quiesces" );
 
 	// The scene camera must be untouched: pane 1's fly went to ITS
@@ -2409,10 +2408,9 @@ static void RunPaneIndexedGestureTest()
 	f.ctrl->OnPanePointerUp( 1, Point2( 12, 12 ) );
 	Check( f.ctrl->WaitForPassCount( orbitReleaseCount + 2, kWaitMs ),
 	       "pointer release sequences drain before the free-fly twin checks" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( kSettleMs ) );
-	const std::size_t releaseCount = f.ctrl->Sequence().size();
-	Check( releaseCount >= orbitReleaseCount + 2
-	    && f.ctrl->SettlesAt( releaseCount, kSettleMs ),
+	std::size_t releaseCount = 0;
+	Check( f.ctrl->WaitForSequenceQuiescence( kSettleMs, kWaitMs, releaseCount )
+	    && releaseCount >= orbitReleaseCount + 2,
 	       "pane-indexed gesture release sequences quiesce" );
 
 	// review-s3 P2 coverage: hidden-pane and free-fly-twin contracts.
@@ -4845,6 +4843,14 @@ public:
 		return mFailCommits ? 0
 			: Job::ApplyCstObjectMatrixEdit( objectName, matrix );
 	}
+	int ApplyCstParamEditOwnerRestore( const char* entityName, const char* entityKind,
+	                                   const char* role, const std::string& expectText,
+	                                   const std::string& newText,
+	                                   bool requireFullDerivability = true ) override
+	{
+		return mFailCommits ? 0
+			: Job::ApplyCstParamEditOwnerRestore( entityName, entityKind, role, expectText, newText, requireFullDerivability );
+	}
 private:
 	bool mFailCommits = true;
 };
@@ -5869,13 +5875,31 @@ static void RunBeautyVariantLiveQualityPolicyTest()
 	       "lost-End timeline live pass mints" );
 	Check( f.ctrl->WaitForVariantPassCount( 2, kWaitMs ),
 	       "timeline watchdog mints a recovery pass" );
+	// Pass-count 2 does NOT imply the recovery pass landed: while the gesture
+	// is still open (the watchdog fires at kScrubWatchdogMs = 1500 ms), the
+	// scheduler can legitimately mint a SECOND live 1-SPP quantum first --
+	// observed under full-suite CPU load, where records.back() sampled right
+	// after the count-2 wait was still the live pass.  Poll for the actual
+	// CONDITION (a final-quality non-gesture record at the tail AND the
+	// composite closed) up to the same deadline.
 	{
+		const auto deadline = std::chrono::steady_clock::now()
+			+ std::chrono::milliseconds( kWaitMs );
+		bool recovered = false;
+		while( std::chrono::steady_clock::now() < deadline ) {
+			const std::vector<RecordingController::VariantPassRecord> r =
+				f.ctrl->VariantPassRecords();
+			if( r.size() >= 2 && !r.back().liveGesture && r.back().samples == 8
+			    && !f.ctrl->Editor().IsCompositeOpen() ) { recovered = true; break; }
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
 		const std::vector<RecordingController::VariantPassRecord> records =
 			f.ctrl->VariantPassRecords();
 		Check( records.size() >= 2 && records.front().liveGesture
 		    && records.front().samples == 1,
 		       "lost-End timeline starts at live 1-SPP quality" );
-		Check( records.size() >= 2 && !records.back().liveGesture
+		Check( recovered
+		    && !records.empty() && !records.back().liveGesture
 		    && records.back().samples == 8,
 		       "MONEY: timeline watchdog restores Direct's final 8-SPP quality" );
 	}

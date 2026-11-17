@@ -195,6 +195,7 @@ namespace RISE
 				case ValueKind::Bool:       return "FALSE";
 				case ValueKind::UInt:       return "0";
 				case ValueKind::Double:     return "0.0";
+				case ValueKind::DoubleVec2: return "0 0";
 				case ValueKind::DoubleVec3: return "0 0 0";
 				case ValueKind::DoubleVec4: return "0 0 0 1";
 				case ValueKind::DoubleMat4: return "1 0 0 0  0 1 0 0  0 0 1 0  0 0 0 1";

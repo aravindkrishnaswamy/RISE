@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "../Utilities/Transformable.h"
 #include "PinholeCamera.h"
+#include <string_view>
 #include "CameraTransforms.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Interfaces/ILog.h"
@@ -225,9 +226,12 @@ IKeyframeParameter* PinholeCamera::KeyframeFromParameters( const String& name, c
 	IKeyframeParameter* p = CameraCommon::KeyframeFromParameters( name, value );
 
 	if( !p ) {
+		Scalar parsed;
+		if( !ParseStrictScalar( value, parsed ) ) return nullptr;
+		const std::string_view field( name.c_str() );
 		// Check the name and see if its something we recognize
-		if( name == "fov" ) {
-			p = new Parameter<Scalar>( value.toDouble(), FOV_ID );
+		if( field == "fov" ) {
+			p = new Parameter<Scalar>( parsed, FOV_ID );
 		} else {
 			return 0;
 		}

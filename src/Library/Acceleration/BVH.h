@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstddef>
 #include <cfloat>
 
 // Phase 3 SIMD selection.  Apple Silicon and arm64 Android (Galaxy Fold)
@@ -242,12 +243,12 @@ namespace RISE
 		//////////////////////////////////////////////////////////////////
 		unsigned int Refit()
 		{
-			Timer t; t.start();
+			const auto tStart = std::chrono::steady_clock::now();
 			if( nodes.empty() ) {
 				BuildFastFilter();  // no-op on empty
 				BuildBVH4();        // no-op on empty
-				t.stop();
-				return (unsigned int)t.getInterval();
+				const auto tEnd = std::chrono::steady_clock::now();
+				return (unsigned int)ElapsedMilliseconds(tStart, tEnd);
 			}
 
 			BoundingBox newOverall(
@@ -300,8 +301,8 @@ namespace RISE
 			BuildFastFilter();
 			BuildBVH4();
 
-			t.stop();
-			const unsigned int ms = (unsigned int)t.getInterval();
+			const auto tEnd = std::chrono::steady_clock::now();
+			const unsigned int ms = (unsigned int)ElapsedMilliseconds(tStart, tEnd);
 
 			// Tier C3: SAH-degradation log.  We don't *force* a rebuild
 			// from inside Refit (BVH doesn't own the input prim list,
@@ -771,7 +772,7 @@ namespace RISE
 		//////////////////////////////////////////////////////////////////
 		void Build( const std::vector<Element>& inputPrims )
 		{
-			Timer t; t.start();
+			const auto tStart = std::chrono::steady_clock::now();
 
 			GlobalLog()->PrintEx( eLog_Info,
 				"BVH:: Building over %u primitives (binCount=%u, maxLeafSize=%u)",
@@ -832,12 +833,12 @@ namespace RISE
 			}
 			prims.swap( reordered );
 
-			t.stop();
+			const auto tEnd = std::chrono::steady_clock::now();
 			GlobalLog()->PrintEx( eLog_Info,
 				"BVH:: Built %u nodes (%u leaves) in %u ms",
 				(unsigned)nodes.size(),
 				(unsigned)CountLeaves(),
-				(unsigned)t.getInterval() );
+				(unsigned)ElapsedMilliseconds(tStart, tEnd) );
 		}
 
 	protected:
@@ -1091,6 +1092,30 @@ namespace RISE
 		// component.  Guarantees the float box contains the true
 		// double box, so the float traversal can never reject a hit
 		// the double intersection would otherwise have caught.
+		//
+		// THIS IS TRUE FOR A FINITE, IN-RANGE double.  The cast to `float`
+		// happens FIRST, `nextafter` second -- for a `double` whose
+		// magnitude exceeds `FLT_MAX` (~3.4e38) by more than half a `float`
+		// ULP, the cast alone overflows to +-infinity (IEEE round-to-nearest;
+		// a `double` inside `(FLT_MAX, FLT_MAX*(1+2^-25))` -- within half a
+		// `float` ULP above the largest finite `float` -- instead rounds TO
+		// `FLT_MAX`, where `nextafter( FLT_MAX, FLT_MAX )` returns `FLT_MAX`
+		// itself -- the same clamped end state by a different route), and `nextafter( -infinity, -FLT_MAX )` (or
+		// the `+infinity`/`FLT_MAX` mirror) does not step 1 ULP OUTWARD from
+		// that -- it steps from an unbounded sentinel to the single nearest
+		// finite `float` in that direction, i.e. exactly `-FLT_MAX` (or
+		// `FLT_MAX`).  For `BoundingBox`'s default (unbounded) construction,
+		// whose `ll`/`ur` are +-`RISE_INFINITY` (== +-`DBL_MAX`, ~1.8e308 --
+		// see `InfinitePlaneGeometry::GenerateBoundingBox`), that is a huge
+		// INWARD snap in absolute terms (~1.8e308 collapsing to ~3.4e38),
+		// the opposite of "outward by 1 ULP".  It stays sound in practice
+		// only because no coordinate this renderer actually queries against
+		// a node box (`PointBoxDistanceF` / the ray slab test) ever
+		// approaches `FLT_MAX` in magnitude -- a box clamped to +-`FLT_MAX`
+		// still behaves as "unbounded enough" for every real scene
+		// coordinate, so the pruning guarantee below holds for the
+		// coordinates this engine handles, not as a fully general claim
+		// about arbitrary `double` inputs.
 		static inline void SetNodeBox( Node& n, const BoundingBox& b )
 		{
 			n.bboxMin[0] = std::nextafter( (float)b.ll.x, -FLT_MAX );
@@ -1275,12 +1300,31 @@ namespace RISE
 			}
 		}
 
+		// `epOverride`: nullptr (the default at every existing call site)
+		// uses the BVH's own bound `ep` — the same behaviour as before this
+		// parameter existed, for one extra pointer compare per leaf (see
+		// the end of this comment).  MEASURED 2026-09-07 on sponza_new
+		// 640x360x32 (8.3 shadow rays per camera sample, 61 M per frame),
+		// interleaved base/branch, two sessions of 3 and 4 pairs: 21.19 +-
+		// 0.35 s vs 21.48 +- 0.33 s, then 21.49 +- 0.41 s vs 21.36 +- 0.66 s
+		// -- ratios 1.014 and 0.994, both inside the +-2-3 % run-to-run
+		// spread, i.e. no measurable shadow-ray cost.  A non-null override
+		// lets a caller traverse this SAME already-built tree under a
+		// DIFFERENT TreeElementProcessor for one call, without building
+		// a second tree or duplicating this traversal — see
+		// ObjectManager::IntersectOcclusionRay, which reuses the shadow
+		// ray's BVH with a processor that drops the `DoesCastShadows()`
+		// filter.  Resolved once per leaf (outside the per-primitive
+		// loop), so the shadow-ray hot path pays one extra pointer
+		// compare per leaf, not per primitive.
 		inline bool Bvh4Leaf_IntersectionOnly(
 			const Ray& ray, Scalar dHowFar,
 			uint32_t firstPrim, uint32_t primCnt,
 			const float origin[3], const float dir[3],
-			bool bHitFrontFaces, bool bHitBackFaces ) const
+			bool bHitFrontFaces, bool bHitBackFaces,
+			const TreeElementProcessor<Element>* epOverride = nullptr ) const
 		{
+			const TreeElementProcessor<Element>& useEp = epOverride ? *epOverride : ep;
 			const uint32_t end = firstPrim + primCnt;
 			const float currentBest = (float)dHowFar;
 			for( uint32_t i = firstPrim; i < end; ++i ) {
@@ -1291,7 +1335,7 @@ namespace RISE
 						continue;
 					}
 				}
-				if( ep.RayElementIntersection_IntersectionOnly(
+				if( useEp.RayElementIntersection_IntersectionOnly(
 				        ray, dHowFar, prims[i],
 				        bHitFrontFaces, bHitBackFaces ) ) {
 					return true;
@@ -1424,9 +1468,11 @@ namespace RISE
 		}
 
 		// BVH4 traversal — any-hit (returns on first hit within dHowFar).
+		// `epOverride`: see Bvh4Leaf_IntersectionOnly above.
 		bool IntersectRay4_IntersectionOnly(
 			const Ray& ray, Scalar dHowFar,
-			bool bHitFrontFaces, bool bHitBackFaces ) const
+			bool bHitFrontFaces, bool bHitBackFaces,
+			const TreeElementProcessor<Element>* epOverride = nullptr ) const
 		{
 			float origin[3], dir[3], invDir[3];
 			PrepRayFloat( ray, origin, dir, invDir );
@@ -1459,7 +1505,8 @@ namespace RISE
 								ray, dHowFar,
 								(uint32_t)n.children[i], (uint32_t)n.primCount[i],
 								origin, dir,
-								bHitFrontFaces, bHitBackFaces ) ) {
+								bHitFrontFaces, bHitBackFaces,
+								epOverride ) ) {
 							return true;
 						}
 					} else {
@@ -1636,17 +1683,30 @@ namespace RISE
 
 		// Boolean any-hit traversal.  Returns true on first leaf hit
 		// within dHowFar.  Used by shadow-ray paths.
+		//
+		// `epOverride`: nullptr (every existing call site) uses the
+		// bound `ep` -- the same behaviour as before this parameter
+		// existed, for one pointer compare per CALL (resolved once, above
+		// the traversal).  A non-null override traverses this SAME
+		// tree under a different TreeElementProcessor for one call --
+		// see ObjectManager::IntersectOcclusionRay (geometry-presence
+		// query that must NOT honour DoesCastShadows(), unlike the
+		// shadow-ray query this method otherwise serves).
 		bool IntersectRay_IntersectionOnly(
 			const Ray& ray,
 			Scalar     dHowFar,
 			bool       bHitFrontFaces,
-			bool       bHitBackFaces ) const
+			bool       bHitBackFaces,
+			const TreeElementProcessor<Element>* epOverride = nullptr ) const
 		{
 			if( useBVH4 && !nodes4.empty() ) {
 				return IntersectRay4_IntersectionOnly( ray, dHowFar,
-				                                       bHitFrontFaces, bHitBackFaces );
+				                                       bHitFrontFaces, bHitBackFaces,
+				                                       epOverride );
 			}
 			if( nodes.empty() ) return false;
+
+			const TreeElementProcessor<Element>& useEp = epOverride ? *epOverride : ep;
 
 			const float origin[3] = {
 				(float)ray.origin.x,
@@ -1694,7 +1754,7 @@ namespace RISE
 								continue;
 							}
 						}
-						if( ep.RayElementIntersection_IntersectionOnly(
+						if( useEp.RayElementIntersection_IntersectionOnly(
 						        ray, dHowFar, prims[i],
 						        bHitFrontFaces, bHitBackFaces ) ) {
 							return true;
@@ -1714,6 +1774,492 @@ namespace RISE
 				}
 			}
 			return false;
+		}
+
+		//! BOUNDED-RADIUS CLOSEST POINT over the primitives in this tree --
+		//! the acceleration half of `IGeometry::DistanceToSurface` for the
+		//! indexed-mesh family (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2).
+		//!
+		//! `primDist( prims[i], p )` must return the EXACT unsigned distance
+		//! from `p` to that primitive.  This method adds no approximation of
+		//! its own: it only decides WHICH primitives are asked, and the
+		//! answer it returns is `min` over the ones it asked.
+		//!
+		//! WHY IT IS IDENTICAL TO BRUTE FORCE, and not merely close.  A node
+		//! is skipped only when the distance from `p` to that node's AABB is
+		//! `>= best`, and every primitive the node owns lies INSIDE that AABB,
+		//! so each of them is at least that far -- none of them could have
+		//! lowered `best`.  TWO roundings feed that box-to-point distance,
+		//! and only one of them is a hazard.  The box itself is `float`,
+		//! conservatively rounded OUTWARD by 1 ulp at build for a finite,
+		//! in-range `double` bound (`SetNodeBox`; see its own comment for
+		//! the one case -- an unbounded/overflowing bound, e.g. an infinite
+		//! plane's default `BoundingBox` -- where the cast overflows to
+		//! infinity first and the "outward by 1 ulp" framing does not
+		//! literally hold, though it stays sound for every coordinate this
+		//! engine actually queries), which can only make the box-to-point
+		//! distance SMALLER than the true one -- can only make the pruning
+		//! admit a node it could have skipped.  Sound in that direction, and
+		//! it is the only one this box ever moves in.  The QUERY POINT `p`, separately,
+		//! stays in full `Scalar` precision end to end (`PointBoxDistanceF`'s
+		//! own doc comment has the fixed history: it used to be cast down to
+		//! `float` first, which rounds to NEAREST and can move the reported
+		//! distance in EITHER direction -- including OVER-stating it enough
+		//! to wrongly prune a node whose primitive answers within `best`,
+		//! the unsound direction).  With `p` never rounded, the only
+		//! remaining approximation is the box's outward pad, which is sound.
+		//! A tie (two primitives at bit-equal distance) is the sole freedom:
+		//! brute force and this traversal may attribute the minimum to
+		//! different primitives, but the VALUE they report is the same
+		//! number.
+		//!
+		//! ORDERING.  Children are visited nearest-AABB-first (the two-child
+		//! sort below), which is what makes `best` fall quickly and the
+		//! pruning bite; a stack entry also carries the box distance it was
+		//! pushed with and is re-tested against the CURRENT `best` on pop,
+		//! since `best` may have improved after it was queued.
+		//!
+		//! THIS USES THE BVH2 `nodes` ARRAY, NOT `nodes4`.  The BVH4 SoA
+		//! exists to test four ray-vs-AABB slabs in one SIMD batch; a point
+		//! query has no ray, no slab test, and no direction to sort by --
+		//! its win is a sorted nearest-first descent, which a binary node
+		//! gives directly (sort 2) and a 4-wide node would need a partial
+		//! sort of 4 to reproduce.  `nodes` is always populated when
+		//! `nodes4` is, since the wide layout is derived from it.
+		//!
+		//! Thread-safe: `const`, reads only immutable post-build state, and
+		//! the scratch stack is `thread_local` exactly as the ray traversals'
+		//! stacks are.
+		//!
+		//! NOT RE-ENTRANT WITHIN ONE INSTANTIATION, and that is worth knowing
+		//! before writing a `primDist` that calls back into this method.  The
+		//! stack is one `thread_local` per instantiation and is `clear()`ed on
+		//! entry, so a nested call on the SAME `(Element, PrimDistFn)` pair
+		//! would wipe the outer traversal's stack.  The two shipped consumers
+		//! nest -- `ObjectManager::NearestOtherSurface` walks the TLAS and its
+		//! `primDist` reaches `TriangleMeshGeometryIndexed::DistanceToSurface`,
+		//! which walks a mesh tree -- and are safe because those are different
+		//! `Element` types AND different lambda types, hence different
+		//! instantiations with different stacks.  A future consumer that made
+		//! them the same would need a local stack instead.
+		//!
+		//! ALSO NOT RE-ENTRANT-SAFE against a `primDist` that REALIZES
+		//! deferred geometry.  `DisplacedGeometry::Realize()` is reachable
+		//! from the leaf loop (`TriangleMeshGeometryIndexed::DistanceToSurface`
+		//! forwards to a realized mesh's traversal, and `ObjectManager`'s own
+		//! `primDist` can hit a `DisplacedGeometry` object directly), and it
+		//! must never itself evaluate a painter whose expression calls
+		//! `proximity()` -- that would re-enter `NearestOtherSurface` while
+		//! the outer query is still walking the TLAS, i.e. while `pBVH` may be
+		//! mid-read and the `thread_local` stack above is still live for this
+		//! same instantiation.  Unreachable today for two independent
+		//! reasons: `ObjectManager::RealizeAllObjects()` bakes every deferred
+		//! geometry BEFORE any query is issued (`CreateBVH`/`EnsureBoxSnapshot`
+		//! both call it first), so a query-time `Realize()` call is always a
+		//! no-op early return; and `DisplacedGeometry::Realize()` carries its
+		//! own DEBUG-build assert against being invoked after the render
+		//! freeze, which would catch a future caller that skipped the bake.
+		//!
+		//! `useElementBoxTest` (default FALSE) adds a per-element point-to-box
+		//! lower-bound test at the leaf, ahead of `primDist`, skipping any
+		//! element whose box is already `>= best`.  It costs one
+		//! `ep.GetElementBoundingBox(prims[i])` call per leaf element visited --
+		//! for `TriangleMeshGeometryIndexed`'s `PointerTriangle` elements that
+		//! is three vertex reads and an `Include`; for `ObjectManager`'s
+		//! `IObjectPriv*` elements it is `Object::getBoundingBox()`, which
+		//! RE-TRANSFORMS all 8 local-box corners through the object's full
+		//! world matrix on every call (Object.cpp) -- not cached.
+		//!
+		//! `ObjectManager::NearestOtherSurface`'s TLAS walk passes TRUE, on
+		//! the reasoning that a TLAS leaf's `primDist` may recurse into a
+		//! whole mesh's own inner BVH walk, so skipping that walk for an
+		//! out-of-range object is worth one box-corner transform.  MEASURED
+		//! on Sponza (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §8.3): the pre-test
+		//! roughly HALVES the candidates evaluated per query (11.08 -> 5.62),
+		//! exactly as intended, but that reduction was **not** clearly a
+		//! wall-clock win on that scene (1.067x before the pre-test, 1.094x
+		//! after, both comfortably inside the ≤1.25x gate) -- `getBoundingBox`'s
+		//! own re-transform cost appears to be competing with the mesh
+		//! recursion it exists to skip, rather than clearly beating it.  Kept
+		//! because both measurements pass with headroom and the candidate-count
+		//! reduction is a real, useful metric in its own right, not because a
+		//! wall-clock improvement was demonstrated.
+		//!
+		//! The mesh's own traversal (`TriangleMeshGeometryIndexed::DistanceToSurface`)
+		//! never passes TRUE, on the UNTESTED reasoning that a single triangle's
+		//! `primDist` is already cheap, so the extra box test would be pure
+		//! overhead -- this has not been exercised with a timing run; treat it
+		//! as reasoning, not measurement, until someone records a real number.
+		//!
+		//! The box test is done ENTIRELY in `Scalar` against the
+		//! element's own (un-rounded, un-compacted-to-float) box -- see
+		//! `PointBoxDistance` below -- so it introduces no cross-precision
+		//! rounding hazard of its own (contrast `PointBoxDistanceF`'s node-box
+		//! test, whose float compaction is exactly what makes it conservative
+		//! at the node level; an element's box here is asked fresh every call
+		//! and is never stored, so there is nothing to round outward for).
+		//! \return TRUE and writes `outDist` when some primitive is strictly
+		//!         within `maxDist`, FALSE otherwise (`outDist` untouched).
+		//!
+		//! `outNodesVisited`/`outCandidatesVisited` (both default null, DL-33):
+		//! optional diagnostic counters, incremented rather than assigned so a
+		//! caller can accumulate over several calls.  A "node visited" is one
+		//! `Entry` popped off the stack and NOT immediately skipped by the
+		//! stale-`best` re-check (i.e. one that actually inspects its
+		//! primitives or pushes its children); a "candidate visited" is one
+		//! call to `primDist` -- after `useElementBoxTest`'s pre-test, when
+		//! enabled, has already skipped an out-of-range element -- matching
+		//! the "distance calls" this class's own doc comments and
+		//! docs/CROSS_OBJECT_PROXIMITY_DESIGN.md's §8.3 measurements
+		//! (11.08 / 5.617 candidates per query) already mean by that phrase.
+		//! Null costs one predicted-not-taken pointer compare per node/
+		//! candidate -- the same discipline as `ProximityDemand`'s relaxed
+		//! atomic checks elsewhere in this codebase -- and every existing
+		//! caller passes null implicitly via the default.
+		template< class PrimDistFn >
+		bool ClosestPointDistance(
+			const Point3& p,
+			const Scalar  maxDist,
+			PrimDistFn&&  primDist,
+			Scalar&       outDist,
+			const bool    useElementBoxTest = false,
+			std::size_t*  outNodesVisited = 0,
+			std::size_t*  outCandidatesVisited = 0 ) const
+		{
+			if( nodes.empty() || prims.empty() ) return false;
+			if( !( maxDist > Scalar( 0 ) ) ) return false;
+
+			Scalar best  = maxDist;
+			bool   found = false;
+
+			struct Entry { uint32_t node; Scalar dist; };
+			// Bounded dynamic stack, thread_local for one warm-up grow per
+			// worker -- the same discipline the ray traversals above use.
+			static thread_local std::vector<Entry> stack;
+			stack.clear();
+
+			const Scalar rootDist = PointBoxDistanceF( p, nodes[0].bboxMin, nodes[0].bboxMax );
+			if( !( rootDist < best ) ) return false;
+			stack.push_back( Entry{ 0u, rootDist } );
+
+			while( !stack.empty() ) {
+				const Entry e = stack.back();
+				stack.pop_back();
+				// `best` may have dropped since this entry was queued.
+				if( !( e.dist < best ) ) continue;
+				if( outNodesVisited ) ++( *outNodesVisited );
+
+				const Node& node = nodes[ e.node ];
+
+				if( node.primCount > 0 ) {
+					const uint32_t end = node.firstPrimOrLeft + node.primCount;
+					for( uint32_t i = node.firstPrimOrLeft; i < end; ++i ) {
+						if( useElementBoxTest ) {
+							const BoundingBox eb = ep.GetElementBoundingBox( prims[i] );
+							const Scalar ebDist = PointBoxDistance( p, eb.ll, eb.ur );
+							if( !( ebDist < best ) ) continue;
+						}
+						if( outCandidatesVisited ) ++( *outCandidatesVisited );
+						const Scalar d = primDist( prims[i], p );
+						if( d < best ) {
+							best  = d;
+							found = true;
+							// Nothing can beat an exact zero (a distance is
+							// never negative), so the rest of the tree
+							// cannot change the answer.
+							if( best <= Scalar( 0 ) ) {
+								outDist = Scalar( 0 );
+								return true;
+							}
+						}
+					}
+				} else {
+					const uint32_t leftIdx  = node.firstPrimOrLeft;
+					const uint32_t rightIdx = leftIdx + 1;
+					const Scalar dL = PointBoxDistanceF( p, nodes[leftIdx].bboxMin,  nodes[leftIdx].bboxMax );
+					const Scalar dR = PointBoxDistanceF( p, nodes[rightIdx].bboxMin, nodes[rightIdx].bboxMax );
+					// FARTHER child pushed first so the NEARER one pops
+					// first and lowers `best` before the far one is even
+					// re-tested.
+					if( dL <= dR ) {
+						if( dR < best ) stack.push_back( Entry{ rightIdx, dR } );
+						if( dL < best ) stack.push_back( Entry{ leftIdx,  dL } );
+					} else {
+						if( dL < best ) stack.push_back( Entry{ leftIdx,  dL } );
+						if( dR < best ) stack.push_back( Entry{ rightIdx, dR } );
+					}
+				}
+			}
+
+			if( !found ) return false;
+			outDist = best;
+			return true;
+		}
+
+		//! Visits every primitive whose LEAF node's box contains `p`, for a
+		//! CONTAINMENT query rather than a nearest-point one --
+		//! `ObjectManager::DeepestOtherContainment`'s TLAS-backed counterpart
+		//! to `ClosestPointDistance` above (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+		//! §5.6 item 1).  A running MAXIMUM (the deepest containment) has no
+		//! "subtree already worse than best" prune to offer -- unlike a
+		//! nearest-point search, EVERY node whose box contains `p` might hold
+		//! the deepest one -- so this descends the whole containing spine,
+		//! trading `ClosestPointDistance`'s early pruning for the plain
+		//! guarantee that a node box NOT containing `p` cannot contain a
+		//! primitive that contains `p` either (a primitive's true extent is
+		//! always inside its node's box).  Node boxes are the same
+		//! outward-padded `float` AABBs `ClosestPointDistance` tests, so the
+		//! prune is exactly as safe: it can only ADMIT a node it need not
+		//! have (the padding), never wrongly reject one.
+		//!
+		//! `visit(prims[i], p)` is called for every leaf element whose
+		//! containing node (and, if `useElementBoxTest`, whose own box) holds
+		//! `p` -- it is the caller's job to test the ELEMENT itself (this is
+		//! a box-level admission, not a proof of containment) and to
+		//! accumulate whatever running value it wants; there is no return
+		//! value and no early-out, matching `DeepestOtherContainment`'s "keep
+		//! going, there is no prune" shape.
+		//!
+		//! `useElementBoxTest` (default FALSE) mirrors `ClosestPointDistance`'s
+		//! knob: an element whose own (tighter) box does not contain `p` is
+		//! skipped before `visit` is called, at the cost of one
+		//! `ep.GetElementBoundingBox()` per leaf element visited.
+		//! `ObjectManager::DeepestOtherContainment` passes TRUE for the same
+		//! reason `NearestOtherSurface` passes it to `ClosestPointDistance`:
+		//! a leaf holds up to 4 objects behind one shared node box, and an
+		//! object's own box is usually far tighter.
+		//!
+		//! NaN-safe the same way the flat AABB scan in `ObjectManager` is
+		//! (see its own comment): a NaN bound makes both the "before lo" and
+		//! "after hi" tests false on that axis, so the axis reads as
+		//! "contained" rather than "excluded" -- the safe direction, since it
+		//! can only ADMIT a candidate that then answers or refuses on its own
+		//! merits, never silently drop one.
+		//!
+		//! `outNodesVisited`/`outCandidatesVisited` (both default null, DL-33):
+		//! the same diagnostic counters `ClosestPointDistance` takes, in the
+		//! same units, so the two traversals' cost SHAPES can be compared
+		//! query-for-query -- see docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §10's
+		//! "not yet measured" residual this exists to close.  A "node
+		//! visited" is one entry popped off the stack (there is no stale-
+		//! `best` re-check here, unlike `ClosestPointDistance` -- a running
+		//! MAXIMUM has nothing to re-test a popped entry against); a
+		//! "candidate visited" is one call to `visit`, after the
+		//! `useElementBoxTest` pre-test (when enabled) has already skipped an
+		//! element whose own box excludes `p`.  Null costs one predicted-
+		//! not-taken pointer compare per node/candidate, and every existing
+		//! caller passes null implicitly via the default.
+		//!
+		//! DL-162 design note (farthest-corner upper-bound prune, DECLINED ON MEASUREMENT):
+		//! `DeepestOtherContainment` tracks a running MAXIMUM depth. A theoretically
+		//! sound prune exists: a node's FARTHEST-corner Euclidean distance from the query
+		//! point `p` is a valid, zero-precomputation upper bound on any depth an element
+		//! confined to that box could possibly report (a `SignedDistanceLower` answer never
+		//! overstates true depth, and the depth of a point inside a solid confined to an
+		//! AABB cannot exceed the AABB's farthest corner from `p`). Any node whose farthest-
+		//! corner distance is <= the running best could therefore be pruned, mirroring
+		//! `ClosestPointDistance`'s nearest-corner prune for a running minimum.
+		//!
+		//! Why declined on measurement:
+		//! 1. Identical-size overlap: `tests/InteriorCandidateWalkCostTest.cpp` fixtures (b)/(c)
+		//!    show that for same-sized overlapping candidates, all nodes yield near-identical
+		//!    farthest-corner bounds, giving zero pruning separation in the worst-case regime.
+		//! 2. Production scenes: On the showcase scene calling `interior()` (`tidal_stones.RISEscene`,
+		//!    fixture (f)), `ForEachContainingPoint` already visits 0.49x candidates and 0.66x nodes
+		//!    at 0.57x the time of `ClosestPointDistance` (43% faster). No shipped scene exhibits
+		//!    a performance deficit.
+		//! 3. Per `performance-work-with-baselines.md`, speculative optimization without a
+		//!    measured production regression is rejected. If a future heterogeneous-size heavy-overlap
+		//!    scene ever demonstrates a bottleneck, implement as a new `BVH::DeepestContainingPoint`
+		//!    rather than modifying `ForEachContainingPoint`'s clean visitor contract.
+		template< class VisitFn >
+		void ForEachContainingPoint(
+			const Point3& p,
+			VisitFn&&     visit,
+			const bool    useElementBoxTest = false,
+			std::size_t*  outNodesVisited = 0,
+			std::size_t*  outCandidatesVisited = 0 ) const
+		{
+			if( nodes.empty() || prims.empty() ) return;
+
+			// Bounded dynamic stack, thread_local for one warm-up grow per
+			// worker -- same discipline as `ClosestPointDistance`'s stack.
+			// A DIFFERENT instantiation (this method's own), so it cannot
+			// alias that one's `Entry`-typed stack even for the same
+			// `Element`.
+			static thread_local std::vector<uint32_t> stack;
+			stack.clear();
+
+			if( !PointInBoxF( p, nodes[0].bboxMin, nodes[0].bboxMax ) ) return;
+			stack.push_back( 0u );
+
+			while( !stack.empty() ) {
+				const uint32_t ni = stack.back();
+				stack.pop_back();
+				if( outNodesVisited ) ++( *outNodesVisited );
+				const Node& node = nodes[ni];
+
+				if( node.primCount > 0 ) {
+					const uint32_t end = node.firstPrimOrLeft + node.primCount;
+					for( uint32_t i = node.firstPrimOrLeft; i < end; ++i ) {
+						if( useElementBoxTest ) {
+							const BoundingBox eb = ep.GetElementBoundingBox( prims[i] );
+							if( !PointInBox( p, eb.ll, eb.ur ) ) continue;
+						}
+						if( outCandidatesVisited ) ++( *outCandidatesVisited );
+						visit( prims[i], p );
+					}
+				} else {
+					const uint32_t leftIdx  = node.firstPrimOrLeft;
+					const uint32_t rightIdx = leftIdx + 1;
+					if( PointInBoxF( p, nodes[leftIdx].bboxMin, nodes[leftIdx].bboxMax ) ) {
+						stack.push_back( leftIdx );
+					}
+					if( PointInBoxF( p, nodes[rightIdx].bboxMin, nodes[rightIdx].bboxMax ) ) {
+						stack.push_back( rightIdx );
+					}
+				}
+			}
+		}
+
+		//! DL-408: visit every element whose box lies within `radius` of
+		//! `p` (node boxes by the conservative `PointBoxDistanceF`, element
+		//! boxes by `PointBoxDistance` when `useElementBoxTest`).  The
+		//! radius-widened sibling of `ForEachContainingPoint`: a contact
+		//! launch needs the bodies whose SURFACE may lie at the launch point,
+		//! including a zero-thickness box (a flat floor) the launch point
+		//! sits a hair outside of.
+		template< class VisitFn >
+		void ForEachNearPoint(
+			const Point3& p,
+			const Scalar  radius,
+			VisitFn&&     visit,
+			const bool    useElementBoxTest = false ) const
+		{
+			if( nodes.empty() || prims.empty() ) return;
+			static thread_local std::vector<uint32_t> stack;
+			stack.clear();
+			if( PointBoxDistanceF( p, nodes[0].bboxMin, nodes[0].bboxMax ) > radius ) return;
+			stack.push_back( 0u );
+			while( !stack.empty() ) {
+				const uint32_t ni = stack.back();
+				stack.pop_back();
+				const Node& node = nodes[ni];
+				if( node.primCount > 0 ) {
+					const uint32_t end = node.firstPrimOrLeft + node.primCount;
+					for( uint32_t i = node.firstPrimOrLeft; i < end; ++i ) {
+						if( useElementBoxTest ) {
+							const BoundingBox eb = ep.GetElementBoundingBox( prims[i] );
+							if( PointBoxDistance( p, eb.ll, eb.ur ) > radius ) continue;
+						}
+						visit( prims[i], p );
+					}
+				} else {
+					const uint32_t leftIdx  = node.firstPrimOrLeft;
+					const uint32_t rightIdx = leftIdx + 1;
+					if( PointBoxDistanceF( p, nodes[leftIdx].bboxMin, nodes[leftIdx].bboxMax ) <= radius ) {
+						stack.push_back( leftIdx );
+					}
+					if( PointBoxDistanceF( p, nodes[rightIdx].bboxMin, nodes[rightIdx].bboxMax ) <= radius ) {
+						stack.push_back( rightIdx );
+					}
+				}
+			}
+		}
+
+	protected:
+		//! Distance from a point to an axis-aligned box, 0 when inside.  The
+		//! bounds are the node's conservative `float` AABB, rounded OUTWARD
+		//! by 1 ulp at build time for a finite, in-range `double` bound
+		//! (`std::nextafter` in `SetNodeBox`; see its own comment for the
+		//! unbounded/overflowing-bound exception and why it stays sound
+		//! anyway); `p` is the query point kept in full `Scalar` precision -- NOT cast
+		//! down to `float` -- and `lo`/`hi` are WIDENED from `float` to
+		//! `Scalar`, which is always exact (every `float` value is exactly
+		//! representable in `Scalar`/`double`).  So of the two roundings a
+		//! caller could introduce here, only one is live, and it is the safe
+		//! one: the box's outward pad can only UNDER-state this distance,
+		//! which can only make the pruning ADMIT a node it could have
+		//! skipped -- never the reverse.
+		//!
+		//! THIS USED TO ALSO CAST `p` DOWN TO `float` before calling in
+		//! (`ClosestPointDistance` built a `const float pf[3]` once at the
+		//! top and passed that to every call here), which introduced a
+		//! SECOND rounding this function's contract did not account for --
+		//! and one that rounds to NEAREST, not outward, so it can move the
+		//! reported box distance in EITHER direction.  Measured: at
+		//! `|coord| ~= 1024` the nearest-rounding error is up to
+		//! `0.25 * ulp_f(|coord|) ~= 2.92e-5` in the OVER-stating direction,
+		//! which is the UNSOUND one for this function's contract -- it can
+		//! make the pruning SKIP a node whose primitive is nearer than
+		//! `best`, silently under-painting a seam the exact algorithm would
+		//! have found.  Fixed by keeping `p` in `Scalar` all the way from
+		//! `ClosestPointDistance`'s parameter to here; there is no longer a
+		//! `pf[3]` anywhere in this class.
+		static Scalar PointBoxDistanceF( const Point3& p, const float lo[3], const float hi[3] )
+		{
+			Scalar sum = Scalar( 0 );
+			const Scalar pc[3] = { p.x, p.y, p.z };
+			for( int k = 0; k < 3; ++k ) {
+				const Scalar v  = pc[k];
+				const Scalar l  = (Scalar)lo[k];
+				const Scalar h  = (Scalar)hi[k];
+				const Scalar dk = ( v < l ) ? ( l - v ) : ( ( v > h ) ? ( v - h ) : Scalar( 0 ) );
+				sum += dk * dk;
+			}
+			return std::sqrt( sum );
+		}
+
+		//! Distance from a point to an axis-aligned box, 0 when inside --
+		//! the ELEMENT-level counterpart of `PointBoxDistanceF` above, used
+		//! by `ClosestPointDistance`'s `useElementBoxTest` pre-test.  Unlike
+		//! the node box (a `float` array compacted once at build time and
+		//! rounded outward by 1 ulp to stay conservative under that
+		//! compaction -- for a finite, in-range bound; see `SetNodeBox`'s
+		//! own comment for the unbounded/overflowing-bound exception),
+		//! an element's box here comes fresh from
+		//! `ep.GetElementBoundingBox()` on every call and is never stored,
+		//! so there is no compaction step to compensate for: doing the
+		//! whole computation in `Scalar`, on the `Scalar` box the processor
+		//! handed back and the `Scalar` point `ClosestPointDistance` was
+		//! itself given, needs no cast of either operand and so has no
+		//! rounding hazard of its own to analyse.
+		static Scalar PointBoxDistance( const Point3& p, const Point3& lo, const Point3& hi )
+		{
+			const Scalar dx = ( p.x < lo.x ) ? ( lo.x - p.x ) : ( ( p.x > hi.x ) ? ( p.x - hi.x ) : Scalar( 0 ) );
+			const Scalar dy = ( p.y < lo.y ) ? ( lo.y - p.y ) : ( ( p.y > hi.y ) ? ( p.y - hi.y ) : Scalar( 0 ) );
+			const Scalar dz = ( p.z < lo.z ) ? ( lo.z - p.z ) : ( ( p.z > hi.z ) ? ( p.z - hi.z ) : Scalar( 0 ) );
+			return std::sqrt( dx*dx + dy*dy + dz*dz );
+		}
+
+		//! Point-in-box test against the node's conservative, outward-padded
+		//! float AABB -- ForEachContainingPoint's node-level admission test.
+		//! Equivalent to PointBoxDistanceF(p, lo, hi) == 0 but without the
+		//! sqrt, and NaN-safe the same way: a NaN bound makes both per-axis
+		//! comparisons false, so that axis reads as "inside" rather than
+		//! "outside" -- the safe over-admission direction (see
+		//! ForEachContainingPoint's own comment).
+		static bool PointInBoxF( const Point3& p, const float lo[3], const float hi[3] )
+		{
+			const Scalar pc[3] = { p.x, p.y, p.z };
+			for( int k = 0; k < 3; ++k ) {
+				const Scalar l = (Scalar)lo[k];
+				const Scalar h = (Scalar)hi[k];
+				if( pc[k] < l || pc[k] > h ) return false;
+			}
+			return true;
+		}
+
+		//! Point-in-box test against an ELEMENT's own (un-padded, un-cached)
+		//! Scalar box -- ForEachContainingPoint's useElementBoxTest pre-test,
+		//! the containment counterpart of PointBoxDistance above.  Same
+		//! NaN-safety note applies.
+		static bool PointInBox( const Point3& p, const Point3& lo, const Point3& hi )
+		{
+			if( p.x < lo.x || p.x > hi.x ) return false;
+			if( p.y < lo.y || p.y > hi.y ) return false;
+			if( p.z < lo.z || p.z > hi.z ) return false;
+			return true;
 		}
 	};
 }

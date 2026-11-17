@@ -1,9 +1,17 @@
 # Facet 3 — Edit Model, History & State
 
-> **Status:** **PARTIALLY IMPLEMENTED.** CST-native edits, revisions/history,
-> undo/redo, optimistic head checks, dirty tracking, and save have shipped. The
-> full immutable derived/prepared snapshot and general transaction model remain
-> incomplete. The body is the ratified target architecture.
+> **Status (refreshed 2026-11):** **PARTIALLY IMPLEMENTED (HYBRID CST + RETAINED `SceneEditor`).**
+> CST-native edits, `CstHeadVersion = (uuid, revision)` optimistic head checks,
+> atomic CAS save (`SaveEngine` serializing the retained CST), and lossless
+> exact-byte CST undo (`DocReplaceChunkIfText` / `mObjectSpellingJournal` paired
+> with retained `SceneEdit` — expanded to 31 op kinds including `AgentEditBatch` —
+> and `EditHistory` inside `SceneEditor` / `SceneEditController`) have shipped.
+> By contrast, the persistent `VersionGraph` DAG, `GestureBuffer`, and the
+> two-layer immutable `DerivedScene` / `PreparedRenderState` snapshot architecture
+> remain unbuilt target design (§3's deletion inventory for `SceneEdit` /
+> `EditHistory` / `SceneEditor` therefore describes the unshipped pure-VersionGraph
+> endpoint, not current `src/Library/SceneEditor/`). The body is the ratified
+> target architecture.
 >
 > **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–6, D1–D51).** Sections
 > below conform to the ratified decisions; where this doc and a decision differ,

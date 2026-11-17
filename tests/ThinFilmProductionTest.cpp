@@ -665,11 +665,18 @@ int main()
 		// calls it, so no edit to PickForwardCos can move these counters.  (An
 		// earlier version of this comment claimed it caught the order swap;
 		// mutation testing showed it does not -- what kills that swap is (a)
-		// above plus [Thick] and [Truth].)  It earns its place by going red on
-		// a libm whose std::sqrt returns an exact (0, +-r), which would
-		// invalidate the rationale written into PickForwardCos even though
-		// every result stayed correct.  The direct pin on the function itself
-		// is immediately after.
+		// above plus [Thick] and [Truth].)  Two libm behaviors are known and
+		// BOTH condemn an `Re`-first rule (2026-08-18, first MSVC run):
+		//   * clang/glibc: sqrt of a negative real leaves a ~6.1e-17 real
+		//     residue, so `Re == 0` never fires -- the tie-break is dead code
+		//     resting on an unstated rounding assumption;
+		//   * MSVC's std::complex sqrt: an EXACT (0, +-r), so an `Re > 0`
+		//     first rule would misclassify EVERY evanescent medium outright.
+		// Either way the conclusion in PickForwardCos stands: test Im first;
+		// Re's value for an evanescent medium is unreliable across libms.  A
+		// MIXED census (some exact zeros, some residues) matches neither
+		// known libm and still fails hard.  The direct pin on the function
+		// itself is immediately after.
 		{
 			int imExactZero = 0, reExactZeroEvan = 0, etaExactZero = 0;
 			int evanescent = 0, n = 0;
@@ -697,8 +704,9 @@ int main()
 			}
 			Check( imExactZero > 0,
 			       "the `Im == 0` tie-break is LIVE (lossless propagating media reach it exactly)" );
-			Check( evanescent > 0 && reExactZeroEvan == 0,
-			       "the `Re == 0` tie-break is DEAD for evanescent media -- never test Re first" );
+			Check( evanescent > 0
+			       && ( reExactZeroEvan == 0 || reExactZeroEvan == evanescent ),
+			       "evanescent Re(eta) is all-residue (clang/glibc) or all-exact-zero (MSVC) -- never test Re first" );
 			std::printf( "  %d media: Im(eta)==0 exactly %d times; over %d EVANESCENT media"
 			             " Re(eta)==0 %d times (min |Re| = %.3e);"
 			             " eta==0 exactly (at critical, both roots 0) %d times\n",

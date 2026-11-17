@@ -64,6 +64,7 @@ namespace RISE
 
 			//! Returns the list of luminaries
 			const LuminariesList& getLuminaries( ){ return luminaries; };
+			const LuminariesList& getLuminaries( ) const { return luminaries; };
 		};
 	}
 }

@@ -39,8 +39,19 @@
 //   - flip_v inverts V coords (reload-and-compare round-trip)
 //
 // Phase 1 of glTF import (see docs/GLTF_IMPORT.md §7).
+//
+// WHY THIS FILE USES A FAILURE TALLY AND NOT `assert` (2026-08-17 counted-
+// assertion conversion pass -- see CSGObjectIdentityTest.cpp for the full
+// rationale).  build/cmake/rise-tests/CMakeLists.txt never overrides
+// CMAKE_CXX_FLAGS_RELEASE, MSVC's Release default carries `/DNDEBUG`, and
+// run_all_tests.ps1 defaults to `-Config Release` -- so on that path every
+// `assert` compiled to nothing.  Worse, most of this file's
+// `imp.BuildGeometryFromPrimitive(...)` calls -- the call that actually
+// extracts the mesh the rest of each test reads -- sat INSIDE `assert(...)`,
+// so under NDEBUG the mesh was never built at all and every following
+// assertion silently checked an empty mesh.  Every side-effecting call is
+// now made on its own line, with only its RESULT checked.
 
-#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <iostream>
@@ -51,6 +62,9 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+static int g_pass = 0, g_fail = 0;
+static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; std::printf( "  FAIL: %s\n", w ); } }
 
 namespace
 {
@@ -74,12 +88,12 @@ namespace
 		pMesh->addref();
 
 		GLTFSceneImporter imp( kBoxAssetPath );
-		assert( imp.IsValid() && "Box.glb failed to parse -- is the asset committed?" );
+		Check( imp.IsValid(), "Box.glb failed to parse -- is the asset committed?" );
 
 		const bool ok = imp.BuildGeometryFromPrimitive( pMesh, 0, 0, false );
-		assert( ok && "Box.glb failed to load -- is the asset committed at "
-		              "scenes/Tests/Geometry/assets/Box.glb and is the "
-		              "test running from the repo root?" );
+		Check( ok, "Box.glb failed to load -- is the asset committed at "
+		           "scenes/Tests/Geometry/assets/Box.glb and is the "
+		           "test running from the repo root?" );
 
 		// Box.glb has 24 vertices (6 faces × 4 corners; each face's
 		// corners get their own normals so vertices are not shared
@@ -87,7 +101,7 @@ namespace
 		// numbers makes the test brittle if Khronos re-exports the
 		// asset; assert on extents instead.
 		const auto& pts = pMesh->getVertices();
-		assert( pts.size() > 0 && "Box.glb produced zero vertices" );
+		Check( pts.size() > 0, "Box.glb produced zero vertices" );
 
 		// Bounding box: Box.glb's canonical extent is -0.5..+0.5 along
 		// each axis (the asset's accessor min/max declares this).
@@ -101,32 +115,31 @@ namespace
 			if( pts[i].y > maxy ) maxy = pts[i].y;
 			if( pts[i].z > maxz ) maxz = pts[i].z;
 		}
-		assert( IsClose( minx, -0.5 ) && "Box.glb min.x != -0.5" );
-		assert( IsClose( miny, -0.5 ) && "Box.glb min.y != -0.5" );
-		assert( IsClose( minz, -0.5 ) && "Box.glb min.z != -0.5" );
-		assert( IsClose( maxx,  0.5 ) && "Box.glb max.x != +0.5" );
-		assert( IsClose( maxy,  0.5 ) && "Box.glb max.y != +0.5" );
-		assert( IsClose( maxz,  0.5 ) && "Box.glb max.z != +0.5" );
+		Check( IsClose( minx, -0.5 ), "Box.glb min.x != -0.5" );
+		Check( IsClose( miny, -0.5 ), "Box.glb min.y != -0.5" );
+		Check( IsClose( minz, -0.5 ), "Box.glb min.z != -0.5" );
+		Check( IsClose( maxx,  0.5 ), "Box.glb max.x != +0.5" );
+		Check( IsClose( maxy,  0.5 ), "Box.glb max.y != +0.5" );
+		Check( IsClose( maxz,  0.5 ), "Box.glb max.z != +0.5" );
 
 		// 6 faces × 2 triangles each = 12 triangles.
 		const auto& faces = pMesh->getFaces();
-		assert( faces.size() == 12 && "Box.glb should yield 12 triangles" );
+		Check( faces.size() == 12, "Box.glb should yield 12 triangles" );
 
 		// NORMAL is declared in Box.glb.
-		assert( pMesh->numNormals() > 0 && "Box.glb NORMAL attribute was not read" );
+		Check( pMesh->numNormals() > 0, "Box.glb NORMAL attribute was not read" );
 
 		// COLOR_0 is NOT in Box.glb -- pColors must stay empty (otherwise
 		// the v2 dynamic_cast or the attribute matcher is misbehaving).
-		assert( pMesh->getColors().empty() && "unexpected COLOR_0 read from Box.glb" );
+		Check( pMesh->getColors().empty(), "unexpected COLOR_0 read from Box.glb" );
 
 		// TANGENT is NOT in Box.glb -- v3 tangent storage must be empty.
-		assert( pMesh->numTangents() == 0 && "unexpected TANGENT read from Box.glb" );
+		Check( pMesh->numTangents() == 0, "unexpected TANGENT read from Box.glb" );
 
 		// TEXCOORD_1 is NOT in Box.glb -- v3 secondary-UV storage must be empty.
-		assert( pMesh->numTexCoords1() == 0 && "unexpected TEXCOORD_1 read from Box.glb" );
+		Check( pMesh->numTexCoords1() == 0, "unexpected TEXCOORD_1 read from Box.glb" );
 
 		pMesh->release();
-		std::cout << "  Passed!" << std::endl;
 	}
 
 	// ---------- BoxTextured: first TEXCOORD_0 ----------
@@ -135,18 +148,20 @@ namespace
 		std::cout << "Testing BoxTextured.glb (TEXCOORD_0)..." << std::endl;
 		TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false ); m->addref();
 		GLTFSceneImporter imp( "scenes/Tests/Geometry/assets/BoxTextured.glb" );
-		assert( imp.IsValid() );
-		assert( imp.BuildGeometryFromPrimitive( m, 0, 0, false ) );
-		assert( m->getVertices().size() == 24 && "BoxTextured should have 24 verts" );
-		assert( m->getFaces().size()    == 12 && "BoxTextured should have 12 tris" );
-		assert( m->numNormals() > 0          && "BoxTextured should have NORMAL" );
+		Check( imp.IsValid(), "BoxTextured.glb failed to parse" );
+		// SIDE EFFECT ON ITS OWN LINE -- this is the call that builds the mesh the
+		// assertions below read.  Inside an `assert` it vanished under NDEBUG.
+		const bool built = imp.BuildGeometryFromPrimitive( m, 0, 0, false );
+		Check( built, "BoxTextured.glb failed to build geometry" );
+		Check( m->getVertices().size() == 24, "BoxTextured should have 24 verts" );
+		Check( m->getFaces().size()    == 12, "BoxTextured should have 12 tris" );
+		Check( m->numNormals() > 0,           "BoxTextured should have NORMAL" );
 		// First asset that actually populates pCoords (Box has none).
-		assert( m->numCoords()  == 24        && "BoxTextured should have TEXCOORD_0 with 24 entries" );
-		assert( m->numTangents() == 0        && "BoxTextured does not have TANGENT" );
-		assert( m->numTexCoords1() == 0      && "BoxTextured does not have TEXCOORD_1" );
-		assert( m->getColors().empty()       && "BoxTextured does not have COLOR_0" );
+		Check( m->numCoords()  == 24,         "BoxTextured should have TEXCOORD_0 with 24 entries" );
+		Check( m->numTangents() == 0,         "BoxTextured does not have TANGENT" );
+		Check( m->numTexCoords1() == 0,       "BoxTextured does not have TEXCOORD_1" );
+		Check( m->getColors().empty(),        "BoxTextured does not have COLOR_0" );
 		m->release();
-		std::cout << "  Passed!" << std::endl;
 	}
 
 	// ---------- Duck: bigger real-world mesh ----------
@@ -155,15 +170,15 @@ namespace
 		std::cout << "Testing Duck.glb (larger real-world mesh)..." << std::endl;
 		TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false ); m->addref();
 		GLTFSceneImporter imp( "scenes/Tests/Geometry/assets/Duck.glb" );
-		assert( imp.IsValid() );
-		assert( imp.BuildGeometryFromPrimitive( m, 0, 0, false ) );
+		Check( imp.IsValid(), "Duck.glb failed to parse" );
+		const bool built = imp.BuildGeometryFromPrimitive( m, 0, 0, false );
+		Check( built, "Duck.glb failed to build geometry" );
 		// Per the source accessor metadata: 2399 positions, 12636 indices = 4212 tris.
-		assert( m->getVertices().size() == 2399 && "Duck should have 2399 verts" );
-		assert( m->getFaces().size()    == 12636 / 3 && "Duck should have 4212 tris" );
-		assert( m->numNormals() > 0   && "Duck should have NORMAL" );
-		assert( m->numCoords()  == 2399 && "Duck should have TEXCOORD_0" );
+		Check( m->getVertices().size() == 2399, "Duck should have 2399 verts" );
+		Check( m->getFaces().size()    == 12636 / 3, "Duck should have 4212 tris" );
+		Check( m->numNormals() > 0,   "Duck should have NORMAL" );
+		Check( m->numCoords()  == 2399, "Duck should have TEXCOORD_0" );
 		m->release();
-		std::cout << "  Passed!" << std::endl;
 	}
 
 	// ---------- Avocado: first asset with TANGENT ----------
@@ -172,25 +187,25 @@ namespace
 		std::cout << "Testing Avocado.glb (first TANGENT asset)..." << std::endl;
 		TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false ); m->addref();
 		GLTFSceneImporter imp( "scenes/Tests/Geometry/assets/Avocado.glb" );
-		assert( imp.IsValid() );
-		assert( imp.BuildGeometryFromPrimitive( m, 0, 0, false ) );
-		assert( m->getVertices().size() == 406 && "Avocado should have 406 verts" );
-		assert( m->getFaces().size()    == 2046 / 3 && "Avocado should have 682 tris" );
-		assert( m->numNormals()  > 0   && "Avocado should have NORMAL" );
-		assert( m->numCoords()   == 406 && "Avocado should have TEXCOORD_0" );
+		Check( imp.IsValid(), "Avocado.glb failed to parse" );
+		const bool built = imp.BuildGeometryFromPrimitive( m, 0, 0, false );
+		Check( built, "Avocado.glb failed to build geometry" );
+		Check( m->getVertices().size() == 406, "Avocado should have 406 verts" );
+		Check( m->getFaces().size()    == 2046 / 3, "Avocado should have 682 tris" );
+		Check( m->numNormals()  > 0,   "Avocado should have NORMAL" );
+		Check( m->numCoords()   == 406, "Avocado should have TEXCOORD_0" );
 		// THE KEY ASSERTION for v3 tangent path -- this is the first asset
 		// in the matrix that populates pTangents.  The path runs through
 		// dynamic_cast<ITriangleMeshGeometryIndexed3*> in the extractor.
-		assert( m->numTangents() == 406 && "Avocado should have 406 tangents (v3 storage)" );
+		Check( m->numTangents() == 406, "Avocado should have 406 tangents (v3 storage)" );
 		// Bitangent sign must be exactly +1 or -1 per glTF 2.0 spec.
 		const auto& tans = m->getTangents();
 		for( size_t i = 0; i < tans.size(); ++i ) {
 			const Scalar w = tans[i].bitangentSign;
-			assert( (IsClose( w, 1.0, 1e-3 ) || IsClose( w, -1.0, 1e-3 ))
-				&& "Avocado tangent bitangent sign must be +/-1" );
+			Check( IsClose( w, 1.0, 1e-3 ) || IsClose( w, -1.0, 1e-3 ),
+			       "Avocado tangent bitangent sign must be +/-1" );
 		}
 		m->release();
-		std::cout << "  Passed!" << std::endl;
 	}
 
 	// ---------- NormalTangentTest: name lies; source has NO TANGENT ----------
@@ -199,18 +214,18 @@ namespace
 		std::cout << "Testing NormalTangentTest.glb (TANGENT absent path)..." << std::endl;
 		TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false ); m->addref();
 		GLTFSceneImporter imp( "scenes/Tests/Geometry/assets/NormalTangentTest.glb" );
-		assert( imp.IsValid() );
-		assert( imp.BuildGeometryFromPrimitive( m, 0, 0, false ) );
-		assert( m->getVertices().size() == 3983 && "NormalTangentTest should have 3983 verts" );
-		assert( m->numNormals() > 0   && "NormalTangentTest should have NORMAL" );
-		assert( m->numCoords()  == 3983 && "NormalTangentTest should have TEXCOORD_0" );
+		Check( imp.IsValid(), "NormalTangentTest.glb failed to parse" );
+		const bool built = imp.BuildGeometryFromPrimitive( m, 0, 0, false );
+		Check( built, "NormalTangentTest.glb failed to build geometry" );
+		Check( m->getVertices().size() == 3983, "NormalTangentTest should have 3983 verts" );
+		Check( m->numNormals() > 0,   "NormalTangentTest should have NORMAL" );
+		Check( m->numCoords()  == 3983, "NormalTangentTest should have TEXCOORD_0" );
 		// CRITICAL: the asset's NAME suggests TANGENT, but the actual source
 		// has only NORMAL+POSITION+TEXCOORD_0 -- the renderer is expected to
 		// derive tangents from positions+normals+UVs.  Phase 1 must not
 		// fabricate tangents; numTangents() must be exactly 0 here.
-		assert( m->numTangents() == 0 && "NormalTangentTest source has no TANGENT; extractor must not fabricate" );
+		Check( m->numTangents() == 0, "NormalTangentTest source has no TANGENT; extractor must not fabricate" );
 		m->release();
-		std::cout << "  Passed!" << std::endl;
 	}
 
 	// ---------- NormalTangentMirrorTest: TANGENT with mirrored UVs ----------
@@ -219,10 +234,11 @@ namespace
 		std::cout << "Testing NormalTangentMirrorTest.glb (TANGENT with bitangent sign +1 AND -1)..." << std::endl;
 		TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false ); m->addref();
 		GLTFSceneImporter imp( "scenes/Tests/Geometry/assets/NormalTangentMirrorTest.glb" );
-		assert( imp.IsValid() );
-		assert( imp.BuildGeometryFromPrimitive( m, 0, 0, false ) );
-		assert( m->getVertices().size() == 2770 && "NormalTangentMirrorTest should have 2770 verts" );
-		assert( m->numTangents() == 2770       && "NormalTangentMirrorTest should have 2770 tangents" );
+		Check( imp.IsValid(), "NormalTangentMirrorTest.glb failed to parse" );
+		const bool built = imp.BuildGeometryFromPrimitive( m, 0, 0, false );
+		Check( built, "NormalTangentMirrorTest.glb failed to build geometry" );
+		Check( m->getVertices().size() == 2770, "NormalTangentMirrorTest should have 2770 verts" );
+		Check( m->numTangents() == 2770,        "NormalTangentMirrorTest should have 2770 tangents" );
 
 		// CRITICAL: this is THE asset that catches a bitangent-sign bug.
 		// Mirrored UVs require some vertices to have w=+1 and others w=-1.
@@ -232,15 +248,14 @@ namespace
 		bool sawPos = false, sawNeg = false;
 		for( size_t i = 0; i < tans.size(); ++i ) {
 			const Scalar w = tans[i].bitangentSign;
-			assert( (IsClose( w, 1.0, 1e-3 ) || IsClose( w, -1.0, 1e-3 ))
-				&& "MirrorTest tangent bitangent sign must be +/-1" );
+			Check( IsClose( w, 1.0, 1e-3 ) || IsClose( w, -1.0, 1e-3 ),
+			       "MirrorTest tangent bitangent sign must be +/-1" );
 			if( w > 0 ) sawPos = true;
 			else        sawNeg = true;
 		}
-		assert( sawPos && "MirrorTest should contain at least one tangent with +1 bitangent sign" );
-		assert( sawNeg && "MirrorTest should contain at least one tangent with -1 bitangent sign" );
+		Check( sawPos, "MirrorTest should contain at least one tangent with +1 bitangent sign" );
+		Check( sawNeg, "MirrorTest should contain at least one tangent with -1 bitangent sign" );
 		m->release();
-		std::cout << "  Passed!" << std::endl;
 	}
 
 	// ---------- VertexColorTest: COLOR_0 round-trip (mesh[1] has it, mesh[0] does not) ----------
@@ -252,15 +267,16 @@ namespace
 		// asset re-use its parse across mesh indices, which is exactly the
 		// performance win the importer-merge cleanup was about.
 		GLTFSceneImporter imp( "scenes/Tests/Geometry/assets/VertexColorTest.glb" );
-		assert( imp.IsValid() );
+		Check( imp.IsValid(), "VertexColorTest.glb failed to parse" );
 
 		// Mesh 0 (LabelMesh): NORMAL+POSITION+TANGENT+TEXCOORD_0, NO COLOR_0.
 		// Verifies that absence is correctly observed.
 		{
 			TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false ); m->addref();
-			assert( imp.BuildGeometryFromPrimitive( m, 0, 0, false ) );
-			assert( m->getColors().empty() && "VertexColorTest mesh[0] (LabelMesh) has no COLOR_0" );
-			assert( m->numTangents() == 24 && "VertexColorTest mesh[0] should have TANGENT" );
+			const bool built = imp.BuildGeometryFromPrimitive( m, 0, 0, false );
+			Check( built, "VertexColorTest mesh[0] failed to build geometry" );
+			Check( m->getColors().empty(), "VertexColorTest mesh[0] (LabelMesh) has no COLOR_0" );
+			Check( m->numTangents() == 24, "VertexColorTest mesh[0] should have TANGENT" );
 			m->release();
 		}
 
@@ -269,8 +285,9 @@ namespace
 		// linear-Rec709 -> RISEPel conversion.
 		{
 			TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false ); m->addref();
-			assert( imp.BuildGeometryFromPrimitive( m, 1, 0, false ) );
-			assert( m->numColors() == 48 && "VertexColorTest mesh[1] should have 48 COLOR_0 entries" );
+			const bool built = imp.BuildGeometryFromPrimitive( m, 1, 0, false );
+			Check( built, "VertexColorTest mesh[1] failed to build geometry" );
+			Check( m->numColors() == 48, "VertexColorTest mesh[1] should have 48 COLOR_0 entries" );
 			// Verify at least one color is non-default (i.e. not pure white,
 			// which would indicate the extractor wrote uninitialized values).
 			const auto& cols = m->getColors();
@@ -281,10 +298,9 @@ namespace
 					break;
 				}
 			}
-			assert( sawColored && "VertexColorTest mesh[1] should have at least one non-white color" );
+			Check( sawColored, "VertexColorTest mesh[1] should have at least one non-white color" );
 			m->release();
 		}
-		std::cout << "  Passed!" << std::endl;
 	}
 
 	// ---------- MultiUVTest: TEXCOORD_1 (v3 secondary-UV path) ----------
@@ -293,13 +309,14 @@ namespace
 		std::cout << "Testing MultiUVTest.glb (TEXCOORD_1 v3 path)..." << std::endl;
 		TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false ); m->addref();
 		GLTFSceneImporter imp( "scenes/Tests/Geometry/assets/MultiUVTest.glb" );
-		assert( imp.IsValid() );
-		assert( imp.BuildGeometryFromPrimitive( m, 0, 0, false ) );
-		assert( m->getVertices().size() == 24 );
+		Check( imp.IsValid(), "MultiUVTest.glb failed to parse" );
+		const bool built = imp.BuildGeometryFromPrimitive( m, 0, 0, false );
+		Check( built, "MultiUVTest.glb failed to build geometry" );
+		Check( m->getVertices().size() == 24, "MultiUVTest should have 24 verts" );
 		// THE KEY ASSERTION for v3 secondary-UV path -- this is the first
 		// (and currently only) asset in the matrix that populates pTexCoords1.
-		assert( m->numCoords()     == 24 && "MultiUVTest should have 24 TEXCOORD_0" );
-		assert( m->numTexCoords1() == 24 && "MultiUVTest should have 24 TEXCOORD_1 (v3 storage)" );
+		Check( m->numCoords()     == 24, "MultiUVTest should have 24 TEXCOORD_0" );
+		Check( m->numTexCoords1() == 24, "MultiUVTest should have 24 TEXCOORD_1 (v3 storage)" );
 		// TEXCOORD_1 is the lightmap UV; it should differ from TEXCOORD_0
 		// for at least some vertices, otherwise why would the asset declare it?
 		const auto& uv0 = m->getCoords();
@@ -311,9 +328,8 @@ namespace
 				break;
 			}
 		}
-		assert( sawDifferent && "MultiUVTest TEXCOORD_1 should differ from TEXCOORD_0 for at least one vertex" );
+		Check( sawDifferent, "MultiUVTest TEXCOORD_1 should differ from TEXCOORD_0 for at least one vertex" );
 		m->release();
-		std::cout << "  Passed!" << std::endl;
 	}
 
 	// ---------- OrientationTest: 13 meshes; exercise mesh_index near boundary ----------
@@ -325,33 +341,33 @@ namespace
 		// the same importer to exercise the "stable cgltf_data across
 		// indices" property.
 		GLTFSceneImporter imp( "scenes/Tests/Geometry/assets/OrientationTest.glb" );
-		assert( imp.IsValid() );
+		Check( imp.IsValid(), "OrientationTest.glb failed to parse" );
 
 		// First mesh loads.
 		{
 			TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false ); m->addref();
-			assert( imp.BuildGeometryFromPrimitive( m, 0, 0, false ) );
-			assert( m->getVertices().size() > 0 );
+			const bool built = imp.BuildGeometryFromPrimitive( m, 0, 0, false );
+			Check( built, "OrientationTest mesh_index 0 should load" );
+			Check( m->getVertices().size() > 0, "OrientationTest mesh_index 0 should have vertices" );
 			m->release();
 		}
 
 		// Last mesh (index 12) loads.
 		{
 			TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false ); m->addref();
-			assert( imp.BuildGeometryFromPrimitive( m, 12, 0, false )
-				&& "OrientationTest mesh_index 12 (last) should load" );
-			assert( m->getVertices().size() > 0 );
+			const bool built = imp.BuildGeometryFromPrimitive( m, 12, 0, false );
+			Check( built, "OrientationTest mesh_index 12 (last) should load" );
+			Check( m->getVertices().size() > 0, "OrientationTest mesh_index 12 should have vertices" );
 			m->release();
 		}
 
 		// One past the last (index 13) fails cleanly.
 		{
 			TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false ); m->addref();
-			assert( !imp.BuildGeometryFromPrimitive( m, 13, 0, false )
-				&& "OrientationTest mesh_index 13 (out of range) must fail" );
+			const bool built = imp.BuildGeometryFromPrimitive( m, 13, 0, false );
+			Check( !built, "OrientationTest mesh_index 13 (out of range) must fail" );
 			m->release();
 		}
-		std::cout << "  Passed!" << std::endl;
 	}
 
 	// ---------- AlphaBlendModeTest: 9 meshes load (we ignore alphaMode metadata) ----------
@@ -364,15 +380,14 @@ namespace
 		// nine extractions — same parse-reuse property as the other multi-
 		// mesh tests above.
 		GLTFSceneImporter imp( "scenes/Tests/Geometry/assets/AlphaBlendModeTest.glb" );
-		assert( imp.IsValid() );
+		Check( imp.IsValid(), "AlphaBlendModeTest.glb failed to parse" );
 		for( unsigned int mi = 0; mi < 9; ++mi ) {
 			TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed( false, false ); m->addref();
 			const bool ok = imp.BuildGeometryFromPrimitive( m, mi, 0, false );
-			assert( ok && "AlphaBlendModeTest mesh should load (alphaMode is ignored in Phase 1)" );
-			assert( m->getVertices().size() > 0 );
+			Check( ok, "AlphaBlendModeTest mesh should load (alphaMode is ignored in Phase 1)" );
+			Check( m->getVertices().size() > 0, "AlphaBlendModeTest mesh should have vertices" );
 			m->release();
 		}
-		std::cout << "  Passed (9 meshes loaded, alphaMode metadata ignored)!" << std::endl;
 	}
 
 	void TestMissingFileFailsCleanly()
@@ -383,7 +398,7 @@ namespace
 		// false, and any subsequent BuildGeometryFromPrimitive returns
 		// false too (the extractor checks IsValid() at the top).
 		GLTFSceneImporter imp( "scenes/Tests/Geometry/assets/this_file_does_not_exist.glb" );
-		assert( !imp.IsValid() && "Missing file should make IsValid() return false" );
+		Check( !imp.IsValid(), "Missing file should make IsValid() return false" );
 
 		// Even on an invalid importer, methods should not crash; they
 		// short-circuit via the IsValid() check.
@@ -391,9 +406,8 @@ namespace
 			new TriangleMeshGeometryIndexed( false, false );
 		pMesh->addref();
 		const bool ok = imp.BuildGeometryFromPrimitive( pMesh, 0, 0, false );
-		assert( !ok && "Build on invalid importer should return false" );
+		Check( !ok, "Build on invalid importer should return false" );
 		pMesh->release();
-		std::cout << "  Passed!" << std::endl;
 	}
 
 	void TestOutOfRangeMeshIndexFailsCleanly()
@@ -407,12 +421,11 @@ namespace
 		// Box.glb has exactly 1 mesh.  Asking for mesh_index 99 must
 		// fail cleanly with a clear log line.
 		GLTFSceneImporter imp( kBoxAssetPath );
-		assert( imp.IsValid() );
+		Check( imp.IsValid(), "Box.glb failed to parse" );
 		const bool ok = imp.BuildGeometryFromPrimitive( pMesh, 99, 0, false );
-		assert( !ok && "Out-of-range mesh_index should have returned false" );
+		Check( !ok, "Out-of-range mesh_index should have returned false" );
 
 		pMesh->release();
-		std::cout << "  Passed!" << std::endl;
 	}
 
 	void TestOutOfRangePrimitiveIndexFailsCleanly()
@@ -426,12 +439,11 @@ namespace
 		// Box.glb has 1 mesh with 1 primitive.  primitive=99 must fail
 		// cleanly.
 		GLTFSceneImporter imp( kBoxAssetPath );
-		assert( imp.IsValid() );
+		Check( imp.IsValid(), "Box.glb failed to parse" );
 		const bool ok = imp.BuildGeometryFromPrimitive( pMesh, 0, 99, false );
-		assert( !ok && "Out-of-range primitive should have returned false" );
+		Check( !ok, "Out-of-range primitive should have returned false" );
 
 		pMesh->release();
-		std::cout << "  Passed!" << std::endl;
 	}
 
 	void TestFlipVActuallyFlips()
@@ -453,24 +465,25 @@ namespace
 		// hold any state from the first extraction that contaminates
 		// the second.
 		GLTFSceneImporter imp( asset );
-		assert( imp.IsValid() );
-		assert( imp.BuildGeometryFromPrimitive( pMeshA, 0, 0, false ) );
-		assert( imp.BuildGeometryFromPrimitive( pMeshB, 0, 0, true  ) );
+		Check( imp.IsValid(), "BoxTextured.glb failed to parse" );
+		const bool builtA = imp.BuildGeometryFromPrimitive( pMeshA, 0, 0, false );
+		Check( builtA, "BoxTextured.glb (unflipped) failed to build geometry" );
+		const bool builtB = imp.BuildGeometryFromPrimitive( pMeshB, 0, 0, true );
+		Check( builtB, "BoxTextured.glb (flipped) failed to build geometry" );
 
 		const auto& uvA = pMeshA->getCoords();
 		const auto& uvB = pMeshB->getCoords();
-		assert( uvA.size() == uvB.size() && "UV count should match between flipped and unflipped" );
-		assert( uvA.size() == 24 && "BoxTextured should have 24 TEXCOORD_0 entries" );
+		Check( uvA.size() == uvB.size(), "UV count should match between flipped and unflipped" );
+		Check( uvA.size() == 24, "BoxTextured should have 24 TEXCOORD_0 entries" );
 
 		for( size_t i = 0; i < uvA.size(); ++i ) {
 			// U unchanged; V = 1 - V on the flipped load.
-			assert( IsClose( uvA[i].x,             uvB[i].x ) && "U coordinate must not change with flip_v" );
-			assert( IsClose( uvA[i].y, 1.0 - uvB[i].y         ) && "V coordinate must equal 1 - flipped V" );
+			Check( IsClose( uvA[i].x,             uvB[i].x ), "U coordinate must not change with flip_v" );
+			Check( IsClose( uvA[i].y, 1.0 - uvB[i].y         ), "V coordinate must equal 1 - flipped V" );
 		}
 
 		pMeshA->release();
 		pMeshB->release();
-		std::cout << "  Passed!" << std::endl;
 	}
 }
 
@@ -497,6 +510,6 @@ int main()
 	TestOutOfRangePrimitiveIndexFailsCleanly();
 	TestFlipVActuallyFlips();
 
-	std::cout << "All GLTFLoaderTest cases passed." << std::endl;
-	return 0;
+	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
+	return g_fail == 0 ? 0 : 1;
 }

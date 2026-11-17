@@ -304,12 +304,12 @@ the agent's measured tool habits, not our notion of the right moment.**
 
 ## 7. Open items
 
-1. **Headless `SetSkillIndex` parity** — now safe to implement (arc
+1. **[CLOSED in [doc 75](75-expressive-surface-arc.md) S0] Headless `SetSkillIndex` parity** — now safe to implement (arc
    closed, instrument no longer needs stability); saves one discovery
    turn per headless run and matches the GUI product surface.
-2. **`Severity::Warning` fixture** for `CheckDiagnosticsKind`'s clean
+2. **[CLOSED in [doc 75](75-expressive-surface-arc.md) S0] `Severity::Warning` fixture** for `CheckDiagnosticsKind`'s clean
    branch, whenever a Warning-severity diagnostic first exists.
-3. **Second bare-prompt subject** (e.g. "build me a cozy study") when
+3. **[CLOSED in [doc 75](75-expressive-surface-arc.md) S0] Second bare-prompt subject** (e.g. "build me a cozy study") when
    repeats go 3→5 — the anti-overfit check on the P1 skill edits.
 4. **Disclosed anti-gaming residuals**: multi-decoy scenes and geometry
    decoys pass the CST-side checkpoints (scenario `//` comments carry the

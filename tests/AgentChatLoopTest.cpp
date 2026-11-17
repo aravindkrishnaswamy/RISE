@@ -247,6 +247,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "TestTempDir.h"
 // Round-8 review P2: per-process temp filenames -- see WriteTemp below.
 #ifdef _WIN32
 	#include <process.h>
@@ -284,8 +285,7 @@ static const char* const kScene =
 
 static std::string WriteTemp( const char* name, const std::string& text )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
@@ -465,7 +465,14 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Responses user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 16, "body carries sixteen OpenAI tools" );
+	// 32 -> 33, doc 90 slice R2 (2026-08-23): `revert_to_revision` joined the
+	// ONE shared kToolDefs table, so every provider rendering below carries
+	// one more.  33 -> 34 (fix_blend_scale, cat plan item 1), 34 -> 35
+	// (add_wear, GEOMETRY_SHADING_SIGNALS sec 11, 2026-08-30), and 35 -> 36
+	// (add_wetness, WETNESS_COAT_DESIGN sec 6/13, 2026-08-31) on the same
+	// rule.  Bumped deliberately -- this count is what would catch a tool
+	// silently added to one formatter and not the table.
+	Check( tools.isArray() && tools.size() == 38, "body carries thirty-eight OpenAI tools" );
 	bool sawReadDocument = false;
 	// Arc-75 slice S2.1 test #7: insert_material_scaffold is visible in
 	// the SAME tool table the eval runner (headless) and every other
@@ -474,6 +481,8 @@ static void TestOpenAIRequestShape()
 	bool sawMaterialScaffold = false;
 	// Arc-75 slice S3b: its geometry sibling, same rationale.
 	bool sawGeometryScaffold = false;
+	// R2 (2026-08-10): the replace form, same rationale.
+	bool sawReplaceGeometryScaffold = false;
 	for( std::size_t i = 0; i < tools.size(); ++i ) {
 		const JsonValue& fn = tools.at( i );
 		if( fn.get( "name" ).asString() == "read_document" ) {
@@ -496,13 +505,42 @@ static void TestOpenAIRequestShape()
 			const JsonValue& params = fn.get( "parameters" );
 			Check( params.isObject(), "insert_geometry_scaffold OpenAI tool carries a parameters object" );
 			const JsonValue& required = params.get( "required" );
-			Check( required.isArray() && required.size() == 5,
-			       "insert_geometry_scaffold declares all 5 params required" );
+			// Arc-75 slice E3, creature scaffold slice: required params
+			// now differ BY FAMILY (blended_chain needs points/taper
+			// instead of aspect; volume_bank needs aspect PLUS tone;
+			// quadruped needs NEITHER detail NOR aspect) -- JSON Schema's
+			// flat top-level "required" can only name what EVERY family
+			// needs (family/name/size -- `detail` dropped out of the
+			// universal set once quadruped shipped without it), so it is
+			// 3, down from 4; the per-family requirement is enforced as a
+			// blocking error by AgentRpc.cpp's handler, not by this
+			// schema array (see AgentSession::InsertGeometryScaffold's
+			// header doc).
+			Check( required.isArray() && required.size() == 3,
+			       "insert_geometry_scaffold declares the three family-universal params required "
+			       "(family/name/size; detail/aspect/points/taper/tone/build are family-conditional, "
+			       "enforced by the handler, not this schema)" );
+		}
+		if( fn.get( "name" ).asString() == "replace_geometry_scaffold" ) {
+			sawReplaceGeometryScaffold = true;
+			const JsonValue& params = fn.get( "parameters" );
+			Check( params.isObject(), "replace_geometry_scaffold OpenAI tool carries a parameters object" );
+			const JsonValue& required = params.get( "required" );
+			// R2 (2026-08-10), creature scaffold slice: the SAME three
+			// family-universal params as the insert form, PLUS `target`
+			// -- the one param that is universal here and absent there.
+			Check( required.isArray() && required.size() == 4,
+			       "replace_geometry_scaffold declares target + the three family-universal params required" );
+			bool sawTargetRequired = false;
+			for( std::size_t r = 0; r < required.size(); ++r )
+				if( required.at( r ).asString() == "target" ) sawTargetRequired = true;
+			Check( sawTargetRequired, "replace_geometry_scaffold requires `target`" );
 		}
 	}
 	Check( sawReadDocument, "OpenAI tool list includes read_document" );
 	Check( sawMaterialScaffold, "OpenAI tool list (the eval-harness tool roster) includes insert_material_scaffold" );
 	Check( sawGeometryScaffold, "OpenAI tool list (the eval-harness tool roster) includes insert_geometry_scaffold" );
+	Check( sawReplaceGeometryScaffold, "OpenAI tool list (the eval-harness tool roster) includes replace_geometry_scaffold" );
 }
 
 //----------------------------------------------------------------------
@@ -538,8 +576,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 16,
-		       "xAI body carries the same sixteen tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 38,
+		       "xAI body carries the same thirty-eight tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -804,11 +842,13 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 16, "body carries sixteen tools" );
+	Check( tools.isArray() && tools.size() == 38, "body carries thirty-eight tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
+	                           // R1a (2026-08-09): the ATOMIC batch remove.
+	                           "remove_chunks",
 	                           "render", "read_image", "query_object_at", "compare_to_reference" };
-	for( int t = 0; t < 13; ++t ) {
+	for( int t = 0; t < 14; ++t ) {
 		bool found = false;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() == expected[t] ) {
@@ -1087,8 +1127,7 @@ static void TestAnthropicRollingCacheBreakpoint()
 	loop.AddUserMessage( "Describe the scene. " + pad );
 
 	// read_schema is deliberately neither a mutation nor a visual observe,
-	// so the blind-edit nudge (which would rewrite the system prompt and
-	// legitimately break the prefix comparison) can never arm here.
+	// so the SEQUENCING GATE (AgentChatLoop.h) can never trip here.
 	const std::string fixtureA = AnthropicFixture(
 		"[{\"type\":\"text\",\"text\":\"Reading the schema.\"},"
 		"{\"type\":\"tool_use\",\"id\":\"toolu_R1\",\"name\":\"read_schema\",\"input\":{}}]",
@@ -1317,6 +1356,17 @@ static void TestAnthropicToolLoop( AgentRpcDispatcher& rpc )
 static void TestInsertChunkToolLoop( AgentRpcDispatcher& rpc )
 {
 	std::printf( "T2b: insert_chunk tool loop end-to-end (live dispatcher)...\n" );
+
+	// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13: prime the zero-area
+	// confirmation for `chatloop_key`'s exact fingerprint on the SHARED
+	// dispatcher session before this case's own insert -- the FIRST
+	// creation request for any omni_light is refused unconditionally now,
+	// and this case is about the tool-loop round-trip, not that gate.  The
+	// refusal mutates nothing.
+	rpc.HandleLine(
+		"{\"jsonrpc\":\"2.0\",\"id\":41,\"method\":\"insert_chunk\",\"params\":"
+		"{\"chunkText\":\"omni_light\\n{\\nname chatloop_key\\nposition 0 5 0\\ncolor 1 1 1\\npower 2.0\\n}\"}}" );
+
 	AgentChatLoop loop;
 	loop.SetProvider( ChatProvider::Anthropic );
 	loop.AddUserMessage( "Add a key light above the sphere" );
@@ -1487,10 +1537,21 @@ static void TestInlineRenderImagePacking( AgentRpcDispatcher& rpc )
 
 	std::string b64First, b64Second;
 	const char* const ids[] = { "toolu_inlA", "toolu_inlB" };
+	// Different imageMaxEdge per round: the retention checks below need the
+	// two renders' bytes to DIFFER, and two renders of an unchanged scene can
+	// legitimately come back byte-identical (QMC sampling is deterministic;
+	// the only cross-call entropy is thread interleaving).  imageMaxEdge only
+	// DOWNSCALES (AgentRpc.cpp render handler), and the fixture film is 24x24,
+	// so the second round must sit BELOW the native edge: 16 (the param's
+	// clamp floor) forces 24x24 -> 16x16, making the PNGs structurally
+	// distinct every run.  (A first attempt used 32/24 -- neither downscales
+	// 24x24, and the fixture-sanity check below caught the two renders coming
+	// back byte-identical.)
+	const char* const edges[] = { "32", "16" };
 	for( int round = 0; round < 2; ++round ) {
 		const std::string fx = AnthropicFixture(
 			std::string( "[{\"type\":\"tool_use\",\"id\":\"" ) + ids[round] +
-			"\",\"name\":\"render\",\"input\":{\"imageMaxEdge\":32}}]", "tool_use" );
+			"\",\"name\":\"render\",\"input\":{\"imageMaxEdge\":" + edges[round] + "}}]", "tool_use" );
 		ChatStepResult st = loop.HandleResponse( 200, fx );
 		Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 1,
 		       "T3b: inline-render fixture -> one ToolCall" );
@@ -1504,6 +1565,8 @@ static void TestInlineRenderImagePacking( AgentRpcDispatcher& rpc )
 		loop.AddToolResult( st.toolCalls[0], resp );
 	}
 	if( b64First.empty() || b64Second.empty() ) return;
+	Check( b64First != b64Second,
+	       "T3b: (fixture sanity) the two renders' bytes differ -- the retention counts below are meaningful" );
 
 	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
 	JsonValue root = ParseBody( req.body );
@@ -1728,12 +1791,12 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 	std::printf( "T4: Gemini request shape + tool loop...\n" );
 	AgentChatLoop loop;
 	loop.SetProvider( ChatProvider::Gemini );
-	Check( loop.ModelId() == "gemini-3.5-flash", "default Gemini model id" );
+	Check( loop.ModelId() == "gemini-4-argon", "default Gemini model id" );
 
 	loop.AddUserMessage( "Show me the current rendering" );
 	{
 		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
-		Check( req.url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
+		Check( req.url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:generateContent",
 		       "url is the v1beta generateContent endpoint" );
 		CheckKeyOnlyInAuthHeader( req, "x-goog-api-key", "T4" );
 
@@ -1743,7 +1806,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 16, "sixteen functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 38, "thirty-eight functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
@@ -2130,97 +2193,291 @@ static void TestHostileInputs( AgentRpcDispatcher& rpc )
 		       "an explicit host cap survives a switch back to a hosted provider" );
 	}
 
-	// BLIND-EDIT NUDGE, STREAK ACCOUNTING: which verbs grow the run, which
-	// reset it, and where the threshold trips.  Guards the behaviour that
-	// targets the measured "insert 70+ chunks, never render".  WHERE the
-	// reminder is delivered (a conversation message, never the system
-	// prompt) and its wire validity are T44's job, not this block's.
+	// SEQUENCING GATE (E4), STREAK ACCOUNTING AND REFUSAL: which verbs grow
+	// the run, which reset it, and where the threshold trips into an
+	// outright REFUSAL -- replacing the earlier blind-edit NUDGE (an
+	// advisory message found UNSAFE in production: a model echoed it back
+	// as its own final text -- see AgentChatLoop.h's SEQUENCING GATE
+	// block).  Guards the same measured failure the nudge targeted
+	// ("insert 70+ chunks, never render").  `stepWith` below mirrors the
+	// HOST's dispatch loop (AgentEvalRunner.cpp / ChatViewModel.swift):
+	// check the gate BEFORE dispatch; a non-empty refusal is fed straight
+	// to AddToolResult and the "dispatcher" (an always-succeeds stub here)
+	// is never consulted -- so a refused call never actually mutates.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );
-		loop.SetBlindEditNudgeThreshold( 3 );   // small K so the test is short
-		Check( loop.BlindEditNudgeThreshold() == 3, "the nudge threshold is settable" );
+		loop.SetBlindEditGateThreshold( 3 );   // small K so the test is short
+		Check( loop.BlindEditGateThreshold() == 3, "the gate threshold is settable" );
 		loop.AddUserMessage( "build a scene" );
 
 		const std::string insertFx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_i\",\"name\":\"insert_chunk\",\"input\":{}}]", "tool_use" );
 		const std::string renderFx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_r\",\"name\":\"render\",\"input\":{}}]", "tool_use" );
+		const std::string viewportFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_v\",\"name\":\"read_viewport\",\"input\":{}}]", "tool_use" );
+		const std::string compareFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_c\",\"name\":\"compare_to_reference\",\"input\":{}}]", "tool_use" );
 		const std::string schemaFx = AnthropicFixture(
 			"[{\"type\":\"tool_use\",\"id\":\"toolu_s\",\"name\":\"read_schema\",\"input\":{}}]", "tool_use" );
-		auto okResult = []( const std::string& id ) {
-			return std::string( "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}" );
-		};
-		auto stepWith = [&]( const std::string& fx ) {
+		int rpcId = 1;
+
+		// Returns true iff THIS call was gate-refused.  Whenever it IS
+		// refused, also pins the envelope's exact shape: applied:false,
+		// status:"rejected", retriable:true, and a message naming BOTH
+		// cheap exits (render, read_viewport) -- the standard rejection
+		// envelope the task brief specifies verbatim.
+		auto stepWith = [&]( const std::string& fx ) -> bool {
 			ChatStepResult st = loop.HandleResponse( 200, fx );
-			if( st.toolCalls.size() == 1 )
-				loop.AddToolResult( st.toolCalls[0], okResult( st.toolCalls[0].id ) );
+			if( st.toolCalls.size() != 1 ) return false;
+			const ChatToolCall& call = st.toolCalls[0];
+			const std::string gate = loop.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) {
+				const JsonValue env = ParseBody( gate );
+				const JsonValue& result = env.get( "result" );
+				Check( result.get( "applied" ).isBool() && result.get( "applied" ).asBool() == false,
+				       "gate envelope: applied is false" );
+				Check( result.get( "status" ).asString() == "rejected",
+				       "gate envelope: status is \"rejected\"" );
+				Check( result.get( "retriable" ).isBool() && result.get( "retriable" ).asBool() == true,
+				       "gate envelope: retriable is true" );
+				const std::string msg = result.get( "message" ).asString();
+				Check( msg.find( "render" ) != std::string::npos &&
+				       msg.find( "read_viewport" ) != std::string::npos,
+				       "gate envelope: message names BOTH cheap exits (render, read_viewport)" );
+				loop.AddToolResult( call, gate );
+				return true;
+			}
+			loop.AddToolResult( call, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}" );
+			return false;
 		};
 
-		// Two inserts (streak 1,2): under threshold 3 -> no nudge yet.
+		// Threshold arithmetic: the gate fires EXACTLY at the
+		// (threshold+1)-th consecutive mutating call -- the streak is
+		// checked BEFORE it would advance, so a call that brings the
+		// streak TO the threshold still succeeds; the NEXT one is refused.
+		Check( !stepWith( insertFx ), "gate: 1st insert -- not refused (streak 0 -> 1)" );
+		Check( !stepWith( insertFx ), "gate: 2nd insert -- not refused (streak 1 -> 2)" );
+		// A non-visual read (read_schema) neither advances nor trips the
+		// gate -- and is NEVER itself refused (it is not a mutating verb).
+		Check( !stepWith( schemaFx ), "gate: read_schema does not advance the streak, and is never refused" );
+		Check( !stepWith( insertFx ), "gate: 3rd insert -- not refused (streak 2 -> 3, reaches the threshold)" );
+		Check( stepWith( insertFx ), "gate: 4th insert -- the (threshold+1)-th mutating call -- REFUSED" );
+
+		// Continued refusal without a look: the 5th mutating call in a row
+		// is ALSO refused -- the gate does not self-clear.
+		Check( stepWith( insertFx ), "gate: 5th insert -- still refused (no look yet)" );
+
+		// Non-mutating calls pass through freely WHILE GATED.
+		Check( !stepWith( schemaFx ), "gate: non-mutating calls pass through freely while gated" );
+
+		// refused -> look -> same mutation retried -> applies.  render is
+		// itself never gated (not a mutating verb) and resets the streak.
+		Check( !stepWith( renderFx ), "gate: render is itself never gated" );
+		Check( !stepWith( insertFx ), "gate: after a look, the SAME mutation applies again" );
+
+		// Re-arm via 3 more inserts (streak 1 -> 2 -> 3 -> refused on the
+		// 4th), then prove read_viewport is ALSO an honest looking verb,
+		// not just render -- the gap this slice's audit found and closed.
 		stepWith( insertFx );
 		stepWith( insertFx );
-		Check( loop.BuildRequest( kApiKey ).body.find( "edits in a row without rendering" ) == std::string::npos,
-		       "nudge: below threshold, no reminder in the request" );
+		Check( stepWith( insertFx ), "gate: re-armed -- REFUSED again after another 3 blind inserts" );
+		Check( !stepWith( viewportFx ), "gate: read_viewport is itself never gated, and resets the streak" );
+		Check( !stepWith( insertFx ), "gate: after read_viewport, the SAME mutation applies again" );
 
-		// A non-visual read (read_schema) does NOT reset the streak.
-		stepWith( schemaFx );
-		// Third insert -> streak hits 3 == threshold -> arm the nudge.
+		// Same again for compare_to_reference -- documented in
+		// AgentRpc.cpp as a PURE READ that RENDERS, and already treated as
+		// image-bearing by the IMAGE RETENTION rule; it was simply missing
+		// from the streak's own visual-observe allowlist before this slice.
 		stepWith( insertFx );
-		const ChatHttpRequest armed = loop.BuildRequest( kApiKey );
-		Check( armed.body.find( "edits in a row without rendering" ) != std::string::npos,
-		       "nudge: at the threshold, the reminder is on the wire" );
-
-		// A visual observe (render) RESETS the streak, so no SECOND reminder
-		// is added: three more inserts would be needed to re-arm.  Count
-		// occurrences rather than presence -- the first reminder is now a
-		// permanent history message, so a presence check would be vacuous.
-		const std::size_t armedCount = CountOccurrences( armed.body, "edits in a row without rendering" );
-		Check( armedCount == 1, "nudge: exactly one reminder at the threshold" );
-		stepWith( renderFx );
 		stepWith( insertFx );
-		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body,
-		                         "edits in a row without rendering" ) == armedCount,
-		       "nudge: a render resets the streak -- one edit after it does not re-arm" );
+		Check( stepWith( insertFx ), "gate: re-armed -- REFUSED again before the compare_to_reference check" );
+		Check( !stepWith( compareFx ), "gate: compare_to_reference is itself never gated, and resets the streak" );
+		Check( !stepWith( insertFx ), "gate: after compare_to_reference, the SAME mutation applies again" );
+	}
 
-		// Disable it entirely: threshold 0 -> never nudges no matter how many edits.
-		AgentChatLoop off;
-		off.SetProvider( ChatProvider::Anthropic );
-		off.SetBlindEditNudgeThreshold( 0 );
-		off.AddUserMessage( "build" );
-		for( int i = 0; i < 8; ++i ) {
-			ChatStepResult st = off.HandleResponse( 200, insertFx );
-			if( st.toolCalls.size() == 1 )
-				off.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
-		}
-		Check( off.BuildRequest( kApiKey ).body.find( "edits in a row without rendering" ) == std::string::npos,
-		       "nudge: threshold 0 disables it -- 8 blind edits, still no reminder" );
+	// USER-TURN RESET (decision, see AddUserMessage's doc in
+	// AgentChatLoop.cpp): a fresh user message resets the streak
+	// IMMEDIATELY, even mid-gate -- no look required.  A human who just
+	// spoke has, by construction, exercised their own judgment about the
+	// current state; inheriting a stale gate would refuse the model's
+	// very first attempt to act on fresh, human-supervised instructions
+	// for no safety benefit -- this mirrors the pre-existing tool-round
+	// cap reset on the very same call.
+	{
+		AgentChatLoop redirect;
+		redirect.SetProvider( ChatProvider::Anthropic );
+		redirect.SetBlindEditGateThreshold( 3 );
+		redirect.AddUserMessage( "build a scene" );
+		const std::string insertFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_ri\",\"name\":\"insert_chunk\",\"input\":{}}]", "tool_use" );
+		int rpcId = 1;
+		auto redirectStep = [&]() -> bool {
+			ChatStepResult st = redirect.HandleResponse( 200, insertFx );
+			if( st.toolCalls.size() != 1 ) return false;
+			const ChatToolCall& call = st.toolCalls[0];
+			const std::string gate = redirect.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) { redirect.AddToolResult( call, gate ); return true; }
+			redirect.AddToolResult( call, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}" );
+			return false;
+		};
+		Check( !redirectStep(), "gate/user-reset: setup insert 1/4 -- not refused" );
+		Check( !redirectStep(), "gate/user-reset: setup insert 2/4 -- not refused" );
+		Check( !redirectStep(), "gate/user-reset: setup insert 3/4 -- not refused" );
+		Check( redirectStep(), "gate/user-reset: setup insert 4/4 -- REFUSED (gate armed)" );
+		redirect.AddUserMessage( "actually, make it blue instead" );
+		Check( !redirectStep(),
+		       "gate/user-reset: a new user message resets the streak -- the redirect's first "
+		       "mutating call applies without requiring a look first" );
+	}
 
-		// EVERY mutating verb must grow the streak -- including the BATCH
-		// forms.  RED-PROVE target: a batch verb missing from the isMutation
-		// set makes the nudge silently STOP FIRING for exactly the models
-		// making the largest unobserved edits (a model that batches all its
-		// work never accrues a streak at all), which is the opposite of the
-		// intent.  Each batch verb is driven on its own fresh loop so one
-		// covering for the other cannot hide a miss.
+	// BATCH SEMANTICS: one insert_chunks/propose_patches call = ONE streak
+	// increment, regardless of how many elements the batch touches.
+	// RED-PROVE target: if a batch call were (mis-)counted per-ELEMENT, a
+	// single 5-element batch call would already exceed a threshold-3 gate
+	// on its own, refusing calls that never should have been refused.
+	{
 		const char* const kBatchVerbs[] = { "insert_chunks", "propose_patches" };
 		for( const char* verb : kBatchVerbs ) {
 			AgentChatLoop batch;
 			batch.SetProvider( ChatProvider::Anthropic );
-			batch.SetBlindEditNudgeThreshold( 3 );
+			batch.SetBlindEditGateThreshold( 3 );
 			batch.AddUserMessage( "build a scene" );
 			const std::string batchFx = AnthropicFixture(
 				std::string( "[{\"type\":\"tool_use\",\"id\":\"toolu_b\",\"name\":\"" ) + verb +
 				"\",\"input\":{}}]", "tool_use" );
-			for( int i = 0; i < 3; ++i ) {
+			int rpcId = 1;
+			auto batchStep = [&]() -> bool {
 				ChatStepResult st = batch.HandleResponse( 200, batchFx );
-				if( st.toolCalls.size() == 1 )
-					batch.AddToolResult( st.toolCalls[0],
-						"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":2,\"total\":2,\"results\":[]}}" );
-			}
-			Check( batch.BuildRequest( kApiKey ).body.find( "edits in a row without rendering" ) != std::string::npos,
-			       std::string( "nudge: " ) + verb + " COUNTS as a mutation -- 3 batch calls with no render arm the reminder" );
+				if( st.toolCalls.size() != 1 ) return false;
+				const ChatToolCall& call = st.toolCalls[0];
+				const std::string gate = batch.GateRefusalResponse( call, rpcId++ );
+				if( !gate.empty() ) { batch.AddToolResult( call, gate ); return true; }
+				batch.AddToolResult( call,
+					"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":5,\"total\":5,\"results\":[]}}" );
+				return false;
+			};
+			Check( !batchStep(), std::string( "gate/batch[" ) + verb + "]: call 1 (5 elements) -- ONE increment, not refused" );
+			Check( !batchStep(), std::string( "gate/batch[" ) + verb + "]: call 2 -- ONE increment, not refused" );
+			Check( !batchStep(), std::string( "gate/batch[" ) + verb + "]: call 3 -- ONE increment, not refused "
+			       "(streak 2->3; a per-ELEMENT count would already be 15, far past threshold 3)" );
+			Check( batchStep(), std::string( "gate/batch[" ) + verb +
+			       "]: call 4 -- REFUSED, proving the gate counts CALLS, not elements" );
 		}
+	}
+
+	// EVERY mutating verb must grow the streak -- including BOTH scaffold
+	// forms.  RED-PROVE target: a verb missing from IsMutatingToolName
+	// makes the gate silently never fire for exactly the models making the
+	// biggest unobserved edits.  Each verb is driven on its own fresh loop
+	// so one covering for another cannot hide a miss.
+	{
+		const char* const kMutatingVerbs[] = {
+			"insert_chunk", "insert_chunks", "insert_material_scaffold",
+			"insert_geometry_scaffold",
+			// R2 (2026-08-10): ONE replace_geometry_scaffold call is ONE blind
+			// mutation -- one composite document swap, one head bump.
+			"replace_geometry_scaffold",
+			"propose_patch", "propose_patches",
+			"remove_chunk",
+			// R1a (2026-08-09): ONE remove_chunks call is ONE blind mutation,
+			// exactly like one batched insert_chunks -- N chunks leave the
+			// document with no visual observation in between.
+			"remove_chunks"
+		};
+		for( const char* verb : kMutatingVerbs ) {
+			AgentChatLoop mv;
+			mv.SetProvider( ChatProvider::Anthropic );
+			mv.SetBlindEditGateThreshold( 3 );
+			mv.AddUserMessage( "build a scene" );
+			int rpcId = 1;
+			bool refused = false;
+			for( int i = 0; i < 4 && !refused; ++i ) {
+				const std::string fx = AnthropicFixture(
+					std::string( "[{\"type\":\"tool_use\",\"id\":\"toolu_mv\",\"name\":\"" ) + verb +
+					"\",\"input\":{}}]", "tool_use" );
+				ChatStepResult st = mv.HandleResponse( 200, fx );
+				if( st.toolCalls.size() != 1 ) break;
+				const ChatToolCall& call = st.toolCalls[0];
+				const std::string gate = mv.GateRefusalResponse( call, rpcId++ );
+				if( !gate.empty() ) { mv.AddToolResult( call, gate ); refused = true; }
+				else mv.AddToolResult( call,
+					"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":2,\"total\":2,\"results\":[]}}" );
+			}
+			Check( refused, std::string( "gate: " ) + verb +
+			       " COUNTS as a mutation -- 4 calls with no look trip the gate" );
+		}
+	}
+
+	// R1a (2026-08-09) remove_chunks specifics, on top of the generic
+	// "every mutating verb counts" loop above:
+	//   * ONE remove_chunks call is ONE increment, exactly like one batched
+	//     insert_chunks -- never one per removed chunk;
+	//   * the gate's OWN refusal never counts, so every refusal reports the
+	//     SAME streak until a look resets it (the general contract
+	//     GateRefusalResponse documents, red-proven here for the new verb).
+	{
+		AgentChatLoop rc;
+		rc.SetProvider( ChatProvider::Anthropic );
+		rc.SetBlindEditGateThreshold( 3 );
+		rc.AddUserMessage( "tear down the old lighting rig" );
+		const std::string rcFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_rc\",\"name\":\"remove_chunks\","
+			"\"input\":{\"targets\":[\"a\",\"b\",\"c\",\"d\",\"e\"]}}]", "tool_use" );
+		int rpcId = 1;
+		std::string lastGate;
+		// `applied` is a BOOL for this verb (all-or-nothing), and the counts ride in
+		// removed/total -- the SAME envelope AgentRpc.cpp's handler emits.
+		auto rcStep = [&]() -> bool {
+			ChatStepResult st = rc.HandleResponse( 200, rcFx );
+			if( st.toolCalls.size() != 1 ) return false;
+			const ChatToolCall& call = st.toolCalls[0];
+			const std::string gate = rc.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) { lastGate = gate; rc.AddToolResult( call, gate ); return true; }
+			rc.AddToolResult( call,
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true,\"status\":\"applied\","
+				"\"removed\":5,\"total\":5,\"results\":[]}}" );
+			return false;
+		};
+		Check( !rcStep(), "gate/remove_chunks: call 1 (5 targets) -- ONE increment, not refused" );
+		Check( !rcStep(), "gate/remove_chunks: call 2 -- ONE increment, not refused" );
+		Check( !rcStep(), "gate/remove_chunks: call 3 -- ONE increment, reaching the threshold "
+		       "(RED-PROVE: a per-TARGET count would already be 15, far past threshold 3)" );
+		Check( rcStep(), "gate/remove_chunks: call 4 -- REFUSED, so remove_chunks really is in the "
+		       "counted-mutation set (a verb missing from IsMutatingToolName would never trip it)" );
+		const std::string firstRefusal = lastGate;
+		Check( rcStep(), "gate/remove_chunks: call 5 -- still refused" );
+		Check( !firstRefusal.empty() && lastGate.find( "\"id\":5" ) != std::string::npos,
+		       "gate/remove_chunks: the second refusal is a distinct envelope (id advanced)" );
+		// A REFUSAL NEVER COUNTS: both refusals must quote the SAME streak number.
+		// If the first refusal had advanced the streak, the second would say 4.
+		Check( firstRefusal.find( "3 document edits in a row" ) != std::string::npos &&
+		       lastGate.find( "3 document edits in a row" ) != std::string::npos,
+		       "gate/remove_chunks: a REFUSED remove_chunks does NOT advance the streak -- both refusals "
+		       "report the same count (nothing was removed, so nothing was blindly edited)" );
+	}
+
+	// Disable it entirely: threshold 0 -> never refuses no matter how many
+	// mutating calls.
+	{
+		AgentChatLoop off;
+		off.SetProvider( ChatProvider::Anthropic );
+		off.SetBlindEditGateThreshold( 0 );
+		off.AddUserMessage( "build" );
+		const std::string insertFx = AnthropicFixture(
+			"[{\"type\":\"tool_use\",\"id\":\"toolu_off\",\"name\":\"insert_chunk\",\"input\":{}}]", "tool_use" );
+		int rpcId = 1;
+		bool everRefused = false;
+		for( int i = 0; i < 8; ++i ) {
+			ChatStepResult st = off.HandleResponse( 200, insertFx );
+			if( st.toolCalls.size() != 1 ) continue;
+			const ChatToolCall& call = st.toolCalls[0];
+			const std::string gate = off.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) { everRefused = true; off.AddToolResult( call, gate ); }
+			else off.AddToolResult( call, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		}
+		Check( !everRefused, "gate: threshold 0 disables it -- 8 blind edits, never refused" );
 	}
 
 	// Iteration cap, RAISED: SetMaxToolRoundsPerTurn(25) lets a host with
@@ -2614,7 +2871,7 @@ static void TestRequestGuards()
 		loop.SetProvider( ChatProvider::Gemini );
 		loop.AddUserMessage( "hi" );
 		Check( loop.BuildRequest( kApiKey ).url ==
-		       "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
+		       "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:generateContent",
 		       "a normal model id passes through unchanged" );
 	}
 }
@@ -3361,9 +3618,15 @@ static void TestSupersededReadElision()
 			Check( false, "un-superseded: drive rounds" ); return;
 		}
 		const std::string body = loop.BuildRequest( kApiKey ).body;
+		// DELIBERATELY CHANGED PIN (docs/agentic-redesign/91-context-
+		// lifetimes-and-visible-detail.md, slice L3a): read_skill is now
+		// superseded BY NAME -- a later read of the SAME skill elides the
+		// earlier copy (TestContextLifetimeRetirement proves that half).
+		// What still holds, and is pinned here, is the cross-name half: two
+		// DIFFERENT skills never supersede each other.
 		Check( CountOccurrences( body, "SKILL_MARKER_ONE" ) == 1 &&
 		       CountOccurrences( body, "SKILL_MARKER_TWO" ) == 1,
-		       "read_skill results are NOT superseded by a later read_skill (both ride)" );
+		       "read_skill results of DIFFERENT skills are NOT superseded by each other (both ride)" );
 		Check( CountOccurrences( body, "RENDER_MARKER_ONE" ) == 1 &&
 		       CountOccurrences( body, "RENDER_MARKER_TWO" ) == 1,
 		       "render results are NOT superseded (the model is told to COMPARE them)" );
@@ -3717,6 +3980,77 @@ static void TestSupersededReadElision()
 		       "read_viewport: an available:false result packs NO image block" );
 	}
 
+	// --- (k2) G3a fix-round (2026-08-10): file_build_plan's SKETCH composite
+	//     is covered by the SAME image retention as (k)'s read_viewport PNG.
+	//
+	// This PINS an ACCEPTED-by-design behaviour, it does not fight it: the
+	// supervisor's arbitration for G3a's P2 review explicitly accepted that
+	// the sketch composite shares the transport's single-global-image-slot
+	// retention, because G3b's comparison composite re-surfaces the sketch
+	// at consultation time (design doc docs/agentic-redesign/77-imagination-
+	// target-design.md Section 4.3 records the decision). file_build_plan is
+	// listed in IsImageResult (AgentChatCodecs.cpp ~1307) alongside
+	// read_image/compare_to_reference/render/read_viewport for exactly this
+	// reason -- ANY later image-bearing result, not only another
+	// file_build_plan, must elide it.
+	//
+	// If someone later "fixes" the elision by PINNING the sketch (excluding
+	// file_build_plan from IsImageResult, or special-casing it in the
+	// elision walk), the FIRST assertion below goes red: the sketch base64
+	// would then still be present after the render, silently doubling the
+	// per-request token cost every time a plan is filed and then a render
+	// happens later in the same session. That flip must be LOUD.
+	{
+		const std::vector<unsigned char> sketchPx( 48, 0x37 );
+		const std::vector<unsigned char> renderPx( 48, 0x64 );
+		const std::string b64Sketch = Base64Encode( sketchPx );
+		const std::string b64Render = Base64Encode( renderPx );
+		const std::string envFileBuildPlan =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,"
+			"\"replacedPreviousPlan\":false,\"elementCount\":1,\"elements\":[{\"element\":\"wing\","
+			"\"pieces\":[\"spar\"],"
+			"\"construction\":\"primitive\",\"outline\":\"0 0; 1 0; 1 1; 0 1\",\"view\":\"front\","
+			"\"pointCount\":4,\"areaFraction\":0.72,\"aspect\":1.0}],"
+			"\"png_base64\":\"" + b64Sketch + "\",\"compositeWidth\":256,\"compositeHeight\":256,"
+			"\"message\":\"Sketches, in order: wing. wing: 4 points, area 0.72, aspect 1.00.\"}}";
+		const std::string envRender =
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"ok\":true,\"width\":160,\"height\":120,"
+			"\"png_base64\":\"" + b64Render + "\",\"byteLength\":48}}";
+
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "sketch the parts, then render it" );
+		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "file_build_plan" ),
+		                     Vec1( "toolu_fp" ), Vec1( envFileBuildPlan ) ) ) {
+			Check( false, "file_build_plan retention: drive filing round" ); return;
+		}
+		const std::string bodyAfterFiling = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( bodyAfterFiling, b64Sketch ) == 1,
+		       "file_build_plan retention: the sketch composite's base64 rides after filing, "
+		       "before anything supersedes it" );
+
+		if( !DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "render" ),
+		                     Vec1( "toolu_rd" ), Vec1( envRender ) ) ) {
+			Check( false, "file_build_plan retention: drive render round" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, b64Sketch ) == 0,
+		       "file_build_plan retention: MONEY ASSERTION (regression tripwire) -- the sketch "
+		       "composite's base64 is FULLY ABSENT once a later image-bearing render supersedes "
+		       "it, the accepted G3a/G3b contract. If this ever reads != 0, the sketch was "
+		       "silently pinned and every render-after-filing session now double-pays for it" );
+		Check( CountOccurrences( body, b64Render ) == 1,
+		       "file_build_plan retention: the NEWER render's base64 rides exactly once" );
+		Check( body.find( "image elided" ) != std::string::npos,
+		       "file_build_plan retention: the elided sketch carries the image-elision note" );
+		Check( body.find( "4 points" ) != std::string::npos &&
+		       body.find( "0.72" ) != std::string::npos,
+		       "file_build_plan retention: the sketch's TEXTUAL facts (pointCount/areaFraction) "
+		       "SURVIVE the elision -- the pixels don't, the facts do, that is the pinned contract" );
+		Check( AnthropicToolCallsAllAnswered( ParseBody( body ).get( "messages" ) ),
+		       "file_build_plan retention: every recorded call is still answered after elision" );
+	}
+
 	// --- (g) DETERMINISM: two loops fed identical scripts agree byte for byte ---
 	{
 		AgentChatLoop a, b;
@@ -3738,6 +4072,896 @@ static void TestSupersededReadElision()
 		       "the elision is deterministic: identical scripts -> identical request bytes" );
 		Check( a.EstimateContextTokens() == b.EstimateContextTokens(),
 		       "the elision is deterministic: identical scripts -> identical estimates" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T14c: CONTEXT LIFETIMES (docs/agentic-redesign/91-context-lifetimes-and-
+//       visible-detail.md, slices L2 + L3).  A tool result whose subject is
+//       SETTLED is retired to a one-line stub:
+//         L2  -- a successful finish_element for E retires E's earlier
+//                build_element / insert_chunks results (a FAILED finish
+//                retires nothing);
+//         L3a -- a read_skill of the SAME name supersedes the earlier copy;
+//         L3b -- the finish_element that reports the COMPOSE phase (every
+//                element finished) retires every live named read_skill, once
+//                per build plan (a new file_build_plan re-arms it); a
+//                pieces-phase place_element is NOT the signal; a read made
+//                after compose stays live (until a same-name re-read), and
+//                the index form is never retired.
+//         A retirement is never applied to the entry being flushed: a
+//         same-turn build+finish delivers the build result once, and it
+//         retires on the next flush.
+//       Proved on all four wire shapes with the pairing invariants, plus
+//       (Anthropic) the history_edit reasons, convergence, determinism and
+//       the EstimateContextTokens drop.
+//----------------------------------------------------------------------
+namespace
+{
+	// One tool round whose calls carry ARGUMENTS (DriveToolRound sends {}).
+	bool DriveToolRoundArgs( AgentChatLoop& loop, ChatProvider provider,
+	                         const std::vector<std::string>& verbs,
+	                         const std::vector<std::string>& ids,
+	                         const std::vector<std::string>& args,
+	                         const std::vector<std::string>& envelopes )
+	{
+		const bool chatCompletions = ( provider == ChatProvider::Local ||
+		                               provider == ChatProvider::XAI );
+		std::string blocks;
+		for( std::size_t i = 0; i < verbs.size(); ++i ) {
+			if( i ) blocks += ",";
+			const std::string argStr = JsonSerialize( JsonValue::MakeString( args[i] ) );
+			if( provider == ChatProvider::Anthropic )
+				blocks += "{\"type\":\"tool_use\",\"id\":\"" + ids[i] + "\",\"name\":\"" +
+				          verbs[i] + "\",\"input\":" + args[i] + "}";
+			else if( provider == ChatProvider::Gemini )
+				blocks += "{\"functionCall\":{\"id\":\"" + ids[i] + "\",\"name\":\"" +
+				          verbs[i] + "\",\"args\":" + args[i] + "}}";
+			else if( chatCompletions )
+				blocks += "{\"id\":\"" + ids[i] + "\",\"type\":\"function\",\"function\":{\"name\":\"" +
+				          verbs[i] + "\",\"arguments\":" + argStr + "}}";
+			else
+				blocks += "{\"type\":\"function_call\",\"call_id\":\"" + ids[i] +
+				          "\",\"name\":\"" + verbs[i] + "\",\"arguments\":" + argStr + "}";
+		}
+		std::string fx;
+		if( provider == ChatProvider::Anthropic )
+			fx = AnthropicFixture( "[" + blocks + "]", "tool_use" );
+		else if( provider == ChatProvider::Gemini )
+			fx = GeminiFixture( "{\"parts\":[" + blocks + "],\"role\":\"model\"}", "STOP" );
+		else if( chatCompletions )
+			fx = OpenAIFixture( "null", "[" + blocks + "]", "tool_calls" );
+		else
+			fx = "{\"status\":\"completed\",\"output\":[" + blocks + "]}";
+
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		if( st.toolCalls.size() != verbs.size() ) return false;
+		for( std::size_t i = 0; i < st.toolCalls.size(); ++i )
+			loop.AddToolResult( st.toolCalls[i], envelopes[i] );
+		return true;
+	}
+
+	struct LifetimeCall
+	{
+		std::string verb, args, env;
+	};
+
+	// Every recorded call is answered by the immediately following results
+	// message with a matching id, on whichever wire `provider` speaks.
+	bool LifetimeWireValid( ChatProvider provider, const std::string& body )
+	{
+		const JsonValue root = ParseBody( body );
+		if( provider == ChatProvider::Anthropic ) return AnthropicToolCallsAllAnswered( root.get( "messages" ) );
+		if( provider == ChatProvider::Gemini )    return GeminiFunctionCallsAllAnswered( root.get( "contents" ) );
+		std::vector<std::string> calls, answers;
+		if( provider == ChatProvider::OpenAI ) {
+			const JsonValue& input = root.get( "input" );
+			for( std::size_t i = 0; i < input.size(); ++i ) {
+				const std::string t = input.at( i ).get( "type" ).asString();
+				if( t == "function_call" ) calls.push_back( input.at( i ).get( "call_id" ).asString() );
+				if( t == "function_call_output" ) {
+					answers.push_back( input.at( i ).get( "call_id" ).asString() );
+					if( !input.at( i ).get( "output" ).isString() ) return false;
+				}
+			}
+		}
+		else {
+			const JsonValue& msgs = root.get( "messages" );
+			for( std::size_t i = 0; i < msgs.size(); ++i ) {
+				const JsonValue& m = msgs.at( i );
+				const JsonValue& tc = m.get( "tool_calls" );
+				for( std::size_t k = 0; tc.isArray() && k < tc.size(); ++k )
+					calls.push_back( tc.at( k ).get( "id" ).asString() );
+				if( m.get( "role" ).asString() == "tool" ) {
+					answers.push_back( m.get( "tool_call_id" ).asString() );
+					// Every result payload stays a serialized JSON object.
+					if( !ParseBody( m.get( "content" ).asString() ).isObject() ) return false;
+				}
+			}
+		}
+		std::sort( calls.begin(), calls.end() );
+		std::sort( answers.begin(), answers.end() );
+		return !calls.empty() && calls == answers;
+	}
+
+	std::string LifetimeEnv( int id, const std::string& resultObj )
+	{
+		return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( id ) + ",\"result\":" + resultObj + "}";
+	}
+}
+
+static void TestContextLifetimeRetirement()
+{
+	std::printf( "T14c: context lifetimes -- element-finished, same-skill and compose-phase retirement...\n" );
+
+	// The loop restates the compose phase name (it does not link the
+	// session); pin it to the session's own spelling.
+	Check( std::string( kChatComposePhaseName ) ==
+	       AgentSession::BuildPhaseName( AgentSession::AgentBuildPhase::Compose ),
+	       "kChatComposePhaseName is AgentSession::BuildPhaseName(Compose)" );
+
+	const std::string pad( 6000, 'p' );   // a realistic report weighs KB, not bytes
+	auto skill = [&]( int id, const std::string& name, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"name\":\"" + name + "\",\"markdown\":\"" + marker + " " + pad + "\"}" );
+	};
+	const std::string skillIndex = LifetimeEnv( 2,
+		"{\"skills\":[{\"name\":\"lighting-recipes\",\"title\":\"t\",\"hook\":\"SK_IDX_MARKER\"}]}" );
+	auto build = [&]( int id, const std::string& element, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"ok\":true,\"element\":\"" + element + "\",\"landed\":[\"" + marker +
+			"\"],\"chunkResults\":[],\"message\":\"" + marker + " " + pad + "\"}" );
+	};
+	// One applied chunk of `element` plus one REJECTED chunk whose name-based
+	// attribution is ANOTHER element (a refused duplicate) -- the batch
+	// still belongs to `element`.
+	auto insert = [&]( int id, const std::string& element, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"applied\":1,\"total\":2,\"results\":[{\"applied\":true,\"status\":"
+			"\"applied\",\"headVersion\":{\"uuid\":7,\"revision\":3},\"name\":\"" + marker +
+			"\",\"kind\":\"uniformcolor_painter\",\"element\":\"" + element + "\"},"
+			"{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
+			"\"headVersion\":{\"uuid\":7,\"revision\":3},\"message\":\"duplicate name\","
+			"\"name\":\"dragon_body\",\"kind\":\"uniformcolor_painter\",\"element\":\"dragon\"}]}" );
+	};
+	auto finish = [&]( int id, const std::string& element, bool ok, const char* phase ) {
+		return LifetimeEnv( id, std::string( "{\"ok\":" ) + ( ok ? "true" : "false" ) +
+			",\"phase\":\"" + phase + "\",\"element\":\"" + element + "\",\"chunks\":[],\"message\":\"m\"}" );
+	};
+	auto place = [&]( int id, bool ok ) {
+		return LifetimeEnv( id, std::string( "{\"ok\":" ) + ( ok ? "true" : "false" ) +
+			",\"element\":\"wizard\",\"objects\":[],\"message\":\"m\"}" );
+	};
+	const std::string plan = LifetimeEnv( 40, "{\"filed\":true,\"elementCount\":1,\"elements\":[]}" );
+	const std::string renderEnv = LifetimeEnv( 41, "{\"ok\":true,\"width\":16,\"height\":12}" );
+	const std::string doc = DocEnvelope( 30, "DOC_LIFE_MARKER", 3 );
+
+	// The script, round by round.  Round indices are referenced below.
+	std::vector<std::vector<LifetimeCall>> rounds;
+	rounds.push_back( { { "read_skill", "{\"name\":\"lighting-recipes\"}", skill( 1, "lighting-recipes", "SK_L1_MARKER" ) } } );     // R0
+	rounds.push_back( { { "read_skill", "{}", skillIndex },                                                                        // R1 (co-packed)
+	                    { "read_skill", "{\"name\":\"materials\"}", skill( 3, "materials", "SK_M1_MARKER" ) } } );
+	rounds.push_back( { { "read_skill", "{\"name\":\"lighting-recipes\"}", skill( 4, "lighting-recipes", "SK_L2_MARKER" ) } } );     // R2: L3a
+	rounds.push_back( { { "build_element", "{\"element\":\"wizard\",\"height\":4}", build( 5, "wizard", "BE_W1_MARKER" ) },          // R3 (co-packed)
+	                    { "read_document", "{}", doc } } );
+	rounds.push_back( { { "insert_chunks", "{\"chunks\":[\"x\",\"y\"]}", insert( 6, "wizard", "IC_W1_MARKER" ) } } );                // R4
+	rounds.push_back( { { "place_element", "{\"element\":\"wizard\",\"position\":\"0 0 0\"}", place( 7, true ) } } );                // R5: pieces-phase place
+	rounds.push_back( { { "finish_element", "{}", finish( 8, "wizard", false, "pieces" ) } } );                                      // R6: FAILED
+	rounds.push_back( { { "build_element", "{\"element\":\"dragon\",\"height\":3}", build( 9, "dragon", "BE_D1_MARKER" ) } } );      // R7
+	rounds.push_back( { { "finish_element", "{}", finish( 10, "wizard", true, "pieces" ) } } );                                      // R8: L2, not compose
+	rounds.push_back( { { "build_element", "{\"element\":\"dragon\",\"height\":3}", build( 11, "dragon", "BE_D2_MARKER" ) },         // R9: same-turn build+finish,
+	                    { "finish_element", "{}", finish( 12, "dragon", true, "compose" ) } } );                                     //     reaching compose
+	rounds.push_back( { { "read_skill", "{\"name\":\"materials\"}", skill( 13, "materials", "SK_M2_MARKER" ) } } );                   // R10
+	rounds.push_back( { { "place_element", "{\"element\":\"dragon\",\"position\":\"1 0 0\"}", place( 14, true ) } } );               // R11
+	rounds.push_back( { { "read_skill", "{\"name\":\"materials\"}", skill( 15, "materials", "SK_M3_MARKER" ) } } );                   // R12: L3a again
+	rounds.push_back( { { "file_build_plan", "{}", plan } } );                                                                       // R13: re-arm
+	rounds.push_back( { { "read_skill", "{\"name\":\"lighting-recipes\"}", skill( 16, "lighting-recipes", "SK_L3_MARKER" ) } } );    // R14
+	rounds.push_back( { { "build_element", "{\"element\":\"tower\",\"height\":2}", build( 17, "tower", "BE_T1_MARKER" ) },           // R15: plan 2 composes
+	                    { "finish_element", "{}", finish( 18, "tower", true, "compose" ) } } );
+	rounds.push_back( { { "render", "{}", renderEnv } } );                                                                           // R16
+
+	struct Prov { ChatProvider p; const char* label; };
+	const Prov provs[] = {
+		{ ChatProvider::Anthropic, "anthropic" }, { ChatProvider::Gemini, "gemini" },
+		{ ChatProvider::OpenAI, "openai/responses" }, { ChatProvider::Local, "openai/chat-completions" } };
+	const char* const kComposeStub = "retired when every element of the build plan was finished";
+	const char* const kFinishedStub = "was finished; read_document shows the current document";
+
+	std::string anthropicFinalBody;
+	for( const Prov& pv : provs ) {
+		const std::string L = pv.label;
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( pv.p );
+		if( pv.p == ChatProvider::Anthropic ) {
+			ChatTrajectoryConfig cfg;
+			cfg.traceId = "trace-lifetimes-14c";
+			loop.SetTrajectorySink( [&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+		}
+		loop.AddUserMessage( "build the wizard and the dragon" );
+
+		std::size_t estBeforeFinish = 0, estAfterFinish = 0, estBeforeCompose = 0, estAfterCompose = 0;
+		std::string entryR3AfterFinish;
+		std::size_t entryR3Index = 0;
+		bool driven = true;
+		for( std::size_t r = 0; r < rounds.size() && driven; ++r ) {
+			std::vector<std::string> verbs, ids, args, envs;
+			for( std::size_t k = 0; k < rounds[r].size(); ++k ) {
+				verbs.push_back( rounds[r][k].verb );
+				ids.push_back( "c" + std::to_string( r ) + "_" + std::to_string( k ) );
+				args.push_back( rounds[r][k].args );
+				envs.push_back( rounds[r][k].env );
+			}
+			if( r == 8 ) estBeforeFinish = loop.EstimateContextTokens();
+			if( r == 9 ) estBeforeCompose = loop.EstimateContextTokens();
+			driven = DriveToolRoundArgs( loop, pv.p, verbs, ids, args, envs );
+			// The flush runs in BuildRequest -- this is when a request goes out.
+			const std::string body = loop.BuildRequest( kApiKey ).body;
+			Check( LifetimeWireValid( pv.p, body ),
+			       L + ": every recorded call is still answered after round " + std::to_string( r ) );
+
+			if( r == 2 ) {
+				Check( CountOccurrences( body, "SK_L1_MARKER" ) == 0 && CountOccurrences( body, "SK_L2_MARKER" ) == 1,
+				       L + ": L3a -- a re-read of the SAME skill supersedes the earlier copy" );
+				Check( body.find( "superseded by a later read_skill of the same skill" ) != std::string::npos,
+				       L + ": L3a -- the superseded skill carries its honest placeholder" );
+				Check( CountOccurrences( body, "SK_M1_MARKER" ) == 1,
+				       L + ": L3a -- a DIFFERENT skill is untouched" );
+			}
+			if( r == 5 ) {
+				Check( CountOccurrences( body, "SK_L2_MARKER" ) == 1 && CountOccurrences( body, "SK_M1_MARKER" ) == 1 &&
+				       body.find( kComposeStub ) == std::string::npos,
+				       L + ": L3b -- a place_element in the PIECES phase (later elements unbuilt) retires no skill" );
+			}
+			if( r == 6 ) {
+				Check( CountOccurrences( body, "BE_W1_MARKER" ) == 2 && CountOccurrences( body, "IC_W1_MARKER" ) == 1,
+				       L + ": L2 -- a FAILED finish_element retires nothing" );
+				Check( body.find( kFinishedStub ) == std::string::npos,
+				       L + ": L2 -- no element-finished stub after a failed finish" );
+			}
+			if( r == 8 ) {
+				estAfterFinish = loop.EstimateContextTokens();
+				Check( CountOccurrences( body, "BE_W1_MARKER" ) == 0,
+				       L + ": L2 MONEY -- the finished element's build_element result is retired" );
+				Check( CountOccurrences( body, "IC_W1_MARKER" ) == 0,
+				       L + ": L2 -- its insert_chunks result is retired too, attributed by its APPLIED chunk "
+				       "(the rejected chunk's other-element attribution is ignored)" );
+				Check( body.find( "build_element result for element" ) != std::string::npos &&
+				       body.find( "insert_chunks result for element" ) != std::string::npos &&
+				       body.find( kFinishedStub ) != std::string::npos,
+				       L + ": L2 -- each retired result carries a stub naming its verb and the recovery path" );
+				Check( CountOccurrences( body, "BE_D1_MARKER" ) == 2,
+				       L + ": L2 -- ANOTHER element's build_element result stays live" );
+				Check( CountOccurrences( body, "DOC_LIFE_MARKER" ) == 1,
+				       L + ": L2 -- a CO-PACKED neighbour (read_document) of a retired result is untouched" );
+				Check( CountOccurrences( body, "SK_L2_MARKER" ) == 1 && body.find( kComposeStub ) == std::string::npos,
+				       L + ": L3b -- a finish that leaves the plan in the PIECES phase retires no skill" );
+				for( std::size_t i = 0; i < loop.TranscriptSize(); ++i )
+					if( loop.TranscriptAt( i ).rawJson.find( "DOC_LIFE_MARKER" ) != std::string::npos )
+						entryR3Index = i;
+				entryR3AfterFinish = loop.TranscriptAt( entryR3Index ).rawJson;
+			}
+			if( r == 9 ) {
+				estAfterCompose = loop.EstimateContextTokens();
+				Check( CountOccurrences( body, "BE_D2_MARKER" ) == 2,
+				       L + ": SAME-FLUSH -- a build_element finished in the SAME turn is still delivered once" );
+				Check( CountOccurrences( body, "BE_D1_MARKER" ) == 0,
+				       L + ": L2 -- the element's build_element from an EARLIER turn retires at the finish" );
+				Check( CountOccurrences( body, "SK_L2_MARKER" ) == 0 && CountOccurrences( body, "SK_M1_MARKER" ) == 0,
+				       L + ": L3b MONEY -- the finish that reaches the compose phase retires every live named skill" );
+				Check( body.find( kComposeStub ) != std::string::npos,
+				       L + ": L3b -- the retired skill carries the compose-phase re-read stub" );
+				Check( CountOccurrences( body, "SK_IDX_MARKER" ) == 1,
+				       L + ": L3b -- the INDEX form of read_skill is never retired" );
+			}
+			if( r == 10 ) {
+				Check( CountOccurrences( body, "BE_D2_MARKER" ) == 0,
+				       L + ": SAME-FLUSH -- ... and it retires on the NEXT flush" );
+				Check( CountOccurrences( body, "SK_M2_MARKER" ) == 1,
+				       L + ": L3b -- a skill read AFTER compose is live" );
+			}
+			if( r == 11 ) {
+				Check( CountOccurrences( body, "SK_M2_MARKER" ) == 1,
+				       L + ": L3b -- a skill read after compose stays live through a later place_element" );
+			}
+			if( r == 12 ) {
+				Check( CountOccurrences( body, "SK_M2_MARKER" ) == 0 && CountOccurrences( body, "SK_M3_MARKER" ) == 1,
+				       L + ": L3a -- a post-compose re-read of the same skill still supersedes" );
+			}
+			if( r == 15 ) {
+				Check( CountOccurrences( body, "SK_M3_MARKER" ) == 0 && CountOccurrences( body, "SK_L3_MARKER" ) == 0,
+				       L + ": L3b RE-ARM -- after a new file_build_plan, that plan's compose retires its skills" );
+				Check( CountOccurrences( body, "BE_T1_MARKER" ) == 2,
+				       L + ": SAME-FLUSH -- the new plan's same-turn build_element is delivered once" );
+			}
+			if( r == 16 ) {
+				Check( CountOccurrences( body, "BE_T1_MARKER" ) == 0,
+				       L + ": SAME-FLUSH -- and retires on the next flush" );
+				// CONVERGENCE: the R3 entry (retired build_element + live
+				// read_document) was rewritten once, at the finish, and no
+				// later flush moved its bytes again.
+				Check( loop.TranscriptAt( entryR3Index ).rawJson == entryR3AfterFinish,
+				       L + ": convergence -- a retired entry is rewritten exactly once" );
+				if( pv.p == ChatProvider::Anthropic ) anthropicFinalBody = body;
+			}
+		}
+		Check( driven, L + ": every scripted round parsed" );
+		Check( estAfterFinish < estBeforeFinish,
+		       L + ": the context estimate DROPS across the finish_element flush" );
+		Check( estAfterCompose < estBeforeCompose,
+		       L + ": the context estimate DROPS across the compose flush" );
+
+		if( pv.p == ChatProvider::Anthropic ) {
+			int finished = 0, compose = 0, supersede = 0;
+			bool nonShrinkingRetirement = false;
+			for( std::size_t i = 0; i < lines.size(); ++i ) {
+				const JsonValue j = ParseBody( lines[i] );
+				if( j.get( "run_type" ).asString() != "history_edit" ) continue;
+				const std::string reason = j.get( "reason" ).asString();
+				if( reason == "element_finished_retirement" || reason == "compose_skill_retirement" ) {
+					if( j.get( "after_bytes" ).asNumber() >= j.get( "before_bytes" ).asNumber() )
+						nonShrinkingRetirement = true;   // a non-shrinking "retirement" is a defect
+				}
+				if( reason == "element_finished_retirement" ) ++finished;
+				if( reason == "compose_skill_retirement" ) ++compose;
+				if( reason == "tool_result_supersession" ) ++supersede;
+			}
+			// R8 flush: the R3 and R4 entries; R9: R7; R10: R9; R16: R15.
+			Check( finished == 5, "anthropic: one element_finished_retirement history_edit per rewritten entry (5)" );
+			Check( !nonShrinkingRetirement, "anthropic: every lifetime retirement shrinks its entry" );
+			// R9 flush: the R1 and R2 skill entries; R15: R12 and R14.
+			Check( compose == 4, "anthropic: one compose_skill_retirement history_edit per rewritten entry (4)" );
+			Check( supersede == 2, "anthropic: the two same-name skill re-reads are tool_result_supersession edits" );
+		}
+	}
+
+	// DETERMINISM: an identical script reproduces identical request bytes.
+	{
+		AgentChatLoop again;
+		again.SetProvider( ChatProvider::Anthropic );
+		again.AddUserMessage( "build the wizard and the dragon" );
+		for( std::size_t r = 0; r < rounds.size(); ++r ) {
+			std::vector<std::string> verbs, ids, args, envs;
+			for( std::size_t k = 0; k < rounds[r].size(); ++k ) {
+				verbs.push_back( rounds[r][k].verb );
+				ids.push_back( "c" + std::to_string( r ) + "_" + std::to_string( k ) );
+				args.push_back( rounds[r][k].args );
+				envs.push_back( rounds[r][k].env );
+			}
+			if( !DriveToolRoundArgs( again, ChatProvider::Anthropic, verbs, ids, args, envs ) ) {
+				Check( false, "determinism: drive round" ); return;
+			}
+			(void)again.BuildRequest( kApiKey );
+		}
+		Check( again.BuildRequest( kApiKey ).body == anthropicFinalBody,
+		       "the lifetime retirements are deterministic: identical scripts -> identical request bytes" );
+	}
+
+	// RESET clears the compose signal: a fresh conversation retires its own
+	// planning skills again at its own compose.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		for( int pass = 0; pass < 2; ++pass ) {
+			if( pass ) loop.Reset();
+			loop.AddUserMessage( "plan, then finish" );
+			if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "read_skill" ), Vec1( "rs" ),
+			                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_RESET_MARKER" ) ) ) ||
+			    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "fe" ),
+			                         Vec1( "{}" ), Vec1( finish( 2, "wizard", true, "compose" ) ) ) ) {
+				Check( false, "reset: drive rounds" ); return;
+			}
+			Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "SK_RESET_MARKER" ) == 0,
+			       pass ? "after Reset, the new conversation's compose retires its skills again"
+			            : "the first conversation's compose retires its skill" );
+		}
+	}
+
+	// A FAILED finish_element is not the compose signal, whatever phase it names.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "finish too early" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "read_skill" ), Vec1( "rs" ),
+		                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_FAILFIN_MARKER" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "fe" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", false, "compose" ) ) ) ) {
+			Check( false, "failed finish: drive rounds" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "SK_FAILFIN_MARKER" ) == 1,
+		       "an ok:false finish_element retires no skill (it is not the compose signal)" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T14d: context lifetimes, review round 2.
+//   (a) a retired build_element stub CARRIES what is not in the document
+//       (rejected chunks + reasons, notices on landed chunks);
+//   (b) a decided-but-unapplied element retirement is CANCELLED by a
+//       successful reopen_element of that element, and a re-finish then
+//       retires the old and the new results;
+//   (c) a read_skill in the SAME turn as the compose-phase finish is
+//       post-compose in either order;
+//   (d) gaps: a mixed-element insert_chunks is never retired; an
+//       error-envelope build_element is attributed by its call argument; a
+//       finish_element carrying a real PNG, co-packed with a build that
+//       retires next flush, keeps both rules consistent.
+//----------------------------------------------------------------------
+static void TestContextLifetimeRetirementRound2()
+{
+	std::printf( "T14d: context lifetimes -- carried rejections, reopen cancel, same-turn compose order...\n" );
+
+	const std::string pad( 4000, 'q' );
+	auto build = [&]( int id, const std::string& element, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"ok\":true,\"element\":\"" + element + "\",\"landed\":[\"" + element +
+			"_robe\"],\"landedKinds\":[\"lambertian_material\"],"
+			"\"rejected\":[{\"name\":\"" + element + "_bad\",\"kind\":\"expression_painter\","
+			"\"reason\":\"REJECT_REASON_MARKER the def did not compile\"}],"
+			"\"chunkResults\":[{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
+			"\"message\":\"REJECT_REASON_MARKER the def did not compile\",\"name\":\"" + element +
+			"_bad\",\"kind\":\"expression_painter\"},"
+			"{\"applied\":true,\"rawCode\":2,\"status\":\"applied\",\"retriable\":false,"
+			"\"message\":\"chunk inserted. NOTICE_MARKER not parented\",\"name\":\"" + element +
+			"_robe\",\"kind\":\"lambertian_material\"}],"
+			"\"message\":\"" + marker + " " + pad + "\"}" );
+	};
+	auto plainBuild = [&]( int id, const std::string& element, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"ok\":true,\"element\":\"" + element + "\",\"landed\":[\"x\"],"
+			"\"rejected\":[],\"chunkResults\":[],\"message\":\"" + marker + " " + pad + "\"}" );
+	};
+	auto finish = [&]( int id, const std::string& element, const char* phase ) {
+		return LifetimeEnv( id, std::string( "{\"ok\":true,\"phase\":\"" ) + phase + "\",\"element\":\"" +
+			element + "\",\"chunks\":[],\"message\":\"m\"}" );
+	};
+	auto reopen = [&]( int id, const std::string& element ) {
+		return LifetimeEnv( id, "{\"ok\":true,\"element\":\"" + element + "\",\"phase\":\"pieces\","
+			"\"previousPhase\":\"pieces\",\"chunks\":[],\"unfinished\":[],\"message\":\"m\"}" );
+	};
+	auto skill = [&]( int id, const std::string& name, const std::string& marker ) {
+		return LifetimeEnv( id, "{\"name\":\"" + name + "\",\"markdown\":\"" + marker + " " + pad + "\"}" );
+	};
+	const std::string renderEnv = LifetimeEnv( 90, "{\"ok\":true,\"width\":16,\"height\":12}" );
+	const char* const kBuildArgs = "{\"element\":\"wizard\",\"height\":4}";
+
+	// --- (a) the stub carries the rejection and the notice ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build the wizard" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "build_element" ), Vec1( "b1" ),
+		                         Vec1( kBuildArgs ), Vec1( build( 1, "wizard", "BE_CARRY_MARKER" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "pieces" ) ) ) ) {
+			Check( false, "T14d(a): drive rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "BE_CARRY_MARKER" ) == 0,
+		       "T14d(a): the finished element's build_element result is retired" );
+		Check( CountOccurrences( body, "REJECT_REASON_MARKER" ) == 1 &&
+		       body.find( "wizard_bad (expression_painter) refused: REJECT_REASON_MARKER" ) != std::string::npos,
+		       "T14d(a) MONEY: the stub CARRIES the refused chunk and its reason (once, deduplicated)" );
+		Check( CountOccurrences( body, "NOTICE_MARKER" ) == 1 &&
+		       body.find( "wizard_robe (lambertian_material) landed with a notice:" ) != std::string::npos,
+		       "T14d(a): the stub carries a landed chunk's notice, labelled as LANDED" );
+		Check( body.find( "Per-chunk outcomes that call reported:" )
+		           != std::string::npos &&
+		       body.find( "retired when \\\"wizard\\\" was finished" ) != std::string::npos,
+		       "T14d(a): the stub says what it kept and that it was retired when the element was finished" );
+		Check( AnthropicToolCallsAllAnswered( ParseBody( body ).get( "messages" ) ),
+		       "T14d(a): every call is still answered" );
+	}
+
+	// --- (b) reopen cancels an unapplied retirement; a re-finish retires both ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build the wizard, then rethink it" );
+		std::vector<std::string> v2a; v2a.push_back( kBuildArgs ); v2a.push_back( "{}" );
+		std::vector<std::string> v2e; v2e.push_back( build( 1, "wizard", "BE_X_MARKER" ) );
+		v2e.push_back( finish( 2, "wizard", "pieces" ) );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec2( "build_element", "finish_element" ),
+		                         Vec2( "b1", "f1" ), v2a, v2e ) ) {
+			Check( false, "T14d(b): same-turn round" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "BE_X_MARKER" ) == 1,
+		       "T14d(b): the same-turn build result is delivered" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "reopen_element" ), Vec1( "r1" ),
+		                         Vec1( "{\"element\":\"wizard\"}" ), Vec1( reopen( 3, "wizard" ) ) ) ) {
+			Check( false, "T14d(b): reopen round" ); return;
+		}
+		const std::string afterReopen = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( afterReopen, "BE_X_MARKER" ) == 1 &&
+		       afterReopen.find( "result for element" ) == std::string::npos,
+		       "T14d(b) MONEY: reopen_element CANCELS the pending retirement -- nothing of the element retires" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "render" ), Vec1( "x1" ),
+		                         Vec1( "{}" ), Vec1( renderEnv ) ) ) {
+			Check( false, "T14d(b): idle round" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "BE_X_MARKER" ) == 1,
+		       "T14d(b): ... and a later flush does not resurrect it" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "build_element" ), Vec1( "b2" ),
+		                         Vec1( kBuildArgs ), Vec1( plainBuild( 4, "wizard", "BE_Y_MARKER" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f2" ),
+		                         Vec1( "{}" ), Vec1( finish( 5, "wizard", "compose" ) ) ) ) {
+			Check( false, "T14d(b): re-finish rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "BE_X_MARKER" ) == 0 && CountOccurrences( body, "BE_Y_MARKER" ) == 0,
+		       "T14d(b): a re-finish after reopen retires BOTH the old and the new build results" );
+		Check( AnthropicToolCallsAllAnswered( ParseBody( body ).get( "messages" ) ),
+		       "T14d(b): every call is still answered" );
+	}
+
+	// --- (c) same-turn read_skill vs compose finish, both orders ---
+	for( int order = 0; order < 2; ++order ) {
+		const std::string L = order ? "T14d(c) [finish, read_skill]" : "T14d(c) [read_skill, finish]";
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "finish and read" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "read_skill" ), Vec1( "s0" ),
+		                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_PRE_MARKER" ) ) ) ) {
+			Check( false, L + ": pre round" ); return;
+		}
+		std::vector<std::string> verbs, ids, args, envs;
+		const std::string sk = skill( 2, "lighting", "SK_SAME_MARKER" );
+		const std::string fin = finish( 3, "wizard", "compose" );
+		if( order == 0 ) {
+			verbs = Vec2( "read_skill", "finish_element" ); ids = Vec2( "s1", "f1" );
+			args = Vec2( "{\"name\":\"lighting\"}", "{}" ); envs = Vec2( sk, fin );
+		} else {
+			verbs = Vec2( "finish_element", "read_skill" ); ids = Vec2( "f1", "s1" );
+			args = Vec2( "{}", "{\"name\":\"lighting\"}" ); envs = Vec2( fin, sk );
+		}
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, verbs, ids, args, envs ) ) {
+			Check( false, L + ": compose round" ); return;
+		}
+		const std::string b1 = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( b1, "SK_PRE_MARKER" ) == 0,
+		       L + ": the skill read in an EARLIER turn retires at the compose finish" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "render" ), Vec1( "x1" ),
+		                         Vec1( "{}" ), Vec1( renderEnv ) ) ) {
+			Check( false, L + ": idle round" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "SK_SAME_MARKER" ) == 1,
+		       L + " MONEY: the skill read in the SAME turn is post-compose -- still live a flush later" );
+	}
+
+	// --- (d1) a MIXED-element insert_chunks is never retired ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "insert across elements" );
+		const std::string mixed = LifetimeEnv( 1, "{\"applied\":2,\"total\":2,\"results\":["
+			"{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":7,\"revision\":3},"
+			"\"name\":\"IC_MIX_MARKER\",\"kind\":\"k\",\"element\":\"wizard\"},"
+			"{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":7,\"revision\":4},"
+			"\"name\":\"dragon_x\",\"kind\":\"k\",\"element\":\"dragon\"}]}" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "insert_chunks" ), Vec1( "i1" ),
+		                         Vec1( "{\"chunks\":[]}" ), Vec1( mixed ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "pieces" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f2" ),
+		                         Vec1( "{}" ), Vec1( finish( 3, "dragon", "compose" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "render" ), Vec1( "x1" ),
+		                         Vec1( "{}" ), Vec1( renderEnv ) ) ) {
+			Check( false, "T14d(d1): drive rounds" ); return;
+		}
+		Check( CountOccurrences( loop.BuildRequest( kApiKey ).body, "IC_MIX_MARKER" ) == 1,
+		       "T14d(d1): an insert_chunks batch spanning two elements is never retired" );
+	}
+
+	// --- (d2) an error-envelope build_element is attributed by its call argument ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build badly" );
+		const std::string err = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32602,"
+			"\"message\":\"ERR_BE_MARKER height missing\"}}";
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "build_element" ), Vec1( "b1" ),
+		                         Vec1( "{\"element\":\"wizard\"}" ), Vec1( err ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "pieces" ) ) ) ) {
+			Check( false, "T14d(d2): drive rounds" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "ERR_BE_MARKER" ) == 0 &&
+		       body.find( "build_element result for element" ) != std::string::npos,
+		       "T14d(d2): an ERROR build_element for E (element from the call argument) retires with E" );
+	}
+
+	// --- (d3) finish_element with a REAL png co-packed with a build that
+	//          retires next flush; then a newer image elides the png ---
+	{
+		const std::vector<unsigned char> px( 32, 0x5A );
+		const std::string b64 = Base64Encode( px );
+		const std::vector<unsigned char> px2( 32, 0x2B );
+		const std::string b642 = Base64Encode( px2 );
+		const std::string finPng = LifetimeEnv( 2, "{\"ok\":true,\"phase\":\"pieces\",\"element\":\"wizard\","
+			"\"chunks\":[],\"rendered\":true,\"png_base64\":\"" + b64 + "\",\"byteLength\":32,"
+			"\"imageWidth\":4,\"imageHeight\":2,\"message\":\"m\"}" );
+		const std::string img2 = LifetimeEnv( 3, "{\"png_base64\":\"" + b642 + "\",\"byteLength\":32}" );
+		const ChatProvider provs[] = { ChatProvider::Anthropic, ChatProvider::Gemini,
+		                               ChatProvider::OpenAI, ChatProvider::Local };
+		const char* const labels[] = { "T14d(d3) anthropic", "T14d(d3) gemini",
+		                               "T14d(d3) openai/responses", "T14d(d3) openai/chat-completions" };
+		for( std::size_t pi = 0; pi < 4; ++pi ) {
+			const ChatProvider pv = provs[pi];
+			const std::string L = labels[pi];
+			AgentChatLoop loop;
+			loop.SetProvider( pv );
+			loop.AddUserMessage( "build and look" );
+			std::vector<std::string> a; a.push_back( kBuildArgs ); a.push_back( "{}" );
+			std::vector<std::string> e; e.push_back( plainBuild( 1, "wizard", "BE_PNG_MARKER" ) ); e.push_back( finPng );
+			if( !DriveToolRoundArgs( loop, pv, Vec2( "build_element", "finish_element" ), Vec2( "b1", "f1" ), a, e ) ) {
+				Check( false, L + ": build+finish round" ); return;
+			}
+			const std::string b1 = loop.BuildRequest( kApiKey ).body;
+			Check( CountOccurrences( b1, "BE_PNG_MARKER" ) == 1 && CountOccurrences( b1, b64 ) == 1,
+			       L + ": the build result and the finish PNG are both delivered" );
+			if( !DriveToolRoundArgs( loop, pv, Vec1( "render" ), Vec1( "x1" ), Vec1( "{}" ), Vec1( renderEnv ) ) ) {
+				Check( false, L + ": idle round" ); return;
+			}
+			const std::string b2 = loop.BuildRequest( kApiKey ).body;
+			Check( CountOccurrences( b2, "BE_PNG_MARKER" ) == 0 && CountOccurrences( b2, b64 ) == 1,
+			       L + ": next flush retires the build but leaves the co-packed PNG live" );
+			Check( LifetimeWireValid( pv, b2 ), L + ": wire-valid after the lifetime rewrite" );
+			if( pv != ChatProvider::Anthropic )
+				Check( b2.find( "retired_note" ) != std::string::npos &&
+				       b2.find( "superseded_note" ) == std::string::npos,
+				       L + ": a lifetime stub rides under retired_note, not supersession's superseded_note" );
+			if( !DriveToolRoundArgs( loop, pv, Vec1( "read_image" ), Vec1( "x2" ), Vec1( "{}" ), Vec1( img2 ) ) ) {
+				Check( false, L + ": newer image round" ); return;
+			}
+			const std::string b3 = loop.BuildRequest( kApiKey ).body;
+			Check( CountOccurrences( b3, b64 ) == 0 && CountOccurrences( b3, b642 ) == 1 &&
+			       b3.find( "build_element result for element" ) != std::string::npos,
+			       L + ": a newer image elides the finish PNG and the build stub survives the image rewrite" );
+			Check( LifetimeWireValid( pv, b3 ), L + ": wire-valid after both rules touched the entry" );
+		}
+	}
+
+	// --- (e) the carry tells the truth (review round 3) ---
+	auto stubAfterFinish = [&]( const std::string& verb, const std::string& args, const std::string& env,
+	                            std::string& body ) -> bool {
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "build" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( verb ), Vec1( "b1" ),
+		                         Vec1( args ), Vec1( env ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "pieces" ) ) ) ) return false;
+		body = loop.BuildRequest( kApiKey ).body;
+		return true;
+	};
+	// (e1) attempt 1 rejects X, the retry lands X under a different kind:
+	//      X IS in the document -- the stub must say so, not "refused".
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\","
+			"\"landed\":[\"wizard_x\"],\"landedKinds\":[\"uniformcolor_painter\"],\"landedAttempts\":[2],"
+			"\"rejected\":[{\"name\":\"wizard_x\",\"kind\":\"expression_painter\","
+			"\"reason\":\"RETRY_REASON_MARKER def did not compile\",\"attempt\":1}],"
+			"\"chunkResults\":[{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
+			"\"message\":\"RETRY_REASON_MARKER def did not compile\",\"name\":\"wizard_x\","
+			"\"kind\":\"expression_painter\"}],\"message\":\"E1_BUILD_MARKER " + pad + "\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e1): drive" ); return; }
+		Check( CountOccurrences( body, "E1_BUILD_MARKER" ) == 0, "T14d(e1): the build result is retired" );
+		Check( body.find( "wizard_x rejected on attempt 1 (as expression_painter), landed on attempt 2 as "
+		                  "uniformcolor_painter" ) != std::string::npos,
+		       "T14d(e1) MONEY: a chunk rejected on attempt 1 and landed by the retry is reported LANDED, "
+		       "with the kind change" );
+		Check( body.find( "wizard_x (expression_painter) refused" ) == std::string::npos &&
+		       body.find( "Not in the document" ) == std::string::npos,
+		       "T14d(e1) MONEY: the stub never claims the landed chunk is absent" );
+	}
+	// (e2) two DISTINCT chunks sharing one generic reason are each named.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[],"
+			"\"landedKinds\":[],\"rejected\":["
+			"{\"name\":\"wizard_a\",\"kind\":\"sphere_geometry\",\"reason\":\"prefix violation\"},"
+			"{\"name\":\"wizard_b\",\"kind\":\"sphere_geometry\",\"reason\":\"prefix violation\"}],"
+			"\"chunkResults\":[],\"message\":\"E2_BUILD_MARKER " + pad + "\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e2): drive" ); return; }
+		Check( body.find( "wizard_a (sphere_geometry) refused: prefix violation" ) != std::string::npos &&
+		       body.find( "wizard_b (sphere_geometry) refused: prefix violation" ) != std::string::npos,
+		       "T14d(e2) MONEY: distinct chunks with the SAME reason are each named (dedupe by name, kind, text)" );
+		Check( body.find( "chunks are in the document" ) == std::string::npos &&
+		       body.find( "read_document shows the current document; finish_element / reopen_element results "
+		                  "list the element's chunks" ) != std::string::npos,
+		       "T14d(e2) MONEY (review round 6): an ALL-REJECTED build's stub claims no chunks exist -- it "
+		       "points to read_document for the current state" );
+	}
+	// (e3) the carry is bounded, with an explicit count of what was left out.
+	{
+		std::string rej;
+		for( int i = 0; i < 14; ++i ) {
+			if( i ) rej += ",";
+			rej += "{\"name\":\"wizard_r" + std::to_string( i ) + "\",\"kind\":\"k\",\"reason\":\"r\"}";
+		}
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[],"
+			"\"rejected\":[" + rej + "],\"chunkResults\":[],\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e3): drive" ); return; }
+		Check( body.find( "wizard_r11 (k) refused" ) != std::string::npos &&
+		       body.find( "wizard_r12 (k) refused" ) == std::string::npos &&
+		       body.find( "and 2 more" ) != std::string::npos,
+		       "T14d(e3): at most 12 items are carried, then \"and N more\"" );
+	}
+	// (e4) an insert_chunks refused duplicate is reported as REFUSED (the
+	//      name may well exist -- another chunk owns it), never as absent.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"applied\":1,\"total\":2,\"results\":["
+			"{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":7,\"revision\":3},"
+			"\"name\":\"wizard_ok\",\"kind\":\"k\",\"element\":\"wizard\"},"
+			"{\"applied\":false,\"rawCode\":0,\"status\":\"rejected\",\"retriable\":false,"
+			"\"headVersion\":{\"uuid\":7,\"revision\":3},\"message\":\"DUP_MARKER a chunk with this name exists\","
+			"\"name\":\"wizard_ok\",\"kind\":\"k\",\"element\":\"wizard\"}]}" );
+		std::string body;
+		if( !stubAfterFinish( "insert_chunks", "{\"chunks\":[]}", env, body ) ) { Check( false, "T14d(e4): drive" ); return; }
+		Check( body.find( "insert_chunks result for element" ) != std::string::npos &&
+		       body.find( "wizard_ok (k) refused: DUP_MARKER" ) != std::string::npos &&
+		       body.find( "Not in the document" ) == std::string::npos,
+		       "T14d(e4): a refused duplicate is carried as \"refused\", not as absent from the document" );
+		Check( body.find( "headVersion after that call: {\\\"uuid\\\":7,\\\"revision\\\":3}." ) != std::string::npos,
+		       "T14d(e4): the insert_chunks stub keeps the head version (the next baseHeadVersion)" );
+	}
+	// (e5) [X bad, X good] in ONE answer: both attempt 1 -- a refusal, never
+	//      "landed on a later attempt".
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\","
+			"\"landed\":[\"wizard_x\"],\"landedKinds\":[\"uniformcolor_painter\"],\"landedAttempts\":[1],"
+			"\"rejected\":[{\"name\":\"wizard_x\",\"kind\":\"expression_painter\","
+			"\"reason\":\"BADGOOD_MARKER def did not compile\",\"attempt\":1}],"
+			"\"chunkResults\":[],\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e5): drive" ); return; }
+		Check( body.find( "wizard_x (expression_painter) refused: BADGOOD_MARKER" ) != std::string::npos &&
+		       body.find( "landed on attempt" ) == std::string::npos,
+		       "T14d(e5) MONEY: X refused and X landed in the SAME answer is reported as a refusal" );
+	}
+	// (e6) one answer naming X three times: one lands, two are refused as
+	//      duplicates -- one item with its count, never a retry relabel.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\","
+			"\"landed\":[\"wizard_dup\"],\"landedKinds\":[\"uniformcolor_painter\"],\"landedAttempts\":[1],"
+			"\"rejected\":["
+			"{\"name\":\"wizard_dup\",\"kind\":\"uniformcolor_painter\",\"reason\":\"DUPNAME_MARKER exists\",\"attempt\":1},"
+			"{\"name\":\"wizard_dup\",\"kind\":\"uniformcolor_painter\",\"reason\":\"DUPNAME_MARKER exists\",\"attempt\":1}],"
+			"\"chunkResults\":["
+			"{\"applied\":false,\"status\":\"rejected\",\"message\":\"DUPNAME_MARKER exists\",\"name\":\"wizard_dup\",\"kind\":\"uniformcolor_painter\"},"
+			"{\"applied\":false,\"status\":\"rejected\",\"message\":\"DUPNAME_MARKER exists\",\"name\":\"wizard_dup\",\"kind\":\"uniformcolor_painter\"}],"
+			"\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e6): drive" ); return; }
+		Check( body.find( "wizard_dup (uniformcolor_painter) refused (x2): DUPNAME_MARKER exists" ) != std::string::npos &&
+		       CountOccurrences( body, "DUPNAME_MARKER" ) == 1 && body.find( "landed on attempt" ) == std::string::npos,
+		       "T14d(e6) MONEY: duplicate refusals in one answer are counted (x2, chunkResults not double-counted), "
+		       "never relabelled as landed later" );
+	}
+	// (e7) the stub's edit rule is phrased from what the finish REPORTED.
+	//      Exact text, all three variants, plus the carried bounding box.
+	{
+		auto stubText = [&]( const std::string& finishEnv, std::string& text ) -> bool {
+			AgentChatLoop loop;
+			loop.SetProvider( ChatProvider::Anthropic );
+			loop.AddUserMessage( "build" );
+			const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[\"w\"],"
+				"\"rejected\":[],\"chunkResults\":[],"
+				"\"bbox\":{\"min\":[-1,0,-0.5],\"max\":[1,4,0.5],\"height\":4},\"message\":\"m\"}" );
+			if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "build_element" ), Vec1( "b1" ),
+			                         Vec1( kBuildArgs ), Vec1( env ) ) ||
+			    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+			                         Vec1( "{}" ), Vec1( finishEnv ) ) ) return false;
+			const JsonValue msgs = ParseBody( loop.BuildRequest( kApiKey ).body ).get( "messages" );
+			for( std::size_t m = 0; m < msgs.size(); ++m ) {
+				const JsonValue& c = msgs.at( m ).get( "content" );
+				for( std::size_t k = 0; c.isArray() && k < c.size(); ++k ) {
+					if( c.at( k ).get( "type" ).asString() != "tool_result" ||
+					    c.at( k ).get( "tool_use_id" ).asString() != "b1" ) continue;
+					text = c.at( k ).get( "content" ).at( 0 ).get( "text" ).asString();
+					return true;
+				}
+			}
+			return false;
+		};
+		// REVIEW ROUND 5: the stub states only IMMUTABLE facts.  The phase,
+		// the session mode and the plan all change after the finish and the
+		// stub is never rewritten, so whatever the finish reported, the stub
+		// is the SAME text -- and it never states an edit or reopen rule (the
+		// session's own refusal names reopen_element when an edit is
+		// actually refused).
+		const std::string expected =
+			"[build_element result for element \"wizard\" elided -- retired when \"wizard\" was finished; "
+			"read_document shows the current document; finish_element / reopen_element results list the "
+			"element's chunks. Realised world bounding box when built: "
+			"min (-1, 0, -0.5) max (1, 4, 0.5), height 4.]";
+		const char* const finishes[] = {
+			"{\"ok\":true,\"phase\":\"pieces\",\"element\":\"wizard\",\"chunks\":[],\"message\":\"m\"}",
+			"{\"ok\":true,\"phase\":\"compose\",\"element\":\"wizard\",\"chunks\":[],\"message\":\"m\"}",
+			"{\"ok\":true,\"phase\":\"pieces\",\"mode\":\"refining\",\"element\":\"wizard\",\"chunks\":[],\"message\":\"m\"}" };
+		const char* const labels[] = { "pieces", "compose", "refining" };
+		for( int v = 0; v < 3; ++v ) {
+			std::string t;
+			const bool got = stubText( LifetimeEnv( 2, finishes[v] ), t );
+			Check( got && t == expected,
+			       std::string( "T14d(e7) MONEY: " ) + labels[v] + "-phase finish -> the immutable stub, exact text" );
+			// No reopen PRESCRIPTION ("reopen_element \"wizard\" ...") -- the
+			// pointer to reopen_element's RESULTS (which list the chunks) is
+			// not a rule and stays true.
+			Check( got && t.find( "reopen_element \"wizard\"" ) == std::string::npos &&
+			       t.find( "refused" ) == std::string::npos && t.find( "editable" ) == std::string::npos,
+			       std::string( "T14d(e7): " ) + labels[v] + " -- no edit/reopen rule is stated (it would go stale)" );
+		}
+	}
+
+	// (e8) review round 5 P2-2: a carried notice keeps its CONTENT -- the
+	//      canonical insert prefix is stripped before the 160-byte cap, and a
+	//      landed chunk's `issues` (a forward-reference warning) are carried.
+	{
+		Check( std::string( kChatChunkInsertedMessage ) == std::string( RISE::kCstChunkInsertedMessage ),
+		       "T14d(e8): the loop's restated canonical insert message equals the writers' constant" );
+		const std::string longNotice = " This chunk was NOT parented to the element's root node: the root "
+			"could not be minted because LONGNOTICE_MARKER " + std::string( 120, 'n' ) + " TAIL_MARKER";
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[\"wizard_a\",\"wizard_b\"],"
+			"\"landedKinds\":[\"k\",\"k\"],\"landedAttempts\":[1,1],\"rejected\":[],\"chunkResults\":["
+			"{\"applied\":true,\"rawCode\":2,\"status\":\"applied\",\"retriable\":false,\"message\":\"" +
+			std::string( kChatChunkInsertedMessage ) + longNotice + "\",\"name\":\"wizard_a\",\"kind\":\"k\"},"
+			"{\"applied\":true,\"rawCode\":2,\"status\":\"applied\",\"retriable\":false,\"message\":\"" +
+			std::string( kChatChunkInsertedMessage ) + "\",\"name\":\"wizard_b\",\"kind\":\"k\","
+			"\"issues\":[{\"param\":\"reflectance\",\"value\":\"pnt_later\",\"reason\":\"unresolved_reference\","
+			"\"suggestions\":[]}]}],\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e8): drive" ); return; }
+		Check( body.find( "wizard_a (k) landed with a notice: This chunk was NOT parented" ) != std::string::npos &&
+		       body.find( "LONGNOTICE_MARKER" ) != std::string::npos,
+		       "T14d(e8) MONEY: the notice's own text fills the budget (the canonical prefix is stripped)" );
+		Check( body.find( "chunk inserted via a full re-derive" ) == std::string::npos,
+		       "T14d(e8): the canonical boilerplate is not carried" );
+		Check( body.find( "wizard_b (k) landed with a notice: unresolved_reference `reflectance`" ) != std::string::npos,
+		       "T14d(e8): a landed chunk whose only extra is an `issues` warning carries that warning" );
+	}
+	// (e9) review round 5 P3: a STAGED chunk is labelled staged, not refused.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"ok\":true,\"element\":\"wizard\",\"landed\":[],"
+			"\"rejected\":[{\"name\":\"wizard_s\",\"kind\":\"k\",\"reason\":\"STAGED_MARKER queued\",\"attempt\":1}],"
+			"\"chunkResults\":[{\"applied\":false,\"status\":\"staged\",\"message\":\"STAGED_MARKER queued\","
+			"\"name\":\"wizard_s\",\"kind\":\"k\"}],\"message\":\"m\"}" );
+		std::string body;
+		if( !stubAfterFinish( "build_element", kBuildArgs, env, body ) ) { Check( false, "T14d(e9): drive" ); return; }
+		Check( body.find( "wizard_s (k) staged as a proposal: STAGED_MARKER" ) != std::string::npos &&
+		       body.find( "wizard_s (k) refused" ) == std::string::npos && CountOccurrences( body, "STAGED_MARKER" ) == 1,
+		       "T14d(e9): a staged chunk is carried as staged (once), not as refused" );
+		Check( body.find( "chunks are in the document" ) == std::string::npos,
+		       "T14d(e9): a build whose only chunk was STAGED does not claim the element has chunks" );
+	}
+	// (e10) review round 6 P1-2: the compose-retired skill stub is PAST
+	//       tense -- after a later reopen_element it is still true.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "plan, compose, reopen" );
+		if( !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "read_skill" ), Vec1( "s1" ),
+		                         Vec1( "{\"name\":\"materials\"}" ), Vec1( skill( 1, "materials", "SK_PAST_MARKER" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "finish_element" ), Vec1( "f1" ),
+		                         Vec1( "{}" ), Vec1( finish( 2, "wizard", "compose" ) ) ) ||
+		    !DriveToolRoundArgs( loop, ChatProvider::Anthropic, Vec1( "reopen_element" ), Vec1( "r1" ),
+		                         Vec1( "{\"element\":\"wizard\"}" ), Vec1( reopen( 3, "wizard" ) ) ) ) {
+			Check( false, "T14d(e10): drive" ); return;
+		}
+		const std::string body = loop.BuildRequest( kApiKey ).body;
+		Check( CountOccurrences( body, "SK_PAST_MARKER" ) == 0 &&
+		       body.find( "retired when every element of the build plan was finished" ) != std::string::npos &&
+		       body.find( "every element of the build plan is finished" ) == std::string::npos,
+		       "T14d(e10) MONEY: the skill stub states a PAST fact, still true after reopen_element" );
+	}
+	// (e11) review round 6 P2: the carried head version is EXACT digits.
+	{
+		const std::string env = LifetimeEnv( 1, "{\"applied\":1,\"total\":1,\"results\":["
+			"{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":9876543210,\"revision\":123456},"
+			"\"name\":\"wizard_hv\",\"kind\":\"k\",\"element\":\"wizard\"}]}" );
+		std::string body;
+		if( !stubAfterFinish( "insert_chunks", "{\"chunks\":[]}", env, body ) ) { Check( false, "T14d(e11): drive" ); return; }
+		Check( body.find( "headVersion after that call: {\\\"uuid\\\":9876543210,\\\"revision\\\":123456}." )
+		           != std::string::npos,
+		       "T14d(e11) MONEY: a large uuid and a 6-digit revision are carried as exact integers" );
 	}
 }
 
@@ -4788,12 +6012,12 @@ static void TestOpenAIContentNullAndMalformedArgs()
 		ChatStepResult st = loop.HandleResponse( 200, fx );
 		Check( st.kind == ChatStepResult::Kind::ProviderError,
 		       "malformed function.arguments -> ProviderError (whole turn refused)" );
-		Check( st.errorKind == ChatErrorKind::Provider,
-		       "malformed arguments -> errorKind Provider" );
+		Check( st.errorKind == ChatErrorKind::MalformedToolCall,
+		       "malformed arguments -> errorKind MalformedToolCall (recoverable)" );
 		Check( st.errorMessage.find( "malformed arguments" ) != std::string::npos,
 		       "the refusal names the malformed arguments" );
-		Check( !st.retryDegenerateTurn,
-		       "a malformed-arguments STRUCTURAL refusal is not one of the four blank-turn sites -- NOT marked retriable" );
+		Check( st.retryDegenerateTurn,
+		       "a malformed-arguments refusal is answered by the loop's corrective retry (not a blank-turn site)" );
 		Check( loop.TranscriptSize() == 1, "the malformed-args turn records nothing" );
 		Check( loop.PendingToolCalls().empty(),
 		       "no call is pended -- it was never recorded as an executable tool_call" );
@@ -6422,6 +7646,15 @@ static void TestToolOutcomeDisplay()
 		Check( e.toolSummaries[0].outcomeLine == "0/12 applied",
 		       "T38d2: a propose_patches batch where NOTHING applied is visibly distinct from one where all did" );
 	}
+	// (d3) batch review round 5: a "diagnosed" element LANDED -- the summary counts it, distinctly.
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "insert_chunks",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":1,\"total\":3,\"results\":["
+			"{\"applied\":true,\"status\":\"applied\"},{\"applied\":false,\"status\":\"diagnosed\"},"
+			"{\"applied\":false,\"status\":\"rejected\"}]}}" );
+		Check( e.toolSummaries[0].outcomeLine == "2/3 landed (1 diagnosed)",
+		       "T38d3: a diagnosed batch element counts as landed in the summary" );
+	}
 
 	// (e) insert_chunk applied cleanly -> "applied: <kind> `<name>`".
 	{
@@ -6461,6 +7694,87 @@ static void TestToolOutcomeDisplay()
 			"\"meanR\":0,\"meanG\":0,\"meanB\":0,\"renderMode\":\"beauty\"}}" );
 		Check( e3.toolSummaries[0].outcomeLine == "64x64, luma 0.00",
 		       "T38g: renderMode \"beauty\" is NOT annotated (the default)" );
+
+		// G3b (2026-08-10): a `target` comparison is the one thing about a
+		// render a human reading the transcript cannot reconstruct from dims
+		// and luma, so the line carries the part and the measured IoU -- and
+		// carries ONLY that.  A word like "close" or "poor" here would be the
+		// harness grading the model's imagination, which the design forbids
+		// outright (77-imagination-target-design.md sec 5.4).
+		const ChatTranscriptEntry e4 = oneCallFlush( "render",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":96,\"height\":96,"
+			"\"meanR\":0,\"meanG\":0,\"meanB\":0,\"renderMode\":\"objectmap\","
+			"\"target\":{\"element\":\"wing\",\"view\":\"front\",\"vantage\":\"front\","
+			"\"iou\":0.4123,\"mirroredIou\":0.39}}}" );
+		Check( e4.toolSummaries[0].outcomeLine == "96x96, luma 0.00 [objectmap]; wing vs sketch: iou 0.41",
+		       "T38g/G3b: a target comparison appends \"<part> vs sketch: iou <2dp>\" -- a NUMBER, "
+		       "with no verdict word anywhere in it" );
+
+		// And a render with no comparison is byte-identical to before.
+		const ChatTranscriptEntry e5 = oneCallFlush( "render",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":96,\"height\":96,"
+			"\"meanR\":0,\"meanG\":0,\"meanB\":0}}" );
+		Check( e5.toolSummaries[0].outcomeLine == "96x96, luma 0.00",
+		       "T38g/G3b: a render WITHOUT a target block is unchanged" );
+
+		// Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: the whole-scene
+		// target line.  Phase 2 printed its RMSE here; that number is GONE
+		// from the payload (a tone metric that drove exposure cranking), so
+		// the line records only WHETHER the render was shown against the
+		// imagined scene -- the census fingerprint a human reading the
+		// transcript cannot otherwise reconstruct.
+		const ChatTranscriptEntry e6 = oneCallFlush( "render",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":96,\"height\":96,"
+			"\"meanR\":0,\"meanG\":0,\"meanB\":0,"
+			"\"sceneTarget\":{\"imagined\":true,\"targetWidth\":512,\"targetHeight\":512,"
+			"\"composite\":true,\"compositeWidth\":192,\"compositeHeight\":386}}}" );
+		Check( e6.toolSummaries[0].outcomeLine == "96x96, luma 0.00; imagined-scene target shown",
+		       "T38g/Arc77 Phase 2b: a scene-target render appends \"imagined-scene target shown\" "
+		       "-- NO number at all, because the payload no longer has one to print" );
+
+		const ChatTranscriptEntry e7 = oneCallFlush( "render",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":96,\"height\":96,"
+			"\"meanR\":0,\"meanG\":0,\"meanB\":0,"
+			"\"sceneTarget\":{\"imagined\":true,\"targetWidth\":512,\"targetHeight\":512,"
+			"\"composite\":false}}}" );
+		Check( e7.toolSummaries[0].outcomeLine == "96x96, luma 0.00; imagined-scene target held",
+		       "T38g/Arc77 Phase 2b: and a render that asked for no image says the target is HELD "
+		       "-- the two are distinguishable in the transcript, which is what the census reads" );
+	}
+
+	// (g2) Arc 77 Phase 2 (2026-08-11): imagine_scene's three outcomes.
+	// "ok" would throw away the one fact worth reading -- whether the
+	// imagination became a picture, and if not, whether that is a provider
+	// limitation or a failed attempt.
+	{
+		const ChatTranscriptEntry e = oneCallFlush( "imagine_scene",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true,\"imagined\":true,"
+			"\"replacedPreviousTarget\":false,\"provider\":\"gemini\",\"width\":512,"
+			"\"height\":512,\"png_base64\":\"\",\"message\":\"scene imagined\"}}" );
+		Check( e.toolSummaries[0].outcomeLine == "scene imagined (image received) 512x512",
+		       "T38g2: a successful imagine reports that an image really arrived, and its dims" );
+
+		const ChatTranscriptEntry e2 = oneCallFlush( "imagine_scene",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true,\"imagined\":true,"
+			"\"replacedPreviousTarget\":true,\"width\":512,\"height\":512,"
+			"\"message\":\"scene imagined\"}}" );
+		Check( e2.toolSummaries[0].outcomeLine ==
+		       "scene imagined (image received) 512x512, replaced previous",
+		       "T38g2: a re-imagine says so -- sketch-vs-build ordering is a census fingerprint" );
+
+		const ChatTranscriptEntry e3 = oneCallFlush( "imagine_scene",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":false,\"imagined\":false,"
+			"\"replacedPreviousTarget\":false,\"capabilityAvailable\":false,"
+			"\"message\":\"imagine_scene is not available: ...\"}}" );
+		Check( e3.toolSummaries[0].outcomeLine == "no image generation on this provider",
+		       "T38g2: a CAPABILITY refusal reads as a provider fact, not as a failed attempt "
+		       "-- only the latter is worth retrying" );
+
+		const ChatTranscriptEntry e4 = oneCallFlush( "imagine_scene",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":false,\"imagined\":false,"
+			"\"requirementDisarmed\":true,\"message\":\"imagine_scene failed: http 503\"}}" );
+		Check( e4.toolSummaries[0].outcomeLine == "not imagined: imagine_scene failed: http 503",
+		       "T38g2: a PROVIDER failure surfaces its factual reason" );
 	}
 
 	// (h) read_image / read_viewport -> "image <w>x<h>".
@@ -8564,40 +9878,208 @@ static void TestReasoningSurvivalMatrix()
 }
 
 //----------------------------------------------------------------------
-// T44: BLIND-EDIT NUDGE DELIVERY -- the nudge rides the CONVERSATION, not
-// the system prompt.
+// T44: DEGENERATE-TURN RETRY-ONCE PARITY (E4 Part 2, defense-in-depth).
 //
-// WHY THIS TEST EXISTS.  The nudge used to be appended to BuildRequest's
-// system prompt.  Tools render before system in every provider's cached
-// prefix, so that made the system block differ on exactly the request
-// carrying the nudge -- and differ again on the next one, which reverted
-// -- invalidating tools + system + the whole history for TWO turns per
-// nudge, on all four codecs (Anthropic's explicit cache_control
-// breakpoint, OpenAI/xAI automatic prefix caching, Gemini implicit
-// caching).  The load-bearing assertion is therefore NOT "the nudge is
-// somewhere in the body" but "the system prompt is BYTE-IDENTICAL on
-// every request of a session that fires a nudge, AND the nudge still
-// reaches the model, AND the transcript is still wire-valid".
+// AgentEvalRunner.cpp's driving loop already retries a genuine degenerate
+// turn (finish=stop, no text, no tool calls -- ChatStepResult::
+// retryDegenerateTurn) once, verbatim, before treating it as a terminal
+// provider_error: nothing was RECORDED for the degenerate response
+// (AgentChatLoop.cpp's HandleResponse: "ProviderError: record nothing"),
+// so BuildRequest at the top of the next attempt rebuilds from the
+// UNCHANGED transcript -- a true verbatim resend needs no request change.
+// The Mac GUI driver (ChatViewModel.swift's driveTurn) did NOT have this
+// -- a degenerate turn there surfaced as a user-facing error requiring a
+// manual Retry click.  This slice ported the SAME retry-once policy into
+// ChatViewModel.swift (untestable here; a Swift driving loop) and added
+// the `attempt`/`retryOf` RecordHttpRound overload + `retryDegenerateTurn`
+// bridge property that make it possible.
 //
-// RED-PROVE: against the pre-fix loop, SystemPromptOf() differs on the
-// armed turn and the nudge is found inside the system block -- the
-// byte-identity and not-in-system assertions both fail on every
-// provider.  A test that only grepped the whole body would have passed
-// before AND after, which is exactly why the old nudge test did not
-// catch this.
+// THIS test is the LOOP-LEVEL seam that both hosts' retry policy is built
+// on top of -- mirroring AgentEvalReplayTest.cpp/AgentEvalCheckTest.cpp's
+// pattern (a scripted blank turn, retried once, accepted if blank again)
+// but driving AgentChatLoop directly, with NO eval-runner or Swift
+// dependency: it proves (a) HandleResponse marks a genuine blank turn
+// retryDegenerateTurn, (b) nothing is recorded so a verbatim resend is
+// possible, (c) a HOST implementing the retry-once policy (simulated
+// here exactly as ChatViewModel.swift's `degenerateTurnRetried` flag
+// does) gets ONE retry per round and no more, and (d) the retry rides the
+// trajectory as an honest sibling `llm` record (attempt 2, retry_of 1) --
+// same convention T33's TestMultimodalRetry pins for retryWithoutImages.
+//----------------------------------------------------------------------
+static void TestDegenerateTurnRetryParity()
+{
+	std::printf( "T44: degenerate-turn retry-once parity (E4 Part 2)...\n" );
+
+	const std::string blank = AnthropicFixture( "[]", "end_turn" );
+	const std::string real  = AnthropicFixture(
+		"[{\"type\":\"text\",\"text\":\"Done.\"}]", "end_turn" );
+
+	// --- (a) One retry, then a real answer: the HOST's retry-once policy
+	//     (simulated exactly as ChatViewModel.swift's `degenerateTurnRetried`
+	//     local does) accepts the SECOND response and moves on. ---
+	{
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "trace-degen-44a";
+		loop.SetTrajectorySink(
+			[&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+
+		loop.AddUserMessage( "say hello" );
+		const std::size_t sizeBeforeRound = loop.TranscriptSize();
+
+		// Attempt 1: the provider serves a genuine blank turn.
+		(void)loop.BuildRequest( kApiKey );
+		loop.RecordHttpRound( 200, blank, 4, 1, -1 );
+		ChatStepResult st1 = loop.HandleResponse( 200, blank );
+		Check( st1.kind == ChatStepResult::Kind::ProviderError,
+		       "T44a: attempt 1 (blank) is a ProviderError" );
+		Check( st1.retryDegenerateTurn,
+		       "T44a: attempt 1 is marked verbatim-retriable" );
+		Check( loop.TranscriptSize() == sizeBeforeRound,
+		       "T44a: the blank attempt records NOTHING (verbatim resend is safe)" );
+
+		// HOST policy: retryDegenerateTurn && !alreadyRetriedThisRound ->
+		// retry.  BuildRequest rebuilds from the SAME unchanged transcript.
+		bool degenerateTurnRetried = false;
+		Check( st1.retryDegenerateTurn && !degenerateTurnRetried,
+		       "T44a: the host's retry-once gate admits this attempt" );
+		degenerateTurnRetried = true;
+
+		const ChatHttpRequest retryReq = loop.BuildRequest( kApiKey );
+		Check( !retryReq.body.empty(), "T44a: the verbatim retry request is non-empty" );
+
+		// Attempt 2: a real answer -- the retry succeeds.
+		loop.RecordHttpRound( 200, real, 6, 2, 1 );
+		ChatStepResult st2 = loop.HandleResponse( 200, real );
+		Check( st2.kind == ChatStepResult::Kind::FinalText,
+		       "T44a: attempt 2 (real answer) succeeds -- the retry recovered the turn" );
+		Check( loop.TranscriptSize() == sizeBeforeRound + 1,
+		       "T44a: the recovered turn records the assistant's FinalText entry "
+		       "(the user entry was already there before the round began)" );
+
+		// Trajectory: the retry rides as an honest sibling llm record.
+		int llmAttempt1 = 0, llmAttempt2RetryOf1 = 0;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			const JsonValue rec = ParseBody( lines[i] );
+			if( rec.get( "run_type" ).asString() != "llm" ) continue;
+			const int at = static_cast<int>( rec.get( "attempt" ).asNumber() );
+			if( at == 1 ) ++llmAttempt1;
+			if( at == 2 && rec.get( "retry_of" ).asNumber() == 1.0 ) ++llmAttempt2RetryOf1;
+		}
+		Check( llmAttempt1 == 1, "T44a: one attempt-1 llm record (the blank turn)" );
+		Check( llmAttempt2RetryOf1 == 1,
+		       "T44a: the retry is one honest sibling llm record (attempt 2, retry_of 1) -- "
+		       "the trajectory SHOWS the retry happened" );
+	}
+
+	// --- (b) Blank AGAIN on the retry: at most ONE retry per round -- the
+	//     host's `degenerateTurnRetried` flag is already true, so the
+	//     second blank response falls through to the ordinary terminal
+	//     ProviderError instead of retrying forever. ---
+	{
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "trace-degen-44b";
+		loop.SetTrajectorySink(
+			[&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+
+		loop.AddUserMessage( "say hello" );
+
+		(void)loop.BuildRequest( kApiKey );
+		loop.RecordHttpRound( 200, blank, 4, 1, -1 );
+		ChatStepResult st1 = loop.HandleResponse( 200, blank );
+		Check( st1.retryDegenerateTurn, "T44b: attempt 1 (blank) is retriable" );
+
+		bool degenerateTurnRetried = false;
+		Check( st1.retryDegenerateTurn && !degenerateTurnRetried,
+		       "T44b: the host retries attempt 1" );
+		degenerateTurnRetried = true;
+		(void)loop.BuildRequest( kApiKey );
+
+		// Attempt 2: STILL blank.
+		loop.RecordHttpRound( 200, blank, 5, 2, 1 );
+		ChatStepResult st2 = loop.HandleResponse( 200, blank );
+		Check( st2.kind == ChatStepResult::Kind::ProviderError && st2.retryDegenerateTurn,
+		       "T44b: attempt 2 is STILL a retriable-shaped blank turn" );
+		// The host's gate is now `!degenerateTurnRetried` == false -- it
+		// does NOT retry again.  RED-PROVE: a host that forgot the
+		// per-round flag (always retries whenever retryDegenerateTurn is
+		// true) would spin forever on a persistently-blank backend.
+		Check( !( st2.retryDegenerateTurn && !degenerateTurnRetried ),
+		       "T44b: the host's retry-once gate REFUSES a second retry this round" );
+
+		// Both attempts recorded nothing -- the transcript never grew.
+		Check( loop.TranscriptSize() == 1, "T44b: neither blank attempt recorded anything" );
+
+		int llmAttempt1 = 0, llmAttempt2RetryOf1 = 0;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			const JsonValue rec = ParseBody( lines[i] );
+			if( rec.get( "run_type" ).asString() != "llm" ) continue;
+			const int at = static_cast<int>( rec.get( "attempt" ).asNumber() );
+			if( at == 1 ) ++llmAttempt1;
+			if( at == 2 && rec.get( "retry_of" ).asNumber() == 1.0 ) ++llmAttempt2RetryOf1;
+		}
+		Check( llmAttempt1 == 1 && llmAttempt2RetryOf1 == 1,
+		       "T44b: the trajectory shows BOTH attempts (1 and the one retry), and no more" );
+	}
+
+	// --- (c) A later round's OWN degenerate response gets its OWN retry
+	//     allowance -- the per-round flag resets once a round succeeds
+	//     (ChatViewModel.swift resets `degenerateTurnRetried` in the
+	//     .toolCalls case; here a FinalText round is the analogous
+	//     "this round succeeded" signal for the NEXT user turn). ---
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.AddUserMessage( "first" );
+		bool degenerateTurnRetried = false;
+
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st1 = loop.HandleResponse( 200, real );
+		Check( st1.kind == ChatStepResult::Kind::FinalText, "T44c: round 1 succeeds outright" );
+		degenerateTurnRetried = false;   // a fresh round begins
+
+		// NOTE: `degenerateTurnRetried` here is a PLAIN TEST-LOCAL bool
+		// (mirroring the Swift local of the same name), already reset to
+		// false explicitly above -- AddUserMessage itself does nothing to
+		// it (the bool is host-local, reset by ChatViewModel.driveTurn's
+		// own scoping on the NEXT round, not by any AgentChatLoop call).
+		// This line only advances the CONVERSATION to a second user turn
+		// so round 2's fetch is the one under test.
+		loop.AddUserMessage( "second" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st2 = loop.HandleResponse( 200, blank );
+		Check( st2.retryDegenerateTurn && !degenerateTurnRetried,
+		       "T44c: round 2's own blank response gets its OWN retry allowance "
+		       "(not blocked by round 1, which never needed one)" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T45 (E4 fix round, P2 sweep): the gate proved on Anthropic only so far
+// (the streak-accounting block above) now driven across ALL FIVE provider
+// codecs, plus the system-prompt byte-identity guard T44 used to carry --
+// resurrected in its GATE-ERA form (a refusal is an ordinary tool result,
+// not an injected message, so there is far less to prove than the old
+// nudge-delivery T44 did, but the ONE property that still matters --
+// GateRefusalResponse must never perturb ComposeSystemPrompt -- is not
+// automatically covered by the streak-accounting block, which never
+// re-reads the system prompt after a refusal).
 //----------------------------------------------------------------------
 
-// The system prompt AS SENT, extracted per provider from the request body
-// (each codec puts it in a different place -- Anthropic a one-element
-// `system` block array, Gemini `systemInstruction`, OpenAI Responses
-// `instructions`, Chat Completions the leading system message).
+// Extract the system prompt AS SENT, per provider, from a built request
+// body (each codec places it differently) -- the gate-era trim of the old
+// T44's SystemPromptOf: same extraction, no nudge-specific callers left.
 static std::string SystemPromptOf( ChatProvider provider, const std::string& body )
 {
 	const JsonValue root = ParseBody( body );
 	switch( provider ) {
 		case ChatProvider::Anthropic: {
 			const JsonValue& sys = root.get( "system" );
-			// The codec emits a plain string only for an EMPTY prompt.
 			if( sys.isString() ) return sys.asString();
 			return sys.at( 0 ).get( "text" ).asString();
 		}
@@ -8608,7 +10090,6 @@ static std::string SystemPromptOf( ChatProvider provider, const std::string& bod
 		case ChatProvider::XAI:
 		case ChatProvider::Local:
 		default: {
-			// Chat Completions: messages[0] is the synthesized system turn.
 			const JsonValue& m0 = root.get( "messages" ).at( 0 );
 			if( m0.get( "role" ).asString() != "system" ) return "<<no leading system message>>";
 			return m0.get( "content" ).asString();
@@ -8617,11 +10098,13 @@ static std::string SystemPromptOf( ChatProvider provider, const std::string& bod
 }
 
 // Collect every tool-CALL id and every tool-RESULT id a request body
-// carries, in the provider's own wire shape.  Equal multisets == every
-// call is answered and no answer is orphaned.
+// carries, in the provider's own wire shape -- the gate-era trim of the
+// old T44's CollectToolIds: same extraction (a gate refusal is answered
+// through the SAME AddToolResult/PackToolResults path any other tool
+// result uses, so there is nothing gate-specific to add here), just
+// retargeted to check a refusal round instead of a nudge round.
 static void CollectToolIds( ChatProvider provider, const JsonValue& root,
-                            std::vector<std::string>& calls,
-                            std::vector<std::string>& results )
+                            std::vector<std::string>& calls, std::vector<std::string>& results )
 {
 	if( provider == ChatProvider::Anthropic ) {
 		const JsonValue& msgs = root.get( "messages" );
@@ -8635,10 +10118,6 @@ static void CollectToolIds( ChatProvider provider, const JsonValue& root,
 		}
 	}
 	else if( provider == ChatProvider::Gemini ) {
-		// Gemini deliberately withholds a SYNTHESIZED id from the wire, so
-		// count parts rather than match ids: a functionResponse part is
-		// pushed as a fixed placeholder so the multisets still line up
-		// one-for-one when every call is answered.
 		const JsonValue& contents = root.get( "contents" );
 		for( std::size_t i = 0; i < contents.size(); ++i ) {
 			const JsonValue& parts = contents.at( i ).get( "parts" );
@@ -8669,65 +10148,33 @@ static void CollectToolIds( ChatProvider provider, const JsonValue& root,
 	}
 }
 
-// Provider-specific structural validity of a built request body.  `tag`
-// names the provider in the failure message.
-static void CheckWireValid( ChatProvider provider, const std::string& body, const char* tag )
+// Drive ONE provider-shaped tool-call round WITHOUT answering it --
+// mirrors DriveToolRound's per-provider single-call fixture shape exactly,
+// stopping short of AddToolResult so the caller can gate-check first.
+static ChatStepResult DriveOneToolCallNoAnswer( AgentChatLoop& loop, ChatProvider provider,
+                                                const std::string& verb, const std::string& id )
 {
-	const JsonValue root = ParseBody( body );
-	Check( !root.isNull(), std::string( "T44[" ) + tag + "]: the request body parses as JSON" );
-	if( root.isNull() ) return;
-
-	std::vector<std::string> calls, results;
-	CollectToolIds( provider, root, calls, results );
-	std::sort( calls.begin(), calls.end() );
-	std::sort( results.begin(), results.end() );
-	Check( calls == results,
-	       std::string( "T44[" ) + tag + "]: WIRE -- every tool call is answered exactly once "
-	       "(the nudge message did not orphan a tool result)" );
-
-	if( provider == ChatProvider::Anthropic ) {
-		Check( AnthropicToolCallsAllAnswered( root.get( "messages" ) ),
-		       "T44[anthropic]: WIRE -- each tool_use is answered by the message that "
-		       "DIRECTLY follows it (the nudge lands after the results, never between)" );
-	}
-	else if( provider == ChatProvider::Gemini ) {
-		// Gemini requires ALTERNATING roles.  The nudge is a second
-		// adjacent user entry, so this is the assertion that proves
-		// BuildRequest's user-run merge actually absorbed it.
-		const JsonValue& contents = root.get( "contents" );
-		bool alternates = true;
-		for( std::size_t i = 1; i < contents.size(); ++i ) {
-			if( contents.at( i ).get( "role" ).asString() ==
-			    contents.at( i - 1 ).get( "role" ).asString() ) alternates = false;
-		}
-		Check( alternates,
-		       "T44[gemini]: WIRE -- contents still strictly alternate user/model "
-		       "(the adjacent-user merge absorbed the nudge)" );
-		// ... and within the merged content the functionResponse parts must
-		// still LEAD, ahead of the nudge text part.
-		bool responsesLead = true;
-		for( std::size_t i = 0; i < contents.size(); ++i ) {
-			const JsonValue& parts = contents.at( i ).get( "parts" );
-			bool sawNonResponse = false;
-			for( std::size_t j = 0; j < parts.size(); ++j ) {
-				if( parts.at( j ).has( "functionResponse" ) ) {
-					if( sawNonResponse ) responsesLead = false;
-				}
-				else { sawNonResponse = true; }
-			}
-		}
-		Check( responsesLead,
-		       "T44[gemini]: WIRE -- functionResponse parts still LEAD the merged content, "
-		       "ahead of the nudge text part" );
-	}
+	const bool chatCompletions = ( provider == ChatProvider::Local || provider == ChatProvider::XAI );
+	std::string block;
+	if( provider == ChatProvider::Anthropic )
+		block = "{\"type\":\"tool_use\",\"id\":\"" + id + "\",\"name\":\"" + verb + "\",\"input\":{}}";
+	else if( provider == ChatProvider::Gemini )
+		block = "{\"functionCall\":{\"id\":\"" + id + "\",\"name\":\"" + verb + "\",\"args\":{}}}";
+	else if( chatCompletions )
+		block = "{\"id\":\"" + id + "\",\"type\":\"function\",\"function\":{\"name\":\"" + verb + "\",\"arguments\":\"{}\"}}";
+	else
+		block = "{\"type\":\"function_call\",\"call_id\":\"" + id + "\",\"name\":\"" + verb + "\",\"arguments\":\"{}\"}";
+	std::string fx;
+	if( provider == ChatProvider::Anthropic ) fx = AnthropicFixture( "[" + block + "]", "tool_use" );
+	else if( provider == ChatProvider::Gemini ) fx = GeminiFixture( "{\"parts\":[" + block + "],\"role\":\"model\"}", "STOP" );
+	else if( chatCompletions ) fx = OpenAIFixture( "null", "[" + block + "]", "tool_calls" );
+	else fx = "{\"status\":\"completed\",\"output\":[" + block + "]}";
+	return loop.HandleResponse( 200, fx );
 }
 
-static void TestBlindEditNudgeDelivery()
+static void TestSequencingGateAcrossProvidersAndByteIdentity()
 {
-	std::printf( "T44: blind-edit nudge rides the conversation, not the system prompt...\n" );
-
-	// The substring the nudge text is recognized by (see AddToolResult).
-	const char* const kNudgeMark = "edits in a row without rendering";
+	std::printf( "T45: SEQUENCING GATE across all 5 provider codecs + system-prompt byte-identity...\n" );
 
 	const struct { ChatProvider provider; const char* tag; } kCases[] = {
 		{ ChatProvider::Anthropic, "anthropic" },
@@ -8743,290 +10190,1327 @@ static void TestBlindEditNudgeDelivery()
 
 		AgentChatLoop loop;
 		loop.SetProvider( provider );
-		loop.SetBlindEditNudgeThreshold( 3 );   // small K so the test is short
+		loop.SetBlindEditGateThreshold( 3 );
 		loop.AddUserMessage( "build a scene" );
+		int rpcId = 1;
 
-		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}";
+		// BASELINE: the system prompt before the gate ever fires.
+		const ChatHttpRequest baselineReq = loop.BuildRequest( kApiKey );
+		const std::string baseline = SystemPromptOf( provider, baselineReq.body );
+		Check( !baseline.empty(),
+		       std::string( "T45[" ) + tag + "]: baseline system prompt is non-empty" );
 
-		// BASELINE: the system prompt on a turn that has fired no nudge.
-		const std::string baseline = SystemPromptOf( provider, loop.BuildRequest( kApiKey ).body );
-		Check( !baseline.empty() && baseline.find( kNudgeMark ) == std::string::npos,
-		       std::string( "T44[" ) + tag + "]: baseline system prompt is non-empty and carries no nudge" );
+		// P2 item 4: the streak-count pin -- reported EXACTLY at the
+		// threshold across EVERY refusal (never higher), guarding the
+		// reset-to-ABSOLUTE-ZERO design (mBlindEditStreak stays PINNED at
+		// the threshold while gated, per GateRefusalResponse's doc) --
+		// against a future "relative reset" refactor that decremented or
+		// rolled the streak back on each refusal instead, which would
+		// silently change the reported count and could reopen the
+		// original "streak keeps climbing forever" spiral the gate exists
+		// to stop.
+		std::vector<int> reportedStreaks;
+		auto extractStreakFromMessage = []( const std::string& msg ) -> int {
+			// "<N> document edits in a row without looking." -- N is the
+			// leading integer.
+			std::size_t i = 0;
+			while( i < msg.size() && isdigit( (unsigned char)msg[i] ) ) ++i;
+			if( i == 0 ) return -1;
+			return std::atoi( msg.substr( 0, i ).c_str() );
+		};
 
-		// Three blind edits -> the streak hits the threshold and the nudge
-		// is delivered.  Every BuildRequest along the way is checked.
-		bool armedSeen = false;
-		std::size_t sawNudgeInMessagesAt = 0;
-		for( int round = 1; round <= 6; ++round ) {
-			const std::string id = std::string( "call_" ) + tag + std::to_string( round );
-			Check( DriveToolRound( loop, provider, Vec1( "insert_chunk" ), Vec1( id ), Vec1( ok ) ),
-			       std::string( "T44[" ) + tag + "]: setup -- round " +
-			       std::to_string( round ) + " drives one insert_chunk" );
+		// Three setup mutations -- streak reaches the threshold (3), none
+		// of these three refused.
+		for( int i = 0; i < 3; ++i ) {
+			ChatStepResult st = DriveOneToolCallNoAnswer( loop, provider, "insert_chunk",
+				std::string( "call_setup" ) + tag + std::to_string( i ) );
+			Check( st.toolCalls.size() == 1,
+			       std::string( "T45[" ) + tag + "]: setup round " + std::to_string( i ) + " parses" );
+			if( st.toolCalls.size() != 1 ) continue;
+			const std::string gate = loop.GateRefusalResponse( st.toolCalls[0], rpcId++ );
+			Check( gate.empty(),
+			       std::string( "T45[" ) + tag + "]: setup insert " + std::to_string( i ) + " is not refused" );
+			loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}" );
+		}
 
-			const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		// The system prompt must be BYTE-IDENTICAL after the setup rounds
+		// (GateRefusalResponse has not even run yet, so this is really
+		// just confirming ordinary tool rounds never touch it -- the
+		// interesting assertions are the ones AFTER a refusal, below).
+		const ChatHttpRequest afterSetupReq = loop.BuildRequest( kApiKey );
+		Check( SystemPromptOf( provider, afterSetupReq.body ) == baseline,
+		       std::string( "T45[" ) + tag + "]: system prompt unchanged after 3 setup mutations" );
 
-			// (1) THE LOAD-BEARING ASSERTION: byte-identical system prompt.
-			Check( SystemPromptOf( provider, req.body ) == baseline,
-			       std::string( "T44[" ) + tag + "]: system prompt is BYTE-IDENTICAL after round " +
-			       std::to_string( round ) + " (the static cache prefix is never invalidated)" );
+		// TWO refusals in a row -- both pinned to report the SAME streak
+		// (the threshold, 3), never climbing, per GateRefusalResponse's
+		// "stays PINNED" contract.
+		for( int i = 0; i < 2; ++i ) {
+			ChatStepResult st = DriveOneToolCallNoAnswer( loop, provider, "insert_chunk",
+				std::string( "call_refused" ) + tag + std::to_string( i ) );
+			Check( st.toolCalls.size() == 1,
+			       std::string( "T45[" ) + tag + "]: refused-round " + std::to_string( i ) + " parses" );
+			if( st.toolCalls.size() != 1 ) continue;
+			const std::string gate = loop.GateRefusalResponse( st.toolCalls[0], rpcId++ );
+			Check( !gate.empty(),
+			       std::string( "T45[" ) + tag + "]: insert " + std::to_string( i ) + " past the threshold IS refused" );
+			const JsonValue env = ParseBody( gate );
+			const std::string msg = env.get( "result" ).get( "message" ).asString();
+			const int streak = extractStreakFromMessage( msg );
+			reportedStreaks.push_back( streak );
+			loop.AddToolResult( st.toolCalls[0], gate );
 
-			// (2) The nudge is never smuggled into the system block.
-			Check( SystemPromptOf( provider, req.body ).find( kNudgeMark ) == std::string::npos,
-			       std::string( "T44[" ) + tag + "]: the nudge is NOT in the system block" );
+			// P2 item 1 (byte-identity, the resurrected T44 property):
+			// STILL byte-identical after a refusal -- a refusal is an
+			// ordinary tool result, never touches ComposeSystemPrompt.
+			const ChatHttpRequest afterRefusalReq = loop.BuildRequest( kApiKey );
+			Check( SystemPromptOf( provider, afterRefusalReq.body ) == baseline,
+			       std::string( "T45[" ) + tag + "]: system prompt STILL byte-identical after refusal " +
+			       std::to_string( i ) );
 
-			// (3) The transcript stays wire-valid for this provider.
-			CheckWireValid( provider, req.body, tag );
-
-			if( req.body.find( kNudgeMark ) != std::string::npos && !armedSeen ) {
-				armedSeen = true;
-				sawNudgeInMessagesAt = static_cast<std::size_t>( round );
+			// P2 item 2: wire-validity of the refusal envelope itself --
+			// every tool call this request carries is answered exactly
+			// once, refusal included, same as any other tool result.
+			const JsonValue reqRoot = ParseBody( afterRefusalReq.body );
+			std::vector<std::string> wcalls, wresults;
+			CollectToolIds( provider, reqRoot, wcalls, wresults );
+			std::sort( wcalls.begin(), wcalls.end() );
+			std::sort( wresults.begin(), wresults.end() );
+			Check( wcalls == wresults,
+			       std::string( "T45[" ) + tag + "]: WIRE -- every tool call (incl. the refused one) is "
+			       "answered exactly once after refusal " + std::to_string( i ) );
+			if( provider == ChatProvider::Anthropic ) {
+				Check( AnthropicToolCallsAllAnswered( reqRoot.get( "messages" ) ),
+				       std::string( "T45[" ) + tag + "]: WIRE -- each tool_use answered by the DIRECTLY "
+				       "following message (the refusal orphans nothing)" );
 			}
 		}
+		Check( reportedStreaks.size() == 2 && reportedStreaks[0] == 3 && reportedStreaks[1] == 3,
+		       std::string( "T45[" ) + tag + "]: BOTH refusals report the SAME streak (3, the threshold) -- "
+		       "pinned at absolute zero-relative-to-threshold, not climbing per refusal "
+		       "(got " + ( reportedStreaks.size() == 2 ?
+		           std::to_string( reportedStreaks[0] ) + "," + std::to_string( reportedStreaks[1] ) :
+		           std::string( "<wrong count>" ) ) + ")" );
 
-		// (4) The model really does receive it -- and at the threshold, not
-		// before.  Three mutations with no observe is the trip point.
-		Check( armedSeen,
-		       std::string( "T44[" ) + tag + "]: the nudge REACHES the model (it is on the wire)" );
-		Check( sawNudgeInMessagesAt == 3,
-		       std::string( "T44[" ) + tag + "]: it arrives on the threshold round (3), not earlier" );
+		// The look -- resets the streak -- and the system prompt is STILL
+		// byte-identical (P2 item 1, the third leg of the cycle: pre-gate,
+		// refused, post-look).
+		{
+			ChatStepResult st = DriveOneToolCallNoAnswer( loop, provider, "render",
+				std::string( "call_look" ) + tag );
+			Check( st.toolCalls.size() == 1, std::string( "T45[" ) + tag + "]: look round parses" );
+			if( st.toolCalls.size() == 1 ) {
+				const std::string gate = loop.GateRefusalResponse( st.toolCalls[0], rpcId++ );
+				Check( gate.empty(), std::string( "T45[" ) + tag + "]: render is never itself gated" );
+				loop.AddToolResult( st.toolCalls[0],
+					"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true,\"width\":4,\"height\":4,"
+					"\"meanR\":0.1,\"meanG\":0.1,\"meanB\":0.1}}" );
+			}
+		}
+		const ChatHttpRequest afterLookReq = loop.BuildRequest( kApiKey );
+		Check( SystemPromptOf( provider, afterLookReq.body ) == baseline,
+		       std::string( "T45[" ) + tag + "]: system prompt byte-identical after the look "
+		       "(pre-gate -> refused -> post-look, the FULL cycle)" );
+
+		// Retry the SAME mutation -- applies now.
+		{
+			ChatStepResult st = DriveOneToolCallNoAnswer( loop, provider, "insert_chunk",
+				std::string( "call_retry" ) + tag );
+			Check( st.toolCalls.size() == 1, std::string( "T45[" ) + tag + "]: retry round parses" );
+			if( st.toolCalls.size() == 1 ) {
+				const std::string gate = loop.GateRefusalResponse( st.toolCalls[0], rpcId++ );
+				Check( gate.empty(),
+				       std::string( "T45[" ) + tag + "]: after the look, the SAME mutation applies again" );
+				loop.AddToolResult( st.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}" );
+			}
+		}
 	}
 
-	// Anthropic close-ups: the nudge is a real user MESSAGE positioned
-	// directly after the tool results, and it persists (a deliberate
-	// change from the old one-shot system-prompt splice -- dropping it
-	// again would rewrite the message suffix and re-introduce exactly the
-	// invalidation this design removes).
+	// P2 item 3: batch per-call counting with a POPULATED chunks array --
+	// the streak-accounting block above proves "one insert_chunks call ==
+	// one increment" with 5-element batches, but every element in THOSE
+	// batches was IDENTICAL boilerplate ({"applied":5,"total":5,
+	// "results":[]}) -- a per-ELEMENT accounting bug (e.g. iterating the
+	// input chunks array instead of counting the CALL) would not show up
+	// against an empty `results` echo.  This drives insert_chunks with a
+	// REAL, populated `chunks` INPUT array (5 distinct chunk texts) and a
+	// REAL, populated `results` OUTPUT array (5 distinct per-element
+	// outcomes) -- so a bug that (mis-)walked either array during
+	// accounting has real per-element data to walk.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );
-		loop.SetBlindEditNudgeThreshold( 2 );
+		loop.SetBlindEditGateThreshold( 3 );
 		loop.AddUserMessage( "build a scene" );
-		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}";
+		int rpcId = 1;
 
-		const std::size_t sizeBefore = loop.TranscriptSize();
-		Check( DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
-		                       Vec1( "toolu_p1" ), Vec1( ok ) ) &&
-		       DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
-		                       Vec1( "toolu_p2" ), Vec1( ok ) ),
-		       "T44: setup -- two blind inserts trip a threshold of 2" );
+		JsonValue chunksIn = JsonValue::MakeArray();
+		JsonValue resultsOut = JsonValue::MakeArray();
+		for( int i = 0; i < 5; ++i ) {
+			JsonValue c = JsonValue::MakeObject();
+			c.set( "chunkText", JsonValue::MakeString(
+				"uniformcolor_painter\n{\n\tname pnt_batch_" + std::to_string( i ) +
+				"\n\tcolor 0.1 0.2 0.3\n}" ) );
+			chunksIn.push_back( c );
+			JsonValue r = JsonValue::MakeObject();
+			r.set( "applied", JsonValue::MakeBool( true ) );
+			r.set( "status", JsonValue::MakeString( "applied" ) );
+			r.set( "name", JsonValue::MakeString( "pnt_batch_" + std::to_string( i ) ) );
+			r.set( "kind", JsonValue::MakeString( "uniformcolor_painter" ) );
+			resultsOut.push_back( r );
+		}
+		JsonValue params = JsonValue::MakeObject();
+		params.set( "chunks", chunksIn );
+		const std::string chunksArgsJson = JsonSerialize( params );
 
-		// Two rounds add 2 x (Assistant + ToolResults) = 4 entries, plus the
-		// ONE nudge entry the second round's flush appended.
-		Check( loop.TranscriptSize() == sizeBefore + 5,
-		       "T44: the nudge is exactly ONE extra transcript entry" );
-		const ChatTranscriptEntry& tail = loop.TranscriptAt( loop.TranscriptSize() - 1 );
-		Check( tail.role == ChatTranscriptEntry::Role::DriverNote,
-		       "T44: ... carried as a DriverNote entry (USER CONTENT on the wire, but "
-		       "tagged so a GUI does not attribute it to the human)" );
-		Check( tail.displayText.find( "edits in a row without rendering" ) != std::string::npos,
-		       "T44: ... whose displayText is the reminder, so a GUI can show the guard firing" );
-		Check( loop.TranscriptAt( loop.TranscriptSize() - 2 ).role ==
-		       ChatTranscriptEntry::Role::ToolResults,
-		       "T44: ... placed DIRECTLY after the tool-results entry (never between a "
-		       "tool_use and its answer)" );
+		JsonValue resultObj = JsonValue::MakeObject();
+		resultObj.set( "applied", JsonValue::MakeNumber( 5 ) );
+		resultObj.set( "total", JsonValue::MakeNumber( 5 ) );
+		resultObj.set( "results", resultsOut );
+		JsonValue envObj = JsonValue::MakeObject();
+		envObj.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+		envObj.set( "id", JsonValue::MakeNumber( 1 ) );
+		envObj.set( "result", resultObj );
+		const std::string populatedBatchEnvelope = JsonSerialize( envObj );
 
-		// Persistence: still on the wire two requests later, with the system
-		// prompt still untouched.
-		const std::string sys1 = SystemPromptOf( ChatProvider::Anthropic, loop.BuildRequest( kApiKey ).body );
-		const ChatHttpRequest later = loop.BuildRequest( kApiKey );
-		Check( later.body.find( "edits in a row without rendering" ) != std::string::npos,
-		       "T44: the reminder PERSISTS in history (re-dropping it would rewrite the "
-		       "suffix and re-invalidate the cache)" );
-		Check( SystemPromptOf( ChatProvider::Anthropic, later.body ) == sys1,
-		       "T44: ... and the system prompt is still byte-identical" );
-	}
-
-	// ==============================================================
-	// T44b: the DriverNote ROLE IS INVISIBLE ON THE WIRE.
-	//
-	// Role::DriverNote exists purely so the two GUIs can tell a
-	// loop-injected note apart from something the user typed.  It must not
-	// cost one byte of any request: `rawJson` still comes from the same
-	// mCodec->MakeUserEntry() a real user message uses, and BuildRequest
-	// assembles `rawEntries` from rawJson ALONE (it never reads `role`).
-	//
-	// Proved by CONSTRUCTION rather than against a stored golden: drive the
-	// identical tool rounds on two loops, one where the nudge fires
-	// (DriverNote entry) and one with the nudge DISABLED where the very
-	// same text is appended by AddUserMessage (a genuine User entry), and
-	// require the two request bodies to be byte-equal.  Since the User form
-	// is exactly what this loop emitted BEFORE the role existed, equality
-	// here IS "byte-identical to today's request for a nudge-firing
-	// session" -- on every provider.
-	//
-	// RED-PROVE: change AppendPendingBuildNudge to build rawJson any other
-	// way (or make any codec branch on role) and this fails on the first
-	// provider.
-	{
-		const struct { ChatProvider provider; const char* tag; } kWire[] = {
-			{ ChatProvider::Anthropic, "anthropic" },
-			{ ChatProvider::Gemini,    "gemini"    },
-			{ ChatProvider::OpenAI,    "openai"    },
-			{ ChatProvider::XAI,       "xai"       },
-			{ ChatProvider::Local,     "local"     },
+		auto batchStep = [&]() -> bool {
+			const std::string fx = AnthropicFixture(
+				"[{\"type\":\"tool_use\",\"id\":\"toolu_pb\",\"name\":\"insert_chunks\",\"input\":" +
+				chunksArgsJson + "}]", "tool_use" );
+			ChatStepResult st = loop.HandleResponse( 200, fx );
+			if( st.toolCalls.size() != 1 ) return false;
+			const ChatToolCall& call = st.toolCalls[0];
+			Check( call.argsJson.find( "pnt_batch_4" ) != std::string::npos,
+			       "T45/batch: the call really carries the 5-element populated chunks array" );
+			const std::string gate = loop.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) { loop.AddToolResult( call, gate ); return true; }
+			loop.AddToolResult( call, populatedBatchEnvelope );
+			return false;
 		};
-		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}";
-
-		for( std::size_t c = 0; c < sizeof( kWire ) / sizeof( kWire[0] ); ++c ) {
-			const ChatProvider provider = kWire[c].provider;
-			const char* const tag = kWire[c].tag;
-
-			// (a) The nudge-firing loop.
-			AgentChatLoop nudged;
-			nudged.SetProvider( provider );
-			nudged.SetBlindEditNudgeThreshold( 2 );
-			nudged.AddUserMessage( "build a scene" );
-			Check( DriveToolRound( nudged, provider, Vec1( "insert_chunk" ),
-			                       Vec1( std::string( "call_w1_" ) + tag ), Vec1( ok ) ) &&
-			       DriveToolRound( nudged, provider, Vec1( "insert_chunk" ),
-			                       Vec1( std::string( "call_w2_" ) + tag ), Vec1( ok ) ),
-			       std::string( "T44b[" ) + tag + "]: setup -- two blind inserts trip the nudge" );
-			const ChatTranscriptEntry& note = nudged.TranscriptAt( nudged.TranscriptSize() - 1 );
-			Check( note.role == ChatTranscriptEntry::Role::DriverNote,
-			       std::string( "T44b[" ) + tag + "]: setup -- the tail really is the DriverNote" );
-			const std::string noteText = note.displayText;
-
-			// (b) The control: same rounds, nudge OFF, same text sent as a
-			//     real user message -- i.e. the pre-role shape.
-			AgentChatLoop control;
-			control.SetProvider( provider );
-			control.SetBlindEditNudgeThreshold( 0 );
-			control.AddUserMessage( "build a scene" );
-			Check( DriveToolRound( control, provider, Vec1( "insert_chunk" ),
-			                       Vec1( std::string( "call_w1_" ) + tag ), Vec1( ok ) ) &&
-			       DriveToolRound( control, provider, Vec1( "insert_chunk" ),
-			                       Vec1( std::string( "call_w2_" ) + tag ), Vec1( ok ) ),
-			       std::string( "T44b[" ) + tag + "]: setup -- control drives the same two rounds" );
-			control.AddUserMessage( noteText );
-			Check( control.TranscriptAt( control.TranscriptSize() - 1 ).role ==
-			       ChatTranscriptEntry::Role::User,
-			       std::string( "T44b[" ) + tag + "]: setup -- the control's tail is a real User entry" );
-
-			// The entry the codecs will serialize is byte-equal...
-			Check( note.rawJson ==
-			       control.TranscriptAt( control.TranscriptSize() - 1 ).rawJson,
-			       std::string( "T44b[" ) + tag + "]: the DriverNote's rawJson is BYTE-IDENTICAL "
-			       "to the user message carrying the same text" );
-
-			// ...and so is the whole request built around it.
-			const ChatHttpRequest a = nudged.BuildRequest( kApiKey );
-			const ChatHttpRequest b = control.BuildRequest( kApiKey );
-			Check( a.body == b.body,
-			       std::string( "T44b[" ) + tag + "]: the REQUEST BODY is byte-identical -- the "
-			       "new role changes nothing on the wire" );
-			Check( a.url == b.url && a.headers == b.headers,
-			       std::string( "T44b[" ) + tag + "]: ... url and headers too" );
-		}
+		Check( !batchStep(), "T45/batch(populated): call 1 (5 populated elements) -- ONE increment, not refused" );
+		Check( !batchStep(), "T45/batch(populated): call 2 -- ONE increment, not refused" );
+		Check( !batchStep(), "T45/batch(populated): call 3 -- ONE increment, not refused (streak 2->3)" );
+		Check( batchStep(), "T45/batch(populated): call 4 -- REFUSED (streak 3 >= threshold 3), proving the "
+		       "gate counts CALLS even against a fully-populated input/output batch shape" );
 	}
+}
 
-	// ==============================================================
-	// T44c: a DriverNote is NOT a compaction span boundary.
-	//
-	// CompactTranscript drops whole SPANS, and a span starts at a
-	// Role::User entry.  A loop-injected note is not a turn the user took
-	// (the trajectory records it as a `history_edit`, not a `user` record,
-	// for exactly this reason), so counting it as a span start would let
-	// compaction cut a conversation in a place the user never spoke --
-	// and would leave a synthesized note as mTranscript[0], which is
-	// supposed to be a real user message.
-	//
-	// RED-PROVE: this fails against the pre-fix loop, where the nudge was a
-	// Role::User entry -- it made spanCount 3 on a TWO-turn conversation,
-	// so compaction fired and erased the first turn.
+//----------------------------------------------------------------------
+// T46 (E4 fix round, P3 sweep): DriverNoteCount()/LastDriverNoteText()
+// smoke test -- the accessor pair is still LIVE on both the C++ core and
+// the macOS bridge (kept as generic infrastructure for a future
+// loop-injected advisory; see Role::DriverNote's doc) even though the ONE
+// thing that used to produce entries, the blind-edit NUDGE, is gone.  A
+// one-line liveness check that the mechanism itself did not silently
+// break (wrong initial state, Reset() forgetting to clear it) -- NOT a
+// claim that anything produces a DriverNote today; zero producers is the
+// documented, correct state.
+//----------------------------------------------------------------------
+static void TestDriverNoteSmoke()
+{
+	std::printf( "T46: DriverNoteCount()/LastDriverNoteText() smoke test (zero producers, still live)...\n" );
+
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Anthropic );
+	Check( loop.DriverNoteCount() == 0 && loop.LastDriverNoteText().empty(),
+	       "T46: a fresh loop reports zero driver notes" );
+
+	loop.AddUserMessage( "build a scene" );
+	Check( loop.DriverNoteCount() == 0,
+	       "T46: an ordinary user turn does not fire a driver note (no producer exists)" );
+
+	loop.Reset();
+	Check( loop.DriverNoteCount() == 0 && loop.LastDriverNoteText().empty(),
+	       "T46: Reset() leaves the count/text at their zero state" );
+}
+
+//----------------------------------------------------------------------
+// T47 (G2, 2026-08-10): file_build_plan on the shared tool table, and its
+// E4 SEQUENCING-GATE classification.
+//
+// (a) The tool is present on every provider codec with the CLOSED
+//     construction enum -- the enum is the whole mechanism, so a codec that
+//     dropped it would leave a model free-texting a field the dispatcher
+//     then -32602s.
+// (b) It is NEITHER a mutation NOR a look, exactly like ask_user: it leaves
+//     the blind-edit streak untouched.  Both halves are red-proved, because
+//     each mistake is separately harmful -- counted as a MUTATION it would
+//     let E4 refuse a model for filing the plan G2 just demanded (two gates
+//     fighting), and counted as a LOOK it would hand every model a free
+//     image-free streak reset and silently defeat E4.
+//----------------------------------------------------------------------
+static void TestFileBuildPlanToolAndGateClassification()
+{
+	std::printf( "T47: file_build_plan tool table + E4 streak classification (neither mutation nor look)...\n" );
+
+	// (a) present on every provider codec, carrying the enum.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );
-		loop.SetBlindEditNudgeThreshold( 2 );
-		// A budget so low that compaction runs on every request and never
-		// reaches its low-water target -- the span floor (kMinRetainedSpans)
-		// is then the ONLY thing that stops it.  (low MUST be > 0 and < high
-		// or the window is inert -- see ContextBudgetActive.)
-		loop.SetContextBudget( 2, 1 );
-		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true}}";
-
-		loop.AddUserMessage( "first instruction" );
-		Check( DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
-		                       Vec1( "toolu_s1" ), Vec1( ok ) ) &&
-		       DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
-		                       Vec1( "toolu_s2" ), Vec1( ok ) ),
-		       "T44c: setup -- turn 1 trips the nudge" );
-		Check( loop.DriverNoteCount() == 1, "T44c: setup -- exactly one note fired" );
-		loop.AddUserMessage( "second instruction" );
-
-		// TWO user turns + one note.  If the note counted as a span the
-		// loop would see three spans, exceed the floor of two, and erase.
-		const std::size_t before = loop.TranscriptSize();
-		loop.BuildRequest( kApiKey );   // compaction runs inside BuildRequest
-		Check( loop.CompactedEntryCount() == 0,
-		       "T44c: nothing is dropped -- a DriverNote does not count as a user turn, so "
-		       "this is a TWO-span conversation and the floor holds" );
-		Check( loop.TranscriptSize() == before,
-		       "T44c: ... and the transcript is intact" );
-		Check( loop.TranscriptAt( 0 ).role == ChatTranscriptEntry::Role::User,
-		       "T44c: ... with a real user message still leading it (wire invariant 1)" );
-
-		// A THIRD real user turn does make it compactable -- so the guard
-		// above is the span RULE holding, not compaction being inert.
-		loop.AddUserMessage( "third instruction" );
-		loop.BuildRequest( kApiKey );
-		Check( loop.CompactedEntryCount() > 0,
-		       "T44c: a third REAL user turn does compact (the check above is the span rule, "
-		       "not a dead compactor)" );
-		Check( loop.TranscriptAt( 0 ).role == ChatTranscriptEntry::Role::User,
-		       "T44c: ... and the surviving head is still a real user message" );
+		loop.AddUserMessage( "hello" );
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue& tools = root.get( "tools" );
+		bool saw = false;
+		for( std::size_t i = 0; i < tools.size(); ++i ) {
+			if( tools.at( i ).get( "name" ).asString() != "file_build_plan" ) continue;
+			saw = true;
+			const JsonValue& items = tools.at( i ).get( "input_schema" ).get( "properties" )
+			                              .get( "elements" ).get( "items" );
+			// C4 (2026-08-19): `construction` is an ARRAY of 1..2 methods, so
+			// the closed enum now lives on its `items`.  An element is
+			// legitimately multi-method (a copper still is a lathe pot AND a
+			// sweep coil), and with one slot the second method's gated schema
+			// was unreachable for the whole element.
+			const JsonValue& consProp = items.get( "properties" ).get( "construction" );
+			Check( consProp.get( "type" ).asString() == "array",
+			       "T47a/C4: anthropic `construction` is an array" );
+			Check( consProp.get( "minItems" ).asNumber( -1 ) == 1.0 &&
+			       consProp.get( "maxItems" ).asNumber( -1 ) ==
+			           static_cast<double>( AgentSession::kBuildPlanMaxConstructionMethods ),
+			       "T47a/C4: MONEY ASSERTION -- the schema states the CAP the dispatcher enforces "
+			       "(kBuildPlanMaxConstructionMethods), so a compliant model never spends a turn "
+			       "discovering it, and the codec's hand-authored literal cannot drift from the "
+			       "constant" );
+			const JsonValue& en = consProp.get( "items" ).get( "enum" );
+			Check( en.isArray() && en.size() == 7, "T47a: anthropic `construction` carries a 7-value enum" );
+			// C3 (2026-08-18): `lathe` joined at index 3 (next to `sweep`),
+			// so `mesh` moved from index 5 to 6 -- the ORDER is contractual
+			// (it is how the enum is rendered to the model everywhere), so
+			// both ends are pinned, not just the size.
+			Check( en.at( 0 ).asString() == "primitive" && en.at( 3 ).asString() == "lathe" &&
+			       en.at( 6 ).asString() == "mesh",
+			       "T47a: the enum is primitive..mesh in the documented order, with `lathe` at 3" );
+			const JsonValue& req = items.get( "required" );
+			bool hasPart = false, hasCons = false, hasOutline = false, hasPieces = false;
+			for( std::size_t k = 0; k < req.size(); ++k ) {
+				if( req.at( k ).asString() == "element" ) hasPart = true;
+				if( req.at( k ).asString() == "pieces" ) hasPieces = true;
+				if( req.at( k ).asString() == "construction" ) hasCons = true;
+				if( req.at( k ).asString() == "outline" ) hasOutline = true;
+			}
+			Check( hasPart && hasCons, "T47a: both `element` and `construction` are REQUIRED per entry" );
+			// S1 (2026-08-11): the piece list is REQUIRED with at least one
+			// entry -- the decomposition IS the artifact, so a codec that
+			// shipped it optional would silently turn the slice off for that
+			// provider (the identical force-level argument G3a's `outline`
+			// check below makes).
+			Check( hasPieces, "T47a/S1: `pieces` is REQUIRED per entry too" );
+			const JsonValue& piecesProp = items.get( "properties" ).get( "pieces" );
+			Check( piecesProp.get( "type" ).asString() == "array" &&
+			       piecesProp.get( "minItems" ).asNumber( -1 ) == 1.0,
+			       "T47a/S1: `pieces` is an array with minItems 1" );
+			// G3a (2026-08-10): `outline` is REQUIRED with NO opt-out value --
+			// that force level IS the mechanism (the design's resolved
+			// decision 2), so a codec that shipped it as optional would
+			// silently turn the slice off for that provider.
+			Check( hasOutline, "T47a/G3a: `outline` is REQUIRED per entry too" );
+			const JsonValue& outlineProp = items.get( "properties" ).get( "outline" );
+			Check( outlineProp.get( "type" ).asString() == "string",
+			       "T47a/G3a: `outline` is a string (the \"x y; x y; ...\" point list)" );
+			Check( outlineProp.get( "description" ).asString().find( "at least 3" ) != std::string::npos,
+			       "T47a/G3a: the outline description states the 3-point minimum the dispatcher enforces" );
+			const JsonValue& viewEnum = items.get( "properties" ).get( "view" ).get( "enum" );
+			Check( viewEnum.isArray() && viewEnum.size() == 3 &&
+			       viewEnum.at( 0 ).asString() == "front",
+			       "T47a/G3a: `view` carries the closed front|side|top enum, front first" );
+			bool viewRequired = false;
+			for( std::size_t k = 0; k < req.size(); ++k )
+				if( req.at( k ).asString() == "view" ) viewRequired = true;
+			Check( !viewRequired, "T47a/G3a: `view` is OPTIONAL (it defaults to front)" );
+			const std::string desc = tools.at( i ).get( "description" ).asString();
+			Check( desc.find( "NOT binding" ) != std::string::npos,
+			       "T47a: the description states the plan is NOT binding" );
+			Check( desc.find( "up to 3 refusals" ) != std::string::npos,
+			       "T47a: the description states the gate is capped at 3 refusals "
+			       "(2026-08-10 refuse-until-filed redesign)" );
+			Check( desc.find( "consider" ) == std::string::npos &&
+			       desc.find( "should use" ) == std::string::npos &&
+			       desc.find( "try to" ) == std::string::npos,
+			       "T47a: MEASUREMENT HYGIENE -- the description carries no exhortation, only facts" );
+		}
+		Check( saw, "T47a: the Anthropic tool table includes file_build_plan" );
+	}
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::OpenAI );
+		loop.AddUserMessage( "hello" );
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue& tools = root.get( "tools" );
+		bool saw = false;
+		for( std::size_t i = 0; i < tools.size(); ++i ) {
+			if( tools.at( i ).get( "name" ).asString() != "file_build_plan" ) continue;
+			saw = true;
+			const JsonValue& consProp = tools.at( i ).get( "parameters" ).get( "properties" )
+			                                 .get( "elements" ).get( "items" )
+			                                 .get( "properties" ).get( "construction" );
+			const JsonValue& en = consProp.get( "items" ).get( "enum" );
+			Check( en.isArray() && en.size() == 7, "T47a: openai `construction` carries the 7-value enum" );
+			Check( consProp.get( "type" ).asString() == "array" &&
+			       consProp.get( "maxItems" ).asNumber( -1 ) ==
+			           static_cast<double>( AgentSession::kBuildPlanMaxConstructionMethods ),
+			       "T47a/C4: openai gets the same array shape and the same cap" );
+		}
+		Check( saw, "T47a: the OpenAI tool table includes file_build_plan" );
+	}
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "hello" );
+		JsonValue root = ParseBody( loop.BuildRequest( kApiKey ).body );
+		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
+		bool saw = false;
+		for( std::size_t i = 0; i < decls.size(); ++i ) {
+			if( decls.at( i ).get( "name" ).asString() != "file_build_plan" ) continue;
+			saw = true;
+			const JsonValue& consProp = decls.at( i ).get( "parameters" ).get( "properties" )
+			                                 .get( "elements" ).get( "items" )
+			                                 .get( "properties" ).get( "construction" );
+			const JsonValue& en = consProp.get( "items" ).get( "enum" );
+			Check( en.isArray() && en.size() == 7, "T47a: gemini `construction` carries the 7-value enum" );
+			Check( consProp.get( "type" ).asString() == "array" &&
+			       consProp.get( "maxItems" ).asNumber( -1 ) ==
+			           static_cast<double>( AgentSession::kBuildPlanMaxConstructionMethods ),
+			       "T47a/C4: gemini gets the same array shape and the same cap" );
+		}
+		Check( saw, "T47a: the Gemini declarations include file_build_plan" );
 	}
 
-	// ==============================================================
-	// T44d: the driver-facing counters (DriverNoteCount /
-	// LastDriverNoteText).  The Mac driver keeps its own display list and
-	// never reads the transcript, so these are its ONLY way to tell the
-	// user the loop just steered the agent -- it watermarks against the
-	// count, which (unlike a transcript index) survives compaction.
+	// (b) E4 classification.
+	// G3a (2026-08-10): the fixture carries the schema-v2 result shape --
+	// per-part sketch facts plus the composite PNG -- because the E4
+	// classification below is precisely the question of whether an
+	// image-BEARING plan result now counts as a look.  A pre-G3a fixture
+	// would make that assertion vacuous.
+	const std::string kPlanResult =
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,\"replacedPreviousPlan\":false,"
+		"\"elementCount\":2,\"elements\":["
+		"{\"element\":\"wing\",\"pieces\":[\"spar\",\"membrane\"],\"construction\":\"sweep\",\"note\":\"\",\"outline\":\"0 0; 2 1; 0 2\","
+		"\"view\":\"front\",\"pointCount\":3,\"areaFraction\":0.36,\"aspect\":1.0},"
+		"{\"element\":\"body\",\"pieces\":[\"hull\"],\"construction\":\"primitive\",\"note\":\"\",\"outline\":\"0 0; 1 0; 1 1; 0 1\","
+		"\"view\":\"front\",\"pointCount\":4,\"areaFraction\":0.73,\"aspect\":1.0}],"
+		"\"png_base64\":\"aVZCT1J3\",\"byteLength\":6,\"compositeWidth\":512,\"compositeHeight\":256,"
+		"\"message\":\"build plan filed\"}}";
+	const std::string kInsertResult =
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"applied\":true,\"status\":\"applied\"}}";
+
+	// NOT A MUTATION: three inserts (threshold 3) with a file_build_plan
+	// interleaved must still refuse on the fourth INSERT and never on the
+	// plan itself.  If the plan counted as a mutation, the third insert would
+	// already be refused.
 	{
 		AgentChatLoop loop;
 		loop.SetProvider( ChatProvider::Anthropic );
-		loop.SetBlindEditNudgeThreshold( 2 );
-		loop.AddUserMessage( "build" );
-		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}";
-		Check( loop.DriverNoteCount() == 0 && loop.LastDriverNoteText().empty(),
-		       "T44d: no notes before one fires" );
-		for( int i = 0; i < 4; ++i ) {
-			DriveToolRound( loop, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
-			                Vec1( "toolu_n" + std::to_string( i ) ), Vec1( ok ) );
-		}
-		Check( loop.DriverNoteCount() == 2,
-		       "T44d: four blind edits at threshold 2 fire exactly two notes" );
-		Check( loop.LastDriverNoteText().find( "edits in a row without rendering" ) !=
-		       std::string::npos,
-		       "T44d: ... and the last note's text is available for the notice row" );
-		loop.Reset();
-		Check( loop.DriverNoteCount() == 0 && loop.LastDriverNoteText().empty(),
-		       "T44d: Reset clears them with the transcript they describe" );
+		loop.SetBlindEditGateThreshold( 3 );
+		loop.AddUserMessage( "build a scene" );
+		int rpcId = 1;
+		auto step = [&]( const char* verb, const std::string& result ) -> bool {
+			ChatStepResult st = loop.HandleResponse( 200, AnthropicFixture(
+				std::string( "[{\"type\":\"tool_use\",\"id\":\"toolu_p\",\"name\":\"" ) + verb +
+				"\",\"input\":{}}]", "tool_use" ) );
+			if( st.toolCalls.size() != 1 ) return false;
+			const ChatToolCall& call = st.toolCalls[0];
+			const std::string gate = loop.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) { loop.AddToolResult( call, gate ); return true; }
+			loop.AddToolResult( call, result );
+			return false;
+		};
+		Check( !step( "file_build_plan", kPlanResult ),
+		       "T47b: file_build_plan is never itself gated" );
+		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 1 -- not refused" );
+		Check( !step( "file_build_plan", kPlanResult ),
+		       "T47b: a file_build_plan between edits is never itself gated" );
+		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 2 -- not refused" );
+		Check( !step( "insert_chunk", kInsertResult ),
+		       "T47b: insert 3 -- not refused (streak 2->3; if the two plan calls had counted as "
+		       "MUTATIONS the streak would already be past threshold 3 and this would refuse)" );
+		Check( step( "insert_chunk", kInsertResult ),
+		       "T47b: insert 4 -- REFUSED; the streak counted exactly the three inserts" );
 	}
 
-	// Disabled (threshold 0) and reset-on-observe still hold, and neither
-	// perturbs the system prompt.
+	// NOT A LOOK: after the gate has armed, a file_build_plan must NOT clear
+	// it -- only a real visual observation may.  RED-PROVE against the
+	// tempting "it is a read, so it resets" mis-wiring.
 	{
-		AgentChatLoop off;
-		off.SetProvider( ChatProvider::Anthropic );
-		off.SetBlindEditNudgeThreshold( 0 );
-		off.AddUserMessage( "build" );
-		const std::string base = SystemPromptOf( ChatProvider::Anthropic, off.BuildRequest( kApiKey ).body );
-		const std::string ok = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}";
-		for( int i = 0; i < 8; ++i ) {
-			DriveToolRound( off, ChatProvider::Anthropic, Vec1( "insert_chunk" ),
-			                Vec1( "toolu_off" + std::to_string( i ) ), Vec1( ok ) );
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		loop.SetBlindEditGateThreshold( 3 );
+		loop.AddUserMessage( "build a scene" );
+		int rpcId = 1;
+		auto step = [&]( const char* verb, const std::string& result ) -> bool {
+			ChatStepResult st = loop.HandleResponse( 200, AnthropicFixture(
+				std::string( "[{\"type\":\"tool_use\",\"id\":\"toolu_q\",\"name\":\"" ) + verb +
+				"\",\"input\":{}}]", "tool_use" ) );
+			if( st.toolCalls.size() != 1 ) return false;
+			const ChatToolCall& call = st.toolCalls[0];
+			const std::string gate = loop.GateRefusalResponse( call, rpcId++ );
+			if( !gate.empty() ) { loop.AddToolResult( call, gate ); return true; }
+			loop.AddToolResult( call, result );
+			return false;
+		};
+		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 1/3" );
+		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 2/3" );
+		Check( !step( "insert_chunk", kInsertResult ), "T47b: insert 3/3 (gate now armed)" );
+		Check( !step( "file_build_plan", kPlanResult ),
+		       "T47b: the plan call itself passes the gate (it is not a mutation)" );
+		Check( step( "insert_chunk", kInsertResult ),
+		       "T47b: MONEY ASSERTION -- the next insert is STILL refused: filing a plan is not a "
+		       "LOOK and must not reset the blind-edit streak" );
+	}
+
+	// The transcript one-liner reports WHAT was declared, not "ok".
+	{
+		ChatToolCall call;
+		call.name = "file_build_plan";
+		const std::string line = AgentChatLoop::ToolOutcomeLineForDisplay( call, kPlanResult );
+		Check( line.find( "wing=sweep" ) != std::string::npos &&
+		       line.find( "body=primitive" ) != std::string::npos,
+		       "T47c: the outcome line echoes each element and its declared construction" );
+		Check( line.find( "2 sketches)" ) != std::string::npos,
+		       "T47c/G3a: and how many sketches the filing produced -- a filing that rasterized "
+		       "fewer sketches than it declared elements must be visible, not silent" );
+		// S1 (2026-08-11): the DECOMPOSITION DEPTH joins the line -- it is the
+		// first thing this arc measures, so a human reading the transcript
+		// should see it without opening the raw payload.
+		Check( line.find( "3 pieces" ) != std::string::npos,
+		       "T47c/S1: and the total piece count across the declared elements" );
+
+		// C4 (2026-08-19): the LIVE shape.  The dispatcher echoes
+		// `construction` as an ARRAY now, so the fixture above -- a bare
+		// string, the pre-C4 recorded form that still replays through this
+		// same function -- proves only the back-compat leg.  This second
+		// fixture is what a real payload looks like today, including a
+		// two-method element, and it must render BOTH methods: a line
+		// showing "still=lathe" for an element declared [lathe, sweep]
+		// would hide exactly the fact this slice exists to make visible.
+		const std::string kPlanResultArray =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,\"elementCount\":2,"
+			"\"elements\":["
+			"{\"element\":\"still\",\"pieces\":[\"pot\",\"coil\"],"
+			"\"construction\":[\"lathe\",\"sweep\"],\"pointCount\":4},"
+			"{\"element\":\"bench\",\"pieces\":[\"top\"],\"construction\":[\"primitive\"],"
+			"\"pointCount\":4}],"
+			"\"message\":\"build plan filed\"}}";
+		const std::string arrLine =
+			AgentChatLoop::ToolOutcomeLineForDisplay( call, kPlanResultArray );
+		Check( arrLine.find( "still=lathe+sweep" ) != std::string::npos,
+		       "T47c/C4: MONEY ASSERTION -- a multi-method element renders EVERY method it "
+		       "declared, joined, not just the first" );
+		Check( arrLine.find( "bench=primitive" ) != std::string::npos,
+		       "T47c/C4: and a one-method element still renders exactly as it always did" );
+	}
+
+	// G3a (2026-08-10): the plan result IS an image result for TRANSPORT
+	// purposes (the composite sketch rides back as a real image block) while
+	// remaining neither a mutation nor a look for the SEQUENCING GATE.  Both
+	// halves asserted here, side by side, because the pair is the whole
+	// classification decision and reading either alone invites "it has a PNG,
+	// so surely it is a look".
+	{
+		ChatToolCall call;
+		call.name = "file_build_plan";
+		Check( ChatToolResultCarriesImage( call, kPlanResult ),
+		       "T47d/G3a: a filing WITH a composite PNG is an image-bearing result (so it gets a "
+		       "real image block and is metered by the image-retention cap)" );
+		const std::string kPlanNoImage =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,\"elementCount\":1,"
+			"\"elements\":[{\"element\":\"body\",\"pieces\":[\"hull\"],\"construction\":\"primitive\",\"pointCount\":4}],"
+			"\"message\":\"build plan filed\"}}";
+		Check( !ChatToolResultCarriesImage( call, kPlanNoImage ),
+		       "T47d/G3a: RED-PROVE -- the predicate keys on the png_base64 FIELD, not the verb name, "
+		       "so a filing that produced no image is correctly not an image result" );
+	}
+}
+
+//----------------------------------------------------------------------
+// Arc 77 Phase 2 (2026-08-11): the PROVIDER IMAGE-GENERATION wire shapes.
+//
+// These are the four pure functions in AgentChatCodecs.cpp that decide
+// WHERE the image request goes, HOW it is authenticated, WHAT it sends and
+// HOW the answer is read.  They are asserted exactly the way the chat
+// codecs' own request shapes are asserted a few hundred lines above: build
+// the request, then read back the url, the headers and the body.  NO
+// NETWORK -- these functions never touch one.
+//
+// The auth assertions are the load-bearing ones: the key must appear in
+// the provider's OWN header and NOWHERE else (never the URL, never the
+// body), which is the chat transport's key-hygiene idiom this borrows.
+//----------------------------------------------------------------------
+static void TestImageGenerationWireShapes()
+{
+	std::printf( "T50: provider image-generation wire shapes (imagine_scene's host half)...\n" );
+
+	// --- the capability map -------------------------------------------
+	Check( ChatProviderSupportsImageGeneration( "gemini" ),
+	       "T50: gemini has an image-generation endpoint" );
+	Check( ChatProviderSupportsImageGeneration( "openai" ),
+	       "T50: openai has an image-generation endpoint" );
+	Check( !ChatProviderSupportsImageGeneration( "anthropic" ) &&
+	       !ChatProviderSupportsImageGeneration( "xai" ) &&
+	       !ChatProviderSupportsImageGeneration( "local" ),
+	       "T50: anthropic / xai / local do NOT -- the capability is per provider, and the "
+	       "tool still exists on all of them (kToolDefs is one shared table)" );
+	Check( !ChatProviderSupportsImageGeneration( "not-a-provider" ) &&
+	       ChatImageGenerationModelId( "not-a-provider" ).empty(),
+	       "T50: an unrecognized provider name is simply NOT capable -- never a guessed endpoint" );
+
+	// VERIFIED LIVE 2026-08-11: the account's image-capable generateContent
+	// model is gemini-3.1-flash-image; `gemini-3.6-flash-image` does not
+	// exist and 404'd on the first live imagine_scene.  Pinned so the two
+	// independently-versioned model lines (chat vs image) cannot be
+	// "modernised" into agreement by eye.
+	Check( ChatImageGenerationModelId( "gemini" ) == "gemini-3.1-flash-image",
+	       "T50: the gemini image model default" );
+	Check( ChatImageGenerationModelId( "openai" ) == "gpt-image-1",
+	       "T50: the openai image model default" );
+
+	// --- gemini: the SAME surface + auth header as the chat codec ------
+	{
+		ChatHttpRequest req;
+		std::string err;
+		const bool built = BuildImageGenerationRequest(
+			"gemini", "gemini-3.1-flash-image", "SECRET-GEMINI-KEY",
+			"a brass orrery on a walnut desk", req, err );
+		Check( built && err.empty(), "T50: gemini image request builds" );
+		Check( req.url ==
+		       "https://generativelanguage.googleapis.com/v1beta/models/"
+		       "gemini-3.1-flash-image:generateContent",
+		       "T50: gemini image generation rides the SAME generativelanguage generateContent "
+		       "surface the chat codec uses -- got: " + req.url );
+		bool sawKeyHeader = false, sawContentType = false;
+		for( std::size_t i = 0; i < req.headers.size(); ++i ) {
+			if( req.headers[i].first == "x-goog-api-key" ) {
+				sawKeyHeader = ( req.headers[i].second == "SECRET-GEMINI-KEY" );
+			}
+			if( req.headers[i].first == "content-type" ) sawContentType = true;
 		}
-		const ChatHttpRequest req = off.BuildRequest( kApiKey );
-		Check( req.body.find( "edits in a row without rendering" ) == std::string::npos,
-		       "T44: threshold 0 disables it -- 8 blind edits, still no reminder anywhere" );
-		Check( SystemPromptOf( ChatProvider::Anthropic, req.body ) == base,
-		       "T44: ... and the system prompt is unchanged either way" );
+		Check( sawKeyHeader, "T50: the key rides in gemini's OWN x-goog-api-key header" );
+		Check( sawContentType, "T50: and a content-type header is set" );
+		Check( req.url.find( "SECRET-GEMINI-KEY" ) == std::string::npos &&
+		       req.body.find( "SECRET-GEMINI-KEY" ) == std::string::npos,
+		       "T50 MONEY ASSERTION: the key is NOWHERE in the url or the body -- the chat "
+		       "transport's header-only key idiom, unchanged" );
+		Check( req.body.find( "\"responseModalities\":[\"IMAGE\"]" ) != std::string::npos,
+		       "T50: the body asks for an IMAGE modality -- got: " + req.body );
+		Check( req.body.find( "a brass orrery on a walnut desk" ) != std::string::npos,
+		       "T50: and carries the model's description verbatim as the prompt text" );
+		Check( req.body.find( "flat-shaded" ) != std::string::npos,
+		       "T50/Phase 2b: with the host's style directive appended -- got: " + req.body );
+	}
+
+	// --- openai: the images endpoint, Bearer auth ----------------------
+	{
+		ChatHttpRequest req;
+		std::string err;
+		const bool built = BuildImageGenerationRequest(
+			"openai", "gpt-image-1", "SECRET-OPENAI-KEY", "a foggy harbour at dawn", req, err );
+		Check( built && err.empty(), "T50: openai image request builds" );
+		Check( req.url == "https://api.openai.com/v1/images/generations",
+		       "T50: openai image generation POSTs /v1/images/generations -- got: " + req.url );
+		bool sawBearer = false;
+		for( std::size_t i = 0; i < req.headers.size(); ++i )
+			if( req.headers[i].first == "Authorization" )
+				sawBearer = ( req.headers[i].second == "Bearer SECRET-OPENAI-KEY" );
+		Check( sawBearer, "T50: the key rides in the Authorization: Bearer header, as it does for chat" );
+		Check( req.url.find( "SECRET-OPENAI-KEY" ) == std::string::npos &&
+		       req.body.find( "SECRET-OPENAI-KEY" ) == std::string::npos,
+		       "T50: and appears nowhere else" );
+		Check( req.body.find( "\"model\":\"gpt-image-1\"" ) != std::string::npos &&
+		       req.body.find( "\"n\":1" ) != std::string::npos &&
+		       req.body.find( "\"size\":\"1024x1024\"" ) != std::string::npos,
+		       "T50: the openai body carries model/n/size -- got: " + req.body );
+		Check( req.body.find( "a foggy harbour at dawn" ) != std::string::npos &&
+		       req.body.find( "flat-shaded" ) != std::string::npos,
+		       "T50/Phase 2b: and the SAME composed prompt as gemini -- description then style "
+		       "directive, built once so the two provider bodies cannot drift" );
+	}
+
+	//----------------------------------------------------------------------
+	// Phase 2b (2026-08-11): THE REACHABILITY WRAPPER.
+	//
+	// Phase 2 forwarded the description verbatim and providers answered with
+	// cinematic concept art -- painterly texture, god-rays, photographic
+	// depth of field -- which a path tracer driving SDF primitives cannot
+	// approach.  A target the renderer cannot get near shows a difference on
+	// every render and never one the model can close, which is the opposite
+	// of a progress-check.  These pin the two properties that matter: the
+	// model's words come FIRST and unaltered (the imagining stays its act),
+	// and a STYLE constraint follows.
+	//----------------------------------------------------------------------
+	{
+		const std::string directive = ChatImageStyleDirective();
+		Check( !directive.empty(), "T50/Phase 2b: there IS a compiled-in style directive" );
+		Check( directive.find( "flat-shaded" ) != std::string::npos &&
+		       directive.find( "neutral even lighting" ) != std::string::npos &&
+		       directive.find( "No painterly" ) != std::string::npos,
+		       "T50/Phase 2b: and it asks for a simple flat-shaded 3D-render look -- got: " +
+		       directive );
+
+		const std::string composed = ComposeImageGenerationPrompt( "a dragon over a canyon" );
+		Check( composed.compare( 0, 22, "a dragon over a canyon" ) == 0,
+		       "T50/Phase 2b MONEY ASSERTION: the model's own description comes FIRST and "
+		       "unaltered -- the subject is its imagining and the host only constrains style" );
+		Check( composed.find( directive ) != std::string::npos &&
+		       composed.size() > directive.size() + 22,
+		       "T50/Phase 2b: with the directive appended after it" );
+
+		// The override: config, not a credential.  Set, re-resolve, unset --
+		// so the rest of this binary sees the compiled-in default again.
+#ifdef _WIN32
+		_putenv_s( "RISE_IMAGE_STYLE_PROMPT", "Style: a rough pencil sketch." );
+#else
+		setenv( "RISE_IMAGE_STYLE_PROMPT", "Style: a rough pencil sketch.", 1 );
+#endif
+		Check( ChatImageStyleDirective() == "Style: a rough pencil sketch." &&
+		       ComposeImageGenerationPrompt( "x" ) == "x\n\nStyle: a rough pencil sketch.",
+		       "T50/Phase 2b: RISE_IMAGE_STYLE_PROMPT replaces the directive with no recompile" );
+#ifdef _WIN32
+		_putenv_s( "RISE_IMAGE_STYLE_PROMPT", "" );
+#else
+		unsetenv( "RISE_IMAGE_STYLE_PROMPT" );
+#endif
+		Check( ChatImageStyleDirective() == directive,
+		       "T50/Phase 2b: unsetting restores the compiled-in default" );
+	}
+
+	// --- an incapable provider refuses to build anything ---------------
+	{
+		ChatHttpRequest req;
+		std::string err;
+		Check( !BuildImageGenerationRequest( "anthropic", "whatever", "k", "p", req, err ) &&
+		       !err.empty() && req.url.empty(),
+		       "T50: an incapable provider yields NO request and a factual reason" );
+	}
+
+	// --- env overrides: the no-recompile hand-test seam ----------------
+	// Config, not credentials.  Set, re-resolve, unset -- so the rest of
+	// this binary sees the compiled-in defaults again.
+	{
+#ifdef _WIN32
+		_putenv_s( "RISE_IMAGE_MODEL_GEMINI", "gemini-test-override" );
+#else
+		setenv( "RISE_IMAGE_MODEL_GEMINI", "gemini-test-override", 1 );
+#endif
+		Check( ChatImageGenerationModelId( "gemini" ) == "gemini-test-override",
+		       "T50: RISE_IMAGE_MODEL_GEMINI retargets the model with no recompile" );
+		ChatHttpRequest req;
+		std::string err;
+		BuildImageGenerationRequest( "gemini", ChatImageGenerationModelId( "gemini" ),
+		                             "k", "p", req, err );
+		Check( req.url.find( "gemini-test-override:generateContent" ) != std::string::npos,
+		       "T50: and the overridden id lands in the url path -- got: " + req.url );
+#ifdef _WIN32
+		_putenv_s( "RISE_IMAGE_MODEL_GEMINI", "" );
+#else
+		unsetenv( "RISE_IMAGE_MODEL_GEMINI" );
+#endif
+		Check( ChatImageGenerationModelId( "gemini" ) == "gemini-3.1-flash-image",
+		       "T50: unsetting restores the compiled-in default" );
+	}
+
+	// --- response parsing ----------------------------------------------
+	{
+		// "AAECAw==" is base64 for the four bytes 00 01 02 03.
+		const std::string geminiBody =
+			"{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":["
+			"{\"text\":\"here you go\"},"
+			"{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AAECAw==\"}}]}}]}";
+		std::vector<unsigned char> bytes;
+		std::string mime, err;
+		Check( ParseImageGenerationResponse( "gemini", geminiBody, bytes, mime, err ),
+		       "T50: the gemini inlineData part is found past a leading text part" );
+		Check( bytes.size() == 4 && bytes[0] == 0 && bytes[3] == 3 && mime == "image/png",
+		       "T50: and decodes to the exact payload bytes with its declared mime" );
+
+		// snake_case is accepted too -- the nesting/naming has moved between
+		// API revisions and a rename must not read as "no image".
+		const std::string snake =
+			"{\"candidates\":[{\"content\":{\"parts\":["
+			"{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"AAECAw==\"}}]}}]}";
+		bytes.clear(); mime.clear(); err.clear();
+		Check( ParseImageGenerationResponse( "gemini", snake, bytes, mime, err ) &&
+		       bytes.size() == 4 && mime == "image/jpeg",
+		       "T50: inline_data/mime_type (the snake_case spelling) parses identically" );
+
+		const std::string openaiBody = "{\"created\":1,\"data\":[{\"b64_json\":\"AAECAw==\"}]}";
+		bytes.clear(); mime.clear(); err.clear();
+		Check( ParseImageGenerationResponse( "openai", openaiBody, bytes, mime, err ) &&
+		       bytes.size() == 4 && mime == "image/png",
+		       "T50: the openai data[0].b64_json payload parses" );
+
+		// A url-only openai response is REFUSED rather than silently treated
+		// as success -- the bytes must arrive inline.
+		bytes.clear(); mime.clear(); err.clear();
+		Check( !ParseImageGenerationResponse( "openai",
+			       "{\"data\":[{\"url\":\"https://example.invalid/i.png\"}]}", bytes, mime, err ) &&
+		       !err.empty() && bytes.empty(),
+		       "T50: a url-only openai response is an honest failure, not an empty success" );
+
+		bytes.clear(); mime.clear(); err.clear();
+		Check( !ParseImageGenerationResponse( "gemini", "not json at all", bytes, mime, err ) &&
+		       !err.empty(),
+		       "T50: an unparseable body fails with a reason" );
+		Check( err.find( "not json at all" ) == std::string::npos,
+		       "T50 MONEY ASSERTION: the parse error names a SHAPE and does not echo the body -- "
+		       "a provider body can carry the prompt back and must not be spliced into a result "
+		       "the model reads" );
+
+		bytes.clear(); mime.clear(); err.clear();
+		Check( !ParseImageGenerationResponse( "gemini",
+			       "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"sorry\"}]}}]}",
+			       bytes, mime, err ) && !err.empty(),
+		       "T50: a text-only candidate is not an image" );
+	}
+
+	// --- the transport predicate covers the new verb -------------------
+	{
+		ChatToolCall call;
+		call.name = "imagine_scene";
+		Check( ChatToolResultCarriesImage( call,
+			       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true,\"png_base64\":\"QUJD\"}}" ),
+		       "T50: imagine_scene's result counts as image-bearing on every transport" );
+		ChatToolCall renderCall;
+		renderCall.name = "render";
+		Check( ChatToolResultCarriesImage( renderCall,
+			       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true,"
+			       "\"sceneTarget\":{\"imagined\":true,\"composite\":true},"
+			       "\"png_base64\":\"QUJD\"}}" ),
+		       "T50: and a render carrying the scene-target composite needs no new entry -- "
+		       "`render` is already on the list and the composite uses the same field" );
+	}
+
+	// --- the tool is declared, with its one required param -------------
+	{
+		const std::string fp = ChatToolDefsFingerprint();
+		Check( fp.find( "imagine_scene" ) != std::string::npos,
+		       "T50: imagine_scene is in the ONE shared tool table every codec maps from" );
+		Check( fp.find( "\\\"required\\\":[\\\"description\\\"]" ) != std::string::npos ||
+		       fp.find( "\"required\":[\"description\"]" ) != std::string::npos,
+		       "T50: and its schema requires `description`" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T51 (S2 fix-round, 2026-08-11, P3): provider TEXT completion wire shapes
+// -- the `build_element` half of AgentChatCodecs.h (BuildTextCompletionRequest
+// / ParseTextCompletionResponse / MakeChatTextCompleter), previously covered
+// only by reading -- every clean-room test (AgentChunkCrudTest.cpp's S2
+// block) mocks the completer via AgentSession::SetTextCompleter, so the
+// wire code itself never ran under a test.  Mirrors T50's per-provider
+// structure exactly: key hygiene (the key rides ONLY the provider's own
+// auth header, never the url or body), a canned success response parses to
+// the expected text, and a shape-mismatch failure never echoes the body
+// (a provider body can carry the prompt straight back).  Mocked
+// BuildTextCompletionRequest / ParseTextCompletionResponse calls only --
+// no transport, no live call; MakeChatTextCompleter's actual HTTP wiring
+// (status-only error, key-hygiene end to end) is covered separately in
+// AgentEvalLiveTransportTest.cpp's T5c, the same split T50/T5b already use
+// for the image sibling.
+//----------------------------------------------------------------------
+static void TestTextCompletionWireShapes()
+{
+	std::printf( "T51: provider text-completion wire shapes (build_element's host half)...\n" );
+
+	// --- the capability map --------------------------------------------
+	Check( ChatProviderSupportsTextCompletion( "anthropic" ) &&
+	       ChatProviderSupportsTextCompletion( "gemini" ) &&
+	       ChatProviderSupportsTextCompletion( "openai" ) &&
+	       ChatProviderSupportsTextCompletion( "xai" ),
+	       "T51: all four chat providers have a text-completion endpoint" );
+	Check( !ChatProviderSupportsTextCompletion( "local" ) &&
+	       !ChatProviderSupportsTextCompletion( "not-a-provider" ),
+	       "T51: local and an unrecognized name do NOT -- never a guessed endpoint" );
+
+	// --- anthropic: x-api-key + anthropic-version, the chat codec's own --
+	{
+		ChatHttpRequest req;
+		std::string err;
+		const bool built = BuildTextCompletionRequest(
+			"anthropic", "claude-sonnet-5", "SECRET-ANTHROPIC-KEY",
+			"build the wizard element", req, err );
+		Check( built && err.empty(), "T51: anthropic text request builds" );
+		Check( req.url == "https://api.anthropic.com/v1/messages",
+		       "T51: anthropic text completion rides the SAME /v1/messages surface the chat codec "
+		       "uses -- got: " + req.url );
+		bool sawKeyHeader = false, sawVersion = false;
+		for( std::size_t i = 0; i < req.headers.size(); ++i ) {
+			if( req.headers[i].first == "x-api-key" )
+				sawKeyHeader = ( req.headers[i].second == "SECRET-ANTHROPIC-KEY" );
+			if( req.headers[i].first == "anthropic-version" ) sawVersion = true;
+		}
+		Check( sawKeyHeader, "T51: the key rides in anthropic's OWN x-api-key header" );
+		Check( sawVersion, "T51: and anthropic-version is set" );
+		Check( req.url.find( "SECRET-ANTHROPIC-KEY" ) == std::string::npos &&
+		       req.body.find( "SECRET-ANTHROPIC-KEY" ) == std::string::npos,
+		       "T51 MONEY ASSERTION: the key is NOWHERE in the url or the body" );
+		Check( req.body.find( "build the wizard element" ) != std::string::npos,
+		       "T51: and the body carries the prompt verbatim" );
+	}
+
+	// --- gemini: x-goog-api-key, the models/<id>:generateContent surface -
+	{
+		ChatHttpRequest req;
+		std::string err;
+		const bool built = BuildTextCompletionRequest(
+			"gemini", "gemini-4-argon", "SECRET-GEMINI-KEY",
+			"build the wizard element", req, err );
+		Check( built && err.empty(), "T51: gemini text request builds" );
+		Check( req.url ==
+		       "https://generativelanguage.googleapis.com/v1beta/models/"
+		       "gemini-4-argon:generateContent",
+		       "T51: got: " + req.url );
+		bool sawKeyHeader = false;
+		for( std::size_t i = 0; i < req.headers.size(); ++i )
+			if( req.headers[i].first == "x-goog-api-key" )
+				sawKeyHeader = ( req.headers[i].second == "SECRET-GEMINI-KEY" );
+		Check( sawKeyHeader, "T51: the key rides in gemini's OWN x-goog-api-key header" );
+		Check( req.url.find( "SECRET-GEMINI-KEY" ) == std::string::npos &&
+		       req.body.find( "SECRET-GEMINI-KEY" ) == std::string::npos,
+		       "T51 MONEY ASSERTION: the key is NOWHERE in the url or the body" );
+		Check( req.body.find( "build the wizard element" ) != std::string::npos,
+		       "T51: and the body carries the prompt verbatim" );
+		Check( req.body.find( "\"maxOutputTokens\":32768" ) != std::string::npos,
+		       "T51: gemini text completion requests the full 32K output ceiling for Argon thinking+text" );
+	}
+
+	// --- openai: /v1/responses, LOWERCASE `authorization` (the text-
+	// completion codec's own header casing -- distinct from the image
+	// sibling's capitalized `Authorization`) --------------------------
+	{
+		ChatHttpRequest req;
+		std::string err;
+		const bool built = BuildTextCompletionRequest(
+			"openai", "gpt-5.6-terra", "SECRET-OPENAI-KEY",
+			"build the wizard element", req, err );
+		Check( built && err.empty(), "T51: openai text request builds" );
+		Check( req.url == "https://api.openai.com/v1/responses",
+		       "T51: got: " + req.url );
+		bool sawAuth = false;
+		for( std::size_t i = 0; i < req.headers.size(); ++i )
+			if( req.headers[i].first == "authorization" )
+				sawAuth = ( req.headers[i].second == "Bearer SECRET-OPENAI-KEY" );
+		Check( sawAuth, "T51: the key rides in the lowercase `authorization` header" );
+		Check( req.url.find( "SECRET-OPENAI-KEY" ) == std::string::npos &&
+		       req.body.find( "SECRET-OPENAI-KEY" ) == std::string::npos,
+		       "T51 MONEY ASSERTION: the key is NOWHERE in the url or the body" );
+		Check( req.body.find( "build the wizard element" ) != std::string::npos,
+		       "T51: and the body carries the prompt verbatim" );
+	}
+
+	// --- xai: the OpenAI-compatible chat-completions surface, lowercase
+	// `authorization` too ------------------------------------------------
+	{
+		ChatHttpRequest req;
+		std::string err;
+		const bool built = BuildTextCompletionRequest(
+			"xai", "grok-4.5", "SECRET-XAI-KEY", "build the wizard element", req, err );
+		Check( built && err.empty(), "T51: xai text request builds" );
+		Check( req.url == "https://api.x.ai/v1/chat/completions",
+		       "T51: got: " + req.url );
+		bool sawAuth = false;
+		for( std::size_t i = 0; i < req.headers.size(); ++i )
+			if( req.headers[i].first == "authorization" )
+				sawAuth = ( req.headers[i].second == "Bearer SECRET-XAI-KEY" );
+		Check( sawAuth, "T51: the key rides in the lowercase `authorization` header" );
+		Check( req.url.find( "SECRET-XAI-KEY" ) == std::string::npos &&
+		       req.body.find( "SECRET-XAI-KEY" ) == std::string::npos,
+		       "T51 MONEY ASSERTION: the key is NOWHERE in the url or the body" );
+		Check( req.body.find( "build the wizard element" ) != std::string::npos,
+		       "T51: and the body carries the prompt verbatim" );
+	}
+
+	// --- an incapable provider refuses to build anything ----------------
+	{
+		ChatHttpRequest req;
+		std::string err;
+		Check( !BuildTextCompletionRequest( "local", "whatever", "k", "p", req, err ) &&
+		       !err.empty() && req.url.empty(),
+		       "T51: an incapable provider yields NO request and a factual reason" );
+	}
+
+	// --- response parsing: success per provider -------------------------
+	{
+		std::string text, err;
+		Check( ParseTextCompletionResponse( "anthropic",
+			       "{\"content\":[{\"type\":\"text\",\"text\":\"sdf_geometry { }\"}]}", text, err ) &&
+		       text == "sdf_geometry { }",
+		       "T51: the anthropic content[] text block parses" );
+
+		text.clear(); err.clear();
+		Check( ParseTextCompletionResponse( "gemini",
+			       "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"box_geometry { }\"}]}}]}",
+			       text, err ) && text == "box_geometry { }",
+		       "T51: the gemini candidates[0].content.parts[0].text parses" );
+
+		text.clear(); err.clear();
+		Check( ParseTextCompletionResponse( "gemini",
+			       "{\"candidates\":[{\"content\":{\"parts\":["
+			       "{\"thought\":true,\"text\":\"reasoning trace that must not leak\"},"
+			       "{\"text\":\"box_geometry { }\"}"
+			       "]}}]}",
+			       text, err ) && text == "box_geometry { }",
+		       "T51: gemini thought:true parts are skipped so reasoning traces never pollute builder chunks" );
+
+		text.clear(); err.clear();
+		Check( ParseTextCompletionResponse( "openai",
+			       "{\"output_text\":\"standard_object { }\"}", text, err ) &&
+		       text == "standard_object { }",
+		       "T51: the openai `output_text` convenience field parses" );
+
+		text.clear(); err.clear();
+		Check( ParseTextCompletionResponse( "openai",
+			       "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"lambertian_material { }\"}]}]}",
+			       text, err ) && text == "lambertian_material { }",
+		       "T51: and the output[]->content[]->output_text fallback parses when there is no "
+		       "convenience field" );
+
+		text.clear(); err.clear();
+		Check( ParseTextCompletionResponse( "xai",
+			       "{\"choices\":[{\"message\":{\"content\":\"uniformcolor_painter { }\"}}]}",
+			       text, err ) && text == "uniformcolor_painter { }",
+		       "T51: the xai choices[0].message.content string parses" );
+	}
+
+	// --- response parsing: shape mismatch, per provider, error names a
+	// SHAPE and NEVER echoes the body -- a provider error body can carry
+	// the prompt straight back, and must not reach a result the model
+	// reads (the same rule ParseImageGenerationResponse's T50 tests pin) --
+	{
+		const char* const kMarker = "SECRET_PROMPT_LEAK_MARKER";
+		struct Case { const char* provider; std::string body; };
+		const Case cases[] = {
+			{ "anthropic", std::string( "{\"content\":\"" ) + kMarker + "\"}" },
+			{ "gemini",    std::string( "{\"candidates\":[{\"content\":{\"parts\":[{\"notes\":\"" ) +
+			               kMarker + "\"}]}}]}" },
+			{ "openai",    std::string( "{\"output\":[{\"content\":[{\"type\":\"other\",\"junk\":\"" ) +
+			               kMarker + "\"}]}]}" },
+			{ "xai",       std::string( "{\"choices\":[{\"other\":\"" ) + kMarker + "\"}]}" },
+		};
+		for( const Case& c : cases ) {
+			std::string t, e;
+			Check( !ParseTextCompletionResponse( c.provider, c.body, t, e ) && !e.empty(),
+			       std::string( "T51: a shape-mismatched " ) + c.provider + " body fails with a reason" );
+			Check( e.find( kMarker ) == std::string::npos,
+			       std::string( "T51 MONEY ASSERTION: the " ) + c.provider +
+			       " parse error never echoes the response body" );
+			Check( t.empty(), std::string( "T51: and no partial text for " ) + c.provider );
+		}
+
+		// Not JSON at all, and an unrecognized provider -- both factual,
+		// neither echoes the body.
+		std::string t, e;
+		Check( !ParseTextCompletionResponse( "gemini", "not json at all, SECRET_PROMPT_LEAK_MARKER",
+			       t, e ) && !e.empty() && e.find( "SECRET_PROMPT_LEAK_MARKER" ) == std::string::npos,
+		       "T51: an unparseable body fails with a reason that does not echo it" );
+		t.clear(); e.clear();
+		Check( !ParseTextCompletionResponse( "not-a-provider", "{}", t, e ) && !e.empty(),
+		       "T51: an unrecognized provider has no completion-response shape" );
+
+		// WELL-FORMED BUT EMPTY IS A FAILURE, same as the image sibling's
+		// "0 chunks landed, no rejections" trap.
+		t.clear(); e.clear();
+		Check( !ParseTextCompletionResponse( "anthropic",
+			       "{\"content\":[{\"type\":\"text\",\"text\":\"\"}]}", t, e ) && !e.empty(),
+		       "T51: a well-formed but EMPTY assistant text is a failure, not a silent success" );
+	}
+}
+
+//----------------------------------------------------------------------
+// T52 (2026-08-11): Gemini functionDeclarations JSON-Schema keyword
+// denylist, matched against the REAL WIRE BODY.
+//
+// THIS IS A RECORDED OUTAGE, NOT SPECULATION.  A live Gemini agent run
+// died before a single tool call with an HTTP 400 the instant the S2
+// build_element/place_element schemas landed:
+//
+//   "Invalid JSON payload received. Unknown name \"exclusiveMinimum\" at
+//    'tools[0].function_declarations[20].parameters.properties[1].value':
+//    Cannot find field."
+//
+// Gemini's functionDeclarations schema is an OpenAPI-subset proto, NOT
+// full JSON Schema -- it 400s the WHOLE request the moment ANY tool
+// anywhere in the array carries a keyword it does not recognize.  Every
+// other tool in kToolDefs (AgentChatCodecs.cpp) used none of the
+// JSON-Schema-only keywords, which is exactly why nothing caught this:
+// build_element's `height` and place_element's `scale` were the FIRST
+// schemas to reach for one.
+//
+// This test does not read kToolDefs directly -- GeminiChatCodec::
+// GeminiFunctionDeclarationsJson() is a file-static helper with no
+// externally callable entry point, and asserting against the exact wire
+// text GeminiChatCodec::BuildRequest sends is strictly better anyway: it
+// is what actually reaches Google, byte for byte.
+//
+// The denylist below is exactly the set the task that created this test
+// specified: keywords that are BOTH documented-unsupported by Gemini's
+// functionDeclarations subset AND currently unused anywhere in the tool
+// table, so this check cannot false-positive on a keyword the table
+// legitimately relies on today (`additionalProperties`, `minimum`,
+// `maximum`, `pattern`, `default` are all either supported or not worth
+// the false-positive risk, and are deliberately excluded).
+//
+// Matched at JSON KEY POSITION (`"keyword":`), not as a bare substring --
+// a denylisted word could legitimately appear inside a free-text
+// `description` as prose (e.g. a tool explaining what a `$ref` or a
+// `const` chunk parameter is) without being a schema keyword at all, and
+// a bare-substring scan would false-positive on that prose.
+//----------------------------------------------------------------------
+static void TestGeminiSchemaKeywordDenylist()
+{
+	std::printf( "T52: Gemini wire body carries none of the functionDeclarations-rejected "
+	             "JSON-Schema keywords (2026-08-11 400 regression guard)...\n" );
+
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Gemini );
+	loop.AddUserMessage( "hello" );
+	const std::string body = loop.BuildRequest( kApiKey ).body;
+
+	Check( body.find( "\"tools\":[{\"functionDeclarations\":" ) != std::string::npos,
+	       "T52: the Gemini wire body carries a functionDeclarations tools array to scan" );
+
+	// Denied AND currently unused (task-specified list) -- exhaustive, not
+	// illustrative: adding a NEW use of one of these to the tool table
+	// must fail this test, not slip through because the list was partial.
+	static const char* const kDenylist[] = {
+		"exclusiveMinimum", "exclusiveMaximum", "multipleOf", "const",
+		"oneOf", "allOf", "$schema", "$ref"
+	};
+
+	std::vector<std::string> problems;
+	for( const char* kw : kDenylist ) {
+		const std::string keyPattern = std::string( "\"" ) + kw + "\":";
+		for( std::size_t at = body.find( keyPattern ); at != std::string::npos;
+		     at = body.find( keyPattern, at + 1 ) ) {
+			// Name the offending tool by scanning backward for the nearest
+			// preceding {"name":"...", so a failure is actionable without
+			// grepping the whole body by hand.
+			std::string toolName = "(tool name not found)";
+			const std::size_t nameKey = body.rfind( "\"name\":\"", at );
+			if( nameKey != std::string::npos ) {
+				const std::size_t nameStart = nameKey + 8;
+				const std::size_t nameEnd = body.find( '"', nameStart );
+				if( nameEnd != std::string::npos )
+					toolName = body.substr( nameStart, nameEnd - nameStart );
+			}
+			problems.push_back( std::string( "keyword `" ) + kw + "` at byte " +
+				std::to_string( at ) + " in tool `" + toolName + "`" );
+		}
+	}
+	for( const std::string& p : problems )
+		std::printf( "  T52 GEMINI SCHEMA REJECT: %s\n", p.c_str() );
+	Check( problems.empty(),
+	       "T52: the Gemini wire body's tools array contains no keyword from Gemini's "
+	       "documented-unsupported denylist -- a hit here means the SAME class of request-killing "
+	       "400 this test exists to prevent (see the header comment for the exact 2026-08-11 error)" );
+}
+
+// Gemini finishReason MALFORMED_FUNCTION_CALL (HTTP 200, one empty text part,
+// finishMessage quoting the unparseable attempt) used to end the turn.  It is
+// now a bounded corrective retry.
+static std::string GeminiMalformedFixture()
+{
+	return "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\","
+		"\"thoughtSignature\":\"sig\"}]},\"finishReason\":\"MALFORMED_FUNCTION_CALL\","
+		"\"finishMessage\":\"Malformed function call: call:default_api:insert_chunks{chunks:[ standard_object\\n{\\n\\tname x} ]}\","
+		"\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":64,\"candidatesTokenCount\":32},"
+		"\"modelVersion\":\"gemini-4-argon\"}";
+}
+
+static void TestMalformedFunctionCallRecovery()
+{
+	std::printf( "T60: Gemini MALFORMED_FUNCTION_CALL corrective retry...\n" );
+	const std::string bad  = GeminiMalformedFixture();
+	const std::string good = GeminiFixture(
+		"{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"read_document\",\"args\":{},\"id\":\"fc_1\"}}]}",
+		"STOP" );
+
+	// (a) malformed then valid: the call executes and the turn continues.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "build it" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st = loop.HandleResponse( 200, bad );
+		Check( st.kind == ChatStepResult::Kind::ProviderError &&
+		       st.errorKind == ChatErrorKind::MalformedToolCall,
+		       "T60a: MALFORMED_FUNCTION_CALL -> ProviderError/MalformedToolCall" );
+		Check( st.errorMessage.find( "insert_chunks" ) != std::string::npos,
+		       "T60a: the error carries the finishMessage" );
+		Check( st.retryDegenerateTurn, "T60a: the driver is told to re-issue" );
+		Check( loop.TranscriptSize() == 1, "T60a: the malformed (empty-text) model turn is NOT recorded" );
+
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		Check( loop.TranscriptSize() == 2, "T60a: BuildRequest appended the corrective user turn" );
+		Check( req.body.find( "was malformed and was NOT executed" ) != std::string::npos &&
+		       req.body.find( "valid JSON" ) != std::string::npos &&
+		       req.body.find( "chunks" ) != std::string::npos,
+		       "T60a: the retry request carries the corrective text" );
+		Check( req.body.find( "thoughtSignature" ) == std::string::npos,
+		       "T60a: the empty malformed model turn is not echoed" );
+
+		ChatStepResult ok = loop.HandleResponse( 200, good );
+		Check( ok.kind == ChatStepResult::Kind::ToolCalls && ok.toolCalls.size() == 1,
+		       "T60a: the re-issued valid call is accepted as ToolCalls" );
+		if( ok.kind == ChatStepResult::Kind::ToolCalls && !ok.toolCalls.empty() ) {
+			loop.AddToolResult( ok.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+			const ChatHttpRequest req2 = loop.BuildRequest( kApiKey );
+			Check( !req2.body.empty() && req2.body.find( "functionResponse" ) != std::string::npos,
+			       "T60a: the turn continues with the tool result on the wire" );
+		}
+	}
+
+	// (b) three consecutive malformed responses: bounded, ends with a clear error.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "build it" );
+		for( int i = 0; i < AgentChatLoop::kMaxMalformedToolCallRetries; ++i ) {
+			(void)loop.BuildRequest( kApiKey );
+			ChatStepResult st = loop.HandleResponse( 200, bad );
+			Check( st.retryDegenerateTurn, "T60b: retry " + std::to_string( i + 1 ) + " is offered" );
+		}
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult st = loop.HandleResponse( 200, bad );
+		Check( st.kind == ChatStepResult::Kind::ProviderError &&
+		       st.errorKind == ChatErrorKind::MalformedToolCall,
+		       "T60b: the third consecutive malformed response is an error" );
+		Check( !st.retryDegenerateTurn, "T60b: no further retry is offered" );
+		Check( st.errorMessage.find( "giving up" ) != std::string::npos,
+		       "T60b: the error says the loop gave up" );
+		// A fresh user message restores the budget.
+		loop.AddUserMessage( "keep going" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult again = loop.HandleResponse( 200, bad );
+		Check( again.retryDegenerateTurn, "T60b: a new user message restores the retry budget" );
+	}
+
+	// (c) OpenAI malformed arguments recover the same way.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		(void)loop.BuildRequest( kApiKey );
+		const std::string fx = OpenAIFixture( "null",
+			"[{\"id\":\"call_badargs\",\"type\":\"function\",\"function\":"
+			"{\"name\":\"validate\",\"arguments\":\"{ not json\"}}]", "tool_calls" );
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.errorKind == ChatErrorKind::MalformedToolCall && st.retryDegenerateTurn,
+		       "T60c: OpenAI malformed arguments -> MalformedToolCall, retry offered" );
+
+		// Truncated by the token cap: MaxTokens, no corrective retry.
+		AgentChatLoop loop2;
+		loop2.AddUserMessage( "hi" );
+		(void)loop2.BuildRequest( kApiKey );
+		const std::string fxLen = OpenAIFixture( "null",
+			"[{\"id\":\"call_cut\",\"type\":\"function\",\"function\":"
+			"{\"name\":\"validate\",\"arguments\":\"{\\\"a\\\":\"}}]", "length" );
+		ChatStepResult stl = loop2.HandleResponse( 200, fxLen );
+		Check( stl.errorKind == ChatErrorKind::MaxTokens && !stl.retryDegenerateTurn,
+		       "T60c: unparseable arguments with finish_reason length -> MaxTokens, no retry" );
+	}
+
+	// (d) the cap counts CONSECUTIVE failures: a valid tool round resets it.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "build it" );
+		(void)loop.BuildRequest( kApiKey );
+		Check( loop.HandleResponse( 200, bad ).retryDegenerateTurn, "T60d: malformed #1 retried" );
+		(void)loop.BuildRequest( kApiKey );
+		ChatStepResult ok = loop.HandleResponse( 200, good );
+		Check( ok.kind == ChatStepResult::Kind::ToolCalls, "T60d: valid call after recovery" );
+		loop.AddToolResult( ok.toolCalls[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}" );
+		// Malformed DIRECTLY after a functionResponse turn.
+		const ChatHttpRequest r1 = loop.BuildRequest( kApiKey );
+		Check( r1.body.find( "functionResponse" ) != std::string::npos, "T60d: functionResponse on the wire" );
+		Check( loop.HandleResponse( 200, bad ).retryDegenerateTurn, "T60d: malformed #2 (post-tool) retried" );
+		const ChatHttpRequest r2 = loop.BuildRequest( kApiKey );
+		Check( r2.body.find( "functionResponse" ) != std::string::npos &&
+		       r2.body.find( "was malformed and was NOT executed" ) != std::string::npos,
+		       "T60d: corrective follows the functionResponse turn" );
+		Check( loop.HandleResponse( 200, bad ).retryDegenerateTurn,
+		       "T60d: malformed #3 total but only #2 consecutive -> still retried (budget reset by the valid round)" );
+	}
+
+	// (f) correctives are NOT compaction span boundaries: with two of them
+	//     in one turn and an over-budget window, the real request survives.
+	{
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		loop.AddUserMessage( "REAL-REQUEST-MARKER build the scene" );
+		(void)loop.BuildRequest( kApiKey );
+		(void)loop.HandleResponse( 200, bad );
+		(void)loop.BuildRequest( kApiKey );
+		(void)loop.HandleResponse( 200, bad );
+		loop.SetContextBudget( 2, 1 );   // everything is over budget
+		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
+		Check( loop.TranscriptSize() == 3, "T60f: request + two correctives retained (no span dropped)" );
+		Check( loop.TranscriptAt( 0 ).role == ChatTranscriptEntry::Role::User &&
+		       loop.TranscriptAt( 0 ).displayText.find( "REAL-REQUEST-MARKER" ) != std::string::npos,
+		       "T60f: the first real user entry survives compaction" );
+		Check( loop.TranscriptAt( 2 ).role == ChatTranscriptEntry::Role::DriverNote,
+		       "T60f: the corrective is a DriverNote entry" );
+		Check( req.body.find( "REAL-REQUEST-MARKER" ) != std::string::npos,
+		       "T60f: the real request is still on the wire" );
+	}
+
+	// (g) the corrective is NOT a human turn in the trajectory: user-record
+	//     count is unchanged; a history_edit marks it instead.
+	{
+		std::vector<std::string> lines;
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Gemini );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "trace-malformed-60g";
+		loop.SetTrajectorySink(
+			[&lines]( const std::string& l ) { lines.push_back( l ); }, cfg );
+		loop.AddUserMessage( "build it" );
+		(void)loop.BuildRequest( kApiKey );
+		loop.RecordHttpRound( 200, bad, 4, 1, -1 );
+		(void)loop.HandleResponse( 200, bad );
+		(void)loop.BuildRequest( kApiKey );   // appends the corrective
+		int users = 0, edits = 0;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			const std::string rt = ParseBody( lines[i] ).get( "run_type" ).asString();
+			if( rt == "user" ) ++users;
+			if( rt == "history_edit" &&
+			    lines[i].find( "malformed_tool_call_corrective" ) != std::string::npos ) ++edits;
+		}
+		Check( users == 1, "T60g: exactly one user record (the real request) despite the corrective" );
+		Check( edits == 1, "T60g: the corrective is recorded as one history_edit" );
+		bool textOk = false;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			const JsonValue j = ParseBody( lines[i] );
+			if( j.get( "run_type" ).asString() == "history_edit" &&
+			    j.get( "reason" ).asString() == "malformed_tool_call_corrective" &&
+			    j.get( "text" ).asString().find( "was malformed and was NOT executed" ) != std::string::npos &&
+			    j.get( "before_bytes" ).asNumber() == 0 )
+				textOk = true;
+		}
+		Check( textOk, "T60g: the history_edit carries the corrective text (insertion, before_bytes 0)" );
+	}
+
+	// (e) Responses wire.
+	{
+		AgentChatLoop loop;
+		loop.AddUserMessage( "hi" );
+		(void)loop.BuildRequest( kApiKey );
+		const std::string fx =
+			"{\"id\":\"resp_x\",\"object\":\"response\",\"status\":\"completed\",\"output\":["
+			"{\"type\":\"function_call\",\"call_id\":\"fc_1\",\"name\":\"validate\","
+			"\"arguments\":\"{ not json\"}]}";
+		ChatStepResult st = loop.HandleResponse( 200, fx );
+		Check( st.errorKind == ChatErrorKind::MalformedToolCall && st.retryDegenerateTurn,
+		       "T60e: Responses malformed arguments -> MalformedToolCall, retry offered" );
 	}
 }
 
 int main()
 {
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentChatLoopTest (Facet 5 slice B1: sans-IO LLM chat loop) ===\n" );
 
 	// ONE live dispatcher over the inline scene, shared by the tests that
@@ -9061,6 +11545,8 @@ int main()
 	TestHostileDispositionGates();
 	TestImageElision();
 	TestSupersededReadElision();
+	TestContextLifetimeRetirement();
+	TestContextLifetimeRetirementRound2();
 	TestFastMathGuards();
 	TestDuplicateIdRefusal();
 	TestGeminiUserRunMerge();
@@ -9085,6 +11571,8 @@ int main()
 	TestContextCompaction( rpc );
 	TestReasoningExtraction();
 	TestToolOutcomeDisplay();
+	TestImageGenerationWireShapes();
+	TestTextCompletionWireShapes();
 	TestAskUserToolSchema();
 	TestAskUserToolLoop();
 	TestAskUserParallelWithDispatchedTool( rpc );
@@ -9094,7 +11582,12 @@ int main()
 	TestSkillIndexDiscourageRelist();
 	TestReasoningTokenAccounting();
 	TestReasoningSurvivalMatrix();
-	TestBlindEditNudgeDelivery();
+	TestDegenerateTurnRetryParity();
+	TestSequencingGateAcrossProvidersAndByteIdentity();
+	TestFileBuildPlanToolAndGateClassification();
+	TestDriverNoteSmoke();
+	TestGeminiSchemaKeywordDenylist();
+	TestMalformedFunctionCallRecovery();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

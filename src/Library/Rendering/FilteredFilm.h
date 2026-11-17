@@ -32,6 +32,7 @@
 #include "../Utilities/Color/Color_Template.h"
 #include "../Utilities/Threads/Threads.h"
 #include <vector>
+#include <memory>
 #include <cmath>
 
 namespace RISE
@@ -61,24 +62,37 @@ namespace RISE
 				}
 			};
 
+			// Pure native-size/vector preflight; does not allocate film storage.
+			static std::size_t CheckedPixelCount(unsigned int w, unsigned int h);
+
 			unsigned int				width;
 			unsigned int				height;
 			std::vector<FilteredPixel>	pixels;
-			std::vector<RMutex*>		rowMutexes;		///< One mutex per scanline for concurrent access
+			std::vector<std::unique_ptr<RMutex>> rowMutexes;		///< One mutex per scanline for concurrent access
 
-			virtual ~FilteredFilm();
+			~FilteredFilm() override;
+
+			//! Snapshot row.size() pixels of row @a y starting at @a startX
+			//! under that row's mutex (the lock Splat takes).
+			void CopyRow( const unsigned int y, const unsigned int startX, std::vector<FilteredPixel>& row ) const;
 
 		public:
+			// Zero extents produce a no-op film; native-size/vector overflow
+			// throws length_error before allocating film storage.
 			FilteredFilm(
 				const unsigned int w,					///< [in] Width of the film in pixels
 				const unsigned int h					///< [in] Height of the film in pixels
 				);
+			FilteredFilm(const FilteredFilm&) = delete;
+			FilteredFilm& operator=(const FilteredFilm&) = delete;
 
 			//! Thread-safe: splats a sample contribution to all pixels within
 			//! the filter's support around the given screen position.
 			//! Accumulator is XYZ (linear, no gamut clip).  Spectral
 			//! integrators pass XYZPel directly; RGB integrators rely on
 			//! the implicit XYZPel(const ROMMRGBPel&) lossless conversion.
+			//! Nonfinite positions or negative/nonfinite support are no-ops.
+			//! Finite off-image positions still contribute when support intersects.
 			void Splat(
 				const Scalar screenX,					///< [in] Sample screen X position
 				const Scalar screenY,					///< [in] Sample screen Y position
@@ -86,8 +100,12 @@ namespace RISE
 				const IPixelFilter& filter				///< [in] Pixel filter for weight evaluation
 				);
 
-			//! After rendering: resolves accumulated contributions into the final image.
-			//! Each pixel's value is colorSum / weightSum.
+			//! Resolves accumulated contributions into the image (overwrites
+			//! pixels whose weightSum is nonzero); each value is
+			//! colorSum / weightSum.  Safe to call concurrently with Splat
+			//! writers (each row is read under its row mutex) and with other
+			//! Resolve calls on disjoint target regions.  The caller must not
+			//! hold any of this film's row mutexes.
 			void Resolve(
 				IRasterImage& target,					///< [out] Target image to receive resolved result
 				const Rect* region = 0					///< [in] Optional inclusive write region

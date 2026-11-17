@@ -51,6 +51,9 @@ namespace RISE
 		class BidirectionalRasterizerBase : public virtual PixelBasedRasterizerHelper
 		{
 		protected:
+#ifdef RISE_ENABLE_OIDN
+			double DenoiseWorkPerMegaSample() const override { return 0.6; }
+#endif
 			mutable SplatFilm*				pSplatFilm;
 			mutable IRasterImage*			pScratchImage;		///< Scratch buffer for splat composition
 			mutable Scalar					mSplatTotalSamples;	///< Cached for progressive resolve
@@ -66,7 +69,7 @@ namespace RISE
 				);
 
 			virtual ~BidirectionalRasterizerBase();
-			virtual bool SupportsFireMediaTransport() const { return false; }
+			virtual bool SupportsFireMediaTransport() const override { return false; }
 
 			/// Scaling factor for splat film resolution.  Pel returns 1;
 			/// Spectral returns nSpectralSamples [ * SampledWavelengths::N
@@ -94,16 +97,40 @@ namespace RISE
 				const unsigned int imageHeight
 				) const;
 
-			/// Returns a scratch image with resolved splats composited
-			/// on top of the current primary, for progressive display.
-			/// Scratch buffer is lazily allocated on first call.
-			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
+			/// Returns a scratch image with the filtered film and resolved
+			/// splats composited on top of the current primary, for
+			/// progressive display.  Region contract (only the delivered
+			/// region is composed; disjoint regions may compose concurrently;
+			/// the scratch is never allocated here) is documented on
+			/// PixelBasedRasterizerHelper::GetIntermediateOutputImage.
+			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const override;
 
-			/// Copy `src` into the scratch buffer and resolve the splat
-			/// film on top.  Shared body for the Flush* overrides that
-			/// both algorithms use.  Caller must verify `pSplatFilm` is
-			/// non-null before calling.
-			IRasterImage& ResolveSplatIntoScratch( const IRasterImage& src ) const;
+			/// Prepare (or keep, when the dimensions match) the composition
+			/// scratch.  Call single-threaded before any pass whose workers
+			/// can reach GetIntermediateOutputImage: PreRenderSetup (covers
+			/// path-guiding training, the main pass and every animation
+			/// frame) and RasterizeScene.
+			void EnsureCompositionScratch( const unsigned int w, const unsigned int h ) const;
+
+			/// Adds pScratchImage to the render-scoped release (the base
+			/// releases the filtered film).  Reuse across animation frames
+			/// with unchanged dimensions still holds within one render.
+			void ReleaseRenderScopedPreviewResources() const override;
+
+			/// The bidirectional getter composes into pScratchImage, never
+			/// into pFilteredScratch.
+			bool UsesFilteredPreviewScratch() const override { return false; }
+
+			/// Final flush: composite the t==1 splat film onto the
+			/// image before forwarding to the outputs.  Shared by VCM
+			/// and BDPT (DL-458) so still renders and every animation
+			/// frame (PixelBasedRasterizerHelper::RasterizeSceneAnimation)
+			/// compose splats identically.  With OIDN, the pre-denoised
+			/// flush resolves then UN-resolves (OIDN must not see
+			/// splats) and the denoised flush adds them on top.
+			void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
+			void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
+			void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
 
 			/// Configure the region used by every splat/filter preview and
 			/// by non-adaptive regional light-path normalization.

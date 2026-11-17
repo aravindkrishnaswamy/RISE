@@ -146,6 +146,21 @@ a bit higher (3.3-3.6x above floor) purely for extra noise headroom —
 they're still well clear of the lighting/material/empty-stage anchors,
 which is what actually matters for those two views.
 
+**Cross-platform amendment (2026-08-18):**
+`image_reconstruct_single.json`'s view1 cap is raised 0.015 → 0.02.
+The committed references and every anchor above were rendered on macOS
+(`-ffast-math` per Config.OSX); an MSVC build (strict IEEE, no
+fast-math) rendering the *ground-truth* scene measures view1 RMSE
+0.0167 against the mac-rendered reference — above the mac-vs-mac noise
+floor (0.0045) because platform FP divergence perturbs sample paths
+into a partially independent noise realization plus a small shading
+bias. 0.02 keeps every discrimination property: nearest anchor (c)
+lighting 0.0381 still fails at 1.9x margin, (d)/(e)/(f) by far more,
+and (b) was already documented not-caught on view1. The multi-scenario
+caps were left untouched — their controls pass on MSVC as-is.  If the
+references are ever regenerated on Windows, revisit (the asymmetry
+flips).
+
 ## 6. Reproducing / recalibrating
 
 1. Build `./bin/rise` if missing: `make -C build/make/rise -j8 all`.
@@ -357,9 +372,9 @@ fully observable there.
 
 **Fix: two-tier caps for `image_reconstruct_single` only.**
 
-- **view1 stays STRICT: `rmseMax` 0.015** (unchanged from §5/§7) — it is the
+- **view1 stays STRICT: `rmseMax` 0.015** (unchanged from §5/§7; subsequently raised `0.015 → 0.02` in the `2026-08-18` cross-platform MSVC amendment at §5, lines 149–162) — it is the
   ONE fully-observable view (the model's own attached photo), so nothing
-  about its grading is relaxed.
+  about its grading is relaxed here.
 - **views 2/3/4 become SHAPE-PLAUSIBILITY caps: `rmseMax` 0.04 each**
   (relaxed from 0.012/0.012/0.015). This admits a reconstruction whose
   hidden-side geometry is a *plausible smooth continuation* of the visible
@@ -754,3 +769,13 @@ lighting from every angle, better than an empty stage from every angle —
 which no run in the July-2026 baseline achieved.** Until then,
 `checkpointFraction` for this eval should be read as "how far from an empty
 stage," not "how close to passing."
+
+**2026-10-02 (DL-368, `debt-dl354`): all four reference PNGs regenerated
+with `generate_references.sh`, unchanged poses and settings.**  DL-368 moved
+every rasterizer's pixels half a pixel onto the camera's nominal film (PBRT's
+pixel-centre convention), so every render shifted by half a pixel.  With
+only the convention files reverted the committed references pass
+(`AgentEvalCheckTest` 2075/0); with the shift and the OLD references,
+`image_reconstruct_multi` read view2 / view3 RMSE 0.013323 / 0.015339
+against its 0.012 max (2071/4).  The shift was the sole cause, so the
+references were regenerated rather than the thresholds widened: 2075/0.

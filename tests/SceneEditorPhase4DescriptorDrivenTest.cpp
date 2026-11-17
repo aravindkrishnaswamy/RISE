@@ -218,7 +218,7 @@ static void TestLightDescriptorDriven()
 	Job* pJob = MakeJobAndSeed();
 	double pos[3] = { 1, 2, 3 };
 	double col[3] = { 1, 1, 1 };
-	pJob->AddPointOmniLight( "omni", 1.0, col, pos, true );
+	pJob->AddPointOmniLight( "omni", 1.0, col, "Rec709RGB_Linear", pos, true );
 
 	ILightManager* lights = pJob->GetLights();
 	const ILight* light = lights->GetItem( "omni" );
@@ -265,7 +265,7 @@ static void TestSpotLightDescriptorDriven()
 	double pos[3] = { 1, 2, 3 };
 	double tgt[3] = { 4, 5, 6 };
 	double col[3] = { 1, 1, 1 };
-	pJob->AddPointSpotLight( "spot", 1.0, col, tgt, 30.0 * DEG, 60.0 * DEG, pos, true );
+	pJob->AddPointSpotLight( "spot", 1.0, col, "Rec709RGB_Linear", tgt, 30.0 * DEG, 60.0 * DEG, pos, true );
 
 	ILightManager* lights = pJob->GetLights();
 	const ILight* light = lights->GetItem( "spot" );
@@ -301,7 +301,7 @@ static void TestLightSetPropertyAcceptsBothVocabularies()
 	Job* pJob = MakeJobAndSeed();
 	double pos[3] = { 0, 0, 0 };
 	double col[3] = { 1, 1, 1 };
-	pJob->AddPointOmniLight( "key", 1.0, col, pos, true );
+	pJob->AddPointOmniLight( "key", 1.0, col, "Rec709RGB_Linear", pos, true );
 
 	{
 	SceneEditController c( *pJob, /*interactiveRasterizer*/0 );

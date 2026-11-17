@@ -56,11 +56,28 @@ namespace RISE
 				const T& NV,
 				const T& Rs
 				);
+			//! DL-481: a copy used only by valueByScatterType (see the .cpp).
+			template< class T >
+			static void ComputeDiffuseSpecularFactorsSplit(
+				T& diffuse,
+				T& specular,
+				const Vector3& vLightIn,
+				const RayIntersectionGeometric& ri,
+				const Vector3& n,
+				const Vector3& u,
+				const Vector3& v,
+				const T& NU,
+				const T& NV,
+				const T& Rs
+				);
 
 			AshikminShirleyAnisotropicPhongBRDF( const IScalarPainter& Nu_, const IScalarPainter& Nv_, const IPainter& Rd_, const IPainter& Rs_ );
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			//! DL-481 (IBSDF::valueByScatterType): the value split by its SPF's lobe labels.
+			virtual bool valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* pIORStack, RISEPel out[5] ) const;
+			virtual bool valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* pIORStack, Scalar out[5] ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
 
 			//! Read-back + rebind for the interactive editor.

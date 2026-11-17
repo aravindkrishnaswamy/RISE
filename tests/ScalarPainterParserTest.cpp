@@ -18,6 +18,8 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <mutex>
+#include <vector>
 #ifdef _WIN32
 #include <process.h>
 #define getpid _getpid
@@ -27,10 +29,13 @@
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
+#include "../src/Library/Interfaces/ILogPrinter.h"
 #include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Interfaces/IScalarPainterManager.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 
@@ -38,6 +43,47 @@ namespace RISE
 {
 	bool RISE_CreateJobPriv( IJobPriv** ppi );
 }
+
+class CapturingLogPrinter : public virtual RISE::ILogPrinter,
+                            public virtual RISE::Implementation::Reference
+{
+public:
+	explicit CapturingLogPrinter( std::string needle ) : mNeedle( std::move( needle ) ) {}
+
+	void Print( const RISE::LogEvent& event ) override
+	{
+		const std::string msg( event.szMessage );
+		if( msg.find( mNeedle ) != std::string::npos ) {
+			std::lock_guard<std::mutex> lk( mMutex );
+			mTypes.push_back( event.eType );
+		}
+	}
+	void Flush() override {}
+
+	int  Count() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return (int)mTypes.size();
+	}
+	bool AllOfType( RISE::LOG_ENUM want ) const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		if( mTypes.empty() ) return false;
+		for( RISE::LOG_ENUM t : mTypes ) { if( t != want ) return false; }
+		return true;
+	}
+	void Reset()
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		mTypes.clear();
+	}
+
+private:
+	std::string                 mNeedle;
+	mutable std::mutex          mMutex;
+	std::vector<RISE::LOG_ENUM> mTypes;
+};
+
 
 static int passCount = 0;
 static int failCount = 0;
@@ -66,9 +112,9 @@ static RayIntersectionGeometric MakeDummyRig()
 // prepends the version banner and writes the temp file.
 static IJobPriv* LoadScene( const char* body, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof( path ),
-		"/tmp/scalar_painter_test_%s_%d.RISEscene", tag, (int)::getpid() );
+		"%s/scalar_painter_test_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, (int)::getpid() );
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) return nullptr;
 	ofs << "RISE ASCII SCENE 7\n\n" << body;
@@ -191,9 +237,9 @@ static void TestPiecewiseLinearFile()
 {
 	std::cout << "TestPiecewiseLinearFile" << std::endl;
 	// Create a 2-column file alongside the scene.
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof( path ),
-		"/tmp/scalar_painter_test_pwl_%d.ior", (int)::getpid() );
+		"%s/scalar_painter_test_pwl_%d.ior", RISE::TestSupport::ScratchBaseDir().c_str(), (int)::getpid() );
 	std::ofstream f( path );
 	f << "380 1.10\n720 1.45\n";
 	f.close();
@@ -217,6 +263,109 @@ static void TestPiecewiseLinearFile()
 		}
 		safe_release( pJob );
 	}
+	std::remove( path );
+}
+
+//! DL-29: a measured 2-column spectral curve now reports genuine
+//! per-channel variation (three samples of the curve), which would make
+//! it collide with `requireSingle` material slots -- slots that read
+//! only `.v[0]`.  Those bindings LOADED before the change (the painter
+//! resolved to one representative wavelength), several shipped
+//! materials take them, and a measured file is not the authoring
+//! mistake `requireSingle` exists to catch.  So the resolver binds a
+//! single-scalar VIEW of the curve (green, 549 nm, through
+//! `IScalarPainter::MakeSingleScalarSlotView`) and warns, instead of
+//! hard-failing -- while an inline `r g b` triple in the same slot,
+//! which IS that authoring mistake, still hard-fails.
+static void TestSpectralCurveInSingleScalarSlot()
+{
+	std::cout << "TestSpectralCurveInSingleScalarSlot" << std::endl;
+
+	char path[1024];
+	std::snprintf( path, sizeof( path ),
+		"%s/scalar_painter_test_single_%d.ior", RISE::TestSupport::ScratchBaseDir().c_str(), (int)::getpid() );
+	std::ofstream f( path );
+	f << "380 1.10\n720 1.45\n";
+	f.close();
+
+	// ACCEPTED: `coated_material`'s coat_ior is requireSingle.
+	{
+		std::ostringstream scene;
+		scene << "scalar_painter\n{\n\tname pwl_curve\n\tfile " << path << "\n}\n\n"
+		      << "lambertian_material\n{\n\tname mat_base\n}\n\n"
+		      << "coated_material\n{\n\tname mat_coated\n\tbase mat_base\n"
+		         "\tcoat_ior pwl_curve\n}\n";
+		IJobPriv* pJob = LoadScene( scene.str().c_str(), "single_curve" );
+		Check( pJob != nullptr,
+			"single-slot curve: scene with a file curve in a requireSingle slot still loads" );
+		if( pJob ) {
+			Check( pJob->GetMaterials()->GetItem( "mat_coated" ) != nullptr,
+				"single-slot curve: the coated material was actually created" );
+			// The named painter itself is unchanged -- the view is a
+			// separate object bound only into the material's slot.
+			IScalarPainter* named = pJob->GetScalarPainters()->GetItem( "pwl_curve" );
+			Check( named != nullptr && named->HasPerChannelVariation(),
+				"single-slot curve: the registered painter still reports per-channel variation" );
+			safe_release( pJob );
+		}
+	}
+
+	// REJECTED: an inline per-channel triple in the same slot.  The
+	// material cannot be created, so the derive fails and the scene does
+	// not load -- the pre-existing `kScalarBoundToPerChannelFmt`
+	// behaviour, deliberately unchanged by DL-29.
+	{
+		const char* scene =
+			"lambertian_material\n{\n\tname mat_base\n}\n\n"
+			"coated_material\n{\n\tname mat_coated\n\tbase mat_base\n"
+			"\tcoat_ior 1.1 1.3 1.5\n}\n";
+		IJobPriv* pJob = LoadScene( scene, "single_triple" );
+		Check( pJob == nullptr,
+			"single-slot triple: an inline r g b triple in a requireSingle slot is still rejected" );
+		if( pJob ) safe_release( pJob );
+	}
+
+	// ACCEPTED (precision-slice P2-1): a `scale` / `multiply` / `add`
+	// COMPOSITE wrapping the same file curve, bound to the same
+	// requireSingle slot, keeps loading too -- before P2-1,
+	// `ScaledScalarPainter`/`MultiplyScalarPainter`/`AddScalarPainter`
+	// forwarded `HasPerChannelVariation()` from their child but not
+	// `MakeSingleScalarSlotView()`, so a scene that loaded fine with the
+	// curve bound DIRECTLY started hard-failing the moment an author
+	// wrapped it in `scale 1` (or any of the other composite forms).
+	{
+		std::ostringstream scene;
+		scene << "scalar_painter\n{\n\tname pwl_curve\n\tfile " << path << "\n}\n\n"
+		      << "scalar_painter\n{\n\tname pwl_scaled\n\tbase pwl_curve\n\tscale 1\n}\n\n"
+		      << "lambertian_material\n{\n\tname mat_base\n}\n\n"
+		      << "coated_material\n{\n\tname mat_coated\n\tbase mat_base\n"
+		         "\tcoat_ior pwl_scaled\n}\n";
+		IJobPriv* pJob = LoadScene( scene.str().c_str(), "single_curve_scaled" );
+		Check( pJob != nullptr,
+			"single-slot curve via scale composite: scene still loads" );
+		if( pJob ) {
+			Check( pJob->GetMaterials()->GetItem( "mat_coated" ) != nullptr,
+				"single-slot curve via scale composite: the coated material was actually created" );
+			IScalarPainter* named = pJob->GetScalarPainters()->GetItem( "pwl_scaled" );
+			Check( named != nullptr && named->HasPerChannelVariation(),
+				"single-slot curve via scale composite: the registered composite still reports per-channel variation" );
+			safe_release( pJob );
+		}
+	}
+	{
+		std::ostringstream scene;
+		scene << "scalar_painter\n{\n\tname pwl_curve2\n\tfile " << path << "\n}\n\n"
+		      << "scalar_painter\n{\n\tname unit_val\n\tvalue 1.0\n}\n\n"
+		      << "scalar_painter\n{\n\tname pwl_multiplied\n\tmultiply pwl_curve2 unit_val\n}\n\n"
+		      << "lambertian_material\n{\n\tname mat_base2\n}\n\n"
+		      << "coated_material\n{\n\tname mat_coated2\n\tbase mat_base2\n"
+		         "\tcoat_ior pwl_multiplied\n}\n";
+		IJobPriv* pJob = LoadScene( scene.str().c_str(), "single_curve_multiplied" );
+		Check( pJob != nullptr,
+			"single-slot curve via multiply composite: scene still loads" );
+		if( pJob ) safe_release( pJob );
+	}
+
 	std::remove( path );
 }
 
@@ -285,6 +434,58 @@ static void TestMultiplyComposition()
 	safe_release( pJob );
 }
 
+static void TestAddComposition()
+{
+	std::cout << "TestAddComposition" << std::endl;
+	const char* scene =
+		"scalar_painter\n"
+		"{\n"
+		"\tname a\n"
+		"\tvalue 3.0\n"
+		"}\n"
+		"\n"
+		"scalar_painter\n"
+		"{\n"
+		"\tname b\n"
+		"\tvalue 4.0\n"
+		"}\n"
+		"\n"
+		"scalar_painter\n"
+		"{\n"
+		"\tname sum_default\n"
+		"\tadd a b\n"
+		"}\n"
+		"\n"
+		"scalar_painter\n"
+		"{\n"
+		"\tname sum_weighted\n"
+		"\tadd a b\n"
+		"\tweight_a 0.5\n"
+		"\tweight_b 0.1\n"
+		"}\n";
+	IJobPriv* pJob = LoadScene( scene, "add" );
+	Check( pJob != nullptr, "add: scene loads" );
+	if( !pJob ) return;
+
+	IScalarPainter* pDefault = pJob->GetScalarPainters()->GetItem( "sum_default" );
+	Check( pDefault != nullptr, "add: default-weight painter registered" );
+	if( pDefault ) {
+		const auto ri = MakeDummyRig();
+		Check( ApproxEq( pDefault->GetValueAtNM( ri, 555 ), 7.0 ),
+			"add: default weights 3 + 4 = 7" );
+	}
+
+	IScalarPainter* pWeighted = pJob->GetScalarPainters()->GetItem( "sum_weighted" );
+	Check( pWeighted != nullptr, "add: weighted painter registered" );
+	if( pWeighted ) {
+		const auto ri = MakeDummyRig();
+		// 0.5*3.0 + 0.1*4.0 = 1.5 + 0.4 = 1.9
+		Check( ApproxEq( pWeighted->GetValueAtNM( ri, 555 ), 1.9 ),
+			"add: weight_a 0.5 * 3 + weight_b 0.1 * 4 = 1.9" );
+	}
+	safe_release( pJob );
+}
+
 static void TestRejectMissingForm()
 {
 	std::cout << "TestRejectMissingForm" << std::endl;
@@ -327,6 +528,88 @@ static void TestRejectUnderspecifiedValues()
 	IJobPriv* pJob = LoadScene( scene, "under_values" );
 	Check( pJob == nullptr, "under-values: 1-component values REJECTED" );
 	if( pJob ) safe_release( pJob );
+}
+
+static void TestRejectOverspecifiedValues()
+{
+	std::cout << "TestRejectOverspecifiedValues" << std::endl;
+	// DL-32 round 4 (docs/DEBT_LEDGER.md, P2-2): `values 1 2 3 4` used to be
+	// read into a local string and checked via `sscanf(...) != 3` -- but
+	// sscanf's return value counts SUCCESSFUL conversions, not total tokens,
+	// so it matched 3 (silently dropping the "4") and the chunk derived
+	// successfully as (1, 2, 3).  Now routed through the shared GetVec3
+	// accessor, which counts the WHOLE token stream and hard-errors on
+	// anything but exactly 3.  (RED pre-fix: this scene loaded successfully
+	// with the painter silently bound to (1, 2, 3), the 4th token dropped.)
+	const char* scene =
+		"scalar_painter\n"
+		"{\n"
+		"\tname over\n"
+		"\tvalues 1 2 3 4\n"
+		"}\n";
+	IJobPriv* pJob = LoadScene( scene, "over_values" );
+	Check( pJob == nullptr, "over-values: 4-component `values` REJECTED (was silently truncated to 3)" );
+	if( pJob ) safe_release( pJob );
+}
+
+static void TestRejectOverspecifiedSellmeier()
+{
+	std::cout << "TestRejectOverspecifiedSellmeier" << std::endl;
+	// DL-32 round 4: `sellmeier` needs exactly 6 numbers; a 7th used to be
+	// silently dropped by the same sscanf-return-count defect as `values`
+	// above.  Now hard-errors via an exact-arity check (AllTokensAreFiniteNumbers)
+	// before ever calling sscanf.
+	const char* scene =
+		"scalar_painter\n"
+		"{\n"
+		"\tname over_sellmeier\n"
+		"\tsellmeier 1.03961212 0.231792344 1.01046945 0.00600069867 0.0200179144 103.560653 999\n"
+		"}\n";
+	IJobPriv* pJob = LoadScene( scene, "over_sellmeier" );
+	Check( pJob == nullptr, "over-sellmeier: 7-component `sellmeier` REJECTED (was silently truncated to 6)" );
+	if( pJob ) safe_release( pJob );
+}
+
+static void TestRejectUnderspecifiedSellmeier()
+{
+	std::cout << "TestRejectUnderspecifiedSellmeier" << std::endl;
+	const char* scene =
+		"scalar_painter\n"
+		"{\n"
+		"\tname under_sellmeier\n"
+		"\tsellmeier 1.0 2.0 3.0\n"
+		"}\n";
+	IJobPriv* pJob = LoadScene( scene, "under_sellmeier" );
+	Check( pJob == nullptr, "under-sellmeier: 3-component `sellmeier` REJECTED" );
+	if( pJob ) safe_release( pJob );
+}
+
+static void TestRejectOverspecifiedMultiplyAndAdd()
+{
+	std::cout << "TestRejectOverspecifiedMultiplyAndAdd" << std::endl;
+	// DL-32 round 4: `multiply`/`add` need exactly two scalar_painter names;
+	// a 3rd used to be silently dropped by the same sscanf-return-count
+	// defect (`sscanf("%255s %255s") == 2` regardless of trailing tokens).
+	{
+		const char* scene =
+			"scalar_painter\n{\n\tname a\n\tvalue 3.0\n}\n\n"
+			"scalar_painter\n{\n\tname b\n\tvalue 4.0\n}\n\n"
+			"scalar_painter\n{\n\tname c\n\tvalue 5.0\n}\n\n"
+			"scalar_painter\n{\n\tname over_multiply\n\tmultiply a b c\n}\n";
+		IJobPriv* pJob = LoadScene( scene, "over_multiply" );
+		Check( pJob == nullptr, "over-multiply: 3-name `multiply` REJECTED (was silently truncated to 2)" );
+		if( pJob ) safe_release( pJob );
+	}
+	{
+		const char* scene =
+			"scalar_painter\n{\n\tname a\n\tvalue 3.0\n}\n\n"
+			"scalar_painter\n{\n\tname b\n\tvalue 4.0\n}\n\n"
+			"scalar_painter\n{\n\tname c\n\tvalue 5.0\n}\n\n"
+			"scalar_painter\n{\n\tname over_add\n\tadd a b c\n}\n";
+		IJobPriv* pJob = LoadScene( scene, "over_add" );
+		Check( pJob == nullptr, "over-add: 3-name `add` REJECTED (was silently truncated to 2)" );
+		if( pJob ) safe_release( pJob );
+	}
 }
 
 static void TestRejectPolynomialGarbage()
@@ -608,6 +891,96 @@ static void TestRejectInlineScalarOverflow()
 	}
 }
 
+//! DL-28: `dielectric_material`'s `tau` is a base transmittance in [0, 1]
+//! applied as `pow(tau, distance)` (Beer's law), NOT an absorption
+//! coefficient sigma_a. An author who pastes a published sigma_a curve
+//! directly gets values > 1.0 (water sigma_a can reach 2.5+ m^-1).
+//! Test that tau values > 1.0 emit a diagnostic warning naming the
+//! material and explaining the unit transmittance convention, while
+//! valid values <= 1.0 emit no warning.
+static void TestDielectricTauPreconversionWarning()
+{
+	std::cout << "TestDielectricTauPreconversionWarning" << std::endl;
+
+	CapturingLogPrinter* pPrinter = new CapturingLogPrinter( "dielectric tau is a unit transmittance base" );
+	RISE::GlobalLogPriv()->AddPrinter( pPrinter );
+
+	// 1. Spectral curve with values > 1.0 (raw sigma_a table) bound to tau.
+	{
+		pPrinter->Reset();
+		char path[1024];
+		std::snprintf( path, sizeof( path ),
+			"%s/scalar_painter_test_tau_sigma_%d.spectra", RISE::TestSupport::ScratchBaseDir().c_str(), (int)::getpid() );
+		std::ofstream f( path );
+		f << "380 0.05\n500 2.50\n700 0.80\n";
+		f.close();
+
+		std::ostringstream scene;
+		scene << "scalar_painter\n{\n\tname water_sigma\n\tfile " << path << "\n}\n\n"
+		      << "dielectric_material\n{\n\tname water_mat\n\ttau water_sigma\n\tior 1.333\n}\n";
+
+		IJobPriv* pJob = LoadScene( scene.str().c_str(), "tau_sigma" );
+		Check( pJob != nullptr, "tau-sigma: scene loads (warning, not hard error)" );
+		if( pJob ) {
+			Check( pJob->GetMaterials()->GetItem( "water_mat" ) != nullptr,
+				"tau-sigma: dielectric material created" );
+			safe_release( pJob );
+		}
+		Check( pPrinter->Count() == 1, "tau-sigma: warning logged for tau > 1.0" );
+		Check( pPrinter->AllOfType( RISE::eLog_Warning ), "tau-sigma: emitted diagnostic is a WARNING" );
+		std::remove( path );
+	}
+
+	// 2. Inline scalar > 1.0 bound to tau.
+	{
+		pPrinter->Reset();
+		const char* scene =
+			"dielectric_material\n{\n\tname bad_inline_tau\n\ttau 1.5\n\tior 1.5\n}\n";
+		IJobPriv* pJob = LoadScene( scene, "tau_inline_bad" );
+		Check( pJob != nullptr, "inline-tau-bad: scene loads" );
+		if( pJob ) safe_release( pJob );
+		Check( pPrinter->Count() == 1, "inline-tau-bad: warning logged for inline tau > 1.0" );
+		Check( pPrinter->AllOfType( RISE::eLog_Warning ), "inline-tau-bad: emitted diagnostic is a WARNING" );
+	}
+
+	// 3. Inline triple with channel > 1.0 bound to tau.
+	{
+		pPrinter->Reset();
+		const char* scene =
+			"dielectric_material\n{\n\tname bad_triple_tau\n\ttau 0.8 1.2 0.9\n\tior 1.5\n}\n";
+		IJobPriv* pJob = LoadScene( scene, "tau_triple_bad" );
+		Check( pJob != nullptr, "triple-tau-bad: scene loads" );
+		if( pJob ) safe_release( pJob );
+		Check( pPrinter->Count() == 1, "triple-tau-bad: warning logged for triple tau > 1.0" );
+		Check( pPrinter->AllOfType( RISE::eLog_Warning ), "triple-tau-bad: emitted diagnostic is a WARNING" );
+	}
+
+	// 4. CONTROL: valid tau <= 1.0 (spectral file and inline) emits NO warning.
+	{
+		pPrinter->Reset();
+		char path[1024];
+		std::snprintf( path, sizeof( path ),
+			"%s/scalar_painter_test_tau_valid_%d.spectra", RISE::TestSupport::ScratchBaseDir().c_str(), (int)::getpid() );
+		std::ofstream f( path );
+		f << "380 0.05\n500 0.85\n700 0.95\n";
+		f.close();
+
+		std::ostringstream scene;
+		scene << "scalar_painter\n{\n\tname water_valid\n\tfile " << path << "\n}\n\n"
+		      << "dielectric_material\n{\n\tname valid_mat\n\ttau water_valid\n\tior 1.333\n}\n"
+		      << "dielectric_material\n{\n\tname valid_inline\n\ttau 0.9 0.9 0.9\n\tior 1.5\n}\n"
+		      << "dielectric_material\n{\n\tname valid_boundary\n\ttau 1.0\n\tior 1.5\n}\n";
+
+		IJobPriv* pJob = LoadScene( scene.str().c_str(), "tau_valid" );
+		Check( pJob != nullptr, "valid-tau: scene loads" );
+		if( pJob ) safe_release( pJob );
+		Check( pPrinter->Count() == 0, "valid-tau: no warning logged when tau <= 1.0" );
+		std::remove( path );
+	}
+
+	safe_release( pPrinter );
+}
+
 int main()
 {
 	std::cout << "ScalarPainterParserTest" << std::endl;
@@ -616,13 +989,20 @@ int main()
 	TestSellmeier();
 	TestPolynomial();
 	TestPiecewiseLinearFile();
+	TestSpectralCurveInSingleScalarSlot();
 	TestScaledComposition();
 	TestMultiplyComposition();
+	TestAddComposition();
 	TestRejectMissingForm();
 	TestRejectMultipleForms();
 	TestRejectUnderspecifiedValues();
+	TestRejectOverspecifiedValues();
+	TestRejectOverspecifiedSellmeier();
+	TestRejectUnderspecifiedSellmeier();
+	TestRejectOverspecifiedMultiplyAndAdd();
 	TestRejectPolynomialGarbage();
 	TestRejectInlineScalarOverflow();
+	TestDielectricTauPreconversionWarning();
 	std::cout << "\nResults: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

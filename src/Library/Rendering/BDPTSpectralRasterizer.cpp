@@ -26,6 +26,7 @@
 #include "AOVBuffers.h"
 #include "../Utilities/Color/SampledWavelengths.h"
 #include "../Utilities/SobolSampler.h"
+#include "../Cameras/CameraUtilities.h"
 #include "../Utilities/ZSobolSampler.h"
 #include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
@@ -143,6 +144,17 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster,
 		sampler, eyeVerts, eyeSubpathStarts, nm, nullptr, pAOV );
 
+	// Debt 28: the point on the camera's entrance APERTURE that the
+	// t==1 light-tracing connections land on.  Its own sampler stream
+	// so it stays stratified across pixels.  A camera whose aperture
+	// is a point (pinhole / fisheye / orthographic) consumes NOTHING
+	// here -- see DrawApertureSample -- so those renders draw the same
+	// dimensions they did before debt 28.  For a thin lens this is
+	// what gives the splat layer the depth of field the eye layer has.
+	const Point2 cameraLensSample =
+		BDPTCameraUtilities::DrawApertureSample( camera, sampler,
+			BDPTCameraUtilities::APERTURE_DEDICATED_STREAM );
+
 	// The generator captures both Fast and Accurate guides against the real
 	// trace-time intersection; no camera-to-vertex reconstruction is needed.
 
@@ -152,7 +164,7 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	if( !eyeVerts.empty() )
 	{
 		std::vector<BDPTIntegrator::ConnectionResultNM> results =
-			pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, nm );
+			pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, cameraLensSample, nm, &sampler );
 
 		for( unsigned int r = 0; r < results.size(); r++ )
 		{
@@ -181,16 +193,14 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 					thisXYZ = thisXYZ * weighted;
 					const Scalar fx = cr.rasterPos.x;
 					const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
-					// Proper XYZ → RISEPel via implicit RISEPel(XYZPel).
-					// Replaces the channel-relabel "RISEPel(X, Y, Z)" hack
-					// which bypassed the colour-space matrix entirely
-					// (post Stage B: XYZtoRec709RGB, D65→D65, matrix-only).
-					// Splat path: don't apply mYNormalization here — the
-					// splat film's own Resolve normalizes by sample count
-					// (see SplatFilm.Resolve), and the per-sample value
-					// already encodes the spectral radiance estimate.
+					// DL-215: Use genuine matrix-only conversion
+					// (ColorUtils::XYZtoRec709RGBMatrixOnly) rather than
+					// gamut-mapping ColorUtils::XYZtoRec709RGB.  Single-wavelength
+					// contributions lie on the spectral locus outside the Rec.709
+					// gamut; gamut mapping each wavelength independently destroys
+					// linear superposition.
 					SplatContributionToFilm( fx, fy,
-						RISEPel( thisXYZ ),
+						ColorUtils::XYZtoRec709RGBMatrixOnly( thisXYZ ) * mYNormalization,
 						filmW, filmH );
 				}
 			}
@@ -251,7 +261,7 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 		for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 		{
 			const Scalar u = rc.random.CanonicalRandom();
-			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
+			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end, num_wavelengths );
 
 			const Scalar heroNM = swl.HeroLambda();
 
@@ -289,8 +299,101 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster,
 				sampler, eyeVerts, eyeSubpathStarts, heroNM, &swl, ss == 0 ? pAOV : 0 );
 
+			// Debt 28: the point on the camera's entrance APERTURE that the
+			// t==1 light-tracing connections land on.  Its own sampler stream
+			// so it stays stratified across pixels.  A camera whose aperture
+			// is a point (pinhole / fisheye / orthographic) consumes NOTHING
+			// here -- see DrawApertureSample -- so those renders draw the same
+			// dimensions they did before debt 28.  For a thin lens this is
+			// what gives the splat layer the depth of field the eye layer has.
+			const Point2 cameraLensSample =
+				BDPTCameraUtilities::DrawApertureSample( camera, sampler,
+					BDPTCameraUtilities::APERTURE_DEDICATED_STREAM );
+
 				// The first hero bundle receives the same trace-time AOV capture
 				// inside GenerateEyeSubpathNM.
+
+			// DL-126 P1.  A null-BSDF continuation vertex (biospec_skin_
+			// material / generic_human_tissue_material) gives
+			// RecomputeSubpathThroughputNM no way to form a companion/hero
+			// ratio, so it zeroes every companion from that vertex on --
+			// wavelength-INDEPENDENT of which companion (the material's
+			// GetBSDF() is null regardless of wavelength), unlike
+			// dispersion, so one path-wide check suffices.  Terminate
+			// secondaries exactly as the dispersive check does, so those
+			// always-zero companions are excluded from the sample-count
+			// denominator below instead of silently diluting the bundle
+			// mean.
+			//
+			// DL-201: BOTH termination checks run BEFORE the hero block, not
+			// after it.  They read only the two vertex arrays and the bundle's
+			// own wavelengths -- every input already exists here, and the hero
+			// block writes none of them, so hoisting them changes no value --
+			// and the hero's own SPLAT deposit below needs `splatLaneScale`,
+			// which is not final until the surviving-lane count is.
+			if( BDPTIntegrator::HasNullBSDFContinuationVertex( lightVerts ) ||
+				BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) ||
+				BDPTIntegrator::HasRandomWalkSSSEntryVertex( lightVerts ) ||	// DL-357
+				BDPTIntegrator::HasRandomWalkSSSEntryVertex( eyeVerts ) )
+			{
+				swl.TerminateSecondary();
+			}
+
+			// Check for dispersive delta vertices in either subpath.
+			// If any delta vertex has wavelength-dependent IOR,
+			// companions cannot share the hero's geometric path.
+			for( unsigned int w = 1; w < SampledWavelengths::N && !swl.SecondaryTerminated(); w++ )
+			{
+				if( BDPTIntegrator::HasDispersiveDeltaVertex( lightVerts, heroNM, swl.lambda[w] ) ||
+					BDPTIntegrator::HasDispersiveDeltaVertex( eyeVerts, heroNM, swl.lambda[w] ) )
+				{
+					swl.TerminateSecondary();
+					break;
+				}
+			}
+
+			// DL-201.  `SplatFilm::Resolve` divides EVERY pixel by ONE global
+			// scalar -- `GetSplatSampleScale()`, which is
+			// `nSpectralSamples * SampledWavelengths::N` under HWSS -- i.e. it
+			// assumes every bundle deposited all N of its lanes.  A bundle
+			// whose companions were just terminated deposits only its hero, so
+			// with no compensation it contributes one lane's worth of splat
+			// energy where the denominator has reserved N, and a pixel reached
+			// mostly through high-termination bundles darkens toward 1/N
+			// relative to one reached by low-termination bundles.
+			//
+			// The per-pixel weight accumulator DL-201's own recipe proposed
+			// CANNOT be the fix: a splat estimator's denominator must count
+			// every lane that COULD have deposited at a pixel, not the ones
+			// that did (a light subpath may land anywhere on the film), so a
+			// weight summed AT DEPOSIT TIME turns the estimator into "mean over
+			// contributing samples" and over-brightens every sparse splat
+			// region by orders of magnitude.  `SplatPixel::weight` already
+			// counts deposits for exactly this reason and is deliberately read
+			// only as a nonzero flag; see `SplatFilm::Resolve`.
+			//
+			// Correcting at the SOURCE is both exact and strictly FINER-grained
+			// than any per-pixel scheme: termination is a property of the
+			// BUNDLE, and the spatial correlation the row is about (bundles
+			// reaching one region terminate more often than those reaching
+			// another) disappears exactly when each bundle is renormalized
+			// before its energy is pooled at a pixel.  Scaling a bundle's
+			// deposits by N/activeLanes IS "divide that bundle's splat energy
+			// by the lanes it actually ran instead of by N" -- the same
+			// renormalization `totalActive` performs for the non-splat path
+			// below, applied per bundle rather than pooled per pixel sample
+			// (pooling would need the deposits deferred until the whole
+			// spectral loop finished; per-bundle is the sample mean of
+			// per-bundle estimates, which is if anything the cleaner
+			// estimator).
+			//
+			// Exactly 1.0 whenever nothing terminated, so a render with no
+			// dispersive / null-BSDF vertex is bit-identical -- as is every
+			// non-HWSS spectral render and every Pel (RGB) render, neither of
+			// which reaches this branch at all.
+			const Scalar splatLaneScale =
+				static_cast<Scalar>( SampledWavelengths::N ) /
+				static_cast<Scalar>( swl.NumActive() );
 
 			// Evaluate all strategies at hero wavelength.  Single
 			// subpath each (no branching) — one EvaluateAllStrategiesNM
@@ -300,7 +403,7 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 				if( !eyeVerts.empty() )
 				{
 					std::vector<BDPTIntegrator::ConnectionResultNM> heroResults =
-						pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, heroNM );
+						pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, cameraLensSample, heroNM, &sampler );
 
 					for( unsigned int r = 0; r < heroResults.size(); r++ ) {
 						const BDPTIntegrator::ConnectionResultNM& cr = heroResults[r];
@@ -319,9 +422,9 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 								splatXYZ = splatXYZ * weighted;
 								const Scalar fx = cr.rasterPos.x;
 								const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
-								// Proper XYZ -> ROMM RGB conversion (hero).
+								// DL-215: Use genuine matrix-only conversion (ColorUtils::XYZtoRec709RGBMatrixOnly).
 								SplatContributionToFilm( fx, fy,
-									RISEPel( splatXYZ ),
+									ColorUtils::XYZtoRec709RGBMatrixOnly( splatXYZ ) * ( splatLaneScale * mYNormalization ),
 									filmW, filmH );
 							}
 						} else {
@@ -334,19 +437,6 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 				if( ColorUtils::XYZFromNM( heroXYZ, heroNM ) ) {
 					spectralSum = spectralSum + heroXYZ * heroValue;
 					totalActive++;
-				}
-			}
-
-			// Check for dispersive delta vertices in either subpath.
-			// If any delta vertex has wavelength-dependent IOR,
-			// companions cannot share the hero's geometric path.
-			for( unsigned int w = 1; w < SampledWavelengths::N && !swl.SecondaryTerminated(); w++ )
-			{
-				if( BDPTIntegrator::HasDispersiveDeltaVertex( lightVerts, heroNM, swl.lambda[w] ) ||
-					BDPTIntegrator::HasDispersiveDeltaVertex( eyeVerts, heroNM, swl.lambda[w] ) )
-				{
-					swl.TerminateSecondary();
-					break;
 				}
 			}
 
@@ -388,7 +478,7 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 
 					std::vector<BDPTIntegrator::ConnectionResultNM> compResults =
 						pIntegrator->EvaluateAllStrategiesNM(
-							compLight, compEye, pScene, *pCaster, camera, companionNM );
+							compLight, compEye, pScene, *pCaster, camera, cameraLensSample, companionNM, &sampler );
 
 					for( unsigned int r = 0; r < compResults.size(); r++ ) {
 						const BDPTIntegrator::ConnectionResultNM& cr = compResults[r];
@@ -407,9 +497,9 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 								splatXYZ = splatXYZ * weighted;
 								const Scalar fx = cr.rasterPos.x;
 								const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
-								// Proper XYZ -> ROMM RGB conversion (companion).
+								// DL-215: Use genuine matrix-only conversion (ColorUtils::XYZtoRec709RGBMatrixOnly).
 								SplatContributionToFilm( fx, fy,
-									RISEPel( splatXYZ ),
+									ColorUtils::XYZtoRec709RGBMatrixOnly( splatXYZ ) * ( splatLaneScale * mYNormalization ),
 									filmW, filmH );
 							}
 						} else {
@@ -490,15 +580,16 @@ void BDPTSpectralRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
 	}
 
 	// Determine how many samples to take
-	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
+	const bool bMultiSample = sampling && rc.UsesPixelSampling();
 	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+	const unsigned int batchSize = bMultiSample ? sampling->GetNumSamples() : 1;
 	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
@@ -593,7 +684,7 @@ void BDPTSpectralRasterizer::IntegratePixel(
 	{
 		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 		} else {
 			samples.push_back( Point2( 0, 0 ) );
 		}
@@ -610,16 +701,14 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			// against SplatFilm::SplatFiltered and blurs the result
 			// with wide-support kernels (gaussian/mitchell).
 			if( bMultiSample ) {
-				ptOnScreen = Point2(
-					static_cast<Scalar>(x) + (*m).x - 0.5,
-					static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+				ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 			} else {
-				ptOnScreen = Point2( x, height-y );
+				ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 			}
 			weights += weight;
 
 			if( temporal_samples && !pScene.FireTemporalHold() ) {
-				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+				AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 			}
 
 			// The Morton remapping is done inside IntegratePixelSpectral per
@@ -713,12 +802,10 @@ void BDPTSpectralRasterizer::IntegratePixel(
 		px.converged = converged;
 	}
 
-	// Track total adaptive samples for splat film normalization.
-	// Use the delta (samples rendered THIS pass) to avoid double-counting
-	// across progressive passes.  See BDPTPelRasterizer::IntegratePixel.
-	if( adaptive ) {
-		AddAdaptiveSamples( pixelSampleIndex - passStartSampleIndex );
-	}
+	// Track total completed samples for splat film (`t == 1`) normalization
+	// unconditionally across adaptive and non-adaptive passes so progressive
+	// previews and mid-render cancellations normalize by completed samples.
+	AddAdaptiveSamples( pixelSampleIndex - passStartSampleIndex );
 
 	if( adaptive && adaptiveConfig.showMap ) {
 		const Scalar t = Scalar(pixelSampleIndex) / Scalar(targetSamples);

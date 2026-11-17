@@ -25,6 +25,7 @@
 
 #include "../src/Library/Shaders/VCMIntegrator.h"
 #include "../src/Library/Shaders/BDPTVertex.h"
+#include "../src/Library/Utilities/BDPTUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -307,6 +308,62 @@ static void TestDeltaVertexInMiddle()
 
 	Check( ( out[0].flags & kLVF_IsDelta ) == 0, "delta: v[1] not flagged delta" );
 	Check( ( out[1].flags & kLVF_IsDelta ) == 0, "delta: v[3] not flagged delta" );
+
+	// DL-470: without a step pool nothing points into one.
+	Check( out[0].stepBase == kLightVertexNoSteps && out[1].stepBase == kLightVertexNoSteps,
+		"steps: no pool -> stepBase is the sentinel" );
+
+	// DL-470: with a pool, records 0..3 (the deepest stored vertex) are
+	// appended, carry the recurrence's own stamped steps, and every stored
+	// vertex points at record 0 of its subpath (here after one record a
+	// previous subpath left in the same pool).
+	{
+		std::vector<LightVertex> out2;
+		std::vector<VCMMisQuantities> mis2;
+		std::vector<VCMStep> pool( 1 );
+		VCMIntegrator::ConvertLightSubpath( verts, norm, out2, &mis2, false, &pool );
+		Check( out2.size() == 2 && pool.size() == 5, "steps: records 0..3 appended" );
+		if( out2.size() == 2 && pool.size() == 5 && mis2.size() == 4 ) {
+			Check( out2[0].stepBase == 1 && out2[1].stepBase == 1, "steps: stepBase = the subpath's record 0" );
+			bool same = true;
+			for( int q = 0; q < 4; q++ ) {
+				same = same && pool[1 + q].xf == static_cast<float>( mis2[q].xf ) &&
+					pool[1 + q].xgVC == static_cast<float>( mis2[q].xgVC ) &&
+					pool[1 + q].xgVM == static_cast<float>( mis2[q].xgVM );
+			}
+			Check( same, "steps: records carry the stamped (xf, xgVC, xgVM)" );
+			Check( pool[1].kind == kVCMStepSurface, "steps: an area-light root counts as an eye-walk surface hit" );
+			Check( pool[2].kind == kVCMStepSurface && pool[3].kind == kVCMStepSurface &&
+				pool[4].kind == kVCMStepSurface, "steps: surface vertices (delta included) count as surface hits" );
+			// The stored record at v[3] replays exactly from record 0 with the
+			// root's dVC kept, i.e. the stamped steps reproduce the stored dVC.
+			Scalar dVC = mis2[0].dVC, dVM = mis2[0].dVM;
+			for( int q = 1; q <= 3; q++ ) {
+				dVC = mis2[q].xf * dVC + mis2[q].xgVC;
+				dVM = mis2[q].xf * dVM + mis2[q].xgVM;
+			}
+			CheckClose( dVC, out2[1].mis.dVC, 1e-12 * ( 1 + std::fabs( dVC ) ), "steps: replay from record 0 reproduces v[3]'s dVC" );
+		}
+
+		// LightVertexStore::Concat adopts each buffer's records as a chunk.
+		LightVertexStore store;
+		std::vector<LightVertex> a = out2, b = out2;
+		std::vector< std::vector<VCMStep> > pa( 1, pool ), pb( 1, pool );
+		store.Concat( std::move( a ), std::move( pa ) );
+		store.Concat( std::move( b ), std::move( pb ) );
+		Check( store.StepCount() == 10 && store.Size() == 4, "store: both pools concatenated" );
+		if( store.Size() == 4 ) {
+			Check( store.Get( 0 ).stepChunk == 0 && store.Get( 2 ).stepChunk == 1 && store.Get( 2 ).stepBase == 1,
+				"store: each buffer's vertices point into their own chunk" );
+			const VCMStep* st = store.StepsOf( store.Get( 2 ) );
+			Check( st && st[3].xf == static_cast<float>( mis2[3].xf ) && st[3].xgVM == static_cast<float>( mis2[3].xgVM ),
+				"store: StepsOf reaches the subpath's records" );
+		}
+		store.Clear();
+		Check( store.StepCount() == 0, "store: Clear drops the pool" );
+		LightVertex none;
+		Check( store.StepsOf( none ) == 0, "store: no records -> StepsOf is null" );
+	}
 }
 
 //
@@ -427,13 +484,29 @@ static void TestMediumVertexNotEmitted()
 }
 
 //
-// Test 5: BSSRDF entry vertices are not stored for merging, but the
-// parallel MIS array must carry their direct area-density state for
-// VC strategies that connect to them.
+// Test 5: a light-side BSSRDF entry is an MIS BARRIER (DL-317), and since
+// DL-380 the light subpath is NOT truncated there.  A path through a
+// subsurface jump is owned by the EYE-sampled jump only when the eye walk
+// can generate a covering strategy within its depth caps, which depends on
+// the eye part of the path -- so every vertex past the entry is converted
+// and stored, carrying the jump's cover (kLVF_JumpCover), and the merge
+// decides.  The entry itself carries zero state and is never stored; the
+// vertex after it carries the light-entry onward update.
+//
+// Hand derivation of the stamp (BDPTUtilities::LightJumpPartition): the
+// jump's segment is verts[0..1]; the witness is w = 1 (verts[1] usable
+// because the entry is connectible, verts[0] the root: NEE), so
+// surfaceBefore = L(0) = 0 and volumeBefore = 0.  The stored vertex
+// k = 3 has L(3) = 1 (x_o) + 0 (entry) + 1 = 2, and a merge there shares
+// it: jumpCoverSurface = L(3) - 1 - 0 = 1, jumpCoverVolume = 0.  The MIS
+// state at k = 3: the onward update from the entry is dVCM = 1/p_w with
+// p_w = next.pdfFwd * dist^2 / cos = 0.25 (dVC, dVM zeroed: only the
+// connection AT the entry exists), then the geometric update at k = 3
+// multiplies dVCM by dist^2 = 1 and divides by cosAtGen = 1: (4, 0, 0).
 //
 static void TestBSSRDFEntryAreaPdf()
 {
-	printf( "Test 5: BSSRDF entry area PDF contributes to light-side MIS\n" );
+	printf( "Test 5: a light-side BSSRDF entry is an MIS barrier; the subpath continues with its cover (DL-317/DL-380)\n" );
 
 	std::vector<BDPTVertex> verts;
 
@@ -496,15 +569,131 @@ static void TestBSSRDFEntryAreaPdf()
 	std::vector<VCMMisQuantities> outMis;
 	VCMIntegrator::ConvertLightSubpath( verts, norm, out, &outMis );
 
-	Check( out.size() == 2, "bssrdf: pre-entry and post-entry surfaces stored" );
+	Check( out.size() == 2, "bssrdf: the pre-entry hit and the vertex past the entry are stored (DL-380)" );
+	if( out.size() == 2 ) {
+		Check( out[0].pathLength == 1, "bssrdf: the first stored vertex is the hit where the light went in" );
+		Check( ( out[0].flags & kLVF_JumpCover ) == 0, "bssrdf: no jump precedes the pre-entry hit" );
+		Check( out[1].pathLength == 3, "bssrdf: the second stored vertex is past the entry (index 3)" );
+		Check( ( out[1].flags & kLVF_JumpCover ) != 0, "bssrdf: the past-entry vertex carries the jump's cover" );
+		Check( ( out[1].flags & kLVF_JumpCoverEscape ) == 0, "bssrdf: witness is NEE at verts[1], not an escape" );
+		Check( out[1].jumpCoverSurface == 1, "bssrdf: jumpCoverSurface = L(3) - 1 - L(0) = 1" );
+		Check( out[1].jumpCoverVolume == 0, "bssrdf: jumpCoverVolume = 0" );
+		CheckClose( out[1].mis.dVCM, 4.0, 1e-12, "bssrdf: stored past-entry dVCM = 1/p_w = 4" );
+		// The stamp decides a merge with an eye subpath of ONE surface hit
+		// (the wall of DL-375's D1): the covering eye walk needs 1 + 1 = 2
+		// hits, so at max_eye_depth 1 the light family keeps the merge and
+		// at max_eye_depth 2 the eye family owns it.
+		const BDPTUtilities::EyeWalkCaps e1 = BDPTUtilities::MakeEyeWalkCaps( 1, 64 );
+		const BDPTUtilities::EyeWalkCaps e2 = BDPTUtilities::MakeEyeWalkCaps( 2, 64 );
+		Check( !BDPTUtilities::EyeWalkCanGenerate( 1 + out[1].jumpCoverSurface, out[1].jumpCoverVolume, false, e1 ),
+			"bssrdf: at max_eye_depth 1 the eye walk cannot cover (light family keeps the merge)" );
+		Check( BDPTUtilities::EyeWalkCanGenerate( 1 + out[1].jumpCoverSurface, out[1].jumpCoverVolume, false, e2 ),
+			"bssrdf: at max_eye_depth 2 the eye walk covers (eye family owns the merge)" );
+	}
 	Check( outMis.size() == 4, "bssrdf: MIS array parallel to input" );
 	if( outMis.size() != 4 ) {
 		return;
 	}
-	CheckClose( outMis[2].dVCM, 2.0, 1e-12, "bssrdf: dVCM = 1/pdfSurface" );
-	CheckClose( outMis[2].dVC, 0.0, 1e-15, "bssrdf: dVC reset" );
-	CheckClose( outMis[2].dVM, 0.0, 1e-15, "bssrdf: dVM reset" );
-	CheckClose( outMis[3].dVCM, 4.0, 1e-12, "bssrdf: onward cosine PDF reaches next vertex" );
+	// Pre-DL-317 these read dVCM = 1/pdfSurface = 2 at the entry.
+	CheckClose( outMis[2].dVCM, 0.0, 1e-15, "bssrdf: no MIS state at the entry (DL-317)" );
+	CheckClose( outMis[2].dVC, 0.0, 1e-15, "bssrdf: dVC zero at the entry" );
+	CheckClose( outMis[2].dVM, 0.0, 1e-15, "bssrdf: dVM zero at the entry" );
+	CheckClose( outMis[3].dVCM, 4.0, 1e-12, "bssrdf: past the entry, the light-entry onward update (DL-380)" );
+	CheckClose( outMis[3].dVC, 0.0, 1e-15, "bssrdf: dVC zero past the entry (no merge at the entry)" );
+	CheckClose( outMis[3].dVM, 0.0, 1e-15, "bssrdf: dVM zero past the entry" );
+}
+
+//
+// Test 6 (DL-317 review P1): a light-side jump the EYE family cannot
+// cover is KEPT.  A delta (point) light feeding a random-walk entry: the
+// eye family would arrive at the entry's point, jump to the light's hit,
+// and find no NEE / connection / merge there (non-connectible) and no
+// s=0 (delta light), so this light-sampled path is the only estimator.
+// The same light feeding a DIFFUSION entry is covered (NEE at the eye's
+// entry), as is a random-walk entry under a non-delta root (s=0).  Since
+// DL-380 "covered" is decided per merge against the eye walk's caps, so a
+// covered jump's past-entry vertex is stored with its cover stamped:
+// diffusion entry, witness w = 1 (NEE): jumpCoverSurface = L(3)-1-L(0) = 1;
+// non-connectible entry under an AREA root, witness w = 0 (the eye hits
+// the root, and that hit counts): surfaceBefore = -1, so
+// jumpCoverSurface = 2 - 1 + 1 = 2.  The uncoverable case gets no cover.
+// DL-375: the generator now emits EVERY entry connectible (a random-walk
+// entry prices Sw through RandomWalkEntryBSDF), so a point light feeding a
+// random-walk entry has the `connectibleEntry = true` shape and is CUT --
+// the eye family covers it through NEE at its entry.  The kept case below
+// is the predicate's logic for a non-connectible entry (the pre-DL-375
+// random-walk shape); a delta light behind a delta interface is the class
+// that still keeps a light-side jump.
+//
+static std::vector<BDPTVertex> MakeJumpLightPath( const bool deltaRoot, const bool connectibleEntry )
+{
+	std::vector<BDPTVertex> verts;
+	BDPTVertex v;
+	v.type = BDPTVertex::LIGHT; v.position = Point3( 0, 0, 0 ); v.normal = Vector3( 1, 0, 0 );
+	v.pdfFwd = 0.25; v.emissionPdfW = 0.125; v.cosAtGen = 1.0;
+	v.isDelta = deltaRoot; v.isConnectible = !deltaRoot;
+	verts.push_back( v );
+	v = BDPTVertex();
+	v.type = BDPTVertex::SURFACE; v.position = Point3( 1, 0, 0 ); v.normal = Vector3( -1, 0, 0 );
+	v.pdfFwd = 1.0; v.cosAtGen = 1.0; v.isDelta = true; v.isConnectible = true;
+	v.throughput = RISEPel( 2, 2, 2 );
+	verts.push_back( v );
+	v = BDPTVertex();
+	v.type = BDPTVertex::SURFACE; v.position = Point3( 2, 0, 0 ); v.normal = Vector3( -1, 0, 0 );
+	v.pdfFwd = connectibleEntry ? 0.5 : 0.0; v.cosAtGen = 0.0;
+	v.isDelta = !connectibleEntry; v.isConnectible = connectibleEntry; v.isBSSRDFEntry = true;
+	v.throughput = RISEPel( 3, 3, 3 );
+	verts.push_back( v );
+	v = BDPTVertex();
+	v.type = BDPTVertex::SURFACE; v.position = Point3( 3, 0, 0 ); v.normal = Vector3( -1, 0, 0 );
+	v.pdfFwd = 0.25; v.cosAtGen = 1.0; v.isDelta = false; v.isConnectible = true;
+	v.throughput = RISEPel( 4, 4, 4 );
+	verts.push_back( v );
+	return verts;
+}
+
+static void TestUncoverableLightJumpKept()
+{
+	printf( "Test 6: a light-side jump the eye family cannot cover is kept (DL-317)\n" );
+	const VCMNormalization norm = ComputeNormalization( 100, 100, 0.0, true, false );
+
+	{
+		std::vector<LightVertex> out;
+		std::vector<VCMMisQuantities> outMis;
+		VCMIntegrator::ConvertLightSubpath( MakeJumpLightPath( true, false ), norm, out, &outMis );
+		Check( out.size() == 2, "point light -> random-walk entry: the vertex past the entry is stored (kept)" );
+		if( out.size() == 2 ) {
+			Check( out[1].pathLength == 3, "point light -> random-walk entry: stored past-entry vertex is index 3" );
+			CheckClose( out[1].mis.dVCM, 0.0, 1e-15, "kept random-walk entry: no connection to it reserved" );
+			CheckClose( out[1].mis.dVC, 0.0, 1e-15, "kept random-walk entry: dVC zero past it" );
+			CheckClose( out[1].mis.dVM, 0.0, 1e-15, "kept random-walk entry: dVM zero past it" );
+			Check( ( out[1].flags & kLVF_JumpCover ) == 0, "point light -> random-walk entry: no eye witness, no cover" );
+		}
+	}
+	{
+		std::vector<LightVertex> out;
+		std::vector<VCMMisQuantities> outMis;
+		VCMIntegrator::ConvertLightSubpath( MakeJumpLightPath( true, true ), norm, out, &outMis );
+		Check( out.size() == 2, "point light -> diffusion entry: past-entry vertex stored (DL-380)" );
+		if( out.size() == 2 ) {
+			Check( ( out[1].flags & kLVF_JumpCover ) != 0 && ( out[1].flags & kLVF_JumpCoverEscape ) == 0,
+				"point light -> diffusion entry: covered by the eye's NEE (cover stamped)" );
+			Check( out[1].jumpCoverSurface == 1, "point light -> diffusion entry: jumpCoverSurface 1" );
+			Check( out[1].jumpCoverVolume == 0, "point light -> diffusion entry: jumpCoverVolume 0" );
+		}
+	}
+	{
+		std::vector<LightVertex> out;
+		std::vector<VCMMisQuantities> outMis;
+		VCMIntegrator::ConvertLightSubpath( MakeJumpLightPath( false, false ), norm, out, &outMis );
+		Check( out.size() == 2, "area light -> random-walk entry: past-entry vertex stored (DL-380)" );
+		if( out.size() == 2 ) {
+			Check( ( out[1].flags & kLVF_JumpCover ) != 0 && ( out[1].flags & kLVF_JumpCoverEscape ) == 0,
+				"area light -> random-walk entry: covered by the eye's s=0 (cover stamped)" );
+			Check( out[1].jumpCoverSurface == 2, "area light -> random-walk entry: jumpCoverSurface 2 (the root hit counts)" );
+			Check( out[1].jumpCoverVolume == 0, "area light -> random-walk entry: jumpCoverVolume 0" );
+		}
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -519,6 +708,7 @@ int main()
 	TestDegenerateInputs();
 	TestMediumVertexNotEmitted();
 	TestBSSRDFEntryAreaPdf();
+	TestUncoverableLightJumpKept();
 
 	printf( "\nPassed: %d\nFailed: %d\n", g_pass, g_fail );
 	if( g_fail > 0 ) {

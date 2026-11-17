@@ -29,15 +29,19 @@ standard_shader
 	shaderop	mis_pt
 }
 
-pixelintegratingspectral_rasterizer
+# Migrated from pixelintegratingspectral_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
+pathtracing_spectral_rasterizer
 {
 	samples					256
-	lum_samples				1
 	nmbegin					405
 	nmend					705
 	num_wavelengths			8
-	max_recursion			3
 oidn_denoise		true
+	sms_enabled		TRUE
+	sms_max_iterations		20
+	sms_threshold		1e-5
+	sms_max_chain_depth		10
+	sms_biased		TRUE
 }
 
 file_rasterizeroutput
@@ -77,7 +81,6 @@ spectral_painter
 	file				colors/cornellbox_green.spectra
 	nmbegin				400
 	nmend				700
-	scale				3
 }
 
 spectral_painter
@@ -86,7 +89,6 @@ spectral_painter
 	file				colors/cornellbox_red.spectra
 	nmbegin				400
 	nmend				700
-	scale				3
 }
 
 spectral_painter
@@ -95,7 +97,6 @@ spectral_painter
 	file				colors/cornellbox_white.spectra
 	nmbegin				400
 	nmend				700
-	scale				3
 }
 
 spectral_painter

@@ -75,6 +75,45 @@ int main()
 		Check( r.dumpBefore == r.dumpAfter, "painter refusal mutated NOTHING" );
 	}
 
+	// DL-164 structural guard (docs/DEBT_LEDGER.md residual, added by the DL-25 review):
+	// an expression_painter/scalar_painter's `sample(name)`/`sample_scalar(name)` resolves
+	// its bound IPainter*/IScalarPainter* ONCE at attach time and holds it under a RAW
+	// addref (ExpressionPainter.h's BoundPainterRefs) -- no re-resolution hook exists. That
+	// is safe TODAY only because EVERY Painter-category chunk (this switch's `default` arm,
+	// just above) is refused from this incremental path and always falls back to a full
+	// DeriveToJob, which rebuilds BoundPainterRefs from scratch. If a future change ever
+	// widens this switch to admit ChunkCategory::Painter, an in-place re-Finalize of a
+	// SAMPLED painter chunk would leave every OTHER chunk's already-resolved sample()/
+	// sample_scalar() pointer referencing the OLD (possibly freed) painter object --
+	// silently, since a raw addref does not detect its target's replacement. This case
+	// pins the refusal specifically for a chunk that USES sample() -- not just an ordinary
+	// painter -- so a future incremental-Painter change trips this test and must address
+	// BindPainterRefs' doc comment before it can pass.
+	{
+		std::string s =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname rock\ncolor 0.5 0.5 0.5\n}\n"
+			"expression_painter\n{\nname wet\nexpr sample(rock)\n}\n"
+			"lambertian_material\n{\nname m\nreflectance wet\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+		IncResult r = RunInc( s, "expression_painter/wet" );
+		Check( r.applied == 0 && r.diagCount > 0,
+		       "DL-164: a sample()-using expression_painter's closure is REFUSED by the incremental path (applied 0 + diagnosed)" );
+		Check( r.dumpBefore == r.dumpAfter, "DL-164: the refusal mutated NOTHING" );
+	}
+	{
+		std::string s =
+			"RISE ASCII SCENE 7\n"
+			"scalar_painter\n{\nname rough\nvalue 0.3\n}\n"
+			"scalar_painter\n{\nname wetrough\nexpression sample_scalar(rough)\n}\n"
+			"ggx_material\n{\nname m\nrd rough\nalphax wetrough\nalphay wetrough\n}\n";
+		IncResult r = RunInc( s, "scalar_painter/wetrough" );
+		Check( r.applied == 0 && r.diagCount > 0,
+		       "DL-164: a sample_scalar()-using scalar_painter's closure is REFUSED by the incremental path (applied 0 + diagnosed)" );
+		Check( r.dumpBefore == r.dumpAfter, "DL-164: the refusal mutated NOTHING (scalar pipe)" );
+	}
+
 	// translucent_material closure -> REFUSED (reads ambient painter-colour cache).
 	{
 		std::string s =
@@ -370,6 +409,118 @@ int main()
 		j->release();
 	}
 
+	// OBJECT VECTOR ARITY UNDER A PARENT CHAIN (DL-32 round-2 review, P2-2).
+	// Cst.cpp's rollback design (the "PART A" comment block above the entity
+	// capture loop, and the "Objects are NOT captured" comment on it) argues
+	// atomicity from "a failure can only occur at an entity, BEFORE any
+	// object is touched" -- entities are captured/restored on a re-Finalize
+	// failure; objects are not, because the slot-precise preflight validates
+	// every object's REFERENCE param before any mutation, and the
+	// entities-first sort means no object is reached until every entity has
+	// already succeeded.
+	//
+	// DL-32 round 2 added a SECOND way an object's OWN Finalize can fail: a
+	// wrong-arity position/orientation/quaternion/scale/matrix.  The
+	// preflight does not see it (it only validates Reference-kind params),
+	// and unlike a Finalize() `return false`, `ParseStateBag::GetVec3` does
+	// NOT abort the caller -- it zero-fills the output and only LATCHES
+	// `HadHardError()`, so the object's own Finalize keeps running and calls
+	// `pJob.AddObject(...)` with the zero-filled value BEFORE the apply loop
+	// notices the latch and gives up.  That mutation is never undone: only
+	// non-object entities are captured/restored.
+	//
+	// Grounded in what the closure actually contains (checked below, not
+	// assumed): editing `parentObj` closes over {parentObj, childObj} --
+	// both objects, no entities (an object's dependents, via `parent`, are
+	// only ever OTHER objects) -- sorted entities-first-then-by-document-
+	// index, so parentObj (declared first) is always processed before
+	// childObj.  The loop breaks at parentObj, so childObj's own Finalize is
+	// NEVER called -- its own `position` param is never touched.
+	//
+	// Measured anyway: childObj's WORLD bbox is corrupted too.
+	// `DeriveToJobIncremental`'s failure branch still calls
+	// `pJob.ComposeObjectHierarchy()` (kept for a different reason -- the 87
+	// step 2 "detached child" self-heal) before returning 0, and that call
+	// recomposes EVERY child's world transform from its parent's CURRENT
+	// (now zero-filled) local transform.  So the "leaves every sibling
+	// object untouched" reading of the old comment is FALSE for a parent
+	// chain: the API reports the edit as refused (applied 0 + a diagnostic,
+	// matching the documented contract for every OTHER refusal in this
+	// suite), but the live Job is left with BOTH the edited parent and every
+	// descendant showing a wrong world transform, and nothing here triggers
+	// a corrective full re-derive.
+	//
+	// Filed as DL-156 (docs/DEBT_LEDGER.md) -- fix recipe: extend `ObjState`
+	// to also snapshot each closure object's pre-edit LOCAL transform, add
+	// an object-transform rollback that restores it before
+	// `ComposeObjectHierarchy()` runs on the failure path, mirroring
+	// `rollbackEntities()`.  This test PINS the CONFIRMED-CURRENT (not yet
+	// fixed) behaviour, both so a future change cannot make it worse
+	// unnoticed and so a future fix is caught (these two assertions will
+	// need to flip when DL-156 closes).
+	{
+		std::string s =
+			"RISE ASCII SCENE 7\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname parentObj\ngeometry g\nposition 5 0 0\n}\n"
+			"standard_object\n{\nname childObj\ngeometry g\nparent parentObj\nposition 1 0 0\n}\n";
+		Document doc = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		Check( d0.empty(), "arity-parent-chain: baseline scene derives cleanly" );
+		const std::string before = DumpJob( *j );
+		Check( before.find( "parentObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[4 -1 -1 .. 6 1 1]" ) != std::string::npos,
+		       "arity-parent-chain: baseline parentObj bbox is centred at its authored position (5,0,0)" );
+		Check( before.find( "childObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[5 -1 -1 .. 7 1 1]" ) != std::string::npos,
+		       "arity-parent-chain: baseline childObj bbox is centred at parent+local (5,0,0)+(1,0,0)=(6,0,0)" );
+		const NodeId pId = DocFindByName( doc, "standard_object/parentObj" );
+		Document docM = DocSetParamValue( doc, pId, "position", 0, "-4 4" );   // wrong arity: 2 tokens, not 3
+		std::vector<NodeId> closure = DocEditClosure( docM, pId );
+		Check( closure.size() == 2, "arity-parent-chain: closure is exactly {parentObj, childObj} -- no entities" );
+		std::vector<std::string> di;
+		int applied = DeriveToJobIncremental( docM, *j, closure, &di );
+		Check( applied == 0 && !di.empty(), "arity-parent-chain: malformed parent position REFUSED (applied 0 + diagnosed)" );
+		const std::string after = DumpJob( *j );
+		Check( after == before,
+		       "arity-parent-chain: DL-156 -- atomic refusal: dump after == dump before (neither parent nor child moved)" );
+		Check( after.find( "parentObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[4 -1 -1 .. 6 1 1]" ) != std::string::npos,
+		       "arity-parent-chain: DL-156 -- parentObj bbox is unchanged at authored position (5,0,0)" );
+		Check( after.find( "childObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[5 -1 -1 .. 7 1 1]" ) != std::string::npos,
+		       "arity-parent-chain: DL-156 -- childObj bbox is unchanged at parent+local (6,0,0)" );
+
+		// DL-156: matrix-arity case. A malformed 12-token matrix (needs 16) on parentObj is refused
+		// before mutation, leaving parent and child bboxes unchanged.
+		{
+			Document docMat = DocSetOrAddParamValue( doc, pId, "matrix", 0, "1 0 0 0  0 1 0 0  0 0 1 0" ); // 12 tokens, not 16
+			std::vector<NodeId> closureMat = DocEditClosure( docMat, pId );
+			std::vector<std::string> diMat;
+			int appliedMat = DeriveToJobIncremental( docMat, *j, closureMat, &diMat );
+			Check( appliedMat == 0 && !diMat.empty(), "arity-parent-chain: malformed parent matrix REFUSED (applied 0 + diagnosed)" );
+			const std::string afterMat = DumpJob( *j );
+			Check( afterMat == before, "arity-parent-chain: malformed matrix refusal mutated NOTHING" );
+			Check( afterMat.find( "parentObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[4 -1 -1 .. 6 1 1]" ) != std::string::npos,
+			       "arity-parent-chain: parentObj bbox unchanged after malformed matrix refusal" );
+			Check( afterMat.find( "childObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[5 -1 -1 .. 7 1 1]" ) != std::string::npos,
+			       "arity-parent-chain: childObj bbox unchanged after malformed matrix refusal" );
+		}
+
+		// DL-156: quaternion-arity case. A malformed 5-token quaternion (needs 4) on parentObj is refused
+		// before mutation, leaving parent and child bboxes unchanged.
+		{
+			Document docQuat = DocSetOrAddParamValue( doc, pId, "quaternion", 0, "0 0 0 1 0" ); // 5 tokens, not 4
+			std::vector<NodeId> closureQuat = DocEditClosure( docQuat, pId );
+			std::vector<std::string> diQuat;
+			int appliedQuat = DeriveToJobIncremental( docQuat, *j, closureQuat, &diQuat );
+			Check( appliedQuat == 0 && !diQuat.empty(), "arity-parent-chain: malformed parent quaternion REFUSED (applied 0 + diagnosed)" );
+			const std::string afterQuat = DumpJob( *j );
+			Check( afterQuat == before, "arity-parent-chain: malformed quaternion refusal mutated NOTHING" );
+			Check( afterQuat.find( "parentObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[4 -1 -1 .. 6 1 1]" ) != std::string::npos,
+			       "arity-parent-chain: parentObj bbox unchanged after malformed quaternion refusal" );
+			Check( afterQuat.find( "childObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[5 -1 -1 .. 7 1 1]" ) != std::string::npos,
+			       "arity-parent-chain: childObj bbox unchanged after malformed quaternion refusal" );
+		}
+		j->release();
+	}
+
 	// OPTIONAL-SLOT REMOVAL (workstream #3): removing radiance_map from a stable object CLEARS it in
 	// place and matches a FULL derive of the edited doc (a fresh object has the slot unset).
 	{
@@ -392,16 +543,22 @@ int main()
 		j->release(); jFull->release();
 	}
 
-	// OPTIONAL-SLOT REMOVAL (workstream #3): removing a modifier from a stable object CLEARS it in
-	// place and matches a FULL derive of the edited doc (a fresh object has the slot unset).
+	// OPTIONAL-SLOT REMOVAL (workstream #3): removing a modifier from a stable object CLEARS
+	// it in place and matches a FULL derive of the edited doc (a fresh object has the slot
+	// unset).  This block was added in the relief-modifier arc as the twin of an identical
+	// one over `bumpmap_modifier`; that chunk was REMOVED 2026-09-06
+	// (docs/RELIEF_MODIFIER_DESIGN.md 7.5) and its block went with it, leaving this one as
+	// the modifier-slot removal check.  `height` is a SCALAR-painter reference (a colour
+	// painter is refused there), hence the dedicated scalar_painter.
 	{
 		Document doc = ParseToCst(
 			"RISE ASCII SCENE 7\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
-			"bumpmap_modifier\n{\nname bm\nfunction p\n}\n"
+			"scalar_painter\n{\nname h\nvalue 0.1\n}\n"
+			"relief_modifier\n{\nname r\nheight h\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
-			"standard_object\n{\nname o\ngeometry g\nmaterial m\nmodifier bm\n}\n" );
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\nmodifier r\n}\n" );
 		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
 		const NodeId oId = DocFindByName( doc, "standard_object/o" );
 		Document docE = DocSetParamValue( doc, oId, "modifier", 0, "none" );
@@ -409,9 +566,9 @@ int main()
 		std::vector<std::string> di; int applied = DeriveToJobIncremental( docE, *j, closure, &di );
 		Job* jFull = new Job(); std::vector<std::string> dF; DeriveToJob( docE, *jFull, &dF );
 		IObjectPriv* o = j->GetObjects() ? j->GetObjects()->GetItem( "o" ) : 0;
-		Check( applied >= 1, "removal modifier: edit applies in place (not refused)" );
-		Check( o && o->GetModifier() == 0, "removal modifier: slot CLEARED" );
-		Check( DumpJob( *j ) == DumpJob( *jFull ), "removal modifier: incremental == full derive of the edited doc" );
+		Check( applied >= 1, "removal relief_modifier: edit applies in place (not refused)" );
+		Check( o && o->GetModifier() == 0, "removal relief_modifier: slot CLEARED" );
+		Check( DumpJob( *j ) == DumpJob( *jFull ), "removal relief_modifier: incremental == full derive of the edited doc" );
 		j->release(); jFull->release();
 	}
 

@@ -1,0 +1,597 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           tidal_stones.RISEscene                                                                  #
+#   Description:    A 0.4 m close-up of five stones resting in a sand-and-water pool -- the                #
+#                   `interior(r)` showcase (docs/PROXIMITY_SHOWCASES.md section 2).                          #
+#   Author:         RISE contributors                                                                        #
+#   Birthdate:      2026-09-10                                                                                #
+#                                                                                                             #
+#############################################################################################################
+#
+#   DOCTRINE.  Why `interior` and not `proximity`: a point on a stone below the waterline is 1-5 cm from
+#   the water's TOP face in every direction alike.  `proximity(r)` would paint everything under water
+#   uniformly wet (or, past r, not at all) -- it cannot tell 1 cm deep from 5 cm deep.  `interior(0.02)`
+#   is the SIGNED half of the same channel: `clamp(depth/2cm, 0, 1)`, 0 above the waterline, a ramp over
+#   the first 2 cm, 1 below -- a crisp line AT the waterline and a sheen that saturates 2 cm down.  The
+#   water box is the neighbour every stone reads: it CONTAINS the submerged fraction of each stone, and
+#   `DeepestOtherContainment` reports how deep.
+#
+#   ONE FIELD DRIVES THREE SLOTS.  `buried = interior(0.02)` is declared three times (a `def` does not
+#   cross chunks -- design doc SS5.6): once in the shared `expr_stones` expression_painter (`rd`, colour --
+#   dry stone vs. dark wet stone), once in `sp_stone_rough` (`alphax`/`alphay` -- roughness falls as the
+#   stone gets wetter, GGX Fresnel starts to glint), once in `sp_stone_coat` (`coat_weight` -- the physical
+#   wetness slot the `add_wetness` verb also drives).  All five stones share ONE `coated_material` /
+#   `ggx_material` / `expression_painter` triple, so a single `expr` swap (the probe protocol, SS0) serves
+#   every receiver.
+#
+#   RECEIVERS.  Two of the five stones carry PAINTER stations that a probe camera can actually read:
+#   `stone_a` (a plain sphere, half in half out of the water -- B1-B5) and `stone_e` (a tilted flagstone
+#   whose top face crosses the waterline at a shallow 36.8 deg elevation from the BEAUTY camera, so the
+#   beauty camera's own sightline crosses the water at 53.2 deg to its normal -- outside SS0's 10 deg
+#   refraction-displacement rule.  The wet ramp is read from a purpose-built OVERHEAD probe camera
+#   instead -- B9).  `stone_b` (an ellipsoid), `stone_c` (an SDF pebble) and `stone_d` (a sphere buried in
+#   dry sand, not water) carry the same recipe and the same beauty-visible wet line, but no painter
+#   station: `stone_d`'s burial line is at the OPAQUE sand surface, not on a visible face, and `stone_b`
+#   / `stone_c` are QUERY-only in this showcase (their closed forms are exercised by `ProximitySignalTest`
+#   (b)/(k); this scene exists to prove `interior` composes into a real, lit, path-traced beauty scene).
+#
+#   STATIONS (predicted from the geometry BEFORE this scene was rendered; MEASURED against the TRACKED
+#   file by tests/TidalStonesShowcaseTest.cpp).  Container family for every B station is the water box or
+#   a sand strip -- both exact -> tolerance 1e-9 unless stated.  `self` is the stone the station lies ON.
+#
+#     | # | station                                   | world (m)                    | predicted | measured |
+#     |---|--------------------------------------------|-------------------------------|-----------|----------|
+#     | B1| stone_a top (dry)                           | (0, 0.06, 0)                  | 0         | 0        |
+#     | B2| stone_a at the waterline                    | (0.0387298, 0.03, 0)          | 0         | 0        |
+#     | B3| stone_a 1 cm under                          | (0.04, 0.02, 0)               | 0.5       | 0.5      |
+#     | B4| stone_a 2 cm under                          | (0.0387298, 0.01, 0)          | 1.0       | 1.0      |
+#     | B5| stone_a bottom (on the bed)                 | (0, -0.02, 0)                 | 1.0       | 1.0 (running max 0.05 from the water, bed's 3.8e-17 dominated but present) |
+#     | B6a| stone_d equator (5 mm above the sand)      | (0.08, 0.035, -0.22)          | 0         | 0        |
+#     | B6b| stone_d mid-depth in the sand               | (0.0759808, 0.02, -0.22)      | 0.5       | 0.5      |
+#     | B6c| stone_d bottom (2.5 cm under the sand)      | (0.05, 0.005, -0.22)          | 1.0       | 1.0      |
+#     | B7a| stone_b bottom                              | (0.09, -0.02, -0.05)          | 1.0       | 1.0      |
+#     | B7b| stone_b at the waterline (local +x, yawed)  | (0.12502, 0.03, -0.062746)    | 0         | 0        |
+#     | B8 | stone_c pebble, -x side, object-space bisect| (-0.108284, 0.02, 0.04)       | 0.5       | 0.5      |
+#     | B9a| stone_e top face, target y=0.0              | s=-0.045566 along t           | 1.0       | 1.0      |
+#     | B9b| stone_e top face, target y=0.01             | s=-0.021904 along t           | 1.0       | 1.0      |
+#     | B9c| stone_e top face, target y=0.02             | s=+0.001758 along t           | 0.5       | 0.5      |
+#     | B9d| stone_e top face, target y=0.035            | s=+0.037251 along t           | 0         | 0        |
+#
+#     All 15 query stations above (the `interior(0.02)` / `DeepestOtherContainment` channel, re-derived
+#     from the scene's own chunk geometry by tests/TidalStonesShowcaseTest.cpp, never a hard-coded number)
+#     matched their predicted values exactly -- no correction to the spec's stated geometry was needed.
+#
+#     Painter stations (overhead probe camera at (-0.016, 0.60, -0.10) looking straight down, 512 spp,
+#     probe `vec3(buried,buried,buried)` / control `vec3(1,1,1)`, MEASURED against the tracked scene):
+#     | station | predicted ratio | band | MEASURED ratio |
+#     |---|---|---|---|
+#     | B1 (stone_a dry top) | 0 | +/- 0.08 | 0.000 (probe r=0, control r=0.434) |
+#     | B9a (y=0.0, saturated wet) | 1.0 | +/- 0.08 | 0.977 |
+#     | B9b (y=0.01, saturated wet) | 1.0 | +/- 0.08 | 0.964 |
+#     | B9c (y=0.02, mid-ramp) | 0.43 | [0.28, 0.58] | 0.454 |
+#     | B9d (y=0.035, dry) | 0 | +/- 0.08 | 0.000 (probe r=0, control r=0.287) |
+#     All five land inside their predicted bands; B9c's mid-ramp value (0.454-0.457 across two runs) sits
+#     comfortably inside the physics-bound-widened [0.28, 0.58] band the design's own water-underside
+#     back-reflection term predicts.  Two independent 512 spp probe/control pairs were rendered (one
+#     stand-alone, one as part of the full suite run); the ratios agree to <=0.02 between them.
+#
+#   COST.  RE-MEASURED 2026-09-10 (P1-1 review round: the gate now asserts <= 1.15x, matching the spec, not
+#   the earlier <= 1.30x placeholder). Live vs `def buried 0` in ALL THREE chunks that declare it
+#   (expr_stones, sp_stone_rough, sp_stone_coat), at the shipped 32 spp, every core busy
+#   (`RISE_OPTIONS_FILE` pointed at a temp options file with `render_thread_reserve_count 0`, matching
+#   `bench.sh`'s own protocol), 2 warm-ups then 3 interleaved pairs (`ps aux | grep -E "bin/rise|bin/tests"`
+#   showed no other heavy render/build activity during this measurement window). Every run listed:
+#     pair 0: live 5.616s / no-signal 5.529s -> 1.016x
+#     pair 1: live 5.545s / no-signal 5.632s -> 0.984x
+#     pair 2: live 5.917s / no-signal 5.895s -> 1.004x
+#   MEASURED: live mean 5.692s, no-signal mean 5.685s, ratio 1.001x (target <= 1.15x, PASSES with large
+#   margin -- at this scene's box-only container family and modest object count, `interior`'s per-hit
+#   cost is within measurement noise of zero). Call-rate regime: a path-traced scene
+#   (`pathtracing_pel_rasterizer`) evaluates the painter many times per pixel (every bounce that hits a
+#   stone), not once per camera sample like the pavilion's `pixelpel_rasterizer`, and its figure is not
+#   comparable to that showcase's.
+#   RE-CHECKED 2026-09-10 (P1-2 review round, after the camera `lookat` fix below): the camera-only change
+#   does not touch the painter/signal call sites, so the table above is NOT replaced -- re-run anyway as
+#   part of the full suite gate: 3 fresh interleaved pairs gave live mean 5.295s, no-signal mean 5.276s,
+#   ratio 1.0036x (still comfortably <= 1.15x; the ~5.3s vs the table's ~5.7s absolute times reflect
+#   ordinary machine-load variance between sessions, not the scene edit -- the RATIO, which is what the
+#   gate checks, is unchanged in substance).
+#
+#   TIR / LIGHTING.  `transparent_shadows TRUE` is MANDATORY (recorded here): the default is FALSE, and
+#   `RayCaster::CastShadowRayAuto` then runs the binary occlusion test, blocking every NEE shadow ray from
+#   a submerged surface to the light.  With it on, `CastShadowRayTransmittance` carries the water's
+#   Fresnel transmittance but returns 0 on total internal reflection past asin(1/1.33) = 48.75 deg from
+#   the water's normal.  The pinned key at (-0.35, 0.80, 0.45) is checked against every submerged station:
+#   B4 (2 cm under stone_a) sees it 37.0 deg from vertical, stone_b's bottom 39.1 deg, B8 (the pebble)
+#   31.3 deg, the deepest B9 station 39.8 deg -- all comfortably inside the 48.75 deg cone.
+#
+#   DEVIATIONS FROM THE SPEC.
+#   1. Orientation convention VERIFIED, no correction needed.  `Transformable::SetOrientation` composes
+#      `XRotation(x) * YRotation(y) * ZRotation(z)` (radians, row-vector `v' = v*M`) on the LOCAL point
+#      before translation by `position`.  Working through `orientation 0 0 -25` by hand against
+#      `Matrix4Ops::ZRotation` reproduces the spec's stated `n = (sin 25, cos 25, 0)` / `t = (-cos 25,
+#      sin 25, 0)` and every B9 target-height solve exactly (re-derived independently in the test, not
+#      copied from the spec) -- the spec's stated geometry needed no correction.
+#   2. The expression VM's `clamp()` takes a SCALAR first argument (confirmed by a parse-time error,
+#      "clamp() argument 1 must be scalar") -- there is no vec3 overload.  `expr_stones`'s `expr` is
+#      therefore `mix(dry, wet, buried) + vec3(grain,grain,grain)*0.05*(1.0-buried)`, UNCLAMPED (matching
+#      the spec's own literal text, which does not itself wrap the expression in `clamp()`; several other
+#      shipped vec3 `expr` lines in the corpus -- e.g. `lacquer_and_rain_still_life`'s -- are unclamped
+#      too). Not a deviation from the letter of the spec, recorded because it is the kind of VM limit a
+#      later worker should not rediscover the hard way.
+#   3. `omni_light` `power 1.5` was tuned empirically (spec leaves this to the worker): the first
+#      value tried (6.0, the naive inverse-square scale from the pavilion/showroom/sculptors_studio
+#      precedents' 300-500 @ 7-8 m down to this scene's ~1 m) washed out the wet/dry contrast (peak
+#      241/255 in the 8-bit sRGB output, MEASURED here -- not literally overexposed to pure white, but
+#      close enough to flatten the colour difference the whole scene exists to show; a red-vs-white debug
+#      swap of the `wet` colour confirmed the RAMP itself was rendering correctly -- the problem was pure
+#      exposure). 1.5 keeps the highlight well off that ceiling and leaves the wet band visible in the
+#      beauty render; see the crop under `rendered/`.
+#   4. CORRECTED 2026-09-10 (was recorded as an open finding on first authoring; fixed by moving the
+#      stone, not by re-deriving anything). `stone_d`'s ORIGINAL position (0.26, 0.035, 0.09) on `sand_px`
+#      projected ~31.0 deg off the beauty camera's view axis against the 50 mm/36 mm-sensor half-FOV of
+#      19.8 deg -- OUTSIDE the frame horizontally. The prior text here also claimed the original position
+#      was "correctly inside the stated depth-of-field RANGE" -- that claim was ITSELF WRONG: its axial
+#      depth was 0.368 m, which is BELOW the near DoF limit 0.4244 m, i.e. also outside the DoF, on the
+#      near side; re-recorded honestly here rather than repeated.
+#      FIX: moved `stone_d` to (0.05, 0.035, -0.22) on the FAR strip `sand_nz` (re-derived against the same
+#      camera-basis formula that reproduces the overhead probe camera's own stated angles): now 9.3 deg
+#      horizontal / 13.5 deg vertical off the (THEN-current) view axis, inside the 19.8 deg / 15.1 deg
+#      half-FOVs -- IN FRAME by that arithmetic. Its axial depth under that camera was 0.624 m, 1.6 cm
+#      BEYOND the f/22 DoF far limit of 0.6084 m (circle of confusion ~1.1 px at that depth) -- falling
+#      just soft, not inside the stated DoF range. `stone_d`'s B6a/B6b/B6c stations (unchanged formula,
+#      translated to the new centre) still match 0/0.5/1.0 exactly -- see the station table above. NOTE:
+#      the 9.3/13.5 deg and 0.624 m figures in this item were measured against the OLD `lookat
+#      (0, 0, -0.02)` and are SUPERSEDED by item 5 below -- 13.5 deg vertical turned out to still clip the
+#      top of the frame against the 15.1 deg half-vFOV once the 2.7 deg angular radius is added back in.
+#   5. CORRECTED 2026-09-10 (P1-2 review round; camera-only fix, `stone_d` itself untouched this time).
+#      Item 4's "9.3 / 13.5 deg, IN FRAME" verdict missed the stone's own ANGULAR RADIUS: 13.5 deg centre +
+#      2.75 deg angular radius = 16.25 deg, past the 15.1 deg half-vFOV -- `stone_d`'s top ~20 px were
+#      actually CROPPED (stone pixels found at row 0 of the rendered PNG). No position on any sand strip
+#      clears the top edge under that `lookat` without leaving the DoF/frame envelope some other way, so
+#      the FIX is to the CAMERA instead: `lookat` moves from (0, 0, -0.02) to (0, 0, -0.08); `location`
+#      (0.10, 0.36, 0.34) is UNCHANGED, so the flagstone's elevation above horizontal (36.8 deg), its
+#      angle to the water normal (53.2 deg) and the DoF range [0.4244, 0.6084] all carry over exactly --
+#      only the view-axis elevation moves, from 43.9 deg to 39.8 deg (both re-derived in the camera
+#      chunk's own comment above). Re-derived under the NEW axis: `stone_d` is now 7.3 deg horizontal /
+#      9.5 deg vertical off-axis with the same 2.7 deg angular radius -- 2.9 deg / ~57 px of margin to the
+#      nearer (top) edge. The full framing-margins table (all five stones, confirming none of them touch
+#      an edge under the corrected camera) is in the camera chunk's own comment block above. Verified by
+#      READING the re-rendered PNG's edge rows (top/bottom/left/right): no stone pixel touches row 0,
+#      row 599, column 0 or column 799.
+#   No other deviation from the spec was needed: every query station, both painter-probe receivers, the
+#   TIR cone check, and the cost gate all landed inside their predicted bands on the first working scene
+#   revision (after the fixes above).
+#
+#   BEAUTY, judged honestly (crop under rendered/tidal_stones_crop.png; full frame
+#   rendered/tidal_stones_denoised.png).  What it draws: a soft, believable darkening at the base of the
+#   sphere, the ellipsoid and the pebble where they cross the (invisible, flush-with-sand) waterline, and
+#   a visible light-to-dark gradient across the tilted flagstone's face running from its dry top-left
+#   corner toward its submerged bottom-right one -- the GGX roughness drop and the shared F0 coat give the
+#   wet band a faint sheen rather than a flat colour change, which is the intended "real stone" cue over
+#   a cartoon waterline. What it does NOT draw: the effect is SUBTLE at normal viewing size -- it reads
+#   first as a soft contact shadow and only on close inspection (or the header's own contrast-boosted
+#   crops, not shipped) as a colour/gloss change; a viewer not told to look for it could miss it. RE-JUDGED
+#   2026-09-10 after `stone_d`'s position correction (Deviations item 4) and the camera `lookat` correction
+#   (Deviations item 5): `stone_d` is now VISIBLE and fully IN FRAME, in the upper right on the far
+#   `sand_nz` strip, falling just soft (its 0.6354 m axial depth under the corrected camera is 2.7 cm past
+#   the DoF far limit) next to the three sharp foreground stones -- a mild, honest depth cue rather than a
+#   defect. It still does not draw a coloured burial ramp on `stone_d` itself: every point of its
+#   visible surface is above the sand (buried = 0 there), and the actual wet-to-1.0 ramp is inside the
+#   opaque sand, unseen, exactly as the spec calls for. The scene does not show the pool's water as a
+#   distinct visual element -- BY DESIGN (SS2's flush waterline means the only tell is the stones
+#   themselves, not a dramatic pool edge), but worth naming as a beauty-render observation rather than
+#   only a measurement one.
+#
+#############################################################################################################
+
+##################################################
+# Renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+film
+{
+	width		800
+	height		600
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					32
+	transparent_shadows		TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/tidal_stones
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Camera.  RECOMPUTED this session (near = s*f^2/(f^2+N*c*(s-f)), far =
+# s*f^2/(f^2-N*c*(s-f)), s=0.50 m, f=0.050 m, N=22, c=0.000045 m -- one pixel
+# of the 36 mm sensor at 800 px wide): near 0.4244 m, far 0.6084 m, matching
+# the header's [0.424, 0.608] to 4 decimals.  `location` and `focus_distance`
+# are unaffected by the `lookat` correction below (item 5), so this DoF range,
+# the flagstone's elevation above horizontal (36.8 deg) and its angle to the
+# water normal (53.2 deg) all carry over unchanged -- all four depend only on
+# `location`, not on which way the camera is pointed.
+#
+# View axis, RECOMPUTED 2026-09-10 for the corrected `lookat (0, 0, -0.08)`
+# (P1-2 review round): |lookat-location| = (-0.10,-0.36,-0.42), horizontal
+# distance sqrt(0.10^2+0.42^2) = 0.4317 m, elevation atan(0.36/0.4317) =
+# 39.82 deg (was 43.94 deg at the old `lookat (0,0,-0.02)`).  Distances
+# re-derived from the shipped `location`/`position` chunks: stone_a's top
+# 0.463 m, the flagstone's centre 0.571 m -- both EUCLIDEAN distances from the
+# fixed `location`, so unchanged by the `lookat` correction -- both inside
+# the DoF range above.
+#
+# FRAMING ARITHMETIC (spec Sec.0's >= 8 px radial rule; thin-lens magnification
+# f/(d-f), 22.22 px/mm over the 36 mm sensor at 800 px, x sin(elevation) for the
+# radial foreshortening), for the two painter RECEIVERS' 2 cm ring -- these use
+# the camera-to-point LINE's own elevation (a function of `location` and the
+# point only), so they too are unaffected by the `lookat` correction:
+#   stone_a: waterline point (0.0387298, 0.03, 0) is at d=0.4767 m, elevation
+#   43.7 deg -> magnification f/(d-f)=0.1172 -> tangential 2.344 mm (of the
+#   20 mm/2 cm span) -> radial 2.344*sin(43.7)=1.619 mm -> 35.97 px (all of
+#   B2/B3/B4 land within 36.0 +/- 0.1 px of each other -- comfortably over the
+#   8 px floor).
+#   stone_e (flagstone): face centre (-0.015774, 0.0192571, -0.10) is at
+#   d=0.564 m (the header's stated "centre 0.571 m" is the BOX centre, 0.008 m
+#   farther); using the box-centre depth with the face-centre elevation
+#   (36.8 deg, matching the spec's stated value exactly): magnification
+#   f/(0.571-0.050)=0.0960 -> tangential 1.919 mm -> radial
+#   1.919*sin(36.8)=1.146 mm -> 25.5 px (also over the floor; the flagstone's
+#   own painter station is read on the OVERHEAD probe, not this camera, so this
+#   is a framing/visibility check, not a MONEY measurement).
+#
+# `stone_d` (0.26, 0.035, 0.09) ORIGINALLY projected ~31 deg off the view axis
+# against this lens/sensor's 19.8 deg half-FOV -- OUTSIDE the frame
+# horizontally -- and was CORRECTED 2026-09-10 (header "Deviations" item 4) to
+# (0.05, 0.035, -0.22) on `sand_nz`.
+#
+# CORRECTED AGAIN 2026-09-10 (P1-2 review round, "Deviations" item 5): even at
+# its new position, stone_d's centre sat 13.5 deg above the OLD view axis
+# against a 15.1 deg half-vFOV with a 2.7 deg angular radius -- its top ~20 px
+# were cropped (stone pixels found at row 0).  No sand-strip position clears
+# the top edge under the OLD `lookat (0, 0, -0.02)`, so `lookat` was moved to
+# (0, 0, -0.08) instead -- `location` UNCHANGED, so the flagstone's elevation/
+# water-normal angle/DoF above carry over exactly.  Re-derived under the NEW
+# view axis (camera basis right = normalize(cross(forward,up)), u =
+# cross(right,forward)): stone_d's axial depth becomes 0.6354 m (was 0.6237 m
+# -- still 2.7 cm BEYOND the 0.6084 m DoF far limit, circle of confusion
+# ~1.20 px, falling just soft as before, NOT inside the stated DoF range), now
+# 7.3 deg horizontal / 9.5 deg vertical off the NEW view axis (was 9.3 deg /
+# 13.5 deg off the OLD axis) against the 19.8 deg / 15.1 deg half-FOVs -- IN
+# FRAME with margin (see the framing-margins table below), still not a MONEY
+# station (B6a/b/c are query-only regardless).
+#
+# FRAMING MARGINS at the corrected `lookat (0, 0, -0.08)` (same camera basis;
+# angular radius = atan(bounding-sphere radius / depth); margin = the
+# relevant half-FOV minus |off-axis angle| minus angular radius; all margins
+# below are POSITIVE, i.e. no stone touches an edge -- confirmed against the
+# re-rendered PNG's edge rows, not just this arithmetic):
+#   | stone   | centre off-axis (h / v) | angular radius | nearer-edge margin |
+#   |---------|--------------------------|-----------------|---------------------|
+#   | stone_a | -2.17 deg / -4.03 deg    | 4.67 deg        | 6.41 deg vert (~127 px) |
+#   | stone_b | +8.86 deg / -2.70 deg    | 5.52 deg        | 5.42 deg horiz (~110 px) |
+#   | stone_c | -12.40 deg / -6.56 deg   | ~5.35 deg (SDF pebble, conservative bound: max(sphere1 r=0.03, offset 0.02 + sphere2 r=0.022) + margin) | 2.04 deg horiz (~41 px) |
+#   | stone_d | +7.27 deg / +9.53 deg    | 2.70 deg        | 2.88 deg vert (~57 px) |
+#   | stone_e | -1.08 deg / +2.98 deg (face centre) | ~5.03 deg | 7.09 deg vert (~141 px) |
+#   half-FOVs: 19.80 deg horizontal, 15.11 deg vertical (unchanged by the
+#   `lookat` correction -- lens/sensor only).
+#
+# The flagstone's top face crosses the waterline at a shallow elevation from
+# this camera, and the SIGHTLINE to it crosses the water at ~53 deg to the
+# water's normal -- far outside the family's 10 deg refraction-displacement
+# rule -- so its wet ramp is read from a purpose-built overhead probe camera
+# instead (the probe/control harness in tests/TidalStonesShowcaseTest.cpp).
+##################################################
+
+thinlens_camera
+{
+	name				beauty_cam
+	location			0.10 0.36 0.34
+	lookat				0 0.0 -0.08
+	up					0 1 0
+	sensor_size			36
+	focal_length		50
+	fstop				22
+	focus_distance		0.50
+}
+
+##################################################
+# Lights.  ONE light, a pinned omni key -- SS0's zero-area requirement (no
+# ambient, no sky, no area light: any of those would reflect off the water's
+# specular arm at R = 0.02 into every submerged pixel of both probe copies,
+# pulling the wet/dry ratio toward 1 exactly as the coat would).
+##################################################
+
+omni_light
+{
+	name		key
+	power		1.5
+	color		1.0 0.96 0.90
+	position	-0.35 0.80 0.45
+}
+
+##################################################
+# Painters -- sand and bed
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_bed
+	color		0.32 0.27 0.21
+}
+
+uniformcolor_painter
+{
+	name		pnt_sand
+	color		0.62 0.55 0.42
+}
+
+lambertian_material
+{
+	name		mat_bed
+	reflectance	pnt_bed
+}
+
+lambertian_material
+{
+	name		mat_sand
+	reflectance	pnt_sand
+}
+
+##################################################
+# Water
+##################################################
+
+dielectric_material
+{
+	name		mat_water
+	ior			1.33
+	tau			1.0
+	scattering	1000000
+}
+
+##################################################
+# Stones -- ONE shared material triple.  `buried = interior(0.02)` is
+# declared three times on purpose (SS5.6: a `def` does not cross chunks), once
+# per slot it drives.
+##################################################
+
+# rd: colour -- dry stone mixed toward a dark wet stone as `buried` rises,
+# plus a fine grain that only shows on the dry part (grain*(1-buried)).
+expression_painter
+{
+	name		expr_stones
+	def			buried  interior(0.02)
+	def			dry     vec3(0.58, 0.53, 0.46)
+	def			wet     vec3(0.15, 0.16, 0.18)
+	def			grain   fbm(vec3(P.x*450.0, P.y*450.0, P.z*450.0), 3, 0.5, 2.0)
+	expr		mix(dry, wet, buried) + vec3(grain, grain, grain)*0.05*(1.0 - buried)
+}
+
+# alphax/alphay: roughness falls as the stone gets wetter (0.55 dry -> 0.12
+# wet), so the wet band picks up a visible GGX glint under the key.  Its OWN
+# `def buried` -- an L1 memo hit, not a re-evaluation.
+scalar_painter
+{
+	name		sp_stone_rough
+	def			buried  interior(0.02)
+	expression	mix(0.55, 0.12, buried)
+}
+
+# coat_weight: coverage IS the wetness fraction.  A third `def buried`.
+scalar_painter
+{
+	name		sp_stone_coat
+	def			buried  interior(0.02)
+	expression	buried
+}
+
+uniformcolor_painter
+{
+	name		pnt_stone_f0
+	color		0.04 0.04 0.04
+}
+
+ggx_material
+{
+	name			mat_stone_base
+	rd				expr_stones
+	rs				pnt_stone_f0
+	alphax			sp_stone_rough
+	alphay			sp_stone_rough
+	fresnel_mode	schlick_f0
+}
+
+coated_material
+{
+	name		mat_stone
+	base		mat_stone_base
+	coat_weight	sp_stone_coat
+}
+
+##################################################
+# Geometry -- pool
+##################################################
+
+box_geometry
+{
+	name		geo_water
+	width		0.36
+	height		0.60
+	depth		0.36
+}
+
+box_geometry
+{
+	name		geo_bed
+	width		0.34
+	height		0.53
+	depth		0.34
+}
+
+box_geometry
+{
+	name		geo_sand_x
+	width		0.2195
+	height		0.10
+	depth		0.80
+}
+
+box_geometry
+{
+	name		geo_sand_z
+	width		0.361
+	height		0.10
+	depth		0.2195
+}
+
+standard_object
+{
+	name		water
+	geometry	geo_water
+	material	mat_water
+	position	0 -0.27 0
+}
+
+standard_object
+{
+	name		pool_bed
+	geometry	geo_bed
+	material	mat_bed
+	position	0 -0.285 0
+}
+
+standard_object
+{
+	name		sand_px
+	geometry	geo_sand_x
+	material	mat_sand
+	position	0.29025 -0.02 0
+}
+
+standard_object
+{
+	name		sand_nx
+	geometry	geo_sand_x
+	material	mat_sand
+	position	-0.29025 -0.02 0
+}
+
+standard_object
+{
+	name		sand_pz
+	geometry	geo_sand_z
+	material	mat_sand
+	position	0 -0.02 0.29025
+}
+
+standard_object
+{
+	name		sand_nz
+	geometry	geo_sand_z
+	material	mat_sand
+	position	0 -0.02 -0.29025
+}
+
+##################################################
+# Geometry -- stones
+##################################################
+
+sphere_geometry
+{
+	name		geo_stone_a
+	radius		0.04
+}
+
+standard_object
+{
+	name		stone_a
+	geometry	geo_stone_a
+	material	mat_stone
+	position	0 0.02 0
+}
+
+ellipsoid_geometry
+{
+	name		geo_stone_b
+	radii		0.05 0.03 0.035
+}
+
+standard_object
+{
+	name		stone_b
+	geometry	geo_stone_b
+	material	mat_stone
+	position	0.09 0.01 -0.05
+	orientation	0 20 0
+}
+
+# A pebble: two spheres (r 0.03 and r 0.022, offset 0.02 along local x)
+# joined by smin k=0.007 (~ a third of the small radius).
+sdf_geometry
+{
+	name		geo_stone_c
+	part		sphere union 0      0 0 0        0 0 0    1 1 1    0.03  0 0   0
+	part		sphere smin 0.007   0.02 0 0      0 0 0    1 1 1    0.022 0 0   0
+	maxsteps	128
+}
+
+standard_object
+{
+	name		stone_c
+	geometry	geo_stone_c
+	material	mat_stone
+	position	-0.08 0.01 0.04
+}
+
+sphere_geometry
+{
+	name		geo_stone_d
+	radius		0.03
+}
+
+standard_object
+{
+	name		stone_d
+	geometry	geo_stone_d
+	material	mat_stone
+	position	0.05 0.035 -0.22
+}
+
+# The flagstone -- a tilted box, orientation applied about its own centre
+# (Transformable::SetOrientation = XRotation*YRotation*ZRotation, row-vector
+# convention v' = v*M) BEFORE translation by `position`.  Centre y is the
+# nine-decimal resting height: -0.02 + 0.05*sin(25deg) + 0.01*cos(25deg) =
+# 0.0101939909574, which puts the low corner 4.3e-11 above the bed top (a 23x
+# margin inside the 1e-9 family tolerance).
+box_geometry
+{
+	name		geo_stone_e
+	width		0.10
+	height		0.02
+	depth		0.06
+}
+
+standard_object
+{
+	name		stone_e
+	geometry	geo_stone_e
+	material	mat_stone
+	position	-0.02 0.010193991 -0.10
+	orientation	0 0 -25
+}

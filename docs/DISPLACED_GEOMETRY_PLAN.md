@@ -4,6 +4,14 @@
 
 **Post-completion amendment (2026-04-21, commit 5f81bf9)**: `BezierPatchGeometry` was subsequently refactored to render analytically (no tessellation pipeline) and `BezierValueGenerator.h` was removed.  References to `BezierValueGenerator.h` in the body below were live at plan-time and are preserved as historical context.  The Phase 3b normal-recompute back-port (§3.5, §5 Phase 3b) is now moot for Bezier — analytical rendering supplies derivatives directly and no post-tessellation normal recomputation is required.  `DisplacedGeometry` itself is unaffected.
 
+> **Post-landing evolution (2026-05 – 2026-09 — supersedes the v1 constructor/pass-through/BSP assumptions below):**
+> - **Deferred realization (`Realize()`, 2026-06-13):** tessellation, displacement, and mesh construction no longer run in the `DisplacedGeometry` constructor (§3.9); they are deferred to `IGeometry::Realize()`, invoked single-threaded from `RayCaster::AttachScene` before parallel rendering so unreferenced displaced geometries never bake.
+> - **Internal `BVH<>` acceleration:** `TriangleMeshGeometryIndexed` now uses `BVH<>` unconditionally; the legacy `max_polys_per_node`, `max_recursion_level`, and `bUseBSP` (`bsp` / `maxpolygons` / `maxdepth`) octree/BSP parameters were retired from the `DisplacedGeometry` constructor (§5 Phase 3/5/7).
+> - **Mesh-base refinement (`TessellateAndRefine`):** supersedes §4 Q2's v1 pass-through. Smooth-normal `TriangleMeshGeometryIndexed` bases honour `detail` (target edge spacing `bbox_diagonal / detail`, capped at 6 levels / 1.5M triangles) without altering the authored piecewise-linear silhouette: builder meshes (`lathe` / `sweep` / `skin`) subdivide their recorded `MeshGrid` line families (`TessellateRefined`), and smooth imported / hand-built / `path_instances` meshes apply uniform `1 -> 4` midpoint subdivision.
+> - **Watertight crease welding & smooth shading transport:** `WeldCoincidentDisplacement` keeps creases, cap rims, and UV seams watertight by moving coincident vertices to a shared mean-displaced position (all coincident groups on `lathe`/`sweep`/`skin`; transitive `< 120°` base-normal crease-cone components on imported meshes so opposite-facing two-sided sheets stay independent; per-instance weld domains on `path_instances_geometry`), and `ApplyTransportedShading` rotates the base mesh's smooth shading normals by the geometric normal delta `g0 -> g1` across angle-weighted `RecomputeVertexNormalsFromTopology`.
+> - **Dual height routes & open-UV control (2026-09-06):** `displaced_geometry` accepts either `displacement` (`IFunction2D`) or mutually exclusive `height` (`IScalarPainter`, evaluated in object space `Po == P` so one `scalar_painter` can drive both `displaced_geometry` and `relief_modifier`), plus `uv_seam_fold` (default `TRUE` tent-fold for closed wrap-seam surfaces; `FALSE` preserves raw UVs on open Cartesian fields).
+> - **Descriptor registry & agent guide:** `DisplacedGeometryAsciiChunkParser` now lives in [src/Library/Parsers/ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp), and contributor build/checklist rules live in [AGENTS.md](../AGENTS.md).
+
 **Owner**: Aravind Krishnaswamy
 **Scope**: New `DisplacedGeometry` type + new `IGeometry::TessellateToMesh` contract + per-geometry tessellation overrides + parser/API/test-scene/regression surface.
 **Precedent (plan-time)**: [src/Library/Geometry/BezierPatchGeometry.cpp](../src/Library/Geometry/BezierPatchGeometry.cpp) + `src/Library/Geometry/BezierValueGenerator.h` (removed in 5f81bf9) + [src/Library/Geometry/GeometryUtilities.cpp](../src/Library/Geometry/GeometryUtilities.cpp).
@@ -332,7 +340,7 @@ Grouped for one commit per logical cluster; commits granular enough to bisect.
 
 ### Phase 4 — Build-system updates
 
-**Goal**: new source files compile everywhere. Per [CLAUDE.md](../CLAUDE.md) "touch ALL five".
+**Goal**: new source files compile everywhere. Per [AGENTS.md](../AGENTS.md) "touch ALL five".
 
 **Tasks**:
 - [ ] Add `DisplacedGeometry.cpp` + `.h` to [build/make/rise/Filelist](../build/make/rise/Filelist) (`SRCS_GEOMETRY` list, alphabetical).
@@ -427,7 +435,7 @@ Grouped for one commit per logical cluster; commits granular enough to bisect.
 **Goal**: `displaced_geometry { ... }` works in `.RISEscene` files.
 
 **Tasks**:
-- [ ] Add `DisplacedGeometryAsciiChunkParser` struct to [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) next to `BezierPatchGeometryAsciiChunkParser` (~line 3952). Parameters and defaults:
+- [ ] Add `DisplacedGeometryAsciiChunkParser` struct to [src/Library/Parsers/ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) next to `BezierPatchGeometryAsciiChunkParser` (~line 3952). Parameters and defaults:
 
   | Param | Type | Default |
   |-------|------|---------|
@@ -447,7 +455,7 @@ Grouped for one commit per logical cluster; commits granular enough to bisect.
 - [ ] Error if `base_geometry` is missing (not defaulted).
 
 **Files touched**:
-- `src/Library/Parsers/AsciiSceneParser.cpp`
+- `src/Library/Parsers/ChunkParserRegistry.cpp`
 
 **Acceptance**: parsing a scene file with a well-formed `displaced_geometry` chunk succeeds; an unknown parameter name errors with the standard `ChunkParser::` error line.
 
@@ -536,7 +544,7 @@ Grouped for one commit per logical cluster; commits granular enough to bisect.
 - [ ] Add `DisplacedGeometry` to [src/Library/README.md](../src/Library/README.md) geometry list with one-line description and link.
 - [ ] Write or extend a "Displacement" section in [src/Library/Parsers/README.md](../src/Library/Parsers/README.md) documenting the `displaced_geometry` chunk, every parameter, and per-base-geometry `detail` semantics.
 - [ ] In [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md), add a note that `IGeometry::TessellateToMesh` is the forward hook for GPU mesh export and composite geometries.
-- [ ] Update the High-Value Facts list in [CLAUDE.md](../CLAUDE.md) ONLY if this feature becomes load-bearing for other subsystems (e.g., if a GPU path lands). Otherwise leave CLAUDE.md thin per its convention.
+- [ ] Update the High-Value Facts list in [AGENTS.md](../AGENTS.md) ONLY if this feature becomes load-bearing for other subsystems (e.g., if a GPU path lands). Otherwise leave AGENTS.md / CLAUDE.md thin per convention.
 - [ ] Brief entry in scenes/Tests/Geometry/README.md listing the new test scenes.
 
 **Files touched**: as listed.

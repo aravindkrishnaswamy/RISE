@@ -1,5 +1,10 @@
 #ifndef FIRE_PRODUCTION_DYADIC_CALIBRATION_FIXTURE_H
 #define FIRE_PRODUCTION_DYADIC_CALIBRATION_FIXTURE_H
+// DL-632: POSIX setenv/unsetenv are shimmed to the CRT equivalents under _WIN32.
+#if defined(_WIN32) && !defined(setenv)
+#define setenv(name,value,overwrite) _putenv_s(name,value)
+#define unsetenv(name) _putenv_s(name,"")
+#endif
 #include "FireProductionR136TraceBridge.h"
 
 namespace FireProductionDyadicCalibration
@@ -420,7 +425,7 @@ namespace FireProductionDyadicCalibration
 	double VelocityDistance(const FilteredVelocityField& a,const FilteredVelocityField& b)
 	{
 		if(a.dimensions!=b.dimensions||a.value.size()!=b.value.size()||a.value.empty())
-			return std::numeric_limits<double>::infinity();
+			return std::numeric_limits<double>::infinity(); // HYGIENE-OK: intentional +inf bound; compiled with -fno-fast-math (build/make/rise/Makefile fire test rules)
 		double sum=0.0;for(std::size_t cell=0u;cell<a.value.size();++cell)
 			for(unsigned int axis=0u;axis<3u;++axis){const double difference=
 				a.value[cell][axis]-b.value[cell][axis];sum+=difference*difference;}

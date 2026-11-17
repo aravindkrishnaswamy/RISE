@@ -7,26 +7,17 @@
 //    delegates every IRasterizer call to it.  It composes the existing
 //    integrators — it contains NO integrator algorithm of its own.
 //
-//    Phase 1 (this file): selection is Tier-0 only — honour an explicit
-//    author pin (`integrator pt|bdpt|vcm`), else fall back to PT (the
-//    matrix's default-and-converged-bulk winner).  See
-//    docs/AUTO_RASTERIZER_DESIGN.md §3 for the architecture and §1 for
-//    the routing policy.
+//    Selection honours an explicit author pin first, then the DL-475
+//    bound-medium support guard, then probe/static selection. See
+//    docs/AUTO_RASTERIZER_DESIGN.md §§2,5 for policy and scope.
 //
-//    WHY LATE (render-time) RESOLUTION, not construction-time:
-//    Phase 4 adds a render-time PROBE — a cheap pre-render of the
-//    *assembled* scene to pick the integrator per-scene.  The assembled
-//    scene only exists at `RasterizeScene` time, so the dispatcher
-//    defers building its delegate until then (guarded by an exclusive,
-//    fail-closed resolution coordinator). A top-level resolution rejects
+//    Resolution uses the assembled scene at render time, including the
+//    optional pre-render probes. An exclusive, fail-closed resolution
+//    coordinator guards delegate creation: a top-level resolution rejects
 //    while any other Auto is active; only same-thread nested resolution is
 //    admitted, so callback-created worker handoffs cannot hide wait cycles.
-//    rather than at parse/construction.  The wrapper stores everything
-//    needed to build ANY of the three delegates and resolves exactly one
-//    lazily; Phase 4 replaces the body of `SelectIntegrator` with the
-//    probe and is free to build candidate delegates via `BuildDelegate`.
-//    A parse-time-only dispatch could not host that probe, which is why
-//    this is the foundation rather than a switch in Job::SetAutoRasterizer.
+//    BuildDelegate also creates temporary probe candidates. The wrapper
+//    stores the settings needed for all three concrete delegates.
 //
 //    The base `Implementation::Rasterizer` already buffers the output
 //    sinks (`outs`), the progress callback, and the FrameStore for us;
@@ -63,6 +54,7 @@
 #include <atomic>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace RISE
 {
@@ -84,7 +76,7 @@ namespace RISE
 				IRayCaster* caster,								///< [in] Shared ray caster (integrator-agnostic)
 				ISampling2D* samples,							///< [in] Pixel sampler
 				IPixelFilter* filter,							///< [in] Pixel reconstruction filter
-				const AutoIntegratorChoice integrator,			///< [in] Author pin (Auto = dispatcher decides -> PT in Phase 1)
+				const AutoIntegratorChoice integrator,			///< [in] Author pin (Auto = support guard, then probe/static selection)
 				const bool oidnDenoise,							///< [in] OIDN denoise (forwarded to the delegate)
 				const OidnQuality oidnQuality,					///< [in] OIDN quality preset
 				const OidnDevice oidnDevice,					///< [in] OIDN device backend
@@ -163,6 +155,8 @@ namespace RISE
 			void AddRasterizerOutput( IRasterizerOutput* ro ) override;
 			void RemoveRasterizerOutput( IRasterizerOutput* ro ) override;
 			void FreeRasterizerOutputs() override;
+			bool SetDenoisingOverride( bool enabled ) override;
+			int GetDenoisingOverride() const override;
 
 			//! The integrator the dispatcher resolved to.  `Auto` until
 			//! the first render-time entry runs selection; the concrete
@@ -195,6 +189,38 @@ namespace RISE
 			//! Number of candidate renders the probe issued (0 if it didn't run).
 			unsigned int LastProbeRenders() const;
 
+			//! G1 fix-round (2026-08-10): run the ONE-TIME integrator
+			//! resolution NOW, against `scene` exactly as it currently
+			//! stands, instead of lazily at the first render-time entry.
+			//!
+			//! WHY THIS EXISTS -- resolution completes exactly once for the
+			//! lifetime of this dispatcher (the fail-closed resolution
+			//! coordinator; `mResolutionComplete`), and BOTH
+			//! Tier-1 static signals read the scene through
+			//! `IObjectManager::EnumerateObjects`, which FILTERS on
+			//! `IObject::IsWorldVisible()`.  The agent's
+			//! `render{isolate:"x"}` surface hides every other object for the
+			//! duration of ONE render.  If that isolated render is the first
+			//! one issued on this dispatcher, resolution would see a
+			//! one-object scene, lock in the choice that scene implies, and
+			//! keep it -- with a confident but WRONG `ResolveReason()` -- for
+			//! every later full-scene render, including the user's own
+			//! production renders.  Restoring visibility cannot undo it:
+			//! nothing clears `mResolutionComplete`.
+			//!
+			//! The isolate path therefore calls this BEFORE it hides
+			//! anything, which is the same "pre-build the visibility-
+			//! dependent cache against the full set first" shape it already
+			//! uses for the TLAS (`IObjectManager::PrepareForRendering`) and
+			//! the luminary list (`Scene::BumpLightTopologyGeneration`).
+			//!
+			//! Deliberately changes only WHEN resolution happens, never WHAT
+			//! it decides: it forwards verbatim to the same `EnsureResolved`
+			//! every render-time entry point calls, exposes no setter for the
+			//! resolved choice, and is idempotent -- a second call, or the
+			//! render's own `EnsureResolved`, is a no-op.
+			void PreResolveIntegrator( const IScene* scene ) const;
+
 			//! Test-only visibility for the delegated FrameStore identity.  Agent
 			//! isolation must restore both wrapper and delegate immediately.
 			FrameStore* ForTest_GetDelegateFrameStore() const;
@@ -206,7 +232,6 @@ namespace RISE
 			unsigned int ForTest_LiveProbeCaptureCount() const;
 			void ForTest_ReturnNullDelegateOnce() const;
 
-		private:
 			//! Render-time probe tunables.  Read from `GlobalOptions` at
 			//! selection time (so the Phase-4 resolution/cost sweep can
 			//! vary them without recompiling) with the Phase-3 experiment
@@ -216,7 +241,7 @@ namespace RISE
 				unsigned int spp;				///< probe samples-per-pixel (default 4)
 				unsigned int scale;				///< resolution divisor: 2=half, 4=quarter, 8=eighth (default 4 — §6.2)
 				double       tauCaustic;		///< median-lum VCM/PT ratio gate 1/2 -> caustic candidate (default 1.30)
-				double       tauReach;			///< mean-lum VCM/PT (transport-reach) gate 2/2 -> VCM (default 1.50; rejects the jewel_vault over-fire)
+				double       tauReach;			///< VCM merge flux share (transport-reach) gate 2/2 -> VCM (default 0.10; DL-167)
 				double       reachWinsorPct;	///< upper-tail winsorize pct for the reach mean (default 0.99; clips VCM merge fireflies so the gate sees broad caustic energy, not sparse spikes)
 				double       tauBdpt;			///< σ²·T PT/BDPT ratio -> BDPT (default 1.35)
 				unsigned int varianceRenders;	///< sub-renders for the per-pixel σ² estimate (default 2)
@@ -232,14 +257,61 @@ namespace RISE
 			{
 				bool   valid;
 				double medianLum;
-				double meanLum;		///< mean per-pixel luminance (the μ in σ/μ; brightness-normalizer for the PT-struggling discriminator)
+				double meanLum;			///< mean per-pixel luminance (the μ in σ/μ; brightness-normalizer for the PT-struggling discriminator)
 				double robustMeanLum;	///< firefly-robust (upper-tail-winsorized) mean luminance — the transport-reach statistic (the raw mean is spiked by VCM merge fireflies at probe spp)
 				double meanVar;
 				double rasSeconds;
+				double vcmMergeShare;	///< Fraction of VCM flux contributed by VM merges (candidate a)
+				std::vector<double> lum; ///< per-pixel luminance array (row-major)
 			};
 
+			//! Caustic transport-reach candidate signals evaluated between
+			//! PT and VCM probe renders (DL-167).
+			struct CausticReachSignals
+			{
+				bool   valid;
+				double medRatio;		///< VCM median / PT median
+				double meanRatio;		///< VCM raw mean / PT raw mean
+				double robustMeanRatio;	///< VCM winsorized mean / PT raw mean
+				double vcmMergeShare;	///< Merge share of total flux in VCM (candidate a)
+				double p95Ratio;		///< 95th percentile of per-pixel VCM/PT ratio (candidate b)
+				double p90Ratio;		///< 90th percentile of per-pixel VCM/PT ratio
+				double fracGt2;			///< Fraction of pixels with VCM > 2*PT (significant pixels)
+				double fracGt1_5;		///< Fraction of pixels with VCM > 1.5*PT (significant pixels)
+				double fracGt3;			///< Fraction of pixels with VCM > 3*PT (significant pixels)
+				double energyFracGt2;	///< Fraction of VCM flux in pixels where VCM > 2*PT
+			};
+
+			//! Compute candidate reach signals from PT and VCM probe outcomes.
+			static CausticReachSignals ComputeCausticReachSignals(
+				const ProbeResult& pt, const ProbeResult& vcm );
+
+			//! Test-only helper: probe one candidate directly.
+			ProbeResult ForTest_ProbeCandidate(
+				const IScene* scene, AutoIntegratorChoice choice,
+				const ProbeConfig& cfg, bool needVariance ) const
+			{
+				return ProbeCandidate( scene, choice, cfg, needVariance );
+			}
+
+			//! Test-only helper: read the probe config from GlobalOptions.
+			ProbeConfig ForTest_ReadProbeConfig() const
+			{
+				return ReadProbeConfig();
+			}
+
+			//! Test-only: repeatable salted, single-thread probe frames and equal
+			//! sample-work costs instead of wall-clock costs. Caller must force one
+			//! render thread and the owned Mersenne backend. Seeds C rand() without
+			//! restoring it. Production routing remains variance times wall time.
+			void ForTest_UseFixedProbeWork() { mForTestFixedProbeWork = true; }
+
+		private:
+
 			//! Integrator selection.  Tier 0: an explicit author pin always
-			//! wins.  Tier 2 (Phase 4): when the probe is enabled and the
+			//! wins. DL-475 support guard: automatic scenes with a visible
+			//! transmissive interior medium and positional light select VCM.
+			//! Tier 2 (Phase 4): when the probe is enabled and the
 			//! production sample count clears the activation-spp gate, run
 			//! the gated/short-circuited render-time probe over the
 			//! assembled `scene` (RunProbe) and take its verdict.  Tier 1
@@ -374,6 +446,7 @@ namespace RISE
 			// SelectIntegrator and surfaced in the resolution log line for
 			// diagnostics + the future UI "Auto -> VCM: <reason>" display.
 			mutable std::string				mResolveReason;
+			bool mForTestFixedProbeWork = false;
 		};
 	}
 }

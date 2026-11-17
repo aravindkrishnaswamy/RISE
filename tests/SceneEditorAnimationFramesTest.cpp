@@ -70,8 +70,8 @@ static Job* MakeNoAnimationCstJob( std::string& outPath )
 	std::ofstream out( target, std::ios::binary | std::ios::trunc );
 	out <<
 		"RISE ASCII SCENE 7\n"
-		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n"
-		"pixelpel_rasterizer\n{\n\tsamples 1\n}\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tmax_diffuse_bounce 0\n}\n"
 		"film\n{\n\twidth 16\n\theight 16\n}\n"
 		"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 5\n\tlookat 0 0 0\n"
 		"\tup 0 1 0\n\tfov 45\n}\n";

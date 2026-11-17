@@ -46,12 +46,11 @@
 //    (S3) — the "camera / eye INSIDE the medium" topology (the enamel
 //    eye-inside-glass scenario).  This site is otherwise completely
 //    untested by A/B/C.
-//      * Why global_medium and not camera-inside-object?  Empirically
-//        verified: RISE does NOT seed the IOR/medium stack when the camera
-//        merely starts inside an interior_medium object (the stack is only
-//        pushed on refraction traversal).  Camera-inside-object renders
-//        BLACK.  So a scene-wide global_medium is the only way to put the
-//        camera in a medium at the first bounce.
+//      * These global-medium fixtures isolate the first camera segment.
+//        Their original rationale predated camera-inside-object IOR/medium
+//        stack seeding, which is now supported (IORStackSeeding and
+//        MediumInsideOutsideInvariantTest). No current black-render claim
+//        or exclusivity of global-medium coverage is intended.
 //      * Why a luminaire and not an env-lit surface?  A global_medium is
 //        UNBOUNDED, so any light-connection / escape segment is infinite
 //        and attenuates to ~0 — an env-lit diffuse wall renders black, and
@@ -60,7 +59,7 @@
 //        connection, so it is the only clean camera-in-medium reference.
 //
 //    THE (S3) REFERENCE IS A CLEAN PER-CHANNEL EQUALITY.  Read from the
-//    denoise-free radiance buffer (CapturingRasterizerOutput::GetPEL, not a
+//    linear radiance buffer (CapturingRasterizerOutput::GetPEL, not a
 //    resolved/denoised PNG), the camera-in-medium luminaire view is exactly
 //    single-count Beer-Lambert:
 //        measured[c]  ==  L0[c] * exp(-sigma_a[c] * d)
@@ -69,10 +68,19 @@
 //    cancels; L0 ~ 1.0 as authored).  So D/E/F assert the same tight
 //    per-channel exp(-sigma_a*d) equality (kRelTol) as A/B/C — no floor, no
 //    band-widening.
-//      (Aside: rendered through the CLI + 8-bit sRGB PNG + OIDN, the same
-//      scenes read ~30-90% brighter than single-count — that spread is an
-//      OIDN/sRGB-quantization MEASUREMENT artifact of that path, NOT an
-//      integrator effect; the in-process linear radiance buffer is clean.)
+//      (CORRECTION, debt-26 sibling sweep 2026-09-05: this buffer was NOT
+//      actually denoise-free until this sweep.  CapturingRasterizerOutput
+//      overrides only OutputImage; IRasterizerOutput::OutputDenoisedImage's
+//      default implementation forwards post-denoise pixels there, and
+//      oidn_denoise defaults TRUE, so every rasterizer string in this file
+//      was silently comparing OIDN-denoised pixels -- the same trap fixed
+//      in BDPTStrategyBalanceTest (debt 26) and EnvLightBalanceTest
+//      (2026-08-27).  Every rasterizer string below now sets
+//      `oidn_denoise FALSE`, so the buffer described above is genuinely
+//      denoise-free as of this fix.  Rendered through the CLI + 8-bit sRGB
+//      PNG + OIDN, the same scenes still read ~30-90% brighter than
+//      single-count — that spread is an OIDN/sRGB-quantization MEASUREMENT
+//      artifact of that separate output path, NOT an integrator effect.)
 //
 //    REVERT-PROOF (in the test harness, in-process, 2026-06-30, d=2):
 //      Temporarily reverting ONLY site (S3) to the buggy `Tr * hitResult`
@@ -86,21 +94,16 @@
 //      All three S3 cases fail ~2x under the revert and pass on the fixed
 //      tree, proving they genuinely exercise site (S3).
 //
-//    SITE (S4) — camera-first-bounce escape-to-env — is NOT cleanly
-//    isolable: it only fires when the camera ray escapes the scene through
-//    a medium, but an UNBOUNDED global_medium escape has an infinite path
-//    (result -> 0, verified), and a bounded interior medium can't put the
-//    camera inside it (camera-inside-object is black).  There is no
-//    finite-path camera-in-medium escape topology, so (S4) is left to the
-//    non-camera-first escape coverage that (S2) provides in spirit and to
-//    the revert-proof discipline in docs; it is documented here rather
-//    than tested with a contrived setup.
+//    SITE (S4) — camera-first-bounce escape-to-env — has no separate finite-
+//    path fixture here: a global medium is unbounded and extinguishes the
+//    env. Bounded camera-inside-object media are supported today, but their
+//    boundary hit follows the surface-hit branch rather than this escape.
+//    S2 supplies the non-camera-first escape coverage.
 //
 //    TOLERANCE: for A/B/C, tight enough to catch the 2x optical-depth
 //    error (exp(-2tau) vs exp(-tau) differ by exp(-tau); at tau ~ 1 that's
-//    ~2.7x) yet loose enough for MC noise.  For D/E, the floor/ceiling
-//    band is sized to the measured MIS-residual spread (documented above),
-//    not silently loosened.
+//    ~2.7x) yet loose enough for MC noise. D/E use the same relative band
+//    against their live zero-absorption references.
 //
 //    ------------------------------------------------------------------
 //    BDPT / VCM COVERAGE (cases G..N) — same analog bug, BDPT sites
@@ -138,7 +141,7 @@
 //    (S4) and is NOT cleanly isolable for the same reason (a finite-path
 //    camera-in-medium escape topology does not exist here): the eye ray
 //    only escapes through a medium when it is INSIDE one, and a bounded
-//    interior medium can't hold the camera (camera-inside-object is black)
+//    interior-medium boundary hit is a surface-hit event,
 //    while an unbounded global medium's escape path is infinite (-> 0).  It
 //    is guarded by `if( pMed_eye )` and byte-identical to the surface-hit
 //    fix; documented here rather than tested with a contrived setup.
@@ -153,6 +156,10 @@
 #include <cmath>
 #include <string>
 #include <sstream>
+#include <chrono>
+#include <cerrno>
+#include <limits>
+#include "../src/Library/Utilities/SobolSampler.h"
 #ifdef _WIN32
 	#include <process.h>
 	#define getpid _getpid
@@ -167,6 +174,10 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
+
+// Each render has an explicit libc seed and a scoped Sobol scramble salt.
+static unsigned int g_renderSeed = 1729u;
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -259,9 +270,9 @@ static PixelRGB CentralBlockMean( const CapturingRasterizerOutput& cap )
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/volume_absorption_%s_%d.RISEscene",
+		"%s/volume_absorption_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
@@ -298,6 +309,17 @@ static PixelRGB RenderCentralBlock( const std::string& sceneText, const char* ta
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	// libc seeds random streams; ValueSalt independently scrambles Sobol points.
+	// Rasterize joins its workers before the scoped hook is restored.
+	const unsigned int seed = g_renderSeed++;
+	const uint32_t salt = SobolSequence::HashCombine( seed, 0x309u );
+	struct ScopedValueSalt {
+		uint32_t previous;
+		explicit ScopedValueSalt( uint32_t value ) : previous(
+			SobolSamplerTestHooks::ValueSalt().exchange( value ) ) {}
+		~ScopedValueSalt() { SobolSamplerTestHooks::ValueSalt().store( previous ); }
+	} scopedSalt( salt );
+	std::srand( seed );
 	const bool bRendered = pJob->Rasterize();
 	if( !bRendered ) {
 		safe_release( pCap );
@@ -353,14 +375,15 @@ static std::string BuildRGBScene(
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n"
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_rgb_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_rgb_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -472,14 +495,15 @@ static std::string BuildRGBSceneWithOmni(
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n"
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_omni_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_omni_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -574,14 +598,15 @@ static std::string BuildSpectralScene( double sa )
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n"
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_nm_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_nm_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -671,10 +696,10 @@ static std::string BuildRGBSlabScene(
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_slab_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_slab_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -738,7 +763,7 @@ static std::string BuildRGBSlabScene(
 // ratio tracking, so the OLD survival denominator MinValue(EvalTransmittance)
 // was a random estimate -> biased/noisy no-scatter weight.  The FIX uses the
 // DETERMINISTIC EvalDistancePdf(false) survival pdf, so the render converges
-// to the clean per-channel exp(-sigma_a[c]*d) with low variance.
+// to the clean per-channel exp(-sigma_a[c]*d) without a stochastic survival denominator.
 // REVERT-PROOF: temporarily restoring the MinValue(EvalTransmittance)
 // denominator makes THIS case bias/desaturate while cases A/B (homogeneous)
 // stay green (homogeneous EvalTransmittance is deterministic).
@@ -775,10 +800,10 @@ static std::string BuildHeterogeneousSlabScene(
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_het_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_het_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -851,6 +876,7 @@ static std::string BDPTPelRasterizerChunk( int samples )
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n";
 	return ss.str();
 }
@@ -867,6 +893,7 @@ static std::string VCMPelRasterizerChunk( int samples )
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n";
 	return ss.str();
 }
@@ -889,6 +916,7 @@ static std::string BDPTSpectralRasterizerChunk( int samples )
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n";
 	return ss.str();
 }
@@ -911,6 +939,7 @@ static std::string VCMSpectralRasterizerChunk( int samples )
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n";
 	return ss.str();
 }
@@ -958,10 +987,10 @@ static std::string BuildLightSubpathSlabScene(
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_lsub_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_lsub_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -1098,6 +1127,7 @@ static std::string BuildGlobalMediumScene(
 			"\tspectral_samples 1\n"
 		 << "\thwss " << ( hwss ? "TRUE" : "false" ) << "\n" <<
 			"\tmax_diffuse_bounce 3\n"
+			"\toidn_denoise FALSE\n"
 			"}\n";
 	} else {
 		ss <<
@@ -1106,16 +1136,17 @@ static std::string BuildGlobalMediumScene(
 			"\tsamples " << samples << "\n"
 			"\tmax_volume_bounce 16\n"
 			"\tpixel_filter box\n"
+			"\toidn_denoise FALSE\n"
 			"}\n";
 	}
 	ss <<
 		"\n"
 		"file_rasterizeroutput\n"
 		"{\n"
-		"\tpattern /tmp/volume_absorption_gmed_unused\n"
-		"\ttype PNG\n"
-		"\tbpp 8\n"
-		"\tcolor_space sRGB\n"
+		"\tpattern rendered/volume_absorption_gmed_unused\n"
+		"\ttype EXR\n"
+		"\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n"
 		"}\n"
 		"\n"
 		"film\n"
@@ -1210,7 +1241,8 @@ static std::string BuildSpectralCurveScene(
 	const std::string& curveName,		// name of the piecewise_linear_function chunk
 	const std::string& curveCps,		// repeated "\tcp <x> <y>\n" control-point lines
 	const std::string& absSpectralRef,	// name bound to absorption_spectral, or "" to omit
-	double sa_rgb )						// RGB-preview absorption (gray fallback triple)
+	double sa_rgb,						// RGB-preview absorption (gray fallback triple)
+	int samples = 256 )
 {
 	std::ostringstream ss;
 	ss <<
@@ -1219,10 +1251,10 @@ static std::string BuildSpectralCurveScene(
 		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
 		"piecewise_linear_function\n{\n\tname " << curveName << "\n" << curveCps << "}\n\n"
 		"pathtracing_spectral_rasterizer\n{\n"
-		"\tsamples 256\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
+		"\tsamples " << samples << "\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
 		"\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss false\n"
-		"\tmax_diffuse_bounce 3\n\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/volume_spectral_curve_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n"
+		"\tmax_diffuse_bounce 3\n\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n\toidn_denoise FALSE\n}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern rendered/volume_spectral_curve_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n"
 		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 		"pinhole_camera\n{\n\tlocation 0 0 -5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n\n"
 		"homogeneous_medium\n{\n\tname slab_abs\n"
@@ -1250,6 +1282,43 @@ static const char* kRedAbsorberCps =
 // max/min chromaticity ratio).
 static const char* kFlatAbsorberCps =
 	"\tcp 400 0.5\n\tcp 700 0.5\n";
+
+//////////////////////////////////////////////////////////////////////
+// REPEAT-AVERAGED RENDER (P2-4, 2026-09-14).
+//
+// Row R retains its four-render average and 8% band. Historical unsalted
+// measurements found about 3.13% single-render spread from worker scheduling;
+// those measurements omitted randomized-QMC error and cannot establish
+// independence. RenderCentralBlock now gives every repeat a distinct libc
+// seed AND Sobol ValueSalt. Averaging reduces variance; its measured spread
+// depends on the fixture and sample budget, not a universal sqrt(N) guarantee.
+//////////////////////////////////////////////////////////////////////
+static const unsigned int kRepeats = 4;
+
+static PixelRGB RenderCentralBlockAveraged(
+	const std::string& sceneText, const char* tag, unsigned int repeats = kRepeats )
+{
+	PixelRGB acc{ 0, 0, 0, false };
+	unsigned int n = 0;
+	for( unsigned int i = 0; i < repeats; ++i ) {
+		const PixelRGB one = RenderCentralBlock( sceneText, tag );
+		if( !one.valid ) {
+			return acc;			// invalid stays invalid -- the loud-failure rows rely on it
+		}
+		acc.r += one.r;
+		acc.g += one.g;
+		acc.b += one.b;
+		++n;
+	}
+	if( n == 0 ) {
+		return acc;
+	}
+	acc.r /= n;
+	acc.g /= n;
+	acc.b /= n;
+	acc.valid = true;
+	return acc;
+}
 
 //////////////////////////////////////////////////////////////////////
 // Tests
@@ -1590,8 +1659,8 @@ static std::string BuildGlobalMediumMirrorScene( int samples, double sa, bool hw
 		"\tsamples " << samples << "\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
 		"\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n"
 	 << "\thwss " << ( hwss ? "TRUE" : "false" ) << "\n" <<
-		"\tmax_diffuse_bounce 3\n}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/volume_gmed_mirror_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n"
+		"\tmax_diffuse_bounce 3\n\toidn_denoise FALSE\n}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern rendered/volume_gmed_mirror_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n"
 		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 		// Camera at origin looking +Z at the mirror; the emissive wall sits
 		// behind the camera (-Z) so it is only seen via the mirror bounce.
@@ -1801,7 +1870,7 @@ static void TestPTvsBDPTAgreement()
 	std::ostringstream ptc;
 	ptc << "pathtracing_pel_rasterizer\n{\n\tsamples 1024\n\tmax_volume_bounce 16\n"
 		   "\tpixel_filter box\n\tradiance_map pnt_env\n\tradiance_scale 1.0\n"
-		   "\tradiance_background TRUE\n}\n";
+		   "\tradiance_background TRUE\n\toidn_denoise FALSE\n}\n";
 	const PixelRGB pt   = RenderSlab( ptc.str(), sar, sag, sab, "agree_pt" );
 	const PixelRGB bdpt = RenderSlab( BDPTPelRasterizerChunk( 1024 ), sar, sag, sab, "agree_bdpt" );
 	Check( pt.valid && bdpt.valid, "M: both renders produced frames" );
@@ -1883,7 +1952,7 @@ static std::string PTPelHetRasterizerChunk( int samples )
 	ss << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
 	   << "\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
 	      "\tradiance_map pnt_env\n\tradiance_scale 1.0\n"
-	      "\tradiance_background TRUE\n}\n";
+	      "\tradiance_background TRUE\n\toidn_denoise FALSE\n}\n";
 	return ss.str();
 }
 
@@ -1895,25 +1964,26 @@ static std::string PTSpectralHetRasterizerChunk( int samples )
 	      "\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n"
 	      "\tspectral_samples 1\n\thwss false\n\tmax_diffuse_bounce 3\n"
 	      "\tradiance_map pnt_env\n\tradiance_scale 1.0\n"
-	      "\tradiance_background TRUE\n}\n";
+	      "\tradiance_background TRUE\n\toidn_denoise FALSE\n}\n";
 	return ss.str();
 }
 
-static void TestHeterogeneousColored()
+static PixelRGB TestHeterogeneousColored( unsigned int spp = 4096u, unsigned int repeats = 6u )
 {
 	std::cout << "[O] HETEROGENEOUS (constant-density) RGB coloured absorber "
 		<< "(sigma_a = 0.2/0.6/1.2, d = " << kSlabDepth
 		<< ") — deterministic EvalDistancePdf survival denominator" << std::endl;
 	const double sar = 0.2, sag = 0.6, sab = 1.2;
-	// 4096 spp: the stochastic ratio-tracking transmittance NUMERATOR is
-	// noisier than the analytic homogeneous Tr, so more samples are needed to
-	// bring the MEAN inside the 8% band; the DENOMINATOR is now deterministic
-	// (that is the fix) so the estimator is unbiased and DOES converge.
-	const PixelRGB px = RenderCentralBlock(
-		BuildHeterogeneousSlabScene( PTPelHetRasterizerChunk( 4096 ), sar, sag, sab ),
-		"het_col" );
+	// DL-309: average six independently salted 4096-spp renders. In the
+	// selection batch (n=16), blue's distance to the nearer unchanged 8%
+	// boundary was 8.13 sample SD, including the mean offset; one 4096-spp
+	// render gave 2.53 SD. This is a measured budget, not a zero-flake guarantee.
+	// The stochastic ratio-tracking numerator remains part of the oracle.
+	const PixelRGB px = RenderCentralBlockAveraged(
+		BuildHeterogeneousSlabScene( PTPelHetRasterizerChunk( static_cast<int>(spp) ), sar, sag, sab ),
+		"het_col", repeats );
 	Check( px.valid, "O: render produced a frame" );
-	if( !px.valid ) return;
+	if( !px.valid ) return px;
 	const double er = Expected( sar ), eg = Expected( sag ), eb = Expected( sab );
 	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b
 		<< ")  expected (" << er << ", " << eg << ", " << eb << ")" << std::endl;
@@ -1924,6 +1994,7 @@ static void TestHeterogeneousColored()
 	// randomize/collapse the chromatic ratio; the deterministic pdf keeps it.
 	Check( px.r > px.g * 1.2 && px.g > px.b * 1.2,
 		"O: het medium stays coloured (r > g > b, not desaturated)" );
+	return px;
 }
 
 static void TestHeterogeneousSpectral()
@@ -2014,7 +2085,10 @@ static void TestPositionalLightColored()
 		<< "(sigma_a = 0.2/0.6/1.2, d = " << kSlabDepth
 		<< ") — selection-weight + desaturation discriminator" << std::endl;
 	const double sar = 0.2, sag = 0.6, sab = 1.2;
-	const PixelRGB px = RenderCentralBlock(
+	// P2-4: repeat-averaged -- see RenderCentralBlockAveraged's note for
+	// historical unsalted single-render spread; it did not include randomized-
+	// QMC error. The current helper salts every repeat and preserves the band.
+	const PixelRGB px = RenderCentralBlockAveraged(
 		BuildRGBSceneWithOmni( 1024, sar, sag, sab ), "omni_col" );
 	Check( px.valid, "R: render produced a frame" );
 	if( !px.valid ) return;
@@ -2087,7 +2161,7 @@ static void TestSpectralNoCurveBaselineGray()
 {
 	std::cout << "[V] no curve (RGB-only) => gray in spectral mode (vs [S] red)" << std::endl;
 	const PixelRGB px = RenderCentralBlock(
-		BuildSpectralCurveScene( "abs_curve", kRedAbsorberCps, /*ref=*/"", 1.0 ),
+		BuildSpectralCurveScene( "abs_curve", kRedAbsorberCps, /*ref=*/"", 1.0, 4096 ),
 		"spec_nocurve" );
 	Check( px.valid, "V: render produced a frame" );
 	if( !px.valid ) return;
@@ -2097,8 +2171,45 @@ static void TestSpectralNoCurveBaselineGray()
 	Check( mx < mn * 1.5 + 1e-4, "V: RGB-only medium renders near-gray in spectral mode" );
 }
 
-int main( int /*argc*/, char* /*argv*/[] )
+// Additional measurement mode; no arguments still execute every default row.
+// Explicit budgets permit stock/post comparison without changing the assertions.
+static bool ParsePositiveUnsigned( const char* text, unsigned int& value )
 {
+	if( !text || !*text ) return false;
+	for( const char* p = text; *p; ++p ) if( *p < '0' || *p > '9' ) return false;
+	char* end = nullptr;
+	errno = 0;
+	const unsigned long parsed = std::strtoul( text, &end, 10 );
+	if( errno || *end || parsed == 0 || parsed > std::numeric_limits<unsigned int>::max() ) return false;
+	value = static_cast<unsigned int>( parsed );
+	return true;
+}
+
+int main( int argc, char* argv[] )
+{
+	if( argc != 1 ) {
+		unsigned int spp, repeats, trials, seedBase;
+		if( argc != 6 || std::string(argv[1]) != "--heterogeneous-measure" ||
+			!ParsePositiveUnsigned(argv[2], spp) || spp > 1048576u ||
+			!ParsePositiveUnsigned(argv[3], repeats) || repeats > 1024u ||
+			!ParsePositiveUnsigned(argv[4], trials) || trials > 1024u ||
+			!ParsePositiveUnsigned(argv[5], seedBase) ||
+			seedBase > std::numeric_limits<unsigned int>::max() - repeats * trials ) {
+			std::cerr << "Usage: VolumeAbsorptionAttenuationTest [--heterogeneous-measure spp repeats trials seedBase]" << std::endl;
+			return 2;
+		}
+		g_renderSeed = seedBase;
+		for( unsigned int i = 0; i < trials; ++i ) {
+			const unsigned int firstSeed = g_renderSeed;
+			const auto start = std::chrono::steady_clock::now();
+			const PixelRGB px = TestHeterogeneousColored( spp, repeats );
+			const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+			std::printf("DL309 trial=%u spp=%u repeats=%u seed=%u salt=%u valid=%d rgb=%.17g,%.17g,%.17g seconds=%.9g\n",
+				i, spp, repeats, firstSeed, SobolSequence::HashCombine(firstSeed, 0x309u), px.valid, px.r, px.g, px.b, seconds);
+		}
+		return failCount ? 1 : 0;
+	}
+
 	std::cout << "VolumeAbsorptionAttenuationTest — Beer-Lambert single-count "
 		"through a homogeneous absorbing medium" << std::endl;
 
@@ -2109,7 +2220,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestNMSpectral();
 
 	// Cases D/E/F: camera INSIDE a global medium (site S3), buggy-vs-fixed
-	// single-count-floor discriminator (see file header).
+	// single-count Beer-Lambert discriminator (see file header).
 	TestGlobalMediumGray();
 	TestGlobalMediumColored();
 	TestGlobalMediumSpectral();

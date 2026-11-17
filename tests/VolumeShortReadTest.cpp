@@ -29,17 +29,50 @@
 
 #include <iostream>
 #include <fstream>
+#include <filesystem>
 #include <string>
 #include <vector>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <cmath>
+#include <limits>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"   // Scalar (double)
 #include "../src/Library/Volume/Volume.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileReadBuffer.h"
+#include "../src/Library/Utilities/DiskFileWriteBuffer.h"
+#include "../src/Library/Utilities/MediaPathLocator.h"
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Geometry/TriangleMeshLoader3DS.h"
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+#include "../src/Library/RasterImages/JPEGReader.h"
+#include "TestTempDir.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
+#include <iterator>
+#include <stdexcept>
+#include <functional>
+#ifndef _WIN32
+#include <csignal>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#ifdef __APPLE__
+#include <sys/acl.h>
+#endif
+#if defined(__APPLE__) || defined(__linux__)
+#include <sys/xattr.h>
+#endif
+#endif
+#ifndef NO_TIFF_SUPPORT
+#include <tiffio.h>
+#include "../src/Library/RasterImages/TIFFCommon.h"
+#endif
+#ifndef NO_EXR_SUPPORT
+#include "../src/Library/RasterImages/EXRReader.h"
+#include "../src/Library/RasterImages/EXRWriter.h"
+#endif
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -49,16 +82,18 @@ static int failCount = 0;
 
 static void Check( bool cond, const char* name )
 {
-	if( cond ) { ++passCount; }
+	if( cond ) {
+		++passCount;
+		const char* marker = std::getenv("RISE_RED_PROVE_MARKER");
+		if( marker && std::strstr(name, marker) ) std::cout << "  PASS: " << name << std::endl;
+	}
 	else { ++failCount; std::cout << "  FAIL: " << name << std::endl; }
 }
 
-static std::string TmpDir()
+static std::string TempPrefix()
 {
-	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? tmp : "/tmp/";
-	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
-	return dir;
+	return RISE::TestSupport::ScratchPath("rise_volume_" +
+		std::to_string(RISE::TestSupport::CurrentProcessId()) + "_");
 }
 
 static void WriteBytes( const std::string& path, unsigned char value, int count )
@@ -116,7 +151,7 @@ static void TestVolumeSlices()
 	static const int SLICE = W * H;           // 4096 bytes/slice
 	static const int TOTAL = SLICE * 3;       // 12288 bytes (escapes nano zone)
 
-	const std::string base = TmpDir() + "rise_voltest_slice_";
+	const std::string base = TempPrefix() + "rise_voltest_slice_";
 	const std::string s0 = base + "0.raw";
 	const std::string s1 = base + "1.raw";
 	const std::string s2 = base + "2.raw";
@@ -131,7 +166,6 @@ static void TestVolumeSlices()
 
 	const std::string pattern = base + "%d.raw";
 	Volume<unsigned char>* v = new Volume<unsigned char>( pattern.c_str(), W, H, 0, 2 );
-	v->addref();
 
 	// slice0 (z=-1): fully present -> 200 everywhere.
 	Check( std::fabs( ByteAt( v, -32, -32, -1 ) - 200.0 ) < 1.5, "A: slice0 corner == 200 (present)" );
@@ -160,12 +194,11 @@ static void TestMemoryBufferMissingFile()
 {
 	std::cout << "B: MemoryBuffer on a nonexistent file leaves an empty buffer (stat guard)" << std::endl;
 
-	const std::string missing = TmpDir() + "rise_membuf_definitely_absent_xyz.bin";
+	const std::string missing = TempPrefix() + "rise_membuf_definitely_absent_xyz.bin";
 	std::remove( missing.c_str() );
 
 	// MemoryBuffer is Reference-counted (heap + release).
 	MemoryBuffer* mb = new MemoryBuffer( missing.c_str() );
-	mb->addref();
 	Check( mb->Size() == 0, "B: missing-file MemoryBuffer has Size()==0 (no bogus alloc/read)" );
 	mb->release();
 }
@@ -181,11 +214,10 @@ static void TestMemoryBufferGetBytesOverread()
 {
 	std::cout << "C: MemoryBuffer::getBytes over-read is bounded (no OOB heap read)" << std::endl;
 
-	const std::string path = TmpDir() + "rise_membuf_small.bin";
+	const std::string path = TempPrefix() + "rise_membuf_small.bin";
 	WriteBytes( path, 0xAB, 8 );        // an 8-byte file
 
 	MemoryBuffer* mb = new MemoryBuffer( path.c_str() );
-	mb->addref();
 	Check( mb->Size() == 8, "C: 8-byte file loaded" );
 
 	// Ask for 32 bytes from an 8-byte buffer.
@@ -218,7 +250,7 @@ static void TestMemoryBufferScalarOverread()
 	std::cout << "D: MemoryBuffer scalar getters past EOF return 0 (no OOB heap read)" << std::endl;
 
 	// An 8-byte file = exactly two uint32.
-	const std::string path = TmpDir() + "rise_membuf_scalar.bin";
+	const std::string path = TempPrefix() + "rise_membuf_scalar.bin";
 	{
 		std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );
 		unsigned int a = 0x11223344u, b = 0x55667788u;
@@ -228,7 +260,6 @@ static void TestMemoryBufferScalarOverread()
 	}
 
 	MemoryBuffer* mb = new MemoryBuffer( path.c_str() );
-	mb->addref();
 	Check( mb->Size() == 8, "D: 8-byte scalar file loaded" );
 
 	const unsigned int v0 = mb->getUInt();   // bytes 0..3
@@ -242,10 +273,9 @@ static void TestMemoryBufferScalarOverread()
 	mb->release();
 
 	// A 4-byte buffer + getDouble (needs 8) -> over-read -> 0.
-	const std::string path2 = TmpDir() + "rise_membuf_scalar2.bin";
+	const std::string path2 = TempPrefix() + "rise_membuf_scalar2.bin";
 	WriteBytes( path2, 0xCD, 4 );
 	MemoryBuffer* mb2 = new MemoryBuffer( path2.c_str() );
-	mb2->addref();
 	const double d = mb2->getDouble();       // only 4 of 8 bytes available
 	Check( d == 0.0, "D: getDouble with < 8 bytes returns 0 (guarded, not partial/OOB)" );
 	mb2->release();
@@ -263,11 +293,10 @@ static void TestDiskFileReadBufferGetBytesOverread()
 {
 	std::cout << "E: DiskFileReadBuffer::getBytes over-read is bounded + cursor at EOF" << std::endl;
 
-	const std::string path = TmpDir() + "rise_diskbuf_small.bin";
+	const std::string path = TempPrefix() + "rise_diskbuf_small.bin";
 	WriteBytes( path, 0xBE, 8 );
 
 	DiskFileReadBuffer* db = new DiskFileReadBuffer( path.c_str() );
-	db->addref();
 
 	unsigned char dest[32];
 	std::memset( dest, 0x22, sizeof( dest ) );
@@ -296,18 +325,20 @@ static void TestDiskFileReadBufferMissingFile()
 {
 	std::cout << "F: DiskFileReadBuffer on a missing file degrades gracefully (no ftell(NULL) crash)" << std::endl;
 
-	const std::string missing = TmpDir() + "rise_diskbuf_definitely_absent_xyz.bin";
+	const std::string missing = TempPrefix() + "rise_diskbuf_definitely_absent_xyz.bin";
 	std::remove( missing.c_str() );
 
 	DiskFileReadBuffer* db = new DiskFileReadBuffer( missing.c_str() );
-	db->addref();
 
 	// Each of these would ftell(NULL)/fread(NULL) crash pre-guard.
 	Check( db->getUInt() == 0,   "F: getUInt on null-hFile returns 0 (no crash)" );
 	Check( db->getDouble() == 0.0, "F: getDouble on null-hFile returns 0 (no crash)" );
 	unsigned char dest[8];
 	std::memset( dest, 0x33, sizeof( dest ) );
-	Check( !db->getBytes( dest, 8 ), "F: getBytes on null-hFile returns false (no crash)" );
+	const bool failed = !db->getBytes(dest, sizeof(dest));
+	bool zeroed = true;
+	for( unsigned char byte : dest ) zeroed &= byte == 0;
+	Check( failed && zeroed, "F: missing-file reads fail and zero every unread destination byte" );
 
 	// Base DiskBuffer methods (seek-first readers like TIFF call these
 	// before any getter): must also be null-safe (was fseek(NULL)/ftell(NULL)).
@@ -330,9 +361,8 @@ static void TestVolumeOverflowDims()
 {
 	std::cout << "G: Volume with overflow dimensions degrades to an empty volume (no OOB alloc)" << std::endl;
 
-	const std::string pattern = TmpDir() + "rise_vol_overflow_%d.raw";
+	const std::string pattern = TempPrefix() + "rise_vol_overflow_%d.raw";
 	Volume<unsigned char>* v = new Volume<unsigned char>( pattern.c_str(), 100000, 100000, 0, 0 );
-	v->addref();
 	Check( v->Width() == 0 && v->Height() == 0 && v->Depth() == 0,
 		"G: overflow volume reports zero dimensions (rejected before alloc)" );
 	Check( ByteAt( v, 0, 0, 0 ) == 0.0, "G: overflow volume GetValue returns 0 (no crash / no OOB)" );
@@ -342,7 +372,6 @@ static void TestVolumeOverflowDims()
 	// and wrap the product SMALL if the guard read the members instead of the
 	// raw unsigned params.  Must still be rejected (empty volume).
 	Volume<unsigned char>* v2 = new Volume<unsigned char>( pattern.c_str(), 0xFFFFFFFFu, 0xFFFFFFFFu, 0, 0 );
-	v2->addref();
 	Check( v2->Width() == 0 && v2->Height() == 0 && v2->Depth() == 0,
 		"G: >=2^31 dimension rejected (no sign-extension bypass)" );
 	Check( ByteAt( v2, 0, 0, 0 ) == 0.0, "G: >=2^31 volume GetValue returns 0 (no OOB)" );
@@ -351,13 +380,1004 @@ static void TestVolumeOverflowDims()
 	// Reversed Z range (zend < zstart) would underflow the unsigned depth to a
 	// huge value; must be rejected too.
 	Volume<unsigned char>* v3 = new Volume<unsigned char>( pattern.c_str(), 4, 4, 5, 2 );
-	v3->addref();
 	Check( v3->Width() == 0 && v3->Depth() == 0, "G: reversed z-range (zend<zstart) rejected" );
 	v3->release();
 }
 
-int main( int /*argc*/, char* /*argv*/[] )
+static void TestBufferWriteFailures()
 {
+	IMemoryBuffer* invalidMemory = nullptr;
+	Check( !RISE_API_CreateCompatibleMemoryBuffer( &invalidMemory, nullptr, 2, false ) && !invalidMemory,
+		"H: wrapping a null pointer with positive capacity is refused" );
+	auto* empty = new MemoryBuffer( nullptr, 2, false );
+	Check( empty->Size() == 0 && empty->EndOfBuffer() && !empty->PointerAtCursor() && !empty->setChar( 'X' ),
+		"H: direct null borrowed storage behaves as an empty buffer" );
+	empty->release();
+	char storage[] = { 'a', 'b', 'c', 'd' };
+	auto* borrowed = new MemoryBuffer( storage, 2, false );
+	borrowed->seek( IBuffer::START, 1 );
+	Check( !borrowed->seek( IBuffer::START, -1 ) && !borrowed->seek( IBuffer::END, -1 ) &&
+		borrowed->getCurPos() == 1 && borrowed->seek( IBuffer::CUR, -1 ) &&
+		borrowed->getCurPos() == 0 && borrowed->seek( IBuffer::CUR, 1 ),
+		"H: invalid signed seeks preserve the cursor and backward relative seeks work" );
+	Check( !borrowed->setBytes( "XY", 2 ) && borrowed->getCurPos() == 1 &&
+		std::memcmp( storage, "abcd", sizeof(storage) ) == 0,
+		"H: rejected borrowed write preserves cursor and both canary bytes" );
+	Check( !borrowed->setDouble( 1 ) && borrowed->getCurPos() == 1 &&
+		std::memcmp( storage, "abcd", sizeof(storage) ) == 0,
+		"H: rejected borrowed scalar write preserves cursor and storage" );
+	borrowed->release();
+
+	auto* owned = new MemoryBuffer( 2u );
+	Check( owned->setBytes( "XY", 2 ) && owned->setBytes( owned->Pointer(), 2 ) &&
+		owned->getCurPos() == 4 && std::memcmp( owned->Pointer(), "XYXY", 4 ) == 0,
+		"H: growing self-copy reads from the original storage" );
+	Check( !owned->ResizeForMore( std::numeric_limits<unsigned int>::max() ) &&
+		owned->Size() == 4 && owned->getCurPos() == 4,
+		"H: capacity request rejects cursor-plus-length overflow" );
+	owned->release();
+
+	auto* growing = new MemoryBuffer();
+	bool validGrowth = true;
+	unsigned int relocations = 0;
+	for( unsigned int i = 0; i < 64; ++i ) {
+		const auto before = reinterpret_cast<std::uintptr_t>(growing->Pointer());
+		validGrowth &= growing->setUInt( i ) && growing->Size() == (i+1)*4 &&
+			growing->getCurPos() == growing->Size();
+		if( before != reinterpret_cast<std::uintptr_t>(growing->Pointer()) ) ++relocations;
+	}
+	Check( relocations < 32, "H: sequential appends reuse backing storage" );
+	auto* clone = new MemoryBuffer( *growing );
+	validGrowth &= clone->Pointer() != growing->Pointer() && clone->seek( IBuffer::START, 0 );
+	for( unsigned int i = 0; i < 64; ++i ) validGrowth &= clone->getUInt() == i;
+	Check( validGrowth && growing->Resize( 8, true ) && growing->Size() == 8 &&
+		growing->getCurPos() == 0 && growing->getUInt() == 0 && growing->getUInt() == 1,
+		"H: growing buffers preserve logical size, deep copies and forced shrink" );
+	clone->release();
+	growing->release();
+
+	auto* adopted = new MemoryBuffer( new char[2]{ 'A', 'B' }, 2, true );
+	auto* adoptedCopy = new MemoryBuffer( static_cast<IMemoryBuffer&>(*adopted) );
+	Check( adopted->seek( IBuffer::START, 2 ) && adopted->setBytes( adopted->Pointer(), 2 ) &&
+		adoptedCopy->DoOwnMemory() && adoptedCopy->Size() == 2 &&
+		std::memcmp( adopted->Pointer(), "ABAB", 4 ) == 0 &&
+		std::memcmp( adoptedCopy->Pointer(), "AB", 2 ) == 0,
+		"H: adopted storage grows safely and interface copy owns independent bytes" );
+	adoptedCopy->release();
+	adopted->release();
+
+	auto* invalid = new DiskFileWriteBuffer( nullptr );
+	Check( !invalid->ReadyToWrite() && !invalid->setChar( 'x' ) && !invalid->setDouble( 1 ) &&
+		!invalid->setBytes( "XY", 2 ) && !invalid->Finish(),
+		"H: disk writes and close report an unavailable file" );
+	invalid->release();
+
+	const auto path = RISE::TestSupport::ScratchPath(
+		"rise_buffer_finish_" + std::to_string( RISE::TestSupport::CurrentProcessId() ) );
+	auto* file = new DiskFileWriteBuffer( path.c_str() );
+	Check( file->setBytes( "XY", 2 ) && file->Finish() && !file->ReadyToWrite(),
+		"H: finishing a successful write closes the handle" );
+	file->release();
+	std::ifstream readback( path, std::ios::binary );
+	char actual[2];
+	Check( readback.read( actual, sizeof(actual) ) && std::memcmp( actual, "XY", sizeof(actual) ) == 0,
+		"H: finished file contains both bytes" );
+	readback.close();
+	std::remove( path.c_str() );
+}
+
+static void TestLittleEndianScalars()
+{
+	const unsigned char expected[] = {
+		0xfe, 0xff, 0xef, 0xbe,
+		0xfe, 0xff, 0xff, 0xff, 0xef, 0xcd, 0xab, 0xf9,
+		0x00, 0x00, 0xa0, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xc0
+	};
+	const auto write = []( IWriteBuffer& buffer ) {
+		return buffer.setWord( -2 ) && buffer.setUWord( 0xbeef ) &&
+			buffer.setInt( -2 ) && buffer.setUInt( 0xf9abcdef ) &&
+			buffer.setFloat( 1.25f ) && buffer.setDouble( -2.5 );
+	};
+	const auto read = []( IReadBuffer& buffer ) {
+		return buffer.getWord() == -2 && buffer.getUWord() == 0xbeef &&
+			buffer.getInt() == -2 && buffer.getUInt() == 0xf9abcdef &&
+			buffer.getFloat() == 1.25f && buffer.getDouble() == -2.5;
+	};
+	auto* memory = new MemoryBuffer();
+	Check( write( *memory ) && memory->getCurPos() == sizeof(expected) &&
+		std::memcmp( memory->Pointer(), expected, sizeof(expected) ) == 0,
+		"memory scalar writes match independent little-endian bytes" );
+	memory->release();
+	char fixture[sizeof(expected)];
+	std::memcpy( fixture, expected, sizeof(fixture) );
+	auto* borrowed = new MemoryBuffer( fixture, sizeof(fixture), false );
+	Check( read( *borrowed ), "memory scalar reads decode independent little-endian bytes" );
+	borrowed->release();
+
+	const auto path = RISE::TestSupport::ScratchPath( "scalar_little_endian_" + std::to_string(RISE::TestSupport::CurrentProcessId()) + ".bin" );
+	auto* diskWrite = new DiskFileWriteBuffer( path.c_str() );
+	const bool written = write( *diskWrite );
+	Check( diskWrite->Finish( true ) && written, "disk scalar writes complete" );
+	diskWrite->release();
+	std::ifstream file( path, std::ios::binary );
+	unsigned char actual[sizeof(expected)];
+	Check( file.read( reinterpret_cast<char*>(actual), sizeof(actual) ) &&
+		std::memcmp( actual, expected, sizeof(expected) ) == 0,
+		"disk scalar writes match independent little-endian bytes" );
+	file.close();
+	std::ofstream fixtureFile( path, std::ios::binary );
+	fixtureFile.write( fixture, sizeof(fixture) );
+	fixtureFile.close();
+	auto* diskRead = new DiskFileReadBuffer( path.c_str() );
+	Check( read( *diskRead ), "disk scalar reads decode independent little-endian bytes" );
+	diskRead->release();
+	std::remove( path.c_str() );
+}
+
+static void TestTruncatedOpenFile()
+{
+	const auto path = RISE::TestSupport::ScratchPath( "rise_open_truncate_" +
+		std::to_string(RISE::TestSupport::CurrentProcessId()) );
+	const std::vector<std::function<bool(DiskFileReadBuffer&)>> readers = {
+		[](DiskFileReadBuffer& b) { return b.getChar() == 'a' && b.getChar() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getUChar() == 'a' && b.getUChar() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getWord() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getUWord() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getInt() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getUInt() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getFloat() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getDouble() == 0; },
+		[](DiskFileReadBuffer& b) {
+			char bytes[6] = {};
+			return !b.getBytes(bytes, sizeof(bytes)) && bytes[0] == 'a' && bytes[1] == 0 && bytes[5] == 0;
+		},
+		[](DiskFileReadBuffer& b) {
+			char line[8] = {};
+			return b.getLine(line, sizeof(line)) == 1 && line[0] == 'a' && b.getLine(line, sizeof(line)) == 0;
+		}
+	};
+	for( const auto& read : readers ) {
+		std::ofstream(path, std::ios::binary) << "abcdef";
+		auto* buffer = new DiskFileReadBuffer(path.c_str());
+		std::filesystem::resize_file(path, 1);
+		Check( read(*buffer) && buffer->EndOfBuffer() && buffer->Size64() == 1 && buffer->getCurPos64() == 1,
+			"post-open truncation exposes the actual EOF and terminates readers" );
+		buffer->release();
+	}
+	std::filesystem::remove(path);
+}
+
+static void TestMediaSearchRoots()
+{
+	namespace fs = std::filesystem;
+	const auto root = fs::path( RISE::TestSupport::ScratchTestRoot( "media_lookup_" ) );
+	const auto first = root / "first";
+	const auto second = root / "second";
+	std::string name = "rise_media_\xC3\xA9.bin";
+#ifdef _WIN32
+	try {
+		const std::wstring wname = L"rise_media_\u00E9.bin";
+		const std::string narrow = fs::path( wname ).string();
+		if( !narrow.empty() && narrow.find( '?' ) == std::string::npos && fs::path( narrow ).wstring() == wname ) {
+			name = narrow;
+		} else {
+			name = "rise_media_nonascii_fallback.bin";
+		}
+	} catch( ... ) {
+		name = "rise_media_nonascii_fallback.bin";
+	}
+#endif
+	const std::string firstRoot = first.string();
+	const std::string secondRoot = second.string();
+	fs::create_directories( first );
+	fs::create_directories( second );
+	std::ofstream( firstRoot + "/" + name ) << '1';
+	std::ofstream( secondRoot + "/" + name ) << '2';
+	MediaPathLocator locator;
+	Check( !locator.AddPath( "" ) && locator.AddPath( firstRoot.c_str() ) &&
+		!locator.AddPath( (firstRoot + "/").c_str() ) && locator.AddPath( secondRoot.c_str() ),
+		"media roots reject empty input and equivalent duplicate spellings" );
+	const auto found = locator.Find(name.c_str());
+	std::ifstream readable(found.c_str(), std::ios::binary);
+	char value = 0;
+	Check( found == (firstRoot + "/" + name).c_str() && readable.get(value) && value == '1',
+		"media search order and native non-ASCII paths match narrow stream opens" );
+	readable.close();
+	const std::string direct = secondRoot + "/" + name;
+	Check( locator.Find( direct.c_str() ) == direct.c_str() &&
+		locator.RemovePath( (firstRoot + "/").c_str() ) &&
+		locator.Find( name.c_str() ) == (secondRoot + "/" + name).c_str(),
+		"media lookup prefers a direct path and removal accepts the normalized spelling" );
+	locator.ClearAllPaths();
+	Check( locator.Find( name.c_str() ) == name.c_str(), "a media miss preserves original spelling" );
+	fs::remove_all( root );
+}
+
+namespace
+{
+	using Bytes3DS = std::vector<unsigned char>;
+
+	void Append3DSWord( Bytes3DS& bytes, unsigned int value )
+	{
+		bytes.push_back( static_cast<unsigned char>(value) );
+		bytes.push_back( static_cast<unsigned char>(value >> 8) );
+	}
+
+	void Append3DSUInt( Bytes3DS& bytes, unsigned int value )
+	{
+		for( unsigned int shift = 0; shift < 32; shift += 8 )
+			bytes.push_back( static_cast<unsigned char>(value >> shift) );
+	}
+
+	void Append3DSBytes( Bytes3DS& bytes, const Bytes3DS& extra )
+	{
+		bytes.insert( bytes.end(), extra.begin(), extra.end() );
+	}
+
+	Bytes3DS Make3DSChunk( unsigned int id, const Bytes3DS& payload )
+	{
+		Bytes3DS bytes;
+		Append3DSWord( bytes, id );
+		Append3DSUInt( bytes, static_cast<unsigned int>(payload.size() + 6) );
+		Append3DSBytes( bytes, payload );
+		return bytes;
+	}
+
+	Bytes3DS Make3DSObject( bool emptyVertices, bool emptyFaces, bool invalidIndex = false, bool omitFaces = false )
+	{
+		Bytes3DS vertices;
+		Append3DSWord( vertices, emptyVertices ? 0 : 3 );
+		if( !emptyVertices ) {
+			for( float component : { 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f } ) {
+				std::uint32_t bits;
+				std::memcpy( &bits, &component, sizeof(bits) );
+				Append3DSUInt( vertices, bits );
+			}
+		}
+		Bytes3DS faces;
+		Append3DSWord( faces, emptyFaces ? 0 : 1 );
+		if( !emptyFaces ) {
+			for( unsigned int value : { 0U, 1U, invalidIndex ? 3U : 2U, 0U } ) Append3DSWord( faces, value );
+		}
+		Bytes3DS mesh = Make3DSChunk( 0x4110, vertices );
+		if( !omitFaces ) Append3DSBytes( mesh, Make3DSChunk( 0x4120, faces ) );
+		Bytes3DS object = { 'm', 0 };
+		Append3DSBytes( object, Make3DSChunk( 0x4100, mesh ) );
+		return Make3DSChunk( 0x4000, object );
+	}
+
+	void Check3DSLoad( const Bytes3DS& bytes, int selected, bool expected, unsigned int points,
+		const char* message = "3DS compatibility fixture preserves usable vertices and load outcome" )
+	{
+		auto* buffer = new MemoryBuffer( static_cast<unsigned int>(bytes.size()) );
+		buffer->setBytes( bytes.data(), static_cast<unsigned int>(bytes.size()) );
+		auto* loader = new TriangleMeshLoader3DS( buffer );
+		auto* geometry = new TriangleMeshGeometryIndexed( false, false );
+		Check( loader->LoadTriangleMesh( geometry, selected ) == expected && geometry->numPoints() == points, message );
+		geometry->release();
+		loader->release();
+		buffer->release();
+	}
+
+	class AdvertisedSizeBuffer : public MemoryBuffer, public IBuffer64
+	{
+	public:
+		explicit AdvertisedSizeBuffer( std::uint64_t size ) : MemoryBuffer(1), advertisedSize(size) {}
+		std::uint64_t Size64() const override { return advertisedSize; }
+		std::uint64_t getCurPos64() const override { return getCurPos(); }
+		bool seek64( IBuffer::eSeek origin, std::int64_t amount ) override {
+			if( amount < std::numeric_limits<int>::min() || amount > std::numeric_limits<int>::max() ) return false;
+			return seek( origin, static_cast<int>(amount) );
+		}
+		bool getBytes( void* destination, unsigned int amount ) override {
+			++readCalls;
+			return MemoryBuffer::getBytes( destination, amount );
+		}
+		unsigned int readCalls = 0;
+	private:
+		const std::uint64_t advertisedSize;
+	};
+}
+
+static void Test3DSCompatibility()
+{
+	for( int version : { 3, 2, -1 } ) {
+		for( unsigned int empty : { 0U, 1U, 2U } ) {
+			for( bool badTail : { false, true } ) {
+				Bytes3DS main;
+				if( version >= 0 ) {
+					Bytes3DS value;
+					Append3DSUInt( value, static_cast<unsigned int>(version) );
+					Append3DSBytes( main, Make3DSChunk( 0x0002, value ) );
+				}
+				Bytes3DS edit;
+				if( empty ) Append3DSBytes( edit, Make3DSObject( empty == 1, true ) );
+				Append3DSBytes( edit, Make3DSObject( false, false ) );
+				Append3DSBytes( main, Make3DSChunk( 0x3d3d, edit ) );
+				if( badTail ) {
+					Append3DSWord( main, 0xb000 );
+					Append3DSUInt( main, 1 );
+				}
+				auto bytes = Make3DSChunk( 0x4d4d, main );
+				Check3DSLoad( bytes, -1, true, 3 );
+				if( empty ) Check3DSLoad( bytes, 0, true, 0 );
+			}
+		}
+	}
+	Bytes3DS emptyWithoutFaces = Make3DSObject(true, true, false, true);
+	Append3DSBytes( emptyWithoutFaces, Make3DSObject(false, false) );
+	Check3DSLoad( Make3DSChunk(0x4d4d, Make3DSChunk(0x3d3d, emptyWithoutFaces)), -1, true, 3 );
+	const auto edit = Make3DSChunk( 0x3d3d, Make3DSObject( false, false ) );
+	auto emptyMain = Make3DSChunk(0x4d4d, {});
+	Append3DSBytes(emptyMain, edit);
+	Check3DSLoad(emptyMain, -1, false, 0,
+		"3DS strict-prefix: MAIN end excludes physically present EDIT geometry");
+	Bytes3DS malformedMainPrefix;
+	Append3DSWord(malformedMainPrefix, 0xafff);
+	Append3DSUInt(malformedMainPrefix, 1);
+	Append3DSBytes(malformedMainPrefix, edit);
+	Check3DSLoad(Make3DSChunk(0x4d4d, malformedMainPrefix), -1, false, 0,
+		"3DS strict-prefix: malformed MAIN child does not resynchronize into later EDIT geometry");
+	auto truncatedTail = Make3DSChunk( 0x4d4d, edit );
+	truncatedTail[2] += 100;
+	Check3DSLoad( truncatedTail, -1, true, 3 );
+	auto truncatedMesh = Make3DSChunk( 0x4d4d, edit );
+	truncatedMesh.pop_back();
+	Check3DSLoad( truncatedMesh, -1, false, 0 );
+	Check3DSLoad( Make3DSChunk( 0x4d4d, Make3DSChunk( 0x3d3d,
+		Make3DSObject(false, false, true) ) ), -1, false, 0 );
+
+	// Metadata discovered after a complete mesh cannot invalidate that mesh,
+	// including when the outer EDIT3DS length still describes a truncated tail.
+	auto checkMetadataTail = []( const Bytes3DS& tail, unsigned int truncateBytes, const char* message ) {
+		for( bool prefix : { false, true } ) {
+			Bytes3DS payload;
+			if( prefix ) Append3DSBytes( payload, Make3DSObject(false, false) );
+			Append3DSBytes( payload, tail );
+			auto bytes = Make3DSChunk( 0x4d4d, Make3DSChunk(0x3d3d, payload) );
+			bytes.resize( bytes.size() - truncateBytes );
+			Check3DSLoad( bytes, -1, prefix, prefix ? 3 : 0, message );
+		}
+	};
+	Bytes3DS badLength;
+	Append3DSWord( badLength, 0xafff );
+	Append3DSUInt( badLength, 1 );
+	checkMetadataTail( badLength, 0, "3DS retained-prefix: undersized EDIT sibling header" );
+	Bytes3DS overshoot;
+	Append3DSWord( overshoot, 0xafff );
+	Append3DSUInt( overshoot, 100 );
+	checkMetadataTail( overshoot, 0, "3DS retained-prefix: overshooting EDIT sibling length" );
+	for( unsigned int size = 1; size < 6; ++size ) {
+		checkMetadataTail( Bytes3DS(size, 0xff), 0, "3DS retained-prefix: partial EDIT sibling header" );
+	}
+	checkMetadataTail( Make3DSChunk(0xafff, Bytes3DS(8, 0)), 3,
+		"3DS retained-prefix: physically truncated EDIT metadata tail" );
+	checkMetadataTail( Make3DSChunk(0x4000, {'m', 'e', 't', 'a'}), 0,
+		"3DS retained-prefix: unterminated trailing object name" );
+	Bytes3DS objectWithBadChild = { 'm', 0 };
+	Append3DSBytes( objectWithBadChild, badLength );
+	checkMetadataTail( Make3DSChunk(0x4000, objectWithBadChild), 0,
+		"3DS retained-prefix: malformed trailing object child" );
+
+	// The bad object's own length still locates its next sibling.
+	for(bool prefix : {false,true}) {
+		Bytes3DS objects;
+		if(prefix) Append3DSBytes(objects,Make3DSObject(false,false));
+		Append3DSBytes(objects,Make3DSChunk(0x4000,objectWithBadChild));
+		Append3DSBytes(objects,Make3DSObject(false,false));
+		Check3DSLoad(Make3DSChunk(0x4d4d,Make3DSChunk(0x3d3d,objects)),-1,true,prefix?6:3,
+			"3DS bounded bad object skips to later valid sibling");
+	}
+
+	// A discovered mesh remains subject to exact record-size validation. Keep
+	// container lengths correct while declaring more records than are present.
+	for( bool badVertices : { false, true } ) {
+		Bytes3DS vertices;
+		Append3DSWord( vertices, badVertices ? 4 : 3 );
+		for( unsigned int i = 0; i < 9; ++i ) Append3DSUInt( vertices, 0 );
+		Bytes3DS faces;
+		Append3DSWord( faces, badVertices ? 1 : 2 );
+		for( unsigned int value : { 0U, 1U, 2U, 0U } ) Append3DSWord( faces, value );
+		auto mesh = Make3DSChunk( 0x4110, vertices );
+		Append3DSBytes( mesh, Make3DSChunk(0x4120, faces) );
+		Bytes3DS badObject = { 'm', 0 };
+		Append3DSBytes( badObject, Make3DSChunk(0x4100, mesh) );
+		auto objects = Make3DSObject( false, false );
+		Append3DSBytes( objects, Make3DSChunk(0x4000, badObject) );
+		Check3DSLoad( Make3DSChunk(0x4d4d, Make3DSChunk(0x3d3d, objects)), -1, false, 0,
+			"3DS malformed discovered geometry rejects the complete load before publication" );
+	}
+
+	// The buffers advertise large logical inputs without allocating or writing
+	// gigabytes. Refusal must happen before even the first payload read.
+	for( auto size : { static_cast<std::uint64_t>(std::numeric_limits<int>::max()) + 1,
+		static_cast<std::uint64_t>(std::numeric_limits<unsigned int>::max()) + 1 } ) {
+		auto* large = new AdvertisedSizeBuffer(size);
+		auto* jpeg = new JPEGReader( *large, eColorSpace_sRGB );
+		unsigned int width = 0, height = 0;
+		Check( !jpeg->BeginRead(width, height) && large->readCalls == 0,
+			"JPEG size limit rejects oversized input before allocation or reading" );
+		jpeg->release();
+		large->release();
+	}
+	auto* large = new AdvertisedSizeBuffer(
+		static_cast<std::uint64_t>(std::numeric_limits<unsigned int>::max()) + 1 );
+	auto* loader = new TriangleMeshLoader3DS(large);
+	auto* geometry = new TriangleMeshGeometryIndexed(false, false);
+	Check( !loader->LoadTriangleMesh(geometry, -1) && large->readCalls == 0,
+		"3DS size limit rejects oversized input before reading" );
+	geometry->release();
+	loader->release();
+	large->release();
+}
+
+static void TestLargeDiskWrites()
+{
+#ifndef _WIN32
+	if( !RISE::TestSupport::SupportsSparseFiles() ) return;
+	const auto path = RISE::TestSupport::ScratchPath( "rise_large_buffer_" +
+		std::to_string(RISE::TestSupport::CurrentProcessId()) );
+	auto* buffer = new DiskFileWriteBuffer( path.c_str() );
+	const auto boundary = static_cast<std::uint64_t>(std::numeric_limits<unsigned int>::max());
+	Check( buffer->seek(IBuffer::START, std::numeric_limits<int>::max()) &&
+		buffer->seek(IBuffer::CUR, std::numeric_limits<int>::max()) && buffer->setUInt(0x12345678),
+		"disk scalar write crosses the 4 GiB boundary" );
+	Check( buffer->getCurPos64() == boundary + 3 && buffer->Size64() == boundary + 3 &&
+		buffer->getCurPos() == std::numeric_limits<unsigned int>::max() &&
+		buffer->Size() == std::numeric_limits<unsigned int>::max(),
+		"large disk position and size retain 64 bits while legacy queries saturate" );
+	Check( buffer->seek(IBuffer::CUR, -2) && buffer->getCurPos64() == boundary + 1 &&
+		buffer->HowFarToEnd() == 2 && !buffer->EndOfBuffer() && buffer->setUWord(0xabcd) && buffer->Finish(),
+		"large backward seek and overwrite preserve the 64-bit cursor" );
+	buffer->release();
+	Check( std::filesystem::file_size(path) == boundary + 3, "large disk output has the complete sparse-file length" );
+	std::ifstream file( path, std::ios::binary );
+	file.seekg( static_cast<std::streamoff>(boundary - 1) );
+	unsigned char bytes[4] = {};
+	file.read( reinterpret_cast<char*>(bytes), sizeof(bytes) );
+	const unsigned char expected[] = { 0x78, 0x56, 0xcd, 0xab };
+	Check( file && std::memcmp(bytes, expected, sizeof(bytes)) == 0,
+		"bytes on both sides of 4 GiB match independent little-endian expectations" );
+	file.close();
+	auto* reader = new DiskFileReadBuffer( path.c_str() );
+	Check( reader->Size64() == boundary + 3 && reader->seek64(IBuffer::START, boundary - 1) &&
+		reader->getUInt() == 0xabcd5678 && reader->EndOfBuffer(),
+		"disk scalar read crosses 4 GiB and reaches the actual end" );
+	reader->release();
+	std::filesystem::remove( path );
+#endif
+}
+
+static void TestLargeCodecOffsets()
+{
+#if !defined(_WIN32) && (!defined(NO_EXR_SUPPORT) || !defined(NO_TIFF_SUPPORT))
+	if( RISE::TestSupport::SupportsSparseFiles() ) {
+	const auto path = RISE::TestSupport::ScratchPath( "rise_codec_offsets_" +
+		std::to_string(RISE::TestSupport::CurrentProcessId()) );
+	const std::uint64_t offset = static_cast<std::uint64_t>(std::numeric_limits<unsigned int>::max()) + 16;
+	auto* writer = new DiskFileWriteBuffer(path.c_str());
+#ifndef NO_EXR_SUPPORT
+	OStreamWrapper output(*writer);
+	output.seekp(offset);
+	output.write("EXR!", 4);
+	Check( output.tellp() == offset + 4, "EXR output wrapper preserves a large offset" );
+#endif
+#ifndef NO_TIFF_SUPPORT
+	auto* writeInterface = static_cast<IWriteBuffer*>(writer);
+	char markerWrite = 'T';
+	Check( TIFFSeekWriter(writeInterface, offset + 32, SEEK_SET) == offset + 32 &&
+		TIFFWrite(writeInterface, &markerWrite, 1) == 1 &&
+		TIFFSizeWriter(writeInterface) == offset + 33, "TIFF output callbacks preserve large offsets and sizes" );
+#endif
+	Check( writer->Finish(), "large codec callback file closes successfully" );
+	writer->release();
+	auto* reader = new DiskFileReadBuffer(path.c_str());
+#ifndef NO_EXR_SUPPORT
+	IStreamWrapper input(*reader);
+	input.seekg(offset);
+	char marker[4]{};
+	Check( input.read(marker, 4) && std::memcmp(marker, "EXR!", 4) == 0 && input.tellg() == offset + 4,
+		"EXR input wrapper reads at the complete large offset" );
+#endif
+#ifndef NO_TIFF_SUPPORT
+	auto* readInterface = static_cast<IReadBuffer*>(reader);
+	char markerTIFF = 0;
+	Check( TIFFSeekReader(readInterface, offset + 32, SEEK_SET) == offset + 32 &&
+		TIFFRead(readInterface, &markerTIFF, 1) == 1 && markerTIFF == 'T' &&
+		TIFFSizeReader(readInterface) == offset + 33, "TIFF input callbacks preserve large offsets and sizes" );
+	Check( TIFFSeekReader(readInterface, static_cast<toff_t>(-1), SEEK_END) == offset + 32 &&
+		TIFFRead(readInterface, &markerTIFF, 1) == 1 && markerTIFF == 'T' &&
+		TIFFSeekReader(readInterface, static_cast<toff_t>(-1), SEEK_CUR) == offset + 32,
+		"TIFF callbacks handle negative relative offsets without losing the large base" );
+#endif
+	reader->release();
+	std::filesystem::remove(path);
+	}
+#endif
+#ifndef NO_EXR_SUPPORT
+	char byte = 'x';
+	auto* borrowed = new MemoryBuffer(&byte, 1, false);
+	OStreamWrapper outputSmall(*borrowed);
+	bool refused = false;
+	try { outputSmall.write("xx", 2); }
+	catch( const std::exception& ) { refused = true; }
+	Check( refused && byte == 'x', "EXR output wrapper reports a failed write without overrunning borrowed storage" );
+	refused = false;
+	try { outputSmall.seekp(static_cast<std::uint64_t>(std::numeric_limits<int>::max()) + 1); }
+	catch( const std::exception& ) { refused = true; }
+	Check( refused && borrowed->getCurPos() == 0, "EXR output wrapper reports an unrepresentable legacy-buffer seek" );
+	borrowed->release();
+#endif
+#ifndef NO_TIFF_SUPPORT
+	class RejectingSeekBuffer final : public MemoryBuffer {
+	public:
+		unsigned int writes = 0;
+		RejectingSeekBuffer() : MemoryBuffer(1) {}
+		bool setBytes(const void*, unsigned int) override { ++writes; return false; }
+	};
+	auto* limited = new RejectingSeekBuffer();
+	Check( TIFFSeekWriter(static_cast<IWriteBuffer*>(limited),
+		static_cast<toff_t>(std::numeric_limits<int>::max()) + 1, SEEK_SET) == static_cast<toff_t>(-1) &&
+		limited->writes == 0 && limited->getCurPos() == 0,
+		"TIFF refuses an unsupported legacy-buffer seek before filling any gap" );
+	limited->release();
+#endif
+}
+
+static void TestStagedOutputFallback()
+{
+	namespace fs = std::filesystem;
+	const fs::path root = RISE::TestSupport::ScratchTestRoot( "rise_staged_output_" );
+	fs::create_directory( root );
+	const auto path = root / "image.bin";
+	const auto read = []( const fs::path& input ) {
+		std::ifstream file( input, std::ios::binary );
+		return std::string( std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() );
+	};
+	std::ofstream( path ) << "original";
+	DiskFileWriteBuffer::WriteDiagnostics diagnostics;
+	Check( !DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& buffer ) {
+		buffer.setBytes("partial", 7);
+		return buffer.setBytes(nullptr, 1);
+	}, DiskFileWriteBuffer::StagingPolicy::Required, &diagnostics) && read(path) == "original" &&
+		diagnostics.error == std::errc::invalid_argument && diagnostics.operation == "finish output",
+		"failed staged write preserves the previous file and reports its cause" );
+	Check( !DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& buffer ) -> bool {
+		buffer.setBytes("partial", 7);
+		throw std::runtime_error("encoder fixture failure");
+	}) && read(path) == "original", "encoder exceptions preserve the previous file and report failure" );
+	Check( !DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& ) { return true; }) &&
+		read(path) == "original", "empty staged output preserves the previous file" );
+	Check( std::distance(fs::directory_iterator(root), fs::directory_iterator()) == 1,
+		"failed staged write removes its temporary file and directory" );
+	Check( DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& buffer ) {
+		return buffer.setBytes("complete", 8);
+	}) && read(path) == "complete", "successful staged write replaces the file" );
+#ifndef _WIN32
+	for( const bool unsafeAncestor : { false, true } ) {
+		const auto unsafe = root / "untrusted-staging-parent";
+		fs::create_directory(unsafe);
+		fs::permissions(unsafe, fs::perms::all);
+		const auto targetParent = unsafeAncestor ? unsafe / "private-child" : unsafe;
+		if( unsafeAncestor ) {
+			fs::create_directory(targetParent);
+			fs::permissions(targetParent, fs::perms::owner_all);
+		}
+		const auto unsafeTarget = targetParent / "explicit-image.bin";
+		std::ofstream(unsafeTarget) << "original";
+		unsigned int calls = 0;
+		DiskFileWriteBuffer::WriteDiagnostics refusal;
+		const bool required = DiskFileWriteBuffer::WriteAtomically(unsafeTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+			++calls;
+			return buffer.setBytes("unexpected stage", 16);
+		}, DiskFileWriteBuffer::StagingPolicy::Required, &refusal);
+		Check(!required && calls == 0 && refusal.error == std::errc::permission_denied &&
+			refusal.operation == "trust staging parent" && read(unsafeTarget) == "original" &&
+			std::distance(fs::directory_iterator(targetParent), fs::directory_iterator()) == 1,
+			"unsafe-parent staging refuses nonsticky writable parent or ancestor before callback or temporary creation");
+		bool noStaging = false;
+		const bool direct = DiskFileWriteBuffer::WriteAtomically(unsafeTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+			++calls;
+			noStaging = std::distance(fs::directory_iterator(targetParent), fs::directory_iterator()) == 1;
+			return buffer.setBytes("explicit direct", 15);
+		}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace);
+		Check(direct && calls == 1 && noStaging && read(unsafeTarget) == "explicit direct",
+			"unsafe-parent image policy encodes explicit output once without creating automatic staging");
+		fs::remove_all(unsafe);
+	}
+	// Static ownership-policy topology: a trusted sticky descendant cannot
+	// make an unsafe nonsticky ancestor suitable for automatic staging. All
+	// fixture directories belong to this process; no foreign-owner chown or
+	// concurrent directory substitution is needed to exercise that contract.
+	const auto unsafeComponent = root / "unsafe-component";
+	const auto stickyDescendant = unsafeComponent / "trusted-sticky-descendant";
+	const auto privateLeaf = stickyDescendant / "private-leaf";
+	fs::create_directories(privateLeaf);
+	Check(::chmod(unsafeComponent.string().c_str(), 0777) == 0 &&
+		::chmod(stickyDescendant.string().c_str(), 01777) == 0 &&
+		::chmod(privateLeaf.string().c_str(), 0700) == 0,
+		"component-policy fixture combines an unsafe ancestor with trusted sticky and private descendants");
+	const auto componentTarget = privateLeaf / "explicit-image.bin";
+	std::ofstream(componentTarget) << "component original";
+	unsigned int componentCalls = 0;
+	DiskFileWriteBuffer::WriteDiagnostics componentRefusal;
+	const bool componentSaved = DiskFileWriteBuffer::WriteAtomically(componentTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+		++componentCalls;
+		return buffer.setBytes("unexpected component stage", 26);
+	}, DiskFileWriteBuffer::StagingPolicy::Required, &componentRefusal);
+	Check(!componentSaved && componentCalls == 0 && componentRefusal.error == std::errc::permission_denied &&
+		componentRefusal.operation == "trust staging parent" && read(componentTarget) == "component original" &&
+		std::distance(fs::recursive_directory_iterator(unsafeComponent), fs::recursive_directory_iterator()) == 3,
+		"component-policy rejects unsafe ancestor before staging despite trusted sticky and private descendants");
+	fs::remove_all(unsafeComponent);
+	const auto stickyParent = root / "trusted-sticky-parent";
+	fs::create_directory(stickyParent);
+	Check(::chmod(stickyParent.string().c_str(), 01777) == 0,
+		"trusted-sticky staging fixture permits foreign writes while protecting owned entries");
+	const auto stickyTarget = stickyParent / "published.bin";
+	Check(DiskFileWriteBuffer::WriteAtomically(stickyTarget.string(), [](DiskFileWriteBuffer& buffer) {
+		return buffer.setBytes("sticky safe", 11);
+	}) && read(stickyTarget) == "sticky safe", "trusted-sticky owner directory retains required staged publication");
+	fs::remove_all(stickyParent);
+#ifdef __APPLE__
+	const auto aclParent = root / "allow-acl-staging-parent";
+	fs::create_directory(aclParent);
+	fs::permissions(aclParent, fs::perms::owner_all);
+	acl_t originalAcl = ::acl_get_file(aclParent.string().c_str(), ACL_TYPE_EXTENDED);
+	const pid_t aclChild = ::fork();
+	if( aclChild == 0 ) {
+		::execl("/bin/chmod", "chmod", "+a",
+			"everyone allow list,search,add_file,add_subdirectory,delete_child,file_inherit,directory_inherit",
+			aclParent.string().c_str(), static_cast<char*>(nullptr));
+		::_exit(127);
+	}
+	int aclStatus = 0;
+	const bool aclInstalled = aclChild > 0 && ::waitpid(aclChild, &aclStatus, 0) == aclChild &&
+		WIFEXITED(aclStatus) && WEXITSTATUS(aclStatus) == 0;
+	struct stat aclParentInfo{};
+	Check(aclInstalled && ::stat(aclParent.string().c_str(), &aclParentInfo) == 0 &&
+		(aclParentInfo.st_mode & 0077) == 0,
+		"inherited-ACL staging fixture installs everyone ALLOW despite restrictive mode bits");
+	if( aclInstalled ) {
+		const auto aclTarget = aclParent / "explicit-image.bin";
+		std::ofstream(aclTarget) << "original ACL image";
+		unsigned int calls = 0;
+		DiskFileWriteBuffer::WriteDiagnostics refusal;
+		const bool required = DiskFileWriteBuffer::WriteAtomically(aclTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+			++calls;
+			return buffer.setBytes("unexpected ACL stage", 20);
+		}, DiskFileWriteBuffer::StagingPolicy::Required, &refusal);
+		Check(!required && calls == 0 && refusal.error == std::errc::permission_denied &&
+			refusal.operation == "trust staging parent" && read(aclTarget) == "original ACL image" &&
+			std::distance(fs::directory_iterator(aclParent), fs::directory_iterator()) == 1,
+			"inherited-ACL staging refuses ALLOW parent before temporary creation or encoder invocation");
+		bool noStaging = false;
+		const bool direct = DiskFileWriteBuffer::WriteAtomically(aclTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+			++calls;
+			noStaging = std::distance(fs::directory_iterator(aclParent), fs::directory_iterator()) == 1;
+			return buffer.setBytes("explicit ACL direct", 19);
+		}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace);
+		Check(direct && calls == 1 && noStaging && read(aclTarget) == "explicit ACL direct",
+			"inherited-ACL image policy writes explicit output once without automatic staging");
+	}
+	acl_t restoreAcl = originalAcl ? originalAcl : ::acl_init(0);
+	Check(restoreAcl && ::acl_set_file(aclParent.string().c_str(), ACL_TYPE_EXTENDED, restoreAcl) == 0,
+		"inherited-ACL staging fixture restores its original directory ACL");
+	if( restoreAcl ) ::acl_free(restoreAcl);
+	fs::remove_all(aclParent);
+#endif
+	for( const auto policy : { DiskFileWriteBuffer::StagingPolicy::Required,
+		DiskFileWriteBuffer::StagingPolicy::AllowInPlace } ) {
+		const auto newTarget = root / "private-stage-new-output.bin";
+		bool privateStaging = false;
+		bool saved = false;
+		{
+			struct RestoreMask { mode_t previous; ~RestoreMask() { ::umask(previous); } } mask{ ::umask(0) };
+			saved = DiskFileWriteBuffer::WriteAtomically(newTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+				for( const auto& entry : fs::directory_iterator(root) ) {
+					if( entry.is_directory() && entry.path().filename().string().find(".rise-write-") == 0 ) {
+						const auto permissions = entry.status().permissions();
+						privateStaging = (permissions & fs::perms::owner_all) == fs::perms::owner_all &&
+							(permissions & (fs::perms::group_all | fs::perms::others_all)) == fs::perms::none;
+					}
+				}
+				return buffer.setBytes("private staging", 15);
+			}, policy);
+		}
+		struct stat published{};
+		Check(saved && privateStaging && read(newTarget) == "private staging" &&
+			::stat(newTarget.string().c_str(), &published) == 0 && (published.st_mode & 0777) == 0666,
+			"permissive umask keeps staging directory private and preserves new-output publication permissions");
+		fs::remove(newTarget);
+	}
+	const auto alias = root / "image-hardlink.bin";
+	fs::create_hard_link(path, alias);
+	struct stat beforeCopy{};
+	const bool hadIdentity = ::stat(path.string().c_str(), &beforeCopy) == 0;
+	const bool copied = DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& buffer) {
+		return buffer.setBytes("same inode", 10);
+	}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace);
+	struct stat afterCopy{};
+	Check(copied && hadIdentity && ::stat(path.string().c_str(), &afterCopy) == 0 &&
+		beforeCopy.st_ino == afterCopy.st_ino && beforeCopy.st_dev == afterCopy.st_dev &&
+		beforeCopy.st_uid == afterCopy.st_uid && beforeCopy.st_gid == afterCopy.st_gid &&
+		beforeCopy.st_mode == afterCopy.st_mode && read(alias) == "same inode" && read(path) == "same inode",
+		"in-place staged publication preserves inode ownership permissions and hardlinks");
+	fs::remove(alias);
+#if defined(__APPLE__) || defined(__linux__)
+	const char* attribute = "user.rise-publication-test";
+	const char attributeValue[] = "retained metadata";
+#ifdef __APPLE__
+	const bool attributeSet = ::setxattr(path.string().c_str(), attribute, attributeValue, sizeof(attributeValue), 0, 0) == 0;
+#else
+	const bool attributeSet = ::setxattr(path.string().c_str(), attribute, attributeValue, sizeof(attributeValue), 0) == 0;
+#endif
+	if( attributeSet ) {
+		const bool saved = DiskFileWriteBuffer::WriteAtomically(path.string(), [](DiskFileWriteBuffer& buffer) {
+			return buffer.setBytes("with metadata", 13);
+		}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace);
+		char restoredAttribute[sizeof(attributeValue)] = {};
+#ifdef __APPLE__
+		const auto count = ::getxattr(path.string().c_str(), attribute, restoredAttribute, sizeof(restoredAttribute), 0, 0);
+#else
+		const auto count = ::getxattr(path.string().c_str(), attribute, restoredAttribute, sizeof(restoredAttribute));
+#endif
+		Check(saved && count == static_cast<ssize_t>(sizeof(attributeValue)) &&
+			std::memcmp(attributeValue, restoredAttribute, sizeof(attributeValue)) == 0,
+			"in-place staged publication preserves extended attributes");
+	} else std::cout << "SKIP: scratch filesystem cannot store the publication xattr fixture" << std::endl;
+#endif
+	const auto initialFifo = root / "initial-output-fifo";
+	const bool madeInitialFifo = ::mkfifo(initialFifo.string().c_str(), 0600) == 0;
+	unsigned int fifoCalls = 0;
+	DiskFileWriteBuffer::WriteDiagnostics fifoRefusal;
+	const bool initialSaved = madeInitialFifo && DiskFileWriteBuffer::WriteAtomically(initialFifo.string(), [&](DiskFileWriteBuffer& buffer) {
+		++fifoCalls;
+		return buffer.setBytes("unexpected FIFO", 15);
+	}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace, &fifoRefusal);
+	Check(madeInitialFifo && !initialSaved && fifoCalls == 0 && fifoRefusal.error == std::errc::invalid_argument &&
+		fifoRefusal.operation == "inspect regular destination" && fs::is_fifo(initialFifo),
+		"initial FIFO output is refused without invoking the staged encoder");
+	// The public direct constructor intentionally remains a stream/device API.
+	// A nonblocking reader permits its historical FIFO write without waiting.
+	const int streamReader = madeInitialFifo ? ::open(initialFifo.string().c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC) : -1;
+	bool directStream = false;
+	if( streamReader >= 0 ) {
+		auto* stream = new DiskFileWriteBuffer(initialFifo.string().c_str());
+		directStream = stream->ReadyToWrite() && stream->setBytes("legacy stream", 13) && stream->Finish(true);
+		stream->release();
+		char bytes[13] = {};
+		directStream = directStream && ::read(streamReader, bytes, sizeof(bytes)) == static_cast<ssize_t>(sizeof(bytes)) &&
+			std::memcmp(bytes, "legacy stream", sizeof(bytes)) == 0;
+		::close(streamReader);
+	}
+	Check(directStream, "public direct output constructor preserves legacy FIFO stream writes");
+	fs::remove(initialFifo);
+	for( const bool hasReader : { false, true } ) {
+		const auto changedTarget = root / "changed-output-fifo";
+		std::ofstream(changedTarget) << "before type change";
+		const pid_t fifoChild = ::fork();
+		if( fifoChild == 0 ) {
+			// The old fopen("wb") blocks indefinitely when there is no reader.
+			// A bounded child converts that behavior into an ordinary assertion
+			// failure in the parent while allowing all other test cases to finish.
+			std::signal(SIGALRM, SIG_DFL);
+			::alarm(3);
+			const std::string payload = "completed before FIFO change";
+			unsigned int calls = 0;
+			bool changed = false;
+			int reader = -1;
+			struct stat fifoBefore{};
+			DiskFileWriteBuffer::WriteDiagnostics failure;
+			const bool saved = DiskFileWriteBuffer::WriteAtomically(changedTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+				++calls;
+				if( !buffer.setBytes(payload.data(), static_cast<unsigned int>(payload.size())) ) return false;
+				fs::remove(changedTarget);
+				changed = ::mkfifo(changedTarget.string().c_str(), 0600) == 0 && ::stat(changedTarget.string().c_str(), &fifoBefore) == 0;
+				if( hasReader && changed ) reader = ::open(changedTarget.string().c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+				return changed && (!hasReader || reader >= 0);
+			}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace, &failure);
+			struct stat fifoAfter{};
+			const bool sameFifo = ::stat(changedTarget.string().c_str(), &fifoAfter) == 0 && S_ISFIFO(fifoAfter.st_mode) &&
+				fifoBefore.st_dev == fifoAfter.st_dev && fifoBefore.st_ino == fifoAfter.st_ino;
+			bool noStreamBytes = true;
+			if( reader >= 0 ) {
+				char byte;
+				noStreamBytes = ::read(reader, &byte, 1) == 0;
+				::close(reader);
+			}
+			const auto cause = hasReader ? std::errc::invalid_argument : std::errc::no_such_device_or_address;
+			const bool recovered = !saved && changed && calls == 1 && failure.error == cause &&
+				failure.operation == "open output" && sameFifo && noStreamBytes &&
+				!failure.recoveryPath.empty() && read(failure.recoveryPath) == payload;
+			::_exit(recovered ? 0 : 1);
+		}
+		int fifoStatus = 0;
+		const bool waitedForFifo = fifoChild > 0 && ::waitpid(fifoChild, &fifoStatus, 0) == fifoChild;
+		Check(waitedForFifo && WIFEXITED(fifoStatus) && WEXITSTATUS(fifoStatus) == 0,
+			hasReader ? "FIFO type change with reader is rejected before writes and retains completed stage with cause" :
+			"FIFO type change without reader returns promptly and retains completed stage with cause");
+		fs::remove(changedTarget);
+		for( const auto& entry : fs::directory_iterator(root) ) if( entry.is_directory() ) fs::remove_all(entry.path());
+	}
+	// A seek flushes the completed staging stream before arming the process
+	// size limit. Only the subsequent in-place copy encounters EFBIG. Running
+	// in a child isolates both the resource limit and SIGXFSZ disposition.
+	const pid_t child = ::fork();
+	if( child == 0 ) {
+		struct rlimit previousLimit{};
+		if( ::getrlimit(RLIMIT_FSIZE, &previousLimit) != 0 || previousLimit.rlim_cur < 131072 ) ::_exit(77);
+		std::signal(SIGXFSZ, SIG_IGN);
+		const std::string payload(131072, 'r');
+		unsigned int calls = 0;
+		bool armed = false;
+		DiskFileWriteBuffer::WriteDiagnostics failure;
+		const bool saved = DiskFileWriteBuffer::WriteAtomically(path.string(), [&](DiskFileWriteBuffer& buffer) {
+			++calls;
+			if( !buffer.setBytes(payload.data(), static_cast<unsigned int>(payload.size())) || !buffer.seek64(IBuffer::START, 0) ) return false;
+			struct rlimit copyLimit = previousLimit;
+			copyLimit.rlim_cur = 1024;
+			armed = ::setrlimit(RLIMIT_FSIZE, &copyLimit) == 0;
+			return armed;
+		}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace, &failure);
+		const bool recovered = !saved && armed && calls == 1 && failure.error == std::errc::file_too_large &&
+			failure.operation == "finish output" && !failure.recoveryPath.empty() &&
+			read(failure.recoveryPath) == payload && fs::file_size(path) <= 1024;
+		::_exit(recovered ? 0 : 1);
+	}
+	int childStatus = 0;
+	const bool waited = child > 0 && ::waitpid(child, &childStatus, 0) == child;
+	if( waited && WIFEXITED(childStatus) && WEXITSTATUS(childStatus) == 77 )
+		std::cout << "SKIP: process file-size budget cannot construct the completed-stage fixture" << std::endl;
+	else Check(waited && WIFEXITED(childStatus) && WEXITSTATUS(childStatus) == 0,
+		"failed in-place copy reports EFBIG and retains complete staging bytes for recovery without re-encoding");
+	for( const auto& entry : fs::directory_iterator(root) ) if( entry.is_directory() ) fs::remove_all(entry.path());
+	fs::permissions( root, fs::perms::owner_read | fs::perms::owner_exec );
+	std::error_code permissionError;
+	const bool restricted = !fs::create_directory( root / "permission-probe", permissionError );
+	if( restricted ) {
+		bool invoked = false;
+		const bool refused = !DiskFileWriteBuffer::WriteAtomically(path.string(), [&]( DiskFileWriteBuffer& ) {
+			invoked = true;
+			return true;
+		});
+		const bool fallback = DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& buffer ) {
+			return buffer.setBytes("direct", 6);
+		}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace);
+		fs::permissions( root, fs::perms::owner_all );
+		Check( refused && !invoked && fallback && read(path) == "direct",
+			"restricted parent preserves required staging and permits explicit in-place output" );
+	} else {
+		fs::permissions( root, fs::perms::owner_all );
+		fs::remove( root / "permission-probe" );
+		std::cout << "SKIP: process can create files in the restricted staging parent" << std::endl;
+	}
+	if( restricted ) {
+		for( const auto policy : { DiskFileWriteBuffer::StagingPolicy::Required,
+			DiskFileWriteBuffer::StagingPolicy::AllowInPlace } ) {
+			std::ofstream(path) << "before rename";
+			unsigned int calls = 0;
+			const bool saved = DiskFileWriteBuffer::WriteAtomically(path.string(), [&]( DiskFileWriteBuffer& buffer ) {
+				++calls;
+				fs::permissions(root, fs::perms::owner_read | fs::perms::owner_exec);
+				return buffer.setBytes("encoded once", 12);
+			}, policy, &diagnostics);
+			fs::permissions(root, fs::perms::owner_all);
+			const bool allow = policy == DiskFileWriteBuffer::StagingPolicy::AllowInPlace;
+			Check( saved == allow && calls == 1 && read(path) == (allow ? "encoded once" : "before rename"),
+				"restricted-parent publication copies completed image bytes and invokes encoder once" );
+			Check(allow ? (diagnostics.cleanupError == std::errc::permission_denied &&
+				!diagnostics.cleanupPath.empty() && fs::is_directory(diagnostics.cleanupPath)) :
+				(diagnostics.error == std::errc::permission_denied && diagnostics.operation == "rename staging output" &&
+				 !diagnostics.recoveryPath.empty() && read(diagnostics.recoveryPath) == "encoded once"),
+				"restricted-parent publication reports residual cleanup or recoverable staged output with cause and path");
+		}
+		// Cleanup may have been denied while the callback restricted the parent.
+		for( const auto& entry : fs::directory_iterator(root) ) {
+			if( entry.is_directory() ) fs::remove_all(entry.path());
+		}
+	}
+	// ENOTDIR is a structural failure, never a reason to invoke a direct encoder.
+	bool invokedForBadParent = false;
+	Check( !DiskFileWriteBuffer::WriteAtomically((path / "child.bin").string(), [&]( DiskFileWriteBuffer& ) {
+		invokedForBadParent = true;
+		return true;
+	}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace) && !invokedForBadParent,
+		"non-permission staging failures do not invoke the encoder" );
+	fs::permissions(path, fs::perms::owner_write);
+	FILE* readProbe = std::fopen(path.string().c_str(), "rb");
+	if( !readProbe ) {
+		for( const bool restrictedParent : { false, true } ) {
+			if( restrictedParent && !restricted ) continue;
+			for( const auto policy : { DiskFileWriteBuffer::StagingPolicy::Required,
+				DiskFileWriteBuffer::StagingPolicy::AllowInPlace } ) {
+				fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write);
+				std::ofstream(path) << "before write-only";
+				fs::permissions(path, fs::perms::owner_write);
+				if( restrictedParent ) fs::permissions(root, fs::perms::owner_read | fs::perms::owner_exec);
+				unsigned int calls = 0;
+				const bool saved = DiskFileWriteBuffer::WriteAtomically(path.string(), [&]( DiskFileWriteBuffer& buffer ) {
+					++calls;
+					return buffer.setBytes("write-only", 10);
+				}, policy);
+				fs::permissions(root, fs::perms::owner_all);
+				fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write);
+				const bool expected = !restrictedParent || policy == DiskFileWriteBuffer::StagingPolicy::AllowInPlace;
+				Check( saved == expected && calls == (expected ? 1U : 0U) &&
+					read(path) == (expected ? "write-only" : "before write-only"),
+					"write-only target compatibility preserves the staging policy without requiring read permission" );
+			}
+		}
+	} else {
+		std::fclose(readProbe);
+		std::cout << "SKIP: process can read a write-only target" << std::endl;
+	}
+	fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write);
+	if( restricted ) {
+		for( const bool existing : { false, true } ) {
+			for( const auto policy : { DiskFileWriteBuffer::StagingPolicy::Required,
+				DiskFileWriteBuffer::StagingPolicy::AllowInPlace } ) {
+				const auto maskedTarget = root / "umask.bin";
+				fs::remove(maskedTarget);
+				if( existing ) std::ofstream(maskedTarget) << "before mask";
+				unsigned int calls = 0;
+				bool saved = false;
+				{
+					struct RestoreMask { mode_t previous; ~RestoreMask() { ::umask(previous); } } mask{ ::umask(0222) };
+					saved = DiskFileWriteBuffer::WriteAtomically(maskedTarget.string(), [&]( DiskFileWriteBuffer& buffer ) {
+						++calls;
+						return buffer.setBytes("mask", 4);
+					}, policy);
+				}
+				const bool expected = policy == DiskFileWriteBuffer::StagingPolicy::AllowInPlace;
+				Check( saved == expected && calls == (expected ? 1U : 0U) &&
+					(expected ? read(maskedTarget) == "mask" :
+						(existing ? read(maskedTarget) == "before mask" : !fs::exists(maskedTarget))),
+					"staging-open permission fallback respects required policy and invokes encoder once" );
+				fs::remove(maskedTarget);
+			}
+		}
+		bool leftover = false;
+		for( const auto& entry : fs::directory_iterator(root) ) leftover |= entry.is_directory();
+		Check( !leftover, "staging-open permission fallback cleans inaccessible staging directories" );
+	}
+	const auto target = root / "created.bin";
+	const auto link = root / "broken-link.bin";
+	fs::create_symlink( target.filename(), link );
+	Check( DiskFileWriteBuffer::WriteAtomically(link.string(), []( DiskFileWriteBuffer& buffer ) {
+		return buffer.setBytes("linked", 6);
+	}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace) && fs::is_symlink(link) && read(target) == "linked",
+		"in-place fallback writes through a dangling symlink and preserves the link" );
+#endif
+	fs::remove_all( root );
+}
+
+static const std::string& LateLogPath()
+{
+	static const auto path = RISE::TestSupport::ScratchPath( "rise_late_log_" +
+		std::to_string(RISE::TestSupport::CurrentProcessId()) + std::string(80, 'l') + ".txt" );
+	return path;
+}
+
+static void CheckLateLogRecreation()
+{
+	GlobalLogCleanupAndShutdown();
+	GlobalLog()->Print( eLog_Event, "late static-destruction log fixture" );
+	GlobalLogCleanupAndShutdown();
+	std::ifstream file( LateLogPath() );
+	const std::string contents( std::istreambuf_iterator<char>(file), {} );
+	if( contents.find("late static-destruction log fixture") == std::string::npos ) std::abort();
+	file.close();
+	std::remove( LateLogPath().c_str() );
+}
+
+static int RunTests()
+{
+	// Register before constructing the logger's filename storage. Its former
+	// static-string destructor ran before this callback, which ASan detects.
+	LateLogPath();
+	std::atexit( CheckLateLogRecreation );
+	SetGlobalLogFileName( LateLogPath().c_str() );
 	std::cout << "VolumeShortReadTest — missing/truncated binary reads zero, never uninitialised"
 		<< std::endl;
 
@@ -368,9 +1388,22 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestDiskFileReadBufferGetBytesOverread();
 	TestDiskFileReadBufferMissingFile();
 	TestVolumeOverflowDims();
+	TestBufferWriteFailures();
+	TestLittleEndianScalars();
+	TestMediaSearchRoots();
+	TestTruncatedOpenFile();
+	Test3DSCompatibility();
+	TestLargeDiskWrites();
+	TestLargeCodecOffsets();
+	TestStagedOutputFallback();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
 	std::cout << "Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
+}
+
+int main()
+{
+	return RISE::TestSupport::WithOwnedScratch(RunTests);
 }

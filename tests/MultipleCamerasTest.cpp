@@ -20,6 +20,7 @@
 #include "../src/Library/Interfaces/ICamera.h"
 #include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -234,7 +235,7 @@ static void TestJobAPI()
 // single-process test binary.
 static std::string MakeTempScenePath( const char* tag )
 {
-	std::string path = "/tmp/rise_multi_camera_test_";
+	std::string path = RISE::TestSupport::ScratchPath( "rise_multi_camera_test_" );
 	path += tag;
 	path += ".RISEscene";
 	return path;

@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "AOVBuffers.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/ICamera.h"
@@ -25,6 +26,7 @@
 #include "../Utilities/ThreadPool.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/FiniteMath.h"
+#include "../Utilities/IORStackSeeding.h"
 #include <algorithm>
 
 using namespace RISE;
@@ -156,9 +158,48 @@ void AOVBuffers::NormalizeSelected(
 	}
 	if( selected.normal && !normals.empty() ) {
 		const size_t idx = pixel * 3;
-		normals[idx + 0] *= fw;
-		normals[idx + 1] *= fw;
-		normals[idx + 2] *= fw;
+		// SPHERICAL-MEAN CAVEAT.  What the samples accumulated is the
+		// weighted ARITHMETIC mean of unit normals, and that mean is
+		// NOT a unit vector: its length is 1 only when every sample
+		// agreed, and it collapses toward 0 as they disagree.  On
+		// high-frequency geometry (a groom, foliage) a pixel's samples
+		// routinely straddle several surfaces, so the raw mean hands
+		// OIDN a normal whose DIRECTION is right but whose MAGNITUDE
+		// silently encodes intra-pixel disagreement -- and OIDN's
+		// normal guide is documented as a unit vector in [-1,1], so it
+		// reads that shortening as a different surface orientation
+		// rather than as "these samples disagreed".
+		//
+		// Renormalizing recovers the mean DIRECTION (the standard
+		// spherical-mean estimator, i.e. the maximum-likelihood mean
+		// of a von Mises-Fisher fit).  What is deliberately discarded
+		// is the concentration: a pixel whose samples span a 90-degree
+		// spread reports the same unit normal as one whose samples all
+		// agree.  OIDN has no channel to receive that concentration,
+		// so encoding it in the magnitude was never actionable -- it
+		// only degraded the direction.
+		//
+		// Idempotent by construction (renormalizing a unit vector is a
+		// no-op), which also makes a double Normalize() call harmless.
+		// `invWeight` is intentionally unused here for the same reason:
+		// a uniform positive scale cannot change a normalized result.
+		const double nx = static_cast<double>( normals[idx + 0] );
+		const double ny = static_cast<double>( normals[idx + 1] );
+		const double nz = static_cast<double>( normals[idx + 2] );
+		const double len2 = nx*nx + ny*ny + nz*nz;
+		if( len2 > 0 && RISE::IsFiniteDouble( len2 ) ) {
+			const double inv = 1.0 / sqrt( len2 );
+			normals[idx + 0] = static_cast<float>( nx * inv );
+			normals[idx + 1] = static_cast<float>( ny * inv );
+			normals[idx + 2] = static_cast<float>( nz * inv );
+		} else {
+			// All-miss (or degenerate) pixel: leave the zero vector,
+			// which is what this plane has always reported for a pixel
+			// with no surface, rather than inventing a direction.
+			normals[idx + 0] = 0.0f;
+			normals[idx + 1] = 0.0f;
+			normals[idx + 2] = 0.0f;
+		}
 	}
 	if( selected.depth && !depths.empty() ) {
 		const float hitWeight = depthWeights[pixel];
@@ -222,19 +263,33 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 	const AOVBuffers::Plan missing = selected;
 	const Scalar invSamples = Scalar( 1.0 ) / Scalar( samplesPerPixel );
 	const unsigned int rowCount = 1u + ( height - 1u - firstRow ) / rowStride;
+	// DL-625 review: each row reseeds the worker's generator from (one value
+	// read here, on the calling thread, row), so the guide buffers are a
+	// function of std::srand's state and not of which worker took which
+	// row (the generator used to keep whatever state its first,
+	// concurrently seeded, construction left).
+	const unsigned int rowSeedBase = LockedLibcRand();
 
 	GlobalThreadPool().ParallelFor( rowCount, [&]( unsigned int row ) {
 		const unsigned int y = firstRow + row * rowStride;
 		if( y < startY || y > endY ) return;
-		static thread_local RandomNumberGenerator tl_rng;
+		// Constant initial seed: it is reseeded per row below, and a
+		// default (libc) seed on a worker's first row would move the libc
+		// stream by a scheduling-dependent count.
+		static thread_local RandomNumberGenerator tl_rng( 0u );
+		const unsigned int rowSeed = DeriveSeed( rowSeedBase, y );
+		tl_rng.Reseed( rowSeed );
+		ScopedMediumTileSeed mediumSeed( rowSeed );
 		RuntimeContext rc( tl_rng, RuntimeContext::PASS_NORMAL, false );
 		rc.aovPrefilterMode = prefilterMode;
 
 		for( unsigned int x = startX; x <= endX; ++x ) {
 			for( unsigned int s = 0; s < samplesPerPixel; ++s ) {
-				const Point2 ptOnScreen(
-					static_cast<Scalar>( x ) + tl_rng.CanonicalRandom(),
-					static_cast<Scalar>( height - y ) - tl_rng.CanonicalRandom() );
+				// DL-368: the same pixel <-> screen convention the beauty
+				// pass samples in (ICamera.h, RasterConvention).
+				const Scalar su = tl_rng.CanonicalRandom();
+				const Scalar sv = tl_rng.CanonicalRandom();
+				const Point2 ptOnScreen = RasterConvention::PixelToScreen( x, y, height, su, sv );
 				Vector3 sampleNormal( 0, 0, 0 );
 				RISEPel sampleAlbedo( 0, 0, 0 );
 				Scalar sampleDepth = 0;
@@ -254,8 +309,14 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 						PixelAOV aov;
 						rc.pAOV = &aov;
 						RISEPel ignoredRadiance( 0, 0, 0 );
+						// Seed from the camera-ray origin (submerged-camera
+						// case) so the Accurate-mode guide walk classifies
+						// its first dielectric crossing the same way the
+						// beauty pass now does; free-space cameras: no-op.
+						IORStack iorStack( 1.0 );
+						IORStackSeeding::SeedFromPoint( iorStack, ray.origin, scene );
 						caster.CastRay( rc, rast, ray, ignoredRadiance,
-							IRayCaster::RAY_STATE(), 0, 0 );
+							IRayCaster::RAY_STATE(), 0, 0, iorStack );
 						rc.pAOV = 0;
 						if( aov.valid ) {
 							sampleNormal = aov.normal;
@@ -264,7 +325,8 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 						if( aov.primaryDepthCaptured ) sampleDepth = aov.depth;
 					} else {
 						RayIntersection ri( ray, rast );
-						pObjects->IntersectRay( ri, true, true, false );
+						IndependentSampler alphaSampler(rc.random);
+                        pObjects->IntersectRaySampled( ri, alphaSampler );
 						if( ri.geometric.bHit ) {
 							if( ri.pModifier ) ri.pModifier->Modify( ri.geometric );
 							sampleNormal = ri.geometric.vNormal;

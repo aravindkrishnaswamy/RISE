@@ -72,6 +72,12 @@ Scalar CheckerPainter::GetColorNM( const RayIntersectionGeometric& ri, const Sca
 	return ComputeWhich(ri).GetColorNM(ri, nm);
 }
 
+Scalar CheckerPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	// SINGLE-SOURCE SELECTOR -- see the header comment.
+	return ComputeWhich(ri).GetRadianceNM(ri, nm);
+}
+
 static const unsigned int SIZE_ID = 100;
 
 IKeyframeParameter* CheckerPainter::KeyframeFromParameters( const String& name, const String& value )
@@ -106,4 +112,10 @@ void CheckerPainter::SetIntermediateValue( const IKeyframeParameter& val )
 void CheckerPainter::RegenerateData( )
 {
 	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
+}
+
+RISEPel CheckerPainter::GetRadianceColor( const RayIntersectionGeometric& ri ) const
+{
+	// DL-396: the RGB twin of GetRadianceNM -- forward to the selected child.
+	return ComputeWhich(ri).GetRadianceColor(ri);
 }

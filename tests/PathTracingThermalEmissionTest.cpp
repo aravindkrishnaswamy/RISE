@@ -4974,7 +4974,7 @@ namespace
 							const Ray topologyRay(probeOrigin,probeDirection);
 							RISEPel interfaceTr(1,1,1);
 							const bool interfaceBlocked = concreteOn->CastShadowRayAuto(
-								topologyRay,probeDistance,true,nm,interfaceTr);
+								topologyRay,probeDistance,true,nm,interfaceTr,false);
 							if( topology.topology==
 								PhaseBMatrixTopology::OpaquePartialBlocker ) {
 								structural = structural &&
@@ -5313,8 +5313,8 @@ namespace
 
 		UniformColorPainter* white =
 			new UniformColorPainter(RISEPel(0.8,0.8,0.8));
-		UniformColorPainter* extinction =
-			new UniformColorPainter(RISEPel(0.0,0.0,0.0));
+		UniformScalarPainter* extinction =
+			new UniformScalarPainter(0.0);
 		UniformScalarPainter* roughness = new UniformScalarPainter(0.7);
 		LambertianMaterial* lambertianA = new LambertianMaterial(*white);
 		LambertianMaterial* lambertianB = new LambertianMaterial(*white);
@@ -8758,7 +8758,7 @@ namespace
 					RISEPel interfaceTr(1,1,1);
 					const bool interfaceBlocked = preparedNeeCaster &&
 						preparedNeeCaster->CastShadowRayAuto(
-							topologyRay,probeDistance,true,nm,interfaceTr);
+							topologyRay,probeDistance,true,nm,interfaceTr,false);
 					if( row.topology==PhaseBMatrixTopology::OpaquePartialBlocker ) {
 						topologyWitness = topologyWitness &&
 							interfaceBlocked==row.castsShadows;
@@ -9550,8 +9550,8 @@ namespace
 
 		UniformColorPainter* white =
 			new UniformColorPainter(RISEPel(0.8,0.8,0.8));
-		UniformColorPainter* extinction =
-			new UniformColorPainter(RISEPel(0.0,0.0,0.0));
+		UniformScalarPainter* extinction =
+			new UniformScalarPainter(0.0);
 		UniformScalarPainter* roughness = new UniformScalarPainter(0.7);
 		LambertianMaterial* lambertianA = new LambertianMaterial(*white);
 		LambertianMaterial* lambertianB = new LambertianMaterial(*white);

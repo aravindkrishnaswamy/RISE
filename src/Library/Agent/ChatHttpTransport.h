@@ -48,6 +48,7 @@
 #ifndef RISE_AGENT_CHATHTTPTRANSPORT_
 #define RISE_AGENT_CHATHTTPTRANSPORT_
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -70,7 +71,9 @@ namespace RISE
 			long        status    = 0;   //!< HTTP status; 0 == no HTTP response reached (see error)
 			std::string body;            //!< response body verbatim ("" on a transport failure)
 			std::string error;           //!< "" on a completed round-trip; else a header-free failure category
-			long        elapsedMs = 0;   //!< measured wall-clock ms of the round-trip
+			std::int64_t elapsedMs = 0;  //!< measured wall-clock ms of the round-trip (int64: matches
+			                             //!< AgentChatLoop::RecordHttpRound and chrono::milliseconds::rep;
+			                             //!< `long` is 32-bit on Windows, so this narrowed only there)
 		};
 
 		//! The synchronous HTTPS transport seam.  ONE method: perform the

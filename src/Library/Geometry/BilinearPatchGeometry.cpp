@@ -20,7 +20,7 @@
 #include "../Interfaces/ILog.h"
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
-#include "../Utilities/stl_utils.h"
+#include "../Utilities/SurfaceCurvature.h"
 #include <algorithm>   // std::lower_bound for the area-CDF search
 
 using namespace RISE;
@@ -53,17 +53,62 @@ void BilinearPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri
 	const BilinearPatch&	patch = *elem;
 
     BILINEAR_HIT	h;
-	RayBilinearPatchIntersection( ri.ray, h, patch );
+	RayBilinearPatchIntersection( ri.ray, h, patch, bHitFrontFaces, bHitBackFaces );
 
 	if( h.bHit ) {
+		if( ri.bHit && h.dRange >= ri.range ) {
+			return;
+		}
+		const Vector3 rawN = GeometricUtilities::BilinearPatchNormalAt( patch, h.u, h.v );
+		const Scalar nLen = Vector3Ops::Magnitude( rawN );
+		if( nLen < 1e-20 ) {
+			return;
+		}
 		// If there is an intersection, compute the point of intersection, the normal and the
 		// texture co-ordinates
 		ri.bHit = true;
 		ri.range = h.dRange;
 		ri.ptIntersection = ri.ray.PointAtLength( h.dRange );
 		ri.ptCoord = Point2( h.u, h.v );
-		ri.vNormal = Vector3Ops::Normalize(GeometricUtilities::BilinearPatchNormalAt( patch, h.u, h.v ));
+		ri.vNormal = rawN * ( Scalar( 1 ) / nLen );
 		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
+		if( m_bProvablyOpenSheet.load( std::memory_order_acquire ) ) {
+			ri.bProvablyNoInterior = true;
+		}
+
+		// DL-20 (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 14 item 2, closed):
+		// this hit already knows exactly which PATCH and (u, v) it landed
+		// on (unlike the generic `ComputeSurfaceDerivatives(point, normal)`
+		// query below, which cannot tell which patch or (u, v) preimage a
+		// bare point came from), so the real closed-form shape operator is
+		// a few vector ops away.  A bilinear surface's own second
+		// derivative is a SINGLE constant vector (d2P/du2 = d2P/dv2 = 0
+		// identically -- see BilinearPatchSecondDerivUV's own comment).
+		// UNGATED like the analytic primitives (Sphere/Ellipsoid/Bezier):
+		// cheap, exact, data the hit already produced.  Only `scaleHint`
+		// (nothing but `curv` reads it) is gated.
+		{
+			const Vector3 dpdu = GeometricUtilities::BilinearPatchTangentU( patch, h.v );
+			const Vector3 dpdv = GeometricUtilities::BilinearPatchTangentV( patch, h.u );
+			const Vector3 d2Pduv = GeometricUtilities::BilinearPatchSecondDerivUV( patch );
+			static const Vector3 kZero( 0, 0, 0 );
+
+			Vector3 dndu, dndv;
+			// `ri.vNormal` above is Normalize(Cross(dpdu, dpdv)) with NO ray-
+			// facing flip (unlike BezierPatchGeometry), so no orientation
+			// correction is needed here -- dndu/dndv are derivatives of
+			// exactly the field `vNormal` already reports.
+			if( SurfaceCurvature::ShapeOperatorFromSecondDerivatives( dpdu, dpdv, kZero, d2Pduv, kZero, dndu, dndv ) ) {
+				ri.derivatives.dpdu  = dpdu;
+				ri.derivatives.dpdv  = dpdv;
+				ri.derivatives.dndu  = dndu;
+				ri.derivatives.dndv  = dndv;
+				ri.derivatives.valid = true;
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
+			}
+		}
 	}
 }
 
@@ -78,9 +123,11 @@ bool BilinearPatchGeometry::RayElementIntersection_IntersectionOnly( const Ray& 
 	const BilinearPatch&	patch = *elem;
 
     BILINEAR_HIT	h;
-	RayBilinearPatchIntersection( ray, h, patch );
+	RayBilinearPatchIntersection( ray, h, patch, bHitFrontFaces, bHitBackFaces );
 
-	if( h.bHit && (h.dRange < NEARZERO || h.dRange > dHowFar) ) {
+	// Self-intersection floor (`tMin`) is already applied inside
+	// RayBilinearPatchIntersection; only bound the upper range here.
+	if( h.bHit && (h.dRange <= 0.0 || h.dRange > dHowFar) ) {
 		h.bHit = false;
 	}
 
@@ -107,7 +154,13 @@ BilinearPatchGeometry::BilinearPatchGeometry(
   nMaxPerOctantNode( max_polys_per_node ),
   nMaxRecursionLevel( max_recursion_level ),
   bUseBSP( bUseBSP_ ),
-  dTotalArea( 0 )
+  dTotalArea( 0 ),
+  m_certGeneration( 1 ),
+  m_certComputedGeneration( 0 ),
+  m_bCertifiedWatertight( false ),
+  m_bProvablyOpenSheet( false ),
+  m_bNegativeOpenSignedVolume( false ),
+  m_topologicalOpenness( -2 )
 {
 }
 
@@ -120,13 +173,15 @@ BilinearPatchGeometry::~BilinearPatchGeometry( )
 void BilinearPatchGeometry::AddPatch( const BilinearPatch& patch )
 {
 	patches.push_back( patch );
+	InvalidateCertificate();
 }
 
 void BilinearPatchGeometry::Prepare()
 {
 	// Prepare for rendering
 	// Optimize the patch container
-	stl_utils::container_optimize< BilinearPatchList >( patches );
+	patches.shrink_to_fit();
+	InvalidateCertificate();	// DL-616: recomputed lazily on first query
 
 	// First create the pointer patches list
 	BilinearPatchPtrList		patchptrs;
@@ -327,6 +382,12 @@ BoundingBox BilinearPatchGeometry::GenerateBoundingBox() const
 	return BoundingBox();
 }
 
+Scalar BilinearPatchGeometry::SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
+{
+	(void)localDir; (void)localNormal;
+	return Geometry::BoundingBoxRootFloor( GenerateBoundingBox(), localOrigin );
+}
+
 void BilinearPatchGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
 	// Area-proportional sampling over every (patch, cell) pair via the single
@@ -396,16 +457,18 @@ void BilinearPatchGeometry::UniformRandomPoint( Point3* point, Vector3* normal, 
 
 SurfaceDerivatives BilinearPatchGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
 {
-	SurfaceDerivatives sd;
-	OrthonormalBasis3D onb;
-	onb.CreateFromW( objSpaceNormal );
-	sd.dpdu = onb.u();
-	sd.dpdv = onb.v();
-	sd.dndu = Vector3( 0, 0, 0 );
-	sd.dndv = Vector3( 0, 0, 0 );
-	sd.uv = Point2( 0, 0 );
-	sd.valid = true;
-	return sd;
+	// DL-20: same conservative-reject rationale as
+	// BezierPatchGeometry::ComputeSurfaceDerivatives -- this geometry can
+	// hold many patches, and a bare point (no (u, v), no patch index)
+	// cannot be inverted back to "which patch, which (u, v)" the way the
+	// real ray-hit path (RayElementIntersection above) gets for free.  The
+	// pre-fix body fabricated an arbitrary tangent frame with
+	// `dndu=dndv=0` and reported `valid=true` -- a FLAT curvature answer
+	// for a genuinely curved (indeed, saddle-shaped) surface, presented as
+	// legitimate.  Report honest absence instead.
+	(void)objSpacePoint;
+	(void)objSpaceNormal;
+	return SurfaceDerivatives();
 }
 
 Scalar BilinearPatchGeometry::GetArea( ) const
@@ -419,4 +482,52 @@ Scalar BilinearPatchGeometry::GetArea( ) const
 	// its true area (and, since consumers divide by it, silently rescaled
 	// every estimator built on this geometry).
 	return dTotalArea;
+}
+
+void BilinearPatchGeometry::InvalidateCertificate()
+{
+	// Clear the flags BEFORE publishing the new generation, so no query
+	// that sees the new generation can still read the old answer.
+	m_bCertifiedWatertight.store( false, std::memory_order_release );
+	m_bProvablyOpenSheet.store( false, std::memory_order_release );
+	m_bNegativeOpenSignedVolume.store( false, std::memory_order_release );
+	m_topologicalOpenness.store( -2, std::memory_order_release );
+	m_certGeneration.fetch_add( 1, std::memory_order_acq_rel );
+	GeometricUtilities::BumpPatchCertificateEpoch();	// cached composite certificates are stale
+	BumpShapeRevision();
+}
+
+void BilinearPatchGeometry::EnsureCertified() const
+{
+	const unsigned int wanted = m_certGeneration.load( std::memory_order_acquire );
+	if( m_certComputedGeneration.load( std::memory_order_acquire ) == wanted ) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock( m_certMutex );
+	const unsigned int current = m_certGeneration.load( std::memory_order_acquire );
+	if( m_certComputedGeneration.load( std::memory_order_acquire ) == current ) {
+		return;
+	}
+	bool watertight = false, open = false, negative = false;
+	GeometricUtilities::CertifyBilinearPatchSet( patches, watertight, open, negative );
+	m_bCertifiedWatertight.store( watertight, std::memory_order_release );
+	m_bProvablyOpenSheet.store( open, std::memory_order_release );
+	m_bNegativeOpenSignedVolume.store( negative, std::memory_order_release );
+	m_certComputedGeneration.store( current, std::memory_order_release );
+}
+
+int BilinearPatchGeometry::TopologicalOpenness() const
+{
+	const int cached = m_topologicalOpenness.load( std::memory_order_acquire );
+	if( cached != -2 ) {
+		return cached;
+	}
+	std::lock_guard<std::mutex> lock( m_opennessMutex );
+	const int recheck = m_topologicalOpenness.load( std::memory_order_acquire );
+	if( recheck != -2 ) {
+		return recheck;
+	}
+	const int computed = GeometricUtilities::BilinearPatchSetOpenness( patches );
+	m_topologicalOpenness.store( computed, std::memory_order_release );
+	return computed;
 }

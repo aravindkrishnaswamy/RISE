@@ -45,6 +45,7 @@
 #include <fstream>
 #include <vector>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <algorithm>
 #ifdef _WIN32
@@ -61,6 +62,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -134,6 +136,11 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 
 	double sum[3] = { 0, 0, 0 };
 	for( const RISEColor& c : cap.pixels ) {
+		// DL-40: a nonfinite (NaN/Inf) pixel component is a broken render,
+		// not a statistic -- reject the whole capture before it reaches sum.
+		if( !std::isfinite( c.base.r ) || !std::isfinite( c.base.g ) || !std::isfinite( c.base.b ) ) {
+			return ImageStats{};   // valid stays false
+		}
 		sum[0] += c.base.r;
 		sum[1] += c.base.g;
 		sum[2] += c.base.b;
@@ -145,11 +152,48 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	return s;
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-40 red-proof: ComputeStats must reject a capture containing a
+// nonfinite pixel component (return valid==false) rather than silently
+// folding NaN/Inf into the mean.  Explicit malformed
+// CapturingRasterizerOutput fixtures, not a live render.
+//////////////////////////////////////////////////////////////////////
+static void TestNonfiniteCandidateRejected()
+{
+	std::cout << std::endl << "-- DL-40: nonfinite candidate statistics are rejected --" << std::endl;
+
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 2; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.5, 0.5, 0.5 ), 1.0 ) );
+		cap->pixels.push_back( RISEColor( RISEPel( std::nan(""), 0.2, 0.2 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with a NaN pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.3, std::numeric_limits<double>::infinity(), 0.3 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with an Inf pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.4, 0.5, 0.6 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( s.valid, "DL-40: ComputeStats control -- an all-finite capture stays valid" );
+		cap->release();
+	}
+}
+
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/caustic_pm_norm_%s_%d.RISEscene",
+		"%s/caustic_pm_norm_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
@@ -226,7 +270,7 @@ static const char* kRasterizerPhotonMap =
 	"caustic_pel_photonmap\n{\n\tnum 600000\n\tmax_recursion 10\n\tmin_importance 0.001\n"
 	"\tpower_scale 1.0\n\tbranch TRUE\n\treflect TRUE\n\trefract TRUE\n}\n\n"
 	"caustic_pel_gather\n{\n\tmax_photons 120\n}\n\n"
-	"file_rasterizeroutput\n{\n\tpattern /tmp/caustic_pm_norm_pm_unused\n"
+	"file_rasterizeroutput\n{\n\tpattern caustic_pm_norm_pm_unused\n"
 	"\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
 
 // BDPT (unbiased light-tracing-splat reference).
@@ -234,7 +278,7 @@ static const char* kRasterizerBDPT =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
 	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 10\n\tmax_light_depth 10\n\tsamples 320\n"
 	"\tpixel_filter box\n\toidn_denoise false\n}\n\n"
-	"file_rasterizeroutput\n{\n\tpattern /tmp/caustic_pm_norm_bdpt_unused\n"
+	"file_rasterizeroutput\n{\n\tpattern caustic_pm_norm_bdpt_unused\n"
 	"\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
 
 //////////////////////////////////////////////////////////////////////
@@ -298,6 +342,7 @@ int main()
 	std::cout << "=== CausticPhotonMapNormalizationTest ===" << std::endl;
 
 	RunCausticCalibrationTest();
+	TestNonfiniteCandidateRejected();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

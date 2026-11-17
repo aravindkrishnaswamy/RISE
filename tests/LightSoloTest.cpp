@@ -44,6 +44,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include "TestTempDir.h"
 // Round-8 review P2: per-process temp filenames -- see WriteTemp below.
 #ifdef _WIN32
 	#include <process.h>
@@ -51,6 +52,9 @@
 #else
 	#include <unistd.h>			// getpid()
 #endif
+
+// DL-03 gate hygiene: seed each render invocation explicitly.
+static unsigned int g_renderSeed = 1729u;
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -89,8 +93,7 @@ static const char* const kSceneTwoColoredLights =
 
 static std::string WriteTemp( const char* name, const std::string& text )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
@@ -177,6 +180,7 @@ static void RunUnknownLightFailsTest()
 
 	AgentRenderParams p;
 	p.light = "nonexistent_light";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult r = session->Render( p );
 
 	Check( !r.ok, "MONEY ASSERTION: an unresolved light name fails the render (ok:false)" );
@@ -207,6 +211,7 @@ static void RunLightIgnoredUnderDataModesTest()
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ObjectMap;
 		p.light = "redlight";
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		Check( r.ok, "objectmap + light:\"redlight\" still succeeds" );
 		Check( r.message.find( "light is ignored" ) != std::string::npos,
@@ -217,6 +222,7 @@ static void RunLightIgnoredUnderDataModesTest()
 		p.renderTarget = AgentRenderTarget::ViewMode;
 		p.viewMode     = Implementation::ViewportRenderMode::Normals;
 		p.light        = "redlight";
+		std::srand( g_renderSeed++ );
 		AgentRenderResult r = session->Render( p );
 		Check( r.ok, "mode:\"normals\" + light:\"redlight\" still succeeds" );
 		Check( r.message.find( "light is ignored" ) != std::string::npos,
@@ -243,16 +249,19 @@ static void RunUnbiasedPartitionTest()
 	if( !session ) { if( pJob ) pJob->release(); return; }
 
 	AgentRenderParams pAll;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rAll = session->Render( pAll );
 	Check( rAll.ok, "all-lights render succeeds" );
 
 	AgentRenderParams pRed;
 	pRed.light = "redlight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rRed = session->Render( pRed );
 	Check( rRed.ok, "solo(redlight) render succeeds" );
 
 	AgentRenderParams pBlue;
 	pBlue.light = "bluelight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rBlue = session->Render( pBlue );
 	Check( rBlue.ok, "solo(bluelight) render succeeds" );
 
@@ -335,6 +344,7 @@ static void RunNonPathTracingIntegratorRefusesSoloTest()
 	// light solo and must not break ordinary VCM rendering.
 	{
 		AgentRenderParams pPlain;
+		std::srand( g_renderSeed++ );
 		AgentRenderResult rPlain = session->Render( pPlain );
 		Check( rPlain.ok, "a VCM render with no `light` arg still succeeds -- the P1-2 gate is scoped "
 		                  "to light solo and does not break ordinary rendering" );
@@ -342,6 +352,7 @@ static void RunNonPathTracingIntegratorRefusesSoloTest()
 
 	AgentRenderParams p;
 	p.light = "redlight";   // a name that RESOLVES; only the integrator is wrong
+	std::srand( g_renderSeed++ );
 	AgentRenderResult r = session->Render( p );
 	std::printf( "  ok=%d message: %s\n", r.ok ? 1 : 0, r.message.c_str() );
 
@@ -376,7 +387,7 @@ static const char* const kSceneOmniPlusMeshLight =
 	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
 	"box_geometry\n{\n\tname floor_geo\n\twidth 12\n\theight 0.2\n\tdepth 12\n}\n\n"
 	"standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial floor_mat\n\tposition 0 -1 0\n}\n\n"
-	"omni_light\n{\n\tname greenomni\n\tpower 40.0\n\tposition 2.2 2.5 0\n\tcolor 0.05 1.0 0.05\n}\n\n"
+	"omni_light\n{\n\tname greenomni\n\tpower 40.0\n\tposition 2.2 2.5 0\n\tcolor 0.05 1.0 0.05\n\tcolorspace sRGB\n}\n\n"
 	"uniformcolor_painter\n{\n\tname redlight_pnt\n\tcolor 1.0 0.05 0.05\n}\n\n"
 	"lambertian_luminaire_material\n{\n\tname redlight_mat\n\texitance redlight_pnt\n\tmaterial none\n\tscale 3.0\n}\n\n"
 	"box_geometry\n{\n\tname redlight_geo\n\twidth 2.5\n\theight 0.2\n\tdepth 2.5\n}\n\n"
@@ -397,11 +408,13 @@ static void RunExplicitLightPartitionTest()
 	if( !session ) { if( pJob ) pJob->release(); return; }
 
 	AgentRenderParams pAll;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rAll = session->Render( pAll );
 	Check( rAll.ok, "all-lights omni+mesh render succeeds" );
 
 	AgentRenderParams pOmni;
 	pOmni.light = "greenomni";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rOmni = session->Render( pOmni );
 	Check( rOmni.ok, "solo(greenomni) render succeeds -- resolves via the LIGHT MANAGER branch of "
 	                 "SetSoloLightByName (SoloKind::Light), not the object-manager fallback every "
@@ -409,6 +422,7 @@ static void RunExplicitLightPartitionTest()
 
 	AgentRenderParams pMesh;
 	pMesh.light = "redlight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rMesh = session->Render( pMesh );
 	Check( rMesh.ok, "solo(redlight) render succeeds" );
 
@@ -420,7 +434,7 @@ static void RunExplicitLightPartitionTest()
 	std::string meshOnly = kSceneOmniPlusMeshLight;
 	{
 		const std::string omniChunk =
-			"omni_light\n{\n\tname greenomni\n\tpower 40.0\n\tposition 2.2 2.5 0\n\tcolor 0.05 1.0 0.05\n}\n\n";
+			"omni_light\n{\n\tname greenomni\n\tpower 40.0\n\tposition 2.2 2.5 0\n\tcolor 0.05 1.0 0.05\n\tcolorspace sRGB\n}\n\n";
 		const size_t at = meshOnly.find( omniChunk );
 		Check( at != std::string::npos, "located the omni chunk to strip for the reference scene" );
 		if( at != std::string::npos ) meshOnly.erase( at, omniChunk.size() );
@@ -432,6 +446,7 @@ static void RunExplicitLightPartitionTest()
 	AgentRenderResult rRef;
 	if( refSession ) {
 		AgentRenderParams pRef;   // NO solo -- the mesh light is the only light
+		std::srand( g_renderSeed++ );
 		rRef = refSession->Render( pRef );
 		Check( rRef.ok, "mesh-only reference render succeeds" );
 	}
@@ -525,16 +540,19 @@ static void RunEnvironmentPartitionTest()
 	if( !session ) { if( pJob ) pJob->release(); return; }
 
 	AgentRenderParams pAll;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rAll = session->Render( pAll );
 	Check( rAll.ok, "all-lights (light + env) render succeeds" );
 
 	AgentRenderParams pLight;
 	pLight.light = "redlight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rLight = session->Render( pLight );
 	Check( rLight.ok, "solo(redlight) render succeeds" );
 
 	AgentRenderParams pEnv;
 	pEnv.light = "environment";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rEnv = session->Render( pEnv );
 	Check( rEnv.ok, "solo(environment) render succeeds -- the reserved \"environment\" name resolves "
 	                "(RayCaster::SetSoloLightByName), without which this identity is unstatable" );
@@ -593,16 +611,19 @@ static void RunUnbiasedPartitionMISHeavyTest()
 	if( !session ) { if( pJob ) pJob->release(); return; }
 
 	AgentRenderParams pAll;
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rAll = session->Render( pAll );
 	Check( rAll.ok, "all-lights render succeeds" );
 
 	AgentRenderParams pRed;
 	pRed.light = "redlight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rRed = session->Render( pRed );
 	Check( rRed.ok, "solo(redlight) render succeeds" );
 
 	AgentRenderParams pBlue;
 	pBlue.light = "bluelight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult rBlue = session->Render( pBlue );
 	Check( rBlue.ok, "solo(bluelight) render succeeds" );
 
@@ -664,6 +685,7 @@ static void RunLightSoloComposesWithBeautyVariantTest()
 	p.renderTarget = AgentRenderTarget::ViewMode;
 	p.viewMode     = Implementation::ViewportRenderMode::Direct;
 	p.light        = "redlight";
+	std::srand( g_renderSeed++ );
 	AgentRenderResult r = session->Render( p );
 	Check( r.ok, "mode:\"direct\" + light:\"redlight\" succeeds" );
 	if( r.ok ) {
@@ -678,6 +700,13 @@ static void RunLightSoloComposesWithBeautyVariantTest()
 
 int main()
 {
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	RunUnknownLightFailsTest();
 	RunLightIgnoredUnderDataModesTest();
 	RunUnbiasedPartitionTest();

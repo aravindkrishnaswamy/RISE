@@ -71,6 +71,8 @@ struct OIDNDenoiser::State
 	unsigned int		height;
 	bool				hasAlbedo;
 	bool				hasNormal;
+	OidnDevice requestedDevice = OidnDevice::Auto;
+	unsigned int deviceGeneration = 0;
 	OidnQuality			resolvedQuality;	// post-Auto resolution
 	OidnPrefilter		prefilter;			// Fast vs Accurate
 
@@ -83,7 +85,8 @@ struct OIDNDenoiser::State
 	// around the host-side staging vectors / AOV pointers via
 	// `oidnNewSharedBuffer`, so the per-call `buffer.write` / `read`
 	// path is skipped (the data is already aliased; a memcpy of up
-	// to 4 image-sized buffers per denoise becomes zero copies).
+	// to 4 image-sized buffers per Fast denoise becomes zero copies).
+	// Accurate aux uses owned buffers and copies each supplied input.
 	//
 	// Shared buffers pin to a specific host pointer at filter-commit
 	// time.  If the caller passes a different pointer on a later
@@ -112,6 +115,19 @@ struct OIDNDenoiser::State
 	  , boundNormalPtr( 0 )
 	{}
 };
+#endif
+
+#ifdef RISE_ENABLE_OIDN
+unsigned int OIDNDenoiser::GetDeviceGeneration() const { return mState->deviceGeneration; }
+OidnDevice OIDNDenoiser::GetLastResolvedDevice() const {
+	if( !mState->device ) return OidnDevice::Auto;
+	return mState->useSharedBuffers ? OidnDevice::CPU : OidnDevice::GPU;
+}
+
+OidnQuality OIDNDenoiser::GetLastResolvedQuality() const
+{
+	return mState->resolvedQuality;
+}
 #endif
 
 OIDNDenoiser::OIDNDenoiser()
@@ -200,23 +216,23 @@ void OIDNDenoiser::FloatBufferToImage(
 
 namespace
 {
-	// Auto-quality heuristic thresholds (s / megapixel).  See docs/OIDN.md
-	// (OIDN-P0-1) for derivation and OIDN-P0-3 for the Metal-backend
-	// recalibration note.  Tuned against Apple Silicon CPU; faster
-	// devices will leave the heuristic underspending.
+	// DL-360: deterministic work-policy thresholds. Carry configured spp
+	// times family weight directly: multiplying by image area then dividing
+	// can cross a threshold through roundoff, especially on cropped regions.
+	// These are policy units, not measured hardware throughput.
 	static constexpr double kAutoFastUntilSecPerMP     = 3.0;
 	static constexpr double kAutoBalancedUntilSecPerMP = 20.0;
 
 	OidnQuality ResolveAutoQuality(
-		double renderSeconds,
+		double workRate,
 		unsigned int w,
 		unsigned int h,
-		double& outR,			// render seconds per megapixel (for logging)
+		double& outR,			// estimated policy seconds per megapixel (for logging)
 		double& outMP			// megapixels (for logging)
 		)
 	{
 		outMP = ( static_cast<double>( w ) * static_cast<double>( h ) ) / 1.0e6;
-		outR  = ( outMP > 0.0 ) ? renderSeconds / outMP : 0.0;
+		outR = workRate;
 		if( outR < kAutoFastUntilSecPerMP ) {
 			return OidnQuality::Fast;
 		}
@@ -252,14 +268,14 @@ namespace
 		return static_cast<int>( oidn::Quality::High );
 	}
 
-	// OIDN error callback.  Routes OIDN's diagnostics through RISE's
-	// log system instead of stderr.  Registered immediately after the
-	// device is created and before its first commit, so any errors
-	// during commit / setImage / set / execute funnel through here
-	// instead of being silently dropped if the caller forgets to poll
-	// `device.getError()`.  The synchronous `getError()` polls in
-	// Denoise() are kept too — together they catch warnings (callback)
-	// and confirm clean state per call (poll).
+	// OIDN error callback routes subsequent device errors to RISE's log.
+	// Registered AFTER ResolveOidnDevice returns a committed device.
+	// TryCreateOidnDevice polls initial commit errors during resolution;
+	// failed first attempts are consumed so fallback does not spam logs.
+	// Later filter commit / setImage / set / execute errors reach this
+	// callback. Denoise also polls after filter setup and execution.
+	// Callback codes map to errors (Cancelled maps to a warning), not a
+	// promise to capture every verbose diagnostic from the OIDN library.
 	//
 	// Cancellation is intentionally NOT propagated to OIDN — see
 	// docs/OIDN.md (OIDN-P1-3) for the project invariant.  Even if a
@@ -387,23 +403,36 @@ void OIDNDenoiser::Denoise(
 	OidnQuality requestedQuality,
 	OidnDevice requestedDevice,
 	OidnPrefilter requestedPrefilter,
-	double renderSecondsBeforeDenoise
+	double workPerMegapixel
 	)
 {
-	// Resolve Auto via the render-time / megapixels heuristic; explicit
-	// presets pass through unchanged.  When Auto fires, log the inputs
-	// and the picked preset so the threshold constants can be tuned
-	// from real-world telemetry without re-running the render.
+	// Resolve Auto from configured work; explicit presets pass through.
 	OidnQuality resolvedQuality = requestedQuality;
 	if( requestedQuality == OidnQuality::Auto ) {
 		double r = 0.0, mp = 0.0;
-		resolvedQuality = ResolveAutoQuality( renderSecondsBeforeDenoise, w, h, r, mp );
+		resolvedQuality = ResolveAutoQuality( workPerMegapixel, w, h, r, mp );
 		GlobalLog()->PrintEx( eLog_Event,
-			"OIDN auto: render=%.2fs, image=%ux%u (%.2f MP), r=%.2f s/MP -> %s",
-			renderSecondsBeforeDenoise, w, h, mp, r,
+			"OIDN auto: image=%ux%u (%.2f MP), r=%.2f policy s/MP -> %s",
+			w, h, mp, r,
 			OidnQualityName( resolvedQuality ) );
 	}
 
+	// An idle caller may change the backend. Release every dependent handle
+	// before the device, preserving staging vectors whose pointers are inputs.
+	if( mState->device && mState->requestedDevice != requestedDevice ) {
+		mState->filter = oidn::FilterRef();
+		mState->albedoFilter = oidn::FilterRef();
+		mState->normalFilter = oidn::FilterRef();
+		mState->colorBuf = oidn::BufferRef();
+		mState->outputBuf = oidn::BufferRef();
+		mState->albedoBuf = oidn::BufferRef();
+		mState->normalBuf = oidn::BufferRef();
+		mState->device = oidn::DeviceRef();
+		mState->initialized = false;
+		mState->width = mState->height = 0;
+		mState->boundColorPtr = mState->boundOutputPtr = 0;
+		mState->boundAlbedoPtr = mState->boundNormalPtr = 0;
+	}
 	const bool hasAlbedo = ( albedoBuffer != 0 );
 	const bool hasNormal = ( normalBuffer != 0 );
 	const size_t bufBytes = static_cast<size_t>( w ) * h * 3 * sizeof( float );
@@ -423,8 +452,9 @@ void OIDNDenoiser::Denoise(
 
 	// Cache key match?  If yes, skip the (expensive) device.commit() and
 	// filter.commit() steps and just memcpy + execute.  If no, tear down
-	// the filter and rebuild — buffers only get reallocated when the
-	// dimensions changed, otherwise they're reused.
+	// the filter and rebuild. GPU storage survives unchanged dimensions;
+	// CPU shared-buffer handles rebuild for configuration/pointer changes.
+	// A changed backend request recreates the device and buffers above.
 	const bool needsRebuild = !mState->initialized
 		|| dimsChanged
 		|| mState->hasAlbedo != hasAlbedo
@@ -434,9 +464,8 @@ void OIDNDenoiser::Denoise(
 		|| ptrsChanged;
 
 	if( needsRebuild ) {
-		// Lazy device creation.  Only happens once per OIDNDenoiser
-		// lifetime regardless of how many cache rebuilds follow — the
-		// device is dimension-agnostic.  Resolution honours the
+		// Lazy device creation. The device survives filter rebuilds when
+		// the requested backend is unchanged. Resolution honours the
 		// `requestedDevice` knob with fall-back semantics documented
 		// in OidnConfig.h.
 		//
@@ -463,6 +492,8 @@ void OIDNDenoiser::Denoise(
 					"OIDN: failed to create any device (CPU fallback also failed); skipping denoise" );
 				return;
 			}
+			mState->requestedDevice = requestedDevice;
+			++mState->deviceGeneration;
 			mState->device.setErrorFunction( OidnErrorCallback, 0 );
 
 			const int actualType = mState->device.get<int>( "type" );
@@ -477,9 +508,9 @@ void OIDNDenoiser::Denoise(
 				( actualType == static_cast<int>( oidn::DeviceType::CPU ) );
 
 			GlobalLog()->PrintEx( eLog_Info,
-				"OIDN: creating %s device (one-time per rasterizer)%s",
+				"OIDN: creating %s device (cached while backend request is unchanged)%s",
 				OidnDeviceTypeName( actualType ),
-				mState->useSharedBuffers ? " [zero-copy shared buffers]" : "" );
+				mState->useSharedBuffers ? " [shared beauty/output; Fast aux shared]" : "" );
 		}
 
 		// Reallocate buffers when dimensions change OR we're in shared-
@@ -492,18 +523,9 @@ void OIDNDenoiser::Denoise(
 		const bool rebuildBuffers = dimsChanged || mState->useSharedBuffers || !mState->colorBuf;
 
 		if( mState->useSharedBuffers ) {
-			// Shared buffers wrap the caller's host memory directly.
-			// The C++ wrapper exposes this as an overload of
-			// `newBuffer(void*, size_t)` (vs. the device-owned
-			// `newBuffer(size_t)` used in the GPU path below); under
-			// the hood it calls `oidnNewSharedBuffer`.  Input-only
-			// buffers (`albedo` / `normal` in Fast mode) are const-
-			// cast safely because OIDN does not write to them when
-			// they're set as inputs.  In Accurate mode the aux
-			// prefilter writes back in-place, mutating the host AOV
-			// buffer — that's intentional and harmless because
-			// AOVBuffers is reset before each render (see
-			// PixelBasedRasterizerHelper::RasterizeScene).
+			// Beauty/output alias caller storage. Fast aux is input-only and
+			// may also alias it. Accurate prefilters write in place, so their
+			// aux buffers must be owned: the public inputs are const (DL-440).
 			if( rebuildBuffers ) {
 				mState->colorBuf  = mState->device.newBuffer(
 					static_cast<void*>( beautyBuffer ), bufBytes );
@@ -513,16 +535,27 @@ void OIDNDenoiser::Denoise(
 				mState->boundOutputPtr = outputBuffer;
 			}
 			if( hasAlbedo ) {
-				mState->albedoBuf = mState->device.newBuffer(
-					const_cast<float*>( albedoBuffer ), bufBytes );
+				if( requestedPrefilter == OidnPrefilter::Accurate ) {
+					if( dimsChanged || !mState->albedoBuf || mState->prefilter != OidnPrefilter::Accurate )
+						mState->albedoBuf = mState->device.newBuffer( bufBytes );
+				} else {
+					// OIDN reads Fast auxiliary inputs without writing them.
+					mState->albedoBuf = mState->device.newBuffer(
+						const_cast<float*>( albedoBuffer ), bufBytes );
+				}
 				mState->boundAlbedoPtr = albedoBuffer;
 			} else {
 				mState->albedoBuf = oidn::BufferRef();
 				mState->boundAlbedoPtr = 0;
 			}
 			if( hasNormal ) {
-				mState->normalBuf = mState->device.newBuffer(
-					const_cast<float*>( normalBuffer ), bufBytes );
+				if( requestedPrefilter == OidnPrefilter::Accurate ) {
+					if( dimsChanged || !mState->normalBuf || mState->prefilter != OidnPrefilter::Accurate )
+						mState->normalBuf = mState->device.newBuffer( bufBytes );
+				} else {
+					mState->normalBuf = mState->device.newBuffer(
+						const_cast<float*>( normalBuffer ), bufBytes );
+				}
 				mState->boundNormalPtr = normalBuffer;
 			} else {
 				mState->normalBuf = oidn::BufferRef();
@@ -648,31 +681,22 @@ void OIDNDenoiser::Denoise(
 			( mState->prefilter == OidnPrefilter::Accurate ) ? "accurate" : "fast" );
 	}
 
-	// Copy the per-render data into the cached buffers.  Use
-	// `buffer.write` rather than `memcpy(getData(), …)` so the same
-	// code path works on GPU devices (where getData() isn't host-
-	// mapped, and a direct memcpy would segfault).
-	//
-	// OIDN-P1-2: when the device is CPU and we used `newSharedBuffer`,
-	// the OIDN buffers already alias host memory — `write` would just
-	// memcpy from the host pointer to itself.  Skipping the write
-	// saves up to 4 image-sized memcpys per denoise (color in,
-	// albedo in, normal in, output out — see the read below).  At 4K
-	// RGB that's ~50 MB × 4 = 200 MB of bandwidth saved.
+	// GPU buffers receive all inputs. CPU beauty/output are shared; Fast
+	// auxiliary inputs are shared too. Accurate auxiliary buffers are owned
+	// and must receive fresh copies on every call, including cache hits.
 	if( !mState->useSharedBuffers ) {
 		mState->colorBuf.write( 0, bufBytes, beautyBuffer );
-		if( hasAlbedo ) {
-			mState->albedoBuf.write( 0, bufBytes, albedoBuffer );
-		}
-		if( hasNormal ) {
-			mState->normalBuf.write( 0, bufBytes, normalBuffer );
-		}
+	}
+	if( !mState->useSharedBuffers || requestedPrefilter == OidnPrefilter::Accurate ) {
+		if( hasAlbedo ) mState->albedoBuf.write( 0, bufBytes, albedoBuffer );
+		if( hasNormal ) mState->normalBuf.write( 0, bufBytes, normalBuffer );
 	}
 
 	// Accurate mode: prefilter the (noisy) aux buffers in-place so
 	// the beauty filter sees clean aux.  Both filters write back into
 	// the same albedoBuf / normalBuf the beauty filter reads, so
-	// there's no extra I/O — just two extra `execute()` calls.  On
+	// CPU Accurate copies const auxiliary inputs into owned buffers;
+	// GPU uses its existing uploads. There are two extra executions. On
 	// Metal at 1080p this adds ~80-150 ms per call (smaller networks
 	// than the beauty filter).
 	if( requestedPrefilter == OidnPrefilter::Accurate ) {
@@ -727,7 +751,7 @@ void OIDNDenoiser::ApplyDenoise(
 	OidnQuality requestedQuality,
 	OidnDevice requestedDevice,
 	OidnPrefilter requestedPrefilter,
-	double renderSecondsBeforeDenoise
+	double workPerMegapixel
 	)
 {
 	GlobalLog()->PrintEx( eLog_Info, "Running OIDN denoiser (%ux%u)...", w, h );
@@ -751,7 +775,7 @@ void OIDNDenoiser::ApplyDenoise(
 		requestedQuality,
 		requestedDevice,
 		requestedPrefilter,
-		renderSecondsBeforeDenoise );
+		workPerMegapixel );
 	FloatBufferToImage( mState->denoisedStaging.data(), image, w, h );
 
 	const auto t_end = std::chrono::steady_clock::now();
@@ -772,7 +796,7 @@ void OIDNDenoiser::ApplyDenoiseRegion(
 	OidnQuality requestedQuality,
 	OidnDevice requestedDevice,
 	OidnPrefilter requestedPrefilter,
-	double renderSecondsBeforeDenoise
+	double workPerMegapixel
 	)
 {
 	if( fullWidth == 0 || fullHeight == 0 || left > right || top > bottom
@@ -822,7 +846,7 @@ void OIDNDenoiser::ApplyDenoiseRegion(
 	Denoise( mState->beautyStaging.data(), albedo, normal,
 		regionWidth, regionHeight, mState->denoisedStaging.data(),
 		requestedQuality, requestedDevice, requestedPrefilter,
-		renderSecondsBeforeDenoise );
+		workPerMegapixel );
 
 	for( unsigned int y=0; y<regionHeight; ++y ) {
 		for( unsigned int x=0; x<regionWidth; ++x ) {

@@ -1,0 +1,27 @@
+# Aluminium (Al) optical constants -- Rakic 1995, Appl. Opt. 34, 4755.
+# Source: refractiveindex.info (CC0 public domain).  Columns: wavelength[nm] n (refractive index).
+# Visible band + margin (340-800 nm); PiecewiseLinearScalarPainter clamps outside range.
+340.0 0.354
+360.0 0.398
+380.0 0.445
+400.0 0.495
+420.0 0.548
+440.0 0.604
+460.0 0.665
+480.0 0.730
+500.0 0.800
+520.0 0.876
+540.0 0.958
+560.0 1.048
+580.0 1.147
+600.0 1.257
+620.0 1.380
+640.0 1.518
+660.0 1.674
+680.0 1.851
+700.0 2.052
+720.0 2.275
+740.0 2.512
+760.0 2.742
+780.0 2.898
+800.0 2.752

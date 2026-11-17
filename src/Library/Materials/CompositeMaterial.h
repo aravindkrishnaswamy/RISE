@@ -18,6 +18,7 @@
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/ILog.h"
 #include "CompositeSPF.h"
+#include "TranslucentMaterial.h"
 #include "CompositeEmitter.h"
 
 namespace RISE
@@ -30,6 +31,8 @@ namespace RISE
 			IBSDF*						pBRDF;
 			ISPF*						pSPF;
 			IEmitter*					pEmitter;
+			bool          bScattersFullSphere;   //!< DL-157 P2-1 / DL-24; see the ctor
+			bool          bHasDeltaPassThrough;  //!< DL-05; see the ctor
 
 			virtual ~CompositeMaterial( )
 			{
@@ -48,28 +51,110 @@ namespace RISE
 				const unsigned int max_diffuse_recursion,			// maximum level of diffuse recursion
 				const unsigned int max_translucent_recursion,		// maximum level of translucent recursion
 				const Scalar thickness,								// thickness between the materials
-				const IPainter& extinction							// extinction coefficient for absorption between layers
+				const IScalarPainter& extinction					// extinction coefficient for absorption between layers (physical scalar)
 				) :
 			pBRDF( 0 ), 
 			pSPF( 0 ), 
-			pEmitter( 0 )
+			pEmitter( 0 ),
+			bScattersFullSphere( false ),
+			bHasDeltaPassThrough( false )
 			{
-				if( top.GetBSDF() ) {
-					pBRDF = top.GetBSDF();
-					pBRDF->addref();
-				} else if( bottom.GetBSDF() ) {
-					pBRDF = bottom.GetBSDF();
-					pBRDF->addref();
-				}
-
 				if( top.GetSPF() && bottom.GetSPF() ) {
-					pSPF = new CompositeSPF( *top.GetSPF(), *bottom.GetSPF(), max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness, extinction );
-				} else if( top.GetSPF() ) {
-					pSPF = top.GetSPF();
-					pSPF->addref();
-				} else if( bottom.GetSPF() ){
-					pSPF = bottom.GetSPF();
-					pSPF->addref();
+					// DL-24 (2026-09-28): the composite prices its own
+					// transport.  Both layers' BSDFs go INTO the SPF --
+					// they are what its layered evaluator connects
+					// through -- and the BSDF this material presents is
+					// that SAME evaluator (CompositeBSDF), so NEE, BDPT/VCM
+					// connections and the BSDF-sampled continuation
+					// estimate one integral (DL-157's one function per
+					// side).
+					//
+					// This SUPERSEDES the pre-DL-24 "top-wins" BSDF, which
+					// presented ONE layer's closed form while the walk
+					// sampled the stack: under a dielectric coat (whose
+					// GetBSDF() is 0) NEE priced the BARE substrate --
+					// unattenuated by the coat, and on top of the walk's own
+					// substrate transport -- which read 1.37 in a
+					// white-furnace BDPT render and ignored the coat's
+					// Fresnel under a delta light entirely.
+					//
+					// DL-157 P2-1's rule is unchanged in principle -- the
+					// full-sphere capability follows the BSDF actually
+					// presented -- and the presented BSDF now never prices
+					// a direction on the far side of the stack (that
+					// transport is sampled by the walk as delta-tagged
+					// rays, see CompositeSPF.h), so the capability is
+					// false.  Pre-DL-24 `composite { top = translucent }`
+					// claimed it because it presented the bare
+					// TranslucentBSDF, pricing a transmission the walk over
+					// an opaque bottom (mat_wax_gold's gold Lambertian)
+					// never produces.
+					CompositeSPF* pComposite = new CompositeSPF( *top.GetSPF(), *bottom.GetSPF(),
+						max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion,
+						max_translucent_recursion, thickness, extinction, top.GetBSDF(), bottom.GetBSDF(),
+						bottom.ScattersFullSphere() && dynamic_cast<const TranslucentMaterial*>( &bottom ) != 0 );
+					pSPF = pComposite;
+					// DL-05: the straight-through lobe needs BOTH layers to
+					// pass (CompositeSPF::DeltaPassThroughTransmittance).
+					// Captured here, like bScattersFullSphere -- an editor
+					// rebind of a layer's gap after construction can only
+					// make it stale toward the pre-DL-05 binary shadow or
+					// toward a walk that reads zero, never toward a double
+					// count.
+					bHasDeltaPassThrough = top.HasDeltaPassThrough() && bottom.HasDeltaPassThrough();
+					if( pComposite->HasLayeredValue() ) {
+						// Null composition (DL-126) is preserved: with no
+						// BSDF on either layer there is nothing to evaluate,
+						// every walked exit is delta-tagged, and the
+						// material presents no BSDF, exactly as before.
+						pBRDF = new CompositeBSDF( *pComposite, top.GetBSDF() ? top.GetBSDF() : bottom.GetBSDF() );
+						GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "CompositeBSDF" );
+					}
+					// DL-296 (2026-10-09): ...except when the BOTTOM transmits
+					// through its own BSDF (translucent_material, whose value
+					// and Pdf really have support below its horizon since
+					// DL-157 / DL-41).  The layered value then has a
+					// below-horizon term -- transmission out through the
+					// bottom, CompositeSPF's term (c) -- that NEE and BDPT /
+					// VCM connections price, and the capability is that
+					// term's.  A light BEHIND such a sheet (a point light
+					// especially) used to reach the camera only through
+					// delta-tagged walker rays, i.e. not at all.  Scoped to a
+					// TRANSLUCENT bottom (DL-472): a thin-transmission weave
+					// bottom also claims the full sphere, but its value under
+					// the composite's back-face layer record does not match
+					// its own sampler (CompositeEnergyConservationTest
+					// --dl472-unit, measured before the scope: back f(b->a)
+					// ~0 at oblique pairs, kray*Pdf mismatches on 78 % of
+					// rays), so it stays walker-only.  The term is
+					// live only at records on a surface that provably
+					// encloses no volume (CompositeSPF.cpp TransmissionLive),
+					// so on a closed object the claim costs NEE samples only.
+					bScattersFullSphere = pComposite->HasTransmissionValue();
+				} else {
+					// Only one layer can scatter: that layer IS the
+					// material (the pre-DL-24 behaviour, kept verbatim).
+					if( top.GetBSDF() ) {
+						pBRDF = top.GetBSDF();
+						pBRDF->addref();
+						bScattersFullSphere = top.ScattersFullSphere();
+					} else if( bottom.GetBSDF() ) {
+						pBRDF = bottom.GetBSDF();
+						pBRDF->addref();
+						bScattersFullSphere = bottom.ScattersFullSphere();
+					}
+
+					// DL-05: a forwarded single SPF's pass-through lobe is
+					// that layer's own.
+					if( top.GetSPF() ) {
+						pSPF = top.GetSPF();
+						pSPF->addref();
+						bHasDeltaPassThrough = top.HasDeltaPassThrough();
+					} else if( bottom.GetSPF() ){
+						pSPF = bottom.GetSPF();
+						pSPF->addref();
+						bHasDeltaPassThrough = bottom.HasDeltaPassThrough();
+					}
 				}
 
 				if( top.GetEmitter() && bottom.GetEmitter() ) {
@@ -92,6 +177,13 @@ namespace RISE
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return pEmitter; };
+
+			//! DL-157 P2-1 / DL-24: the answer of the BSDF `GetBSDF()`
+			//! actually returns -- see the constructor's derivation.
+			inline bool ScattersFullSphere() const { return bScattersFullSphere; }
+
+			//! DL-05: see the constructor (IMaterial::HasDeltaPassThrough).
+			inline bool HasDeltaPassThrough() const { return bHasDeltaPassThrough; }
 		};
 	}
 }

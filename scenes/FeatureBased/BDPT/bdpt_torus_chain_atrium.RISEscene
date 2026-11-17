@@ -58,27 +58,14 @@ vcm_pel_rasterizer
 }
 */
 
-/*
-mlt_rasterizer
-{
-	max_eye_depth		12
-	max_light_depth		12
-	bootstrap_samples	100000
-	chains				64
-	mutations_per_pixel	10000
-	large_step_prob		0.25
-}
-*/
-
 
 ##################################################
-# Alternative: Unidirectional MIS Path Tracer
+# Alternative: unidirectional path tracer
 #
-# MISPathTracingShaderOp is a self-contained integrator that
-# handles NEE (both mesh and non-mesh lights), BSDF sampling,
-# emission, and SMS all in one shaderop with proper MIS weights.
-# It replaces the entire DefaultDirectLighting + PathTracing chain.
-# Use with pixelpel_rasterizer instead of bdpt_pel_rasterizer.
+# pathtracing_pel_rasterizer handles NEE (mesh and non-mesh lights),
+# BSDF sampling, emission and SMS with MIS weights.  To use it,
+# uncomment the chunk below and comment out bdpt_pel_rasterizer above
+# (unnamed rasterizer chunks derive last-wins).
 #
 # Note: for scenes like this one where all floor illumination must
 # pass through glass, BDPT is fundamentally superior — its light

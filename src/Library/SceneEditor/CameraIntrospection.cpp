@@ -53,6 +53,13 @@ namespace
 		return String( buf );
 	}
 
+	String FormatVec2( const Vector2& v )
+	{
+		char buf[96];
+		std::snprintf( buf, sizeof(buf), "%.6g %.6g", v.x, v.y );
+		return String( buf );
+	}
+
 	String FormatPoint3( const Point3& p )
 	{
 		char buf[128];
@@ -184,15 +191,17 @@ namespace
 		}
 		if( n == "target_orientation" )
 		{
-			out.kind = ValueKind::DoubleVec3;
+			// DL-32 round 3 (docs/DEBT_LEDGER.md): the descriptor now
+			// genuinely declares `target_orientation` DoubleVec2 (it always
+			// was 2-component in storage; the parser used to mis-declare it
+			// DoubleVec3), so this reads and reports the real 2-component
+			// value instead of padding a fake third `0`.
+			out.kind = ValueKind::DoubleVec2;
 			Vector2 t = cam.GetTargetOrientation();
-			// target_orientation is Vec2 in storage but the parser
-			// param is DoubleVec3; emit (theta, phi, 0) for clarity.
-			Vector3 v;
-			v.x = t.x * RAD_TO_DEG;
-			v.y = t.y * RAD_TO_DEG;
-			v.z = 0;
-			out.value = FormatVec3( v );
+			Vector2 deg;
+			deg.x = t.x * RAD_TO_DEG;
+			deg.y = t.y * RAD_TO_DEG;
+			out.value = FormatVec2( deg );
 			return true;
 		}
 		if( n == "theta" )
@@ -412,17 +421,16 @@ namespace
 		}
 		if( n == "viewport_scale" )
 		{
-			// Stored as Vector2 but the descriptor declares Double.
-			// The parser reads the field as "x y" (two doubles); we
-			// emit the same string form here so the panel round-trips
-			// the user's input.
-			out.kind = ValueKind::String;
+			// DL-32 round 3 (docs/DEBT_LEDGER.md): the descriptor now
+			// genuinely declares `viewport_scale` DoubleVec2 (it was always
+			// 2-component in storage; the parser used to mis-declare it a
+			// single Double while reading "x y" from it) -- report the real
+			// kind instead of the ValueKind::String workaround.
+			out.kind = ValueKind::DoubleVec2;
 			out.editable = true;
 			if( const OrthographicCamera* o = dynamic_cast<const OrthographicCamera*>( &cam ) ) {
 				const Vector2 v = o->GetViewportScaleStored();
-				char buf[128];
-				std::snprintf( buf, sizeof(buf), "%.6g %.6g", v.x, v.y );
-				out.value = String( buf );
+				out.value = FormatVec2( v );
 				return true;
 			}
 			out.value = String( "(unavailable)" );
@@ -455,7 +463,7 @@ namespace
 	// The camera descriptor declares both multi-component and
 	// single-component versions of the same stored data — e.g.
 	// `orientation` (vec3) is shadowed by `pitch`/`roll`/`yaw`
-	// (scalars), and `target_orientation` (vec3) by `theta`/`phi`
+	// (scalars), and `target_orientation` (vec2) by `theta`/`phi`
 	// (scalars).  Both forms map to the same Vector3/Vector2 in
 	// the camera, so showing both in the panel is just noise; we
 	// pick the form that fits the interactive workflow:
@@ -691,8 +699,19 @@ bool CameraIntrospection::SetProperty( ICamera& camera,
 	}
 	else if( n == "target_orientation" ) {
 		Scalar x, y, z;
-		if( !ParseVec3( value, x, y, z ) ) return false;
-		// Stored as Vec2; only x/y are used.  Convert from degrees.
+		// Stored as Vec2; only x/y are used.  Convert from degrees.  Accept
+		// BOTH spellings: the 3-component form the scene language and the
+		// agent's camera override use ("x y 0"), and the 2-component form this
+		// property's OWN GetPropertyValue emits (DoubleVec2).  Rejecting the
+		// latter made a captured value impossible to write back, so any
+		// capture-set-render-restore sequence that overrode target_orientation
+		// (the agent's `view`/`isolate`/`zoom` renders) left the override in
+		// place on the camera afterwards.
+		if( ParseVec3( value, x, y, z ) ) {
+			// ok
+		} else if( std::sscanf( value.c_str(), "%lf %lf", &x, &y ) != 2 ) {
+			return false;
+		}
 		cam->SetTargetOrientation( Vector2( x * DEG_TO_RAD, y * DEG_TO_RAD ) );
 	}
 	else if( n == "theta" ) {
@@ -862,10 +881,12 @@ bool CameraIntrospection::SetProperty( ICamera& camera,
 		}
 	}
 	else if( n == "viewport_scale" ) {
-		// Stored as Vector2; the parser reads "x y".  Accept the same
-		// form here.  If the user types one number we treat it as a
-		// uniform scale (x = y = v) to match the descriptor's
-		// single-Double declaration.
+		// Stored as Vector2; the parser reads "x y" through the descriptor's
+		// (now genuinely) DoubleVec2 declaration (DL-32 round 3,
+		// docs/DEBT_LEDGER.md).  This live-panel editing surface stays more
+		// permissive than the strict scene-file parser: a single typed
+		// number is accepted as a uniform-scale shorthand (x = y = v) for
+		// editing convenience, independent of the parser's own arity rule.
 		Scalar x = 0, y = 0;
 		const int got = std::sscanf( value.c_str(), "%lf %lf", &x, &y );
 		if( got < 1 ) return false;
@@ -900,6 +921,44 @@ bool CameraIntrospection::SetProperty( ICamera& camera,
 // the discriminator and calls the matching `IJob::Add*Camera`.  See
 // CameraIntrospection.h for the contract.
 // -------------------------------------------------------------------
+
+bool CameraIntrospection::CaptureExactValue( const ICamera& camera, const String& name, double out[3] )
+{
+	const CameraCommon* cam = dynamic_cast<const CameraCommon*>( &camera );
+	if( !cam ) return false;
+	const std::string n( name.c_str() );
+	out[0] = out[1] = out[2] = 0.0;
+	if( n == "location" )  { const Point3  p = cam->GetRestLocation();       out[0] = p.x; out[1] = p.y; out[2] = p.z; return true; }
+	if( n == "lookat" )    { const Point3  p = cam->GetStoredLookAt();       out[0] = p.x; out[1] = p.y; out[2] = p.z; return true; }
+	if( n == "up" )        { const Vector3 v = cam->GetStoredUp();           out[0] = v.x; out[1] = v.y; out[2] = v.z; return true; }
+	if( n == "orientation" ) { const Vector3 v = cam->GetEulerOrientation(); out[0] = v.x; out[1] = v.y; out[2] = v.z; return true; }
+	if( n == "target_orientation" ) { const Vector2 v = cam->GetTargetOrientation(); out[0] = v.x; out[1] = v.y; return true; }
+	if( n == "fov" ) {
+		if( const PinholeCamera* p = dynamic_cast<const PinholeCamera*>( cam ) ) { out[0] = p->GetFovStored(); return true; }
+		return false;
+	}
+	return false;
+}
+
+bool CameraIntrospection::RestoreExactValue( ICamera& camera, const String& name, const double in[3] )
+{
+	CameraCommon* cam = dynamic_cast<CameraCommon*>( &camera );
+	if( !cam ) return false;
+	const std::string n( name.c_str() );
+	if( n == "location" )         cam->SetLocation( Point3( in[0], in[1], in[2] ) );
+	else if( n == "lookat" )      cam->SetLookAt( Point3( in[0], in[1], in[2] ) );
+	else if( n == "up" )          cam->SetUp( Vector3( in[0], in[1], in[2] ) );
+	else if( n == "orientation" ) cam->SetEulerOrientation( Vector3( in[0], in[1], in[2] ) );
+	else if( n == "target_orientation" ) cam->SetTargetOrientation( Vector2( in[0], in[1] ) );
+	else if( n == "fov" ) {
+		PinholeCamera* p = dynamic_cast<PinholeCamera*>( cam );
+		if( !p ) return false;
+		p->SetFovStored( in[0] );
+	}
+	else return false;
+	cam->RegenerateData();
+	return true;
+}
 
 bool CameraIntrospection::CaptureCameraSnapshot( const ICamera& camera, CameraSnapshot& out )
 {

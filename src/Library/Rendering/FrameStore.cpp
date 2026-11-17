@@ -11,6 +11,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <exception>
 #include "FrameStore.h"
 #include "../Interfaces/IRenderObserver.h"
 #include "../Utilities/Color/ColorUtils.h"
@@ -470,13 +471,17 @@ namespace
 		const RISECBOR64::Value* global = record.Find("global_render_options");
 		const RISECBOR64::Value* autoProbe = global ? global->Find("auto_probe") : nullptr;
 		const RISECBOR64::Value* vcm = global ? global->Find("vcm") : nullptr;
-		if( !global || !ExactMapKeys(*global,{"auto_probe","vcm"},
+		if( !global || !ExactMapKeys(*global,{"auto_probe","time_indexed_motion_blur","vcm"},
 			"resolved global options",error) || !autoProbe || !vcm ||
 			!ExactMapKeys(*autoProbe,{ "activation_spp", "reach_winsor_percentile",
 				"scale", "spp", "tau_bdpt", "tau_caustic", "tau_reach",
 				"variance_renders" },"resolved auto probe",error) ||
 			!ExactMapKeys(*vcm,{ "progressive_radius_enabled", "throughput_clamp_multiplier",
-				"throughput_clamp_percentile" },"resolved VCM options",error) ) return false;
+				"throughput_clamp_percentile", "volume_merge_footprints",
+				"volume_merge_max_vertices", "volume_merge_neighbours" },
+				"resolved VCM options",error) ||
+			!FieldType(*global,"time_indexed_motion_blur",RISECBOR64::Value::Boolean,
+				"resolved global options",error) ) return false;
 		for( const char* key : {"activation_spp","scale","spp","variance_renders"} ) {
 			if( !FieldType(*autoProbe,key,RISECBOR64::Value::UnsignedInteger,
 				"resolved auto probe",error) ) return false;
@@ -489,6 +494,12 @@ namespace
 			!FieldType(*vcm,"throughput_clamp_multiplier",RISECBOR64::Value::Float64,
 				"resolved VCM options",error) ||
 			!FieldType(*vcm,"throughput_clamp_percentile",RISECBOR64::Value::Float64,
+				"resolved VCM options",error) ||
+			!FieldType(*vcm,"volume_merge_footprints",RISECBOR64::Value::Float64,
+				"resolved VCM options",error) ||
+			!FieldType(*vcm,"volume_merge_max_vertices",RISECBOR64::Value::Float64,
+				"resolved VCM options",error) ||
+			!FieldType(*vcm,"volume_merge_neighbours",RISECBOR64::Value::Float64,
 				"resolved VCM options",error) ) return false;
 
 		const RISECBOR64::Value* integrator = record.Find("integrator");
@@ -504,7 +515,7 @@ namespace
 				"max_guiding_depth", "max_light_guiding_depth", "online", "ris_candidates",
 				"sampling_type", "training_iterations", "training_spp", "warmup_iterations" },
 				"resolved path guiding",error) ||
-			!ExactMapKeys(*sms,{ "bernoulli_trials", "biased", "enabled", "max_chain_depth",
+			!ExactMapKeys(*sms,{ "bernoulli_trials", "biased", "enabled", "extended", "max_chain_depth",
 				"max_iterations", "max_photon_seeds_per_shading_point", "multi_trials",
 				"photon_count", "seeding_mode", "target_bounces", "threshold", "two_stage",
 				"use_levenberg_marquardt" },"resolved SMS",error) ) return false;
@@ -558,7 +569,7 @@ namespace
 			"resolved path guiding",error) ) return false;
 		for( const auto& member : sms->GetMap() ) {
 			const std::set<std::string> boolFields = {
-				"biased","enabled","two_stage","use_levenberg_marquardt"};
+				"biased","enabled","extended","two_stage","use_levenberg_marquardt"};
 			const RISECBOR64::Value::Type expected = member.first == "threshold" ?
 				RISECBOR64::Value::Float64 : boolFields.count(member.first) ?
 				RISECBOR64::Value::Boolean : RISECBOR64::Value::UnsignedInteger;
@@ -1160,16 +1171,20 @@ namespace RISE
 				                            : 0;
 				const unsigned int y0 = rc ? rc->top
 				                            : 0;
-				const unsigned int xEnd = rc
-				    ? rc->right + 1u   // inclusive → exclusive end
-				    : static_cast<unsigned int>( parent_.width_ );
-				const unsigned int yEnd = rc
-				    ? rc->bottom + 1u  // inclusive → exclusive end
-				    : static_cast<unsigned int>( parent_.height_ );
-				const unsigned int xClamp = std::min( xEnd,
-				    static_cast<unsigned int>( parent_.width_ ) );
-				const unsigned int yClamp = std::min( yEnd,
-				    static_cast<unsigned int>( parent_.height_ ) );
+				// Inclusive → exclusive end in 64 bits, THEN clamp: a
+				// 32-bit `right + 1` wrapped UINT_MAX ("to the edge",
+				// which RasterImage::Clear honours) to 0 and cleared
+				// nothing.
+				const uint64_t xEnd = rc
+				    ? uint64_t( rc->right ) + 1u
+				    : uint64_t( parent_.width_ );
+				const uint64_t yEnd = rc
+				    ? uint64_t( rc->bottom ) + 1u
+				    : uint64_t( parent_.height_ );
+				const unsigned int xClamp = static_cast<unsigned int>(
+				    std::min<uint64_t>( xEnd, uint64_t( parent_.width_ ) ) );
+				const unsigned int yClamp = static_cast<unsigned int>(
+				    std::min<uint64_t>( yEnd, uint64_t( parent_.height_ ) ) );
 				for ( unsigned int y = y0; y < yClamp; ++y ) {
 					for ( unsigned int x = x0; x < xClamp; ++x ) {
 						parent_.beauty_->At( x, y ) = c.base;
@@ -1407,7 +1422,11 @@ namespace RISE
 		{
 			assert( tileX < tileCountX_ && tileY < tileCountY_ );
 			TileLockAt( tileX, tileY ).mtx.unlock();
+			PublishTile( tileX, tileY );
+		}
 
+		void FrameStore::PublishTile( size_t tileX, size_t tileY )
+		{
 			// Bump global generation; readers gate viewport repaints
 			// on this counter changing.  Release ordering pairs with
 			// the acquire load on the reader side.
@@ -1449,11 +1468,12 @@ namespace RISE
 
 		void FrameStore::CopyTileFromRasterImage( size_t tileX, size_t tileY,
 		                                          const IRasterImage& src,
-		                                          const Rect& srcRect )
+		                                          const Rect& srcRect,
+		                                          const Rect* dstClip )
 		{
 			// Phase-1 ingest path: copy beauty pixels + alpha from
 			// the existing rasterizer's IRasterImage into our typed
-			// Beauty/Alpha channels under tile-seqlock protection.
+			// Beauty/Alpha channels under exclusive tile-lock protection.
 			//
 			// srcRect is the area of `src` to read (typically the
 			// rasterizer's just-completed tile rect); the
@@ -1469,11 +1489,27 @@ namespace RISE
 			const unsigned int dstY1 = static_cast<unsigned int>(
 				std::min( ( tileY + 1 ) * tileEdge_, height_ ) );
 
-			BeginTile( tileX, tileY );
+			// Optional destination clip (inclusive): pixels outside it keep
+			// their previous content and their source pixels are not read.
+			// An empty clip copies nothing but still brackets the tile.
+			unsigned int cx0 = dstX0, cy0 = dstY0, cx1 = dstX1, cy1 = dstY1;
+			if ( dstClip ) {
+				if ( dstClip->left > dstClip->right || dstClip->top > dstClip->bottom ) {
+					cx1 = cx0;
+					cy1 = cy0;
+				} else {
+					cx0 = std::max( cx0, dstClip->left );
+					cy0 = std::max( cy0, dstClip->top );
+					cx1 = static_cast<unsigned int>( std::min<uint64_t>( cx1, uint64_t( dstClip->right ) + 1 ) );
+					cy1 = static_cast<unsigned int>( std::min<uint64_t>( cy1, uint64_t( dstClip->bottom ) + 1 ) );
+				}
+			}
 
-			for ( unsigned int dy = dstY0; dy < dstY1; ++dy ) {
+			FrameStoreTileBracket bracket( this, tileX, tileY, tileX + 1, tileY + 1 );
+
+			for ( unsigned int dy = cy0; dy < cy1; ++dy ) {
 				const unsigned int sy = srcRect.top + ( dy - dstY0 );
-				for ( unsigned int dx = dstX0; dx < dstX1; ++dx ) {
+				for ( unsigned int dx = cx0; dx < cx1; ++dx ) {
 					const unsigned int sx = srcRect.left + ( dx - dstX0 );
 					if ( sx >= src.GetWidth() || sy >= src.GetHeight() ) continue;
 
@@ -1485,7 +1521,7 @@ namespace RISE
 				}
 			}
 
-			EndTile( tileX, tileY );
+			bracket.Release();
 		}
 
 		void FrameStore::MarkFrameComplete( unsigned frame )
@@ -1601,75 +1637,73 @@ namespace RISE
 			return true;
 		}
 
-		// FrameStoreBulkBracket — RAII guard for full-image writes.
-		// See FrameStore.h for the contract.
-		FrameStoreBulkBracket::FrameStoreBulkBracket( FrameStore* fs, const IRasterImage& image )
-			: mFs( nullptr )
+		FrameStoreTileBracket::FrameStoreTileBracket(
+			FrameStore* fs, size_t tx0, size_t ty0, size_t tx1, size_t ty1 )
+			: fs_( fs ), tx0_( tx0 ), ty0_( ty0 ), columns_( 0 ), count_( 0 )
 		{
 			if( !fs ) return;
-			// Identity check: only bracket when `image` is the actual
-			// FrameStore beauty view.  A dim-only check would falsely
-			// fire on private RISERasterImages whose dims happen to
-			// match camera dims (e.g. BDPT path-guiding training image,
-			// `pPreDenoised` scratch in the OIDN path).
-			if( &image != &fs->AsBeautyRasterImage() ) return;
+			tx1 = std::min( tx1, fs->TileCountX() );
+			ty1 = std::min( ty1, fs->TileCountY() );
+			if( tx0 >= tx1 || ty0 >= ty1 ) return;
+			columns_ = tx1 - tx0;
+			count_ = columns_ * ( ty1 - ty0 );
+			Acquire();
+		}
 
-			const size_t ntx = fs->TileCountX();
-			const size_t nty = fs->TileCountY();
-
-			// Partial-acquire safety: `std::shared_mutex::lock` is
-			// allowed to throw `std::system_error` (resource
-			// exhaustion, EAGAIN on POSIX).  If we throw partway
-			// through the loop without unwinding, the destructor (mFs
-			// is null until all-acquired) leaves N partial locks held
-			// forever → process-wide deadlock.  Track per-tile
-			// progress and release-in-reverse on any throw before
-			// rethrowing.  See L6e-1.1 final adversarial review P0.
-			size_t acquired = 0;
+		void FrameStoreTileBracket::Acquire()
+		{
+			assert( first_ == end_ );
+			first_ = end_ = 0;
 			try {
-				for( size_t ty = 0; ty < nty; ++ty ) {
-					for( size_t tx = 0; tx < ntx; ++tx ) {
-						fs->BeginTile( tx, ty );
-						++acquired;
-					}
+				while( end_ < count_ ) {
+					fs_->BeginTile( tx0_ + end_ % columns_, ty0_ + end_ / columns_ );
+					++end_;
 				}
 			} catch( ... ) {
-				// Construction never exposed a writable guard, so unwind the
+				// Acquisition never exposed a writable guard, so unwind the
 				// acquired prefix without publishing false tile completions.
-				while( acquired > 0u ) {
-					--acquired;
-					fs->TileLockAt(acquired%ntx,acquired/ntx).mtx.unlock();
+				while( first_ < end_ ) {
+					--end_;
+					fs_->TileLockAt( tx0_ + end_ % columns_, ty0_ + end_ / columns_ ).mtx.unlock();
 				}
 				throw;
 			}
-			mFs = fs;  // record only after every BeginTile succeeded
 		}
 
-		FrameStoreBulkBracket::~FrameStoreBulkBracket() noexcept
+		void FrameStoreTileBracket::Release()
 		{
-			if( !mFs ) return;
-			const size_t ntx = mFs->TileCountX();
-			const size_t nty = mFs->TileCountY();
-			// A bulk observer may read the whole image. Release every lock
-			// before the first callback so that read cannot self-deadlock.
-			for( size_t ty = 0; ty < nty; ++ty ) {
-				for( size_t tx = 0; tx < ntx; ++tx ) {
-					mFs->TileLockAt(tx,ty).mtx.unlock();
+			const size_t begin = first_;
+			// Synchronous observers may Render several of these tiles. Unlock
+			// the complete rectangle first so they never wait on this thread.
+			while( first_ < end_ ) {
+				const size_t index = first_++;
+				fs_->TileLockAt( tx0_ + index % columns_, ty0_ + index / columns_ ).mtx.unlock();
+			}
+			std::exception_ptr failure;
+			for( size_t index = begin; index < end_; ++index ) {
+				try {
+					fs_->PublishTile( tx0_ + index % columns_, ty0_ + index / columns_ );
+				} catch( ... ) {
+					if( !failure ) failure = std::current_exception();
 				}
 			}
-			for( size_t ty = 0; ty < nty; ++ty ) {
-				for( size_t tx = 0; tx < ntx; ++tx ) {
-					const uint64_t generation =
-						mFs->globalGeneration_.fetch_add(1,std::memory_order_release)+1;
-					try {
-						mFs->NotifyTileComplete(tx,ty,generation);
-					} catch( ... ) {
-						GlobalLog()->PrintEasyError(
-							"FrameStore bulk tile observer threw; notification was contained" );
-					}
-				}
+			if( failure ) std::rethrow_exception( failure );
+		}
+
+		FrameStoreTileBracket::~FrameStoreTileBracket() noexcept
+		{
+			try { Release(); } catch( ... ) {
+				GlobalLog()->PrintEasyError(
+					"FrameStore tile observer threw during bracket cleanup; notification was contained" );
 			}
 		}
+
+		FrameStoreBulkBracket::FrameStoreBulkBracket( FrameStore* fs, const IRasterImage& image )
+			: tiles_( fs && &image == &fs->AsBeautyRasterImage() ? fs : nullptr,
+			          0, 0, fs ? fs->TileCountX() : 0, fs ? fs->TileCountY() : 0 )
+		{}
+
+		FrameStoreBulkBracket::~FrameStoreBulkBracket() noexcept = default;
 
 		// ─────────────────────────────────────────────────────────────
 		// L7 — AOV propagation utility.

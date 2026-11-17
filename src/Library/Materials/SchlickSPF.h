@@ -38,6 +38,9 @@ namespace RISE
 			const IScalarPainter*	pRoughness;		// physical scalar
 			const IScalarPainter*	pIsotropy;
 
+			//! DL-310: the diffuse lobe's coupled krayNM along `outDir`.
+			Scalar SchlickCoupledDiffuseNM( const RayIntersectionGeometric& ri, const Vector3& outDir, const Scalar nm ) const;
+
 		public:
 			SchlickSPF(
 				const IPainter& diffuse,
@@ -62,7 +65,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -73,7 +76,7 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Evaluates the PDF for scattering in direction wo
@@ -89,6 +92,40 @@ namespace RISE
 				const Vector3& wo,
 				const Scalar nm,
 				const IORStack& ior_stack
+				) const;
+
+			//! DL-216. The SELECTED lobe's own spectral BSDF value f_I(wo; nm)
+			//! in [1/sr], without cosine or density division.
+			Scalar EvaluateLobeFNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
+			//! DL-125.  The SELECTED lobe's own `f_I cos / p_I` at a
+			//! COMPANION wavelength, for the HWSS companion ladder.
+			//! Required because this SPF stores a PER-LOBE conditional
+			//! density on each emitted ray, which makes the ladder's
+			//! aggregate-BSDF fallback the DL-69 mispairing.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
+			//! DL-216. Unbiased companion weight evaluated with the HERO
+			//! wavelength's sampling density: f_I(nm) * cos_o / pdfHero.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack,
+				Scalar pdfHero
 				) const;
 		};
 	}

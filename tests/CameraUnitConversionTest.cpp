@@ -38,12 +38,14 @@
 #include <sys/stat.h>
 
 #include "../src/Library/Cameras/ThinLensCamera.h"
+#include "../src/Library/Cameras/FisheyeCamera.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Math3D/Constants.h"
 #include "../src/Library/Utilities/RuntimeContext.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Ray.h"
 #include "../src/Library/Interfaces/IReference.h"
+#include "../src/Library/Interfaces/IKeyframable.h"
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/Parsers/ChunkDescriptor.h"
 
@@ -913,6 +915,88 @@ static void TestScenesUseSensibleScale()
 }
 
 
+// Test 11: FisheyeCamera `scale` keyframe path must agree with the
+// constructor (== parser) path, BIT-EXACT.  `scale` is an image-plane
+// extent in sine units (ComputeWorldDirection: x = scale/2 -
+// scale*screenX*OVwidth), NOT an angle -- the parser
+// (Job::AddFisheyeCamera -> RISE_API_CreateFisheyeCamera ->
+// FisheyeCamera ctor) and the editor setter (SetScaleStored) both
+// take it raw.  SetIntermediateValue (the SCALE_ID keyframe/animation
+// path) used to multiply by DEG_TO_RAD, making an animated scale
+// ~57.3x smaller than the same literal in a scene file.  This is the
+// "editor-setter-is-direct" pattern from TestEditorSetterIsMMDirect,
+// applied to the keyframe entry point instead: a camera built with
+// `scale` via the constructor and a camera built with a placeholder
+// scale then driven to the SAME `scale` via
+// KeyframeFromParameters("scale", ...) + SetIntermediateValue must
+// generate IDENTICAL rays.
+static FisheyeCamera* makeFisheyeCam( double scale )
+{
+	const Point3 loc(0, -55, 650);
+	const Point3 lookAt(0, -55, 0);
+	const Vector3 up(0, 1, 0);
+	const Vector3 orient(0, 0, 0);
+	const Vector2 targetOrient(0, 0);
+	return new FisheyeCamera( loc, lookAt, up,
+		512, 512, 1.0, 0.0, 0.0, 0.0,
+		orient, targetOrient, scale );
+}
+
+static void TestFisheyeScaleKeyframeMatchesConstructor()
+{
+	std::cout << "TestFisheyeScaleKeyframeMatchesConstructor\n";
+
+	const double scaleValue = 1.6;  // matches scenes/Tests/Cameras/fisheye.RISEscene
+
+	// Reference camera: `scale` passed straight to the constructor,
+	// exactly as the parser path does.
+	FisheyeCamera* camRef = makeFisheyeCam( scaleValue );
+
+	// Keyframe camera: built with a different placeholder scale, then
+	// driven to `scaleValue` through the keyframe entry point.
+	FisheyeCamera* camKey = makeFisheyeCam( 0.5 );
+	IKeyframeParameter* p = camKey->KeyframeFromParameters(
+		String( "scale" ), String( "1.6" ) );
+	EXPECT( p != nullptr );
+	if( !p ) {
+		release( camRef );
+		release( camKey );
+		return;
+	}
+	camKey->SetIntermediateValue( *p );
+	p->release();
+
+	RandomNumberGenerator rng( 1u );
+	RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+
+	// Three representative pixels: image centre, an off-axis point
+	// well inside the disc, and a point near the rim.
+	const Point2 pixels[] = {
+		Point2( 256.0, 256.0 ),
+		Point2( 180.0, 340.0 ),
+		Point2( 256.0, 60.0 ),
+	};
+
+	for( const Point2& px : pixels ) {
+		Ray rayRef, rayKey;
+		const bool gotRef = camRef->GenerateRay( rc, rayRef, px );
+		const bool gotKey = camKey->GenerateRay( rc, rayKey, px );
+		EXPECT( gotRef == gotKey );
+		if( gotRef && gotKey ) {
+			EXPECT_NEAR( rayRef.origin.x, rayKey.origin.x, 1e-15 );
+			EXPECT_NEAR( rayRef.origin.y, rayKey.origin.y, 1e-15 );
+			EXPECT_NEAR( rayRef.origin.z, rayKey.origin.z, 1e-15 );
+			EXPECT_NEAR( rayRef.Dir().x,  rayKey.Dir().x,  1e-15 );
+			EXPECT_NEAR( rayRef.Dir().y,  rayKey.Dir().y,  1e-15 );
+			EXPECT_NEAR( rayRef.Dir().z,  rayKey.Dir().z,  1e-15 );
+		}
+	}
+
+	release( camRef );
+	release( camKey );
+}
+
+
 int main()
 {
 	std::cout << "Running CameraUnitConversionTest..." << std::endl;
@@ -929,6 +1013,7 @@ int main()
 	TestFocalLengthSetterRoundTripsAsMM();
 	TestEditorSetterIsMMDirect();
 	TestScenesUseSensibleScale();
+	TestFisheyeScaleKeyframeMatchesConstructor();
 
 	std::cout << "Passed: " << g_pass << "  Failed: " << g_fail << std::endl;
 	return g_fail == 0 ? 0 : 1;

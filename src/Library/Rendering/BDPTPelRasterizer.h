@@ -22,6 +22,8 @@
 #include "BDPTRasterizerBase.h"
 #include "PixelBasedPelRasterizer.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"
+#include "../Interfaces/ILog.h"
 #include <stdint.h>
 
 namespace RISE
@@ -38,13 +40,14 @@ namespace RISE
 			const char* GetProgressTitle() const { return "BDPT Rasterizing: "; }
 
 			// Diamond-inheritance disambiguation for PreRenderSetup.
-			// Both BDPTRasterizerBase and PixelBasedPelRasterizer inherit
-			// the no-op default from the common virtual base
-			// (PixelBasedRasterizerHelper).  Without an explicit override
-			// here MSVC reports C2250 (ambiguous inheritance).
+			// BDPTRasterizerBase and PixelBasedPelRasterizer both override
+			// it; BDPT wants ONLY its own per-render setup (light sampler,
+			// splat film -- DL-458), not PixelBasedPelRasterizer's PT
+			// guiding/optimal-MIS setup.  Without an explicit override here
+			// the final overrider is ambiguous (MSVC C2250).
 			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
 			{
-				PixelBasedRasterizerHelper::PreRenderSetup( pScene, pRect );
+				BDPTRasterizerBase::PreRenderSetup( pScene, pRect );
 			}
 
 			/// Override to use BDPTRasterizerBase::stabilityConfig instead of

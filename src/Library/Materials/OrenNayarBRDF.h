@@ -47,6 +47,8 @@ namespace RISE
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+			virtual bool hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const;
+			virtual bool hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const;
 
 			//! Read-back + rebind for the interactive editor.
 			inline const IPainter&       GetReflectance() const { return *pReflectance; }

@@ -175,7 +175,7 @@ namespace RISE
 			//! Wall-clock timestamp captured at the start of RasterizeScene
 			//! by derived rasterizers via BeginRenderTimer().  Read by the
 			//! denoise call site immediately before oidn::Filter::execute()
-			//! to drive the OidnQuality::Auto heuristic.  See docs/OIDN.md
+			//! for render-duration telemetry (Auto uses configured work since DL-360).  See docs/OIDN.md
 			//! (OIDN-P0-1) for the heuristic itself.
 			mutable std::chrono::steady_clock::time_point mRenderStartTime;
 
@@ -243,7 +243,7 @@ namespace RISE
 			}
 
 			//! Seconds elapsed since BeginRenderTimer().  Used by the
-			//! denoise call site to feed the auto heuristic.
+			//! denoise call site for telemetry.
 			double GetRenderElapsedSeconds() const {
 				const auto now = std::chrono::steady_clock::now();
 				const std::chrono::duration<double> elapsed = now - mRenderStartTime;
@@ -257,24 +257,22 @@ namespace RISE
 			void ForTest_SetThreadCountOverride( const int count ) {
 				mForTestThreadCountOverride = count;
 			}
-			virtual void AddRasterizerOutput( IRasterizerOutput* ro ) override;
+			void AddRasterizerOutput( IRasterizerOutput* ro ) override;
 			//! Removes exactly one matching output, if present.  This is an
 			//! implementation-level companion to the legacy all-or-nothing
 			//! FreeRasterizerOutputs API, used by transactional callers that must
 			//! roll back one attachment without disturbing outputs added later by
 			//! another owner.
 			virtual void RemoveRasterizerOutput( IRasterizerOutput* ro );
-			virtual void FreeRasterizerOutputs( ) override;
-			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const override;
+			void FreeRasterizerOutputs( ) override;
+			void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const override;
 			std::vector<IRasterizerOutput*> RetainRasterizerOutputs() const;
-			virtual void SetProgressCallback( IProgressCallback* pFunc ) override;
+			void SetProgressCallback( IProgressCallback* pFunc ) override;
+
 			// L6a — IRasterizer override.  Returns the FrameStore
 			// passed at construction time (may be null until Job
 			// migrates to allocate one).
-			// `virtual` remains explicit to match the surrounding
-			// IRasterizer methods; `override` pins the capability after
-			// the fire-boundary review made this class multi-interface.
-			virtual FrameStore* GetFrameStore() const override
+			FrameStore* GetFrameStore() const override
 				{ return mFrameStore; }
 
 			// L6b — Late-binding FrameStore setter.  Used by `Job` to
@@ -333,6 +331,11 @@ namespace RISE
 			bool GetDenoisingEnabled() const { return bDenoisingEnabled; }
 			void SetDenoisingQuality( OidnQuality quality ) { mDenoisingQuality = quality; }
 			void SetDenoisingDevice( OidnDevice device ) { mDenoisingDevice = device; }
+			bool SetDenoisingOverride( bool enabled ) override { bDenoisingEnabled = enabled; return true; }
+			int GetDenoisingOverride() const override { return bDenoisingEnabled ? 1 : 0; }
+#else
+			bool SetDenoisingOverride( bool enabled ) override { return !enabled; }
+			int GetDenoisingOverride() const override { return 0; }
 #endif
 			//! Retained without OIDN because agent albedo/normal capture uses
 			//! the same fast-versus-accurate surface semantics.

@@ -45,7 +45,7 @@ void DirectLightingShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -86,7 +86,40 @@ void DirectLightingShaderOp::PerformOperation(
 		ri.pObject,
 		pMedium,
 		false,	// isVolumeScatter
-		pMediumObject,
+		pMediumObject,	// fire: medium resolved from the enclosure stack above
+		// DL-74 P2: no guiding hook on the legacy chain, but the
+		// MIS-partner aggregate pdf must still be evaluated under the LIVE
+		// IOR stack -- this arm's partner is EmissionShaderOp's
+		// `rs.MisPartnerPdf()`, a density the previous vertex's SPF
+		// produced under exactly this stack.
+		/*pGuidedBlend*/ 0,
+		&ior_stack,
+		// DL-185: `RayCaster::CastRay{,NM,HWSS}` stamps its own local
+		// cast-level RR compensation onto `rs` before dispatching to this
+		// shader op (see `RAY_STATE::castRRCompensation`) -- fold it into
+		// the training integrand so this NEE arm's trained optimal-MIS
+		// moment agrees with the BSDF-escape arm's (DL-148).  Default 1
+		// for every producer that predates the field.
+		rs.castRRCompensation,
+		// DL-171/DL-209: does a competing BSDF-sampled strategy actually
+		// exist in THIS shader's own op list?  Stamped by the owning
+		// StandardShader/AdvancedShader (see RAY_STATE::
+		// chainHasBsdfContinuationOp's doc) -- default TRUE for every
+		// caller that predates the field, so this is a no-op everywhere
+		// but the legacy shader-op chain.
+		rs.chainHasBsdfContinuationOp,
+		// DL-292: price the NEE segment's graded-index factor (DL-09) from
+		// this hit's stack.  RayCaster::CastRay{,NM,HWSS} Advances that
+		// stack to the hit before shading it (and scales the whole shade by
+		// the factor of the segment that reached it), so its top is n(hit)
+		// and every BSDF-sampled sibling -- a distribution-tracing /
+		// reflection / refraction continuation, or a PathTracingShaderOp --
+		// prices its arrival at an emitter from the same value.  Before
+		// DL-292 this passed nothing and the legacy chain kept the
+		// pre-DL-09 accounting.
+		&ior_stack,
+		/*bSMSCoversDeltaLights*/ false,
+		// Fire: full outer-to-inner medium state for the shadow-medium walk.
 		&ior_stack );
 }
 
@@ -99,7 +132,7 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -135,6 +168,17 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 		ri.pObject,
 		pMedium,
 		false,	// isVolumeScatter
-		pMediumObject,
+		pMediumObject,	// fire -- see the RGB twin above
+		// DL-74 P2 -- see the RGB twin above.
+		/*pGuidedBlend*/ 0,
+		&ior_stack,
+		// DL-185 -- see the RGB twin above.
+		rs.castRRCompensation,
+		// DL-171/DL-209 -- see the RGB twin above.
+		rs.chainHasBsdfContinuationOp,
+		// DL-292 -- see the RGB twin above.
+		&ior_stack,
+		/*bSMSCoversDeltaLights*/ false,
+		// Fire -- see the RGB twin above.
 		&ior_stack );
 }

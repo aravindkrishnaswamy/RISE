@@ -17,14 +17,13 @@ RISE ASCII SCENE 7
 standard_shader
 {
 	name				global
-	shaderop			DefaultDirectLighting
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		3
-	samples				4
-	lum_samples			1
+	samples				64
 }
 
 file_rasterizeroutput
@@ -35,18 +34,10 @@ file_rasterizeroutput
 	color_space			ProPhotoRGB
 }
 
-distributiontracing_shaderop
-{
-	name			dt
-	samples			4
-	reflections		false
-}
-
-advanced_shader
+standard_shader
 {
 	name				adv
-	shaderop			DefaultRefraction			2		100			+
-	shaderop			dt							1		1			+
+	shaderop		DefaultPathTracing
 }
 
 ##################################################

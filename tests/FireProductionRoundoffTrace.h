@@ -150,7 +150,7 @@ namespace FireProductionRoundoffTrace
 
 	inline double NextUp(const double value)
 	{
-		return std::nextafter(value,std::numeric_limits<double>::infinity());
+		return std::nextafter(value,std::numeric_limits<double>::infinity()); // HYGIENE-OK: intentional +inf bound; compiled with -fno-fast-math (build/make/rise/Makefile fire test rules)
 	}
 
 	inline double RoundRadius(const double magnitude)
@@ -238,7 +238,7 @@ namespace FireProductionRoundoffTrace
 				RecordOperation(Operation::Divide,depth,std::max(
 					std::fabs(a.center_)+a.radius_,std::fabs(b.center_)+b.radius_),
 					std::numeric_limits<double>::infinity());}
-				return Raw(a.center_/b.center_,std::numeric_limits<double>::infinity(),
+				return Raw(a.center_/b.center_,std::numeric_limits<double>::infinity(), // HYGIENE-OK: intentional +inf bound; compiled with -fno-fast-math (build/make/rise/Makefile fire test rules)
 					static_cast<float>(a.rounded_/b.rounded_),depth);}
 			const double center=a.center_/b.center_;
 			const double propagated=NextUp(a.radius_/lower+

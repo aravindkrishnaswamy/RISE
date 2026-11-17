@@ -14,6 +14,7 @@
 #include <iostream>
 #include <cassert>
 #include <cstring>
+#include <string>
 
 #include "../src/Library/SceneEditor/SceneEdit.h"
 #include "../src/Library/SceneEditor/EditHistory.h"
@@ -200,6 +201,83 @@ static void TestEditHistoryCapacity()
 	Check( h.UndoDepth() == CAP, "history bounded at maxEntries" );
 }
 
+//! S20 review round 1 P2-4: `TrimToMax` was entry-capped ONLY -- a
+//! whole-document-payload op (`AgentDuplicateNode` / `AgentReplaceGeometry`
+//! carry the pre- AND post-mutation Document text; `AgentRemoveChunks`
+//! carries the pre-batch text) pushed up to the 1024-entry cap on a large
+//! document is gigabytes of live memory the entry cap alone never notices.
+//! `EditHistory::HeavyPayloadBytes_` + the byte-budget half of `TrimToMax`
+//! close that gap; this pins the eviction with SYNTHETIC large payloads
+//! (no real Document needed -- `EditHistory` is a pure value-typed stack)
+//! against a tiny budget that isolates the byte path from the entry-cap path.
+static SceneEdit MakeHeavyDuplicate( const char* tag, std::size_t payloadBytes )
+{
+	SceneEdit e;
+	e.op                = SceneEdit::AgentDuplicateNode;
+	e.objectName        = String( tag );
+	e.propertyValue     = String( std::string( payloadBytes, 'A' ).c_str() );
+	e.prevPropertyValue = String( std::string( payloadBytes, 'B' ).c_str() );
+	return e;
+}
+
+static void TestEditHistoryByteBudget()
+{
+	std::cout << "Testing EditHistory byte budget (S20 review round 1 P2-4)..." << std::endl;
+
+	// A generous entry cap (100) and a TINY byte budget (2000 bytes) --
+	// isolates the byte-budget trim path from the entry-cap path: with only
+	// 6 entries ever pushed, entry-cap trimming could never fire on its own
+	// (6 << 100), so any eviction observed below is provably BYTE-driven.
+	// Each entry below carries 1000 heavyweight bytes (500 'A's in
+	// `propertyValue` + 500 'B's in `prevPropertyValue` -- AgentDuplicateNode
+	// counts BOTH, the "2x" from the survey), so budget 2000 admits at most 2.
+	{
+		const unsigned int        kCap        = 100;
+		const unsigned long long  kByteBudget = 2000;
+		EditHistory h( kCap, kByteBudget );
+		for( int i = 0; i < 6; ++i )
+		{
+			char tag[16];
+			std::snprintf( tag, sizeof( tag ), "copy%d", i );
+			h.Push( MakeHeavyDuplicate( tag, 500 ) );
+		}
+		Check( h.UndoDepth() < 6,
+			"byte budget evicted at least one entry well before the entry cap (6 << 100) ever could" );
+		Check( h.CurrentByteUsage() <= h.ByteBudget(),
+			"post-trim byte usage is within budget" );
+		Check( h.DidTrim(), "DidTrim() reports the byte-driven eviction" );
+		Check( h.UndoDepth() >= 1, "at least the most recent entry survives" );
+	}
+
+	// Byte budget 0 disables the check entirely (entry-cap-only, the
+	// pre-P2-4 contract) -- the same 6 heavy pushes against a generous entry
+	// cap now keep every one of them.
+	{
+		EditHistory h2( 100, 0 );
+		for( int i = 0; i < 6; ++i )
+		{
+			char tag[16];
+			std::snprintf( tag, sizeof( tag ), "copy%d", i );
+			h2.Push( MakeHeavyDuplicate( tag, 500 ) );
+		}
+		Check( h2.UndoDepth() == 6,
+			"byte budget 0 disables byte-driven eviction -- entry-cap-only behaviour is unchanged" );
+	}
+
+	// A SINGLE entry whose payload alone exceeds the whole budget is still
+	// RETAINED, never evicted to zero undoability -- the byte-budget trigger
+	// shares the entry-cap composite branch's "never trim the last/only undo
+	// unit" floor (TrimToMax's `mUndoStack.size() > 1` guard).
+	{
+		EditHistory h3( 100, 100 );
+		h3.Push( MakeHeavyDuplicate( "huge", 5000 ) );
+		Check( h3.UndoDepth() == 1, "a single over-budget entry is retained, not evicted to empty" );
+		h3.Push( MakeHeavyDuplicate( "second", 5000 ) );
+		Check( h3.UndoDepth() == 1,
+			"pushing a second over-budget entry evicts the first -- still only the single newest survives" );
+	}
+}
+
 //////////////////////////////////////////////////////////////////////
 // 3. CancellableProgressCallback behaviour
 //////////////////////////////////////////////////////////////////////
@@ -292,6 +370,7 @@ int main()
 	TestEditHistoryPushPop();
 	TestEditHistoryDirtyTracking();
 	TestEditHistoryCapacity();
+	TestEditHistoryByteBudget();
 	TestCancellableProgressBasic();
 	TestCancellableProgressInnerVeto();
 	TestCancellableProgressNullInner();

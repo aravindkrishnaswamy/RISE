@@ -1,0 +1,375 @@
+scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene	obj_brain_a	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene	obj_brain_b	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene	obj_kelp_a	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene	obj_kelp_b	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene	obj_kelp_c	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene	obj_rock_a	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene	obj_rock_b	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene	obj_rock_c	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene	obj_sea_surface	DISP	uncertOpen=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene	obj_seabed	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene	obj_brain_a	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene	obj_brain_b	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene	obj_kelp_a	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene	obj_kelp_b	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene	obj_kelp_c	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene	obj_rock_a	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene	obj_rock_b	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene	obj_rock_c	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene	obj_sea_surface	DISP	uncertOpen=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Benchmarks/dreamscape_coral_queens_hour_v2.RISEscene	obj_seabed	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_covenant_of_the_vale.RISEscene	obj_ground	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_covenant_of_the_vale.RISEscene	obj_shard_a	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_covenant_of_the_vale.RISEscene	obj_shard_b	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Benchmarks/dreamscape_covenant_of_the_vale.RISEscene	obj_spell	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation27LambertianLuminaireMaterialE
+scenes/FeatureBased/Animation/translucent_bunny.RISEscene	mesh	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation19TranslucentMaterialE
+scenes/FeatureBased/Caustics/pool_caustics.RISEscene	water_surface	DISP	uncertOpen=0	N4RISE14Implementation18DielectricMaterialE
+scenes/FeatureBased/Combined/composite_wacky_creature.RISEscene	obj_creature1	DISP	uncertOpen=0	N4RISE14Implementation28SubSurfaceScatteringMaterialE
+scenes/FeatureBased/Combined/composite_wacky_creature.RISEscene	obj_creature2	DISP	uncertOpen=0	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/Combined/showroom.RISEscene	torus_knot	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/Combined/spotlight_drama.RISEscene	bunny	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation28SubSurfaceScatteringMaterialE
+scenes/FeatureBased/Combined/spotlight_drama.RISEscene	dragon	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation28SubSurfaceScatteringMaterialE
+scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene	furniture	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene	stitch_12_l	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene	stitch_12_r	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene	stitch_6_l	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene	stitch_6_r	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene	strap_12	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene	strap_6	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/Geometry/sponza_new.RISEscene	PARSEFAIL
+scenes/FeatureBased/Geometry/sponza_new_candles.RISEscene	PARSEFAIL
+scenes/FeatureBased/Geometry/sponza_new_curtains.RISEscene	PARSEFAIL
+scenes/FeatureBased/Geometry/sponza_new_ivy.RISEscene	PARSEFAIL
+scenes/FeatureBased/Geometry/teapot.RISEscene	teapot	DISP	uncertOpen=1	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/GeometrySignals/weathered_reliquary.RISEscene	obj_goblet	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene	stitch_12_l	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene	stitch_12_r	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene	stitch_6_l	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene	stitch_6_r	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene	strap_12	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene	strap_6	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/FeatureBased/Hair/dandelion_clock.RISEscene	obj_stem	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_bust_1	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_bust_2	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_bust_3	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_bust_4	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_bust_5	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_bust_6	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_bust_7	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_bust_8	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_bust_9	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_col_4	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_col_5	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_col_6	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_col_7	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_col_8	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Hair/variety_gallery.RISEscene	obj_col_9	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation17OrenNayarMaterialE
+scenes/FeatureBased/Materials/denim_and_satin_drape.RISEscene	o_denim	DISP	uncertOpen=0	N4RISE14Implementation14FabricMaterialE
+scenes/FeatureBased/Materials/denim_and_satin_drape.RISEscene	o_satin	DISP	uncertOpen=0	N4RISE14Implementation14FabricMaterialE
+scenes/FeatureBased/Materials/fabric_swatches.RISEscene	s_cotton	DISP	uncertOpen=0	N4RISE14Implementation14FabricMaterialE
+scenes/FeatureBased/Materials/fabric_swatches.RISEscene	s_denim	DISP	uncertOpen=0	N4RISE14Implementation14FabricMaterialE
+scenes/FeatureBased/Materials/fabric_swatches.RISEscene	s_linen	DISP	uncertOpen=0	N4RISE14Implementation14FabricMaterialE
+scenes/FeatureBased/Materials/fabric_swatches.RISEscene	s_satin	DISP	uncertOpen=0	N4RISE14Implementation14FabricMaterialE
+scenes/FeatureBased/Materials/fabric_swatches.RISEscene	s_silk	DISP	uncertOpen=0	N4RISE14Implementation14FabricMaterialE
+scenes/FeatureBased/Materials/fabric_swatches.RISEscene	s_velvet	DISP	uncertOpen=0	N4RISE14Implementation14FabricMaterialE
+scenes/FeatureBased/Materials/fabric_swatches.RISEscene	s_wool	DISP	uncertOpen=0	N4RISE14Implementation14FabricMaterialE
+scenes/FeatureBased/Materials/lacquer_and_rain_still_life.RISEscene	obj_candlestick	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation14CoatedMaterialE
+scenes/FeatureBased/Materials/sheer_curtain.RISEscene	curtain_obj	DISP	uncertOpen=0	N4RISE14Implementation13WeaveMaterialE
+scenes/FeatureBased/Shaders/SSS/sss_gi_dragon.RISEscene	mesh	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation28SubSurfaceScatteringMaterialE
+scenes/FeatureBased/Textures/receding_pier.RISEscene	obj_pier	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/FeatureBased/Textures/shelf_bunny.RISEscene	bunny	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation18LambertianMaterialE
+scenes/FeatureBased/Textures/shelf_bunny.RISEscene	dragon	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation18LambertianMaterialE
+scenes/FeatureBased/VCM/vcm_sdf_luminaire_jellyfish.RISEscene	water_surface	DISP	uncertOpen=1	N4RISE14Implementation18DielectricMaterialE
+scenes/FeatureBased/VCM/vcm_veach_egg_displaced.RISEscene	egg_outer	DISP	uncertOpen=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/BDPT/cornellbox_bdpt.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/BDPT/cornellbox_bdpt.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/BDPT/cornellbox_bdpt_pointlight.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/BDPT/cornellbox_bdpt_pointlight.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/BDPT/cornellbox_bdpt_spectral.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/BDPT/cornellbox_bdpt_spectral.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/BDPT/cornellbox_bdpt_thinlens.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/BDPT/cornellbox_bdpt_thinlens.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Bench/bench_bdpt.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Bench/bench_bdpt.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Bench/bench_pt.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Bench/bench_pt.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Bench/bench_pt_bigmesh.RISEscene	the_blob	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Cameras/fisheye.RISEscene	mesh	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Caustics/diacaustic.RISEscene	box	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Caustics/diacaustic.RISEscene	tube	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation24PerfectReflectorMaterialE
+scenes/Tests/Caustics/diacaustic_pt_sms.RISEscene	box	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Caustics/diacaustic_pt_sms.RISEscene	tube	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation24PerfectReflectorMaterialE
+scenes/Tests/ChunkCoverage/cc_displaced_geometry_height.RISEscene	cc_height_object	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/aphrodite_mesh.RISEscene	bez	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/assets/extract_embedded_texture.py	PARSEFAIL
+scenes/Tests/Geometry/displaced_box.RISEscene	the_box	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_builders_stress.RISEscene	obj_beadchain	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_builders_stress.RISEscene	obj_box	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_builders_stress.RISEscene	obj_cushion	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_builders_stress.RISEscene	obj_leg	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_builders_stress.RISEscene	obj_sail	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_builders_stress.RISEscene	obj_tentacle	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_builders_stress.RISEscene	obj_vase	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_procedural.RISEscene	the_quad	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_procedural.RISEscene	the_sphere	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_procedural.RISEscene	the_torus	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_self_shadow.RISEscene	the_sphere	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dbox0000	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dbox0001	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dbox0002	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dbox0003	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dbox0004	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dcp0000	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dcp0001	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dcp0002	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dcp0003	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dcp0004	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dcylinder0000	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dcylinder0001	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dcylinder0002	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dcylinder0003	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dcylinder0004	DISP	uncertOpen=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dellipsoid0000	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dellipsoid0001	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dellipsoid0002	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dellipsoid0003	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dellipsoid0004	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dtorus0000	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dtorus0001	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dtorus0002	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dtorus0003	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_shapes.RISEscene	dtorus0004	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_sphere.RISEscene	the_sphere	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_torus.RISEscene	the_torus	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/displaced_zero_scale.RISEscene	the_sphere	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/gerstner_plane.RISEscene	ocean	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/gltf_box.RISEscene	box	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/gltf_duck.RISEscene	duck	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/gltf_normal_mapped.RISEscene	ntm_object_mirrored	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/gltf_normal_mapped.RISEscene	ntm_object_normal	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_basic.RISEscene	cutaway	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_basic.RISEscene	tableleg	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_basic.RISEscene	vase	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_stress.RISEscene	cup	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_stress.RISEscene	cutaway	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_stress.RISEscene	egg	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_stress.RISEscene	faceted	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_stress.RISEscene	fwd	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_stress.RISEscene	horiz_x	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_stress.RISEscene	horiz_z	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_stress.RISEscene	pinch	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_stress.RISEscene	rev	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_stress.RISEscene	smoothed	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_stress.RISEscene	spool	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/lathe_stress.RISEscene	tube	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/loft_stress.RISEscene	control	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/loft_stress.RISEscene	leg	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/loft_stress.RISEscene	morphring	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/loft_stress.RISEscene	torso	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/loft_stress.RISEscene	vent	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/misc_geometry_stress.RISEscene	beads_slanted	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/misc_geometry_stress.RISEscene	beads_upright	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/misc_geometry_stress.RISEscene	checkerdisk	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/misc_geometry_stress.RISEscene	coarsedial	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/misc_geometry_stress.RISEscene	finedial	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/skin_stress.RISEscene	kinksheet	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/skin_stress.RISEscene	sail	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/skin_stress.RISEscene	tarp	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/skin_stress.RISEscene	twosided_a	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/skin_stress.RISEscene	twosided_b	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/skin_stress.RISEscene	wingskin	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_instances.RISEscene	beads	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_instances.RISEscene	horn	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_instances.RISEscene	ribbon	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_instances.RISEscene	tube	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_loop.RISEscene	tube	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_loop.RISEscene	wreath	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_stress.RISEscene	cappedtube	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_stress.RISEscene	coil	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_stress.RISEscene	flattaper	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_stress.RISEscene	roundtaper	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_stress.RISEscene	stadiumbar	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_stress.RISEscene	trefoil	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/sweep_stress.RISEscene	uncappedtube	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/vertex_colors_quad.RISEscene	vcolor_quad	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/vertex_colors_quad_bdpt.RISEscene	vcolor_quad	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/vertex_colors_quad_bdpt_spectral.RISEscene	vcolor_quad	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/vertex_colors_quad_pt_spectral.RISEscene	vcolor_quad	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/vertex_colors_quad_vcm.RISEscene	vcolor_quad	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Geometry/vertex_colors_quad_vcm_spectral.RISEscene	vcolor_quad	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/GlobalIllumination/cornellbox_fg.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/GlobalIllumination/cornellbox_fg.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene	alpha.obj.n0.p0	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene	alpha.obj.n1.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene	alpha.obj.n2.p0	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene	alpha.obj.n3.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene	alpha.obj.n4.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene	alpha.obj.n5.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene	alpha.obj.n6.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene	alpha.obj.n7.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene	alpha.obj.n8.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n0.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n1.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n10.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n11.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n12.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n13.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n14.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n15.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n16.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n17.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n18.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n19.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n2.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n20.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n21.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n22.p0	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n3.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n4.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n5.p0	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n6.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n7.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n8.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_attenuation.RISEscene	atten.obj.n9.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Importers/gltf_import_avocado.RISEscene	avocado.obj.n0.p0	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_avocado_spectral.RISEscene	avocado_spectral.obj.n0.p0	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_damaged_helmet.RISEscene	helmet.obj.n0.p0	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_damaged_helmet_spectral.RISEscene	helmet_spectral.obj.n0.p0	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_metalrough_spheres.RISEscene	mrspheres.obj.n1.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_metalrough_spheres.RISEscene	mrspheres.obj.n2.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_metalrough_spheres.RISEscene	mrspheres.obj.n3.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_metalrough_spheres.RISEscene	mrspheres.obj.n4.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_metalrough_spheres.RISEscene	mrspheres.obj.n5.p0	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Importers/gltf_import_multi_uv.RISEscene	multiuv.obj.n2.p0	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+Queued Global Pel Photons (will shoot at render time)
+scenes/Tests/Legacy/cornellbox_fg.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Legacy/cornellbox_fg.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Legacy/gltf_box.RISEscene	box	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Legacy/showroom.RISEscene	torus_knot	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Legacy/teapot.RISEscene	teapot	DISP	uncertOpen=1	N4RISE14Implementation24PerfectReflectorMaterialE
+scenes/Tests/Legacy/translucent_bunny.RISEscene	mesh	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation19TranslucentMaterialE
+scenes/Tests/LightBVH/cornellbox_mixed_bdpt_alias.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/LightBVH/cornellbox_mixed_bdpt_alias.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/LightBVH/cornellbox_mixed_bdpt_bvh.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/LightBVH/cornellbox_mixed_bdpt_bvh.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Materials/authored_mesh_tangent.RISEscene	surface	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Materials/spectral_skin_fast.RISEscene	ears	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation19BioSpecSkinMaterialE
+scenes/Tests/Materials/spectral_skin_fast.RISEscene	head	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation19BioSpecSkinMaterialE
+scenes/Tests/Materials/spectral_skinmodel.RISEscene	ears	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation19BioSpecSkinMaterialE
+scenes/Tests/Materials/spectral_skinmodel.RISEscene	eyespupil	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation19BioSpecSkinMaterialE
+scenes/Tests/Materials/spectral_skinmodel.RISEscene	eyeswhite	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation19BioSpecSkinMaterialE
+scenes/Tests/Materials/spectral_skinmodel.RISEscene	head	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation19BioSpecSkinMaterialE
+scenes/Tests/Materials/spectral_skinmodel.RISEscene	lips	IDX	wt=0	open=1	uncOrient=0	N4RISE14Implementation19BioSpecSkinMaterialE
+scenes/Tests/Painters/composite_displaced_sphere.RISEscene	ball	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/composite_polynomial_catalog.RISEscene	obj_bump_times_perlin	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/composite_polynomial_catalog.RISEscene	obj_monkey_plus_perlin	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/composite_polynomial_catalog.RISEscene	obj_para_lerp_saddle	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/composite_polynomial_catalog.RISEscene	obj_para_minus_bump	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/composite_polynomial_catalog.RISEscene	obj_para_plus_bump	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/composite_polynomial_catalog.RISEscene	obj_para_plus_perlin	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/displaced_plus_relief_shared_field.RISEscene	ball	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/polynomial_displacement_catalog.RISEscene	obj_monkey	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/polynomial_displacement_catalog.RISEscene	obj_monomial_x2	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/polynomial_displacement_catalog.RISEscene	obj_paraboloid	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/polynomial_displacement_catalog.RISEscene	obj_radial_d1	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/polynomial_displacement_catalog.RISEscene	obj_radial_d3	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/polynomial_displacement_catalog.RISEscene	obj_saddle	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/polynomial_negative_amplitude_check.RISEscene	obj_neg	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Painters/polynomial_negative_amplitude_check.RISEscene	obj_pos	DISP	uncertOpen=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/PathTracing/cornellbox_pathtracer.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/PathTracing/cornellbox_pathtracer.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/SMS/sms_k1_botonly.RISEscene	bot_plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k1_botonly_ref.RISEscene	bot_plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k1_mirror.RISEscene	mirror	DISP	uncertOpen=0	N4RISE14Implementation24PerfectReflectorMaterialE
+scenes/Tests/SMS/sms_k1_refract.RISEscene	plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k1_refract_ref.RISEscene	plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_flatslab.RISEscene	bot_plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_flatslab.RISEscene	top_plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_flatslab_nosms.RISEscene	bot_plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_flatslab_nosms.RISEscene	top_plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_flatslab_ref.RISEscene	bot_plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_flatslab_ref.RISEscene	top_plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_glassblock.RISEscene	bot_plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_glassblock.RISEscene	top_plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_glassblock_ref.RISEscene	bot_plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_glassblock_ref.RISEscene	top_plane	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_glasssphere_tess.RISEscene	glass_ball	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_glasssphere_tess_disp.RISEscene	glass_ball	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_glasssphere_tess_disp_ref.RISEscene	glass_ball	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_k2_glasssphere_tess_ref.RISEscene	glass_ball	DISP	uncertOpen=0	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_slab_close_nosms.RISEscene	glass_slab	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_slab_close_photonmap.RISEscene	glass_slab	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_slab_close_pt_sms_hispp.RISEscene	glass_slab	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_slab_close_sms.RISEscene	glass_slab	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_slab_close_vcm.RISEscene	glass_slab	IDX	wt=1	open=0	uncOrient=1	N4RISE14Implementation24PerfectRefractorMaterialE
+scenes/Tests/SMS/sms_veach_egg_displaced.RISEscene	egg_outer	DISP	uncertOpen=0	N4RISE14Implementation18DielectricMaterialE
+scenes/Tests/Samplers/cornell_bdpt_16spp_sobol.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_bdpt_16spp_sobol.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_bdpt_16spp_zsobol.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_bdpt_16spp_zsobol.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_mlt.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_mlt.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_pt_16spp_sobol.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_pt_16spp_sobol.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_pt_16spp_zsobol.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_pt_16spp_zsobol.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_pt_32spp_sobol.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_pt_32spp_sobol.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_pt_32spp_zsobol.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_pt_32spp_zsobol.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_pt_512spp_sobol.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_pt_512spp_sobol.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_pt_512spp_zsobol.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Samplers/cornell_pt_512spp_zsobol.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Shaders/ambocc_ibl.RISEscene	mesh	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Signals/emitter_louvres.RISEscene	obj_louvres	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation27LambertianLuminaireMaterialE
+scenes/Tests/Signals/proximity_closed_forms.RISEscene	n_rawmesh	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Signals/proximity_mesh_contact.RISEscene	bunny	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Signals/proximity_mesh_contact.RISEscene	dragon	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/cornellbox_bdpt_pointlight_spectral.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/cornellbox_bdpt_pointlight_spectral.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/cornellbox_pointlight_spectral.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/cornellbox_pointlight_spectral.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/cornellbox_spectral.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/cornellbox_spectral.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_cornellbox_bdpt.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_cornellbox_bdpt.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_cornellbox_bdpt_ref.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_cornellbox_bdpt_ref.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_cornellbox_pt.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_cornellbox_pt.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_cornellbox_pt_1samp.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_cornellbox_pt_1samp.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_cornellbox_pt_4samp_ref.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_cornellbox_pt_4samp_ref.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_cornellbox_pt_ref.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_cornellbox_pt_ref.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_mlt_spectral_cornellbox.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/hwss_mlt_spectral_cornellbox.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/Spectral/perf_avocado_rgb.RISEscene	avocado_perf_rgb.obj.n0.p0	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/Spectral/perf_avocado_spectral.RISEscene	avocado_perf_spectral.obj.n0.p0	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation11GGXMaterialE
+scenes/Tests/SubsurfaceScattering/bdpt_sss_different_bsdf.RISEscene	mesh	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation28SubSurfaceScatteringMaterialE
+scenes/Tests/SubsurfaceScattering/bdpt_sss_dragon.RISEscene	mesh	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation28SubSurfaceScatteringMaterialE
+scenes/Tests/SubsurfaceScattering/pt_sss_dragon.RISEscene	mesh	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation28SubSurfaceScatteringMaterialE
+scenes/Tests/SubsurfaceScattering/sss_colorvariation.RISEscene	tk	IDX	wt=0	open=0	uncOrient=0	N4RISE14Implementation19TranslucentMaterialE
+scenes/Tests/SubsurfaceScattering/sss_comparison_dragon.RISEscene	dragon_diffusion	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation28SubSurfaceScatteringMaterialE
+scenes/Tests/SubsurfaceScattering/sss_comparison_dragon.RISEscene	dragon_randomwalk	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation21RandomWalkSSSMaterialE
+scenes/Tests/SubsurfaceScattering/sss_different_bsdf.RISEscene	mesh	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation28SubSurfaceScatteringMaterialE
+scenes/Tests/SubsurfaceScattering/sss_multiple_lights.RISEscene	venus	RAW	open=1	uncOrient=0	N4RISE14Implementation28SubSurfaceScatteringMaterialE
+scenes/Tests/SubsurfaceScattering/vcm_sss_dragon.RISEscene	mesh	IDX	wt=0	open=0	uncOrient=1	N4RISE14Implementation28SubSurfaceScatteringMaterialE
+scenes/Tests/UnifiedLighting/cornellbox_meshlight_pt.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/UnifiedLighting/cornellbox_meshlight_pt.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/UnifiedLighting/cornellbox_mixed_lights_pt.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/UnifiedLighting/cornellbox_mixed_lights_pt.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/UnifiedLighting/cornellbox_pointlight_pt.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/UnifiedLighting/cornellbox_pointlight_pt.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/UnifiedLighting/torture_manydistant_control_pt.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/UnifiedLighting/torture_manydistant_control_pt.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/UnifiedLighting/torture_manydistant_pt.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/UnifiedLighting/torture_manydistant_pt.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/VCM/cornellbox_vcm_spectral.RISEscene	shortblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/VCM/cornellbox_vcm_spectral.RISEscene	tallblock	RAW	open=1	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/VCM/diacaustic_vcm.RISEscene	box	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation18LambertianMaterialE
+scenes/Tests/VCM/diacaustic_vcm.RISEscene	tube	IDX	wt=1	open=0	uncOrient=0	N4RISE14Implementation24PerfectReflectorMaterialE
+scenes/Tests/VCM/pool_caustics_vcm.RISEscene	water_surface	DISP	uncertOpen=0	N4RISE14Implementation18DielectricMaterialE
+scenes/pr.RISEscene	PARSEFAIL
