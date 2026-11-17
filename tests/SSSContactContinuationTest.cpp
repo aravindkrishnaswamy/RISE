@@ -792,10 +792,20 @@ int main( int argc, char** argv )
 	}
 
 	// Original reviewer fixtures: perspective pad/floor, no contribution clamp.
-	// Both sides share a salt; a 2e-6 gap changes no visible geometry.
+	// Both sides share a salt.  The 2e-6 twin is a DIFFERENT scene, not a
+	// relabelled one: lifting the 1x1 block off its matched 1x1 emissive pad
+	// opens a rim slot through which pad light escapes sideways, a fraction
+	// ~ (perimeter * gap / pi) * ln(size / gap) / area = 3.2e-5 of the pad's
+	// flux.  So the paired band carries a 1e-4 RELATIVE floor (~3x that
+	// bound).  Without it the band is only as wide as the twins' paired noise,
+	// which shrank from ratio-sd ~6e-3 when these rows were added to 4e-6
+	// once the twins began sharing almost every path; the diffusion BDPT row
+	// then flipped pass/fail between builds of equivalent code (a bisect
+	// landed on a Python-only commit).  The floor is still 3000x below the
+	// 1.32-1.50 ratios these fixtures reproduced and 500x below DL-557's -5.5%.
 	for( bool diffusion : {false,true} ) for( Rast r : {Rast::PT,Rast::BDPT,Rast::VCM} ) {
 		rows.push_back({std::string("review4 original ")+(diffusion?"diffusion":"RW")+" pad-floor "+RastName(r),
-			[=](Scalar gap,std::string& sc){sc=BuildReview4Pad(diffusion,gap,r);return true;},false,0,false,diffusion && r==Rast::VCM?16u:8u});
+			[=](Scalar gap,std::string& sc){sc=BuildReview4Pad(diffusion,gap,r);return true;},false,1e-4,false,diffusion && r==Rast::VCM?16u:8u});
 	}
 	for( Rast r : {Rast::BDPT,Rast::VCM} ) {
 		rows.push_back({std::string("review4 original outside-lit room ")+RastName(r),
@@ -850,8 +860,9 @@ int main( int argc, char** argv )
 		// The twins share each salt (common random numbers), so the band is
 		// 4 SE of the PAIRED differences for legacy rows, 3 SE for original
 		// review fixtures -- a heavy-tailed salt shows up in
-		// both twins and cancels -- with a legacy-only 0.2 % floor for pairing the
-		// thread schedule breaks.
+		// both twins and cancels -- with a 0.2 % floor on legacy rows for pairing the
+		// thread schedule breaks, and a 1e-4 floor on the original pad-floor
+		// fixtures for the gap twin's own geometric difference (see their rows).
 		std::vector<double> diff;
 		for( unsigned int i = 0; i < kSalts; ++i ) diff.push_back( contact[i] - gapped[i] );
 		std::vector<double> ratios;
