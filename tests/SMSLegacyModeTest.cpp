@@ -2,8 +2,11 @@
 // Adopted 2026-10-04; within-build rejection tests retain HashPixels doubles.
 // Run the same --trial value after each interleaved master/candidate build.
 //
-// Fixtures 7-10 (sms-ext Phase 4 review) are legacy HWSS + SMS scenes through
-// the HWSS paths Phase 4 edited.  Like 0-6 they are verified ONLY by the
+// Fixtures 7-9 (sms-ext Phase 4 review) and 10 (added 2026-11-17) are legacy
+// HWSS + SMS scenes through the HWSS paths Phase 4 edited.  Build BOTH sides
+// of a comparison from this test file (only the library under comparison
+// differs): a base whose test predates fixture 10 writes no fixture-10 dump,
+// and the candidate's reference check then fails for that fixture.  Like 0-6 they are verified ONLY by the
 // two-build dump comparison (RISE_SMS_LEGACY_DUMP_DIR on the base build,
 // RISE_SMS_LEGACY_REFERENCE_DIR on the candidate); a single run asserts
 // only that they render lit.  The negative control below shows those

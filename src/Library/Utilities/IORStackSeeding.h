@@ -4974,7 +4974,10 @@ namespace RISE
 				// beneath the closed top on the stack: the sheet itself, pushed
 				// before the crossing, or retained / inserted beneath the top by
 				// it (an outer fold, DL-626 (3)), or a same-material open sibling
-				// that represents the medium (FindRetainedSelf's deduplication) --
+				// taken to represent the same medium (as FindRetainedSelf's
+				// deduplication does for curved sheets; here it also covers
+				// planar tiles, and two non-coplanar same-material panes with a
+				// closed object between them keep master's non-crossing) --
 				// the walk stays in that object's medium and refracts from the
 				// previous top.  Otherwise the crossing is the sheet's own exit and
 				// refracts from the sheet's index (DL-290 / DL-345): a closed

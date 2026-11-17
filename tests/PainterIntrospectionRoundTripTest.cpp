@@ -1692,9 +1692,10 @@ static void TestRowRangeMetadata()
 // comes back byte for byte and the drift guard is not consulted.  The guard
 // -- and with it the whitespace normalisation this test exists for -- runs
 // only on the value-replay FALLBACK, taken when the owner chunk changed in
-// some other way since the edit.  So each half first pins the verbatim swap,
-// then forces the fallback with an unrelated out-of-band edit to the same
-// chunk (`interpolation`) and checks the guard there.
+// some other way since the edit.  So (a) first pins the verbatim swap, then
+// (a') forces the fallback with an unrelated out-of-band edit to the same
+// chunk (`interpolation`) and checks the guard there; (b) goes straight to
+// the forced fallback, which is the only place its mismatch can arise.
 //////////////////////////////////////////////////////////////////////
 static void TestOccurrenceDriftGuardWhitespace()
 {
