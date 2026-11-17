@@ -1742,8 +1742,12 @@ void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graph
 // dereferenced an out-of-range index into the vector).  A vertex index, and a
 // normal / texture-coordinate index into a NON-empty list, must be in range or
 // the triangle is refused.  An empty normal list (face normals, or a mesh that
-// never had normals) or an empty coordinate list yields a null pointer, the
-// "absent" value ComputeAreas and the derivative code already test for.
+// never had normals) yields a null normal pointer, the "absent" value every
+// normal consumer tests for.  An empty coordinate list yields a null coord
+// pointer (it used to be &v[i] on an empty vector); ComputeAreas and the
+// derivative code test for it, but the hit path still reads coordinates
+// unconditionally, so a coordinate-free mesh needs a dummy (every importer
+// adds one) -- as it always has.
 bool TriangleMeshGeometryIndexed::MakePointerTriangle(
 	const unsigned int iVerts[3],
 	const unsigned int iNorms[3],
@@ -1799,6 +1803,9 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 		}
 
 		if( rejected ) {
+			// A builder's MeshGrid (lathe / sweep / skin) addresses triangles by
+			// their emission order, which a refused triangle shifts.
+			m_grid.reset();
 			GlobalLog()->PrintEx( eLog_Error,
 				"TriangleMeshGeometryIndexed::DoneIndexedTriangles:: dropped %u of %u triangle(s) with an out-of-range "
 				"vertex / normal / texture-coordinate index (%u points, %u normals, %u coords)",
@@ -2889,7 +2896,7 @@ void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 	//
 	// Symmetric-gating: only emit the cache flag when we actually have
 	// polygon data.  Deserialize gates the read on the same condition
-	// (`ptr_polygons.size() > 0`), so an empty-mesh round-trip stays
+	// (the STORED triangle count > 0), so an empty-mesh round-trip stays
 	// byte-symmetric across Serialize/Deserialize.  Empty meshes occur
 	// in test fixtures (mesh-not-yet-fed-via-Begin/Done) and would
 	// otherwise leave a trailing flag byte unconsumed in composite
@@ -3117,13 +3124,17 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	bool bvhCacheLoaded = false;
 	safe_release( pPtrBVH );
 
-	// Serialize writes the cache flag iff it had polygons, so the read is
-	// gated on the STORED count; a stream whose triangles were refused above
-	// still carries the cache, which is consumed and then discarded (its
-	// primitive indices refer to the unfiltered list).
+	// Serialize writes the cache flag iff it had polygons, so the flag read is
+	// gated on the STORED count.  A stream with a refused triangle is corrupt:
+	// its cache's primitive indices refer to the unfiltered list, so the cache
+	// is not read at all (its trailing bytes stay unconsumed -- a corrupt
+	// stream is not resumable) and the BVH is rebuilt below.
 	if( version >= 3 && numptrpolys > 0 ) {
 		const char haveBVHCache = buffer.getChar();
-		if( haveBVHCache ) {
+		if( haveBVHCache && rejectedPolys > 0 ) {
+			GlobalLog()->PrintEasyWarning(
+				"TriangleMeshGeometryIndexed::Deserialize:: ignoring the BVH cache of a stream with refused triangles; rebuilding" );
+		} else if( haveBVHCache ) {
 			AccelerationConfig cfg;
 			cfg.maxLeafSize            = 4;
 			cfg.binCount               = 32;
@@ -3147,7 +3158,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 					return base + idx;
 				} );
 
-			if( ok && rejectedPolys == 0 ) {
+			if( ok ) {
 				bvhCacheLoaded = true;
 				GlobalLog()->PrintEx( eLog_Info,
 					"TriangleMeshGeometryIndexed::Deserialize:: Loaded BVH cache "

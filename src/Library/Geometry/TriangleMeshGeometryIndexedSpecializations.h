@@ -643,9 +643,12 @@ namespace RISE
 		// arithmetic.  NO!  Pointer arithmetic does NOT work on some platforms (the SGI Origin 3800 for example)
 		// Instead resort to using array tricks.
 
-		unsigned int idx = buffer.getUInt();
-		const char* pch = (const char*)(void*)&(*ptr_polygons.begin());
-		ret = (MYOBJ)&pch[idx*sizeof(PointerTriangle)];
+		// Only the legacy (v1-v3) BSP/octree read-and-discard reaches this; those
+		// trees are never traversed.  Bounds-check rather than form a pointer
+		// into (or past) a list that refused triangles may have left short or
+		// empty (MakePointerTriangle).
+		const unsigned int idx = buffer.getUInt();
+		ret = idx < ptr_polygons.size() ? &ptr_polygons[idx] : nullptr;
 	//	unsigned int ptr = (VoidPtrToUInt( pCustom )) + (idx*sizeof(PointerTriangle));
 	//	ret = (MYOBJ)ptr;
 	}
