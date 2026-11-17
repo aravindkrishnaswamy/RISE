@@ -44,6 +44,18 @@ static void Furnace() {
         if(std::abs(energy-1)>.05) std::cout<<"boundary eta "<<eta<<" mu "<<mu<<" energy "<<energy<<'\n';
         Check(std::abs(energy-1)<.05,"near-matched/grazing and high-contrast furnace calibration");
     }
+    for(Scalar eta : {std::nextafter(Scalar(1),Scalar(0)),std::nextafter(Scalar(1),Scalar(2))}) {
+        const Vector3 wi(0,std::sqrt(1-1e-18),1e-9);
+        MS::Model model(wi,.7,1e-20,eta);
+        Scalar sum=0;
+        for(int i=0;i<65536;++i) {
+            const auto s=RD::Draw(wi,.7,1e-20,eta,Random(),Random(),Random(),false);
+            if(s.valid) sum+=s.weight;
+        }
+        const Scalar energy=sum/65536+model.MissingEnergy();
+        if(std::abs(energy-1)>.05) std::cout<<"adjacent narrow-axis furnace energy "<<energy<<'\n';
+        Check(std::abs(energy-1)<.05,"machine-adjacent index retains narrow-axis grazing Fresnel/TIR");
+    }
 }
 static void Identities() {
     const Vector3 wi=Unit(.7,.2,1);

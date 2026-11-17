@@ -52,7 +52,9 @@ contrast, azimuth, and incident cosine. Axis exchange and quadrant symmetry
 reduce storage without isotropizing anisotropic inputs. Logarithmic nodes
 resolve the near-index/grazing transition; below contrast 0.001, interpolation
 also uses log contrast. The generator retains the index contrast in Snell's
-correction instead of subtracting two rounded, nearly equal cosines.
+correction instead of subtracting two rounded, nearly equal cosines. Fresnel
+also retains `Nt^2-Ni^2 = +/-4c` in its critical-angle discriminant, so the
+smallest nonzero contrast cannot become an index-matched interface.
 
 Directional deficits are quantized to 16 bits. Stored hemispherical means
 exactly integrate the quantized, piecewise-bilinear angular profiles; they are

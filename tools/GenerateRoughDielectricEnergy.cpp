@@ -27,6 +27,29 @@ static Scalar Weight(const Vector3& wi,const Vector3& wo,Scalar ax,Scalar ay) {
     const Scalar lo=std::hypot(co,std::hypot(ax*wo.x,ay*wo.y));
     return ((ci+li)*co)/(li*co+lo*ci);
 }
+static Scalar FresnelFromContrast(Scalar ci,Scalar si,Scalar contrast,bool inside,Scalar& ct,Scalar& T) {
+    // Reconstructing eta erases the first positive contrast knot. Keep
+    // Nt^2-Ni^2 = +/-4c explicit, especially at grazing/TIR incidence.
+    const Scalar ni=inside ? 1+contrast : 1-contrast;
+    const Scalar nt=inside ? 1-contrast : 1+contrast;
+    if(ci>=si) {
+        const Scalar a=std::fma(inside ? -contrast : contrast,1+si,1-si);
+        if(a<=0) { ct=0; T=0; return 1; }
+        ct=std::sqrt((a/nt)*((nt+ni*si)/nt));
+    } else {
+        const Scalar incident=ni*ci;
+        const Scalar discriminant=std::fma(incident,incident,inside ? -4*contrast : 4*contrast);
+        if(discriminant<=0) { ct=0; T=0; return 1; }
+        ct=std::sqrt(discriminant)/nt;
+    }
+    Scalar rs=0,rp=0,ts=0,tp=0;
+    RD::PolarizedFresnel(ni*ci,nt*ct,rs,ts);
+    RD::PolarizedFresnel(nt*ci,ni*ct,rp,tp);
+    Scalar F=(rs+rp)*.5;
+    T=(ts+tp)*.5;
+    if(F<=T) T=1-F; else F=1-T;
+    return F;
+}
 static Scalar Energy(Scalar ax,Scalar ay,Scalar contrast,bool inside,Scalar phi,Scalar mu,int samples) {
     if(ax==0 && ay==0) return 1;
     const Scalar sinTheta=std::sqrt((1-mu)*(1+mu));
@@ -49,7 +72,7 @@ static Scalar Energy(Scalar ax,Scalar ay,Scalar contrast,bool inside,Scalar phi,
         const Vector3 reflected=m*(2*ci)-wi;
         Scalar ct=0,T=0;
         const Vector3 cross=RD::Cross(wi,m);
-        const Scalar F=contrast==1 ? Scalar(1) : RD::Fresnel(ci,std::hypot(cross.x,std::hypot(cross.y,cross.z)),eta,ct,T);
+        const Scalar F=contrast==1 ? Scalar(1) : FresnelFromContrast(ci,std::hypot(cross.x,std::hypot(cross.y,cross.z)),contrast,inside,ct,T);
         if(reflected.z>0) sum+=F*Weight(wi,reflected,ax,ay);
         if(T>0) {
             const Scalar invEta=1/eta;
@@ -106,8 +129,8 @@ int main(int argc,char** argv) {
     for(Scalar contrast:IndexNodes) {
         Scalar sum=0;
         if(contrast<1) for(int k=0;k<16384;++k) {
-            const Scalar mu=std::sqrt((k+.5)/16384.0),eta=(1+contrast)/(1-contrast);
-            Scalar ct=0,T=0; RD::Fresnel(mu,std::sqrt((1-mu)*(1+mu)),eta,ct,T); sum+=T;
+            const Scalar mu=std::sqrt((k+.5)/16384.0);
+            Scalar ct=0,T=0; FresnelFromContrast(mu,std::sqrt((1-mu)*(1+mu)),contrast,false,ct,T); sum+=T;
         }
         std::printf("%.17g,\n",sum/16384);
     }
