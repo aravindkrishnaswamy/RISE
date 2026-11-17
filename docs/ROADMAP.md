@@ -93,6 +93,9 @@ HWSS conservatively terminates companions at rough interfaces, including
 non-dispersive ones, because the walkers share a hero medium stack and eta scale.
 This reduces a four-wavelength bundle to one active wavelength; wavelength-specific
 medium tracking is required before retaining companions through rough glass.
+Composite SPFs cache and propagate that requirement through nested layers.
+PT, BDPT, VCM and MLT average active wavelengths within each bundle before
+averaging bundles, so mixed termination does not reweight sampled paths.
 Sampling and stateful evaluation share nested-medium crossing and geometric
 horizon gates. SPF weights exclude eta scaling; the BSDF honors radiance versus
 importance mode, and spectral companion weights use the hero sampling density.

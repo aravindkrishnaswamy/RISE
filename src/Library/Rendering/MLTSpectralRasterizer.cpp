@@ -400,25 +400,8 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	// For each strategy index across all wavelengths, accumulate XYZ.
 	// We'll build the final splats after all wavelengths are processed.
 
-	XYZPel totalXYZ( 0, 0, 0 );
 	std::vector<StrategyXYZ> allStrategyXYZ;
 
-	// DL-126/DL-200 review round 4 (P1-1).  Counts wavelength EVALUATIONS
-	// actually performed in the HWSS branch below -- the hero (always) and
-	// each companion NOT excluded by `swl.terminated[w]` (a dispersive
-	// delta vertex, or -- since this row -- a null-BSDF continuation
-	// vertex).  Mirrors `BDPTSpectralRasterizer.cpp`'s own `totalActive`,
-	// which this file's `totalWavelengths` normalisation used NOT to have:
-	// it divided by the FIXED `nSpectralSamples * SampledWavelengths::N`
-	// regardless of how many companions were actually terminated, so
-	// `TerminateSecondary()` (dispersion, pre-existing; the null-BSDF
-	// check, new to this row) was a pure DARKENING with no compensating
-	// change to the denominator -- a numerical no-op for BDPT/VCM (which
-	// already divide by the active count) but a real bias here.  Left at
-	// 0 and unused on the non-HWSS path below, which has no termination
-	// concept at all (every one of its `nSpectralSamples` independent
-	// wavelengths always contributes).
-	unsigned int activeWavelengthCount = 0;
 
 	if( bUseHWSS )
 	{
@@ -430,6 +413,7 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			// Wavelength sample was pre-consumed above so the BDPT
 			// stream switches inside the generator calls don't alias
 			// into the next iteration's wavelength.
+			const size_t bundleStart = allStrategyXYZ.size();
 			const Scalar u = wavelengthSamples[ss];
 			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
 
@@ -480,7 +464,6 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 					}
 
 					allStrategyXYZ.push_back( sxyz );
-					totalXYZ = totalXYZ + thisXYZ;
 				}
 			};
 
@@ -489,14 +472,8 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 				std::vector<BDPTIntegrator::ConnectionResultNM> heroResults =
 					pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, cameraLensSample, heroNM, &sampler );
 				accumulateResults( heroResults, heroNM );
-				activeWavelengthCount++;
 			}
 
-			// DL-126 P1 (review round 4 correction: see the
-			// activeWavelengthCount comment above -- terminating a
-			// companion here only fixes the BIAS this row is about
-			// together with that counter; termination alone, on its own,
-			// darkens the bundle by exactly the fraction terminated).
 			// A null-BSDF continuation vertex gives
 			// RecomputeSubpathThroughputNM no companion/hero ratio to
 			// compute, wavelength-independently, so terminate secondaries
@@ -542,7 +519,11 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 					pIntegrator->EvaluateAllStrategiesNM(
 						compLight, compEye, scene, *pCaster, camera, cameraLensSample, companionNM, &sampler );
 				accumulateResults( compResults, companionNM );
-				activeWavelengthCount++;
+			}
+			// Termination is final now: normalize ALL strategies from this bundle,
+			// including the hero evaluated before the termination checks.
+			for(size_t i=bundleStart; i<allStrategyXYZ.size(); ++i) {
+				allStrategyXYZ[i].color = swl.BundleAverage(allStrategyXYZ[i].color);
 			}
 		}
 	}
@@ -602,37 +583,13 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 				}
 
 				allStrategyXYZ.push_back( sxyz );
-				totalXYZ = totalXYZ + thisXYZ;
 			}
 		}
 	}
 
-	// Normalize by number of wavelength evaluations.
-	// DL-126/DL-200 review round 4 (P1-1): the HWSS case now divides by
-	// `activeWavelengthCount` -- the hero plus every companion that was
-	// NOT excluded by a mid-loop `swl.TerminateSecondary()` (dispersive
-	// delta, or a null-BSDF continuation vertex) -- instead of the FIXED
-	// `nSpectralSamples * SampledWavelengths::N`.  The fixed denominator
-	// used to make every termination a pure darkening with no
-	// compensating change below it: measured on a mixed skin+lambertian
-	// scene, hwss FALSE 0.649 vs hwss TRUE 0.214 (a 3.03x deficit) before
-	// this fix, matching PT/BDPT/VCM spectral's own +1.1/+8.1/-0.1% on
-	// the identical scene only after it.  `activeWavelengthCount` is 0 on
-	// the non-HWSS path above (unused there -- it has no termination
-	// concept, every one of its `nSpectralSamples` always contributes),
-	// so guard the divide-by-zero that would otherwise follow from an
-	// HWSS render whose every bundle terminated every companion AND
-	// somehow never even reached the always-incremented hero (should be
-	// unreachable, but `totalWavelengths` must never be 0).
-	const unsigned int totalWavelengths = bUseHWSS
-		? ( activeWavelengthCount > 0 ? activeWavelengthCount : 1 )
-		: nSpectralSamples;
-
-	// DL-461: the wavelength average times the spectral integral
-	// normalization (see the constructor).  Applied to the colour AND the
-	// MLT luminance alike, so the Metropolis target, the bootstrap
-	// normalization b and the splats stay in one measure.
-	const Scalar invWavelengths = yNormalization / static_cast<Scalar>( totalWavelengths );
+	// HWSS bundles already carry their active-lane means. Average bundles
+	// (or independent NM samples) in the same measure for splats and target.
+	const Scalar invWavelengths = nSpectralSamples ? yNormalization / static_cast<Scalar>(nSpectralSamples) : Scalar(0);
 
 	// Build final MLTSample splats from accumulated strategy XYZ
 	Scalar totalLuminance = 0;
@@ -641,7 +598,7 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	{
 		const StrategyXYZ& sxyz = allStrategyXYZ[i];
 
-		// Scale by yNormalization/totalWavelengths (DL-461)
+		// Scale the bundle mean by yNormalization/nSpectralSamples (DL-461).
 		XYZPel scaled = sxyz.color * invWavelengths;
 
 		// Luminance = Y component of XYZ

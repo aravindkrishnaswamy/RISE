@@ -72,9 +72,8 @@ public:
 // Current HWSS walkers carry one IOR stack and one radiance eta factor.
 // Until they carry wavelength-specific media, a rough interface conservatively
 // ends companion transport, including when its surrounding medium disperses.
+bool RoughDielectricRequiresHeroOnlySPF(const ISPF* spf);
 inline bool RoughDielectricRequiresHeroOnlyHWSS(const IMaterial* material)
-{
-    return material && dynamic_cast<const RoughDielectricSurface*>(material->GetSPF());
-}
+{ return material && RoughDielectricRequiresHeroOnlySPF(material->GetSPF()); }
 } }
 #endif

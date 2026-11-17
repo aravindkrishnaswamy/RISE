@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "RoughDielectricMaterial.h"
+#include "CompositeSPF.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/MicrofacetUtils.h"
 #include "../Utilities/IORStackSeeding.h"
@@ -7,6 +8,13 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 namespace RD = MicrofacetUtils::RoughDielectric;
+
+bool RISE::Implementation::RoughDielectricRequiresHeroOnlySPF(const ISPF* spf)
+{
+    if(dynamic_cast<const RoughDielectricSurface*>(spf)) return true;
+    const auto* composite=dynamic_cast<const CompositeSPF*>(spf);
+    return composite && composite->RequiresHeroOnlyHWSS();
+}
 
 namespace {
 Scalar Read(const IScalarPainter& p, const RayIntersectionGeometric& ri, Scalar nm)

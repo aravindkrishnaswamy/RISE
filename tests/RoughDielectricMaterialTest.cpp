@@ -15,6 +15,10 @@
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Shaders/BDPTIntegrator.h"
+#include "../src/Library/Materials/CompositeMaterial.h"
+#include "../src/Library/Materials/DielectricMaterial.h"
+#include "../src/Library/Rendering/PathTracingSpectralRasterizer.h"
+#include "../src/Library/Managers/ObjectManager.h"
 #include "TestTempDir.h"
 #include <cmath>
 #include <fstream>
@@ -34,9 +38,45 @@ public:
     Point2 Get2D() override { const Scalar a=Get1D(),b=Get1D(); return Point2(a,b); }
 };
 class ConstantSamples : public ISampler {
+    const Scalar sample;
 public:
-    Scalar Get1D() override { return 0.5; }
-    Point2 Get2D() override { return Point2(0.5,0.5); }
+    explicit ConstantSamples(Scalar value=0.5) : sample(value) {}
+    Scalar Get1D() override { return sample; }
+    Point2 Get2D() override { return Point2(sample,sample); }
+};
+
+// Two independent camera paths: a hero-only rough emitter and an ordinary
+// four-lane emitter. This exercises the real rasterizer's bundle accumulation.
+class AlternatingEmitterManager : public ObjectManager {
+    const IMaterial& first;
+    const IMaterial& second;
+    const IObject* object;
+    unsigned int& calls; // Script state belongs to the test, not the const manager.
+public:
+    AlternatingEmitterManager(const IMaterial& a,const IMaterial& b,const IObject* key,unsigned int& script)
+        : ObjectManager(false,false,4,8),first(a),second(b),object(key),calls(script) {}
+    void Reset() { calls=0; }
+    unsigned int Calls() const { return calls; }
+    void IntersectRay(RayIntersection& hit,bool,bool,bool) const override {
+        if(hit.geometric.ray.origin.z<1) { hit.geometric.bHit=false; return; }
+        hit.geometric.bHit=true;
+        hit.geometric.range=1;
+        hit.geometric.ptIntersection=Point3(0,0,0);
+        hit.geometric.vNormal=hit.geometric.vGeomNormal=Vector3(0,0,1);
+        hit.geometric.onb=OrthonormalBasis3D();
+        hit.pMaterial=(calls++ % 2)==0 ? &first : &second;
+        hit.pObject=object;
+    }
+};
+class SpectralPixelProbe : public PathTracingSpectralRasterizer {
+public:
+    SpectralPixelProbe(IRayCaster* caster,unsigned int samples)
+        : Rasterizer(nullptr),PixelBasedRasterizerHelper(caster),
+          PathTracingSpectralRasterizer(caster,400,700,10000,samples,
+            ManifoldSolverConfig(),AdaptiveSamplingConfig(),StabilityConfig(),false,true) {
+        pIntegrator->SetMaxPathDepth(1);
+    }
+    using PathTracingSpectralRasterizer::IntegratePixelSpectral;
 };
 class SpectralIndex : public virtual IScalarPainter, public virtual Reference {
 protected:
@@ -193,6 +233,8 @@ int main()
             <<"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
             <<"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\nlambertian_luminaire_material\n{\nname glow\nexitance white\nscale 10\nmaterial none\n}\n"
             <<"sphere_geometry\n{\nname bulb\nradius 0.9\n}\nstandard_object\n{\nname emitter\ngeometry bulb\nmaterial glow\n}\n";
+        scene<<"film\n{\nwidth 1\nheight 1\n}\npinhole_camera\n{\nlocation 0 0 3\nlookat 0 0 0\nup 0 1 0\nfov 40\n}\n"
+            <<"lambertian_luminaire_material\n{\nname rough_glow\nexitance white\nscale 2\nmaterial authored_glass\n}\n";
     }
     Check(priv && priv->LoadAsciiSceneViaCst(path.c_str()),"native chunk parses through CST and Job");
     std::remove(path.c_str());
@@ -233,6 +275,62 @@ int main()
     std::vector<BDPTVertex> vertices(1);
     vertices[0].type=BDPTVertex::SURFACE; vertices[0].pMaterial=parsed; vertices[0].isDelta=false;
     Check(BDPTIntegrator::HasDispersiveDeltaVertex(vertices,550,450),"BDPT/VCM/MLT shared gate rejects rough companion replay");
+
+    auto* clearIndex=new UniformScalarPainter(1);
+    auto* noExtinction=new UniformScalarPainter(0);
+    auto* noWarp=new UniformScalarPainter(1000000);
+    auto* clearBottom=new DielectricMaterial(*clearIndex,*clearIndex,*noWarp,false);
+    auto* composite=new CompositeMaterial(*parsedRough,*clearBottom,8,8,8,8,8,0,*noExtinction);
+    Check(RoughDielectricRequiresHeroOnlyHWSS(composite),"composite caches rough top requirement");
+    auto* nested=new CompositeMaterial(*clearBottom,*composite,8,8,8,8,8,0,*noExtinction);
+    Check(RoughDielectricRequiresHeroOnlyHWSS(nested),"nested composite propagates rough bottom requirement");
+    auto* controlComposite=new CompositeMaterial(*clearBottom,*clearBottom,8,8,8,8,8,0,*noExtinction);
+    Check(!RoughDielectricRequiresHeroOnlyHWSS(controlComposite),"ordinary composite preserves companion capability");
+    hit.pMaterial=composite;
+    bool positiveComposite=false;
+    for(Scalar value : {0.01,0.05,0.15,0.3,0.5,0.7,0.9}) {
+        ConstantSamples compositeSamples(value);
+        wavelengths=SampledWavelengths::SampleEquidistant(0.5,400,700);
+        pt->IntegrateFromHitHWSS(rc,nullRasterizerState,hit,wavelengths,*job->GetScene(),*caster,compositeSamples,nullptr,
+            0,originStack,0,true,1,IRayCaster::RAY_STATE::eRayView,0,0,0,0,0,0,bundle);
+        const Scalar compositeSingle=pt->IntegrateFromHitNM(rc,nullRasterizerState,hit,wavelengths.lambda[0],*job->GetScene(),*caster,compositeSamples,nullptr,
+            0,originStack,0,1,true,1,IRayCaster::RAY_STATE::eRayView,0,0,0,0,0,0,false,false);
+        Check(wavelengths.NumActive()==1,"live composite HWSS terminates hidden rough companions");
+        Check(Close(bundle[0],compositeSingle),"live composite HWSS agrees with NM radiance");
+        positiveComposite=positiveComposite || compositeSingle>0;
+    }
+    Check(positiveComposite,"composite regression exercises nonzero continuation");
+    vertices[0].pMaterial=nested;
+    Check(BDPTIntegrator::HasDispersiveDeltaVertex(vertices,550,450),"shared BDPT/VCM/MLT gate sees nested rough layers");
+    safe_release(controlComposite); safe_release(nested); safe_release(composite);
+    safe_release(clearBottom); safe_release(noWarp); safe_release(noExtinction); safe_release(clearIndex);
+
+    // Exact counterexample: averaging A and B must give (A+B)/2, not
+    // (A+4B)/5. Replay identical wavelength draws as two one-bundle calls.
+    for(bool blackFirst : {false,true}) {
+        unsigned int scriptPosition=0;
+        auto* alternating=new AlternatingEmitterManager(blackFirst ? *parsedRough : *job->GetMaterials()->GetItem("rough_glow"),*job->GetMaterials()->GetItem("glow"),hit.pObject,scriptPosition);
+        job->GetScene()->SetObjectManager(alternating);
+        caster->AttachScene(job->GetScene());
+        auto* oneBundle=new SpectralPixelProbe(caster,1);
+        auto* twoBundles=new SpectralPixelProbe(caster,2);
+        RandomNumberGenerator separateRng(12345),combinedRng(12345);
+        RuntimeContext separateRC(separateRng,RuntimeContext::PASS_NORMAL,false);
+        RuntimeContext combinedRC(combinedRng,RuntimeContext::PASS_NORMAL,false);
+        const Point2 pixel(0.5,0.5);
+        const XYZPel first=oneBundle->IntegratePixelSpectral(separateRC,nullRasterizerState,pixel,*job->GetScene(),fixed,nullptr);
+        const XYZPel second=oneBundle->IntegratePixelSpectral(separateRC,nullRasterizerState,pixel,*job->GetScene(),fixed,nullptr);
+        alternating->Reset();
+        const XYZPel combined=twoBundles->IntegratePixelSpectral(combinedRC,nullRasterizerState,pixel,*job->GetScene(),fixed,nullptr);
+        const XYZPel expected=(first+second)*0.5;
+        Check(alternating->Calls()==2,"mixed fixture evaluates exactly two independent camera paths");
+        Check((blackFirst ? first.Y==0 : first.Y>0) && second.Y>0,"mixed bundle fixture includes the intended black/nonblack path");
+        Check(Close(combined.X,expected.X) && Close(combined.Y,expected.Y) && Close(combined.Z,expected.Z),"real spectral rasterizer averages mixed termination bundles equally");
+        auto* noBundles=new SpectralPixelProbe(caster,0);
+        const XYZPel empty=noBundles->IntegratePixelSpectral(combinedRC,nullRasterizerState,pixel,*job->GetScene(),fixed,nullptr);
+        Check(empty.X==0 && empty.Y==0 && empty.Z==0,"zero requested bundles resolve to black");
+        safe_release(noBundles); safe_release(twoBundles); safe_release(oneBundle); safe_release(alternating);
+    }
     safe_release(pt); safe_release(caster);
     Check(!jobBase->AddRoughDielectricMaterial("bad","1.4 1.5 1.6","0.2","0.2"),"Job rejects ambiguous RGB scalar");
     auto* zero=new UniformScalarPainter(0);

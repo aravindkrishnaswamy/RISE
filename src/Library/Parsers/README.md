@@ -536,6 +536,9 @@ companion evaluation. Current PT/BDPT/VCM/MLT HWSS transport conservatively
 terminates companions at every rough interface, even without dispersion: these
 walkers share one hero medium stack and radiance eta factor. This reduces four
 active wavelengths to one until wavelength-specific medium tracking is added.
+Nested composites propagate this requirement. Mixed terminated/unterminated
+bundles receive equal weight: each bundle is normalized by its own active lanes
+before bundles are averaged (also for VCM merging and MLT splats/target).
 The local spectral evaluator remains available with caller-supplied wavelength
 stacks and hero density. Index-matched interfaces report their exact transparent
 delta behavior to shadow queries. SMS caustic construction for the new material
