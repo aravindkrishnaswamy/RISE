@@ -4938,7 +4938,8 @@ namespace RISE
 						media.ConfirmAt( pScene->GetObjects(), PointPastBackFaceCrossing( ri, d ), nm, 0 );
 					}
 				}
-				if( dest.containsCurrent() ) {
+				const bool wasPushed = dest.containsCurrent();
+				if( wasPushed ) {
 					if( checkSelfEnclosure && media.FindRetainedSelf( pSelf, &dest ) != 0 ) {
 						for( std::size_t idx = dest.Depth(); idx-- > 1; ) {
 							if( dest.ObjectAt( idx ) == pSelf ) {
@@ -4968,7 +4969,26 @@ namespace RISE
 					}
 				}
 				c.bEntering = false;
-				c.etaFrom = ( hadInnerClosedTop && !dest.topIsOpenSheet() && dest.Depth() > 1 ) ? prevTop : sheetIOR;
+				// The index the crossing refracts FROM.  When the walk is inside a
+				// closed object NESTED in this sheet's medium -- that medium sits
+				// beneath the closed top on the stack: the sheet itself, pushed
+				// before the crossing, or retained / inserted beneath the top by
+				// it (an outer fold, DL-626 (3)), or a same-material open sibling
+				// that represents the medium (FindRetainedSelf's deduplication) --
+				// the walk stays in that object's medium and refracts from the
+				// previous top.  Otherwise the crossing is the sheet's own exit and
+				// refracts from the sheet's index (DL-290 / DL-345): a closed
+				// object that merely ENCLOSES the sheet (a world box, possibly at
+				// the environment's index) must not turn it into an index-matched
+				// non-crossing.
+				const IMaterial* pSelfMat = pSelf ? pSelf->GetMaterial() : 0;
+				bool sheetBeneathTop = wasPushed;
+				for( std::size_t i = 1; !sheetBeneathTop && i + 1 < dest.Depth(); ++i ) {
+					const IObject* pEntry = dest.ObjectAt( i );
+					sheetBeneathTop = dest.isOpenSheetAt( i ) && pEntry &&
+						( pEntry == pSelf || ( pSelfMat && pEntry->GetMaterial() == pSelfMat ) );
+				}
+				c.etaFrom = ( sheetBeneathTop && hadInnerClosedTop && !dest.topIsOpenSheet() && dest.Depth() > 1 ) ? prevTop : sheetIOR;
 				c.etaTo = dest.top();
 			}
 			return c;
