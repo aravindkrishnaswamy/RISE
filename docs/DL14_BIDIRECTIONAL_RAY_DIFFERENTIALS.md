@@ -286,3 +286,32 @@ BDPT/VCM/MLT-specific gap; it is PT's own pre-existing, disclosed,
 DESIGN.md`, `docs/RELIEF_MODIFIER_DESIGN.md`: "Still primary-hits-only:
 no ray carries differentials after a scatter"), already true of PT
 before this slice and unaffected by it.
+
+## 5. DL-402 interaction: the light-traced share needs the pixel footprint too (2026-11-17)
+
+`6dec90813` (DL-402, BDPT/MLT MIS uses the whole-film camera density) is
+correct MIS and moved real weight onto the light-tracing (t == 1) strategy
+on this fixture's point-lit floor.  A light vertex was never traced from the
+camera, so it carried no footprint, and the t == 1 share shaded the fbm
+UNFILTERED while every eye strategy MIS-combined into the same pixel shaded
+it filtered: the pixel converged to a mixture.  Measured at 1024 spp
+(converged; PT is noise-free here): BDPT mean +0.32% and HF energy 1.70x
+PT's.
+
+Fix: a t == 1 connection shades a copy of its SURFACE light endpoint
+stamped with the footprint of the pixel it lands in
+(`BDPTCameraUtilities::PixelFootprintThrough` -- central differences of
+`RasterizeThrough` along two tangents, the 2x2 Jacobian inverted, so no
+camera ray and no random numbers -- then
+`PathVertexEval::StampPixelFootprint` fills the world width, the object
+width and the texcoord UV Jacobian exactly as `Object::IntersectRay` does).
+Applied at BDPT's live t == 1 site, its per-type-cap rescale (one record
+per connection) and VCM's splat.  After: BDPT mean 0.510207 against PT's
+0.510207, HF 1.18x and still converging (the remainder is DL-402's genuine
+t == 1 noise, which a noise-free PT reference shows at any spp).  Cost:
+within noise (9.37 s vs 9.34 s, 1024 spp).
+
+`BidirectionalTextureFootprintParityTest` therefore compares CONVERGED
+quantities: BDPT at 1024 spp, mean within 0.1%, HF within 25%.  Both fail
+on the pre-fix build (+0.32%, 1.70x) and on DL-14's own eye-footprint
+mutation (-0.41%, 2.33x).

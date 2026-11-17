@@ -336,8 +336,10 @@ static std::string BuildScene( const std::string& rasterizerChunk, const char* o
 
 static const char* kPtRasterizer =
 	"pathtracing_pel_rasterizer\n{\n\tsamples\t\t\t64\n\toidn_denoise\t\tFALSE\n\tpixel_filter\t\tbox\n}\n";
+// BDPT renders at 1024 spp (DL-402): see the comparison block in
+// TestFootprintParity for why its checks compare converged quantities.
 static const char* kBdptRasterizer =
-	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth\t\t2\n\tmax_light_depth\t\t2\n\tsamples\t\t\t64\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth\t\t2\n\tmax_light_depth\t\t2\n\tsamples\t\t\t1024\n"
 	"\toidn_denoise\t\tFALSE\n\tpixel_filter\t\tbox\n}\n";
 static const char* kVcmRasterizer =
 	"vcm_pel_rasterizer\n{\n\tmax_eye_depth\t\t2\n\tmax_light_depth\t\t2\n\tsamples\t\t\t64\n"
@@ -367,13 +369,25 @@ static void TestFootprintParity()
 	std::cout << "  BDPT mean=" << bdptStats.mean << " hfEnergy=" << bdptStats.hfEnergy << std::endl;
 	std::cout << "  VCM  mean=" << vcmStats.mean  << " hfEnergy=" << vcmStats.hfEnergy  << std::endl;
 
-	// (1) PT vs BDPT, tight: identical camera ray, identical geometry
-	// intersection, identical vertex-population copy -- agreement is
-	// expected to several decimal places, not MC-noise-scale.  5% is
-	// still a wide margin over the ~0.1% relative difference measured
-	// on this fixture; it exists only to not be a flake magnet.
-	Check( RelClose( ptStats.mean,     bdptStats.mean,     0.05 ), "PT vs BDPT: whole-image mean" );
-	Check( RelClose( ptStats.hfEnergy, bdptStats.hfEnergy, 0.10 ), "PT vs BDPT: whole-image HF energy" );
+	// (1) PT vs BDPT, CONVERGED.  Since DL-402 (6dec90813, whole-film
+	// camera density in BDPT's MIS) the light-tracing (t == 1) strategy
+	// carries a real share of this point-lit floor.  That share is (a)
+	// genuinely noisier than PT, which is noise-free here (a point light,
+	// deterministic NEE: its 64- and 1024-spp HF energies agree to five
+	// digits), and (b) was shaded with NO pixel footprint -- a light
+	// vertex was never traced from the camera -- so it mixed the
+	// unfiltered fbm into the filtered one.  (b) is a bias, not noise:
+	// at 1024 spp BDPT read mean +0.32% and HF energy 1.70x PT's, and a
+	// t == 1 connection now shades its surface point with the footprint
+	// of the pixel it lands in (PathVertexEval::StampPixelFootprint),
+	// after which BDPT reads mean 0.000% and HF 1.18x (the rest is (a),
+	// still converging).  So these checks compare converged quantities
+	// at 1024 spp: the mean tightly (the footprint is the only thing
+	// that moves it), the HF energy within 25%.  The eye footprint
+	// itself (DL-14's original subject) is still pinned: dropping the
+	// eye ray's differentials moves both by more than either band.
+	Check( RelClose( ptStats.mean,     bdptStats.mean,     0.001 ), "PT vs BDPT: whole-image mean (converged, 0.1%)" );
+	Check( RelClose( ptStats.hfEnergy, bdptStats.hfEnergy, 0.25 ), "PT vs BDPT: whole-image HF energy (converged)" );
 
 	// (2) PT vs VCM: mean only, loose tolerance.  VCM does NOT get its
 	// own HF-energy check here -- measured on this fixture, VCM's own

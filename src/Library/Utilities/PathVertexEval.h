@@ -38,11 +38,14 @@
 
 #include "../Shaders/BDPTVertex.h"
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IObject.h"
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../Interfaces/IPhaseFunction.h"
 #include "../Intersection/RayIntersectionGeometric.h"
+#include "../Intersection/TextureFootprintCompute.h"
+#include "../Cameras/CameraUtilities.h"
 #include "../Utilities/BSSRDFSampling.h"
 #include "../Utilities/IORStack.h"
 #include "Math3D/Math3D.h"
@@ -51,6 +54,64 @@ namespace RISE
 {
 	namespace PathVertexEval
 	{
+		//! DL-14 / DL-402: stamp the pixel footprint of a light-traced
+		//! (t == 1) camera connection onto a LIGHT-subpath surface vertex
+		//! before it is shaded for that pixel.  A light vertex otherwise
+		//! carries no footprint (nothing traced it from the camera), so a
+		//! footprint-filtered texture -- ExpressionPainter's `fw`, a mip
+		//! level -- would be evaluated UNFILTERED by the light-tracing
+		//! strategy while every eye strategy MIS-combined into the same
+		//! pixel evaluates it filtered: the pixel then converges to a
+		//! mixture of two textures weighted by the strategies' MIS shares.
+		//! `dpdx` / `dpdy` are the world-space surface steps per raster
+		//! pixel (BDPTCameraUtilities::PixelFootprintThrough); the fields
+		//! are filled exactly as Object::IntersectRay fills an eye hit's:
+		//! the world width, the width in the hit object's own frame (the
+		//! frame `Po` is evaluated in), and the texcoord-chart UV Jacobian.
+		inline void StampPixelFootprint( BDPTVertex& vertex, const Vector3& dpdx, const Vector3& dpdy )
+		{
+			TextureFootprint fp;
+			fp.dpdx = dpdx;
+			fp.dpdy = dpdy;
+			fp.worldWidth = Scalar( 0.5 ) * ( Vector3Ops::Magnitude( dpdx ) + Vector3Ops::Magnitude( dpdy ) );
+			fp.objectWidth = fp.worldWidth;
+			if( vertex.pObject ) {
+				const Matrix4 toObject = vertex.pObject->GetFinalInverseTransformMatrix();
+				fp.objectWidth = Scalar( 0.5 ) * (
+					Vector3Ops::Magnitude( Vector3Ops::Transform( toObject, dpdx ) ) +
+					Vector3Ops::Magnitude( Vector3Ops::Transform( toObject, dpdy ) ) );
+			}
+			fp.widthValid = true;
+			RayIntersectionGeometric rig( Ray( vertex.position, vertex.normal ), nullRasterizerState );
+			rig.vNormal = vertex.normal;
+			rig.derivatives = vertex.derivatives;
+			rig.txFootprint = fp;
+			SolveFootprintUV( rig );
+			vertex.txFootprint = rig.txFootprint;
+		}
+
+		//! The record a t == 1 (light-traced) connection shades a light
+		//! endpoint with: for a SURFACE vertex whose pixel footprint
+		//! through @a ap is defined, a copy in @a scratch carrying that
+		//! footprint (StampPixelFootprint); otherwise @a vertex itself.
+		//! Every evaluation of one t == 1 connection's light endpoint must
+		//! use the same record so its BSDF factors stay consistent.
+		inline const BDPTVertex& WithPixelFootprint(
+			const ICamera& camera,
+			const BDPTCameraUtilities::ApertureSample& ap,
+			const BDPTVertex& vertex,
+			BDPTVertex& scratch )
+		{
+			Vector3 dpdx, dpdy;
+			if( vertex.type != BDPTVertex::SURFACE ||
+				!BDPTCameraUtilities::PixelFootprintThrough( camera, ap, vertex.position, vertex.normal, dpdx, dpdy ) ) {
+				return vertex;
+			}
+			scratch = vertex;
+			StampPixelFootprint( scratch, dpdx, dpdy );
+			return scratch;
+		}
+
 		// Radiance is integrated against the shading-frame projected solid
 		// angle: f_s(wi,wo) |Ns.wi| dwi. Connections and photon density
 		// estimates instead carry geometric-area measure, so their response

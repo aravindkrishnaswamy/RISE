@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "CameraUtilities.h"
+#include <cmath>
 #include "PinholeCamera.h"
 #include "ThinLensCamera.h"
 #include "FisheyeCamera.h"
@@ -777,6 +778,52 @@ bool BDPTCameraUtilities::RasterizeThrough(
 	}
 
 	return Rasterize( cam, worldPoint, rasterPoint );
+}
+
+bool BDPTCameraUtilities::PixelFootprintThrough(
+	const ICamera& cam,
+	const ApertureSample& ap,
+	const Point3& worldPoint,
+	const Vector3& normal,
+	Vector3& dpdx,
+	Vector3& dpdy )
+{
+	const Scalar nLen = Vector3Ops::Magnitude( normal );
+	const Scalar dist = Point3Ops::Distance( worldPoint, ap.point );
+	if( !( nLen > 0 ) || !( dist > 0 ) || !std::isfinite( nLen ) || !std::isfinite( dist ) ) {
+		return false;
+	}
+	const Vector3 N = normal * ( Scalar( 1 ) / nLen );
+	const Vector3 axis = std::fabs( N.x ) < Scalar( 0.9 ) ? Vector3( 1, 0, 0 ) : Vector3( 0, 1, 0 );
+	const Vector3 T = Vector3Ops::Normalize( Vector3Ops::Cross( N, axis ) );
+	const Vector3 B = Vector3Ops::Cross( N, T );
+
+	// A step of 1e-4 of the viewing distance moves the image by a small
+	// fraction of a pixel for any practical field of view, so all four
+	// probes stay inside RasterizeThrough's one-pixel guard band at the
+	// film edge; the projection is smooth there, so the central
+	// difference's error is second order in that step.
+	const Scalar h = Scalar( 1e-4 ) * dist;
+	Point2 tp, tm, bp, bm;
+	if( !RasterizeThrough( cam, Point3Ops::mkPoint3( worldPoint, T * h ), ap, tp ) ||
+		!RasterizeThrough( cam, Point3Ops::mkPoint3( worldPoint, T * -h ), ap, tm ) ||
+		!RasterizeThrough( cam, Point3Ops::mkPoint3( worldPoint, B * h ), ap, bp ) ||
+		!RasterizeThrough( cam, Point3Ops::mkPoint3( worldPoint, B * -h ), ap, bm ) ) {
+		return false;
+	}
+	const Scalar inv2h = Scalar( 1 ) / ( Scalar( 2 ) * h );
+	const Scalar dxdT = ( tp.x - tm.x ) * inv2h, dydT = ( tp.y - tm.y ) * inv2h;
+	const Scalar dxdB = ( bp.x - bm.x ) * inv2h, dydB = ( bp.y - bm.y ) * inv2h;
+	const Scalar det = dxdT * dydB - dxdB * dydT;
+	if( !std::isfinite( det ) || det == 0 ) {
+		return false;
+	}
+	// (dT, dB) per raster unit is the inverse of the raster Jacobian.
+	const Scalar inv = Scalar( 1 ) / det;
+	dpdx = T * (  dydB * inv ) + B * ( -dydT * inv );
+	dpdy = T * ( -dxdB * inv ) + B * (  dxdT * inv );
+	return std::isfinite( dpdx.x ) && std::isfinite( dpdx.y ) && std::isfinite( dpdx.z ) &&
+		std::isfinite( dpdy.x ) && std::isfinite( dpdy.y ) && std::isfinite( dpdy.z );
 }
 
 bool BDPTCameraUtilities::HasFiniteAperture(
