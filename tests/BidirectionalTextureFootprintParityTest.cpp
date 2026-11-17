@@ -49,46 +49,35 @@
 //  image: tiny near the camera (fine high-frequency noise visible,
 //  large per-row standard deviation), enormous near the horizon
 //  (heavily faded, near-flat, near-zero per-row standard deviation).
-//  Rendered once each under `pathtracing_pel_rasterizer`,
-//  `bdpt_pel_rasterizer` and `vcm_pel_rasterizer` at matched settings
-//  (`oidn_denoise FALSE`, `pixel_filter box`, a single point light so
-//  the whole scene is direct-lit off the ONE vertex every integrator
-//  ever attaches a footprint to -- no dependence on VCM's directional-
-//  light gap, which is unrelated and pre-existing).
+//  Rendered under `pathtracing_pel_rasterizer` (64 spp: a point light
+//  and deterministic NEE make PT noise-free here), and
+//  `bdpt_pel_rasterizer` and `vcm_pel_rasterizer` at 1024 spp
+//  (`oidn_denoise FALSE`, `pixel_filter box`, a single point light --
+//  no dependence on VCM's directional-light gap, which is unrelated).
+//  Two kinds of vertex carry a footprint here: the depth-0 eye vertex
+//  (the camera ray's differentials, DL-14) and, since 2026-11-17, the
+//  copy of a surface light endpoint a light-traced (t == 1) connection
+//  shades, stamped with the footprint of the pixel it lands in
+//  (PathVertexEval::WithPixelFootprint; docs/DL14_..., section 10).
 //
-//    (1) FADE SHAPE, per integrator.  The far-row band's standard
-//        deviation must be far smaller than the near-row band's, in
-//        EVERY integrator.  This is the direct catch for "footprint
-//        stuck at zero": with no fade, the far band would show the
-//        SAME high-frequency variance as the near band instead of a
-//        heavily smoothed one.
-//    (2) PT vs BDPT PARITY, tight.  Same camera ray, same geometry
-//        intersection code, same vertex-population copy -- the two
-//        should agree to a few times the camera's own run-to-run FP
-//        summation-order noise, not a MC-noise-scale tolerance.
-//    (3) PT vs VCM PARITY, loose.  VCM combines a different mixture
-//        of MIS strategies per pixel even on a simple direct-lit
-//        diffuse floor, so its per-pixel noise is measurably higher
-//        at matched sample count (measured on this fixture: ~2-4 %
-//        at 64 spp, shrinking with more samples) -- the tolerance
-//        here is generous enough to absorb that MC noise while still
-//        being far tighter than the "footprint completely missing"
-//        failure mode this file exists to catch (which would move the
-//        far band by orders of magnitude, not a few percent).
+//    (1) PT vs BDPT, CONVERGED: whole-image mean within 0.1% and
+//        whole-image HF energy within 25%.
+//    (2) PT vs VCM, CONVERGED: mean within 0.1%, HF energy within 50%.
+//        VCM has its own light-traced splat site, so it needs its own
+//        check rather than inheriting BDPT's.
 //
-//  RED-PROOF.  Temporarily inserting `currentRay.hasDifferentials =
-//  false;` immediately after `Ray currentRay = cameraRay;` at the top
-//  of `GenerateEyeSubpathImpl` (BDPTIntegrator.cpp) -- the literal
-//  code shape DL-14's own text describes ("no differentials are ever
-//  computed for those walks") -- and rebuilding turns every assertion
-//  in section (1) and (2) red for BDPT and VCM: the far band's std
-//  jumps to match the near band's (full, unfaded high-frequency
-//  noise leaking through at every distance) and the PT-vs-BDPT/VCM
-//  far-band ratio blows out by 1-2 orders of magnitude.  Measured
-//  numbers from that mutated build are recorded in the fix commit
-//  message and docs/DL14_BIDIRECTIONAL_RAY_DIFFERENTIALS.md (there is
-//  no permanent code change in this slice -- the mechanism already
-//  works; this file and that doc are the closure evidence).
+//  Both the mean and the HF energy move when the footprint is wrong:
+//  an unfiltered share mixes un-faded fbm octaves into the image.  The
+//  mean check is the sharp one -- the footprint is the only thing in
+//  this scene that moves it -- while the HF bands absorb the
+//  light-traced share's own noise.
+//
+//  RED-PROOF (1024 spp).  Pre-fix (no t == 1 stamp): BDPT mean +0.32%,
+//  HF 1.70x; VCM mean +0.23%, HF 1.80x.  Dropping the eye ray's
+//  differentials (`currentRay.hasDifferentials = false;` after
+//  `Ray currentRay = cameraRay;` in GenerateEyeSubpathImpl): BDPT mean
+//  -0.41%, HF 2.33x.  Reverting VCMIntegrator.cpp's stamp alone fails
+//  the VCM mean check (+0.23%).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -382,8 +371,9 @@ static void TestFootprintParity()
 	// at 1024 spp BDPT read mean +0.32% and HF energy 1.70x PT's, and a
 	// t == 1 connection now shades its surface point with the footprint
 	// of the pixel it lands in (PathVertexEval::StampPixelFootprint),
-	// after which BDPT reads mean 0.000% and HF 1.18x (the rest is (a),
-	// still converging).  So these checks compare converged quantities
+	// after which BDPT reads mean 0.000% and HF 1.18x.  The remaining HF
+	// excess is (a): at 4096 spp it reads 1.042x, shrinking ~4x for 4x the
+	// samples as a variance term does.  So these checks compare converged quantities
 	// at 1024 spp: the mean tightly (the footprint is the only thing
 	// that moves it), the HF energy within 25%.  The eye footprint
 	// itself (DL-14's original subject) is still pinned: dropping the
@@ -399,8 +389,9 @@ static void TestFootprintParity()
 	// stamp VCM read mean +0.23% and HF 1.80x PT's, with it +0.001% and
 	// 1.32x -- so much of VCM's long-documented HF excess on this fixture
 	// was the unfiltered light-traced share, not noise; the remainder is
-	// still converging.  Same bands as BDPT's: the mean tightly, HF 50%
-	// (VCM is noisier than BDPT at matched spp).
+	// noise (1.080x at 4096 spp).  The mean is held as tightly as
+	// BDPT's; the HF band is 50% (BDPT's is 25%) because VCM is noisier
+	// than BDPT at matched spp.
 	Check( RelClose( ptStats.mean,     vcmStats.mean,     0.001 ), "PT vs VCM: whole-image mean (converged, 0.1%)" );
 	Check( RelClose( ptStats.hfEnergy, vcmStats.hfEnergy, 0.50 ), "PT vs VCM: whole-image HF energy (converged)" );
 

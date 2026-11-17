@@ -64,10 +64,13 @@ namespace RISE
 		//! pixel evaluates it filtered: the pixel then converges to a
 		//! mixture of two textures weighted by the strategies' MIS shares.
 		//! `dpdx` / `dpdy` are the world-space surface steps per raster
-		//! pixel (BDPTCameraUtilities::PixelFootprintThrough); the fields
-		//! are filled exactly as Object::IntersectRay fills an eye hit's:
-		//! the world width, the width in the hit object's own frame (the
-		//! frame `Po` is evaluated in), and the texcoord-chart UV Jacobian.
+		//! pixel (BDPTCameraUtilities::PixelFootprintThrough).  The fields
+		//! use the formulas Object::IntersectRay uses for an eye hit -- the
+		//! world width, the width in the hit object's own frame (the frame
+		//! `Po` is evaluated in), and the texcoord-chart UV Jacobian -- but
+		//! from the stored, post-modifier vertex rather than the pre-modifier
+		//! hit, so on a bump- or normal-mapped surface the two sides can
+		//! differ slightly (DL-14 doc §10, residuals).
 		inline void StampPixelFootprint( BDPTVertex& vertex, const Vector3& dpdx, const Vector3& dpdy )
 		{
 			TextureFootprint fp;

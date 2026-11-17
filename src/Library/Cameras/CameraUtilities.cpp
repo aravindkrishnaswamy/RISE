@@ -800,11 +800,14 @@ bool BDPTCameraUtilities::PixelFootprintThrough(
 
 	// A step of 1e-7 of the viewing distance (1e-7 rad) moves the image by
 	// ~0.002 px even at a 10-degree field of view on a 1920-px film (one pixel
-	// is ~9e-5 rad there), so all four probes stay well inside
-	// RasterizeThrough's one-pixel guard band at the film edge.  The
+	// is ~9e-5 rad there), so the probes move the image point by a tiny
+	// fraction of a pixel.  A point already within that fraction of the edge
+	// of RasterizeThrough's one-pixel guard band can still fail a probe; the
+	// caller then shades the connection unstamped.  The
 	// projection is smooth, so the central difference's truncation error is
-	// second order in the step, and in double precision its round-off is
-	// ~1e-16 / 1e-7 ~ 1e-9 relative.
+	// second order in the step; in double precision its round-off is about
+	// 1e-16 * |P| / h relative, i.e. ~1e-9 * |P| / dist -- negligible unless
+	// the point is far from the origin and very close to the camera.
 	const Scalar h = Scalar( 1e-7 ) * dist;
 	Point2 tp, tm, bp, bm;
 	if( !RasterizeThrough( cam, Point3Ops::mkPoint3( worldPoint, T * h ), ap, tp ) ||

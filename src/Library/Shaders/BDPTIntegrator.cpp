@@ -5860,8 +5860,11 @@ bool RescaleTypeCapSplit(
 	if( t == 1 ) {
 		const BDPTCameraUtilities::ApertureSample ap = BDPTCameraUtilities::SampleAperture( camera, cameraLensSample );
 		woL = Vector3Ops::Normalize( Vector3Ops::mkVector3( ap.point, pLightEnd->position ) );
-		// The same record the t == 1 contribution was shaded with (DL-14).
-		pLightEnd = &PathVertexEval::WithPixelFootprint( camera, ap, *pLightEnd, footprinted );
+		// The same record the t == 1 contribution was shaded with (DL-14);
+		// only the light-side split reads it.
+		if( plan.splitLight ) {
+			pLightEnd = &PathVertexEval::WithPixelFootprint( camera, ap, *pLightEnd, footprinted );
+		}
 	} else {
 		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
 		const Vector3 dConnect = Vector3Ops::Normalize(

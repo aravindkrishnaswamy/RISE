@@ -9,14 +9,15 @@ int main(int argc,char** argv) {
  const std::string shipped=ReadFileText(root+"scenes/Tests/SMS/sms_k2_glassblock.RISEscene");
  std::string sms=PatchShippedScene(shipped,budget,100,75,false),pt=PatchShippedScene(shipped,budget,100,75,false);
  auto at=pt.find("sms_enabled"); if(at==std::string::npos) return 2; auto end=pt.find("\n",at); pt.replace(at,end-at,"sms_enabled FALSE");
- // The shipped VCM reference caps both subpaths at 8 vertices, which
+ // The shipped VCM reference caps both subpaths at 8 surface hits, which
  // truncates the slab's internal-reflection series (ior 2.2 between two
- // bumpy sheets): at depth 8 its masked mean reads ~3.8% below PT-no-SMS
- // at any merge radius (0.04 / 0.01 / 0.0025 / auto: 0.3252 / 0.3271 /
- // 0.3253 / 0.3251) and does not move with spp, while at depth 32 it reads
- // PT's value (0.33824 vs 0.33832).  PT runs at its default depth (128), so
- // the reference is matched to it here (DL-308: a gap is a depth mismatch
- // until shown otherwise).
+ // bumpy sheets): at depth 8 its masked mean reads 3.3-3.9% below
+ // PT-no-SMS at every merge radius tried (0.04 / 0.01 / 0.0025 / auto:
+ // 0.3252 / 0.3271 / 0.3253 / 0.3251) and does not move from 512 to 2048
+ // spp, while at depth 32 it reads PT's value (0.33824 +/- 0.0030 vs
+ // 0.33832 +/- 0.0011, four salted replicas each).  PT runs at its default
+ // depth (128); depth 32 is deep enough here, not an exact match (DL-308:
+ // a gap is a depth mismatch until shown otherwise).
  std::string refText=ReadFileText(root+"scenes/Tests/SMS/sms_k2_glassblock_ref.RISEscene");
  for(const char* k:{"max_eye_depth","max_light_depth"}) {
   const auto at=refText.find(k); if(at==std::string::npos) return 2;
