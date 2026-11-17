@@ -10,6 +10,7 @@
 #include "../src/Library/Objects/SnapshotLeafClone.h"
 #include "../src/Library/SceneEditor/MaterialIntrospection.h"
 #include "../src/Library/Utilities/MicrofacetUtils.h"
+#include "../src/Library/Utilities/RoughDielectricEnergy.h"
 #include "../src/Library/Utilities/ISampler.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
 #include "../src/Library/Rendering/RayCaster.h"
@@ -101,9 +102,9 @@ static void Sampling(IMaterial& material,RayIntersectionGeometric& ri,IORStack& 
         Check(Close(pdf,ray.pdf) && pdf>0 && !ray.isDelta,"aggregate query PDF equals sample density");
         const Vector3 wi=Vector3Ops::Normalize(-ri.ray.Dir());
         const Vector3 wo=ray.ray.Dir();
-        const auto expected=RD::Evaluate(wi,wo,0.2,0.4,eta,false);
+        const auto expected=RoughDielectricEnergy::Model(wi,0.2,0.4,eta).Evaluate(wo,false);
         const Scalar weight=nm>0 ? ray.krayNM : ray.kray[0];
-        Check(Close(weight,expected.weight),"sampler importance weight matches kernel");
+        Check(Close(weight,expected.weight),"sampler importance weight matches compensated kernel");
         const Scalar cosine=std::abs(wo.z);
         Scalar importance=0,radiance=0;
         {
@@ -164,7 +165,7 @@ int main()
         if(rays.Count() && rays[0].type==ScatteredRay::eRayRefraction) {
             exited=true;
             Check(rays[0].ior_stack && Close(rays[0].ior_stack->top(),1.33) && !rays[0].ior_stack->containsCurrent(),"exit restores enclosing medium");
-            const auto expected=RD::Evaluate(Vector3(0,0,1),rays[0].ray.Dir(),0.2,0.4,1.33/1.5,false);
+            const auto expected=RoughDielectricEnergy::Model(Vector3(0,0,1),0.2,0.4,1.33/1.5).Evaluate(rays[0].ray.Dir(),false);
             Check(Close(rays[0].kray[0],expected.weight),"exit samples enclosing/material IOR ratio");
         }
     }
@@ -179,10 +180,10 @@ int main()
         if(rays.Count()) {
             const auto& ray=rays[0];
             const Scalar index=spectral->GetValueAtNM(ri,nm);
-            const auto expected=RD::Evaluate(Vector3(0,0,1),ray.ray.Dir(),0.2,0.4,index,false);
+            const auto expected=RoughDielectricEnergy::Model(Vector3(0,0,1),0.2,0.4,index).Evaluate(ray.ray.Dir(),false);
             Check(Close(ray.krayNM,expected.weight) && Close(ray.pdf,expected.pdf),"NM sampler preserves wavelength-dependent IOR");
             const Scalar companion=material->GetSPF()->EvaluateKrayNM(ri,ray.ray.Dir(),ray.type,600,air,ray.pdf);
-            const Scalar f=RD::Evaluate(Vector3(0,0,1),ray.ray.Dir(),0.2,0.4,1.4,false).f;
+            const Scalar f=RoughDielectricEnergy::Model(Vector3(0,0,1),0.2,0.4,1.4).Evaluate(ray.ray.Dir(),false).f;
             Check(Close(companion,f*std::abs(ray.ray.Dir().z)/ray.pdf),"HWSS dispersive companion is evaluated at its own IOR");
         }
     }

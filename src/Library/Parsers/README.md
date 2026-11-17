@@ -530,7 +530,8 @@ sample, while NM/HWSS preserve the full curve. Authored RGB triples are refused.
 `alphax`/`alphay` are GGX widths, not perceptual roughness; both must be in
 (0,1]. The defaults are IOR 1.5 and widths 0.2. Invalid per-hit widths/indices
 produce null scattering. Use `dielectric_material` for a smooth interface.
-The model includes single-scattering reflection and refraction, anisotropy,
+The model includes GGX reflection/refraction with reciprocal two-sided
+Kulla–Conty multiscatter compensation, anisotropy,
 aggregate solid-angle PDFs, nested-media IOR tracking, and hero-density spectral
 companion evaluation. Current PT/BDPT/VCM/MLT HWSS transport conservatively
 terminates companions at every rough interface, even without dispersion: these
@@ -542,8 +543,10 @@ before bundles are averaged (also for VCM merging and MLT splats/target).
 The local spectral evaluator remains available with caller-supplied wavelength
 stacks and hero density. Index-matched interfaces report their exact transparent
 delta behavior to shadow queries. SMS caustic construction for the new material
-is not supported in this increment. Micronormal and geometric-horizon rejection remain null
-events, so rough interfaces lose energy until multiscatter compensation lands.
+is not supported in this increment. The aggregate sampler retains VNDF null events while restoring their missing
+energy through the compensation lobes. Geometric-horizon clipping remains
+additional loss. LUT interpolation makes energy restoration approximate; see
+[ROUGH_DIELECTRIC_ENERGY.md](../../../docs/ROUGH_DIELECTRIC_ENERGY.md).
 Bulk absorption requires a separately assigned medium. World-position IOR
 fields are unsupported and refused. Importers still use their existing glass
 mappings. See `scenes/Tests/Materials/rough_dielectric.RISEscene`.

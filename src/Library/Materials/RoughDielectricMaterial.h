@@ -1,4 +1,4 @@
-// Single-scattering anisotropic GGX dielectric interface. Bulk absorption belongs
+// Anisotropic GGX dielectric with reciprocal multiscatter compensation. Bulk absorption belongs
 // to a separately assigned medium. Positive widths only; use dielectric_material
 // for a smooth interface. RGB uses a single physical IOR; NM/HWSS retain dispersion.
 #ifndef RISE_ROUGH_DIELECTRIC_MATERIAL_H

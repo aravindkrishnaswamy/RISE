@@ -234,6 +234,7 @@
     <ClCompile Include="..\..\..\src\Library\Materials\DataDrivenSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\DielectricSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\RoughDielectricMaterial.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\RoughDielectricEnergy.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\DonnerJensenSkinDiffusionProfile.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GGXBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GGXSPF.cpp" />
@@ -774,6 +775,8 @@
     <ClInclude Include="..\..\..\src\Library\Materials\DielectricMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\DielectricSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\RoughDielectricMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\RoughDielectricEnergy.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\RoughDielectricEnergyData.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\GenericHumanTissueMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\GenericHumanTissueSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\IsotropicPhongBRDF.h" />

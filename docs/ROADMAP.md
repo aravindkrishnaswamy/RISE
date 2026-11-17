@@ -15,7 +15,7 @@ Before prioritizing new work, note what is **complete in production** as of Nove
 - **Integrators & Transport:** Unidirectional PT, BDPT, VCM (including SPPM auto-radius clipped to pixel footprint, surface + volumetric merging, and continuous-PMF env+light sampling), PSSMLT (frozen legacy tier), Specular Manifold Sampling (`SMS` + `sms_extended` Phases 1–4 across RGB/NM/HWSS), OpenPGL path guiding (one-sample + RIS with exact aggregate MIS partitioning), and the `auto_rasterizer` / `auto_spectral_rasterizer` two-tier router.
 - **Materials, Curves & Signals:** GGX + height-correlated Smith $G_2$ directional/anisotropic energy-compensation LUTs, `pbr_metallic_roughness_material`, `coated_material` (refracted-frame substrate + trapped diffuse recycling + `coat_normal`), `ggx_material` (`fresnel_mode thinfilm`) + `dielectric_material` (`ar_layer`) Airy thin-film interference, `fabric_material` (Charlie sheen) + `weave_material` + `add_fuzz`, `hair_geometry` + Chiang `HairBSDF` + Yan 2017 fur medulla (`medulla_ratio`) + `.hair` loader + Hair Phase 4 LOD, Donner-Jensen diffusion + `randomwalk_sss_material` (spectral + relative exterior IOR), scalar material `alpha_coverage`, `relief_modifier` / `glint_modifier` / `add_wetness` / `add_wear`, and cross-object `proximity(r)` / watertight `interior(r)` shading signals.
 - **Spectral & Color Pipeline:** `RISEPel = Rec709RGBPel` (Linear Rec.709 / D65 working space), Stage C illuminant-aware Jakob-Hanika LUT (`100 %` cell convergence; `GetColorNM` vs `GetRadianceNM`), physical-scalar `IScalarPainter` separation, GPU-backed OIDN denoising with albedo/normal AOVs (`OIDN-P1-1` inline delta-walk first-diffuse AOV accumulation and `oidn_prefilter`), and `FrameStore` HDR display pipeline.
-- **Multi-Platform GUI, Importers & Agent Surface:** Native macOS SwiftUI + Metal and Windows Qt6 + D3D11/OpenGL editors (with Material Editor Slices 1–6: node graph, `ObjectGraphCanvas`, 3D `MaterialPreview` shaderball, Kelvin/Sellmeier/preset-metal/thin-film spectral controls, `NamedViewsPanel`, and Keychain / Windows Credential Manager API-key persistence), Android Compose + NDK viewer/editor, glTF 2.0 importer (9 KHR material/light/transform extensions), Blender 4.x–5.3 add-on (C ABI v18), and the 43-tool MCP / HTTP / in-app LLM agent with 9 runtime authoring skills (`skills/agent/`), 12 contributor workflow skills (`docs/skills/`), and 532 standalone C++ test suites.
+- **Multi-Platform GUI, Importers & Agent Surface:** Native macOS SwiftUI + Metal and Windows Qt6 + D3D11/OpenGL editors (with Material Editor Slices 1–6: node graph, `ObjectGraphCanvas`, 3D `MaterialPreview` shaderball, Kelvin/Sellmeier/preset-metal/thin-film spectral controls, `NamedViewsPanel`, and Keychain / Windows Credential Manager API-key persistence), Android Compose + NDK viewer/editor, glTF 2.0 importer (9 KHR material/light/transform extensions), Blender 4.x–5.3 add-on (C ABI v18), and the 43-tool MCP / HTTP / in-app LLM agent with 9 runtime authoring skills (`skills/agent/`), 12 contributor workflow skills (`docs/skills/`), and 533 standalone C++ test suites.
 
 ---
 
@@ -101,8 +101,10 @@ horizon gates. SPF weights exclude eta scaling; the BSDF honors radiance versus
 importance mode, and spectral companion weights use the hero sampling density.
 `RoughDielectricMaterialTest` checks these boundaries; the comparison scene is
 `scenes/Tests/Materials/rough_dielectric.RISEscene`.
-This is single scattering with null events: multiscatter compensation and
-importer wiring remain before closing 1.1. Both material alpha widths must be
+The material now adds reciprocal two-sided Kulla–Conty multiscatter compensation
+with an anisotropic energy LUT and a matching mixture sampler. Furnace energy
+restoration is approximate; see [ROUGH_DIELECTRIC_ENERGY.md](ROUGH_DIELECTRIC_ENERGY.md)
+for its derivation, calibration and limits. Importer wiring remains before closing 1.1. Both material alpha widths must be
 in (0,1]; smooth interfaces use `dielectric_material`. Bulk absorption uses a
 separate medium. World-position IOR fields are refused in this increment.
 

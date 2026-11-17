@@ -753,6 +753,9 @@
     <ClCompile Include="..\..\..\src\Library\Materials\RoughDielectricMaterial.cpp">
       <Filter>Materials\Dielectrics</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\RoughDielectricEnergy.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.cpp">
       <Filter>Materials\BioSpec</Filter>
     </ClCompile>
@@ -2252,6 +2255,12 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\RoughDielectricMaterial.h">
       <Filter>Materials\Dielectrics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RoughDielectricEnergy.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RoughDielectricEnergyData.h">
+      <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinData.h">
       <Filter>Materials\BioSpec</Filter>
