@@ -509,3 +509,31 @@ See `docs/IMPROVEMENTS.md` item 8 for algorithmic details.
 - Scene taxonomy: [../../../scenes/README.md](../../../scenes/README.md)
 - Showcase scenes: [../../../scenes/FeatureBased/README.md](../../../scenes/FeatureBased/README.md)
 - Regression scenes: [../../../scenes/Tests/README.md](../../../scenes/Tests/README.md)
+
+### Rough dielectric interface (Tier 1.1)
+
+`rough_dielectric_material` is an additive native-v7 material chunk:
+
+```text
+rough_dielectric_material
+{
+name frosted_glass
+ior 1.5
+alphax 0.2
+alphay 0.4
+}
+```
+
+All three slots accept single-scalar literals or scalar painters. Spectral
+curves resolve to single-scalar slot views: RGB uses the representative green
+sample, while NM/HWSS preserve the full curve. Authored RGB triples are refused.
+`alphax`/`alphay` are GGX widths, not perceptual roughness; both must be in
+(0,1]. The defaults are IOR 1.5 and widths 0.2. Invalid per-hit widths/indices
+produce null scattering. Use `dielectric_material` for a smooth interface.
+The model includes single-scattering reflection and refraction, anisotropy,
+aggregate solid-angle PDFs, nested-media IOR tracking, and hero-density spectral
+companion evaluation. Micronormal and geometric-horizon rejection remain null
+events, so rough interfaces lose energy until multiscatter compensation lands.
+Bulk absorption requires a separately assigned medium. World-position IOR
+fields are unsupported and refused. Importers still use their existing glass
+mappings. See `scenes/Tests/Materials/rough_dielectric.RISEscene`.

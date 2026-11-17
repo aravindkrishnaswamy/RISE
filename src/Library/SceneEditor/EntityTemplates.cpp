@@ -339,6 +339,19 @@ namespace
 		return d;
 	}
 
+    const EntityTemplateDef& RoughDielectricMaterialTemplate()
+    {
+        static const EntityTemplateDef d = [] {
+            EntityTemplateDef t;
+            t.category=Category::Material; t.label="Rough Dielectric (Glass)";
+            t.baseName="rough_glass"; t.hasNamedIdentity=true;
+            t.needsMaterial=false; t.needsTexture=false;
+            t.chunkTexts.push_back("rough_dielectric_material\n{\nname @NAME@\nior 1.5\nalphax 0.2\nalphay 0.2\n}\n");
+            return t;
+        }();
+        return d;
+    }
+
 	const EntityTemplateDef& DielectricMaterialTemplate()
 	{
 		static const EntityTemplateDef d = []{
@@ -674,7 +687,7 @@ namespace
 			&SphereObjectTemplate(), &BoxObjectTemplate(), &CylinderObjectTemplate(), &InfinitePlaneObjectTemplate()
 		};
 		static const std::vector<const EntityTemplateDef*> kMaterial = {
-			&LambertianMaterialTemplate(), &LambertianLuminaireMaterialTemplate(), &DielectricMaterialTemplate(),
+			&LambertianMaterialTemplate(), &LambertianLuminaireMaterialTemplate(), &DielectricMaterialTemplate(), &RoughDielectricMaterialTemplate(),
 			&GGXMaterialTemplate(), &PerfectRefractorMaterialTemplate()
 		};
 		static const std::vector<const EntityTemplateDef*> kPainter = {

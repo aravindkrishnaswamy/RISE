@@ -468,7 +468,9 @@
 		F24B72D32F52A632008304C4 /* CookTorranceSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E0069C42900069C9E5 /* CookTorranceSPF.h */; };
 		F24B72D42F52A632008304C4 /* DielectricMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E1069C42900069C9E5 /* DielectricMaterial.h */; };
 		F24B72D52F52A632008304C4 /* DielectricSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */; };
+		01EAA6405C33D1616E15A2D7 /* RoughDielectricMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */; };
 		F24B72D62F52A632008304C4 /* DielectricSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E3069C42900069C9E5 /* DielectricSPF.h */; };
+		E6DB0045BB8847325691D3A1 /* RoughDielectricMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = AB8D647B084BB4805FD4BC4C /* RoughDielectricMaterial.h */; };
 		F24B72D72F52A632008304C4 /* GenericHumanTissueMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E4069C42900069C9E5 /* GenericHumanTissueMaterial.h */; };
 		F24B72D82F52A632008304C4 /* GenericHumanTissueSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E5069C42900069C9E5 /* GenericHumanTissueSPF.cpp */; };
 		F24B72D92F52A632008304C4 /* GenericHumanTissueSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E6069C42900069C9E5 /* GenericHumanTissueSPF.h */; };
@@ -1200,7 +1202,9 @@
 		F27F0B48069C42910069C9E5 /* CookTorranceSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E0069C42900069C9E5 /* CookTorranceSPF.h */; };
 		F27F0B49069C42910069C9E5 /* DielectricMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E1069C42900069C9E5 /* DielectricMaterial.h */; };
 		F27F0B4A069C42910069C9E5 /* DielectricSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */; };
+		1D81A1F561D9D814B3B6DF5D /* RoughDielectricMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */; };
 		F27F0B4B069C42910069C9E5 /* DielectricSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E3069C42900069C9E5 /* DielectricSPF.h */; };
+		1746417C8BD779406CF744AA /* RoughDielectricMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = AB8D647B084BB4805FD4BC4C /* RoughDielectricMaterial.h */; };
 		F27F0B4C069C42910069C9E5 /* GenericHumanTissueMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E4069C42900069C9E5 /* GenericHumanTissueMaterial.h */; };
 		F27F0B4D069C42910069C9E5 /* GenericHumanTissueSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E5069C42900069C9E5 /* GenericHumanTissueSPF.cpp */; };
 		F27F0B4E069C42910069C9E5 /* GenericHumanTissueSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E6069C42900069C9E5 /* GenericHumanTissueSPF.h */; };
@@ -2545,7 +2549,9 @@
 		F27F08E0069C42900069C9E5 /* CookTorranceSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CookTorranceSPF.h; sourceTree = "<group>"; };
 		F27F08E1069C42900069C9E5 /* DielectricMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DielectricMaterial.h; sourceTree = "<group>"; };
 		F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DielectricSPF.cpp; sourceTree = "<group>"; };
+		4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RoughDielectricMaterial.cpp; sourceTree = "<group>"; };
 		F27F08E3069C42900069C9E5 /* DielectricSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DielectricSPF.h; sourceTree = "<group>"; };
+		AB8D647B084BB4805FD4BC4C /* RoughDielectricMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RoughDielectricMaterial.h; sourceTree = "<group>"; };
 		F27F08E4069C42900069C9E5 /* GenericHumanTissueMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GenericHumanTissueMaterial.h; sourceTree = "<group>"; };
 		F27F08E5069C42900069C9E5 /* GenericHumanTissueSPF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GenericHumanTissueSPF.cpp; sourceTree = "<group>"; };
 		F27F08E6069C42900069C9E5 /* GenericHumanTissueSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GenericHumanTissueSPF.h; sourceTree = "<group>"; };
@@ -3824,7 +3830,9 @@
 				F27F08E0069C42900069C9E5 /* CookTorranceSPF.h */,
 				F27F08E1069C42900069C9E5 /* DielectricMaterial.h */,
 				F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */,
+				4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */,
 				F27F08E3069C42900069C9E5 /* DielectricSPF.h */,
+				AB8D647B084BB4805FD4BC4C /* RoughDielectricMaterial.h */,
 				F27F08E4069C42900069C9E5 /* GenericHumanTissueMaterial.h */,
 				F27F08E5069C42900069C9E5 /* GenericHumanTissueSPF.cpp */,
 				F27F08E6069C42900069C9E5 /* GenericHumanTissueSPF.h */,
@@ -5009,6 +5017,7 @@
 				F27F0B48069C42910069C9E5 /* CookTorranceSPF.h in Headers */,
 				F27F0B49069C42910069C9E5 /* DielectricMaterial.h in Headers */,
 				F27F0B4B069C42910069C9E5 /* DielectricSPF.h in Headers */,
+				1746417C8BD779406CF744AA /* RoughDielectricMaterial.h in Headers */,
 				F27F0B4C069C42910069C9E5 /* GenericHumanTissueMaterial.h in Headers */,
 				F27F0B4E069C42910069C9E5 /* GenericHumanTissueSPF.h in Headers */,
 				F27F0B50069C42910069C9E5 /* IsotropicPhongBRDF.h in Headers */,
@@ -5674,6 +5683,7 @@
 				F27F0B47069C42910069C9E5 /* CookTorranceSPF.cpp in Sources */,
 				F2D9B07F2F896BFA0077A171 /* FilteredFilm.cpp in Sources */,
 				F27F0B4A069C42910069C9E5 /* DielectricSPF.cpp in Sources */,
+				1D81A1F561D9D814B3B6DF5D /* RoughDielectricMaterial.cpp in Sources */,
 				F27F0B4D069C42910069C9E5 /* GenericHumanTissueSPF.cpp in Sources */,
 				F27F0B4F069C42910069C9E5 /* IsotropicPhongBRDF.cpp in Sources */,
 				F27F0B52069C42910069C9E5 /* IsotropicPhongSPF.cpp in Sources */,
@@ -6273,7 +6283,9 @@
 				F24B72D32F52A632008304C4 /* CookTorranceSPF.h in Sources */,
 				F24B72D42F52A632008304C4 /* DielectricMaterial.h in Sources */,
 				F24B72D52F52A632008304C4 /* DielectricSPF.cpp in Sources */,
+				01EAA6405C33D1616E15A2D7 /* RoughDielectricMaterial.cpp in Sources */,
 				F24B72D62F52A632008304C4 /* DielectricSPF.h in Sources */,
+				E6DB0045BB8847325691D3A1 /* RoughDielectricMaterial.h in Sources */,
 				F24C54402F7C107E009AF16D /* BSSRDFSampling.cpp in Sources */,
 				F2C5D5EF2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp in Sources */,
 				F24B72D72F52A632008304C4 /* GenericHumanTissueMaterial.h in Sources */,

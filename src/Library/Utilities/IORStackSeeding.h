@@ -128,6 +128,7 @@
 #include "../Geometry/Geometry.h"
 #include "../Objects/Object.h"
 #include "../Materials/PolishedSPF.h"
+#include "../Materials/RoughDielectricMaterial.h"
 #include <algorithm>
 #include <functional>
 #include <limits>
@@ -427,7 +428,9 @@ namespace RISE
 				return kMembershipBlock;
 			}
 			if( ri.geometric.bProvablyNoInterior ) {
-				if( info.clearTransmission && info.ior > 0 ) {
+				// Membership is geometric, not a ballistic-shadow query. Rough
+				// dielectric sheets carry an index despite their non-delta BTDF.
+				if( (info.clearTransmission || dynamic_cast<const Implementation::RoughDielectricSurface*>(ri.pMaterial->GetSPF())) && info.ior > 0 ) {
 					return ri.geometric.TrueGeomFacing( dir ) > 0 ? kMembershipSheetBack : kMembershipSheetFront;
 				}
 				return kMembershipBlock;

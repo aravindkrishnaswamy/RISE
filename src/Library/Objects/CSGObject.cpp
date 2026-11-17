@@ -27,6 +27,7 @@
 #include "../Geometry/CircularDiskGeometry.h"
 #include "../Geometry/InfinitePlaneGeometry.h"
 #include "../Materials/DielectricMaterial.h"
+#include "../Materials/RoughDielectricMaterial.h"
 #include "../Materials/PerfectRefractorMaterial.h"
 #include "../Materials/LambertianLuminaireMaterial.h"
 #include "../Materials/PhongLuminaireMaterial.h"
@@ -4431,7 +4432,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 
 	// DL-617: preserve bProvablyNoInterior only when this CSG composite
 	// is a certified open sheet and the effective scattering material is
-	// clear refraction (DielectricMaterial / PerfectRefractorMaterial,
+	// an index-tracking interface (DielectricMaterial / RoughDielectricMaterial / PerfectRefractorMaterial,
 	// optionally wrapped in luminaire materials).
 	bool allowOpenSheetProof = false;
 	if( ri.geometric.bHit && certifiedOpenCSG && ri.pMaterial ) {
@@ -4446,6 +4447,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			}
 		}
 		if( dynamic_cast<const DielectricMaterial*>( proofMaterial ) ||
+                dynamic_cast<const RoughDielectricMaterial*>( proofMaterial ) ||
 			dynamic_cast<const PerfectRefractorMaterial*>( proofMaterial ) ) {
 			allowOpenSheetProof = true;
 		}

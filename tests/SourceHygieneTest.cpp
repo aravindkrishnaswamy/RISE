@@ -5282,8 +5282,8 @@ int main()
 		// And the capability itself stays scarce.  Granting it to a material
 		// whose value() does NOT transmit is a real bias (NEE would light its
 		// back faces at full weight), so it must be a deliberate, reviewed
-		// act -- not something that spreads by copy-paste.  Today exactly one
-		// material claims it.
+		// act -- not something that spreads by copy-paste. The explicit
+		// allowlist below records the audited transmitting materials.
 		// Robust in the direction that matters: the scan is RECURSIVE over
 		// all of src/Library (claimers need not live in Materials/), and it
 		// matches on a whitespace-flattened body so an `override` keyword, a
@@ -5323,19 +5323,21 @@ int main()
 		for( const std::string& c : claimers ) {
 			std::cout << "  full-sphere material: " << c << std::endl;
 		}
-		Check( claimers.size() == 8
+		Check( claimers.size() == 9
 		    && claimers[0] == "CoatedMaterial.h"
 		    && claimers[1] == "CompositeMaterial.h"
 		    && claimers[2] == "FabricMaterial.h"
 		    && claimers[3] == "HairMaterial.h"
 		    && claimers[4] == "LambertianLuminaireMaterial.h"
 		    && claimers[5] == "PhongLuminaireMaterial.h"
-		    && claimers[6] == "TranslucentMaterial.h"
-		    && claimers[7] == "WeaveMaterial.h",
+		    && claimers[6] == "RoughDielectricMaterial.h"
+		    && claimers[7] == "TranslucentMaterial.h"
+		    && claimers[8] == "WeaveMaterial.h",
 		       "full-sphere NEE: HairMaterial (unconditional), WeaveMaterial (conditional on "
 		       "`transmission thin`, P2-B), TranslucentMaterial (unconditional, DL-157), "
 		       "CompositeMaterial (DL-157 P2-1, CACHED at construction), FabricMaterial and "
 		       "CoatedMaterial (DELEGATING via `pBase->ScattersFullSphere()`), and "
+		       "RoughDielectricMaterial (unconditional GGX transmission), and "
 		       "LambertianLuminaireMaterial / PhongLuminaireMaterial (DELEGATING via "
 		       "`pMaterial.ScattersFullSphere()`) are the ONLY materials claiming ScattersFullSphere()" );
 	}

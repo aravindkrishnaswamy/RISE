@@ -1299,6 +1299,9 @@ namespace RISE
 									const double bias				///< [in] Additive offset after scale
 									);
 
+		bool AddRoughDielectricMaterial(const char* name, const char* ior,
+			const char* alphaX, const char* alphaY);
+
 		//! Creates a Dielectric material
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddDielectricMaterial(

@@ -4709,6 +4709,12 @@ namespace RISE
             const unsigned int numfaces, const bool double_sided, const bool face_normals,
             const float* corner_tangents, const unsigned int numtangents) = 0;
 
+        //! Lossless single-scattering GGX interface. Positive alpha widths in
+        //! (0,1], single-scalar slots; spectral IOR curves retain NM dispersion.
+        //! Appended to preserve all existing virtual slot positions.
+        virtual bool AddRoughDielectricMaterial(const char*, const char*,
+            const char*, const char*) { return false; }
+
 	};
 
 

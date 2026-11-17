@@ -4180,6 +4180,23 @@ static bool RefuseUngradableWorldPositionIor(
 
 //! Creates a Dielectric material
 /// \return TRUE if successful, FALSE otherwise
+bool Job::AddRoughDielectricMaterial(const char* name, const char* ior,
+    const char* alphaX, const char* alphaY)
+{
+    IScalarPainter* n = ResolveOrDiagnoseScalar(pScalarPntManager,pPntManager,"rough_dielectric_material",name,"ior",ior,true);
+    IScalarPainter* ax = ResolveOrDiagnoseScalar(pScalarPntManager,pPntManager,"rough_dielectric_material",name,"alphax",alphaX,true);
+    IScalarPainter* ay = ResolveOrDiagnoseScalar(pScalarPntManager,pPntManager,"rough_dielectric_material",name,"alphay",alphaY,true);
+    IMaterial* material = nullptr;
+    const bool created = n && ax && ay && RISE_API_CreateRoughDielectricMaterial(&material,*n,*ax,*ay);
+    if(n && (n->ReadsWorldPosition() || n->IsWorldPositionField())) {
+        GlobalLog()->PrintEx(eLog_Error,"rough_dielectric_material '%s': world-position IOR fields are not supported",name);
+    }
+    const bool ok = created && RegisterOrDiag(pMatManager,material,name,"material");
+    safe_release(material);
+    safe_release(n); safe_release(ax); safe_release(ay);
+    return ok;
+}
+
 bool Job::AddDielectricMaterial(
 							const char* name,				///< [in] Name of the material
 							const char* tau,				///< [in] Transmittance painter

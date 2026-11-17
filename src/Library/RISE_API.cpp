@@ -4258,6 +4258,7 @@ namespace RISE
 #include "Materials/FabricMaterial.h"
 #include "Materials/WeaveMaterial.h"
 #include "Materials/DielectricMaterial.h"
+#include "Materials/RoughDielectricMaterial.h"
 #include "Materials/SubSurfaceScatteringMaterial.h"
 #include "Materials/RandomWalkSSSMaterial.h"
 #include "Materials/PerfectReflectorMaterial.h"
@@ -4455,6 +4456,18 @@ namespace RISE
 		                            warp_color, warp_ior, warp_width, warp_azimuth, warp_kd, warp_tilt, warp_transmit,
 		                            weft_color, weft_ior, weft_width, weft_azimuth, weft_kd, weft_tilt, weft_transmit );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "weave material" );
+		return true;
+	}
+
+	bool RISE_API_CreateRoughDielectricMaterial(IMaterial** ppi, const IScalarPainter& ior,
+		const IScalarPainter& alphaX, const IScalarPainter& alphaY)
+	{
+		if(!ppi) return false;
+		*ppi = nullptr;
+		if(ior.HasPerChannelVariation() || alphaX.HasPerChannelVariation() || alphaY.HasPerChannelVariation() ||
+			ior.ReadsWorldPosition() || ior.IsWorldPositionField()) return false;
+		*ppi = new RoughDielectricMaterial(ior,alphaX,alphaY);
+		GlobalLog()->PrintNew(*ppi,__FILE__,__LINE__,"rough dielectric material");
 		return true;
 	}
 

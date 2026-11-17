@@ -4024,6 +4024,39 @@ namespace RISE
 				}
 			};
 
+			struct RoughDielectricMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize(const ParseStateBag& bag, IJob& job) const override
+				{
+					return job.AddRoughDielectricMaterial(bag.GetString("name","noname").c_str(),
+						bag.GetString("ior","1.5").c_str(), bag.GetString("alphax","0.2").c_str(),
+						bag.GetString("alphay","0.2").c_str());
+				}
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = [] {
+						ChunkDescriptor cd;
+						cd.keyword="rough_dielectric_material"; cd.category=ChunkCategory::Material;
+						cd.description="Single-scattering anisotropic GGX glass interface; bulk absorption uses a separate medium.";
+						cd.parameters.emplace_back();
+						cd.parameters.back().name="name"; cd.parameters.back().kind=ValueKind::String;
+						cd.parameters.back().defaultValueHint="noname";
+						for(const char* key : {"ior","alphax","alphay"}) {
+							cd.parameters.emplace_back(); auto& p=cd.parameters.back();
+							p.name=key; p.kind=ValueKind::Reference; p.referenceCategories={ChunkCategory::Painter};
+							p.semantics.pipe=ParameterPipe::Scalar;
+							const bool index=std::string(key)=="ior";
+							p.description=index ? "Single-scalar physical IOR; spectral curves retain NM/HWSS dispersion. No world-position IOR fields."
+								: "GGX alpha width in (0,1], not perceptual roughness. Both axes must be positive; use dielectric_material for smooth glass.";
+							p.defaultValueHint=index ? "1.5" : "0.2";
+							p.SoftRange(index ? 1.0 : 0.001,index ? 3.0 : 1.0,0.01);
+						}
+						AddVariantTagParam(cd); return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct DielectricMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -14105,6 +14138,7 @@ namespace RISE
 		add( "perfectrefractor_material",             std::make_unique<PerfectRefractorMaterialAsciiChunkParser>() );
 		add( "polished_material",                     std::make_unique<PolishedMaterialAsciiChunkParser>() );
 		add( "dielectric_material",                   std::make_unique<DielectricMaterialAsciiChunkParser>() );
+		add( "rough_dielectric_material",             std::make_unique<RoughDielectricMaterialAsciiChunkParser>() );
 		add( "subsurfacescattering_material",         std::make_unique<SubSurfaceScatteringMaterialAsciiChunkParser>() );
 		add( "randomwalk_sss_material",               std::make_unique<RandomWalkSSSMaterialAsciiChunkParser>() );
 		add( "lambertian_luminaire_material",         std::make_unique<LambertianLuminaireMaterialAsciiChunkParser>() );

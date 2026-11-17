@@ -1,0 +1,150 @@
+RISE ASCII SCENE 7
+# Tier 1.1 single-scattering glass comparison. Left: smooth; center: rough
+# isotropic; right: rough anisotropic; small front sphere: Lambertian control.
+# A checker backdrop shows refractive blur. Bulk absorption and multiscatter
+# compensation are deliberately absent. Adapted from pbr_metallic_roughness.
+standard_shader
+{
+name global
+shaderop DefaultPathTracing
+}
+film
+{
+width 480
+height 200
+}
+pinhole_camera
+{
+location 0 1.4 8
+lookat 0 0 0
+up 0 1 0
+fov 40
+}
+uniformcolor_painter
+{
+name white
+color 0.8 0.8 0.8
+colorspace Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+name blue
+color 0.025 0.12 0.5
+colorspace Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+name sky
+color 1 1 1
+colorspace Rec709RGB_Linear
+}
+checker_painter
+{
+name checks
+size 0.035
+colora white
+colorb blue
+}
+lambertian_material
+{
+name backdrop
+reflectance checks
+}
+lambertian_material
+{
+name control
+reflectance white
+}
+dielectric_material
+{
+name smooth
+ior 1.5
+tau 1
+scattering 1000000
+}
+rough_dielectric_material
+{
+name frosted
+ior 1.5
+alphax 0.16
+alphay 0.16
+}
+rough_dielectric_material
+{
+name brushed
+ior 1.5
+alphax 0.06
+alphay 0.4
+}
+sphere_geometry
+{
+name ball
+radius 0.7
+}
+clippedplane_geometry
+{
+name backplane
+pta -8 -4 -1.5
+ptb 8 -4 -1.5
+ptc 8 4 -1.5
+ptd -8 4 -1.5
+}
+standard_object
+{
+name back
+geometry backplane
+material backdrop
+}
+standard_object
+{
+name clear
+geometry ball
+material smooth
+position -1.7 0 0
+}
+standard_object
+{
+name frost
+geometry ball
+material frosted
+position 0 0 0
+}
+standard_object
+{
+name anisotropic
+geometry ball
+material brushed
+position 1.7 0 0
+}
+standard_object
+{
+name lambertian_control
+geometry ball
+material control
+position -2.6 -0.7 1
+scale 0.3 0.3 0.3
+}
+rect_light
+{
+name key
+center 0 3 3
+size 5 2
+facing 0 -1 -1
+color 1 0.95 0.85
+exitance 20
+}
+pathtracing_pel_rasterizer
+{
+samples 64
+radiance_map sky
+radiance_scale 0.2
+radiance_background TRUE
+pixel_filter gaussian
+}
+file_rasterizeroutput
+{
+pattern rendered/rough_dielectric
+type PNG
+bpp 8
+color_space sRGB
+}

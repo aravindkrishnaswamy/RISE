@@ -20,6 +20,7 @@
 #include "../Geometry/TriangleMeshGeometryIndexed.h"
 #include "../Geometry/BoxGeometry.h"
 #include "../Materials/DielectricMaterial.h"
+#include "../Materials/RoughDielectricMaterial.h"
 #include "../Materials/PerfectRefractorMaterial.h"
 #include "../Materials/PolishedSPF.h"
 #include "../Materials/LambertianLuminaireMaterial.h"
@@ -1176,6 +1177,7 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
                 } else break;
             }
             if( dynamic_cast<const DielectricMaterial*>( proofMaterial ) ||
+                dynamic_cast<const RoughDielectricMaterial*>( proofMaterial ) ||
                 dynamic_cast<const PerfectRefractorMaterial*>( proofMaterial ) ) {
                 if( const auto* bez = dynamic_cast<const BezierPatchGeometry*>( pGeometry ) ) {
                     openClearPatch = bez->IsProvablyOpenSheet();
@@ -1201,6 +1203,7 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
             } else break;
         }
         if(!dynamic_cast<const DielectricMaterial*>(proofMaterial) &&
+            !dynamic_cast<const RoughDielectricMaterial*>(proofMaterial) &&
             !dynamic_cast<const PerfectRefractorMaterial*>(proofMaterial)) {
             if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(pGeometry))
                 ri.geometric.bProvablyNoInterior=mesh->IsZeroVolumeSheet();
