@@ -253,8 +253,10 @@ bool ObjectWrapsComposite(const IObject& object)
 // (PotentialCaster reads the index painter's position independence; the
 // partial-HG check reads the scattering painter's) and a weave's gap
 // (WeaveMaterial::SetGap rebuilds HasDeltaPassThrough) without changing the
-// material pointer.  Those reads are two virtual calls for every material
-// and an index-painter query for the four caster types only.
+// material pointer.  Those reads are two virtual calls for every material,
+// plus, for the four caster types only, one virtual position-independence
+// query on the index painter (the caster's exact type is memoized, so no RTTI
+// is repeated) at each of the up to three predicates that ask.
 //
 // Geometry and object state -- an SDF's CanBeAreaLight follows its keyframed
 // parameters, mesh certification follows UpdateVertices, the interior medium
@@ -264,7 +266,9 @@ struct MaterialCensus
     bool wrapsComposite = false;
     bool notAudited = false;            // !AuditedMaterialGraph
     bool nativeClear = false;           // DielectricSPF / PerfectRefractorSPF
-    bool casterType = false;            // a type PotentialCaster can accept
+    SMSDomainReplay::CasterKind casterKind = SMSDomainReplay::NotCaster;  // PotentialCaster's exact-type gate
+    const PerfectRefractorMaterial* refractor = nullptr;  // set for casterKind == Refractor
+    const PolishedMaterial* polished = nullptr;           // set for casterKind == Polished
     bool clearTransmissive = false;     // IsClearTransmissiveMaterial (DL-382)
     const DielectricMaterial* dielectric = nullptr;
 };
@@ -278,12 +282,13 @@ MaterialCensus CensusOfMaterial(const IMaterial* material)
     c.nativeClear = dynamic_cast<const DielectricSPF*>(spf)
         || dynamic_cast<const PerfectRefractorSPF*>(spf);
     c.dielectric = dynamic_cast<const DielectricMaterial*>(material);
-    // A superset of SMSDomainReplay::PotentialCaster's exact-type gate; the
-    // live call below makes the decision.
-    c.casterType = c.dielectric
-        || dynamic_cast<const PerfectRefractorMaterial*>(material)
-        || dynamic_cast<const PolishedMaterial*>(material)
-        || dynamic_cast<const PerfectReflectorMaterial*>(material);
+    // SMSDomainReplay::PotentialCaster's exact-type gate; only the index
+    // painter's position independence is read live (PotentialCasterLive).
+    c.casterKind = SMSDomainReplay::PotentialCasterKind(*material);
+    if(c.casterKind == SMSDomainReplay::Refractor)
+        c.refractor = dynamic_cast<const PerfectRefractorMaterial*>(material);
+    else if(c.casterKind == SMSDomainReplay::Polished)
+        c.polished = dynamic_cast<const PolishedMaterial*>(material);
     bool broadProof = false;
     c.clearTransmissive = IsClearTransmissiveMaterial(material, broadProof);
     return c;
@@ -295,7 +300,17 @@ bool TransmissiveLive(const IMaterial* material, const MaterialCensus& census)
 }
 bool PotentialCasterLive(const IMaterial* material, const MaterialCensus& census)
 {
-    return material && census.casterType && SMSDomainReplay::PotentialCaster(*material);
+    // SMSDomainReplay::PotentialCaster with the type gate and the casts read
+    // from the memo: only the index painter, which SetIOR can replace in
+    // place, is queried live.
+    if(!material) return false;
+    switch(census.casterKind) {
+    case SMSDomainReplay::Reflector:  return true;
+    case SMSDomainReplay::Dielectric: return census.dielectric && census.dielectric->GetIOR().IsPositionIndependent();
+    case SMSDomainReplay::Refractor:  return census.refractor && census.refractor->GetIOR().IsPositionIndependent();
+    case SMSDomainReplay::Polished:   return census.polished && census.polished->GetIOR().IsPositionIndependent();
+    default:                          return false;
+    }
 }
 // A partial HG interface has no supported delta-limit query. Its scattering
 // declaration must certify independence before a value can establish
@@ -887,6 +902,30 @@ void ObjectManager::RefreshPrepareCensus() const
 		prepareCensus.reset( new PrepareCensus() );
 	}
 	std::vector<PrepareCensus::Entry>& old = prepareCensus->entries;
+	// Steady state: the same objects in the same order.  Update in place --
+	// only a re-pointed material is re-censused -- with no reallocation.
+	if( old.size() == items.size() ) {
+		bool inPlace = true;
+		std::size_t k = 0;
+		for( const auto& item : items ) {
+			if( old[k++].object != item.second.first ) { inPlace = false; break; }
+		}
+		if( inPlace ) {
+			k = 0;
+			for( const auto& item : items ) {
+				PrepareCensus::Entry& e = old[k++];
+				const IMaterial* material = item.second.first ? item.second.first->GetMaterial() : nullptr;
+				if( !e.factsValid || e.material != material ) {
+					if( material ) material->addref();
+					if( e.material ) e.material->release();
+					e.material = material;
+					e.facts = CensusOfMaterial( material );
+					e.factsValid = true;
+				}
+			}
+			return;
+		}
+	}
 	std::vector<PrepareCensus::Entry> fresh;
 	fresh.reserve( items.size() );
 	// Steady state (a non-structural edit): every item is at the position it
@@ -2845,8 +2884,8 @@ void ObjectManager::PrepareForRendering() const
                 smsUncertainNormalOrientation = true;
             if(RejectedTransmissiveCaster(*object, entry.facts, entry.isCSG))
                 smsRejectedTransmissiveCaster = true;
-            if(object->GetGeometry() && object->GetGeometry()->CanBeAreaLight()
-                && PotentialCasterLive(object->GetMaterial(), entry.facts))
+            if(PotentialCasterLive(object->GetMaterial(), entry.facts)
+                && object->GetGeometry() && object->GetGeometry()->CanBeAreaLight())
                 smsExtendedCasters.push_back(object);
         }
     }

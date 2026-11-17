@@ -361,6 +361,7 @@ Object::Object( ) :
   m_worldAreaScale( 1.0 ),
   m_needsWorldAreaSampling( false ),
   m_warnedAreaFallback( false ),
+  m_worldAreaEverOwned( false ),
   m_rejectionCapHits( 0 ),
   m_worldLinearScale( 1.0 ),
   m_sigmaMax( 1.0 ),
@@ -395,6 +396,7 @@ Object::Object( const IGeometry* pGeometry_ ) :
   m_worldAreaScale( 1.0 ),
   m_needsWorldAreaSampling( false ),
   m_warnedAreaFallback( false ),
+  m_worldAreaEverOwned( false ),
   m_rejectionCapHits( 0 ),
   m_worldLinearScale( 1.0 ),
   m_sigmaMax( 1.0 ),
@@ -565,6 +567,9 @@ void Object::CopySnapshotStateInto( Object& dst, const bool bCloneMaterial ) con
 		std::lock_guard<std::mutex> dstLock( dst.m_worldAreaMutex );
 		dst.m_geomOwned = m_geomOwned;
 		dst.m_metricOwned = m_metricOwned;
+		if( !m_geomOwned.empty() || !m_metricOwned.empty() ) {
+			dst.m_worldAreaEverOwned.store( true, std::memory_order_release );
+		}
 		for( unsigned int i = 0; i < kMaxAreaSlots; i++ ) {
 			dst.m_geomSlots[i].store( i < m_geomOwned.size() ? m_geomOwned[i].get() : 0, std::memory_order_release );
 			dst.m_metricSlots[i].store( i < m_metricOwned.size() ? m_metricOwned[i].get() : 0, std::memory_order_release );
@@ -2521,6 +2526,7 @@ const Object::GeometryAreaData* Object::FindOrBuildGeometryData( const WorldArea
 	}
 	m_geomSlots[m_geomOwned.size()].store( built.get(), std::memory_order_release );
 	m_geomOwned.push_back( built );
+	m_worldAreaEverOwned.store( true, std::memory_order_release );
 	return built.get();
 }
 
@@ -2575,6 +2581,7 @@ bool Object::AcquireWorldAreaView( WorldAreaView& view ) const
 			std::shared_ptr<const MetricAreaData> built = BuildMetricData( key, *g );
 			m_metricSlots[m_metricOwned.size()].store( built.get(), std::memory_order_release );
 			m_metricOwned.push_back( built );
+			m_worldAreaEverOwned.store( true, std::memory_order_release );
 			fill( *built );
 			return true;
 		}
@@ -2597,7 +2604,11 @@ void Object::PruneWorldAreaSampling() const
 	// Every other object -- almost all of a large scene -- has nothing to
 	// keep or retire, so skip the pose key and the vector churn below.  This
 	// runs for every object on every PrepareForRendering, including the one
-	// after a non-spatial edit (CstEditCostTest).
+	// after a non-spatial edit (CstEditCostTest).  An object that never owned
+	// an entry has nothing retired either, so it skips even the mutex.
+	if( !m_worldAreaEverOwned.load( std::memory_order_acquire ) ) {
+		return;
+	}
 	{
 		std::lock_guard<std::mutex> lock( m_worldAreaMutex );
 		if( m_geomOwned.empty() && m_metricOwned.empty() &&

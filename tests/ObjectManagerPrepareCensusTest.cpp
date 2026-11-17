@@ -30,6 +30,7 @@
 #include "../src/Library/Materials/PerfectRefractorMaterial.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Utilities/ManifoldSolver.h"
 #include "TestTempDir.h"
 
 using namespace RISE;
@@ -74,6 +75,8 @@ static std::string Scene( const char* objMaterial )
 		"perfectrefractor_material\n{\nname glass\nrefractance white\nior 1.5\n}\n"
 		"perfectreflector_material\n{\nname mirror\nreflectance white\n}\n"
 		"composite_material\n{\nname coat\ntop glass\nbottom diffuse\n}\n"
+		"dielectric_material\n{\nname dielectric\ntau 1\nior 1.33\nscattering 100000\n}\n"
+		"polished_material\n{\nname polish\nreflectance white\ntau 1\nior 1.5\nscattering 1000\n}\n"
 		"sphere_geometry\n{\nname sg\nradius 1\n}\n"
 		"sphere_geometry\n{\nname sg2\nradius 1\n}\n"
 		"standard_object\n{\nname obj\ngeometry sg\nmaterial ";
@@ -132,13 +135,20 @@ static std::string Str( const Policy& p )
 	return b;
 }
 
-// Fresh-manager reference for `obj` holding `material`.
-static Policy Reference_( const char* material )
+// Fresh-manager reference for `obj` holding `material`.  A fresh manager runs
+// the same census code, so it can only catch STALENESS; `oracleCaster` is the
+// independent check: SMSDomainReplay::PotentialCaster, the predicate the
+// memoized census (type gate + typed pointers) must reproduce.
+static Policy Reference_( const char* material, int* oracleCaster = nullptr )
 {
 	IJobPriv* job = Load( Scene( material ) );
 	Policy p;
 	if( job ) {
 		p = Read( *job );
+		if( oracleCaster ) {
+			const IMaterial* m = job->GetMaterials()->GetItem( material );
+			*oracleCaster = m && SMSDomainReplay::PotentialCaster( *m ) ? 1 : 0;
+		}
 		safe_release( job );
 	}
 	return p;
@@ -148,12 +158,21 @@ int main()
 {
 	std::printf( "ObjectManagerPrepareCensusTest\n" );
 
-	const Policy refDiffuse = Reference_( "diffuse" );
-	const Policy refGlass   = Reference_( "glass" );
-	const Policy refMirror  = Reference_( "mirror" );
+	int oDiffuse = -1, oGlass = -1, oMirror = -1, oDiel = -1, oPolish = -1;
+	const Policy refDiffuse = Reference_( "diffuse", &oDiffuse );
+	const Policy refGlass   = Reference_( "glass", &oGlass );
+	const Policy refMirror  = Reference_( "mirror", &oMirror );
 	const Policy refCoat    = Reference_( "coat" );
-	std::printf( "  reference diffuse: %s\n  reference glass:   %s\n  reference mirror:  %s\n  reference coat:    %s\n",
-		Str( refDiffuse ).c_str(), Str( refGlass ).c_str(), Str( refMirror ).c_str(), Str( refCoat ).c_str() );
+	const Policy refDiel    = Reference_( "dielectric", &oDiel );
+	const Policy refPolish  = Reference_( "polish", &oPolish );
+	// The census's caster decision equals SMSDomainReplay::PotentialCaster for
+	// every caster kind (a visible unit sphere can be an area light).
+	Check( (int)refDiffuse.casters == oDiffuse && (int)refGlass.casters == oGlass && (int)refMirror.casters == oMirror
+		&& (int)refDiel.casters == oDiel && (int)refPolish.casters == oPolish,
+		"census caster decision == SMSDomainReplay::PotentialCaster for diffuse / refractor / reflector / dielectric / polished" );
+	std::printf( "  reference diffuse: %s\n  reference glass:   %s\n  reference mirror:  %s\n  reference coat:    %s\n  reference dielectric: %s\n  reference polish:  %s\n",
+		Str( refDiffuse ).c_str(), Str( refGlass ).c_str(), Str( refMirror ).c_str(), Str( refCoat ).c_str(),
+		Str( refDiel ).c_str(), Str( refPolish ).c_str() );
 
 	// The references must actually differ, or the swap rows below prove
 	// nothing about staleness.
@@ -177,15 +196,18 @@ int main()
 
 		// Material swaps between preparations of the SAME manager: each must
 		// be re-censused, not answered from the previous material's entry.
-		const char* order[] = { "glass", "coat", "mirror", "diffuse", "coat", "glass" };
+		// Every caster kind the memo distinguishes (refractor, dielectric,
+		// polished, reflector) and the two non-casters.
+		const char* order[] = { "glass", "coat", "mirror", "diffuse", "dielectric", "polish", "coat", "glass" };
 		for( const char* name : order ) {
 			IMaterial* m = mats->GetItem( name );
 			Check( m != nullptr, std::string( "material " ) + name + " found" );
 			if( !m ) continue;
 			obj->AssignMaterial( *m );	// returns false unconditionally (Object.cpp); the policy rows below are the check
-			const Policy expect = !std::string( name ).compare( "glass" ) ? refGlass
-				: !std::string( name ).compare( "coat" ) ? refCoat
-				: !std::string( name ).compare( "mirror" ) ? refMirror : refDiffuse;
+			const std::string n( name );
+			const Policy expect = n == "glass" ? refGlass : n == "coat" ? refCoat
+				: n == "mirror" ? refMirror : n == "dielectric" ? refDiel
+				: n == "polish" ? refPolish : refDiffuse;
 			const Policy got = Read( *job );
 			Check( got == expect, std::string( "after swapping obj to " ) + name + ": " + Str( got ) + " (fresh: " + Str( expect ) + ")" );
 		}

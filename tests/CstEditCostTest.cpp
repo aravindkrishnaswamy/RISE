@@ -277,8 +277,25 @@ int main()
 			std::vector<std::string> dns; DeriveToJobIncremental( docM, *jns, closM, &dns );
 			char mn[104]; std::snprintf( mn, sizeof(mn), "N=%d NON-SPATIAL edit SKIPS the TLAS (spatial generation unchanged -- slice 3)", N );
 			Check( jns->GetObjects()->GetSpatialStructureGeneration() == g0, mn );
-			prepNonAt[k] = MedianMicros( 21, [&]{ jns->GetObjects()->PrepareForRendering(); } );   // skips the BVH rebuild; O(N) realize sweep only
 			jns->release();
+			// Time the prepare that FOLLOWS the edit, once per trial on a fresh job
+			// whose TLAS and per-object census were built before the edit.  Repeating
+			// PrepareForRendering on one job would time only the second and later
+			// prepares, which find PrepareForRendering's memoized census unchanged
+			// (ObjectManager::PrepareCensus) and so are not the post-edit cost.
+			std::vector<double> tns;
+			for( int trial = 0; trial < 7; ++trial ) {
+				Job* jt = new Job(); DeriveToJob( doc, *jt );
+				jt->GetObjects()->PrepareForRendering();
+				std::vector<std::string> dt; DeriveToJobIncremental( docM, *jt, closM, &dt );
+				const auto a = std::chrono::steady_clock::now();
+				jt->GetObjects()->PrepareForRendering();   // skips the BVH rebuild; O(N) realize sweep + census refresh
+				const auto b = std::chrono::steady_clock::now();
+				tns.push_back( std::chrono::duration<double, std::micro>( b - a ).count() );
+				jt->release();
+			}
+			std::sort( tns.begin(), tns.end() );
+			prepNonAt[k] = tns[ tns.size() / 2 ];
 		}
 
 		jbase->release();
