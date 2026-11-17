@@ -134,6 +134,7 @@
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Rendering/Rasterizer.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/SobolSampler.h"
@@ -201,7 +202,13 @@ struct Stats
 	double se() const { return n > 0 ? sd / std::sqrt( double( n ) ) : 0; }
 };
 
-static Stats RenderStatsSalted( const std::string& sceneText, int n, unsigned int seedBase )
+//! `singleThread` renders on ONE worker.  A bitwise pixel-identity check
+//! needs it: with several workers, splat flushes and VCM light-pass tiles
+//! complete in scheduling order, so a pixel summed from three or more
+//! contributions can differ in its last bit between two renders of the SAME
+//! scene (RISE's multi-threaded determinism is per worker count, not per
+//! schedule -- LuminarySamplerAreaTest mode F; DL-625 used the same seam).
+static Stats RenderStatsSalted( const std::string& sceneText, int n, unsigned int seedBase, bool singleThread = false )
 {
 	Stats st = { 0, 0, n, false };
 	char path[1024];
@@ -222,6 +229,15 @@ static Stats RenderStatsSalted( const std::string& sceneText, int n, unsigned in
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+	if( singleThread ) {
+		if( Rasterizer* pRas = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() ) ) {
+			pRas->ForTest_SetThreadCountOverride( 1 );
+		} else {
+			safe_release( pCap );
+			safe_release( pJob );
+			return st;
+		}
+	}
 
 	std::vector<double> v;
 	bool ok = true;
@@ -1118,8 +1134,11 @@ static void RowK()
         Check(ref.ok && ref.mean>1e-3 && capped.ok && Agree(ref,capped,3.0,0),std::string(kind)+": DL502 hair cap one == uncapped");
         for(int f:{4}) {
             const unsigned salt=50600+100*f;
-            const Stats free=RenderStatsSalted(EnclosedPointScene(EnclosedChunk(kind,""),f),n,salt);
-            const Stats nonbinding=RenderStatsSalted(EnclosedPointScene(EnclosedChunk(kind,"\tmax_glossy_bounce 100\n"),f),n,salt);
+            // Single worker: a bitwise comparison (see RenderStatsSalted).
+            const Stats free=RenderStatsSalted(EnclosedPointScene(EnclosedChunk(kind,""),f),n,salt,true);
+            const Stats again=RenderStatsSalted(EnclosedPointScene(EnclosedChunk(kind,""),f),n,salt,true);
+            const Stats nonbinding=RenderStatsSalted(EnclosedPointScene(EnclosedChunk(kind,"\tmax_glossy_bounce 100\n"),f),n,salt,true);
+            Check(free.ok && again.ok && free.hashes==again.hashes,std::string(kind)+": DL502 single-worker render repeats bit-identically material "+std::to_string(f));
             Check(free.ok && nonbinding.ok && free.hashes==nonbinding.hashes,std::string(kind)+": DL502 nonbinding cap pixel identity material "+std::to_string(f));
         }
 
@@ -1141,8 +1160,8 @@ static void RowN()
         Print((std::string(kind)+" fabric Lambertian twin").c_str(),ref);
         Print((std::string(kind)+" fabric cap one").c_str(),cap);
         Check(ref.ok && ref.mean>1e-3 && cap.ok && Agree(ref,cap,3.0,0),std::string(kind)+": fabric cap == Lambertian twin");
-        const Stats free=RenderStatsSalted(scene(5,""),n,52100);
-        const Stats nonbinding=RenderStatsSalted(scene(5,"\tmax_glossy_bounce 100\n"),n,52100);
+        const Stats free=RenderStatsSalted(scene(5,""),n,52100,true);
+        const Stats nonbinding=RenderStatsSalted(scene(5,"\tmax_glossy_bounce 100\n"),n,52100,true);
         Print((std::string(kind)+" fabric free identity").c_str(),free);
         Print((std::string(kind)+" fabric nonbinding identity").c_str(),nonbinding);
         Check(free.ok && nonbinding.ok && free.hashes==nonbinding.hashes,std::string(kind)+": fabric nonbinding pixel identity");
