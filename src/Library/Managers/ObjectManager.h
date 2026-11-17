@@ -59,8 +59,10 @@ namespace RISE
 			//! PrepareForRendering's per-object census memo.  Every SMS /
 			//! DL-382 policy fact that depends only on an object's TYPE and
 			//! on its material's type graph is computed once per (object,
-			//! material) and reused across preparations; geometry and object
-			//! state are still read live.  Without it the census paid ~25
+			//! material) and reused across preparations; facts a material's
+			//! in-place setters can change (painter-dependent: index /
+			//! scattering position independence, a weave's gap), geometry and
+			//! object state are still read live (MaterialCensus, .cpp).  Without it the census paid ~25
 			//! RTTI queries per object on every preparation, so a NON-spatial
 			//! edit's prepare cost as much as a TLAS rebuild (CstEditCostTest).
 			//! Defined in ObjectManager.cpp; dropped by RemoveItem / Shutdown

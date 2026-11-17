@@ -238,23 +238,35 @@ bool ObjectWrapsComposite(const IObject& object)
 }
 
 // The material-derived half of PrepareForRendering's per-object SMS / DL-382
-// census.  Every field is a property of the material's TYPE GRAPH, fixed
-// when the material is constructed: wrapper composition, SPF type, the exact
-// audited type, the TYPE of its index / scattering painter (position
-// independence), the weave's construction-time gap flag.  So it is computed
-// once per material an object holds and memoized across preparations
-// (ObjectManager::PrepareCensus).  Geometry and object state -- an SDF's
-// CanBeAreaLight follows its keyframed parameters, mesh certification
-// follows UpdateVertices, the interior medium and visibility are per object
-// -- are NOT part of it and are read live by the predicates below.
+// census, split by what can change after construction.
+//
+// MEMOIZED (ObjectManager::PrepareCensus): the material's TYPE GRAPH --
+// wrapper composition, the exact audited types, the SPF's type, the
+// luminaire unwrapping DL-382 reads.  No setter replaces a wrapper's
+// sub-material or a material's type, so these are fixed for the life of the
+// material object (the memo pins it).
+//
+// READ LIVE every preparation (the *Live helpers below): everything that
+// depends on a painter or a construction-time flag a setter can rebuild.
+// The editor's in-place material edits (MaterialIntrospection::SetSlot)
+// replace a dielectric / refractor / polished index or scattering painter
+// (PotentialCaster reads the index painter's position independence; the
+// partial-HG check reads the scattering painter's) and a weave's gap
+// (WeaveMaterial::SetGap rebuilds HasDeltaPassThrough) without changing the
+// material pointer.  Those reads are two virtual calls for every material
+// and an index-painter query for the four caster types only.
+//
+// Geometry and object state -- an SDF's CanBeAreaLight follows its keyframed
+// parameters, mesh certification follows UpdateVertices, the interior medium
+// and visibility are per object -- are read live by the predicates below.
 struct MaterialCensus
 {
     bool wrapsComposite = false;
     bool notAudited = false;            // !AuditedMaterialGraph
-    bool transmissive = false;          // native clear SPF, or light can pass
-    bool potentialCaster = false;       // SMSDomainReplay::PotentialCaster
-    bool hgPositionDependent = false;   // partial-HG dielectric, scattering not certified uniform
+    bool nativeClear = false;           // DielectricSPF / PerfectRefractorSPF
+    bool casterType = false;            // a type PotentialCaster can accept
     bool clearTransmissive = false;     // IsClearTransmissiveMaterial (DL-382)
+    const DielectricMaterial* dielectric = nullptr;
 };
 MaterialCensus CensusOfMaterial(const IMaterial* material)
 {
@@ -263,29 +275,47 @@ MaterialCensus CensusOfMaterial(const IMaterial* material)
     c.wrapsComposite = WrapsComposite(material);
     c.notAudited = !AuditedMaterialGraph(*material);
     const ISPF* spf = material->GetSPF();
-    const bool nativeClear = dynamic_cast<const DielectricSPF*>(spf)
+    c.nativeClear = dynamic_cast<const DielectricSPF*>(spf)
         || dynamic_cast<const PerfectRefractorSPF*>(spf);
-    c.transmissive = nativeClear || material->CouldLightPassThrough() || material->HasDeltaPassThrough();
-    c.potentialCaster = SMSDomainReplay::PotentialCaster(*material);
-    // A partial HG interface has no supported delta-limit query. Its
-    // scattering declaration must certify independence before a value can
-    // establish eligibility for the whole interface.
-    if(const auto* dielectric = dynamic_cast<const DielectricMaterial*>(material))
-        c.hgPositionDependent = dielectric->GetHG() && !dielectric->GetScattering().IsPositionIndependent();
+    c.dielectric = dynamic_cast<const DielectricMaterial*>(material);
+    // A superset of SMSDomainReplay::PotentialCaster's exact-type gate; the
+    // live call below makes the decision.
+    c.casterType = c.dielectric
+        || dynamic_cast<const PerfectRefractorMaterial*>(material)
+        || dynamic_cast<const PolishedMaterial*>(material)
+        || dynamic_cast<const PerfectReflectorMaterial*>(material);
     bool broadProof = false;
     c.clearTransmissive = IsClearTransmissiveMaterial(material, broadProof);
     return c;
+}
+bool TransmissiveLive(const IMaterial* material, const MaterialCensus& census)
+{
+    return material && (census.nativeClear
+        || material->CouldLightPassThrough() || material->HasDeltaPassThrough());
+}
+bool PotentialCasterLive(const IMaterial* material, const MaterialCensus& census)
+{
+    return material && census.casterType && SMSDomainReplay::PotentialCaster(*material);
+}
+// A partial HG interface has no supported delta-limit query. Its scattering
+// declaration must certify independence before a value can establish
+// eligibility for the whole interface.
+bool HGPositionDependentLive(const MaterialCensus& census)
+{
+    return census.dielectric && census.dielectric->GetHG()
+        && !census.dielectric->GetScattering().IsPositionIndependent();
 }
 // `census` is CensusOfMaterial(object.GetMaterial()); `isCSG` is whether the
 // object is a CSGObject.
 bool RejectedTransmissiveCaster(const IObject& object, const MaterialCensus& census, bool isCSG)
 {
     if(census.notAudited) return true;
+    const IMaterial* material = object.GetMaterial();
     const IGeometry* geometry = object.GetGeometry();
-    if(census.transmissive && (!census.potentialCaster
+    if(TransmissiveLive(material, census) && (!PotentialCasterLive(material, census)
         || object.GetInteriorMedium() || !geometry
         || !geometry->CanBeAreaLight())) return true;
-    if(census.hgPositionDependent) return true;
+    if(HGPositionDependentLive(census)) return true;
     // A CSG hit can inherit a clear operand's material while the container
     // itself has no material. Its complete surface has no uniform-sampling
     // API, so even individually supported operands cannot give the required
@@ -301,7 +331,7 @@ bool RejectedTransmissiveCaster(const IObject& object, const MaterialCensus& cen
 bool UncertainSMSNormalOrientation(const IObject& object, const MaterialCensus& census)
 {
     const IGeometry* geometry=object.GetGeometry();
-    if(!geometry || !object.GetMaterial() || !census.potentialCaster) return false;
+    if(!geometry || !PotentialCasterLive(object.GetMaterial(), census)) return false;
     if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry))
         return mesh->HasUncertainSMSNormalOrientation();
     if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(geometry))
@@ -2815,8 +2845,8 @@ void ObjectManager::PrepareForRendering() const
                 smsUncertainNormalOrientation = true;
             if(RejectedTransmissiveCaster(*object, entry.facts, entry.isCSG))
                 smsRejectedTransmissiveCaster = true;
-            if(entry.facts.potentialCaster && object->GetMaterial() && object->GetGeometry()
-                && object->GetGeometry()->CanBeAreaLight())
+            if(object->GetGeometry() && object->GetGeometry()->CanBeAreaLight()
+                && PotentialCasterLive(object->GetMaterial(), entry.facts))
                 smsExtendedCasters.push_back(object);
         }
     }

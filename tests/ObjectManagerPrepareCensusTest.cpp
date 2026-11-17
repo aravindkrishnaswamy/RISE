@@ -26,6 +26,8 @@
 #include "../src/Library/Interfaces/IObjectPriv.h"
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Managers/ObjectManager.h"
+#include "../src/Library/Materials/PerfectRefractorMaterial.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "TestTempDir.h"
 
@@ -36,6 +38,16 @@ namespace RISE
 {
 	bool RISE_CreateJobPriv( IJobPriv** ppi );
 }
+
+//! A uniform value that does NOT certify position independence -- what an
+//! editor-assigned spatially varying index painter reports.  SMS's extended
+//! policy rejects a refractive caster whose index is not certified uniform.
+class PositionDependentScalar : public UniformScalarPainter
+{
+public:
+	PositionDependentScalar() : UniformScalarPainter( 1.5 ) {}
+	bool IsPositionIndependent() const override { return false; }
+};
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -182,6 +194,29 @@ int main()
 		Check( Read( *job ).casters == 0, "a hidden caster is not an extended-SMS caster (visibility read live)" );
 		obj->SetWorldVisible( true );
 		Check( Read( *job ) == refGlass, "un-hiding restores the glass policy" );
+
+		// An IN-PLACE material edit (the editor's MaterialIntrospection::SetSlot
+		// calls the material's own setter) keeps the material pointer, so the
+		// memo key does not change.  The index painter's position independence
+		// is read live: swapping glass's index for a painter that does not
+		// certify it must reject the caster exactly as a fresh manager does,
+		// and restoring a uniform index must restore the caster.
+		{
+			PerfectRefractorMaterial* glass = dynamic_cast<PerfectRefractorMaterial*>( mats->GetItem( "glass" ) );
+			Check( glass != nullptr, "glass is a PerfectRefractorMaterial" );
+			if( glass ) {
+				PositionDependentScalar* varying = new PositionDependentScalar();
+				glass->SetIOR( *varying );
+				const Policy got = Read( *job );
+				Check( got.rejected && got.casters == 0,
+					"after an in-place SetIOR to a position-dependent index: rejected, no caster (" + Str( got ) + ")" );
+				UniformScalarPainter* uniform = new UniformScalarPainter( 1.5 );
+				glass->SetIOR( *uniform );
+				Check( Read( *job ) == refGlass, "restoring a uniform index in place restores the glass policy" );
+				safe_release( varying );
+				safe_release( uniform );
+			}
+		}
 
 		// Removal drops the memo; the remaining objects are re-censused.
 		Check( job->GetObjects()->RemoveItem( "obj" ), "remove obj" );
