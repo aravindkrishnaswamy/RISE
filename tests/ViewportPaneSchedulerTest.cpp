@@ -950,6 +950,13 @@ public:
 		return mExposureEV;
 	}
 
+	//! Centre pixel of the last PRE-denoise image (the raw estimator).
+	RISEColor PreDenoisedCenterPixel() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mPreDenoisedCenter;
+	}
+
 	unsigned int PreDenoisedCount() const
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
@@ -970,9 +977,11 @@ public:
 	}
 
 	void OutputPreDenoisedImage(
-		const IRasterImage&, const Rect*, const unsigned int ) override
+		const IRasterImage& image, const Rect*, const unsigned int ) override
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
+		mPreDenoisedCenter = ( image.GetWidth() && image.GetHeight() )
+			? image.GetPEL( image.GetWidth() / 2, image.GetHeight() / 2 ) : RISEColor();
 		++mPreDenoisedCount;
 	}
 
@@ -1018,6 +1027,7 @@ private:
 	unsigned int        mExposureCount = 0;
 	unsigned int        mPreDenoisedCount = 0;
 	unsigned int        mDenoisedCount = 0;
+	RISEColor           mPreDenoisedCenter;
 };
 
 class ReentrantSharedPaneSink
@@ -6080,17 +6090,27 @@ static void RunSharedDirectIndirectTransportTest()
 	       "OIDN-disabled shared Direct uses the ordinary output protocol" );
 #endif
 	{
+		// The transport claim is checked on the RAW estimators (the
+		// pre-denoise images when OIDN runs): Indirect's raw centre is exactly
+		// 0 on this lone convex sphere, Direct's is its primary NEE.  The
+		// denoised pair is no oracle for it -- OIDN reconstructs ~0.0017 into
+		// an all-black 8x6 frame, and the 1-spp Direct companion's centre
+		// reads ~0.03 here, so a 20x margin on DENOISED outputs passed or
+		// failed on that one sample (and on whatever earlier scenarios in
+		// this process left behind), not on the transport.
+#ifdef RISE_ENABLE_OIDN
+		const RISEColor directCenter = directSink->PreDenoisedCenterPixel();
+		const RISEColor indirectCenter = indirectSink->PreDenoisedCenterPixel();
+#else
 		const RISEColor directCenter = directSink->CenterPixel();
 		const RISEColor indirectCenter = indirectSink->CenterPixel();
+#endif
 		const Scalar directPeak = std::max( directCenter.base.r,
 			std::max( directCenter.base.g, directCenter.base.b ) );
 		const Scalar indirectPeak = std::max( indirectCenter.base.r,
 			std::max( indirectCenter.base.g, indirectCenter.base.b ) );
 		Check( directPeak > 0.01,
 		       "MONEY: paired Direct companion contains the primary NEE contribution" );
-		// OIDN can reconstruct a small non-zero value into an estimator pixel
-		// whose raw input is black, so compare the two separately-denoised
-		// outputs by discrimination margin rather than requiring exact zero.
 		Check( indirectPeak * 20 < directPeak,
 		       "MONEY: canonical Indirect remains at least 20x dimmer than the paired primary-NEE Direct result" );
 	}
