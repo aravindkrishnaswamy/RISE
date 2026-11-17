@@ -2,7 +2,7 @@
 // Adopted 2026-10-04; within-build rejection tests retain HashPixels doubles.
 // Run the same --trial value after each interleaved master/candidate build.
 //
-// Fixtures 7-9 (sms-ext Phase 4 review) are legacy HWSS + SMS scenes through
+// Fixtures 7-10 (sms-ext Phase 4 review) are legacy HWSS + SMS scenes through
 // the HWSS paths Phase 4 edited.  Like 0-6 they are verified ONLY by the
 // two-build dump comparison (RISE_SMS_LEGACY_DUMP_DIR on the base build,
 // RISE_SMS_LEGACY_REFERENCE_DIR on the candidate); a single run asserts
@@ -10,10 +10,12 @@
 // fixtures would see the change: a Phase 4 HWSS fixture rendered by a
 // directly constructed HWSS rasterizer with extended mode ON differs from it
 // with extended mode OFF (and the OFF render repeats bit-identically).  The
-// control renders fixture 9's geometry with a LAMBERTIAN receiver (see
-// Phase4ControlScene): since 6c83d1515 (DL-616..620) fixture 9's
-// random-walk floor is not an SMS anchor, so extended and legacy render it
-// identically and it can no longer show sensitivity.
+// control renders fixture 10 -- fixture 9's geometry with a LAMBERTIAN
+// receiver (Phase4ControlScene), dumped and compared like the others so the
+// one scene shown to be sensitive is also the one gated across builds:
+// since 6c83d1515 (DL-616..620) fixture 9's random-walk floor is not an SMS
+// anchor, so extended and legacy render it identically and it can no
+// longer show sensitivity.
 //
 // DL-453 (2026-10-07, user-approved legacy image change): legacy HWSS + SMS
 // lanes draw their SMS samples from per-lane Sobol' streams, so fixtures 3
@@ -206,9 +208,10 @@ int main(int argc,char** argv)
     const char* paths[]={"scenes/Tests/SMS/sms_k1_refract.RISEscene",
         "scenes/Tests/SMS/sms_k2_glasssphere.RISEscene",
         "scenes/Tests/Spectral/spectral_dispersive_caustic_pt_sms_uniform.RISEscene"};
-    for(unsigned fixture=0;fixture<10;++fixture) {
+    for(unsigned fixture=0;fixture<11;++fixture) {
         if(fixture>=7) {
-            const std::string scene=Phase4HWSSScene(fixture);
+            const std::string scene=fixture==10?Phase4ControlScene():Phase4HWSSScene(fixture);
+            Check(!scene.empty(),"Phase 4 fixture scene builds");
             std::vector<double> seconds;
             for(unsigned trial=first;trial<first+count;++trial) {
                 g_renderIndex=trial;
@@ -282,14 +285,14 @@ int main(int argc,char** argv)
         const auto stats=Summarize(seconds);
         std::cout<<"LEGACY timing fixture="<<fixture<<" mean="<<stats.mean<<" sd="<<stats.sd<<" n="<<count<<std::endl;
     }
-    // Negative control for fixtures 7-9 (see the header and
-    // Phase4ControlScene).  Fixture 7 stopped discriminating at DL-453 (its
+    // Negative control for fixtures 7-10 (see the header and
+    // Phase4ControlScene); it renders fixture 10's scene.  Fixture 7 stopped discriminating at DL-453 (its
     // single-sided emitter faces away from the coat; its old difference was
     // only the per-lane stream layout, now common to both modes), fixture 9
     // at DL-616..620 (its receiver is no longer an SMS anchor).
-    for(unsigned fixture:{9u}) {
+    for(unsigned fixture:{10u}) {
         const std::string scene=Phase4ControlScene();
-        Check(!scene.empty(),"negative control: Phase 4 control scene builds (fixture 9 with a Lambertian receiver)");
+        Check(!scene.empty(),"negative control: fixture 10 scene builds (fixture 9 with a Lambertian receiver)");
         const auto off=RenderDirectHWSS(scene,false), again=RenderDirectHWSS(scene,false), on=RenderDirectHWSS(scene,true);
         bool complete=!off.empty()&&off.size()==again.size()&&off.size()==on.size();
         unsigned long long repeat=0,changed=0,maxULP=0;

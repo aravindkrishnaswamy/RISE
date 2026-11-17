@@ -6101,6 +6101,10 @@ static void RunSharedDirectIndirectTransportTest()
 #ifdef RISE_ENABLE_OIDN
 		const RISEColor directCenter = directSink->PreDenoisedCenterPixel();
 		const RISEColor indirectCenter = indirectSink->PreDenoisedCenterPixel();
+		// A sink that never received a pre-denoise image would report a
+		// default (black) centre and pass the Indirect half vacuously.
+		Check( indirectSink->PreDenoisedCount() >= 1,
+		       "shared Indirect received a pre-denoise image to compare" );
 #else
 		const RISEColor directCenter = directSink->CenterPixel();
 		const RISEColor indirectCenter = indirectSink->CenterPixel();

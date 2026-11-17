@@ -206,8 +206,10 @@ struct Stats
 //! needs it: with several workers, splat flushes and VCM light-pass tiles
 //! complete in scheduling order, so a pixel summed from three or more
 //! contributions can differ in its last bit between two renders of the SAME
-//! scene (RISE's multi-threaded determinism is per worker count, not per
-//! schedule -- LuminarySamplerAreaTest mode F; DL-625 used the same seam).
+//! scene.  Multi-threaded renders ARE reproducible where each pixel is
+//! written by one tile (LuminarySamplerAreaTest modes D/F, DL-625), but a
+//! pixel that sums splats from several tiles is schedule-dependent in its
+//! last bit, so these rows render on one worker.
 static Stats RenderStatsSalted( const std::string& sceneText, int n, unsigned int seedBase, bool singleThread = false )
 {
 	Stats st = { 0, 0, n, false };

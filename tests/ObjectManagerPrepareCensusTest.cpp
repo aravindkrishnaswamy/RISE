@@ -3,11 +3,12 @@
 //  ObjectManagerPrepareCensusTest.cpp - ObjectManager::PrepareForRendering
 //    memoizes its per-object SMS / DL-382 policy census across
 //    preparations (ObjectManager::PrepareCensus).  The memo keys on
-//    (object, material) and must never answer for a stale material, a
-//    removed object, or a changed interior medium / visibility (both read
-//    live).  Each row changes ONE input between two preparations of the
-//    same manager and checks the published policy against a fresh
-//    manager's answer for the same state.
+//    (object, material) and must never answer for a stale material or a
+//    removed object; visibility and the material's painter-dependent facts
+//    (an in-place index edit) are read live.  Each row changes ONE input
+//    between two preparations of the same manager and checks the published
+//    policy against a fresh manager's answer for the same state (interior
+//    media are read live too but no row changes one).
 //
 //    Why it exists: before the memo, every preparation paid ~25 RTTI
 //    queries per object (CstEditCostTest's NON-spatial prepare cost as

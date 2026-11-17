@@ -120,13 +120,13 @@ Render gates ran sequentially. No timing/speedup claim is made. No shipped scene
 The "no tolerance floor" above no longer holds for the six pad/floor rows.
 Their 2e-6 twin is a different scene: lifting the 1x1 block off its matched
 1x1 emissive pad opens a rim slot, through which a fraction
-~ (perimeter * gap / pi) * ln(size / gap) / area = 3.2e-5 of the pad's flux
+~ (perimeter * gap / pi) * ln(size / gap) / area ~ 3.2e-5 (an order-of-magnitude estimate, not a bound) of the pad's flux
 escapes sideways.  When these rows were added the twins' paired ratio SD was
 ~6e-3, far above that; it is now ~4e-6 (the twins share almost every path),
 so a floorless 3-SE band (3.9e-8 absolute on diffusion BDPT) was narrower
 than the twins' genuine difference (-5.6e-8, relative -6e-6) and flipped
-pass/fail between builds of equivalent code -- a bisect landed on a
+pass/fail from run to run, even across equivalent builds -- a bisect landed on a
 Python-only commit.  The pad/floor rows therefore carry a 1e-4 relative
-floor (~3x the geometric bound); it remains 3000x below the 1.32-1.50
+floor (~3x that estimate); it remains 3000x below the 1.32-1.50
 ratios these fixtures reproduce and 500x below DL-557's -5.5%.  The room and
 occlusion rows are unchanged.

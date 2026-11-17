@@ -1669,12 +1669,13 @@ static void TestRowRangeMetadata()
 // whitespace-NORMALISE (token-split + single-space rejoin) both sides
 // before comparing -- see NormalizeParamValueWs_'s doc in SceneEditor.cpp.
 //
-//   (a) COLUMN-ALIGNED fixture: edit occurrence 1, Undo, then REDO.
-//       Redo's drift check compares the CURRENT (post-Undo, single-spaced
-//       -- Undo's own revert-write goes through WithParamValue too) line
-//       against `edit.prevPropertyValue`, captured VERBATIM from the
-//       column-aligned original -- this is where an ends-only trim
-//       refused a legitimate Redo.
+//   (a) COLUMN-ALIGNED fixture: edit occurrence 1, Undo, then REDO --
+//       first on the verbatim swap (see below), then (a') with the
+//       fallback forced: there the replayed Undo's revert-write goes
+//       through WithParamValue (single-spaced), and the guard compares
+//       that line against `edit.prevPropertyValue`, captured VERBATIM from
+//       the column-aligned original -- where an ends-only trim refused a
+//       legitimate Undo/Redo.
 //   (b) A commit that changes ONE token but resends every other byte of
 //       the line verbatim (the slider `commit()` shape): the value SENT
 //       for the edit itself carries the original's interior spacing on

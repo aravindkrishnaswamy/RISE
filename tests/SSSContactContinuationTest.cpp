@@ -795,12 +795,12 @@ int main( int argc, char** argv )
 	// Both sides share a salt.  The 2e-6 twin is a DIFFERENT scene, not a
 	// relabelled one: lifting the 1x1 block off its matched 1x1 emissive pad
 	// opens a rim slot through which pad light escapes sideways, a fraction
-	// ~ (perimeter * gap / pi) * ln(size / gap) / area = 3.2e-5 of the pad's
+	// ~ (perimeter * gap / pi) * ln(size / gap) / area ~ 3.2e-5 (an order-of-magnitude estimate, not a bound) of the pad's
 	// flux.  So the paired band carries a 1e-4 RELATIVE floor (~3x that
-	// bound).  Without it the band is only as wide as the twins' paired noise,
+	// estimate).  Without it the band is only as wide as the twins' paired noise,
 	// which shrank from ratio-sd ~6e-3 when these rows were added to 4e-6
 	// once the twins began sharing almost every path; the diffusion BDPT row
-	// then flipped pass/fail between builds of equivalent code (a bisect
+	// then flipped pass/fail from run to run, including across builds of equivalent code (a bisect
 	// landed on a Python-only commit).  The floor is still 3000x below the
 	// 1.32-1.50 ratios these fixtures reproduced and 500x below DL-557's -5.5%.
 	for( bool diffusion : {false,true} ) for( Rast r : {Rast::PT,Rast::BDPT,Rast::VCM} ) {
