@@ -191,6 +191,8 @@ RD::Sample Model::Draw(Scalar u,Scalar v,Scalar lobe,Scalar technique,bool radia
     }
     const auto evaluated=Combine(result.wo,ss,radiance);
     result.f=evaluated.f; result.pdf=evaluated.pdf; result.weight=evaluated.weight;
+    result.fMantissa=evaluated.fMantissa; result.fExponent=evaluated.fExponent;
+    result.pdfMantissa=evaluated.pdfMantissa; result.pdfExponent=evaluated.pdfExponent;
     result.valid=evaluated.positiveDensity;
     return result;
 }

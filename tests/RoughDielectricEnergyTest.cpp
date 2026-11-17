@@ -112,6 +112,13 @@ static void Sampler() {
     }
 }
 static void ScaledLimits() {
+    for(Scalar alpha : {.4,1e-200}) for(Scalar eta : {2./3,1.5,1e-150})
+    for(Scalar technique : {0.,.99}) for(bool radiance : {false,true}) {
+        const auto draw=MS::Model(Unit(.6,.2,1),alpha,alpha,eta).Draw(.25,.25,.25,technique,radiance);
+        if(!draw.valid) continue;
+        Check(draw.f==std::scalbn(draw.fMantissa,draw.fExponent),"sample scaled value represents its aggregate BSDF");
+        Check(draw.pdf==std::scalbn(draw.pdfMantissa,draw.pdfExponent),"sample scaled density represents its aggregate PDF");
+    }
     for(Scalar alpha : {1e-200,1e-100,.2}) for(Scalar eta : {1e-150,1.5,1e150}) {
         const auto draw=MS::Model(Vector3(0,0,1),alpha,alpha,eta).Draw(.25,.25,0,.9,true);
         Check(draw.valid && std::isfinite(draw.weight),"scaled mixture retains representable radiance throughput");
