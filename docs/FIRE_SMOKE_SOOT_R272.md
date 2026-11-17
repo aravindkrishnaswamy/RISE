@@ -1,6 +1,6 @@
 # r272: methane soot formation switched on, one-parameter fit, full window launched
 
-Last updated 2026-11-16. Design and evidence: [formation–oxidation draft](FIRE_SMOKE_SOOT_FORMATION_OXIDATION_R252.md),
+Last updated 2026-11-17. Design and evidence: [formation–oxidation draft](FIRE_SMOKE_SOOT_FORMATION_OXIDATION_R252.md),
 [measurements](FIRE_SMOKE_METHANE_SOOT_DATA_R252.md). Data: `docs/data/fire_r272/`. Tools: `tools/fire/r272/`.
 
 ## Result
@@ -16,7 +16,7 @@ Last updated 2026-11-16. Design and evidence: [formation–oxidation draft](FIRE
 
 ## 1. Closure (uncommitted opt-in)
 
-`RISE_FIRE_METHANE_SOOT_YIELD=<y>` (0 to 0.1), read in `FireProductionSourceKernel.h`. Unset, the solver is
+`RISE_FIRE_METHANE_SOOT_YIELD=<y>` (0 to 0.5; 0 to 0.1 until §6), read in `FireProductionSourceKernel.h`. Unset, the solver is
 bit-identical to before and the methane record's yield of 0 stands.
 
 - Formation is the exact inverse of the record's carbon oxidation: per kg of fuel reacted, `y` kg of carbon is held
@@ -110,9 +110,32 @@ Look pass (2026-11-16), `tools/fire/r272/r272_soot_look.RISEscene` and `render_l
 - **Still limited by the data.** The visible flame is about 0.5 m tall and thin, because soot emission follows the
   cell-mean temperature. The escaping smoke (0.039 ppm in the flame, less above) is too thin to see against the wall.
 
+## 6. Sooty-fuel check (2026-11-17)
+
+Question: does the solver give a heavily smoking fire when set for one, and does a scene show it?
+
+- **Setting.** The only soot parameter is the gross yield. `sooty_y300`: resume of `tier8_y030` at step 13,769
+  (22.46 s) for 2.5 s with yield 0.3 (`tools/fire/r272/run_sooty.sh`). The opt-in's upper bound was raised from 0.1 to
+  0.5 for this. 1,520 steps, every one accepted, 3.0 h.
+- **Smoke is ten times the methane fit.** Mean of 23.97–24.90 s (16 frames), same frames from both runs: upward soot
+  flux at 1 m is 91 mg/s against 8.8 mg/s; centreline volume fraction in the flame 0.42 ppm against 0.039 ppm.
+- **Escaping share did not change.** 197 mg/s formed, about 91 mg/s escapes: 46%, against 45% at yield 0.03. Net smoke
+  yield 0.14 kg/kg, in the range of toluene or polystyrene.
+- **The poor-burn feedback is not reproduced.** Centreline temperatures agree with the 0.03 run within about 5%, and
+  the share of soot in cells above 1300 K fell only from 0.34 to 0.29 at the burner. Sootiness here is set by the
+  yield, not by the flame cooling itself. The fixed radiative fraction of 0.20 is one reason; realised heat release
+  was not extracted for this run.
+- **Scene.** `tools/fire/r272/r272_sooty_wide.RISEscene`: wall reflectance 0.7, light power 0.6, camera 4 m back at
+  1.6 m. At yield 0.03 the smoke is barely visible; at 0.3 it is a dark column. A fast preview that multiplies the
+  soot in existing frames (`tools/fire/r272/scale_carbon.cpp`) gave the same picture before the run.
+- **Artifact.** Smoke that reaches the side of the 2.1 m wide domain shows as a hard-edged dark patch at the upper
+  right. A showcase movie needs that cropped out or a wider domain.
+- Data: `sooty_y300_budget_23.96_24.90s.txt`, `sooty_y300_centreline_23.96_24.90s.txt`,
+  `tier8_y030_budget_23.96_24.90s.txt`. Only 40 frames exist at this yield (frames 192–231).
+
 ## Open
 
-- The production change is uncommitted (owner review); `docs/data/fire_r271/s29_optins.patch` carries it.
+- The solver opt-ins were committed 2026-11-17 on the owner's instruction; `docs/data/fire_r271/s29_optins.patch` is the earlier snapshot.
 - Calibration used the 0.30 m / 33 kW scene, not a reproduction of the NIST 0.37 m / 34.5 kW burner, and a 1 s mean.
 - A second resolution was not run, so whether the fitted yield moves with cell size is unknown.
 - The exporter still writes the temperature-weighted placeholder channels; fixing it at source is a test-code change.
