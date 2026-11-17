@@ -94,8 +94,12 @@ namespace RISE
 		//! endpoint with: for a SURFACE vertex whose pixel footprint
 		//! through @a ap is defined, a copy in @a scratch carrying that
 		//! footprint (StampPixelFootprint); otherwise @a vertex itself.
-		//! Every evaluation of one t == 1 connection's light endpoint must
-		//! use the same record so its BSDF factors stay consistent.
+		//! Every BSDF VALUE evaluation of one t == 1 connection's light
+		//! endpoint uses this record so its factors stay consistent (the
+		//! contribution and BDPT's per-type-cap rescale).  MIS densities
+		//! (pdfRev / pdfPred, VCM's bsdfRevPdfW) still read the stored vertex:
+		//! a density that depends on a footprint-filtered painter sees the
+		//! unfiltered one there, as the light walk that sampled it did.
 		inline const BDPTVertex& WithPixelFootprint(
 			const ICamera& camera,
 			const BDPTCameraUtilities::ApertureSample& ap,

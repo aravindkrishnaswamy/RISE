@@ -798,12 +798,14 @@ bool BDPTCameraUtilities::PixelFootprintThrough(
 	const Vector3 T = Vector3Ops::Normalize( Vector3Ops::Cross( N, axis ) );
 	const Vector3 B = Vector3Ops::Cross( N, T );
 
-	// A step of 1e-4 of the viewing distance moves the image by a small
-	// fraction of a pixel for any practical field of view, so all four
-	// probes stay inside RasterizeThrough's one-pixel guard band at the
-	// film edge; the projection is smooth there, so the central
-	// difference's error is second order in that step.
-	const Scalar h = Scalar( 1e-4 ) * dist;
+	// A step of 1e-7 of the viewing distance (1e-7 rad) moves the image by
+	// ~0.002 px even at a 10-degree field of view on a 1920-px film (one pixel
+	// is ~9e-5 rad there), so all four probes stay well inside
+	// RasterizeThrough's one-pixel guard band at the film edge.  The
+	// projection is smooth, so the central difference's truncation error is
+	// second order in the step, and in double precision its round-off is
+	// ~1e-16 / 1e-7 ~ 1e-9 relative.
+	const Scalar h = Scalar( 1e-7 ) * dist;
 	Point2 tp, tm, bp, bm;
 	if( !RasterizeThrough( cam, Point3Ops::mkPoint3( worldPoint, T * h ), ap, tp ) ||
 		!RasterizeThrough( cam, Point3Ops::mkPoint3( worldPoint, T * -h ), ap, tm ) ||

@@ -4585,7 +4585,9 @@ ConnectAndEvaluateImplCore(
 			}
 
 			if( s >= 2 ) {
-				fLight = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+				BDPTVertex footprinted;
+				const BDPTVertex& shadeEnd = PathVertexEval::WithPixelFootprint( camera, apertureSample_t0, lightEnd, footprinted );
+				fLight = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( shadeEnd, wiAtLight, dirToCam, tag );
 			}
 		}
 
@@ -4694,7 +4696,9 @@ ConnectAndEvaluateImplCore(
 		if( lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial && s >= 2 ) {
 			Vector3 wiAtLight = Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position );
 			wiAtLight = Vector3Ops::Normalize( wiAtLight );
-			fLightNM = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+			BDPTVertex footprinted;
+			const BDPTVertex& shadeEnd = PathVertexEval::WithPixelFootprint( camera, apertureSample_t0, lightEnd, footprinted );
+			fLightNM = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( shadeEnd, wiAtLight, dirToCam, tag );
 		}
 
 		const Scalar distSq = dist * dist;

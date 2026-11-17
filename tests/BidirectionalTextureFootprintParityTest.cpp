@@ -341,8 +341,10 @@ static const char* kPtRasterizer =
 static const char* kBdptRasterizer =
 	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth\t\t2\n\tmax_light_depth\t\t2\n\tsamples\t\t\t1024\n"
 	"\toidn_denoise\t\tFALSE\n\tpixel_filter\t\tbox\n}\n";
+// VCM also renders at 1024 spp: its splat (t == 1) site has its own copy of
+// the footprint stamp (VCMIntegrator.cpp), so it needs its own converged check.
 static const char* kVcmRasterizer =
-	"vcm_pel_rasterizer\n{\n\tmax_eye_depth\t\t2\n\tmax_light_depth\t\t2\n\tsamples\t\t\t64\n"
+	"vcm_pel_rasterizer\n{\n\tmax_eye_depth\t\t2\n\tmax_light_depth\t\t2\n\tsamples\t\t\t1024\n"
 	"\toidn_denoise\t\tFALSE\n\tpixel_filter\t\tbox\n}\n";
 
 static void TestFootprintParity()
@@ -389,37 +391,18 @@ static void TestFootprintParity()
 	Check( RelClose( ptStats.mean,     bdptStats.mean,     0.001 ), "PT vs BDPT: whole-image mean (converged, 0.1%)" );
 	Check( RelClose( ptStats.hfEnergy, bdptStats.hfEnergy, 0.25 ), "PT vs BDPT: whole-image HF energy (converged)" );
 
-	// (2) PT vs VCM: mean only, loose tolerance.  VCM does NOT get its
-	// own HF-energy check here -- measured on this fixture, VCM's own
-	// per-pixel noise is 2-4x PT/BDPT's at matched 64 spp and converges
-	// to that noise floor only very slowly with more samples (1.9x
-	// remained at 1024 spp, 16x the sample count), which is exactly
-	// RISE's own documented, ACCEPTED characteristic of VCM on a
-	// non-caustic scene (CLAUDE.md: "VCM loses sigma^2*T 3-40x
-	// off-caustics" -- UNIFIED_INTEGRATOR_DECISION.md) rather than
-	// anything to do with footprint.  An HF-energy check tight enough
-	// to catch a real footprint regression would also be tripped by
-	// VCM's ordinary, expected noise, and one loose enough to tolerate
-	// that noise would not catch the regression either (a missing
-	// footprint's blowout on THIS fixture is measured at 1-2 orders of
-	// magnitude, comfortably outside VCM's 2-4x noise band, but "loose
-	// enough for VCM noise, tight enough for the defect" is not a
-	// robust needle to thread at a test-suite-friendly sample count).
-	//
-	// The mechanism itself does not need a separate, noise-tolerant
-	// re-proof for VCM: VCM's eye subpath is the exact same
-	// `std::vector<BDPTVertex>` BDPT's own `GenerateEyeSubpath` call
-	// produces (VCMPelRasterizer.cpp -> VCMIntegrator.cpp, which reuses
-	// `BDPTIntegrator`; see MLTRasterizer.cpp:166/376 for the same
-	// pattern under MLT) -- VCMIntegrator.cpp never re-populates or
-	// re-derives `BDPTVertex::txFootprint` itself (grep the symbol: no
-	// occurrences in that file), so whatever the tight PT-vs-BDPT check
-	// above proves about the shared vertex array is true for VCM's
-	// consumption of it BY CONSTRUCTION, not by a separate render-level
-	// coincidence.  The mean check here is a coarse end-to-end sanity
-	// check that VCM renders the same scene sensibly, not the load-
-	// bearing footprint assertion.
-	Check( RelClose( ptStats.mean, vcmStats.mean, 0.15 ), "PT vs VCM: whole-image mean" );
+	// (2) PT vs VCM, CONVERGED (1024 spp).  VCM shares BDPT's eye subpath
+	// (the depth-0 footprint) but has its OWN light-traced splat site
+	// (VCMIntegrator.cpp SplatLightSubpathToCameraImpl), which needs the
+	// same pixel-footprint stamp; its balance-heuristic MIS gives that
+	// strategy a large share here.  Measured at 1024 spp: without the
+	// stamp VCM read mean +0.23% and HF 1.80x PT's, with it +0.001% and
+	// 1.32x -- so much of VCM's long-documented HF excess on this fixture
+	// was the unfiltered light-traced share, not noise; the remainder is
+	// still converging.  Same bands as BDPT's: the mean tightly, HF 50%
+	// (VCM is noisier than BDPT at matched spp).
+	Check( RelClose( ptStats.mean,     vcmStats.mean,     0.001 ), "PT vs VCM: whole-image mean (converged, 0.1%)" );
+	Check( RelClose( ptStats.hfEnergy, vcmStats.hfEnergy, 0.50 ), "PT vs VCM: whole-image HF energy (converged)" );
 
 	safe_release( pt );
 	safe_release( bdpt );
