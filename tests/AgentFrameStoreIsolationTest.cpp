@@ -395,6 +395,14 @@ public:
 	RISEColor contaminationColor;
 	Rect contaminationRect = Rect( 0, 0, 0, 0 );
 
+	// Inspects only what a call PUBLISHES: the pixels inside `changed`, or
+	// the whole image when it is null (IRasterizerOutput's contract).  Since
+	// 2566595ae a tile preview is composed into a scratch image whose pixels
+	// outside `changed` are documented as unspecified
+	// (PixelBasedRasterizerHelper::GetIntermediateOutputImage), and every
+	// production consumer honours the region, so a published pixel outside
+	// the monitored crop -- not scratch content outside the published rect
+	// -- is the contamination this monitor exists to catch.
 	void OutputIntermediateImage( const IRasterImage& image, const Rect* changed ) override
 	{
 		if( !monitorOutside ) return;
@@ -402,6 +410,10 @@ public:
 		if( outsideContaminated ) return;
 		for( unsigned int y=0; y<image.GetHeight() && !outsideContaminated; ++y ) {
 			for( unsigned int x=0; x<image.GetWidth(); ++x ) {
+				if( changed && ( x < changed->left || x > changed->right ||
+					y < changed->top || y > changed->bottom ) ) {
+					continue;
+				}
 				const bool inside = x >= monitoredRegion.left && x <= monitoredRegion.right &&
 					y >= monitoredRegion.top && y <= monitoredRegion.bottom;
 				const RISEColor color = image.GetPEL( x, y );
