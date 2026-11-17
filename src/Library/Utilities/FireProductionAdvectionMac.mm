@@ -647,13 +647,20 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 			}
 			parameters.turbulentPrandtl=static_cast<float>(transport.TurbulentPrandtl());
 			parameters.turbulentSchmidt=static_cast<float>(transport.TurbulentSchmidt());
-			parameters.vremanCoefficient=static_cast<float>(transport.VremanCv());
+			// r271 diagnostic (opt-in RISE_FIRE_SCALAR_VREMAN_CV=<C_v>=0): overrides the scalar (heat/species)
+			// Vreman coefficient, 0 switching scalar SGS diffusion off. Unset keeps the transport record's C_v.
+			static const float scalarVremanOverride=[](){const char* value=std::getenv("RISE_FIRE_SCALAR_VREMAN_CV");
+				if(!value||!*value)return -1.0f;char* end=nullptr;const float parsed=std::strtof(value,&end);
+				return end&&*end=='\0'&&std::isfinite(parsed)&&parsed>=0.0f?parsed:-1.0f;}();
+			parameters.vremanCoefficient=scalarVremanOverride>=0.0f?scalarVremanOverride:
+				static_cast<float>(transport.VremanCv());
 			parameters.thermochemistryIdentity=ResidentRecordIdentity(thermochemistry.RecordId());
 			parameters.transportIdentity=ResidentRecordIdentity(transport.RecordId());
 			return std::isfinite(parameters.turbulentPrandtl)&&
 				std::isfinite(parameters.turbulentSchmidt)&&
 				std::isfinite(parameters.vremanCoefficient)&&parameters.turbulentPrandtl>0.0f&&
-				parameters.turbulentSchmidt>0.0f&&parameters.vremanCoefficient>0.0f;
+				parameters.turbulentSchmidt>0.0f&&(parameters.vremanCoefficient>0.0f||
+				(scalarVremanOverride==0.0f&&parameters.vremanCoefficient==0.0f));
 		}
 
 		bool PackMetalSingleStageFCTCertificate(
@@ -1786,7 +1793,7 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			// instantiate this library.
 			static const char* SingleStageFCTSource()
 		{
-			return R"METAL(
+			static const std::string source=R"METAL(
 #include <metal_stdlib>
 using namespace metal;
 struct FCTParams {
@@ -2241,6 +2248,16 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
  atomic_fetch_max_explicit(maximumScaleBits,as_type<uint>(scale),memory_order_relaxed);
 }
 )METAL";
+			// r271 diagnostic (opt-in RISE_FIRE_FCT_ALPHA_ONE=1 or 0): force the scalar FCT face alpha to 1 (full
+			// high-order correction) or 0 (first-order donor cell); the commit still checks positivity and the
+			// enthalpy bounds and fails the step if they break.
+			static const std::string selected=[](){const char* value=std::getenv("RISE_FIRE_FCT_ALPHA_ONE");
+				if(!value||(std::string(value)!="1"&&std::string(value)!="0"))return source;
+				const bool one=std::string(value)=="1";
+				const std::string at="alpha[gid]=clamp(accepted,0.0f,1.0f);";std::string out=source;
+				const std::size_t where=out.find(at);if(where==std::string::npos||out.find(at,where+1u)!=std::string::npos)return source;
+				out.replace(where,at.size(),one?"alpha[gid]=isfinite(accepted)?1.0f:0.0f;":"alpha[gid]=isfinite(accepted)?0.0f:0.0f;");return out;}();
+			return selected.c_str();
 		}
 
 			bool Valid() const
@@ -2447,7 +2464,7 @@ inline float tr_phi(float mui,float muj,float wi,float wj){float numerator=1.0f+
 inline void resident_transport_cell(device const float* state,device const float* temperature,
  device const float* velocity,device const float* thermo,device const float* transport,
  device float* output,device atomic_uint* failure,device atomic_uint* obligations,
- constant TransportParams& p,device const uchar* inflow,uint gid,bool compactDiagonal){if(gid>=p.cells)return;uint x=gid%p.nx,y=(gid/p.nx)%p.ny,z=gid/(p.nx*p.ny);
+ constant TransportParams& p,device const uchar* inflow,uint gid,bool compactDiagonal,bool nearWallWale=false){if(gid>=p.cells)return;uint x=gid%p.nx,y=(gid/p.nx)%p.ny,z=gid/(p.nx*p.ny);
  float T=temperature[gid];bool valid=isfinite(T);float rho=0.0f,mass[6];
  for(uint species=0u;species<6u;++species){float q=state[(species+1u)*p.cells+gid];
   if(!isfinite(q))valid=false;mass[species]=max(0.0f,q);rho+=mass[species];}
@@ -2490,7 +2507,19 @@ inline void resident_transport_cell(device const float* state,device const float
  if(abs(rawB)<=32.0f*0x1p-24f*max(1.0f,rawScale))atomic_fetch_or_explicit(obligations,1u<<11u,memory_order_relaxed);
  atomic_fetch_or_explicit(obligations,1u<<(alpha2==0.0f?12u:13u),memory_order_relaxed);
  atomic_fetch_or_explicit(obligations,1u<<(rawB<0.0f?14u:15u),memory_order_relaxed);
- float eddy=alpha2==0.0f?0.0f:p.Cv*sqrt(max(0.0f,rawB)/alpha2);if(!(eddy>=0.0f)||!isfinite(eddy))valid=false;
+ float eddy=alpha2==0.0f?0.0f:p.Cv*sqrt(max(0.0f,rawB)/alpha2);
+ // r271 opt-in (RISE_FIRE_NEAR_WALL_WALE=1): FDS's WALE nu_t (C_WALE 0.60) in cells with a wall face, as momentum.
+ if(nearWallWale){bool wallCell=false;uint xyz[3]={x,y,z};for(uint a=0u;a<3u;++a){
+   if(xyz[a]==0u&&p.boundary[2u*a]==2u)wallCell=true;if(xyz[a]+1u==tr_extent(p,a)&&p.boundary[2u*a+1u]==2u)wallCell=true;}
+  if(wallCell){float s[3][3],o[3][3],s2=0.0f,o2=0.0f,iv=0.0f;
+   for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j){s[i][j]=0.5f*(gradient[i][j]+gradient[j][i]);
+    o[i][j]=0.5f*(gradient[i][j]-gradient[j][i]);s2+=s[i][j]*s[i][j];o2+=o[i][j]*o[i][j];}
+   for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j)for(uint k=0u;k<3u;++k)for(uint l=0u;l<3u;++l)
+    iv+=s[i][k]*s[k][j]*o[j][l]*o[l][i];
+   float sd2=max(0.0f,(1.0f/6.0f)*(s2*s2+o2*o2)+(2.0f/3.0f)*s2*o2+2.0f*iv);
+   float denominator=pow(s2,2.5f)+pow(sd2,1.25f),width=0.60f*p.dx;
+   eddy=p.Cv>0.0f&&denominator>0.0f?width*width*pow(sd2,1.5f)/denominator:0.0f;}}
+ if(!(eddy>=0.0f)||!isfinite(eddy))valid=false;
  float mole[6],mu[6],conductivity[6],moleTotal=0.0f,cp=0.0f;
  for(uint species=0u;species<6u;++species){float fraction=mass[species]/rho;
   float weight=thermo[32u*species];mole[species]=fraction/weight;moleTotal+=mole[species];
@@ -2521,6 +2550,14 @@ kernel void evaluate_resident_transport_compact(device const float* state [[buff
  device const uchar* inflow [[buffer(9)]],
  uint gid [[thread_position_in_grid]]){resident_transport_cell(state,temperature,velocity,thermo,
  transport,output,failure,obligations,p,inflow,gid,true);}
+kernel void evaluate_resident_transport_compact_wale(device const float* state [[buffer(0)]],
+ device const float* temperature [[buffer(1)]],device const float* velocity [[buffer(2)]],
+ device const float* thermo [[buffer(3)]],device const float* transport [[buffer(4)]],
+ device float* output [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
+ device atomic_uint* obligations [[buffer(7)]],constant TransportParams& p [[buffer(8)]],
+ device const uchar* inflow [[buffer(9)]],
+ uint gid [[thread_position_in_grid]]){resident_transport_cell(state,temperature,velocity,thermo,
+ transport,output,failure,obligations,p,inflow,gid,true,true);}
 kernel void identify_resident_transport(device const float* state [[buffer(0)]],
  device const float* temperature [[buffer(1)]],device const float* velocity [[buffer(2)]],
  device const float* output [[buffer(3)]],device const float* thermo [[buffer(4)]],
@@ -4003,7 +4040,36 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
  hash^=l2[0];hash*=1099511628211ul;
  hash^=p.attempt;hash*=1099511628211ul;output[0]=hash==0ul?1ul:hash;}
 )METAL";
-				return source.c_str();
+				// r271 diagnostic (opt-in RISE_FIRE_SCALAR_SLOPE=central|superbee): scalar reconstruction uses the
+				// unlimited centred slope, or the more compressive superbee limiter, instead of MC; FCT still
+				// enforces positivity and the enthalpy bounds.
+				static const std::string selected=[](){const char* value=std::getenv("RISE_FIRE_SCALAR_SLOPE");
+					if(!value||(std::string(value)!="central"&&std::string(value)!="superbee"))return source;
+					const bool central=std::string(value)=="central";
+					const std::string mc="inline float pf_mc(float backward,float forward){if(backward*forward<=0.0f)return 0.0f;\n"
+						" float centered=0.5f*(backward+forward),sign=centered<0.0f?-1.0f:1.0f;\n"
+						" return sign*min(abs(centered),2.0f*min(abs(backward),abs(forward)));}";
+					std::string out=source;const std::size_t at=out.find(mc);
+					if(at==std::string::npos||out.find(mc,at+1u)!=std::string::npos)return source;
+					out.replace(at,mc.size(),central?"inline float pf_mc(float backward,float forward){return 0.5f*(backward+forward);}":
+						"inline float pf_mc(float backward,float forward){if(backward*forward<=0.0f)return 0.0f;\n"
+						" float sign=backward<0.0f?-1.0f:1.0f,b=abs(backward),f=abs(forward);\n"
+						" return sign*max(min(2.0f*b,f),min(b,2.0f*f));}");
+					return out;}();
+				// r271 diagnostic (opt-in RISE_FIRE_WALL_SLOPE=linear): at a wall side the scalar ghost value is the
+				// linear extrapolation 2 q_0 - q_1 instead of q_0, so the wall cell's normal slope is its one-sided
+				// interior difference rather than zero (the wall face itself still carries no flux).
+				static const std::string walled=[](){const char* value=std::getenv("RISE_FIRE_WALL_SLOPE");
+					if(!value||std::string(value)!="linear")return selected;
+					const std::string ghost=" float interior=q[component*p.cells+tr_cell(p,x,y,z)];return p.boundary[side]==1u&&";
+					std::string out=selected;const std::size_t at=out.find(ghost);
+					if(at==std::string::npos||out.find(ghost,at+1u)!=std::string::npos)return selected;
+					out.replace(at,ghost.size()," float interior=q[component*p.cells+tr_cell(p,x,y,z)];\n"
+						" if(p.boundary[side]==2u&&extent>1){tr_set(axis,coordinate<0?1u:uint(extent-2),x,y,z);\n"
+						"  return 2.0f*interior-q[component*p.cells+tr_cell(p,x,y,z)];}\n"
+						" return p.boundary[side]==1u&&");
+					return out;}();
+				return walled.c_str();
 			}
 
 			explicit ResidentTransportMetalContext(bool stageTokens=false) : device(nil),queue(nil),evaluate(nil),identify(nil),
@@ -4049,7 +4115,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 						return function?NameProducerKernel([device newComputePipelineStateWithFunction:function error:&metalError],name):nil;};
 					evaluate=pipeline("evaluate_resident_transport");identify=pipeline("identify_resident_transport");
 					// r271 A/B: heat and species take the compact-stencil nu_t with the momentum.
-					if(FireProductionForceMetalCompactViscousStencil())evaluate=pipeline("evaluate_resident_transport_compact");
+					if(FireProductionForceMetalCompactViscousStencil())evaluate=pipeline(
+						FireProductionForceMetalNearWallWale()?"evaluate_resident_transport_compact_wale":"evaluate_resident_transport_compact");
 					physicalFlux=pipeline("evaluate_resident_physical_flux");
 					advectivePair=pipeline("evaluate_resident_advective_pair");
 					finalizeAdvective=pipeline("finalize_resident_advective_high");
@@ -8489,7 +8556,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 						output.projectionDiagnostics,error))return false;
 					++projectionInvocations_;deviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
 					projectionDeviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
-					if(std::getenv("RISE_FIRE_REFUSAL_CLAUSES")){
+					// r271 diagnostic: RISE_R271_PROJECTION_TRACE=1 prints the same per-projection line outside the refusal scopes.
+					if(std::getenv("RISE_FIRE_REFUSAL_CLAUSES")||std::getenv("RISE_R271_PROJECTION_TRACE")){
 						const auto& diagnostic=output.projectionDiagnostics;
 						std::fprintf(stderr,"PROJECTION_REFUSAL_TRACE stage=%u invocation=%u cycles=%u "
 							"pre_per_s=%.17g post_per_s=%.17g band_per_s=%.17g passed=%d\n",

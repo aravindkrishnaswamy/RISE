@@ -10,6 +10,8 @@
 #include "FireProductionSourceKernel.h"
 #include "FireCase.h"
 
+#include <cstdio>
+#include <cmath>
 #include <new>
 #include <system_error>
 
@@ -165,13 +167,45 @@ namespace RISE
 					request.eligibilityBeginningConservativeValues.empty()?
 					request.beginningConservativeValues:
 					request.eligibilityBeginningConservativeValues;
+				// r271 diagnostic (opt-in RISE_FIRE_NONCANONICAL_DETAIL=1): context for a negative-zero sensible energy.
+				if(std::getenv("RISE_FIRE_NONCANONICAL_DETAIL")){
+					static std::vector<float> previousEnergy,currentEnergy;static double currentTimeS=-1.0;
+					const float* energy=request.beginningConservativeValues.data()+8u*cells;
+					if(request.beginningTimeS!=currentTimeS){previousEnergy.swap(currentEnergy);
+						currentEnergy.assign(energy,energy+cells);currentTimeS=request.beginningTimeS;}
+					std::size_t negativeZeros=0u,positiveZeros=0u,tiny=0u,first=cells;
+					float smallestPositive=0.0f,smallestNegative=0.0f;
+					for(std::size_t cell=0u;cell<cells;++cell){const float v=energy[cell];
+						if(v==0.0f){if(std::signbit(v)){if(first==cells)first=cell;++negativeZeros;}else ++positiveZeros;continue;}
+						if(std::fabs(v)<1.0e-30f)++tiny;
+						if(v>0.0f&&(smallestPositive==0.0f||v<smallestPositive))smallestPositive=v;
+						if(v<0.0f&&(smallestNegative==0.0f||v>smallestNegative))smallestNegative=v;}
+					if(first!=cells){
+						const std::size_t nx=request.shape.nx,ny=request.shape.ny,nz=request.shape.nz;
+						const std::size_t x=first%nx,y=(first/nx)%ny,z=first/(nx*ny);
+						std::fprintf(stderr,"NEGATIVE_ZERO_DETAIL time=%.17g cell=%zu x=%zu y=%zu z=%zu of %zux%zux%zu negative_zeros=%zu "
+							"positive_zeros=%zu tiny_nonzero=%zu smallest_positive=%.9g smallest_negative=%.9g previous=%.9g previous_signbit=%d\n",
+							request.beginningTimeS,first,x,y,z,nx,ny,nz,negativeZeros,positiveZeros,tiny,
+							static_cast<double>(smallestPositive),static_cast<double>(smallestNegative),
+							previousEnergy.size()==cells?static_cast<double>(previousEnergy[first]):0.0,
+							previousEnergy.size()==cells?static_cast<int>(std::signbit(previousEnergy[first])):-1);
+						for(int dz=-2;dz<=2;++dz)for(int dy=-2;dy<=2;++dy)for(int dx=-2;dx<=2;++dx){
+							const long long X=static_cast<long long>(x)+dx,Y=static_cast<long long>(y)+dy,Z=static_cast<long long>(z)+dz;
+							if(X<0||Y<0||Z<0||X>=static_cast<long long>(nx)||Y>=static_cast<long long>(ny)||Z>=static_cast<long long>(nz))continue;
+							const std::size_t n=static_cast<std::size_t>(X)+nx*(static_cast<std::size_t>(Y)+ny*static_cast<std::size_t>(Z));
+							std::fprintf(stderr,"NEGATIVE_ZERO_NEIGHBOUR d=%d,%d,%d now=%.9g previous=%.9g rho=%.9g\n",dx,dy,dz,
+								static_cast<double>(energy[n]),previousEnergy.size()==cells?static_cast<double>(previousEnergy[n]):0.0,
+								static_cast<double>(request.beginningConservativeValues[n]));}
+					}
+				}
 				for(std::size_t cell=0u;cell<cells;++cell){
 					ConservativeVector tuple,eligibilityTuple;
 					for(std::size_t component=0u;component<9u;++component){
 						const float value=request.beginningConservativeValues[component*cells+cell];
 						const float eligibilityValue=eligibilityValues[component*cells+cell];
 						if(!std::isfinite(value)||(value==0.0f&&std::signbit(value)))return Fail(error,
-							"production canonical source beginning state is noncanonical");
+							"production canonical source beginning state is noncanonical"+(std::getenv("RISE_FIRE_NONCANONICAL_DETAIL")?
+							" (component "+std::to_string(component)+" cell "+std::to_string(cell)+" value "+std::to_string(value)+")":std::string()));
 						if(!std::isfinite(eligibilityValue)||(eligibilityValue==0.0f&&
 							std::signbit(eligibilityValue)))return Fail(error,
 							"production canonical source eligibility state is noncanonical");
@@ -271,6 +305,9 @@ namespace RISE
 						if(passes)eligible[cell]=true;
 					}
 				}
+				// r271 inert plume (RISE_FIRE_INERT_PLUME=1): nothing reacts; the heat comes from a frozen source below.
+				const bool inertPlume=FireCase::InertPlumeSelected();
+				if(inertPlume)eligible.assign(cells,false);
 				std::vector<MethaneReactionStep> reactions(cells);
 				for(std::size_t cell=0u;cell<cells;++cell){
 					reactions[cell].deltaTimeS=static_cast<double>(request.timeStepS);
@@ -278,7 +315,7 @@ namespace RISE
 					reactions[cell].maximumAcceptedTemperatureK=
 						fireCase.derived.maximumAcceptedTemperatureK;
 					reactions[cell].primaryEligible=eligible[cell];
-					reactions[cell].sootOxidationEnabled=true;
+					reactions[cell].sootOxidationEnabled=!inertPlume;
 					if(!FireCase::EvaluatePilotSetpointTemperatureK(fireCase.derived,
 						request.pilotCommandMask[cell]!=0u,request.beginningTimeS,
 						request.beginningTimeS+static_cast<double>(request.timeStepS),
@@ -295,7 +332,7 @@ namespace RISE
 					fireCase.derived.pilotAmbientTemperatureK,
 					fireCase.derived.referenceHeatReleaseRateW,
 					fireCase.derived.effectiveRadiativeFraction,request.predictiveRadiation,
-					fuel,fuel,opacity,packets,factor,error,request.workerCount))return false;
+					fuel,fuel,opacity,packets,factor,error,request.workerCount,!inertPlume))return false;
 				// r270: the radiatively adiabatic floor returns its convective flux
 				// to the first gas layer as a frozen energy dose, q/dz, before the
 				// expansion target is derived from the packet.
@@ -357,6 +394,38 @@ namespace RISE
 						RepresentMethaneSourcePacketBinary32(packets[face]);
 						if(!CertifiedBinary32SourcePacket(packets[face],fuel))return Fail(error,
 							"production canonical source floor dose failed its Binary32 certificate");
+					}
+				}
+				// r271 inert plume: the frozen volumetric heat source, uniform over the burner-masked cells of each
+				// layer, enters the energy dose before the expansion target is derived from the packet (as the floor).
+				if(inertPlume){
+					if(floorRadiation)return Fail(error,"production canonical source inert plume excludes floor radiation");
+					std::vector<double> pattern;
+					if(!FireCase::BuildSourcePattern(fireCase.authored,fireCase.derived,pattern,caseError)||
+						pattern.size()!=floorFaces)return Fail(error,"production canonical source inert plume pattern is invalid");
+					double masked=0.0;for(const double value:pattern)if(value!=0.0)masked+=1.0;
+					if(!(masked>0.0))return Fail(error,"production canonical source inert plume has no burner cells");
+					const double seed=FireCase::InertPlumeSeedAmplitude();
+					if(seed<0.0)return Fail(error,"production canonical source inert plume seed is invalid");
+					const std::uint64_t bucket=static_cast<std::uint64_t>(std::floor(request.beginningTimeS/FireCase::InertPlumeSeedBucketS));
+					std::vector<double> weight(cells,1.0);
+					const double tier8CellWidthM=fireCase.derived.characteristicDiameterM/8.0;
+					for(std::size_t z=0u;z<request.shape.nz;++z){
+						const double layerFraction=FireCase::InertPlumeLayerFraction(z,fireCase.derived.cellWidthM,tier8CellWidthM);
+						if(layerFraction==0.0)continue;
+						if(seed>0.0){double sum=0.0;
+							for(std::size_t face=0u;face<floorFaces;++face){if(pattern[face]==0.0)continue;
+								const std::uint64_t h=FireCase::SplitMix64(bucket*UINT64_C(0x9E3779B97F4A7C15)^static_cast<std::uint64_t>(z*floorFaces+face));
+								weight[z*floorFaces+face]=1.0+seed*(2.0*static_cast<double>(h>>11)*0x1p-53-1.0);sum+=weight[z*floorFaces+face];}
+							for(std::size_t face=0u;face<floorFaces;++face)if(pattern[face]!=0.0)weight[z*floorFaces+face]*=masked/sum;}
+						const double heatWPerM3=FireCase::InertPlumeHeatW*layerFraction/(masked*volume);
+						for(std::size_t face=0u;face<floorFaces;++face){
+							if(pattern[face]==0.0)continue;MethaneSourcePacket& packet=packets[z*floorFaces+face];
+							packet.sensibleEnergyDeltaJPerM3+=weight[z*floorFaces+face]*heatWPerM3*static_cast<double>(request.timeStepS);
+							RepresentMethaneSourcePacketBinary32(packet);
+							if(!CertifiedBinary32SourcePacket(packet,fuel))return Fail(error,
+								"production canonical source inert plume dose failed its Binary32 certificate");
+						}
 					}
 				}
 				FireProductionFrozenSourcePacketSeal candidate;
@@ -467,6 +536,15 @@ namespace RISE
 					HashDouble(candidate.sourceInputIdentity_,fireCase.derived.floorEmissivity);
 					HashByteValues(candidate.sourceInputIdentity_,request.floorAbsorbingFaceMask);
 					HashFloatValues(candidate.sourceInputIdentity_,request.floorTangentialSpeedMPerS);
+				}
+				if(inertPlume){
+					HashDomain(candidate.sourceInputIdentity_,"RISE canonical frozen source r271 inert plume v1");
+					HashDouble(candidate.sourceInputIdentity_,FireCase::InertPlumeHeatW);
+					for(std::size_t z=0u;z<static_cast<std::size_t>(FireCase::InertPlumeLayers);++z)
+						HashDouble(candidate.sourceInputIdentity_,FireCase::InertPlumeFraction(z));
+					if(FireCase::InertPlumeSeedAmplitude()!=0.0){
+						HashDomain(candidate.sourceInputIdentity_,"RISE canonical frozen source r271 inert seed v1");
+						HashDouble(candidate.sourceInputIdentity_,FireCase::InertPlumeSeedAmplitude());}
 				}
 				candidate.FinalizeIdentities();
 				if(!candidate.Matches(error))return false;

@@ -7,6 +7,7 @@
 #include "FireSimulationRecords.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <sstream>
@@ -218,10 +219,49 @@ double RISE::FireCase::ScheduleFlowThroughTimeS(const DerivedV1& derived)
 		derived.flowThroughTimeS : derived.matchedScheduleFlowThroughTimeS;
 }
 
-bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
+__attribute__((noinline)) bool RISE::FireCase::InertPlumeSelected()
+{
+	static const bool selected=[](){const char* value=std::getenv("RISE_FIRE_INERT_PLUME");
+		return value&&std::strcmp(value,"1")==0;}();
+	return selected;
+}
+
+__attribute__((noinline)) double RISE::FireCase::InertPlumeFraction(const std::size_t layer)
+{
+	static const double fraction[InertPlumeLayers]={0.29275044241386805,0.15094146662912586,
+		0.0844006732609355,0.058700586497278794,0.047024621256962995,0.04097938478458258,
+		0.037912394570761614,0.03457648340326168,0.03269258574328498,0.031004103721329994,
+		0.028354134582725933,0.0258953556234965,0.023199473576261072,0.020136765603255866,
+		0.01742165804261253,0.014731486683972306,0.012373778719905509,0.010212516183986328,
+		0.008288275384240696,0.006747521046522308,0.0054842188408049655,0.004386704977817099,
+		0.0035405184893804007,0.002847464312458545,0.002234006857513744,0.001753092494177177,
+		0.0014102862994772088};
+	return layer<static_cast<std::size_t>(InertPlumeLayers)?fraction[layer]:0.0;
+}
+
+__attribute__((noinline)) double RISE::FireCase::InertPlumeLayerFraction(const std::size_t layer,
+	const double cellWidthM,const double tier8CellWidthM)
+{
+	if(cellWidthM==tier8CellWidthM)return InertPlumeFraction(layer);
+	if(!(cellWidthM>0.0)||!(tier8CellWidthM>0.0))return 0.0;
+	const double low=static_cast<double>(layer)*cellWidthM,high=low+cellWidthM;
+	double sum=0.0;
+	for(std::size_t source=0u;source<static_cast<std::size_t>(InertPlumeLayers);++source){
+		const double a=std::max(low,static_cast<double>(source)*tier8CellWidthM);
+		const double b=std::min(high,static_cast<double>(source+1u)*tier8CellWidthM);
+		if(b>a)sum+=InertPlumeFraction(source)*(b-a)/tier8CellWidthM;
+	}
+	return sum;
+}
+
+namespace
+{
+	// The historical pilot arithmetic, kept out of line so the r271 inert check below cannot perturb its fast-math code.
+	__attribute__((noinline)) bool EvaluatePilotSetpointTemperatureKV1(const RISE::FireCase::DerivedV1& derived,
 	const bool maskCell,const double beginningTimeS,const double endTimeS,
 	double& result,std::string& error)
 {
+	using namespace RISE::FireCase;
 	result=0.0;
 	if(!FinitePositive(derived.pilotSetpointTemperatureK) ||
 		!FinitePositive(derived.pilotExpansionVolumeRatioCap) ||
@@ -243,6 +283,24 @@ bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
 			derived.pilotSetpointTemperatureK/derived.pilotAmbientTemperatureK,exponent);
 	}
 	return true;
+}
+}
+
+__attribute__((noinline)) double RISE::FireCase::InertPlumeSeedAmplitude()
+{
+	static const double amplitude=[](){const char* value=std::getenv("RISE_FIRE_INERT_SEED");if(!value)return 0.0;
+		char* end=nullptr;const double parsed=std::strtod(value,&end);
+		return end!=value&&*end==0&&std::isfinite(parsed)&&parsed>0.0&&parsed<1.0?parsed:-1.0;}();
+	return amplitude;
+}
+
+bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
+	const bool maskCell,const double beginningTimeS,const double endTimeS,
+	double& result,std::string& error)
+{
+	// The r271 inert plume has no pilot.
+	if(InertPlumeSelected()){result=0.0;return true;}
+	return EvaluatePilotSetpointTemperatureKV1(derived,maskCell,beginningTimeS,endTimeS,result,error);
 }
 
 double RISE::FireCase::PilotCommandMaximumStepS(const DerivedV1& derived)
@@ -267,7 +325,12 @@ double RISE::FireCase::SelectTimeStepS(const double dx,const double speed,
 		!std::isfinite(diffusivity)||diffusivity<0.0||
 		!std::isfinite(previous)||previous<0.0)return 0.0;
 	double selected=std::numeric_limits<double>::infinity();
-	if(speed>0.0)selected=std::min(selected,0.5*dx/speed);
+	// r271 diagnostic opt-in (RISE_FIRE_ADVECTIVE_CFL=<c>, 0 < c <= 1) replaces the advective CFL
+	// number 0.5; unset or invalid keeps 0.5. The selection is fixed for the process.
+	static const double advectiveCFL=[](){const char* option=std::getenv("RISE_FIRE_ADVECTIVE_CFL");
+		if(!option)return 0.5;char* end=nullptr;const double value=std::strtod(option,&end);
+		return end!=option&&*end=='\0'&&std::isfinite(value)&&value>0.0&&value<=1.0?value:0.5;}();
+	if(speed>0.0)selected=std::min(selected,advectiveCFL*dx/speed);
 	if(reducedGravity>0.0)selected=std::min(selected,
 		0.5*std::sqrt(2.0*dx/reducedGravity));
 	if(diffusivity>0.0)selected=std::min(selected,dx*dx/(8.0*diffusivity));

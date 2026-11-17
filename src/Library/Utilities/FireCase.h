@@ -93,6 +93,22 @@ namespace RISE
 			const DerivedV1&,bool maskCell,double beginningTimeS,double endTimeS,
 			double& setpointTemperatureK,
 			std::string& error );
+		//! r271 diagnostic (opt-in RISE_FIRE_INERT_PLUME=1): a non-reacting buoyant plume on the production case.
+		//! Reaction, pilot and gas radiation are off; a frozen volumetric heat source of InertPlumeHeatW is applied
+		//! uniformly over the burner-masked cells of layers 0..InertPlumeLayers-1, split by InertPlumeFraction (FDS
+		//! r263's time-mean heat release per layer, docs/data/fire_r271/inert_source_profile.json).
+		bool InertPlumeSelected();
+		const int InertPlumeLayers=27;
+		const double InertPlumeHeatW=26400.0;
+		double InertPlumeFraction(std::size_t layer);
+		//! The same vertical profile on a grid of another cell width: the tier-8 table is piecewise constant in height
+		//! (layer width tier8CellWidthM) and is integrated over cell layer `layer` of width cellWidthM. Equal widths
+		//! return the table value itself.
+		double InertPlumeLayerFraction(std::size_t layer,double cellWidthM,double tier8CellWidthM);
+		//! Optional seed (RISE_FIRE_INERT_SEED=eps, 0 when unset): each burner cell's dose is scaled by 1+eps*xi, xi uniform
+		//! in [-1,1] from a hash of the cell and a 10 ms time bucket, renormalised per layer so the total stays exact.
+		double InertPlumeSeedAmplitude();
+		const double InertPlumeSeedBucketS=0.01;
 		double ScheduleFlowThroughTimeS(const DerivedV1&);
 		double PilotCommandMaximumStepS(const DerivedV1&);
 		bool BuildMethaneV1(

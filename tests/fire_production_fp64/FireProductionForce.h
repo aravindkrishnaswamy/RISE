@@ -45,6 +45,14 @@ namespace RISEFireProductionFP64
 	//! r271 A/B: true when this process's force context selected the opt-in
 	//! compact MAC viscous stencil (RISE_FIRE_COMPACT_VISCOUS_STENCIL=1).
 	bool FireProductionForceMetalCompactViscousStencil();
+	//! r271 opt-in: true when RISE_FIRE_NEAR_WALL_WALE=1, selecting FDS's WALE eddy viscosity
+	//! (C_WALE 0.60) in wall-adjacent cells for momentum and scalars. Honoured only with the
+	//! compact viscous stencil; the selection is fixed for the process.
+	bool FireProductionForceMetalNearWallWale();
+	//! r271 opt-in: c_h from RISE_FIRE_HYPER_VREMAN (0 < c_h <= 1; anything else is off), a
+	//! scale-selective biharmonic viscosity mu c_h dx^2 added to the compact face force and to its
+	//! viscous stability bound. Honoured only with the compact viscous stencil; fixed for the process.
+	double FireProductionForceMetalHyperVreman();
 	//! Shared bound for fail-closed step reductions.  The binary64 trajectory
 	//! owner and the production manifold owner use the same rejection budget.
 	constexpr unsigned int FireStepRejectionRetryCap=20u;

@@ -6391,6 +6391,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 				}else if(caseRecord.derived.floorEmissivity>0.0){
 					// Only the canonical source authority implements the r270 floor.
 					packetOK=false;error="r270 floor radiation requires the canonical source authority";
+				}else if(FireCase::InertPlumeSelected()){
+					packetOK=false;error="r271 inert plume requires the canonical source authority";
 				}else if(persistence.forceZeroSourceForTest){
 					packets.assign(shape.CellCount(),MethaneSourcePacket());escape=RadiationEscapeFactor();
 				}else packetOK=BuildFrozenMethaneSourcePackets(packetBeginning,reactions,
@@ -7681,7 +7683,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 						centerlineHeatReleaseW+=packets[center].gasHeatReleaseWPerM3*cellVolume/
 							centerSampleCount;}
 				const double stepEndS=simulationTimeS+reaction.deltaTimeS;
-				if(stepEndS>=pilotEndS&&!values.ignitedDuringPilot) {
+				// The r271 inert plume never ignites.
+				if(stepEndS>=pilotEndS&&!values.ignitedDuringPilot&&!FireCase::InertPlumeSelected()) {
 					advancedOK=false;
 					error="pilot_window_expired_without_ignition";
 					break;
@@ -11740,6 +11743,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		if(FireProductionForceMetalCompactViscousStencil())receipt<<"viscous_stencil r271-compact-mac-v2\n";
 		// r271 A/B: the opt-in FDS mixing time likewise leaves the case unchanged.
 		if(FireFDSMixingTimeSelected())receipt<<"mixing_time r271-fds-v1\n";
+		if(FireCase::InertPlumeSelected())receipt<<"inert_plume r271-v1\n";
+		if(FireCase::InertPlumeSeedAmplitude()!=0.0)receipt<<"inert_seed "<<std::setprecision(17)<<FireCase::InertPlumeSeedAmplitude()<<"\n";
 		receipt<<std::setprecision(17)<<"schema rise.fire.full-window-launch.v1\n"
 			<<"producer_build_id "<<buildId<<"\nproducer_executable_sha256 "<<executableDigest<<'\n'
 			<<"case_record_id "<<launchCase.caseRecordId<<"\nresolution_tier "<<resolutionTier<<'\n'
@@ -11892,17 +11897,20 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		std::string receiptCaseId;
 		{
 			std::ifstream receipt(runDirectory/"window_launch.v1");std::string key,value;
-			bool receiptCompact=false,receiptFDSMixing=false;
+			bool receiptCompact=false,receiptFDSMixing=false,receiptInert=false;double receiptSeed=0.0;
 			while(receipt>>key>>value){
 				if(key=="domain_study")return 91;
 				if(key=="case_record_id")receiptCaseId=value;
 				// A superseded stencil (v1, momentum only) cannot be rebuilt by this build.
 				if(key=="viscous_stencil"){if(value!="r271-compact-mac-v2")return 91;receiptCompact=true;}
 				if(key=="mixing_time"){if(value!="r271-fds-v1")return 91;receiptFDSMixing=true;}
+				if(key=="inert_plume"){if(value!="r271-v1")return 91;receiptInert=true;}
+				if(key=="inert_seed")receiptSeed=std::stod(value);
 			}
 			// A rebuild never mixes viscous stencils with the run it describes.
 			if(receiptCompact!=FireProductionForceMetalCompactViscousStencil()||
-				receiptFDSMixing!=FireFDSMixingTimeSelected())return 91;
+				receiptFDSMixing!=FireFDSMixingTimeSelected()||receiptInert!=FireCase::InertPlumeSelected()||
+				receiptSeed!=FireCase::InertPlumeSeedAmplitude())return 91;
 		}
 		if(receiptCaseId.size()!=64u)return 95;
 		const SolverFrameValues beginning=RunMethaneFrameProbe(1u,0u,0.0,1.0,1.0,

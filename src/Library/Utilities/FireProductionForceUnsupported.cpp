@@ -13,6 +13,8 @@
 namespace RISE
 {
 	bool FireProductionForceMetalCompactViscousStencil() { return false; }
+	bool FireProductionForceMetalNearWallWale() { return false; }
+	float FireProductionForceMetalHyperVreman() { return 0.0f; }
 
 	bool BuildFireProductionFrozenForceFieldsMetal(
 		const FireProductionFrozenForceRequest&,

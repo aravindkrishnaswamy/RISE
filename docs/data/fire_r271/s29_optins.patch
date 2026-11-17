@@ -623,7 +623,7 @@ index ddf51eb75..990c8911a 100644
  				if(!candidate.Matches(error))return false;
  				result=std::move(candidate);return true;
 diff --git a/src/Library/Utilities/FireProductionSourceKernel.h b/src/Library/Utilities/FireProductionSourceKernel.h
-index b7e7f03e7..2a4742c16 100644
+index b7e7f03e7..a3015d7bf 100644
 --- a/src/Library/Utilities/FireProductionSourceKernel.h
 +++ b/src/Library/Utilities/FireProductionSourceKernel.h
 @@ -1049,6 +1049,22 @@ namespace RISE
@@ -631,7 +631,7 @@ index b7e7f03e7..2a4742c16 100644
  		}
  
 +		// Gross carbon (soot) formed per kg of methane reacted. The record value is
-+		// zero; RISE_FIRE_METHANE_SOOT_YIELD=<y> (0..0.1) overrides it for the r272
++		// zero; RISE_FIRE_METHANE_SOOT_YIELD=<y> (0..0.5) overrides it for the r272
 +		// in-flame soot closure. Formation is the exact inverse of the record's
 +		// carbon oxidation: formed carbon withholds its CO2, its oxygen and its
 +		// oxidation heat from the primary step and returns them when it burns out.
@@ -641,7 +641,7 @@ index b7e7f03e7..2a4742c16 100644
 +				const char* text=std::getenv("RISE_FIRE_METHANE_SOOT_YIELD");
 +				if(!text)return -1.0;
 +				char* end=0;const double value=std::strtod(text,&end);
-+				return end!=text&&*end=='\0'&&std::isfinite(value)&&value>=0.0&&value<=0.1?
++				return end!=text&&*end=='\0'&&std::isfinite(value)&&value>=0.0&&value<=0.5?
 +					value:std::numeric_limits<double>::quiet_NaN();}();
 +			return overrideYield<0.0?fuel.SootYieldKGPerKGFuel():overrideYield;
 +		}
@@ -655,7 +655,7 @@ index b7e7f03e7..2a4742c16 100644
  			}
 +			const double sootYield=MethaneGrossSootYieldKGPerKGFuel(fuel);
 +			if(!std::isfinite(sootYield))
-+				return Fail(error,"RISE_FIRE_METHANE_SOOT_YIELD must be a number in 0..0.1");
++				return Fail(error,"RISE_FIRE_METHANE_SOOT_YIELD must be a number in 0..0.5");
  			auto packetAtExtent=[&](const double extent,MethaneSourcePacket& candidate){
  				candidate=MethaneSourcePacket();
  				const double reacted=extent==1.0?fullReacted:extent*fullReacted;

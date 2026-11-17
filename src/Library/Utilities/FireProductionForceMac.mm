@@ -316,12 +316,24 @@ inline void compact_gradient(device const float* cellVelocity,device const float
    neighbor_velocity(cellVelocity,p,c,x,y,z,d,-1))/(2.0f*p.dx);
  } divergence+=gradient[d][d];}
 }
-kernel void build_stress_compact(device const float* cellVelocity [[buffer(0)]],
- device const float* cellDensity [[buffer(1)]],device const float* molecularNu [[buffer(2)]],
- device float* eddy [[buffer(3)]],device float* muOut [[buffer(4)]],
- device float* stress [[buffer(5)]],constant Params& p [[buffer(6)]],
- device const float* faceVelocity [[buffer(7)]],device const uchar* burner [[buffer(8)]],
- uint gid [[thread_position_in_grid]]){
+// r271 opt-in (RISE_FIRE_NEAR_WALL_WALE=1): FDS 6.11's default near-wall model (velo.f90 WALL_LOOP,
+// turb.f90 WALE_VISCOSITY, C_WALE 0.60) replaces Vreman in every cell with a no-slip wall face.
+inline float near_wall_wale_nu(thread const float (&g)[3][3],float dx){
+ float s[3][3],o[3][3],s2=0.0f,o2=0.0f,iv=0.0f;
+ for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j){s[i][j]=0.5f*(g[i][j]+g[j][i]);o[i][j]=0.5f*(g[i][j]-g[j][i]);
+  s2+=s[i][j]*s[i][j];o2+=o[i][j]*o[i][j];}
+ for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j)for(uint k=0u;k<3u;++k)for(uint l=0u;l<3u;++l)
+  iv+=s[i][k]*s[k][j]*o[j][l]*o[l][i];
+ float sd2=max(0.0f,(1.0f/6.0f)*(s2*s2+o2*o2)+(2.0f/3.0f)*s2*o2+2.0f*iv);
+ float denominator=pow(s2,2.5f)+pow(sd2,1.25f);float width=0.60f*dx;
+ return denominator>0.0f?width*width*pow(sd2,1.5f)/denominator:0.0f;
+}
+inline bool near_wall_cell(constant Params& p,uint x,uint y,uint z){uint xyz[3]={x,y,z};
+ for(uint a=0u;a<3u;++a){if(xyz[a]==0u&&p.boundary[2u*a]==2u)return true;
+  if(xyz[a]+1u==extent(p,a)&&p.boundary[2u*a+1u]==2u)return true;}return false;}
+inline void stress_compact_cell(device const float* cellVelocity,device const float* cellDensity,
+ device const float* molecularNu,device float* eddy,device float* muOut,device float* stress,
+ constant Params& p,device const float* faceVelocity,uint gid,bool nearWallWale){
  uint cells=p.nx*p.ny*p.nz;if(gid>=cells)return;uint x=gid%p.nx,r=gid/p.nx,y=r%p.ny,z=r/p.ny;
  float gradient[3][3];float divergence;compact_gradient(cellVelocity,faceVelocity,p,x,y,z,gradient,divergence);
  float alphaSquared=0.0f,beta[3][3]={{0.0f,0.0f,0.0f},{0.0f,0.0f,0.0f},{0.0f,0.0f,0.0f}};
@@ -333,16 +345,37 @@ kernel void build_stress_compact(device const float* cellVelocity [[buffer(0)]],
   beta[0][0]*beta[2][2]-beta[0][2]*beta[0][2]+
   beta[1][1]*beta[2][2]-beta[1][2]*beta[1][2];
  float nuEddy=alphaSquared==0.0f?0.0f:p.cv*sqrt(max(0.0f,raw)/alphaSquared);
+ if(nearWallWale&&near_wall_cell(p,x,y,z))nuEddy=near_wall_wale_nu(gradient,p.dx);
 #ifdef RISE_VREMAN_ZONE_K
  // r271 candidate opt-in (RISE_FIRE_VREMAN_ZONE=<below|above>:<k>:<scale>): momentum eddy viscosity
  // scaled in cell layers z < k (below) or z >= k (above) only. Unset = production. The r271 default
  // candidate uses below:<layer at 1.0 m>:0.2857 (C_v 0.02 under 1 m) with the limited momentum carrier.
  if((RISE_VREMAN_ZONE_BELOW!=0)==(z<RISE_VREMAN_ZONE_K))nuEddy*=RISE_VREMAN_ZONE_SCALE;
 #endif
+#ifdef RISE_VREMAN_RAMP_K0
+ // r271 diagnostic opt-in (RISE_FIRE_VREMAN_ZONE=ramp:<k0>:<k1>:<scale>): momentum eddy viscosity scaled by
+ // <scale> in cell layers below k0, rising linearly to 1 at layer k1. Unset = production.
+ nuEddy*=mix(RISE_VREMAN_RAMP_SCALE,1.0f,clamp((float(z)+0.5f-float(RISE_VREMAN_RAMP_K0))/
+  float(RISE_VREMAN_RAMP_K1-RISE_VREMAN_RAMP_K0),0.0f,1.0f));
+#endif
  float mu=cellDensity[gid]*(molecularNu[gid]+nuEddy);eddy[gid]=nuEddy;muOut[gid]=mu;
  for(uint c=0u;c<3u;++c)for(uint d=0u;d<3u;++d)
   stress[(3u*c+d)*cells+gid]=c==d?mu*(2.0f*gradient[c][c]-(2.0f/3.0f)*divergence):0.0f;
 }
+kernel void build_stress_compact(device const float* cellVelocity [[buffer(0)]],
+ device const float* cellDensity [[buffer(1)]],device const float* molecularNu [[buffer(2)]],
+ device float* eddy [[buffer(3)]],device float* muOut [[buffer(4)]],
+ device float* stress [[buffer(5)]],constant Params& p [[buffer(6)]],
+ device const float* faceVelocity [[buffer(7)]],device const uchar* burner [[buffer(8)]],
+ uint gid [[thread_position_in_grid]]){
+ stress_compact_cell(cellVelocity,cellDensity,molecularNu,eddy,muOut,stress,p,faceVelocity,gid,false);}
+kernel void build_stress_compact_wale(device const float* cellVelocity [[buffer(0)]],
+ device const float* cellDensity [[buffer(1)]],device const float* molecularNu [[buffer(2)]],
+ device float* eddy [[buffer(3)]],device float* muOut [[buffer(4)]],
+ device float* stress [[buffer(5)]],constant Params& p [[buffer(6)]],
+ device const float* faceVelocity [[buffer(7)]],device const uchar* burner [[buffer(8)]],
+ uint gid [[thread_position_in_grid]]){
+ stress_compact_cell(cellVelocity,cellDensity,molecularNu,eddy,muOut,stress,p,faceVelocity,gid,true);}
 kernel void build_stress_fixed_mu_compact(device const float* cellVelocity [[buffer(0)]],
  device const float* mu [[buffer(1)]],device float* stress [[buffer(2)]],
  constant Params& p [[buffer(3)]],device const float* faceVelocity [[buffer(4)]],
@@ -398,6 +431,18 @@ kernel void build_face_force_compact(device const float* faceDensity [[buffer(0)
   for(uint d=0u;d<3u;++d)if(d!=component)
    value+=(compact_edge_shear(faceVelocity,mu,p,component,d,xyz,leftXYZ,xyz[d]+1u)-
     compact_edge_shear(faceVelocity,mu,p,component,d,xyz,leftXYZ,xyz[d]))/p.dx;
+#ifdef RISE_HYPER_VREMAN
+  // r271 opt-in (RISE_FIRE_HYPER_VREMAN=<c_h>): scale-selective biharmonic viscosity,
+  // -mu_f c_h dx^2 sum_a delta_a^4 u / dx^4, with mu_f the face mean of the cell mu
+  // (molecular + Vreman). It damps 2dx 16x and 8dx 0.34x as strongly as 4dx; it is
+  // left out along an axis within two faces of a non-periodic boundary.
+  {float sum=0.0f;
+   for(uint a=0u;a<3u;++a){uint last=a==component?n:extent(p,a)-1u,c0=xyz[a];
+    if(c0<2u||c0+2u>last)continue;uint q[3]={x,y,z};float u[5];
+    for(uint k=0u;k<5u;++k){q[a]=c0+k-2u;u[k]=faceVelocity[face_index(p,component,q[0],q[1],q[2])];}
+    sum+=u[0]-4.0f*u[1]+6.0f*u[2]-4.0f*u[3]+u[4];}
+   value-=RISE_HYPER_VREMAN*0.5f*(mu[left]+mu[right])*sum/(p.dx*p.dx);}
+#endif
  }
  viscous[gid]=value;
  if(periodic&&normal==0u){uint highXYZ[3]={x,y,z};highXYZ[component]=n;
@@ -424,7 +469,12 @@ kernel void build_lambda(device const float* maxima [[buffer(0)]],device float* 
  constant Params& p [[buffer(2)]]){
  float invDx=nextafter(1.0f/p.dx,INFINITY);float invDx2=outward_multiply(invDx,invDx);
  float value=outward_multiply(maxima[0],maxima[1]);value=outward_multiply(value,invDx2);
- diagnostic[0]=outward_multiply(24.0f,value);diagnostic[1]=maxima[0];diagnostic[2]=maxima[1];
+#ifdef RISE_HYPER_VREMAN
+ diagnostic[0]=outward_multiply(24.0f+48.0f*RISE_HYPER_VREMAN,value);
+#else
+ diagnostic[0]=outward_multiply(24.0f,value);
+#endif
+ diagnostic[1]=maxima[0];diagnostic[2]=maxima[1];
 }
 kernel void update_viscous_momentum(device float* momentum [[buffer(0)]],
  device const float* rate [[buffer(1)]],constant Params& p [[buffer(2)]],
@@ -479,6 +529,10 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				if( [options respondsToSelector:@selector(setMathMode:)] ) options.mathMode=MTLMathModeSafe;
 				options.mathFloatingPointFunctions=MTLMathFloatingPointFunctionsPrecise;
 				std::string librarySource=ForceSource();
+				if( FireProductionForceMetalHyperVreman()>0.0f ) {char prefix[96];
+					std::snprintf(prefix,sizeof(prefix),"#define RISE_HYPER_VREMAN ((float)%.9g)\n",
+						static_cast<double>(FireProductionForceMetalHyperVreman()));
+					librarySource=prefix+librarySource;}
 				if( const char* zone=std::getenv("RISE_FIRE_VREMAN_ZONE") ) {
 					const char* compact=std::getenv("RISE_FIRE_COMPACT_VISCOUS_STENCIL");
 					char side[8]={};unsigned int layer=0u;float scale=-1.0f;
@@ -488,6 +542,13 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 						std::snprintf(prefix,sizeof(prefix),"#define RISE_VREMAN_ZONE_K %uu\n#define RISE_VREMAN_ZONE_BELOW %d\n"
 							"#define RISE_VREMAN_ZONE_SCALE ((float)%.9g)\n",layer,std::string(side)=="below"?1:0,
 							static_cast<double>(scale));
+						librarySource=prefix+librarySource;}
+					unsigned int k0=0u,k1=0u;float rampScale=-1.0f;
+					if( compact&&std::string(compact)=="1"&&std::sscanf(zone,"ramp:%u:%u:%f",&k0,&k1,&rampScale)==3&&
+						k1>k0&&std::isfinite(rampScale)&&rampScale>=0.0f&&rampScale<=4.0f ) {char prefix[160];
+						std::snprintf(prefix,sizeof(prefix),"#define RISE_VREMAN_RAMP_K0 %d\n#define RISE_VREMAN_RAMP_K1 %d\n"
+							"#define RISE_VREMAN_RAMP_SCALE ((float)%.9g)\n",static_cast<int>(k0),static_cast<int>(k1),
+							static_cast<double>(rampScale));
 						librarySource=prefix+librarySource;}}
 				NSError* libraryError=nil;id<MTLLibrary> library=[device newLibraryWithSource:
 					[NSString stringWithUTF8String:librarySource.c_str()] options:options error:&libraryError];
@@ -513,7 +574,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				const char* compactOption=std::getenv("RISE_FIRE_COMPACT_VISCOUS_STENCIL");
 				compactViscousStencil=compactOption&&std::string(compactOption)=="1";
 				if( compactViscousStencil ) {
-					stress=pipeline("build_stress_compact");faceForce=pipeline("build_face_force_compact");
+					stress=pipeline(FireProductionForceMetalNearWallWale()?"build_stress_compact_wale":
+						"build_stress_compact");faceForce=pipeline("build_face_force_compact");
 					fixedStress=pipeline("build_stress_fixed_mu_compact");
 				}
 			}
@@ -1868,6 +1930,22 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		FireProductionResidentForceDiagnostics unpublishedDiagnostics;
 		return AdvanceFireProductionFrozenForceMetalImpl(forceRequest,false,&divergenceTargetPerS,
 			&result,0,unpublishedForce,unpublishedDiagnostics,error);
+	}
+	bool FireProductionForceMetalNearWallWale()
+	{
+		static const bool selected=[](){const char* option=std::getenv("RISE_FIRE_NEAR_WALL_WALE");
+			const char* compact=std::getenv("RISE_FIRE_COMPACT_VISCOUS_STENCIL");
+			return option&&std::string(option)=="1"&&compact&&std::string(compact)=="1";}();
+		return selected;
+	}
+	float FireProductionForceMetalHyperVreman()
+	{
+		static const float selected=[](){const char* option=std::getenv("RISE_FIRE_HYPER_VREMAN");
+			const char* compact=std::getenv("RISE_FIRE_COMPACT_VISCOUS_STENCIL");
+			if( !option||!compact||std::string(compact)!="1" ) return 0.0f;
+			char* end=nullptr;const float value=std::strtof(option,&end);
+			return end!=option&&*end=='\0'&&std::isfinite(value)&&value>0.0f&&value<=1.0f?value:0.0f;}();
+		return selected;
 	}
 	bool FireProductionForceMetalCompactViscousStencil()
 	{
