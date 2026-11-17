@@ -112,9 +112,9 @@ static void Sampler() {
     }
 }
 static void ScaledLimits() {
-    for(Scalar alpha : {.4,1e-200}) for(Scalar eta : {2./3,1.5,1e-150})
-    for(Scalar technique : {0.,.99}) for(bool radiance : {false,true}) {
-        const auto draw=MS::Model(Unit(.6,.2,1),alpha,alpha,eta).Draw(.25,.25,.25,technique,radiance);
+    for(Scalar alpha : {0.,.4,1e-200}) for(Scalar eta : {2./3,1.,1.5,1e-150})
+    for(Scalar technique : {0.,.99}) for(Scalar lobe : {0.,.25}) for(bool radiance : {false,true}) {
+        const auto draw=MS::Model(Unit(.6,.2,1),alpha,alpha,eta).Draw(.25,.25,lobe,technique,radiance);
         if(!draw.valid) continue;
         Check(draw.f==std::scalbn(draw.fMantissa,draw.fExponent),"sample scaled value represents its aggregate BSDF");
         Check(draw.pdf==std::scalbn(draw.pdfMantissa,draw.pdfExponent),"sample scaled density represents its aggregate PDF");

@@ -375,9 +375,9 @@ namespace RISE
 		/// Alpha values are GGX widths in (0,1], not perceptual roughness. Both zero
 		/// means smooth; a single zero width (a singular 1D distribution) is
 		/// unsupported. This is SINGLE scattering: rejected micronormals are
-		/// null events, not resampled. Multiple scattering and material/IOR
-		/// stack integration are separate work; existing materials do not use
-		/// this kernel yet. Shared scalar math is suitable for Pel/NM/HWSS.
+		/// null events, not resampled. RoughDielectricEnergy adds compensation;
+		/// RoughDielectricMaterial handles material/IOR stack integration.
+		/// Shared scalar math is suitable for Pel/NM/HWSS.
 		namespace RoughDielectric
 		{
 			struct Evaluation
@@ -745,6 +745,7 @@ namespace RISE
 				if( result.transmission ? result.wo.z >= 0 : result.wo.z <= 0 ) return result;
 				if( result.delta ) {
 					result.pdf = result.transmission ? transmission : F;
+					result.pdfMantissa = std::frexp(result.pdf,&result.pdfExponent);
 					PositiveProduct weight;
 					if( result.transmission && radiance ) { weight.Divide(eta); weight.Divide(eta); }
 					result.weight = weight.Value();
@@ -752,6 +753,7 @@ namespace RISE
 					value.Multiply(result.pdf); value.Divide(std::abs(result.wo.z));
 					if( result.transmission && radiance ) { value.Divide(eta); value.Divide(eta); }
 					result.f = value.Value();
+					result.fMantissa = value.mantissa; result.fExponent = value.exponent;
 					result.valid = result.pdf > 0;
 				} else {
 					const Evaluation evaluated = EvaluateWithNormal( wi, result.wo, m, ax, ay, eta, radiance );
