@@ -89,7 +89,8 @@ $ExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
         'CompositeEnergyConservationTest', 'LayeredWhiteFurnaceTest',
         'VolumeAbsorptionAttenuationTest', 'MediumInsideOutsideInvariantTest',
         'ExteriorIndexInvarianceTest', 'SSSExteriorIndexInvarianceTest',
-        'CstDeriveGoldenTest', 'AgentViewModeRenderTest', 'AgentProposeRenderTest'
+        'CstDeriveGoldenTest', 'AgentViewModeRenderTest', 'AgentProposeRenderTest',
+        'UnlistedEmitterWeightTest'
     ),
     [System.StringComparer]::Ordinal
 )

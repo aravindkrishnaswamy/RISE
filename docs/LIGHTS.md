@@ -157,8 +157,15 @@ SMS / VCM test directories:
 - **Area lights with RIS: MIS off, BSDF emission suppressed.** The
   exact finite-M RIS technique density requires marginalising over
   all M-candidate sets — not closed-form. We set `w_nee = 1` and
-  suppress the BSDF-hit emitter contribution in
-  `PathTracingShaderOp` to avoid double-counting. Adding RIS to a
+  suppress the BSDF-hit emitter contribution on the hit side
+  (`PathTracingIntegrator`; `EmissionShaderOp` for a path-tracer
+  continuation), for every luminary RIS can select, to avoid
+  double-counting. A hit light sampling could not have made (a
+  luminary with no entry in the light table, or the object the ray
+  scattered from) keeps full weight: DL-633. The frozen legacy
+  shader-op chain keeps its older weight on its own rays (not after
+  a volume scatter, where RayCaster's shared continuation applies the
+  new one). Adding RIS to a
   new code path means BOTH pieces, or you get the symptom in
   [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md):
   scenes 1.5–2× too bright in the well-lit regions, fireflies
@@ -181,11 +188,19 @@ SMS / VCM test directories:
 
 When the shading object is itself a luminaire (e.g. an emitting
 panel reflecting off its own back side), `LightSampler` excludes
-that entry from selection: zero resampling weight under RIS;
-rejection draw with a `(1 − p_self)` correction under plain alias.
-Self-illumination from a flat or convex emitter is physically zero,
-so the sample would be wasted regardless. Skipping it is purely a
-variance optimisation — correctness is preserved either way.
+that entry from selection: zero resampling weight under RIS; under
+the alias table or the light BVH a single draw is made and a self
+draw contributes nothing (no retry, no correction factor, so every
+other light keeps its selection probability). Self-illumination from
+a flat or convex emitter is zero, so nothing is lost there. A
+non-convex emitter does light itself; that light is estimated only by
+the scattered ray that returns to the same object, and the hit side
+must give it full weight. The path tracer does (`pNEESelfObject` in
+its loops, `RAY_STATE::pNEESelfObject` across a `RayCaster` hand-off;
+DL-633; before that fix one self-lighting object read 0.855 of the
+same walls as two objects, 0.667 under RIS). BDPT and VCM select
+lights without self-exclusion and need no such rule. The frozen
+legacy shader-op chain does not carry the object.
 
 ### 5.6 Light-sample Russian roulette
 

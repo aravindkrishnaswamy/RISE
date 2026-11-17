@@ -1396,6 +1396,26 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   (`A`/`B`/`C`/`D`/`F`/`H`/`P`/`Q`; `T` prints SDF sampler ns/sample, not a
   gate), spp, repeats; `DL459_SDF_M` overrides the chi-square count.
 
+- `UnlistedEmitterWeightTest` (DL-633 / DL-635, extended tier, about 4 minutes): an emitter
+  hit that light sampling could not have made keeps full weight. Section 0
+  asserts the premise (light sampling alone reaches the kept emitter and not
+  the dropped one). Section 1: a 2x2 emitter whose exitance is discs about the
+  corners of the light table's 10x10 sample grid (95% of the quad emits, every
+  sample reads zero) against the same discs about the cell centres and a
+  closed form, in PT RGB (also under light RIS), BDPT RGB (also with other
+  lights listed), VCM RGB, PT spectral, the HWSS loop's hand-off to the NM body,
+  the HWSS loop's own emitter block (an emitter with a black base material;
+  also under RIS) and BDPT spectral. Section 2: two emitters, one hidden behind
+  the other, PT against a closed form. Section 3: the dropped emitter behind a
+  specular caster, SMS on against SMS off, through a glass slab and by
+  reflection in a polished plate (the HWSS loop's gate, and its no-BSDF
+  hand-off with no chain record). Section 4: two facing emissive walls as one
+  object against the same walls as two objects, with the light BVH, the alias
+  table and RIS. Section 5: a subsurface wall whose emitters are shaded by the
+  emission op against the integrator's own block. The frozen legacy shader-op
+  chain's rows are printed, not gated. 61/0; 35/26 on the parent commit. The
+  header lists what no row covers.
+
 - `EmitterAverageExitanceTest` (DL-431): the luminary's average exitance
   (light-selection weight, photon power / budget) over its own surface points.
   Row 1 renders the wall-and-camera rig with `1.5 (P.x^2+P.y^2)` (zero at the

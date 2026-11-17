@@ -21,7 +21,7 @@ Before prioritizing new work, note what is **complete in production** as of Nove
 
 ## Tier 0 — Immediate Bug Fixes, Active Correctness Debts & Parity Quick Wins (**COMPLETED 2026-11-12**)
 
-All 14 Tier 0 items are **complete, red-proven, and verified green** on `master` (leaving **0 active unparked** items in [DEBT_LEDGER.md](DEBT_LEDGER.md)):
+All 14 Tier 0 items are **complete, red-proven, and verified green** on `master` (leaving **0 active unparked** items in [DEBT_LEDGER.md](DEBT_LEDGER.md) on that date; DL-633..DL-635 were opened 2026-11-16):
 
 ### 0.1 Code & Scene Hygiene Bugs (**COMPLETED**)
 

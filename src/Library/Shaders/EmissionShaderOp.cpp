@@ -13,6 +13,9 @@
 
 #include "pch.h"
 #include "EmissionShaderOp.h"
+#include "../Lights/LightSampler.h"
+#include "../Utilities/OptimalMISAccumulator.h"
+#include "../Utilities/MISWeights.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): SDF emitters get full BSDF weight
 
@@ -54,11 +57,24 @@ void EmissionShaderOp::PerformOperation(
 		// (LambertianEmitter: `Dot(out, N) > 0` is a side-of-surface
 		// test that must be unaffected by bump perturbation).
 		c = pEmitter->emittedRadiance( ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal );
+		// DL-633: light solo blacks out every other emitter for a marked ray
+		// (`emitterHitFollowsLightTable`), before any geometry or MIS test, as
+		// the path tracer's own PART 1 does.  (The frozen legacy chain's rays
+		// are left as they were.)
+		if( rs.emitterHitFollowsLightTable ) {
+			const LightSampler* pSoloLS = caster.GetLightSampler();
+			if( pSoloLS && pSoloLS->IsSoloActive() && !pSoloLS->IsSoloTargetLuminary( ri.pObject ) ) {
+				c = RISEPel( 0.0 );
+				return;
+			}
+		}
 
 		// MIS weight for BSDF-sampled emission.
 		// When bsdfPdf > 0, this ray was traced via BSDF importance sampling.
 		// We weight the emission by w_bsdf = p_bsdf² / (p_bsdf² + p_light²).
 		// When bsdfPdf == 0 (view ray or delta), full weight (no MIS).
+		// What p_light is depends on who produced the ray: see the two
+		// branches on `rs.emitterHitFollowsLightTable` below (DL-633).
 		// An emitter on geometry that cannot be uniformly area-sampled (CanBeAreaLight()
 		// false, OR NO geometry at all -- e.g. a csg_object, see LuminaryManager::
 		// AddToLuminaryList) is NOT in the NEE light set (LuminaryManager skips it), so
@@ -103,11 +119,49 @@ void EmissionShaderOp::PerformOperation(
 				{
 					const Scalar dist = Vector3Ops::Magnitude(
 						Vector3Ops::mkVector3( ri.geometric.ptIntersection, ri.geometric.ray.origin ) );
-					const Scalar p_light = (dist * dist) / (area * cosLight);
 					const Scalar p_bsdf = misPartnerPdf;
-					if( p_bsdf > 0 ) {
-						const Scalar w_bsdf = (p_bsdf * p_bsdf) / (p_bsdf * p_bsdf + p_light * p_light);
-						c = c * w_bsdf;
+					if( !rs.emitterHitFollowsLightTable ) {
+						// A ray from the legacy shader-op chain.  That chain is frozen
+						// and keeps its weight as it was: the partner density leaves
+						// out the light-selection probability its NEE op applies, so
+						// a hit is under-weighted when the light table has more than
+						// one entry, and a hit light sampling could not have made is
+						// weighted as if it could (docs/DEBT_LEDGER.md, "Known issues
+						// in frozen code").
+						const Scalar p_light = (dist * dist) / (area * cosLight);
+						if( p_bsdf > 0 ) {
+							const Scalar w_bsdf = (p_bsdf * p_bsdf) / (p_bsdf * p_bsdf + p_light * p_light);
+							c = c * w_bsdf;
+						}
+					} else {
+						// DL-633: a ray from the path tracer's subsurface continuation
+						// or RayCaster's volume continuation, shaded here because the
+						// hit object's shader does not name `pathtracing_shaderop`.
+						// Weight it as the path tracer weights its own emitter hits
+						// (PathTracingIntegrator.cpp PART 1): the partner density
+						// carries the probability light sampling gave THIS emitter
+						// at the producing vertex, which is zero when the luminary is
+						// not in the light table, when the ray returned to the object
+						// that vertex's light sampling excluded, or with no light
+						// sampler; a zero keeps full weight; and light RIS takes a
+						// selectable emitter whole (its NEE weight is 1).
+						const LightSampler* pLS = caster.GetLightSampler();
+						const bool bSelfHit = rs.pNEESelfObject && ri.pObject == rs.pNEESelfObject;
+						const Scalar pdfSelect = ( pLS && !bSelfHit ) ? pLS->CachedPdfSelectLuminary(
+							*ri.pObject, ri.geometric.ray.origin, ri.geometric.ray.Dir() ) : Scalar( 0 );
+						const Scalar p_light = pdfSelect * (dist * dist) / (area * cosLight);
+						if( p_bsdf > 0 && p_light > 0 ) {
+							if( pLS->IsRISActive() ) {
+								c = c * Scalar( 0 );
+							} else if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() ) {
+								// The NEE partner uses the trained weight once it is ready.
+								c = c * MISWeights::OptimalMIS2Weight( p_bsdf, p_light,
+									rc.pOptimalMIS->GetAlpha( ri.geometric.rast.x, ri.geometric.rast.y ) );
+							} else {
+								const Scalar w_bsdf = (p_bsdf * p_bsdf) / (p_bsdf * p_bsdf + p_light * p_light);
+								c = c * w_bsdf;
+							}
+						}
 					}
 				}
 			}
@@ -141,6 +195,13 @@ Scalar EmissionShaderOp::PerformOperationNM(
 	if( pEmitter && rs.considerEmission ) {
 		// Geometric normal: see RGB path above for rationale.
 		c = pEmitter->emittedRadianceNM( ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal, nm );
+		// DL-633: light solo, as in the RGB twin above.
+		if( rs.emitterHitFollowsLightTable ) {
+			const LightSampler* pSoloLS = caster.GetLightSampler();
+			if( pSoloLS && pSoloLS->IsSoloActive() && !pSoloLS->IsSoloTargetLuminary( ri.pObject ) ) {
+				return 0;
+			}
+		}
 
 		// MIS weight for BSDF-sampled emission (spectral)
 		// An emitter on geometry that cannot be uniformly area-sampled (CanBeAreaLight()
@@ -165,11 +226,49 @@ Scalar EmissionShaderOp::PerformOperationNM(
 				{
 					const Scalar dist = Vector3Ops::Magnitude(
 						Vector3Ops::mkVector3( ri.geometric.ptIntersection, ri.geometric.ray.origin ) );
-					const Scalar p_light = (dist * dist) / (area * cosLight);
 					const Scalar p_bsdf = misPartnerPdf;
-					if( p_bsdf > 0 ) {
-						const Scalar w_bsdf = (p_bsdf * p_bsdf) / (p_bsdf * p_bsdf + p_light * p_light);
-						c = c * w_bsdf;
+					if( !rs.emitterHitFollowsLightTable ) {
+						// A ray from the legacy shader-op chain.  That chain is frozen
+						// and keeps its weight as it was: the partner density leaves
+						// out the light-selection probability its NEE op applies, so
+						// a hit is under-weighted when the light table has more than
+						// one entry, and a hit light sampling could not have made is
+						// weighted as if it could (docs/DEBT_LEDGER.md, "Known issues
+						// in frozen code").
+						const Scalar p_light = (dist * dist) / (area * cosLight);
+						if( p_bsdf > 0 ) {
+							const Scalar w_bsdf = (p_bsdf * p_bsdf) / (p_bsdf * p_bsdf + p_light * p_light);
+							c = c * w_bsdf;
+						}
+					} else {
+						// DL-633: a ray from the path tracer's subsurface continuation
+						// or RayCaster's volume continuation, shaded here because the
+						// hit object's shader does not name `pathtracing_shaderop`.
+						// Weight it as the path tracer weights its own emitter hits
+						// (PathTracingIntegrator.cpp PART 1): the partner density
+						// carries the probability light sampling gave THIS emitter
+						// at the producing vertex, which is zero when the luminary is
+						// not in the light table, when the ray returned to the object
+						// that vertex's light sampling excluded, or with no light
+						// sampler; a zero keeps full weight; and light RIS takes a
+						// selectable emitter whole (its NEE weight is 1).
+						const LightSampler* pLS = caster.GetLightSampler();
+						const bool bSelfHit = rs.pNEESelfObject && ri.pObject == rs.pNEESelfObject;
+						const Scalar pdfSelect = ( pLS && !bSelfHit ) ? pLS->CachedPdfSelectLuminary(
+							*ri.pObject, ri.geometric.ray.origin, ri.geometric.ray.Dir() ) : Scalar( 0 );
+						const Scalar p_light = pdfSelect * (dist * dist) / (area * cosLight);
+						if( p_bsdf > 0 && p_light > 0 ) {
+							if( pLS->IsRISActive() ) {
+								c = c * Scalar( 0 );
+							} else if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() ) {
+								// The NEE partner uses the trained weight once it is ready.
+								c = c * MISWeights::OptimalMIS2Weight( p_bsdf, p_light,
+									rc.pOptimalMIS->GetAlpha( ri.geometric.rast.x, ri.geometric.rast.y ) );
+							} else {
+								const Scalar w_bsdf = (p_bsdf * p_bsdf) / (p_bsdf * p_bsdf + p_light * p_light);
+								c = c * w_bsdf;
+							}
+						}
 					}
 				}
 			}

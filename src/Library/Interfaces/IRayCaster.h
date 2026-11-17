@@ -70,6 +70,22 @@ namespace RISE
 			unsigned int depth;					///< Number of times the ray has bounced
 			Scalar importance;					///< Importance of this ray
 			bool considerEmission;				///< Should shader consider direct emission
+			//! DL-633: true when this ray's producer wants an emitter hit
+			//! shaded by `EmissionShaderOp` weighted the way the path tracer
+			//! weights its own: the partner density carries the light-
+			//! selection probability, a hit light sampling cannot make (not
+			//! in the light table, or `pNEESelfObject`) keeps full weight,
+			//! and light RIS takes a selectable emitter whole.  Set by the
+			//! path tracer's subsurface continuations and RayCaster's volume
+			//! continuations.  The legacy shader-op producers leave it false:
+			//! that chain is frozen and keeps its pre-DL-633 weight -- except
+			//! after a volume scatter, because RayCaster's volume continuation
+			//! marks its ray whoever cast it (its partner is RayCaster's own
+			//! volume NEE, which does use the selection probability).
+			//! Placed beside `considerEmission` so it occupies that bool's
+			//! existing padding before `type` (DL-103's copy-cost ruling);
+			//! `pNEESelfObject` below is what grows `RAY_STATE`, by 8 bytes.
+			bool emitterHitFollowsLightTable;
 			RayType type;						///< The type of ray
 			//! The TRUE density the continuation direction was drawn from
 			//! (0 = not set / delta).  This is the throughput denominator:
@@ -213,16 +229,26 @@ namespace RISE
 			//! only by PT's SSS exit continuations.
 			const IObject* pContactTarget;
 			const IObject* pContactSource;
+
+			//! DL-633: the object the vertex that produced this ray stood
+			//! on, when that vertex's light sampling EXCLUDED it (LightSampler
+			//! never selects the luminary it is shading).  A hit on the same
+			//! object then has no light-sampling partner and keeps full
+			//! weight.  Null when nothing was excluded (a volume vertex, a
+			//! camera ray) and from every producer that predates the field.
+			const IObject* pNEESelfObject;
+
 			Point3 contactPoint;				///< DL-408: the launch's surface point (valid when pContactTarget)
 
-			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ),
+			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), emitterHitFollowsLightTable( false ), type( eRayView ), bsdfPdf( 0 ),
 				bsdfMisPdf( -1 ),
 				diffuseBounces( 0 ), glossyBounces( 0 ), transmissionBounces( 0 ), translucentBounces( 0 ),
 				glossyFilterWidth( 0 ), volumeBounces( 0 ),
 				smsPassedThroughSpecular( false ), smsHadNonSpecularShading( false ),
 				chainHasNEEOp( true ), chainHasBsdfContinuationOp( true ),
 				castRRCompensation( 1.0 ),
-				pContactTarget( 0 ), pContactSource( 0 ), contactPoint( 0, 0, 0 ) {}
+				pContactTarget( 0 ), pContactSource( 0 ),
+				pNEESelfObject( 0 ), contactPoint( 0, 0, 0 ) {}
 
 			//! The MIS-partner density to weight with -- see `bsdfMisPdf`.
 			Scalar MisPartnerPdf() const

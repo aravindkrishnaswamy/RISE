@@ -575,6 +575,27 @@ namespace
 			IRayCaster::RAY_STATE::eRaySpecular;
 	}
 
+	//! Is this hit on an emitter that light sampling cannot draw at all?
+	//! `LightSampler::Prepare` leaves a luminary out of the light table when
+	//! its average exitance reads zero -- 100 stratified samples, or the
+	//! emitter's own construction-time average when those all agree -- so
+	//! emission confined to the gaps between the samples is left out while
+	//! the surface still emits.  Nothing that draws from the table then
+	//! reaches it: NEE, light subpaths, and SMS, which draws its emitter
+	//! through SampleLight().  Such a hit has its only estimator in the
+	//! scattered ray that found it (tests/UnlistedEmitterWeightTest.cpp).
+	//! With no light sampler there is no table, and the answer is yes.
+	static inline bool PTEmitterOutsideLightTable(
+		const Implementation::LightSampler* pLS,
+		const RayIntersection& ri
+		)
+	{
+		if( !ri.pObject || !ri.pMaterial || !ri.pMaterial->GetEmitter() ) {
+			return false;
+		}
+		return !pLS || !pLS->IsLuminaryInLightTable( ri.pObject );
+	}
+
 	//! DL-295 (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 9):
 	//! is the specular chain this scatter extends one that SMS can NEVER
 	//! have estimated?  Returns the value of the "SMS-uncovered chain"
@@ -1852,7 +1873,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	Scalar castRRCompensation_,
 	bool smsChainUncovered_initial,
 	const SMSChainRecord* pSMSChain_initial,
-    bool smsIgnoreExtended_
+    bool smsIgnoreExtended_,
+	const IObject* pNEESelfObject_
 	) const
 {
 	using Traits = SpectralValueTraits<Tag>;
@@ -1875,6 +1897,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// made the emitter-hit weight use the guided pdf against an NEE arm
 	// that had used the raw one -- measured +44 % on the row-(g) fixture.
 	Scalar bsdfMisPdf = bsdfMisPdf_ < 0 ? bsdfPdf : bsdfMisPdf_;
+	// The object the last scattering vertex stood on, when that vertex is
+	// one of this loop's own surface vertices.  Light sampling never selects
+	// the luminary it is shading (LightSampler's self-exclusion), so a
+	// scattered ray that comes back to the SAME object -- a non-convex
+	// emitter lighting itself -- is the only estimator of that light and
+	// keeps full weight.  Null for a volume vertex (its NEE excludes
+	// nothing).  At entry it is the caller's (`pNEESelfObject_`): a
+	// continuation handed through RayCaster::CastRay names the object
+	// its own light sampling excluded in RAY_STATE.
+	const IObject* pNEESelfObject = pNEESelfObject_;
 
 	RayIntersection ri( firstHit );
 	Ray currentRay = ri.geometric.ray;
@@ -2368,6 +2400,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// VolumeEnvFurnaceTest's floor-in-fog furnace.
 					bsdfPdf = effectivePdf;
 					bsdfMisPdf = phasePdf;
+					pNEESelfObject = 0;
 					// DL-84 (fixed): the optimal-MIS moment's numerator must be
 					// the FULL vertex-local integrand at THIS vertex, matching
 					// its own denominator (`bsdfPdf` above).  A phase function
@@ -2821,7 +2854,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// `smsChain` is engaged only where SMS is deterministic
 				// (SplitSuppressionExact); an extended loop engages it
 				// always and classifies with the canonical predicate.
-				bool smsSuppressThisHit = smsSuppressEmission;
+				//
+				// SMS draws its emitter through the light table
+				// (LightSampler::SampleLight).  A luminary the table left out
+				// is never estimated by SMS whatever the chain, so this hit
+				// is kept (tests/UnlistedEmitterWeightTest.cpp, section 3).
+				// Asked only where SMS would suppress.
+				bool smsSuppressThisHit = smsSuppressEmission && !PTEmitterOutsideLightTable( pLS, ri );
 				// Phase 3: per-component (RGB) / per-wavelength (NM) keep
 				// mask; 1 where PT keeps the component, 0 where SMS's
 				// canonical predicate owns this chain in that domain.
@@ -2945,7 +2984,29 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									ri.geometric.ptIntersection,
 									ri.geometric.ray.origin ) );
 
-							if( pLS && pLS->IsRISActive() )
+							// The probability light sampling gave THIS emitter at the
+							// scattering vertex.  Zero means it could not select it there
+							// at all, and this hit is then the only estimator of the
+							// emitter's light and keeps full weight:
+							//  - the luminary is not in the light table (see
+							//    PTEmitterOutsideLightTable);
+							//  - the ray came back to the object it scattered from, which
+							//    light sampling excludes (`pNEESelfObject`);
+							//  - there is no light sampler.
+							// (The light BVH never reads zero for a luminary in the table:
+							// every mesh luminary gets a full-sphere orientation cone.)
+							// All three used to be weighted as if the strategy existed
+							// (a selection probability of 1 substituted for a dropped
+							// luminary or a missing sampler; the full table probability
+							// for a self hit), and the first two were zeroed outright
+							// under light RIS: tests/UnlistedEmitterWeightTest.cpp.
+							const bool bSelfHit = pNEESelfObject && ri.pObject == pNEESelfObject;
+							const Scalar pdfSelect = ( pLS && !bSelfHit ) ? pLS->CachedPdfSelectLuminary(
+								*ri.pObject,
+								ri.geometric.ray.origin,
+								ri.geometric.ray.Dir() ) : Scalar( 0 );
+
+							if( pLS && pLS->IsRISActive() && pdfSelect > 0 )
 							{
 								emissionMiWeight = 0.0;
 								// Pel zeroed via `emission * 0.0`; NM via a
@@ -2959,18 +3020,6 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							}
 							else
 							{
-								Scalar pdfSelect = 1.0;
-								if( pLS )
-								{
-									pdfSelect = pLS->CachedPdfSelectLuminary(
-										*ri.pObject,
-										ri.geometric.ray.origin,
-										ri.geometric.ray.Dir() );
-									if( pdfSelect <= 0 ) {
-										pdfSelect = 1.0;
-									}
-								}
-
 								const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
 
 								// DL-124: fold `escapeTr` in here too -- when the
@@ -2988,7 +3037,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								{
 									const Scalar fLum = PTPositiveMagnitude( rawEmission * bsdfTimesCos * escapeTr );
 									const Scalar f2 = fLum * fLum;
-									if( f2 > 0 && bsdfPdf > 0 )
+									if( f2 > 0 && bsdfPdf > 0 && p_nee > 0 )
 									{
 										const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->Accumulate(
 											rast.x, rast.y,
@@ -3003,7 +3052,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								// pair sum to one under guiding.  Training
 								// above keeps the true sampling density.
 								Scalar w_bsdf = 1.0;
-								if( bsdfMisPdf > 0 )
+								if( bsdfMisPdf > 0 && p_nee > 0 )
 								{
 									if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
 									{
@@ -3330,6 +3379,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// path, so the sampling density and the MIS-partner
 										// density coincide.
 										rs2.bsdfMisPdf = bssrdf.cosinePdf;
+										// DL-633: the entry point's light sampling above excluded
+										// this object, and an emitter the exit ray reaches is
+										// weighted by the light-table rule whichever op shades it.
+										rs2.pNEESelfObject = ri.pObject;
+										rs2.emitterHitFollowsLightTable = true;
 										rs2.type = IRayCaster::RAY_STATE::eRayDiffuse;
 										rs2.diffuseBounces = diffuseBounces;
 										rs2.glossyBounces = glossyBounces;
@@ -3617,6 +3671,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// path, so the sampling density and the MIS-partner
 										// density coincide.
 										rs2.bsdfMisPdf = bssrdf.cosinePdf;
+										// DL-633: the entry point's light sampling above excluded
+										// the walk's EXIT object (after a DL-370 crossing, a
+										// touching neighbour, not `ri.pObject`), and an emitter
+										// the exit ray reaches is weighted by the light-table
+										// rule whichever op shades it.
+										rs2.pNEESelfObject = pSSSExitObject;
+										rs2.emitterHitFollowsLightTable = true;
 										rs2.type = IRayCaster::RAY_STATE::eRayDiffuse;
 										rs2.diffuseBounces = diffuseBounces;
 										rs2.glossyBounces = glossyBounces;
@@ -3826,6 +3887,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				importance = rs2.importance;
 				bsdfPdf = rs2.bsdfPdf;
 				bsdfMisPdf = rs2.bsdfMisPdf;
+				pNEESelfObject = ri.pObject;
 				bsdfTimesCos = Traits::zero();
 				considerEmission = nextConsiderEmissionSPF;
 				smsGuardedEmission = false;
@@ -4795,6 +4857,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			importance = rs2.importance;
 			bsdfPdf = effectiveBsdfPdf;
 			bsdfMisPdf = misBsdfPdf;
+			pNEESelfObject = ri.pObject;
 			bsdfTimesCos = bsdfTimesCosVal;
 			considerEmission = nextConsiderEmission;
 			// DL-372: the SMS guard above is the only rule that turns it off
@@ -4937,7 +5000,8 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	bool smsHadNonSpecularShading_,
 	PixelAOV* pAOV,
 	Scalar bsdfMisPdf_,
-	Scalar castRRCompensation_
+	Scalar castRRCompensation_,
+	const IObject* pNEESelfObject_
 	) const
 {
 	return IntegrateFromHitTemplated<PelTag>(
@@ -4947,7 +5011,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		glossyBounces_, transmissionBounces_, translucentBounces_,
 		volumeBounces_, glossyFilterWidth_, smsPassedThroughSpecular_,
 		smsHadNonSpecularShading_, pAOV, nullptr, PelTag{}, bsdfMisPdf_,
-		castRRCompensation_ );
+		castRRCompensation_, false, nullptr, false, pNEESelfObject_ );
 }
 
 
@@ -5806,7 +5870,8 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 	Scalar castRRCompensation_,
 	bool smsChainUncovered_,
 	const SMSChainRecord* pSMSChain_,
-    bool smsIgnoreExtended_
+    bool smsIgnoreExtended_,
+	const IObject* pNEESelfObject_
 	) const
 {
     const SMSLegacyModeScope smsMode(rc, smsIgnoreExtended_);
@@ -5826,7 +5891,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 		glossyBounces, transmissionBounces, translucentBounces,
 		volumeBounces, glossyFilterWidth, smsPassedThroughSpecular_initial,
 		smsHadNonSpecularShading_initial, pAOV, nullptr, NMTag{ nm }, bsdfMisPdf_,
-		castRRCompensation_, smsChainUncovered_, pSMSChain_, smsIgnoreExtended_ );
+		castRRCompensation_, smsChainUncovered_, pSMSChain_, smsIgnoreExtended_, pNEESelfObject_ );
 }
 
 
@@ -5865,7 +5930,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	PixelAOV* pAOV,
 	Scalar bsdfMisPdf_,
 	Scalar castRRCompensation_,
-	const IORStack* preseededOriginLanes_
+	const IORStack* preseededOriginLanes_,
+	const IObject* pNEESelfObject_
 	) const
 {
     // Phase 4 (docs/SMS_EXTENDED_DESIGN.md, "Phase 4 implementation
@@ -5893,6 +5959,16 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// separately and used for every weight below.  Negative = "same as
 	// bsdfPdf" (every camera-ray and legacy-rasterizer entry).
 	Scalar bsdfMisPdf = bsdfMisPdf_ < 0 ? bsdfPdf : bsdfMisPdf_;
+	// The object the last scattering vertex stood on, when that vertex is
+	// one of this loop's own surface vertices.  Light sampling never selects
+	// the luminary it is shading (LightSampler's self-exclusion), so a
+	// scattered ray that comes back to the SAME object -- a non-convex
+	// emitter lighting itself -- is the only estimator of that light and
+	// keeps full weight.  Null for a volume vertex (its NEE excludes
+	// nothing).  At entry it is the caller's (`pNEESelfObject_`): a
+	// continuation handed through RayCaster::CastRay names the object
+	// its own light sampling excluded in RAY_STATE.
+	const IObject* pNEESelfObject = pNEESelfObject_;
 
 	// Fast-mode albedo/normal fallback for callers that begin from a
 	// pre-computed hit. Root camera-ray entry points normally record this
@@ -5951,7 +6027,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// `startDepth` -- forward the cast-level RR
 						// compensation (see this function's own trailing
 						// parameter doc).
-						castRRCompensation_ , false, nullptr, smsLegacyHandOff);
+						castRRCompensation_ , false, nullptr, smsLegacyHandOff, pNEESelfObject);
 			}
 		}
 		return;
@@ -6008,7 +6084,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						false, false, pAOV, bsdfMisPdf,
 						// DL-196: this delegation IS `firstHit` at
 						// `startDepth` too (see the Fallback 1 site above).
-						castRRCompensation_ , false, nullptr, smsLegacyHandOff);
+						castRRCompensation_ , false, nullptr, smsLegacyHandOff, pNEESelfObject);
 				}
 			}
 			return;
@@ -6444,7 +6520,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 									// HWSS geometry is hero-driven.  Let only the hero
 									// continuation populate the shared, wavelength-independent
 									// Accurate guide so companion paths cannot race to define it.
-									w == 0 ? pAOV : 0 , -1, 1, false, nullptr, smsLegacyHandOff);
+									w == 0 ? pAOV : 0 , -1, 1, false, nullptr, smsLegacyHandOff,
+									// DL-633: this ray leaves a VOLUME scatter, whose NEE
+									// excluded no object (the Pel/NM loop resets its own
+									// `pNEESelfObject` to 0 at a volume vertex likewise).
+									nullptr);
 								break;
 							}
 
@@ -6722,12 +6802,16 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				// (`bPassedThroughSpecular`), so the delegated PART 1 asks the
 				// predicate in this lane's domain instead of dropping the hit
 				// -- the Pel/NM loop's `smsGuardedEmission` rule.  A legacy
-				// bundle also reopens the gate when it has an exact Snell record.
+				// bundle also reopens the gate when it has an exact Snell record,
+				// and any bundle reopens it for an emitter outside the light
+				// table, which SMS never supplies (DL-633): with no record the
+				// delegated body would otherwise never see that the guard closed it.
 				const bool laneAnchor = bSMSExtendedLoopHW ? smsLaneAnchor[w] : bSMSAnchor;
 				hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
 					rc, rast, ri, swl.lambda[w], scene, caster, sampler,
 					pRadianceMap, depth, iorStack, bsdfPdf, 0,
-					( bSMSExtendedLoopHW || smsChainHWSS ) ? ( considerEmission || smsGuardedEmissionHW ) : considerEmission,
+					( bSMSExtendedLoopHW || smsChainHWSS || ( smsGuardedEmissionHW && PTEmitterOutsideLightTable( pLS, ri ) ) ) ?
+						( considerEmission || smsGuardedEmissionHW ) : considerEmission,
 					importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
 					translucentBounces, volumeBounces, glossyFilterWidth,
@@ -6743,7 +6827,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					( bSMSExtendedLoopHW || smsChainHWSS ) && bPassedThroughSpecular, laneAnchor, pAOV, misBsdfPdfComp[w],
 					1, bSMSChainUncovered,
 					( smsChainHWSS && ( !bSMSExtendedLoopHW || laneAnchor ) ) ? &*smsChainHWSS : nullptr,
-					smsLegacyHandOff);
+					smsLegacyHandOff, pNEESelfObject);
 			}
 			break;
 		}
@@ -6788,10 +6872,13 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
                     hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
 						rc, rast, ri, swl.lambda[w], scene, caster, sampler,
 						pRadianceMap, depth, laneStack, bsdfPdf, 0,
-						( bSMSExtendedLoopHW || smsChainHWSS ) ? ( considerEmission || smsGuardedEmissionHW ) : considerEmission,
+						( bSMSExtendedLoopHW || smsChainHWSS || ( smsGuardedEmissionHW && PTEmitterOutsideLightTable( pLS, ri ) ) ) ?
+							( considerEmission || smsGuardedEmissionHW ) : considerEmission,
 						importance, rayType,
 						diffuseBounces, glossyBounces, transmissionBounces,
 						translucentBounces, volumeBounces, glossyFilterWidth,
+						// (The gate argument reopens for an emitter outside the light
+						// table as at the no-BSDF hand-off above: DL-633.)
 						// SMS double-count guard — identical reasoning to the no-BSDF
 						// (glass) delegation above: forward whether an SMS anchor
 						// preceded this chain, so the delegated body suppresses the
@@ -6814,7 +6901,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						( bSMSExtendedLoopHW || smsChainHWSS ) && bPassedThroughSpecular, laneAnchor, pAOV, misBsdfPdfComp[w],
 						1, bSMSChainUncovered,
 						( smsChainHWSS && ( !bSMSExtendedLoopHW || laneAnchor ) ) ? &*smsChainHWSS : nullptr,
-						smsLegacyHandOff);
+						smsLegacyHandOff, pNEESelfObject);
 				}
 				break;
 			}
@@ -6861,7 +6948,17 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				smsLaneKeep[w] = true;
 			}
 			bool emissionGateHW = considerEmission;
-			if( bSMSExtendedLoopHW && pEmitter && !soloSuppressEmissionHW )
+			// SMS draws its emitter through the light table; one the table
+			// left out is never estimated by SMS, so every lane keeps the
+			// hit (the Pel/NM loop's rule).  Asked only where the PART 3
+			// guard closed the gate.
+			const bool smsCannotSampleEmitterHW = pEmitter && bSMSEnabled && bPassedThroughSpecular &&
+				smsGuardedEmissionHW && PTEmitterOutsideLightTable( pLS, ri );
+			if( smsCannotSampleEmitterHW )
+			{
+				emissionGateHW = considerEmission || smsGuardedEmissionHW;
+			}
+			else if( bSMSExtendedLoopHW && pEmitter && !soloSuppressEmissionHW )
 			{
 				const bool smsExtendedRecordHW = smsChainHWSS &&
 					smsChainHWSS->anchorValid && smsChainHWSS->extendedAnchor;
@@ -6901,6 +6998,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
                 }
             }
 
+			Scalar pdfSelectHW = -1;	// the emitter-hit selection probability, asked at most once below
 			if( pEmitter && emissionGateHW && !soloSuppressEmissionHW )
 			{
 				for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
@@ -6940,24 +7038,28 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 										ri.geometric.ptIntersection,
 										ri.geometric.ray.origin ) );
 
-								if( pLS && pLS->IsRISActive() )
+								// Zero: light sampling could not select this emitter at
+								// the scattering vertex (not in the table, a self hit, or
+								// no light sampler), and the hit keeps full weight -- the
+								// RGB/NM twin's rule.  The same for every lane: asked once.
+								if( pdfSelectHW < 0 ) {
+									const bool bSelfHit = pNEESelfObject && ri.pObject == pNEESelfObject;
+									pdfSelectHW = ( pLS && !bSelfHit ) ? pLS->CachedPdfSelectLuminary(
+										*ri.pObject,
+										ri.geometric.ray.origin,
+										ri.geometric.ray.Dir() ) : Scalar( 0 );
+								}
+								const Scalar pdfSelect = pdfSelectHW;
+
+								if( pLS && pLS->IsRISActive() && pdfSelect > 0 )
 								{
 									emission = 0;
 								}
 								else
 								{
-									Scalar pdfSelect = 1.0;
-									if( pLS )
-									{
-										pdfSelect = pLS->CachedPdfSelectLuminary(
-											*ri.pObject,
-											ri.geometric.ray.origin,
-											ri.geometric.ray.Dir() );
-										if( pdfSelect <= 0 ) pdfSelect = 1.0;
-									}
 									const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
 
-									if( misBsdfPdfComp[w] > 0 )
+									if( misBsdfPdfComp[w] > 0 && p_nee > 0 )
 									{
 										if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
 										{
@@ -7495,6 +7597,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// DL-103: what replaces it is the aggregate partner computed above,
 		// not the selected lobe's sampling density.
 		bsdfMisPdf = misBsdfPdfHW;
+		pNEESelfObject = ri.pObject;
 		considerEmission = nextConsiderEmission;
 		rayType = rs2.type;
 		diffuseBounces = rs2.diffuseBounces;

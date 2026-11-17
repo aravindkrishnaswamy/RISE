@@ -44,22 +44,32 @@
 //  - Delta lights (point/spot): no MIS needed (only one sampling
 //    strategy can reach a delta position).
 //  - Area lights (mesh luminaries), RIS OFF: power heuristic MIS
-//    weight using the alias-table selection PDF converted to solid
-//    angle vs the BSDF sampling PDF.
+//    weight using the selection PMF the draw used (the light BVH's
+//    when built, else the alias table's) converted to solid angle vs
+//    the BSDF sampling PDF.
 //  - Area lights (mesh luminaries), RIS ON: MIS is disabled
 //    (w_nee = 1).  The exact finite-M RIS technique density is
 //    intractable (it requires marginalizing over all possible
 //    M-candidate sets), so no closed-form MIS weight is available.
-//    The BSDF-hit emitter contribution is suppressed on the
-//    PathTracingShaderOp side to avoid double-counting.
+//    The BSDF-hit emitter contribution is suppressed on the hit side
+//    (PathTracingIntegrator; EmissionShaderOp for a path-tracer
+//    continuation) for every luminary RIS can select, to avoid
+//    double-counting; a hit light sampling could not have made keeps
+//    full weight (DL-633).
 //
 //  SELF-EXCLUSION:
 //  When the shading object is itself an emitter in the light table,
-//  it is excluded from selection (self-illumination is physically
-//  meaningless for convex/flat surfaces).  For RIS, the self
-//  entry's resampling weight is zeroed.  For the alias table, a
-//  rejection draw is used with a (1-p_self) correction factor.
-//  This prevents wasting samples on an always-zero contribution.
+//  it is excluded from selection (self-illumination is zero for
+//  convex/flat surfaces).  For RIS, the self entry's resampling
+//  weight is zeroed.  For the alias table and the light BVH one
+//  draw is made and a self draw contributes nothing: no retry and
+//  no correction factor, so the selection pmf of every OTHER light
+//  is unchanged.  A non-convex emitter does light itself; that
+//  light is estimated only by the scattered ray that returns to
+//  the same object.  The path tracer gives that hit full weight
+//  (`pNEESelfObject` in its loops; RAY_STATE::pNEESelfObject across a
+//  RayCaster hand-off; DL-633).  The frozen legacy shader-op chain
+//  does not carry the object and keeps its old weight.
 //
 //  Call Prepare() once after the scene is attached to cache the
 //  light list, luminaries list, and build the alias table.  All
@@ -77,6 +87,7 @@
 #ifndef LIGHT_SAMPLER_
 #define LIGHT_SAMPLER_
 
+#include <unordered_map>
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/ILight.h"
 #include "../Interfaces/IObject.h"
@@ -489,6 +500,11 @@ namespace RISE
 			Scalar											cachedTotalExitance;
 
 			std::vector<LightEntry>		lightEntries;	///< All selectable lights
+			//! Mesh luminary -> its index in `lightEntries`, filled with the
+			//! table in Prepare().  FindLuminaryIndex and the two selection-pmf
+			//! queries are asked on every MIS-weighted emitter hit; this makes
+			//! them one hash lookup instead of a scan of the table.
+			std::unordered_map<const IObject*, unsigned int> luminaryEntryIndex;
 			std::vector<unsigned int>	positionalLightIndices;	///< Indices into lightEntries for positional (point/spot) lights
 			Scalar						positionalLightTotalExitance;	///< Sum of exitance for positional lights
 			AliasTable					aliasTable;		///< O(1) selection table
@@ -1008,6 +1024,27 @@ namespace RISE
 				const Vector3& shadingNormal						///< [in] Unused
 				) const;
 
+			/// Is this luminary in the light table, so that SampleLight()
+			/// and what roots on it (NEE, SMS, BDPT / VCM / MLT light
+			/// subpaths) can draw it?  False for a luminary Prepare() left
+			/// out because its average exitance read zero -- 100 stratified
+			/// samples, or the emitter's own construction-time average when
+			/// those all agree, so emission confined to the gaps between
+			/// the samples still lights the scene, through scattered rays
+			/// only -- for any emitter never admitted to the luminaries
+			/// list (no geometry, CanBeAreaLight() false), and before
+			/// Prepare().  (Under a motion sweep a zero-reading luminary is
+			/// kept at a floor weight, and is in the table.)  The photon
+			/// tracers do not use the table but
+			/// weight luminaries by the same average, so they shoot nothing
+			/// from such a luminary either.
+			bool IsLuminaryInLightTable(
+				const IObject* pLuminary							///< [in] The luminary to query
+				) const
+			{
+				return FindLuminaryIndex( pLuminary ) >= 0;
+			}
+
 			//
 			// Unified direct lighting evaluation (NEE)
 			//
@@ -1111,13 +1148,20 @@ namespace RISE
 				const bool bSMSCoversDeltaLights = false
 				) const;
 
-			/// Returns the alias-table selection probability for a given
-			/// mesh luminary.  Used for MIS weight computation when a
-			/// BSDF-sampled ray hits an emitter (the "other strategy"
-			/// PDF).  When RIS is active the caller should NOT use this
-			/// for MIS — the BSDF-hit emitter contribution is suppressed
-			/// instead (see PathTracingShaderOp).
-			/// \return Selection probability, or 0 if luminary not found
+			/// Returns the probability PT's own NEE gives a mesh luminary
+			/// from a shading point: the light BVH's pmf when the BVH is
+			/// built, else the alias-table pmf.  The "other strategy"
+			/// density when a BSDF-sampled ray hits an emitter.  Under RIS
+			/// the value is not an MIS density: a positive one tells the
+			/// caller RIS can select the luminary, so the hit is suppressed.
+			/// Under light solo it is 1 for the target (0 if the target is
+			/// not in the table, as NEE's solo bypass then finds nothing) and
+			/// 0 for any other.
+			/// \return Selection probability; 0 when light sampling cannot
+			/// select this luminary (it is not in the table; the light BVH
+			/// gives every mesh luminary a full-sphere orientation cone, so
+			/// its pmf is never zero for one that is), in which case the
+			/// caller gives the hit full weight (DL-633)
 			Scalar CachedPdfSelectLuminary(
 				const IObject& luminary,							///< [in] The luminary to query
 				const Point3& shadingPoint,							///< [in] Shading point (used for BVH PDF; ignored when BVH inactive)

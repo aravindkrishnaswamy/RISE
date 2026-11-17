@@ -233,7 +233,8 @@ own estimator contains this path, and suppresses only if it does:
    root.  That is the delta-limit partition, not an exact one (below).
 5. SMS's external-segment visibility test fails: not covered.
 
-An emitter SMS's light sampler cannot draw (not `CanBeAreaLight`) is not
+An emitter SMS's light sampler cannot draw (not `CanBeAreaLight`, or with no
+light-table entry: DL-633, in every seeding mode) is not
 covered.  A covered hit is suppressed; a not-covered one is kept at full
 weight (the last vertex was delta, so its MIS partner density is 0).
 

@@ -80,7 +80,7 @@ The design builds on these facts. Code references are to that commit.
 - **Existing split suppression (debt-smssplit).**
   - `ManifoldSolver::ClassifyEmitterHitCoverage` (`ManifoldSolver.cpp:8633`) re-runs SMS's own endpoint-aware Snell seed and solve from the recorded anchor toward the hit emitter point. PT suppresses the hit only if that deterministic solve reaches the same chain; an "unknown" result suppresses.
   - It applies only where `SplitSuppressionExact` holds: snell seeding, biased, no photons, no alpha; RGB additionally needs no pure-mirror caster.
-  - It applies to area emitters only (`PathTracingIntegrator.cpp:2745`), and the chain record holds at most 16 vertices (`ManifoldSolver.h:381`).
+  - It applies to area emitters in the light table only (the SMS gate in `PathTracingIntegrator.cpp` PART 1; DL-633), and the chain record holds at most 16 vertices (`ManifoldSolver.h:381`).
   - It is consistent because the SMS estimator in that mode is itself deterministic in (anchor, emitter point): what SMS finds and what PT suppresses are the same set.
 - **Delta-light shadow rule.** DL-344's `bSMSCoversDeltaLights` makes a delta light's NEE shadow ray opaque at dielectrics, but only at a PART 2 point where a solver is present (`PathTracingIntegrator.cpp:1294`). DL-413 builds a point light's Jacobian plane perpendicular to the last chain segment.
 - **`IORStack`.** It stores object keys (`IORStack.h:78`); composite layers use per-instance keys and the environment entry has no object. It stores no crossing position or UV context.
