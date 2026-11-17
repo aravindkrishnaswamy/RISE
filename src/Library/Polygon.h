@@ -67,8 +67,16 @@ namespace RISE
 		unsigned int	iCoords[N];
 
 	public:
+		// Zero-initialised: a caller that sets only some index arrays (e.g.
+		// vertices and coords, leaving normals) gets index 0, never an
+		// indeterminate value.
 		IndexedPolygon_Template( )
 		{
+			for( int i=0; i<N; i++ ) {
+				iVertices[i] = 0;
+				iNormals[i] = 0;
+				iCoords[i] = 0;
+			}
 		};
 
 		virtual ~IndexedPolygon_Template( )
@@ -97,14 +105,12 @@ namespace RISE
 	public:
 		PointerPolygon_Template( )
 		{
-	#ifdef _DEBUG
 			for( int i=0; i<N; i++ )
 			{
 				pVertices[i] = 0;
 				pNormals[i] = 0;
 				pCoords[i] = 0;
 			}
-	#endif
 		};
 
 		virtual ~PointerPolygon_Template( )

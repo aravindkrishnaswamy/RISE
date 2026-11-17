@@ -43,7 +43,9 @@ namespace
 		IndexedTriangle tri;
 		tri.iVertices[0] = 0; tri.iVertices[1] = 1; tri.iVertices[2] = 2;
 		tri.iCoords[0]   = 0; tri.iCoords[1]   = 1; tri.iCoords[2]   = 2;
-		// Normals will be auto-computed.
+		// ComputeVertexNormals below produces one normal per position, so
+		// the normal indices follow the vertex indices.
+		tri.iNormals[0]  = 0; tri.iNormals[1]  = 1; tri.iNormals[2]  = 2;
 		mesh.AddIndexedTriangle( tri );
 		mesh.ComputeVertexNormals();
 		mesh.DoneIndexedTriangles();
@@ -107,6 +109,7 @@ namespace
 		IndexedTriangle tri;
 		tri.iVertices[0] = 0; tri.iVertices[1] = 1; tri.iVertices[2] = 2;
 		tri.iCoords[0]   = 0; tri.iCoords[1]   = 1; tri.iCoords[2]   = 2;
+		tri.iNormals[0]  = 0; tri.iNormals[1]  = 1; tri.iNormals[2]  = 2;
 		pSrc->AddIndexedTriangle( tri );
 		pSrc->ComputeVertexNormals();
 		pSrc->DoneIndexedTriangles();
@@ -128,6 +131,76 @@ namespace
 		pSrc->release();
 		std::cout << "  Passed!" << std::endl;
 	}
+
+	// Out-of-range indices (from an API caller or a corrupt .risemesh) are
+	// refused per triangle in EVERY build.  Before the fix the range check
+	// was _DEBUG-only and a release build stored &pNormals[garbage], which
+	// ComputeAreas then dereferenced (SIGBUS) -- the crash this file hit
+	// while its own fixture left iNormals indeterminate.
+	void TestOutOfRangeIndicesRefused()
+	{
+		std::cout << "Testing out-of-range indices are refused, not dereferenced..." << std::endl;
+
+		TriangleMeshGeometryIndexed* pMesh = new TriangleMeshGeometryIndexed( false, false );
+		pMesh->addref();
+		pMesh->BeginIndexedTriangles();
+		pMesh->AddVertex( Point3( 0, 0, 0 ) );
+		pMesh->AddVertex( Point3( 1, 0, 0 ) );
+		pMesh->AddVertex( Point3( 0, 1, 0 ) );
+		pMesh->AddTexCoord( Point2( 0, 0 ) );
+		pMesh->AddTexCoord( Point2( 1, 0 ) );
+		pMesh->AddTexCoord( Point2( 0, 1 ) );
+
+		IndexedTriangle good;
+		for( int k = 0; k < 3; ++k ) { good.iVertices[k] = k; good.iCoords[k] = k; good.iNormals[k] = k; }
+		IndexedTriangle badNormal = good;
+		badNormal.iNormals[1] = 0x7fffffffu;
+		IndexedTriangle badVertex = good;
+		badVertex.iVertices[2] = 3;
+		IndexedTriangle badCoord = good;
+		badCoord.iCoords[0] = 3;
+
+		pMesh->AddIndexedTriangle( good );
+		pMesh->AddIndexedTriangle( badNormal );
+		pMesh->AddIndexedTriangle( badVertex );
+		pMesh->AddIndexedTriangle( badCoord );
+		pMesh->ComputeVertexNormals();
+		pMesh->DoneIndexedTriangles();
+		assert( pMesh->getFaces().size() == 1 );
+
+		// A default-constructed triangle has zero indices, not garbage.
+		const IndexedTriangle zeroed;
+		for( int k = 0; k < 3; ++k ) {
+			assert( zeroed.iVertices[k] == 0 && zeroed.iNormals[k] == 0 && zeroed.iCoords[k] == 0 );
+		}
+
+		// A corrupt stream: serialize, then overwrite the first vertex index
+		// of the one triangle with an out-of-range value.  The index block is
+		// the last thing before the double-sided flag, so locate it from the
+		// known layout: header 8 + version 4 + face-normal flag 1, then
+		// points (4 + 3*3*8), normals (4 + 3*3*8), coords (4 + 3*2*8),
+		// colors (4), triangle count (4).
+		MemoryBuffer* pBuffer = new MemoryBuffer();
+		pBuffer->addref();
+		pMesh->Serialize( *pBuffer );
+		const unsigned int vertexIndexOffset = 8 + 4 + 1 + (4 + 72) + (4 + 72) + (4 + 48) + 4 + 4;
+		pBuffer->seek( IBuffer::START, vertexIndexOffset );
+		assert( pBuffer->getUInt() == 0 );
+		pBuffer->seek( IBuffer::START, vertexIndexOffset );
+		pBuffer->setUInt( 1000000u );
+		pBuffer->seek( IBuffer::START, 0 );
+
+		TriangleMeshGeometryIndexed* pDst = new TriangleMeshGeometryIndexed( false, false );
+		pDst->addref();
+		pDst->Deserialize( *pBuffer );
+		assert( pDst->getFaces().empty() );
+		assert( pDst->numPoints() == 3 );
+
+		pDst->release();
+		pBuffer->release();
+		pMesh->release();
+		std::cout << "  Passed!" << std::endl;
+	}
 }
 
 int main()
@@ -135,6 +208,7 @@ int main()
 	std::cout << "Running VertexColorRoundtripTest..." << std::endl;
 	TestRoundtrip();
 	TestEmptyColorsRoundtrip();
+	TestOutOfRangeIndicesRefused();
 	std::cout << "All VertexColorRoundtripTest cases passed." << std::endl;
 	return 0;
 }
