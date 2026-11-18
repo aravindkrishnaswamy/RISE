@@ -952,8 +952,8 @@ static void TestClosedFormOmni()
 	// BDPT and VCM average 2 salted 1024-spp renders, not 8: a single
 	// render's L/L0 sd is ~0.17 % (n = 8 SE 0.00060, BDPT gap 0.1,
 	// docs/DL_CHEAPBATCH_VALIDATION.md), so n = 2 still leaves the 2 % band
-	// ~12 SE wide for BDPT (VCM's spot noise is not recorded; the 2026-11-17
-	// trim runs pass it).  These rows were consistency pins for DL-05 (only PT read
+	// ~12 SE wide for BDPT; VCM merging off at fov 10 reads sd 0.034 %
+	// (docs/DL294_NARROW_FOV_SPLAT.md), smaller still.  These rows were consistency pins for DL-05 (only PT read
 	// 0 before it) and cannot see DL-294 at fov 10 (+0.1 % pre-fix).
 	std::vector<RowSpec> spotRows;
 	spotRows.push_back( { "PT RGB", RastPT( 64 ), 0.02, kWide } );
@@ -1518,11 +1518,15 @@ static void TestHWSSTintedCoatGap()
 		TintedChannelTransmittance( RastBDPTSpectral( 128, false ), n, 0xD32A3u, bdOff, tmp );
 	}
 	char buf[480];
+	char offBuf[96] = "[hwss=false not rendered]";
+	if( std::getenv( "WEAVE_GAP_HWSS_OFF" ) ) {
+		std::snprintf( offBuf, sizeof(offBuf), "[hwss=false: PT (%.5f, %.5f) BDPT (%.5f, %.5f)]", ptOff[0], ptOff[1], bdOff[0], bdOff[1] );
+	}
 	std::snprintf( buf, sizeof(buf),
 		"hwsstint: L/L0 (R, G)  PT hwss=true (%.5f +/- %.5f, %.5f +/- %.5f)  BDPT hwss=true (%.5f +/- %.5f, %.5f +/- %.5f)  "
-		"BDPT/PT (%.4f, %.4f)  [hwss=false: PT (%.5f, %.5f) BDPT (%.5f, %.5f)]  n = %u",
+		"BDPT/PT (%.4f, %.4f)  %s  n = %u",
 		pt[0], ptSd[0], pt[1], ptSd[1], bd[0], bdSd[0], bd[1], bdSd[1], bd[0] / pt[0], bd[1] / pt[1],
-		ptOff[0], ptOff[1], bdOff[0], bdOff[1], n );
+		offBuf, n );
 	std::cout << "  " << buf << std::endl;
 	Check( std::fabs( bd[0] / pt[0] - 1.0 ) <= 0.04 && std::fabs( bd[1] / pt[1] - 1.0 ) <= 0.06, buf );
 }
@@ -2246,8 +2250,8 @@ static void TestTwoLayerLightOutside()
 	// Four salted renders per integrator, not eight: BDPT's n = 8 SE was
 	// 0.46 % (box) / 0.69 % (two planes) (docs/DL_CHEAPBATCH_VALIDATION.md),
 	// so n = 4 gives ~0.65 % / ~1.0 % for BDPT's share of the ratio noise
-	// (PT's and VCM's shares are not recorded) against the 8 % band, while
-	// DL-05's pre-fix PT error was 28-55 %.
+	// (PT's is +/-0.00001, docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md)
+	// against the 8 % band, while DL-05's pre-fix PT error was 28-55 %.
 	const unsigned int res = 24, spp = 512, n = 4;
 	for( const L& r : rows )
 	{

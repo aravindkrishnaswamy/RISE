@@ -2248,8 +2248,13 @@ static void MeasureRoughSSSU(unsigned samples, bool gate, double radius, bool st
  g_seedBase=savedSeed;g_renderIndex=savedIndex;g_dl367CompleteRenderSeed=savedComplete;
  auto stat=[](const std::vector<double>& v){double m=0,ss=0;for(double x:v)m+=x;m/=v.size();for(double x:v)ss+=(x-m)*(x-m);return std::make_pair(m,std::sqrt(ss/(v.size()-1)/v.size()));};
  auto p=stat(pt),a=stat(on),b=wantOff?stat(off):std::make_pair(-1.,0.);
- std::printf("DL367 radius=%g PT-sd=%.9g on-sd=%.9g off-sd=%.9g\n",radius,p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.));
- std::printf("DL367 spp=%u n=8 PT %.9g SE %.9g VM-on %.9g SE %.9g VM-off %.9g SE %.9g on/PT %.8g off/PT %.8g on3sigma %.9g off3sigma %.9g\n",samples,p.first,p.second,a.first,a.second,b.first,b.second,a.first/p.first,b.first/p.first,3*std::hypot(a.second,p.second),3*std::hypot(b.second,p.second));
+ if(wantOff) {
+  std::printf("DL367 radius=%g PT-sd=%.9g on-sd=%.9g off-sd=%.9g\n",radius,p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.));
+  std::printf("DL367 spp=%u n=8 PT %.9g SE %.9g VM-on %.9g SE %.9g VM-off %.9g SE %.9g on/PT %.8g off/PT %.8g on3sigma %.9g off3sigma %.9g\n",samples,p.first,p.second,a.first,a.second,b.first,b.second,a.first/p.first,b.first/p.first,3*std::hypot(a.second,p.second),3*std::hypot(b.second,p.second));
+ } else {
+  std::printf("DL367 radius=%g PT-sd=%.9g on-sd=%.9g (VM-off not rendered by the default gate)\n",radius,p.second*std::sqrt(8.),a.second*std::sqrt(8.));
+  std::printf("DL367 spp=%u n=8 PT %.9g SE %.9g VM-on %.9g SE %.9g on/PT %.8g on3sigma %.9g\n",samples,p.first,p.second,a.first,a.second,a.first/p.first,3*std::hypot(a.second,p.second));
+ }
  if(strict) {
   if(unmatched) {
    // Owner ruling 2026-10-10: accept this finite-budget batching residual

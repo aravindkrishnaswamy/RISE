@@ -1110,10 +1110,10 @@ int main( int argc, char** argv )
 	TestStoneC( s );
 	TestStoneE( s );
 	// 128 spp in the extended tier (it was 512; 2026-11-17 cost trim).  The
-	// fast tier gates the same stations at 64 spp; the faults they exist for
-	// (a wrong interior() read, a broken readback) move a ratio by ~1, while
-	// B9b's recorded 512-spp read (0.964) sits 0.044 inside its 0.08 band,
-	// hence 128 rather than 64.
+	// faults these stations exist for (a wrong interior() read, a broken
+	// readback) move a ratio by ~1.  B9b's recorded 512-spp read (0.964) sits
+	// only 0.044 inside its 0.08 band, so the extended tier keeps 2x the
+	// fast tier's 64 spp for a margin over the fast tier's noise.
 	TestPainterProbe( s, scenePath, extended ? "128" : "64" );
 
 	s.job->release();

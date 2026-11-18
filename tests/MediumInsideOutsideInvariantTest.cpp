@@ -53,7 +53,9 @@
 //  (PTVolumeWalkStream; 1.028 -> 0.995), without which the four lanes'
 //  draws overran into the streams their own surface hand-off re-opens.
 //
-//  BAND.  +/-3%.  Run-to-run sd of an 8-render in/out ratio is <= 0.0014
+//  BAND.  +/-3%.  (The homogeneous rows average 4 renders since the
+//  2026-11-17 cost trim; see HomogeneousRepeats.)  Run-to-run sd of an
+//  8-render in/out ratio is <= 0.0014
 //  on every row (three batches above) and the largest systematic offset
 //  is the NM row's ~1%, so the band is >= 13 sd from any row's mean.  The
 //  sub-1% PT offsets are below this suite's resolution and not claimed:

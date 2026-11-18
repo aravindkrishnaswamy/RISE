@@ -95,14 +95,17 @@
 //  ~0.3%; they were 32, ~0.2%, until the 2026-11-17 cost trim), candidates
 //  of 4 (pel) or 8 (spectral, whose per-render tails are heavier: VCM
 //  spectral read 0.976-0.983 at n = 4).  The +/-4% band is >= 13x the
-//  references' sd and >= 6 sd of the noisiest ratio (VCM spectral, ~0.63%).
+//  references' sd; the noisiest ratio (VCM spectral) carries ~0.66 %
+//  (~0.61 % before the trim), so a mean near 0.98 sits ~3 sd from 0.96.
 //  The mvb 1000 truncation control averages 8 renders (ratio sd ~0.5%).
 //  The BDPT `max_light_depth 1` row restores the diagnostic the first
 //  closure deleted: it and full BDPT are both unbiased, so they agree with
 //  each other and with PT.  The enclosed rows' PT references are likewise
 //  rendered once, 8 renders at 256 spp (sd of the mean ~0.4%; 16 until the
 //  2026-11-17 cost trim).  DL-200's pre-fix BDPT/PT read 0.903-0.915 (RGB)
-//  and ~0.79 (spectral) against the 0.95 floor, >= 8 reference sd away.
+//  and ~0.79 (spectral) against the 0.95 floor: the RGB margin is ~3 sd of
+//  the ratio (BDPT's 8-render mean carries ~1 %, the reference 0.4 %; the
+//  trim moved it from ~3.2 to ~3.1 sd), the spectral one far larger.
 //
 //  WHAT THE PREDICTED MECHANISM TURNED OUT TO BE WORTH: ZERO.  DL-200
 //  predicted a partition-of-unity violation from the ASYMMETRY.  The

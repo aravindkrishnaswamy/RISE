@@ -502,7 +502,7 @@ static void SectionB( const int spp, const int n, const BSubset subset = BSubset
 {
 	const bool fastSubset = ( subset == BSubset::Fast );
 	std::cout << "\nB: all threads TI vs OLD (single-threaded), 192x192, " << n << " salted renders each"
-		<< ( fastSubset ? " (fast representative subset; pass --extended for both scenes x pt/bdpt/vcm)" :
+		<< ( fastSubset ? " (fast representative subset; pass --extended for both scenes x pt/bdpt/vcm/vcms)" :
 		     subset == BSubset::Reduced ? " (pt, bdpt, vcm, vcms; section B alone runs the full 2x6 matrix)" : "" ) << "\n";
 	static const char* kAllScenes[] = { "combo_big", "ext_combo_big" };
 	static const char* kFastScenes[] = { "combo_big" };
