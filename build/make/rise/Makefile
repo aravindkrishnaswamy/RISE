@@ -194,9 +194,13 @@ TEST_ARCHIVE_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(ARCHIVE_LINK_LIBRISE),$(AR
 # The test link mode in use, rewritten only when it changes; every test
 # object and binary depends on it, so switching TEST_LTO rebuilds them.
 TEST_MODE_STAMP = $(PATHDEST).test-link-mode
-# Single-letter flags are one word, "n..." or "-n..." depending on the make
-# version, among the --long ones; -n anywhere in it is a dry run.
-MAKE_DRY_RUN = $(findstring n,$(filter-out --%,$(MAKEFLAGS)))
+# The single-letter flags are MAKEFLAGS's first word, or MAKEFLAGS starts
+# with a space when there are none (the GNU make manual's idiom; later words
+# can be -Oline, -I<dir> or VAR=value on make 4.x).  -n is a dry run and -t
+# only touches, so neither records a mode: a -t after a mode switch must not
+# make objects compiled in the old mode look current.
+MAKE_FLAG_WORD = $(firstword -$(MAKEFLAGS))
+MAKE_DRY_RUN = $(findstring n,$(MAKE_FLAG_WORD))$(findstring t,$(MAKE_FLAG_WORD))
 ifeq ($(MAKE_DRY_RUN)$(filter clean,$(MAKECMDGOALS)),)
 $(shell mkdir -p $(PATHDEST) && { [ "`cat $(TEST_MODE_STAMP) 2>/dev/null`" = "$(TEST_LINK_MODE) $(LTO_TESTS)" ] || echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $(TEST_MODE_STAMP); })
 endif

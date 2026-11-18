@@ -171,7 +171,8 @@ re-found every round until the words match reality.
 - ASan/UBSan: `g++ -std=gnu++17 -fsanitize=address,undefined -I. <test>.cpp <impl>.cpp`
   (or link against `bin/librise.a` when exercising full-library integration).
 - Archive/relink race: test executables link against a library archive
-  (`bin/librise_test.a`, a non-LTO copy, on macOS; `bin/librise.a` elsewhere), so
+  (`bin/librise_test.a`, a non-LTO copy, on macOS, where the eight
+  `TESTS_LINK_LTO` tests still link `bin/librise.a`; `bin/librise.a` elsewhere), so
   touching a shared `.cpp` updates the archive and relinks dependent tests —
   always run test binaries in a phase SEPARATE from any concurrent `make`, or a
   binary/archive touched mid-relink reports a phantom failure.

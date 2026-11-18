@@ -152,6 +152,7 @@ so build the Windows library/CLI once first.
 
 Note on incremental builds: the Unix GNU `Makefile` tracks header dependencies
 automatically via `-MMD -MP` `.d` sidecars and rebuilds the test library
-(`librise_test.a`, a non-LTO copy, on macOS; `librise.a` elsewhere) before
+(`librise_test.a`, a non-LTO copy, on macOS, where eight LTO-sensitive tests
+still link `librise.a`; `librise.a` elsewhere) before
 test targets. On Windows, rebuild the VS2022 `Library` project (`RISE.lib`) before
 re-linking CMake test targets after `src/Library/` header or source edits.
