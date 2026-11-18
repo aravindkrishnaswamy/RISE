@@ -109,8 +109,11 @@ librise : $(LIBRISE_A)
 # -flto (macOS).  With -flto every one of the ~530 test links re-ran LTO code
 # generation over the whole library slice it pulled in (~50 s of one core
 # each): a clean `make -j10 tests` took 2098 s, and so did relinking every test
-# after a one-line library change.  Without LTO the same clean build takes
-# 163 s (library 51 s, tests 112 s) and a relink after a library change 18 s.
+# after a one-line library change.  Measured now (2026-11-18, 10-core M-series,
+# both libraries, 523 non-LTO + 8 LTO test links): a clean `make -j10 tests`
+# takes 235 s, and rebuilding the tests after touching one library source
+# 63-65 s, most of it the eight LTO links below (the non-LTO relinks alone
+# took 18 s before those eight were added).
 # Costs: same -O3 / -ffast-math flags but no cross-TU inlining (what the Linux
 # build has always done), measured ~0-9 % slower test runs (+3 % on a
 # six-test sample); and a library edit compiles twice, once per library
