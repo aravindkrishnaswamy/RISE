@@ -44,6 +44,7 @@ $ErrorActionPreference = 'Stop'
 $origRiseTestExtended = $env:RISE_TEST_EXTENDED
 $origTmpDir = $env:TMPDIR
 $origRiseMediaPath = $env:RISE_MEDIA_PATH
+$origRiseOptionsFile = $env:RISE_OPTIONS_FILE
 try {
 # Clear any caller-inherited RISE_MEDIA_PATH (mirroring run_all_tests.sh) so
 # tests running from repo root resolve relative `scenes/...` and `models/...`
@@ -128,9 +129,6 @@ $DualModeExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
 )
 
 $RepoRoot      = Split-Path -Parent $PSCommandPath
-# Tests open scenes\... and read global.options relative to the working
-# directory, so run them from the repo root wherever the script was started.
-Set-Location -LiteralPath $RepoRoot
 $BinSubdir     = if ($Config -eq 'Debug') { 'dbin' } else { 'bin' }
 $BinDir        = Join-Path $RepoRoot "$BinSubdir\tests"
 $SrcDir        = Join-Path $RepoRoot 'tests'
@@ -149,8 +147,16 @@ if (-not $LogDir) {
         $LogDir = Join-Path $env:TEMP "rise-tests-logs-$repoHash"
     }
 }
-# Absolute: tests get TMPDIRs under it and some change directory first.
+# Absolute (against the caller's directory, before the Push-Location below):
+# tests get TMPDIRs under it and some change directory first.
 $LogDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($LogDir)
+if ($env:RISE_OPTIONS_FILE) {
+    $env:RISE_OPTIONS_FILE = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($env:RISE_OPTIONS_FILE)
+}
+# Tests open scenes\... and read global.options relative to the working
+# directory, so run them from the repo root; the finally block restores the
+# caller's location.
+Push-Location -LiteralPath $RepoRoot -StackName RiseRunAllTests
 
 # -Jobs: the parameter, else RISE_TEST_RUN_JOBS, else one per processor.
 if ($Jobs -eq 0) {
@@ -622,6 +628,8 @@ Write-Host "All $found tests passed"
 exit 0
 
 } finally {
+    Pop-Location -StackName RiseRunAllTests -ErrorAction SilentlyContinue
+    $env:RISE_OPTIONS_FILE = $origRiseOptionsFile
     $env:RISE_TEST_EXTENDED = $origRiseTestExtended
     $env:TMPDIR = $origTmpDir
     $env:RISE_MEDIA_PATH = $origRiseMediaPath

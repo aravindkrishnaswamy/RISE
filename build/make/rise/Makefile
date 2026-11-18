@@ -127,7 +127,9 @@ librise : $(LIBRISE_A)
 # boundary arm reads 0.01025 instead of exactly 0.01, and
 # LuminarySamplerAreaTest's single-sided dart lets one ray from behind hit.
 # The last two are numeric-robustness differences, not only low bits; the
-# Linux build (never LTO) may show them too.
+# Linux build (never LTO) may show them too.  That run could not test the
+# twelve tests already failing on master; one of them may need adding once
+# fixed.
 # `make TEST_LTO=1 tests` links every test against the LTO library instead,
 # for checking something that depends on LTO code generation (run the suite
 # that way with `TEST_LTO=1 ./run_all_tests.sh`).  The mode is recorded in
@@ -185,14 +187,18 @@ endif
 TEST_CPPFLAGS_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(CPPFLAGS),$(TEST_CPPFLAGS))
 TEST_CXXFLAGS_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(CXXFLAGS),$(TEST_CXXFLAGS))
 TEST_ARCHIVE_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(ARCHIVE_LINK_LIBRISE),$(ARCHIVE_LINK_LIBRISE_TEST))
-$(addprefix $(PATHTESTDEST),$(LTO_TESTS)) : $(LIBRISE_A)
 
 # The test link mode in use, rewritten only when it changes; every test
 # object and binary depends on it, so switching TEST_LTO rebuilds them.
 TEST_MODE_STAMP = $(PATHDEST).test-link-mode
-ifeq ($(findstring n,$(firstword -$(MAKEFLAGS)))$(filter clean,$(MAKECMDGOALS)),)
+# Single-letter flags are one word, "n..." or "-n..." depending on the make
+# version, among the --long ones; -n anywhere in it is a dry run.
+MAKE_DRY_RUN = $(findstring n,$(filter-out --%,$(MAKEFLAGS)))
+ifeq ($(MAKE_DRY_RUN)$(filter clean,$(MAKECMDGOALS)),)
 $(shell mkdir -p $(PATHDEST) && { [ "`cat $(TEST_MODE_STAMP) 2>/dev/null`" = "$(TEST_LINK_MODE) $(LTO_TESTS)" ] || echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $(TEST_MODE_STAMP); })
 endif
+# A dry run or clean in a fresh tree has no record yet; nothing to build.
+$(TEST_MODE_STAMP) : ;
 
 # Depend on $(ARCHIVE_BUILD_DEFS) in addition to $(OBJLIB) so removing a
 # translation unit from Filelist (or changing platform gates in Config.*)
@@ -294,6 +300,16 @@ $(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_TEST_A) $(TEST_MODE_STAMP)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(call TEST_CPPFLAGS_FOR,$*) -o $@ $(PATHTESTS)$*.o $(call TEST_ARCHIVE_FOR,$*) $(LDLIBS)
+
+# The LTO_TESTS link only the LTO library (a static pattern rule wins over
+# the pattern rule above, so they do not wait on, or relink for, the test
+# library).
+ifneq ($(strip $(LTO_TESTS)),)
+$(addprefix $(PATHTESTDEST),$(LTO_TESTS)) : $(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_A) $(TEST_MODE_STAMP)
+	@mkdir -p $(PATHTESTDEST)
+	@echo Linking $@
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(ARCHIVE_LINK_LIBRISE) $(LDLIBS)
+endif
 
 # Targeted diagnostic builds (for reproducible certification audits/timings).
 build-tool/% : $(PATHTOOLDEST)%

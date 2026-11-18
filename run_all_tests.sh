@@ -3,10 +3,6 @@ set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
-# Tests open scenes/..., write rendered/ and read global.options relative to
-# the working directory, so run them from the repo root wherever the script
-# was started (e.g. `make test` starts it in build/make/rise).
-cd "$REPO_ROOT"
 BIN_DIR="$REPO_ROOT/bin/tests"
 SRC_DIR="$REPO_ROOT/tests"
 BUILD_DIR="$REPO_ROOT/build/make/rise"
@@ -18,11 +14,23 @@ LIB_DIR="$REPO_ROOT/src/Library"
 # worktrees at once do not delete each other's logs and run state.
 REPO_SUM="$(printf '%s' "$REPO_ROOT" | cksum | cut -d' ' -f1)"
 LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs-$REPO_SUM}"
-# Absolute: tests get TMPDIRs under it and some chdir before using them.
+# Absolute (against the caller's directory): tests get TMPDIRs under it and
+# some chdir before using them, and the runner changes to the repo root below.
 case "$LOG_DIR" in
 	/*) ;;
 	*) LOG_DIR="$(pwd)/$LOG_DIR" ;;
 esac
+# A caller's relative RISE_OPTIONS_FILE likewise means their directory.
+if [ -n "${RISE_OPTIONS_FILE:-}" ]; then
+	case "$RISE_OPTIONS_FILE" in
+		/*) ;;
+		*) RISE_OPTIONS_FILE="$(pwd)/$RISE_OPTIONS_FILE"; export RISE_OPTIONS_FILE ;;
+	esac
+fi
+# Tests open scenes/..., write rendered/ and read global.options relative to
+# the working directory, so run them from the repo root wherever the script
+# was started (e.g. `make test` starts it in build/make/rise).
+cd "$REPO_ROOT"
 # Parallel build jobs for the library and bulk-test build phases.  Without
 # this, a change to a widely-included header (IJob.h, RISE_API.h, ...) meant
 # the library recompiled one file at a time AND all ~131 test binaries
