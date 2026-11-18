@@ -1745,9 +1745,10 @@ void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graph
 // never had normals) yields a null normal pointer, the "absent" value every
 // normal consumer tests for.  An empty coordinate list yields a null coord
 // pointer (it used to be &v[i] on an empty vector); ComputeAreas and the
-// derivative code test for it, but the hit path still reads coordinates
-// unconditionally, so a coordinate-free mesh needs a dummy (every importer
-// adds one) -- as it always has.
+// derivative code test for it, but the hit path and TessellateToMesh's
+// face-normal branch still read coordinates unconditionally, so a
+// coordinate-free mesh needs a dummy (every importer adds one) -- as it always
+// has (an empty vector's &v[i] was a null-based pointer too).
 bool TriangleMeshGeometryIndexed::MakePointerTriangle(
 	const unsigned int iVerts[3],
 	const unsigned int iNorms[3],

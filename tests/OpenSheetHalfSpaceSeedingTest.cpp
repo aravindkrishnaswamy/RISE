@@ -2764,7 +2764,7 @@ static void PartA()
 	std::cout << "[DL-626-SUMMARY] " << ( dl626NewFails == 0 ? "PASS" : "FAIL" )
 		<< " (new_failures=" << dl626NewFails << ")" << std::endl;
 
-	// A59: a planar open sheet INSIDE a closed dielectric that encloses it (a
+	// A65: a planar open sheet INSIDE a closed dielectric that encloses it (a
 	// world box) -- the unpushed back-face exit refracts from the SHEET's
 	// index, whatever the enclosing box's index.  0f39278cb priced it from the
 	// stack's closed top (the box): at a world index of 1.0 that is an
@@ -2780,14 +2780,14 @@ static void PartA()
 		const std::string sc = Header() + w.str() + Obj( "world", "g_world", "worldmat" )
 			+ HSheet( "g_pane", 0.6, 0.6, true ) + Obj( "pane", "g_pane", "glass15" );
 		Loaded s( sc );
-		Check( s.ok, "A59 [unpushed exit in an enclosing box] scene loads" );
+		Check( s.ok, "A65 [unpushed exit in an enclosing box] scene loads" );
 		if( !s.ok ) continue;
 		const IObject* pPane = s.O( "pane" );
 		const IObject* pWorld = s.O( "world" );
 		RayIntersection hit( Ray( Point3( 0.1, 0.2, 0.1 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
 		pPane->IntersectRay( hit, RISE_INFINITY, true, true, false );
 		Check( hit.geometric.bHit && hit.geometric.bProvablyNoInterior,
-			"A59: an upward ray from below strikes the up-facing pane's back face" );
+			"A65: an upward ray from below strikes the up-facing pane's back face" );
 		if( !hit.geometric.bHit ) continue;
 		for( const Scalar nm : { Scalar( 0 ), Scalar( 550 ) } ) {
 			IORStack walk( 1.0 );
@@ -2797,7 +2797,7 @@ static void PartA()
 			walk.SetCurrentObject( pPane );
 			const auto c = IORStackSeeding::ResolveOpenSheetCrossing( hit.geometric, 1.5, walk, pPane->GetMaterial(), nm );
 			std::ostringstream label;
-			label << "A59: unpushed pane exit inside an enclosing box (index " << worldIor << ", nm " << nm
+			label << "A65: unpushed pane exit inside an enclosing box (index " << worldIor << ", nm " << nm
 			      << ") refracts 1.5 -> " << worldIor << " and leaves [env, box] (got " << c.etaFrom << " -> " << c.etaTo
 			      << ", depth " << walk.Depth() << ")";
 			Check( !c.bEntering && Close( c.etaFrom, 1.5 ) && Close( c.etaTo, worldIor ) &&

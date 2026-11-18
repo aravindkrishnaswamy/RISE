@@ -384,10 +384,10 @@ void TestPopulateRIG_AllFields()
 		"signals.time should mirror vertex.signals.time" );
 
 	// ------------------------------------------------------------------
-	// txFootprint — the expression VM's `fw` / `fwo` octave fade.  Zero
-	// in practice under today's bidirectional rasterizers; carried, and
-	// pinned here, so a future ray-differential landing on BDPT / VCM
-	// cannot reopen the gap by omission.
+	// txFootprint — the expression VM's `fw` / `fwo` octave fade.  Real at
+	// the depth-0 eye vertex (DL-14) and on the copy a light-traced
+	// connection shades (DL-14 doc §10), zero elsewhere; pinned here so a
+	// rebuild that drops the field is caught.
 	// ------------------------------------------------------------------
 	Check( IsClose( ri.txFootprint.dudx, 3.01 ),
 		"txFootprint.dudx should mirror vertex.txFootprint.dudx" );

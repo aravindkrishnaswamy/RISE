@@ -1792,8 +1792,8 @@ static void TestOccurrenceDriftGuardWhitespace()
 			Check( DocText( *j ) == expectedAfterUndo,
 			       "Undo was NOT refused -- restores the prior TOKENS exactly (single-spaced, as any "
 			       "write re-emits them), everything else unchanged "
-			       "(pre-fix: an ends-only trim compared the single-spaced post-Undo line against "
-			       "the captured multi-spaced original and refused this Undo as drifted)" );
+			       "(the edited line and the sent value are both single-spaced here, so this Undo "
+			       "passes even an ends-only trim; the Redo below is the check that needs normalisation)" );
 
 			c.Redo();
 			Check( DocText( *j ) == beforeUndo,

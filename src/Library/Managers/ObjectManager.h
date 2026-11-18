@@ -64,7 +64,7 @@ namespace RISE
 			//! scattering position independence, a weave's gap), geometry and
 			//! object state are still read live (MaterialCensus, .cpp).  Without it the census paid ~25
 			//! RTTI queries per object on every preparation, so a NON-spatial
-			//! edit's prepare cost as much as a TLAS rebuild (CstEditCostTest).
+			//! edit's prepare cost several times a TLAS rebuild (CstEditCostTest).
 			//! Defined in ObjectManager.cpp; dropped by RemoveItem / Shutdown
 			//! so a cached object pointer always names a live item.
 			struct PrepareCensus;

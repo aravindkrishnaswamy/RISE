@@ -6,13 +6,17 @@
 //    (object, material) and must never answer for a stale material or a
 //    removed object; visibility and the material's painter-dependent facts
 //    (an in-place index edit) are read live.  Each row changes ONE input
-//    between two preparations of the same manager and checks the published
-//    policy against a fresh manager's answer for the same state (interior
-//    media are read live too but no row changes one).
+//    between two preparations of the same manager: material swaps are
+//    checked against a fresh manager's answer for the same state, the
+//    others (visibility, in-place index edits, an added or a removed
+//    object) against the expected policy written out.  A fresh manager runs
+//    the same census code, so an independent oracle
+//    (SMSDomainReplay::PotentialCaster) checks the caster decision itself.
+//    Interior media are read live too but no row changes one.
 //
 //    Why it exists: before the memo, every preparation paid ~25 RTTI
-//    queries per object (CstEditCostTest's NON-spatial prepare cost as
-//    much as a TLAS rebuild, first bad commit ccc56b7b9).  A memo that is
+//    queries per object (CstEditCostTest's NON-spatial prepare cost several
+//    times a TLAS rebuild, first bad commit ccc56b7b9).  A memo that is
 //    fast but stale would silently mis-route extended SMS.
 //
 //////////////////////////////////////////////////////////////////////
@@ -28,9 +32,12 @@
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Managers/ObjectManager.h"
 #include "../src/Library/Materials/PerfectRefractorMaterial.h"
+#include "../src/Library/Materials/DielectricMaterial.h"
+#include "../src/Library/Materials/PolishedMaterial.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/ManifoldSolver.h"
+#include "../src/Library/Utilities/RadianceMapConfig.h"
 #include "TestTempDir.h"
 
 using namespace RISE;
@@ -239,6 +246,51 @@ int main()
 				safe_release( varying );
 				safe_release( uniform );
 			}
+		}
+
+		// The same in-place index swap for the dielectric and polished caster
+		// kinds, whose live reads go through their own typed census branch.
+		// A position-dependent index rejects the caster (or, for a polished
+		// coat, drops it) exactly as SMSDomainReplay::PotentialCaster says; a
+		// branch that ignored the live read would keep it.
+		{
+			struct Swap { const char* name; IMaterial* m; };
+			for( const Swap& sw : { Swap{ "dielectric", mats->GetItem( "dielectric" ) }, Swap{ "polish", mats->GetItem( "polish" ) } } ) {
+				Check( sw.m != nullptr, std::string( sw.name ) + " found" );
+				if( !sw.m ) continue;
+				obj->AssignMaterial( *sw.m );
+				const Policy before = Read( *job );
+				PositionDependentScalar* varying = new PositionDependentScalar();
+				UniformScalarPainter* uniform = new UniformScalarPainter( 1.5 );
+				if( auto* d = dynamic_cast<DielectricMaterial*>( sw.m ) ) d->SetIOR( *varying );
+				else if( auto* p = dynamic_cast<PolishedMaterial*>( sw.m ) ) p->SetIOR( *varying );
+				const bool oracleVarying = SMSDomainReplay::PotentialCaster( *sw.m );
+				const Policy got = Read( *job );
+				Check( !oracleVarying && got.casters == 0 && before.casters == 1,
+					std::string( "after an in-place SetIOR on " ) + sw.name + " to a position-dependent index: no caster, as PotentialCaster says (" + Str( got ) + ")" );
+				if( auto* d = dynamic_cast<DielectricMaterial*>( sw.m ) ) d->SetIOR( *uniform );
+				else if( auto* p = dynamic_cast<PolishedMaterial*>( sw.m ) ) p->SetIOR( *uniform );
+				Check( Read( *job ) == before, std::string( "restoring a uniform index on " ) + sw.name + " restores its policy" );
+				safe_release( varying );
+				safe_release( uniform );
+			}
+			IMaterial* glass = mats->GetItem( "glass" );
+			if( glass ) obj->AssignMaterial( *glass );
+			Check( Read( *job ) == refGlass, "back to glass" );
+		}
+
+		// An object ADDED between preparations, named to sort first so every
+		// existing entry shifts position: the census refresh falls back to its
+		// pointer index, keeps the existing entries, and censuses the new one.
+		{
+			const double pos[3] = { -5, 0, 0 }, orient[3] = { 0, 0, 0 }, scale[3] = { 1, 1, 1 };
+			Check( job->AddObject( "aaa_added", "sg2", "mirror", nullptr, nullptr, RadianceMapConfig(), pos, orient, scale, true, true ),
+				"add an object that sorts before the existing ones" );
+			const Policy got = Read( *job );
+			Check( got.allowed && !got.rejected && got.casters == refGlass.casters + 1,
+				"after adding a mirror object: one more caster (" + Str( got ) + ")" );
+			Check( job->GetObjects()->RemoveItem( "aaa_added" ), "remove the added object" );
+			Check( Read( *job ) == refGlass, "removing it restores the glass policy" );
 		}
 
 		// Removal drops the memo; the remaining objects are re-censused.

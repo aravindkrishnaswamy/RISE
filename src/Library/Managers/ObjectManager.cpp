@@ -253,10 +253,12 @@ bool ObjectWrapsComposite(const IObject& object)
 // (PotentialCaster reads the index painter's position independence; the
 // partial-HG check reads the scattering painter's) and a weave's gap
 // (WeaveMaterial::SetGap rebuilds HasDeltaPassThrough) without changing the
-// material pointer.  Those reads are two virtual calls for every material,
-// plus, for the four caster types only, one virtual position-independence
-// query on the index painter (the caster's exact type is memoized, so no RTTI
-// is repeated) at each of the up to three predicates that ask.
+// material pointer.  Those reads are two virtual calls for every material;
+// for a dielectric / refractor / polished caster, one virtual
+// position-independence query on the index painter at each of the up to
+// three predicates that ask (the caster's exact type is memoized, so no RTTI
+// is repeated; a reflector reads no painter); and for a dielectric the HG
+// check's GetHG() and scattering-painter query.
 //
 // Geometry and object state -- an SDF's CanBeAreaLight follows its keyframed
 // parameters, mesh certification follows UpdateVertices, the interior medium

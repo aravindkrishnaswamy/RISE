@@ -119,7 +119,9 @@ and never changes transport.  Shipped corpus: see section 7.
 
 An unpushed exit is a back-face hit on a certified sheet `S` that is not on
 the walk's stack (the walk reached `S`'s material side without crossing `S`).
-The crossing refracts FROM `S`'s index; the question is the FRONT-side
+The crossing refracts FROM `S`'s index (unless the walk is inside a closed
+object nested in `S`'s medium -- see DL345_OPEN_SHEET_FACE_RULE.md §2's
+exception); the question is the FRONT-side
 medium, i.e. which stack entries still contain the region the walk enters.
 The old rule asked ONE object (the top `Y`) with ONE ray: "is the first hit
 on `Y` ahead an exit?".  It fails two ways:

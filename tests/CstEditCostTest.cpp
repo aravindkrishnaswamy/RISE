@@ -40,6 +40,7 @@
 //                     ~flat in N) AND produces a Job byte-identical (DumpJob) to a full
 //                     re-derive
 //      [full]         DeriveToJob (whole scene)       -> O(N log N)  (the baseline beaten)
+//      (both prep rows time the FIRST prepare after the edit, on a fresh job per trial)
 //      [prep:spatial] PrepareForRendering AFTER a spatial edit -> rebuilds the BVH4,
 //                     O(N log N): the spatial-edit premium
 //      [prep:nonspat] PrepareForRendering AFTER a non-spatial edit -> SKIPS the O(N log N)
@@ -263,9 +264,30 @@ int main()
 			std::vector<std::string> ds; DeriveToJobIncremental( docG, *js, closG, &ds );
 			char ms[104]; std::snprintf( ms, sizeof(ms), "N=%d SPATIAL edit invalidates the TLAS (spatial generation advanced)", N );
 			Check( js->GetObjects()->GetSpatialStructureGeneration() > gs0, ms );
-			prepSpatAt[k] = MedianMicros( 7, [&]{ js->GetObjects()->InvalidateSpatialStructure(); js->GetObjects()->PrepareForRendering(); } );
 			js->release();
 		}
+		// Both prep rows time the FIRST PrepareForRendering after the edit, once
+		// per trial on a fresh job whose TLAS and per-object census were built
+		// before the edit, so the two are measured the same way.  Repeating
+		// PrepareForRendering on one job would time only the second and later
+		// prepares, which find the census memo (ObjectManager::PrepareCensus)
+		// already refreshed.
+		const auto postEditPrepare = [&]( const Document& edited, const std::vector<NodeId>& closure ) {
+			std::vector<double> t;
+			for( int trial = 0; trial < 7; ++trial ) {
+				Job* jt = new Job(); DeriveToJob( doc, *jt );
+				jt->GetObjects()->PrepareForRendering();
+				std::vector<std::string> dt; DeriveToJobIncremental( edited, *jt, closure, &dt );
+				const auto a = std::chrono::steady_clock::now();
+				jt->GetObjects()->PrepareForRendering();
+				const auto b = std::chrono::steady_clock::now();
+				t.push_back( std::chrono::duration<double, std::micro>( b - a ).count() );
+				jt->release();
+			}
+			std::sort( t.begin(), t.end() );
+			return t[ t.size() / 2 ];
+		};
+		prepSpatAt[k] = postEditPrepare( docG, closG );   // rebuilds the BVH (spatial generation advanced)
 		// NON-SPATIAL: build the TLAS, apply the non-spatial edit -> the spatial generation
 		// MUST be UNCHANGED (TLAS preserved -- the slice-3 skip), and the subsequent
 		// PrepareForRendering SKIPS the O(N log N) BVH rebuild (the BVH is still valid),
@@ -278,25 +300,8 @@ int main()
 			char mn[104]; std::snprintf( mn, sizeof(mn), "N=%d NON-SPATIAL edit SKIPS the TLAS (spatial generation unchanged -- slice 3)", N );
 			Check( jns->GetObjects()->GetSpatialStructureGeneration() == g0, mn );
 			jns->release();
-			// Time the prepare that FOLLOWS the edit, once per trial on a fresh job
-			// whose TLAS and per-object census were built before the edit.  Repeating
-			// PrepareForRendering on one job would time only the second and later
-			// prepares, which find PrepareForRendering's memoized census unchanged
-			// (ObjectManager::PrepareCensus) and so are not the post-edit cost.
-			std::vector<double> tns;
-			for( int trial = 0; trial < 7; ++trial ) {
-				Job* jt = new Job(); DeriveToJob( doc, *jt );
-				jt->GetObjects()->PrepareForRendering();
-				std::vector<std::string> dt; DeriveToJobIncremental( docM, *jt, closM, &dt );
-				const auto a = std::chrono::steady_clock::now();
-				jt->GetObjects()->PrepareForRendering();   // skips the BVH rebuild; O(N) realize sweep + census refresh
-				const auto b = std::chrono::steady_clock::now();
-				tns.push_back( std::chrono::duration<double, std::micro>( b - a ).count() );
-				jt->release();
-			}
-			std::sort( tns.begin(), tns.end() );
-			prepNonAt[k] = tns[ tns.size() / 2 ];
 		}
+		prepNonAt[k] = postEditPrepare( docM, closM );   // skips the BVH rebuild: O(N) realize sweep + census refresh
 
 		jbase->release();
 		std::printf( "  %6d | %8.1f | %10.1f | %10.1f | %11.1f | %10.1f | %11.1f | %11.1f\n", N, editAt[k], cloAt[k], cloGraphAt[k], incrAt[k], fullAt[k], prepSpatAt[k], prepNonAt[k] );

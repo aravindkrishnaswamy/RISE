@@ -799,7 +799,7 @@ bool BDPTCameraUtilities::PixelFootprintThrough(
 	const Vector3 B = Vector3Ops::Cross( N, T );
 
 	// A step of 1e-7 of the viewing distance (1e-7 rad) moves the image by
-	// ~0.002 px even at a 10-degree field of view on a 1920-px film (one pixel
+	// ~0.001 px even at a 10-degree field of view on a 1920-px film (one pixel
 	// is ~9e-5 rad there), so the probes move the image point by a tiny
 	// fraction of a pixel.  A point already within that fraction of the edge
 	// of RasterizeThrough's one-pixel guard band can still fail a probe; the

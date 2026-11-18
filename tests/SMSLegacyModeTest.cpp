@@ -9,11 +9,11 @@
 // and the candidate's reference check then fails for that fixture.  Like 0-6 they are verified ONLY by the
 // two-build dump comparison (RISE_SMS_LEGACY_DUMP_DIR on the base build,
 // RISE_SMS_LEGACY_REFERENCE_DIR on the candidate); a single run asserts
-// only that they render lit.  The negative control below shows those
-// fixtures would see the change: a Phase 4 HWSS fixture rendered by a
-// directly constructed HWSS rasterizer with extended mode ON differs from it
-// with extended mode OFF (and the OFF render repeats bit-identically).  The
-// control renders fixture 10 -- fixture 9's geometry with a LAMBERTIAN
+// only that they render lit.  The negative control below shows that
+// fixture 10 would see the change (fixtures 7-9 measured 0 differing
+// components, so they cannot): rendered by a directly constructed HWSS
+// rasterizer, extended mode ON differs from extended mode OFF (and the OFF
+// render repeats bit-identically).  The control renders fixture 10 -- fixture 9's geometry with a LAMBERTIAN
 // receiver (Phase4ControlScene), dumped and compared like the others so the
 // one scene shown to be sensitive is also the one gated across builds:
 // since 6c83d1515 (DL-616..620) fixture 9's random-walk floor is not an SMS

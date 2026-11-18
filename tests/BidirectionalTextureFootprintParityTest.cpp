@@ -68,9 +68,10 @@
 //
 //  Both the mean and the HF energy move when the footprint is wrong:
 //  an unfiltered share mixes un-faded fbm octaves into the image.  The
-//  mean check is the sharp one -- the footprint is the only thing in
-//  this scene that moves it -- while the HF bands absorb the
-//  light-traced share's own noise.
+//  mean check is the sharp one -- the footprint is the only defect this
+//  scene was seen to move it by (any other MIS bias would move it too, and
+//  should fail it) -- while the HF bands absorb the light-traced share's
+//  own noise.
 //
 //  RED-PROOF (1024 spp).  Pre-fix (no t == 1 stamp): BDPT mean +0.32%,
 //  HF 1.70x; VCM mean +0.23%, HF 1.80x.  Dropping the eye ray's
@@ -374,8 +375,8 @@ static void TestFootprintParity()
 	// after which BDPT reads mean 0.000% and HF 1.18x.  The remaining HF
 	// excess is (a): at 4096 spp it reads 1.042x, shrinking ~4x for 4x the
 	// samples as a variance term does.  So these checks compare converged quantities
-	// at 1024 spp: the mean tightly (the footprint is the only thing
-	// that moves it), the HF energy within 25%.  The eye footprint
+	// at 1024 spp: the mean tightly (a footprint or any other bias moves
+	// it), the HF energy within 25%.  The eye footprint
 	// itself (DL-14's original subject) is still pinned: dropping the
 	// eye ray's differentials moves both by more than either band.
 	Check( RelClose( ptStats.mean,     bdptStats.mean,     0.001 ), "PT vs BDPT: whole-image mean (converged, 0.1%)" );

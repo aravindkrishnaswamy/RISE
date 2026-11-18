@@ -335,14 +335,19 @@ light-traced share).  After, at 1024 spp: BDPT mean 0.510207 against PT's
 0.510207, HF 1.18x; VCM mean 0.510211, HF 1.32x.  At 4096 spp the same
 renders read BDPT HF 1.042x and VCM 1.080x (means unchanged): the excess
 shrinks about 4x for 4x the samples, as the noise term of a mean absolute
-difference does (it scales with the variance), so it is the light-traced
-share's own noise -- PT is noise-free here, so any noise shows.  MIS densities (pdfRev / pdfPred, VCM's bsdfRevPdfW) still read the
+difference does (it scales with the variance), so it reads as the
+light-traced share's own noise -- PT is noise-free here, so any noise shows.
+(One render per spp, so this is a two-point fit, not a measured sd.)  MIS densities (pdfRev / pdfPred, VCM's bsdfRevPdfW) still read the
 unstamped vertex.
 
 Cost (supersedes §8): one `WithPixelFootprint` per surface t == 1 connection
+(two when a per-type bounce cap splits the light side: RescaleTypeCapSplit stamps
+its own copy)
 -- four `RasterizeThrough` calls, a 1184-byte `BDPTVertex` copy, a 2x2
-solve, a `RayIntersectionGeometric` construction and the UV solve; about
-210 ns per call in the round-1 review's microbenchmark.  Measured
+solve, a `RayIntersectionGeometric` construction and the UV solve; the
+round-1 review timed it at about 210 ns per call in an ad hoc benchmark that
+is not in the tree (consistent with the +7% below: ~25M connections x 210 ns
+~ 5 s of the 7.6 s difference).  Measured
 (review, interleaved, user CPU, n=4 per side): about +7% on this shallow
 point-lit fixture where light tracing dominates (110.6 +/- 4.0 s vs
 118.2 +/- 3.0 s for BDPT+VCM at 1024 spp).  On two deeper scenes the same

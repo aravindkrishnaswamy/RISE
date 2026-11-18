@@ -4977,7 +4977,8 @@ namespace RISE
 				// taken to represent the same medium (as FindRetainedSelf's
 				// deduplication does for curved sheets; here it also covers
 				// planar tiles, and two non-coplanar same-material panes with a
-				// closed object between them keep master's non-crossing) --
+				// closed object between them read as an index-matched
+				// non-crossing, as they did before this rule) --
 				// the walk stays in that object's medium and refracts from the
 				// previous top.  Otherwise the crossing is the sheet's own exit and
 				// refracts from the sheet's index (DL-290 / DL-345): a closed
