@@ -30597,11 +30597,11 @@ namespace RISE
 				// dims above, so this should be unreachable in practice; kept
 				// so a future rasterizer quirk fails loud rather than reading
 				// past either buffer's end.
-				char db[320];
-				std::snprintf( db, sizeof( db ),
-					"comparison render is %ux%u but reference '%s' is %ux%u -- dims must match",
-					candW, candH, params.reference.c_str(), refW, refH );
-				res.error = db;
+				// Built as a string, not into a fixed buffer, so a long
+				// reference path cannot truncate the "dims must match" tail.
+				res.error = "comparison render is " + std::to_string( candW ) + "x" + std::to_string( candH ) +
+					" but reference '" + params.reference + "' is " + std::to_string( refW ) + "x" +
+					std::to_string( refH ) + " -- dims must match";
 				return res;
 			}
 
