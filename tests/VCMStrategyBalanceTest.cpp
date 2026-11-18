@@ -2269,7 +2269,8 @@ static void MeasureRoughSSSU(unsigned samples, bool gate, double radius, bool st
  }
  if(gate) {
   const double ratio=a.first/p.first, uncertainty=3*std::hypot(a.second,p.second)/p.first;
-  std::printf("DL367 default n=8 PT sd=%.9g on sd=%.9g off sd=%.9g ratio3SE=%.9g physical band=0.008\n",p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.),uncertainty);
+  if(wantOff) std::printf("DL367 default n=8 PT sd=%.9g on sd=%.9g off sd=%.9g ratio3SE=%.9g physical band=0.008\n",p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.),uncertainty);
+  else std::printf("DL367 default n=8 PT sd=%.9g on sd=%.9g ratio3SE=%.9g physical band=0.008\n",p.second*std::sqrt(8.),a.second*std::sqrt(8.),uncertainty);
   Check(std::isfinite(ratio)&&std::fabs(ratio-1)<=.008,"topology U salted mean retains +/-0.8% parity limit");
   Check(uncertainty<=.008,"topology U salted mean resolves the 0.8% precision budget");
  }

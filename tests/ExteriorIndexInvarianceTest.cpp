@@ -1577,8 +1577,9 @@ namespace
 	// not an index effect. Historical pre-review readings on S: 0.12 / 0.11.
 	// After master DL-345 corrected open-sheet crossings, the current bands
 	// are [0.885, 1.130] / [0.840, 1.180], with at least eight replicates.
-	// DL-399 retains those updated bands, measures controlled salted mean
-	// uncertainty directly, and raises sampling to fit them. The old
+	// DL-399 retains those updated bands and measures controlled salted mean
+	// uncertainty directly (the budgets it raised were cut back in the
+	// 2026-11-17 cost trim, still with 2.5x precision headroom). The old
 	// glassblock centre is not claimed as current behavior.
 	std::string ReadFileText( const std::string& path )
 	{

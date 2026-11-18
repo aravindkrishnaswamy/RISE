@@ -3285,15 +3285,17 @@ static void DL420LegacySlab() {
         std::cout<<"DL-420 omni="<<omni<<" legacy="<<a.mean<<" +/- "<<a.sd/2<<" BDPT="<<b.mean<<" +/- "<<b.sd/2<<" ratio="<<a.mean/b.mean<<'\n';
     }
 }
-// The 80/85 deg wide cone is a measurement with no accuracy gate (see
-// below), so the default run skips its 16 renders; --slab-only runs it.
+// The 80/85 deg wide cone's accuracy band is a measurement, not a gate (see
+// below), so the default run renders it once per winding, which still runs
+// its completion and positive/finite checks on the near-grazing spot; the
+// four-trial measurement (16 renders) runs under --slab-only.
 static bool g_slabWideCone=false;
 static void SlabRenders() {
     Check(ConfigureTestWorker(),"slab render uses one configured worker");
     for(bool reverse:{false,true}) for(const auto& cone:{std::array<unsigned,2>{30,45},std::array<unsigned,2>{44,45},std::array<unsigned,2>{80,85}}) {
-        if(cone[0]==80 && !g_slabWideCone) continue;
+        const unsigned trials=(cone[0]==80&&!g_slabWideCone)?1u:4u;
         std::array<std::vector<double>,3> tested,reference;
-        for(unsigned trial=0;trial<4;++trial) {
+        for(unsigned trial=0;trial<trials;++trial) {
             const unsigned seed=46000+trial;const unsigned salt=SobolSequence::HashCombine(seed,kSaltTag);
             const auto text=SlabScene(reverse,cone[0],cone[1]);
             const auto a=SlabExtendedRender(text,salt);
@@ -3311,14 +3313,16 @@ static void SlabRenders() {
         for(unsigned c=0;c<3;++c) {
             const Moments a(tested[c]),b(reference[c]);
             std::cout<<std::setprecision(17)<<"slab winding="<<reverse<<" inner="<<cone[0]<<" outer="<<cone[1]<<" c="<<c
-                <<" extended="<<a.mean<<" sd="<<a.sd<<" BDPT="<<b.mean<<" reference sd="<<b.sd<<" n=4 spp=4096\n";
+                <<" extended="<<a.mean<<" sd="<<a.sd<<" BDPT="<<b.mean<<" reference sd="<<b.sd<<" n="<<trials<<" spp=4096\n";
             Check(a.mean>0&&b.mean>0&&std::isfinite(a.mean)&&std::isfinite(b.mean),"slab native-domain controls are positive and finite");
             const bool withinBand=std::fabs(a.mean-b.mean)<=3*std::hypot(a.sd,b.sd);
             // The user accepted the measured wide-cone discrepancy as variance
             // and authorized continuation. Keep its original band visible;
             // this fixture remains a measurement, not a claimed 3-sd pass.
-            if(cone[0]==80) std::cout<<"slab wide-cone measurement within_3_sd="<<withinBand
-                <<" user accepted variance; no accuracy gate or DL-420 closure claimed"<<std::endl;
+            if(cone[0]==80) {
+                if(trials>1) std::cout<<"slab wide-cone measurement within_3_sd="<<withinBand
+                    <<" user accepted variance; no accuracy gate or DL-420 closure claimed"<<std::endl;
+            }
             else Check(withinBand,"extended spot slab agrees with matching BDPT within 3 combined sd");
         }
     }

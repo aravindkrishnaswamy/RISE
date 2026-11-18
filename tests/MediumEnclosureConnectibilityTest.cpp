@@ -91,12 +91,13 @@
 //  the skew of a heavy-tailed mean.  Measured per-render sd at 64 spp with
 //  the new emitter: PT 1.2%, PT spectral 1.3%, BDPT 0.24%, VCM 0.48%,
 //  BDPT spectral 0.94%, VCM spectral 1.6%.  Every render is seeded
-//  (`std::srand`); references are means of 16 renders (sd of the mean
-//  ~0.3%; they were 32, ~0.2%, until the 2026-11-17 cost trim), candidates
-//  of 4 (pel) or 8 (spectral, whose per-render tails are heavier: VCM
-//  spectral read 0.976-0.983 at n = 4).  The +/-4% band is >= 13x the
-//  references' sd; the noisiest ratio (VCM spectral) carries ~0.66 %
-//  (~0.61 % before the trim), so a mean near 0.98 sits ~3 sd from 0.96.
+//  (`std::srand`); the pel reference is the mean of 16 renders (sd of the
+//  mean ~0.3%; 32 until the 2026-11-17 cost trim), the spectral one of 32
+//  (~0.2%), candidates of 4 (pel) or 8 (spectral, whose per-render tails
+//  are heavier: VCM spectral read 0.976-0.983 at n = 4).  The +/-4% band
+//  is >= 13x the references' sd and >= 4 sd of the noisiest ratio (VCM
+//  spectral, ~0.6%, which keeps the 32-render spectral reference: a mean
+//  near 0.98 sits only ~3.3 sd from 0.96).
 //  The mvb 1000 truncation control averages 8 renders (ratio sd ~0.5%).
 //  The BDPT `max_light_depth 1` row restores the diagnostic the first
 //  closure deleted: it and full BDPT are both unbiased, so they agree with
@@ -357,7 +358,7 @@ static const char* kPTSpectral256Enc =
 	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 
 // Global-medium (DL-247) rasterizers, all 64 spp: references are means of
-// 16 renders, candidates of 4 (pel) or 8 (spectral).  `max_volume_bounce 1000` is the
+// 16 (pel) or 32 (spectral) renders, candidates of 4 (pel) or 8 (spectral).  `max_volume_bounce 1000` is the
 // truncation control.
 static const char* kPT64 =
 	"pathtracing_pel_rasterizer\n{\n\tsamples 64\n\trr_min_depth 8\n"
@@ -449,7 +450,7 @@ int main()
 
 	std::cout << "DL-247 global medium, references:" << std::endl;
 	const double ptRef   = RenderMeanRepeated( Scene( kPT64, global ), "PT pel reference     ", 16 );
-	const double ptSpRef = RenderMeanRepeated( Scene( kPTSpectral64, global ), "PT spectral reference", 16 );
+	const double ptSpRef = RenderMeanRepeated( Scene( kPTSpectral64, global ), "PT spectral reference", 32 );
 
 	// Truncation control: the thin medium's PT answer must not depend on
 	// the cap, or the rows below would again compare truncations.

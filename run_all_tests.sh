@@ -320,9 +320,15 @@ print_summary() {
 RUNNING=""
 
 # Signal a process and all of its descendants: the per-test subshell wraps
-# /usr/bin/time, which wraps timeout, which wraps the test binary.
+# /usr/bin/time, which wraps timeout, which wraps the test binary.  ps is
+# the fallback where pgrep (procps) is missing, e.g. a slim container.
+if command -v pgrep >/dev/null 2>&1; then
+	children_of() { pgrep -P "$1" 2>/dev/null; }
+else
+	children_of() { ps -A -o pid= -o ppid= 2>/dev/null | awk -v p="$1" '$2 == p { print $1 }'; }
+fi
 kill_tree() {
-	for kt_child in $(pgrep -P "$1" 2>/dev/null); do
+	for kt_child in $(children_of "$1"); do
 		kill_tree "$kt_child"
 	done
 	kill -TERM "$1" 2>/dev/null || true
@@ -563,7 +569,7 @@ launch_test() {
 		fi
 		printf '%d\n' "$lt_rc" > "$DONE_DIR/$lt_name.part"
 		mv "$DONE_DIR/$lt_name.part" "$DONE_DIR/$lt_name"
-	) &
+	) 2>>"$lt_log" &
 	RUNNING="$RUNNING$lt_name$TAB$2$TAB$!$TAB$(date +%s)
 "
 }
