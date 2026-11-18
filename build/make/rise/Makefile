@@ -110,16 +110,22 @@ librise : $(LIBRISE_A)
 # generation over the whole library slice it pulled in (~50 s of one core
 # each): a clean `make -j10 tests` took 2098 s, and so did relinking every test
 # after a one-line library change.  Without LTO the same clean build takes
-# 163 s (library 51 s, tests 112 s).  Same -O3 / -ffast-math flags; the only
-# difference is no cross-TU inlining, which is what the Linux build has always
-# done.  The shipped binaries (`make all`, Xcode) are unaffected.
+# 163 s (library 51 s, tests 112 s) and a relink after a library change 18 s.
+# Costs: same -O3 / -ffast-math flags but no cross-TU inlining (what the Linux
+# build has always done), measured ~0-9 % slower test runs (+3 % on a
+# six-test sample); and a library edit now compiles twice when you build both
+# `all` and `tests` (about 50 s more for a full library rebuild).  The shipped
+# binaries (`make all`, Xcode) are unaffected.
 #
-# `make TEST_LTO=1 tests` links the tests against the LTO library instead, for
-# checking something that depends on LTO code generation.  The test objects
-# themselves are native in the split build and bitcode otherwise; either kind
-# links against either library.
+# TESTS_LINK_LTO keeps the old LTO build for tests that pin bit-exact render
+# hashes measured on it (no-LTO code generation changes the low bits).
+# `make TEST_LTO=1 tests` links every test against the LTO library instead,
+# for checking something that depends on LTO code generation.  The mode is
+# recorded in $(TEST_MODE_STAMP), so switching it rebuilds the tests.
+TESTS_LINK_LTO = LegacyTierRenderIdentityTest DeprecatedMaterialRenderIdentityTest ImageDriftHistoryTest
+
 ifneq ($(filter -flto%,$(CPPFLAGS) $(CXXFLAGS)),)
-ifeq ($(strip $(TEST_LTO)),)
+ifeq ($(filter-out 0,$(strip $(TEST_LTO))),)
 TESTLIB_SPLIT = 1
 endif
 endif
@@ -135,6 +141,8 @@ ARCHIVE_LINK_LIBRISE_TEST = -Wl,-dead_strip $(LIBRISE_TEST_A)
 else
 ARCHIVE_LINK_LIBRISE_TEST = -Wl,--start-group $(LIBRISE_TEST_A) -Wl,--end-group
 endif
+TEST_LINK_MODE = split
+LTO_TESTS = $(TESTS_LINK_LTO)
 
 $(LIBRISE_TEST_A) : $(OBJTESTLIB) $(ARCHIVE_BUILD_DEFS)
 	@mkdir -p $(PATHDEST)
@@ -157,7 +165,20 @@ TEST_CXXFLAGS = $(CXXFLAGS)
 OBJTESTLIB =
 LIBRISE_TEST_A = $(LIBRISE_A)
 ARCHIVE_LINK_LIBRISE_TEST = $(ARCHIVE_LINK_LIBRISE)
+TEST_LINK_MODE = $(if $(filter -flto%,$(CPPFLAGS) $(CXXFLAGS)),lto,plain)
+LTO_TESTS =
 endif
+
+# Per-test flags: an LTO_TESTS test compiles and links exactly as before.
+TEST_CPPFLAGS_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(CPPFLAGS),$(TEST_CPPFLAGS))
+TEST_CXXFLAGS_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(CXXFLAGS),$(TEST_CXXFLAGS))
+TEST_ARCHIVE_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(ARCHIVE_LINK_LIBRISE),$(ARCHIVE_LINK_LIBRISE_TEST))
+$(addprefix $(PATHTESTDEST),$(LTO_TESTS)) : $(LIBRISE_A)
+
+# The test link mode in use, rewritten only when it changes; every test
+# object and binary depends on it, so switching TEST_LTO rebuilds them.
+TEST_MODE_STAMP = $(PATHDEST).test-link-mode
+$(shell mkdir -p $(PATHDEST) && { [ "`cat $(TEST_MODE_STAMP) 2>/dev/null`" = "$(TEST_LINK_MODE) $(LTO_TESTS)" ] || echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $(TEST_MODE_STAMP); })
 
 # Depend on $(ARCHIVE_BUILD_DEFS) in addition to $(OBJLIB) so removing a
 # translation unit from Filelist (or changing platform gates in Config.*)
@@ -251,14 +272,14 @@ build-test/% : $(PATHTESTDEST)%
 # emitted by $(CXXFLAGS_DEPS) keep the .o rebuilds header-accurate).
 $(PATHTESTS)ImageReaderOverflowTest.o: CPPFLAGS += -DRISE_TEST_SOURCE_ROOT='"$(abspath ../../..)"'
 
-$(PATHTESTS)%.o : $(PATHTESTS)%.cpp
+$(PATHTESTS)%.o : $(PATHTESTS)%.cpp $(TEST_MODE_STAMP)
 	@echo Compiling: $<
-	@$(CXX) $(TEST_CPPFLAGS) $(TEST_CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+	@$(CXX) $(call TEST_CPPFLAGS_FOR,$*) $(call TEST_CXXFLAGS_FOR,$*) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
-$(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_TEST_A)
+$(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_TEST_A) $(TEST_MODE_STAMP)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
-	@$(CXX) $(TEST_CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(ARCHIVE_LINK_LIBRISE_TEST) $(LDLIBS)
+	@$(CXX) $(call TEST_CPPFLAGS_FOR,$*) -o $@ $(PATHTESTS)$*.o $(call TEST_ARCHIVE_FOR,$*) $(LDLIBS)
 
 # Targeted diagnostic builds (for reproducible certification audits/timings).
 build-tool/% : $(PATHTOOLDEST)%
@@ -295,7 +316,7 @@ tools : $(LIBRISE_A)
 # Build the library .o files and static archive needed to link tests (the
 # non-LTO test copy where the platform splits them, see LIBRISE_TEST_A). Used by
 # run_all_tests.sh as a one-shot library-build phase before per-test builds.
-test-objs : $(LIBRISE_TEST_A)
+test-objs : $(LIBRISE_TEST_A) $(if $(LTO_TESTS),$(LIBRISE_A))
 	@:
 
 # Build and run all tests

@@ -30,8 +30,8 @@ param(
     [int]$TimeoutSeconds = 0,
     # How many test binaries may RUN at once.  Tests marked `exclusive` in
     # tests\test_schedule.tsv always run alone.  1 = the old serial behaviour.
-    [ValidateRange(1, 4096)]
-    [int]$Jobs = $(if ($env:RISE_TEST_RUN_JOBS) { [int]$env:RISE_TEST_RUN_JOBS } else { [Environment]::ProcessorCount }),
+    # 0 = RISE_TEST_RUN_JOBS, else one per logical processor (checked below).
+    [int]$Jobs = 0,
     [string]$LogDir,
     [switch]$NoBuild,
     [switch]$BuildOnly,
@@ -138,8 +138,32 @@ if (-not $LogDir) {
     if ($env:RISE_TEST_LOG_DIR) {
         $LogDir = $env:RISE_TEST_LOG_DIR
     } else {
-        $LogDir = Join-Path $env:TEMP 'rise-tests-logs'
+        # Per checkout (a hash of its path), so runs in two worktrees at once
+        # do not delete each other's logs and run state.
+        $sha = [System.Security.Cryptography.SHA1]::Create()
+        $repoHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($RepoRoot))) -replace '-', '').Substring(0, 10)
+        $LogDir = Join-Path $env:TEMP "rise-tests-logs-$repoHash"
     }
+}
+# Absolute: tests get TMPDIRs under it and some change directory first.
+$LogDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($LogDir)
+
+# -Jobs: the parameter, else RISE_TEST_RUN_JOBS, else one per processor.
+if ($Jobs -eq 0) {
+    if ($env:RISE_TEST_RUN_JOBS) {
+        $parsedJobs = 0
+        if (-not [int]::TryParse($env:RISE_TEST_RUN_JOBS, [ref]$parsedJobs) -or $parsedJobs -lt 1) {
+            Write-Host "ERROR: RISE_TEST_RUN_JOBS='$($env:RISE_TEST_RUN_JOBS)' is not a positive integer" -ForegroundColor Red
+            exit 64
+        }
+        $Jobs = $parsedJobs
+    } else {
+        $Jobs = [Environment]::ProcessorCount
+    }
+}
+if ($Jobs -lt 1) {
+    Write-Host "ERROR: -Jobs $Jobs is not a positive integer" -ForegroundColor Red
+    exit 64
 }
 
 # Honor RISE_TEST_TIMEOUT env var when -TimeoutSeconds wasn't passed.
@@ -339,7 +363,7 @@ if (Test-Path -LiteralPath $scheduleFile) {
         $cols = $line -split "`t"
         if ($cols.Count -lt 2) { continue }
         $cls = $cols[1]
-        if ($cls -ne 'pool' -and $cls -ne 'exclusive' -and $cls -ne 'single') {
+        if ($cls -cne 'pool' -and $cls -cne 'exclusive' -and $cls -cne 'single') {
             Write-Host ('warning: tests\test_schedule.tsv: unknown class "{0}" for {1}; running it exclusive' -f $cls, $cols[0])
             $cls = 'exclusive'
         }
@@ -360,7 +384,7 @@ $plan = foreach ($src in $testSources) {
 }
 if ($Jobs -gt 1) {
     # Exclusive tests first; then the rest (pool and single), longest first.
-    $plan = $plan | Sort-Object -Property @{ Expression = { if ($_.Class -eq 'exclusive') { 0 } else { 1 } } }, @{ Expression = 'Seconds'; Descending = $true }, @{ Expression = 'Name' }
+    $plan = $plan | Sort-Object -Property @{ Expression = { if ($_.Class -ceq 'exclusive') { 0 } else { 1 } } }, @{ Expression = 'Seconds'; Descending = $true }, @{ Expression = 'Name' }
 }
 $plan = @($plan)
 
@@ -372,7 +396,15 @@ $null = New-Item -ItemType Directory -Force -Path $tmpRoot
 $singleOptions = Join-Path $LogDir '.single-thread.options'
 $optionsSource = if ($env:RISE_OPTIONS_FILE -and (Test-Path -LiteralPath $env:RISE_OPTIONS_FILE)) { $env:RISE_OPTIONS_FILE } else { Join-Path $RepoRoot 'global.options' }
 $optionsText = if (Test-Path -LiteralPath $optionsSource) { Get-Content -Raw -LiteralPath $optionsSource } else { '' }
-Set-Content -LiteralPath $singleOptions -Value ($optionsText + "`nforce_number_of_threads 1`n") -Encoding ascii
+# The force line goes FIRST: Options keeps the first occurrence of a key.
+Set-Content -LiteralPath $singleOptions -Value ("force_number_of_threads 1`n" + $optionsText) -Encoding ascii
+
+# Kill a test and every process it started (agent tests spawn rise.exe).
+function Stop-RiseTestTree($proc) {
+    if (-not $proc -or $proc.HasExited) { return }
+    try { & taskkill.exe /T /F /PID $proc.Id *> $null } catch { }
+    try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+}
 
 function Start-RiseTest($item) {
     $exe = Join-Path $BinDir "$($item.Name).exe"
@@ -384,26 +416,40 @@ function Start-RiseTest($item) {
     $env:TMPDIR = $tmp
     $env:TEMP = $tmp
     $env:TMP = $tmp
-    if ($item.Class -eq 'single') { $env:RISE_OPTIONS_FILE = $singleOptions }
+    if ($item.Class -ceq 'single') { $env:RISE_OPTIONS_FILE = $singleOptions }
+    $proc = $null
+    $launchError = $null
     try {
         $proc = Start-Process -FilePath $exe -PassThru -NoNewWindow `
             -RedirectStandardOutput "$log.stdout" -RedirectStandardError "$log.stderr"
+        # Touch Handle now: without it PowerShell may never report ExitCode.
+        $null = $proc.Handle
+    } catch {
+        # A launch that fails (antivirus holding a fresh exe, ...) is that
+        # test's FAIL, not the end of the run.
+        $launchError = $_.Exception.Message
     } finally {
         $env:TMPDIR = $saved[0]
         $env:TEMP = $saved[1]
         $env:TMP = $saved[2]
         $env:RISE_OPTIONS_FILE = $saved[3]
     }
-    # Touch Handle now: without it PowerShell may never report ExitCode.
-    $null = $proc.Handle
     return [pscustomobject]@{
         Item = $item; Proc = $proc; Start = Get-Date; Log = $log; Tmp = $tmp
-        Cpu = 0.0; TimedOut = $false
+        Cpu = 0.0; TimedOut = $false; LaunchError = $launchError
     }
 }
 
 function Complete-RiseTest($run) {
     $name = $run.Item.Name
+    if ($run.LaunchError) {
+        Set-Content -LiteralPath $run.Log -Value "launch failed: $($run.LaunchError)" -Encoding utf8
+        $script:doneCount++
+        Write-Host ('[ {0,3}/{1,3} ] {2,-46} FAIL (launch failed: {3})' -f $script:doneCount, $total, $name, $run.LaunchError)
+        $script:runFailures += [pscustomobject]@{ Name = $name; Code = -1; Log = $run.Log; Reason = 'launch' }
+        $script:failed++
+        return
+    }
     $run.Proc.WaitForExit()
     $wall = ((Get-Date) - $run.Start).TotalSeconds
     $dur = [int]$wall
@@ -443,18 +489,20 @@ $next = 0
 try {
     while ($true) {
         # Reap finished tests; kill any past the timeout.
+        $still = New-Object System.Collections.ArrayList
         foreach ($run in @($running)) {
-            if (-not $run.Proc.HasExited) {
+            if (-not $run.LaunchError -and -not $run.Proc.HasExited) {
                 try { $run.Cpu = $run.Proc.TotalProcessorTime.TotalSeconds } catch { }
                 if ($TimeoutSeconds -gt 0 -and ((Get-Date) - $run.Start).TotalSeconds -gt $TimeoutSeconds) {
                     $run.TimedOut = $true
-                    try { $run.Proc.Kill() } catch { }
+                    Stop-RiseTestTree $run.Proc
                 }
+                [void]$still.Add($run)
                 continue
             }
             Complete-RiseTest $run
-            $running.Remove($run)
         }
+        $running = $still
 
         # Start as many as the schedule allows: an exclusive test only on an
         # idle machine, and nothing beside a running exclusive test.
@@ -476,8 +524,8 @@ try {
                 continue
             }
             if ($running.Count -gt 0) {
-                $exclusiveRunning = @($running | Where-Object { $_.Item.Class -eq 'exclusive' }).Count -gt 0
-                if ($exclusiveRunning -or $item.Class -eq 'exclusive' -or $running.Count -ge $Jobs) { break }
+                $exclusiveRunning = @($running | Where-Object { $_.Item.Class -ceq 'exclusive' }).Count -gt 0
+                if ($exclusiveRunning -or $item.Class -ceq 'exclusive' -or $running.Count -ge $Jobs) { break }
             }
             $found++
             [void]$running.Add((Start-RiseTest $item))
@@ -490,7 +538,7 @@ try {
 } finally {
     # Ctrl-C or an error: do not leave test processes behind.
     foreach ($run in @($running)) {
-        if (-not $run.Proc.HasExited) { try { $run.Proc.Kill() } catch { } }
+        if (-not $run.LaunchError) { Stop-RiseTestTree $run.Proc }
     }
 }
 $runWall = [int]((Get-Date) - $runStart).TotalSeconds
@@ -520,11 +568,11 @@ if ($found -gt 1) {
 # breaks the one-multi-core-render-at-a-time rule, so flag it for an
 # `exclusive` entry.  Only meaningful when tests ran side by side.
 if ($Jobs -gt 1) {
-    $busy = @($cpuRows | Where-Object { $_.Class -eq 'pool' -and $_.Seconds -ge 20 -and $_.Cores -ge 1.6 })
+    $busy = @($cpuRows | Where-Object { $_.Class -cne 'exclusive' -and $_.Seconds -ge 20 -and $_.Cores -ge 1.6 })
     if ($busy.Count -gt 0) {
         Write-Host ''
-        Write-Host 'Pool tests that kept several cores busy (mark them exclusive in tests\test_schedule.tsv):'
-        foreach ($b in $busy) { Write-Host ('  {0,-46} {1,5:N1} cores over {2}s' -f $b.Name, $b.Cores, $b.Seconds) }
+        Write-Host 'Pool / single tests that kept several cores busy (mark them exclusive in tests\test_schedule.tsv):'
+        foreach ($b in $busy) { Write-Host ('  {0,-46} {1,-6} {2,5:N1} cores over {3}s' -f $b.Name, $b.Class, $b.Cores, $b.Seconds) }
     }
 }
 

@@ -7,11 +7,18 @@ BIN_DIR="$REPO_ROOT/bin/tests"
 SRC_DIR="$REPO_ROOT/tests"
 BUILD_DIR="$REPO_ROOT/build/make/rise"
 LIB_DIR="$REPO_ROOT/src/Library"
-LIB_ARCHIVE="$REPO_ROOT/bin/librise.a"
 # Logs go outside the repo so they survive cloud-sync providers (iCloud,
 # Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
 # locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
-LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs}"
+# The default is per checkout (a checksum of its path), so runs in two
+# worktrees at once do not delete each other's logs and run state.
+REPO_SUM="$(printf '%s' "$REPO_ROOT" | cksum | cut -d' ' -f1)"
+LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs-$REPO_SUM}"
+# Absolute: tests get TMPDIRs under it and some chdir before using them.
+case "$LOG_DIR" in
+	/*) ;;
+	*) LOG_DIR="$(pwd)/$LOG_DIR" ;;
+esac
 # Parallel build jobs for the library and bulk-test build phases.  Without
 # this, a change to a widely-included header (IJob.h, RISE_API.h, ...) meant
 # the library recompiled one file at a time AND all ~131 test binaries
@@ -225,7 +232,7 @@ if [ "$total" -eq 0 ]; then
 fi
 
 # Optional per-test runtime timeout: set RISE_TEST_TIMEOUT=<seconds>. Requires
-# `timeout` (Linux) or `gtimeout` (macOS w/ coreutils) on PATH.
+# `timeout` (Linux, recent macOS) or `gtimeout` (coreutils) on PATH.
 timeout_bin=""
 if [ -n "${RISE_TEST_TIMEOUT:-}" ]; then
 	if command -v timeout >/dev/null 2>&1; then
@@ -242,7 +249,7 @@ print_summary() {
 	echo "Build: $built built, $build_failed failed (of $total)"
 	echo "Run:   $passed passed, $failed failed, $skipped skipped (of $found run)"
 	if [ -n "${run_wall:-}" ] && [ "$found" -gt 0 ]; then
-		run_sum=$(awk -F"$TAB" '{ s += $1 } END { printf "%d", s }' "$TIMINGS_TSV")
+		run_sum=$(LC_ALL=C awk -F"$TAB" '{ s += $1 } END { printf "%d", s }' "$TIMINGS_TSV")
 		echo "Time:  ${run_wall}s wall for ${run_sum}s of test time (--jobs $RUN_JOBS)"
 	fi
 
@@ -259,10 +266,10 @@ print_summary() {
 	# and breaks the one-multi-core-render-at-a-time rule, so flag it for an
 	# `exclusive` entry.  Only meaningful when tests ran side by side.
 	if [ "$RUN_JOBS" -gt 1 ] && [ -s "$CPU_TSV" ]; then
-		busy=$(awk -F"$TAB" '$5 == "pool" && $2 >= 20 && $4 >= 1.6 { printf "  %-46s %5.1f cores over %ds\n", $1, $4, $2 }' "$CPU_TSV")
+		busy=$(LC_ALL=C awk -F"$TAB" '$5 != "exclusive" && $2 >= 20 && $4 + 0 >= 1.6 { printf "  %-46s %-6s %5.1f cores over %ds\n", $1, $5, $4, $2 }' "$CPU_TSV")
 		if [ -n "$busy" ]; then
 			echo
-			echo "Pool tests that kept several cores busy (mark them exclusive in tests/test_schedule.tsv):"
+			echo "Pool / single tests that kept several cores busy (mark them exclusive in tests/test_schedule.tsv):"
 			echo "$busy"
 		fi
 	fi
@@ -308,8 +315,7 @@ kill_tree() {
 	kill -TERM "$1" 2>/dev/null || true
 }
 
-cleanup_interrupted() {
-	trap '' INT TERM
+kill_running() {
 	if [ -n "$RUNNING" ]; then
 		while IFS="$TAB" read -r rn_name rn_class rn_pid rn_start; do
 			[ -n "$rn_pid" ] || continue
@@ -318,6 +324,12 @@ cleanup_interrupted() {
 $RUNNING
 EOF
 	fi
+	RUNNING=""
+}
+
+cleanup_interrupted() {
+	trap '' INT TERM
+	kill_running
 	echo
 	echo "Interrupted — partial results below:"
 	print_summary
@@ -325,8 +337,14 @@ EOF
 }
 trap cleanup_interrupted INT TERM
 
+# Any other way out (set -e on an unexpected failure) must not leave tests
+# running behind a dead runner.
+trap kill_running EXIT
+
 # ============================================================
-# Phase 1: Build the library .o files and librise.a used to link tests.
+# Phase 1: Build the library archive used to link tests (`make test-objs`:
+# bin/librise_test.a, a non-LTO copy, where the config uses LTO; see the
+# Makefile).
 # ============================================================
 lib_log="$LOG_DIR/.library.log"
 printf 'Building library ... '
@@ -386,12 +404,13 @@ for test_src in "$SRC_DIR"/*.cpp; do
 
 	# Fast up-to-date short-circuit: when Phase 1.5 succeeded ($bulk_rc == 0),
 	# make just verified every selected target with full -MMD header dependency
-	# tracking. When Phase 1.5 failed ($bulk_rc != 0), query `make -q` (which
-	# honors .d header dependencies as well as .cpp and $LIB_ARCHIVE) before
+	# tracking. When Phase 1.5 failed ($bulk_rc != 0), query `make -q` on the
+	# binary itself (which honors .d header dependencies as well as .cpp and
+	# the test library; the phony-like build-test/% alias always reads stale) before
 	# skipping, so a header-induced compile error never masks behind a stale
 	# pre-existing binary.
 	if [ -x "$test_path" ] \
-	   && { [ "$bulk_rc" -eq 0 ] || make -q -C "$BUILD_DIR" --no-print-directory "build-test/$name" >/dev/null 2>&1; }
+	   && { [ "$bulk_rc" -eq 0 ] || make -q -C "$BUILD_DIR" --no-print-directory "../../../bin/tests/$name" >/dev/null 2>&1; }
 	then
 		printf '%s UP TO DATE\n' "$prefix"
 		built=$((built + 1))
@@ -488,15 +507,14 @@ fi
 
 # `single` tests read this options file: the repo's options (or the caller's
 # RISE_OPTIONS_FILE) plus force_number_of_threads 1.
+# The force line goes FIRST: Options keeps the first occurrence of a key.
 SINGLE_OPTIONS="$LOG_DIR/.single-thread.options"
+printf 'force_number_of_threads 1\n' > "$SINGLE_OPTIONS"
 if [ -n "${RISE_OPTIONS_FILE:-}" ] && [ -f "$RISE_OPTIONS_FILE" ]; then
-	cp "$RISE_OPTIONS_FILE" "$SINGLE_OPTIONS"
+	cat "$RISE_OPTIONS_FILE" >> "$SINGLE_OPTIONS"
 elif [ -f "$REPO_ROOT/global.options" ]; then
-	cp "$REPO_ROOT/global.options" "$SINGLE_OPTIONS"
-else
-	: > "$SINGLE_OPTIONS"
+	cat "$REPO_ROOT/global.options" >> "$SINGLE_OPTIONS"
 fi
-printf '\nforce_number_of_threads 1\n' >> "$SINGLE_OPTIONS"
 plan_count=$(wc -l < "$PLAN" | tr -d ' ')
 
 time_bin=""
@@ -546,14 +564,17 @@ finish_test() {
 	ft_dur=$(( $(date +%s) - ft_start ))
 	ft_cpu=""
 	if [ -s "$RUSAGE_DIR/$ft_name" ]; then
-		ft_line=$(awk '$1 == "real" { r = $2 } $1 == "user" { u = $2 } $1 == "sys" { s = $2 }
-			END { if (r != "") { c = (r > 0) ? (u + s) / r : 0; printf "%d %.1f %.2f", r + 0.5, u + s, c } }' "$RUSAGE_DIR/$ft_name")
+		# /usr/bin/time writes its numbers in the caller's locale (a comma
+		# decimal under de_DE); read them as C-locale dot decimals, and do all
+		# formatting here, none with the shell's locale-aware printf.
+		ft_line=$(LC_ALL=C awk '{ gsub( ",", ".", $2 ) } $1 == "real" { r = $2 + 0 } $1 == "user" { u = $2 + 0 } $1 == "sys" { s = $2 + 0 }
+			END { if (r != "") { c = (r > 0) ? (u + s) / r : 0; printf "%d %.1f %.2f %.1f", r + 0.5, u + s, c, c } }' "$RUSAGE_DIR/$ft_name")
 		if [ -n "$ft_line" ]; then
 			# shellcheck disable=SC2086
 			set -- $ft_line
 			ft_dur="$1"
 			printf '%s\t%s\t%s\t%s\t%s\n' "$ft_name" "$1" "$2" "$3" "$ft_class" >> "$CPU_TSV"
-			ft_cpu=", $(printf '%.1f' "$3") cores"
+			ft_cpu=", $4 cores"
 		fi
 	fi
 	printf '%d\t%s\n' "$ft_dur" "$ft_name" >> "$TIMINGS_TSV"
@@ -587,7 +608,14 @@ while :; do
 		still=""
 		while IFS="$TAB" read -r rn_name rn_class rn_pid rn_start; do
 			[ -n "$rn_name" ] || continue
-			if [ -f "$DONE_DIR/$rn_name" ]; then
+			if [ ! -f "$DONE_DIR/$rn_name" ] && ! kill -0 "$rn_pid" 2>/dev/null && [ ! -f "$DONE_DIR/$rn_name" ]; then
+				# The runner subshell is gone but left no status (its marker
+				# could not be written, e.g. the log dir vanished): a failure.
+				mkdir -p "$DONE_DIR" 2>/dev/null || true
+				echo 1 > "$DONE_DIR/$rn_name" 2>/dev/null || true
+				echo "warning: $rn_name exited without recording its status; counting it as failed" >&2
+			fi
+			if [ -f "$DONE_DIR/$rn_name" ] || ! kill -0 "$rn_pid" 2>/dev/null; then
 				finish_test "$rn_name" "$rn_class" "$rn_pid" "$rn_start"
 				running_count=$((running_count - 1))
 				if [ "$rn_class" = "exclusive" ]; then
@@ -606,6 +634,10 @@ EOF
 	# Start as many as the schedule allows: an exclusive test only on an idle
 	# machine, and nothing beside a running exclusive test.
 	while [ "$next" -le "$plan_count" ]; do
+		# Nothing can start beside an exclusive test or in a full pool.
+		if [ "$running_count" -gt 0 ] && { [ "$exclusive_running" -eq 1 ] || [ "$running_count" -ge "$RUN_JOBS" ]; }; then
+			break
+		fi
 		plan_line=$(sed -n "${next}p" "$PLAN")
 		pl_class=$(printf '%s\n' "$plan_line" | cut -f1)
 		pl_name=$(printf '%s\n' "$plan_line" | cut -f3)

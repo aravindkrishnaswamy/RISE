@@ -8,21 +8,23 @@
 #                    child-process renders) or a check depends on elapsed
 #                    wall-clock time.
 #         single     shares the cores with its render threads forced to one
-#                    (RISE_OPTIONS_FILE = global.options + force_number_of_
-#                    threads 1): its renders spread over a few cores without
-#                    gaining throughput, and nothing it checks depends on the
-#                    thread count.
+#                    (RISE_OPTIONS_FILE = force_number_of_threads 1 + the
+#                    repo's global.options): its renders spread over a few
+#                    cores without gaining much throughput, and nothing it
+#                    checks depends on the thread count.
 #         pool       shares the cores as it is (the default for any test not
 #                    listed here).
 # seconds last measured run time on its own (10-core Apple M-series, before
 #         the 2026-11-17 trims); only used to start long tests first.
 #         Pool tests under 5 s are not listed.
 # reason  why the test is exclusive or single.  "N cores" is the measured
-#         mean over the test (or its first 60 s), with the peak 3-s window.
+#         mean over the test (or its first 60 s), with the peak 3-s window;
+#         "on one thread" times were measured with other tests running.
 #
-# The runner's summary lists pool tests that kept several cores busy; move
-# such a test here.  A new test that renders more than one tile with the
-# default thread count, or that checks a timing, belongs here as exclusive.
+# The runner's summary lists pool / single tests that kept several cores
+# busy; move such a test here.  A new test that renders more than one tile
+# with the default thread count, or that checks a timing, belongs here as
+# exclusive.
 AgentChunkCrudTest	exclusive	80	timing window (40 ms sleep vs 300 ms simulated pass)
 AgentEvalCheckTest	exclusive	119	wall-clock gate (refusal < 25 ms)
 AgentFixBlendScaleTest	exclusive	3	4.2 cores (measured)
@@ -49,7 +51,7 @@ AutoRasterizerTest	pool	25
 BDPTDepthCapMISTest	pool	347
 BDPTGuidedContinuationTest	pool	345
 BDPTMediumDeltaStrategyTest	pool	28
-BDPTStrategyBalanceTest	single	1924	3.3 cores at default threads for ~10% more throughput
+BDPTStrategyBalanceTest	single	1924	3.3 cores at default threads for ~10% more throughput; ~2900 s CPU on one thread
 BDPTZeroDensityConnectibleTest	pool	7
 BidirectionalTextureFootprintParityTest	exclusive	1	4.5 cores (measured)
 CallbackOutputRenderScopeTest	exclusive	1	4.7 cores (measured)
@@ -75,6 +77,7 @@ EnvLightBalanceTest	pool	35
 ExteriorIndexInvarianceTest	pool	3181
 FabricRenderTest	pool	49
 FrameStoreTest	exclusive	1	timing window (iterations in 500 ms)
+GeometryPanelJumpTest	exclusive	0	timing windows (30 ms negative windows pass without testing under load)
 GGXDiffuseRenderTest	exclusive	1	3.0 cores (measured)
 GGXDiffuseTransmissionTest	pool	51
 GGXHeightCorrelatedEnergyLUTTest	pool	174
@@ -90,8 +93,8 @@ LayeredWhiteFurnaceTest	pool	26
 LegacyTierRenderIdentityTest	pool	52
 LightSoloTest	exclusive	4	3.1 cores (measured)
 LuminarySamplerAreaTest	exclusive	1197	multi-threaded 96x96 renders (Q, D) and child-process renders (F); D checks multi-thread determinism
-MediumEnclosureConnectibilityTest	single	466	1.6 cores (48x48 films)
-MediumInsideOutsideInvariantTest	single	724	1.7 cores over the whole run (64x64 deep-fog rows)
+MediumEnclosureConnectibilityTest	single	466	1.6 cores (48x48 films); 944 s on one thread
+MediumInsideOutsideInvariantTest	single	724	1.7 cores over the whole run (64x64 deep-fog rows); ~1350 s on one thread
 MeshClosestPointTest	pool	39
 MeshInteriorSignalTest	exclusive	4	wall-clock gates (weld and certification ms budgets)
 MLTMutationScheduleTest	pool	5
@@ -113,7 +116,7 @@ RandomWalkFogEnergyTest	pool	318
 RandomWalkSSSSpectralColourTest	pool	64
 RasterizeSequenceCoverageTest	pool	5
 ReferenceGraphTest	exclusive	2	wall-clock budget (< 2 s)
-RefractiveRadianceScalingTest	single	239	3.9 cores at default threads
+RefractiveRadianceScalingTest	single	239	3.9 cores at default threads; 466 s on one thread
 ReliefBidirectionalConsistencyTest	exclusive	86	5.3 cores (measured mean; peak 9.5)
 RewireConnectionTest	exclusive	2	wall-clock ratio (batch vs build time)
 SceneEditorCancelRestartTest	exclusive	10	timing window (sleep-paced drag counts)
@@ -155,6 +158,7 @@ SSSContactContinuationTest	pool	1148
 SSSExteriorIndexInvarianceTest	pool	2058
 SSSHWSSCompanionTest	pool	66
 SSSRadianceScalingTest	pool	127
+ThreadPoolExceptionSafetyTest	exclusive	2	timing window (2 ms settle)
 TidalStonesShowcaseTest	exclusive	386	wall-clock cost gate (live/no-signal render ratio <= 1.15)
 TimeIndexedMotionBlurTest	exclusive	398	all-core child renders; section D times renders
 TranslucentLobeConsistencyTest	pool	12
