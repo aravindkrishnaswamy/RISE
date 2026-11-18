@@ -19,6 +19,7 @@
 
 #include <iostream>
 #include <type_traits>
+#include <vector>
 #include <utility>
 
 #include "../src/Library/Utilities/IORStack.h"
@@ -137,6 +138,109 @@ static void TestCannotPopEnvironment( const IObject* stub )
 	std::cout << "TestCannotPopEnvironment passed!" << std::endl;
 }
 
+static void AssertEnclosures(
+	const IORStack& stack,
+	const std::vector<const IObject*>& expected
+	)
+{
+	std::vector<const IObject*> actual;
+	stack.AppendObjectStack( actual );
+	Check( actual == expected, "enclosure sequence matches" );
+	Check( stack.topObject() == ( expected.empty() ? 0 : expected.back() ),
+		"top object matches enclosure tail" );
+	Check( stack.DebugOpticalStackIsEnclosureSubsequence(),
+		"optical stack remains an enclosure subsequence" );
+}
+
+static void TestDielectricOnlyBehaviorIsUnchanged(
+	const IObject* outer,
+	const IObject* inner
+	)
+{
+	std::cout << "Running TestDielectricOnlyBehaviorIsUnchanged..." << std::endl;
+
+	IORStack stack( 1.0 );
+	AssertEnclosures( stack, std::vector<const IObject*>() );
+
+	stack.SetCurrentObject( outer );
+	Check( !stack.containsCurrent(), "outer absent before optical push" );
+	stack.push( 1.5 );
+	Check( stack.top() == 1.5, "outer optical push updates IOR" );
+	Check( stack.containsCurrent(), "outer present after optical push" );
+	AssertEnclosures( stack, std::vector<const IObject*>( 1, outer ) );
+
+	stack.SetCurrentObject( inner );
+	Check( !stack.containsCurrent(), "inner absent before optical push" );
+	stack.push( 1.33 );
+	Check( stack.top() == 1.33, "inner optical push updates IOR" );
+	Check( stack.containsCurrent(), "inner present after optical push" );
+	std::vector<const IObject*> nested;
+	nested.push_back( outer );
+	nested.push_back( inner );
+	AssertEnclosures( stack, nested );
+
+	stack.pop();
+	Check( stack.top() == 1.5, "inner pop restores outer IOR" );
+	Check( !stack.containsCurrent(), "inner absent after pop" );
+	AssertEnclosures( stack, std::vector<const IObject*>( 1, outer ) );
+
+	stack.SetCurrentObject( outer );
+	stack.pop();
+	Check( stack.top() == 1.0, "outer pop restores environment IOR" );
+	Check( !stack.containsCurrent(), "outer absent after pop" );
+	AssertEnclosures( stack, std::vector<const IObject*>() );
+
+	std::cout << "TestDielectricOnlyBehaviorIsUnchanged passed!" << std::endl;
+}
+
+static void TestEnclosureOnlyState(
+	const IObject* optical,
+	const IObject* enclosureOnly
+	)
+{
+	std::cout << "Running TestEnclosureOnlyState..." << std::endl;
+
+	IORStack stack( 1.0 );
+	stack.SetCurrentObject( optical );
+	stack.push( 1.5 );
+	stack.SetCurrentObject( enclosureOnly );
+	stack.pushEnclosure();
+
+	Check( stack.top() == 1.5, "enclosure-only push preserves optical IOR" );
+	Check( !stack.containsCurrent(), "enclosure-only object is not optical" );
+	Check( stack.containsCurrentEnclosure(), "enclosure-only object is tracked" );
+	std::vector<const IObject*> nested;
+	nested.push_back( optical );
+	nested.push_back( enclosureOnly );
+	AssertEnclosures( stack, nested );
+
+	IORStack copy( stack );
+	Check( copy.top() == 1.5, "enclosure copy preserves optical IOR" );
+	Check( !copy.containsCurrent(), "enclosure copy preserves optical absence" );
+	Check( copy.containsCurrentEnclosure(), "enclosure copy preserves membership" );
+	AssertEnclosures( copy, nested );
+
+	IORStack assigned( 1.0 );
+	assigned = stack;
+	Check( assigned.top() == 1.5, "enclosure assignment preserves optical IOR" );
+	Check( !assigned.containsCurrent(), "enclosure assignment preserves optical absence" );
+	Check( assigned.containsCurrentEnclosure(),
+		"enclosure assignment preserves membership" );
+	AssertEnclosures( assigned, nested );
+
+	stack.popEnclosure();
+	Check( stack.top() == 1.5, "enclosure pop preserves optical IOR" );
+	Check( !stack.containsCurrentEnclosure(), "enclosure pop removes membership" );
+	AssertEnclosures( stack, std::vector<const IObject*>( 1, optical ) );
+
+	stack.SetCurrentObject( optical );
+	stack.pop();
+	Check( stack.top() == 1.0, "final optical pop restores environment" );
+	AssertEnclosures( stack, std::vector<const IObject*>() );
+
+	std::cout << "TestEnclosureOnlyState passed!" << std::endl;
+}
+
 static void TestMoveInlineAndSpilled( const IObject* stub )
 {
 	std::cout << "Running TestMoveInlineAndSpilled..." << std::endl;
@@ -203,15 +307,20 @@ static void TestMoveInlineAndSpilled( const IObject* stub )
 int main()
 {
 	StubObject* stub = new StubObject();
+	StubObject* secondStub = new StubObject();
 	stub->addref();
+	secondStub->addref();
 
 	TestEnvironmentIOR();
 	TestPushPop( stub );
 	TestCopyPreservesTop( stub );
 	TestCannotPopEnvironment( stub );
+	TestDielectricOnlyBehaviorIsUnchanged( stub, secondStub );
+	TestEnclosureOnlyState( stub, secondStub );
 	TestMoveInlineAndSpilled( stub );
 
 	stub->release();
+	secondStub->release();
 
 	std::cout << "\nIORStackTest: " << gPassCount << " passed, " << gFailCount << " failed." << std::endl;
 	return gFailCount == 0 ? 0 : 1;

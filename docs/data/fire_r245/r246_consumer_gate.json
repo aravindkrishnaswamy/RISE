@@ -1,0 +1,23 @@
+{
+  "scope": "preview_and_native_spectrum_consumer_wiring_synthetic_controls_only",
+  "status": "passed_pending_fresh_review",
+  "launch_permitted": false,
+  "actual_rendered_evidence": false,
+  "native_centerline_support": "layers_0_159",
+  "common_height_processing_implemented": false,
+  "controls": [
+    "strict metadata contract forwarded to preview and spectrum",
+    "original eighty-layer fixed FOV/render profile",
+    "exact canonical scene/all-pair receipt",
+    "recomputed taller autoframing receipt RED",
+    "foreign frame receipt RED",
+    "native160layer support cannot use old80layer label",
+    "old r244 identities and controls unchanged"
+  ],
+  "log_sha256": {
+    "r246_consumer_build.v1.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "r246_consumer_build.v2.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "r246_consumer_gate.v1.log": "dd6c54d0615dbf789c5daf67f211dae8ee62a41f4e9dc4665cb1daad981b0d6f",
+    "r246_consumer_legacy_gate.v1.log": "67b2b84e77a763cd581c688cc12e3239e3c53e5bf398b4b370163da8ca072554"
+  }
+}

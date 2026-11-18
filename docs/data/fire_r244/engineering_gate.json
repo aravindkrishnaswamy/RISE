@@ -1,0 +1,296 @@
+{
+  "status": "self_gate_passed_independent_review_pending",
+  "canonical_baseline_case_id": "73d1cac70e5e68b697e0462ef3b5784c606606372397823d08cce9815b833b1e",
+  "lateral_case_id": "a9369e770465bd76e2cc8d5fc3b79e7c2aac038ecb14a0e4424a97ba2f98d586",
+  "source_sha256": {
+    "src/Library/Utilities/FireCase.cpp": "a9b4e0f334137580d7658d9d394398aecec12bcac4f71e996b84dff7e5d2a2f4",
+    "src/Library/Utilities/FireCase.h": "1268ee5aa6cbbb8b8fe9b1157f83b6d0b6aa89b5bde57c7d175b56b4d9709581",
+    "tests/FireCaseTest.cpp": "0a0259052501534117c4e84bd0ce165750f58d9c5f418b8863b8785eb47a6f6f",
+    "tests/FireSequenceTest.cpp": "83dd2ab42b0de4975edd8df78ec63963a2711c48fdbb231288f7e47382884e0d",
+    "tests/fire_production_fp64/SourceManifest.h": "c030e4409d8745439494f69aa63b406ac32582c337fe5e6f33fbedae797bf150",
+    "tests/fire_production_trace/SourceManifest.h": "636c1726776b72bcbdbae810b0ccd95fefe54da94bbbc7a18459696bfada2634",
+    "tools/fire/r244_case_mutation_gate.py": "e500924c8a72003f79b0540a0dcda18a1514764bae58fda6bfee1f048ac57bac"
+  },
+  "tested_executable_sha256": "05ebfa2e21152f3e1ed74633c449c6a625a519d03dd0d942187a707c315c3fe2",
+  "steps": [
+    {
+      "name": "make_clean",
+      "receipt": {
+        "command": [
+          "make",
+          "-C",
+          "build/make/rise",
+          "clean"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:11:50.043253+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/make_clean.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/make_clean.log",
+      "log_sha256": "09155cd7b2f99672f8f213b798682fc13fdd3602f019b4c35e86d49af827ebe1",
+      "ignored_environment_warnings": []
+    },
+    {
+      "name": "make_all",
+      "receipt": {
+        "command": [
+          "make",
+          "-C",
+          "build/make/rise",
+          "-j8",
+          "all"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:12:38.089517+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/make_all.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/make_all.log",
+      "log_sha256": "e0612ce2979f69ff5be3dafba6e56470383d512c1d52f951f0be0c585ad6da29",
+      "ignored_environment_warnings": []
+    },
+    {
+      "name": "case_final_build",
+      "receipt": {
+        "command": [
+          "make",
+          "-C",
+          "build/make/rise",
+          "build-test/FireCaseTest"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:23:30.560987+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/case_final_build.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/case_final_build.log",
+      "log_sha256": "ac2e91a34dad71ac3b8e70982d018840f2bf82f8d134545925d3183625b540f0",
+      "ignored_environment_warnings": []
+    },
+    {
+      "name": "case_final_test",
+      "receipt": {
+        "command": [
+          "./bin/tests/FireCaseTest"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:23:30.914453+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/case_final_test.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/case_final_test.log",
+      "log_sha256": "62d4c78e2d8616ff5a735ad7ddee1404f3041f027a4e0e6972eb3d22dc886cdc",
+      "ignored_environment_warnings": []
+    },
+    {
+      "name": "sequence_final_build",
+      "receipt": {
+        "command": [
+          "make",
+          "-C",
+          "build/make/rise",
+          "-j8",
+          "build-test/FireSequenceTest"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:16:41.726266+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/sequence_final_build.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/sequence_final_build.log",
+      "log_sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+      "ignored_environment_warnings": []
+    },
+    {
+      "name": "r244_gate",
+      "receipt": {
+        "command": [
+          "./bin/tests/FireSequenceTest",
+          "--fire-r244-domain-study-gate"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:16:43.157691+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/r244_gate.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/r244_gate.log",
+      "log_sha256": "6850c39d7e77c5356ccb7c9d672b0b73deaccc7e68c837cc617fbe54c3513633",
+      "ignored_environment_warnings": []
+    },
+    {
+      "name": "publication_gate",
+      "receipt": {
+        "command": [
+          "./bin/tests/FireSequenceTest",
+          "--fire-r224-window-publication-gate"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:16:44.564762+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/publication_gate.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/publication_gate.log",
+      "log_sha256": "dcb7df822691a59f6eefcd8379a3843cea0d95c7d028a13e4b4b2691c6cecafc",
+      "ignored_environment_warnings": []
+    },
+    {
+      "name": "burner_owner_gate",
+      "receipt": {
+        "command": [
+          "./bin/tests/FireSequenceTest",
+          "--fire-production-burner-owner-gate"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:17:05.264239+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/burner_owner_gate.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/burner_owner_gate.log",
+      "log_sha256": "18688bbcd8be32d40035a4b12c6360ca15bf9709267d3f71fcfe50046214127e",
+      "ignored_environment_warnings": []
+    },
+    {
+      "name": "burner_launcher_gate",
+      "receipt": {
+        "command": [
+          "./bin/tests/FireSequenceTest",
+          "--fire-production-burner-launcher-gate"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:17:18.554494+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/burner_launcher_gate.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/burner_launcher_gate.log",
+      "log_sha256": "9b044274d536e2a04f6cfe5913b4c1fa255c8267c41e93d493cfdfa7a3ca9cef",
+      "ignored_environment_warnings": []
+    },
+    {
+      "name": "mutation_gate_v6",
+      "receipt": {
+        "command": [
+          "python3",
+          "tools/fire/r244_case_mutation_gate.py",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/mutations.v6"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:23:52.245128+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/mutation_gate_v6.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/mutation_gate_v6.log",
+      "log_sha256": "54948bc48170b251c18d8862cb3edd3c0e67cdefd14646b5a2f0f8a09c8ea7e9",
+      "ignored_environment_warnings": []
+    },
+    {
+      "name": "physical_flux_gate",
+      "receipt": {
+        "command": [
+          "./bin/tests/FireSequenceTest",
+          "--fire-r241-physical-flux-gate"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:23:52.367864+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/physical_flux_gate.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/physical_flux_gate.log",
+      "log_sha256": "660750f5528a9b36f5415f789c9c6bb62a878264578731917fe3e0e602607c61",
+      "ignored_environment_warnings": []
+    },
+    {
+      "name": "kernel_sweep",
+      "receipt": {
+        "command": [
+          "./bin/tests/FireSequenceTest",
+          "--fire-production-metal-fp64-kernel-sweep"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:24:36.333424+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/kernel_sweep.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/kernel_sweep.log",
+      "log_sha256": "d2e47eef8b942ae6a21d3730110ba9c4d6846c8f9d29b92c9217ad72b62e0ed5",
+      "ignored_environment_warnings": []
+    },
+    {
+      "name": "xcode_deployment",
+      "receipt": {
+        "command": [
+          "xcodebuild",
+          "-project",
+          "build/XCode/rise/rise.xcodeproj",
+          "-scheme",
+          "RISE-GUI",
+          "-configuration",
+          "Deployment",
+          "-derivedDataPath",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/xcode_data",
+          "-jobs",
+          "8",
+          "clean",
+          "build"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:25:31.490777+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/xcode_deployment.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/xcode_deployment.log",
+      "log_sha256": "559a2e2894868adecafdcf90dfcf3a9b2c43afa3b98a15f804d794bd30c5c05c",
+      "ignored_environment_warnings": [
+        "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/build/XCode/rise/rise.xcodeproj: RISE-GUI: ld: warning: search path '/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/extlib/oidn/install/lib' not found",
+        "2026-09-28 10:25:28.662 appintentsmetadataprocessor[83421:1121973099] warning: Metadata extraction skipped. No AppIntents.framework dependency found."
+      ]
+    },
+    {
+      "name": "xcode_opto",
+      "receipt": {
+        "command": [
+          "xcodebuild",
+          "-project",
+          "build/XCode/rise/rise.xcodeproj",
+          "-scheme",
+          "RISE-GUI-Opto",
+          "-configuration",
+          "Opto",
+          "-derivedDataPath",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/xcode_data",
+          "-jobs",
+          "8",
+          "clean",
+          "build"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:26:55.601427+00:00"
+      },
+      "receipt_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/xcode_opto.json",
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/xcode_opto.log",
+      "log_sha256": "d22f2353f97329f11fb646910344c4da8d32f922c1e373e909f80e295f2cd982",
+      "ignored_environment_warnings": [
+        "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/build/XCode/rise/rise.xcodeproj: RISE-GUI: ld: warning: search path '/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/extlib/oidn/install/lib' not found",
+        "2026-09-28 10:26:53.103 appintentsmetadataprocessor[84244:1121976060] warning: Metadata extraction skipped. No AppIntents.framework dependency found."
+      ]
+    }
+  ],
+  "mutations": {
+    "results": [
+      {
+        "name": "sanitized_green",
+        "exit_code": 0,
+        "expected_exit_code": 0,
+        "source_sha256": "a9b4e0f334137580d7658d9d394398aecec12bcac4f71e996b84dff7e5d2a2f4",
+        "log_sha256": "fbe4f81bd6490313cb832247e8504289239e875ee1c036201971e347ddc26e33"
+      },
+      {
+        "name": "source_rehash_red",
+        "exit_code": 1,
+        "expected_exit_code": 1,
+        "source_sha256": "88ac9c4d7c90cb2c5f4ae95be8c51cfa24ed43819789bac2079217f708146774",
+        "log_sha256": "eaa6cc07e21de38e2c234537c98ca6450e936aaaffdc84461e5495de1b9a44aa"
+      },
+      {
+        "name": "pilot_translation_red",
+        "exit_code": 1,
+        "expected_exit_code": 1,
+        "source_sha256": "4cfb0ecb5f53c071eb60f06c89c45ad16565168e9ced35e24205149ee3ac56a3",
+        "log_sha256": "23833d362d77a591039c87618157bb5a1edb54006cd38e0ba0f5baa3f9331301"
+      }
+    ],
+    "finished_utc": "2026-09-28T17:23:52.242675+00:00"
+  },
+  "limitations": [
+    "Sanitizer checks are scoped to r244 invariants; they do not certify historical FP-sensitive source digests. Full native tests enforce those original expectations.",
+    "Early standalone link/setup and instrumented historical-digest failures remain in the external gate directory.",
+    "Only FireCase.cpp and FireCase.h changed under src/Library; no solver kernel or physical gate was edited."
+  ]
+}

@@ -40,6 +40,7 @@ namespace RISE
 		class FrameStore;
 
 		class FrameSink : public virtual IRasterizerOutput,
+		                  public virtual IFireRasterizerOutputRoute,
 		                  public virtual Reference
 		{
 		public:
@@ -73,6 +74,8 @@ namespace RISE
 				const unsigned int  frame ) override;
 
 			void SetCameraExposureCompensationEV( Scalar ev ) override;
+			FireArtifactRouteKind FireArtifactRoute() const override
+				{ return FireArtifactRouteKind::DisplayOnly; }
 
 		protected:
 			virtual ~FrameSink();

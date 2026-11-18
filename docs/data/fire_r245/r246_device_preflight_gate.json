@@ -1,0 +1,114 @@
+{
+  "exit_code": 0,
+  "completed_utc": "2026-10-01T08:24:39.625931+00:00",
+  "stages": [
+    {
+      "stage": "legacy_domain",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:20:27.938305+00:00",
+      "log_sha256": "67b2b84e77a763cd581c688cc12e3239e3c53e5bf398b4b370163da8ca072554"
+    },
+    {
+      "stage": "physical",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:20:28.064538+00:00",
+      "log_sha256": "660750f5528a9b36f5415f789c9c6bb62a878264578731917fe3e0e602607c61"
+    },
+    {
+      "stage": "eos",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:20:28.439427+00:00",
+      "log_sha256": "355fdb6505f55521249cafd3e62e176a180ad3e60497fadc20353554dc367b7f"
+    },
+    {
+      "stage": "target",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:20:32.152032+00:00",
+      "log_sha256": "8efb3a29082e95f5341c2bc85a8475633212a5b787913bb13a87a61b8d3f80ae"
+    },
+    {
+      "stage": "owner",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:20:52.367279+00:00",
+      "log_sha256": "bdd22023c472817317c9a46873a298b8e9c1b18971638a4bcfb13097bfe7dbfb"
+    },
+    {
+      "stage": "make_clean",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:20:53.072124+00:00",
+      "log_sha256": "09155cd7b2f99672f8f213b798682fc13fdd3602f019b4c35e86d49af827ebe1"
+    },
+    {
+      "stage": "make_all",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:21:41.220274+00:00",
+      "log_sha256": "e0612ce2979f69ff5be3dafba6e56470383d512c1d52f951f0be0c585ad6da29"
+    },
+    {
+      "stage": "sequence_build",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:22:32.640787+00:00",
+      "log_sha256": "2816c30bf666f29da66e106d51b5724b88b5c10aaa8a7488cd24eed6f8cf9844"
+    },
+    {
+      "stage": "launcher_gate",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:22:33.812788+00:00",
+      "log_sha256": "dd6c54d0615dbf789c5daf67f211dae8ee62a41f4e9dc4665cb1daad981b0d6f"
+    },
+    {
+      "stage": "case_build",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:22:39.036001+00:00",
+      "log_sha256": "ac2e91a34dad71ac3b8e70982d018840f2bf82f8d134545925d3183625b540f0"
+    },
+    {
+      "stage": "case_test",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:22:39.347989+00:00",
+      "log_sha256": "62d4c78e2d8616ff5a735ad7ddee1404f3041f027a4e0e6972eb3d22dc886cdc"
+    },
+    {
+      "stage": "deployment_clean",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:22:40.389356+00:00",
+      "log_sha256": "29189e3a55e44f759eb7f2a9ec69170d9a636e5a26bfaa1632a268174e012a49"
+    },
+    {
+      "stage": "deployment_build",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:23:23.450252+00:00",
+      "log_sha256": "960dc590eb6e2b88df53171e9d3f1eccc76aa8452bf0de93e632b8d8305671a3"
+    },
+    {
+      "stage": "opto_clean",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:23:24.239388+00:00",
+      "log_sha256": "f174408c747302b3cbe962207db9576b7a80f9f1306b67095eebe024f9f566b0"
+    },
+    {
+      "stage": "opto_build",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T08:24:39.624545+00:00",
+      "log_sha256": "b5a9207f42f2c402351bc08030e8eda06b3db55532a6a2adf53fd681c9584b4d"
+    }
+  ],
+  "scope": "device preallocation and launcher foundation validation; not simulation or physical qualification",
+  "external_directory": "/Volumes/SSD/RISE/fire_production_calibration/r246_device_validation.v1",
+  "status": "passed_pending_fresh_implementation_reviews",
+  "launch_permitted": false,
+  "warnings": {
+    "owned": 0,
+    "discounted": [
+      "documented missing checkout OIDN path",
+      "AppIntents metadata notice"
+    ]
+  },
+  "source_commit": "81497ebd",
+  "source_sha256": {
+    "src/Library/Utilities/FireProductionAdvectionMac.mm": "6a5c4543d3e5b61c76f1458346d91e94291ab10322c3f542e2870ec83f309a3d",
+    "src/Library/Utilities/FireProductionForce.h": "67cbec521d69fcc0eae38a55d164988594e6c091b25579c7f9075172fd79f512",
+    "src/Library/Utilities/FireProductionForceUnsupported.cpp": "3da763afeb5f7c696e19a6e9e46475126711ff457c66d717c1fd0e9310a84a16",
+    "tests/FireSequenceTest.cpp": "8842b90d3baa69b265e19adb0cff4920af49fc8aa6e0442000c9fd1dc9a8bca6"
+  }
+}

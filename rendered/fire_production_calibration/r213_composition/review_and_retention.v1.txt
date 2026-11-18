@@ -1,0 +1,36 @@
+schema rise.fire.r213.review-and-retention.v1
+reviewed_code_and_document_commit a1b327ee
+fresh_reviewer_1 r213_hardened_review1
+fresh_reviewer_1_P1 0
+fresh_reviewer_1_P2 0
+fresh_reviewer_2 r213_hardened_review2
+fresh_reviewer_2_P1 0
+fresh_reviewer_2_P2 0
+snapshot_tests 6_passed
+cost_tests 6_passed
+column_tests 1_passed
+native_comparison_steps 8
+native_comparison_authority canonical_persistent_payload_excluding_only_producerBuildId
+migration_authority false
+formal_three_way_verdict pending_shared_input_and_additive_terms
+fixed_k_qualification pending
+full_statistics_window pending
+new_movie none
+
+Retention: oracle_compositions.v1.tar.gz.part-000 onward, ordered by the
+three-digit suffix, reconstruct the gzip tar retaining oracle_n8.v1 (the
+diagnostic-only failed attempt), oracle_n8.v2, oracle_n16.v1 and oracle_n32.v1.
+hot_snapshots.v1.tar.gz.part-000 onward reconstruct the gzip tar retaining
+baseline_hot_snapshots.v1 and candidate_hot_snapshots.v1. Parts are 48,000,000
+bytes except the final part. The *.parts.sha256 manifests bind every part;
+evidence_roots.v1.jsonl additionally binds them with payload Merkle v2 roots.
+The archive member paths are relative to this directory. Restore into a new
+empty staging directory, verify the member payload sidecars, then use the
+historical directory names for the reporting tools. Never extract over a live
+run or overwrite any preserved artifact. Original live directories remain
+untouched on the durable worker. Binary executables are frozen locally; their
+exact source commits and executed qualification receipts are retained.
+
+Code/document review above covers the stated source commit. The subsequent
+packaging commit adds immutable measurements and archived payloads only; it
+does not change the reviewed solver, diagnostic or reporting implementation.

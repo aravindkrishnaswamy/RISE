@@ -2746,6 +2746,7 @@ int main() {
 	printf("#ifndef MICROFACET_ENERGY_LUT_\n");
 	printf("#define MICROFACET_ENERGY_LUT_\n\n");
 	printf("#include \"Math3D/Math3D.h\"\n");
+	printf("#include \"GaussLegendreQuadrature.h\"\n");
 	printf("#include \"Optics.h\"\n");
 	printf("#include \"math_utils.h\"\n");
 	printf("#include <array>\n\n");
@@ -3817,48 +3818,9 @@ int main() {
 	fputs( kHandMaintainedDL77AnisoBlock, stdout );
 	printf("\n");
 
-	// Fresnel averaging via Gauss-Legendre quadrature
-	printf("\t/// 21-point Gauss-Legendre quadrature nodes on [0,1].\n");
-	printf("\tstatic const int GL_N = 21;\n");
-	printf("\tstatic const Scalar GL_nodes[21] = {\n\t\t");
-	// 21-point GL nodes on [0,1] (transformed from [-1,1])
-	double gl_nodes_11[] = {
-		-0.9937521706203895, -0.9672268385663063, -0.9200993341504008,
-		-0.8533633645833173, -0.7684399634756779, -0.6671388041974123,
-		-0.5516188358872198, -0.4243421202074388, -0.2880213168024011,
-		-0.1455618541608951, 0.0,
-		0.1455618541608951, 0.2880213168024011, 0.4243421202074388,
-		0.5516188358872198, 0.6671388041974123, 0.7684399634756779,
-		0.8533633645833173, 0.9200993341504008, 0.9672268385663063,
-		0.9937521706203895
-	};
-	double gl_weights_11[] = {
-		0.0160172282577743, 0.0369537897708525, 0.0571344254268572,
-		0.0761001136283793, 0.0934444234560339, 0.1087972991671484,
-		0.1218314160537285, 0.1322689386333375, 0.1398873947910732,
-		0.1445244789050542, 0.1460811308764353,
-		0.1445244789050542, 0.1398873947910732, 0.1322689386333375,
-		0.1218314160537285, 0.1087972991671484, 0.0934444234560339,
-		0.0761001136283793, 0.0571344254268572, 0.0369537897708525,
-		0.0160172282577743
-	};
-	for(int i = 0; i < 21; i++) {
-		double node_01 = 0.5 * (gl_nodes_11[i] + 1.0);
-		printf("%.16f", node_01);
-		if(i < 20) printf(", ");
-		if((i+1) % 4 == 0) printf("\n\t\t");
-	}
-	printf("\n\t};\n\n");
-
-	printf("\t/// 21-point Gauss-Legendre quadrature weights on [0,1].\n");
-	printf("\tstatic const Scalar GL_weights[21] = {\n\t\t");
-	for(int i = 0; i < 21; i++) {
-		double weight_01 = 0.5 * gl_weights_11[i];
-		printf("%.16f", weight_01);
-		if(i < 20) printf(", ");
-		if((i+1) % 4 == 0) printf("\n\t\t");
-	}
-	printf("\n\t};\n\n");
+	// Fresnel averaging uses the shared GaussLegendre21 rule (no table is emitted here).
+	printf("\t// The 21-point Gauss-Legendre rule on [0,1] is the shared GaussLegendre21\n");
+	printf("\t// (GaussLegendreQuadrature.h); there is deliberately no copy of it here.\n\n");
 
 	// ComputeFresnelAvg template function
 	printf("\t/// Compute the hemispherical Fresnel average for a conductor:\n");
@@ -3874,14 +3836,14 @@ int main() {
 	printf("\t\telse\n");
 	printf("\t\t\tt = Vector3Ops::Normalize( Vector3Ops::Cross( n, Vector3(0,1,0) ) );\n\n");
 	printf("\t\tT sum = 0.0;\n");
-	printf("\t\tfor( int i = 0; i < GL_N; i++ )\n");
+	printf("\t\tfor( unsigned int i = 0; i < GaussLegendre21::NodeCount; i++ )\n");
 	printf("\t\t{\n");
-	printf("\t\t\tconst Scalar mu = GL_nodes[i];\n");
+	printf("\t\t\tconst Scalar mu = GaussLegendre21::Nodes[i];\n");
 	printf("\t\t\tconst Scalar sinTheta = sqrt( r_max(0.0, 1.0 - mu*mu) );\n");
 	printf("\t\t\t// Direction at angle acos(mu) from normal\n");
 	printf("\t\t\tconst Vector3 v = n * (-mu) + t * sinTheta;\n");
 	printf("\t\t\tconst T F = Optics::CalculateConductorReflectance<T>( v, n, Ni, Nt, kt );\n");
-	printf("\t\t\tsum = sum + F * (2.0 * mu * GL_weights[i]);\n");
+	printf("\t\t\tsum = sum + F * (2.0 * mu * GaussLegendre21::Weights[i]);\n");
 	printf("\t\t}\n");
 	printf("\t\treturn sum;\n");
 	printf("\t}\n\n");

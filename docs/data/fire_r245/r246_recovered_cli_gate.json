@@ -1,0 +1,53 @@
+{
+  "schema": "rise.fire.r246.recovered-cli-gate.v1",
+  "status": "accepted_zero_p1_p2",
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "implementation_sha256": "3249a19b4bfc9a19c20e2d5d0a74fb2b85b9a7698e17e79f37d18f6c51130725",
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_cli_runtime.v1",
+  "executable_sha256": "ed7cf2c3dce91d1d801800341381c4dd60b7ffafb10ca431c4c879322e8308b1",
+  "build_identity_sha256": "052d2afedb127964c8379a41e1da80095f591c8dd6e7fc20977dc90f3599e45e",
+  "embedded_revision": "478fde402e178255e358bd913cd0716b7c699c6c",
+  "embedded_dirty_state": "dirty",
+  "consumer_build": "a862d3b95764747c9b363dfda81f0d6be95d64e28c5f22c1e1e168e95a5fdf6b",
+  "external_output": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_cli_validation.v1",
+  "build_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_cli.v1.build.log",
+  "build_log_sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+  "build_exit_code": 0,
+  "controls": [
+    {
+      "name": "actual",
+      "exit_code": 0,
+      "expected_exit_code": 0
+    },
+    {
+      "name": "source_red",
+      "exit_code": 98,
+      "expected_exit_code": 98
+    },
+    {
+      "name": "snapshot_red",
+      "exit_code": 98,
+      "expected_exit_code": 98
+    },
+    {
+      "name": "prepared_red",
+      "exit_code": 98,
+      "expected_exit_code": 98
+    }
+  ],
+  "evidence_sha256": {
+    "actual.log": "9923f474ff46950b1c6d02032d2e048c3fe358d500302ea28031b627ce8e686e",
+    "completion.json": "f0b0c84c7e3cad9f8b98f98401b854b8dec5bbbb83e022719711dd6f42ac1126",
+    "independent_identity.json": "67a44a919764ee67fdee6d0ddca0afc868fdacfc18070be0337a3701493b322e",
+    "prepared_red.log": "0b149acc069d3eac403fc8512fd5b24d48126dd0312b69e4b5fd39230f9a42dd",
+    "snapshot_red.log": "1d8f9e6a96b1e9d96a52aef2b94eea8f98672eeb494ae8837740195eb35f57cf",
+    "source_red.log": "d30a02bdb7094f8a5760fd48f3dbc47e0488ec1474f3043124333629a503b73a"
+  },
+  "limitations": [
+    "Inspect composition loads immutable captured checkpoint/history plus exact prepared/snapshot admission; no native VDB fields or render and no prior full gate rerun.",
+    "Preview and spectrum launch branches plus new reader-issued consumer result receipt are source-reviewed only; launches await reviewed full signed budget audit.",
+    "No full recovery acceptance or original exit98 relabeling."
+  ],
+  "completed_utc": "2026-10-04T11:15:42.935833+00:00"
+}

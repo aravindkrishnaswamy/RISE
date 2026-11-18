@@ -1,17 +1,16 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  IORStackSeeding.h - Seed a light / eye subpath's IORStack so that
-//    `containsCurrent()` reports the correct inside/outside state
-//    when the subpath's origin is physically inside one or more
-//    dielectric (or otherwise refractive) objects.
+//  IORStackSeeding.h - Seed a light / eye subpath's optical and enclosure
+//    stacks so that refraction and medium lookup both start from the
+//    correct nested-object state.
 //
 //  Why this exists
 //
 //    BDPT (and integrators that reuse its light subpaths, e.g. VCM)
-//    used to initialize the IOR stack to just the environment IOR
-//    and rely on the stack to reflect the ray's current medium.  That
-//    works for rays starting in free space — the stack grows as the
-//    ray enters dielectrics and shrinks as it exits them.  It FAILS
+//    used to initialize transport state to just the environment IOR
+//    and rely on later boundary hits to establish both logical stacks.
+//    That works for rays starting in free space — both stacks grow as
+//    the ray enters dielectrics and shrink as it exits them.  It FAILS
 //    silently for light subpaths whose origin is a luminaire sealed
 //    inside nested dielectrics, and for eye subpaths whose camera
 //    sits inside a dielectric (submerged camera, camera inside a
@@ -72,6 +71,7 @@
 //
 //    Objects confirmed in both directions are pushed in OUTERMOST-FIRST
 //    order (stack convention: bottom = outermost, top = innermost).
+//    The dielectric push operation seeds both logical stacks.
 //    Order is determined by each containing object's FIRST exit's
 //    probe-step index: smaller index = closer to seed = innermost.
 //    Insertion-sort by firstExitStep descending and push in that order.
@@ -110,6 +110,14 @@
 //    shared with the walks' unpushed-exit resolution
 //    (`OpenSheetEnclosesCrossing`).
 //
+//    Fire r40: exact NullBoundaryMaterial objects (`null_boundary`) are
+//    also probe participants.  They are closed enclosure-only boundaries:
+//    a containing null boundary seeds the ENCLOSURE stack only
+//    (`IORStack::pushEnclosure`), never the optical stack, so refraction
+//    decisions are unchanged while innermost-exclusive medium lookup
+//    starts from the right nested object.  Lanes that meet one seed on
+//    their own (the shared lane record has no enclosure-only flag).
+//
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 23, 2026
 //  Tabs: 4
@@ -144,6 +152,7 @@
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IGeometry.h"
 #include "../Interfaces/SpecularInfo.h"
+#include "../Materials/NullBoundaryMaterial.h"
 #include "../Intersection/RayIntersection.h"
 
 namespace RISE
@@ -187,7 +196,22 @@ namespace RISE
 			// False for an ordinary `canRefract` medium, which pushes
 			// its own distinct `ior` as before.
 			bool repushParentIor;
+			// Fire r40: true for an exact NullBoundaryMaterial object --
+			// seeded with `pushEnclosure()` (enclosure stack only), never
+			// onto the optical stack.
+			bool enclosureOnly;
 		};
+
+		//! Pushes one confirmed closed probe entry onto @a stack (whose
+		//! current object the caller has set to the entry's object).
+		inline void PushProbeEntry( IORStack& stack, const ProbeEntry& e )
+		{
+			if( e.enclosureOnly ) {
+				stack.pushEnclosure();
+			} else {
+				stack.push( e.repushParentIor ? stack.top() : e.ior );
+			}
+		}
 
 		// Safety cap on the surface hits one probe walks: guards against
 		// pathological geometry (coincident faces, self-intersections)
@@ -413,6 +437,14 @@ namespace RISE
 			}
 			if( !ri.pObject || !ri.pMaterial ) {
 				return kMembershipBlock;
+			}
+			// Fire r40: an exact null boundary is a closed, enclosure-only
+			// medium boundary with no index of its own -- trackable for
+			// containment, transparent to open-sheet membership.  `info`
+			// stays the default (invalid, canRefract=false).
+			if( Implementation::IsExactNullBoundaryMaterial( ri.pMaterial ) ) {
+				info = SpecularInfo();
+				return kMembershipTransparent;
 			}
 			if( IsPolishedCoatMaterial( ri.pMaterial ) &&
 				!ri.pMaterial->IsVolumetric() &&
@@ -1456,6 +1488,10 @@ namespace RISE
 
 		inline bool MaterialMayBeTrackable( const IMaterial* pMaterial )
 		{
+			// Fire r40: null boundaries seed the enclosure stack.
+			if( Implementation::IsExactNullBoundaryMaterial( pMaterial ) ) {
+				return true;
+			}
 			if( !pMaterial || pMaterial->CouldLightPassThrough() ||
 				pMaterial->IsVolumetric() || pMaterial->GetGradedIORField() ) {
 				return true;
@@ -2142,6 +2178,11 @@ namespace RISE
 						e->firstExitStep = -1;
 						e->firstEntryStep = -1;
 						e->repushParentIor = !info.canRefract;
+						e->enclosureOnly = Implementation::IsExactNullBoundaryMaterial( ri.pMaterial );
+						if( e->enclosureOnly && pLanes ) {
+							// LaneSeed::Rec has no enclosure-only flag: lanes seed alone.
+							pLanes->diverged = true;
+						}
 						if( recordLanes && pLanes && !pLanes->diverged ) {
 							LaneSeed::Rec rec;
 							rec.pObj = ri.pObject;
@@ -2246,6 +2287,7 @@ namespace RISE
 								ce->firstExitStep = -1;
 								ce->firstEntryStep = -1;
 								ce->repushParentIor = !ctInfo.canRefract;
+								ce->enclosureOnly = Implementation::IsExactNullBoundaryMaterial( ctRi.pMaterial );
 							}
 							if( ce ) {
 								if( ctRi.geometric.TrueGeomFacing( probe.Dir() ) > 0 ) {
@@ -4651,7 +4693,7 @@ namespace RISE
 				}
 				for( std::size_t i = 0; i < orderedCount; ++i ) {
 					stack.SetCurrentObject( ordered[i]->pObj );
-					stack.push( ordered[i]->repushParentIor ? stack.top() : ordered[i]->ior );
+					PushProbeEntry( stack, *ordered[i] );
 				}
 				GradedIndexMedium::RecordAt( stack, pos );
 				return;
@@ -4801,7 +4843,7 @@ namespace RISE
 					break;
 				}
 				stack.SetCurrentObject( ordered[i]->pObj );
-				stack.push( ordered[i]->repushParentIor ? stack.top() : ordered[i]->ior );
+				PushProbeEntry( stack, *ordered[i] );
 			}
 
 			GradedIndexMedium::RecordAt( stack, pos );
@@ -4994,6 +5036,7 @@ namespace RISE
 			for( std::size_t i = 0; same && i < hero.Depth(); i++ ) {
 				same = atOrigin.ObjectAt( i ) == hero.ObjectAt( i ) && atOrigin.isOpenSheetAt( i ) == hero.isOpenSheetAt( i );
 			}
+			same = same && atOrigin.SameEnclosure( hero );	// fire r40
 			if( same ) {
 				lane = atOrigin;
 				return;
@@ -5145,6 +5188,7 @@ namespace RISE
 					for( std::size_t i = 0; same && i < hero.Depth(); i++ ) {
 						same = seeded.ObjectAt( i ) == hero.ObjectAt( i ) && seeded.isOpenSheetAt( i ) == hero.isOpenSheetAt( i );
 					}
+					same = same && seeded.SameEnclosure( hero );	// fire r40
 					if( !same ) {
 						*targets[j] = IORStack( hero.EnvironmentIOR() );
 						midTargets[m] = targets[j];
@@ -5441,7 +5485,7 @@ namespace RISE
 			const Point3& pt = ri.ptIntersection;
 			const IScene* pScene = dest.MediumProbeScene();
 
-			while( const IObject* pY = dest.topObject() ) {
+			while( const IObject* pY = dest.opticalTopObject() ) {
 				if( pY == pSheet ) {
 					break;
 				}
@@ -5481,7 +5525,7 @@ namespace RISE
 			const Scalar nm = 0
 			)
 		{
-			const IObject* pTop = dest.topObject();
+			const IObject* pTop = dest.opticalTopObject();
 			if( !pTop || pTop == pSheet ) {
 				return;
 			}
@@ -5554,7 +5598,7 @@ namespace RISE
 				// (`ResolveUnpushedExitWithMedia` breaks immediately when `pSelf` is on top).
 				ResolveUnpushedExitWithMedia( ri, pSelf, dest, nm, media, checkSelfEnclosure );
 				const bool wasPushed = dest.containsCurrent();
-				const bool wasTopSelf = ( dest.topObject() == pSelf );
+				const bool wasTopSelf = ( dest.opticalTopObject() == pSelf );
 				if( wasPushed ) {
 					dest.pop();
 					if( wasTopSelf && pScene && pScene->GetObjects() && dest.Depth() > 1 && dest.topIsOpenSheet() ) {

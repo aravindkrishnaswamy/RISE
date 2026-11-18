@@ -1,0 +1,103 @@
+{
+  "statistics_start_s": 10.466040127212182,
+  "statistics_end_s": 25.09104012721218,
+  "mass": [
+    {
+      "z": 9,
+      "height_m": 0.29063460264040464,
+      "r251_up_r08_kg_s": 0.09300822169961198,
+      "FDS_up_r08_kg_s": 0.1399660191153703,
+      "r251_up_whole_plane_kg_s": 0.11274290042229661,
+      "FDS_up_whole_plane_kg_s": 0.15322595519981436,
+      "FDS_rho_cell_centered_w_up_r08_kg_s": 0.13996928800717875,
+      "FDS_rho_cell_centered_w_net_r08_kg_s": 0.11531028042059847,
+      "r251_net_r08_kg_s": 0.06983882762675872,
+      "FDS_net_r08_kg_s": 0.11530836665078845
+    },
+    {
+      "z": 16,
+      "height_m": 0.5047864151122817,
+      "r251_up_r08_kg_s": 0.14370476652947528,
+      "FDS_up_r08_kg_s": 0.18471836410651843,
+      "r251_up_whole_plane_kg_s": 0.16899556457770493,
+      "FDS_up_whole_plane_kg_s": 0.19266792275924446,
+      "FDS_rho_cell_centered_w_up_r08_kg_s": 0.1847039058868611,
+      "FDS_rho_cell_centered_w_net_r08_kg_s": 0.1746721302868168,
+      "r251_net_r08_kg_s": 0.1218224009887194,
+      "FDS_net_r08_kg_s": 0.17468788720471218
+    },
+    {
+      "z": 32,
+      "height_m": 0.994276272190858,
+      "r251_up_r08_kg_s": 0.26331435736877457,
+      "FDS_up_r08_kg_s": 0.31062852254799667,
+      "r251_up_whole_plane_kg_s": 0.29790976313708656,
+      "FDS_up_whole_plane_kg_s": 0.34070982003614986,
+      "FDS_rho_cell_centered_w_up_r08_kg_s": 0.3106585465318709,
+      "FDS_rho_cell_centered_w_net_r08_kg_s": 0.30268124782931044,
+      "r251_net_r08_kg_s": 0.24148412963394678,
+      "FDS_net_r08_kg_s": 0.30265200714231144
+    }
+  ],
+  "halfwidths": [
+    {
+      "z": 9,
+      "height_m": 0.29063460264040464,
+      "quantity": "theta",
+      "r251_halfwidth_m": 0.06206747930566298,
+      "FDS_halfwidth_m": 0.06343824372974632,
+      "r251_center": 1236.7478916787695,
+      "FDS_center": 1051.914975236585
+    },
+    {
+      "z": 9,
+      "height_m": 0.29063460264040464,
+      "quantity": "w",
+      "r251_halfwidth_m": 0.0746055597593686,
+      "FDS_halfwidth_m": 0.07773786097068702,
+      "r251_center": 4.12317781417798,
+      "FDS_center": 4.024776165601897
+    },
+    {
+      "z": 16,
+      "height_m": 0.5047864151122817,
+      "quantity": "theta",
+      "r251_halfwidth_m": 0.06713367218504775,
+      "FDS_halfwidth_m": 0.07529962087278382,
+      "r251_center": 838.2128664978554,
+      "FDS_center": 633.6522374406891
+    },
+    {
+      "z": 16,
+      "height_m": 0.5047864151122817,
+      "quantity": "w",
+      "r251_halfwidth_m": 0.08317961036880969,
+      "FDS_halfwidth_m": 0.09327146489840415,
+      "r251_center": 4.391160446609186,
+      "FDS_center": 4.056931640992904
+    },
+    {
+      "z": 32,
+      "height_m": 0.994276272190858,
+      "quantity": "theta",
+      "r251_halfwidth_m": 0.10174868597320036,
+      "FDS_halfwidth_m": 0.1269935727099444,
+      "r251_center": 316.9713983780297,
+      "FDS_center": 202.81001737294187
+    },
+    {
+      "z": 32,
+      "height_m": 0.994276272190858,
+      "quantity": "w",
+      "r251_halfwidth_m": 0.12261432578733306,
+      "FDS_halfwidth_m": 0.13967134666258404,
+      "r251_center": 3.674833850982861,
+      "FDS_center": 3.317951874281694
+    }
+  ],
+  "heat_below_1m_kW": {
+    "r251_mean_heat_kW_m": 32.83473816401187,
+    "FDS_mean_heat_kW_m": 32.957366462595566
+  },
+  "conventions": "same native cell heights; annular means with width dx; half-width first outward crossing of half center value. RISE mass from retained checkpoint quadrature; radial profiles/HRR from235 retained frames. FDS mass centered adjacent native mass-flux faces, positive part after centering; T converted Celsius to Kelvin; W adjacent native faces centered. Statistics quadrature uses actual timestamps."
+}

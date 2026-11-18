@@ -18,6 +18,7 @@
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/IRadianceMap.h"
 #include "../Utilities/Reference.h"
+#include <atomic>
 #include <string>
 
 namespace RISE
@@ -93,6 +94,7 @@ namespace RISE
 			//! 0 is the "never built" sentinel only in concert with a null
 			//! pScene; once a scene is attached this tracks its generation.
 			unsigned int				builtLightGeneration;
+			bool					forceLightSamplerRebuild;
 
 			//! Rebuilds the cached LuminaryManager / LightSampler /
 			//! EnvironmentSampler from the currently-attached `pScene`.
@@ -191,6 +193,15 @@ namespace RISE
 			//! false; production casters never set it (cost when off is
 			//! one bool test).  Set via SetXrayViewResolve.
 			bool						bXrayViewResolve;
+			mutable std::atomic<bool>	bFirePelDiagnosticEmitted;
+			mutable std::atomic<bool>	bCompetingMediumGuideAlphaNonzero;
+			mutable std::atomic<unsigned long long>	nCompetingMediumGuideSampleCount;
+			mutable std::atomic<bool>	bCompetingMediumReachPdfMismatch;
+			mutable std::atomic<bool>	bCompetingMediumZeroSurvivalObserved;
+			mutable std::atomic<bool>	bCompetingMediumIntermediateSurvivalObserved;
+			mutable std::atomic<bool>	bCompetingMediumUnitSurvivalObserved;
+			unsigned int				nMediumContinuationRRMinDepth;
+			Scalar					dMediumContinuationRRThreshold;
 
 			//! When true, CastRay / CastRayNM / CastRayHWSS treat the scene
 			//! as a VACUUM: the enclosing-object interior medium and the
@@ -265,6 +276,32 @@ namespace RISE
 			//! ends up being.
 			void ResolveXrayView_( RayIntersection& ri, ISampler& alphaSampler ) const;
 
+			//! Internal same-segment continuations used only when traversing an
+			//! exact NullBoundaryMaterial.  skipEntryGates prevents a boundary
+			//! crossing from becoming a second depth/roulette event.
+			bool CastRayImpl_(
+				const RuntimeContext& rc, const RasterizerState& rast,
+				const Ray& ray, RISEPel& c, const RAY_STATE& rs,
+				Scalar* distance, const IRadianceMap* pRadianceMap,
+				const IORStack& ior_stack, bool skipEntryGates,
+				bool skipEntryRoulette = false,
+				bool sourceOnlySegment = false,
+				RISEPel* sameSegmentMediumSource = 0 ) const;
+			bool CastRayNMImpl_(
+				const RuntimeContext& rc, const RasterizerState& rast,
+				const Ray& ray, Scalar& c, const RAY_STATE& rs, Scalar nm,
+				Scalar* distance, const IRadianceMap* pRadianceMap,
+				const IORStack& ior_stack, bool skipEntryGates,
+				bool skipEntryRoulette = false,
+				bool sourceOnlySegment = false,
+				Scalar* sameSegmentMediumSource = 0 ) const;
+			bool CastRayHWSSImpl_(
+				const RuntimeContext& rc, const RasterizerState& rast,
+				const Ray& ray, Scalar c[SampledWavelengths::N],
+				const RAY_STATE& rs, SampledWavelengths& swl,
+				Scalar* distance, const IRadianceMap* pRadianceMap,
+				const IORStack& ior_stack, bool skipEntryGates ) const;
+
 		public:
 			//! DL-315: how many nested casts, process-wide, the stack guard
 			//! refused because the calling thread had less than the margin
@@ -280,6 +317,38 @@ namespace RISE
 				);
 
 			void AttachScene( const IScene* pScene_ );
+			void InvalidateLightSamplers()
+				{ forceLightSamplerRebuild = true; }
+
+			bool CompetingMediumGuideAlphaNonzero() const {
+				return bCompetingMediumGuideAlphaNonzero.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long CompetingMediumGuideSampleCount() const {
+				return nCompetingMediumGuideSampleCount.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumReachPdfMismatch() const {
+				return bCompetingMediumReachPdfMismatch.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumZeroSurvivalObserved() const {
+				return bCompetingMediumZeroSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumIntermediateSurvivalObserved() const {
+				return bCompetingMediumIntermediateSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumUnitSurvivalObserved() const {
+				return bCompetingMediumUnitSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			void SetMediumContinuationRoulettePolicy(
+				const unsigned int minDepth, const Scalar threshold ) {
+				nMediumContinuationRRMinDepth = minDepth;
+				dMediumContinuationRRThreshold = threshold;
+			}
 
 			//! Tells the ray caster to cast the specified ray into the scene
 			/// \return TRUE if the cast ray results in an intersection, FALSE otherwise

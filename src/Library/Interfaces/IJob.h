@@ -4715,6 +4715,159 @@ namespace RISE
         virtual bool AddRoughDielectricMaterial(const char*, const char*,
             const char*, const char*) { return false; }
 
+		//! Adds the Phase-A painter-baked carbon + temperature medium.
+		//! Each channel source is `painter <scalar_painter-name>` in the
+		//! scene grammar; both are baked onto the same trilinear lattice.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMultichannelHeterogeneousMedium(
+			const char* /*name*/,
+			const char* /*carbon_painter*/,
+			const char* /*temperature_painter*/,
+			const unsigned int /*bake_width*/,
+			const unsigned int /*bake_height*/,
+			const unsigned int /*bake_depth*/,
+			const double /*bboxMin*/[3],
+			const double /*bboxMax*/[3],
+			const double /*scene_unit_meters*/,
+			const double /*soot_em*/,
+			const double /*soot_density*/,
+			const double /*soot_albedo_hot*/,
+			const double /*soot_g_hot*/,
+			const double /*smoke_km_carbon*/,
+			const double /*smoke_n_carbon*/,
+			const double /*smoke_albedo_carbon*/,
+			const double /*smoke_g_carbon*/
+			) { return false; }
+
+		//! Adds a unit-transmission medium boundary distinct from the
+		//! terminating "none" material.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddNullBoundaryMaterial(
+			const char* /*name*/					///< [in] Name of the material
+			) { return false; }
+
+		//! Adds the Phase-A medium with its optional condensed-organic channel.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMultichannelHeterogeneousMediumWithCondensed(
+			const char* /*name*/,
+			const char* /*carbon_painter*/,
+			const char* /*temperature_painter*/,
+			const char* /*condensed_painter*/,
+			const unsigned int /*bake_width*/,
+			const unsigned int /*bake_height*/,
+			const unsigned int /*bake_depth*/,
+			const double /*bboxMin*/[3],
+			const double /*bboxMax*/[3],
+			const double /*scene_unit_meters*/,
+			const double /*soot_em*/,
+			const double /*soot_density*/,
+			const double /*soot_albedo_hot*/,
+			const double /*soot_g_hot*/,
+			const double /*smoke_km_carbon*/,
+			const double /*smoke_n_carbon*/,
+			const double /*smoke_albedo_carbon*/,
+			const double /*smoke_g_carbon*/,
+			const double /*smoke_km_cond*/,
+			const double /*smoke_n_cond*/,
+			const double /*smoke_albedo_cond*/,
+			const double /*smoke_g_cond*/
+			) { return false; }
+
+		//! Adds the Phase-A medium with the all-or-none chem channel/SPD bundle.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMultichannelHeterogeneousMediumWithChem(
+			const char* /*name*/,
+			const char* /*carbon_painter*/,
+			const char* /*temperature_painter*/,
+			const char* /*condensed_painter*/,
+			const char* /*chem_ch_painter*/,
+			const char* /*chem_c2_painter*/,
+			const char* /*chem_co2_painter*/,
+			const char* /*chem_spd_ch*/,
+			const char* /*chem_spd_c2*/,
+			const char* /*chem_spd_co2*/,
+			const double /*chem_interval_ch*/[2],
+			const double /*chem_interval_c2*/[2],
+			const double /*chem_interval_co2*/[2],
+			const unsigned int /*bake_width*/,
+			const unsigned int /*bake_height*/,
+			const unsigned int /*bake_depth*/,
+			const double /*bboxMin*/[3],
+			const double /*bboxMax*/[3],
+			const double /*scene_unit_meters*/,
+			const double /*soot_em*/,
+			const double /*soot_density*/,
+			const double /*soot_albedo_hot*/,
+			const double /*soot_g_hot*/,
+			const double /*smoke_km_carbon*/,
+			const double /*smoke_n_carbon*/,
+			const double /*smoke_albedo_carbon*/,
+			const double /*smoke_g_carbon*/,
+			const double /*smoke_km_cond*/,
+			const double /*smoke_n_cond*/,
+			const double /*smoke_albedo_cond*/,
+			const double /*smoke_g_cond*/
+			) { return false; }
+
+		//! Adds a fire medium whose constituent optics come from one versioned
+		//! record.  Optional chem arguments are accepted only as one complete
+		//! channel/SPD/interval bundle.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMultichannelHeterogeneousMediumWithPreset(
+			const char* /*name*/,
+			const char* /*carbon_painter*/,
+			const char* /*temperature_painter*/,
+			const char* /*condensed_painter*/,
+			const char* /*chem_ch_painter*/,
+			const char* /*chem_c2_painter*/,
+			const char* /*chem_co2_painter*/,
+			const char* /*chem_spd_ch*/,
+			const char* /*chem_spd_c2*/,
+			const char* /*chem_spd_co2*/,
+			const double /*chem_interval_ch*/[2],
+			const double /*chem_interval_c2*/[2],
+			const double /*chem_interval_co2*/[2],
+			const unsigned int /*bake_width*/,
+			const unsigned int /*bake_height*/,
+			const unsigned int /*bake_depth*/,
+			const double /*bboxMin*/[3],
+			const double /*bboxMax*/[3],
+			const double /*scene_unit_meters*/,
+			const char* /*optical_record*/
+			) { return false; }
+
+		//! Requests fire-render fidelity at scene/job scope. Static Phase-A
+		//! fire media remain preview-only; predictive requests fail preflight.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool SetFireFidelityMode(
+			const char* /*mode*/
+			) { return false; }
+
+		//! Adds a manifest-backed fire sequence medium.  The manifest is the sole
+		//! sequence locator and carries the complete physical/record closure.
+		//! NB: appended at the ABI tail.
+		virtual bool AddFireMedium(
+			const char* /*name*/,
+			const char* /*sequence_manifest*/
+			) { return false; }
+
+		//! Exact scene binding for the manifest-backed channel set. Empty optional
+		//! names mean absent; chem is either none or the complete triplet.
+		virtual bool AddFireMediumBound(
+			const char* name, const char* sequence_manifest,
+			const char* channel_carbon, const char* channel_temperature,
+			const char* channel_condensed, const char* channel_reaction,
+			const char* channel_chem_ch, const char* channel_chem_c2,
+			const char* channel_chem_co2, const char* channel_velocity,
+			const bool chem_model_none )
+		{
+			(void)channel_carbon;(void)channel_temperature;(void)channel_condensed;
+			(void)channel_reaction;(void)channel_chem_ch;(void)channel_chem_c2;
+			(void)channel_chem_co2;(void)channel_velocity;(void)chem_model_none;
+			return AddFireMedium(name,sequence_manifest);
+		}
+
 	};
 
 

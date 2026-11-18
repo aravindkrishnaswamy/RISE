@@ -1,0 +1,51 @@
+{
+  "schema": "rise.fire.r246.consumer-pair-snapshot-gate.v1",
+  "status": "review_round3_requires_pending_source_publication_marker_refusal",
+  "recovery_accepted": false,
+  "binary": "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_runtime.v3/FireSequenceTest",
+  "binary_sha256": "4ac281a977a000066047aa19f4492eb23db71053444bb92226390a2589fa520e",
+  "binary_identity_note": "ca670e6e0 dirty checkpoint-pair snapshot repair, separate from original producer.",
+  "results": [
+    {
+      "stage": "staged_source_replacement",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "773aa81b9d6e67e6ecf9d523de032d8920f4f5ef6f88b91955008933bed51ba9"
+    },
+    {
+      "stage": "same_source_snapshot",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "cba1b5bea656ef0587ef7ac0f338dc7e930139bd3743a72f5a7be0a9b4fd20a7"
+    },
+    {
+      "stage": "checkpoint_pair_snapshot_reds",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "57c6901982092cb5555cf9e6aadb9a629fab3c7bcd1ce2bdc74463414d2cc5c2"
+    }
+  ],
+  "sha256": {
+    "tests/FireSequenceTest.cpp": "bb70d654bf39cf222cae83a7b3ffcd41f38eefc43b8699b9e34def877f5f2772",
+    "tools/fire/r246_consumer_input_controls.py": "6208b691686478045515138d22d0cb681e899e44da8b4e5afcdee2902a1fa5ce",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_runtime.v3/RendererBuildIdentity.generated.h": "f5dfc2f1e824fed3e1dfd6ac6903b9185e3bec0449442a1a31eaa408e92e8908",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v3.build.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v3.controls/report.json": "fdfb3ecbea06ad1196fef0c90c4b1703ed1e6a5be099e5edbc0f45e69e23d85b",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v3.controls/completion.json": "5dbe5bece8ea87a84b098a37777593fba09efb879e459865aee68922bed9a239"
+  },
+  "prior_native_frame_evidence": "docs/data/fire_r245/r246_consumer_input_gate.json",
+  "review_round2": {
+    "commit": "ca670e6e0",
+    "contract": "P1 checkpoint/certificate/report split-read; P2 old candidate control nondiscriminating",
+    "lifecycle": "P2 missing-sidecar race"
+  },
+  "self_audit": [
+    "Manifest/CSV bytes passed, parsed and hashed from same snapshot.",
+    "Checkpoint/seal captured then private read-only copy ensures all legacy loader reopens consume same pair. No producer certificate is minted.",
+    "Mandatory captured certificate cannot use legacy absence allowance.",
+    "Regression seam must show independent history accepts B while candidate A binding refuses.",
+    "No claim of full recovery, budget audit, or optional-build qualification."
+  ],
+  "limitations": "No repeated235-frame preflight; prior v1 native results retained as separate evidence.",
+  "repair_receipt": "docs/data/fire_r245/r246_consumer_publication_snapshot_gate.json"
+}

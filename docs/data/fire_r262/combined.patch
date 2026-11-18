@@ -1,0 +1,48 @@
+--- r260_centered
++++ r262_combined
+@@ -2564,9 +2564,11 @@
+   return q[component*p.cells+tr_cell(p,x,y,z)];}tr_set(axis,coordinate<0?0u:uint(extent-1),x,y,z);
+  float interior=q[component*p.cells+tr_cell(p,x,y,z)];return p.boundary[side]==1u&&
+   inflow[pf_side_index(p,side,x,y,z)]!=0u?ambient[component]:interior;}
+-inline float pf_mc(float backward,float forward){if(backward*forward<=0.0f)return 0.0f;
+- float centered=0.5f*(backward+forward),sign=centered<0.0f?-1.0f:1.0f;
+- return sign*min(abs(centered),2.0f*min(abs(backward),abs(forward)));}
++inline float pf_charm(float backward,float forward,bool fromLeft){
++ if(!((backward>0.0f&&forward>0.0f)||(backward<0.0f&&forward<0.0f)))return 0.0f;
++ float up=fromLeft?backward:forward,local=fromLeft?forward:backward;
++ float t=local/(up+local);return up*t*(1.0f+2.0f*t);
++}
+ inline float pf_log(float value){uint bits=as_type<uint>(value);int exponent=int((bits>>23u)&255u)-127;
+  uint mantissa=(bits&0x007fffffu)|0x3f800000u;float normalized=as_type<float>(mantissa);
+  volatile float numerator=normalized-1.0f,denominator=normalized+1.0f;
+@@ -2577,7 +2579,7 @@
+ inline float pf_mass_slope(device const float* q,device const float* ambient,
+  device const uchar* inflow,device const float* basis,device const float* projector,
+  constant TransportParams& p,constant PhysicalParams& extra,uint component,uint x,uint y,uint z,
+- uint axis){float coordinateSlope[8];for(uint b=0u;b<8u;++b)coordinateSlope[b]=0.0f;
++ uint axis,bool fromLeft){float coordinateSlope[8];for(uint b=0u;b<8u;++b)coordinateSlope[b]=0.0f;
+  for(uint b=0u;b<extra.advectiveNullity;++b){float backward=0.0f,forward=0.0f;
+   for(uint row=0u;row<8u;++row){float center=q[row*p.cells+tr_cell(p,x,y,z)];
+    float previous=pf_stage_value(q,ambient,inflow,p,row,x,y,z,axis,-1);
+@@ -2585,7 +2587,7 @@
+    volatile float backwardDifference=center-previous,forwardDifference=next-center;
+    volatile float backwardProduct=basis[row*extra.advectiveNullity+b]*backwardDifference;
+    volatile float forwardProduct=basis[row*extra.advectiveNullity+b]*forwardDifference;
+-   backward+=backwardProduct;forward+=forwardProduct;}coordinateSlope[b]=pf_mc(backward,forward);}
++   backward+=backwardProduct;forward+=forwardProduct;}coordinateSlope[b]=pf_charm(backward,forward,fromLeft);}
+  float result=0.0f;for(uint b=0u;b<extra.advectiveNullity;++b){float projected=0.0f;
+   for(uint column=0u;column<extra.advectiveNullity;++column){volatile float product=
+    projector[b*extra.advectiveNullity+column]*coordinateSlope[column];projected+=product;}
+@@ -2706,9 +2708,9 @@
+  uint lx=x,ly=y,lz=z,rx=x,ry=y,rz=z;tr_set(axis,leftCoordinate,lx,ly,lz);tr_set(axis,rightCoordinate,rx,ry,rz);
+  bool fromLeft=u>=0.0f;uint dx=fromLeft?lx:rx,dy=fromLeft?ly:ry,dz=fromLeft?lz:rz;
+  float donor=state[component*p.cells+tr_cell(p,dx,dy,dz)],slope=component<8u?
+-  pf_mass_slope(state,ambient,inflow,basis,projector,p,extra,component,dx,dy,dz,axis):
+-  pf_mc(donor-pf_stage_value(state,ambient,inflow,p,component,dx,dy,dz,axis,-1),
+-   pf_stage_value(state,ambient,inflow,p,component,dx,dy,dz,axis,1)-donor);
++  pf_mass_slope(state,ambient,inflow,basis,projector,p,extra,component,dx,dy,dz,axis,fromLeft):
++  pf_charm(donor-pf_stage_value(state,ambient,inflow,p,component,dx,dy,dz,axis,-1),
++   pf_stage_value(state,ambient,inflow,p,component,dx,dy,dz,axis,1)-donor,fromLeft);
+  volatile float slopeDose=(fromLeft?0.5f:-0.5f)*slope;
+  volatile float high=donor+slopeDose,lowFlux=u*donor,highDifference=high-donor;
+  volatile float deltaFlux=u*highDifference;

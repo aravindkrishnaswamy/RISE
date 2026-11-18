@@ -230,7 +230,9 @@ void PNGWriter::EndWrite( )
 		png_set_bgr(png_ptr);
 
 		// WriteColor applies the selected transfer function at either depth.
-		// Preserve the existing approximate gAMA convention for that space.
+		// Metadata must describe that encoding, not the integer precision.
+		// sRGB carries the exact sRGB tag (plus its gAMA 1/2.2 and cHRM
+		// fallbacks); the other spaces keep the approximate gAMA convention.
 		switch( color_space )
 		{
 		case eColorSpace_ROMMRGB_Linear:
@@ -238,7 +240,7 @@ void PNGWriter::EndWrite( )
 			png_set_gAMA(png_ptr, info_ptr, 1.0);
 			break;
 		case eColorSpace_sRGB:
-			png_set_gAMA(png_ptr, info_ptr, 1.0/2.2);
+			png_set_sRGB_gAMA_and_cHRM(png_ptr, info_ptr, PNG_sRGB_INTENT_RELATIVE);
 			break;
 		case eColorSpace_ProPhotoRGB:
 			png_set_gAMA(png_ptr, info_ptr, 1.0/1.8);
@@ -267,4 +269,3 @@ void PNGWriter::EndWrite( )
 }
 
 #endif
-

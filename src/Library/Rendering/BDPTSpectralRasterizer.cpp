@@ -700,7 +700,7 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			}
 			weights += weight;
 
-			if( temporal_samples ) {
+			if( temporal_samples && !pScene.FireTemporalHold() ) {
 				AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 			}
 

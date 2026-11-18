@@ -1,0 +1,12 @@
+schema rise.fire.production.onset_observation_event.v1
+accepted_step_beginning 1864
+beginning_time_s 2.6960048334440216
+end_time_s 2.6965437539038248
+realized_max_velocity_m_per_s 32.694915771484375
+max_axis 2
+max_face 7141
+source_packet_field_sha256 416cb164d1261ecffb2d225bf1053d7829ee7fabc4d35f767fd9d8222376a3f7
+source_event_threshold 30
+crossed_threshold 15
+crossed_threshold 30
+exact_reference_composition_endpoint_s 2.6960048334440216

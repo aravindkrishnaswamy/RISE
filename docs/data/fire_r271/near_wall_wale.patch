@@ -1,0 +1,204 @@
+diff --git a/src/Library/Utilities/FireProductionAdvectionMac.mm b/src/Library/Utilities/FireProductionAdvectionMac.mm
+index a3f2a1999..81fd768da 100644
+--- a/src/Library/Utilities/FireProductionAdvectionMac.mm
++++ b/src/Library/Utilities/FireProductionAdvectionMac.mm
+@@ -647,13 +647,20 @@ bool PackMetalResidentTransport(
+ 			}
+ 			parameters.turbulentPrandtl=static_cast<float>(transport.TurbulentPrandtl());
+ 			parameters.turbulentSchmidt=static_cast<float>(transport.TurbulentSchmidt());
+-			parameters.vremanCoefficient=static_cast<float>(transport.VremanCv());
++			// r271 diagnostic (opt-in RISE_FIRE_SCALAR_VREMAN_CV=<C_v>=0): overrides the scalar (heat/species)
++			// Vreman coefficient, 0 switching scalar SGS diffusion off. Unset keeps the transport record's C_v.
++			static const float scalarVremanOverride=[](){const char* value=std::getenv("RISE_FIRE_SCALAR_VREMAN_CV");
++				if(!value||!*value)return -1.0f;char* end=nullptr;const float parsed=std::strtof(value,&end);
++				return end&&*end=='\0'&&std::isfinite(parsed)&&parsed>=0.0f?parsed:-1.0f;}();
++			parameters.vremanCoefficient=scalarVremanOverride>=0.0f?scalarVremanOverride:
++				static_cast<float>(transport.VremanCv());
+ 			parameters.thermochemistryIdentity=ResidentRecordIdentity(thermochemistry.RecordId());
+ 			parameters.transportIdentity=ResidentRecordIdentity(transport.RecordId());
+ 			return std::isfinite(parameters.turbulentPrandtl)&&
+ 				std::isfinite(parameters.turbulentSchmidt)&&
+ 				std::isfinite(parameters.vremanCoefficient)&&parameters.turbulentPrandtl>0.0f&&
+-				parameters.turbulentSchmidt>0.0f&&parameters.vremanCoefficient>0.0f;
++				parameters.turbulentSchmidt>0.0f&&(parameters.vremanCoefficient>0.0f||
++				(scalarVremanOverride==0.0f&&parameters.vremanCoefficient==0.0f));
+ 		}
+ 
+ 		bool PackMetalSingleStageFCTCertificate(
+@@ -2445,7 +2452,7 @@ inline float tr_phi(float mui,float muj,float wi,float wj){float numerator=1.0f+
+ inline void resident_transport_cell(device const float* state,device const float* temperature,
+  device const float* velocity,device const float* thermo,device const float* transport,
+  device float* output,device atomic_uint* failure,device atomic_uint* obligations,
+- constant TransportParams& p,device const uchar* inflow,uint gid,bool compactDiagonal){if(gid>=p.cells)return;uint x=gid%p.nx,y=(gid/p.nx)%p.ny,z=gid/(p.nx*p.ny);
++ constant TransportParams& p,device const uchar* inflow,uint gid,bool compactDiagonal,bool nearWallWale=false){if(gid>=p.cells)return;uint x=gid%p.nx,y=(gid/p.nx)%p.ny,z=gid/(p.nx*p.ny);
+  float T=temperature[gid];bool valid=isfinite(T);float rho=0.0f,mass[6];
+  for(uint species=0u;species<6u;++species){float q=state[(species+1u)*p.cells+gid];
+   if(!isfinite(q))valid=false;mass[species]=max(0.0f,q);rho+=mass[species];}
+@@ -2488,7 +2495,19 @@ inline void resident_transport_cell(device const float* state,device const float
+  if(abs(rawB)<=32.0f*0x1p-24f*max(1.0f,rawScale))atomic_fetch_or_explicit(obligations,1u<<11u,memory_order_relaxed);
+  atomic_fetch_or_explicit(obligations,1u<<(alpha2==0.0f?12u:13u),memory_order_relaxed);
+  atomic_fetch_or_explicit(obligations,1u<<(rawB<0.0f?14u:15u),memory_order_relaxed);
+- float eddy=alpha2==0.0f?0.0f:p.Cv*sqrt(max(0.0f,rawB)/alpha2);if(!(eddy>=0.0f)||!isfinite(eddy))valid=false;
++ float eddy=alpha2==0.0f?0.0f:p.Cv*sqrt(max(0.0f,rawB)/alpha2);
++ // r271 opt-in (RISE_FIRE_NEAR_WALL_WALE=1): FDS's WALE nu_t (C_WALE 0.60) in cells with a wall face, as momentum.
++ if(nearWallWale){bool wallCell=false;uint xyz[3]={x,y,z};for(uint a=0u;a<3u;++a){
++   if(xyz[a]==0u&&p.boundary[2u*a]==2u)wallCell=true;if(xyz[a]+1u==tr_extent(p,a)&&p.boundary[2u*a+1u]==2u)wallCell=true;}
++  if(wallCell){float s[3][3],o[3][3],s2=0.0f,o2=0.0f,iv=0.0f;
++   for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j){s[i][j]=0.5f*(gradient[i][j]+gradient[j][i]);
++    o[i][j]=0.5f*(gradient[i][j]-gradient[j][i]);s2+=s[i][j]*s[i][j];o2+=o[i][j]*o[i][j];}
++   for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j)for(uint k=0u;k<3u;++k)for(uint l=0u;l<3u;++l)
++    iv+=s[i][k]*s[k][j]*o[j][l]*o[l][i];
++   float sd2=max(0.0f,(1.0f/6.0f)*(s2*s2+o2*o2)+(2.0f/3.0f)*s2*o2+2.0f*iv);
++   float denominator=pow(s2,2.5f)+pow(sd2,1.25f),width=0.60f*p.dx;
++   eddy=p.Cv>0.0f&&denominator>0.0f?width*width*pow(sd2,1.5f)/denominator:0.0f;}}
++ if(!(eddy>=0.0f)||!isfinite(eddy))valid=false;
+  float mole[6],mu[6],conductivity[6],moleTotal=0.0f,cp=0.0f;
+  for(uint species=0u;species<6u;++species){float fraction=mass[species]/rho;
+   float weight=thermo[32u*species];mole[species]=fraction/weight;moleTotal+=mole[species];
+@@ -2519,6 +2538,14 @@ kernel void evaluate_resident_transport_compact(device const float* state [[buff
+  device const uchar* inflow [[buffer(9)]],
+  uint gid [[thread_position_in_grid]]){resident_transport_cell(state,temperature,velocity,thermo,
+  transport,output,failure,obligations,p,inflow,gid,true);}
++kernel void evaluate_resident_transport_compact_wale(device const float* state [[buffer(0)]],
++ device const float* temperature [[buffer(1)]],device const float* velocity [[buffer(2)]],
++ device const float* thermo [[buffer(3)]],device const float* transport [[buffer(4)]],
++ device float* output [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
++ device atomic_uint* obligations [[buffer(7)]],constant TransportParams& p [[buffer(8)]],
++ device const uchar* inflow [[buffer(9)]],
++ uint gid [[thread_position_in_grid]]){resident_transport_cell(state,temperature,velocity,thermo,
++ transport,output,failure,obligations,p,inflow,gid,true,true);}
+ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
+  device const float* temperature [[buffer(1)]],device const float* velocity [[buffer(2)]],
+  device const float* output [[buffer(3)]],device const float* thermo [[buffer(4)]],
+@@ -4047,7 +4074,8 @@ explicit ResidentTransportMetalContext(bool stageTokens=false) : device(nil),que
+ 						return function?NameProducerKernel([device newComputePipelineStateWithFunction:function error:&metalError],name):nil;};
+ 					evaluate=pipeline("evaluate_resident_transport");identify=pipeline("identify_resident_transport");
+ 					// r271 A/B: heat and species take the compact-stencil nu_t with the momentum.
+-					if(FireProductionForceMetalCompactViscousStencil())evaluate=pipeline("evaluate_resident_transport_compact");
++					if(FireProductionForceMetalCompactViscousStencil())evaluate=pipeline(
++						FireProductionForceMetalNearWallWale()?"evaluate_resident_transport_compact_wale":"evaluate_resident_transport_compact");
+ 					physicalFlux=pipeline("evaluate_resident_physical_flux");
+ 					advectivePair=pipeline("evaluate_resident_advective_pair");
+ 					finalizeAdvective=pipeline("finalize_resident_advective_high");
+@@ -8487,7 +8515,8 @@ bool Project(const unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> momentum
+ 						output.projectionDiagnostics,error))return false;
+ 					++projectionInvocations_;deviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
+ 					projectionDeviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
+-					if(std::getenv("RISE_FIRE_REFUSAL_CLAUSES")){
++					// r271 diagnostic: RISE_R271_PROJECTION_TRACE=1 prints the same per-projection line outside the refusal scopes.
++					if(std::getenv("RISE_FIRE_REFUSAL_CLAUSES")||std::getenv("RISE_R271_PROJECTION_TRACE")){
+ 						const auto& diagnostic=output.projectionDiagnostics;
+ 						std::fprintf(stderr,"PROJECTION_REFUSAL_TRACE stage=%u invocation=%u cycles=%u "
+ 							"pre_per_s=%.17g post_per_s=%.17g band_per_s=%.17g passed=%d\n",
+diff --git a/src/Library/Utilities/FireProductionForce.h b/src/Library/Utilities/FireProductionForce.h
+index e1b0690c3..097f197e4 100644
+--- a/src/Library/Utilities/FireProductionForce.h
++++ b/src/Library/Utilities/FireProductionForce.h
+@@ -29,6 +29,10 @@ namespace RISE
+ 	//! r271 A/B: true when this process's force context selected the opt-in
+ 	//! compact MAC viscous stencil (RISE_FIRE_COMPACT_VISCOUS_STENCIL=1).
+ 	bool FireProductionForceMetalCompactViscousStencil();
++	//! r271 opt-in: true when RISE_FIRE_NEAR_WALL_WALE=1, selecting FDS's WALE eddy viscosity
++	//! (C_WALE 0.60) in wall-adjacent cells for momentum and scalars. Honoured only with the
++	//! compact viscous stencil; the selection is fixed for the process.
++	bool FireProductionForceMetalNearWallWale();
+ 	//! Shared bound for fail-closed step reductions.  The binary64 trajectory
+ 	//! owner and the production manifold owner use the same rejection budget.
+ 	constexpr unsigned int FireStepRejectionRetryCap=20u;
+diff --git a/src/Library/Utilities/FireProductionForceMac.mm b/src/Library/Utilities/FireProductionForceMac.mm
+index 86a9ab7ad..b6a0d38c2 100644
+--- a/src/Library/Utilities/FireProductionForceMac.mm
++++ b/src/Library/Utilities/FireProductionForceMac.mm
+@@ -316,12 +316,24 @@ inline void compact_gradient(device const float* cellVelocity,device const float
+    neighbor_velocity(cellVelocity,p,c,x,y,z,d,-1))/(2.0f*p.dx);
+  } divergence+=gradient[d][d];}
+ }
+-kernel void build_stress_compact(device const float* cellVelocity [[buffer(0)]],
+- device const float* cellDensity [[buffer(1)]],device const float* molecularNu [[buffer(2)]],
+- device float* eddy [[buffer(3)]],device float* muOut [[buffer(4)]],
+- device float* stress [[buffer(5)]],constant Params& p [[buffer(6)]],
+- device const float* faceVelocity [[buffer(7)]],device const uchar* burner [[buffer(8)]],
+- uint gid [[thread_position_in_grid]]){
++// r271 opt-in (RISE_FIRE_NEAR_WALL_WALE=1): FDS 6.11's default near-wall model (velo.f90 WALL_LOOP,
++// turb.f90 WALE_VISCOSITY, C_WALE 0.60) replaces Vreman in every cell with a no-slip wall face.
++inline float near_wall_wale_nu(thread const float (&g)[3][3],float dx){
++ float s[3][3],o[3][3],s2=0.0f,o2=0.0f,iv=0.0f;
++ for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j){s[i][j]=0.5f*(g[i][j]+g[j][i]);o[i][j]=0.5f*(g[i][j]-g[j][i]);
++  s2+=s[i][j]*s[i][j];o2+=o[i][j]*o[i][j];}
++ for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j)for(uint k=0u;k<3u;++k)for(uint l=0u;l<3u;++l)
++  iv+=s[i][k]*s[k][j]*o[j][l]*o[l][i];
++ float sd2=max(0.0f,(1.0f/6.0f)*(s2*s2+o2*o2)+(2.0f/3.0f)*s2*o2+2.0f*iv);
++ float denominator=pow(s2,2.5f)+pow(sd2,1.25f);float width=0.60f*dx;
++ return denominator>0.0f?width*width*pow(sd2,1.5f)/denominator:0.0f;
++}
++inline bool near_wall_cell(constant Params& p,uint x,uint y,uint z){uint xyz[3]={x,y,z};
++ for(uint a=0u;a<3u;++a){if(xyz[a]==0u&&p.boundary[2u*a]==2u)return true;
++  if(xyz[a]+1u==extent(p,a)&&p.boundary[2u*a+1u]==2u)return true;}return false;}
++inline void stress_compact_cell(device const float* cellVelocity,device const float* cellDensity,
++ device const float* molecularNu,device float* eddy,device float* muOut,device float* stress,
++ constant Params& p,device const float* faceVelocity,uint gid,bool nearWallWale){
+  uint cells=p.nx*p.ny*p.nz;if(gid>=cells)return;uint x=gid%p.nx,r=gid/p.nx,y=r%p.ny,z=r/p.ny;
+  float gradient[3][3];float divergence;compact_gradient(cellVelocity,faceVelocity,p,x,y,z,gradient,divergence);
+  float alphaSquared=0.0f,beta[3][3]={{0.0f,0.0f,0.0f},{0.0f,0.0f,0.0f},{0.0f,0.0f,0.0f}};
+@@ -333,10 +345,25 @@ kernel void build_stress_compact(device const float* cellVelocity [[buffer(0)]],
+   beta[0][0]*beta[2][2]-beta[0][2]*beta[0][2]+
+   beta[1][1]*beta[2][2]-beta[1][2]*beta[1][2];
+  float nuEddy=alphaSquared==0.0f?0.0f:p.cv*sqrt(max(0.0f,raw)/alphaSquared);
++ if(nearWallWale&&near_wall_cell(p,x,y,z))nuEddy=near_wall_wale_nu(gradient,p.dx);
+  float mu=cellDensity[gid]*(molecularNu[gid]+nuEddy);eddy[gid]=nuEddy;muOut[gid]=mu;
+  for(uint c=0u;c<3u;++c)for(uint d=0u;d<3u;++d)
+   stress[(3u*c+d)*cells+gid]=c==d?mu*(2.0f*gradient[c][c]-(2.0f/3.0f)*divergence):0.0f;
+ }
++kernel void build_stress_compact(device const float* cellVelocity [[buffer(0)]],
++ device const float* cellDensity [[buffer(1)]],device const float* molecularNu [[buffer(2)]],
++ device float* eddy [[buffer(3)]],device float* muOut [[buffer(4)]],
++ device float* stress [[buffer(5)]],constant Params& p [[buffer(6)]],
++ device const float* faceVelocity [[buffer(7)]],device const uchar* burner [[buffer(8)]],
++ uint gid [[thread_position_in_grid]]){
++ stress_compact_cell(cellVelocity,cellDensity,molecularNu,eddy,muOut,stress,p,faceVelocity,gid,false);}
++kernel void build_stress_compact_wale(device const float* cellVelocity [[buffer(0)]],
++ device const float* cellDensity [[buffer(1)]],device const float* molecularNu [[buffer(2)]],
++ device float* eddy [[buffer(3)]],device float* muOut [[buffer(4)]],
++ device float* stress [[buffer(5)]],constant Params& p [[buffer(6)]],
++ device const float* faceVelocity [[buffer(7)]],device const uchar* burner [[buffer(8)]],
++ uint gid [[thread_position_in_grid]]){
++ stress_compact_cell(cellVelocity,cellDensity,molecularNu,eddy,muOut,stress,p,faceVelocity,gid,true);}
+ kernel void build_stress_fixed_mu_compact(device const float* cellVelocity [[buffer(0)]],
+  device const float* mu [[buffer(1)]],device float* stress [[buffer(2)]],
+  constant Params& p [[buffer(3)]],device const float* faceVelocity [[buffer(4)]],
+@@ -496,7 +523,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device
+ 				const char* compactOption=std::getenv("RISE_FIRE_COMPACT_VISCOUS_STENCIL");
+ 				compactViscousStencil=compactOption&&std::string(compactOption)=="1";
+ 				if( compactViscousStencil ) {
+-					stress=pipeline("build_stress_compact");faceForce=pipeline("build_face_force_compact");
++					stress=pipeline(FireProductionForceMetalNearWallWale()?"build_stress_compact_wale":
++						"build_stress_compact");faceForce=pipeline("build_face_force_compact");
+ 					fixedStress=pipeline("build_stress_fixed_mu_compact");
+ 				}
+ 			}
+@@ -1852,6 +1880,13 @@ bool AdvanceFireProductionForceProjectionMetal(
+ 		return AdvanceFireProductionFrozenForceMetalImpl(forceRequest,false,&divergenceTargetPerS,
+ 			&result,0,unpublishedForce,unpublishedDiagnostics,error);
+ 	}
++	bool FireProductionForceMetalNearWallWale()
++	{
++		static const bool selected=[](){const char* option=std::getenv("RISE_FIRE_NEAR_WALL_WALE");
++			const char* compact=std::getenv("RISE_FIRE_COMPACT_VISCOUS_STENCIL");
++			return option&&std::string(option)=="1"&&compact&&std::string(compact)=="1";}();
++		return selected;
++	}
+ 	bool FireProductionForceMetalCompactViscousStencil()
+ 	{
+ 		ForceContext& context=Context();return context.Valid()&&context.compactViscousStencil;
+diff --git a/src/Library/Utilities/FireProductionForceUnsupported.cpp b/src/Library/Utilities/FireProductionForceUnsupported.cpp
+index 152b24a3e..a48132288 100644
+--- a/src/Library/Utilities/FireProductionForceUnsupported.cpp
++++ b/src/Library/Utilities/FireProductionForceUnsupported.cpp
+@@ -13,6 +13,7 @@
+ namespace RISE
+ {
+ 	bool FireProductionForceMetalCompactViscousStencil() { return false; }
++	bool FireProductionForceMetalNearWallWale() { return false; }
+ 
+ 	bool BuildFireProductionFrozenForceFieldsMetal(
+ 		const FireProductionFrozenForceRequest&,

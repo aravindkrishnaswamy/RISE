@@ -264,6 +264,57 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\Optics.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\RISECBOR64.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireOptics.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireSimulationRecords.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionTables.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionComputeUnsupported.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionAdvection.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionProjection.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionTransport.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionSource.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionForce.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionForceUnsupported.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionProjectionUnsupported.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionAdvectionUnsupported.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireSequence.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireCase.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\GaussLegendreQuadrature.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\OrthonormalBasis3D.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -765,6 +816,12 @@
     <ClCompile Include="..\..\..\src\Library\Materials\LambertianBRDF.cpp">
       <Filter>Materials\Lambertian</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\NullBoundaryMaterial.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\ContinuationClosure.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\LambertianSPF.cpp">
       <Filter>Materials\Lambertian</Filter>
     </ClCompile>
@@ -1200,6 +1257,9 @@
     <ClCompile Include="..\..\..\src\Library\Shaders\SSS\SubSurfaceScatteringShaderOp.cpp">
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\SSS\SSSContainment.cpp">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\RISE_API.cpp">
       <Filter>API</Filter>
     </ClCompile>
@@ -1477,6 +1537,48 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.hpp">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RISECBOR64.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireOptics.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireSimulationRecords.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionCompute.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionTables.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionAdvection.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionProjection.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionTransport.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionSourceKernel.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionForce.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireSequence.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireCase.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\GaussLegendreQuadrature.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\OrthonormalBasis3D.h">
@@ -2205,6 +2307,12 @@
     <ClInclude Include="..\..\..\src\Library\Materials\Material.h">
       <Filter>Materials</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\NullBoundaryMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IContinuationClosure.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\IsotropicPhongBRDF.h">
       <Filter>Materials\Phong</Filter>
     </ClInclude>
@@ -2799,6 +2907,9 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterizer.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IRenderPreparationController.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterizerOutput.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
@@ -3079,6 +3190,9 @@
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Shaders\SSS\SubSurfaceScatteringShaderOp.h">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\SSS\SSSContainment.h">
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\RISE_API.h">

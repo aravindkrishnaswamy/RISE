@@ -1,0 +1,17 @@
+Compiling strict calibration owner: ../../../tests/FireSequenceTest.cpp
+Compiling strict fp64 calibration mirror: Compiling ../../../tests/fire_production_fp64/FireProductionForce.cpp
+strict fp64 calibration mirror: ../../../tests/fire_production_fp64/FireProductionAdvection.cpp
+Compiling strict fp64 calibration mirror: ../../../tests/fire_production_fp64/FireProductionProjection.cpp
+Compiling strict fp64 calibration mirror: ../../../tests/fire_production_fp64/FireProductionTransport.cpp
+Compiling strict roundoff trace: ../../../tests/fire_production_trace/FireProductionAdvection.cpp
+Compiling strict roundoff trace: ../../../tests/fire_production_trace/FireProductionForce.cpp
+Compiling strict roundoff trace: ../../../tests/fire_production_trace/FireProductionProjection.cpp
+Compiling strict roundoff trace: ../../../tests/fire_production_trace/FireProductionTransport.cpp
+Compiling (safe fp32): ../../../src/Library/Utilities/FireProductionTransport.cpp
+Compiling (safe fp32): ../../../src/Library/Utilities/FireProductionSource.cpp
+Compiling (safe fp32): ../../../src/Library/Utilities/FireProductionForce.cpp
+Compiling: ../../../src/Library/Utilities/FireCase.cpp
+Compiling (safe fp32 ObjC++): ../../../src/Library/Utilities/FireProductionAdvectionMac.mm
+Compiling (safe fp32 ObjC++): ../../../src/Library/Utilities/FireProductionForceMac.mm
+Compiling: ../../../src/Library/Job.cpp
+Linking ../../../bin/tests/FireSequenceTest

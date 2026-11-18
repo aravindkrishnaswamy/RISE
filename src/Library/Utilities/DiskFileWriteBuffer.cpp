@@ -314,11 +314,13 @@ bool DiskFileWriteBuffer::setDouble( const double d )
 
 bool DiskFileWriteBuffer::setBytes( const void* pSource, unsigned int amount )
 {
-	if( !pSource || !hFile || ferror( hFile.get() ) ) {
+	if( (!pSource && amount) || !hFile || ferror( hFile.get() ) ) {
 		writeFailed = true;
 		if( !writeError ) writeError = std::make_error_code(!pSource ? std::errc::invalid_argument : std::errc::io_error);
 		return false;
 	}
+	// An empty write (possibly with a null source) is a successful no-op.
+	if( !amount ) return !writeFailed;
 	if( amount > std::numeric_limits<std::uint64_t>::max() - cursor ) {
 		writeFailed = true;
 		writeError = std::make_error_code(std::errc::value_too_large);
@@ -387,7 +389,8 @@ bool DiskFileWriteBuffer::ResizeForMore( unsigned int )
 
 bool DiskFileWriteBuffer::ReadyToWrite() const
 {
-	return static_cast<bool>(hFile);
+	// Fail closed once any write has failed so callers can reject partial output.
+	return static_cast<bool>(hFile) && !writeFailed;
 }
 
 bool DiskFileWriteBuffer::Finish( bool requireOutput )

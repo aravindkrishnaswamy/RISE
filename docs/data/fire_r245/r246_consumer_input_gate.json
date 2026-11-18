@@ -1,0 +1,63 @@
+{
+  "schema": "rise.fire.r246.consumer-input-preflight-gate.v1",
+  "status": "review_round1_requires_snapshot_and_optional_helper_fix",
+  "recovery_accepted": false,
+  "binary": "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_runtime.v1/FireSequenceTest",
+  "binary_sha256": "d0267315d513866d3e3464be43c08b4bba6bac4661696bb4cb104db125b8d6fd",
+  "binary_identity_note": "c8bdab3ad dirty consumer-input increment, distinct from original producer and prior prerequisite; exact tested binary frozen without relabel.",
+  "report": "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v1/controls/report.json",
+  "report_sha256": "f55f9671868c33a3c61b9990203a1cbefe5797317615a992ae61b2eb7bb62404",
+  "completed_utc": "2026-10-04T03:25:56.196535+00:00",
+  "results": [
+    {
+      "stage": "relabeled_discard",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "5d371a65d3b9bf8564de99299a92a6faed9bba043c59b6509a89bd9e23c89ca5"
+    },
+    {
+      "stage": "changed_placement",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "e367dd2ff9a1f7b6f3a4522b1f5945b651572e1903e567c2d8ea4dfce652b5cd"
+    },
+    {
+      "stage": "missing_checkpoint_seal",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "9bde51cef9e1ef30efdc4760c997800aab3e92fa9ae47c18bdc46557dc304255"
+    },
+    {
+      "stage": "missing_first_frame",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "b5938ddad12410f4d87f9d6f947ccba0303a2b818d12cda4d077bcad0a18f012"
+    },
+    {
+      "stage": "actual_full_235_native_frames",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "45b1684843a60c6ba427d7e26283bfdcac0ddff29480112c6e43b181c10b4e8f"
+    }
+  ],
+  "original_input_sha256": {
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/production_final.checkpoint": "0632960c2b045c8717e2d655cfc8bb340b918023f0fea1bfa1117a0aeaaca043",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/frame_times.csv": "3bb265a8539d5de45356dba419024c077834e3bb4c3770d75c63478006a5a5c8",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/sequence_manifest.rise-fire.cbor": "f036ff7f96a3f5827104cdd2f06e8aa068c3e8f097acd7ff3c069bab82fb3cc1"
+  },
+  "sha256": {
+    "tests/FireSequenceTest.cpp": "d6f9fe9251032fe846627002312d6da3b3fc12f2d52eac755ebf9d35b6c4e775",
+    "tools/fire/r246_consumer_input_controls.py": "a11a7bbc1038906173ba87123bf1789c2dc1e74f5bf8cc884377813d43387ed1",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v1/build.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_validation.v1/controls/completion.json": "48dcb97edd5f03e6779fdeb2b4996b906b177d66eefa86ba5e4e642e96f2714a",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_consumer_input_runtime.v1/RendererBuildIdentity.generated.h": "205c5f68682ea52e780175280787ddf6fbe18c485b3faf13c9bb01cab3292d8b"
+  },
+  "self_audit": [
+    "Source-path switch cannot authorize an arbitrary manifest origin: candidate bytes and retained source/case/build/checkpoint/seal/CSV/event history must agree.",
+    "Mandatory modern checkpoint seal enforced through accepted inspector; shared legacy behavior unchanged.",
+    "All235 native frames verified only on actual GREEN; absent first VDB RED must reach native stage.",
+    "New consumer/preflight identity is separate from original producer; original failure not relabeled.",
+    "Native frame validation is not full budget/Merkle or recovery acceptance."
+  ],
+  "repair_receipt": "docs/data/fire_r245/r246_consumer_input_snapshot_gate.json"
+}

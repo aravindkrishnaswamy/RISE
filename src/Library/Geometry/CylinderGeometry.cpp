@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "CylinderGeometry.h"
 #include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
@@ -953,6 +954,7 @@ IKeyframeParameter* CylinderGeometry::KeyframeFromParameters( const String& name
 
 void CylinderGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case RADIUS_ID:
@@ -972,6 +974,7 @@ void CylinderGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void CylinderGeometry::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	m_dAxisMin = -m_dHeight/2;
 	m_dAxisMax = m_dHeight/2;
 

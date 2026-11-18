@@ -72,6 +72,7 @@
 #endif
 #include <memory>
 #include "../Cameras/CameraUtilities.h"
+#include "../Utilities/Transformable.h"
 
 // CPP-only lifetime witness shared with the RGB implementation.
 namespace RISE { namespace Implementation { namespace MLTResourceTestHooks
@@ -1026,10 +1027,9 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 			// never displays per-round previews.  No
 			// `MarkFrameComplete` — progressive, not final.
 			CopyToFrameStore_( *pImage );
-			RasterizerOutputListType::const_iterator r, s;
-			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-				(*r)->OutputIntermediateImage( *pImage, 0 );
-			}
+			ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+				output->OutputIntermediateImage( *pImage, 0 );
+			});
 		}
 
 		if( progress ) {
@@ -1076,6 +1076,8 @@ void MLTSpectralRasterizer::RasterizeScene(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
@@ -1155,6 +1157,8 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
@@ -1186,15 +1190,26 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 		const unsigned int frameIdx = specificFrame ? *specificFrame : i;
 		const Scalar curtime = time_start + Scalar( frameIdx ) * step_size;
 
-		pScene.GetAnimator()->EvaluateAtTime( curtime );
-		if( bHasKeyframedObjects ) {
-			pScene.GetObjects()->InvalidateSpatialStructure();
-		}
-		pScene.GetObjects()->PrepareForRendering();
-		// DL-463 (b): rebuild the light-selection tables for this frame's
-		// light poses / powers (in place: the integrator's pointer stays).
-		if( bHasKeyframedObjects ) {
-			pCaster->RefreshLightSamplers();
+		{
+			// A Job render request holds the prepared mutation freeze
+			// (Job::BeginPreparedRequest); this frame-time evaluation is the
+			// render's own internal mutation, as in
+			// PixelBasedRasterizerHelper::PrepareSceneForFrame.  Without the
+			// capability keyframed lights / objects silently keep frame 0's pose.
+			struct PreparedInternalTransformScope {
+				PreparedInternalTransformScope() { Transformable::BeginPreparedInternalMutation(); }
+				~PreparedInternalTransformScope() { Transformable::EndPreparedInternalMutation(); }
+			} preparedTransformScope;
+			pScene.GetAnimator()->EvaluateAtTime( curtime );
+			if( bHasKeyframedObjects ) {
+				pScene.GetObjects()->InvalidateSpatialStructure();
+			}
+			pScene.GetObjects()->PrepareForRendering();
+			// DL-463 (b): rebuild the light-selection tables for this frame's
+			// light poses / powers (in place: the integrator's pointer stays).
+			if( bHasKeyframedObjects ) {
+				pCaster->RefreshLightSamplers();
+			}
 		}
 		pScene.SetSceneTime( curtime );
 

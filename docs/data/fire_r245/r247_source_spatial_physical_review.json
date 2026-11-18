@@ -1,0 +1,30 @@
+{
+  "schema": "rise.fire.r247.source-spatial-physical-review.v1",
+  "status": "accepted_descriptive_spatial_localization_only",
+  "reviewed_head": "8a9efa36e",
+  "reviewer": "r247_source_spatial_physical_r1",
+  "p1": 0,
+  "p2": 0,
+  "findings": [
+    "All235taller sampled frozen chemical-source states lie within original80layers; zero sampled upper-layer source does not exclude unsampled upper thermal/radiative/momentum dynamics",
+    "Native/common sampled mean source18101.493010W wide and18394.103334W taller; fixed centralfour TOTAL5336.132276W and5238.528824W",
+    "Centralfour means after divisionby4 are1334.033069W and1309.632206W; priorstation usesgas-only average,235snapshotgas+soot versus8916station samples and distinctwide producer runs remain explicit",
+    "Meanfraction timesmeanpower is not meancentralpower; covariance must remain",
+    "Mean positive source height0.066219m wide/0.067234m taller; first8layers contain99.9204%/99.8203% of sampled source power",
+    "Taller sampled total increasesabout1.62% while centralfour total decreasesabout1.83%; describes spatial distribution versusfixedprobe but provesno boundarymechanism/puffingcause/remedy"
+  ],
+  "next": "StageB sampled original80-layer signed transports and actual momentum terms with widez80boundary/tallerz80interior",
+  "unavailable": [
+    "full15315-step cumulativecommon80budget",
+    "completefluxdonorhistories",
+    "separatepressure/EOSrestorationterms",
+    "baselinespatialpackets"
+  ],
+  "optical_confound_retained": true,
+  "single_trajectory_limits_retained": true,
+  "physical_acceptance": false,
+  "puffing_cause_localized": false,
+  "remedy_supported": false,
+  "canonical_taller_qualification": false,
+  "original_taller_exit_code": 98
+}

@@ -1,0 +1,30 @@
+{
+ "all_line_voigt_tail_cell_count": 849,
+ "bounded_renderer_wavenumber_domain_cm-1": [
+  12820.5128205,
+  26315.7894737
+ ],
+ "continuous_bound_method": "all HITEMP lines; one-atmosphere Voigt band probability bounded by a Cauchy interval plus Gaussian tail union bound using worst air/self width, temperature exponent, pressure shift and lightest-isotopologue Doppler width; then monotone E/T/Q bounds over 50 K gas intervals and the exact visible-band normalized-Planck-weight maximum over the radiation-temperature interval",
+ "continuous_upper_absorption_per_m_atm": 0.000960684582336281,
+ "exact_selected_line_count": 446553,
+ "gas_bound_interval_K": 50.0,
+ "histogram_cell_count": 60520,
+ "observed_100K_lattice": {
+  "maximum_absorption_at_K": [
+   300.0,
+   2500.0
+  ],
+  "maximum_absorption_per_m_atm": 6.973479052705202e-05,
+  "maximum_fraction_at_K": [
+   2400.0,
+   2500.0
+  ],
+  "maximum_fraction_of_total_planck_mean": 1.6997880695263722e-05
+ },
+ "schema": "rise-hitemp-visible-certificate-v1",
+ "species": "H2O",
+ "temperature_domain_K": [
+  300.0,
+  2500.0
+ ]
+}

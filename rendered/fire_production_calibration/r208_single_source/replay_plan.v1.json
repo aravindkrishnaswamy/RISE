@@ -1,0 +1,42 @@
+{
+  "schema": "rise.fire.r208.replay-plan.v1",
+  "status": "pre_registered_before_repaired_from_zero_run",
+  "compiled_source_commit": "786d44d162eb3f42072579e859b6df7dc2e45495",
+  "executable_sha256": "40e672ff12d67cd447ef4f4d662df386e5e9e3ed04243105cb49f61ac556f473",
+  "build_owner_qualification_sha256": "1fac3103ef143a0c55c24755eb32a38d6d667102fe17c3247f40e04e69b4752f",
+  "protocol_path": "rendered/fire_production_calibration/r194_matched_tier8_replay/matched_replay_protocol.v1",
+  "protocol_sha256": "5578fa19dcd500ff68743f7f1cfeff21d22da43fef48a3ada42df042badf3e3d",
+  "output": "rendered/fire_production_calibration/r208_single_source/ported_from_zero.v1",
+  "executable": "bin/tests/FireSequenceTest_r208_sealed_v1",
+  "resolution_tier": 8,
+  "from_zero": true,
+  "resume": "forbidden_no_r78_certificate",
+  "seed": 1234,
+  "case_record_id": "6eb8b1f95bfdb27d06245db94d6e9513c0cdef3662fc055547d35b353094f7e1",
+  "initial_state_sha256": "c08cb0658ee6a3474f7c04bcbd0134a79a58665cd661d2fa2ee8a4ee99bdb016",
+  "target_time_s": 3,
+  "stop_velocity_m_per_s": 60,
+  "crossings_m_per_s": [
+    15,
+    30,
+    60
+  ],
+  "baseline": {
+    "maximum_velocity_m_per_s": 63.96087265,
+    "time_s": 2.69911337766,
+    "aligned_advection": 11691.86634462
+  },
+  "oracle_context": {
+    "aligned_advection": 159.0089232385488,
+    "time_s": 2.107979197617608,
+    "status": "context_only_not_equal_time_pass_value"
+  },
+  "equal_time_gate": "frozen_matched_input_oracle_composition_required_before_rate_claim",
+  "convergence_export": "accepted_attempt_observational_rerun_byte_and_lineage_gated; no_fixed_k_selection_without_crossing_data",
+  "tail_evidence": "last_consumed_device_target_increment_fields_not_realized_exchange",
+  "projection_budget": "combined_tangent_source_tail_impulse_not_separate_tail_impulse",
+  "cost_prototype_included": false,
+  "early_missing_reference_candidate": "stop_without_verdict",
+  "shortened_prefix_claim": "forbidden",
+  "launch_authority": "requires fresh zero_P1_P2 review plus completed full-suite/crossing fixture"
+}

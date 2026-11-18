@@ -1,0 +1,148 @@
+RISE ASCII SCENE 7
+
+# r272 tier-8 sequence with soot (yield 0.03), using the r242 spectral preview template.
+# Z-up matches the simulation; no authored lights alter its emission.
+# Preview provenance remains until predictive qualification is available.
+scene_options
+{
+scene_unit 1
+fidelity_mode preview
+}
+standard_shader
+{
+name global
+shaderop DefaultPathTracing
+}
+pathtracing_spectral_rasterizer
+{
+samples 16
+nmbegin 380
+nmend 780
+num_wavelengths 32
+spectral_samples 1
+hwss true
+pixel_filter box
+oidn_denoise true
+}
+file_rasterizeroutput
+{
+pattern /Volumes/SSD/RISE/fire_production_calibration/r272_soot/look/r1_y300_primary
+multiple TRUE
+type EXR
+bpp 32
+color_space Rec709RGB_Linear
+exposure 0
+display_transform none
+exr_compression piz
+}
+file_rasterizeroutput
+{
+pattern /Volumes/SSD/RISE/fire_production_calibration/r272_soot/look/r1_y300_e7_
+multiple TRUE
+type PNG
+bpp 16
+color_space sRGB
+exposure 7
+display_transform aces
+}
+file_rasterizeroutput
+{
+pattern /Volumes/SSD/RISE/fire_production_calibration/r272_soot/look/r1_y300_e5_
+multiple TRUE
+type PNG
+bpp 16
+color_space sRGB
+exposure 5
+display_transform aces
+}
+film
+{
+width 512
+height 768
+}
+pinhole_camera
+{
+name camera
+location 1.05546 -3.0 1.6
+lookat 1.05546 1.05546 1.6
+up 0 0 1
+fov 45
+exposure 0
+scanning_rate 0
+pixel_rate 0
+}
+
+uniformcolor_painter
+{
+name pnt_floor
+color 0.18 0.17 0.16
+}
+uniformcolor_painter
+{
+name pnt_wall
+color 0.7 0.7 0.7
+}
+lambertian_material
+{
+name mat_floor
+reflectance pnt_floor
+}
+lambertian_material
+{
+name mat_wall
+reflectance pnt_wall
+}
+clippedplane_geometry
+{
+name floorgeom
+pta -6 -6 0
+ptb 8 -6 0
+ptc 8 4 0
+ptd -6 4 0
+doublesided true
+}
+clippedplane_geometry
+{
+name wallgeom
+pta -6 4 0
+ptb 8 4 0
+ptc 8 4 8
+ptd -6 4 8
+doublesided true
+}
+standard_object
+{
+name floor
+geometry floorgeom
+material mat_floor
+}
+standard_object
+{
+name wall
+geometry wallgeom
+material mat_wall
+}
+omni_light
+{
+name key
+power 0.6
+position -1.5 -2.5 3.5
+color 1.0 0.97 0.92
+}
+fire_medium
+{
+name sequence_fire
+fidelity_mode preview
+sequence_manifest /Volumes/SSD/RISE/fire_production_calibration/r272_soot/sooty_seq/sequence_manifest.rise-fire.cbor
+channel_carbon carbon
+channel_temperature temperature
+channel_reaction reaction
+channel_chem_ch chem_CH
+channel_chem_c2 chem_C2
+channel_chem_co2 chem_CO2
+channel_velocity velocity
+}
+global_medium
+{
+medium sequence_fire
+}

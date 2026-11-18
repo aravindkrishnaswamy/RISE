@@ -4,7 +4,13 @@ package com.risegfx.android.nativebridge
  * Callback interface invoked from native code. All methods may arrive on
  * arbitrary library worker threads — implementations MUST be thread-safe
  * and must not do expensive work inline (the library's progress mutex is
- * held while these fire).
+ * held while these fire). Callback delivery does not hold the bridge's
+ * callback-reference mutex, so [RiseNative.nativeOwnsCallback] and
+ * [RiseNative.nativeCancel] may be called inline. Callbacks MUST NOT call
+ * scene-lifecycle or viewport APIs (`nativeSetCallback`, `nativeClearCallback`,
+ * `nativeLoadScene`, `nativeRasterize`, or any `nativeViewport*` method): a
+ * load/render may already own the process-wide scene lifecycle on the current
+ * thread, and re-entering it would be both recursive and semantically invalid.
  *
  * The JNI layer caches these method IDs in JNI_OnLoad, so the class name
  * and method signatures here are load-bearing. Do not rename without
@@ -20,18 +26,23 @@ interface RiseCallback {
     fun onProgress(progress: Float)
 
     /**
-     * Fired once per scene, when the first tile callback arrives and the
-     * dimensions become known. After this, [RiseNative.nativeGetFramebuffer]
-     * returns a non-null ByteBuffer of size w*h*4.
+     * Fired whenever the native display framebuffer is allocated or resized,
+     * and once for a replacement callback when a same-sized framebuffer is
+     * already available. Adaptive interactive rendering can therefore fire
+     * this multiple times within one scene. After each notification,
+     * [RiseNative.nativeCopyFramebuffer] can copy a snapshot of size w*h*4
+     * into caller-owned storage.
      */
     fun onSceneReady(width: Int, height: Int)
 
     /**
-     * A tile has been written to the native framebuffer. The rectangle is
-     * packed into [packedRect] as ((top & 0xFFFF) << 48) |
+     * The native display framebuffer has been refreshed. Current production
+     * and interactive paths publish full-frame invalidations at display/frame
+     * cadence rather than one callback per render tile. The affected rectangle
+     * is packed into [packedRect] as ((top & 0xFFFF) << 48) |
      * ((left & 0xFFFF) << 32) | ((bottom & 0xFFFF) << 16) | (right & 0xFFFF),
-     * inclusive on all four edges. The UI side should merge these into a
-     * coarse dirty rect and invalidate at frame rate rather than per-tile.
+     * inclusive on all four edges. The UI side coalesces notifications and
+     * republishes at display cadence.
      */
     fun onRegionInvalidated(packedRect: Long)
 

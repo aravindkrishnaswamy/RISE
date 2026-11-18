@@ -20,6 +20,7 @@
 #include "../Interfaces/ILog.h"
 #include "../Interfaces/IWriteBuffer.h"
 #include "../RISE_API.h"
+#include "../RasterImages/EXRWriter.h"
 #include "../RasterImages/PNGWriter.h"
 
 #include <algorithm>
@@ -45,7 +46,6 @@ namespace RISE
 {
 	namespace Implementation
 	{
-
 		// ─────────────────────────────────────────────────────────────
 		// FrameEncoderBase::Encode — shared "construct, wrap, dump"
 		// ─────────────────────────────────────────────────────────────
@@ -54,6 +54,10 @@ namespace RISE
 			IWriteBuffer&     dst,
 			const EncodeOpts& opts )
 		{
+			const FrameStore::Metadata metadata = opts.useMetadataSnapshot ?
+				opts.metadataSnapshot : store.Meta();
+			// Scoped ownership releases the display-transform wrapper before
+			// the inner writer on both success and exception unwind.
 			const auto release = []( IRasterImageWriter* writer ) { writer->release(); };
 			std::unique_ptr<IRasterImageWriter, decltype(release)> pWriter( CreateWriter(dst, opts), release );
 			if ( !pWriter ) {
@@ -62,33 +66,40 @@ namespace RISE
 					FormatName().c_str() );
 				throw std::runtime_error( "Frame encoder writer factory returned null" );
 			}
+			if( EXRWriter* exr = dynamic_cast<EXRWriter*>(pWriter.get()) ) {
+				exr->SetStringAttributes(opts.attrs);
+				exr->SetPixelAspectRatio(opts.exrPixelAspectRatio);
+			}
 
 			// Decide whether to wrap in DisplayTransformWriter.
-			// Mirrors the gate in FileRasterizerOutput.cpp:232 —
-			// LDR-only AND non-default exposure or tone curve.
+			// LDR-only and any non-identity output transform.
 			//
 			// Total EV is the sum of the caller-supplied static
 			// exposure (from opts.viewTransform.exposureEV — UI
 			// slider, scene-declared exposure_compensation, etc.)
-			// and the per-frame camera-side EV (from
-			// store.Meta().cameraExposureEV — set by the rasterizer
-			// at frame start via SetCameraExposureCompensationEV).
-			// This matches FileRasterizerOutput.cpp:231.  See L2
+			// and the per-frame camera-side EV from the transaction's
+			// immutable FrameStore metadata snapshot (or a direct encoder
+			// call's snapshot taken above).  See L2
 			// adversarial review HIGH-2.
 			IRasterImageWriter* pEffective = pWriter.get();
 			std::unique_ptr<IRasterImageWriter, decltype(release)> pDtw( nullptr, release );
 			if ( !IsHDRFormat() ) {
-				const Scalar staticEV =
-					static_cast<Scalar>( opts.viewTransform.exposureEV );
-				const Scalar cameraEV =
-					static_cast<Scalar>( store.Meta().cameraExposureEV );
-				const Scalar totalEV = staticEV + cameraEV;
+				FrameStoreOutput::ViewTransform effectiveTransform = opts.viewTransform;
+				effectiveTransform.exposureEV +=
+					static_cast<float>(metadata.cameraExposureEV);
+				const Matrix3& balance = effectiveTransform.whiteBalance;
+				const bool identityBalance =
+					balance._00 == 1.0 && balance._01 == 0.0 && balance._02 == 0.0 &&
+					balance._10 == 0.0 && balance._11 == 1.0 && balance._12 == 0.0 &&
+					balance._20 == 0.0 && balance._21 == 0.0 && balance._22 == 1.0;
 				const bool useDt =
-					   ( opts.viewTransform.toneCurve != eDisplayTransform_None )
-					|| ( totalEV != Scalar( 0 ) );
+					   effectiveTransform.exposureEV != 0.0f
+					|| !identityBalance
+					|| ( effectiveTransform.toneCurve != eDisplayTransform_None &&
+						effectiveTransform.toneCurveStrength > 0.0f );
 				if ( useDt ) {
 					pDtw.reset( new DisplayTransformWriter(
-						*pWriter, totalEV, opts.viewTransform.toneCurve ) );
+						*pWriter, effectiveTransform, opts.colorSpace ) );
 					GlobalLog()->PrintNew(
 						pDtw.get(), __FILE__, __LINE__, "DisplayTransformWriter" );
 					pEffective = pDtw.get();
@@ -270,11 +281,17 @@ namespace RISE
 			// Step 2 — initialise libpng for write.
 			png_structp png_ptr = png_create_write_struct( PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr );
 			if ( !png_ptr ) {
+				GlobalLog()->PrintSourceError(
+					"HDR10PNGFrameEncoder::Encode: png_create_write_struct failed",
+					__FILE__, __LINE__ );
 				throw std::runtime_error( "HDR10 PNG: Could not allocate PNG structure" );
 			}
 			png_infop info_ptr = png_create_info_struct( png_ptr );
 			if ( !info_ptr ) {
 				png_destroy_write_struct( &png_ptr, nullptr );
+				GlobalLog()->PrintSourceError(
+					"HDR10PNGFrameEncoder::Encode: png_create_info_struct failed",
+					__FILE__, __LINE__ );
 				throw std::runtime_error( "HDR10 PNG: Could not allocate PNG info structure" );
 			}
 
@@ -283,6 +300,9 @@ namespace RISE
 			// control returns here and we clean up.
 			if ( setjmp( png_jmpbuf( png_ptr ) ) ) {
 				png_destroy_write_struct( &png_ptr, &info_ptr );
+				GlobalLog()->PrintSourceError(
+					"HDR10PNGFrameEncoder::Encode: libpng error during write",
+					__FILE__, __LINE__ );
 				throw std::runtime_error( "HDR10 PNG: libpng encoding failed" );
 			}
 
@@ -400,9 +420,15 @@ namespace RISE
 		void FrameEncoderRegistry::RegisterBuiltins()
 		{
 			// Register order is iteration order returned by All().
+#ifndef NO_PNG_SUPPORT
 			Register( new PNGFrameEncoder() );
+#endif
+#ifndef NO_EXR_SUPPORT
 			Register( new EXRFrameEncoder() );
+#endif
+#ifndef NO_TIFF_SUPPORT
 			Register( new TIFFFrameEncoder() );
+#endif
 			Register( new HDRFrameEncoder() );
 			Register( new RGBEAFrameEncoder() );
 			Register( new TGAFrameEncoder() );
@@ -411,7 +437,9 @@ namespace RISE
 			// users select via FormatName "HDR10_PNG" rather than
 			// extension lookup (ByExtension("png") still returns the
 			// SDR PNG encoder, which is the safer default).
+#ifndef NO_PNG_SUPPORT
 			Register( new HDR10PNGFrameEncoder() );
+#endif
 		}
 
 		void FrameEncoderRegistry::Register( IFrameEncoder* encoder )
@@ -431,11 +459,39 @@ namespace RISE
 			encoders_.push_back( encoder );
 		}
 
+		bool FrameEncoderRegistry::Unregister( const std::string& formatName )
+		{
+			std::lock_guard<std::mutex> lock( mutex_ );
+			for( auto it = encoders_.begin(); it != encoders_.end(); ++it ) {
+				if( IEqualsASCII( (*it)->FormatName(), formatName ) ) {
+					IFrameEncoder* removed = *it;
+					encoders_.erase(it);
+					safe_release(removed);
+					return true;
+				}
+			}
+			return false;
+		}
+
 		IFrameEncoder* FrameEncoderRegistry::ByFormatName( const std::string& name ) const
 		{
 			std::lock_guard<std::mutex> lock( mutex_ );
 			for ( IFrameEncoder* enc : encoders_ ) {
 				if ( IEqualsASCII( enc->FormatName(), name ) ) {
+					return enc;
+				}
+			}
+			return nullptr;
+		}
+
+		IFrameEncoder* FrameEncoderRegistry::AcquireByFormatName(
+			const std::string& name
+			) const
+		{
+			std::lock_guard<std::mutex> lock( mutex_ );
+			for( IFrameEncoder* enc : encoders_ ) {
+				if( IEqualsASCII(enc->FormatName(),name) ) {
+					enc->addref();
 					return enc;
 				}
 			}
@@ -456,10 +512,51 @@ namespace RISE
 			return nullptr;
 		}
 
+		IFrameEncoder* FrameEncoderRegistry::AcquireByExtension(
+			const std::string& ext
+			) const
+		{
+			const std::string needle = StripDot(ext);
+			std::lock_guard<std::mutex> lock(mutex_);
+			for( IFrameEncoder* enc : encoders_ ) {
+				for( const std::string& candidate : enc->Extensions() ) {
+					if( IEqualsASCII(candidate,needle) ) {
+						enc->addref();
+						return enc;
+					}
+				}
+			}
+			return nullptr;
+		}
+
 		std::vector<IFrameEncoder*> FrameEncoderRegistry::All() const
 		{
 			std::lock_guard<std::mutex> lock( mutex_ );
 			return encoders_;
+		}
+
+		std::vector<IFrameEncoder*> FrameEncoderRegistry::AcquireAll() const
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			std::vector<IFrameEncoder*> acquired;
+			try {
+				acquired.reserve(encoders_.size());
+				for( IFrameEncoder* encoder : encoders_ ) {
+					encoder->addref();
+					try {
+						acquired.push_back(encoder);
+					}
+					catch( ... ) {
+						encoder->release();
+						throw;
+					}
+				}
+			}
+			catch( ... ) {
+				for( IFrameEncoder* encoder : acquired ) encoder->release();
+				throw;
+			}
+			return acquired;
 		}
 
 	} // namespace Implementation

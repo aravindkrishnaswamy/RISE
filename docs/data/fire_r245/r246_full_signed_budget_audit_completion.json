@@ -1,0 +1,33 @@
+{
+  "schema": "rise.fire.r246.full-signed-budget-audit-completion.v1",
+  "status": "accepted_full_signed_arithmetic_zero_p1_p2",
+  "original_exit_code": 98,
+  "output": "/Volumes/SSD/RISE/fire_production_calibration/r246_full_signed_budget_audit.v1",
+  "steps": 15315,
+  "frames": 235,
+  "end_time_s": 25.156864278920693,
+  "first_selected_step": 6400,
+  "final_selected_step": 15315,
+  "report_sha256": "8105dc52c044e6e39e8937fc36baa2be60f8e2e2a3d9f75a9384fc19646b3e72",
+  "seal_sha256": "134c0fc3ee51c5f617415116546724c838a485735afa5ef7183b40b207f91d1c",
+  "completion_sha256": "31740381215c3c2fc501c5ce18d68a4482e0e9eaf925811579ca9b38be674e89",
+  "log_sha256": "1afc1586c1b561eef9c95e565787bd341f494de62d28973117e8e985a9190b50",
+  "runtime_sha256": {
+    "tools/fire/r245_budget_audit.py": "1fa6d89575566e5dcf1b744c7c71a4dd4f32040a2499c89197cd0c2dfee74311",
+    "tools/fire/r246_budget_admission.py": "262b69656c1ef3e6d4628adb5b523b157b82b2e809eae7dcf73488492d0c34c2",
+    "tools/fire/r246_recovery_evidence.py": "9a0564701f0467f67870b6f5e7f91e40f1d44c7a9b1b6a9ffd3df2596ac72cdf",
+    "tools/fire/r246_observation_ledger_binding.py": "8996e94d88ddede087b5d73a75fbbdb29f721803cee46a8f0af14bd566cc70c7",
+    "tools/fire_payload_merkle.py": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf"
+  },
+  "independent_checks": [
+    "Strict modern report seal recomputed",
+    "235 capsule roots/columns hashes and selected events match prior accepted binding",
+    "Final consumed ledger hash matches accepted ledger receipt",
+    "All reported admitted input hashes match retained bytes",
+    "Five reported runtime identities match frozen launch implementations"
+  ],
+  "full_arithmetic_audit": true,
+  "physical_acceptance": false,
+  "canonical_taller_qualification": false,
+  "completed_utc": "2026-10-04T12:33:10.760046+00:00"
+}

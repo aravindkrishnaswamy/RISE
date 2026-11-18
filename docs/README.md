@@ -150,6 +150,10 @@ historical 2026-06-19 snapshot, not present-day ground truth.
 
 ## Active or Deferred Roadmaps
 
+- [FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md): current fire/smoke state,
+  open problems and operating rules; start here
+- [FIRE_SMOKE_PRODUCTION_SOLVER.md](FIRE_SMOKE_PRODUCTION_SOLVER.md): r82
+  Metal-GPU production fire solver contract and oracle-validation roadmap
 - [ROADMAP.md](ROADMAP.md): consolidated, prioritized next-steps implementation
   roadmap across all subsystems
 - [IMPROVEMENTS.md](IMPROVEMENTS.md): rendering gap criteria and historical

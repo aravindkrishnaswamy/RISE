@@ -1,0 +1,41 @@
+{
+  "schema": "rise.fire.r246.captured-display-gate.v1",
+  "status": "accepted_captured_display_prerequisite",
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "implementation_sha256": "21b7dcf911486b6fbef345972284d456f4839722b9de453ec098f51a344f2aa1",
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_captured_display_runtime.v1",
+  "executable_sha256": "a074906ebedb22466daffbe015ba2a51f087772ac9f8c28b8891a84e98b31b61",
+  "embedded_revision": "739da79956e5c57d80f87b861da66f1b8d14ca24",
+  "embedded_dirty_state": "dirty",
+  "build_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_captured_display.v1.build.log",
+  "build_log_sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+  "gate_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_captured_display.v1.gate.log",
+  "gate_log_sha256": "70145e278c0a9fd788d96f43759e157b1278b5c1e14c2f9fca2871895788dd77",
+  "gate_exit_code": 0,
+  "external_output": "/Volumes/SSD/RISE/fire_production_calibration/r246_captured_display_validation.v1",
+  "independent_script": "/Volumes/SSD/RISE/fire_production_calibration/r246_captured_display_runtime.v1/independent_pixels.py",
+  "independent_script_sha256": "1bcf76d73a97704bed11fca443c770f07f0a8f3d091bc5e7b3226751b66081bb",
+  "independent_pixels_report": "/Volumes/SSD/RISE/fire_production_calibration/r246_captured_display_validation.v1/independent_pixels.json",
+  "independent_pixels_report_sha256": "5c4ad9342d2f64155078d290417cf2610e985b3a103ce56f141a6e3aa6da352e",
+  "independent_pixels_log_sha256": "6883d419efbaeca992d6b5953b2398e917ce9e0e54cfc4976927a83b5451852a",
+  "completed_utc": "2026-10-04T08:13:23.473628+00:00",
+  "controls": {
+    "captured_lit": 4,
+    "reopened_lit": 0,
+    "captured_gif_lit": 4,
+    "old_gif_lit": 0,
+    "changed_gif_red": true,
+    "cardinality_red": true,
+    "empty_red": true,
+    "old_inventory_green": true,
+    "bound_inventory_red": true
+  },
+  "limitations": [
+    "Synthetic 2x2 ImageIO PNG/GIF decodes and receipt-only byte inventory controls, not fire rendering/EXR attestation or recovered/native physical evidence.",
+    "No native preflight, simulation, field reading or recovered preview/spectrum launch.",
+    "Historical first-light GIF call remains optional-unpinned; captured single-read decoder shared without rewriting prior artifacts.",
+    "Actual scene/GIF/output publication composition/full recovery/strict signed budget admission remain pending."
+  ],
+  "reviewed_head": "9f85793f6"
+}

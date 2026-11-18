@@ -1,0 +1,23 @@
+{
+  "reviewed_commit": "ca6ae610",
+  "reviewers": [
+    {
+      "agent": "r246_design_final_physics",
+      "P1": 0,
+      "P2": 1
+    },
+    {
+      "agent": "r246_design_final_contract",
+      "P1": 0,
+      "P2": 0
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P2",
+      "issue": "Samecamera doesnotguarantee sameopticalsupport; preview-only response cannotprove originalregiondynamics",
+      "status": "fixed_require_commonheight_or_nearbase_for_dynamicalinference_freshreviewpending"
+    }
+  ],
+  "prior_three_P2": "Both reviewers confirmed corrected clockbits/support/derivedformula."
+}

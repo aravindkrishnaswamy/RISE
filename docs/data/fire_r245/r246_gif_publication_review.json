@@ -1,0 +1,31 @@
+{
+  "schema": "rise.fire.r246.gif-publication-review.v1",
+  "status": "accepted_zero_p1_p2",
+  "reviewed_head": "bf3291fd7",
+  "round": 5,
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "gate_sha256": "68082df6d9bc84246a66f1f1f79638f1c6001dac97de3db8bca412735f187c35",
+  "reviewers": [
+    {
+      "agent": "r246_gif_publication_contract_r5",
+      "axis": "contract/test integrity",
+      "p1": 0,
+      "p2": 0,
+      "findings": "Exact publisher schema, authored-byte physical validation and captured metadata/links, input hash pins, actual capstone caller child layout and v7 arithmetic/evidence verified."
+    },
+    {
+      "agent": "r246_actual_profile_lifecycle_r1",
+      "axis": "lifecycle/provenance, first review of this increment",
+      "p1": 0,
+      "p2": 0,
+      "findings": "Captured bytes/alias safeguards/exclusive output and reported hashes match; all nine evidence hashes, honest dirty identity and original exit98 files preserved."
+    }
+  ],
+  "review_dispatch_note": "New lifecycle-agent spawn reached tool thread limit; an independent earlier-profile reviewer who had not reviewed this GIF increment received the full fresh increment for its first review. Prior GIF round reviewers were not reused.",
+  "limitations": [
+    "Synthetic GIF/image/metadata controls; no native fire fields or render launched.",
+    "Recovered command composition, spectrum scene/movie admission and full recovery remain pending."
+  ],
+  "accepted_utc": "2026-10-04T10:10:00.468053+00:00"
+}

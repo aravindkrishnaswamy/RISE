@@ -13,9 +13,10 @@
 #   files duplicates compile/link settings; this CMake script generates them
 #   from one source list.
 #
-# Prerequisites (one-time, done outside this script):
-#   1. Build the Library and CLI from build/VS2022/RISE.sln in both Debug and
-#      Release. This populates:
+# Prerequisites for direct CMake use (the tracked run_all_tests.ps1 performs
+# the incremental Library.vcxproj build automatically):
+#   1. Build the Library and CLI from build/VS2022/RISE.sln in the desired
+#      configuration. This populates:
 #        - bin/RISE.lib, dbin/RISE.lib
 #        - bin/*.dll, dbin/*.dll (OpenEXR + OIDN runtime)
 #        - build/VS2022/vcpkg_installed/x64-windows/x64-windows/{include,lib,...}
@@ -46,6 +47,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 project(rise_tests CXX)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 if(NOT MSVC)
     message(FATAL_ERROR
@@ -131,11 +133,11 @@ if(NOT EXISTS "${OPENPGL_DIR}/lib/openpgl.lib")
         "openpgl.lib to resolve pgl* symbols.")
 endif()
 
-if(NOT EXISTS "${RISE_LIB_RELEASE}" OR NOT EXISTS "${RISE_LIB_DEBUG}")
+if(NOT EXISTS "${RISE_LIB_RELEASE}" AND NOT EXISTS "${RISE_LIB_DEBUG}")
     message(FATAL_ERROR
-        "RISE.lib not found in bin/ and/or dbin/. Build the Library project in "
-        "Release and Debug before building rise-tests. Expected: "
-        "${RISE_LIB_RELEASE} and ${RISE_LIB_DEBUG}.")
+        "RISE.lib not found in bin/ or dbin/. Build the Library project in the "
+        "configuration you intend to test before building rise-tests. Expected "
+        "one of: ${RISE_LIB_RELEASE} or ${RISE_LIB_DEBUG}.")
 endif()
 
 # -----------------------------------------------------------------------------
@@ -279,6 +281,23 @@ foreach(test_src ${TEST_SOURCES})
 
     add_executable(${test_name} "${test_src}")
 
+    if(test_name STREQUAL "FireProductionCalibrationTest" OR
+       test_name STREQUAL "FireSequenceTest")
+        file(GLOB FIRE_PRODUCTION_FP64_SOURCES CONFIGURE_DEPENDS
+            "${RISE_TESTS_DIR}/fire_production_fp64/*.cpp")
+        target_sources(${test_name} PRIVATE ${FIRE_PRODUCTION_FP64_SOURCES})
+        set_source_files_properties(${FIRE_PRODUCTION_FP64_SOURCES} PROPERTIES
+            COMPILE_OPTIONS "/fp:strict")
+    endif()
+	if(test_name STREQUAL "FireProductionCalibrationTest" OR
+	   test_name STREQUAL "FireSequenceTest")
+		file(GLOB FIRE_PRODUCTION_TRACE_SOURCES CONFIGURE_DEPENDS
+			"${RISE_TESTS_DIR}/fire_production_trace/*.cpp")
+		target_sources(${test_name} PRIVATE ${FIRE_PRODUCTION_TRACE_SOURCES})
+		set_source_files_properties(${FIRE_PRODUCTION_TRACE_SOURCES} PROPERTIES
+			COMPILE_OPTIONS "/fp:strict")
+	endif()
+
     if(test_name STREQUAL "ImageReaderOverflowTest")
         get_filename_component(_image_test_root "${RISE_ROOT}" ABSOLUTE)
         target_compile_definitions(${test_name} PRIVATE RISE_TEST_SOURCE_ROOT="${_image_test_root}")
@@ -329,6 +348,28 @@ foreach(test_src ${TEST_SOURCES})
         /UNDEBUG                   # keep <cassert> checks live in Release test runs (matches make builds)
         /wd4250                    # 'inherits via dominance' - benign with diamond inheritance
     )
+
+	if(test_name STREQUAL "FireProductionCalibrationTest" OR
+	   test_name STREQUAL "FireSequenceTest")
+		target_compile_options(${test_name} PRIVATE /fp:strict)
+	endif()
+	if(test_name STREQUAL "FireSequenceTest")
+		target_compile_options(${test_name} PRIVATE /fp:strict)
+	endif()
+	if(test_name STREQUAL "FireProductionCalibrationTest" OR
+	   test_name STREQUAL "FireSequenceTest")
+		add_custom_command(TARGET ${test_name} PRE_BUILD
+			COMMAND ${Python3_EXECUTABLE}
+				"${RISE_ROOT}/tools/generate_fire_production_fp64_mirror.py" --check
+			WORKING_DIRECTORY "${RISE_ROOT}")
+	endif()
+	if(test_name STREQUAL "FireProductionCalibrationTest" OR
+	   test_name STREQUAL "FireSequenceTest")
+		add_custom_command(TARGET ${test_name} PRE_BUILD
+			COMMAND ${Python3_EXECUTABLE}
+				"${RISE_ROOT}/tools/generate_fire_production_roundoff_trace.py" --check
+			WORKING_DIRECTORY "${RISE_ROOT}")
+	endif()
 
     # Per-config libraries via generator expressions.
     target_link_libraries(${test_name} PRIVATE

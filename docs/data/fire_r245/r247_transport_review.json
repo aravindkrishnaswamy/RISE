@@ -1,0 +1,36 @@
+{
+  "schema": "rise.fire.r247.transport-completion-review.v1",
+  "status": "accepted_selected_data_arithmetic_only",
+  "candidate": "595149c95",
+  "round": 1,
+  "p1": 0,
+  "p2": 0,
+  "completion_sha256": "33e0a6302980ea019de4d62f899054a4bf0ae1df0e201682173598ef5f36606b",
+  "reviews": [
+    {
+      "agent": "r247_transport_completion_arithmetic",
+      "axis": "arithmetic/contract",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "All470 events/2modernpairs/6identities/signedsurfaces+bottom+closure/47000widechecks/momentum1284common2564native/profilecoverage; no nativepayloadrereads"
+    },
+    {
+      "agent": "r247_transport_completion_provenance",
+      "axis": "lifecycle/provenance/memory",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "470eventlinks/940frame-ledger modernpairs/1880payloadreceipts/6identities/2outputseals/failedv1v2hashes/currentRSS-vs-plan-vs-peak distinct"
+    }
+  ],
+  "rows": 470,
+  "frames_per_variant": 235,
+  "measured_peak_rss_bytes": 1163493376,
+  "reader_ceiling_bytes": 2147483648,
+  "original_taller_exit_code": 98,
+  "original_v1_v2_failures_preserved": true,
+  "reader_receipt_acceptance_fields_unchanged": true,
+  "reader_receipt_fields_preserved": "full_derivation_accepted=false and physical_acceptance=false unchanged; separate documentary acceptance only",
+  "physical_acceptance": false,
+  "canonical_taller_qualification": false,
+  "pressure_restoration_split_available": false
+}

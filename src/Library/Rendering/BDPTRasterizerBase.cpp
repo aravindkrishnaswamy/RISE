@@ -359,6 +359,15 @@ void BDPTRasterizerBase::RasterizeScene(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	// Completion tracking (IFireRasterizerState::LastRenderCompleted), as in
+	// PixelBasedRasterizerHelper::RasterizeScene: this override bypasses that
+	// entry, so without its own tracking a cancelled earlier render (e.g. an
+	// animation frame) left the flag false and Job refused every later still
+	// or region render on this rasterizer.
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	bool renderCompleted = true;
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot the active camera once at entry; structural camera
 	// changes (Add/Remove/SetActive) are required to serialize
 	// against rendering — see IScenePriv.h.
@@ -952,10 +961,9 @@ void BDPTRasterizerBase::RasterizeScene(
 			pImage->Clear( RISEColor( GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, 1.0 ), pRect );
 		}
 
-		RasterizerOutputListType::const_iterator r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputIntermediateImage( *pImage, pRect );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( *pImage, pRect );
+		});
 	}
 
 	// Compute tile size from image × threads so small-scene/high-core
@@ -1089,6 +1097,7 @@ void BDPTRasterizerBase::RasterizeScene(
 			safe_release( pPassSampling );
 
 			if( !passCompleted ) {
+				renderCompleted = false;
 				GlobalLog()->PrintEx( eLog_Event,
 					"BDPT Progressive:: Cancelled after pass %u/%u",
 					passIdx+1, numPasses );
@@ -1116,10 +1125,9 @@ void BDPTRasterizerBase::RasterizeScene(
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage, ActiveSplatRegion() );
-				RasterizerOutputListType::const_iterator r, s;
-				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-					(*r)->OutputIntermediateImage( outputImage, pRect );
-				}
+				ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+					output->OutputIntermediateImage( outputImage, pRect );
+				});
 				previewScheduler.MarkPreviewRan();
 
 				// Convergence check runs with preview — keeps the two
@@ -1182,6 +1190,9 @@ void BDPTRasterizerBase::RasterizeScene(
 			pool.ParallelFor( static_cast<unsigned int>( threads ), [&dispatcher]( unsigned int /*workerIdx*/ ) {
 				dispatcher.DoWork();
 			} );
+			if( dispatcher.WasCancelled() || ( pProgressFunc && pProgressFunc->IsCancelled() ) ) {
+				renderCompleted = false;
+			}
 		}
 		else
 		{
@@ -1211,6 +1222,7 @@ void BDPTRasterizerBase::RasterizeScene(
 				if( pProgressFunc ) {
 					if( pProgressFunc->IsCancelled() ||
 						( i > 0 && !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) ) ) ) {
+						renderCompleted = false;
 						break;
 					}
 				}
@@ -1413,6 +1425,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	delete pAOVBuffers;
 	pAOVBuffers = 0;
 	aovUnwindGuard.Dismiss();
+	mLastRenderCompleted.store(renderCompleted,std::memory_order_release);
 #ifdef RISE_ENABLE_OPENPGL
 	pIntegrator->SetGuidingField( 0, 0, 0, 0, 0, eGuidingOneSampleMIS, 2 );
 	pIntegrator->SetCompletePathGuide( 0, false, 0 );

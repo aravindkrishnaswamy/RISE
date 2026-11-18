@@ -174,6 +174,7 @@ data class ViewportPropertyRow(
 fun ViewportPane(
     modifier: Modifier = Modifier,
     frame: ImageBitmap?,
+    ownerToken: Long,
     hasAnimation: Boolean,
     interactionEnabled: Boolean,
     state: RenderState,
@@ -232,36 +233,41 @@ fun ViewportPane(
     // each time the viewport restarts.  Without this, the toolbar's
     // saveable @State would still highlight (e.g.) Orbit while the
     // freshly-constructed controller is at Select internally.
-    LaunchedEffect(viewportEpoch) {
-        RiseNative.nativeViewportSetTool(selectedTool.rawValue)
+    LaunchedEffect(viewportEpoch,ownerToken,interactionEnabled) {
+        if (interactionEnabled) {
+            RiseNative.nativeViewportSetTool(selectedTool.rawValue,ownerToken)
+        }
     }
 
-    LaunchedEffect(refreshTrigger) {
+    LaunchedEffect(refreshTrigger,ownerToken,interactionEnabled) {
         if (interactionEnabled) {
-            RiseNative.nativeViewportRefreshProperties()
-            panelMode = RiseNative.nativeViewportPanelMode()
-            panelHeader = RiseNative.nativeViewportPanelHeader()
-            selectionCategory = RiseNative.nativeViewportSelectionCategory()
-            selectionName = RiseNative.nativeViewportSelectionName()
-            val n = RiseNative.nativeViewportPropertyCount()
+            RiseNative.nativeViewportRefreshProperties(ownerToken)
+            panelMode = RiseNative.nativeViewportPanelMode(ownerToken)
+            panelHeader = RiseNative.nativeViewportPanelHeader(ownerToken)
+            selectionCategory = RiseNative.nativeViewportSelectionCategory(ownerToken)
+            selectionName = RiseNative.nativeViewportSelectionName(ownerToken)
+            val n = RiseNative.nativeViewportPropertyCount(ownerToken)
             properties = (0 until n).map { i ->
-                val pn = RiseNative.nativeViewportPropertyPresetCount(i)
+                val pn = RiseNative.nativeViewportPropertyPresetCount(i, ownerToken)
                 val presetList = if (pn > 0) {
                     (0 until pn).map { j ->
                         ViewportPropertyPreset(
-                            label = RiseNative.nativeViewportPropertyPresetLabel(i, j),
-                            value = RiseNative.nativeViewportPropertyPresetValue(i, j),
+                            label = RiseNative.nativeViewportPropertyPresetLabel(
+                                i,j,ownerToken),
+                            value = RiseNative.nativeViewportPropertyPresetValue(
+                                i,j,ownerToken),
                         )
                     }
                 } else {
                     emptyList()
                 }
                 ViewportPropertyRow(
-                    name = RiseNative.nativeViewportPropertyName(i),
-                    value = RiseNative.nativeViewportPropertyValue(i),
-                    description = RiseNative.nativeViewportPropertyDescription(i),
-                    kind = RiseNative.nativeViewportPropertyKind(i),
-                    editable = RiseNative.nativeViewportPropertyEditable(i),
+                    name = RiseNative.nativeViewportPropertyName(i,ownerToken),
+                    value = RiseNative.nativeViewportPropertyValue(i,ownerToken),
+                    description = RiseNative.nativeViewportPropertyDescription(
+                        i,ownerToken),
+                    kind = RiseNative.nativeViewportPropertyKind(i,ownerToken),
+                    editable = RiseNative.nativeViewportPropertyEditable(i,ownerToken),
                     presets = presetList,
                 )
             }
@@ -272,15 +278,16 @@ fun ViewportPane(
             // Lights / Output Settings (Film) — category ints 1..5
             // derived from `kAccordionSections` below so adding a new
             // section is a one-line change.
-            val epoch = RiseNative.nativeViewportSceneEpoch()
+            val epoch = RiseNative.nativeViewportSceneEpoch(ownerToken)
             val categoryIds = kAccordionSections.map { it.category }.toIntArray()
             if (epoch != lastEpoch) {
                 lastEpoch = epoch
                 val fresh = mutableMapOf<Int, List<String>>()
                 for (cat in categoryIds) {
-                    val nEntries = RiseNative.nativeViewportCategoryEntityCount(cat)
+                    val nEntries = RiseNative.nativeViewportCategoryEntityCount(
+                        cat,ownerToken)
                     fresh[cat] = (0 until nEntries).map { idx ->
-                        RiseNative.nativeViewportCategoryEntityName(cat, idx)
+                        RiseNative.nativeViewportCategoryEntityName(cat,idx,ownerToken)
                     }
                 }
                 entitiesByCategory = fresh
@@ -292,7 +299,8 @@ fun ViewportPane(
             // refresh.
             val freshActive = mutableMapOf<Int, String>()
             for (cat in categoryIds) {
-                freshActive[cat] = RiseNative.nativeViewportCategoryActiveName(cat)
+                freshActive[cat] = RiseNative.nativeViewportCategoryActiveName(
+                    cat,ownerToken)
             }
             activeNameByCategory = freshActive
         }
@@ -337,7 +345,10 @@ fun ViewportPane(
                 onExposureChange = { onExposureChange(it.toDouble()) },
                 toneCurve = viewToneCurve,
                 onToneCurveChange = onToneCurveChange,
-                enabled = state !is RenderState.Idle,
+                enabled = state !is RenderState.Idle &&
+                    state !is RenderState.Loading &&
+                    state !is RenderState.Rendering &&
+                    state !is RenderState.Cancelling,
             )
             Spacer(Modifier.height(8.dp))
             Row(Modifier.weight(1f).fillMaxWidth()) {
@@ -361,11 +372,13 @@ fun ViewportPane(
                         entitiesByCategory = entitiesByCategory,
                         activeNameByCategory = activeNameByCategory,
                         enabled = interactionEnabled,
+                        ownerToken = ownerToken,
                         onSelectionChanged = { cat, name ->
                             // Empty name = open the section without picking.
                             // Camera / Rasterizer selections also trigger
                             // scene mutations on the C++ side.
-                            if (RiseNative.nativeViewportSetSelection(cat, name)) {
+                            if (RiseNative.nativeViewportSetSelection(
+                                    cat,name,ownerToken)) {
                                 refreshTrigger++
                             }
                         },
@@ -378,7 +391,7 @@ fun ViewportPane(
                             // in which case the scene DID change.  Refresh
                             // unconditionally rather than gating on the
                             // return value, matching the Mac panel idiom.
-                            RiseNative.nativeViewportSetProperty(name, value)
+                            RiseNative.nativeViewportSetProperty(name,value,ownerToken)
                             refreshTrigger++
                         },
                     )
@@ -390,11 +403,12 @@ fun ViewportPane(
                         selectedTool = selectedTool,
                         onToolSelected = {
                             selectedTool = it
-                            RiseNative.nativeViewportSetTool(it.rawValue)
+                            RiseNative.nativeViewportSetTool(it.rawValue,ownerToken)
                         },
-                        onUndo = { RiseNative.nativeViewportUndo() },
-                        onRedo = { RiseNative.nativeViewportRedo() },
+                        onUndo = { RiseNative.nativeViewportUndo(ownerToken) },
+                        onRedo = { RiseNative.nativeViewportRedo(ownerToken) },
                         enabled = interactionEnabled,
+                        ownerToken = ownerToken,
                     )
                     Spacer(Modifier.height(8.dp))
                     ViewportCanvas(
@@ -405,6 +419,7 @@ fun ViewportPane(
                         isProductionRendering = (state is RenderState.Rendering),
                         refreshTrigger = refreshTrigger,
                         viewportEpoch = viewportEpoch,
+                        ownerToken = ownerToken,
                     )
                     if (hasAnimation) {
                         Spacer(Modifier.height(8.dp))
@@ -413,21 +428,32 @@ fun ViewportPane(
                         // when the scene declares no animation
                         // (timeEnd == 0) so a degenerate scene still
                         // renders a visible (if useless) slider.
-                        val timelineEnd = remember {
-                            val end = RiseNative.nativeViewportAnimationTimeEnd().toFloat()
-                            if (end > 0f) end else 5f
+                        var timelineEnd by remember(ownerToken) {
+                            mutableStateOf(5f)
+                        }
+                        LaunchedEffect(ownerToken,viewportEpoch,interactionEnabled) {
+                            if (interactionEnabled) {
+                                val end = RiseNative.nativeViewportAnimationTimeEnd(
+                                    ownerToken).toFloat()
+                                timelineEnd = if (end > 0f) end else 5f
+                            }
                         }
                         ViewportTimelineSlider(
                             time = sceneTime,
                             timelineMax = timelineEnd,
-                            onScrubBegin = { RiseNative.nativeViewportScrubBegin() },
+                            onScrubBegin = {
+                                RiseNative.nativeViewportScrubBegin(ownerToken)
+                            },
                             onScrub = { value ->
                                 val accepted =
-                                    RiseNative.nativeViewportScrub(value.toDouble())
+                                    RiseNative.nativeViewportScrub(
+                                        value.toDouble(),ownerToken)
                                 if (accepted) onSceneTimeChange(value)
                                 accepted
                             },
-                            onScrubEnd = { RiseNative.nativeViewportScrubEnd() },
+                            onScrubEnd = {
+                                RiseNative.nativeViewportScrubEnd(ownerToken)
+                            },
                             enabled = interactionEnabled,
                         )
                     }
@@ -523,6 +549,7 @@ private fun ViewportToolbar(
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     enabled: Boolean,
+    ownerToken: Long,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         ToolCategory.values().forEach { cat ->
@@ -531,6 +558,7 @@ private fun ViewportToolbar(
                 selectedTool = selectedTool,
                 onToolSelected = onToolSelected,
                 enabled = enabled,
+                ownerToken = ownerToken,
             )
             Spacer(Modifier.width(4.dp))
         }
@@ -565,20 +593,24 @@ private fun CategorySlot(
     selectedTool: ViewportTool,
     onToolSelected: (ViewportTool) -> Unit,
     enabled: Boolean,
+    ownerToken: Long,
 ) {
     val hasFlyout = category.subTools.size > 1
     // Slot icon = active sub-tool if the slot's category matches,
     // otherwise per-category last-used from the bridge (falls back to
     // the category default when the bridge has no memory yet).
-    val shownTool: ViewportTool = remember(selectedTool, category) {
-        if (selectedTool.category == category) {
-            selectedTool
-        } else {
-            val raw = RiseNative.nativeViewportGetLastSubToolForCategory(category.rawValue)
-            ViewportTool.values().firstOrNull { it.rawValue == raw }
+    var lastUsedTool by remember(category,ownerToken) {
+        mutableStateOf(category.defaultSubTool)
+    }
+    LaunchedEffect(selectedTool,category,ownerToken,enabled) {
+        if (enabled && selectedTool.category != category) {
+            val raw = RiseNative.nativeViewportGetLastSubToolForCategory(
+                category.rawValue,ownerToken)
+            lastUsedTool = ViewportTool.values().firstOrNull { it.rawValue == raw }
                 ?: category.defaultSubTool
         }
     }
+    val shownTool = if (selectedTool.category == category) selectedTool else lastUsedTool
     val isSelected = (selectedTool.category == category)
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -651,6 +683,7 @@ private fun GizmoOverlay(
     frame: ImageBitmap?,
     refreshTrigger: Int,
     paddingPx: Int,
+    ownerToken: Long,
 ) {
     if (frame == null) return
     var handles by remember { mutableStateOf(emptyList<GizmoHandle>()) }
@@ -658,11 +691,11 @@ private fun GizmoOverlay(
     var activeKind by remember { mutableStateOf(-1) }
     var activeAxis by remember { mutableStateOf(-1) }
 
-    LaunchedEffect(refreshTrigger) {
-        RiseNative.nativeViewportRefreshGizmoHandles()
-        val n = RiseNative.nativeViewportGizmoHandleCount()
+    LaunchedEffect(refreshTrigger,ownerToken) {
+        RiseNative.nativeViewportRefreshGizmoHandles(ownerToken)
+        val n = RiseNative.nativeViewportGizmoHandleCount(ownerToken)
         handles = (0 until n).mapNotNull { i ->
-            val a = RiseNative.nativeViewportGizmoHandle(i)
+            val a = RiseNative.nativeViewportGizmoHandle(i,ownerToken)
             if (a.size != 5) null
             else GizmoHandle(
                 kind = a[0].toInt(),
@@ -672,16 +705,16 @@ private fun GizmoOverlay(
                 screenRadius = a[4],
             )
         }
-        dragActive = RiseNative.nativeViewportIsGizmoDragActive()
-        activeKind = RiseNative.nativeViewportActiveGizmoKind()
-        activeAxis = RiseNative.nativeViewportActiveGizmoAxis()
+        dragActive = RiseNative.nativeViewportIsGizmoDragActive(ownerToken)
+        activeKind = RiseNative.nativeViewportActiveGizmoKind(ownerToken)
+        activeAxis = RiseNative.nativeViewportActiveGizmoAxis(ownerToken)
     }
 
     Canvas(modifier = modifier) {
         if (handles.isEmpty()) return@Canvas
         // Pull the camera's stable surface dims, packed (w in hi 32,
         // h in lo 32) by [nativeViewportCameraDimensions].
-        val packed = RiseNative.nativeViewportCameraDimensions()
+        val packed = RiseNative.nativeViewportCameraDimensions(ownerToken)
         val surfW = (packed ushr 32).toInt().toFloat()
         val surfH = (packed and 0xFFFFFFFFL).toInt().toFloat()
         if (surfW <= 0f || surfH <= 0f) return@Canvas
@@ -827,6 +860,7 @@ private fun ViewportCanvas(
     isProductionRendering: Boolean = false,
     refreshTrigger: Int = 0,
     viewportEpoch: Int = 0,
+    ownerToken: Long,
 ) {
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
     var surfaceEpoch by remember { mutableStateOf(0) }
@@ -855,11 +889,12 @@ private fun ViewportCanvas(
     // what Compose actually displays. `enabled` provides a retry edge when a
     // coordinated render temporarily refuses the setter.
     LaunchedEffect(boxSize, paddingPx, refreshTrigger, frame?.width, frame?.height,
-                   enabled, viewportEpoch) {
+                   enabled, viewportEpoch, ownerToken) {
+        if (!enabled) return@LaunchedEffect
         val effectiveWidth = boxSize.width - 2 * paddingPx
         val effectiveHeight = boxSize.height - 2 * paddingPx
         if (effectiveWidth <= 0 || effectiveHeight <= 0) return@LaunchedEffect
-        val packed = RiseNative.nativeViewportCameraDimensions()
+        val packed = RiseNative.nativeViewportCameraDimensions(ownerToken)
         val filmWidth = ((packed ushr 32) and 0xffffffffL).toDouble()
         val filmHeight = (packed and 0xffffffffL).toDouble()
         if (filmWidth <= 0.0 || filmHeight <= 0.0) return@LaunchedEffect
@@ -876,7 +911,8 @@ private fun ViewportCanvas(
         }
         val desired = IntSize(displayWidth, displayHeight)
         if (desired == acceptedSurfaceSize) return@LaunchedEffect
-        if (RiseNative.nativeViewportSetSurfaceDimensions(displayWidth, displayHeight)) {
+        if (RiseNative.nativeViewportSetSurfaceDimensions(
+                displayWidth,displayHeight,ownerToken)) {
             acceptedSurfaceSize = desired
             surfaceEpoch++
         }
@@ -885,7 +921,7 @@ private fun ViewportCanvas(
         modifier
             .background(Color(0xFF101114), RoundedCornerShape(12.dp))
             .onSizeChanged { boxSize = it }
-            .pointerInput(enabled) {
+            .pointerInput(enabled,ownerToken) {
                 // Tap-only gesture detector — for the Select tool's
                 // pick path (controller's `OnPointerDown` runs
                 // `PickAt(px)` which casts a ray and sets the Object
@@ -907,17 +943,19 @@ private fun ViewportCanvas(
                 if (!enabled) return@pointerInput
                 detectTapGestures(
                     onTap = { o ->
-                        val surfaceDims = RiseNative.nativeViewportCameraDimensions()
+                        val surfaceDims = RiseNative.nativeViewportCameraDimensions(ownerToken)
                         val img = mapToImagePixel(
                             o, boxSizeState.value, frameState.value, surfaceDims,
                             paddingPxState.value,
                         ) ?: return@detectTapGestures
-                        RiseNative.nativeViewportPointerDown(img.x.toDouble(), img.y.toDouble())
-                        RiseNative.nativeViewportPointerUp(img.x.toDouble(), img.y.toDouble())
+                        RiseNative.nativeViewportPointerDown(
+                            img.x.toDouble(),img.y.toDouble(),ownerToken)
+                        RiseNative.nativeViewportPointerUp(
+                            img.x.toDouble(),img.y.toDouble(),ownerToken)
                     },
                 )
             }
-            .pointerInput(enabled) {
+            .pointerInput(enabled,ownerToken) {
                 if (!enabled) return@pointerInput
                 detectDragGestures(
                     onDragStart = { o ->
@@ -925,21 +963,23 @@ private fun ViewportCanvas(
                         // gesture-start; they don't change during a
                         // drag, so capturing here means the rest of
                         // the gesture uses a single coord-space target.
-                        val surfaceDims = RiseNative.nativeViewportCameraDimensions()
+                        val surfaceDims = RiseNative.nativeViewportCameraDimensions(ownerToken)
                         val img = mapToImagePixel(
                             o, boxSizeState.value, frameState.value, surfaceDims,
                             paddingPxState.value,
                         ) ?: return@detectDragGestures
-                        RiseNative.nativeViewportPointerDown(img.x.toDouble(), img.y.toDouble())
+                        RiseNative.nativeViewportPointerDown(
+                            img.x.toDouble(),img.y.toDouble(),ownerToken)
                     },
                     onDrag = { change, _ ->
-                        val surfaceDims = RiseNative.nativeViewportCameraDimensions()
+                        val surfaceDims = RiseNative.nativeViewportCameraDimensions(ownerToken)
                         val img = mapToImagePixel(
                             change.position, boxSizeState.value, frameState.value, surfaceDims,
                             paddingPxState.value,
                         )
                         if (img != null) {
-                            RiseNative.nativeViewportPointerMove(img.x.toDouble(), img.y.toDouble())
+                            RiseNative.nativeViewportPointerMove(
+                                img.x.toDouble(),img.y.toDouble(),ownerToken)
                         }
                         change.consume()
                     },
@@ -947,10 +987,10 @@ private fun ViewportCanvas(
                         // We don't have the final position here; pass (0,0).
                         // The controller cares about the up event itself,
                         // not the exact coordinate at release.
-                        RiseNative.nativeViewportPointerUp(0.0, 0.0)
+                        RiseNative.nativeViewportPointerUp(0.0,0.0,ownerToken)
                     },
                     onDragCancel = {
-                        RiseNative.nativeViewportPointerUp(0.0, 0.0)
+                        RiseNative.nativeViewportPointerUp(0.0,0.0,ownerToken)
                     },
                 )
             },
@@ -973,12 +1013,13 @@ private fun ViewportCanvas(
             // the cached handles routes drags to the right gizmo
             // handler.
             if (selectedTool.category == ToolCategory.ObjectTransform
-                && !isProductionRendering) {
+                && !isProductionRendering && enabled) {
                 GizmoOverlay(
                     modifier = Modifier.fillMaxSize(),
                     frame = frame,
                     refreshTrigger = refreshTrigger + surfaceEpoch + viewportEpoch,
                     paddingPx = paddingPx,
+                    ownerToken = ownerToken,
                 )
             }
         } else {
@@ -1051,6 +1092,7 @@ private fun ViewportAccordionPanel(
     entitiesByCategory: Map<Int, List<String>>,
     activeNameByCategory: Map<Int, String>,
     enabled: Boolean,
+    ownerToken: Long,
     onSelectionChanged: (Int, String) -> Unit,
     onPropertyEdited: (String, String) -> Unit,
 ) {
@@ -1095,6 +1137,7 @@ private fun ViewportAccordionPanel(
                     },
                     propertyRows = if (selectionCategory == section.category && mode != 0) properties else emptyList(),
                     onPropertyEdited = onPropertyEdited,
+                    ownerToken = ownerToken,
                 )
             }
         }
@@ -1128,6 +1171,7 @@ private fun AccordionSection(
     onSelectRow: (String) -> Unit,
     propertyRows: List<ViewportPropertyRow>,
     onPropertyEdited: (String, String) -> Unit,
+    ownerToken: Long,
 ) {
     Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
         // Tap anywhere on the header strip to toggle.  Single hit
@@ -1187,7 +1231,8 @@ private fun AccordionSection(
             if (selectedName.isNotEmpty()) {
                 Column(Modifier.padding(start = 12.dp, top = 6.dp, bottom = 6.dp)) {
                     propertyRows.forEach { row ->
-                        ViewportPropertyEntry(row, enabled, onPropertyEdited)
+                        ViewportPropertyEntry(
+                            row,enabled,onPropertyEdited,ownerToken)
                     }
                     if (propertyRows.isEmpty()) {
                         Text(
@@ -1262,6 +1307,7 @@ private fun ViewportPropertyEntry(
     row: ViewportPropertyRow,
     enabled: Boolean,
     onPropertyEdited: (String, String) -> Unit,
+    ownerToken: Long,
 ) {
     var text by rememberSaveable(row.name) { mutableStateOf(row.value) }
 
@@ -1294,12 +1340,16 @@ private fun ViewportPropertyEntry(
                         currentText = { text },
                         name = row.name,
                         kind = row.kind,
-                        onScrubBegin = { RiseNative.nativeViewportBeginPropertyScrub() },
+                        onScrubBegin = {
+                            RiseNative.nativeViewportBeginPropertyScrub(ownerToken)
+                        },
                         onScrub = { newValue ->
                             text = newValue
                             onPropertyEdited(row.name, newValue)
                         },
-                        onScrubEnd = { RiseNative.nativeViewportEndPropertyScrub() },
+                        onScrubEnd = {
+                            RiseNative.nativeViewportEndPropertyScrub(ownerToken)
+                        },
                     )
                     Spacer(Modifier.width(4.dp))
                 }

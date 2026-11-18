@@ -218,6 +218,7 @@ namespace RISE
 		class MLTRasterizer : public virtual Rasterizer
 		{
 		protected:
+			virtual bool SupportsFireMediaTransport() const { return false; }
 
 			IRayCaster*				pCaster;
 			BDPTIntegrator*			pIntegrator;

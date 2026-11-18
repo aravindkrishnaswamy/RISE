@@ -83,47 +83,70 @@ JNIF(void, nativeInit)(JNIEnv* env, jobject /*thiz*/,
                            static_cast<int>(threadCount));
 }
 
-JNIF(void, nativeSetCallback)(JNIEnv* env, jobject /*thiz*/, jobject kotlinCallback) {
-    getBridge().setCallback(env, kotlinCallback);
+JNIF(jlong, nativeSetCallback)(JNIEnv* env, jobject /*thiz*/, jobject kotlinCallback,
+                               jlong requestGeneration) {
+    return static_cast<jlong>(getBridge().setCallback(
+        env,kotlinCallback,static_cast<uint64_t>(requestGeneration)));
 }
 
-JNIF(jboolean, nativeLoadScene)(JNIEnv* env, jobject /*thiz*/, jstring jPath) {
-    return getBridge().loadScene(jstringToStd(env, jPath)) ? JNI_TRUE : JNI_FALSE;
+JNIF(void, nativeClearCallback)(JNIEnv* env, jobject /*thiz*/, jlong ownerToken) {
+    getBridge().clearCallback(env, static_cast<uint64_t>(ownerToken));
 }
 
-JNIF(jboolean, nativeRasterize)(JNIEnv* /*env*/, jobject /*thiz*/) {
+JNIF(jboolean, nativeOwnsCallback)(JNIEnv* /*env*/, jobject /*thiz*/, jlong ownerToken) {
+    return getBridge().ownsCallback(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
+}
+
+JNIF(jboolean, nativeLoadScene)(JNIEnv* env, jobject /*thiz*/, jstring jPath,
+                                jlong ownerToken) {
+    return getBridge().loadScene(jstringToStd(env, jPath),
+        static_cast<uint64_t>(ownerToken)) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIF(jboolean, nativeRasterize)(JNIEnv* /*env*/, jobject /*thiz*/, jlong ownerToken) {
     // BLOCKING. Kotlin calls this from Dispatchers.IO. Inside Rasterize(),
     // the library spawns its own pthread worker pool; callbacks fire from
     // those workers and use getJniEnv() to attach-as-daemon.
-    return getBridge().rasterize() ? JNI_TRUE : JNI_FALSE;
+    return getBridge().rasterize(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
 
-JNIF(jstring, nativeAutoResolvedIntegrator)(JNIEnv* env, jobject /*thiz*/) {
-    return env->NewStringUTF(getBridge().autoResolvedIntegrator().c_str());
+JNIF(jstring, nativeAutoResolvedIntegrator)(JNIEnv* env, jobject /*thiz*/,
+                                             jlong ownerToken) {
+    return env->NewStringUTF(getBridge().autoResolvedIntegrator(
+        static_cast<uint64_t>(ownerToken)).c_str());
 }
 
-JNIF(jstring, nativeAutoResolveReason)(JNIEnv* env, jobject /*thiz*/) {
-    return env->NewStringUTF(getBridge().autoResolveReason().c_str());
+JNIF(jstring, nativeAutoResolveReason)(JNIEnv* env, jobject /*thiz*/,
+                                      jlong ownerToken) {
+    return env->NewStringUTF(getBridge().autoResolveReason(
+        static_cast<uint64_t>(ownerToken)).c_str());
 }
 
-JNIF(void, nativeCancel)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().requestCancel();
+JNIF(jboolean, nativeCancel)(JNIEnv* /*env*/, jobject /*thiz*/, jlong ownerToken) {
+    return getBridge().requestCancel(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
 
-JNIF(void, nativeSetSceneTime)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble t) {
+JNIF(jboolean, nativeSetSceneTime)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble t,
+                                   jlong ownerToken) {
     // Full SetSceneTime — advances the animator AND regenerates every
     // populated photon map at time `t`.  Called by RenderViewModel
     // before nativeRasterize so post-scrub renders pick up caustics
     // consistent with the scrubbed scene state.
-    getBridge().setSceneTime(static_cast<double>(t));
+    return getBridge().setSceneTime(static_cast<double>(t),
+        static_cast<uint64_t>(ownerToken)) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIF(jboolean, nativeHasAnimatedObjects)(JNIEnv* /*env*/, jobject /*thiz*/) {
+JNIF(jboolean, nativeHasAnimatedObjects)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                         jlong ownerToken) {
     // Whether the loaded scene declares any keyframed objects.  Used
     // by RenderViewModel after nativeLoadScene to drive _hasAnimation
     // — works without the viewport controller being running, unlike
     // the controller-scoped nativeViewportAnimation* getters.
-    return getBridge().hasAnimatedObjects() ? JNI_TRUE : JNI_FALSE;
+    return getBridge().hasAnimatedObjects(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
 
 // -----------------------------------------------------------------------------
@@ -148,11 +171,10 @@ JNIF(void, nativeSetViewToneCurve)(JNIEnv* /*env*/, jobject /*thiz*/,
     getBridge().setViewToneCurve(static_cast<int>(curve));
 }
 
-// L8 round 9 — lockless progressive-update poll.  Called by the
-// Kotlin side's `Choreographer.postFrameCallback` loop at the
-// display refresh rate during an active render.  Reads the
-// production VFS's atomic generation counter; no-ops if the counter
-// hasn't advanced since the last poll, otherwise emits one
+// L8 round 9 — generation-gated progressive-update poll.  Called by the
+// RenderViewModel's 30 Hz coroutine during an active render. Snapshots the
+// production VFS chain and reads its FrameStore generation; no-ops if
+// the counter hasn't advanced since the last poll, otherwise emits one
 // full-image refresh via the standard `onRegionInvalidated` JNI
 // path.  Workers fire NO synchronous bridge callbacks per tile;
 // they just bump the generation counter in `FrameStore::EndTile`.
@@ -171,17 +193,31 @@ JNIF(jboolean, nativeSaveAs)(JNIEnv* env, jobject /*thiz*/,
            ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIF(jdouble, nativeViewportLastSceneTime)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    // Canonical scene time tracked by the SceneEditController.  Used
-    // by RenderViewModel just before nativeSetSceneTime so the
-    // production handoff uses the truth rather than the slider's
-    // local copy (which goes stale across undo/redo).  Returns 0
-    // when no controller is attached.
-    return static_cast<jdouble>(getBridge().viewportLastSceneTime());
+JNIF(jobject, nativePrepareProductionRender)(JNIEnv* env, jobject /*thiz*/,
+                                              jdouble fallbackSceneTime,
+                                              jlong ownerToken) {
+    double canonicalSceneTime = static_cast<double>(fallbackSceneTime);
+    if (!getBridge().prepareProductionRender(
+            static_cast<double>(fallbackSceneTime), canonicalSceneTime,
+            static_cast<uint64_t>(ownerToken))) {
+        return nullptr;
+    }
+    jclass resultClass = env->FindClass(
+        "com/risegfx/android/nativebridge/ProductionViewportHandoff");
+    if (!resultClass) return nullptr;
+    jmethodID constructor = env->GetMethodID(resultClass, "<init>", "(D)V");
+    if (!constructor) {
+        env->DeleteLocalRef(resultClass);
+        return nullptr;
+    }
+    jobject result = env->NewObject(
+        resultClass, constructor, static_cast<jdouble>(canonicalSceneTime));
+    env->DeleteLocalRef(resultClass);
+    return result;
 }
 
-JNIF(jobject, nativeGetFramebuffer)(JNIEnv* env, jobject /*thiz*/) {
-    return getBridge().getFramebufferByteBuffer(env);
+JNIF(jobject, nativeCopyFramebuffer)(JNIEnv* env, jobject /*thiz*/, jobject destination) {
+    return getBridge().copyFramebufferSnapshot(env, destination);
 }
 
 JNIF(void, nativeEtaBegin)(JNIEnv* /*env*/, jobject /*thiz*/) {
@@ -203,34 +239,43 @@ JNIF(jlong, nativeEtaRemainingMs)(JNIEnv* /*env*/, jobject /*thiz*/) {
 // -----------------------------------------------------------------------------
 
 JNIF(jboolean, nativeViewportStart)(JNIEnv* /*env*/, jobject /*thiz*/,
-                                    jboolean suppressFirstFrame) {
-    return getBridge().startViewport(suppressFirstFrame == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+                                    jboolean suppressFirstFrame, jlong ownerToken) {
+    return getBridge().startViewport(suppressFirstFrame == JNI_TRUE,
+        static_cast<uint64_t>(ownerToken)) ? JNI_TRUE : JNI_FALSE;
 }
 JNIF(jboolean, nativeScaleFilmToFit)(JNIEnv* /*env*/, jobject /*thiz*/,
-                                     jint surfaceW, jint surfaceH, jint maxLongEdge) {
+                                     jint surfaceW, jint surfaceH, jint maxLongEdge,
+                                     jlong ownerToken) {
     if (surfaceW <= 0 || surfaceH <= 0 || maxLongEdge <= 0) return JNI_FALSE;
     return getBridge().scaleFilmToFit(
         static_cast<unsigned int>(surfaceW),
         static_cast<unsigned int>(surfaceH),
-        static_cast<unsigned int>(maxLongEdge)) ? JNI_TRUE : JNI_FALSE;
+        static_cast<unsigned int>(maxLongEdge),
+        static_cast<uint64_t>(ownerToken)) ? JNI_TRUE : JNI_FALSE;
 }
-JNIF(void, nativeViewportStop)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().stopViewport();
+JNIF(jboolean, nativeViewportStop)(JNIEnv* /*env*/, jobject /*thiz*/, jlong ownerToken) {
+    return getBridge().stopViewport(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
-JNIF(jboolean, nativeViewportIsRunning)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return getBridge().isViewportRunning() ? JNI_TRUE : JNI_FALSE;
+JNIF(jboolean, nativeViewportIsRunning)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                        jlong ownerToken) {
+    return getBridge().isViewportRunning(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
-JNIF(jboolean, nativeViewportHasLivePreview)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return getBridge().hasLivePreview() ? JNI_TRUE : JNI_FALSE;
+JNIF(jboolean, nativeViewportHasLivePreview)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                             jlong ownerToken) {
+    return getBridge().hasLivePreview(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
-JNIF(void, nativeViewportSuppressNextFrame)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().viewportSuppressNextFrame();
+JNIF(void, nativeViewportSetTool)(JNIEnv* /*env*/, jobject /*thiz*/, jint tool,
+                                  jlong ownerToken) {
+    getBridge().viewportSetTool(static_cast<int>(tool),
+        static_cast<uint64_t>(ownerToken));
 }
-JNIF(void, nativeViewportSetTool)(JNIEnv* /*env*/, jobject /*thiz*/, jint tool) {
-    getBridge().viewportSetTool(static_cast<int>(tool));
-}
-JNIF(jint, nativeViewportCurrentTool)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return static_cast<jint>(getBridge().viewportCurrentTool());
+JNIF(jint, nativeViewportCurrentTool)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                      jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportCurrentTool(
+        static_cast<uint64_t>(ownerToken)));
 }
 JNIF(jint, nativeViewportCategoryForTool)(JNIEnv* /*env*/, jobject /*thiz*/, jint tool) {
     return static_cast<jint>(getBridge().viewportCategoryForTool(static_cast<int>(tool)));
@@ -238,169 +283,243 @@ JNIF(jint, nativeViewportCategoryForTool)(JNIEnv* /*env*/, jobject /*thiz*/, jin
 JNIF(jint, nativeViewportDefaultSubToolForCategory)(JNIEnv* /*env*/, jobject /*thiz*/, jint category) {
     return static_cast<jint>(getBridge().viewportDefaultSubToolForCategory(static_cast<int>(category)));
 }
-JNIF(jint, nativeViewportGetLastSubToolForCategory)(JNIEnv* /*env*/, jobject /*thiz*/, jint category) {
-    return static_cast<jint>(getBridge().viewportGetLastSubToolForCategory(static_cast<int>(category)));
+JNIF(jint, nativeViewportGetLastSubToolForCategory)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                                    jint category, jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportGetLastSubToolForCategory(
+        static_cast<int>(category),static_cast<uint64_t>(ownerToken)));
 }
-JNIF(void, nativeViewportRefreshGizmoHandles)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().viewportRefreshGizmoHandles();
+JNIF(void, nativeViewportRefreshGizmoHandles)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                               jlong ownerToken) {
+    getBridge().viewportRefreshGizmoHandles(static_cast<uint64_t>(ownerToken));
 }
-JNIF(jint, nativeViewportGizmoHandleCount)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return static_cast<jint>(getBridge().viewportGizmoHandleCount());
+JNIF(jint, nativeViewportGizmoHandleCount)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                           jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportGizmoHandleCount(
+        static_cast<uint64_t>(ownerToken)));
 }
-JNIF(jdoubleArray, nativeViewportGizmoHandle)(JNIEnv* env, jobject /*thiz*/, jint index) {
+JNIF(jdoubleArray, nativeViewportGizmoHandle)(JNIEnv* env, jobject /*thiz*/,
+                                              jint index, jlong ownerToken) {
     double tmp[5] = { 0, 0, 0, 0, 0 };
-    if (!getBridge().viewportGizmoHandle(static_cast<unsigned int>(index), tmp)) {
+    if (!getBridge().viewportGizmoHandle(static_cast<unsigned int>(index),tmp,
+            static_cast<uint64_t>(ownerToken))) {
         return env->NewDoubleArray(0);
     }
     jdoubleArray arr = env->NewDoubleArray(5);
     if (arr) env->SetDoubleArrayRegion(arr, 0, 5, tmp);
     return arr;
 }
-JNIF(jint, nativeViewportGizmoHandleAt)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble x, jdouble y) {
-    return static_cast<jint>(getBridge().viewportGizmoHandleAt(x, y));
+JNIF(jint, nativeViewportGizmoHandleAt)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                        jdouble x, jdouble y, jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportGizmoHandleAt(
+        x,y,static_cast<uint64_t>(ownerToken)));
 }
-JNIF(jboolean, nativeViewportIsGizmoDragActive)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return getBridge().viewportIsGizmoDragActive() ? JNI_TRUE : JNI_FALSE;
+JNIF(jboolean, nativeViewportIsGizmoDragActive)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                                 jlong ownerToken) {
+    return getBridge().viewportIsGizmoDragActive(
+        static_cast<uint64_t>(ownerToken)) ? JNI_TRUE : JNI_FALSE;
 }
-JNIF(jint, nativeViewportActiveGizmoKind)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return static_cast<jint>(getBridge().viewportActiveGizmoKind());
+JNIF(jint, nativeViewportActiveGizmoKind)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                          jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportActiveGizmoKind(
+        static_cast<uint64_t>(ownerToken)));
 }
-JNIF(jint, nativeViewportActiveGizmoAxis)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return static_cast<jint>(getBridge().viewportActiveGizmoAxis());
+JNIF(jint, nativeViewportActiveGizmoAxis)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                          jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportActiveGizmoAxis(
+        static_cast<uint64_t>(ownerToken)));
 }
-JNIF(void, nativeViewportPointerDown)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble x, jdouble y) {
-    getBridge().viewportPointerDown(x, y);
+JNIF(void, nativeViewportPointerDown)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                      jdouble x, jdouble y, jlong ownerToken) {
+    getBridge().viewportPointerDown(x,y,static_cast<uint64_t>(ownerToken));
 }
-JNIF(void, nativeViewportPointerMove)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble x, jdouble y) {
-    getBridge().viewportPointerMove(x, y);
+JNIF(void, nativeViewportPointerMove)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                      jdouble x, jdouble y, jlong ownerToken) {
+    getBridge().viewportPointerMove(x,y,static_cast<uint64_t>(ownerToken));
 }
-JNIF(void, nativeViewportPointerUp)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble x, jdouble y) {
-    getBridge().viewportPointerUp(x, y);
+JNIF(void, nativeViewportPointerUp)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                    jdouble x, jdouble y, jlong ownerToken) {
+    getBridge().viewportPointerUp(x,y,static_cast<uint64_t>(ownerToken));
 }
-JNIF(jlong, nativeViewportCameraDimensions)(JNIEnv* /*env*/, jobject /*thiz*/) {
+JNIF(jlong, nativeViewportCameraDimensions)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                             jlong ownerToken) {
     // Pack (w, h) into a single jlong so Kotlin can read both
     // dims with one JNI call (cheap on every pointer event).  Hi
     // 32 bits = width, lo 32 bits = height.  Returns 0 when no
     // camera is attached (both halves zero).
     unsigned int w = 0, h = 0;
-    getBridge().viewportGetCameraDimensions(w, h);
+    getBridge().viewportGetCameraDimensions(
+        w,h,static_cast<uint64_t>(ownerToken));
     return (static_cast<jlong>(w) << 32) | static_cast<jlong>(h);
 }
 JNIF(jboolean, nativeViewportSetSurfaceDimensions)(JNIEnv* /*env*/, jobject /*thiz*/,
-                                                    jint width, jint height) {
+                                                    jint width, jint height,
+                                                    jlong ownerToken) {
     if (width <= 0 || height <= 0) return JNI_FALSE;
     return getBridge().viewportSetSurfaceDimensions(
-        static_cast<unsigned int>(width), static_cast<unsigned int>(height))
+        static_cast<unsigned int>(width),static_cast<unsigned int>(height),
+        static_cast<uint64_t>(ownerToken))
         ? JNI_TRUE : JNI_FALSE;
 }
-JNIF(jdouble, nativeViewportAnimationTimeEnd)(JNIEnv* /*env*/, jobject /*thiz*/) {
+JNIF(jdouble, nativeViewportAnimationTimeEnd)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                               jlong ownerToken) {
     double t0 = 0, t1 = 0;
     unsigned int nf = 0;
-    getBridge().viewportGetAnimationOptions(t0, t1, nf);
+    getBridge().viewportGetAnimationOptions(
+        t0,t1,nf,static_cast<uint64_t>(ownerToken));
     return t1;
 }
-JNIF(jint, nativeViewportAnimationNumFrames)(JNIEnv* /*env*/, jobject /*thiz*/) {
+JNIF(jint, nativeViewportAnimationNumFrames)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                              jlong ownerToken) {
     double t0 = 0, t1 = 0;
     unsigned int nf = 0;
-    getBridge().viewportGetAnimationOptions(t0, t1, nf);
+    getBridge().viewportGetAnimationOptions(
+        t0,t1,nf,static_cast<uint64_t>(ownerToken));
     return static_cast<jint>(nf);
 }
-JNIF(jboolean, nativeViewportScrubBegin)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return getBridge().viewportScrubBegin() ? JNI_TRUE : JNI_FALSE;
+JNIF(jboolean, nativeViewportScrubBegin)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                         jlong ownerToken) {
+    return getBridge().viewportScrubBegin(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
-JNIF(jboolean, nativeViewportScrub)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble t) {
-    return getBridge().viewportScrub(t) ? JNI_TRUE : JNI_FALSE;
+JNIF(jboolean, nativeViewportScrub)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble t,
+                                    jlong ownerToken) {
+    return getBridge().viewportScrub(t,static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
-JNIF(jboolean, nativeViewportScrubEnd)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return getBridge().viewportScrubEnd() ? JNI_TRUE : JNI_FALSE;
+JNIF(jboolean, nativeViewportScrubEnd)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                       jlong ownerToken) {
+    return getBridge().viewportScrubEnd(static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
-JNIF(void, nativeViewportBeginPropertyScrub)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().viewportBeginPropertyScrub();
+JNIF(void, nativeViewportBeginPropertyScrub)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                              jlong ownerToken) {
+    getBridge().viewportBeginPropertyScrub(static_cast<uint64_t>(ownerToken));
 }
-JNIF(void, nativeViewportEndPropertyScrub)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().viewportEndPropertyScrub();
+JNIF(void, nativeViewportEndPropertyScrub)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                            jlong ownerToken) {
+    getBridge().viewportEndPropertyScrub(static_cast<uint64_t>(ownerToken));
 }
-JNIF(void, nativeViewportUndo)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().viewportUndo();
+JNIF(void, nativeViewportUndo)(JNIEnv* /*env*/, jobject /*thiz*/, jlong ownerToken) {
+    getBridge().viewportUndo(static_cast<uint64_t>(ownerToken));
 }
-JNIF(void, nativeViewportRedo)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().viewportRedo();
+JNIF(void, nativeViewportRedo)(JNIEnv* /*env*/, jobject /*thiz*/, jlong ownerToken) {
+    getBridge().viewportRedo(static_cast<uint64_t>(ownerToken));
 }
-JNIF(jboolean, nativeViewportProductionRender)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return getBridge().viewportProductionRender() ? JNI_TRUE : JNI_FALSE;
+JNIF(jboolean, nativeViewportProductionRender)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                                jlong ownerToken) {
+    return getBridge().viewportProductionRender(
+        static_cast<uint64_t>(ownerToken)) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIF(void, nativeViewportRefreshProperties)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    getBridge().viewportRefreshProperties();
+JNIF(void, nativeViewportRefreshProperties)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                             jlong ownerToken) {
+    getBridge().viewportRefreshProperties(static_cast<uint64_t>(ownerToken));
 }
-JNIF(jint, nativeViewportPanelMode)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return static_cast<jint>(getBridge().viewportPanelMode());
+JNIF(jint, nativeViewportPanelMode)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                    jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportPanelMode(
+        static_cast<uint64_t>(ownerToken)));
 }
-JNIF(jstring, nativeViewportPanelHeader)(JNIEnv* env, jobject /*thiz*/) {
-    return env->NewStringUTF(getBridge().viewportPanelHeader().c_str());
+JNIF(jstring, nativeViewportPanelHeader)(JNIEnv* env, jobject /*thiz*/,
+                                         jlong ownerToken) {
+    return env->NewStringUTF(getBridge().viewportPanelHeader(
+        static_cast<uint64_t>(ownerToken)).c_str());
 }
-JNIF(jint, nativeViewportPropertyCount)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return static_cast<jint>(getBridge().viewportPropertyCount());
+JNIF(jint, nativeViewportPropertyCount)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                        jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportPropertyCount(
+        static_cast<uint64_t>(ownerToken)));
 }
-JNIF(jstring, nativeViewportPropertyName)(JNIEnv* env, jobject /*thiz*/, jint idx) {
-    return env->NewStringUTF(getBridge().viewportPropertyName(static_cast<unsigned>(idx)).c_str());
+JNIF(jstring, nativeViewportPropertyName)(JNIEnv* env, jobject /*thiz*/, jint idx,
+                                           jlong ownerToken) {
+    return env->NewStringUTF(getBridge().viewportPropertyName(
+        static_cast<unsigned>(idx),static_cast<uint64_t>(ownerToken)).c_str());
 }
-JNIF(jstring, nativeViewportPropertyValue)(JNIEnv* env, jobject /*thiz*/, jint idx) {
-    return env->NewStringUTF(getBridge().viewportPropertyValue(static_cast<unsigned>(idx)).c_str());
+JNIF(jstring, nativeViewportPropertyValue)(JNIEnv* env, jobject /*thiz*/, jint idx,
+                                            jlong ownerToken) {
+    return env->NewStringUTF(getBridge().viewportPropertyValue(
+        static_cast<unsigned>(idx),static_cast<uint64_t>(ownerToken)).c_str());
 }
-JNIF(jstring, nativeViewportPropertyDescription)(JNIEnv* env, jobject /*thiz*/, jint idx) {
-    return env->NewStringUTF(getBridge().viewportPropertyDescription(static_cast<unsigned>(idx)).c_str());
+JNIF(jstring, nativeViewportPropertyDescription)(JNIEnv* env, jobject /*thiz*/, jint idx,
+                                                  jlong ownerToken) {
+    return env->NewStringUTF(getBridge().viewportPropertyDescription(
+        static_cast<unsigned>(idx),static_cast<uint64_t>(ownerToken)).c_str());
 }
-JNIF(jint, nativeViewportPropertyKind)(JNIEnv* /*env*/, jobject /*thiz*/, jint idx) {
-    return static_cast<jint>(getBridge().viewportPropertyKind(static_cast<unsigned>(idx)));
+JNIF(jint, nativeViewportPropertyKind)(JNIEnv* /*env*/, jobject /*thiz*/, jint idx,
+                                        jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportPropertyKind(
+        static_cast<unsigned>(idx),static_cast<uint64_t>(ownerToken)));
 }
-JNIF(jboolean, nativeViewportPropertyEditable)(JNIEnv* /*env*/, jobject /*thiz*/, jint idx) {
-    return getBridge().viewportPropertyEditable(static_cast<unsigned>(idx)) ? JNI_TRUE : JNI_FALSE;
+JNIF(jboolean, nativeViewportPropertyEditable)(JNIEnv* /*env*/, jobject /*thiz*/, jint idx,
+                                                jlong ownerToken) {
+    return getBridge().viewportPropertyEditable(
+        static_cast<unsigned>(idx),static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
-JNIF(jint, nativeViewportPropertyPresetCount)(JNIEnv* /*env*/, jobject /*thiz*/, jint idx) {
-    return static_cast<jint>(getBridge().viewportPropertyPresetCount(static_cast<unsigned>(idx)));
+JNIF(jint, nativeViewportPropertyPresetCount)(JNIEnv* /*env*/, jobject /*thiz*/, jint idx,
+                                               jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportPropertyPresetCount(
+        static_cast<unsigned>(idx),static_cast<uint64_t>(ownerToken)));
 }
-JNIF(jstring, nativeViewportPropertyPresetLabel)(JNIEnv* env, jobject /*thiz*/, jint idx, jint presetIdx) {
+JNIF(jstring, nativeViewportPropertyPresetLabel)(JNIEnv* env, jobject /*thiz*/, jint idx,
+                                                  jint presetIdx, jlong ownerToken) {
     return env->NewStringUTF(getBridge().viewportPropertyPresetLabel(
-        static_cast<unsigned>(idx), static_cast<unsigned>(presetIdx)).c_str());
+        static_cast<unsigned>(idx),static_cast<unsigned>(presetIdx),
+        static_cast<uint64_t>(ownerToken)).c_str());
 }
-JNIF(jstring, nativeViewportPropertyPresetValue)(JNIEnv* env, jobject /*thiz*/, jint idx, jint presetIdx) {
+JNIF(jstring, nativeViewportPropertyPresetValue)(JNIEnv* env, jobject /*thiz*/, jint idx,
+                                                  jint presetIdx, jlong ownerToken) {
     return env->NewStringUTF(getBridge().viewportPropertyPresetValue(
-        static_cast<unsigned>(idx), static_cast<unsigned>(presetIdx)).c_str());
+        static_cast<unsigned>(idx),static_cast<unsigned>(presetIdx),
+        static_cast<uint64_t>(ownerToken)).c_str());
 }
 JNIF(jboolean, nativeViewportSetProperty)(JNIEnv* env, jobject /*thiz*/,
-                                          jstring jName, jstring jValue) {
+                                          jstring jName, jstring jValue,
+                                          jlong ownerToken) {
     return getBridge().viewportSetProperty(jstringToStd(env, jName),
-                                           jstringToStd(env, jValue)) ? JNI_TRUE : JNI_FALSE;
+        jstringToStd(env,jValue),static_cast<uint64_t>(ownerToken)) ?
+        JNI_TRUE : JNI_FALSE;
 }
 
 // -----------------------------------------------------------------------------
 // Accordion list / selection — Phase 1 right-panel API.
 // -----------------------------------------------------------------------------
-JNIF(jint, nativeViewportCategoryEntityCount)(JNIEnv* /*env*/, jobject /*thiz*/, jint category) {
-    return static_cast<jint>(getBridge().viewportCategoryEntityCount(static_cast<int>(category)));
+JNIF(jint, nativeViewportCategoryEntityCount)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                               jint category, jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportCategoryEntityCount(
+        static_cast<int>(category),static_cast<uint64_t>(ownerToken)));
 }
-JNIF(jstring, nativeViewportCategoryEntityName)(JNIEnv* env, jobject /*thiz*/, jint category, jint idx) {
+JNIF(jstring, nativeViewportCategoryEntityName)(JNIEnv* env, jobject /*thiz*/, jint category,
+                                                 jint idx, jlong ownerToken) {
     return env->NewStringUTF(getBridge().viewportCategoryEntityName(
-        static_cast<int>(category), static_cast<unsigned int>(idx)).c_str());
+        static_cast<int>(category),static_cast<unsigned int>(idx),
+        static_cast<uint64_t>(ownerToken)).c_str());
 }
-JNIF(jstring, nativeViewportCategoryActiveName)(JNIEnv* env, jobject /*thiz*/, jint category) {
+JNIF(jstring, nativeViewportCategoryActiveName)(JNIEnv* env, jobject /*thiz*/, jint category,
+                                                 jlong ownerToken) {
     return env->NewStringUTF(getBridge().viewportCategoryActiveName(
-        static_cast<int>(category)).c_str());
+        static_cast<int>(category),static_cast<uint64_t>(ownerToken)).c_str());
 }
-JNIF(jint, nativeViewportSelectionCategory)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return static_cast<jint>(getBridge().viewportSelectionCategory());
+JNIF(jint, nativeViewportSelectionCategory)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                             jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportSelectionCategory(
+        static_cast<uint64_t>(ownerToken)));
 }
-JNIF(jstring, nativeViewportSelectionName)(JNIEnv* env, jobject /*thiz*/) {
-    return env->NewStringUTF(getBridge().viewportSelectionName().c_str());
+JNIF(jstring, nativeViewportSelectionName)(JNIEnv* env, jobject /*thiz*/,
+                                            jlong ownerToken) {
+    return env->NewStringUTF(getBridge().viewportSelectionName(
+        static_cast<uint64_t>(ownerToken)).c_str());
 }
-JNIF(jboolean, nativeViewportSetSelection)(JNIEnv* env, jobject /*thiz*/, jint category, jstring jName) {
+JNIF(jboolean, nativeViewportSetSelection)(JNIEnv* env, jobject /*thiz*/, jint category,
+                                            jstring jName, jlong ownerToken) {
     return getBridge().viewportSetSelection(
-        static_cast<int>(category),
-        jstringToStd(env, jName)) ? JNI_TRUE : JNI_FALSE;
+        static_cast<int>(category),jstringToStd(env,jName),
+        static_cast<uint64_t>(ownerToken)) ? JNI_TRUE : JNI_FALSE;
 }
-JNIF(jint, nativeViewportSceneEpoch)(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return static_cast<jint>(getBridge().viewportSceneEpoch());
+JNIF(jint, nativeViewportSceneEpoch)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                     jlong ownerToken) {
+    return static_cast<jint>(getBridge().viewportSceneEpoch(
+        static_cast<uint64_t>(ownerToken)));
 }
 
 #undef JNIF

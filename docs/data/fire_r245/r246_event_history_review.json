@@ -1,0 +1,28 @@
+{
+  "schema": "rise.fire.r246.event-history-prerequisite-review.v1",
+  "reviewed_commit": "253528913",
+  "accepted_utc": "2026-10-04T03:04:42.674687+00:00",
+  "verdict": "zero_P1_P2_prepared_prerequisite_only",
+  "recovery_accepted": false,
+  "reviewers": [
+    {
+      "name": "r246_event_contract_r2",
+      "axis": "arithmetic_contract",
+      "P1": 0,
+      "P2": 0
+    },
+    {
+      "name": "r246_event_lifecycle_r2",
+      "axis": "lifecycle_provenance_doc_fidelity",
+      "P1": 0,
+      "P2": 0
+    }
+  ],
+  "gate_receipt_sha256": "5b4760d977fd3d54b8e6e8358ecb237aa2d748d9d702a09231df8aa55a964151",
+  "retained_original_exit_code": 98,
+  "remaining": [
+    "Reviewed consumer/recovery integration with required modern checkpoint seals.",
+    "Independent all235 VDB/preflight/payload and full original accepted-history/budget verification.",
+    "Separate recovery artifacts and provenance; no original relabel or fabricated nonserialized summaries."
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "exit_code": 0,
+  "completed_utc": "2026-10-01T06:43:22.178008+00:00",
+  "stages": [
+    {
+      "stage": "make_clean",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T06:40:16.506163+00:00",
+      "log_sha256": "09155cd7b2f99672f8f213b798682fc13fdd3602f019b4c35e86d49af827ebe1"
+    },
+    {
+      "stage": "make_all",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T06:41:04.575820+00:00",
+      "log_sha256": "296b7075c19f0e314e3a52057a9186927232f563e110794548788ac1e4a39547"
+    },
+    {
+      "stage": "case_build",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T06:41:09.940203+00:00",
+      "log_sha256": "ac2e91a34dad71ac3b8e70982d018840f2bf82f8d134545925d3183625b540f0"
+    },
+    {
+      "stage": "case_test",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T06:41:10.345340+00:00",
+      "log_sha256": "62d4c78e2d8616ff5a735ad7ddee1404f3041f027a4e0e6972eb3d22dc886cdc"
+    },
+    {
+      "stage": "deployment_clean",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T06:41:11.516806+00:00",
+      "log_sha256": "29189e3a55e44f759eb7f2a9ec69170d9a636e5a26bfaa1632a268174e012a49"
+    },
+    {
+      "stage": "deployment_build",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T06:42:05.812195+00:00",
+      "log_sha256": "fad6d2bbf00481d741d862f973d2aee28e904288b381289ee444a507ef91d014"
+    },
+    {
+      "stage": "opto_clean",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T06:42:06.646351+00:00",
+      "log_sha256": "f174408c747302b3cbe962207db9576b7a80f9f1306b67095eebe024f9f566b0"
+    },
+    {
+      "stage": "opto_build",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T06:43:22.176293+00:00",
+      "log_sha256": "6219662007be5cff241ae53edd2427679e795bad5c72e3dc8918d884e2c219f6"
+    }
+  ],
+  "scope": "case/clock foundation only; not launcher, full experiment or physical qualification",
+  "reviewed_implementation_commit": "a5ea64f3",
+  "known_warning_exclusions": [
+    "checkout-local missing OIDN search path",
+    "AppIntents metadata extraction notice"
+  ],
+  "additional_gates": [
+    {
+      "log": "/Volumes/SSD/RISE/fire_production_calibration/r246_foundation_sequence_build.v2.log",
+      "exit_code": 0,
+      "sha256": "f3327e77311468163faf52f2efb4f872b255489dfc266806af62c2e7e6583ef7"
+    },
+    {
+      "log": "/Volumes/SSD/RISE/fire_production_calibration/r246_foundation_old_domain_gate.v1.log",
+      "exit_code": 0,
+      "sha256": "67b2b84e77a763cd581c688cc12e3239e3c53e5bf398b4b370163da8ca072554"
+    }
+  ],
+  "historical_failed_attempt": {
+    "log": "/Volumes/SSD/RISE/fire_production_calibration/r246_foundation_sequence_build.v1.log",
+    "reason": "trace generated FireCase source identity stale; regenerated exact source hashes; no native kernel changed",
+    "exit_code": 2
+  },
+  "frozen_old_case_ids": {
+    "baseline": "73d1cac70e5e68b697e0462ef3b5784c606606372397823d08cce9815b833b1e",
+    "lateral_double": "a9369e770465bd76e2cc8d5fc3b79e7c2aac038ecb14a0e4424a97ba2f98d586"
+  }
+}

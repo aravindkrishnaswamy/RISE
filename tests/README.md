@@ -17,6 +17,23 @@ make -C build/make/rise build-test/Math3DTest     # Build a single test executab
 ./run_all_tests.sh --filter '*Noise3D*' --timeout 60
 ```
 
+The normal suite keeps deterministic structural, routing, cache-refresh,
+Pel-preview, constituent-closure, dispatcher-lifecycle, and fire-preflight
+gates. `PathTracingThermalEmissionTest` keeps representative fixed-seed Monte
+Carlo analytic anchors in the normal tier while moving the exhaustive,
+high-sample Phase-B mean-equality, analytic-convergence, and topology matrices
+under `--extended-matrix`.
+`AutoRasterizerTest` keeps a 16x16 uniform-fire Pel/spectral projection envelope
+in the normal tier; `--fire-preview-only` restores the 32x48 showcase-flame
+tripwire, and the nightly runner combines it with `--extended-fire-ablation`
+for the five-seed magnitude/tilt factorial. Run both extended experiments for
+nightly or pre-release validation; the runner keeps them sequential because
+each render already consumes the worker pool:
+
+```sh
+./run_extended_tests.sh
+```
+
 Build behavior comes from [../build/make/rise/Makefile](../build/make/rise/Makefile). The makefile glob picks up every `tests/*.cpp` file automatically and links each test executable against the shared static archive `bin/librise.a`.
 
 Environment overrides honored by `run_all_tests.sh`:
@@ -47,6 +64,8 @@ cmake -S build/cmake/rise-tests -B build/cmake/rise-tests/_out -A x64
 .\run_all_tests.ps1 -Tier fast                   # Fast tier only (fast|extended|all)
 .\run_all_tests.ps1 -Filter Math3DTest,*Noise3D* # Subset by wildcard
 .\run_all_tests.ps1 -TimeoutSeconds 60           # Kill any test exceeding 60s
+.\run_extended_tests.ps1                         # High-sample fire matrices
+.\run_extended_tests.ps1 -Config Debug           # Debug high-sample matrices
 ```
 
 Build behavior comes from [../build/cmake/rise-tests/CMakeLists.txt](../build/cmake/rise-tests/CMakeLists.txt). CMake globs every `tests/*.cpp` into its own per-test executable, links against the existing `RISE.lib` produced by the VS2022 Library project, and stages the OpenEXR + OIDN runtime DLLs alongside each test exe.
@@ -142,10 +161,9 @@ Return status is nonzero for build, run, count, warning, or arithmetic failure.
 
 ## Test Map
 
-`tests/*.cpp` contains **529** standalone test suites. Do not
-maintain a hand-counted filename inventory here: the CST, editor, GUI,
-FrameStore, agent, and eval work adds tests often enough that static file lists
-drift quickly. Use filesystem/glob discovery as the source of truth:
+Do not maintain a hand-counted filename inventory here: the CST, editor, GUI,
+FrameStore, agent, and eval work adds tests often enough that such lists become
+wrong within days. The filesystem and build globs are authoritative:
 
 ```sh
 rg --files tests -g '*Test.cpp' | sort
@@ -960,7 +978,10 @@ The seven legacy non-physically-based material chunks (`cooktorrance_material`, 
 ## Style Of Test Used Here
 
 - Each file is an executable with its own `main`.
-- Assertions are usually plain `assert(...)`.
+- New tests use an always-on `Check`/failure counter (or an equivalent explicit
+  nonzero return) so Release builds cannot compile their oracles out. The
+  Windows test project also undefines `NDEBUG` to keep legacy `assert(...)`
+  coverage active until those files are converted.
 - Helpful progress text is printed with `std::cout`.
 - The best targets are deterministic helpers, math utilities, cache logic, and other focused behavior that does not require comparing full rendered images.
 - For procedural / noise tests, separate **exact contract checks** from **sampled-difference heuristics**. Put exact identities first in `main()` and label the weaker sampled-difference checks clearly so future readers do not mistake them for strong oracles.
@@ -1116,7 +1137,8 @@ done
 1. Add a new `tests/<Name>.cpp` file.
 2. Include the minimal headers you need from `src/Library`.
 3. Keep the test deterministic and fast.
-4. Use `assert` for pass/fail checks.
+4. Use an always-on check that records failure and makes `main()` return
+   nonzero; do not rely on `assert(...)` for new runtime coverage.
 5. Build with `make -C build/make/rise tests` on Linux/macOS, or `cmake --build build/cmake/rise-tests/_out --config Release --target rise_all_tests --parallel` on Windows.
 6. Run with `./run_all_tests.sh` on Linux/macOS, or `.\run_all_tests.ps1` on Windows.
 

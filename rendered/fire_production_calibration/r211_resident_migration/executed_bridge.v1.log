@@ -1,0 +1,4 @@
+executing old eight-step owner
+executing new eight-step owner
+RESIDENT_RESUME_VALIDATE passed=1 version=2 steps=8 error=
+CERTIFIED /Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v1/resume_equivalence.v2.cbor sha256=c0e2cbb7c92b24019f31a198e0e75017c79163b537ba51cc4aef04b442067ff2

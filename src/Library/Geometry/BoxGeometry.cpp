@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "BoxGeometry.h"
 #include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
@@ -290,7 +291,22 @@ void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 	// "outside" and used to reject the far face under back-faces-only).
 	// Note (false, false) now yields no hit, where the removed early-out
 	// let it through; no caller passes that combination.
-	const bool bExitHit = DropSelfHitRoot( ri.ray, h, ptLowerLeft, ptUpperRight ) || RayBeginsInBox;
+	//
+	// EXACT-BOUNDARY continuation queries (minimumSurfaceRange >= 0 with
+	// bExactBoundaryOrigin: a medium boundary walk re-querying from a
+	// boundary point it computed itself) are not backed-off shading points;
+	// they reject the zero-distance root through minimumSurfaceRange
+	// (Object::IntersectRay promotes the exit root).  The plane-distance
+	// heuristic is not admissible there: a genuinely distinct entry face
+	// lying within its band of the origin (a thin or strongly scaled box,
+	// e.g. 5e-7 world = 5e-13 local under a 1e6 scale) would be dropped and
+	// the walk would see an exit without its entry.  A walk's FIRST query
+	// starts from the caller's (possibly backed-off) point and keeps the
+	// drop, so it does not re-report the face it is standing on.
+	const bool bExactBoundaryQuery = ri.minimumSurfaceRange >= 0 &&
+		ri.bExactBoundaryOrigin;
+	const bool bExitHit = ( !bExactBoundaryQuery &&
+		DropSelfHitRoot( ri.ray, h, ptLowerLeft, ptUpperRight ) ) || RayBeginsInBox;
 	if( h.bHit && ( bExitHit ? !bHitBackFaces : !bHitFrontFaces ) ) {
 		h.bHit = false;
 		h.dRange = RISE_INFINITY;    // publish a consistent miss, as DropSelfHitRoot's own reject does
@@ -645,6 +661,7 @@ IKeyframeParameter* BoxGeometry::KeyframeFromParameters( const String& name, con
 
 void BoxGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case WIDTH_ID:
@@ -673,6 +690,7 @@ void BoxGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void BoxGeometry::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	if( dWidth > 0 ) {
 		dOVWidth = 1.0 / dWidth;
 	} else {

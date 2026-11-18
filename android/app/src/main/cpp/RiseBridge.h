@@ -3,8 +3,8 @@
 // Mirrors the Objective-C++ RISEBridge.mm on macOS. The bridge is a thin C++
 // class that:
 //   - owns the job,
-//   - owns the framebuffer (RGBA8, allocated once per scene),
-//   - owns the progress / rasterizer-output / logger adapters,
+//   - owns the framebuffer (RGBA8, resized with the active display output),
+//   - owns the progress, VFS/fallback-output, and logger adapters,
 //   - forwards cancellation requests to an atomic flag read by the progress
 //     callback from worker threads.
 //
@@ -60,27 +60,35 @@ public:
                     const std::string& logFile,
                     int                threadCount);
 
-    // Set the Kotlin-side RiseCallback that will receive onProgress /
+    // Install the Kotlin-side RiseCallback that will receive onProgress /
     // onRegionInvalidated / onSceneReady / onLog. Held as a JNI global ref.
-    // Passing nullptr detaches and releases the current callback.
-    void setCallback(JNIEnv* env, jobject kotlinCallback);
+    // Replacing an owner waits for any blocking scene operation and stops its
+    // viewport before returning the new nonzero ownership token. Requests are
+    // monotonic: a delayed older request is rejected instead of replacing the
+    // newest callback.
+    uint64_t setCallback(JNIEnv* env, jobject kotlinCallback,
+                         uint64_t requestGeneration);
+    // Release the callback and viewport only when ownerToken still names the
+    // installed owner. A delayed teardown from an old ViewModel is a no-op.
+    void clearCallback(JNIEnv* env, uint64_t ownerToken);
+    bool ownsCallback(uint64_t ownerToken) const;
 
     // Tear down any previous job and parse the scene. Returns false on
-    // parse error.
-    bool loadScene(const std::string& absPath);
+    // parse error or when ownerToken was superseded.
+    bool loadScene(const std::string& absPath, uint64_t ownerToken);
 
     // Blocking render. MUST be called from a non-UI thread. The library's
     // own pthread worker pool dispatches tiles underneath this call. The
-    // RasterizerOutputImpl callback fires from those workers and writes
-    // into m_framebuffer while calling back into Kotlin.
-    bool rasterize();
+    // production VFS publishes coherent display snapshots and invalidation
+    // callbacks to Kotlin. A superseded ownerToken rejects before mutation.
+    bool rasterize(uint64_t ownerToken);
 
     // The active rasterizer's resolved concrete integrator ("pt"/"bdpt"/"vcm")
     // when it is the auto_rasterizer dispatcher; empty otherwise.  Valid after a
     // render (the dispatcher resolves lazily at render time).  Queried via
     // GetRasterizer()->IsAutoDispatcher() etc. -- the shared cross-UI surface.
-    std::string autoResolvedIntegrator() const;
-    std::string autoResolveReason() const;
+    std::string autoResolvedIntegrator(uint64_t ownerToken) const;
+    std::string autoResolveReason(uint64_t ownerToken) const;
 
     // Advance the in-memory scene to time `t` AND regenerate every
     // populated photon map.  Called by RenderViewModel before
@@ -91,7 +99,15 @@ public:
     // distinct full-fidelity entry point at production-render time.
     // Photon-heavy scenes may pause many seconds inside this call;
     // the caller should already be in a "rendering" UI state.
-    void setSceneTime(double t);
+    bool setSceneTime(double t, uint64_t ownerToken);
+
+    // Atomically capture the controller's canonical scene time and stop its
+    // interactive render thread before production rendering. If no viewport
+    // exists, fallbackSceneTime is returned unchanged. This takes the blocking
+    // lifecycle lock and may join render work, so callers MUST run it off-main.
+    bool prepareProductionRender(double fallbackSceneTime,
+                                 double& outCanonicalSceneTime,
+                                 uint64_t ownerToken);
 
     // True if the loaded scene declares any keyframed objects (so
     // the Compose UI should surface the timeline scrubber).  Mirrors
@@ -99,26 +115,28 @@ public:
     // loadScene; doesn't require the viewport controller to be
     // running, so it works for the first-render-then-restart-viewport
     // ordering on Android.
-    bool hasAnimatedObjects() const;
+    bool hasAnimatedObjects(uint64_t ownerToken) const;
 
     // Cooperative cancel. The next IProgressCallback::Progress tick will
     // return false, the library will wind down its workers on tile
-    // boundaries, and rasterize() will return false (not true).
-    void requestCancel();
+    // boundaries, and rasterize() will return false (not true). A stale owner
+    // cannot cancel its replacement's render.
+    bool requestCancel(uint64_t ownerToken);
 
-    // Expose the internal RGBA8 framebuffer as a direct ByteBuffer. Called
-    // by Kotlin after onSceneReady fires so it can wrap it in an
-    // AndroidBitmap and display it.
-    jobject getFramebufferByteBuffer(JNIEnv* env) const;
+    // Copy the current RGBA8 framebuffer into caller-owned direct storage.
+    // Dimensions, generation, and copy status are captured under one lock.
+    jobject copyFramebufferSnapshot(JNIEnv* env, jobject destination) const;
 
-    // Internal: called by RasterizerOutputImpl on the first tile callback
-    // when scene dimensions become known. Allocates m_framebuffer if needed
-    // and notifies the Kotlin callback via onSceneReady. Thread-safe.
+    // Internal: called by the production and interactive display paths when
+    // their output dimensions become known or change. Reallocates the
+    // framebuffer as needed and notifies Kotlin via onSceneReady. Thread-safe.
     void ensureFramebuffer(unsigned w, unsigned h);
+    void notifySceneReady(unsigned w, unsigned h);
+    void notifySceneReady(JNIEnv* env, jobject callback,
+                          unsigned w, unsigned h);
 
-    // Internal: called by RasterizerOutputImpl on every tile callback to
-    // copy the dirty region from RGBA16 source into the RGBA8 framebuffer
-    // and notify Kotlin via onRegionInvalidated.
+    // Internal: legacy interactive-fallback blit. Copies one dirty region
+    // from RGBA16 into the RGBA8 framebuffer and notifies Kotlin.
     void writeDirtyRegion(const unsigned short* src16,
                           unsigned w, unsigned h,
                           unsigned top, unsigned left,
@@ -149,22 +167,23 @@ public:
     // and fires onRegionInvalidated for the full image, identical to the
     // production path.  Compose displays whichever frame arrived most
     // recently — production or viewport-preview.
+    // Every method below that reads or mutates controller state takes the
+    // installed callback owner token and try-locks m_sceneLifecycleMutex for
+    // the complete access. A busy lifecycle fails closed immediately so a UI
+    // event cannot wait for a production render. Only the two enum-mapping
+    // helpers are controller-free.
     // -------------------------------------------------------------
 
     // Build the live-preview rasterizer + sink, create the controller,
     // and start its render thread.  When `suppressFirstFrame` is true
-    // (typical post-production-render path), the suppression flag is
-    // latched on the sink BEFORE the render thread starts, closing
-    // the race where a fast preview pass could blit through to the
-    // sink between the controller's Start and a follow-up
-    // SuppressNextFrame call from the UI layer.  On Android the sink
-    // is reconstructed by every stop/start (unlike macOS / Windows
-    // where it's persistent), so the suppress intent has to be
-    // threaded into the start call itself.
-    bool startViewport(bool suppressFirstFrame);
-    void stopViewport();
-    bool isViewportRunning() const { return m_viewportRunning; }
-    bool hasLivePreview() const    { return m_viewportRasterizer != nullptr; }
+    // (typical post-production-render path), start through the controller's
+    // source-level suppressed-initial-render admission. No preview pass is
+    // emitted until the first real edit, so an immediate user kick cannot be
+    // mistaken for and swallowed as the synthetic initial pass.
+    bool startViewport(bool suppressFirstFrame, uint64_t ownerToken);
+    bool stopViewport(uint64_t ownerToken);
+    bool isViewportRunning(uint64_t ownerToken) const;
+    bool hasLivePreview(uint64_t ownerToken) const;
 
     // Shrink the loaded scene's Film so the interactive preview
     // renders at a screen-appropriate resolution rather than blindly
@@ -180,43 +199,36 @@ public:
     // Returns false on null job or invalid arguments.
     bool scaleFilmToFit(unsigned int maxSurfaceW,
                         unsigned int maxSurfaceH,
-                        unsigned int maxLongEdge);
+                        unsigned int maxLongEdge,
+                        uint64_t ownerToken);
 
-    // Drop exactly one upcoming preview frame.  Race-prone if called
-    // *after* startViewport's render thread has already fired —
-    // prefer the suppressFirstFrame argument on startViewport for
-    // the post-production-render restart path.  Still useful for
-    // late-arriving suppress intents (e.g. inside an unrelated
-    // event after the viewport's been running for a while).
-    void viewportSuppressNextFrame();
-
-    void viewportSetTool(int tool);
-    int  viewportCurrentTool() const;
+    void viewportSetTool(int tool, uint64_t ownerToken);
+    int  viewportCurrentTool(uint64_t ownerToken) const;
     int  viewportCategoryForTool(int tool) const;
     int  viewportDefaultSubToolForCategory(int category) const;
-    int  viewportGetLastSubToolForCategory(int category) const;
+    int  viewportGetLastSubToolForCategory(int category, uint64_t ownerToken) const;
 
     /// Gizmo handle math — recompute the per-tool screen-space layout
     /// for the current Object selection + camera, then expose the
     /// array for the Compose overlay.  See SceneEditController for
     /// the underlying contract.
-    void viewportRefreshGizmoHandles();
-    unsigned int viewportGizmoHandleCount() const;
+    void viewportRefreshGizmoHandles(uint64_t ownerToken);
+    unsigned int viewportGizmoHandleCount(uint64_t ownerToken) const;
 
     /// Fill `out[5]` with `{kind, axis, screenX, screenY, screenRadius}`
     /// for handle `idx`.  Returns true on success.  `kind` and `axis`
     /// are stored as doubles to keep the JNI handoff a single
     /// jdoubleArray copy.
-    bool viewportGizmoHandle(unsigned int idx, double out[5]) const;
+    bool viewportGizmoHandle(unsigned int idx, double out[5], uint64_t ownerToken) const;
 
-    int  viewportGizmoHandleAt(double x, double y) const;
-    bool viewportIsGizmoDragActive() const;
-    int  viewportActiveGizmoKind() const;
-    int  viewportActiveGizmoAxis() const;
+    int  viewportGizmoHandleAt(double x, double y, uint64_t ownerToken) const;
+    bool viewportIsGizmoDragActive(uint64_t ownerToken) const;
+    int  viewportActiveGizmoKind(uint64_t ownerToken) const;
+    int  viewportActiveGizmoAxis(uint64_t ownerToken) const;
 
-    void viewportPointerDown(double x, double y);
-    void viewportPointerMove(double x, double y);
-    void viewportPointerUp(double x, double y);
+    void viewportPointerDown(double x, double y, uint64_t ownerToken);
+    void viewportPointerMove(double x, double y, uint64_t ownerToken);
+    void viewportPointerUp(double x, double y, uint64_t ownerToken);
 
     /// Stable full-resolution camera dimensions for pointer-event
     /// coord conversion in the Compose viewport pane.  The rendered
@@ -226,38 +238,32 @@ public:
     /// pointer event (in another) live in mismatched coord spaces,
     /// producing 4×–32× pan/orbit jumps when the scale state machine
     /// steps.  Returns (0, 0) when no camera is attached.
-    void viewportGetCameraDimensions(unsigned int& outW, unsigned int& outH) const;
-    bool viewportSetSurfaceDimensions(unsigned int width, unsigned int height);
+    void viewportGetCameraDimensions(unsigned int& outW, unsigned int& outH,
+                                     uint64_t ownerToken) const;
+    bool viewportSetSurfaceDimensions(unsigned int width, unsigned int height,
+                                      uint64_t ownerToken);
 
     /// Scene's animation options for sizing the timeline scrubber.
     /// Returns false on null controller; the Compose UI treats that
     /// as "no animation" and hides the slider.
     bool viewportGetAnimationOptions(double& outTimeStart, double& outTimeEnd,
-                                     unsigned int& outNumFrames) const;
+                                     unsigned int& outNumFrames,
+                                     uint64_t ownerToken) const;
     /// Fallible because a coordinated/direct render can acquire admission
     /// after Compose sampled its enabled state.  FALSE means no scrub
     /// state/time mutation occurred.
-    bool viewportScrubBegin();
-    bool viewportScrub(double t);
-    bool viewportScrubEnd();
+    bool viewportScrubBegin(uint64_t ownerToken);
+    bool viewportScrub(double t, uint64_t ownerToken);
+    bool viewportScrubEnd(uint64_t ownerToken);
 
     /// Bracket a property-panel chevron scrub.  See
     /// SceneEditController::BeginPropertyScrub for the rationale.
-    void viewportBeginPropertyScrub();
-    void viewportEndPropertyScrub();
-    void viewportUndo();
-    void viewportRedo();
+    void viewportBeginPropertyScrub(uint64_t ownerToken);
+    void viewportEndPropertyScrub(uint64_t ownerToken);
+    void viewportUndo(uint64_t ownerToken);
+    void viewportRedo(uint64_t ownerToken);
 
-    /// Canonical scene time owned by the underlying SceneEditController.
-    /// Updated by every time-scrub AND by Undo / Redo of a SetSceneTime
-    /// edit; that's why RenderViewModel queries this just before
-    /// nativeRasterize / nativeSetSceneTime instead of trusting its
-    /// own _sceneTime StateFlow, which goes stale when undo/redo
-    /// changes scene time without going through the slider.  Returns
-    /// 0 when no controller is attached.
-    double viewportLastSceneTime() const;
-
-    bool viewportProductionRender();
+    bool viewportProductionRender(uint64_t ownerToken);
 
     // L4d — live exposure scrubbing & multi-format Save-As over the
     // canonical HDR FrameStore.  setViewExposureEV adjusts the
@@ -282,35 +288,40 @@ public:
                 double             ev);
 
     // Properties panel accessors — descriptor-driven snapshot.
-    void         viewportRefreshProperties();
-    int          viewportPanelMode() const;       // 0=None,1=Camera,2=Rasterizer,3=Object,4=Light
-    std::string  viewportPanelHeader() const;     // "Camera: …" / "Object: …" / etc.
-    unsigned int viewportPropertyCount() const;
-    std::string  viewportPropertyName(unsigned int idx) const;
-    std::string  viewportPropertyValue(unsigned int idx) const;
-    std::string  viewportPropertyDescription(unsigned int idx) const;
-    int          viewportPropertyKind(unsigned int idx) const;
-    bool         viewportPropertyEditable(unsigned int idx) const;
+    void         viewportRefreshProperties(uint64_t ownerToken);
+    int          viewportPanelMode(uint64_t ownerToken) const;       // 0=None,1=Camera,2=Rasterizer,3=Object,4=Light
+    std::string  viewportPanelHeader(uint64_t ownerToken) const;     // "Camera: …" / "Object: …" / etc.
+    unsigned int viewportPropertyCount(uint64_t ownerToken) const;
+    std::string  viewportPropertyName(unsigned int idx, uint64_t ownerToken) const;
+    std::string  viewportPropertyValue(unsigned int idx, uint64_t ownerToken) const;
+    std::string  viewportPropertyDescription(unsigned int idx, uint64_t ownerToken) const;
+    int          viewportPropertyKind(unsigned int idx, uint64_t ownerToken) const;
+    bool         viewportPropertyEditable(unsigned int idx, uint64_t ownerToken) const;
     // Quick-pick presets surfaced to the UI as a dropdown.  Returns
     // empty / 0 for parameters whose descriptor declared no presets,
     // in which case the panel falls back to a plain text edit.  The
     // multi-camera "active_camera" row leans on this so Android can
     // show a real dropdown of camera names instead of forcing the
     // user to type.
-    unsigned int viewportPropertyPresetCount(unsigned int idx) const;
-    std::string  viewportPropertyPresetLabel(unsigned int idx, unsigned int presetIdx) const;
-    std::string  viewportPropertyPresetValue(unsigned int idx, unsigned int presetIdx) const;
-    bool         viewportSetProperty(const std::string& name, const std::string& value);
+    unsigned int viewportPropertyPresetCount(unsigned int idx, uint64_t ownerToken) const;
+    std::string  viewportPropertyPresetLabel(unsigned int idx, unsigned int presetIdx,
+                                             uint64_t ownerToken) const;
+    std::string  viewportPropertyPresetValue(unsigned int idx, unsigned int presetIdx,
+                                             uint64_t ownerToken) const;
+    bool         viewportSetProperty(const std::string& name, const std::string& value,
+                                     uint64_t ownerToken);
 
     // Accordion list entries — see SceneEditController::Category for
     // the int → category mapping.
-    unsigned int viewportCategoryEntityCount(int category) const;
-    std::string  viewportCategoryEntityName(int category, unsigned int idx) const;
-    std::string  viewportCategoryActiveName(int category) const;
-    int          viewportSelectionCategory() const;
-    std::string  viewportSelectionName() const;
-    bool         viewportSetSelection(int category, const std::string& name);
-    unsigned int viewportSceneEpoch() const;
+    unsigned int viewportCategoryEntityCount(int category, uint64_t ownerToken) const;
+    std::string  viewportCategoryEntityName(int category, unsigned int idx,
+                                            uint64_t ownerToken) const;
+    std::string  viewportCategoryActiveName(int category, uint64_t ownerToken) const;
+    int          viewportSelectionCategory(uint64_t ownerToken) const;
+    std::string  viewportSelectionName(uint64_t ownerToken) const;
+    bool         viewportSetSelection(int category, const std::string& name,
+                                      uint64_t ownerToken);
+    unsigned int viewportSceneEpoch(uint64_t ownerToken) const;
 
     // Internal: invoked by the viewport preview sink after blitting
     // the final-frame pixels into m_framebuffer.  Fires onRegionInvalidated
@@ -318,6 +329,17 @@ public:
     void onViewportFramePainted();
 
 private:
+    void stopViewportUnowned();
+    // Retain the installed callback as a JNI local reference while holding
+    // m_kotlinCallbackMutex. Callers invoke Kotlin only after the mutex is
+    // released, so callbacks may safely re-enter non-lifecycle bridge APIs.
+    jobject snapshotKotlinCallback(JNIEnv* env) const;
+    enum class DisplaySource : uint8_t {
+        None,
+        Production,
+        Interactive,
+    };
+
     void teardownJob();
     void writeGlobalOptionsFile(const std::string& path, int threadCount);
 
@@ -329,15 +351,16 @@ private:
     // IJobRasterizerOutput RasterizerOutputAdapter.  The bridge owns
     // one persistent VFS reference; the rasterizer's reference is
     // bumped on Attach() and dropped via FreeRasterizerOutputs()
-    // between renders.  Production-render path; the interactive
-    // viewport's ViewportPreviewSink (m_viewportSink below) is a
-    // separate sink, deferred to a follow-up landing.  See
+    // between renders.  The interactive viewport uses its own
+    // ViewportPreviewSink and VFS below; that sink forwards final images
+    // into the interactive VFS while production remains independently
+    // bound to the rasterizer's canonical FrameStore.  See
     // docs/FRAMESTORE_DESIGN.md §11 L4d.
     // L5a round-5 — TWO independent ViewportFrameStores, mirroring
     // the macOS architecture (see
     // build/XCode/rise/RISE-GUI/Bridge/RISEBridge.mm for the full
-    // rationale).  Production VFS receives per-tile + per-frame
-    // updates from the production rasterizer (rasterize() call).
+    // rationale).  Production VFS receives frame-complete callbacks and is
+    // generation-polled at display cadence for progressive updates.
     // Interactive VFS receives ONLY frame-complete fires from the
     // SceneEditController-driven live-preview rasterizer (no
     // per-tile observer wiring → no DrawToggles flash, no
@@ -348,31 +371,25 @@ private:
     RISE::Implementation::ViewportFrameStore* m_productionVFS = nullptr;
     RISE::Implementation::ViewportFrameStore* m_interactiveVFS = nullptr;
     bool                                      m_productionVFSAttachedToRasterizer = false;
-    // L8 round 9 — sentinel for the lockless progressive-update
-    // polling path.  Read + written ONLY from `pollProductionVFS`
-    // (Kotlin Choreographer thread; see MainActivity JNI wiring)
-    // and from `onProductionVFSFrameComplete` (rasterizer main
-    // thread, fires once per render).  These do not overlap in
-    // practice — the Choreographer poll quiesces well before
-    // OnFrameComplete fires the final emit — so no atomic is needed.
-    uint64_t                                  m_lastSeenGeneration = 0;
+    // L8 round 9 — sentinel shared by the RenderViewModel 30 Hz poll and
+    // the render-thread frame-complete callback.
+    std::atomic<uint64_t>                     m_lastSeenGeneration{0};
     std::atomic<double>                       m_viewExposureEV{0.0};
 
     // L5e — LDR view tone curve.  Default 2 = ACES; matches the
     // modern preview-standard convergent across other platforms.
     std::atomic<int>                          m_viewToneCurve{2 /* eDisplayTransform_ACES */};
+    void ensureProductionVFSCreated();
     void ensureProductionVFSAttachedToRasterizer();
     void ensureInteractiveVFSCreated();
-    // L4 round-7 P1: tile callback takes the half-open roi so we
-    // can RenderToBuffer just the changed region (was: full image
-    // every tile fire — ~4× regression vs legacy).  nullptr → full
-    // image (used by frame-complete + setViewExposureEV scrub).
-    void onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi,
-                                     bool nonBlocking = false);
+    // Android deliberately has no production tile callback. Render the
+    // current full VFS image only from frame completion, display-cadence
+    // generation polling, or an explicit view-transform refresh.
+    void renderProductionVFS(bool nonBlocking = false);
     void onProductionVFSFrameComplete();
-    // L8 round 9 — lockless progressive-update poll.  Called from
-    // the Kotlin Choreographer at the display refresh rate during
-    // an active render.  See `pollProductionVFS` impl in
+    // L8 round 9 — generation-gated progressive-update poll. Called from
+    // RenderViewModel's 30 Hz coroutine during an active render. See
+    // `pollProductionVFS` impl in
     // RiseBridge.cpp + `ViewportFrameStoreCallbacks::PollAndEmitIfDirty`
     // doc in RISEBridge.mm (the architecture spec).
 public:
@@ -388,37 +405,41 @@ private:
     RISE::Implementation::ViewportFrameStore* getOrCreateInteractiveVFS();
 
     // Job & state
+    // Blocking JNI load/render calls hold this process-wide Job lifecycle
+    // lock. Callback replacement waits for the same lock, so a replacement
+    // ViewModel cannot tear down or receive callbacks from the prior call.
+    mutable std::mutex m_sceneLifecycleMutex;
     RISE::IJobPriv*    m_job = nullptr;
     std::atomic<bool>  m_cancel{false};
+    std::atomic<DisplaySource> m_displaySource{DisplaySource::None};
 
     // ETA estimator, read from the UI thread and written from progress
     // callbacks on worker threads.
     mutable std::mutex            m_etaMutex;
     RISE::RenderETAEstimator      m_eta;
 
-    // Framebuffer: RGBA8, allocated once per scene, reused across tiles and
-    // across renders of the same scene dimensions.
+    // Framebuffer: RGBA8, reallocated whenever either display producer changes
+    // dimensions and reused while those dimensions remain stable.
     mutable std::mutex m_fbMutex;
     uint8_t*           m_framebuffer = nullptr;
     unsigned           m_fbWidth  = 0;
     unsigned           m_fbHeight = 0;
+    uint64_t           m_fbGeneration = 0;
 
     // JNI global ref to the Kotlin RiseCallback. Held by the bridge;
-    // released in setCallback(nullptr) or ~RiseBridge.  Guarded by
+    // conditionally released by clearCallback(owner) or ~RiseBridge. Guarded by
     // m_kotlinCallbackMutex (L4 round-5 P1-A): worker threads from
     // the rasterizer pool fire callbacks (onProgressTick / onLogLine
-    // / onVFSTileComplete / writeDirtyRegion / ensureFramebuffer)
-    // that JNI-CallVoidMethod against this jobject from arbitrary
-    // threads, while the UI thread can call setCallback(null) at
-    // ViewModel teardown without waiting for an in-flight render
-    // (RenderViewModel.kt:313 documents this — `cancel()` doesn't
-    // join the rasterize coroutine).  Without the mutex,
-    // DeleteGlobalRef would race CallVoidMethod and UAF.  Holding
-    // the mutex across CallVoidMethod is safe because the Kotlin
-    // callbacks (onProgress/onSceneReady/etc.) don't re-enter the
-    // bridge; they post Compose state updates and return.
+    // / renderProductionVFS / writeDirtyRegion / ensureFramebuffer)
+    // that JNI-CallVoidMethod against this jobject from arbitrary threads.
+    // Each delivery creates a local reference under this mutex, releases the
+    // mutex, then invokes Kotlin. The local ref survives a concurrent
+    // DeleteGlobalRef while allowing documented callback re-entry.
     mutable std::mutex m_kotlinCallbackMutex;
     jobject m_kotlinCallback = nullptr;
+    uint64_t m_kotlinCallbackOwner = 0u;
+    uint64_t m_nextKotlinCallbackOwner = 1u;
+    uint64_t m_latestKotlinCallbackRequest = 0u;
 
     // Snapshots of init config so global.options regeneration is possible
     // on subsequent calls (not currently wired to UI).
@@ -435,7 +456,12 @@ private:
     RISE::IRayCaster*          m_viewportPolishCaster = nullptr;  // polish caster, max-recursion 2 (one bounce of glossy / refl / refr)
     RISE::IRasterizer*         m_viewportRasterizer = nullptr;
     RISE::IRasterizerOutput*   m_viewportSink = nullptr;
-    bool                       m_viewportRunning = false;
+    std::atomic<bool>          m_viewportRunning{false};
+    // A recreated Android controller starts with an empty edit history and a
+    // tracked time of zero. Until this controller accepts its first scrub,
+    // production handoff must preserve the ViewModel fallback rather than
+    // mistaking that construction default for a user-authored time.
+    bool                       m_viewportHasTimeEdit = false;
 
     void buildViewportLivePreview();
     void releaseViewportLivePreview();

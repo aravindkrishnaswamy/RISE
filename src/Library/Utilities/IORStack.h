@@ -1,10 +1,12 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  IORStack.h - Index of refraction stack
+//  IORStack.h - Optical-IOR and enclosure state for transport
 //
-//  Tracks the chain of media the ray is currently inside, keyed by
-//  the IObject* pointer at each push.  `containsCurrent()` uses this
-//  key to decide entering vs. exiting when the ray hits a refractor.
+//  The optical stack drives Snell/Fresnel/TIR decisions.  The enclosure
+//  stack drives innermost-exclusive medium lookup.  Ordinary dielectric
+//  push/pop operations update both, so scenes without enclosure-only
+//  boundaries retain the historical unified-stack behavior exactly.
+//  Enclosure-only boundaries never enter the optical stack.
 //
 //  Known limitation (object-pointer keying)
 //
@@ -73,6 +75,7 @@
 #include "../Interfaces/IReference.h"
 #include "../Interfaces/IObject.h"
 #include <atomic>
+#include <cassert>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -181,7 +184,6 @@ namespace RISE
 		};
 
 	protected:
-
 		struct IORDATA
 		{
 			const IObject* pObj;
@@ -646,9 +648,47 @@ namespace RISE
 				}
 				return false;
 			}
+
+			//! Fire r40: true when this stack's object keys (environment
+			//! excluded) appear, in order, within @a enclosing.
+			bool isObjectSubsequenceOf( const std::vector<const IObject*>& enclosing ) const
+			{
+				const IORDATA* p = entries();
+				std::vector<const IObject*>::const_iterator next = enclosing.begin();
+				for( std::size_t i = 0; i < m_size; ++i ) {
+					if( !p[i].pObj ) continue;
+					while( next != enclosing.end() && *next != p[i].pObj ) ++next;
+					if( next == enclosing.end() ) return false;
+					++next;
+				}
+				return true;
+			}
+
+			std::size_t objectCount() const
+			{
+				const IORDATA* p = entries();
+				std::size_t n = 0;
+				for( std::size_t i = 0; i < m_size; ++i ) {
+					if( p[i].pObj ) ++n;
+				}
+				return n;
+			}
 		};
 
 		MyIORStack iorstack;
+
+		//! Fire r40: medium-ENCLOSURE state, kept separate from the optical
+		//! stack above.  Null means "the enclosure stack equals the optical
+		//! stack's object keys, in order" -- the case for every scene without
+		//! enclosure-only boundaries (exact NullBoundaryMaterial objects), so
+		//! those scenes keep DL-631's heap-free hot path.  The first
+		//! `pushEnclosure()` materializes the full enclosure list (outermost
+		//! first) here; optical push/pop/insert keep it in lockstep while it
+		//! exists, and it is dropped again when the last enclosure-only entry
+		//! leaves.  Invariant: the optical object keys are an ordered
+		//! subsequence of the enclosure list.
+		std::vector<const IObject*>* pEnclosure;
+
 		//! The object the ray is about to shade (set by the hit that owns
 		//! this stack, read by containsCurrent()/push()/pop()).  Part of
 		//! the stack's observable state, so NOT `mutable` (DL-315): it used
@@ -676,12 +716,112 @@ namespace RISE
 		Scalar crossingEtaFrom;
 		const IScene* pProbeScene;
 
+		RISE_IORSTACK_COLD static std::vector<const IObject*>* CloneEnclosure( const std::vector<const IObject*>* p )
+		{
+			return p ? new std::vector<const IObject*>( *p ) : 0;
+		}
+
+		RISE_IORSTACK_COLD static void FreeEnclosure( std::vector<const IObject*>* p )
+		{
+			delete p;
+		}
+
+		RISE_IORSTACK_COLD void AssignEnclosure( const std::vector<const IObject*>* p )
+		{
+			if( p ) {
+				if( pEnclosure ) {
+					*pEnclosure = *p;
+				} else {
+					pEnclosure = new std::vector<const IObject*>( *p );
+				}
+			} else if( pEnclosure ) {
+				FreeEnclosure( pEnclosure );
+				pEnclosure = 0;
+			}
+		}
+
+		//! Builds the explicit enclosure list from the optical keys.
+		RISE_IORSTACK_COLD void MaterializeEnclosure()
+		{
+			if( !pEnclosure ) {
+				pEnclosure = new std::vector<const IObject*>( iorstack.ObjectKeys() );
+			}
+		}
+
+		RISE_IORSTACK_COLD static bool EnclosureContains( const std::vector<const IObject*>& e, const IObject* pObj )
+		{
+			for( std::size_t i = e.size(); i-- > 0; ) {
+				if( e[i] == pObj ) return true;
+			}
+			return false;
+		}
+
+		//! Removes the innermost occurrence of @a pObj.
+		RISE_IORSTACK_COLD static bool EnclosureErase( std::vector<const IObject*>& e, const IObject* pObj )
+		{
+			for( std::size_t i = e.size(); i-- > 0; ) {
+				if( e[i] == pObj ) {
+					e.erase( e.begin() + static_cast<std::ptrdiff_t>( i ) );
+					return true;
+				}
+			}
+			return false;
+		}
+
+		RISE_IORSTACK_COLD void EnclosurePushBack( const IObject* pObj )
+		{
+			pEnclosure->push_back( pObj );
+		}
+
+		//! Optical entry @a opticalIdx was just inserted (InsertOpenSheetAt):
+		//! place it in the enclosure list immediately before the enclosure
+		//! position of the optical entry now above it, or on top when none is.
+		RISE_IORSTACK_COLD void EnclosureInsertForOptical( const std::size_t opticalIdx, const IObject* pObj )
+		{
+			std::vector<const IObject*>& e = *pEnclosure;
+			std::size_t cursor = 0;
+			for( std::size_t i = 0; i < iorstack.depth(); ++i ) {
+				const IObject* pKey = iorstack.objectAt( i );
+				if( i == opticalIdx || !pKey ) {
+					continue;
+				}
+				while( cursor < e.size() && e[cursor] != pKey ) ++cursor;
+				if( cursor >= e.size() ) {
+					break;
+				}
+				if( i > opticalIdx ) {
+					e.insert( e.begin() + static_cast<std::ptrdiff_t>( cursor ), pObj );
+					return;
+				}
+				++cursor;
+			}
+			e.push_back( pObj );
+		}
+
+		//! Drops the explicit enclosure list once it again equals the optical keys.
+		RISE_IORSTACK_COLD void MaybeReleaseEnclosure()
+		{
+			if( pEnclosure && pEnclosure->size() == iorstack.objectCount() &&
+				iorstack.isObjectSubsequenceOf( *pEnclosure ) ) {
+				FreeEnclosure( pEnclosure );
+				pEnclosure = 0;
+			}
+		}
+
+		inline void AssertStackInvariant() const
+		{
+#ifndef NDEBUG
+			assert( !pEnclosure || iorstack.isObjectSubsequenceOf( *pEnclosure ) );
+#endif
+		}
+
 	public:
 		// Explicit to prevent implicit conversion from Scalar / integer
 		// literal when a function expects `const IORStack&`.  A bare `0`
 		// at such a call site used to construct IORStack(0), giving an
 		// environment IOR of 0 and causing Ni=0 refraction errors.
 		explicit IORStack( const Scalar ior ) :
+		  pEnclosure( 0 ),
 		  pCurrentObject( 0 ),
 		  crossingEtaFrom( 0 ),
 		  pProbeScene( 0 )
@@ -690,19 +830,26 @@ namespace RISE
 			iorstack.pushEntry( IORDATA(0,ior,false), 0 );
 		}
 
-		IORStack( const IORStack& s ) : 
+		IORStack( const IORStack& s ) :
 		  iorstack( s.iorstack ),
+		  pEnclosure( s.pEnclosure ? CloneEnclosure( s.pEnclosure ) : 0 ),
 		  pCurrentObject( s.pCurrentObject ),
 		  crossingEtaFrom( 0 ),
 		  pProbeScene( s.pProbeScene )
-		{}
+		{
+			AssertStackInvariant();
+		}
 
 		IORStack( IORStack&& s ) noexcept :
 		  iorstack( std::move( s.iorstack ) ),
+		  pEnclosure( s.pEnclosure ),
 		  pCurrentObject( s.pCurrentObject ),
 		  crossingEtaFrom( s.crossingEtaFrom ),
 		  pProbeScene( s.pProbeScene )
 		{
+			// The moved-from optical stack keeps only its environment entry,
+			// whose enclosure state is the implicit (null) one.
+			s.pEnclosure = 0;
 			s.pCurrentObject = 0;
 			s.crossingEtaFrom = 0;
 			s.pProbeScene = 0;
@@ -714,9 +861,13 @@ namespace RISE
 				return *this;
 			}
 			iorstack = s.iorstack;
+			if( pEnclosure || s.pEnclosure ) {
+				AssignEnclosure( s.pEnclosure );
+			}
 			pCurrentObject = s.pCurrentObject;
 			crossingEtaFrom = 0;
 			pProbeScene = s.pProbeScene;
+			AssertStackInvariant();
 			return *this;
 		}
 
@@ -726,9 +877,14 @@ namespace RISE
 				return *this;
 			}
 			iorstack = std::move( s.iorstack );
+			if( pEnclosure ) {
+				FreeEnclosure( pEnclosure );
+			}
+			pEnclosure = s.pEnclosure;
 			pCurrentObject = s.pCurrentObject;
 			crossingEtaFrom = s.crossingEtaFrom;
 			pProbeScene = s.pProbeScene;
+			s.pEnclosure = 0;
 			s.pCurrentObject = 0;
 			s.crossingEtaFrom = 0;
 			s.pProbeScene = 0;
@@ -745,15 +901,23 @@ namespace RISE
 
 		~IORStack()
 		{
+			if( pEnclosure ) {
+				FreeEnclosure( pEnclosure );
+			}
 		}
 
-		// Ability to push stuff onto the stack
+		// Enter an optical boundary.  Dielectric transport updates both the
+		// optical and enclosure state in one operation.
 		inline void push( const Scalar ior )
 		{
 			if( !pCurrentObject ) {
 				GlobalLog()->PrintEasyWarning( "IORStack::push Asked to push item onto stack with no object" );
 			} else {
 				iorstack.pushEntry( IORDATA(pCurrentObject,ior,false), 0 );
+				if( pEnclosure ) {
+					EnclosurePushBack( pCurrentObject );
+				}
+				AssertStackInvariant();
 			}
 		}
 
@@ -763,6 +927,10 @@ namespace RISE
 				GlobalLog()->PrintEasyWarning( "IORStack::push Asked to push item onto stack with no object" );
 			} else {
 				iorstack.pushEntry( IORDATA(pCurrentObject,ior,false), &ctx );
+				if( pEnclosure ) {
+					EnclosurePushBack( pCurrentObject );
+				}
+				AssertStackInvariant();
 			}
 		}
 
@@ -773,6 +941,10 @@ namespace RISE
 				GlobalLog()->PrintEasyWarning( "IORStack::pushOpenSheet Asked to push item onto stack with no object" );
 			} else {
 				iorstack.pushEntry( IORDATA(pCurrentObject,ior,true), 0 );
+				if( pEnclosure ) {
+					EnclosurePushBack( pCurrentObject );
+				}
+				AssertStackInvariant();
 			}
 		}
 
@@ -782,13 +954,17 @@ namespace RISE
 				GlobalLog()->PrintEasyWarning( "IORStack::pushOpenSheet Asked to push item onto stack with no object" );
 			} else {
 				iorstack.pushEntry( IORDATA(pCurrentObject,ior,true), &ctx );
+				if( pEnclosure ) {
+					EnclosurePushBack( pCurrentObject );
+				}
+				AssertStackInvariant();
 			}
 		}
 
 		inline bool topIsOpenSheet() const { return iorstack.topIsOpenSheet(); }
 		inline bool isOpenSheetAt( const std::size_t i ) const { return iorstack.isOpenSheetAt( i ); }
 
-		// Ability to pop something off the stack
+		// Exit an optical boundary.  The matching enclosure entry leaves with it.
 		inline void pop()
 		{
 			if( !pCurrentObject ) {
@@ -796,12 +972,49 @@ namespace RISE
 			} else {
 				// Don't pop the default air entry in the IOR stack
 				if( iorstack.size() > 1 ) {
-					if( !iorstack.find_and_destroy( pCurrentObject ) ) {
+					if( !iorstack.containsObject( pCurrentObject ) ) {
 						GlobalLog()->PrintEasyWarning( "IORStack::pop Failed to find object to pop IOR for" );
+					} else if( pEnclosure && !EnclosureContains( *pEnclosure, pCurrentObject ) ) {
+						GlobalLog()->PrintEasyWarning( "IORStack::pop Failed to find matching enclosure entry" );
+					} else {
+						iorstack.find_and_destroy( pCurrentObject );
+						if( pEnclosure ) {
+							EnclosureErase( *pEnclosure, pCurrentObject );
+						}
+						AssertStackInvariant();
 					}
 				} else {
 					GlobalLog()->PrintEasyWarning( "IORStack::pop Trying to pop IOR stack with only global IOR in it, cannot allow." );
 				}
+			}
+		}
+
+		// Enter a boundary that changes only medium enclosure.  The ambient
+		// optical IOR and every refraction decision remain unchanged.
+		inline void pushEnclosure()
+		{
+			if( !pCurrentObject ) {
+				GlobalLog()->PrintEasyWarning( "IORStack::pushEnclosure Asked to push item with no object" );
+			} else {
+				MaterializeEnclosure();
+				EnclosurePushBack( pCurrentObject );
+				AssertStackInvariant();
+			}
+		}
+
+		// Exit an enclosure-only boundary.  Refuse to remove an object that is
+		// also optical; such objects must use pop() so the two states stay paired.
+		inline void popEnclosure()
+		{
+			if( !pCurrentObject ) {
+				GlobalLog()->PrintEasyWarning( "IORStack::popEnclosure Asked to pop item with no object" );
+			} else if( iorstack.containsObject( pCurrentObject ) ) {
+				GlobalLog()->PrintEasyWarning( "IORStack::popEnclosure Cannot remove an optical boundary" );
+			} else if( !pEnclosure || !EnclosureErase( *pEnclosure, pCurrentObject ) ) {
+				GlobalLog()->PrintEasyWarning( "IORStack::popEnclosure Failed to find object" );
+			} else {
+				MaybeReleaseEnclosure();
+				AssertStackInvariant();
 			}
 		}
 
@@ -818,7 +1031,20 @@ namespace RISE
         // Root index survives a wavelength-specific containment replay.
         inline Scalar EnvironmentIOR() const { return iorstack.EnvironmentIOR(); }
         inline bool SameInterfaces(const IORStack& other) const
-        { return iorstack.SameInterfaces(other.iorstack); }
+        { return iorstack.SameInterfaces(other.iorstack) && SameEnclosure(other); }
+
+		// Fire r40: equal medium-enclosure membership (both implicit, or the
+		// same explicit list).  Optical membership is compared separately.
+		inline bool SameEnclosure( const IORStack& other ) const
+		{
+			if( !pEnclosure && !other.pEnclosure ) {
+				return true;
+			}
+			std::vector<const IObject*> a, b;
+			AppendObjectStack( a );
+			other.AppendObjectStack( b );
+			return a == b;
+		}
 
 
 		// Checks if the current object is already in the IOR stack.
@@ -838,6 +1064,17 @@ namespace RISE
 				return false;
 			}
 			return iorstack.containsObject( pCurrentObject );
+		}
+
+		// Checks enclosure membership without changing the optical interpretation
+		// of containsCurrent(), which remains the refraction entering/exiting test.
+		inline bool containsCurrentEnclosure() const
+		{
+			if( !pCurrentObject ) {
+				return false;
+			}
+			return pEnclosure ? EnclosureContains( *pEnclosure, pCurrentObject )
+				: iorstack.containsObject( pCurrentObject );
 		}
 
 		// DL-09: re-record the IOR of the innermost enclosing medium (the
@@ -876,7 +1113,12 @@ namespace RISE
 		inline void InsertOpenSheetAt( const std::size_t i, const IObject* pObj, const Scalar ior, const EntryContext& ctx )
 		{
 			if( pObj && i > 0 ) {
+				const std::size_t pos = i < iorstack.depth() ? i : iorstack.depth();
 				iorstack.insertEntryAt( i, IORDATA( pObj, ior, true ), &ctx );
+				if( pEnclosure ) {
+					EnclosureInsertForOptical( pos, pObj );
+				}
+				AssertStackInvariant();
 			}
 		}
 		inline const EntryContext& TopContext() const { return iorstack.topContext(); }
@@ -885,12 +1127,49 @@ namespace RISE
 			return pObj ? iorstack.findContext( pObj ) : 0;
 		}
 
-		// Returns the object at the top of the IOR stack (innermost enclosing object).
-		// Returns 0 for the environment (root entry with no object).
+		// Returns the innermost enclosing object used for medium resolution
+		// (the enclosure stack's top; fire r40).  Returns 0 for the
+		// environment (root entry with no object).  Equals the optical
+		// stack's top object unless an enclosure-only boundary is innermost.
 		// Analogous to Cycles' volume stack top entry.
 		inline const IObject* topObject() const
 		{
+			if( pEnclosure ) {
+				return pEnclosure->empty() ? 0 : pEnclosure->back();
+			}
 			return iorstack.top().pObj;
+		}
+
+		// Returns the object at the top of the OPTICAL IOR stack -- the entry
+		// `top()`, `topIsOpenSheet()` and `pop()` act on.  Code that pairs the
+		// top object with those optical operations must use this, not
+		// topObject(), so an enclosure-only boundary never stands in for it.
+		inline const IObject* opticalTopObject() const
+		{
+			return iorstack.top().pObj;
+		}
+
+		// Appends enclosing objects from outermost to innermost.  Shadow-medium
+		// walks use the complete ordering so exiting an inner medium restores
+		// the next outer medium rather than incorrectly falling back to world.
+		inline void AppendObjectStack( std::vector<const IObject*>& objects ) const
+		{
+			if( pEnclosure ) {
+				objects.insert( objects.end(), pEnclosure->begin(), pEnclosure->end() );
+			} else {
+				for( std::size_t i = 0; i < iorstack.depth(); ++i ) {
+					if( const IObject* pObj = iorstack.objectAt( i ) ) {
+						objects.push_back( pObj );
+					}
+				}
+			}
+		}
+
+		// Test/debug witness for the r40 invariant.  Internal mutators assert the
+		// same property in non-NDEBUG builds.
+		inline bool DebugOpticalStackIsEnclosureSubsequence() const
+		{
+			return !pEnclosure || iorstack.isObjectSubsequenceOf( *pEnclosure );
 		}
 
 		inline const IObject* currentObject() const
@@ -1024,5 +1303,3 @@ namespace RISE
 }
 
 #endif
-
-

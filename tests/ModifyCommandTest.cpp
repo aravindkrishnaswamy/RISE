@@ -37,6 +37,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -162,9 +163,9 @@ static const char* kScene =
 
 static IJobPriv* LoadScene( const char* tag )
 {
-    char path[1024];
-    std::snprintf( path, sizeof(path),
-        "%s/modify_command_test_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, (int)::getpid() );
+    const std::filesystem::path path = std::filesystem::path( RISE::TestSupport::ScratchBaseDir() ) /
+        ( "modify_command_test_" + std::string( tag ) + "_" +
+          std::to_string( static_cast<long>( ::getpid() ) ) + ".RISEscene" );
     std::ofstream ofs( path );
     if( !ofs.is_open() ) return nullptr;
     ofs << kScene;
@@ -172,11 +173,12 @@ static IJobPriv* LoadScene( const char* tag )
 
     IJobPriv* pJob = nullptr;
     if( !RISE_CreateJobPriv( &pJob ) || !pJob ) {
-        std::remove( path );
+        std::filesystem::remove( path );
         return nullptr;
     }
-    const bool ok = pJob->LoadAsciiSceneViaCst( path );
-    std::remove( path );
+    const std::string pathString = path.string();
+    const bool ok = pJob->LoadAsciiSceneViaCst( pathString.c_str() );
+    std::filesystem::remove( path );
     if( !ok ) {
         safe_release( pJob );
         return nullptr;
@@ -312,6 +314,9 @@ static void TestSetActiveRasterizerRadianceScale()
     // direct-view background (the map's own scale) stay consistent.
     if( pCaster ) Check( CloseEnough( pCaster->GetRadianceScale(), 0.25 ), "caster override == 0.25" );
     if( pRm )     Check( CloseEnough( pRm->GetScale(), 0.25 ), "map scale updated to 0.25" );
+    Check( pJob->GetRasterizerParameter(
+        pJob->GetActiveRasterizerName().c_str(), "radiance_scale" ) == "0.25",
+        "authoritative rasterizer snapshot scale updated to 0.25" );
 
     // Negative radiance scale is nonphysical -> rejected at the boundary,
     // leaving BOTH the caster override and the map scale unchanged (and

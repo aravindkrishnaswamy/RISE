@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "BlackBodyPainter.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/GeometricUtilities.h"
@@ -134,6 +135,7 @@ IKeyframeParameter* BlackBodyPainter::KeyframeFromParameters( const String& name
 
 void BlackBodyPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case TEMPERATURE_ID:
@@ -166,6 +168,7 @@ static Scalar EvalPlanck( const void* ctx, const Scalar nm )
 
 void BlackBodyPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	// DL-464: the normalisation is recomputed from the AUTHORED scale every
 	// time (this used to divide `scale` in place, so each keyframed
 	// RegenerateData divided it by the peak again).

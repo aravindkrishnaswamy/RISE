@@ -1,0 +1,79 @@
+{
+  "r237": {
+    "input": "/Volumes/SSD/Working/RISE/docs/data/fire_r252/r237_retained_statistics.txt",
+    "input_sha256": "dd96796e7f7bf6e776b234432e70d1dc40878929f60ad04fef06ff4adea0b1b3",
+    "checkpoint_sha256": "b264cb1f3d296349aaa3e83b851c264cbca018ea25f2e963801d657dd2575719",
+    "duration_s": 14.625000000004771,
+    "cell_width_m": 0.02447449285392881,
+    "station_count": 132,
+    "selected_count": 94,
+    "flame_tip_1percent_peak_plane_m": 0.3304056535280389,
+    "selection_lower_exclusive_m": 0.8099077814591382,
+    "selection_upper_inclusive_m": 3.108260592448959,
+    "characteristic_diameter_m": 0.2447449285392881,
+    "authored_heat_release_kW": 33,
+    "max_temperature_error_station": {
+      "station": 126,
+      "height_m": 3.0960233460219944,
+      "selected": true,
+      "temperature_rise_K": 20.029914940036065,
+      "mccaffrey_temperature_rise_K": 36.44949392278037,
+      "temperature_relative_error": -0.4504748136566671,
+      "velocity_m_per_s": 1.7871237191619238,
+      "mccaffrey_velocity_m_per_s": 2.4868428835747847,
+      "velocity_relative_error": -0.28136846482517996,
+      "mean_plane_heat_W": 0.0
+    },
+    "max_velocity_error_station": {
+      "station": 126,
+      "height_m": 3.0960233460219944,
+      "selected": true,
+      "temperature_rise_K": 20.029914940036065,
+      "mccaffrey_temperature_rise_K": 36.44949392278037,
+      "temperature_relative_error": -0.4504748136566671,
+      "velocity_m_per_s": 1.7871237191619238,
+      "mccaffrey_velocity_m_per_s": 2.4868428835747847,
+      "velocity_relative_error": -0.28136846482517996,
+      "mean_plane_heat_W": 0.0
+    }
+  },
+  "r251": {
+    "input": "/Volumes/SSD/Working/RISE/docs/data/fire_r252/r251_retained_statistics.txt",
+    "input_sha256": "4a441b6c5d53b852bbb91c003ce0ad470d6e1392967ec0b84f422f607f171efe",
+    "checkpoint_sha256": "417472aa4449dcff81de248978780182b16d7d8701eb067b928cd0704c85c5e7",
+    "duration_s": 14.625000000055213,
+    "cell_width_m": 0.030593116067411014,
+    "station_count": 106,
+    "selected_count": 76,
+    "flame_tip_1percent_peak_plane_m": 0.6271588793819258,
+    "selection_lower_exclusive_m": 0.8099077814591382,
+    "selection_upper_inclusive_m": 3.1204978388759237,
+    "characteristic_diameter_m": 0.2447449285392881,
+    "authored_heat_release_kW": 33,
+    "max_temperature_error_station": {
+      "station": 99,
+      "height_m": 3.044015048707396,
+      "selected": true,
+      "temperature_rise_K": 70.22154959976768,
+      "mccaffrey_temperature_rise_K": 37.493319184478544,
+      "temperature_relative_error": 0.872908324127194,
+      "velocity_m_per_s": 3.1156414452089405,
+      "mccaffrey_velocity_m_per_s": 2.500925905002486,
+      "velocity_relative_error": 0.245795182886813,
+      "mean_plane_heat_W": 0.0
+    },
+    "max_velocity_error_station": {
+      "station": 95,
+      "height_m": 2.921642584437752,
+      "selected": true,
+      "temperature_rise_K": 74.71225920805949,
+      "mccaffrey_temperature_rise_K": 40.14702831784508,
+      "temperature_relative_error": 0.8609661122751247,
+      "velocity_m_per_s": 3.169431806471495,
+      "mccaffrey_velocity_m_per_s": 2.53536638591888,
+      "velocity_relative_error": 0.25008828076057865,
+      "mean_plane_heat_W": 0.0
+    }
+  },
+  "tier10_decision": "do_not_launch"
+}

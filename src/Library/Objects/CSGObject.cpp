@@ -2947,7 +2947,11 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	}
 
 	ScopedCsgQueryBudget queryBudget;
-	const bool memoizeRay = IsSharedConsumerTarget();
+	// Fire: an exact-boundary (topology) query's answer also depends on
+	// `minimumSurfaceRange`, which the memo key does not carry -- such
+	// queries bypass the memo rather than share ordinary shading results.
+	const bool memoizeRay = IsSharedConsumerTarget() &&
+		!( ri.geometric.minimumSurfaceRange >= 0 );
 	CsgRayMemoKey rayKey{};
 	if( memoizeRay ) {
 		rayKey.csg = this;
@@ -3071,6 +3075,16 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	riObjA.geometric.PropagateCastInputs( ri.geometric );
 	RayIntersection		riObjB( ri.geometric.ray, ri.geometric.rast );
 	riObjB.geometric.PropagateCastInputs( ri.geometric );
+	const bool exactBoundaryMode = ri.geometric.minimumSurfaceRange >= 0;
+	if( exactBoundaryMode ) {
+		// Child objects report their exact ranges in this CSG's local frame,
+		// so the caller-frame representability bound needs the same conversion
+		// as dHowFar before it can reject the just-processed root.
+		riObjA.geometric.minimumSurfaceRange =
+			factor * ri.geometric.minimumSurfaceRange;
+		riObjB.geometric.minimumSurfaceRange =
+			factor * ri.geometric.minimumSurfaceRange;
+	}
 
 	const int certBits = CertificateBits();
 	const auto factsFromBits = [certBits]( const bool a ) {
@@ -3094,6 +3108,26 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		if( !factsB.csg || RayMayReachCsgBounds( ri.geometric.ray, limitB, pObjectB ) ) {
 			pObjectB->IntersectRay( riObjB, limitB, true, true, true );
 			RecoverContainedOperand( pObjectB, riObjB, factsB );
+		}
+	}
+
+	if( exactBoundaryMode ) {
+		// Fire: the CSG interval algebra below was written in terms of
+		// range/range2.  In topology mode make those its exact working
+		// coordinates, so every comparison and every branch assignment
+		// composes the same geometric boundaries.  Ordinary shading retains
+		// its historical offset ranges.
+		if( riObjA.geometric.bHit ) {
+			riObjA.geometric.range = riObjA.geometric.surfaceRange;
+			if( riObjA.geometric.range2 != 0 ) {
+				riObjA.geometric.range2 = riObjA.geometric.surfaceRange2;
+			}
+		}
+		if( riObjB.geometric.bHit ) {
+			riObjB.geometric.range = riObjB.geometric.surfaceRange;
+			if( riObjB.geometric.range2 != 0 ) {
+				riObjB.geometric.range2 = riObjB.geometric.surfaceRange2;
+			}
 		}
 	}
 
@@ -4359,7 +4393,31 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
         if (ri.hasBoundaryRange) ri.boundaryRange /= factor;
         if (ri.hasBoundaryRange2) ri.boundaryRange2 /= factor;
 
-        // Compute the intersection in world space
+		// Fire: in exact-boundary mode the switch composed range/range2 from
+		// exact child intervals; preserve those boundary points before
+		// applying the legacy shading offsets below.
+		if( exactBoundaryMode ) {
+			const Point3 ptLocalSurface =
+				ri.geometric.ray.PointAtLength( ri.geometric.range );
+			const Point3 ptWorldSurface =
+				Point3Ops::Transform( m_mxFinalTrans, ptLocalSurface );
+			ri.geometric.surfaceRange = Vector3Ops::Magnitude(
+				Vector3Ops::mkVector3( ptWorldSurface, orig.origin ) );
+			if( ri.geometric.range2 != 0 &&
+				ri.geometric.range2 < RISE_INFINITY )
+			{
+				const Point3 ptLocalSurface2 =
+					ri.geometric.ray.PointAtLength( ri.geometric.range2 );
+				const Point3 ptWorldSurface2 =
+					Point3Ops::Transform( m_mxFinalTrans, ptLocalSurface2 );
+				ri.geometric.surfaceRange2 = Vector3Ops::Magnitude(
+					Vector3Ops::mkVector3( ptWorldSurface2, orig.origin ) );
+			} else {
+				ri.geometric.surfaceRange2 = RISE_INFINITY;
+			}
+		}
+
+		// Compute the intersection in world space
 		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR ) );
 		// An open-sheet hit has no exit (range2 == RISE_INFINITY, kept as
 		// the sentinel below); give it the entry point rather than leaving

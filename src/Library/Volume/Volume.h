@@ -18,6 +18,8 @@
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/MediaPathLocator.h"
+#include <limits>
+#include <type_traits>
 
 namespace RISE
 {
@@ -60,6 +62,49 @@ namespace RISE
 		//
 		// Protected member functions
 		//
+
+		//! Construct an in-memory volume for painter-baked physical fields.
+		//! Floating-point volumes store authored SI values directly; integer
+		//! volumes retain the historical normalized [0,1] interpretation.
+		Volume(
+			unsigned int width,
+			unsigned int height,
+			unsigned int depth
+			) :
+		m_pData( 0 ),
+		m_nWidth( width ),
+		m_nHeight( height ),
+		m_nDepth( depth ),
+		m_nSliceSize( 0 ),
+		m_nWidthOV2( 0 ),
+		m_nHeightOV2( 0 ),
+		m_nDepthOV2( 0 ),
+		m_OVMaxValue( 1.0 )
+		{
+			static const unsigned long long kMaxVolumeBytes = 2ULL * 1024 * 1024 * 1024;
+			const unsigned long long maxByBytes = kMaxVolumeBytes / sizeof( T );
+			const unsigned long long maxVoxels = maxByBytes < 0x7fffffffULL ? maxByBytes : 0x7fffffffULL;
+			const unsigned long long slice64 =
+				static_cast<unsigned long long>( width ) * static_cast<unsigned long long>( height );
+			const unsigned long long count64 = slice64 * static_cast<unsigned long long>( depth );
+			if( width == 0 || height == 0 || depth == 0 ||
+				slice64 > maxVoxels || count64 > maxVoxels ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Volume:: Invalid or too-large in-memory volume dimensions %ux%ux%u (empty volume)",
+					width, height, depth );
+				m_nWidth = m_nHeight = m_nDepth = 0;
+				return;
+			}
+
+			m_nSliceSize = static_cast<int>( slice64 );
+			m_nWidthOV2 = m_nWidth >> 1;
+			m_nHeightOV2 = m_nHeight >> 1;
+			m_nDepthOV2 = m_nDepth >> 1;
+			m_pData = new T[static_cast<size_t>( count64 )]();
+			if( !std::is_floating_point<T>::value ) {
+				m_OVMaxValue = 1.0 / Scalar( std::numeric_limits<T>::max() );
+			}
+		}
 
 		Volume(
 			const char * szFilePattern, 
@@ -182,8 +227,22 @@ namespace RISE
 
 			return Scalar(m_pData[az*m_nSliceSize+ay*m_nWidth+ax]) * m_OVMaxValue;
 		}
+
+		//! Set one centered-coordinate voxel in an in-memory volume.
+		//! Returns false for an out-of-range coordinate or an empty volume.
+		bool SetValue( const int x, const int y, const int z, const T value )
+		{
+			const int az = z + m_nDepthOV2;
+			const int ay = y + m_nHeightOV2;
+			const int ax = x + m_nWidthOV2;
+			if( !m_pData || az >= m_nDepth || ay >= m_nHeight || ax >= m_nWidth ||
+				az < 0 || ay < 0 || ax < 0 ) {
+				return false;
+			}
+			m_pData[az*m_nSliceSize+ay*m_nWidth+ax] = value;
+			return true;
+		}
 	};
 }
 
 #endif
-

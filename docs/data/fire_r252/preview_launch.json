@@ -1,0 +1,12 @@
+{
+  "started_utc": "2026-10-19T21:13:57.969841+00:00",
+  "binary_sha256": "be3e8b74b1cd74003fa449d147ce9d4259a3ce76b12d0c5c6465458e4e2edf57",
+  "scene_sha256": "bb9cb93537d74f8fcdecdeb94e3f5017c86bf13a8be470fb6ab564bdc25d0b86",
+  "width": 128,
+  "height": 192,
+  "frames": 235,
+  "fps": 16,
+  "source_manifest_sha256": "25334481334321f04c0926b8f3983c399fd0079117ba90610fe15a30e8dd93e1",
+  "label": "r251 tier-8 quick preview; r242 spectral scene at owner-selected 128x192",
+  "host_rule": "one render; no concurrent builds or solver"
+}

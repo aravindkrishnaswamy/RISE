@@ -1,0 +1,58 @@
+RESIDENT_RESUME_EXECUTION build_id=9121922730a101080a5a69fc4d598f898c36386041c9f4d02cb30d49ec9efcef executable_sha256=2adb8006a924d8060bed456175beb704c3ba57e4aec29a4a5361d5a4f70b4eca
+OWNER_CERTIFICATE_DIAGNOSTIC checkpoint_sha256=7eefb57bfd01f27817d0e245da8293c5ec85c770f0bf157556f20f906865e966 build=81cf8340374423e2c5ae209062c35ed2e7d8a915535051324060c48a1d7cb5a9 accepted_steps=1165 beginning_s=1.7873949808417819 migration_authority=false
+OWNER_EOS_SNAPSHOT_SCOPE_RED foreign_directory_refused=1 production_refused=1 certificate_refused=1 passed=1
+OWNER_REFUSAL_CLAUSES_V1 stage=0 iteration=0 physical=0 candidate=0 eos=128 target=10368 final=33564800 publication=false
+OWNER_REFUSAL_SEAL field=projection value=4242672244311018523 units=identity_word required=authenticated_nonzero publication=false
+OWNER_REFUSAL_SEAL field=transport value=7887772084331594268 units=identity_word required=authenticated_nonzero publication=false
+OWNER_REFUSAL_SEAL field=physical value=12561591782754025130 units=identity_word required=authenticated_nonzero publication=false
+OWNER_REFUSAL_SEAL field=candidate value=0 units=identity_word required=authenticated_nonzero publication=false
+OWNER_REFUSAL_SEAL field=eos value=0 units=identity_word required=authenticated_nonzero publication=false
+OWNER_REFUSAL_SEAL field=source value=0 units=identity_word required=authenticated_nonzero publication=false
+OWNER_REFUSAL_SEAL field=target value=0 units=identity_word required=authenticated_nonzero publication=false
+OWNER_REFUSAL_SEAL field=projection_consumer value=0 units=identity_word required=authenticated_nonzero publication=false
+OWNER_REFUSAL_SEAL field=target_consumer value=0 units=identity_word required=authenticated_nonzero publication=false
+OWNER_REFUSAL_SEAL field=stage value=0 units=identity_word required=authenticated_nonzero publication=false
+EOS_TEMPERATURE_PREDICATE_V1 cell=367001 x=39 y=53 z=49 clause=5 residual_hi_J_m3=-5.3218995182957585e-11 residual_lo_J_m3=1.4699939369038315e-18 residual_tail_J_m3=0 bound_J_m3=5.4029482277062613e-11 separation_J_m3=5.3218991713510633e-11 order=2 lower_K=338.39862060546875 upper_K=338.39862060546875 publication=false
+EOS_TEMPERATURE_ROUNDING_BIN_V1 lower_residual_J_m3=-0.016090947824833335 lower_bound_J_m3=5.4029499624297372e-11 upper_residual_J_m3=0.016090947737880605 upper_bound_J_m3=5.4029503093744324e-11
+EOS_REFUSAL_INPUT_V1 stage=0 raw_iteration=0 cell=367001 nx=86 ny=86 nz=132 Tmin=300 Tmax=2300 pressure=101325 dynamics_bound=0.25 scope=failed_candidate_only publication=false
+EOS_REFUSAL_COMPONENT field=0 component=0 bits=984760021 value=0.0013599047670140862
+EOS_REFUSAL_COMPONENT field=0 component=1 bits=974318319 value=0.00056044658413156867
+EOS_REFUSAL_COMPONENT field=0 component=2 bits=1047786539 value=0.23823611438274384
+EOS_REFUSAL_COMPONENT field=0 component=3 bits=1061915600 value=0.79510211944580078
+EOS_REFUSAL_COMPONENT field=0 component=4 bits=990886717 value=0.0021931671071797609
+EOS_REFUSAL_COMPONENT field=0 component=5 bits=988502112 value=0.0017955414950847626
+EOS_REFUSAL_COMPONENT field=0 component=6 bits=2979416162 value=-4.3738035415685772e-09
+EOS_REFUSAL_COMPONENT field=0 component=7 bits=813281542 value=9.0837237731733467e-10
+EOS_REFUSAL_COMPONENT field=0 component=8 bits=1193145984 value=40438.5
+EOS_REFUSAL_COMPONENT field=1 component=0 bits=984831389 value=0.0013682130957022309
+EOS_REFUSAL_COMPONENT field=1 component=1 bits=974378782 value=0.00056396599393337965
+EOS_REFUSAL_COMPONENT field=1 component=2 bits=1047768027 value=0.23796026408672333
+EOS_REFUSAL_COMPONENT field=1 component=3 bits=1061901414 value=0.79425656795501709
+EOS_REFUSAL_COMPONENT field=1 component=4 bits=990943143 value=0.0022063048090785742
+EOS_REFUSAL_COMPONENT field=1 component=5 bits=988594502 value=0.0018062971066683531
+EOS_REFUSAL_COMPONENT field=1 component=6 bits=2980497091 value=-4.8538324470825955e-09
+EOS_REFUSAL_COMPONENT field=1 component=7 bits=814547863 value=1.0260120530958261e-09
+EOS_REFUSAL_COMPONENT field=1 component=8 bits=1193230849 value=40770.00390625
+EOS_REFUSAL_COMPONENT field=2 component=0 bits=984831389 value=0.0013682130957022309
+EOS_REFUSAL_COMPONENT field=2 component=1 bits=974378782 value=0.00056396599393337965
+EOS_REFUSAL_COMPONENT field=2 component=2 bits=1047768027 value=0.23796026408672333
+EOS_REFUSAL_COMPONENT field=2 component=3 bits=1061901414 value=0.79425656795501709
+EOS_REFUSAL_COMPONENT field=2 component=4 bits=990943143 value=0.0022063048090785742
+EOS_REFUSAL_COMPONENT field=2 component=5 bits=988594502 value=0.0018062971066683531
+EOS_REFUSAL_COMPONENT field=2 component=6 bits=2980497091 value=-4.8538324470825955e-09
+EOS_REFUSAL_COMPONENT field=2 component=7 bits=814547863 value=1.0260120530958261e-09
+EOS_REFUSAL_COMPONENT field=2 component=8 bits=1193230849 value=40770.00390625
+EOS_REFUSAL_COMPONENT field=3 component=0 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=1 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=2 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=3 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=4 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=5 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=6 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=7 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=8 bits=3181092578 value=-0.07598663866519928
+EOS_TEMPERATURE_FP64_PREDICATE temperature_K=338.39862060546875 energy_J_m3=40438.499991317731 sensible_J_m3=40438.5 residual_J_m3=-8.6822692537680268e-06
+EOS_REFUSAL_FP64 accepted=1 temperature_K=338.39862061370206 pressure_ratio=0.9999991168940322 projected_ratio=0.99999910593032837 lower_midpoint=0.99999907612800598 upper_midpoint=0.99999913573265076 lower_distance_ratio=4.0766026221383811e-08 upper_distance_ratio=1.8838618554006814e-08 error=
+capstone solver diagnostic steps=1165 time=1.7873949808417819: solver_failure:projected-Heun resident stage device validation failed: stage=0 bitmap=33564800 phase_witness=verified full_witness=verified
+capstone accepted EOS drift history tail=0.00828700982,0.00732173303,0.00685926566,0.00675679602,0.0069485739,0.00696195481,0.00639595675,0.00626946079
+OWNER_CERTIFICATE_DIAGNOSTIC_END solver_accepted=0 checkpoint_unchanged=1 migration_authority=false error=solver_failure:projected-Heun resident stage device validation failed: stage=0 bitmap=33564800 phase_witness=verified full_witness=verified

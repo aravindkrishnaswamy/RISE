@@ -1,0 +1,26 @@
+Centre w spectra, 6-14 s. Burner D_eq 0.287 m, puffing estimate 1.5/sqrt(D) = 2.80 Hz
+  z=0.29 m
+    FDS                    peak 3.00 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.04 0.06 0.58 0.32
+    inert_compact_seed02   peak 2.11 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.09 0.14 0.44 0.33
+    inert_compact          peak 2.73 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.02 0.34 0.48 0.15
+    inert_legacy           peak 1.98 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.05 0.36 0.40 0.19
+  z=0.50 m
+    FDS                    peak 2.00 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.04 0.36 0.29 0.31
+    inert_compact_seed02   peak 3.22 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.06 0.18 0.54 0.22
+    inert_compact          peak 2.73 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.08 0.22 0.46 0.23
+    inert_legacy           peak 2.98 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.05 0.20 0.35 0.41
+  z=0.75 m
+    FDS                    peak 1.50 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.16 0.21 0.35 0.28
+    inert_compact_seed02   peak 2.11 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.07 0.23 0.51 0.19
+    inert_compact          peak 1.74 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.06 0.30 0.28 0.36
+    inert_legacy           peak 1.98 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.03 0.33 0.41 0.23
+  z=0.99 m
+    FDS                    peak 1.00 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.33 0.18 0.21 0.29
+    inert_compact_seed02   peak 2.11 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.06 0.25 0.50 0.20
+    inert_compact          peak 0.50 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.14 0.26 0.31 0.29
+    inert_legacy           peak 1.98 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.10 0.25 0.35 0.30
+  z=1.51 m
+    FDS                    peak 0.87 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.24 0.08 0.25 0.43
+    inert_compact_seed02   peak 2.23 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.09 0.14 0.42 0.35
+    inert_compact          peak 3.22 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.08 0.08 0.44 0.40
+    inert_legacy           peak 1.98 Hz  shares 0.3-1/1-2/2-4/4-8 Hz: 0.03 0.32 0.29 0.35

@@ -428,6 +428,10 @@ namespace RISE
 				// parse time so a misplaced block is caught loudly
 				// rather than producing a 1000×-misscaled render.
 				bool   camera_committed  = false;
+				// Physical-volume coefficients are converted to inverse scene
+				// units when a multichannel medium is constructed, so their
+				// scale is locked for the same declaration-order reason.
+				bool   metric_medium_committed = false;
 			};
 			static thread_local SceneOptionsState s_sceneOptions;
 
@@ -948,6 +952,7 @@ namespace RISE
 				StabilityConfig d;
 				{ auto& p = P(); p.name = "direct_clamp";                           p.kind = ValueKind::Double; p.description = "Clamp on direct-lighting contribution (0 disables)"; p.defaultValueHint = to_hint(d.directClamp); }
 				{ auto& p = P(); p.name = "indirect_clamp";                         p.kind = ValueKind::Double; p.description = "Clamp on indirect contribution (0 disables)";         p.defaultValueHint = to_hint(d.indirectClamp); }
+				{ auto& p = P(); p.name = "filter_glossy";                          p.kind = ValueKind::Double; p.description = "Per-bounce glossy roughness increase (0 disables)";    p.defaultValueHint = to_hint(d.filterGlossy); }
 				{ auto& p = P(); p.name = "rr_min_depth";                           p.kind = ValueKind::UInt;   p.description = "Min depth before Russian roulette";     p.defaultValueHint = to_hint(d.rrMinDepth); }
 				{ auto& p = P(); p.name = "rr_threshold";                           p.kind = ValueKind::Double; p.description = "Throughput threshold for RR";           p.defaultValueHint = to_hint(d.rrThreshold); }
 				{ auto& p = P(); p.name = "max_diffuse_bounce";                     p.kind = ValueKind::UInt;   p.description = "Max diffuse bounces (UINT_MAX = unlimited): per PATH in every integrator (the vertex next to the light is free unless its scatter is delta; SCENE_CONVENTIONS 8.10)";              p.defaultValueHint = to_hint(d.maxDiffuseBounce); }
@@ -3537,6 +3542,29 @@ namespace RISE
 			// Materials
 			//////////////////////////////////////////
 
+			struct NullBoundaryMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					return pJob.AddNullBoundaryMaterial( bag.GetString( "name" ).c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "null_boundary_material";
+						cd.category = ChunkCategory::Material;
+						cd.description = "Unit-transmission medium boundary with no optical or shading response.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.required = true; p.description = "Unique material name"; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct LambertianMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -5154,19 +5182,18 @@ namespace RISE
 			// Scene-level options (top-of-file scope)
 			//////////////////////////////////////////
 
-			// `scene_options` declares the world-unit scale.  Stored
-			// in thread_local parser state and consumed by camera
-			// chunks at parse time.  Place AT OR NEAR THE TOP of the
-			// .RISEscene file (before any camera) — values declared
-			// after a camera don't reach back.  Same declaration-order
-			// rule as `standard_shader`, `camera_defaults`, etc.
+			// `scene_options` declares the world-unit scale and requested
+			// fire-fidelity mode.  The scale is stored in thread_local parser
+			// state and consumed by camera chunks at parse time.  Place AT OR
+			// NEAR THE TOP of the .RISEscene file (before any camera) — scale
+			// values declared after a camera don't reach back.  Same
+			// declaration-order rule as `standard_shader`, `camera_defaults`, etc.
 			//
-			// Today this only governs camera lens-mm-to-scene-unit
-			// conversion; future phases (volumetric atmosphere,
-			// physical sky, sensor noise) will consume the same scale.
+			// This governs camera lens-mm-to-scene-unit conversion and
+			// SI-to-scene-unit conversion for multichannel physical media.
 			struct SceneOptionsAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool Finalize( const ParseStateBag& bag, IJob& /*pJob*/ ) const override
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					if( bag.Has( "scene_unit" ) ) {
 						const double v = bag.GetDouble( "scene_unit" );
@@ -5183,16 +5210,20 @@ namespace RISE
 						// (its lens math is locked in).  Warn loudly so
 						// the user notices rather than silently rendering
 						// a 1000×-misscaled image.
-						if( s_sceneOptions.camera_committed
+						if( (s_sceneOptions.camera_committed || s_sceneOptions.metric_medium_committed)
 						    && v != s_sceneOptions.scene_unit_meters ) {
 							GlobalLog()->PrintEx( eLog_Warning,
-								"scene_options:: declared AFTER a camera was already finalized. "
-								"The camera locked in scene_unit = %g; this block sets %g but the "
-								"camera's lens math is unchanged. Move `scene_options` to the top "
-								"of the .RISEscene file, before any camera chunk.",
+								"scene_options:: declared AFTER a camera or SI-valued medium was already finalized. "
+								"That entity locked in scene_unit = %g; this block sets %g but the "
+								"constructed entity is unchanged. Move `scene_options` to the top "
+								"of the .RISEscene file, before camera and multichannel-medium chunks.",
 								s_sceneOptions.scene_unit_meters, v );
 						}
 						s_sceneOptions.scene_unit_meters = v;
+					}
+					if( bag.Has("fidelity_mode") &&
+						!pJob.SetFireFidelityMode(bag.GetString("fidelity_mode").c_str()) ) {
+						return false;
 					}
 					return true;
 				}
@@ -5201,12 +5232,12 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "scene_options"; cd.category = ChunkCategory::Camera;
-						cd.description = "Scene-level options. Currently sets the world-unit scale that bridges scene-geometry units to mm-input on cameras. Place near the top of the file (before any camera).";
+						cd.description = "Scene-level options. Sets fire fidelity and the world-unit scale used by camera mm input and SI-valued multichannel media. Place before cameras and multichannel media.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{
 							auto& p = P();
 							p.name = "scene_unit"; p.kind = ValueKind::Double;
-							p.description = "Meters per scene unit. Default 1.0 = scenes are in meters. Set 0.001 for mm-scale scenes, 0.0254 for inches, etc. Affects camera lens-input conversion (sensor_size / focal_length / shift_x/y are mm in the scene file regardless of this value; the camera converts to scene units via this factor).";
+							p.description = "Meters per scene unit. Default 1.0 = scenes are in meters. Set 0.001 for mm-scale scenes, 0.0254 for inches, etc. Affects camera lens-input conversion and SI-valued multichannel-medium coefficients.";
 							p.defaultValueHint = "1.0";
 							p.unitLabel = "m / unit";
 							p.presets = {
@@ -5216,6 +5247,13 @@ namespace RISE
 								{ "Inches",           "0.0254" },
 								{ "Feet",             "0.3048" },
 							};
+						}
+						{
+							auto& p = P();
+							p.name = "fidelity_mode"; p.kind = ValueKind::Enum;
+							p.enumValues = {"preview", "predictive"};
+							p.description = "Requested fire-render fidelity. Predictive is fail-closed before workers start; preview remains specifically reason-coded.";
+							p.defaultValueHint = "preview";
 						}
 						return cd;
 					}();
@@ -9487,6 +9525,232 @@ namespace RISE
 				}
 			};
 
+			struct MultichannelHeterogeneousMediumAsciiChunkParser : public IAsciiChunkParser
+			{
+				static bool ParsePainterSource(
+					const std::string& raw,
+					std::string& painterName
+					)
+				{
+					std::istringstream input( raw );
+					std::string kind;
+					std::string extra;
+					if( !(input >> kind >> painterName) || (input >> extra) || kind != "painter" ) {
+						return false;
+					}
+					return !painterName.empty();
+				}
+
+				static bool ParseInterval(
+					const std::string& raw,
+					double (&interval)[2]
+					)
+				{
+					std::istringstream input(raw);
+					std::string extra;
+					return (input >> interval[0] >> interval[1]) &&
+						!(input >> extra) && std::isfinite(interval[0]) &&
+						std::isfinite(interval[1]) && interval[1] > interval[0];
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					static const char* required[] = {
+						"name", "channel_carbon", "channel_temperature", "bake_resolution",
+						"bbox_min", "bbox_max", "optical_record"
+					};
+					for( size_t i = 0; i < sizeof(required)/sizeof(required[0]); ++i ) {
+						if( !bag.Has( required[i] ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"MultichannelHeterogeneousMedium:: required parameter `%s` is missing",
+								required[i] );
+							return false;
+						}
+					}
+					const bool hasCondensed = bag.Has( "channel_condensed" );
+					static const char* chemChannels[] = {
+						"channel_chem_ch", "channel_chem_c2", "channel_chem_co2" };
+					static const char* chemSPDs[] = {
+						"chem_spd_ch", "chem_spd_c2", "chem_spd_co2" };
+					static const char* chemIntervals[] = {
+						"chem_interval_ch", "chem_interval_c2", "chem_interval_co2" };
+					bool hasAnyChemParameter = false;
+					bool hasAllChemParameters = true;
+					for( unsigned int band = 0; band < 3u; ++band ) {
+						hasAnyChemParameter = hasAnyChemParameter ||
+							bag.Has(chemChannels[band]) || bag.Has(chemSPDs[band]) ||
+							bag.Has(chemIntervals[band]);
+						hasAllChemParameters = hasAllChemParameters &&
+							bag.Has(chemChannels[band]) && bag.Has(chemSPDs[band]) &&
+							bag.Has(chemIntervals[band]);
+					}
+					const bool declaresChemNone = bag.Has("chem_model") &&
+						bag.GetString("chem_model") == "none";
+					if( (hasAnyChemParameter && !hasAllChemParameters) ||
+						(hasAnyChemParameter && declaresChemNone) ||
+						(!hasAnyChemParameter && !declaresChemNone) ) {
+						GlobalLog()->PrintEasyError(
+							"MultichannelHeterogeneousMedium:: provide all three chem channel/SPD/interval tuples, or declare `chem_model none`" );
+						return false;
+					}
+
+					std::string carbonPainter;
+					std::string temperaturePainter;
+					std::string condensedPainter;
+					std::string chemPainters[3];
+					if( !ParsePainterSource( bag.GetString( "channel_carbon" ), carbonPainter ) ||
+						!ParsePainterSource( bag.GetString( "channel_temperature" ), temperaturePainter ) ||
+						(hasCondensed && !ParsePainterSource(
+							bag.GetString( "channel_condensed" ), condensedPainter )) ||
+						(hasAnyChemParameter &&
+							(!ParsePainterSource(bag.GetString(chemChannels[0]),chemPainters[0]) ||
+							 !ParsePainterSource(bag.GetString(chemChannels[1]),chemPainters[1]) ||
+							 !ParsePainterSource(bag.GetString(chemChannels[2]),chemPainters[2]))) ) {
+						GlobalLog()->PrintEasyError(
+							"MultichannelHeterogeneousMedium:: channel sources must be `painter <scalar_painter-name>`" );
+						return false;
+					}
+
+					if( !HasExactNumericArity( bag, "bake_resolution", 3 ) ) {
+						GlobalLog()->PrintEasyError(
+							"MultichannelHeterogeneousMedium:: bake_resolution requires exactly three integer dimensions" );
+						return false;
+					}
+					double resolution[3] = { 0, 0, 0 };
+					bag.GetVec3( "bake_resolution", resolution );
+					for( unsigned int i = 0; i < 3; ++i ) {
+						if( resolution[i] < 2.0 || resolution[i] > 4294967295.0 ||
+							floor( resolution[i] ) != resolution[i] ) {
+							GlobalLog()->PrintEasyError(
+								"MultichannelHeterogeneousMedium:: bake_resolution dimensions must be integers >= 2" );
+							return false;
+						}
+					}
+
+					double bboxMin[3] = { 0, 0, 0 };
+					double bboxMax[3] = { 0, 0, 0 };
+					bag.GetVec3( "bbox_min", bboxMin );
+					bag.GetVec3( "bbox_max", bboxMax );
+
+					double chemInterval[3][2] = {{0,0},{0,0},{0,0}};
+					if( hasAnyChemParameter &&
+						(!ParseInterval(bag.GetString(chemIntervals[0]),chemInterval[0]) ||
+						 !ParseInterval(bag.GetString(chemIntervals[1]),chemInterval[1]) ||
+						 !ParseInterval(bag.GetString(chemIntervals[2]),chemInterval[2])) ) {
+						GlobalLog()->PrintEasyError(
+							"MultichannelHeterogeneousMedium:: each chem_interval requires finite `lambda_min lambda_max` with lambda_max > lambda_min" );
+						return false;
+					}
+
+					const bool ok = pJob.AddMultichannelHeterogeneousMediumWithPreset(
+						bag.GetString("name").c_str(), carbonPainter.c_str(),
+						temperaturePainter.c_str(),
+						hasCondensed ? condensedPainter.c_str() : 0,
+						hasAnyChemParameter ? chemPainters[0].c_str() : 0,
+						hasAnyChemParameter ? chemPainters[1].c_str() : 0,
+						hasAnyChemParameter ? chemPainters[2].c_str() : 0,
+						hasAnyChemParameter ? bag.GetString(chemSPDs[0]).c_str() : 0,
+						hasAnyChemParameter ? bag.GetString(chemSPDs[1]).c_str() : 0,
+						hasAnyChemParameter ? bag.GetString(chemSPDs[2]).c_str() : 0,
+						hasAnyChemParameter ? chemInterval[0] : 0,
+						hasAnyChemParameter ? chemInterval[1] : 0,
+						hasAnyChemParameter ? chemInterval[2] : 0,
+						static_cast<unsigned int>(resolution[0]),
+						static_cast<unsigned int>(resolution[1]),
+						static_cast<unsigned int>(resolution[2]),
+						bboxMin, bboxMax, s_sceneOptions.scene_unit_meters,
+						bag.GetString("optical_record").c_str() );
+					if( ok ) s_sceneOptions.metric_medium_committed = true;
+					return ok;
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "multichannel_heterogeneous_medium";
+						cd.category = ChunkCategory::Medium;
+						cd.description = "Preview-only painter-baked carbon, temperature, and optional condensed-organic medium on one trilinear lattice.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.required = true; p.description = "Unique medium name"; }
+						{ auto& p = P(); p.name = "channel_carbon"; p.kind = ValueKind::String; p.required = true; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Carbon source: `painter <scalar_painter-name>` [g/m^3]"; }
+						{ auto& p = P(); p.name = "channel_temperature"; p.kind = ValueKind::String; p.required = true; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Temperature source: `painter <scalar_painter-name>` [K]"; }
+						{ auto& p = P(); p.name = "channel_condensed"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Condensed-organic source: `painter <scalar_painter-name>` [g/m^3]"; }
+						{ auto& p = P(); p.name = "chem_model"; p.kind = ValueKind::Enum; p.required = false; p.enumValues = {"none"}; p.description = "Explicitly disables chem channels; mutually exclusive with the all-or-none chem bundle"; }
+						{ auto& p = P(); p.name = "channel_chem_ch"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Band-integrated CH source: `painter <scalar_painter-name>` [W/m^3]"; }
+						{ auto& p = P(); p.name = "channel_chem_c2"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Band-integrated C2 source: `painter <scalar_painter-name>` [W/m^3]"; }
+						{ auto& p = P(); p.name = "channel_chem_co2"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Enum, ValueKind::Reference}; p.enumValues = {"painter"}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Band-integrated CO2* source: `painter <scalar_painter-name>` [W/m^3]"; }
+						{ auto& p = P(); p.name = "chem_spd_ch"; p.kind = ValueKind::Reference; p.required = false; p.referenceCategories = {ChunkCategory::Function}; p.description = "CH SPD shape IFunction1D"; }
+						{ auto& p = P(); p.name = "chem_spd_c2"; p.kind = ValueKind::Reference; p.required = false; p.referenceCategories = {ChunkCategory::Function}; p.description = "C2 SPD shape IFunction1D"; }
+						{ auto& p = P(); p.name = "chem_spd_co2"; p.kind = ValueKind::Reference; p.required = false; p.referenceCategories = {ChunkCategory::Function}; p.description = "CO2* SPD shape IFunction1D"; }
+						{ auto& p = P(); p.name = "chem_interval_ch"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Double,ValueKind::Double}; p.description = "CH SPD normalization interval [nm]: lambda_min lambda_max"; }
+						{ auto& p = P(); p.name = "chem_interval_c2"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Double,ValueKind::Double}; p.description = "C2 SPD normalization interval [nm]: lambda_min lambda_max"; }
+						{ auto& p = P(); p.name = "chem_interval_co2"; p.kind = ValueKind::String; p.required = false; p.tupleKinds = {ValueKind::Double,ValueKind::Double}; p.description = "CO2* SPD normalization interval [nm]: lambda_min lambda_max"; }
+						{ auto& p = P(); p.name = "bake_resolution"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "Shared carbon/temperature/condensed lattice resolution (integer X Y Z, each >= 2)"; }
+						{ auto& p = P(); p.name = "bbox_min"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "World-space bbox minimum"; }
+						{ auto& p = P(); p.name = "bbox_max"; p.kind = ValueKind::DoubleVec3; p.required = true; p.description = "World-space bbox maximum"; }
+						{ auto& p = P(); p.name = "optical_record"; p.kind = ValueKind::Enum; p.required = true; p.enumValues = {"fire_optics_v1","synthetic_regression_v1"}; p.description = "One versioned constituent-optics record"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct FireMediumAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const struct Expected { const char* key; const char* value; } expected[] = {
+						{"channel_carbon","carbon"},{"channel_temperature","temperature"}
+					};
+					for( const Expected& item : expected ) if( bag.GetString(item.key) != item.value ) {
+						GlobalLog()->PrintEasyError("fire_medium channel binding differs from the version-1 manifest schema");
+						return false;
+					}
+					const bool chemNone = bag.Has("chem_model") && bag.GetString("chem_model") == "none";
+					const bool allChem = bag.Has("channel_chem_ch") && bag.Has("channel_chem_c2") &&
+						bag.Has("channel_chem_co2");
+					if( chemNone == allChem || (allChem &&
+						(bag.GetString("channel_chem_ch") != "chem_CH" ||
+						 bag.GetString("channel_chem_c2") != "chem_C2" ||
+						 bag.GetString("channel_chem_co2") != "chem_CO2")) ) return false;
+					if( bag.Has("channel_condensed") && bag.GetString("channel_condensed") != "condensed" ) return false;
+					if( !pJob.SetFireFidelityMode(bag.GetString("fidelity_mode").c_str()) ) return false;
+					return pJob.AddFireMediumBound(bag.GetString("name").c_str(),
+						bag.GetString("sequence_manifest").c_str(),"carbon","temperature",
+						bag.Has("channel_condensed") ? "condensed" : "",
+						bag.Has("channel_reaction") ? "reaction" : "",
+						allChem ? "chem_CH" : "",allChem ? "chem_C2" : "",
+						allChem ? "chem_CO2" : "",
+						bag.Has("channel_velocity") ? "velocity" : "",chemNone);
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "fire_medium";
+						cd.category = ChunkCategory::Medium;
+						cd.description = "Manifest-backed physical fire sequence medium.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p=P(); p.name="name"; p.kind=ValueKind::String; p.required=true; }
+						{ auto& p=P(); p.name="fidelity_mode"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"preview","predictive"}; }
+						{ auto& p=P(); p.name="sequence_manifest"; p.kind=ValueKind::String; p.required=true; }
+						{ auto& p=P(); p.name="channel_carbon"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"carbon"}; }
+						{ auto& p=P(); p.name="channel_temperature"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"temperature"}; }
+						{ auto& p=P(); p.name="channel_condensed"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"condensed"}; }
+						{ auto& p=P(); p.name="channel_reaction"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"reaction"}; }
+						{ auto& p=P(); p.name="chem_model"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"none"}; }
+						{ auto& p=P(); p.name="channel_chem_ch"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"chem_CH"}; }
+						{ auto& p=P(); p.name="channel_chem_c2"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"chem_C2"}; }
+						{ auto& p=P(); p.name="channel_chem_co2"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"chem_CO2"}; }
+						{ auto& p=P(); p.name="channel_velocity"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"velocity"}; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 
 			//////////////////////////////////////////
 			// Objects
@@ -11779,7 +12043,6 @@ namespace RISE
 						AddPathGuidingParams( P );
 						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
-						{ auto& p = P(); p.name = "filter_glossy";                    p.kind = ValueKind::Double; p.description = "Glossy roughness floor (0 disables)";                     p.defaultValueHint = to_hint(stabilityDflt.filterGlossy); }
 						AddOptimalMISParams( P );
 						AddProgressiveParams( P );
 						return cd;
@@ -11935,7 +12198,6 @@ namespace RISE
 						AddRadianceMapParams( P );
 						AddSpectralConfigParams( P );
 						AddStabilityConfigParams( P );
-						{ auto& p = P(); p.name = "filter_glossy"; p.kind = ValueKind::Double; p.description = "Glossy roughness floor (0 disables)"; p.defaultValueHint = to_hint(stabilityDflt.filterGlossy); }
 						return cd;
 					}();
 					return d;
@@ -12006,6 +12268,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
@@ -12139,6 +12402,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
@@ -12255,6 +12519,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )            stabilityConfig.directClamp           = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )          stabilityConfig.indirectClamp         = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )           stabilityConfig.filterGlossy          = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )            stabilityConfig.rrMinDepth            = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )            stabilityConfig.rrThreshold           = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )      stabilityConfig.maxDiffuseBounce      = bag.GetUInt("max_diffuse_bounce");
@@ -12361,6 +12626,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )            stabilityConfig.directClamp           = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )          stabilityConfig.indirectClamp         = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )           stabilityConfig.filterGlossy          = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )            stabilityConfig.rrMinDepth            = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )            stabilityConfig.rrThreshold           = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )      stabilityConfig.maxDiffuseBounce      = bag.GetUInt("max_diffuse_bounce");
@@ -12498,6 +12764,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
@@ -12622,6 +12889,7 @@ namespace RISE
 						StabilityConfig stabilityConfig;
 						if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 						if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+						if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
 						if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
 						if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
 						if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
@@ -12752,6 +13020,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
@@ -12883,6 +13152,7 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
 					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
 					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
 					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
@@ -13161,15 +13431,17 @@ namespace RISE
 					#ifndef NO_PNG_SUPPORT
 							type = 2;
 					#else
-							type = 0;
-							GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO PNG SUPPORT was compiled, reverting to TGA instead" );
+							GlobalLog()->PrintEasyError(
+								"ChunkParser:: PNG output was authored but its encoder is unavailable in this build" );
+							return false;
 					#endif
 						} else if( t == "TIFF" ) {
 					#ifndef NO_TIFF_SUPPORT
 							type = 4;
 					#else
-							type = 0;
-							GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO TIFF SUPPORT was compiled, reverting to TGA instead" );
+							GlobalLog()->PrintEasyError(
+								"ChunkParser:: TIFF output was authored but its encoder is unavailable in this build" );
+							return false;
 					#endif
 						} else if( t == "HDR" ) {
 							type = 3;
@@ -13179,8 +13451,9 @@ namespace RISE
 					#ifndef NO_EXR_SUPPORT
 							type = 6;
 					#else
-							type = 0;
-							GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO EXR SUPPORT was compiled, reverting to TGA instead" );
+							GlobalLog()->PrintEasyError(
+								"ChunkParser:: EXR output was authored but its encoder is unavailable in this build" );
+							return false;
 					#endif
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown output file type type `%s`", t.c_str() );
@@ -14133,6 +14406,7 @@ namespace RISE
 		add( "piecewise_linear_function2d",           std::make_unique<PiecewiseLinearFunction2DChunkParser>() );
 
 		// Materials
+		add( "null_boundary_material",                 std::make_unique<NullBoundaryMaterialAsciiChunkParser>() );
 		add( "lambertian_material",                   std::make_unique<LambertianMaterialAsciiChunkParser>() );
 		add( "perfectreflector_material",             std::make_unique<PerfectReflectorMaterialAsciiChunkParser>() );
 		add( "perfectrefractor_material",             std::make_unique<PerfectRefractorMaterialAsciiChunkParser>() );
@@ -14221,6 +14495,8 @@ namespace RISE
 		add( "light_rr_threshold",                   std::make_unique<LightRRThresholdAsciiChunkParser>() );
 		add( "heterogeneous_medium",                  std::make_unique<HeterogeneousMediumAsciiChunkParser>() );
 		add( "painter_heterogeneous_medium",          std::make_unique<PainterHeterogeneousMediumAsciiChunkParser>() );
+		add( "multichannel_heterogeneous_medium",     std::make_unique<MultichannelHeterogeneousMediumAsciiChunkParser>() );
+		add( "fire_medium",                          std::make_unique<FireMediumAsciiChunkParser>() );
 
 		// Objects
 		add( "standard_object",                       std::make_unique<StandardObjectAsciiChunkParser>() );

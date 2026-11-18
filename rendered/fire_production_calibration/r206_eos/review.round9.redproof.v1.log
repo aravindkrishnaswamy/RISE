@@ -1,0 +1,22 @@
+
+======================================================================
+FAIL: test_copied_runs_with_cosmetic_log_changes_are_not_independent (test_fire_r206_eos.EOSGateREDs) (suffix='\n')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 50, in test_copied_runs_with_cosmetic_log_changes_are_not_independent
+    distinct_repeats(directory, names)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_copied_runs_with_cosmetic_log_changes_are_not_independent (test_fire_r206_eos.EOSGateREDs) (suffix='\n# copied diagnostic commentary\n')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 50, in test_copied_runs_with_cosmetic_log_changes_are_not_independent
+    distinct_repeats(directory, names)
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.212s
+
+FAILED (failures=2)
+R206_EXECUTION_INDEPENDENCE_RED historical_false_green_caught=1 setup_errors=0

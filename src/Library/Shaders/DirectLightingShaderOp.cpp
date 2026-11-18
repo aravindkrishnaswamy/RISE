@@ -15,6 +15,7 @@
 #include "DirectLightingShaderOp.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/IndependentSampler.h"
+#include "../Utilities/MediumTracking.h"
 #include "../Lights/LightSampler.h"
 
 using namespace RISE;
@@ -73,6 +74,9 @@ void DirectLightingShaderOp::PerformOperation(
 
 	IndependentSampler fallbackSampler( rc.random );
 	ISampler& sampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+	const IObject* pMediumObject = 0;
+	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject(
+		ior_stack, pScene, pMediumObject );
 	c = pLS->EvaluateDirectLighting(
 		ri.geometric,
 		*pBRDF,
@@ -80,9 +84,9 @@ void DirectLightingShaderOp::PerformOperation(
 		caster,
 		sampler,
 		ri.pObject,
-		0,		// pMedium: shader op runs at surface scatter, vacuum along shadow ray
+		pMedium,
 		false,	// isVolumeScatter
-		0,		// pMediumObject
+		pMediumObject,	// fire: medium resolved from the enclosure stack above
 		// DL-74 P2: no guiding hook on the legacy chain, but the
 		// MIS-partner aggregate pdf must still be evaluated under the LIVE
 		// IOR stack -- this arm's partner is EmissionShaderOp's
@@ -113,6 +117,9 @@ void DirectLightingShaderOp::PerformOperation(
 		// prices its arrival at an emitter from the same value.  Before
 		// DL-292 this passed nothing and the legacy chain kept the
 		// pre-DL-09 accounting.
+		&ior_stack,
+		/*bSMSCoversDeltaLights*/ false,
+		// Fire: full outer-to-inner medium state for the shadow-medium walk.
 		&ior_stack );
 }
 
@@ -148,6 +155,9 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 
 	IndependentSampler fallbackSampler( rc.random );
 	ISampler& sampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+	const IObject* pMediumObject = 0;
+	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject(
+		ior_stack, pScene, pMediumObject );
 	return pLS->EvaluateDirectLightingNM(
 		ri.geometric,
 		*pBRDF,
@@ -156,9 +166,9 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 		caster,
 		sampler,
 		ri.pObject,
-		0,		// pMedium
+		pMedium,
 		false,	// isVolumeScatter
-		0,		// pMediumObject
+		pMediumObject,	// fire -- see the RGB twin above
 		// DL-74 P2 -- see the RGB twin above.
 		/*pGuidedBlend*/ 0,
 		&ior_stack,
@@ -167,5 +177,8 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 		// DL-171/DL-209 -- see the RGB twin above.
 		rs.chainHasBsdfContinuationOp,
 		// DL-292 -- see the RGB twin above.
+		&ior_stack,
+		/*bSMSCoversDeltaLights*/ false,
+		// Fire -- see the RGB twin above.
 		&ior_stack );
 }

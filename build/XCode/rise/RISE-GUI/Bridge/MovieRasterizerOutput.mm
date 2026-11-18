@@ -15,6 +15,12 @@
 
 #include "Interfaces/IRasterImage.h"
 #include "Interfaces/ILog.h"
+#include "Rendering/FrameEncoders.h"
+#include "Utilities/RISECBOR64.h"
+
+#include <fstream>
+#include <memory>
+#include <stdexcept>
 
 // Note: do NOT use "using namespace RISE;" here — RISE::Rect conflicts
 // with the macOS Carbon Rect type pulled in by AVFoundation headers.
@@ -52,25 +58,372 @@ static inline float linearToPQ(double lin)
     return (float)pow((c1 + c2 * Lm) / (1.0 + c3 * Lm), m2);
 }
 
+static bool MovieEncodingDescriptorSupported(
+    const RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor)
+{
+    return descriptor.schemaVersion == 1u && descriptor.backend == "avfoundation" &&
+        descriptor.containerFormat == "MOV" &&
+        descriptor.codec == "apple_prores_4444" &&
+        descriptor.codecImplementation == "AVVideoCodecTypeAppleProRes4444" &&
+        descriptor.codecProfile == "4444" && descriptor.bitsPerChannel == 12u &&
+        descriptor.inputPixelFormat == "kCVPixelFormatType_64RGBAHalf" &&
+        descriptor.outputPixelFormat == "prores_4444_12bit" &&
+        descriptor.chromaSubsampling == "4:4:4" && descriptor.alphaMode == "encoded" &&
+        descriptor.colorRange == "avfoundation_codec_owned" &&
+        descriptor.colorPrimaries == "bt2020" &&
+        descriptor.transferFunction == "smpte_st_2084_pq" &&
+        descriptor.ycbcrMatrix == "bt2020_nonconstant_luminance" &&
+        descriptor.displayTransform == "rec709_linear_to_rec2020_pq" &&
+        descriptor.referenceWhiteNits == 100u && descriptor.pqPeakNits == 10000u &&
+        descriptor.dimensionRounding == "round_up_to_even" &&
+        descriptor.maxBFrames == 0u && descriptor.gopFrames == 1u &&
+        descriptor.rateControl == "constant_quality_intra" &&
+        descriptor.encoderPreset == "not_configurable_by_avfoundation" &&
+        descriptor.codecOptions == "no_compression_properties" &&
+        descriptor.codecTag == "ap4h" && descriptor.muxerFlags == "none" &&
+        descriptor.conversionFilter == "avfoundation_managed" &&
+        descriptor.conversionMatrix == "rec709_to_rec2020_d65" &&
+        descriptor.conversionSourceRange == "full" &&
+        descriptor.conversionDestinationRange == "avfoundation_codec_owned" &&
+        descriptor.conversionBrightness == 0 &&
+        descriptor.conversionContrast == (1 << 16) &&
+        descriptor.conversionSaturation == (1 << 16) &&
+        !descriptor.expectsMediaDataInRealTime;
+}
+
+static NSDictionary* MovieVideoSettings(
+    const RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor,
+    const int width,
+    const int height)
+{
+    if (!MovieEncodingDescriptorSupported(descriptor)) return nil;
+    return @{
+        AVVideoCodecKey: AVVideoCodecTypeAppleProRes4444,
+        AVVideoWidthKey: @(width),
+        AVVideoHeightKey: @(height),
+        AVVideoColorPropertiesKey: @{
+            AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
+            AVVideoTransferFunctionKey: AVVideoTransferFunction_SMPTE_ST_2084_PQ,
+            AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
+        }
+    };
+}
+
+static NSDictionary* MovieBufferAttributes(
+    const RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor,
+    const int width,
+    const int height)
+{
+    if (!MovieEncodingDescriptorSupported(descriptor)) return nil;
+    return @{
+        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_64RGBAHalf),
+        (NSString*)kCVPixelBufferWidthKey: @(width),
+        (NSString*)kCVPixelBufferHeightKey: @(height),
+    };
+}
+
+static bool ValidateClosedMovieArtifact(
+    const std::string& path,
+    RISE::Implementation::FireFrameSequenceEncoding encoding,
+    unsigned int width,
+    unsigned int height,
+    unsigned int framesPerSecond,
+    const std::vector<RISE::Implementation::FireFramePrimary>& frames,
+    std::string& error);
+
+static bool ProbeMovieDerivativeAvailability(
+    NSString* writerPath,
+    const int fps,
+    const RISE::Implementation::FireFrameSequenceEncodingDescriptor& descriptor)
+{
+    if (fps <= 0 || !MovieEncodingDescriptorSupported(descriptor)) return false;
+    NSURL* url = [NSURL fileURLWithPath:writerPath];
+    [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+    NSError* error = nil;
+    AVAssetWriter* writer = [AVAssetWriter assetWriterWithURL:url
+        fileType:AVFileTypeQuickTimeMovie error:&error];
+    NSDictionary* settings = MovieVideoSettings(descriptor,16,16);
+    if (!writer || error ||
+        ![writer canApplyOutputSettings:settings forMediaType:AVMediaTypeVideo]) {
+        [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+        return false;
+    }
+    AVAssetWriterInput* input = [AVAssetWriterInput
+        assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:settings];
+    input.expectsMediaDataInRealTime = descriptor.expectsMediaDataInRealTime ? YES : NO;
+    AVAssetWriterInputPixelBufferAdaptor* adaptor =
+        [AVAssetWriterInputPixelBufferAdaptor
+            assetWriterInputPixelBufferAdaptorWithAssetWriterInput:input
+            sourcePixelBufferAttributes:MovieBufferAttributes(descriptor,16,16)];
+    if (![writer canAddInput:input]) {
+        [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+        return false;
+    }
+    [writer addInput:input];
+    bool available = [writer startWriting];
+    if (available) {
+        [writer startSessionAtSourceTime:kCMTimeZero];
+        CVPixelBufferRef buffer = nullptr;
+        available = adaptor.pixelBufferPool != nullptr &&
+            CVPixelBufferPoolCreatePixelBuffer(
+                kCFAllocatorDefault,adaptor.pixelBufferPool,&buffer) == kCVReturnSuccess;
+        if (available && buffer) {
+            CVPixelBufferLockBaseAddress(buffer,0);
+            std::memset(CVPixelBufferGetBaseAddress(buffer),0,
+                CVPixelBufferGetBytesPerRow(buffer)*16u);
+            CVPixelBufferUnlockBaseAddress(buffer,0);
+            available = [adaptor appendPixelBuffer:buffer
+                withPresentationTime:CMTimeMake(0,fps)];
+        }
+        if (buffer) CVPixelBufferRelease(buffer);
+    }
+    if (available) {
+        [input markAsFinished];
+        dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+        [writer finishWritingWithCompletionHandler:^{
+            dispatch_semaphore_signal(semaphore);
+        }];
+        dispatch_semaphore_wait(semaphore,DISPATCH_TIME_FOREVER);
+        NSNumber* fileSize = [[[NSFileManager defaultManager]
+            attributesOfItemAtPath:writerPath error:nil] objectForKey:NSFileSize];
+        available = writer.status == AVAssetWriterStatusCompleted &&
+            fileSize != nil && [fileSize unsignedLongLongValue] != 0u;
+    } else {
+        [writer cancelWriting];
+    }
+    if (available) {
+        std::vector<RISE::Implementation::FireFramePrimary> probeFrames(1u);
+        probeFrames[0].frameIndex = 0u;
+        std::string validationError;
+        available = ValidateClosedMovieArtifact([writerPath UTF8String],
+            RISE::Implementation::FireFrameSequenceEncoding::AppleProRes4444_12Bit,
+            16u,16u,static_cast<unsigned int>(fps),probeFrames,validationError);
+        if (available) {
+            probeFrames[0].frameIndex = 1u;
+            available = !ValidateClosedMovieArtifact([writerPath UTF8String],
+                RISE::Implementation::FireFrameSequenceEncoding::AppleProRes4444_12Bit,
+                16u,16u,static_cast<unsigned int>(fps),probeFrames,validationError);
+        }
+    }
+    [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+    return available;
+}
+
+static bool ValidateClosedMovieArtifact(
+    const std::string& path,
+    const RISE::Implementation::FireFrameSequenceEncoding encoding,
+    const unsigned int width,
+    const unsigned int height,
+    const unsigned int framesPerSecond,
+    const std::vector<RISE::Implementation::FireFramePrimary>& frames,
+    std::string& error)
+{
+    error.clear();
+    if (encoding != RISE::Implementation::FireFrameSequenceEncoding::
+            AppleProRes4444_12Bit || width == 0u || height == 0u ||
+        framesPerSecond == 0u || frames.empty()) {
+        error = "AVFoundation movie validation received inconsistent expectations";
+        return false;
+    }
+    std::ifstream file(path,std::ios::binary);
+    unsigned char brandHeader[12] = {};
+    file.read(reinterpret_cast<char*>(brandHeader),sizeof(brandHeader));
+    if (file.gcount() != static_cast<std::streamsize>(sizeof(brandHeader)) ||
+        std::memcmp(brandHeader+4,"ftyp",4u) != 0 ||
+        std::memcmp(brandHeader+8,"qt  ",4u) != 0) {
+        error = "finalized ProRes artifact is not a QuickTime MOV container";
+        return false;
+    }
+
+    NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+    AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url options:@{
+        AVURLAssetPreferPreciseDurationAndTimingKey: @YES
+    }];
+    __block NSArray<AVAssetTrack*>* videoTracks = nil;
+    __block NSArray<AVAssetTrack*>* audioTracks = nil;
+    __block NSError* videoTrackError = nil;
+    __block NSError* audioTrackError = nil;
+    dispatch_group_t trackGroup = dispatch_group_create();
+    dispatch_group_enter(trackGroup);
+    [asset loadTracksWithMediaType:AVMediaTypeVideo
+        completionHandler:^(NSArray<AVAssetTrack*>* tracks, NSError* loadError) {
+            videoTracks = tracks;
+            videoTrackError = loadError;
+            dispatch_group_leave(trackGroup);
+        }];
+    dispatch_group_enter(trackGroup);
+    [asset loadTracksWithMediaType:AVMediaTypeAudio
+        completionHandler:^(NSArray<AVAssetTrack*>* tracks, NSError* loadError) {
+            audioTracks = tracks;
+            audioTrackError = loadError;
+            dispatch_group_leave(trackGroup);
+        }];
+    dispatch_group_wait(trackGroup,DISPATCH_TIME_FOREVER);
+    if (videoTrackError || audioTrackError ||
+        videoTracks.count != 1u || audioTracks.count != 0u) {
+        error = "finalized MOV does not contain exactly one video track and no audio";
+        return false;
+    }
+
+    AVAssetTrack* track = videoTracks.firstObject;
+    NSArray* descriptions = track.formatDescriptions;
+    if (descriptions.count != 1u) {
+        error = "finalized MOV has an ambiguous video format description";
+        return false;
+    }
+    CMFormatDescriptionRef description =
+        (__bridge CMFormatDescriptionRef)descriptions.firstObject;
+    const CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(description);
+    const CFDictionaryRef extensions = CMFormatDescriptionGetExtensions(description);
+    const auto matchesExtension = [extensions](const CFStringRef key,
+        const CFStringRef expected) {
+        const CFTypeRef actual = extensions ? CFDictionaryGetValue(extensions,key) : nullptr;
+        return actual && CFEqual(actual,expected);
+    };
+    const auto integerExtension = [extensions](const CFStringRef key,
+        int32_t& value) {
+        const CFTypeRef actual = extensions ? CFDictionaryGetValue(extensions,key) : nullptr;
+        return actual && CFGetTypeID(actual) == CFNumberGetTypeID() &&
+            CFNumberGetValue(static_cast<CFNumberRef>(actual),kCFNumberSInt32Type,&value);
+    };
+    int32_t componentBits = 0;
+    int32_t encodedDepth = 0;
+    const CFTypeRef containsAlpha = extensions ?
+        CFDictionaryGetValue(extensions,kCMFormatDescriptionExtension_ContainsAlphaChannel) :
+        nullptr;
+    const bool alphaFactValid = integerExtension(
+            kCMFormatDescriptionExtension_Depth,encodedDepth) && encodedDepth == 32 &&
+        (!containsAlpha || (CFGetTypeID(containsAlpha) == CFBooleanGetTypeID() &&
+            CFBooleanGetValue(static_cast<CFBooleanRef>(containsAlpha))));
+    if (CMFormatDescriptionGetMediaSubType(description) !=
+            kCMVideoCodecType_AppleProRes4444 ||
+        dimensions.width != static_cast<int32_t>(width) ||
+        dimensions.height != static_cast<int32_t>(height) ||
+        !matchesExtension(kCMFormatDescriptionExtension_ColorPrimaries,
+            kCMFormatDescriptionColorPrimaries_ITU_R_2020) ||
+        !matchesExtension(kCMFormatDescriptionExtension_TransferFunction,
+            kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ) ||
+        !matchesExtension(kCMFormatDescriptionExtension_YCbCrMatrix,
+            kCMFormatDescriptionYCbCrMatrix_ITU_R_2020) ||
+        !integerExtension(kCMFormatDescriptionExtension_BitsPerComponent,componentBits) ||
+        componentBits != 12 || !alphaFactValid) {
+        error = "finalized MOV codec, native depth, alpha, dimensions, or HDR tags differ from authoring";
+        return false;
+    }
+
+    NSError* readerError = nil;
+    AVAssetReader* reader = [AVAssetReader assetReaderWithAsset:asset error:&readerError];
+    NSDictionary* outputSettings = @{
+        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_64ARGB)
+    };
+    AVAssetReaderTrackOutput* output = [AVAssetReaderTrackOutput
+        assetReaderTrackOutputWithTrack:track outputSettings:outputSettings];
+    output.alwaysCopiesSampleData = NO;
+    if (!reader || readerError || ![reader canAddOutput:output]) {
+        error = "AVFoundation cannot configure a full movie decode";
+        return false;
+    }
+    [reader addOutput:output];
+    if (![reader startReading]) {
+        error = "AVFoundation cannot start decoding the finalized MOV";
+        return false;
+    }
+    std::size_t decoded = 0u;
+    for (;;) {
+        CMSampleBufferRef sample = [output copyNextSampleBuffer];
+        if (!sample) break;
+        const CVImageBufferRef image = CMSampleBufferGetImageBuffer(sample);
+        const CMTime actualTime = CMSampleBufferGetPresentationTimeStamp(sample);
+        const CMTime expectedTime = decoded < frames.size() ?
+            CMTimeMake(frames[decoded].frameIndex,framesPerSecond) : kCMTimeInvalid;
+        const bool valid = image && decoded < frames.size() &&
+            CVPixelBufferGetWidth(image) == width &&
+            CVPixelBufferGetHeight(image) == height &&
+            CVPixelBufferGetPixelFormatType(image) == kCVPixelFormatType_64ARGB &&
+            CMTIME_IS_NUMERIC(actualTime) && CMTIME_IS_NUMERIC(expectedTime) &&
+            CMTimeCompare(actualTime,expectedTime) == 0;
+        CFRelease(sample);
+        if (!valid) {
+            [reader cancelReading];
+            error = "decoded MOV frames differ from authored dimensions, order, or cadence";
+            return false;
+        }
+        ++decoded;
+    }
+    if (reader.status != AVAssetReaderStatusCompleted || decoded != frames.size()) {
+        error = "AVFoundation did not decode the complete authored frame sequence";
+        return false;
+    }
+    return true;
+}
+
 MovieRasterizerOutput::MovieRasterizerOutput(NSString* outputPath, int fps)
     : _writer(nil)
     , _input(nil)
     , _adaptor(nil)
     , _outputPath([outputPath copy])
+    , _writerPath(nil)
+    , _primaryPattern(nil)
+    , _frameStore(nullptr)
+    , _primaryEncoder(RISE::Implementation::FrameEncoderRegistry::Get()
+        .AcquireByFormatName("EXR"))
     , _fps(fps)
     , _started(false)
     , _finalized(false)
+    , _failed(false)
+    , _derivativeFailed(false)
+    , _succeeded(false)
+    , _routeAvailable(false)
+    , _derivativeAvailable(false)
+    , _fireRender(false)
+    , _metadataCaptured(false)
     , _width(0)
     , _height(0)
     , _framesReceived(0)
 {
+    NSString* token = [[NSUUID UUID] UUIDString];
+    _writerPath = [[NSString stringWithFormat:@"%@.rise-tmp.movie.%@",
+        _outputPath, token] copy];
+    _primaryPattern = [[NSString stringWithFormat:@"%@.fire-primary-%@.frame",
+        [_outputPath stringByDeletingPathExtension], token] copy];
+
+    NSFileManager* fm = [NSFileManager defaultManager];
+    BOOL parentIsDirectory = NO;
+    BOOL artifactIsDirectory = NO;
+    BOOL sidecarIsDirectory = NO;
+    NSString* parent = [_outputPath stringByDeletingLastPathComponent];
+    NSString* sidecar = [_outputPath stringByAppendingString:@".provenance.cbor"];
+    const BOOL parentExists = [fm fileExistsAtPath:parent isDirectory:&parentIsDirectory];
+    [fm fileExistsAtPath:_outputPath isDirectory:&artifactIsDirectory];
+    [fm fileExistsAtPath:sidecar isDirectory:&sidecarIsDirectory];
+    const BOOL probeCreated = parentExists && parentIsDirectory &&
+        !artifactIsDirectory && !sidecarIsDirectory && _fps > 0 &&
+        [fm createFileAtPath:_writerPath contents:[NSData data] attributes:nil];
+    if (probeCreated) [fm removeItemAtPath:_writerPath error:nil];
+    std::string descriptorError;
+    const bool descriptorAvailable = _fps > 0 &&
+        RISE::Implementation::DescribeFireFrameSequenceEncoding(
+            RISE::Implementation::FireFrameSequenceEncoding::AppleProRes4444_12Bit,
+            static_cast<unsigned int>(_fps),_encodingDescriptor,descriptorError) &&
+        MovieEncodingDescriptorSupported(_encodingDescriptor);
+    _routeAvailable = _primaryEncoder != nullptr && probeCreated;
+    _derivativeAvailable = probeCreated && descriptorAvailable &&
+        ProbeMovieDerivativeAvailability(_writerPath,_fps,_encodingDescriptor);
+    if (!_derivativeAvailable) {
+        RISE::GlobalLog()->PrintEasyWarning(
+            "MovieRasterizerOutput:: authored ProRes 4444 display derivative "
+            "is unavailable at preflight");
+    }
 }
 
 MovieRasterizerOutput::~MovieRasterizerOutput()
 {
     if (!_finalized) {
-        finalize();
+        finalize(false);
     }
+    if (_primaryEncoder) _primaryEncoder->release();
+    std::lock_guard<std::mutex> lock(_frameStoreMutex);
+    if (_frameStore) _frameStore->release();
 }
 
 void MovieRasterizerOutput::OutputIntermediateImage(
@@ -79,8 +432,71 @@ void MovieRasterizerOutput::OutputIntermediateImage(
     // No-op: we only want complete frames.
 }
 
+void MovieRasterizerOutput::OnRasterizerFrameStoreChanged(
+    RISE::Implementation::FrameStore* framestore)
+{
+    if (framestore) framestore->addref();
+    std::lock_guard<std::mutex> lock(_frameStoreMutex);
+    if (_frameStore) _frameStore->release();
+    _frameStore = framestore;
+}
+
+static bool SameFireMedium(
+    const RISE::FrameStoreOutput::ActiveFireMedium& lhs,
+    const RISE::FrameStoreOutput::ActiveFireMedium& rhs)
+{
+    return lhs.mediaKind == rhs.mediaKind &&
+        lhs.managerName == rhs.managerName &&
+        lhs.bindingKind == rhs.bindingKind &&
+        lhs.bindingOwner == rhs.bindingOwner &&
+        lhs.authoredConfigDigest == rhs.authoredConfigDigest &&
+        lhs.opticalRecordIds == rhs.opticalRecordIds;
+}
+
+static bool SameFireRenderIdentity(
+    const RISE::FrameStoreOutput::Metadata& lhs,
+    const RISE::FrameStoreOutput::Metadata& rhs)
+{
+
+    const auto configWithoutEvaluatedCamera = [](
+        const std::vector<unsigned char>& encoded,
+        std::vector<unsigned char>& normalized) {
+        RISE::RISECBOR64::Value record;
+        std::string error;
+        if (!RISE::RISECBOR64::DecodeCanonical(encoded, record, &error) ||
+            record.GetType() != RISE::RISECBOR64::Value::Map) return false;
+        RISE::RISECBOR64::Value::Members members;
+        for (const auto& member : record.GetMap()) {
+            if (member.first != "camera" &&
+                member.first != "evaluated_camera_states") {
+                members.push_back(member);
+            }
+        }
+        return RISE::RISECBOR64::Encode(
+            RISE::RISECBOR64::Value::MapValue(members), normalized, &error);
+    };
+    std::vector<unsigned char> lhsStaticConfig;
+    std::vector<unsigned char> rhsStaticConfig;
+    if (!configWithoutEvaluatedCamera(lhs.resolvedRenderConfigCoreV1,
+            lhsStaticConfig) ||
+        !configWithoutEvaluatedCamera(rhs.resolvedRenderConfigCoreV1,
+            rhsStaticConfig)) return false;
+    if (lhs.renderFidelityStatus != rhs.renderFidelityStatus ||
+        lhs.renderReasonCodes != rhs.renderReasonCodes ||
+        lhs.activeFireOpticsRecordIds != rhs.activeFireOpticsRecordIds ||
+        lhsStaticConfig != rhsStaticConfig ||
+        lhs.rendererBuildV1 != rhs.rendererBuildV1 ||
+        lhs.rendererBuildId != rhs.rendererBuildId ||
+        lhs.activeFireMedia.size() != rhs.activeFireMedia.size()) return false;
+    for (std::size_t i = 0; i < lhs.activeFireMedia.size(); ++i) {
+        if (!SameFireMedium(lhs.activeFireMedia[i], rhs.activeFireMedia[i])) return false;
+    }
+    return true;
+}
+
 bool MovieRasterizerOutput::setupWriter(int width, int height)
 {
+    if (!MovieEncodingDescriptorSupported(_encodingDescriptor)) return false;
     // Round up to next multiple of 2 (harmless even-dimension safeguard)
     _width = (width + 1) & ~1;
     _height = (height + 1) & ~1;
@@ -91,8 +507,9 @@ bool MovieRasterizerOutput::setupWriter(int width, int height)
             width, height, _width, _height);
     }
 
-    // Remove existing file if present
-    NSURL* fileURL = [NSURL fileURLWithPath:_outputPath];
+    // The writer targets a unique sibling. The public MOV path is published
+    // only after AVFoundation closes it and the sidecar is ready.
+    NSURL* fileURL = [NSURL fileURLWithPath:_writerPath];
     [[NSFileManager defaultManager] removeItemAtURL:fileURL error:nil];
 
     NSError* error = nil;
@@ -118,29 +535,18 @@ bool MovieRasterizerOutput::setupWriter(int width, int height)
     //   Y'CbCr matrix    Rec.2020 (paired with the Rec.2020 primaries)
     // The source buffers are tagged with a matching Rec.2020 PQ color space
     // below, so AVFoundation tags the output without an implicit conversion.
-    NSDictionary* videoSettings = @{
-        AVVideoCodecKey: AVVideoCodecTypeAppleProRes4444,
-        AVVideoWidthKey: @(_width),
-        AVVideoHeightKey: @(_height),
-        AVVideoColorPropertiesKey: @{
-            AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
-            AVVideoTransferFunctionKey: AVVideoTransferFunction_SMPTE_ST_2084_PQ,
-            AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
-        }
-    };
+    NSDictionary* videoSettings = MovieVideoSettings(_encodingDescriptor,_width,_height);
 
     _input = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
                                                 outputSettings:videoSettings];
-    _input.expectsMediaDataInRealTime = NO;
+    _input.expectsMediaDataInRealTime =
+        _encodingDescriptor.expectsMediaDataInRealTime ? YES : NO;
 
     // Pixel buffer adaptor for efficient pixel buffer pool access.
     // 64-bit RGBA, 16-bit IEEE half per channel (8 bytes/pixel) so values
     // outside [0,1] survive into the encoder.
-    NSDictionary* bufferAttributes = @{
-        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_64RGBAHalf),
-        (NSString*)kCVPixelBufferWidthKey: @(_width),
-        (NSString*)kCVPixelBufferHeightKey: @(_height),
-    };
+    NSDictionary* bufferAttributes = MovieBufferAttributes(
+        _encodingDescriptor,_width,_height);
 
     _adaptor = [AVAssetWriterInputPixelBufferAdaptor
         assetWriterInputPixelBufferAdaptorWithAssetWriterInput:_input
@@ -156,13 +562,33 @@ bool MovieRasterizerOutput::setupWriter(int width, int height)
     }
 
     [_writer addInput:_input];
-    [_writer startWriting];
+    if (![_writer startWriting]) {
+        _writer = nil;
+        _input = nil;
+        _adaptor = nil;
+        return false;
+    }
     [_writer startSessionAtSourceTime:kCMTimeZero];
 
     RISE::GlobalLog()->PrintEx(RISE::eLog_Event,
         "MovieRasterizerOutput:: Writing %dx%d ProRes 4444 (HDR10, PQ, Rec.2020) video to '%s'",
-        width, height, [_outputPath UTF8String]);
+        width, height, [_writerPath UTF8String]);
 
+    return true;
+}
+
+bool MovieRasterizerOutput::failMovieDerivative(const char* reason)
+{
+    if (!_fireRender) return false;
+    _derivativeFailed = true;
+    RISE::GlobalLog()->PrintEx(RISE::eLog_Warning,
+        "MovieRasterizerOutput:: display derivative failed (%s); finalized "
+        "fire frame primaries remain valid", reason);
+    if (_writer) [_writer cancelWriting];
+    [[NSFileManager defaultManager] removeItemAtPath:_writerPath error:nil];
+    _writer = nil;
+    _input = nil;
+    _adaptor = nil;
     return true;
 }
 
@@ -171,6 +597,31 @@ void MovieRasterizerOutput::OutputImage(
     const RISE::Rect* /*pRegion*/,
     const unsigned int frame)
 {
+    outputFrame(pImage, frame, true, true);
+}
+
+void MovieRasterizerOutput::OutputPreDenoisedImage(
+    const RISE::IRasterImage& pImage,
+    const RISE::Rect* /*pRegion*/,
+    const unsigned int frame)
+{
+    outputFrame(pImage, frame, true, false);
+}
+
+void MovieRasterizerOutput::OutputDenoisedImage(
+    const RISE::IRasterImage& pImage,
+    const RISE::Rect* /*pRegion*/,
+    const unsigned int frame)
+{
+    outputFrame(pImage, frame, false, true);
+}
+
+void MovieRasterizerOutput::outputFrame(
+    const RISE::IRasterImage& pImage,
+    const unsigned int frame,
+    const bool writePrimary,
+    const bool writeDerivative)
+{
     if (_finalized) return;
 
     @autoreleasepool {
@@ -178,11 +629,114 @@ void MovieRasterizerOutput::OutputImage(
     int imgW = (int)pImage.GetWidth();
     int imgH = (int)pImage.GetHeight();
 
+    RISE::Implementation::FrameStore* frameStore = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(_frameStoreMutex);
+        frameStore = _frameStore;
+        if (frameStore) frameStore->addref();
+    }
+    struct StoreRelease
+    {
+        void operator()(RISE::Implementation::FrameStore* store) const
+        {
+            if (store) store->release();
+        }
+    };
+    std::unique_ptr<RISE::Implementation::FrameStore,StoreRelease>
+        frameStoreSnapshot(frameStore);
+    RISE::FrameStoreOutput::Metadata metadata;
+    if (frameStore) metadata = frameStore->Meta();
+    const bool isFireFrame = !metadata.renderFidelityStatus.empty();
+    if (_framesReceived == 0u && _framePrimaries.empty()) {
+        _fireRender = isFireFrame;
+    } else if (_fireRender != isFireFrame) {
+        _failed = true;
+        throw std::runtime_error(
+            "output_provenance_unavailable: fire fidelity changed within movie");
+    }
+
+    if (_fireRender && writePrimary) {
+        if (!frameStore || !_primaryEncoder) {
+            _failed = true;
+            RISE::GlobalLog()->PrintEasyError(
+                "MovieRasterizerOutput:: output_provenance_unavailable: "
+                "canonical FrameStore or FP32 EXR encoder is unavailable");
+            throw std::runtime_error(
+                "output_provenance_unavailable: animation primary encoder unavailable");
+        }
+        if (_metadataCaptured && !SameFireRenderIdentity(_fireMetadata, metadata)) {
+            _failed = true;
+            throw std::runtime_error(
+                "output_provenance_unavailable: fire render identity changed within movie");
+        }
+        if (!_framePrimaries.empty() &&
+            frame != _framePrimaries.back().frameIndex + 1u) {
+            _failed = true;
+            throw std::runtime_error(
+                "output_provenance_unavailable: movie frame indices are not contiguous");
+        }
+        if (!_metadataCaptured) {
+            _fireMetadata = metadata;
+            _metadataCaptured = true;
+        }
+        _fireMetadata = metadata;
+
+        RISE::EncodeOpts primaryOpts;
+        primaryOpts.colorSpace = RISE::eColorSpace_Rec709RGB_Linear;
+        primaryOpts.bpp = 32u;
+        primaryOpts.exrCompression = RISE::eExrCompression_Piz;
+        primaryOpts.exrWithAlpha = true;
+        primaryOpts.viewTransform = RISE::FrameStoreOutput::ViewTransform::Identity();
+        primaryOpts.frame = frame;
+        NSString* primaryPath = [NSString stringWithFormat:@"%@%04u.exr",
+            _primaryPattern, frame];
+        std::string primaryError;
+        if (!RISE::Implementation::EncodeFrameStoreFileTransaction(
+            *frameStore, *_primaryEncoder, primaryOpts,
+            [primaryPath UTF8String], primaryError)) {
+            _failed = true;
+            RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
+                "MovieRasterizerOutput:: output_provenance_unavailable for frame %u: %s",
+                frame, primaryError.c_str());
+            throw std::runtime_error(
+                "output_provenance_unavailable: animation frame primary failed");
+        }
+        const RISE::FrameStoreOutput::Metadata linked = frameStore->Meta();
+        if (linked.primaryProvenanceId.empty() ||
+            linked.primaryArtifactSha256.empty() ||
+            (linked.primaryArtifactFidelity != "predictive_primary" &&
+             linked.primaryArtifactFidelity != "preview_primary")) {
+            _failed = true;
+            throw std::runtime_error(
+                "output_provenance_unavailable: animation primary linkage is incomplete");
+        }
+        RISE::Implementation::FireFramePrimary link;
+        link.frameIndex = frame;
+        link.provenanceId = linked.primaryProvenanceId;
+        link.artifactSha256 = linked.primaryArtifactSha256;
+        _framePrimaries.push_back(link);
+    }
+    if (!writeDerivative || _derivativeFailed) return;
+    if (_fireRender &&
+        (_framePrimaries.empty() ||
+         _framePrimaries.back().frameIndex != frame ||
+         _framesReceived + 1u != _framePrimaries.size())) {
+        _failed = true;
+        throw std::runtime_error(
+            "output_provenance_unavailable: movie derivative has no matching raw primary");
+    }
+    if (!_derivativeAvailable) {
+        if (failMovieDerivative("authored encoder unavailable at preflight")) return;
+        _failed = true;
+        throw std::runtime_error("authored movie encoder unavailable at preflight");
+    }
+
     // Lazy initialization on first frame
     if (!_started) {
         if (!setupWriter(imgW, imgH)) {
-            _finalized = true;
-            return;
+            if (failMovieDerivative("writer initialization")) return;
+            _failed = true;
+            throw std::runtime_error("movie writer initialization failed");
         }
         _started = true;
     }
@@ -193,12 +747,18 @@ void MovieRasterizerOutput::OutputImage(
             "MovieRasterizerOutput:: Writer is in failed state at frame %u: %s",
             frame,
             [[_writer.error localizedDescription] UTF8String]);
-        _finalized = true;
-        return;
+        if (failMovieDerivative("writer entered a failed state")) return;
+        _failed = true;
+        throw std::runtime_error("movie writer entered a failed state");
     }
 
     // Wait until the input is ready for more data
     while (!_input.isReadyForMoreMediaData) {
+        if (_writer.status != AVAssetWriterStatusWriting) {
+            if (failMovieDerivative("writer failed while awaiting frame input")) return;
+            _failed = true;
+            throw std::runtime_error("movie writer failed while awaiting frame input");
+        }
         [NSThread sleepForTimeInterval:0.01];
     }
 
@@ -222,7 +782,9 @@ void MovieRasterizerOutput::OutputImage(
         RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
             "MovieRasterizerOutput:: Failed to create pixel buffer at frame %u (status=%d)",
             frame, (int)status);
-        return;
+        if (failMovieDerivative("pixel-buffer allocation")) return;
+        _failed = true;
+        throw std::runtime_error("movie pixel-buffer allocation failed");
     }
 
     // Attach a Rec.2020 PQ color space matching the now-PQ-encoded buffer
@@ -286,6 +848,10 @@ void MovieRasterizerOutput::OutputImage(
             "MovieRasterizerOutput:: Failed to append frame %u: %s",
             frame,
             [[_writer.error localizedDescription] UTF8String]);
+        CVPixelBufferRelease(pixelBuffer);
+        if (failMovieDerivative("writer rejected a frame")) return;
+        _failed = true;
+        throw std::runtime_error("movie writer rejected a frame");
     }
 
     CVPixelBufferRelease(pixelBuffer);
@@ -294,16 +860,30 @@ void MovieRasterizerOutput::OutputImage(
     } // @autoreleasepool
 }
 
-void MovieRasterizerOutput::finalize()
+bool MovieRasterizerOutput::finalize(bool publish)
 {
-    if (_finalized) return;
+    if (_finalized) return _succeeded;
     _finalized = true;
 
     if (!_started || !_writer) {
+        if (_derivativeFailed) {
+            [[NSFileManager defaultManager] removeItemAtPath:_writerPath error:nil];
+            return false;
+        }
         RISE::GlobalLog()->PrintEx(RISE::eLog_Warning,
             "MovieRasterizerOutput:: finalize called but no frames were written (received %u frames)",
             _framesReceived);
-        return;
+        [[NSFileManager defaultManager] removeItemAtPath:_writerPath error:nil];
+        return false;
+    }
+
+    if (!publish || _failed) {
+        [_writer cancelWriting];
+        [[NSFileManager defaultManager] removeItemAtPath:_writerPath error:nil];
+        _writer = nil;
+        _input = nil;
+        _adaptor = nil;
+        return false;
     }
 
     RISE::GlobalLog()->PrintEx(RISE::eLog_Event,
@@ -319,17 +899,58 @@ void MovieRasterizerOutput::finalize()
     dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
 
     if (_writer.status == AVAssetWriterStatusCompleted) {
-        RISE::GlobalLog()->PrintEx(RISE::eLog_Event,
-            "MovieRasterizerOutput:: Video written successfully (%u frames) to '%s'",
-            _framesReceived, [_outputPath UTF8String]);
+        if (_fireRender) {
+            std::string publishError;
+            _succeeded = RISE::Implementation::PublishFireFrameSequenceFileTransaction(
+                _fireMetadata,
+                RISE::Implementation::FireFrameSequenceEncoding::AppleProRes4444_12Bit,
+                [_writerPath UTF8String], [_outputPath UTF8String],
+                static_cast<unsigned int>(_width), static_cast<unsigned int>(_height),
+                static_cast<unsigned int>(_fps), _framesReceived, _framePrimaries,
+                ValidateClosedMovieArtifact,
+                publishError);
+            if (!_succeeded) {
+                _derivativeFailed = true;
+                RISE::GlobalLog()->PrintEx(RISE::eLog_Warning,
+                    "MovieRasterizerOutput:: display derivative transaction failed for '%s' "
+                    "(%s); finalized fire frame primaries remain valid",
+                    [_outputPath UTF8String], publishError.c_str());
+            }
+        } else {
+            std::string publicationError;
+            _succeeded = RISE::Implementation::PublishUnprovenancedFileTransaction(
+                [_writerPath UTF8String], [_outputPath UTF8String], publicationError);
+            if (!_succeeded) {
+                RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
+                    "MovieRasterizerOutput:: failed to publish '%s': %s",
+                    [_outputPath UTF8String],
+                    publicationError.c_str());
+            }
+        }
+        if (_succeeded) {
+            RISE::GlobalLog()->PrintEx(RISE::eLog_Event,
+                "MovieRasterizerOutput:: Video written successfully (%u frames) to '%s'",
+                _framesReceived, [_outputPath UTF8String]);
+        }
     } else {
-        RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
-            "MovieRasterizerOutput:: Video writing failed after %u frames: %s",
-            _framesReceived,
-            [[_writer.error localizedDescription] UTF8String]);
+        if (_fireRender) {
+            _derivativeFailed = true;
+            RISE::GlobalLog()->PrintEx(RISE::eLog_Warning,
+                "MovieRasterizerOutput:: display derivative finalization failed after %u "
+                "frames (%s); finalized fire frame primaries remain valid",
+                _framesReceived,
+                [[_writer.error localizedDescription] UTF8String]);
+        } else {
+            RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
+                "MovieRasterizerOutput:: Video writing failed after %u frames: %s",
+                _framesReceived,
+                [[_writer.error localizedDescription] UTF8String]);
+        }
+        [[NSFileManager defaultManager] removeItemAtPath:_writerPath error:nil];
     }
 
     _writer = nil;
     _input = nil;
     _adaptor = nil;
+    return _succeeded;
 }

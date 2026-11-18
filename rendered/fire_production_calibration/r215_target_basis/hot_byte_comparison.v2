@@ -1,0 +1,145 @@
+schema rise.fire.r213.numeric-snapshot-comparison.v1
+scope canonical_persistent_payload_minus_producer_build_not_migration
+excluded_field producerBuildId
+required_steps 8
+reporter_build_id 4aa5da6758f20c63362ee0f201507127a021be2faac22397d294fbc9ce0d799e
+reporter_executable_sha256 02b705b284888c92a512e060b8fb04b74c09dd353284ae8abf5326a12fd22d9d
+step 1 time_s 2.1096706851385534 old_build c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d new_build 4aa5da6758f20c63362ee0f201507127a021be2faac22397d294fbc9ce0d799e old_checkpoint_sha256 bf2348186aac54a78686d32e536aae1d6da780873f9bfffdbd0665c9cf7214df new_checkpoint_sha256 7343b29947107a9af2d354f623b9532f1086d16d48d9efd89fe21b544aef9b20 old_comparison_sha256 2c606307d0dfa42266cb0a1e15cec5c8ff62eb47c40f1cba751cd48436276bad new_comparison_sha256 2c606307d0dfa42266cb0a1e15cec5c8ff62eb47c40f1cba751cd48436276bad bytes 65447938 exact_bytes_equal 1
+scalar step 1 component 0 cells 504666 bit_mismatches 0
+scalar step 1 component 1 cells 504666 bit_mismatches 0
+scalar step 1 component 2 cells 504666 bit_mismatches 0
+scalar step 1 component 3 cells 504666 bit_mismatches 0
+scalar step 1 component 4 cells 504666 bit_mismatches 0
+scalar step 1 component 5 cells 504666 bit_mismatches 0
+scalar step 1 component 6 cells 504666 bit_mismatches 0
+scalar step 1 component 7 cells 504666 bit_mismatches 0
+scalar step 1 component 8 cells 504666 bit_mismatches 0
+scalar step 1 component 9 cells 504666 bit_mismatches 0
+face step 1 field momentum axis 0 faces 511980 bit_mismatches 0
+face step 1 field momentum axis 1 faces 511980 bit_mismatches 0
+face step 1 field momentum axis 2 faces 509427 bit_mismatches 0
+face step 1 field velocity axis 0 faces 511980 bit_mismatches 0
+face step 1 field velocity axis 1 faces 511980 bit_mismatches 0
+face step 1 field velocity axis 2 faces 509427 bit_mismatches 0
+red persisted_source_ledger_and_temperature_history_mutations_refused 1
+step 2 time_s 2.1113169511081651 old_build c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d new_build 4aa5da6758f20c63362ee0f201507127a021be2faac22397d294fbc9ce0d799e old_checkpoint_sha256 c0d539cf0c393b5077e164a7d34bef4ac0ae00a1b1ea38d188fe0cf0879e59fe new_checkpoint_sha256 ce3beed6e1f7b58da5584f9fa8b3b0b613fa463f3c2f37de55077f5e32aa82f8 old_comparison_sha256 bb7c2c4a64d610ca5fa155bf70ca60783d9f15919e6729c77fff40767d177aae new_comparison_sha256 bb7c2c4a64d610ca5fa155bf70ca60783d9f15919e6729c77fff40767d177aae bytes 65447970 exact_bytes_equal 1
+scalar step 2 component 0 cells 504666 bit_mismatches 0
+scalar step 2 component 1 cells 504666 bit_mismatches 0
+scalar step 2 component 2 cells 504666 bit_mismatches 0
+scalar step 2 component 3 cells 504666 bit_mismatches 0
+scalar step 2 component 4 cells 504666 bit_mismatches 0
+scalar step 2 component 5 cells 504666 bit_mismatches 0
+scalar step 2 component 6 cells 504666 bit_mismatches 0
+scalar step 2 component 7 cells 504666 bit_mismatches 0
+scalar step 2 component 8 cells 504666 bit_mismatches 0
+scalar step 2 component 9 cells 504666 bit_mismatches 0
+face step 2 field momentum axis 0 faces 511980 bit_mismatches 0
+face step 2 field momentum axis 1 faces 511980 bit_mismatches 0
+face step 2 field momentum axis 2 faces 509427 bit_mismatches 0
+face step 2 field velocity axis 0 faces 511980 bit_mismatches 0
+face step 2 field velocity axis 1 faces 511980 bit_mismatches 0
+face step 2 field velocity axis 2 faces 509427 bit_mismatches 0
+step 3 time_s 2.1129632170777768 old_build c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d new_build 4aa5da6758f20c63362ee0f201507127a021be2faac22397d294fbc9ce0d799e old_checkpoint_sha256 bec352f131c5330084eb3be2267ea626bd08539964ab26d870c2c89b53f5bfcf new_checkpoint_sha256 f15d321e27d18446d3894c2fd0c8b7786b7821b20ef65bfd18a2b835693fd17d old_comparison_sha256 f8a7c85059b74e17ab717a239ca7b4e57c29765d7a7bf5e6602844fc9096d709 new_comparison_sha256 f8a7c85059b74e17ab717a239ca7b4e57c29765d7a7bf5e6602844fc9096d709 bytes 65448002 exact_bytes_equal 1
+scalar step 3 component 0 cells 504666 bit_mismatches 0
+scalar step 3 component 1 cells 504666 bit_mismatches 0
+scalar step 3 component 2 cells 504666 bit_mismatches 0
+scalar step 3 component 3 cells 504666 bit_mismatches 0
+scalar step 3 component 4 cells 504666 bit_mismatches 0
+scalar step 3 component 5 cells 504666 bit_mismatches 0
+scalar step 3 component 6 cells 504666 bit_mismatches 0
+scalar step 3 component 7 cells 504666 bit_mismatches 0
+scalar step 3 component 8 cells 504666 bit_mismatches 0
+scalar step 3 component 9 cells 504666 bit_mismatches 0
+face step 3 field momentum axis 0 faces 511980 bit_mismatches 0
+face step 3 field momentum axis 1 faces 511980 bit_mismatches 0
+face step 3 field momentum axis 2 faces 509427 bit_mismatches 0
+face step 3 field velocity axis 0 faces 511980 bit_mismatches 0
+face step 3 field velocity axis 1 faces 511980 bit_mismatches 0
+face step 3 field velocity axis 2 faces 509427 bit_mismatches 0
+step 4 time_s 2.1146094830473885 old_build c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d new_build 4aa5da6758f20c63362ee0f201507127a021be2faac22397d294fbc9ce0d799e old_checkpoint_sha256 98f7d6caa16bebeb73f3102f8f6be4750800a1edb999f1cab0d0c8ba2f896d34 new_checkpoint_sha256 1e38f11bd0ea0dcef241aa739bbc31bf09b8fe52172ce0f22edf3782b80a38db old_comparison_sha256 fdb65b517c0e9fdb8d262c0bf6030baa16636a381675810b38c2cc981d0d240e new_comparison_sha256 fdb65b517c0e9fdb8d262c0bf6030baa16636a381675810b38c2cc981d0d240e bytes 65448034 exact_bytes_equal 1
+scalar step 4 component 0 cells 504666 bit_mismatches 0
+scalar step 4 component 1 cells 504666 bit_mismatches 0
+scalar step 4 component 2 cells 504666 bit_mismatches 0
+scalar step 4 component 3 cells 504666 bit_mismatches 0
+scalar step 4 component 4 cells 504666 bit_mismatches 0
+scalar step 4 component 5 cells 504666 bit_mismatches 0
+scalar step 4 component 6 cells 504666 bit_mismatches 0
+scalar step 4 component 7 cells 504666 bit_mismatches 0
+scalar step 4 component 8 cells 504666 bit_mismatches 0
+scalar step 4 component 9 cells 504666 bit_mismatches 0
+face step 4 field momentum axis 0 faces 511980 bit_mismatches 0
+face step 4 field momentum axis 1 faces 511980 bit_mismatches 0
+face step 4 field momentum axis 2 faces 509427 bit_mismatches 0
+face step 4 field velocity axis 0 faces 511980 bit_mismatches 0
+face step 4 field velocity axis 1 faces 511980 bit_mismatches 0
+face step 4 field velocity axis 2 faces 509427 bit_mismatches 0
+step 5 time_s 2.1162557490170002 old_build c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d new_build 4aa5da6758f20c63362ee0f201507127a021be2faac22397d294fbc9ce0d799e old_checkpoint_sha256 4209f3ea6f4cc1605f8d506da1ab53f71dcdfda9c005c92592208991706b1839 new_checkpoint_sha256 b117c2f0e290b179cc14f249c03fbb5e71660794abfbe9b2bbf6171b7ef06f2c old_comparison_sha256 d8114aa1c466c1f2e6f7258dec1650e04b03d553712a61d408a09971c927b175 new_comparison_sha256 d8114aa1c466c1f2e6f7258dec1650e04b03d553712a61d408a09971c927b175 bytes 65448066 exact_bytes_equal 1
+scalar step 5 component 0 cells 504666 bit_mismatches 0
+scalar step 5 component 1 cells 504666 bit_mismatches 0
+scalar step 5 component 2 cells 504666 bit_mismatches 0
+scalar step 5 component 3 cells 504666 bit_mismatches 0
+scalar step 5 component 4 cells 504666 bit_mismatches 0
+scalar step 5 component 5 cells 504666 bit_mismatches 0
+scalar step 5 component 6 cells 504666 bit_mismatches 0
+scalar step 5 component 7 cells 504666 bit_mismatches 0
+scalar step 5 component 8 cells 504666 bit_mismatches 0
+scalar step 5 component 9 cells 504666 bit_mismatches 0
+face step 5 field momentum axis 0 faces 511980 bit_mismatches 0
+face step 5 field momentum axis 1 faces 511980 bit_mismatches 0
+face step 5 field momentum axis 2 faces 509427 bit_mismatches 0
+face step 5 field velocity axis 0 faces 511980 bit_mismatches 0
+face step 5 field velocity axis 1 faces 511980 bit_mismatches 0
+face step 5 field velocity axis 2 faces 509427 bit_mismatches 0
+step 6 time_s 2.1179020149866119 old_build c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d new_build 4aa5da6758f20c63362ee0f201507127a021be2faac22397d294fbc9ce0d799e old_checkpoint_sha256 045b8f83c2ce5f66c0b97f862555f244d9457bd99d1c4a61a611dd8a2291e2b2 new_checkpoint_sha256 491eff39cc7a18ade716baef8162cdb1d1e61fcd202e5eda1ff624d68e4037d3 old_comparison_sha256 22f0a528c372491a5dacc5b7968bcc27134f15f4ceb1c10244906f154fe19240 new_comparison_sha256 22f0a528c372491a5dacc5b7968bcc27134f15f4ceb1c10244906f154fe19240 bytes 65448098 exact_bytes_equal 1
+scalar step 6 component 0 cells 504666 bit_mismatches 0
+scalar step 6 component 1 cells 504666 bit_mismatches 0
+scalar step 6 component 2 cells 504666 bit_mismatches 0
+scalar step 6 component 3 cells 504666 bit_mismatches 0
+scalar step 6 component 4 cells 504666 bit_mismatches 0
+scalar step 6 component 5 cells 504666 bit_mismatches 0
+scalar step 6 component 6 cells 504666 bit_mismatches 0
+scalar step 6 component 7 cells 504666 bit_mismatches 0
+scalar step 6 component 8 cells 504666 bit_mismatches 0
+scalar step 6 component 9 cells 504666 bit_mismatches 0
+face step 6 field momentum axis 0 faces 511980 bit_mismatches 0
+face step 6 field momentum axis 1 faces 511980 bit_mismatches 0
+face step 6 field momentum axis 2 faces 509427 bit_mismatches 0
+face step 6 field velocity axis 0 faces 511980 bit_mismatches 0
+face step 6 field velocity axis 1 faces 511980 bit_mismatches 0
+face step 6 field velocity axis 2 faces 509427 bit_mismatches 0
+step 7 time_s 2.1195482809562236 old_build c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d new_build 4aa5da6758f20c63362ee0f201507127a021be2faac22397d294fbc9ce0d799e old_checkpoint_sha256 e6cce945f11764eae9ba682077dc3911f52aa04c8415e2ed5811109b380dc6d0 new_checkpoint_sha256 30f94601b1bed38b22b945feef28d90881be1c50bf59b0955f00e67e98a8f1e7 old_comparison_sha256 711e45a35667a9accb83c1fbd877f727f38233f583eabbc856ff77d888726e5a new_comparison_sha256 711e45a35667a9accb83c1fbd877f727f38233f583eabbc856ff77d888726e5a bytes 65448130 exact_bytes_equal 1
+scalar step 7 component 0 cells 504666 bit_mismatches 0
+scalar step 7 component 1 cells 504666 bit_mismatches 0
+scalar step 7 component 2 cells 504666 bit_mismatches 0
+scalar step 7 component 3 cells 504666 bit_mismatches 0
+scalar step 7 component 4 cells 504666 bit_mismatches 0
+scalar step 7 component 5 cells 504666 bit_mismatches 0
+scalar step 7 component 6 cells 504666 bit_mismatches 0
+scalar step 7 component 7 cells 504666 bit_mismatches 0
+scalar step 7 component 8 cells 504666 bit_mismatches 0
+scalar step 7 component 9 cells 504666 bit_mismatches 0
+face step 7 field momentum axis 0 faces 511980 bit_mismatches 0
+face step 7 field momentum axis 1 faces 511980 bit_mismatches 0
+face step 7 field momentum axis 2 faces 509427 bit_mismatches 0
+face step 7 field velocity axis 0 faces 511980 bit_mismatches 0
+face step 7 field velocity axis 1 faces 511980 bit_mismatches 0
+face step 7 field velocity axis 2 faces 509427 bit_mismatches 0
+step 8 time_s 2.1211945469258353 old_build c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d new_build 4aa5da6758f20c63362ee0f201507127a021be2faac22397d294fbc9ce0d799e old_checkpoint_sha256 17eca456c85f82feb1fee111c9f241d7207f9fa0006092b9edbbc919c0d8787d new_checkpoint_sha256 0672105d9698e5973e366c150ea14e2f83d96e55d35962cb2550290a95c6dd67 old_comparison_sha256 6b3cd921a2d2d7d10f9f3eb8878b0171f995178e5b967b8cbac9b726f20198a3 new_comparison_sha256 6b3cd921a2d2d7d10f9f3eb8878b0171f995178e5b967b8cbac9b726f20198a3 bytes 65448162 exact_bytes_equal 1
+scalar step 8 component 0 cells 504666 bit_mismatches 0
+scalar step 8 component 1 cells 504666 bit_mismatches 0
+scalar step 8 component 2 cells 504666 bit_mismatches 0
+scalar step 8 component 3 cells 504666 bit_mismatches 0
+scalar step 8 component 4 cells 504666 bit_mismatches 0
+scalar step 8 component 5 cells 504666 bit_mismatches 0
+scalar step 8 component 6 cells 504666 bit_mismatches 0
+scalar step 8 component 7 cells 504666 bit_mismatches 0
+scalar step 8 component 8 cells 504666 bit_mismatches 0
+scalar step 8 component 9 cells 504666 bit_mismatches 0
+face step 8 field momentum axis 0 faces 511980 bit_mismatches 0
+face step 8 field momentum axis 1 faces 511980 bit_mismatches 0
+face step 8 field momentum axis 2 faces 509427 bit_mismatches 0
+face step 8 field velocity axis 0 faces 511980 bit_mismatches 0
+face step 8 field velocity axis 1 faces 511980 bit_mismatches 0
+face step 8 field velocity axis 2 faces 509427 bit_mismatches 0
+passed 1
+migration_authority false
