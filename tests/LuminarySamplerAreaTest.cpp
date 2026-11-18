@@ -1537,8 +1537,11 @@ int main( int argc, char** argv )
 	if( hasExplicitRepeats ) { g_repeats = std::atoi( argv[argIdx++] ); g_trapRepeats = g_repeats; }
 	const char* extEnv = std::getenv( "RISE_TEST_EXTENDED" );
 	const bool extended = ( only == "Q" ) || ( extEnv != nullptr && std::strcmp( extEnv, "1" ) == 0 );
-	const int qSpp = ( only == "Q" && hasExplicitSpp ) ? g_spp : ( extended ? 1024 : 256 );
-	const int qRepeats = ( only == "Q" && hasExplicitRepeats ) ? g_repeats : ( extended ? 64 : 16 );
+	// Extended Q runs the 32 x 256-spp budget the Q note documents (relative
+	// SE ~2-4e-6, 95 % power below DL-629's 2-4e-5 residual); it used to run
+	// 64 x 1024 (8x the samples, ~1000 s of this test's ~1200 s).
+	const int qSpp = ( only == "Q" && hasExplicitSpp ) ? g_spp : 256;
+	const int qRepeats = ( only == "Q" && hasExplicitRepeats ) ? g_repeats : ( extended ? 32 : 16 );
 	std::cout << "LuminarySamplerAreaTest (DL-459 / DL-460)\n";
 	if( only == "all" || only == "A" ) TestAreas();
 	if( only == "all" || only == "B" ) TestUniformity();

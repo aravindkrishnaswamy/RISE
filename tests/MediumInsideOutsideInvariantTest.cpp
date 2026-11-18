@@ -512,6 +512,17 @@ static int Repeats()
 	return n >= 2 ? n : 2;
 }
 
+//! The HOMOGENEOUS in/out rows and the cap rows average 4 renders per cell,
+//! not 8 (RISE_MIOIT_REPEATS still overrides).  Their 8-render ratio sd is
+//! <= 0.0014 (in/out) and ~0.0008 (cap) -- see BAND in the header -- so 4
+//! renders leave the +/-3 % band >= 10 sd from every row's mean, while the
+//! DL-247 defect read 1.84-1.91 (in/out) and 1.49-1.69 (cap).  The
+//! heterogeneous rows keep 8 (their 8-render sd is ~0.5 %).
+static int HomogeneousRepeats()
+{
+	return std::getenv( "RISE_MIOIT_REPEATS" ) ? Repeats() : 4;
+}
+
 static const double kCameraInside  = 1.9999;
 static const double kCameraOutside = 2.0001;
 
@@ -523,7 +534,7 @@ static void InsideOutsideRow( const std::string& label, const std::string& kind,
 	double band, unsigned int seedBase,
 	MediumKind medium = kHomogeneous, double floorAlbedo = 0.8 )
 {
-	const int n = Repeats();
+	const int n = ( medium == kHomogeneous ) ? HomogeneousRepeats() : Repeats();
 	const std::string rast = RasterizerChunk( kind, "" );
 	const Stats in  = RenderStats( BoxScene( rast, kCameraInside,  medium, floorAlbedo ), n, seedBase );
 	const Stats out = RenderStats( BoxScene( rast, kCameraOutside, medium, floorAlbedo ), n, seedBase + 1000u );
@@ -760,7 +771,7 @@ static Stats CapRender( const std::string& kind, unsigned int cap, unsigned int 
 {
 	char extra[64];
 	std::snprintf( extra, sizeof(extra), "\tmax_volume_bounce %u\n", cap );
-	return RenderStats( BoxScene( RasterizerChunk( kind, extra ), kCameraInside ), Repeats(), seedBase );
+	return RenderStats( BoxScene( RasterizerChunk( kind, extra ), kCameraInside ), HomogeneousRepeats(), seedBase );
 }
 
 // Independent probability oracle on actual generated light paths.  An
@@ -1042,14 +1053,14 @@ int main( int argc, char** argv )
 	const Stats ptCap   = CapRender( "pt",   2, 7600u );
 	const Stats bdptCap = CapRender( "bdpt", 2, 7700u );
 	const Stats vcmCap  = CapRender( "vcm",  2, 7800u );
-	const Stats ptFull  = CapRender( "pt",  64, 7900u );
-	Check( ptCap.ok && bdptCap.ok && vcmCap.ok && ptFull.ok, "cap rows produced output" );
-	if( ptCap.ok && bdptCap.ok && vcmCap.ok && ptFull.ok && ptCap.mean > 1e-6 )
+	Check( ptCap.ok && bdptCap.ok && vcmCap.ok, "cap rows produced output" );
+	if( ptCap.ok && bdptCap.ok && vcmCap.ok && ptCap.mean > 1e-6 )
 	{
 		std::printf( "  PT   mvb 2   %.6f +/- %.6f\n", ptCap.mean, ptCap.sd );
 		std::printf( "  BDPT mvb 2   %.6f +/- %.6f   /PT %.4f\n", bdptCap.mean, bdptCap.sd, bdptCap.mean / ptCap.mean );
 		std::printf( "  VCM  mvb 2   %.6f +/- %.6f   /PT %.4f\n", vcmCap.mean, vcmCap.sd, vcmCap.mean / ptCap.mean );
-		std::printf( "  PT   mvb 64  %.6f +/- %.6f   (mvb2/mvb64 %.4f)\n", ptFull.mean, ptFull.sd, ptCap.mean / ptFull.mean );
+		// (The PT mvb 64 render that printed the cap's own effect, mvb2/mvb64,
+		// gated nothing and is gone; the PT pel in/out row renders that scene.)
 
 		char buf[320];
 		std::snprintf( buf, sizeof(buf), "VCM/PT at max_volume_bounce 2: %.4f within 1 +/- %.2f",

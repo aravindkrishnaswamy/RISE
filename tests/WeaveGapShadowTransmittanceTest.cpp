@@ -637,13 +637,14 @@ struct RowSpec
 	std::string rast;
 	double tol;			// relative tolerance on (L_sheet / L0) / g - 1; < 0 = print only
 	CamKind cam;
+	unsigned int n = 8;	// salted renders averaged for L0 and for each L
 };
 
 static void RunReceiverRows( const char* section, LightKind light, const std::vector<RowSpec>& rows, const double gaps[], int nGaps )
 {
 	for( const RowSpec& row : rows )
 	{
-		const double L0 = RenderMeanN( Assemble( row.rast, ReceiverScene( light, false, 0.0, row.cam ) ), "l0" );
+		const double L0 = RenderMeanN( Assemble( row.rast, ReceiverScene( light, false, 0.0, row.cam ) ), "l0", row.n );
 		Check( L0 > 0, std::string( section ) + " " + row.label + ": no-sheet control renders non-black" );
 		if( !( L0 > 0 ) ) continue;
 		std::cout << "  " << section << " " << row.label << ": L0 (no sheet) = " << L0 << std::endl;
@@ -651,7 +652,7 @@ static void RunReceiverRows( const char* section, LightKind light, const std::ve
 		for( int k = 0; k < nGaps; k++ )
 		{
 			const double g = gaps[k];
-			const double L = RenderMeanN( Assemble( row.rast, ReceiverScene( light, true, g, row.cam ) ), "lg" );
+			const double L = RenderMeanN( Assemble( row.rast, ReceiverScene( light, true, g, row.cam ) ), "lg", row.n );
 			Check( L >= 0, std::string( section ) + " " + row.label + ": sheet render produced output" );
 			const double ratio = L / L0;
 			char buf[256];
@@ -948,10 +949,15 @@ static void TestClosedFormOmni()
 
 	// The bidirectional rows under the spot twin (see ReceiverScene's
 	// kSpot and CamKind comments), plus PT once more through the same arm.
+	// BDPT and VCM average 2 salted 1024-spp renders, not 8: a single
+	// render's L/L0 sd is ~0.17 % (n = 8 SE 0.00060, BDPT gap 0.1,
+	// docs/DL_CHEAPBATCH_VALIDATION.md), so n = 2 still leaves the 2 % band
+	// ~12 SE wide.  These rows were consistency pins for DL-05 (only PT read
+	// 0 before it) and cannot see DL-294 at fov 10 (+0.1 % pre-fix).
 	std::vector<RowSpec> spotRows;
 	spotRows.push_back( { "PT RGB", RastPT( 64 ), 0.02, kWide } );
-	spotRows.push_back( { "BDPT RGB", RastBDPT( 1024 ), 0.02, kWide } );
-	spotRows.push_back( { "VCM RGB", RastVCM( 1024 ), 0.02, kWide } );
+	spotRows.push_back( { "BDPT RGB", RastBDPT( 1024 ), 0.02, kWide, 2 } );
+	spotRows.push_back( { "VCM RGB", RastVCM( 1024 ), 0.02, kWide, 2 } );
 	RunReceiverRows( "closed spot", kSpot, spotRows, gaps, 2 );
 }
 
@@ -1104,9 +1110,12 @@ static void TestAreaPartitionGuard()
 	// pre-existing BDPT residual on this fixture that DL-05 does not touch
 	// (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 8, filed as
 	// DL-330 at merge), and a band wide enough to hold it would say
-	// nothing.
+	// nothing.  The BDPT row therefore runs only with WEAVE_GAP_AREA_BDPT
+	// set (the suite skips it: 16 BDPT renders that gate nothing).
 	rows.push_back( { "PT RGB", RastPT( 1024 ), 0.05, kWide } );
-	rows.push_back( { "BDPT RGB", RastBDPT( 512 ), -1.0, kWide } );
+	if( std::getenv( "WEAVE_GAP_AREA_BDPT" ) ) {
+		rows.push_back( { "BDPT RGB", RastBDPT( 512 ), -1.0, kWide } );
+	}
 	RunReceiverRows( "area", kArea, rows, gaps, 1 );
 }
 
@@ -1205,7 +1214,10 @@ static void TestHWSSGapContinuation()
 	std::cout << "=== hwssgap: AREA closed form through the spectral rasterizers (DL-329 / DL-330) ===" << std::endl;
 	// Measurement aids: WEAVE_GAP_HWSS_G overrides the gap (gating then
 	// still applies against the overridden g); WEAVE_GAP_HWSS_ROWS keeps
-	// only rows whose label contains that substring.
+	// only rows whose label contains that substring.  Without
+	// WEAVE_GAP_HWSS_ROWS only the GATED rows run: the twelve printed rows
+	// (~70k spp-renders, mostly BDPT) gate nothing, so the suite skips them;
+	// WEAVE_GAP_HWSS_ROWS=" " (any label substring) prints them again.
 	const char* gEnv = std::getenv( "WEAVE_GAP_HWSS_G" );
 	const double g = gEnv ? std::strtod( gEnv, nullptr ) : 0.3;
 	const char* rowFilter = std::getenv( "WEAVE_GAP_HWSS_ROWS" );
@@ -1246,6 +1258,7 @@ static void TestHWSSGapContinuation()
 	{
 		const unsigned int rowSalt = 0xD329u + 0x100u * k++;
 		if( rowFilter && !std::strstr( row.label, rowFilter ) ) continue;
+		if( !rowFilter && row.tol < 0 ) continue;
 		double sd = 0, L0 = 0;
 		const double ratio = HwssRatio( row, kArea, g, n, rowSalt, sd, L0 );
 		const double cf = ( row.sheet == 2 ) ? 1.0 : g;
@@ -1495,11 +1508,14 @@ static void TestHWSSTintedCoatGap()
 	// a single-wavelength sample of this saturated red is far outside
 	// Rec.709 and the per-sample conversion does not average to the
 	// bundle's (its blue channel reads > 0 where the bundle's reads 0).
-	double pt[3], ptSd[3], bd[3], bdSd[3], ptOff[3], bdOff[3], tmp[3];
+	// They run only with WEAVE_GAP_HWSS_OFF set (they gate nothing).
+	double pt[3], ptSd[3], bd[3], bdSd[3], ptOff[3] = { -1, -1, -1 }, bdOff[3] = { -1, -1, -1 }, tmp[3];
 	TintedChannelTransmittance( RastPTSpectral( 256, true ),    n, 0xD32A0u, pt, ptSd );
 	TintedChannelTransmittance( RastBDPTSpectral( 128, true ),  n, 0xD32A1u, bd, bdSd );
-	TintedChannelTransmittance( RastPTSpectral( 256, false ),   n, 0xD32A2u, ptOff, tmp );
-	TintedChannelTransmittance( RastBDPTSpectral( 128, false ), n, 0xD32A3u, bdOff, tmp );
+	if( std::getenv( "WEAVE_GAP_HWSS_OFF" ) ) {
+		TintedChannelTransmittance( RastPTSpectral( 256, false ),   n, 0xD32A2u, ptOff, tmp );
+		TintedChannelTransmittance( RastBDPTSpectral( 128, false ), n, 0xD32A3u, bdOff, tmp );
+	}
 	char buf[480];
 	std::snprintf( buf, sizeof(buf),
 		"hwsstint: L/L0 (R, G)  PT hwss=true (%.5f +/- %.5f, %.5f +/- %.5f)  BDPT hwss=true (%.5f +/- %.5f, %.5f +/- %.5f)  "
@@ -2226,13 +2242,17 @@ static void TestTwoLayerLightOutside()
 	// ~3 % lower than at 512 with a run-to-run sd of ~0.03 %, i.e. a
 	// sample-count-dependent QMC structure rather than noise, so the band
 	// is checked where the table itself converged.
-	const unsigned int res = 24, spp = 512;
+	// Four salted renders per integrator, not eight: BDPT's n = 8 SE was
+	// 0.46 % (box) / 0.69 % (two planes) (docs/DL_CHEAPBATCH_VALIDATION.md),
+	// so n = 4 gives ~0.65 % / ~1.0 % against the 8 % band, while DL-05's
+	// pre-fix PT error was 28-55 %.
+	const unsigned int res = 24, spp = 512, n = 4;
 	for( const L& r : rows )
 	{
 		const std::string body = LayerScene( r.geom, r.gap, -3.0, res );
-		const double pt   = RenderMeanN( Assemble( RastPT( spp ),   body ), "lay_pt" );
-		const double bdpt = RenderMeanN( Assemble( RastBDPT( spp ), body ), "lay_bdpt" );
-		const double vcm  = RenderMeanN( Assemble( RastVCM( spp ),  body ), "lay_vcm" );
+		const double pt   = RenderMeanN( Assemble( RastPT( spp ),   body ), "lay_pt", n );
+		const double bdpt = RenderMeanN( Assemble( RastBDPT( spp ), body ), "lay_bdpt", n );
+		const double vcm  = RenderMeanN( Assemble( RastVCM( spp ),  body ), "lay_vcm", n );
 		Check( pt > 0 && bdpt > 0 && vcm > 0, std::string( "layers " ) + r.label + ": all three renders non-black" );
 		if( !( pt > 0 && bdpt > 0 && vcm > 0 ) ) continue;
 		char buf[256];
