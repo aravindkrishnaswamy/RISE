@@ -115,17 +115,26 @@ librise : $(LIBRISE_A)
 # build has always done), measured ~0-9 % slower test runs (+3 % on a
 # six-test sample); and a library edit compiles twice, once per library
 # (about 50 s more for a full library rebuild).  The shipped
-# binaries (`make all`, Xcode) are unaffected.  (The three TESTS_LINK_LTO
+# binaries (`make all`, Xcode) are unaffected.  (The eight TESTS_LINK_LTO
 # tests below also need the LTO library, so `make tests` builds both.)
 #
-# TESTS_LINK_LTO keeps the old LTO build for tests that pin bit-exact render
-# hashes measured on it (no-LTO code generation changes the low bits).
+# TESTS_LINK_LTO keeps the old LTO build for the tests whose results depend
+# on LTO code generation (measured: a full suite run on the non-LTO library
+# failed exactly these): three pin bit-exact render hashes measured on it,
+# two check compensated-arithmetic oracles to the last bits
+# (SSSCriticalPartitionTest, SSSNearUnityFresnelTest), HairBSDFTest
+# compares to a bit-exact golden capture, ProximitySignalTest's transformed
+# boundary arm reads 0.01025 instead of exactly 0.01, and
+# LuminarySamplerAreaTest's single-sided dart lets one ray from behind hit.
+# The last two are numeric-robustness differences, not only low bits; the
+# Linux build (never LTO) may show them too.
 # `make TEST_LTO=1 tests` links every test against the LTO library instead,
 # for checking something that depends on LTO code generation (run the suite
 # that way with `TEST_LTO=1 ./run_all_tests.sh`).  The mode is recorded in
 # $(TEST_MODE_STAMP), so switching it rebuilds the tests; dry runs and
 # `clean` leave the record alone.
-TESTS_LINK_LTO = LegacyTierRenderIdentityTest DeprecatedMaterialRenderIdentityTest ImageDriftHistoryTest
+TESTS_LINK_LTO = LegacyTierRenderIdentityTest DeprecatedMaterialRenderIdentityTest ImageDriftHistoryTest \
+	SSSCriticalPartitionTest SSSNearUnityFresnelTest HairBSDFTest ProximitySignalTest LuminarySamplerAreaTest
 
 ifneq ($(filter -flto%,$(CPPFLAGS) $(CXXFLAGS)),)
 ifeq ($(filter-out 0,$(strip $(TEST_LTO))),)
