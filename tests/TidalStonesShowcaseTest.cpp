@@ -26,7 +26,7 @@
 //    (f) The painter-probe harness: a PROBE copy (`expr` -> `vec3(buried,
 //        buried, buried)`) and a CONTROL copy (`expr` -> `vec3(1,1,1)`)
 //        built in-process from the tracked file via `Cst::DocSetOrAddParamValue`
-//        (never `DocSetParamValue`), rendered at 64 spp by default (512 spp
+//        (never `DocSetParamValue`), rendered at 64 spp by default (128 spp
 //        under `--extended` or `RISE_TEST_EXTENDED=1`) with
 //        `oidn_denoise FALSE` -- comment carries the literal substring
 //        `oidn_denoise FALSE` for SourceHygieneTest -- and read back
@@ -602,7 +602,7 @@ static void TestStoneE( Scene& s )
 
 //======================================================================
 // (f) The painter-probe harness -- PROBE (`vec3(buried,buried,buried)`)
-// vs CONTROL (`vec3(1,1,1)`), 512 spp, `oidn_denoise FALSE` (the probe
+// vs CONTROL (`vec3(1,1,1)`), 64 / 128 spp, `oidn_denoise FALSE` (the probe
 // copies force it off -- SourceHygieneTest's literal, next to the call
 // below).
 //======================================================================
@@ -707,7 +707,7 @@ static Cst::Document BuildVariant( const std::string& trackedText, bool isProbe,
 
 	// 2. The rasterizer chunk is UNNAMED -- find it by role (ends in
 	// `_rasterizer`), not by name.  oidn_denoise FALSE (SourceHygieneTest's
-	// literal substring is right there) + samples (64 default; 512 under
+	// literal substring is right there) + samples (64 default; 128 under
 	// --extended / RISE_TEST_EXTENDED=1).
 	Cst::NodeId rastId = 0;
 	{
@@ -1109,7 +1109,12 @@ int main( int argc, char** argv )
 	TestStoneB( s );
 	TestStoneC( s );
 	TestStoneE( s );
-	TestPainterProbe( s, scenePath, extended ? "512" : "64" );
+	// 128 spp in the extended tier (it was 512; 2026-11-17 cost trim).  The
+	// fast tier gates the same stations at 64 spp; the faults they exist for
+	// (a wrong interior() read, a broken readback) move a ratio by ~1, while
+	// B9b's recorded 512-spp read (0.964) sits 0.044 inside its 0.08 band,
+	// hence 128 rather than 64.
+	TestPainterProbe( s, scenePath, extended ? "128" : "64" );
 
 	s.job->release();
 

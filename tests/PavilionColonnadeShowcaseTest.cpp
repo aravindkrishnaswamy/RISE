@@ -13,7 +13,7 @@
 //  transform is applied correctly regardless of which column carries the
 //  receiver), and ADDS what (l) does not: the painter stations read
 //  through an in-process probe/control render pair (64 spp by default;
-//  512 spp under `--extended` or `RISE_TEST_EXTENDED=1`), and a
+//  128 spp under `--extended` or `RISE_TEST_EXTENDED=1`), and a
 //  live-vs-zero wall-clock cost gate (text-substitution check in default
 //  fast mode; full timed renders under `--check-cost-gate`, `--extended`,
 //  `PAVILION_RUN_COST_GATE=1`, or `RISE_TEST_EXTENDED=1`).
@@ -801,7 +801,7 @@ int main( int argc, char** argv )
 		// Sanity guard against a pixel-picking mistake: 200 REAL
 		// aperture-jittered samples (a fresh ThinLensCamera, the actual
 		// per-sample `GenerateRay` path that draws its own lens sample
-		// from `rc.random`, exactly as every one of the render's 512 spp
+		// from `rc.random`, exactly as every one of the render's samples
 		// does) within S6's pixel must all land on cap1, close to S6
 		// itself -- ruling out "the wrong object/point is being read".
 		//
@@ -859,7 +859,11 @@ int main( int argc, char** argv )
 		RenderedImage probeImg, controlImg;
 		bool probeOk = false, controlOk = false;
 		if( rastId > 0 && painterId > 0 ) {
-			const char* probeSpp = gExtended ? "512" : "64";
+			// 128 spp in the extended tier (it was 512; 2026-11-17 cost trim):
+			// the fast tier gates the same two ratios at 64 spp, and the
+			// readback faults they exist for move a ratio by ~0.5-1, far
+			// outside the 0.15 / 0.08 bands.  The extra spp only lowers noise.
+			const char* probeSpp = gExtended ? "128" : "64";
 			// PROBE: expr -> vec3(dust, dust, dust).
 			Cst::Document probeDoc = doc;
 			probeDoc = Cst::DocSetOrAddParamValue( probeDoc, rastId, "oidn_denoise", 0, "FALSE" );   // oidn_denoise FALSE

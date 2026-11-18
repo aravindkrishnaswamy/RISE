@@ -35,8 +35,11 @@
 //    directional + ambient lights, a non-uniformly scaling luminary, a
 //    keyframed matrix-authored object); B runs on their 192x192 twins
 //    (in default `all` mode, B runs a fast subset on `combo_big` with `pt`
-//    and `bdpt`; pass `--extended`, `RISE_TEST_EXTENDED=1`, or explicit
-//    section `B` for the full 2-scene x 6-rasterizer matrix).
+//    and `bdpt`; `--extended` or `RISE_TEST_EXTENDED=1` runs both scenes
+//    with the three RGB rasterizers `pt`/`bdpt`/`vcm` -- A already pins
+//    every spectral twin to its RGB counterpart's posing EXACTLY, and B's
+//    job is concurrent posing, which the twins share; explicit section `B`
+//    runs the full 2-scene x 6-rasterizer matrix).
 //
 //    Usage: TimeIndexedMotionBlurTest [--extended] [all|S|A|B|C|D] [spp] [n]
 //
@@ -492,17 +495,21 @@ static void SectionS( const int spp )
 
 //! On the 192x192 film: the 32x32 film is ONE FrameStore tile, which one
 //! worker renders alone, so only the big film exercises concurrent posing.
-static void SectionB( const int spp, const int n, const bool fastSubset = false )
+enum class BSubset { Fast, RGB, Full };
+static void SectionB( const int spp, const int n, const BSubset subset = BSubset::Full )
 {
+	const bool fastSubset = ( subset == BSubset::Fast );
 	std::cout << "\nB: all threads TI vs OLD (single-threaded), 192x192, " << n << " salted renders each"
-		<< ( fastSubset ? " (fast representative subset; pass --extended for full 2x6 matrix)" : "" ) << "\n";
+		<< ( fastSubset ? " (fast representative subset; pass --extended for both scenes x pt/bdpt/vcm)" :
+		     subset == BSubset::RGB ? " (RGB rasterizers; section B alone runs the full 2x6 matrix)" : "" ) << "\n";
 	static const char* kAllScenes[] = { "combo_big", "ext_combo_big" };
 	static const char* kFastScenes[] = { "combo_big" };
 	static const char* kFastRasterizers[] = { "pt", "bdpt" };
+	static const char* kRGBRasterizers[] = { "pt", "bdpt", "vcm" };
 	const char* const* scenes = fastSubset ? kFastScenes : kAllScenes;
 	const int nScenes = fastSubset ? 1 : 2;
-	const char* const* rasList = fastSubset ? kFastRasterizers : kRasterizers;
-	const int nRas = fastSubset ? 2 : int( sizeof( kRasterizers ) / sizeof( kRasterizers[0] ) );
+	const char* const* rasList = fastSubset ? kFastRasterizers : subset == BSubset::RGB ? kRGBRasterizers : kRasterizers;
+	const int nRas = fastSubset ? 2 : subset == BSubset::RGB ? 3 : int( sizeof( kRasterizers ) / sizeof( kRasterizers[0] ) );
 	const int family = nScenes * nRas * 17;
 	const double alpha = 0.01 / family;
 	for( int si = 0; si < nScenes; ++si ) {
@@ -620,9 +627,9 @@ int main( int argc, char** argv )
 	if( only == "all" ) {
 		const int bSpp = posArgs.size() > 1 ? spp : ( extended ? 16 : 8 );
 		const int bN   = posArgs.size() > 2 ? n   : ( extended ? 8  : 4 );
-		SectionB( bSpp, bN, !extended );
+		SectionB( bSpp, bN, extended ? BSubset::RGB : BSubset::Fast );
 	} else if( only == "B" ) {
-		SectionB( spp, n, false );
+		SectionB( spp, n, BSubset::Full );
 	}
 	if( only == "all" || only == "C" ) SectionC( spp );
 	if( only == "D" ) SectionD( spp, n );
