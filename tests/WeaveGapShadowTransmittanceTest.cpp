@@ -2247,13 +2247,12 @@ static void TestTwoLayerLightOutside()
 	// ~3 % lower than at 512 with a run-to-run sd of ~0.03 %, i.e. a
 	// sample-count-dependent QMC structure rather than noise, so the band
 	// is checked where the table itself converged.
-	// Four salted renders per integrator, not eight: BDPT's n = 8 SE was
-	// 0.46 % (box) / 0.69 % (two planes) (docs/DL_CHEAPBATCH_VALIDATION.md),
-	// so n = 4 gives ~0.65 % / ~1.0 % for BDPT's share of the ratio noise
-	// (PT's is +/-0.00001, docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md)
-	// against the 8 % band, while DL-05's pre-fix PT error was 28-55 %.
-	// Measured at n = 4 over six seed bases (2026-11-18): BDPT SE <= 0.07 %,
-	// VCM SE <= 0.06 %, BDPT/PT 0.9987-1.0032 and VCM/PT 0.9988-1.0030.
+	// Four salted renders per integrator, not eight.  Measured at n = 4 over
+	// six seed bases (2026-11-18): BDPT SE <= 0.07 %, VCM SE <= 0.06 %,
+	// BDPT/PT 0.9987-1.0032 and VCM/PT 0.9988-1.0030, against the 8 % band,
+	// while DL-05's pre-fix PT error was 28-55 %.  (The cheapbatch record's
+	// BDPT n = 8 SE of 0.46 % / 0.69 % is ~10x larger than these and would
+	// still leave n = 4 at ~1 %, eight times inside the band.)
 	const unsigned int res = 24, spp = 512, n = 4;
 	for( const L& r : rows )
 	{

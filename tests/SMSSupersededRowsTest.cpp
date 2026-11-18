@@ -18,7 +18,7 @@
 // --section all a slab-only mode list leaves the ball gate nothing to check.
 //   slab-closed DL-455 omni slab direct caustic per chain length vs an
 //               unfolded-image closed form                       [gated]
-//   nested, nested-hwss, nested-hwss-const
+//   nested, nested-matched, nested-hwss, nested-hwss-const
 //               DL-391 nested dispersive exterior probes          [measurement]
 // Options: --section <name> --lights spot,omni,area --modes a,b --n N --extspp S
 //          --dl353-uniform (add the DL-353 legacy-uniform series)

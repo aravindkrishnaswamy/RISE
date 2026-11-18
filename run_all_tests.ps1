@@ -249,19 +249,20 @@ if ($total -eq 0) {
 # Setup output dirs
 # -----------------------------------------------------------------------------
 
-# One run per log dir at a time: a second run would delete the first one's
-# logs and per-test TEMP dirs under it while its tests still use them.  A
-# lock whose owner process is gone is taken over.
-$lockPath = "$LogDir.lock"
-if (Test-Path -LiteralPath $lockPath) {
-    $lockOwner = 0
-    [void][int]::TryParse(((Get-Content -LiteralPath $lockPath -ErrorAction SilentlyContinue) | Select-Object -First 1), [ref]$lockOwner)
-    if ($lockOwner -gt 0 -and $lockOwner -ne $PID -and (Get-Process -Id $lockOwner -ErrorAction SilentlyContinue)) {
-        Write-Host "ERROR: another run_all_tests.ps1 (pid $lockOwner) is using $LogDir. Wait for it, or pass its own -LogDir / RISE_TEST_LOG_DIR." -ForegroundColor Red
-        exit 1
-    }
+# One run per checkout at a time: a second run would rebuild and relink the
+# test binaries the first is running, write the same scene output, and (with
+# the default log dir) delete the first one's logs and per-test TEMP dirs.
+# The lock is an exclusively opened file held for the whole run; Windows
+# releases it when the process ends, so a crashed run leaves no stale lock.
+$lockDir = Join-Path $RepoRoot 'bin'
+$null = New-Item -ItemType Directory -Force -Path $lockDir
+$lockPath = Join-Path $lockDir '.run_all_tests.lock'
+try {
+    $lockStream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+} catch [System.IO.IOException] {
+    Write-Host "ERROR: another run_all_tests.ps1 is running in this checkout (it holds $lockPath). Wait for it to finish." -ForegroundColor Red
+    exit 1
 }
-Set-Content -LiteralPath $lockPath -Value $PID
 $ownsLock = $true
 if (Test-Path -LiteralPath $LogDir) { Remove-Item -Recurse -Force -LiteralPath $LogDir }
 $null = New-Item -ItemType Directory -Force -Path $LogDir
@@ -643,7 +644,10 @@ Write-Host "All $found tests passed"
 exit 0
 
 } finally {
-    if ($ownsLock) { Remove-Item -Force -LiteralPath $lockPath -ErrorAction SilentlyContinue }
+    if ($ownsLock) {
+        $lockStream.Dispose()
+        Remove-Item -Force -LiteralPath $lockPath -ErrorAction SilentlyContinue
+    }
     Pop-Location -StackName RiseRunAllTests -ErrorAction SilentlyContinue
     $env:RISE_OPTIONS_FILE = $origRiseOptionsFile
     $env:RISE_TEST_EXTENDED = $origRiseTestExtended

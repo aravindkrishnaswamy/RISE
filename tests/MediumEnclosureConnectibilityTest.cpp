@@ -105,7 +105,11 @@
 //  rendered once at 256 spp: 16 renders for pel (sd of the mean ~0.3%),
 //  8 for spectral (16 until the 2026-11-17 cost trim).  DL-200's pre-fix
 //  BDPT/PT read 0.903-0.915 (RGB), ~3.2 sd below the 0.95 floor, which is
-//  why the pel reference keeps 16; spectral read ~0.79, far outside.
+//  why the pel reference keeps 16; spectral read ~0.79, far outside.  The
+//  tightest post-fix row on the spectral reference, VCM spectral enclosed
+//  (0.94 against its 0.90 floor, DL-218), keeps a 4 % margin against the
+//  8-render reference's sd (a few tenths of a percent if its per-render
+//  sd is near the 1.3 % measured at 64 spp on the global scene).
 //
 //  WHAT THE PREDICTED MECHANISM TURNED OUT TO BE WORTH: ZERO.  DL-200
 //  predicted a partition-of-unity violation from the ASYMMETRY.  The

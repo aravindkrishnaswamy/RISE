@@ -204,22 +204,35 @@ if [ "$orphan_count" -ne 0 ]; then
 fi
 
 mkdir -p "$BIN_DIR"
-# One run per log dir at a time: a second run would delete the first one's
-# logs and per-test TMPDIRs under it while its tests still use them.  A lock
-# whose owner is gone (kill -9, reboot) is taken over.
-LOCK_DIR="$LOG_DIR.lock"
+# One run per checkout at a time: a second run would rebuild and relink the
+# test binaries the first is running, write the same scene output, and (with
+# the default log dir) delete the first one's logs and per-test TMPDIRs.  The
+# lock is a directory holding the owner's pid; one whose owner is gone
+# (kill -9, reboot) is taken over.  An empty pid file is an owner still
+# writing it, unless the lock is older than a minute.
+LOCK_DIR="$REPO_ROOT/bin/.run_all_tests.lock"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 	lock_owner=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
-	if [ -n "$lock_owner" ] && kill -0 "$lock_owner" 2>/dev/null; then
-		echo "Another run_all_tests.sh (pid $lock_owner) is using $LOG_DIR." >&2
-		echo "Wait for it, or give this run its own RISE_TEST_LOG_DIR." >&2
+	lock_live=0
+	if [ -n "$lock_owner" ]; then
+		kill -0 "$lock_owner" 2>/dev/null && lock_live=1
+	elif [ -z "$(find "$LOCK_DIR" -prune -mmin +1 2>/dev/null)" ]; then
+		lock_live=1
+	fi
+	if [ "$lock_live" -eq 1 ]; then
+		echo "Another run_all_tests.sh (pid ${lock_owner:-starting}) is running in this checkout." >&2
+		echo "Wait for it to finish; if no run is active, remove $LOCK_DIR." >&2
 		exit 1
 	fi
 	rm -rf "$LOCK_DIR"
-	mkdir "$LOCK_DIR" || { echo "Cannot create $LOCK_DIR" >&2; exit 1; }
+	mkdir "$LOCK_DIR" 2>/dev/null || { echo "Cannot create $LOCK_DIR (another run took it?)" >&2; exit 1; }
 fi
 echo "$$" > "$LOCK_DIR/pid"
-release_lock() { rm -rf "$LOCK_DIR"; }
+release_lock() {
+	if [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; then
+		rm -rf "$LOCK_DIR"
+	fi
+}
 trap release_lock EXIT
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"

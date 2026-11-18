@@ -41,7 +41,7 @@ struct Moments {
         for(double x:values) mean+=x;
         mean/=values.size();
         for(double x:values) sd+=(x-mean)*(x-mean);
-        sd=std::sqrt(sd/(values.size()-1));
+        sd=values.size()>1?std::sqrt(sd/(values.size()-1)):0.0;
     }
 };
 struct ScriptSampler : ISampler {

@@ -1647,8 +1647,9 @@ namespace
 		// / VCM 512 SD 0.0140; glass-block SMS 4096 / VCM 512 SD 0.0213.
 		// docs/DL_CHEAPBATCH_VALIDATION.md shows this SD estimate moving
 		// 2.4-6.4x between batches at one budget, so the SMS budgets keep
-		// twice those (4096 / 8192, ~3.5x headroom expected) and only VCM
-		// is cut.  The defects these rows exist for read 0.12 / 0.11
+		// twice those (4096 / 8192); that record measured flat-slab SMS 4096
+		// / VCM 512 directly at SD 0.0055 (6.7x headroom) and glass-block at
+		// 16384 / 512 at 0.0048-0.0115.  The defects these rows exist for read 0.12 / 0.11
 		// (DL-290) and 2.25-2.6x (DL-345), far outside the bands.
 		const unsigned int kW = 100, kH = 75, kMaskSpp = 256;
 		// Keep DL-345 physics bands and minimum eight replicates; retain
