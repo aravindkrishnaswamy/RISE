@@ -29,7 +29,8 @@ param(
     [string]$Tier = $(if ($env:RISE_TEST_TIER) { $env:RISE_TEST_TIER } else { 'all' }),
     [int]$TimeoutSeconds = 0,
     # How many test binaries may RUN at once.  Tests marked `exclusive` in
-    # tests\test_schedule.tsv always run alone.  1 = the old serial behaviour.
+    # tests\test_schedule.tsv always run alone.  1 = one at a time, alphabetical
+    # (single tests still get one render thread).
     # 0 = RISE_TEST_RUN_JOBS, else one per logical processor (checked below).
     [int]$Jobs = 0,
     [string]$LogDir,
@@ -127,6 +128,9 @@ $DualModeExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
 )
 
 $RepoRoot      = Split-Path -Parent $PSCommandPath
+# Tests open scenes\... and read global.options relative to the working
+# directory, so run them from the repo root wherever the script was started.
+Set-Location -LiteralPath $RepoRoot
 $BinSubdir     = if ($Config -eq 'Debug') { 'dbin' } else { 'bin' }
 $BinDir        = Join-Path $RepoRoot "$BinSubdir\tests"
 $SrcDir        = Join-Path $RepoRoot 'tests'
@@ -269,6 +273,8 @@ if (-not (Test-Path -LiteralPath $cacheFile)) {
 $built = 0
 $buildFailed = 0
 $buildFailures = @()
+$buildRc = 0
+$anyTargetFailed = $false
 
 if (-not $NoBuild) {
     $buildLog = Join-Path $LogDir 'build.log'
@@ -283,12 +289,14 @@ if (-not $NoBuild) {
         foreach ($src in $testSources) {
             & $cmake --build $CmakeBuildDir --config $Config --target $src.BaseName *>&1 |
                 Out-File -FilePath $buildLog -Encoding utf8 -Append
+            # Remember ANY failed target, not only the last one.
+            if ($LASTEXITCODE -ne 0) { $anyTargetFailed = $true }
         }
     } else {
         & $cmake --build $CmakeBuildDir --config $Config --target rise_all_tests --parallel *>&1 |
             Out-File -FilePath $buildLog -Encoding utf8
     }
-    $buildRc = $LASTEXITCODE
+    $buildRc = if ($anyTargetFailed) { 1 } else { $LASTEXITCODE }
     $bd = [int]((Get-Date) - $bs).TotalSeconds
 
     # Walk the test list and check which exes were produced. Source-newer-than-exe
@@ -339,8 +347,8 @@ if ($BuildOnly) {
 # that share the cores with their render threads forced to one (`single`), and
 # the last measured run time of the long ones, so long tests start first.
 # Exclusive tests run first, one at a time on an otherwise idle machine; the
-# rest then share the cores.  Unlisted tests are `pool`.  -Jobs 1 restores the
-# old one-at-a-time, alphabetical behaviour.
+# rest then share the cores.  Unlisted tests are `pool`.  -Jobs 1 runs one test
+# at a time in alphabetical order (single tests still get one render thread).
 #
 # Every test gets its own TMPDIR/TEMP/TMP ($LogDir\.tmp\<name>), so two
 # different tests that pick the same scratch-file name cannot collide.  Like
@@ -500,7 +508,15 @@ try {
                 [void]$still.Add($run)
                 continue
             }
-            Complete-RiseTest $run
+            try {
+                Complete-RiseTest $run
+            } catch {
+                # Bookkeeping failed (e.g. a log could not be read): count the
+                # test as failed rather than abort the whole run.
+                Write-Host ('[ {0,3}/{1,3} ] {2,-46} FAIL (runner error: {3})' -f (++$script:doneCount), $total, $run.Item.Name, $_.Exception.Message)
+                $script:runFailures += [pscustomobject]@{ Name = $run.Item.Name; Code = -1; Log = $run.Log; Reason = 'runner' }
+                $script:failed++
+            }
         }
         $running = $still
 
@@ -594,7 +610,12 @@ if ($runFailures.Count -gt 0) {
     foreach ($f in $runFailures) { Write-Host "  - $($f.Name)" }
 }
 
-if ($failed -ne 0 -or $buildFailed -ne 0) {
+# A failed build fails the run even when every exe (possibly stale against a
+# changed header or library) ran green -- as run_all_tests.sh does.
+if ($failed -ne 0 -or $buildFailed -ne 0 -or $buildRc -ne 0) {
+    if ($buildRc -ne 0 -and $failed -eq 0 -and $buildFailed -eq 0) {
+        Write-Host "Build step failed (exit=$buildRc); see the build log"
+    }
     exit 1
 }
 Write-Host "All $found tests passed"

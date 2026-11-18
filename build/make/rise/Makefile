@@ -113,15 +113,18 @@ librise : $(LIBRISE_A)
 # 163 s (library 51 s, tests 112 s) and a relink after a library change 18 s.
 # Costs: same -O3 / -ffast-math flags but no cross-TU inlining (what the Linux
 # build has always done), measured ~0-9 % slower test runs (+3 % on a
-# six-test sample); and a library edit now compiles twice when you build both
-# `all` and `tests` (about 50 s more for a full library rebuild).  The shipped
-# binaries (`make all`, Xcode) are unaffected.
+# six-test sample); and a library edit compiles twice, once per library
+# (about 50 s more for a full library rebuild).  The shipped
+# binaries (`make all`, Xcode) are unaffected.  (The three TESTS_LINK_LTO
+# tests below also need the LTO library, so `make tests` builds both.)
 #
 # TESTS_LINK_LTO keeps the old LTO build for tests that pin bit-exact render
 # hashes measured on it (no-LTO code generation changes the low bits).
 # `make TEST_LTO=1 tests` links every test against the LTO library instead,
-# for checking something that depends on LTO code generation.  The mode is
-# recorded in $(TEST_MODE_STAMP), so switching it rebuilds the tests.
+# for checking something that depends on LTO code generation (run the suite
+# that way with `TEST_LTO=1 ./run_all_tests.sh`).  The mode is recorded in
+# $(TEST_MODE_STAMP), so switching it rebuilds the tests; dry runs and
+# `clean` leave the record alone.
 TESTS_LINK_LTO = LegacyTierRenderIdentityTest DeprecatedMaterialRenderIdentityTest ImageDriftHistoryTest
 
 ifneq ($(filter -flto%,$(CPPFLAGS) $(CXXFLAGS)),)
@@ -178,7 +181,9 @@ $(addprefix $(PATHTESTDEST),$(LTO_TESTS)) : $(LIBRISE_A)
 # The test link mode in use, rewritten only when it changes; every test
 # object and binary depends on it, so switching TEST_LTO rebuilds them.
 TEST_MODE_STAMP = $(PATHDEST).test-link-mode
+ifeq ($(findstring n,$(firstword -$(MAKEFLAGS)))$(filter clean,$(MAKECMDGOALS)),)
 $(shell mkdir -p $(PATHDEST) && { [ "`cat $(TEST_MODE_STAMP) 2>/dev/null`" = "$(TEST_LINK_MODE) $(LTO_TESTS)" ] || echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $(TEST_MODE_STAMP); })
+endif
 
 # Depend on $(ARCHIVE_BUILD_DEFS) in addition to $(OBJLIB) so removing a
 # translation unit from Filelist (or changing platform gates in Config.*)
@@ -316,7 +321,7 @@ tools : $(LIBRISE_A)
 # Build the library .o files and static archive needed to link tests (the
 # non-LTO test copy where the platform splits them, see LIBRISE_TEST_A). Used by
 # run_all_tests.sh as a one-shot library-build phase before per-test builds.
-test-objs : $(LIBRISE_TEST_A) $(if $(LTO_TESTS),$(LIBRISE_A))
+test-objs : $(LIBRISE_TEST_A)
 	@:
 
 # Build and run all tests
@@ -402,7 +407,7 @@ clean:
 # prerequisites: it was compiled by an older make (pre -MMD), orphaned when a
 # .d was deleted, or carried in from another tree.  It therefore looks up to
 # date against its lone .cpp prerequisite even after a header it includes has
-# changed.  Test and tool binaries link $(LIBRISE_A) + the per-binary .o (and
+# changed.  Test and tool binaries link a library archive + the per-binary .o (and
 # standalone binaries link $(OBJLIB) + the per-binary .o), and compile/link are
 # separate rules, so such
 # a stale object is RELINKED in place when a library-header change rebuilds the

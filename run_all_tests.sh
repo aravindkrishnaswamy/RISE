@@ -3,6 +3,10 @@ set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
+# Tests open scenes/..., write rendered/ and read global.options relative to
+# the working directory, so run them from the repo root wherever the script
+# was started (e.g. `make test` starts it in build/make/rise).
+cd "$REPO_ROOT"
 BIN_DIR="$REPO_ROOT/bin/tests"
 SRC_DIR="$REPO_ROOT/tests"
 BUILD_DIR="$REPO_ROOT/build/make/rise"
@@ -31,7 +35,8 @@ TIER="${RISE_TEST_TIER:-all}"
 # films on one core, so running them side by side cuts wall time several-fold
 # without changing any result.  Tests marked `exclusive` in
 # tests/test_schedule.tsv (multi-core renders, wall-clock gates) always run
-# alone.  1 restores the old one-at-a-time behaviour.  Override with --jobs or
+# alone.  1 runs one test at a time in alphabetical order (single tests still
+# get one render thread).  Override with --jobs or
 # RISE_TEST_RUN_JOBS.
 RUN_JOBS="${RISE_TEST_RUN_JOBS:-}"
 
@@ -518,7 +523,7 @@ fi
 plan_count=$(wc -l < "$PLAN" | tr -d ' ')
 
 time_bin=""
-if [ -x /usr/bin/time ]; then
+if [ -x /usr/bin/time ] && /usr/bin/time -p -o /dev/null true >/dev/null 2>&1; then
 	time_bin=/usr/bin/time
 fi
 
