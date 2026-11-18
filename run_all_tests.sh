@@ -73,16 +73,25 @@ esac
 
 # Heavy multi-minute statistical/integration sweep suites assigned exclusively
 # to the extended tier when --tier fast or --tier extended is requested.
+# Rule: a test that takes more than about 200 s on its own does not belong in
+# the fast tier.  Put it here, or give it a cheap fast mode (has_extended_mode
+# below).  Keep this list and run_all_tests.ps1's $ExtendedTests identical.
 is_extended_test() {
 	case "$1" in
-		BDPTStrategyBalanceTest|VCMStrategyBalanceTest|SMSExtendedReferenceTest|\
-		SMSExtendedPartitionTest|SMSUniformDispersionTest|SMSSupersededRowsTest|\
-		SMSFourVertexVarianceTest|PTGuidingMISPartitionTest|BDPTGuidedContinuationTest|\
-		CompositeEnergyConservationTest|LayeredWhiteFurnaceTest|\
-		VolumeAbsorptionAttenuationTest|MediumInsideOutsideInvariantTest|\
-		ExteriorIndexInvarianceTest|SSSExteriorIndexInvarianceTest|\
-		CstDeriveGoldenTest|AgentViewModeRenderTest|AgentProposeRenderTest|\
-		UnlistedEmitterWeightTest)
+		AgentProposeRenderTest|AgentViewModeRenderTest|BDPTDepthCapMISTest|\
+		BDPTGuidedContinuationTest|BDPTStrategyBalanceTest|CompositeEnergyConservationTest|\
+		ConnectionTypeSplitTest|CstDeriveGoldenTest|ExteriorIndexInvarianceTest|\
+		GradedIndexInteriorFactorTest|LayeredWhiteFurnaceTest|\
+		MediumEnclosureConnectibilityTest|MediumInsideOutsideInvariantTest|\
+		MotionBlurTimeAverageTest|OIDNAutoDeterminismTest|OpenSheetIndexConventionTest|\
+		PTGuidingMISPartitionTest|RandomWalkFogEnergyTest|RefractiveRadianceScalingTest|\
+		SignalIntegratorConsistencyTest|SMSDisplacedEnergyTest|SMSEmitterDirectionTest|\
+		SMSExtendedHWSSTest|SMSExtendedPartitionTest|SMSExtendedReferenceTest|\
+		SMSFourVertexVarianceTest|SMSHWSSNestedEnergyTest|SMSLegacyModeTest|\
+		SMSMediumAnchorTest|SMSPhotonSeedEnergyTest|SMSSupersededRowsTest|\
+		SMSUniformDispersionTest|SpectralOnlyEmitterTest|SSSContactContinuationTest|\
+		SSSExteriorIndexInvarianceTest|UnlistedEmitterWeightTest|VCMStrategyBalanceTest|\
+		VCMVolumeMergeTest|VolumeAbsorptionAttenuationTest|WeaveGapShadowTransmittanceTest)
 			return 0
 			;;
 		*)
@@ -98,8 +107,8 @@ has_extended_mode() {
 	case "$1" in
 		AgentSkillsTest|InteriorCandidateWalkCostTest|LightExitanceTest|\
 		LuminarySamplerAreaTest|PavilionColonnadeShowcaseTest|PolishedBRDFConsistencyTest|\
-		SPFPdfConsistencyTest|ShelfBunnyShowcaseTest|TidalStonesShowcaseTest|\
-		TimeIndexedMotionBlurTest)
+		SchlickSPFPdfConsistencyTest|ShelfBunnyShowcaseTest|SPFPdfConsistencyTest|\
+		TidalStonesShowcaseTest|TimeIndexedMotionBlurTest)
 			return 0
 			;;
 		*)

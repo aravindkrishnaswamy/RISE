@@ -81,16 +81,28 @@ switch ($Tier) {
 
 # Heavy multi-minute statistical/integration sweep suites assigned exclusively
 # to the extended tier when -Tier fast or -Tier extended is requested.
+# Rule: a test that takes more than about 200 s on its own does not belong in
+# the fast tier.  Put it here, or give it a cheap fast mode
+# ($DualModeExtendedTests below).  Keep both lists identical to
+# run_all_tests.sh's is_extended_test / has_extended_mode.
 $ExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
     [string[]]@(
-        'BDPTStrategyBalanceTest', 'VCMStrategyBalanceTest', 'SMSExtendedReferenceTest',
-        'SMSExtendedPartitionTest', 'SMSUniformDispersionTest', 'SMSSupersededRowsTest',
-        'SMSFourVertexVarianceTest', 'PTGuidingMISPartitionTest', 'BDPTGuidedContinuationTest',
-        'CompositeEnergyConservationTest', 'LayeredWhiteFurnaceTest',
-        'VolumeAbsorptionAttenuationTest', 'MediumInsideOutsideInvariantTest',
-        'ExteriorIndexInvarianceTest', 'SSSExteriorIndexInvarianceTest',
-        'CstDeriveGoldenTest', 'AgentViewModeRenderTest', 'AgentProposeRenderTest',
-        'UnlistedEmitterWeightTest'
+        'AgentProposeRenderTest', 'AgentViewModeRenderTest', 'BDPTDepthCapMISTest',
+        'BDPTGuidedContinuationTest', 'BDPTStrategyBalanceTest',
+        'CompositeEnergyConservationTest', 'ConnectionTypeSplitTest', 'CstDeriveGoldenTest',
+        'ExteriorIndexInvarianceTest', 'GradedIndexInteriorFactorTest',
+        'LayeredWhiteFurnaceTest', 'MediumEnclosureConnectibilityTest',
+        'MediumInsideOutsideInvariantTest', 'MotionBlurTimeAverageTest',
+        'OIDNAutoDeterminismTest', 'OpenSheetIndexConventionTest', 'PTGuidingMISPartitionTest',
+        'RandomWalkFogEnergyTest', 'RefractiveRadianceScalingTest',
+        'SignalIntegratorConsistencyTest', 'SMSDisplacedEnergyTest', 'SMSEmitterDirectionTest',
+        'SMSExtendedHWSSTest', 'SMSExtendedPartitionTest', 'SMSExtendedReferenceTest',
+        'SMSFourVertexVarianceTest', 'SMSHWSSNestedEnergyTest', 'SMSLegacyModeTest',
+        'SMSMediumAnchorTest', 'SMSPhotonSeedEnergyTest', 'SMSSupersededRowsTest',
+        'SMSUniformDispersionTest', 'SpectralOnlyEmitterTest', 'SSSContactContinuationTest',
+        'SSSExteriorIndexInvarianceTest', 'UnlistedEmitterWeightTest',
+        'VCMStrategyBalanceTest', 'VCMVolumeMergeTest', 'VolumeAbsorptionAttenuationTest',
+        'WeaveGapShadowTransmittanceTest'
     ),
     [System.StringComparer]::Ordinal
 )
@@ -101,8 +113,9 @@ $ExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
 $DualModeExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
     [string[]]@(
         'AgentSkillsTest', 'InteriorCandidateWalkCostTest', 'LightExitanceTest',
-        'LuminarySamplerAreaTest', 'PavilionColonnadeShowcaseTest', 'PolishedBRDFConsistencyTest',
-        'SPFPdfConsistencyTest', 'ShelfBunnyShowcaseTest', 'TidalStonesShowcaseTest',
+        'LuminarySamplerAreaTest', 'PavilionColonnadeShowcaseTest',
+        'PolishedBRDFConsistencyTest', 'SchlickSPFPdfConsistencyTest',
+        'ShelfBunnyShowcaseTest', 'SPFPdfConsistencyTest', 'TidalStonesShowcaseTest',
         'TimeIndexedMotionBlurTest'
     ),
     [System.StringComparer]::Ordinal

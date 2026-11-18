@@ -24,6 +24,10 @@ Environment overrides honored by `run_all_tests.sh`:
 - `RISE_TEST_BUILD_JOBS=<N>` — parallel job count when `run_all_tests.sh` invokes `make` to build missing or stale test binaries.
 - `RISE_TEST_LOG_DIR=<dir>` — directory where per-test logs and summary artifacts are written.
 
+#### Tiers
+
+`--tier fast` skips the tests listed in `is_extended_test` (`run_all_tests.sh`) / `$ExtendedTests` (`run_all_tests.ps1`), and runs the tests listed in `has_extended_mode` / `$DualModeExtendedTests` in their cheap mode (`RISE_TEST_EXTENDED=0`).  A test that takes more than about 200 s on its own belongs in one of those two lists: either the extended tier, or a dual-mode test whose fast mode is cheap.  Keep the lists identical in the two scripts.
+
 #### Red-proof helper (`tools/red_prove.sh`)
 
 To produce auditable RED → GREEN regression evidence without leaving the working tree dirty:
