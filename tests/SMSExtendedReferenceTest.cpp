@@ -3285,9 +3285,13 @@ static void DL420LegacySlab() {
         std::cout<<"DL-420 omni="<<omni<<" legacy="<<a.mean<<" +/- "<<a.sd/2<<" BDPT="<<b.mean<<" +/- "<<b.sd/2<<" ratio="<<a.mean/b.mean<<'\n';
     }
 }
+// The 80/85 deg wide cone is a measurement with no accuracy gate (see
+// below), so the default run skips its 16 renders; --slab-only runs it.
+static bool g_slabWideCone=false;
 static void SlabRenders() {
     Check(ConfigureTestWorker(),"slab render uses one configured worker");
     for(bool reverse:{false,true}) for(const auto& cone:{std::array<unsigned,2>{30,45},std::array<unsigned,2>{44,45},std::array<unsigned,2>{80,85}}) {
+        if(cone[0]==80 && !g_slabWideCone) continue;
         std::array<std::vector<double>,3> tested,reference;
         for(unsigned trial=0;trial<4;++trial) {
             const unsigned seed=46000+trial;const unsigned salt=SobolSequence::HashCombine(seed,kSaltTag);
@@ -3335,7 +3339,7 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--delta-only") {synthetic=false;geometry=false;unsupported=false;slab=false;}
     if(argc==2&&std::string(argv[1])=="--unsupported-only") {synthetic=false;geometry=false;delta=false;slab=false;}
     if(argc==2&&std::string(argv[1])=="--production-only") {synthetic=false;geometry=false;delta=true;unsupported=false;production=true;slab=false;}
-    if(argc==2&&std::string(argv[1])=="--slab-only") {synthetic=false;geometry=false;delta=false;unsupported=false;}
+    if(argc==2&&std::string(argv[1])=="--slab-only") {synthetic=false;geometry=false;delta=false;unsupported=false;g_slabWideCone=true;}
     if(argc==2&&std::string(argv[1])=="--modifier-chart-only") {
 #ifdef RISE_SMS_REFERENCE_A
         PostModifierChartRoots();

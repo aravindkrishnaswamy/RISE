@@ -1,5 +1,11 @@
 // DL-331: independent SMS-off PT energy reference and Snell coverage control.
 // Args: replicas (>=4), optional "air", optional photon count (default 200000), optional PT spp (default 128), optional seed budget, optional SMS spp, optional solver threshold, trailing --gate (photon/PT parity only; Snell is a printed control).
+// With NO arguments (the suite's invocation) it runs one replica of each
+// estimator as a smoke test: every render must succeed and be lit.  The
+// default run never gated the photon/PT parity (that needs --gate, and DL-331
+// is parked); its eight replicas only printed the measurement, at ~1700 s.
+// The measurement: `SMSPhotonSeedEnergyTest 4 air 200000 128 16 128 0 --gate`
+// (docs/BATCH11_CLOSEOUT_TRIAGE.md).
 #define main GradedIndexFixtureMain
 #include "GradedIndexInteriorFactorTest.cpp"
 #undef main
@@ -25,10 +31,11 @@ static void AttachSeedBudget(IJobPriv* job) {
  }
 }
 int main(int argc,char** argv) {
+ const bool smoke=argc==1;
  const bool gate=argc>1 && std::string(argv[argc-1])=="--gate";
  if(gate) --argc;
  bool failed=false;
- const unsigned repeats=argc>1?std::max(4, std::atoi(argv[1])):8;
+ const unsigned repeats=smoke?1:(argc>1?std::max(4, std::atoi(argv[1])):8);
  const unsigned photonCount=argc>3?std::max(1,std::atoi(argv[3])):200000;
  const unsigned ptSPP=argc>4?std::max(128,std::atoi(argv[4])):128;
  seedBudget=argc>5?std::max(1,std::atoi(argv[5])):0;
@@ -66,9 +73,11 @@ int main(int argc,char** argv) {
    if(thresholdOverride>0 && !thresholdAttached) {std::cerr<<"FAIL: DL331 photon threshold not installed\n";return 1;}
    if(seedBudget && !seedBudgetAttached) {std::cerr<<"FAIL: DL331 seed budget was not installed\n";return 1;}
    if(!pt.ok || !snell.ok || !photon.ok) return 1;
+   if(smoke && !(pt.mean>0 && snell.mean>0 && photon.mean>0)) {std::cerr<<"FAIL: DL331 smoke render is black\n";return 1;}
    a.push_back(pt.mean); b.push_back(snell.mean); c.push_back(photon.mean);
    std::printf("DL331 salt=%u mode=%d photons=%u seedBudget=%u ptSPP=%u smsSPP=%u PT %.9g snell %.9g photon %.9g\n",i,mode,photonCount,seedBudget?seedBudget:16,ptSPP,smsSPP,pt.mean,snell.mean,photon.mean); std::fflush(stdout);
   }
+  if(smoke) {std::printf("DL331 smoke: one replica per estimator rendered and lit; pass replicas (>=4) for the measurement\n");continue;}
   auto stats=[](const std::vector<double>& v) { double m=0,ss=0; for(double x:v)m+=x; m/=v.size(); for(double x:v)ss+=(x-m)*(x-m); return std::make_pair(m,std::sqrt(ss/(v.size()-1)/v.size())); };
   auto x=stats(a),y=stats(b),z=stats(c);
   for(const auto& comparison: {std::make_pair("snell",y), std::make_pair("photon",z)}) {

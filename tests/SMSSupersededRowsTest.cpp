@@ -7,13 +7,19 @@
 //               against wavelength-isolated spectral truth) and DL-353
 //               (spectral dispersion, hwss FALSE/TRUE)            [gated]
 //   slab        DL-421 / DL-420 (glass slab: spot, omni, area vs depth-matched
-//               BDPT/VCM; legacy uniform/snell as controls)       [gated]
-//   ball        DL-376 / DL-445 (DL-372 ball-lens image vs PT and VCM) [gated]
+//               VCM; legacy uniform as the control)                [gated]
+//   ball        DL-376 / DL-445 (DL-372 ball-lens image vs PT)    [gated]
+// The default run renders only the modes a gate reads.  The measurement
+// modes (slab snell, bdpt8, bdpt16; ball VCM and the legacy ball rows; the
+// DL-353 legacy-uniform series) only printed their numbers, recorded in
+// docs/DEBT_LEDGER.md (DL-353, DL-376, DL-421, DL-445); --modes selects
+// them (slab, ball) and --dl353-uniform adds the DL-353 series back.
 //   slab-closed DL-455 omni slab direct caustic per chain length vs an
 //               unfolded-image closed form                       [gated]
 //   nested, nested-hwss, nested-hwss-const
 //               DL-391 nested dispersive exterior probes          [measurement]
 // Options: --section <name> --lights spot,omni,area --modes a,b --n N --extspp S
+//          --dl353-uniform (add the DL-353 legacy-uniform series)
 //          --seed B (salt base) --ball-y Y (DL-455 focus discriminator)
 //          --no-slab (direct-light calibration, mode ptplain)
 // Slab modes: extended[:tb], extd[:tb] (extended, direct caustic only:
@@ -224,7 +230,7 @@ namespace
     }
     void Ball( std::string only, unsigned n, unsigned spp )
     {
-        if( only.empty() ) only="PT (SMS off),VCM,extended tb0 trials1,extended tb0 trials2,legacy snell tb0 trials2,legacy uniform tb2 trials1";
+        if( only.empty() ) only="PT (SMS off),extended tb0 trials1,extended tb0 trials2";
         struct Mode { const char* name; const char* label; unsigned trials; unsigned tb; };
         const Mode modes[]={ {"pt","PT (SMS off)",1,0}, {"vcm","VCM",1,0},
             {"extended","extended tb0 trials1",1,0}, {"extended","extended tb0 trials2",2,0},
@@ -329,9 +335,9 @@ namespace
         // heavy-tailed 4+-vertex corner/TRRT chains reading about half
         // their closed form (DL-466).
         const Light cases[]={
-            {"spot",kSpot,{"uniform","snell","extended","bdpt8","vcm"},"extended","uniform",0.005},
-            {"omni",kOmni,{"uniform:0","extended:0","bdpt16","vcm"},"extended:0","uniform:0",0.01},
-            {"area",kArea,{"uniform","extended","bdpt8","vcm"},"extended","uniform",0.01} };
+            {"spot",kSpot,{"uniform","extended","vcm"},"extended","uniform",0.005},
+            {"omni",kOmni,{"uniform:0","extended:0","vcm"},"extended:0","uniform:0",0.01},
+            {"area",kArea,{"uniform","extended","vcm"},"extended","uniform",0.01} };
         for( const Light& L : cases ) {
             if( lights.find(L.name)==std::string::npos ) continue;
             std::map<std::string,Series> m;
@@ -427,6 +433,7 @@ namespace
         Series d; for( size_t i=0;i<a.v.size();++i ) d.v.push_back(a.v[i]-b.v[i]); return d;
     }
 
+    bool g_dl353Uniform = false;   // --dl353-uniform: print the legacy-uniform DL-353 series
     void Dispersion()
     {
         // DL-438: RGB, SF11 sampled at {611,549,465} nm per channel.  Truth is
@@ -461,11 +468,12 @@ namespace
         for( bool hwss : {false,true} ) {
             std::map<std::string,Series> shift;
             for( const char* mode : {"snell","uniform","extended"} ) {
+                if( std::string(mode)=="uniform" && !g_dl353Uniform ) continue;
                 shift[mode]=Diff(SpectralCentroid(mode,hwss,450,4),SpectralCentroid(mode,hwss,650,4));
                 std::cout<<"DL-353 spectral hwss="<<hwss<<" mode="<<mode<<" blue-red="<<shift[mode].mean()<<" +/- "<<shift[mode].se()<<std::endl;
             }
             Report("DL-353 extended vs snell reference",shift["extended"],shift["snell"]);
-            Report("DL-353 legacy uniform vs snell reference",shift["uniform"],shift["snell"]);
+            if( g_dl353Uniform ) Report("DL-353 legacy uniform vs snell reference",shift["uniform"],shift["snell"]);
             Check(Agree3(shift["extended"],shift["snell"],2e-3),"DL-353 extended spectral dispersion = snell reference");
             Check(std::fabs(shift["extended"].mean())>0.02,"DL-353 extended N-SF11 caustic moves with wavelength");
         }
@@ -487,6 +495,7 @@ int main( int argc, char** argv )
         else if( a=="--ball-y" && i+1<argc ) g_ballY=argv[++i];
         else if( a=="--seed" && i+1<argc ) g_seedBase=unsigned(std::atoi(argv[++i]));
         else if( a=="--extspp" && i+1<argc ) extSpp=unsigned(std::atoi(argv[++i]));
+        else if( a=="--dl353-uniform" ) g_dl353Uniform=true;
     }
     const bool all=section=="all";
     if( all || section=="dispersion" ) Dispersion();

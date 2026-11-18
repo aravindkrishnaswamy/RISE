@@ -13,7 +13,8 @@
 // every PT path with `full`.
 //
 // Sections (all by default; `--section <name>` runs one; `--quick` lowers
-// the sample counts for a smoke run, never for the recorded gate):
+// the sample counts for a smoke run, never for the recorded gate;
+// `--report-legacy` adds body's printed legacy-HWSS comparison):
 //   lanes   area partition per lane through the NM delegations: planar
 //           mirror (double-sided indexed mesh, both windings; clipped-plane
 //           control; closed form), glass slab both windings, transformed
@@ -63,6 +64,7 @@
 namespace
 {
     bool g_quick=false;
+    bool g_reportLegacy=false;   // --report-legacy: body's printed legacy HWSS block
     std::string g_caseFilter;
     unsigned g_biasSalts=64;
     bool g_biasLegacy=false;    // `--bias-legacy`: samplerbias renders legacy (extended-off) HWSS (DL-453)
@@ -719,8 +721,12 @@ static void BodySection()
         LaneCase(CeilingScene("polished",false,false,lum),o);
     }
     // Report legacy HWSS vs SMS-off HWSS on the covered delegated-emitter
-    // control; dl378 separately gates uncovered paths per lane.
-    if(g_caseFilter.empty()) {
+    // control; dl378 separately gates uncovered paths per lane.  Printed
+    // only, so it runs with --report-legacy (the suite skips its six
+    // 4096 x 32 renders); the salt base advances either way, so the
+    // sections after it draw the same salts.
+    if(g_caseFilter.empty() && !g_reportLegacy) g_saltBase+=1000;
+    else if(g_caseFilter.empty()) {
         const auto spec=CeilingScene("polished",true,false,"lum");
         RenderOptions l=o;l.saltBase=g_saltBase;g_saltBase+=1000;
         const auto legacy=Render(spec,Mode::Legacy,l), ref=Render(spec,Mode::Ref,l);
@@ -1011,6 +1017,7 @@ int main(int argc,char** argv)
     for(int i=1;i<argc;++i) {
         const std::string a=argv[i];
         if(a=="--quick") g_quick=true;
+        else if(a=="--report-legacy") g_reportLegacy=true;
         else if(a=="--section" && i+1<argc) section=argv[++i];
         else if(a=="--case" && i+1<argc) g_caseFilter=argv[++i];
         else if(a=="--salt-base" && i+1<argc) g_saltBase=unsigned(std::stoul(argv[++i]));
