@@ -722,7 +722,7 @@ static void BodySection()
     }
     // Report legacy HWSS vs SMS-off HWSS on the covered delegated-emitter
     // control; dl378 separately gates uncovered paths per lane.  Printed
-    // only, so it runs with --report-legacy (the suite skips its six
+    // only, so it runs with --report-legacy (the suite skips its four
     // 4096 x 32 renders); the salt base advances either way, so the
     // sections after it draw the same salts.
     if(g_caseFilter.empty() && !g_reportLegacy) g_saltBase+=1000;

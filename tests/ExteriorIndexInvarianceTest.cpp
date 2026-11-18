@@ -1643,13 +1643,14 @@ namespace
 		// [0.842, 1.040]; against the current bands the precision gate below
 		// needs only a ratio mean SD < 0.037 / 0.053.  Measured at n = 8:
 		// flat-slab SMS 1024 / VCM 512 read SD 0.0229 (SMS-dominated, 1.6x
-		// headroom, too little), hence SMS 2048 (~0.016); glass-block SMS
+		// headroom, too little), hence SMS 2048 (measured SD 0.0140, ratio
+		// 1.0135, 2.6x headroom; one n = 8 batch each); glass-block SMS
 		// 4096 / VCM 512 read SD 0.0213 (2.5x headroom).  The defects these
 		// rows exist for read 0.12 / 0.11 (DL-290) and 2.25-2.6x (DL-345),
 		// far outside the bands.
 		const unsigned int kW = 100, kH = 75, kMaskSpp = 256;
 		// Keep DL-345 physics bands and minimum eight replicates; retain
-		// DL-399 controlled inputs, larger budgets and paired precision checks.
+		// DL-399 controlled inputs and paired precision checks.
 		const unsigned int partCTrials = trials > 8 ? trials : 8;
 		const uint32_t kMaskSalt = 0x5ca1ab1eu;
 		const char* media = std::getenv( "RISE_MEDIA_PATH" );

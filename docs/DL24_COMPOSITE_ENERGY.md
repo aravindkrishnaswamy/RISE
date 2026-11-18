@@ -1202,7 +1202,9 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
   nested 5 % (1024 spp, per-branch estimator: 144 furnace / sheet ratios
   over four full runs read sd 0.69 % with a heavy tail -- max +3.47 %, which
   failed a 3 % band once); light inside 1024 spp, every
-  cell the mean of 3 salted renders: 3 % glass/glass (a single render's
+  cell the mean of 3 salted renders (since 2026-11-17 one render for
+  glass/glass under PT / BDPT, whose single-render sd is ~0.5 %, 6 sd
+  inside the band; the smallest red cell is -5.7 %): 3 % glass/glass (a single render's
   ratio sd is ~0.5 % under PT / BDPT but ~1.1 % under VCM -- 10 repeats,
   the round-7 review; a single VCM render in a 3 % band was a ~2.5 sd gate,
   4-7 % spurious failures per run), 5 % translucent / nested (a single
@@ -1223,9 +1225,10 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
   Round 7: **270 / 0** with the final bands (the one failure in an earlier
   run, glass/translucent single mixed light inside PT 0.155 vs 0.148, was a
   single-render ~2.5 sd excursion; four salted repeats of that cell read
-  0.150-0.154 per half, which is why every light-inside cell now averages
+  0.150-0.154 per half, which is why every light-inside cell averages
   three renders -- glass/glass too since the round-7 review measured VCM's
-  ratio sd there).
+  ratio sd there; since 2026-11-17 glass/glass under PT / BDPT renders
+  once).
 * **Not changed, measured (the round-7 reviewer): a camera INSIDE a closed
   composite** (DL-407, not seeded) -- composite{glass/glass} reads 0.444
   under PT / BDPT / VCM against the seeded plain-glass truth 2.25 (master

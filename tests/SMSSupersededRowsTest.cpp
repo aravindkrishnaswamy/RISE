@@ -13,7 +13,9 @@
 // modes (slab snell, bdpt8, bdpt16; ball VCM and the legacy ball rows; the
 // DL-353 legacy-uniform series) only printed their numbers, recorded in
 // docs/DEBT_LEDGER.md (DL-353, DL-376, DL-421, DL-445); --modes selects
-// them (slab, ball) and --dl353-uniform adds the DL-353 series back.
+// them and --dl353-uniform adds the DL-353 series back.  --modes filters
+// slab AND ball, so pair it with --section slab or --section ball: under
+// --section all a slab-only mode list leaves the ball gate nothing to check.
 //   slab-closed DL-455 omni slab direct caustic per chain length vs an
 //               unfolded-image closed form                       [gated]
 //   nested, nested-hwss, nested-hwss-const

@@ -141,8 +141,9 @@ int main( int argc, char** argv )
 	VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( 0.0 );
 
 	// C: the ledger row; pre-fix 0.80 (printed: heavy-tailed, see header).
-	// It gates only "finite and non-black", which A already gates on the
-	// same box, so it runs only when --only selects it (e.g. --only C:).
+	// It gates only "finite and non-black", which
+	// SMSMediumTransmittanceTest row A already gates on this same scene, so
+	// it runs only when --only selects it (e.g. --only C:).
 	if( !only.empty() ) {
 		RatioRow( "C: ledger fog box with sphere, VCM / PT (printed)",
 			FogBoxScene( true, 1024, true ), FogBoxScene( false, 64, true ), 1.0, 0.0, trials, seed, only );
