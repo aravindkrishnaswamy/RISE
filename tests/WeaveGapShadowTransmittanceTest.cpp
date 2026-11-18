@@ -2252,6 +2252,8 @@ static void TestTwoLayerLightOutside()
 	// so n = 4 gives ~0.65 % / ~1.0 % for BDPT's share of the ratio noise
 	// (PT's is +/-0.00001, docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md)
 	// against the 8 % band, while DL-05's pre-fix PT error was 28-55 %.
+	// Measured at n = 4 over six seed bases (2026-11-18): BDPT SE <= 0.07 %,
+	// VCM SE <= 0.06 %, BDPT/PT 0.9987-1.0032 and VCM/PT 0.9988-1.0030.
 	const unsigned int res = 24, spp = 512, n = 4;
 	for( const L& r : rows )
 	{

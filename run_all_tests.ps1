@@ -45,6 +45,7 @@ $origRiseTestExtended = $env:RISE_TEST_EXTENDED
 $origTmpDir = $env:TMPDIR
 $origRiseMediaPath = $env:RISE_MEDIA_PATH
 $origRiseOptionsFile = $env:RISE_OPTIONS_FILE
+$ownsLock = $false
 try {
 # Clear any caller-inherited RISE_MEDIA_PATH (mirroring run_all_tests.sh) so
 # tests running from repo root resolve relative `scenes/...` and `models/...`
@@ -248,6 +249,20 @@ if ($total -eq 0) {
 # Setup output dirs
 # -----------------------------------------------------------------------------
 
+# One run per log dir at a time: a second run would delete the first one's
+# logs and per-test TEMP dirs under it while its tests still use them.  A
+# lock whose owner process is gone is taken over.
+$lockPath = "$LogDir.lock"
+if (Test-Path -LiteralPath $lockPath) {
+    $lockOwner = 0
+    [void][int]::TryParse(((Get-Content -LiteralPath $lockPath -ErrorAction SilentlyContinue) | Select-Object -First 1), [ref]$lockOwner)
+    if ($lockOwner -gt 0 -and $lockOwner -ne $PID -and (Get-Process -Id $lockOwner -ErrorAction SilentlyContinue)) {
+        Write-Host "ERROR: another run_all_tests.ps1 (pid $lockOwner) is using $LogDir. Wait for it, or pass its own -LogDir / RISE_TEST_LOG_DIR." -ForegroundColor Red
+        exit 1
+    }
+}
+Set-Content -LiteralPath $lockPath -Value $PID
+$ownsLock = $true
 if (Test-Path -LiteralPath $LogDir) { Remove-Item -Recurse -Force -LiteralPath $LogDir }
 $null = New-Item -ItemType Directory -Force -Path $LogDir
 $null = New-Item -ItemType Directory -Force -Path $BinDir
@@ -628,6 +643,7 @@ Write-Host "All $found tests passed"
 exit 0
 
 } finally {
+    if ($ownsLock) { Remove-Item -Force -LiteralPath $lockPath -ErrorAction SilentlyContinue }
     Pop-Location -StackName RiseRunAllTests -ErrorAction SilentlyContinue
     $env:RISE_OPTIONS_FILE = $origRiseOptionsFile
     $env:RISE_TEST_EXTENDED = $origRiseTestExtended

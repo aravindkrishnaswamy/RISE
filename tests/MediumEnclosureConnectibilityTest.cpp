@@ -96,17 +96,16 @@
 //  (~0.2%), candidates of 4 (pel) or 8 (spectral, whose per-render tails
 //  are heavier: VCM spectral read 0.976-0.983 at n = 4).  The +/-4% band
 //  is >= 13x the references' sd and >= 4 sd of the noisiest ratio (VCM
-//  spectral, ~0.6%, which keeps the 32-render spectral reference: a mean
-//  near 0.98 sits only ~3.3 sd from 0.96).
+//  spectral, ~0.85%; it reads ~0.98, close to 0.96, which is why its
+//  spectral reference keeps all 32 renders).
 //  The mvb 1000 truncation control averages 8 renders (ratio sd ~0.5%).
 //  The BDPT `max_light_depth 1` row restores the diagnostic the first
 //  closure deleted: it and full BDPT are both unbiased, so they agree with
 //  each other and with PT.  The enclosed rows' PT references are likewise
-//  rendered once, 8 renders at 256 spp (sd of the mean ~0.4%; 16 until the
-//  2026-11-17 cost trim).  DL-200's pre-fix BDPT/PT read 0.903-0.915 (RGB)
-//  and ~0.79 (spectral) against the 0.95 floor: the RGB margin is ~3 sd of
-//  the ratio (BDPT's 8-render mean carries ~1 %, the reference 0.4 %; the
-//  trim moved it from ~3.2 to ~3.1 sd), the spectral one far larger.
+//  rendered once at 256 spp: 16 renders for pel (sd of the mean ~0.3%),
+//  8 for spectral (16 until the 2026-11-17 cost trim).  DL-200's pre-fix
+//  BDPT/PT read 0.903-0.915 (RGB), ~3.2 sd below the 0.95 floor, which is
+//  why the pel reference keeps 16; spectral read ~0.79, far outside.
 //
 //  WHAT THE PREDICTED MECHANISM TURNED OUT TO BE WORTH: ZERO.  DL-200
 //  predicted a partition-of-unity violation from the ASYMMETRY.  The
@@ -413,11 +412,12 @@ int main()
 
 	// The enclosed rows keep the original dense medium: the DL-200 /
 	// DL-218 configuration is a light INSIDE a strongly scattering shell.
-	// Each reference is rendered ONCE (8 renders at 256 spp) and shared.
+	// Each reference is rendered ONCE (16 pel / 8 spectral renders at
+	// 256 spp) and shared.
 	const std::string enclosed = SceneBody( true, 0.02, 3.0, 0.12, 40.0 );
 
 	std::cout << "Enclosed shell, references:" << std::endl;
-	const double encRef   = RenderMeanRepeated( Scene( kPT256Enc, enclosed ), "PT pel reference     ", 8 );
+	const double encRef   = RenderMeanRepeated( Scene( kPT256Enc, enclosed ), "PT pel reference     ", 16 );
 	const double encSpRef = RenderMeanRepeated( Scene( kPTSpectral256Enc, enclosed ), "PT spectral reference", 8 );
 
 	// MONEY ROWS (DL-200).  Camera OUTSIDE: the eye walk must cross the delta

@@ -337,8 +337,9 @@ the same tree with `DielectricSPF::SelectionMassIsDeterministic` forced
 back to the round-1 claim (`true`).  Composite n = 64 x 20 000, walk
 n = 16 x 20 000, band 5 sigma + 0.001 (the measurement below; since the
 2026-11-17 cost trim the test runs the composite at n = 16 x 20 000 except
-the `scattering 5` top, which keeps 64 -- the weakest pre-fix row then
-still sits ~3.4x outside its band):
+the `scattering 5` top, which keeps 64 because even there its pre-fix
+diff (0.0063) only just clears its ~0.0054 band; the weakest pre-fix row
+of the other tops still sits ~3.4x outside its band at 16):
 
 | top | tilt / theta | independent walk | pre-fix composite (z) | post-fix composite (z) |
 |---|---|---|---|---|

@@ -204,6 +204,23 @@ if [ "$orphan_count" -ne 0 ]; then
 fi
 
 mkdir -p "$BIN_DIR"
+# One run per log dir at a time: a second run would delete the first one's
+# logs and per-test TMPDIRs under it while its tests still use them.  A lock
+# whose owner is gone (kill -9, reboot) is taken over.
+LOCK_DIR="$LOG_DIR.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+	lock_owner=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+	if [ -n "$lock_owner" ] && kill -0 "$lock_owner" 2>/dev/null; then
+		echo "Another run_all_tests.sh (pid $lock_owner) is using $LOG_DIR." >&2
+		echo "Wait for it, or give this run its own RISE_TEST_LOG_DIR." >&2
+		exit 1
+	fi
+	rm -rf "$LOCK_DIR"
+	mkdir "$LOCK_DIR" || { echo "Cannot create $LOCK_DIR" >&2; exit 1; }
+fi
+echo "$$" > "$LOCK_DIR/pid"
+release_lock() { rm -rf "$LOCK_DIR"; }
+trap release_lock EXIT
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"
 BUILD_FAIL_TSV="$LOG_DIR/.build_failures.tsv"
@@ -347,18 +364,21 @@ EOF
 }
 
 cleanup_interrupted() {
-	trap '' INT TERM
+	trap '' INT TERM HUP QUIT
 	kill_running
 	echo
 	echo "Interrupted — partial results below:"
 	print_summary
-	exit 130
+	exit "$1"
 }
-trap cleanup_interrupted INT TERM
+trap 'cleanup_interrupted 130' INT
+trap 'cleanup_interrupted 143' TERM
+trap 'cleanup_interrupted 129' HUP
+trap 'cleanup_interrupted 131' QUIT
 
 # Any other way out (set -e on an unexpected failure) must not leave tests
 # running behind a dead runner.
-trap kill_running EXIT
+trap 'kill_running; release_lock' EXIT
 
 # ============================================================
 # Phase 1: Build the library archive used to link tests (`make test-objs`:
@@ -516,7 +536,7 @@ awk -F"$TAB" -v OFS="$TAB" -v sched="$schedule_src" '
 			cls[f[1]] = f[2]; sec[f[1]] = (n >= 3) ? f[3] + 0 : 0
 		}
 	}
-	{ c = ($1 in cls) ? cls[$1] : "pool"; t = ($1 in sec) ? sec[$1] : 0; print (c == "exclusive") ? 0 : 1, c, t, $1 }
+	{ c = ($1 in cls) ? cls[$1] : "pool"; t = ($1 in sec) ? sec[$1] : 0; print ((c == "exclusive") ? 0 : 1), c, t, $1 }
 ' "$selected" > "$PLAN.unsorted"
 if [ "$RUN_JOBS" -eq 1 ]; then
 	cut -f2- "$PLAN.unsorted" > "$PLAN"

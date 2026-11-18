@@ -3313,7 +3313,11 @@ static void SlabRenders() {
         for(unsigned c=0;c<3;++c) {
             const Moments a(tested[c]),b(reference[c]);
             std::cout<<std::setprecision(17)<<"slab winding="<<reverse<<" inner="<<cone[0]<<" outer="<<cone[1]<<" c="<<c
-                <<" extended="<<a.mean<<" sd="<<a.sd<<" BDPT="<<b.mean<<" reference sd="<<b.sd<<" n="<<trials<<" spp=4096\n";
+                <<" extended="<<a.mean;
+            if(trials>1) std::cout<<" sd="<<a.sd;
+            std::cout<<" BDPT="<<b.mean;
+            if(trials>1) std::cout<<" reference sd="<<b.sd;
+            std::cout<<" n="<<trials<<" spp=4096\n";
             Check(a.mean>0&&b.mean>0&&std::isfinite(a.mean)&&std::isfinite(b.mean),"slab native-domain controls are positive and finite");
             const bool withinBand=std::fabs(a.mean-b.mean)<=3*std::hypot(a.sd,b.sd);
             // The user accepted the measured wide-cone discrepancy as variance

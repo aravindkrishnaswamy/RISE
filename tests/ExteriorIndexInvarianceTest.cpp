@@ -65,7 +65,7 @@
 //      uniform, RGB and spectral.  The enclosed/air image-mean ratio must
 //      be 1.  One NON-gated row prints the photon-seeded SMS residual.
 //    Part C -- shipped SMS/VCM comparisons on fully covered slab pixels.
-//      Default SMS budgets 2048/4096 spp, full-film VCM 512/512 spp; SMS
+//      Default SMS budgets 4096/8192 spp, full-film VCM 512/512 spp; SMS
 //      uses the mask bounding rectangle without changing camera/film.
 //      Four controlled replay pairs pin fixture input reproducibility.
 //    Usage: [--unit-only] [--trials K (default/minimum 4; RGB uniform glass minimum 8)] [--only <label substring>]
@@ -1578,8 +1578,8 @@ namespace
 	// After master DL-345 corrected open-sheet crossings, the current bands
 	// are [0.885, 1.130] / [0.840, 1.180], with at least eight replicates.
 	// DL-399 retains those updated bands and measures controlled salted mean
-	// uncertainty directly (the budgets it raised were cut back in the
-	// 2026-11-17 cost trim, still with 2.5x precision headroom). The old
+	// uncertainty directly (the budgets it raised were partly cut back in
+	// the 2026-11-17 cost trim; see the budget note below). The old
 	// glassblock centre is not claimed as current behavior.
 	std::string ReadFileText( const std::string& path )
 	{
@@ -1636,19 +1636,20 @@ namespace
 		std::cout << "C: shipped two-sheet SMS scenes vs their VCM _ref twin on the slab pixels S, n=" << ( trials > 8 ? trials : 8 ) << " per side, salted" << std::endl;
 		struct SceneRow { const char* name; double lo, hi; unsigned int smsSpp, vcmSpp; };
 		const SceneRow rows[] = {
-			{ "sms_k2_flatslab",   0.885, 1.130, 2048, 512 },
-			{ "sms_k2_glassblock", 0.840, 1.180, 4096, 512 },
+			{ "sms_k2_flatslab",   0.885, 1.130, 4096, 512 },
+			{ "sms_k2_glassblock", 0.840, 1.180, 8192, 512 },
 		};
 		// Budgets (2026-11-17 cost trim; they were 4096/1024 and 16384/512).
 		// DL-399 raised them to fit the PRE-DL-345 bands [0.964, 1.036] /
 		// [0.842, 1.040]; against the current bands the precision gate below
-		// needs only a ratio mean SD < 0.037 / 0.053.  Measured at n = 8:
-		// flat-slab SMS 1024 / VCM 512 read SD 0.0229 (SMS-dominated, 1.6x
-		// headroom, too little), hence SMS 2048 (measured SD 0.0140, ratio
-		// 1.0135, 2.6x headroom; one n = 8 batch each); glass-block SMS
-		// 4096 / VCM 512 read SD 0.0213 (2.5x headroom).  The defects these
-		// rows exist for read 0.12 / 0.11 (DL-290) and 2.25-2.6x (DL-345),
-		// far outside the bands.
+		// needs only a ratio mean SD < 0.037 / 0.053.  Measured at n = 8
+		// (one batch each): flat-slab SMS 1024 / VCM 512 SD 0.0229, SMS 2048
+		// / VCM 512 SD 0.0140; glass-block SMS 4096 / VCM 512 SD 0.0213.
+		// docs/DL_CHEAPBATCH_VALIDATION.md shows this SD estimate moving
+		// 2.4-6.4x between batches at one budget, so the SMS budgets keep
+		// twice those (4096 / 8192, ~3.5x headroom expected) and only VCM
+		// is cut.  The defects these rows exist for read 0.12 / 0.11
+		// (DL-290) and 2.25-2.6x (DL-345), far outside the bands.
 		const unsigned int kW = 100, kH = 75, kMaskSpp = 256;
 		// Keep DL-345 physics bands and minimum eight replicates; retain
 		// DL-399 controlled inputs and paired precision checks.

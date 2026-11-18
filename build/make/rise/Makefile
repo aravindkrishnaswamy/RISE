@@ -199,7 +199,14 @@ TEST_MODE_STAMP = $(PATHDEST).test-link-mode
 # can be -Oline, -I<dir> or VAR=value on make 4.x).  -n is a dry run and -t
 # only touches, so neither records a mode: a -t after a mode switch must not
 # make objects compiled in the old mode look current.
+# GNU make 3.81 (macOS /usr/bin/make) instead puts --long options first and
+# the single-letter flags after them as -x words; 4.x's later -x words can be
+# -Oline or -I<dir>, so only 3.81 reads them.
+ifeq ($(MAKE_VERSION),3.81)
+MAKE_FLAG_WORD = $(firstword -$(MAKEFLAGS)) $(filter-out --%,$(filter -%,$(MAKEFLAGS)))
+else
 MAKE_FLAG_WORD = $(firstword -$(MAKEFLAGS))
+endif
 MAKE_DRY_RUN = $(findstring n,$(MAKE_FLAG_WORD))$(findstring t,$(MAKE_FLAG_WORD))
 ifeq ($(MAKE_DRY_RUN)$(filter clean,$(MAKECMDGOALS)),)
 $(shell mkdir -p $(PATHDEST) && { [ "`cat $(TEST_MODE_STAMP) 2>/dev/null`" = "$(TEST_LINK_MODE) $(LTO_TESTS)" ] || echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $(TEST_MODE_STAMP); })

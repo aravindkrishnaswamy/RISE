@@ -57,7 +57,8 @@
 //  2026-11-17 cost trim; see HomogeneousRepeats.)  Run-to-run sd of an
 //  8-render in/out ratio is <= 0.0014
 //  on every row (three batches above) and the largest systematic offset
-//  is the NM row's ~1%, so the band is >= 13 sd from any row's mean.  The
+//  is the NM row's ~1%, so the band is >= 13 sd from any row's mean
+//  (~10 sd at the 4 renders the homogeneous rows now average).  The
 //  sub-1% PT offsets are below this suite's resolution and not claimed:
 //  at n = 16, PT pel camera-outside reads 0.31623 +/- 0.00029 against
 //  camera-inside 0.31525 +/- 0.00024 and VCM 0.31526 +/- 0.00001.
