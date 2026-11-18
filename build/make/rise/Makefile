@@ -73,7 +73,7 @@ OBJSTANDALONE = \
 # back in via the `-include $(ALL_DEPS)` near the bottom of this file. Result:
 # editing a header invalidates exactly the .o files that included it -- no
 # more `make clean` after touching IJob.h or any other interface header.
-ALL_OBJS = $(OBJLIB) $(OBJDRISE) $(OBJTESTS) $(OBJTOOLS) $(OBJSTANDALONE)
+ALL_OBJS = $(OBJLIB) $(OBJDRISE) $(OBJTESTS) $(OBJTOOLS) $(OBJSTANDALONE) $(OBJTESTLIB)
 ALL_DEPS = $(ALL_OBJS:.o=.d)
 
 # -MMD: emit a Make-format header-dependency snippet alongside each .o,
@@ -103,6 +103,61 @@ ARCHIVE_LINK_LIBRISE = -Wl,--start-group $(LIBRISE_A) -Wl,--end-group
 endif
 
 librise : $(LIBRISE_A)
+
+# Test binaries link against their own copy of the library, compiled WITHOUT
+# link-time optimisation, whenever the platform config builds the library with
+# -flto (macOS).  With -flto every one of the ~530 test links re-ran LTO code
+# generation over the whole library slice it pulled in (~50 s of one core
+# each): a clean `make -j10 tests` took 2098 s, and so did relinking every test
+# after a one-line library change.  Without LTO the same clean build takes
+# 163 s (library 51 s, tests 112 s).  Same -O3 / -ffast-math flags; the only
+# difference is no cross-TU inlining, which is what the Linux build has always
+# done.  The shipped binaries (`make all`, Xcode) are unaffected.
+#
+# `make TEST_LTO=1 tests` links the tests against the LTO library instead, for
+# checking something that depends on LTO code generation.  The test objects
+# themselves are native in the split build and bitcode otherwise; either kind
+# links against either library.
+ifneq ($(filter -flto%,$(CPPFLAGS) $(CXXFLAGS)),)
+ifeq ($(strip $(TEST_LTO)),)
+TESTLIB_SPLIT = 1
+endif
+endif
+
+ifdef TESTLIB_SPLIT
+TESTOBJ_DIR = $(PATHDEST)testobj/
+TEST_CPPFLAGS = $(filter-out -flto -flto=%,$(CPPFLAGS))
+TEST_CXXFLAGS = $(filter-out -flto -flto=%,$(CXXFLAGS))
+OBJTESTLIB = $(patsubst ../../../%,$(TESTOBJ_DIR)%,$(OBJLIB))
+LIBRISE_TEST_A = $(PATHDEST)librise_test.a
+ifdef IS_MACOS_BUILD
+ARCHIVE_LINK_LIBRISE_TEST = -Wl,-dead_strip $(LIBRISE_TEST_A)
+else
+ARCHIVE_LINK_LIBRISE_TEST = -Wl,--start-group $(LIBRISE_TEST_A) -Wl,--end-group
+endif
+
+$(LIBRISE_TEST_A) : $(OBJTESTLIB) $(ARCHIVE_BUILD_DEFS)
+	@mkdir -p $(PATHDEST)
+	@echo Creating test archive
+	@rm -f $(LIBRISE_TEST_A)
+	@ar rcs $(LIBRISE_TEST_A) $(OBJTESTLIB)
+
+$(TESTOBJ_DIR)%.o : ../../../%.cpp
+	@mkdir -p $(dir $@)
+	@echo Compiling for tests: $<
+	@$(CXX) $(TEST_CPPFLAGS) $(TEST_CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(TESTOBJ_DIR)%.o : ../../../%.mm
+	@mkdir -p $(dir $@)
+	@echo "Compiling for tests (ObjC++): $<"
+	@$(CXX) $(TEST_CPPFLAGS) $(TEST_CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
+else
+TEST_CPPFLAGS = $(CPPFLAGS)
+TEST_CXXFLAGS = $(CXXFLAGS)
+OBJTESTLIB =
+LIBRISE_TEST_A = $(LIBRISE_A)
+ARCHIVE_LINK_LIBRISE_TEST = $(ARCHIVE_LINK_LIBRISE)
+endif
 
 # Depend on $(ARCHIVE_BUILD_DEFS) in addition to $(OBJLIB) so removing a
 # translation unit from Filelist (or changing platform gates in Config.*)
@@ -198,12 +253,12 @@ $(PATHTESTS)ImageReaderOverflowTest.o: CPPFLAGS += -DRISE_TEST_SOURCE_ROOT='"$(a
 
 $(PATHTESTS)%.o : $(PATHTESTS)%.cpp
 	@echo Compiling: $<
-	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+	@$(CXX) $(TEST_CPPFLAGS) $(TEST_CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
-$(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_A)
+$(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_TEST_A)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
-	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(ARCHIVE_LINK_LIBRISE) $(LDLIBS)
+	@$(CXX) $(TEST_CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(ARCHIVE_LINK_LIBRISE_TEST) $(LDLIBS)
 
 # Targeted diagnostic builds (for reproducible certification audits/timings).
 build-tool/% : $(PATHTOOLDEST)%
@@ -237,9 +292,10 @@ tools : $(LIBRISE_A)
 	fi; \
 	echo "tools: all built successfully"
 
-# Build the library .o files and static archive needed to link tests. Used by
+# Build the library .o files and static archive needed to link tests (the
+# non-LTO test copy where the platform splits them, see LIBRISE_TEST_A). Used by
 # run_all_tests.sh as a one-shot library-build phase before per-test builds.
-test-objs : $(LIBRISE_A)
+test-objs : $(LIBRISE_TEST_A)
 	@:
 
 # Build and run all tests
@@ -287,7 +343,7 @@ clean:
 	@rm -rf $(PATHDEST)rise $(PATHDEST)risempi $(PATHDEST)librise.a $(PATHDEST)meshconverter $(PATHDEST)imageconverter $(PATHDEST)biospecbsdfmaker $(PATHDEST)drise_server $(PATHDEST)drise_client $(PATHDEST)drise_submitter $(OBJS) $(OBJMPI) $(OBJLIB)
 	@rm -rf $(OBJDRISE) $(PATHSRCSDRISE)drise_server.o $(PATHSRCSDRISE)drise_client.o $(PATHSRCSDRISE)drise_submitter.o
 	@rm -rf $(PATHSRCS)commandconsole.o $(PATHSRCS)meshconverter.o $(PATHSRCS)imageconverter.o $(PATHSRCS)biospecbsdfmaker.o
-	@rm -rf $(OBJTESTS) $(PATHTESTDEST)
+	@rm -rf $(OBJTESTS) $(PATHTESTDEST) $(PATHDEST)testobj $(PATHDEST)librise_test.a
 	@rm -rf $(OBJTOOLS) $(PATHTOOLDEST)
 	@find $(CLEAN_OBJECT_DIRS) -type f \( -name '*.o' -o -name '*.d' \) -exec rm -f {} \;
 	@rm -rf $(PATHSRCS)ii_files
