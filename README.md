@@ -73,6 +73,7 @@ make -C build/make/rise -j8 tests
 ./run_all_tests.sh                                  # default: all tiers (fast + extended)
 ./run_all_tests.sh --tier fast                      # fast tier only
 ./run_all_tests.sh --filter "*GGX*" --timeout 180   # targeted subset
+./run_all_tests.sh --jobs 1                         # one test at a time (default: one per core)
 make -C build/make/rise build-test/SourceHygieneTest && ./bin/tests/SourceHygieneTest
 tools/red_prove.sh [--args "<test-args>"] <TestBinaryName> <marker> <src-file>...  # stash-based red-proof
 

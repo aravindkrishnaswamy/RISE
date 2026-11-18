@@ -20,6 +20,13 @@ LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs}"
 JOBS="${RISE_TEST_BUILD_JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4 )}"
 FILTER="${RISE_TEST_FILTER:-}"
 TIER="${RISE_TEST_TIER:-all}"
+# How many test binaries may RUN at once (Phase 3).  Most suites render tiny
+# films on one core, so running them side by side cuts wall time several-fold
+# without changing any result.  Tests marked `exclusive` in
+# tests/test_schedule.tsv (multi-core renders, wall-clock gates) always run
+# alone.  1 restores the old one-at-a-time behaviour.  Override with --jobs or
+# RISE_TEST_RUN_JOBS.
+RUN_JOBS="${RISE_TEST_RUN_JOBS:-}"
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -33,13 +40,18 @@ while [ "$#" -gt 0 ]; do
 			TIER="$2"
 			shift 2
 			;;
+		--jobs|-Jobs)
+			[ "$#" -ge 2 ] || { echo "Missing value for $1" >&2; exit 64; }
+			RUN_JOBS="$2"
+			shift 2
+			;;
 		--timeout|-TimeoutSeconds)
 			[ "$#" -ge 2 ] || { echo "Missing value for $1" >&2; exit 64; }
 			RISE_TEST_TIMEOUT="$2"
 			shift 2
 			;;
 		-h|--help)
-			echo "Usage: $0 [--filter <glob1,glob2,...>] [--tier all|fast|extended] [--timeout <sec>]"
+			echo "Usage: $0 [--filter <glob1,glob2,...>] [--tier all|fast|extended] [--jobs <n>] [--timeout <sec>]"
 			exit 0
 			;;
 		*)
@@ -67,6 +79,16 @@ case "$TIER" in
 		;;
 	*)
 		echo "Invalid --tier '$TIER' (expected all, fast, or extended)" >&2
+		exit 64
+		;;
+esac
+
+if [ -z "$RUN_JOBS" ]; then
+	RUN_JOBS="$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 1 )"
+fi
+case "$RUN_JOBS" in
+	''|*[!0-9]*|0)
+		echo "Invalid --jobs '$RUN_JOBS' (expected a positive integer)" >&2
 		exit 64
 		;;
 esac
@@ -167,9 +189,14 @@ mkdir -p "$LOG_DIR"
 BUILD_FAIL_TSV="$LOG_DIR/.build_failures.tsv"
 RUN_FAIL_TSV="$LOG_DIR/.run_failures.tsv"
 TIMINGS_TSV="$LOG_DIR/.timings.tsv"
+# name, wall s, CPU s (user+sys), mean cores, schedule class -- written when
+# /usr/bin/time is available.  A `pool` test whose mean cores is well above 1
+# belongs in tests/test_schedule.tsv as `exclusive`; the summary flags those.
+CPU_TSV="$LOG_DIR/.cpu.tsv"
 : > "$BUILD_FAIL_TSV"
 : > "$RUN_FAIL_TSV"
 : > "$TIMINGS_TSV"
+: > "$CPU_TSV"
 
 TAB="$(printf '\t')"
 
@@ -214,6 +241,10 @@ print_summary() {
 	echo "============================================================"
 	echo "Build: $built built, $build_failed failed (of $total)"
 	echo "Run:   $passed passed, $failed failed, $skipped skipped (of $found run)"
+	if [ -n "${run_wall:-}" ] && [ "$found" -gt 0 ]; then
+		run_sum=$(awk -F"$TAB" '{ s += $1 } END { printf "%d", s }' "$TIMINGS_TSV")
+		echo "Time:  ${run_wall}s wall for ${run_sum}s of test time (--jobs $RUN_JOBS)"
+	fi
 
 	if [ "$found" -gt 1 ] && [ -s "$TIMINGS_TSV" ]; then
 		echo
@@ -222,6 +253,18 @@ print_summary() {
 			[ -n "$tname" ] || continue
 			printf '  %4ds  %s\n' "$tdur" "$tname"
 		done
+	fi
+
+	# A pool test that keeps several cores busy competes with its neighbours
+	# and breaks the one-multi-core-render-at-a-time rule, so flag it for an
+	# `exclusive` entry.  Only meaningful when tests ran side by side.
+	if [ "$RUN_JOBS" -gt 1 ] && [ -s "$CPU_TSV" ]; then
+		busy=$(awk -F"$TAB" '$5 == "pool" && $2 >= 20 && $4 >= 1.6 { printf "  %-46s %5.1f cores over %ds\n", $1, $4, $2 }' "$CPU_TSV")
+		if [ -n "$busy" ]; then
+			echo
+			echo "Pool tests that kept several cores busy (mark them exclusive in tests/test_schedule.tsv):"
+			echo "$busy"
+		fi
 	fi
 
 	if [ "$build_failed" -gt 0 ] && [ -s "$BUILD_FAIL_TSV" ]; then
@@ -253,7 +296,28 @@ print_summary() {
 	fi
 }
 
+# Running tests (Phase 3), one "name<TAB>class<TAB>pid<TAB>start" line each.
+RUNNING=""
+
+# Signal a process and all of its descendants: the per-test subshell wraps
+# /usr/bin/time, which wraps timeout, which wraps the test binary.
+kill_tree() {
+	for kt_child in $(pgrep -P "$1" 2>/dev/null); do
+		kill_tree "$kt_child"
+	done
+	kill -TERM "$1" 2>/dev/null || true
+}
+
 cleanup_interrupted() {
+	trap '' INT TERM
+	if [ -n "$RUNNING" ]; then
+		while IFS="$TAB" read -r rn_name rn_class rn_pid rn_start; do
+			[ -n "$rn_pid" ] || continue
+			kill_tree "$rn_pid"
+		done <<EOF
+$RUNNING
+EOF
+	fi
 	echo
 	echo "Interrupted — partial results below:"
 	print_summary
@@ -364,47 +428,214 @@ echo
 
 # ============================================================
 # Phase 3: Run each built test with captured output.
+#
+# Tests run up to $RUN_JOBS at a time.  tests/test_schedule.tsv names the
+# tests that must run ALONE (`exclusive`: multi-core renders, wall-clock
+# gates), the tests that share the cores with their render threads forced to
+# one (`single`: their renders would spread over a few cores without gaining
+# throughput), and the last measured run time of the long ones, so long tests
+# start first.  Exclusive tests run first, one at a time on an otherwise idle
+# machine; the rest then share the cores.  Unlisted tests are `pool`.
+#
+# Every test gets its own TMPDIR ($LOG_DIR/.tmp/<name>), so two different
+# tests that pick the same scratch-file name cannot collide.  Like the log, it
+# is removed when the test passes and kept when it fails.
 # ============================================================
-i=0
+SCHEDULE_FILE="$SRC_DIR/test_schedule.tsv"
+PLAN="$LOG_DIR/.plan"
+DONE_DIR="$LOG_DIR/.done"
+RUSAGE_DIR="$LOG_DIR/.rusage"
+TMP_ROOT="$LOG_DIR/.tmp"
+mkdir -p "$DONE_DIR" "$RUSAGE_DIR" "$TMP_ROOT"
+
+selected="$LOG_DIR/.selected"
+: > "$selected"
 for test_src in "$SRC_DIR"/*.cpp; do
 	[ -f "$test_src" ] || continue
 	name="$(basename "$test_src" .cpp)"
 	matches_selection "$name" || continue
-	i=$((i + 1))
-	test_path="$BIN_DIR/$name"
-	prefix="$(printf '[ %3d/%3d ] %-46s' "$i" "$total" "$name")"
+	printf '%s\n' "$name" >> "$selected"
+done
 
-	if [ ! -x "$test_path" ]; then
-		printf '%s SKIP (build failed)\n' "$prefix"
-		skipped=$((skipped + 1))
-		continue
+# Plan lines: class<TAB>seconds<TAB>name.  An unknown class is treated as
+# exclusive (the safe choice) with a warning.  With --jobs 1 the plan keeps
+# the old alphabetical order; otherwise exclusive tests come first, then the
+# rest longest first.
+schedule_src=""
+[ -f "$SCHEDULE_FILE" ] && schedule_src="$SCHEDULE_FILE"
+awk -F"$TAB" -v OFS="$TAB" -v sched="$schedule_src" '
+	BEGIN {
+		# Read the schedule with getline: an awk NR == FNR two-file idiom
+		# would treat the selected list as the schedule when the schedule
+		# file is empty.
+		while (sched != "" && (getline line < sched) > 0) {
+			if (line ~ /^[ \t]*(#|$)/) continue
+			n = split(line, f, "\t")
+			if (f[2] != "pool" && f[2] != "exclusive" && f[2] != "single") {
+				printf "warning: tests/test_schedule.tsv: unknown class \"%s\" for %s; running it exclusive\n", f[2], f[1] > "/dev/stderr"
+				f[2] = "exclusive"
+			}
+			cls[f[1]] = f[2]; sec[f[1]] = (n >= 3) ? f[3] + 0 : 0
+		}
+	}
+	{ c = ($1 in cls) ? cls[$1] : "pool"; t = ($1 in sec) ? sec[$1] : 0; print (c == "exclusive") ? 0 : 1, c, t, $1 }
+' "$selected" > "$PLAN.unsorted"
+if [ "$RUN_JOBS" -eq 1 ]; then
+	cut -f2- "$PLAN.unsorted" > "$PLAN"
+else
+	sort -t "$TAB" -k1,1n -k3,3rn -k4,4 "$PLAN.unsorted" | cut -f2- > "$PLAN"
+fi
+
+# `single` tests read this options file: the repo's options (or the caller's
+# RISE_OPTIONS_FILE) plus force_number_of_threads 1.
+SINGLE_OPTIONS="$LOG_DIR/.single-thread.options"
+if [ -n "${RISE_OPTIONS_FILE:-}" ] && [ -f "$RISE_OPTIONS_FILE" ]; then
+	cp "$RISE_OPTIONS_FILE" "$SINGLE_OPTIONS"
+elif [ -f "$REPO_ROOT/global.options" ]; then
+	cp "$REPO_ROOT/global.options" "$SINGLE_OPTIONS"
+else
+	: > "$SINGLE_OPTIONS"
+fi
+printf '\nforce_number_of_threads 1\n' >> "$SINGLE_OPTIONS"
+plan_count=$(wc -l < "$PLAN" | tr -d ' ')
+
+time_bin=""
+if [ -x /usr/bin/time ]; then
+	time_bin=/usr/bin/time
+fi
+
+# Start one test in the background.  The subshell writes the exit status to
+# $DONE_DIR/<name> when the test finishes; the loop below polls for it.
+launch_test() {
+	lt_name="$1"
+	lt_path="$BIN_DIR/$lt_name"
+	lt_log="$LOG_DIR/$lt_name.log"
+	lt_tmp="${TMP_ROOT:?}/${lt_name:?}"
+	rm -rf "$lt_tmp"
+	mkdir -p "$lt_tmp"
+	(
+		TMPDIR="$lt_tmp"
+		export TMPDIR
+		if [ "$2" = "single" ]; then
+			RISE_OPTIONS_FILE="$SINGLE_OPTIONS"
+			export RISE_OPTIONS_FILE
+		fi
+		lt_rc=0
+		if [ -n "$time_bin" ] && [ -n "$timeout_bin" ]; then
+			"$time_bin" -p -o "$RUSAGE_DIR/$lt_name" "$timeout_bin" "$RISE_TEST_TIMEOUT" "$lt_path" >"$lt_log" 2>&1 || lt_rc=$?
+		elif [ -n "$time_bin" ]; then
+			"$time_bin" -p -o "$RUSAGE_DIR/$lt_name" "$lt_path" >"$lt_log" 2>&1 || lt_rc=$?
+		elif [ -n "$timeout_bin" ]; then
+			"$timeout_bin" "$RISE_TEST_TIMEOUT" "$lt_path" >"$lt_log" 2>&1 || lt_rc=$?
+		else
+			"$lt_path" >"$lt_log" 2>&1 || lt_rc=$?
+		fi
+		printf '%d\n' "$lt_rc" > "$DONE_DIR/$lt_name.part"
+		mv "$DONE_DIR/$lt_name.part" "$DONE_DIR/$lt_name"
+	) &
+	RUNNING="$RUNNING$lt_name$TAB$2$TAB$!$TAB$(date +%s)
+"
+}
+
+# Report one finished test.  Wall time comes from /usr/bin/time when present
+# (exact), else from the launch timestamp (to within the poll interval).
+finish_test() {
+	ft_name="$1"; ft_class="$2"; ft_pid="$3"; ft_start="$4"
+	wait "$ft_pid" 2>/dev/null || true
+	ft_rc=$(cat "$DONE_DIR/$ft_name" 2>/dev/null || echo 1)
+	ft_dur=$(( $(date +%s) - ft_start ))
+	ft_cpu=""
+	if [ -s "$RUSAGE_DIR/$ft_name" ]; then
+		ft_line=$(awk '$1 == "real" { r = $2 } $1 == "user" { u = $2 } $1 == "sys" { s = $2 }
+			END { if (r != "") { c = (r > 0) ? (u + s) / r : 0; printf "%d %.1f %.2f", r + 0.5, u + s, c } }' "$RUSAGE_DIR/$ft_name")
+		if [ -n "$ft_line" ]; then
+			# shellcheck disable=SC2086
+			set -- $ft_line
+			ft_dur="$1"
+			printf '%s\t%s\t%s\t%s\t%s\n' "$ft_name" "$1" "$2" "$3" "$ft_class" >> "$CPU_TSV"
+			ft_cpu=", $(printf '%.1f' "$3") cores"
+		fi
 	fi
-
-	found=$((found + 1))
-	log="$LOG_DIR/$name.log"
-	printf '%s ... ' "$prefix"
-
-	start_ts=$(date +%s)
-	rc=0
-	if [ -n "$timeout_bin" ]; then
-		"$timeout_bin" "$RISE_TEST_TIMEOUT" "$test_path" >"$log" 2>&1 || rc=$?
-	else
-		"$test_path" >"$log" 2>&1 || rc=$?
-	fi
-	end_ts=$(date +%s)
-	dur=$((end_ts - start_ts))
-	printf '%d\t%s\n' "$dur" "$name" >> "$TIMINGS_TSV"
-
-	if [ "$rc" -eq 0 ]; then
-		printf 'PASS (%ds)\n' "$dur"
-		rm -f "$log"
+	printf '%d\t%s\n' "$ft_dur" "$ft_name" >> "$TIMINGS_TSV"
+	done_count=$((done_count + 1))
+	ft_prefix="$(printf '[ %3d/%3d ] %-46s' "$done_count" "$total" "$ft_name")"
+	if [ "$ft_rc" -eq 0 ]; then
+		printf '%s PASS (%ds%s)\n' "$ft_prefix" "$ft_dur" "$ft_cpu"
+		rm -f "${LOG_DIR:?}/${ft_name:?}.log"
+		rm -rf "${TMP_ROOT:?}/${ft_name:?}"
 		passed=$((passed + 1))
 	else
-		printf 'FAIL (exit=%d, %ds)\n' "$rc" "$dur"
-		printf '%s\t%d\t%s\n' "$name" "$rc" "$log" >> "$RUN_FAIL_TSV"
+		printf '%s FAIL (exit=%d, %ds%s)\n' "$ft_prefix" "$ft_rc" "$ft_dur" "$ft_cpu"
+		printf '%s\t%d\t%s\n' "$ft_name" "$ft_rc" "$LOG_DIR/$ft_name.log" >> "$RUN_FAIL_TSV"
 		failed=$((failed + 1))
 	fi
+}
+
+nap() {
+	sleep 0.2 2>/dev/null || sleep 1
+}
+
+echo "Running $plan_count test(s), up to $RUN_JOBS at a time (exclusive tests alone)"
+run_start=$(date +%s)
+done_count=0
+next=1
+running_count=0
+exclusive_running=0
+while :; do
+	# Reap finished tests.
+	if [ "$running_count" -gt 0 ]; then
+		still=""
+		while IFS="$TAB" read -r rn_name rn_class rn_pid rn_start; do
+			[ -n "$rn_name" ] || continue
+			if [ -f "$DONE_DIR/$rn_name" ]; then
+				finish_test "$rn_name" "$rn_class" "$rn_pid" "$rn_start"
+				running_count=$((running_count - 1))
+				if [ "$rn_class" = "exclusive" ]; then
+					exclusive_running=0
+				fi
+			else
+				still="$still$rn_name$TAB$rn_class$TAB$rn_pid$TAB$rn_start
+"
+			fi
+		done <<EOF
+$RUNNING
+EOF
+		RUNNING="$still"
+	fi
+
+	# Start as many as the schedule allows: an exclusive test only on an idle
+	# machine, and nothing beside a running exclusive test.
+	while [ "$next" -le "$plan_count" ]; do
+		plan_line=$(sed -n "${next}p" "$PLAN")
+		pl_class=$(printf '%s\n' "$plan_line" | cut -f1)
+		pl_name=$(printf '%s\n' "$plan_line" | cut -f3)
+		if [ ! -x "$BIN_DIR/$pl_name" ]; then
+			done_count=$((done_count + 1))
+			printf '[ %3d/%3d ] %-46s SKIP (build failed)\n' "$done_count" "$total" "$pl_name"
+			skipped=$((skipped + 1))
+			next=$((next + 1))
+			continue
+		fi
+		if [ "$running_count" -gt 0 ]; then
+			[ "$exclusive_running" -eq 0 ] || break
+			[ "$pl_class" != "exclusive" ] || break
+			[ "$running_count" -lt "$RUN_JOBS" ] || break
+		fi
+		found=$((found + 1))
+		launch_test "$pl_name" "$pl_class"
+		running_count=$((running_count + 1))
+		if [ "$pl_class" = "exclusive" ]; then
+			exclusive_running=1
+		fi
+		next=$((next + 1))
+	done
+
+	if [ "$running_count" -eq 0 ] && [ "$next" -gt "$plan_count" ]; then
+		break
+	fi
+	nap
 done
+run_wall=$(( $(date +%s) - run_start ))
 
 print_summary
 

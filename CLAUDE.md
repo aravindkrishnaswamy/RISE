@@ -6,9 +6,9 @@ Start with [README.md](README.md) for the repo map, [AGENTS.md](AGENTS.md) for t
 
 - Linux/macOS main build: `make -C build/make/rise -j8 all`
 - Linux/macOS single test: `make -C build/make/rise build-test/<TestName>`
-- Linux/macOS tests: `make -C build/make/rise -j8 tests` then `./run_all_tests.sh` (`--tier all|fast|extended` [default `all`], `--filter "<glob>"`, `--timeout <sec>`)
+- Linux/macOS tests: `make -C build/make/rise -j8 tests` then `./run_all_tests.sh` (`--tier all|fast|extended` [default `all`], `--filter "<glob>"`, `--timeout <sec>`, `--jobs <n>` [default: one test per core; tests marked `exclusive` in `tests/test_schedule.tsv` run alone])
 - Stash-based red-proof helper: `tools/red_prove.sh [--args "<test-args>"] <TestName> <marker> <src-file>...`
-- Windows tests: `.\run_all_tests.ps1` (`-Tier all|fast|extended` [default `all`], `-Filter "<glob>"`, `-TimeoutSeconds <sec>`)
+- Windows tests: `.\run_all_tests.ps1` (`-Tier all|fast|extended` [default `all`], `-Filter "<glob>"`, `-TimeoutSeconds <sec>`, `-Jobs <n>`)
 - Windows tests (Debug): `.\run_all_tests.ps1 -Config Debug`
 - Sample render:
 

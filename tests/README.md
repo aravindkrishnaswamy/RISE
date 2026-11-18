@@ -9,24 +9,39 @@ Scene-based validation taxonomy now lives in [../scenes/README.md](../scenes/REA
 ### Linux / macOS
 
 ```sh
-make -C build/make/rise tests                     # Build all test binaries against bin/librise.a
+make -C build/make/rise tests                     # Build all test binaries (against bin/librise_test.a on macOS, see below)
 make -C build/make/rise build-test/Math3DTest     # Build a single test executable
 ./run_all_tests.sh                                # Default: all tiers (fast + extended)
 ./run_all_tests.sh --tier fast                    # Fast tier only
 ./run_all_tests.sh --tier extended                # Extended tier only (sets RISE_TEST_EXTENDED=1)
 ./run_all_tests.sh --filter '*Noise3D*' --timeout 60
+./run_all_tests.sh --jobs 1                       # Run tests one at a time (default: one per core)
 ```
 
-Build behavior comes from [../build/make/rise/Makefile](../build/make/rise/Makefile). The makefile glob picks up every `tests/*.cpp` file automatically and links each test executable against the shared static archive `bin/librise.a`.
+Build behavior comes from [../build/make/rise/Makefile](../build/make/rise/Makefile). The makefile glob picks up every `tests/*.cpp` file automatically and links each test executable against a shared static archive of the library.  Where the platform config compiles the library with `-flto` (macOS), the tests use `bin/librise_test.a`, a second copy of the library objects compiled without LTO (`bin/testobj/`): with LTO every test link re-ran code generation over the library (a clean `make -j10 tests` took 2098 s; without LTO, 163 s).  Same `-O3` / fast-math flags, no cross-TU inlining — what the Linux build has always done.  `make TEST_LTO=1 tests` links against the LTO archive `bin/librise.a` instead, for anything that depends on LTO code generation.
 
 Environment overrides honored by `run_all_tests.sh`:
 - `RISE_TEST_EXTENDED=1` — enables gated long-running sections inside individual test binaries (automatically exported under `--tier extended` / `--tier all`).
 - `RISE_TEST_BUILD_JOBS=<N>` — parallel job count when `run_all_tests.sh` invokes `make` to build missing or stale test binaries.
+- `RISE_TEST_RUN_JOBS=<N>` — how many test binaries may run at once (same as `--jobs`; default: the number of cores).
 - `RISE_TEST_LOG_DIR=<dir>` — directory where per-test logs and summary artifacts are written.
 
 #### Tiers
 
 `--tier fast` skips the tests listed in `is_extended_test` (`run_all_tests.sh`) / `$ExtendedTests` (`run_all_tests.ps1`), and runs the tests listed in `has_extended_mode` / `$DualModeExtendedTests` in their cheap mode (`RISE_TEST_EXTENDED=0`).  A test that takes more than about 200 s on its own belongs in one of those two lists: either the extended tier, or a dual-mode test whose fast mode is cheap.  Keep the lists identical in the two scripts.
+
+#### Running tests side by side
+
+Most tests render tiny films on one core, so the runner runs up to `--jobs` (default: one per core) test binaries at once.  [test_schedule.tsv](test_schedule.tsv) controls this:
+
+- `exclusive` tests run alone, before the others, on an otherwise idle machine.  A test is exclusive if it keeps several cores busy (a full-size render, an all-core thread pool, OIDN) or if a check depends on elapsed wall-clock time (cost gates such as Pavilion/Tidal and `CstEditCostTest`, timeouts and deadlines in the agent, viewport and frame-store tests).
+- `pool` tests (the default for an unlisted test) share the cores.
+- `single` tests also share the cores, with their render threads forced to one (`RISE_OPTIONS_FILE` pointing at the repo's `global.options` plus `force_number_of_threads 1`, in every `--jobs` mode).  This is for tests whose renders spread over a few cores without gaining throughput, so one thread costs them little wall time while freeing the machine; nothing they check depends on the thread count.
+- The seconds column is the test's last measured run time; it only decides the start order (longest first).
+
+Every test runs with its own `TMPDIR` (`<log dir>/.tmp/<name>`, kept when the test fails), so two tests that pick the same scratch-file name cannot collide.  When `/usr/bin/time` exists, the runner records each test's CPU time; the summary lists any `pool` test that kept more than about 1.6 cores busy for 20 s or longer, which belongs in `test_schedule.tsv` as `exclusive`.  Per-test wall time, CPU time and mean cores are in `<log dir>/.cpu.tsv`.
+
+A new test that renders with the default thread count, or that checks a timing, must be added to `test_schedule.tsv` as `exclusive`.  `--jobs 1` runs everything one at a time in alphabetical order, as before.
 
 #### Red-proof helper (`tools/red_prove.sh`)
 
@@ -51,6 +66,7 @@ cmake -S build/cmake/rise-tests -B build/cmake/rise-tests/_out -A x64
 .\run_all_tests.ps1 -Tier fast                   # Fast tier only (fast|extended|all)
 .\run_all_tests.ps1 -Filter Math3DTest,*Noise3D* # Subset by wildcard
 .\run_all_tests.ps1 -TimeoutSeconds 60           # Kill any test exceeding 60s
+.\run_all_tests.ps1 -Jobs 1                      # Run tests one at a time (default: one per core)
 ```
 
 Build behavior comes from [../build/cmake/rise-tests/CMakeLists.txt](../build/cmake/rise-tests/CMakeLists.txt). CMake globs every `tests/*.cpp` into its own per-test executable, links against the existing `RISE.lib` produced by the VS2022 Library project, and stages the OpenEXR + OIDN runtime DLLs alongside each test exe.

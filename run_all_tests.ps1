@@ -12,6 +12,7 @@
 #   .\run_all_tests.ps1 -Tier fast               # Fast tier (RISE_TEST_EXTENDED=0)
 #   .\run_all_tests.ps1 -Tier extended           # Extended tier only (RISE_TEST_EXTENDED=1)
 #   .\run_all_tests.ps1 -TimeoutSeconds 60       # Kill any test exceeding 60s
+#   .\run_all_tests.ps1 -Jobs 1                  # Run tests one at a time (default: one per core)
 #   .\run_all_tests.ps1 -NoBuild                 # Run pre-built tests only
 #   .\run_all_tests.ps1 -BuildOnly               # Build only, don't run
 #   .\run_all_tests.ps1 -Filter Math3D*,*Noise3D # Run subset matching wildcards
@@ -27,6 +28,10 @@ param(
     [ValidateSet('all', 'fast', 'extended')]
     [string]$Tier = $(if ($env:RISE_TEST_TIER) { $env:RISE_TEST_TIER } else { 'all' }),
     [int]$TimeoutSeconds = 0,
+    # How many test binaries may RUN at once.  Tests marked `exclusive` in
+    # tests\test_schedule.tsv always run alone.  1 = the old serial behaviour.
+    [ValidateRange(1, 4096)]
+    [int]$Jobs = $(if ($env:RISE_TEST_RUN_JOBS) { [int]$env:RISE_TEST_RUN_JOBS } else { [Environment]::ProcessorCount }),
     [string]$LogDir,
     [switch]$NoBuild,
     [switch]$BuildOnly,
@@ -302,7 +307,20 @@ if ($BuildOnly) {
 }
 
 # -----------------------------------------------------------------------------
-# Phase 2: Run each built test with captured output and optional timeout
+# Phase 2: Run the built tests, up to $Jobs at a time, with captured output
+# and an optional timeout.
+#
+# tests\test_schedule.tsv (shared with run_all_tests.sh) names the tests that
+# must run ALONE (`exclusive`: multi-core renders, wall-clock gates), the tests
+# that share the cores with their render threads forced to one (`single`), and
+# the last measured run time of the long ones, so long tests start first.
+# Exclusive tests run first, one at a time on an otherwise idle machine; the
+# rest then share the cores.  Unlisted tests are `pool`.  -Jobs 1 restores the
+# old one-at-a-time, alphabetical behaviour.
+#
+# Every test gets its own TMPDIR/TEMP/TMP ($LogDir\.tmp\<name>), so two
+# different tests that pick the same scratch-file name cannot collide.  Like
+# the log, it is removed when the test passes and kept when it fails.
 # -----------------------------------------------------------------------------
 
 $found = 0
@@ -310,71 +328,172 @@ $passed = 0
 $failed = 0
 $skipped = 0
 $runFailures = @()
+$timings = @()
+$cpuRows = @()
 
-$i = 0
-foreach ($src in $testSources) {
-    $i++
-    $name = $src.BaseName
-    $exe = Join-Path $BinDir "$name.exe"
-    $prefix = '[ {0,3}/{1,3} ] {2,-46}' -f $i, $total, $name
-
-    if (-not (Test-Path -LiteralPath $exe)) {
-        Write-Host "$prefix SKIP (build failed or missing)"
-        $skipped++
-        continue
-    }
-    # Stale check: source newer than exe means a recent build attempt failed.
-    if (-not $NoBuild -and `
-        (Get-Item -LiteralPath $exe).LastWriteTime -lt $src.LastWriteTime) {
-        Write-Host "$prefix SKIP (build failed, exe is stale)"
-        $skipped++
-        continue
-    }
-
-    $found++
-    $log = Join-Path $LogDir "$name.log"
-    Write-Host -NoNewline "$prefix ... "
-    $start = Get-Date
-
-    if ($TimeoutSeconds -gt 0) {
-        # Start-Process with WaitForExit(ms) gives us a kill-on-timeout path.
-        # Redirect to per-stream files because Start-Process can't merge
-        # stdout+stderr into a single file natively; we concatenate after.
-        $stdoutTmp = "$log.stdout"
-        $stderrTmp = "$log.stderr"
-        $proc = Start-Process -FilePath $exe -PassThru -NoNewWindow `
-            -RedirectStandardOutput $stdoutTmp -RedirectStandardError $stderrTmp
-        if ($proc.WaitForExit($TimeoutSeconds * 1000)) {
-            $rc = $proc.ExitCode
-        } else {
-            $proc.Kill()
-            $proc.WaitForExit()
-            $rc = 124   # mimic GNU `timeout` exit code
+$schedule = @{}
+$scheduleFile = Join-Path $SrcDir 'test_schedule.tsv'
+if (Test-Path -LiteralPath $scheduleFile) {
+    foreach ($line in Get-Content -LiteralPath $scheduleFile) {
+        if ($line -match '^\s*(#|$)') { continue }
+        $cols = $line -split "`t"
+        if ($cols.Count -lt 2) { continue }
+        $cls = $cols[1]
+        if ($cls -ne 'pool' -and $cls -ne 'exclusive' -and $cls -ne 'single') {
+            Write-Host ('warning: tests\test_schedule.tsv: unknown class "{0}" for {1}; running it exclusive' -f $cls, $cols[0])
+            $cls = 'exclusive'
         }
-        $stdout = if (Test-Path -LiteralPath $stdoutTmp) { Get-Content -Raw -LiteralPath $stdoutTmp } else { '' }
-        $stderr = if (Test-Path -LiteralPath $stderrTmp) { Get-Content -Raw -LiteralPath $stderrTmp } else { '' }
-        Set-Content -LiteralPath $log -Value ($stdout + $stderr) -Encoding utf8
-        Remove-Item -Force -LiteralPath $stdoutTmp, $stderrTmp -ErrorAction SilentlyContinue
-    } else {
-        & $exe *>&1 | Out-File -FilePath $log -Encoding utf8
-        $rc = $LASTEXITCODE
-    }
-    $dur = [int]((Get-Date) - $start).TotalSeconds
-
-    if ($rc -eq 0) {
-        Write-Host ("PASS ({0}s)" -f $dur)
-        Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
-        $passed++
-    } elseif ($rc -eq 124) {
-        Write-Host ("TIMEOUT (>{0}s)" -f $TimeoutSeconds)
-        $runFailures += [pscustomobject]@{ Name = $name; Code = $rc; Log = $log; Reason = 'timeout' }
-        $failed++
-    } else {
-        Write-Host ("FAIL (exit={0}, {1}s)" -f $rc, $dur)
-        $runFailures += [pscustomobject]@{ Name = $name; Code = $rc; Log = $log; Reason = 'fail' }
-        $failed++
+        $sec = 0.0
+        if ($cols.Count -ge 3) { [void][double]::TryParse($cols[2], [ref]$sec) }
+        $schedule[$cols[0]] = [pscustomobject]@{ Class = $cls; Seconds = $sec }
     }
 }
+
+$plan = foreach ($src in $testSources) {
+    $entry = $schedule[$src.BaseName]
+    [pscustomobject]@{
+        Name    = $src.BaseName
+        Src     = $src
+        Class   = if ($entry) { $entry.Class } else { 'pool' }
+        Seconds = if ($entry) { $entry.Seconds } else { 0.0 }
+    }
+}
+if ($Jobs -gt 1) {
+    # Exclusive tests first; then the rest (pool and single), longest first.
+    $plan = $plan | Sort-Object -Property @{ Expression = { if ($_.Class -eq 'exclusive') { 0 } else { 1 } } }, @{ Expression = 'Seconds'; Descending = $true }, @{ Expression = 'Name' }
+}
+$plan = @($plan)
+
+$tmpRoot = Join-Path $LogDir '.tmp'
+$null = New-Item -ItemType Directory -Force -Path $tmpRoot
+
+# `single` tests read this options file: the repo's options (or the caller's
+# RISE_OPTIONS_FILE) plus force_number_of_threads 1.
+$singleOptions = Join-Path $LogDir '.single-thread.options'
+$optionsSource = if ($env:RISE_OPTIONS_FILE -and (Test-Path -LiteralPath $env:RISE_OPTIONS_FILE)) { $env:RISE_OPTIONS_FILE } else { Join-Path $RepoRoot 'global.options' }
+$optionsText = if (Test-Path -LiteralPath $optionsSource) { Get-Content -Raw -LiteralPath $optionsSource } else { '' }
+Set-Content -LiteralPath $singleOptions -Value ($optionsText + "`nforce_number_of_threads 1`n") -Encoding ascii
+
+function Start-RiseTest($item) {
+    $exe = Join-Path $BinDir "$($item.Name).exe"
+    $log = Join-Path $LogDir "$($item.Name).log"
+    $tmp = Join-Path $tmpRoot $item.Name
+    if (Test-Path -LiteralPath $tmp) { Remove-Item -Recurse -Force -LiteralPath $tmp }
+    $null = New-Item -ItemType Directory -Force -Path $tmp
+    $saved = @($env:TMPDIR, $env:TEMP, $env:TMP, $env:RISE_OPTIONS_FILE)
+    $env:TMPDIR = $tmp
+    $env:TEMP = $tmp
+    $env:TMP = $tmp
+    if ($item.Class -eq 'single') { $env:RISE_OPTIONS_FILE = $singleOptions }
+    try {
+        $proc = Start-Process -FilePath $exe -PassThru -NoNewWindow `
+            -RedirectStandardOutput "$log.stdout" -RedirectStandardError "$log.stderr"
+    } finally {
+        $env:TMPDIR = $saved[0]
+        $env:TEMP = $saved[1]
+        $env:TMP = $saved[2]
+        $env:RISE_OPTIONS_FILE = $saved[3]
+    }
+    # Touch Handle now: without it PowerShell may never report ExitCode.
+    $null = $proc.Handle
+    return [pscustomobject]@{
+        Item = $item; Proc = $proc; Start = Get-Date; Log = $log; Tmp = $tmp
+        Cpu = 0.0; TimedOut = $false
+    }
+}
+
+function Complete-RiseTest($run) {
+    $name = $run.Item.Name
+    $run.Proc.WaitForExit()
+    $wall = ((Get-Date) - $run.Start).TotalSeconds
+    $dur = [int]$wall
+    try { $run.Cpu = $run.Proc.TotalProcessorTime.TotalSeconds } catch { }
+    $rc = if ($run.TimedOut) { 124 } else { $run.Proc.ExitCode }
+    $stdout = if (Test-Path -LiteralPath "$($run.Log).stdout") { Get-Content -Raw -LiteralPath "$($run.Log).stdout" } else { '' }
+    $stderr = if (Test-Path -LiteralPath "$($run.Log).stderr") { Get-Content -Raw -LiteralPath "$($run.Log).stderr" } else { '' }
+    Set-Content -LiteralPath $run.Log -Value ($stdout + $stderr) -Encoding utf8
+    Remove-Item -Force -LiteralPath "$($run.Log).stdout", "$($run.Log).stderr" -ErrorAction SilentlyContinue
+
+    $cores = if ($wall -gt 0) { $run.Cpu / $wall } else { 0.0 }
+    $script:timings += [pscustomobject]@{ Name = $name; Seconds = $dur }
+    $script:cpuRows += [pscustomobject]@{ Name = $name; Seconds = $dur; Cores = $cores; Class = $run.Item.Class }
+    $script:doneCount++
+    $prefix = '[ {0,3}/{1,3} ] {2,-46}' -f $script:doneCount, $total, $name
+    if ($rc -eq 0) {
+        Write-Host ('{0} PASS ({1}s, {2:N1} cores)' -f $prefix, $dur, $cores)
+        Remove-Item -LiteralPath $run.Log -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force -LiteralPath $run.Tmp -ErrorAction SilentlyContinue
+        $script:passed++
+    } elseif ($rc -eq 124) {
+        Write-Host ('{0} TIMEOUT (>{1}s)' -f $prefix, $TimeoutSeconds)
+        $script:runFailures += [pscustomobject]@{ Name = $name; Code = $rc; Log = $run.Log; Reason = 'timeout' }
+        $script:failed++
+    } else {
+        Write-Host ('{0} FAIL (exit={1}, {2}s)' -f $prefix, $rc, $dur)
+        $script:runFailures += [pscustomobject]@{ Name = $name; Code = $rc; Log = $run.Log; Reason = 'fail' }
+        $script:failed++
+    }
+}
+
+Write-Host ('Running {0} test(s), up to {1} at a time (exclusive tests alone)' -f $plan.Count, $Jobs)
+$runStart = Get-Date
+$doneCount = 0
+$running = New-Object System.Collections.ArrayList
+$next = 0
+try {
+    while ($true) {
+        # Reap finished tests; kill any past the timeout.
+        foreach ($run in @($running)) {
+            if (-not $run.Proc.HasExited) {
+                try { $run.Cpu = $run.Proc.TotalProcessorTime.TotalSeconds } catch { }
+                if ($TimeoutSeconds -gt 0 -and ((Get-Date) - $run.Start).TotalSeconds -gt $TimeoutSeconds) {
+                    $run.TimedOut = $true
+                    try { $run.Proc.Kill() } catch { }
+                }
+                continue
+            }
+            Complete-RiseTest $run
+            $running.Remove($run)
+        }
+
+        # Start as many as the schedule allows: an exclusive test only on an
+        # idle machine, and nothing beside a running exclusive test.
+        while ($next -lt $plan.Count) {
+            $item = $plan[$next]
+            $exe = Join-Path $BinDir "$($item.Name).exe"
+            $doneSkip = $null
+            if (-not (Test-Path -LiteralPath $exe)) {
+                $doneSkip = 'SKIP (build failed or missing)'
+            } elseif (-not $NoBuild -and (Get-Item -LiteralPath $exe).LastWriteTime -lt $item.Src.LastWriteTime) {
+                # Source newer than exe means a recent build attempt failed.
+                $doneSkip = 'SKIP (build failed, exe is stale)'
+            }
+            if ($doneSkip) {
+                $doneCount++
+                Write-Host ('[ {0,3}/{1,3} ] {2,-46} {3}' -f $doneCount, $total, $item.Name, $doneSkip)
+                $skipped++
+                $next++
+                continue
+            }
+            if ($running.Count -gt 0) {
+                $exclusiveRunning = @($running | Where-Object { $_.Item.Class -eq 'exclusive' }).Count -gt 0
+                if ($exclusiveRunning -or $item.Class -eq 'exclusive' -or $running.Count -ge $Jobs) { break }
+            }
+            $found++
+            [void]$running.Add((Start-RiseTest $item))
+            $next++
+        }
+
+        if ($running.Count -eq 0 -and $next -ge $plan.Count) { break }
+        Start-Sleep -Milliseconds 200
+    }
+} finally {
+    # Ctrl-C or an error: do not leave test processes behind.
+    foreach ($run in @($running)) {
+        if (-not $run.Proc.HasExited) { try { $run.Proc.Kill() } catch { } }
+    }
+}
+$runWall = [int]((Get-Date) - $runStart).TotalSeconds
 
 # -----------------------------------------------------------------------------
 # Summary
@@ -384,6 +503,30 @@ Write-Host '============================================================'
 Write-Host ('Build: {0} built, {1} failed (of {2})' -f $built, $buildFailed, $total)
 Write-Host ('Run:   {0} passed, {1} failed, {2} skipped (of {3} run)' `
     -f $passed, $failed, $skipped, $found)
+if ($found -gt 0) {
+    $runSum = ($timings | Measure-Object -Property Seconds -Sum).Sum
+    Write-Host ('Time:  {0}s wall for {1}s of test time (-Jobs {2})' -f $runWall, $runSum, $Jobs)
+}
+
+if ($found -gt 1) {
+    Write-Host ''
+    Write-Host 'Slowest tests (s):'
+    foreach ($t in ($timings | Sort-Object -Property Seconds -Descending | Select-Object -First 10)) {
+        Write-Host ('  {0,4}s  {1}' -f $t.Seconds, $t.Name)
+    }
+}
+
+# A pool test that keeps several cores busy competes with its neighbours and
+# breaks the one-multi-core-render-at-a-time rule, so flag it for an
+# `exclusive` entry.  Only meaningful when tests ran side by side.
+if ($Jobs -gt 1) {
+    $busy = @($cpuRows | Where-Object { $_.Class -eq 'pool' -and $_.Seconds -ge 20 -and $_.Cores -ge 1.6 })
+    if ($busy.Count -gt 0) {
+        Write-Host ''
+        Write-Host 'Pool tests that kept several cores busy (mark them exclusive in tests\test_schedule.tsv):'
+        foreach ($b in $busy) { Write-Host ('  {0,-46} {1,5:N1} cores over {2}s' -f $b.Name, $b.Cores, $b.Seconds) }
+    }
+}
 
 if ($buildFailed -gt 0 -and $buildFailures.Count -gt 0) {
     Write-Host ''
