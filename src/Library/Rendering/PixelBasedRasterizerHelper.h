@@ -520,10 +520,16 @@ namespace RISE
 			///    image (film contributions are additionally limited to the
 			///    active output / splat region, exactly as a full-frame
 			///    composition would produce them).  Pixels outside it are not
-			///    composed by this call: RasterizeScene pre-fills the scratch
-			///    from the prepared image, so they hold that or an earlier
-			///    composition (AgentFrameStoreIsolationTest relies on them
-			///    never holding pixels from outside the render's crop).
+			///    composed by this call.  In THIS helper's filtered scratch
+			///    (pFilteredScratch) they hold the prepared image, which
+			///    RasterizeScene / RasterizeSceneAnimation copy in before any
+			///    worker starts, or an earlier composition;
+			///    AgentFrameStoreIsolationTest checks that every outside pixel
+			///    of a regional pixel-based render's previews equals the film
+			///    as it was before the render.  BidirectionalRasterizerBase's
+			///    override composes into its own scratch, which starts
+			///    transparent black, so there they are black or an earlier
+			///    composition.  Callers must still read only the region.
 			///    An empty or wholly off-image region composes nothing.
 			///  * @a region null: the whole image is valid.
 			///  * The returned reference is valid until the caller's

@@ -292,7 +292,8 @@ int main()
 		// NON-SPATIAL: build the TLAS, apply the non-spatial edit -> the spatial generation
 		// MUST be UNCHANGED (TLAS preserved -- the slice-3 skip), and the subsequent
 		// PrepareForRendering SKIPS the O(N log N) BVH rebuild (the BVH is still valid),
-		// leaving only its O(N) per-object realize sweep.
+		// leaving only its O(N) per-object work (realize sweep, census refresh,
+		// world-area prune, SMS / DL-382 loops).
 		{
 			Job* jns = new Job(); DeriveToJob( doc, *jns );
 			jns->GetObjects()->PrepareForRendering();
@@ -302,7 +303,7 @@ int main()
 			Check( jns->GetObjects()->GetSpatialStructureGeneration() == g0, mn );
 			jns->release();
 		}
-		prepNonAt[k] = postEditPrepare( docM, closM );   // skips the BVH rebuild: O(N) realize sweep + census refresh
+		prepNonAt[k] = postEditPrepare( docM, closM );   // skips the BVH rebuild: O(N) per-object work only
 
 		jbase->release();
 		std::printf( "  %6d | %8.1f | %10.1f | %10.1f | %11.1f | %10.1f | %11.1f | %11.1f\n", N, editAt[k], cloAt[k], cloGraphAt[k], incrAt[k], fullAt[k], prepSpatAt[k], prepNonAt[k] );
@@ -320,7 +321,8 @@ int main()
 	Check( incrAt[2] < incrAt[0] * 6.0 + 50.0, "incremental re-apply ~flat in N (O(closure . log N), not O(N log N))" );
 	// The TLAS-skip result (slice 3): a non-spatial edit's post-edit PrepareForRendering
 	// SKIPS the O(N log N) BVH rebuild (BVH still valid; only O(N) per-object work runs),
-	// so it is materially cheaper than a spatial edit's rebuild (4.2-4.6x measured, 3x gate). The generation-counter
+	// so it is materially cheaper than a spatial edit's rebuild (4.2-4.6x over three runs
+	// at 647531ad4, 2026-11-17; 3x gate). The generation-counter
 	// Checks above are the noise-free proof; this is the wall-clock.
 	Check( prepSpatAt[2] > prepSpatAt[0], "spatial TLAS rebuild grows with N (~O(N log N))" );
 	Check( prepNonAt[2] * 3 < prepSpatAt[2], "NON-spatial edit's post-edit prepare materially cheaper than the spatial rebuild at N=4096 (TLAS skipped; gen-counter Checks are the noise-free proof)" );
