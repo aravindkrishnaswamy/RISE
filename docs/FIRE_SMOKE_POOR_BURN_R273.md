@@ -1,6 +1,6 @@
 # r273: poor-burn feedback for sooty flames (two opt-ins, evaluated offline and at low tier)
 
-Last updated 2026-11-18. Follows [r272 soot](FIRE_SMOKE_SOOT_R272.md) §6 and the
+Last updated 2026-11-19. Follows [r272 soot](FIRE_SMOKE_SOOT_R272.md) §6 and the
 [formation–oxidation draft](FIRE_SMOKE_SOOT_FORMATION_OXIDATION_R252.md). Tools: `tools/fire/r273/`.
 Data: `/Volumes/SSD/RISE/fire_production_calibration/r273_poor_burn/`.
 
@@ -23,6 +23,14 @@ Data: `/Volumes/SSD/RISE/fire_production_calibration/r273_poor_burn/`.
   adding the sheet gate fixes methane and thins the smoke of a sooty fuel.
 - **Tier-8 run A (§5): soot radiation alone runs away.** The flame cools to a 1350 K peak, oxidation stops and
   nearly all the soot escapes. Too strong; a lower-cap run is in progress.
+- **Why (§6):** not missing self-absorption and not the cap. The collapse starts at a radiative fraction of 0.31–0.36
+  with soot optical depth 0.2–0.4. Soot emission at yield 0.3 is large enough to cool the reaction cells below the
+  1300 K oxidation gate, soot then accumulates, and the gas-normalised budget pushes the escape factor above 1 (1.26 by
+  0.3 s), so cooling no longer lowers the loss.
+- **Third opt-in (§6), `RISE_FIRE_SOOT_SELF_ABSORPTION=1`:** soot radiates its own emission attenuated by its
+  six-flux column, outside the gas budget; the gas escape factor is bounded by 1. Tier 6, yield 0.3: the flame holds
+  at about 1450–1480 K with 1.1–1.6 L above 1300 K (soot radiation alone: no gas above 1300 K by 0.3 s), and the
+  unburned share is 0.78 (old closure 0.62, soot radiation alone 0.94). A tier-8 run is in progress.
 - Not run: single-opt-in tier-6 arms, any window longer than 0.6 s. The tier-6 numbers are start-up
   transients from a soot-free state and overstate the settled escaping share (old closure: 62% here, 46% settled at
   tier 8).
@@ -331,11 +339,222 @@ same start, same frames. Means of 23.97–24.90 s (16 frames) unless noted.
   intermediate state or the flame falls to the cold branch at any cap above the gas value.
 - Data: `docs/data/fire_r273/t8_y300_rad045_{budget,centreline}_23.96_24.90s.txt`.
 
+## 6. Why run A collapses, and a self-absorption closure (2026-11-19)
+
+### 6.1 Diagnosis
+
+Tools: `radiation_census.cpp` (one frozen production source step on a checkpoint; per-cell census of reaction heat
+against realised radiative loss, the budget arithmetic, soot optical depth, a six-flux column escape) and
+`frame_tau.cpp` (soot optical depth from frames, which carry carbon and temperature only). Run A kept no checkpoints,
+so `run_snap.sh` replayed it from step 13,769 with a checkpoint every 30 steps (0.049 s) up to 0.30 s
+(`t8_snap_rad045`, stopped there). The replay is the same build and settings as run A. Table:
+`docs/data/fire_r273/r273_collapse_census.txt`.
+
+| State | t after start, s | Applied fraction | Escape factor β | Gas above 1300 K, L | Hot cells: share of loss / of heat | Hot cells: loss / heat | Soot oxidised / formed | Largest soot chord τ | Peak T, K |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| y300, no soot radiation (25 s run, 5.70 s) | – | 0.418 | 0.74 | 3.9 | 0.66 / 0.42 | 0.64 | 0.54 | 0.32 | 1744 |
+| replay s30 | 0.05 | 0.307 | 0.78 | 4.2 | 0.64 / 0.44 | 0.44 | 0.31 | 0.19 | 1635 |
+| replay s90 | 0.15 | 0.359 | 0.96 | 2.4 | 0.45 / 0.31 | 0.51 | 0.32 | 0.32 | 1505 |
+| replay s150 | 0.25 | 0.416 | 1.18 | 0.8 | 0.22 / 0.16 | 0.56 | 0.18 | 0.38 | 1450 |
+| replay s180 | 0.30 | 0.437 | 1.26 | 0.7 | 0.21 / 0.16 | 0.57 | 0.17 | 0.41 | 1460 |
+
+(Gas alone, χ 0.20, on the same states: hot-cell loss/heat 0.24–0.30, and 2/3 of the loss in cells above 1300 K.)
+
+- **Hypothesis 1 (missing self-absorption, only the cap limiting): not the cause.** The collapse happens while the
+  fraction is 0.31–0.36, well under the cap; the cap is approached only at 0.3 s, after the volume above 1300 K has
+  fallen fivefold. Soot optical depth across the flame stays at 0.2–0.4 during the collapse (column escape 0.82–0.92).
+  In run A's settled frames (23.97–24.90 s) it is 0.30–0.48 across the axis at 0.05–0.3 m, peak κ about 3 per metre,
+  column escape of the axis cell 0.70 (the vertical column dominates); the control is 0.11–0.24 and 0.86. The
+  self-absorption the note estimated (τ ≈ 0.8) is about twice what the frames give, and it is a consequence of the
+  collapse, not its trigger.
+- **Hypothesis 2 (the partition dumps the capped loss on the few hottest cells): not as stated.** The distribution of
+  the loss over temperature is close to the gas-only one (hot cells take 64–72% of the loss with soot, 67% without).
+  Hot cells lose 0.44–0.64 of their own heat in aggregate, against 0.24–0.30 with gas alone; 8–33% of them
+  individually lose more than they release (none once collapsed). The hot cells lose more because the total roughly doubles, not because
+  the share moves.
+- **What the numbers do show:**
+  1. *The onset is the soot emission itself.* Soot formed in a burning cell sits in that cell at its temperature and
+     emits as f_v T⁵. At yield 0.3 a hot, sooty flame emits 0.42–0.45 of its heat release (frozen, y300 state);
+     hot cells then lose about half their heat instead of a quarter, which by itself is enough to pull their mean
+     down by a few hundred kelvin.
+  2. *The amplifier is the cell-mean oxidation gate.* Oxidised/formed falls from 0.54 (hot sooty state) to 0.17 as
+     cells drop below 1300 K, so soot accumulates (peak f_v 0.7 → 1.5 ppm by 0.25 s, about 2 ppm on the centreline when settled).
+  3. *The budget arithmetic removes the temperature feedback.* The escape factor is χQ/G; as the flame cools the gas
+     emission G falls and β rises: 0.78 → 0.96 → 1.18 → 1.26. From 0.2 s on, every cell emits more than the
+     optically thin limit at its temperature, so cooling no longer reduces the loss: it stays at a fixed fraction of the
+     heat release and the cold state is self-sustaining. An escape factor above 1 is not physical.
+
+### 6.2 Closure: `RISE_FIRE_SOOT_SELF_ABSORPTION=1` (needs the cap; unset = off)
+
+Soot leaves the gas budget and radiates its own emission:
+
+- Gas: unchanged calibration (β = χQ/G with χ = 0.20), but β is bounded by 1, since it is an escape probability.
+- Soot: each cell loses P·C·f_v·(T⁵ − T∞⁵), the same thin law, with P its six-flux escape probability: the mean over
+  ±x, ±y, ±z of the slab-mean transmission out of the cell, (1 − e^(−κΔx))/(κΔx), times e^(−τ) of the soot column
+  beyond it to the domain edge, with the Planck-mean κ = 3.83·6π·E(m)·f_v·T/C₂ of the same law (3.83 = 15·24ζ(5)/π⁴,
+  checked). No length scale is chosen: the column is the solver's own soot field.
+- The cap now only scales soot down, never up: if gas plus escaping soot exceed cap × Q the soot term is scaled to fit;
+  otherwise the loss is whatever the physics gives. With no heat release the soot scale follows the gas's quiescent
+  factor γ.
+- Why this and not the alternatives: (a) a flame-scale mean beam length (3.6 V/A) is ill-defined here (the region
+  above 1000 K is a wrinkled shell with 3.6 V/A ≈ 0.06–0.07 m) and would need a per-scene length; the column uses the
+  field the solver has. (b) A per-cell loss bound (loss ≤ local heat) has no physical basis (a cell may radiate heat
+  convected into it). A temperature floor or soot eraser was ruled out. The two defects the evidence found are
+  physical-law violations (β > 1, and soot emission scaled by a gas calibration), and this closure removes both; the
+  column factor is the self-absorption the owner asked about, kept because it costs one pass over the grid and is
+  measurable (0.7 in run A's settled state).
+- What it does not change: the onset. At the start the gas escape factor is 0.74–0.82 and the column escape 0.84–0.92,
+  so soot emits about the same either way (frozen fraction 0.447 against 0.418 on the y300 state, 0.327 against 0.307
+  at s30). It acts once the flame cools: on the s150/s180 states the fraction is 0.32/0.31 against 0.42/0.44, and the
+  hot cells lose 0.40–0.42 of their heat instead of 0.56–0.57. At yield 0.03 it gives 0.224 against 0.219.
+- Conservation: only the radiative sink changes. The backward-Euler map takes separate gas and soot weights (folded
+  into the exchange with the solver's factor set to 1); its derivative enclosure becomes β·g′_lower + w·5C·T_lo⁴ and
+  the existing positivity test on C_T + Δt·F′ is unchanged. The frozen-packet ledger is checked per cell in the kernel
+  as before, and every tier-6 step was accepted.
+- Production call (`FireProductionSource.cpp`) passes the grid dimensions; a call without them, a malformed value, or
+  the variable without the cap fails with a named error.
+
+### 6.3 Tests
+
+`FireSimulationSolverTest` gains six checks ("r273 self-absorption …", "r273 six-flux …", "r273 separate soot
+weight …"): parsing and off when unset; the column escape is 1 in clear gas, the slab transmission behind a slab and
+the slab mean inside it (closed forms); the separate soot weight with no gas weight gives the weighted soot law,
+bracketed by its end values; on a 2-cell grid the applied fraction equals an independent oracle (gas at χ with β ≤ 1
+plus column-escaping soot), the gas escape factor is the gas-only one, the cap scales only soot, and the realised sink
+matches within 2%; chemistry unchanged and the ledger closes; fails closed without the cap, on a malformed setting,
+without grid dimensions or with non-uniform cells. Unset, the existing soot-radiation arm is byte-identical
+(checked against the explicit-0 call).
+
+Results, 2026-11-19, variables unset, `RISE_TEST_EXTENDED=0`: FireSimulationSolverTest, FireProductionCalibrationTest
+(no mirrored source touched; it prints an informational `UNBOUND_R186_OWNER` line for the kernel header and passes),
+FireSequenceTest, FireSimulationRecordsTest and FireCaseTest pass. FireProductionSolverTest (3) and
+FireProductionProjectionTest (1) fail only their Metal timing checks (tier-10 ms allocations) while the GPU is shared.
+
+### 6.4 Tier-6 A/B (0.6 s restarts, `run_ab.sh`, same state and frames as §3.3)
+
+Soot radiation alone had never been run at tier 6; it is the collapse control. Means of the nine frames 2.5–3.0 s
+(`r273_poor_burn/t6_ab_selfabs_summary.txt`, `docs/data/fire_r273/r273_t6_selfabs_summary.txt`); the radiative
+fraction is not recorded by this driver.
+
+| Arm | Yield | Heat release, kW | Unburned share | Peak T, K (last 5 frames) | Centre T at 0.1 m, K | Gas above 1300 K, L (mean; last 5 frames) |
+|---|---:|---:|---:|---:|---:|---:|
+| off (r272 closure) | 0.3 | 25.8 | 0.62 | 1724 (mean) | 1347 | 3.4 |
+| both (cap 0.45 + sheet gate) | 0.3 | 25.7 | 0.11 | 1464 (mean) | 1203 | 2.0 |
+| soot radiation alone, cap 0.45 | 0.3 | 25.2 | 0.94 | 1188–1253 | 1027 | 0.42; 0 |
+| soot radiation + self-absorption | 0.3 | 25.6 | 0.78 | 1447–1477 | 1162 | 1.52; 1.1–1.6 |
+| soot radiation alone, cap 0.45 | 0.03 | 31.4 | 0.55 | 1658–1723 | 1382 | 3.99 |
+| soot radiation + self-absorption | 0.03 | 31.4 | 0.55 | 1652–1714 | 1378 | 3.94 |
+| both (§3.3) | 0.03 | 31.5 | 0.07 | 1697 (mean) | 1390 | 4.1 |
+
+- **Soot radiation alone reproduces the tier-8 collapse at tier 6.** The volume above 1300 K goes 2.2 → 0.07 L in
+  0.2 s and to zero after, the peak settles at 1190–1250 K, and 94% of the formed soot stays unburned.
+- **With self-absorption the flame stops falling.** The peak drops from 1560 to about 1450 K in the first 0.2 s and
+  then holds at 1450–1480 K; the volume above 1300 K settles at 1.1–1.6 L (old closure 3.4 L, soot radiation alone
+  0); centre temperature at 0.1 m 1060–1180 K. Soot oxidation continues: 22% of the formed soot burns in the window
+  (6% with soot radiation alone, 38% with the old closure).
+- **At yield 0.03 it stays close to soot radiation alone** (unburned share 0.548 against 0.546, peak and hot volume
+  within 1–2%); the column escape there is 0.98 and the gas escape factor stays below 1.
+- These are 0.6 s start-up windows from a soot-free state (§3.3); they rank the arms, they do not give settled shares.
+
+### 6.5 Tier-8 run (launched, not finished)
+
+`t8_y300_rad045_sa` (`run_tier8_a.sh t8_y300_rad045_sa 0.45 0 1`, driver `build_r273c/ab_driver_tier`): run A with
+self-absorption on; same start (step 13,769) and frame origin, so `sooty_y300` and `t8_y300_rad045` are controls. A
+full checkpoint every 190 steps goes to `t8_y300_rad045_sa.snap/` (`RISE_R273_SNAPSHOT_EVERY`), so the realised
+radiative fraction can be measured with `radiation_census`. Launched 2026-11-19 02:33 PST. Its first steps took
+about 20 s each with three other GPU jobs running (run A averaged 10 s); expected end roughly 08:00–11:00.
+Provenance in `t8_y300_rad045_sa.commit`. Its first three frames (to 22.59 s) match run A's within 1–4% (peak 1703,
+1576, 1515 K against 1704, 1592, 1516 K), as the frozen analysis predicts for the onset. Frames 3–5 (to 22.78 s)
+then diverge: peak 1485–1497 K against 1419–1448 K, gas above 1300 K 1.9/1.5/1.2 L against 1.5/0.7/0.7 L. Its first
+snapshot (step 190, 22.78 s, `diag/census2_t8sa_step190.txt`): applied fraction 0.364, not at the cap; gas escape
+factor at its bound of 1; soot oxidised 50 mg/s against 29 mg/s in the run-A replay at 22.76 s; largest soot chord τ
+0.35. Early, single snapshot.
+
+To judge it (as §4): peak temperature 1500 K or more with a persistent volume above 1300 K; realised fraction
+0.3–0.45 and not at the cap; soot oxidation continuing; escaping share between `sooty_y300`'s 46% and run A's ~100%.
+
+### 6.6 Not verified
+
+- The tier-6 arm did not reach the 1500 K peak the owner asked for (1450–1480 K); whether tier 8 does is open.
+- The radiative fraction in the solver runs is inferred from frozen steps, not measured in the dynamic runs (the tier-8
+  snapshots will give it).
+- The onset is unchanged: soot formed in a burning cell emits at that cell's temperature, so the first 0.1–0.2 s still
+  cool the reaction cells. Whether a real yield-0.3 flame's cell-mean reaction zone at 3 cm should sit near 1450 K or
+  1700 K was not checked against data. Klassen and Gore's 30 cm toluene and heptane pool-fire measurements (NIST
+  reports, found on the web 2026-11-19; values not retrieved) are the dataset to check against.
+- The six-flux escape uses only the soot column (not the gas bands), drops the absorbed energy instead of depositing it
+  in the absorbing cells (so cool soot in the plume is not heated by flame radiation), and treats the domain edges as
+  black and cold. The Planck mean is used for absorption of radiation emitted at a different temperature.
+- The gas escape factor bound (β ≤ 1) changes the gas calibration once a sooty flame has cooled; with the opt-in the
+  gas fraction can drop below 0.20.
+- The dynamic gain was not split between its three parts. Frozen, on s180: gas-normalised thin 0.437 → soot on its
+  own emission 0.389 → with the column 0.354 → with the gas factor bounded 0.313.
+- Single realisations, 0.6 s windows, one resolution at tier 6.
+
+## 7. Tier-8 cap 0.30, no self-absorption (2026-11-19)
+
+`t8_y300_rad030`: run A with the cap at 0.30 (`run_tier8_a.sh t8_y300_rad030 0.30`). 1,520 steps, all accepted.
+Mean of 23.97–24.90 s (16 frames), same frames as the control and run A.
+
+| | Control (`sooty_y300`) | Cap 0.30 | Cap 0.45 (run A) |
+|---|---:|---:|---:|
+| Heat release, kW | 26.4 | 26.3 | 26.6 |
+| Peak temperature, K | 1720–1810 | 1514–1608 | 1340–1410 |
+| Centreline temperature at 0.14 m, K | 1572 | 1315 | 1021 |
+| Gas above 1300 K, litres | about 4.4 | 2.5 | about 0.1 |
+| Upward soot flux at 1 m, mg/s | 91 | 116 | 198 |
+| Escaping share (flux over 197 mg/s formed) | 46% | about 59% | about 100% |
+| Centreline soot volume fraction in the flame, ppm | 0.42 | 0.66–0.67 | 1.9–2.0 |
+
+- **A stable intermediate state exists.** The flame stays hot, soot keeps oxidising, and the soot inventory levels
+  off (76, 130, 183, 226, 223 mg at 0.5 s intervals). The poor-burn feedback is present at a believable strength:
+  about 200 K cooler and 13 points more soot escaping than the control.
+- The realised radiative fraction was not recorded; whether it sits at the 0.30 cap is not known. If it does, the
+  cap is acting as the model, which is what §6's opt-in is meant to replace.
+- Formed soot is taken as 197 mg/s (the control's value); heat release is equal in all three runs.
+- Look: flame shorter and redder than the control, column darker (`rad030_seq`, sheet
+  `movies/r273_soot_radiation_compare4.png`: yield 0.03, control, cap 0.30, cap 0.45).
+- Data: `docs/data/fire_r273/t8_y300_rad030_{budget,centreline}_23.96_24.90s.txt`.
+
+## 8. Tier-8 with the self-absorption closure, cap 0.45 (2026-11-19)
+
+`t8_y300_rad045_sa`: run A plus `RISE_FIRE_SOOT_SELF_ABSORPTION=1`. 1,520 steps, all accepted. Same 16 frames.
+
+| | Control | Cap 0.30 (§7) | Cap 0.45 + closure | Cap 0.45 (run A) |
+|---|---:|---:|---:|---:|
+| Heat release, kW | 26.4 | 26.3 | 26.2 | 26.6 |
+| Peak temperature, K | 1720–1810 | 1514–1608 | 1485–1539 | 1340–1410 |
+| Centreline temperature at 0.14 m, K | 1572 | 1315 | 1261 | 1021 |
+| Gas above 1300 K, litres | about 4.4 | 2.5 | 1.7 | about 0.1 |
+| Upward soot flux at 1 m, mg/s | 91 | 116 | 136 | 198 |
+| Escaping share (over 197 mg/s formed) | 46% | about 59% | about 69% | about 100% |
+| Centreline soot volume fraction, ppm | 0.42 | 0.66–0.67 | 0.86 | 1.9–2.0 |
+
+- **The flame stays lit at the cap that collapsed run A.** Peak holds near 1500 K to the end, the hot volume is
+  steady (1.2–1.7 L from 1.0 s on) and the soot inventory levels off (81, 143, 206, 258, 256 mg at 0.5 s intervals).
+- **The radiative fraction is not set by the cap.** Frozen census on the run's own checkpoints at 1.56 s and 2.5 s:
+  the closure radiates 9.6–9.7 kW where the thin law would radiate 14.4–14.7 kW (at its 0.44 budget). Against the
+  26 kW the run releases that is about 0.37. (The census step itself ran at zero yield and reports 0.28–0.29 of its
+  own 33–34 kW.) The gas escape factor would have been 1.33–1.37 without the bound; the soot column escape is 0.79.
+- Peak temperature is at the 1500 K target, not clearly above it; escaping share 69% is above the control and
+  well below 100%.
+- Look: close to the cap-0.30 run, a short orange-red flame under a dark column
+  (`rad045sa_seq`, sheet `movies/r273_self_absorption_compare.png`: control, cap 0.30, closure, run A).
+- **Started:** `tier8_y300_sa`, the 25 s window from zero with these settings (`run_tier8_showcase.sh`), for the
+  showcase movie. The capstone's closing 0.20 ± 0.02 radiative-fraction check is expected to fail; the frames are
+  the product.
+- Data: `docs/data/fire_r273/t8_y300_rad045_sa_{budget,centreline}_23.96_24.90s.txt`.
+
 ## Files
 
-- Solver: `src/Library/Utilities/FireProductionSourceKernel.h`. Tests: `tests/FireSimulationSolverTest.cpp`.
-- Tools: `tools/fire/r273/` (`frozen_response.cpp`, `ab_driver_tier.cpp`, `ab_frames.cpp`, `ab_summary.py`,
-  `build_tool.py`, `run_ab.sh`).
+- Solver: `src/Library/Utilities/FireProductionSourceKernel.h`; §6 also passes the grid dimensions from
+  `src/Library/Utilities/FireProductionSource.cpp`. Tests: `tests/FireSimulationSolverTest.cpp`.
+- Tools: `tools/fire/r273/` (`frozen_response.cpp`, `radiation_census.cpp`, `frame_tau.cpp`, `ab_driver_tier.cpp`,
+  `ab_frames.cpp`, `ab_summary.py`, `build_tool.py` (optional output directory; ab tools gain the
+  `RISE_R273_SNAPSHOT_EVERY`/`_DIR` checkpoint patch, inert when unset), `run_ab.sh`, `run_tier8_a.sh`, `run_snap.sh`).
 - Data: `r273_poor_burn/frozen_*.txt`, `t6_*` (frames, logs, `result.txt`), `t6_*.frames.txt`, `t6_ab_summary.txt`.
-  `t6_y300_both_noframes_killed` is a first attempt stopped because it wrote no frames.
+  `t6_y300_both_noframes_killed` is a first attempt stopped because it wrote no frames. §6: `diag/` (census outputs,
+  test logs), `t8_snap_rad045.snap/` (replay checkpoints), `t6_ab_selfabs_summary.txt`, `build_r273b/` and
+  `build_r273c/` (tool builds kept apart from the running `build/ab_driver_tier`).
+- Tables in git: `docs/data/fire_r273/r273_collapse_census.txt`, `docs/data/fire_r273/r273_t6_selfabs_summary.txt`.
 
