@@ -5653,6 +5653,185 @@ int main()
 				gridRadiativeFraction*gridDerivedHeatReleaseW/
 				(3.0*gridUnscaledExchange.exchangeWPerM3),2.0e-15),
 		"V4 one grid-level pass derives and freezes a shared record-resolved escape factor");
+	{
+		// r273 poor-burn opt-ins (docs/FIRE_SMOKE_POOR_BURN_R273.md): parsing, off
+		// identity, bounds and conservation of the soot radiation budget and the
+		// sub-grid sheet oxidation gate.
+		Check(ParseMethaneSootRadiativeFractionCap(0)==-1.0&&
+			ParseMethaneSootRadiativeFractionCap("0.45")==0.45&&
+			ParseMethaneSootRadiativeFractionCap("1")==1.0&&
+			std::isnan(ParseMethaneSootRadiativeFractionCap(""))&&
+			std::isnan(ParseMethaneSootRadiativeFractionCap("0"))&&
+			std::isnan(ParseMethaneSootRadiativeFractionCap("1.5"))&&
+			std::isnan(ParseMethaneSootRadiativeFractionCap("0.4x"))&&
+			std::isnan(ParseMethaneSootRadiativeFractionCap("nan"))&&
+			ParseMethaneSootSheetOxidation(0)==0&&ParseMethaneSootSheetOxidation("0")==0&&
+			ParseMethaneSootSheetOxidation("1")==1&&ParseMethaneSootSheetOxidation("")==-1&&
+			ParseMethaneSootSheetOxidation("2")==-1&&ParseMethaneSootSheetOxidation("11")==-1,
+			"r273 poor-burn opt-ins parse unset as off and reject malformed values");
+		Check((std::getenv("RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP")||
+			MethaneSootRadiativeFractionCapSetting()==-1.0)&&
+			(std::getenv("RISE_FIRE_SOOT_SHEET_OXIDATION")||
+			MethaneSootSheetOxidationSetting()==0),
+			"r273 poor-burn opt-ins are off when their variables are unset");
+		const double chi=0.2;
+		MethaneReactionStep sootStep=step;sootStep.deltaTimeS=0.001;sootStep.mixingTimeS=5.0;
+		sootStep.primaryEligible=true;sootStep.sootOxidationEnabled=true;
+		const MethaneCellState sootyHot=ProductRichMixtureLineState(fuel,thermochemistry,0.055,1500.0);
+		const MethaneCellState sootyWarm=ProductRichMixtureLineState(fuel,thermochemistry,0.055,600.0);
+		const std::vector<MethaneCellState> sootCells={sootyHot,sootyWarm};
+		const std::vector<MethaneReactionStep> sootSteps={sootStep,sootStep};
+		const std::vector<double> sootVolumes={1.0,2.0};
+		auto samePackets=[](const std::vector<MethaneSourcePacket>& a,
+			const std::vector<MethaneSourcePacket>& b){
+			return a.size()==b.size()&&!a.empty()&&std::memcmp(a.data(),b.data(),
+				a.size()*sizeof(MethaneSourcePacket))==0;
+		};
+		auto ledgerResidual=[&](const std::vector<MethaneSourcePacket>& packets){
+			// Mass, elements and energy: dU = fuel heat + net carbon heat - dt*cooling.
+			double worst=0.0;
+			for(std::size_t cell=0;cell<packets.size();++cell){
+				const MethaneSourcePacket& p=packets[cell];
+				double mass=0.0;for(const double value:p.constituentDelta)mass+=value;
+				const double energy=p.sensibleEnergyDeltaJPerM3-(p.reactedFuelKGPerM3*
+					fuel.LowerHeatingValueJPerKG()+(p.oxidizedCarbonKGPerM3-
+					p.grossCarbonFormedKGPerM3)*fuel.SootHeatReleaseJPerKGCarbon()-
+					sootStep.deltaTimeS*p.radiativeCoolingWPerM3);
+				worst=std::max({worst,std::fabs(mass),
+					MaximumElementResidual(fuel,p.constituentDelta),
+					std::fabs(energy)/std::max(1.0,std::fabs(sootCells[cell].sensibleEnergyJPerM3))});
+			}
+			return worst;
+		};
+		std::vector<MethaneSourcePacket> offDefault,offExplicit,sootOn,sootCapped,sheetOn,bothOn;
+		RadiationEscapeFactor offFactor,offExplicitFactor,sootFactor,cappedFactor,sheetFactor,bothFactor;
+		double offApplied=0.0,sootApplied=0.0,cappedApplied=0.0,sheetApplied=0.0,bothApplied=0.0;
+		const bool envOff=!std::getenv("RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP")&&
+			!std::getenv("RISE_FIRE_SOOT_SHEET_OXIDATION");
+		const bool offBuilt=BuildFrozenMethaneSourcePackets(sootCells,sootSteps,sootVolumes,
+			300.0,600.0,chi,false,fuel,thermochemistry,opacity,offDefault,offFactor,&error)&&
+			BuildFrozenMethaneSourcePackets(sootCells,sootSteps,sootVolumes,300.0,600.0,chi,
+				false,fuel,thermochemistry,opacity,offExplicit,offExplicitFactor,&error,1u,true,
+				-1.0,0,&offApplied);
+		Check(offBuilt&&(!envOff||(samePackets(offDefault,offExplicit)&&
+			offFactor.accepted==offExplicitFactor.accepted))&&offApplied==chi&&
+			offExplicit[1].oxidizedCarbonKGPerM3==0.0&&offExplicit[0].oxidizedCarbonKGPerM3>0.0,
+			"r273 unset opt-ins reproduce the cell-mean gate and the fixed radiative fraction byte for byte");
+		double carbonExchange=0.0,carbonDerivative=0.0;
+		Check(EvaluateSyntheticHotCarbonExchange(sootyHot.constituent[MethaneCarbon],1500.0,300.0,
+			SootEmissionEffectiveAbsorption,SootEmissionDensityKGPerM3,carbonExchange,
+			carbonDerivative,&error)&&carbonExchange>0.0&&Near(MethaneSootExchangeWPerM3(
+			MethaneSootExchangeCoefficientWPerM3K5(sootyHot),1500.0,300.0),carbonExchange,4.0e-15)&&
+			MethaneSootExchangeWPerM3(MethaneSootExchangeCoefficientWPerM3K5(sootyHot),300.0,300.0)==0.0,
+			"r273 soot emission is the validated fv*(T^5-Tinf^5) hot-carbon law");
+		// Independent budget oracle from the reaction-only endpoints.
+		double gasIntegral=0.0,sootIntegral=0.0,heatRelease=0.0;
+		bool oracle=true;
+		for(std::size_t cell=0;cell<sootCells.size();++cell){
+			MethaneSourcePacket reactionOnly;MethaneCellState post;GasExchangeEvaluation gas;
+			oracle=oracle&&BuildMethaneReactionPacket(sootCells[cell],fuel,sootSteps[cell],
+				reactionOnly,&error,&post)&&EvaluateGasExchange(post,post.temperatureK,300.0,
+				thermochemistry,opacity,gas,&error);
+			gasIntegral+=gas.exchangeWPerM3*sootVolumes[cell];
+			sootIntegral+=MethaneSootExchangeWPerM3(MethaneSootExchangeCoefficientWPerM3K5(post),
+				post.temperatureK,300.0)*sootVolumes[cell];
+			heatRelease+=(reactionOnly.gasHeatReleaseWPerM3+reactionOnly.sootHeatReleaseWPerM3)*
+				sootVolumes[cell];
+		}
+		const double uncapped=chi*(1.0+sootIntegral/gasIntegral);
+		const bool sootBuilt=BuildFrozenMethaneSourcePackets(sootCells,sootSteps,sootVolumes,
+			300.0,600.0,chi,false,fuel,thermochemistry,opacity,sootOn,sootFactor,&error,1u,true,
+			1.0,0,&sootApplied)&&
+			BuildFrozenMethaneSourcePackets(sootCells,sootSteps,sootVolumes,300.0,600.0,chi,
+				false,fuel,thermochemistry,opacity,sootCapped,cappedFactor,&error,1u,true,
+				0.21,0,&cappedApplied);
+		double offCooling=0.0,sootCooling=0.0,cappedCooling=0.0;
+		bool sameChemistry=sootBuilt&&offBuilt;
+		for(std::size_t cell=0;sootBuilt&&offBuilt&&cell<sootCells.size();++cell){
+			offCooling+=offExplicit[cell].radiativeCoolingWPerM3*sootVolumes[cell];
+			sootCooling+=sootOn[cell].radiativeCoolingWPerM3*sootVolumes[cell];
+			cappedCooling+=sootCapped[cell].radiativeCoolingWPerM3*sootVolumes[cell];
+			sameChemistry=sameChemistry&&sootOn[cell].constituentDelta==
+				offExplicit[cell].constituentDelta&&sootOn[cell].reactedFuelKGPerM3==
+				offExplicit[cell].reactedFuelKGPerM3&&sootOn[cell].oxidizedCarbonKGPerM3==
+				offExplicit[cell].oxidizedCarbonKGPerM3;
+		}
+		if(!(oracle&&sootBuilt))std::printf("r273 soot radiation diagnostic: %s\n",error.c_str());
+		const bool sootBudgetOK=oracle&&sootBuilt&&sootIntegral>0.0&&gasIntegral>0.0&&heatRelease>0.0&&
+			uncapped>0.21&&uncapped<1.0&&Near(sootApplied,uncapped,4.0e-15)&&
+			cappedApplied==0.21&&Near(sootFactor.beta,offExplicitFactor.beta,1.0e-12)&&
+			Near(cappedFactor.beta,0.21*heatRelease/(gasIntegral+sootIntegral),1.0e-12)&&
+			sootCooling>cappedCooling&&cappedCooling>offCooling&&
+			Near(offCooling,chi*heatRelease,0.02)&&Near(sootCooling,sootApplied*heatRelease,0.02)&&
+			Near(cappedCooling,0.21*heatRelease,0.02);
+		if(!sootBudgetOK)std::printf("r273 soot radiation: gas=%.9g soot=%.9g hrr=%.9g uncapped=%.9g applied=%.9g capped=%.9g beta off/soot/capped %.9g %.9g %.9g gamma %.9g cooling off/soot/capped %.9g %.9g %.9g\n",
+			gasIntegral,sootIntegral,heatRelease,uncapped,sootApplied,cappedApplied,offExplicitFactor.beta,
+			sootFactor.beta,cappedFactor.beta,offExplicitFactor.gamma,offCooling,sootCooling,cappedCooling);
+		Check(sootBudgetOK,
+			"r273 soot raises the radiative fraction by its share of thin emission at the gas escape factor, up to the cap");
+		Check(sameChemistry&&ledgerResidual(sootOn)<1.0e-12&&ledgerResidual(sootCapped)<1.0e-12&&
+			ledgerResidual(offExplicit)<1.0e-12,
+			"r273 soot radiation changes only the radiative sink; mass, elements and energy close");
+		// Sheet gate: the 600 K cell burns fuel, so its sheet is hot although its mean is not.
+		MethaneSourcePacket warmMean,warmSheet,warmQuenched,warmIneligible,hotMean,hotSheet;
+		MethaneReactionStep ineligibleStep=sootStep;ineligibleStep.primaryEligible=false;
+		MethaneReactionStep disabledStep=sootStep;disabledStep.sootOxidationEnabled=false;
+		MethaneSourcePacket warmDisabled;
+		const bool sheetPackets=BuildMethaneReactionPacket(sootyWarm,fuel,sootStep,warmMean,&error)&&
+			BuildMethaneReactionPacket(sootyWarm,fuel,sootStep,warmSheet,&error,0,chi)&&
+			BuildMethaneReactionPacket(sootyWarm,fuel,sootStep,warmQuenched,&error,0,1.0)&&
+			BuildMethaneReactionPacket(sootyWarm,fuel,ineligibleStep,warmIneligible,&error,0,chi)&&
+			BuildMethaneReactionPacket(sootyWarm,fuel,disabledStep,warmDisabled,&error,0,chi)&&
+			BuildMethaneReactionPacket(sootyHot,fuel,sootStep,hotMean,&error)&&
+			BuildMethaneReactionPacket(sootyHot,fuel,sootStep,hotSheet,&error,0,chi);
+		double sheetMass=0.0;for(const double value:warmSheet.constituentDelta)sheetMass+=value;
+		Check(sheetPackets&&warmMean.oxidizedCarbonKGPerM3==0.0&&
+			warmSheet.oxidizedCarbonKGPerM3>0.0&&warmSheet.oxidizedCarbonKGPerM3<=
+			sootyWarm.constituent[MethaneCarbon]&&warmQuenched.oxidizedCarbonKGPerM3==0.0&&
+			warmIneligible.oxidizedCarbonKGPerM3==0.0&&warmDisabled.oxidizedCarbonKGPerM3==0.0&&
+			std::memcmp(&warmQuenched,&warmMean,sizeof(MethaneSourcePacket))==0&&
+			std::memcmp(&hotSheet,&hotMean,sizeof(MethaneSourcePacket))==0,
+			"r273 sheet gate oxidizes soot only in a burning cell whose sheet estimate reaches the oxidation temperature");
+		Check(sheetPackets&&std::fabs(sheetMass)<2.0e-16&&
+			MaximumElementResidual(fuel,warmSheet.constituentDelta)<2.0e-16&&
+			Near(warmSheet.sensibleEnergyDeltaJPerM3,warmSheet.reactedFuelKGPerM3*
+				fuel.LowerHeatingValueJPerKG()+warmSheet.oxidizedCarbonKGPerM3*
+				fuel.SootHeatReleaseJPerKGCarbon(),4.0e-15)&&
+			-warmSheet.constituentDelta[MethaneO2]<=sootyWarm.constituent[MethaneO2],
+			"r273 sheet-gated oxidation closes mass, elements, oxygen and energy");
+		bool monotone=true,previous=true,anyReach=false,anyQuench=false,sootierCooler=true;
+		for(int index=0;index<=20;++index){
+			const double loss=0.05*index;bool clean=false,sooty=false;
+			monotone=monotone&&MethaneSootSheetReachesOxidationTemperature(sootyWarm,fuel,loss,
+				0.0,clean,&error)&&MethaneSootSheetReachesOxidationTemperature(sootyWarm,fuel,loss,
+				0.3,sooty,&error)&&(previous||!clean);
+			previous=clean;anyReach=anyReach||clean;anyQuench=anyQuench||!clean;
+			sootierCooler=sootierCooler&&(clean||!sooty);
+		}
+		bool invalidReach=false;
+		Check(monotone&&anyReach&&anyQuench&&sootierCooler&&
+			!MethaneSootSheetReachesOxidationTemperature(sootyWarm,fuel,-0.1,0.0,invalidReach)&&
+			!MethaneSootSheetReachesOxidationTemperature(sootyWarm,fuel,1.1,0.0,invalidReach),
+			"r273 sheet estimate falls monotonically with radiative loss and with soot yield and rejects loss outside 0..1");
+		const bool sheetBuilt=BuildFrozenMethaneSourcePackets(sootCells,sootSteps,sootVolumes,
+			300.0,600.0,chi,false,fuel,thermochemistry,opacity,sheetOn,sheetFactor,&error,1u,true,
+			-1.0,1,&sheetApplied)&&
+			BuildFrozenMethaneSourcePackets(sootCells,sootSteps,sootVolumes,300.0,600.0,chi,
+				false,fuel,thermochemistry,opacity,bothOn,bothFactor,&error,1u,true,
+				0.45,1,&bothApplied);
+		std::vector<MethaneSourcePacket> rejected;RadiationEscapeFactor rejectedFactor;
+		if(!sheetBuilt)std::printf("r273 sheet grid diagnostic: %s\n",error.c_str());
+		Check(sheetBuilt&&sheetApplied==chi&&sheetOn[1].oxidizedCarbonKGPerM3>0.0&&
+			sheetOn[0].oxidizedCarbonKGPerM3==offExplicit[0].oxidizedCarbonKGPerM3&&
+			bothApplied>chi&&bothApplied<=0.45&&bothOn[1].oxidizedCarbonKGPerM3>=0.0&&
+			ledgerResidual(sheetOn)<1.0e-12&&ledgerResidual(bothOn)<1.0e-12&&
+			!BuildFrozenMethaneSourcePackets(sootCells,sootSteps,sootVolumes,300.0,600.0,chi,
+				false,fuel,thermochemistry,opacity,rejected,rejectedFactor,0,1u,true,
+				std::numeric_limits<double>::quiet_NaN(),0)&&
+			!BuildFrozenMethaneSourcePackets(sootCells,sootSteps,sootVolumes,300.0,600.0,chi,
+				false,fuel,thermochemistry,opacity,rejected,rejectedFactor,0,1u,true,-1.0,-1),
+			"r273 grid pass applies both opt-ins inside the frozen-packet ledger and fails closed on malformed settings");
+	}
 	RadiationEscapeFactor previewUnderOpaque,overflowBetaEscape;
 	Check(ComputeRadiationEscapeFactor(2.0,100.0,1.0,{0.5},{1.0},false,
 		previewUnderOpaque,&error)&&previewUnderOpaque.beta==4.0&&

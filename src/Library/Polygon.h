@@ -67,7 +67,10 @@ namespace RISE
 		unsigned int	iCoords[N];
 
 	public:
-		IndexedPolygon_Template( )
+		// Indices start at zero: a caller that leaves a set unassigned (e.g. no
+		// normals) must not hand garbage to the mesh, which turns indices into
+		// pointers (TriangleMeshGeometryIndexed::DoneIndexedTriangles).
+		IndexedPolygon_Template( ) : iVertices(), iNormals(), iCoords()
 		{
 		};
 

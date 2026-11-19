@@ -79,6 +79,16 @@ namespace
 		scene.GetAnimator()->EvaluateAtTime(time);
 	}
 
+	// The prepared (fire) path's nominal scene time.  SetSceneTimeForPreview
+	// re-evaluates the animator at the time the render already posed the
+	// scene to; that is the render's own nominal evaluation, so it takes the
+	// internal capability rather than being refused by the freeze.
+	void SetPreparedNominalSceneTime( const IScene& scene, const Scalar time )
+	{
+		PreparedInternalTransformScope scope;
+		scene.SetSceneTimeForPreview(time);
+	}
+
 	bool PrepareAndFreeze(
 		const IScene& scene, IRayCaster& caster, const Scalar nominal,
 		const Rect* crop, const unsigned int field,
@@ -87,7 +97,7 @@ namespace
 		EvaluatePreparedAnimator(scene,nominal);
 		if( scene.GetObjects() ) scene.GetObjects()->InvalidateSpatialStructure();
 		caster.InvalidateLightSamplers();
-		scene.SetSceneTimeForPreview(nominal);
+		SetPreparedNominalSceneTime(scene,nominal);
 		std::string error;
 		if( !controller.PrepareMediaForRender(
 			ComputePathTimeSupport(scene,nominal,crop,field),error) ||
@@ -1400,6 +1410,17 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 	PrepareImageForNewRender( *pImage, pRect );
 
+	// GetIntermediateOutputImage composes only the delivered region into the
+	// scratch, so seed the rest from the prepared image: outside a regional
+	// crop a preview must show the preserved film, not the scratch's
+	// transparent black.  Single-threaded here, before any worker starts.
+	if( pFilteredScratch ) {
+		Rect wholeImage( 0, 0, 0, 0 );
+		if( ClampRegionToImage( 0, width, height, wholeImage ) ) {
+			CopyRegion( *pImage, *pFilteredScratch, wholeImage );
+		}
+	}
+
 	pCaster->AttachScene( &pScene );
 
 	// Eagerly build spatial acceleration structures (BSP/octree) from current
@@ -2703,6 +2724,12 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		pFilteredFilm = new FilteredFilm( width, height );
 		if( UsesFilteredPreviewScratch() ) {
 			pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+			// Same seeding as RasterizeScene: previews compose only the
+			// delivered region, so the rest mirrors the image.
+			Rect wholeImage( 0, 0, 0, 0 );
+			if( ClampRegionToImage( 0, width, height, wholeImage ) ) {
+				CopyRegion( *pImage, *pFilteredScratch, wholeImage );
+			}
 		}
 	}
 
@@ -2793,7 +2820,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			// Rebuild spatial structure after transforms update but before
 			// SetSceneTime, which regenerates photon maps via ray tracing.
 			PrepareSceneForFrame( pScene, curtime_upper, bHasKeyframedObjects, width, height );
-			if( gPreparedRenderDepth ) pScene.SetSceneTimeForPreview(curtime_upper);
+			if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime_upper);
 			else pScene.SetSceneTime(curtime_upper);
 			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
 				curtime_upper,invert_fields ? "lower" : "upper") ) {
@@ -2830,7 +2857,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 					// fallback. The fallback deliberately does not replay the beauty
 					// pass's temporal sample distribution (AGENT_PERCEPTION.md).
 					PrepareSceneForFrame( pScene, curtime_upper, bHasKeyframedObjects, width, height, false );
-					if( gPreparedRenderDepth ) pScene.SetSceneTimeForPreview(curtime_upper);
+					if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime_upper);
 					else pScene.SetSceneTime(curtime_upper);
 					const FIELD upperField = invert_fields ? FIELD_LOWER : FIELD_UPPER;
 					CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
@@ -2841,7 +2868,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 
 			// Lower field
 			PrepareSceneForFrame( pScene, curtime_lower, bHasKeyframedObjects, width, height );
-			if( gPreparedRenderDepth ) pScene.SetSceneTimeForPreview(curtime_lower);
+			if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime_lower);
 			else pScene.SetSceneTime(curtime_lower);
 			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
 				curtime_lower,invert_fields ? "upper" : "lower") ) {
@@ -2863,7 +2890,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				// RenderFrameOfAnimation may leave the animator at its final
 				// exposure sample. Re-establish the nominal lower-field state.
 				PrepareSceneForFrame( pScene, curtime_lower, bHasKeyframedObjects, width, height, false );
-				if( gPreparedRenderDepth ) pScene.SetSceneTimeForPreview(curtime_lower);
+				if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime_lower);
 				else pScene.SetSceneTime(curtime_lower);
 				const FIELD lowerField = invert_fields ? FIELD_UPPER : FIELD_LOWER;
 				CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
@@ -2877,7 +2904,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			// Rebuild spatial structure after transforms update but before
 			// SetSceneTime, which regenerates photon maps via ray tracing.
 			PrepareSceneForFrame( pScene, curtime, bHasKeyframedObjects, width, height );
-			if( gPreparedRenderDepth ) pScene.SetSceneTimeForPreview(curtime);
+			if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime);
 			else pScene.SetSceneTime(curtime);
 			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
 				curtime,"both") ) {
@@ -2927,7 +2954,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				// animator at an arbitrary sample time. The bounded fallback is a
 				// deterministic nominal-frame approximation, not temporal replay.
 				PrepareSceneForFrame( pScene, fallbackNominalTime, bHasKeyframedObjects, width, height, false );
-				if( gPreparedRenderDepth ) pScene.SetSceneTimeForPreview(fallbackNominalTime);
+				if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,fallbackNominalTime);
 				else pScene.SetSceneTime(fallbackNominalTime);
 				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
 					mDenoisingPrefilter, pRect );

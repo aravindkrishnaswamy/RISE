@@ -135,8 +135,10 @@ namespace
 		const RISEPel rgb = solver.EvaluateChainThroughput(normalStart,end,chain);
 		CheckNear( rgb[0], (1.0L-F)/(1.5L*1.5L),
 			"unequal-index SMS RGB includes independent Fresnel and radiance scale" );
-		CheckNear( solver.EvaluateChainThroughputNM(normalStart,end,chain,Scalar(550)), 1.0L-F,
-			"unequal-index SMS NM includes independent Fresnel transmission" );
+		// DL-435 (f3061e1ab) gave NM transmission the same (etaI/etaT)^2
+		// radiance rescale as RGB: attenuationNM * (1-F) * (etaI/etaT)^2.
+		CheckNear( solver.EvaluateChainThroughputNM(normalStart,end,chain,Scalar(550)), (1.0L-F)/(1.5L*1.5L),
+			"unequal-index SMS NM includes independent Fresnel transmission and radiance scale" );
 	}
 
 	void TestMatchedGrazingSpecularDirection()

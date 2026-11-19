@@ -3960,6 +3960,12 @@ namespace RISE
 		//! prefixes across multiple imports remain fully supported (sponza_new_ivy.RISEscene
 		//! precedent).
 		std::set<std::string> mGltfImportPrefixes;
+
+		//! True while the active prepared request holds the process-wide
+		//! scene-mutation freeze (Transformable::BeginPreparedMutationFreeze).
+		//! Set and cleared under m_preparedRequestMutex; only requests whose
+		//! scene has fire media take the freeze (Job::BeginPreparedRequest).
+		bool m_preparedRequestFrozeScene = false;
 	};
 }
 
