@@ -438,9 +438,9 @@ namespace
 
 		std::atomic<bool> stop{ false };
 		std::atomic<unsigned long> splatTorn{ 0 }, splatBadValue{ 0 }, filteredTorn{ 0 }, resolves{ 0 };
-		// Resolve calls that overlapped a film write: a write that had not
-		// finished when the call began (commits) had started (started) by the
-		// time it returned.  Writers start once a resolver has finished a
+		// Resolve calls that overlapped a writer's write interval (its
+		// BatchCommit and Splat): one that had not finished when the call
+		// began (commits) had started (started) by the time it returned.  Writers start once a resolver has finished a
 		// pass and keep writing past their 400 commits until such a call has
 		// happened, so the checks below are exercised even on a busy machine.
 		std::atomic<unsigned long> overlapResolves{ 0 }, commits{ 0 }, started{ 0 };

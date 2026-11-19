@@ -143,9 +143,10 @@ CPPFLAGS += -I$(CURDIR)
 # can be -Oline, -I<dir> or VAR=value on make 4.x).  -n is a dry run and -t
 # only touches, so neither regenerates the build identity below nor records
 # the test link mode: a -t after a mode switch must not make objects compiled
-# in the old mode look current.  -q does regenerate both, so its answer is
-# about the current source state (and after a test link-mode switch it
-# deletes the test objects and binaries, as below).
+# in the old mode look current.  -q regenerates the build identity, so its
+# answer is about the current source state; with a test goal it also records
+# the test link mode (deleting the test objects and binaries after a switch,
+# as below).
 # GNU make 3.81 (macOS /usr/bin/make) instead puts --long options first and
 # the single-letter flags after them as -x words; 4.x's later -x words can be
 # -Oline or -I<dir>, so only 3.81 reads them.
@@ -239,8 +240,9 @@ librise : $(LIBRISE_A)
 # `make TEST_LTO=1 tests` links every test against the LTO library instead,
 # for checking something that depends on LTO code generation (run the suite
 # that way with `TEST_LTO=1 ./run_all_tests.sh`).  The mode is recorded in
-# $(TEST_MODE_STAMP), so switching it rebuilds the tests; dry runs leave the
-# record alone (but see the stamp rule for -t), and `clean` deletes it.
+# $(TEST_MODE_STAMP), so the next make that builds tests after a switch
+# rebuilds them; dry runs leave the record alone (but see the stamp rule for
+# -t), and `clean` deletes it.
 TESTS_LINK_LTO = LegacyTierRenderIdentityTest DeprecatedMaterialRenderIdentityTest ImageDriftHistoryTest \
 	SSSCriticalPartitionTest SSSNearUnityFresnelTest HairBSDFTest ProximitySignalTest LuminarySamplerAreaTest \
 	FireSimulationSolverTest FireProductionSolverTest FireProductionProjectionTest
@@ -339,7 +341,9 @@ TEST_MODE_STAMP = $(PATHDEST).test-link-mode
 # binaries alone.  A mode change also deletes the test objects and binaries:
 # make 3.81 compares whole-second mtimes, so an object or binary made in the
 # same second as the new record would otherwise count as up to date.
-TEST_GOALS = $(filter tests build-test/% $(PATHTESTDEST)% $(PATHTESTS)%,$(MAKECMDGOALS))
+# Every goal that builds test objects or binaries must be listed here,
+# including aliases of `tests` such as `test`.
+TEST_GOALS = $(filter test tests build-test/% $(PATHTESTDEST)% $(PATHTESTS)%,$(MAKECMDGOALS))
 ifeq ($(MAKE_SKIP_GENERATED),)
 ifneq ($(TEST_GOALS),)
 $(shell mkdir -p $(PATHDEST) && { [ "`cat $(TEST_MODE_STAMP) 2>/dev/null`" = "$(TEST_LINK_MODE) $(LTO_TESTS)" ] || { rm -rf $(OBJTESTS) $(PATHTESTDEST); echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $(TEST_MODE_STAMP); }; })
@@ -347,7 +351,7 @@ endif
 endif
 # Only when the record is missing, e.g. after the clean of `make clean tests`;
 # `make -n` only prints this, and `make -t` writes an empty record, which the
-# next real make replaces (rebuilding the tests).
+# next real make with a test goal replaces (rebuilding the tests).
 $(TEST_MODE_STAMP) :
 	@mkdir -p $(PATHDEST) && echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $@
 
@@ -551,7 +555,8 @@ tools : $(LIBRISE_A)
 test-objs : $(LIBRISE_TEST_A)
 	@:
 
-# Build and run all tests
+# Build and run all tests (`test` is in TEST_GOALS, so it records the test
+# link mode like `tests`).
 test : tests
 	@echo Running all tests
 	@sh ../../../run_all_tests.sh
