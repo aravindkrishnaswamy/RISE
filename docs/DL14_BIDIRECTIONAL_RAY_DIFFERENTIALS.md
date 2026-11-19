@@ -104,7 +104,7 @@ camera-side code was not touched by S1 or by anything since).
 ### 2.5 VCM inherits this by construction, not by a separate fix
 
 > Superseded in part by §10 (2026-11-17): true for the EYE footprint; VCM's
-> light-traced (splat) share has its own footprint stamp since DL-402.
+> light-traced (splat) share has its own footprint stamp since 2026-11-17 (§10).
 
 `VCMIntegrator.cpp` contains zero occurrences of `txFootprint` (grep
 the symbol). VCM does not need its own copy site because it never
@@ -327,8 +327,8 @@ camera ray and no random numbers -- then
 `PathVertexEval::StampPixelFootprint` fills the world width, the object
 width and the texcoord UV Jacobian with the same formulas `Object::IntersectRay`
 uses, though not from the same inputs -- see the residuals below).
-Applied at BDPT's live t == 1 site, its per-type-cap rescale (one record per
-connection), the unreachable t == 0 spellings of the same connection, and
+Applied at BDPT's live t == 1 site, its per-type-cap rescale (its own stamped
+copy of the same record), the unreachable t == 0 spellings of the same connection, and
 VCM's splat (`VCMIntegrator.cpp` -- so VCM now has its own copy of this
 mechanism and §2.5's "VCM needs no separate site" no longer holds for the
 light-traced share).  After, at 1024 spp: BDPT mean 0.510207 against PT's
@@ -369,7 +369,10 @@ Residuals (supersedes §9's "None"):
   unfiltered while the eye strategy's s=0 hit on it is filtered -- the same
   mixture, for footprint-reading EMISSION painters only;
 - a light point within a few probe steps of the raster guard band can fail
-  a probe, and that connection is then shaded unstamped.
+  a probe, and that connection is then shaded unstamped;
+- the stamp reaches only BSDF / painter evaluation of the rebuilt record:
+  modifiers are not re-run there, so a footprint-reading relief / bump step
+  on the light-traced share still sees no footprint.
 
 `BidirectionalTextureFootprintParityTest` therefore compares CONVERGED
 quantities: BDPT and VCM at 1024 spp, mean within 0.1%, HF within 25%

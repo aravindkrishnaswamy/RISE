@@ -22,11 +22,11 @@
 //  `currentRay` (BDPTIntegrator.cpp).  `Object::IntersectRay` (the
 //  ONE geometry-intersection layer every integrator shares) computes
 //  `ri.geometric.txFootprint` whenever `ray.hasDifferentials` is
-//  true, so the eye subpath's FIRST hit -- the only vertex any
-//  integrator (PT included) ever attaches a real footprint to, since
-//  every ray after the first scattering bounce carries no
-//  differentials at all, by design, everywhere in this renderer --
-//  gets the identical, non-zero footprint PT's own primary ray gets.
+//  true, so the eye subpath's FIRST hit -- every ray after the first
+//  scattering bounce carries no differentials at all, by design,
+//  everywhere in this renderer -- gets the identical, non-zero
+//  footprint PT's own primary ray gets.  (Since 2026-11-17 a second
+//  record carries one too: the light-traced copy described below.)
 //  The 2026-09-11 S1 slice (925c2720, docs/
 //  SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md) already added the two
 //  copy sites that make this observable at the BDPTVertex/painter
@@ -59,7 +59,8 @@
 //  copy of a surface light endpoint a light-traced (t == 1) connection
 //  shades, stamped with the footprint of the pixel it lands in
 //  (PathVertexEval::WithPixelFootprint; docs/DL14_..., section 10; this
-//  closes DL-636, which had pinned BDPT at max_light_depth 0 instead).
+//  fixes DL-636, pending review, which had pinned BDPT at
+//  max_light_depth 0 instead).
 //
 //    (1) PT vs BDPT, CONVERGED: whole-image mean within 0.1% and
 //        whole-image HF energy within 25%.

@@ -519,8 +519,11 @@ namespace RISE
 			///    rect, clamped to the image, are valid in the returned
 			///    image (film contributions are additionally limited to the
 			///    active output / splat region, exactly as a full-frame
-			///    composition would produce them).  Pixels outside it may
-			///    hold anything, including another caller's composition.
+			///    composition would produce them).  Pixels outside it are not
+			///    composed by this call: RasterizeScene pre-fills the scratch
+			///    from the prepared image, so they hold that or an earlier
+			///    composition (AgentFrameStoreIsolationTest relies on them
+			///    never holding pixels from outside the render's crop).
 			///    An empty or wholly off-image region composes nothing.
 			///  * @a region null: the whole image is valid.
 			///  * The returned reference is valid until the caller's

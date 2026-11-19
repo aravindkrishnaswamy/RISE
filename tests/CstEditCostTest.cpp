@@ -44,8 +44,9 @@
 //      [prep:spatial] PrepareForRendering AFTER a spatial edit -> rebuilds the BVH4,
 //                     O(N log N): the spatial-edit premium
 //      [prep:nonspat] PrepareForRendering AFTER a non-spatial edit -> SKIPS the O(N log N)
-//                     BVH rebuild (the BVH is still valid); only an O(N) per-object
-//                     realize sweep remains -- the SAVING the stable-object apply delivers
+//                     BVH rebuild (the BVH is still valid); only O(N) per-object work
+//                     remains (realize sweep, census refresh, world-area prune, the
+//                     SMS / DL-382 loops) -- the SAVING the stable-object apply delivers
 //                     (so prep:nonsp scales ~O(N), far below the spatial rebuild, NOT O(1))
 //
 //  HONEST SCOPE (R13): the bounds carry log factors -- the incremental apply is
@@ -318,8 +319,8 @@ int main()
 	Check( fullAt[2] > fullAt[0] * 2.0, "full re-derive grows with N (~O(N log N))" );
 	Check( incrAt[2] < incrAt[0] * 6.0 + 50.0, "incremental re-apply ~flat in N (O(closure . log N), not O(N log N))" );
 	// The TLAS-skip result (slice 3): a non-spatial edit's post-edit PrepareForRendering
-	// SKIPS the O(N log N) BVH rebuild (BVH still valid; only an O(N) realize sweep runs),
-	// so it is DRAMATICALLY cheaper than a spatial edit's rebuild. The generation-counter
+	// SKIPS the O(N log N) BVH rebuild (BVH still valid; only O(N) per-object work runs),
+	// so it is materially cheaper than a spatial edit's rebuild (4.2-4.6x measured, 3x gate). The generation-counter
 	// Checks above are the noise-free proof; this is the wall-clock.
 	Check( prepSpatAt[2] > prepSpatAt[0], "spatial TLAS rebuild grows with N (~O(N log N))" );
 	Check( prepNonAt[2] * 3 < prepSpatAt[2], "NON-spatial edit's post-edit prepare materially cheaper than the spatial rebuild at N=4096 (TLAS skipped; gen-counter Checks are the noise-free proof)" );
