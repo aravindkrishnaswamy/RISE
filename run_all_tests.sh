@@ -373,7 +373,8 @@ bulk_targets=""
 # Discover selected test count first so the [ i/N ] display is correctly sized.
 for test_src in "$SRC_DIR"/*.cpp; do
 	[ -f "$test_src" ] || continue
-	tname="$(basename "$test_src" .cpp)"
+	tname=${test_src##*/}
+	tname=${tname%.cpp}
 	if matches_selection "$tname"; then
 		total=$((total + 1))
 		bulk_targets="$bulk_targets build-test/$tname"

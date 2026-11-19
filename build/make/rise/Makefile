@@ -144,7 +144,8 @@ CPPFLAGS += -I$(CURDIR)
 # only touches, so neither regenerates the build identity below nor records
 # the test link mode: a -t after a mode switch must not make objects compiled
 # in the old mode look current.  -q does regenerate both, so its answer is
-# about the current source state.
+# about the current source state (and after a test link-mode switch it
+# deletes the test objects and binaries, as below).
 # GNU make 3.81 (macOS /usr/bin/make) instead puts --long options first and
 # the single-letter flags after them as -x words; 4.x's later -x words can be
 # -Oline or -I<dir>, so only 3.81 reads them.
@@ -239,7 +240,7 @@ librise : $(LIBRISE_A)
 # for checking something that depends on LTO code generation (run the suite
 # that way with `TEST_LTO=1 ./run_all_tests.sh`).  The mode is recorded in
 # $(TEST_MODE_STAMP), so switching it rebuilds the tests; dry runs leave the
-# record alone, and `clean` deletes it (the stamp rule recreates it).
+# record alone (but see the stamp rule for -t), and `clean` deletes it.
 TESTS_LINK_LTO = LegacyTierRenderIdentityTest DeprecatedMaterialRenderIdentityTest ImageDriftHistoryTest \
 	SSSCriticalPartitionTest SSSNearUnityFresnelTest HairBSDFTest ProximitySignalTest LuminarySamplerAreaTest \
 	FireSimulationSolverTest FireProductionSolverTest FireProductionProjectionTest
@@ -333,13 +334,18 @@ TEST_ARCHIVE_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(ARCHIVE_LINK_LIBRISE),$(AR
 # The test link mode in use, rewritten only when it changes; every test
 # object and binary depends on it, so switching TEST_LTO rebuilds them.
 TEST_MODE_STAMP = $(PATHDEST).test-link-mode
+# Only a make that builds tests records the mode; any other (`make all`, say,
+# beside a suite running in the other mode) leaves the record and the test
+# binaries alone.  A mode change also deletes the test objects and binaries:
+# make 3.81 compares whole-second mtimes, so an object or binary made in the
+# same second as the new record would otherwise count as up to date.
+TEST_GOALS = $(filter tests build-test/% $(PATHTESTDEST)% $(PATHTESTS)%,$(MAKECMDGOALS))
 ifeq ($(MAKE_SKIP_GENERATED),)
-# A mode change also deletes the test objects and binaries: make 3.81 compares
-# whole-second mtimes, so a binary linked in the same second as the new record
-# would otherwise count as up to date.
+ifneq ($(TEST_GOALS),)
 $(shell mkdir -p $(PATHDEST) && { [ "`cat $(TEST_MODE_STAMP) 2>/dev/null`" = "$(TEST_LINK_MODE) $(LTO_TESTS)" ] || { rm -rf $(OBJTESTS) $(PATHTESTDEST); echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $(TEST_MODE_STAMP); }; })
 endif
-# Only when the record is missing after `clean` (as in `make clean tests`);
+endif
+# Only when the record is missing, e.g. after the clean of `make clean tests`;
 # `make -n` only prints this, and `make -t` writes an empty record, which the
 # next real make replaces (rebuilding the tests).
 $(TEST_MODE_STAMP) :

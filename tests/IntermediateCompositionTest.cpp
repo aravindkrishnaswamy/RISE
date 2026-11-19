@@ -438,16 +438,18 @@ namespace
 
 		std::atomic<bool> stop{ false };
 		std::atomic<unsigned long> splatTorn{ 0 }, splatBadValue{ 0 }, filteredTorn{ 0 }, resolves{ 0 };
-		// Resolves during which a writer committed.  Writers
-		// start once a resolver has finished a pass and keep writing past
-		// their 400 commits until such a resolve has happened, so the overlap
-		// the checks below depend on happens even on a busy machine.
-		std::atomic<unsigned long> overlapResolves{ 0 }, commits{ 0 };
+		// Resolve calls that overlapped a film write: a write that had not
+		// finished when the call began (commits) had started (started) by the
+		// time it returned.  Writers start once a resolver has finished a
+		// pass and keep writing past their 400 commits until such a call has
+		// happened, so the checks below are exercised even on a busy machine.
+		std::atomic<unsigned long> overlapResolves{ 0 }, commits{ 0 }, started{ 0 };
 		std::vector<std::thread> threads;
 		for( int w = 0; w < 3; ++w ) {
 			threads.emplace_back( [&]() {
 				while( resolves.load() == 0 ) std::this_thread::yield();
 				for( int i = 0; i < 400 || overlapResolves.load() == 0; ++i ) {
+					++started;
 					splat->BatchCommit( all.data(), all.size() );
 					filtered->Splat( 32.0, 8.0, XYZPel( c ), *flat );
 					++commits;
@@ -455,19 +457,19 @@ namespace
 			} );
 		}
 		const unsigned int resolvers = 4;
-		std::atomic<unsigned int> writersDone{ 0 };
 		for( unsigned int rI = 0; rI < resolvers; ++rI ) {
 			threads.emplace_back( [&, rI]() {
 				const unsigned int y0 = rI * ( FH / resolvers ), y1 = y0 + FH / resolvers - 1;
 				const Rect region( y0, 0, y1, FW - 1 );
 				while( !stop.load() ) {
 					for( int mode = 0; mode < 3; ++mode ) {
-						const unsigned long commitsBefore = commits.load();
 						for( unsigned int y = y0; y <= y1; ++y ) for( unsigned int x = 0; x < FW; ++x )
 							target->SetPEL( x, y, RISEColor( 0, 0, 0, 0 ) );
+						const unsigned long finishedBefore = commits.load();
 						if( mode == 0 ) splat->Resolve( *target, 1.0, &region );
 						else if( mode == 1 ) splat->Unresolve( *target, 1.0, &region );
 						else filtered->Resolve( *target, &region );
+						if( started.load() > finishedBefore ) ++overlapResolves;
 						for( unsigned int y = y0; y <= y1; ++y ) {
 							const RISEColor first = target->GetPEL( 0, y );
 							for( unsigned int x = 0; x < FW; ++x ) {
@@ -484,7 +486,6 @@ namespace
 							}
 						}
 						++resolves;
-						if( commits.load() != commitsBefore ) ++overlapResolves;
 					}
 				}
 			} );
@@ -492,7 +493,6 @@ namespace
 		for( int w = 0; w < 3; ++w ) threads[w].join();
 		stop.store( true );
 		for( size_t i = 3; i < threads.size(); ++i ) threads[i].join();
-		(void)writersDone;
 		std::cout << "  resolves: " << resolves.load() << ", of which during writes: " << overlapResolves.load() << "\n";
 		Check( overlapResolves.load() > 0, "resolves ran while writers were writing" );
 		Check( splatTorn.load() == 0, "SplatFilm Resolve/Unresolve rows are whole-batch snapshots (" + std::to_string( splatTorn.load() ) + " torn pixels)" );
