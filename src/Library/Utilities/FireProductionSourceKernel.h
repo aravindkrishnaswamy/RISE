@@ -1065,13 +1065,126 @@ namespace RISE
 			return overrideYield<0.0?fuel.SootYieldKGPerKGFuel():overrideYield;
 		}
 
+		// r273 poor-burn closure (docs/FIRE_SMOKE_POOR_BURN_R273.md). Two opt-ins,
+		// both off when unset, and the solver is then bit-identical.
+		//
+		// RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP=<c> (0 < c <= 1): soot joins the
+		// radiation budget as an optically thin emitter with the gas's escape
+		// factor, so the radiative fraction rises with the soot share of the
+		// emission, up to the cap (a measured sooty-fuel value).
+		// Returns -1 when unset and NaN when malformed.
+		inline double ParseMethaneSootRadiativeFractionCap(const char* text)
+		{
+			if(!text)return -1.0;
+			char* end=0;const double value=std::strtod(text,&end);
+			return end!=text&&*end=='\0'&&std::isfinite(value)&&value>0.0&&value<=1.0?
+				value:std::numeric_limits<double>::quiet_NaN();
+		}
+		inline double MethaneSootRadiativeFractionCapSetting()
+		{
+			static const double setting=ParseMethaneSootRadiativeFractionCap(
+				std::getenv("RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP"));
+			return setting;
+		}
+		// RISE_FIRE_SOOT_SHEET_OXIDATION=1: in a cell that is burning fuel, soot
+		// oxidation is decided by an estimate of the flame-sheet temperature
+		// instead of the cell mean. Returns 0 when unset or "0", 1 for "1", -1 when malformed.
+		inline int ParseMethaneSootSheetOxidation(const char* text)
+		{
+			if(!text)return 0;
+			return text[0]!='\0'&&text[1]=='\0'&&(text[0]=='0'||text[0]=='1')?text[0]-'0':-1;
+		}
+		inline int MethaneSootSheetOxidationSetting()
+		{
+			static const int setting=ParseMethaneSootSheetOxidation(
+				std::getenv("RISE_FIRE_SOOT_SHEET_OXIDATION"));
+			return setting;
+		}
+
+		// Optically thin soot emission, the fv*(T^5-Tinf^5) law of
+		// EvaluateSyntheticHotCarbonExchange with fixed model constants:
+		// E(m) = 0.26 (Dalzell and Sarofim, m = 1.57-0.56i) and 1800 kg/m3.
+		static const double SootEmissionEffectiveAbsorption=0.26;
+		static const double SootEmissionDensityKGPerM3=1800.0;
+		inline double MethaneSootExchangeCoefficientWPerM3K5(const MethaneCellState& state)
+		{
+			const double sigmaSB = 5.670374419e-8;
+			const double secondRadiationConstantMK = 0.014387768775039337;
+			const double volumeFraction=std::max(0.0,state.constituent[MethaneCarbon])/
+				SootEmissionDensityKGPerM3;
+			return 4.0*sigmaSB*3.83*6.0*std::acos(-1.0)*SootEmissionEffectiveAbsorption*
+				volumeFraction/secondRadiationConstantMK;
+		}
+		inline double MethaneSootExchangeWPerM3(const double coefficientWPerM3K5,
+			const double temperatureK,const double ambientTemperatureK)
+		{
+			const double temperature2=temperatureK*temperatureK;
+			const double ambient2=ambientTemperatureK*ambientTemperatureK;
+			return coefficientWPerM3K5*(temperature2*temperature2*temperatureK-
+				ambient2*ambient2*ambientTemperatureK);
+		}
+
+		// Sub-grid flame-sheet estimate for the soot oxidation gate: the cell's
+		// stoichiometric parcel (as in the critical-flame-temperature trial) burned
+		// with the heat that stays in the gas, (1-loss) times the primary heat
+		// after the formed carbon's share is withheld, must reach the record's
+		// soot oxidation temperature. No fuel or no oxygen means no sheet.
+		inline bool MethaneSootSheetReachesOxidationTemperature(
+			const MethaneCellState& state,const FireSimulationMethaneRecord& fuel,
+			const double radiativeLossFraction,const double sootYield,
+			bool& reaches,std::string* error=0)
+		{
+			reaches=false;
+			if(!fuel.IsValid()||!std::isfinite(radiativeLossFraction)||
+				radiativeLossFraction<0.0||radiativeLossFraction>1.0||
+				!std::isfinite(sootYield)||sootYield<0.0||
+				state.temperatureK<fuel.TemperatureMinK()||
+				state.temperatureK>fuel.TemperatureMaxK())
+				return Fail(error,"fire solver soot sheet estimate input is invalid");
+			const double fuelDensity=state.constituent[MethaneCH4];
+			const double oxygenDensity=state.constituent[MethaneO2];
+			if(fuelDensity<=0.0||oxygenDensity<=0.0)return true;
+			const std::vector<double>& primary=fuel.PrimaryReactionDelta();
+			if(primary.size()!=MethaneSpeciesCount)
+				return Fail(error,"fire solver methane reaction vector has the wrong dimension");
+			const double stoichiometric=fuel.StoichiometricOxygenKGPerKGFuel();
+			const bool lean=fuelDensity<=oxygenDensity/stoichiometric;
+			const double scale=lean?stoichiometric/oxygenDensity:1.0/fuelDensity;
+			const double extent=lean?1.0:(oxygenDensity/fuelDensity)/stoichiometric;
+			std::array<double,MethaneSpeciesCount> beginningEnthalpy,oxidationEnthalpy;
+			if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(state.temperatureK,
+				beginningEnthalpy.data(),beginningEnthalpy.size(),error)||
+				!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.SootOxidationTemperatureK(),
+				oxidationEnthalpy.data(),oxidationEnthalpy.size(),error))return false;
+			std::array<double,MethaneSpeciesCount> product;
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+				product[species]=extent*primary[species];
+			const double formed=extent*sootYield;
+			product[MethaneCarbon]+=formed;
+			product[MethaneO2]+=fuel.SootOxygenKGPerKGCarbon()*formed;
+			product[MethaneCO2]-=fuel.SootCO2KGPerKGCarbon()*formed;
+			double available=(1.0-radiativeLossFraction)*extent*
+				(fuel.LowerHeatingValueJPerKG()-sootYield*fuel.SootHeatReleaseJPerKGCarbon());
+			double required=0.0;
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species){
+				const double parcel=species==MethaneCH4?1.0:state.constituent[species]*scale;
+				available+=parcel*beginningEnthalpy[species];
+				required+=(parcel+product[species])*oxidationEnthalpy[species];
+			}
+			if(!std::isfinite(available)||!std::isfinite(required))
+				return Fail(error,"fire solver soot sheet estimate enthalpy is nonfinite");
+			reaches=available>=required;return true;
+		}
+
+		// sootSheetRadiativeLossFraction < 0 keeps the cell-mean oxidation gate.
 		inline bool BuildMethaneReactionPacket(
 			const MethaneCellState& beginning,
 			const FireSimulationMethaneRecord& fuel,
 			const MethaneReactionStep& step,
 			MethaneSourcePacket& packet,
 			std::string* error = 0,
-			MethaneCellState* acceptedEndpoint = 0
+			MethaneCellState* acceptedEndpoint = 0,
+			const double sootSheetRadiativeLossFraction = -1.0
 			)
 		{
 			packet = MethaneSourcePacket();
@@ -1105,8 +1218,16 @@ namespace RISE
 			const double primaryCandidate = step.primaryEligible ? relaxation*std::min(
 				std::max(0.0,beginning.constituent[MethaneCH4]),
 				oxygen/fuel.StoichiometricOxygenKGPerKGFuel()) : 0.0;
-			const bool oxidizes = step.sootOxidationEnabled &&
+			bool oxidizes = step.sootOxidationEnabled &&
 				beginning.temperatureK > fuel.SootOxidationTemperatureK();
+			if(!oxidizes&&step.sootOxidationEnabled&&sootSheetRadiativeLossFraction>=0.0&&
+				primaryCandidate>0.0) {
+				const double sheetYield=MethaneGrossSootYieldKGPerKGFuel(fuel);
+				if(!std::isfinite(sheetYield))
+					return Fail(error,"RISE_FIRE_METHANE_SOOT_YIELD must be a number in 0..0.5");
+				if(!MethaneSootSheetReachesOxidationTemperature(beginning,fuel,
+					sootSheetRadiativeLossFraction,sheetYield,oxidizes,error))return false;
+			}
 			const double sootCandidate = oxidizes ? relaxation*std::min(
 				std::max(0.0,beginning.constituent[MethaneCarbon]),
 				oxygen/fuel.SootOxygenKGPerKGCarbon()) : 0.0;
@@ -2037,7 +2158,8 @@ namespace RISE
 			const FireSimulationGasOpacityRecord& opacity,
 			MethaneCellState& result,
 			double& acceptedCoolingWPerM3,
-			std::string* error = 0
+			std::string* error = 0,
+			const bool sootEmission = false
 			)
 		{
 			if( !ValidateCellState(preRadiation,error) || !std::isfinite(deltaTimeS) ||
@@ -2091,15 +2213,23 @@ namespace RISE
 				return SignedMixtureSensibleEnergy(preRadiation,temperature,
 					thermochemistry,value,error);
 			};
+			// r273: soot adds coefficient*(T^5-Tinf^5); its derivative on [lo,hi] is at least 5*coefficient*lo^4.
+			const double sootCoefficient=sootEmission?
+				MethaneSootExchangeCoefficientWPerM3K5(preRadiation):0.0;
 			auto exchange=[&](const double temperature,double& value){
 				GasExchangeEvaluation evaluation;
 				if(!EvaluateGasExchange(preRadiation,temperature,ambientTemperatureK,
 					thermochemistry,opacity,evaluation,error))return false;
-				value=evaluation.exchangeWPerM3;return true;
+				value=evaluation.exchangeWPerM3;
+				if(sootCoefficient>0.0)value+=MethaneSootExchangeWPerM3(sootCoefficient,
+					temperature,ambientTemperatureK);
+				return true;
 			};
 			auto derivative=[&](const double lo,const double hi,double& value){
-				return CertifiedGasExchangeDerivativeLower(preRadiation,lo,hi,
-					ambientTemperatureK,thermochemistry,opacity,value,error);
+				if(!CertifiedGasExchangeDerivativeLower(preRadiation,lo,hi,
+					ambientTemperatureK,thermochemistry,opacity,value,error))return false;
+				if(sootCoefficient>0.0)value+=5.0*sootCoefficient*lo*lo*lo*lo;
+				return true;
 			};
 			MethaneCellState candidate = preRadiation;
 			if(!CertifiedScalarRadiationBackwardEuler(radiationTemperatureK,
@@ -2211,7 +2341,9 @@ namespace RISE
 			const FireSimulationMethaneRecord& thermochemistry,
 			const FireSimulationGasOpacityRecord& opacity,
 			MethaneSourcePacket& result,
-			std::string* error = 0
+			std::string* error = 0,
+			const bool sootEmission = false,
+			const double sootSheetRadiativeLossFraction = -1.0
 			)
 		{
 			if(fuel.RecordId()!=thermochemistry.RecordId())return Fail(error,
@@ -2219,12 +2351,12 @@ namespace RISE
 			MethaneSourcePacket reaction;
 			MethaneCellState postReaction;
 			if( !BuildMethaneReactionPacket(beginning,fuel,reactionStep,reaction,error,
-				&postReaction) ) return false;
+				&postReaction,sootSheetRadiativeLossFraction) ) return false;
 			MethaneCellState finalScratch;
 			double signedCoolingWPerM3 = 0.0;
 			if( !ApplyGasRadiationBackwardEuler(postReaction,ambientTemperatureK,
 				reactionStep.deltaTimeS,escapeFactor,thermochemistry,opacity,
-				finalScratch,signedCoolingWPerM3,error) ) return false;
+				finalScratch,signedCoolingWPerM3,error,sootEmission) ) return false;
 			result = reaction;
 			for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
 				result.constituentDelta[species] = finalScratch.constituent[species]-
@@ -2257,13 +2389,25 @@ namespace RISE
 			RadiationEscapeFactor& factor,
 			std::string* error = 0,
 			const unsigned int workerCount = 1u,
-			const bool gasRadiation = true
+			const bool gasRadiation = true,
+			const double sootRadiativeFractionCap = MethaneSootRadiativeFractionCapSetting(),
+			const int sootSheetOxidation = MethaneSootSheetOxidationSetting(),
+			double* appliedRadiativeFraction = 0
 			)
 		{
 			const std::size_t count = beginning.size();
 			if( count == 0 || reactionStep.size() != count || cellVolumeM3.size() != count ) {
 				return Fail(error,"fire solver grid source-packet arrays are malformed");
 			}
+			// r273 poor-burn opt-ins; with both off every branch below is the pre-r273 one.
+			if(std::isnan(sootRadiativeFractionCap))return Fail(error,
+				"RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP must be a number in (0,1]");
+			if(sootSheetOxidation!=0&&sootSheetOxidation!=1)return Fail(error,
+				"RISE_FIRE_SOOT_SHEET_OXIDATION must be 0 or 1");
+			const bool sootRadiation=gasRadiation&&sootRadiativeFractionCap>0.0;
+			const double sootRadiativeFractionLimit=std::max(radiativeFraction,
+				sootRadiativeFractionCap);
+			std::vector<double> sootExchange(sootRadiation?count:0u,0.0);
 			if(fuel.RecordId()!=thermochemistry.RecordId())return Fail(error,
 				"fire solver grid source packet fuel and thermochemistry records differ");
 			std::vector<double> unscaledExchange(count,0.0);
@@ -2278,8 +2422,34 @@ namespace RISE
 				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
 				for(std::size_t cell=first;cell<last;++cell) {
 				std::string cellError;
+				// r273 sheet gate: only a cell that can burn fuel, holds soot and is
+				// at or below the oxidation temperature needs the estimate. The sheet
+				// loses the case radiative fraction, raised (soot radiation on) by the
+				// cell's soot-to-gas emission ratio at the oxidation temperature.
+				double sheetLoss=-1.0;
+				if(sootSheetOxidation==1&&reactionStep[cell].primaryEligible&&
+					reactionStep[cell].sootOxidationEnabled&&
+					beginning[cell].constituent[MethaneCarbon]>0.0&&
+					beginning[cell].constituent[MethaneCH4]>0.0&&
+					beginning[cell].constituent[MethaneO2]>0.0&&
+					beginning[cell].temperatureK<=fuel.SootOxidationTemperatureK()) {
+					sheetLoss=radiativeFraction;
+					if(sootRadiation) {
+						GasExchangeEvaluation sheetGas;
+						if( !EvaluateGasExchange(beginning[cell],fuel.SootOxidationTemperatureK(),
+							ambientTemperatureK,thermochemistry,opacity,sheetGas,&cellError) ) {
+							failureCell[worker]=cell;failureMessage[worker]=cellError;break;
+						}
+						const double sheetSoot=MethaneSootExchangeWPerM3(
+							MethaneSootExchangeCoefficientWPerM3K5(beginning[cell]),
+							fuel.SootOxidationTemperatureK(),ambientTemperatureK);
+						sheetLoss=sheetGas.exchangeWPerM3>0.0?std::min(sootRadiativeFractionLimit,
+							radiativeFraction*(1.0+std::max(0.0,sheetSoot)/sheetGas.exchangeWPerM3)):
+							(sheetSoot>0.0?sootRadiativeFractionLimit:radiativeFraction);
+					}
+				}
 				if( !BuildMethaneReactionPacket(beginning[cell],fuel,reactionStep[cell],
-					reaction[cell],&cellError,&postReaction[cell]) ) {
+					reaction[cell],&cellError,&postReaction[cell],sheetLoss) ) {
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
 				// r271 inert plume: no gas radiation, so every cell takes the zero-exchange branch below.
@@ -2290,6 +2460,11 @@ namespace RISE
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
 				unscaledExchange[cell] = exchange.exchangeWPerM3;
+				if( sootRadiation ) {
+					sootExchange[cell]=MethaneSootExchangeWPerM3(
+						MethaneSootExchangeCoefficientWPerM3K5(postReaction[cell]),
+						postReaction[cell].temperatureK,ambientTemperatureK);
+				}
 				}
 				}
 			});
@@ -2307,9 +2482,30 @@ namespace RISE
 				}
 				totalHeatReleaseW += heatRelease;
 			}
+			// r273: the gas alone carries the case radiative fraction; soot emits on
+			// top with the same escape factor until the total reaches the limit.
+			double budgetRadiativeFraction=radiativeFraction;
+			bool sootEmissionApplied=false;
+			if( sootRadiation ) {
+				double gasIntegralW=0.0,sootIntegralW=0.0;
+				for( std::size_t cell=0; cell<count; ++cell ) {
+					gasIntegralW+=unscaledExchange[cell]*cellVolumeM3[cell];
+					sootIntegralW+=sootExchange[cell]*cellVolumeM3[cell];
+				}
+				if( !std::isfinite(gasIntegralW) || !std::isfinite(sootIntegralW) )
+					return Fail(error,"fire solver soot radiation budget accumulation overflowed");
+				if( sootIntegralW > 0.0 ) {
+					budgetRadiativeFraction=gasIntegralW>0.0?std::min(sootRadiativeFractionLimit,
+						radiativeFraction*(1.0+sootIntegralW/gasIntegralW)):sootRadiativeFractionLimit;
+					for( std::size_t cell=0; cell<count; ++cell )
+						unscaledExchange[cell]+=sootExchange[cell];
+					sootEmissionApplied=true;
+				}
+			}
+			if(appliedRadiativeFraction)*appliedRadiativeFraction=budgetRadiativeFraction;
 			RadiationEscapeFactor candidateFactor;
 			if( !ComputeRadiationEscapeFactor(totalHeatReleaseW,nominalPeakHeatReleaseW,
-				radiativeFraction,unscaledExchange,cellVolumeM3,predictive,
+				budgetRadiativeFraction,unscaledExchange,cellVolumeM3,predictive,
 				candidateFactor,error) ) return false;
 			std::vector<MethaneSourcePacket> candidateResult(count);
 			std::fill(failureCell.begin(),failureCell.end(),noFailure);
@@ -2324,7 +2520,7 @@ namespace RISE
 					finalScratch=postReaction[cell];signedCoolingWPerM3=0.0;
 				} else if( !ApplyGasRadiationBackwardEuler(postReaction[cell],ambientTemperatureK,
 					reactionStep[cell].deltaTimeS,candidateFactor.accepted,thermochemistry,opacity,
-					finalScratch,signedCoolingWPerM3,&cellError) ) {
+					finalScratch,signedCoolingWPerM3,&cellError,sootEmissionApplied) ) {
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
 				candidateResult[cell] = reaction[cell];
