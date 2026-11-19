@@ -516,6 +516,35 @@ Mean of 23.97–24.90 s (16 frames), same frames as the control and run A.
   `movies/r273_soot_radiation_compare4.png`: yield 0.03, control, cap 0.30, cap 0.45).
 - Data: `docs/data/fire_r273/t8_y300_rad030_{budget,centreline}_23.96_24.90s.txt`.
 
+## 8. Tier-8 with the self-absorption closure, cap 0.45 (2026-11-19)
+
+`t8_y300_rad045_sa`: run A plus `RISE_FIRE_SOOT_SELF_ABSORPTION=1`. 1,520 steps, all accepted. Same 16 frames.
+
+| | Control | Cap 0.30 (§7) | Cap 0.45 + closure | Cap 0.45 (run A) |
+|---|---:|---:|---:|---:|
+| Heat release, kW | 26.4 | 26.3 | 26.2 | 26.6 |
+| Peak temperature, K | 1720–1810 | 1514–1608 | 1485–1539 | 1340–1410 |
+| Centreline temperature at 0.14 m, K | 1572 | 1315 | 1261 | 1021 |
+| Gas above 1300 K, litres | about 4.4 | 2.5 | 1.7 | about 0.1 |
+| Upward soot flux at 1 m, mg/s | 91 | 116 | 136 | 198 |
+| Escaping share (over 197 mg/s formed) | 46% | about 59% | about 69% | about 100% |
+| Centreline soot volume fraction, ppm | 0.42 | 0.66–0.67 | 0.86 | 1.9–2.0 |
+
+- **The flame stays lit at the cap that collapsed run A.** Peak holds near 1500 K to the end, the hot volume is
+  steady (1.2–1.7 L from 1.0 s on) and the soot inventory levels off (81, 143, 206, 258, 256 mg at 0.5 s intervals).
+- **The radiative fraction is not set by the cap.** Frozen census on the run's own checkpoints at 1.56 s and 2.5 s:
+  the closure radiates 9.6–9.7 kW where the thin law would radiate 14.4–14.7 kW (at its 0.44 budget). Against the
+  26 kW the run releases that is about 0.37. (The census step itself ran at zero yield and reports 0.28–0.29 of its
+  own 33–34 kW.) The gas escape factor would have been 1.33–1.37 without the bound; the soot column escape is 0.79.
+- Peak temperature is at the 1500 K target, not clearly above it; escaping share 69% is above the control and
+  well below 100%.
+- Look: close to the cap-0.30 run, a short orange-red flame under a dark column
+  (`rad045sa_seq`, sheet `movies/r273_self_absorption_compare.png`: control, cap 0.30, closure, run A).
+- **Started:** `tier8_y300_sa`, the 25 s window from zero with these settings (`run_tier8_showcase.sh`), for the
+  showcase movie. The capstone's closing 0.20 ± 0.02 radiative-fraction check is expected to fail; the frames are
+  the product.
+- Data: `docs/data/fire_r273/t8_y300_rad045_sa_{budget,centreline}_23.96_24.90s.txt`.
+
 ## Files
 
 - Solver: `src/Library/Utilities/FireProductionSourceKernel.h`; §6 also passes the grid dimensions from
