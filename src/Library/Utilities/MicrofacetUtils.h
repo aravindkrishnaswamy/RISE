@@ -375,9 +375,9 @@ namespace RISE
 		/// Alpha values are GGX widths in (0,1], not perceptual roughness. Both zero
 		/// means smooth; a single zero width (a singular 1D distribution) is
 		/// unsupported. This is SINGLE scattering: rejected micronormals are
-		/// null events, not resampled. Multiple scattering and material/IOR
-		/// stack integration are separate work; existing materials do not use
-		/// this kernel yet. Shared scalar math is suitable for Pel/NM/HWSS.
+		/// null events, not resampled. RoughDielectricEnergy adds compensation;
+		/// RoughDielectricMaterial handles material/IOR stack integration.
+		/// Shared scalar math is suitable for Pel/NM/HWSS.
 		namespace RoughDielectric
 		{
 			struct Evaluation
@@ -385,6 +385,8 @@ namespace RISE
 				Scalar f = 0;       ///< BSDF in sr^-1, including radiance scaling if requested.
 				Scalar pdf = 0;     ///< Aggregate reflection/transmission solid-angle PDF.
 				Scalar weight = 0;  ///< Independently scaled f*abs(wo.z)/pdf where density is positive.
+				Scalar fMantissa = 0, pdfMantissa = 0; ///< Retained for mixture arithmetic before Scalar conversion.
+				int fExponent = 0, pdfExponent = 0;
 				bool positiveDensity = false; ///< Retains positivity if conversion to Scalar underflows.
 			};
 
@@ -394,6 +396,8 @@ namespace RISE
 				Scalar f = 0;
 				Scalar pdf = 0;     ///< Probability mass for a delta event, density otherwise.
 				Scalar weight = 0;  ///< f * abs(wo.z) / pdf, without a second Fresnel coin.
+				Scalar fMantissa = 0, pdfMantissa = 0;
+				int fExponent = 0, pdfExponent = 0;
 				// Values/densities or true eta^-2 weights can exceed Scalar's
 				// range. Representable throughput is evaluated independently;
 				// positiveDensity keeps underflowing densities from becoming nulls.
@@ -634,6 +638,8 @@ namespace RISE
 					if( radiance ) { f.Divide(eta); f.Divide(eta); }
 				}
 				result.f = f.Value(); result.pdf = pdf.Value();
+				result.fMantissa=f.mantissa; result.fExponent=f.exponent;
+				result.pdfMantissa=pdf.mantissa; result.pdfExponent=pdf.exponent;
 				result.positiveDensity = pdf.mantissa > 0;
 				if( result.positiveDensity ) {
 					PositiveProduct weight = masking.outFraction;
@@ -660,6 +666,41 @@ namespace RISE
 				return EvaluateWithNormal( wi, wo, m, ax, ay, eta, radiance );
 			}
 
+			// Shared with the offline energy bake; no Fresnel coin is involved.
+			inline Vector3 SampleVisibleNormal(const Vector3& wi, Scalar ax, Scalar ay, Scalar uNormal1, Scalar uNormal2)
+			{
+				// Heitz 2018 projected-disk VNDF. Unlike adding a cap point
+				// to its nearly antipodal view vector, this constructs a unit
+				// hemisphere normal before the anisotropic stretch.
+				const Vector3 vh = NormalizeScaled( wi, Vector3(ax,ay,1) );
+				const Scalar vt = std::hypot(vh.x,vh.y);
+				const Vector3 t1 = vt > 0 ? Vector3(-vh.y/vt,vh.x/vt,0) : Vector3(1,0,0);
+				const Vector3 t2 = Cross(vh,t1);
+				const Scalar r = std::sqrt(uNormal2);
+				const Scalar phi = TWO_PI * uNormal1;
+				const Scalar diskX = r*std::cos(phi), diskY = r*std::sin(phi);
+				const Scalar remaining = 1-uNormal2;
+				const Scalar q = std::sqrt(remaining+uNormal2*std::sin(phi)*std::sin(phi));
+				const Scalar plus = diskY < 0 ? remaining/(q-diskY) : q+diskY;
+				const Scalar minus = diskY > 0 ? remaining/(q+diskY) : q-diskY;
+				const Scalar s = (1+vh.z)*Scalar(0.5);
+				const Scalar oneMinusVz = (vt/(1+vh.z))*vt;
+				const Scalar a = s*minus, b = oneMinusVz*q+s*plus;
+				const Scalar alignedZ = std::sqrt(a*b);
+				const Scalar directA = (oneMinusVz*Scalar(0.5))*q, directB = s*diskY;
+				const Scalar horizonA = s*plus, horizonB = vh.z*q;
+				// Use the equivalent sum with the smaller rounding bound.
+				// The horizon form preserves boundary cancellation; the
+				// direct form preserves tiny disk components near normal.
+				const Scalar warpedY = diskY >= 0 || directA-directB <= horizonA+horizonB ?
+					directA+directB : horizonA-horizonB;
+				Vector3 nh = t1*diskX+t2*warpedY+vh*alignedZ;
+				// Positive-factor form of warpedY*vt + alignedZ*vh.z.
+				// It preserves a tiny height at the grazing disk boundary.
+				nh.z = s*plus*((vt*alignedZ+oneMinusVz*q+vh.z*a)/(alignedZ+vt*q));
+				return NormalizeScaled(nh,Vector3(ax,ay,1));
+			}
+
 			inline Sample Draw( const Vector3& wi, Scalar ax, Scalar ay, Scalar eta,
 				Scalar uNormal1, Scalar uNormal2, Scalar uLobe, bool radiance )
 			{
@@ -670,36 +711,7 @@ namespace RISE
 				result.delta = ax == 0 || eta == 1;
 				Vector3 m( 0, 0, 1 );
 				if( !result.delta ) {
-					// Heitz 2018 projected-disk VNDF. Unlike adding a cap point
-					// to its nearly antipodal view vector, this constructs a unit
-					// hemisphere normal before the anisotropic stretch.
-					const Vector3 vh = NormalizeScaled( wi, Vector3(ax,ay,1) );
-					const Scalar vt = std::hypot(vh.x,vh.y);
-					const Vector3 t1 = vt > 0 ? Vector3(-vh.y/vt,vh.x/vt,0) : Vector3(1,0,0);
-					const Vector3 t2 = Cross(vh,t1);
-					const Scalar r = std::sqrt(uNormal2);
-					const Scalar phi = TWO_PI * uNormal1;
-					const Scalar diskX = r*std::cos(phi), diskY = r*std::sin(phi);
-					const Scalar remaining = 1-uNormal2;
-					const Scalar q = std::sqrt(remaining+uNormal2*std::sin(phi)*std::sin(phi));
-					const Scalar plus = diskY < 0 ? remaining/(q-diskY) : q+diskY;
-					const Scalar minus = diskY > 0 ? remaining/(q+diskY) : q-diskY;
-					const Scalar s = (1+vh.z)*Scalar(0.5);
-					const Scalar oneMinusVz = (vt/(1+vh.z))*vt;
-					const Scalar a = s*minus, b = oneMinusVz*q+s*plus;
-					const Scalar alignedZ = std::sqrt(a*b);
-					const Scalar directA = (oneMinusVz*Scalar(0.5))*q, directB = s*diskY;
-					const Scalar horizonA = s*plus, horizonB = vh.z*q;
-					// Use the equivalent sum with the smaller rounding bound.
-					// The horizon form preserves boundary cancellation; the
-					// direct form preserves tiny disk components near normal.
-					const Scalar warpedY = diskY >= 0 || directA-directB <= horizonA+horizonB ?
-						directA+directB : horizonA-horizonB;
-					Vector3 nh = t1*diskX+t2*warpedY+vh*alignedZ;
-					// Positive-factor form of warpedY*vt + alignedZ*vh.z.
-					// It preserves a tiny height at the grazing disk boundary.
-					nh.z = s*plus*((vt*alignedZ+oneMinusVz*q+vh.z*a)/(alignedZ+vt*q));
-					m = NormalizeScaled(nh,Vector3(ax,ay,1));
+					m = SampleVisibleNormal(wi,ax,ay,uNormal1,uNormal2);
 				}
 				const Scalar ci = Vector3Ops::Dot( wi, m );
 				const Vector3 plane = Cross(wi,m);
@@ -733,6 +745,7 @@ namespace RISE
 				if( result.transmission ? result.wo.z >= 0 : result.wo.z <= 0 ) return result;
 				if( result.delta ) {
 					result.pdf = result.transmission ? transmission : F;
+					result.pdfMantissa = std::frexp(result.pdf,&result.pdfExponent);
 					PositiveProduct weight;
 					if( result.transmission && radiance ) { weight.Divide(eta); weight.Divide(eta); }
 					result.weight = weight.Value();
@@ -740,11 +753,14 @@ namespace RISE
 					value.Multiply(result.pdf); value.Divide(std::abs(result.wo.z));
 					if( result.transmission && radiance ) { value.Divide(eta); value.Divide(eta); }
 					result.f = value.Value();
+					result.fMantissa = value.mantissa; result.fExponent = value.exponent;
 					result.valid = result.pdf > 0;
 				} else {
 					const Evaluation evaluated = EvaluateWithNormal( wi, result.wo, m, ax, ay, eta, radiance );
 					result.f = evaluated.f;
 					result.pdf = evaluated.pdf;
+					result.fMantissa=evaluated.fMantissa; result.fExponent=evaluated.fExponent;
+					result.pdfMantissa=evaluated.pdfMantissa; result.pdfExponent=evaluated.pdfExponent;
 					result.valid = evaluated.positiveDensity;
 					result.weight = evaluated.weight;
 				}

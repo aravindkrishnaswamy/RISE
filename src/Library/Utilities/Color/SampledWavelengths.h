@@ -137,6 +137,14 @@ namespace RISE
 			}
 		}
 
+		/// Each independently sampled bundle has equal weight, including a
+		/// black bundle. Average its active lanes before combining bundles;
+		/// pooling active counts would weight unterminated paths N times more.
+		template<class T> T BundleAverage(const T& sum) const
+		{
+			return sum * (Scalar(1) / Scalar(NumActive()));
+		}
+
 		/// Returns true if all companion wavelengths have been terminated,
 		/// leaving only the hero active.
 		inline bool SecondaryTerminated() const

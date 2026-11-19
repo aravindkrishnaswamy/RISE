@@ -15,6 +15,7 @@
 
 #include "pch.h"
 #include "CompositeSPF.h"
+#include "RoughDielectricMaterial.h"
 #include "DielectricSPF.h"
 #include "PerfectRefractorSPF.h"
 #include "PolishedSPF.h"
@@ -132,6 +133,7 @@ CompositeSPF::CompositeSPF(
 	) :
   top( top_ ),
   bottom( bottom_ ),
+  heroOnlyHWSS(RoughDielectricRequiresHeroOnlySPF(&top_) || RoughDielectricRequiresHeroOnlySPF(&bottom_)),
   pTopBSDF( pTopBSDF_ ),
   pBottomBSDF( pBottomBSDF_ ),
   bBottomTransmits( bottomTransmits_ && pBottomBSDF_ != 0 ),

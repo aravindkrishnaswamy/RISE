@@ -1,4 +1,4 @@
-// Single-scattering anisotropic GGX dielectric interface. Bulk absorption belongs
+// Anisotropic GGX dielectric with reciprocal multiscatter compensation. Bulk absorption belongs
 // to a separately assigned medium. Positive widths only; use dielectric_material
 // for a smooth interface. RGB uses a single physical IOR; NM/HWSS retain dispersion.
 #ifndef RISE_ROUGH_DIELECTRIC_MATERIAL_H
@@ -72,9 +72,8 @@ public:
 // Current HWSS walkers carry one IOR stack and one radiance eta factor.
 // Until they carry wavelength-specific media, a rough interface conservatively
 // ends companion transport, including when its surrounding medium disperses.
+bool RoughDielectricRequiresHeroOnlySPF(const ISPF* spf);
 inline bool RoughDielectricRequiresHeroOnlyHWSS(const IMaterial* material)
-{
-    return material && dynamic_cast<const RoughDielectricSurface*>(material->GetSPF());
-}
+{ return material && RoughDielectricRequiresHeroOnlySPF(material->GetSPF()); }
 } }
 #endif

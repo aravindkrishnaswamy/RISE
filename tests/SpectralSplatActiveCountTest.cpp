@@ -10,7 +10,7 @@
 //  call `swl.TerminateSecondary()` whenever a bundle's subpaths contain a
 //  dispersive delta vertex or a null-BSDF continuation vertex (DL-126), and
 //  the companion loop then correctly SKIPS those lanes' splat deposits.  The
-//  non-splat (per-pixel) path compensates by dividing by `totalActive`; the
+//  non-splat (per-pixel) path now averages each bundle's active lanes; the
 //  splat path had no such compensation, because `SplatFilm::Resolve` applies
 //  ONE global scalar to the whole film.  A terminated bundle therefore
 //  deposited one lane's worth of splat energy where the denominator had
@@ -95,8 +95,8 @@
 //  different sample counts).  Gate against that baseline, not against 1.0.
 //
 //  MLT is NOT affected and has no row here: `MLTSpectralRasterizer` scales
-//  every strategy -- splat and non-splat alike -- by `1/activeWavelengthCount`
-//  before building its `MLTSample`s (DL-126 review round 4, P1-1), and it
+//  every strategy -- splat and non-splat alike -- by its bundle's active count
+//  and then the bundle count before building its `MLTSample`s, and it
 //  never consults `GetSplatSampleScale()`.  The Pel (RGB) rasterizers are
 //  unaffected by construction: `BidirectionalRasterizerBase::GetSplatSampleScale`
 //  returns 1.0 for them and they have no wavelength bundle at all.

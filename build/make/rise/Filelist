@@ -215,6 +215,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/DataDrivenSPF.cpp									\
 	$(PATHLIBRARY)Materials/DielectricSPF.cpp								\
 	$(PATHLIBRARY)Materials/RoughDielectricMaterial.cpp								\
+	$(PATHLIBRARY)Utilities/RoughDielectricEnergy.cpp								\
 	$(PATHLIBRARY)Materials/GGXBRDF.cpp										\
 	$(PATHLIBRARY)Materials/GGXSPF.cpp										\
 	$(PATHLIBRARY)Materials/HairBSDF.cpp										\

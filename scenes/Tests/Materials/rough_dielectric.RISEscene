@@ -1,8 +1,8 @@
 RISE ASCII SCENE 7
-# Tier 1.1 single-scattering glass comparison. Left: smooth; center: rough
+# Tier 1.1 compensated rough-glass comparison. Left: smooth; center: rough
 # isotropic; right: rough anisotropic; small front sphere: Lambertian control.
-# A checker backdrop shows refractive blur. Bulk absorption and multiscatter
-# compensation are deliberately absent. Adapted from pbr_metallic_roughness.
+# A checker backdrop shows refractive blur. Rough glass uses reciprocal
+# multiscatter compensation; bulk absorption is absent. Adapted from pbr_metallic_roughness.
 standard_shader
 {
 name global

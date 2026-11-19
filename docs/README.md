@@ -36,6 +36,7 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
   integrator selection guide
 - [MATERIALS.md](MATERIALS.md): material, BSDF/SPF, BSSRDF, and phase-function
   taxonomy
+- [ROUGH_DIELECTRIC_ENERGY.md](ROUGH_DIELECTRIC_ENERGY.md): reciprocal two-sided rough-glass energy compensation, bake, sampling and validation.
 - [ALPHA_COVERAGE.md](ALPHA_COVERAGE.md): scalar material intersection coverage
   (`alpha_coverage`, `alpha_mode`, `alpha_cutoff`), CSG inheritance, SSS/SMS
   endpoint rules

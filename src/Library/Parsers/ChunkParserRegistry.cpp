@@ -4065,7 +4065,7 @@ namespace RISE
 					static const ChunkDescriptor d = [] {
 						ChunkDescriptor cd;
 						cd.keyword="rough_dielectric_material"; cd.category=ChunkCategory::Material;
-						cd.description="Single-scattering anisotropic GGX glass interface; bulk absorption uses a separate medium.";
+						cd.description="Anisotropic GGX glass with reciprocal multiscatter energy compensation; bulk absorption uses a separate medium.";
 						cd.parameters.emplace_back();
 						cd.parameters.back().name="name"; cd.parameters.back().kind=ValueKind::String;
 						cd.parameters.back().description="Unique material name";

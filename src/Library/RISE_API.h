@@ -897,7 +897,7 @@ namespace RISE
 								const IScalarPainter& weft_transmit		///< [in] P2-B: weft's diffuse-transmission share, [0,1]
 								);
 
-	//! Single-scattering GGX dielectric interface, without bulk absorption.
+	//! GGX dielectric interface with reciprocal energy compensation, without bulk absorption.
 	//! All slots are single-valued scalar painters (spectral slot views retain
 	//! NM dispersion). Both alpha widths must be in (0,1]; invalid hit values
 	//! produce null scattering. World-position IOR fields are not supported.

@@ -1,12 +1,21 @@
 #include "pch.h"
 #include "RoughDielectricMaterial.h"
+#include "CompositeSPF.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/MicrofacetUtils.h"
+#include "../Utilities/RoughDielectricEnergy.h"
 #include "../Utilities/IORStackSeeding.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
 namespace RD = MicrofacetUtils::RoughDielectric;
+
+bool RISE::Implementation::RoughDielectricRequiresHeroOnlySPF(const ISPF* spf)
+{
+    if(dynamic_cast<const RoughDielectricSurface*>(spf)) return true;
+    const auto* composite=dynamic_cast<const CompositeSPF*>(spf);
+    return composite && composite->RequiresHeroOnlyHWSS();
+}
 
 namespace {
 Scalar Read(const IScalarPainter& p, const RayIntersectionGeometric& ri, Scalar nm)
@@ -68,7 +77,7 @@ struct Crossing
         return Vector3Ops::Dot(wo,frame.w()) > 0 ? ScatteredRay::eRayReflection : ScatteredRay::eRayRefraction;
     }
     RD::Evaluation Eval(const Vector3& wo, bool radiance) const {
-        return Allowed(wo) ? RD::Evaluate(wi, Local(Vector3Ops::Normalize(wo)), ax, ay, eta, radiance) : RD::Evaluation();
+        return Allowed(wo) ? RoughDielectricEnergy::Model(wi,ax,ay,eta).Evaluate(Local(Vector3Ops::Normalize(wo)),radiance) : RD::Evaluation();
     }
 };
 
@@ -77,9 +86,9 @@ void DrawRay(const RoughDielectricSurface& surface, const RayIntersectionGeometr
 {
     const Crossing c(surface, ri, &stack, nm);
     if(!c.valid) return;
-    const Scalar u = sampler.Get1D(), v = sampler.Get1D(), lobe = sampler.Get1D();
+    const Scalar u = sampler.Get1D(), v = sampler.Get1D(), lobe = sampler.Get1D(), technique=sampler.Get1D();
     // Integrators, including HWSS, apply their radiance eta scaling separately.
-    const RD::Sample draw = RD::Draw(c.wi, c.ax, c.ay, c.eta, u, v, lobe, false);
+    const RD::Sample draw = RoughDielectricEnergy::Model(c.wi,c.ax,c.ay,c.eta).Draw(u,v,lobe,technique,false);
     // The equal-index delta is exactly straight, even after a rotated frame.
     const Vector3 wo = draw.delta ? Vector3Ops::Normalize(ri.ray.Dir()) : c.World(draw.wo);
     if(!draw.valid || !c.Allowed(wo)) return;
