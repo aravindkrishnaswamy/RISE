@@ -333,8 +333,9 @@ TEST_CPPFLAGS_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(CPPFLAGS),$(TEST_CPPFLAGS
 TEST_CXXFLAGS_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(CXXFLAGS),$(TEST_CXXFLAGS))
 TEST_ARCHIVE_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(ARCHIVE_LINK_LIBRISE),$(ARCHIVE_LINK_LIBRISE_TEST))
 
-# The test link mode in use, rewritten only when it changes; every test
-# object and binary depends on it, so switching TEST_LTO rebuilds them.
+# The test link mode in use, rewritten only when it changes.  Every
+# pattern-built test object and binary depends on it; a switch is acted on by
+# the next make with a test goal (below), which deletes them.
 TEST_MODE_STAMP = $(PATHDEST).test-link-mode
 # Only a make that builds tests records the mode; any other (`make all`, say,
 # beside a suite running in the other mode) leaves the record and the test
@@ -350,8 +351,9 @@ $(shell mkdir -p $(PATHDEST) && { [ "`cat $(TEST_MODE_STAMP) 2>/dev/null`" = "$(
 endif
 endif
 # Only when the record is missing, e.g. after the clean of `make clean tests`;
-# `make -n` only prints this, and `make -t` writes an empty record, which the
-# next real make with a test goal replaces (rebuilding the tests).
+# `make -n` prints this and `make -t` touches an empty record only when
+# something below it is out of date; the next real make with a test goal
+# replaces an empty record (deleting the test objects and binaries).
 $(TEST_MODE_STAMP) :
 	@mkdir -p $(PATHDEST) && echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $@
 

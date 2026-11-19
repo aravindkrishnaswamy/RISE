@@ -438,17 +438,22 @@ namespace
 
 		std::atomic<bool> stop{ false };
 		std::atomic<unsigned long> splatTorn{ 0 }, splatBadValue{ 0 }, filteredTorn{ 0 }, resolves{ 0 };
-		// Resolve calls that overlapped a writer's write interval (its
-		// BatchCommit and Splat): one that had not finished when the call
-		// began (commits) had started (started) by the time it returned.  Writers start once a resolver has finished a
-		// pass and keep writing past their 400 commits until such a call has
-		// happened, so the checks below are exercised even on a busy machine.
-		std::atomic<unsigned long> overlapResolves{ 0 }, commits{ 0 }, started{ 0 };
+		// Resolve calls, per mode, that overlapped a writer's bracket from
+		// ++started to ++commits (its BatchCommit and Splat): at least one
+		// bracket not closed when the call began had opened by the time it
+		// returned.  Writers start once a resolver has finished a pass and
+		// keep writing past their 400 commits until every mode has had such
+		// a call, so each check below is exercised even on a busy machine.
+		std::atomic<unsigned long> commits{ 0 }, started{ 0 };
+		std::atomic<unsigned long> overlapResolves[3] = { { 0 }, { 0 }, { 0 } };
+		auto allModesOverlapped = [&]() {
+			return overlapResolves[0].load() > 0 && overlapResolves[1].load() > 0 && overlapResolves[2].load() > 0;
+		};
 		std::vector<std::thread> threads;
 		for( int w = 0; w < 3; ++w ) {
 			threads.emplace_back( [&]() {
 				while( resolves.load() == 0 ) std::this_thread::yield();
-				for( int i = 0; i < 400 || overlapResolves.load() == 0; ++i ) {
+				for( int i = 0; i < 400 || !allModesOverlapped(); ++i ) {
 					++started;
 					splat->BatchCommit( all.data(), all.size() );
 					filtered->Splat( 32.0, 8.0, XYZPel( c ), *flat );
@@ -469,7 +474,7 @@ namespace
 						if( mode == 0 ) splat->Resolve( *target, 1.0, &region );
 						else if( mode == 1 ) splat->Unresolve( *target, 1.0, &region );
 						else filtered->Resolve( *target, &region );
-						if( started.load() > finishedBefore ) ++overlapResolves;
+						if( started.load() > finishedBefore ) ++overlapResolves[mode];
 						for( unsigned int y = y0; y <= y1; ++y ) {
 							const RISEColor first = target->GetPEL( 0, y );
 							for( unsigned int x = 0; x < FW; ++x ) {
@@ -493,8 +498,9 @@ namespace
 		for( int w = 0; w < 3; ++w ) threads[w].join();
 		stop.store( true );
 		for( size_t i = 3; i < threads.size(); ++i ) threads[i].join();
-		std::cout << "  resolves: " << resolves.load() << ", of which during writes: " << overlapResolves.load() << "\n";
-		Check( overlapResolves.load() > 0, "resolves ran while writers were writing" );
+		std::cout << "  resolves: " << resolves.load() << ", of which during writes (splat resolve / unresolve / filtered resolve): "
+			<< overlapResolves[0].load() << " / " << overlapResolves[1].load() << " / " << overlapResolves[2].load() << "\n";
+		Check( allModesOverlapped(), "every resolve mode ran while writers were writing" );
 		Check( splatTorn.load() == 0, "SplatFilm Resolve/Unresolve rows are whole-batch snapshots (" + std::to_string( splatTorn.load() ) + " torn pixels)" );
 		Check( splatBadValue.load() == 0, "SplatFilm resolved pixels are whole multiples of the record (" + std::to_string( splatBadValue.load() ) + ")" );
 		Check( filteredTorn.load() == 0, "FilteredFilm Resolve rows read colorSum/weightSum consistently (" + std::to_string( filteredTorn.load() ) + ")" );
