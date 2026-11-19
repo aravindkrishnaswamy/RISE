@@ -147,7 +147,10 @@ CPPFLAGS += -I$(CURDIR)
 # about the current source state.
 # GNU make 3.81 (macOS /usr/bin/make) instead puts --long options first and
 # the single-letter flags after them as -x words; 4.x's later -x words can be
-# -Oline or -I<dir>, so only 3.81 reads them.
+# -Oline or -I<dir>, so only 3.81 reads them.  (A 3.81 sub-make also inherits
+# command-line variables in MAKEFLAGS, where a value such as -fexceptions
+# would read as -n; this Makefile never runs a sub-make, and a header that
+# was not generated is made by its rule below when it is missing.)
 ifeq ($(MAKE_VERSION),3.81)
 MAKE_FLAG_WORD = $(firstword -$(MAKEFLAGS)) $(filter-out --%,$(filter -%,$(MAKEFLAGS)))
 else
@@ -175,8 +178,10 @@ endif
 endif
 
 $(PATHLIBRARY)Job.o : $(RENDERER_BUILD_HEADER)
-# A dry run or clean in a fresh tree has no header yet; nothing to build.
-$(RENDERER_BUILD_HEADER) : ;
+# Only when the header is missing: a dry run in a fresh tree, or after the
+# clean of a `make clean all`.
+$(RENDERER_BUILD_HEADER) :
+	@$(RENDERER_IDENTITY_GEN) --output $@ --lto-mode $(RENDERER_LTO)
 
 # Rules section
 # Normally you would define target upstairs and build it here, but 
@@ -309,7 +314,8 @@ ifneq ($(TEST_RENDERER_IDENTITY_STATUS),)
 $(error generate_renderer_build_identity_header.py failed for $(TEST_RENDERER_BUILD_HEADER))
 endif
 endif
-$(TEST_RENDERER_BUILD_HEADER) : ;
+$(TEST_RENDERER_BUILD_HEADER) :
+	@$(RENDERER_IDENTITY_GEN) --output $@ --lto-mode off
 
 $(TESTOBJ_DIR)src/Library/Job.o : $(TEST_RENDERER_BUILD_HEADER)
 else
@@ -455,23 +461,6 @@ $(PATHTESTS)%.o : $(PATHTESTS)%.cpp $(TEST_MODE_STAMP)
 	@echo Compiling: $<
 	@$(CXX) $(call TEST_CPPFLAGS_FOR,$*) $(call TEST_CXXFLAGS_FOR,$*) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
-# The mirror checks pass a stamp to the binaries that need them, so a check
-# reruns (and those binaries relink) only when the generator, the originals
-# or the generated mirrors change.  The phony names run the check on demand.
-FIRE_FP64_CHECK_STAMP = $(PATHDEST).fire-production-fp64.checked
-FIRE_TRACE_CHECK_STAMP = $(PATHDEST).fire-production-trace.checked
-FIRE_CHECK_STAMPS = $(FIRE_FP64_CHECK_STAMP) $(FIRE_TRACE_CHECK_STAMP)
-
-$(FIRE_FP64_CHECK_STAMP) : ../../../tools/generate_fire_production_fp64_mirror.py $(FIREPRODUCTIONFP64ORIGINALS) $(FIREPRODUCTIONFP64SOURCES)
-	@mkdir -p $(PATHDEST)
-	@python3 ../../../tools/generate_fire_production_fp64_mirror.py --check
-	@touch $@
-
-$(FIRE_TRACE_CHECK_STAMP) : ../../../tools/generate_fire_production_roundoff_trace.py $(FIREPRODUCTIONFP64ORIGINALS) $(FIREPRODUCTIONTRACESOURCES)
-	@mkdir -p $(PATHDEST)
-	@python3 ../../../tools/generate_fire_production_roundoff_trace.py --check
-	@touch $@
-
 .PHONY: check-fire-production-fp64 check-fire-production-trace
 check-fire-production-fp64 : ../../../tools/generate_fire_production_fp64_mirror.py $(FIREPRODUCTIONFP64ORIGINALS) $(FIREPRODUCTIONFP64SOURCES)
 	@python3 ../../../tools/generate_fire_production_fp64_mirror.py --check
@@ -479,17 +468,17 @@ check-fire-production-fp64 : ../../../tools/generate_fire_production_fp64_mirror
 check-fire-production-trace : ../../../tools/generate_fire_production_roundoff_trace.py $(FIREPRODUCTIONFP64ORIGINALS) $(FIREPRODUCTIONTRACESOURCES)
 	@python3 ../../../tools/generate_fire_production_roundoff_trace.py --check
 
-$(PATHTESTDEST)FireProductionCalibrationTest : $(FIRE_CHECK_STAMPS) $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB)
+$(PATHTESTDEST)FireProductionCalibrationTest : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) $(LDLIBS)
 
-$(PATHTESTDEST)FireSequenceTest : $(FIRE_CHECK_STAMPS) $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB)
+$(PATHTESTDEST)FireSequenceTest : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) $(LDLIBS) $(FIREPREVIEWLIBS)
 
-$(PATHTESTDEST)FireProductionCalibrationOracle : $(FIRE_CHECK_STAMPS) $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB_NOMETAL)
+$(PATHTESTDEST)FireProductionCalibrationOracle : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB_NOMETAL)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking no-Metal calibration owner: $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB_NOMETAL) $(LDLIBS_NOMETAL) $(FIREPREVIEWLIBS)

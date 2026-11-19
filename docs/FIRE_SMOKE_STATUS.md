@@ -328,7 +328,7 @@ by owner decision. `run_all_tests.sh` runs to the end again.
 | `FireProductionSolverTest` two exact rounding pins (r96 composed force) | **Re-baselined** from equalities to upper bounds; the GPU now matches the CPU exactly on those cases. |
 | `FireProductionSolverTest` tier-10 full-step trial, its 200 ms gate, five source-text bindings | **Retired.** The test's tier-10 fixture is refused by the cap; production tier 10 itself runs (r271 §33). Which fixture setting differs is not traced. |
 | `FireProductionCalibrationTest` 26 of 278 checks; `FireSequenceTest` r136 gate | **Retired.** Each binds SHA-256 digests or exact text of sources, documents or the test runner. |
-| r136–r175 evidence replays in `run_all_tests.sh` (21 sub-runs, about 70 minutes) | **Removed** from the Unix runner. All stopped on the same cap refusal or on stale bindings. |
+| r136–r175 evidence replays in `run_all_tests.sh` and `run_all_tests.ps1` (21 sub-runs, about 70 minutes) | **Removed** from both runners. All stopped on the same cap refusal or on stale bindings. |
 
 After the cleanup the stock suite gave 246 of 247 passed; the remaining failure is `AutoRasterizerTest` (renderer integrator selection, unrelated to fire), which is intermittent: it passed in two earlier full runs and fails 2 of 5 standalone runs (`ggx_showcase` probe resolves to BDPT instead of PT). Not addressed here.
 

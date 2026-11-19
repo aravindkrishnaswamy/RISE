@@ -124,8 +124,10 @@ if [ -z "$RUN_JOBS" ]; then
 	RUN_JOBS="$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 1 )"
 fi
 case "$RUN_JOBS" in
-	''|*[!0-9]*|0)
-		echo "Invalid --jobs '$RUN_JOBS' (expected a positive integer)" >&2
+	''|*[!0-9]*|0*)
+		# A leading zero is refused too: $(( )) would read it as octal while
+		# [ -lt ] and awk read it as decimal.
+		echo "Invalid --jobs '$RUN_JOBS' (expected a positive integer without leading zeros)" >&2
 		exit 64
 		;;
 esac
@@ -672,6 +674,7 @@ awk -F"$TAB" -v OFS="$TAB" -v sched="$schedule_src" -v hist="$history_src" -v jo
 			cls[f[1]] = f[2]; sec[f[1]] = (n >= 3) ? f[3] + 0 : 0
 		}
 		while (hist != "" && (getline line < hist) > 0) {
+			sub(/\r$/, "", line)
 			split(line, f, "\t")
 			if (f[1] != "" && f[2] ~ /^[0-9]+$/) last[f[1]] = f[2] + 0
 		}
@@ -787,7 +790,7 @@ nap() {
 	sleep 0.2 2>/dev/null || sleep 1
 }
 
-echo "Running $plan_count test(s), up to $RUN_JOBS at a time (exclusive tests alone)"
+echo "Running $plan_count test(s) in $RUN_JOBS run slots (exclusive tests alone)"
 
 # The run slots a running test holds, from its class.
 slots_of() {
@@ -827,13 +830,19 @@ skip_unrunnable() {
 # Returns 0 when the line is used up (started or skipped), 1 when it must
 # wait for slots.  On an idle machine every test fits: slots never exceed
 # $RUN_JOBS.
+# The line last read is kept (ts_cached), so a test waiting for slots costs
+# no processes on later passes: an exclusive test may be timing something.
+ts_cached=""
 try_start() {
-	ts_line=$(sed -n "${1}p" "$PLAN")
-	ts_class=$(printf '%s\n' "$ts_line" | cut -f1)
-	ts_slots=$(printf '%s\n' "$ts_line" | cut -f2)
-	ts_name=$(printf '%s\n' "$ts_line" | cut -f4)
-	if skip_unrunnable "$ts_name"; then
-		return 0
+	if [ "$1" != "$ts_cached" ]; then
+		ts_line=$(sed -n "${1}p" "$PLAN")
+		ts_class=$(printf '%s\n' "$ts_line" | cut -f1)
+		ts_slots=$(printf '%s\n' "$ts_line" | cut -f2)
+		ts_name=$(printf '%s\n' "$ts_line" | cut -f4)
+		ts_cached="$1"
+		if skip_unrunnable "$ts_name"; then
+			return 0
+		fi
 	fi
 	if [ "$running_count" -gt 0 ] && [ $((slots_used + ts_slots)) -gt "$RUN_JOBS" ]; then
 		return 1
@@ -891,7 +900,7 @@ EOF
 		next_ex=$((next_ex + 1))
 	done
 	if [ "$next_ex" -gt "$plan_ex" ]; then
-		while [ "$next_wide" -le "$wide_end" ]; do
+		while [ "$next_wide" -le "$wide_end" ] && [ "$slots_used" -lt "$RUN_JOBS" ]; do
 			try_start "$next_wide" || break
 			next_wide=$((next_wide + 1))
 		done
@@ -910,23 +919,36 @@ done
 run_wall=$(( $(date +%s) - run_start ))
 
 # Remember each test's time for the next run's order: this run's times
-# replace the old ones, tests this run did not reach keep theirs.  Only a
-# run that got this far writes it (an interrupted run's times are partial).
-if [ -s "$TIMINGS_TSV" ]; then
+# replace the old ones, tests this run did not reach keep theirs, and tests
+# whose source is gone are dropped.  Only passing tests of a full-tier run on
+# several slots count: a failure can stop early, --tier fast runs cheaper
+# modes and --jobs 1 has no neighbours.  An interrupted run writes nothing.
+if [ -s "$TIMINGS_TSV" ] && [ "$TIER" = "all" ] && [ "$RUN_JOBS" -gt 1 ]; then
+	all_tests="$LOG_DIR/.all_tests"
+	: > "$all_tests"
+	for test_src in "$SRC_DIR"/*.cpp; do
+		[ -f "$test_src" ] || continue
+		basename "$test_src" .cpp >> "$all_tests"
+	done
 	mkdir -p "$(dirname "$TIMINGS_HISTORY")"
-	if awk -F"$TAB" -v OFS="$TAB" -v hist="$TIMINGS_HISTORY" '
+	if awk -F"$TAB" -v OFS="$TAB" -v hist="$TIMINGS_HISTORY" -v fails="$RUN_FAIL_TSV" -v known="$all_tests" '
 		BEGIN {
+			while ((getline line < known) > 0) exists[line] = 1
+			while ((getline line < fails) > 0) { split(line, f, "\t"); failed[f[1]] = 1 }
 			while ((getline line < hist) > 0) {
+				sub(/\r$/, "", line)
 				split(line, f, "\t")
 				if (f[1] != "" && f[2] ~ /^[0-9]+$/) { t[f[1]] = f[2]; if (!(f[1] in seen)) { seen[f[1]] = 1; order[++n] = f[1] } }
 			}
 		}
-		$2 != "" { if (!($2 in seen)) { seen[$2] = 1; order[++n] = $2 } t[$2] = $1 }
-		END { for (i = 1; i <= n; i++) print order[i], t[order[i]] }
-	' "$TIMINGS_TSV" > "$TIMINGS_HISTORY.tmp.$$"; then
-		mv "$TIMINGS_HISTORY.tmp.$$" "$TIMINGS_HISTORY"
+		$2 != "" && !($2 in failed) { if (!($2 in seen)) { seen[$2] = 1; order[++n] = $2 } t[$2] = $1 }
+		END { for (i = 1; i <= n; i++) if (order[i] in exists) print order[i], t[order[i]] }
+	' "$TIMINGS_TSV" > "$TIMINGS_HISTORY.tmp.$$" \
+	   && mv "$TIMINGS_HISTORY.tmp.$$" "$TIMINGS_HISTORY"; then
+		:
 	else
 		rm -f "$TIMINGS_HISTORY.tmp.$$"
+		echo "warning: could not update $TIMINGS_HISTORY" >&2
 	fi
 fi
 

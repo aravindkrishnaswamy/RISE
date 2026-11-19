@@ -62,7 +62,7 @@ BDPTZeroDensityConnectibleTest	pool	9
 BDPTZeroExitanceBSSRDFTest	pool	5
 BidirectionalTextureFootprintParityTest	wide:5	2	4.5 cores (measured)
 CallbackOutputRenderScopeTest	wide:5	1	4.7 cores (measured)
-CausticPhotonMapNormalizationTest	wide:2	8	1.9 cores (measured mean; peak 1.4)
+CausticPhotonMapNormalizationTest	wide:2	8	1.9 cores (measured mean)
 CausticReachHarnessTest	wide:5	4	4.6 cores (measured)
 CoatedBindingCapTest	pool	31
 CoatedFabricAccuracyTest	pool	31
@@ -104,7 +104,7 @@ IsotropicPhongSPFPdfConsistencyTest	pool	13
 LayeredWhiteFurnaceTest	pool	34
 LegacyTierRenderIdentityTest	pool	61
 LightSoloTest	wide:3	4	3.1 cores (measured)
-LuminarySamplerAreaTest	wide:7	1274	multi-threaded 96x96 renders (Q, D) and child-process renders (F); D checks multi-thread determinism
+LuminarySamplerAreaTest	wide:7	1274	6.9 cores (measured mean); multi-threaded 96x96 renders (Q, D) and child-process renders (F); D checks multi-thread determinism
 MediumEnclosureConnectibilityTest	single	1215	1.6 cores (48x48 films); 944 s on one thread
 MediumInsideOutsideInvariantTest	single	1791	1.7 cores over the whole run (64x64 deep-fog rows); ~1350 s on one thread
 MeshClosestPointTest	pool	43

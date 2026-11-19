@@ -669,7 +669,7 @@ $timingsHistory = Join-Path $RepoRoot 'bin\.test_timings.tsv'
 $lastSeconds = @{}
 if (Test-Path -LiteralPath $timingsHistory) {
     foreach ($line in Get-Content -LiteralPath $timingsHistory) {
-        $cols = $line -split "`t"
+        $cols = $line.TrimEnd("`r") -split "`t"
         $sec = 0
         if ($cols.Count -ge 2 -and $cols[0] -and [int]::TryParse($cols[1], [ref]$sec)) { $lastSeconds[$cols[0]] = $sec }
     }
@@ -679,7 +679,11 @@ if (Test-Path -LiteralPath $timingsHistory) {
 # pool and single 1.
 function Get-RiseTestSlots([string]$class) {
     if ($class -ceq 'exclusive') { return $Jobs }
-    if ($class -cmatch '^wide:([1-9][0-9]*)$') { return [Math]::Min([int]$Matches[1], $Jobs) }
+    if ($class -cmatch '^wide:([1-9][0-9]*)$') {
+        $n = 0
+        if (-not [int]::TryParse($Matches[1], [ref]$n)) { return $Jobs }
+        return [Math]::Min($n, $Jobs)
+    }
     return 1
 }
 
@@ -795,7 +799,7 @@ function Complete-RiseTest($run) {
     }
 }
 
-Write-Host ('Running {0} test(s), up to {1} at a time (exclusive tests alone)' -f $plan.Count, $Jobs)
+Write-Host ('Running {0} test(s) in {1} run slots (exclusive tests alone)' -f $plan.Count, $Jobs)
 $runStart = Get-Date
 $doneCount = 0
 $running = New-Object System.Collections.ArrayList
@@ -896,18 +900,30 @@ try {
 $runWall = [int]((Get-Date) - $runStart).TotalSeconds
 
 # Remember each test's time for the next run's order: this run's times replace
-# the old ones, tests this run did not reach keep theirs.  Only a run that got
-# this far writes it (an interrupted run's times are partial).
-if ($timings.Count -gt 0) {
-    foreach ($t in $timings) { $lastSeconds[$t.Name] = [int]$t.Seconds }
-    $historyLines = foreach ($k in ($lastSeconds.Keys | Sort-Object)) { "$k`t$($lastSeconds[$k])" }
+# the old ones, tests this run did not reach keep theirs, and tests whose
+# source is gone are dropped.  Only passing tests of a full-tier run on several
+# slots count: a failure can stop early, -Tier fast runs cheaper modes and
+# -Jobs 1 has no neighbours.  An interrupted run writes nothing.  LF line
+# endings, so run_all_tests.sh in the same checkout reads it as well.
+if ($timings.Count -gt 0 -and $Tier -eq 'all' -and $Jobs -gt 1) {
+    $failedNames = @{}
+    foreach ($f in $runFailures) { $failedNames[$f.Name] = $true }
+    foreach ($t in $timings) {
+        if (-not $failedNames.ContainsKey($t.Name)) { $lastSeconds[$t.Name] = [int]$t.Seconds }
+    }
+    $existing = @{}
+    foreach ($src in (Get-ChildItem -LiteralPath $SrcDir -Filter '*.cpp' -File)) { $existing[$src.BaseName] = $true }
+    $historyLines = foreach ($k in ($lastSeconds.Keys | Sort-Object)) {
+        if ($existing.ContainsKey($k)) { "$k`t$($lastSeconds[$k])" }
+    }
     $historyTmp = "$timingsHistory.tmp.$PID"
     try {
         $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $timingsHistory)
-        Set-Content -LiteralPath $historyTmp -Value $historyLines -Encoding ascii
+        [IO.File]::WriteAllText($historyTmp, ((@($historyLines) -join "`n") + "`n"))
         Move-Item -Force -LiteralPath $historyTmp -Destination $timingsHistory
     } catch {
         Remove-Item -Force -LiteralPath $historyTmp -ErrorAction SilentlyContinue
+        Write-Host "warning: could not update $timingsHistory"
     }
 }
 

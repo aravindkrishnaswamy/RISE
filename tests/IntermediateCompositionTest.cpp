@@ -441,6 +441,10 @@ namespace
 		std::vector<std::thread> threads;
 		for( int w = 0; w < 3; ++w ) {
 			threads.emplace_back( [&]() {
+				// Start once a resolver has finished a pass, so the writes
+				// overlap resolves even when the machine is busy enough that
+				// the resolver threads start late.
+				while( resolves.load() == 0 ) std::this_thread::yield();
 				for( int i = 0; i < 400; ++i ) {
 					splat->BatchCommit( all.data(), all.size() );
 					filtered->Splat( 32.0, 8.0, XYZPel( c ), *flat );
