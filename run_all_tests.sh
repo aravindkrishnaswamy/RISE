@@ -30,7 +30,7 @@ FIRE_GAS_PLANCK_TEST="$REPO_ROOT/tests/test_fire_gas_opacity_planck_record.py"
 # The default is per checkout (a checksum of its path), so runs in two
 # worktrees at once do not delete each other's logs and run state.
 REPO_SUM="$(printf '%s' "$REPO_ROOT" | cksum | cut -d' ' -f1)"
-LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs-$REPO_SUM}"
+LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs-managed-$REPO_SUM}"
 # Absolute (against the caller's directory): tests get TMPDIRs under it and
 # some chdir before using them, and the runner changes to the repo root below.
 case "$LOG_DIR" in
@@ -58,11 +58,11 @@ FILTER="${RISE_TEST_FILTER:-}"
 TIER="${RISE_TEST_TIER:-all}"
 # How many test binaries may RUN at once (Phase 3).  Most suites render tiny
 # films on one core, so running them side by side cuts wall time several-fold
-# without changing any result.  Tests marked `exclusive` in
-# tests/test_schedule.tsv (multi-core renders, wall-clock gates) always run
-# alone.  1 runs one test at a time in alphabetical order (single tests still
-# get one render thread).  Override with --jobs or
-# RISE_TEST_RUN_JOBS.
+# without changing any result.  Each test takes one of these run slots, or
+# N of them when tests/test_schedule.tsv marks it `wide:N` (multi-core
+# renders); tests marked `exclusive` (wall-clock gates) always run alone.
+# 1 runs one test at a time in alphabetical order (single tests still get one
+# render thread).  Override with --jobs or RISE_TEST_RUN_JOBS.
 RUN_JOBS="${RISE_TEST_RUN_JOBS:-}"
 
 while [ "$#" -gt 0 ]; do
@@ -344,9 +344,12 @@ mkdir -p "$LOG_DIR"
 BUILD_FAIL_TSV="$LOG_DIR/.build_failures.tsv"
 RUN_FAIL_TSV="$LOG_DIR/.run_failures.tsv"
 TIMINGS_TSV="$LOG_DIR/.timings.tsv"
+# Each test's time in this checkout's last run (name<TAB>seconds), kept
+# outside the log dir, which every run deletes; it orders the next run.
+TIMINGS_HISTORY="$REPO_ROOT/bin/.test_timings.tsv"
 # name, wall s, CPU s (user+sys), mean cores, schedule class -- written when
-# /usr/bin/time is available.  A `pool` test whose mean cores is well above 1
-# belongs in tests/test_schedule.tsv as `exclusive`; the summary flags those.
+# /usr/bin/time is available.  A test whose mean cores is well above its run
+# slots belongs in tests/test_schedule.tsv as `wide:N`; the summary flags those.
 CPU_TSV="$LOG_DIR/.cpu.tsv"
 : > "$BUILD_FAIL_TSV"
 : > "$RUN_FAIL_TSV"
@@ -410,14 +413,19 @@ print_summary() {
 		done
 	fi
 
-	# A pool test that keeps several cores busy competes with its neighbours
-	# and breaks the one-multi-core-render-at-a-time rule, so flag it for an
-	# `exclusive` entry.  Only meaningful when tests ran side by side.
+	# A test that keeps more cores busy than the slots it holds competes with
+	# its neighbours, so flag it for a wider `wide:N` (or `exclusive`) entry.
+	# Only meaningful when tests ran side by side.
 	if [ "$RUN_JOBS" -gt 1 ] && [ -s "$CPU_TSV" ]; then
-		busy=$(LC_ALL=C awk -F"$TAB" '$5 != "exclusive" && $2 >= 20 && $4 + 0 >= 1.6 { printf "  %-46s %-6s %5.1f cores over %ds\n", $1, $5, $4, $2 }' "$CPU_TSV")
+		busy=$(LC_ALL=C awk -F"$TAB" -v jobs="$RUN_JOBS" '
+			$5 != "exclusive" && $2 >= 20 {
+				s = ($5 ~ /^wide:/) ? substr($5, 6) + 0 : 1
+				if (s > jobs) s = jobs
+				if ($4 + 0 >= s + 0.6) printf "  %-46s %-7s %5.1f cores over %ds\n", $1, $5, $4, $2
+			}' "$CPU_TSV")
 		if [ -n "$busy" ]; then
 			echo
-			echo "Pool / single tests that kept several cores busy (mark them exclusive in tests/test_schedule.tsv):"
+			echo "Tests that kept more cores busy than their run slots (give them wide:N in tests/test_schedule.tsv):"
 			echo "$busy"
 		fi
 	fi
@@ -605,13 +613,15 @@ echo
 # ============================================================
 # Phase 3: Run each built test with captured output.
 #
-# Tests run up to $RUN_JOBS at a time.  tests/test_schedule.tsv names the
-# tests that must run ALONE (`exclusive`: multi-core renders, wall-clock
-# gates), the tests that share the cores with their render threads forced to
-# one (`single`: their renders would spread over a few cores without gaining
-# throughput), and the last measured run time of the long ones, so long tests
-# start first.  Exclusive tests run first, one at a time on an otherwise idle
-# machine; the rest then share the cores.  Unlisted tests are `pool`.
+# Tests share $RUN_JOBS run slots.  tests/test_schedule.tsv names the tests
+# that must run ALONE (`exclusive`: wall-clock gates), the tests that take N
+# slots (`wide:N`: multi-core renders), the tests that take one slot with
+# their render threads forced to one (`single`: their renders would spread
+# over a few cores without gaining throughput), and a run time for the long
+# ones.  Exclusive tests run first, one at a time on an otherwise idle
+# machine; the rest then share the slots, longest first by this checkout's
+# last run ($TIMINGS_HISTORY, else the schedule's times).  Unlisted tests are
+# `pool` (one slot).
 #
 # Every test gets its own TMPDIR ($LOG_DIR/.tmp/<name>), so two different
 # tests that pick the same scratch-file name cannot collide.  Like the log, it
@@ -633,13 +643,21 @@ for test_src in "$SRC_DIR"/*.cpp; do
 	printf '%s\n' "$name" >> "$selected"
 done
 
-# Plan lines: class<TAB>seconds<TAB>name.  An unknown class is treated as
-# exclusive (the safe choice) with a warning.  With --jobs 1 the plan keeps
-# the old alphabetical order; otherwise exclusive tests come first, then the
-# rest longest first.
+# Plan lines: class<TAB>slots<TAB>seconds<TAB>name.  slots is how many of
+# the $RUN_JOBS run slots the test takes: exclusive all of them, wide:N N
+# (at most $RUN_JOBS), pool and single 1.  seconds is the test's time in this
+# checkout's last run ($TIMINGS_HISTORY), else its schedule entry, else 0.
+# An unknown class is treated as exclusive (the safe choice) with a warning.
+# With --jobs 1 the plan keeps the old alphabetical order; otherwise it is
+# the exclusive tests longest first, then the wide tests widest first, then
+# the pool and single tests longest first.  The scheduler below starts the
+# wide tests ahead of the rest: each fits into the slots the one before it
+# frees, so none waits behind a long pool test.
 schedule_src=""
 [ -f "$SCHEDULE_FILE" ] && schedule_src="$SCHEDULE_FILE"
-awk -F"$TAB" -v OFS="$TAB" -v sched="$schedule_src" '
+history_src=""
+[ -f "$TIMINGS_HISTORY" ] && history_src="$TIMINGS_HISTORY"
+awk -F"$TAB" -v OFS="$TAB" -v sched="$schedule_src" -v hist="$history_src" -v jobs="$RUN_JOBS" '
 	BEGIN {
 		# Read the schedule with getline: an awk NR == FNR two-file idiom
 		# would treat the selected list as the schedule when the schedule
@@ -647,19 +665,35 @@ awk -F"$TAB" -v OFS="$TAB" -v sched="$schedule_src" '
 		while (sched != "" && (getline line < sched) > 0) {
 			if (line ~ /^[ \t]*(#|$)/) continue
 			n = split(line, f, "\t")
-			if (f[2] != "pool" && f[2] != "exclusive" && f[2] != "single") {
+			if (f[2] != "pool" && f[2] != "exclusive" && f[2] != "single" && f[2] !~ /^wide:[1-9][0-9]*$/) {
 				printf "warning: tests/test_schedule.tsv: unknown class \"%s\" for %s; running it exclusive\n", f[2], f[1] > "/dev/stderr"
 				f[2] = "exclusive"
 			}
 			cls[f[1]] = f[2]; sec[f[1]] = (n >= 3) ? f[3] + 0 : 0
 		}
+		while (hist != "" && (getline line < hist) > 0) {
+			split(line, f, "\t")
+			if (f[1] != "" && f[2] ~ /^[0-9]+$/) last[f[1]] = f[2] + 0
+		}
 	}
-	{ c = ($1 in cls) ? cls[$1] : "pool"; t = ($1 in sec) ? sec[$1] : 0; print ((c == "exclusive") ? 0 : 1), c, t, $1 }
+	{
+		c = ($1 in cls) ? cls[$1] : "pool"
+		t = ($1 in last) ? last[$1] : (($1 in sec) ? sec[$1] : 0)
+		if (c == "exclusive") { k = 0; s = jobs }
+		else if (c ~ /^wide:/) { k = 1; s = substr(c, 6) + 0; if (s > jobs) s = jobs }
+		else { k = 2; s = 1 }
+		print k, c, s, t, $1
+	}
 ' "$selected" > "$PLAN.unsorted"
 if [ "$RUN_JOBS" -eq 1 ]; then
+	# One queue: every test takes the one slot, in alphabetical order.
 	cut -f2- "$PLAN.unsorted" > "$PLAN"
+	plan_ex=0
+	plan_wide=0
 else
-	sort -t "$TAB" -k1,1n -k3,3rn -k4,4 "$PLAN.unsorted" | cut -f2- > "$PLAN"
+	sort -t "$TAB" -k1,1n -k3,3rn -k4,4rn -k5,5 "$PLAN.unsorted" | cut -f2- > "$PLAN"
+	plan_ex=$(awk -F"$TAB" '$1 == 0' "$PLAN.unsorted" | wc -l | tr -d ' ')
+	plan_wide=$(awk -F"$TAB" '$1 == 1' "$PLAN.unsorted" | wc -l | tr -d ' ')
 fi
 
 # `single` tests read this options file: the repo's options (or the caller's
@@ -754,11 +788,73 @@ nap() {
 }
 
 echo "Running $plan_count test(s), up to $RUN_JOBS at a time (exclusive tests alone)"
+
+# The run slots a running test holds, from its class.
+slots_of() {
+	case "$1" in
+		exclusive) echo "$RUN_JOBS" ;;
+		wide:*)
+			so_n=${1#wide:}
+			[ "$so_n" -le "$RUN_JOBS" ] || so_n=$RUN_JOBS
+			echo "$so_n" ;;
+		*) echo 1 ;;
+	esac
+}
+
+# Skip test $1 when it cannot run; returns 0 when it was skipped.  A test
+# whose build failed this run is skipped even when an older executable is
+# still on disk: that binary is stale.
+skip_unrunnable() {
+	su_name="$1"
+	if [ -s "$BUILD_FAIL_TSV" ] && awk -F '\t' -v test="$su_name" \
+		'$1 == test { found=1 } END { exit(found ? 0 : 1) }' "$BUILD_FAIL_TSV"
+	then
+		done_count=$((done_count + 1))
+		printf '[ %3d/%3d ] %-46s SKIP (current build failed; stale executable ignored)\n' "$done_count" "$total" "$su_name"
+		skipped=$((skipped + 1))
+		return 0
+	fi
+	if [ ! -x "$BIN_DIR/$su_name" ]; then
+		done_count=$((done_count + 1))
+		printf '[ %3d/%3d ] %-46s SKIP (build failed)\n' "$done_count" "$total" "$su_name"
+		skipped=$((skipped + 1))
+		return 0
+	fi
+	return 1
+}
+
+# Start plan line $1 if its test fits in the free slots (or skip it).
+# Returns 0 when the line is used up (started or skipped), 1 when it must
+# wait for slots.  On an idle machine every test fits: slots never exceed
+# $RUN_JOBS.
+try_start() {
+	ts_line=$(sed -n "${1}p" "$PLAN")
+	ts_class=$(printf '%s\n' "$ts_line" | cut -f1)
+	ts_slots=$(printf '%s\n' "$ts_line" | cut -f2)
+	ts_name=$(printf '%s\n' "$ts_line" | cut -f4)
+	if skip_unrunnable "$ts_name"; then
+		return 0
+	fi
+	if [ "$running_count" -gt 0 ] && [ $((slots_used + ts_slots)) -gt "$RUN_JOBS" ]; then
+		return 1
+	fi
+	found=$((found + 1))
+	launch_test "$ts_name" "$ts_class"
+	running_count=$((running_count + 1))
+	slots_used=$((slots_used + ts_slots))
+	return 0
+}
+
 run_start=$(date +%s)
 done_count=0
-next=1
 running_count=0
-exclusive_running=0
+slots_used=0
+# The plan's three runs of lines: exclusive [1, plan_ex], wide
+# (plan_ex, plan_ex + plan_wide], then pool and single to the end.
+wide_end=$((plan_ex + plan_wide))
+next_ex=1
+next_wide=$((plan_ex + 1))
+next_narrow=$((wide_end + 1))
 while :; do
 	# Reap finished tests.
 	if [ "$running_count" -gt 0 ]; then
@@ -775,9 +871,7 @@ while :; do
 			if [ -f "$DONE_DIR/$rn_name" ] || ! kill -0 "$rn_pid" 2>/dev/null; then
 				finish_test "$rn_name" "$rn_class" "$rn_pid" "$rn_start"
 				running_count=$((running_count - 1))
-				if [ "$rn_class" = "exclusive" ]; then
-					exclusive_running=0
-				fi
+				slots_used=$((slots_used - $(slots_of "$rn_class")))
 			else
 				still="$still$rn_name$TAB$rn_class$TAB$rn_pid$TAB$rn_start
 "
@@ -788,54 +882,53 @@ EOF
 		RUNNING="$still"
 	fi
 
-	# Start as many as the schedule allows: an exclusive test only on an idle
-	# machine, and nothing beside a running exclusive test.
-	while [ "$next" -le "$plan_count" ]; do
-		# Nothing can start beside an exclusive test or in a full pool.
-		if [ "$running_count" -gt 0 ] && { [ "$exclusive_running" -eq 1 ] || [ "$running_count" -ge "$RUN_JOBS" ]; }; then
-			break
-		fi
-		plan_line=$(sed -n "${next}p" "$PLAN")
-		pl_class=$(printf '%s\n' "$plan_line" | cut -f1)
-		pl_name=$(printf '%s\n' "$plan_line" | cut -f3)
-		# A test whose build failed this run is skipped even when an older
-		# executable is still on disk: that binary is stale.
-		if [ -s "$BUILD_FAIL_TSV" ] && awk -F '\t' -v test="$pl_name" \
-			'$1 == test { found=1 } END { exit(found ? 0 : 1) }' "$BUILD_FAIL_TSV"
-		then
-			done_count=$((done_count + 1))
-			printf '[ %3d/%3d ] %-46s SKIP (current build failed; stale executable ignored)\n' "$done_count" "$total" "$pl_name"
-			skipped=$((skipped + 1))
-			next=$((next + 1))
-			continue
-		fi
-		if [ ! -x "$BIN_DIR/$pl_name" ]; then
-			done_count=$((done_count + 1))
-			printf '[ %3d/%3d ] %-46s SKIP (build failed)\n' "$done_count" "$total" "$pl_name"
-			skipped=$((skipped + 1))
-			next=$((next + 1))
-			continue
-		fi
-		if [ "$running_count" -gt 0 ]; then
-			[ "$exclusive_running" -eq 0 ] || break
-			[ "$pl_class" != "exclusive" ] || break
-			[ "$running_count" -lt "$RUN_JOBS" ] || break
-		fi
-		found=$((found + 1))
-		launch_test "$pl_name" "$pl_class"
-		running_count=$((running_count + 1))
-		if [ "$pl_class" = "exclusive" ]; then
-			exclusive_running=1
-		fi
-		next=$((next + 1))
+	# Start what the slots allow.  Exclusive tests come first, one at a time
+	# on an idle machine; nothing else starts until they are done.  Then the
+	# wide tests in plan order (widest first), while the pool and single
+	# tests fill whatever slots the next wide test cannot use.
+	while [ "$next_ex" -le "$plan_ex" ] && [ "$running_count" -eq 0 ]; do
+		try_start "$next_ex" || break
+		next_ex=$((next_ex + 1))
 	done
+	if [ "$next_ex" -gt "$plan_ex" ]; then
+		while [ "$next_wide" -le "$wide_end" ]; do
+			try_start "$next_wide" || break
+			next_wide=$((next_wide + 1))
+		done
+		while [ "$next_narrow" -le "$plan_count" ] && [ "$slots_used" -lt "$RUN_JOBS" ]; do
+			try_start "$next_narrow" || break
+			next_narrow=$((next_narrow + 1))
+		done
+	fi
 
-	if [ "$running_count" -eq 0 ] && [ "$next" -gt "$plan_count" ]; then
+	if [ "$running_count" -eq 0 ] && [ "$next_ex" -gt "$plan_ex" ] \
+	   && [ "$next_wide" -gt "$wide_end" ] && [ "$next_narrow" -gt "$plan_count" ]; then
 		break
 	fi
 	nap
 done
 run_wall=$(( $(date +%s) - run_start ))
+
+# Remember each test's time for the next run's order: this run's times
+# replace the old ones, tests this run did not reach keep theirs.  Only a
+# run that got this far writes it (an interrupted run's times are partial).
+if [ -s "$TIMINGS_TSV" ]; then
+	mkdir -p "$(dirname "$TIMINGS_HISTORY")"
+	if awk -F"$TAB" -v OFS="$TAB" -v hist="$TIMINGS_HISTORY" '
+		BEGIN {
+			while ((getline line < hist) > 0) {
+				split(line, f, "\t")
+				if (f[1] != "" && f[2] ~ /^[0-9]+$/) { t[f[1]] = f[2]; if (!(f[1] in seen)) { seen[f[1]] = 1; order[++n] = f[1] } }
+			}
+		}
+		$2 != "" { if (!($2 in seen)) { seen[$2] = 1; order[++n] = $2 } t[$2] = $1 }
+		END { for (i = 1; i <= n; i++) print order[i], t[order[i]] }
+	' "$TIMINGS_TSV" > "$TIMINGS_HISTORY.tmp.$$"; then
+		mv "$TIMINGS_HISTORY.tmp.$$" "$TIMINGS_HISTORY"
+	else
+		rm -f "$TIMINGS_HISTORY.tmp.$$"
+	fi
+fi
 
 # The r136-r175 historical evidence replays that ran here were retired on
 # 2026-11-14: each bound milestone evidence to source and grid sizes that later

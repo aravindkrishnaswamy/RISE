@@ -28,9 +28,10 @@ param(
     [ValidateSet('all', 'fast', 'extended')]
     [string]$Tier = $(if ($env:RISE_TEST_TIER) { $env:RISE_TEST_TIER } else { 'all' }),
     [int]$TimeoutSeconds = 0,
-    # How many test binaries may RUN at once.  Tests marked `exclusive` in
-    # tests\test_schedule.tsv always run alone.  1 = one at a time, alphabetical
-    # (single tests still get one render thread).
+    # How many run slots the tests share.  A test takes one, or N when
+    # tests\test_schedule.tsv marks it `wide:N`; tests marked `exclusive` always
+    # run alone.  1 = one at a time, alphabetical (single tests still get one
+    # render thread).
     # 0 = RISE_TEST_RUN_JOBS, else one per logical processor (checked below).
     [int]$Jobs = 0,
     [string]$LogDir,
@@ -234,7 +235,7 @@ if (-not $LogDir) {
         # do not delete each other's logs and run state.
         $sha = [System.Security.Cryptography.SHA1]::Create()
         $repoHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($RepoRoot))) -replace '-', '').Substring(0, 10)
-        $LogDir = Join-Path $env:TEMP "rise-tests-logs-$repoHash"
+        $LogDir = Join-Path $env:TEMP "rise-tests-logs-managed-$repoHash"
     }
 }
 # Absolute (against the caller's directory, before the Push-Location below):
@@ -619,13 +620,17 @@ if ($BuildOnly) {
 # Phase 2: Run the built tests, up to $Jobs at a time, with captured output
 # and an optional timeout.
 #
-# tests\test_schedule.tsv (shared with run_all_tests.sh) names the tests that
-# must run ALONE (`exclusive`: multi-core renders, wall-clock gates), the tests
-# that share the cores with their render threads forced to one (`single`), and
-# the last measured run time of the long ones, so long tests start first.
-# Exclusive tests run first, one at a time on an otherwise idle machine; the
-# rest then share the cores.  Unlisted tests are `pool`.  -Jobs 1 runs one test
-# at a time in alphabetical order (single tests still get one render thread).
+# Tests share $Jobs run slots.  tests\test_schedule.tsv (shared with
+# run_all_tests.sh) names the tests that must run ALONE (`exclusive`:
+# wall-clock gates), the tests that take N slots (`wide:N`: multi-core
+# renders), the tests that take one slot with their render threads forced to
+# one (`single`), and a run time for the long ones.  Exclusive tests run first,
+# one at a time on an otherwise idle machine.  The wide tests then start in
+# order, widest first, while the pool and single tests fill the slots the next
+# wide test cannot use, longest first by this checkout's last run
+# (bin\.test_timings.tsv, else the schedule's times).  Unlisted tests are
+# `pool` (one slot).  -Jobs 1 runs one test at a time in alphabetical order
+# (single tests still get one render thread).
 #
 # Every test gets its own TMPDIR/TEMP/TMP ($LogDir\.tmp\<name>), so two
 # different tests that pick the same scratch-file name cannot collide.  Like
@@ -648,7 +653,7 @@ if (Test-Path -LiteralPath $scheduleFile) {
         $cols = $line -split "`t"
         if ($cols.Count -lt 2) { continue }
         $cls = $cols[1]
-        if ($cls -cne 'pool' -and $cls -cne 'exclusive' -and $cls -cne 'single') {
+        if ($cls -cne 'pool' -and $cls -cne 'exclusive' -and $cls -cne 'single' -and $cls -cnotmatch '^wide:[1-9][0-9]*$') {
             Write-Host ('warning: tests\test_schedule.tsv: unknown class "{0}" for {1}; running it exclusive' -f $cls, $cols[0])
             $cls = 'exclusive'
         }
@@ -658,18 +663,42 @@ if (Test-Path -LiteralPath $scheduleFile) {
     }
 }
 
+# Each test's time in this checkout's last run (name<TAB>seconds), kept
+# outside the log dir, which every run deletes; it orders the next run.
+$timingsHistory = Join-Path $RepoRoot 'bin\.test_timings.tsv'
+$lastSeconds = @{}
+if (Test-Path -LiteralPath $timingsHistory) {
+    foreach ($line in Get-Content -LiteralPath $timingsHistory) {
+        $cols = $line -split "`t"
+        $sec = 0
+        if ($cols.Count -ge 2 -and $cols[0] -and [int]::TryParse($cols[1], [ref]$sec)) { $lastSeconds[$cols[0]] = $sec }
+    }
+}
+
+# The run slots a test takes: exclusive all of them, wide:N N (at most $Jobs),
+# pool and single 1.
+function Get-RiseTestSlots([string]$class) {
+    if ($class -ceq 'exclusive') { return $Jobs }
+    if ($class -cmatch '^wide:([1-9][0-9]*)$') { return [Math]::Min([int]$Matches[1], $Jobs) }
+    return 1
+}
+
 $plan = foreach ($src in $testSources) {
     $entry = $schedule[$src.BaseName]
+    $cls = if ($entry) { $entry.Class } else { 'pool' }
     [pscustomobject]@{
         Name    = $src.BaseName
         Src     = $src
-        Class   = if ($entry) { $entry.Class } else { 'pool' }
-        Seconds = if ($entry) { $entry.Seconds } else { 0.0 }
+        Class   = $cls
+        Slots   = Get-RiseTestSlots $cls
+        Group   = if ($Jobs -le 1) { 2 } elseif ($cls -ceq 'exclusive') { 0 } elseif ($cls -cmatch '^wide:') { 1 } else { 2 }
+        Seconds = if ($lastSeconds.ContainsKey($src.BaseName)) { [double]$lastSeconds[$src.BaseName] } elseif ($entry) { $entry.Seconds } else { 0.0 }
     }
 }
 if ($Jobs -gt 1) {
-    # Exclusive tests first; then the rest (pool and single), longest first.
-    $plan = $plan | Sort-Object -Property @{ Expression = { if ($_.Class -ceq 'exclusive') { 0 } else { 1 } } }, @{ Expression = 'Seconds'; Descending = $true }, @{ Expression = 'Name' }
+    # Exclusive tests longest first, then the wide tests widest first, then
+    # the pool and single tests longest first.
+    $plan = $plan | Sort-Object -Property @{ Expression = 'Group' }, @{ Expression = 'Slots'; Descending = $true }, @{ Expression = 'Seconds'; Descending = $true }, @{ Expression = 'Name' }
 }
 $plan = @($plan)
 
@@ -770,7 +799,48 @@ Write-Host ('Running {0} test(s), up to {1} at a time (exclusive tests alone)' -
 $runStart = Get-Date
 $doneCount = 0
 $running = New-Object System.Collections.ArrayList
-$next = 0
+$slotsUsed = 0
+# The plan's three runs: exclusive, wide, then pool and single (all in the
+# last run with -Jobs 1).
+# (Element by element: @( @(a), @(b) ) would flatten into one array.)
+$queues = New-Object 'object[]' 3
+foreach ($g in 0..2) { $queues[$g] = @($plan | Where-Object { $_.Group -eq $g }) }
+$nextIn = @(0, 0, 0)
+
+# Start the next test of queue $q if it fits in the free slots (or skip it).
+# Returns $true when that test is used up (started or skipped), $false when
+# it must wait for slots.  On an idle machine every test fits: slots never
+# exceed $Jobs.
+function Start-NextRiseTest([int]$q) {
+    $item = $script:queues[$q][$script:nextIn[$q]]
+    $name = $item.Name
+    $exe = Join-Path $BinDir "$name.exe"
+    $doneSkip = $null
+    if (-not $NoBuild -and $failedTargets.ContainsKey($name)) {
+        $doneSkip = 'SKIP (build failed)'
+    } elseif (-not (Test-Path -LiteralPath $exe)) {
+        $doneSkip = 'SKIP (build failed or missing)'
+    } elseif ($failedBuildTargets.ContainsKey($name)) {
+        $doneSkip = 'SKIP (current build failed; stale exe ignored)'
+    } elseif (-not $NoBuild -and (Get-Item -LiteralPath $exe).LastWriteTime -lt $item.Src.LastWriteTime) {
+        # Source newer than exe means a recent build attempt failed.
+        $doneSkip = 'SKIP (build failed, exe is stale)'
+    }
+    if ($doneSkip) {
+        $script:doneCount++
+        Write-Host ('[ {0,3}/{1,3} ] {2,-46} {3}' -f $script:doneCount, $total, $name, $doneSkip)
+        $script:skipped++
+        $script:nextIn[$q]++
+        return $true
+    }
+    if ($script:running.Count -gt 0 -and ($script:slotsUsed + $item.Slots) -gt $Jobs) { return $false }
+    $script:found++
+    [void]$script:running.Add((Start-RiseTest $item))
+    $script:slotsUsed += $item.Slots
+    $script:nextIn[$q]++
+    return $true
+}
+
 try {
     while ($true) {
         # Reap finished tests; kill any past the timeout.
@@ -785,6 +855,7 @@ try {
                 [void]$still.Add($run)
                 continue
             }
+            $slotsUsed -= $run.Item.Slots
             try {
                 Complete-RiseTest $run
             } catch {
@@ -797,39 +868,23 @@ try {
         }
         $running = $still
 
-        # Start as many as the schedule allows: an exclusive test only on an
-        # idle machine, and nothing beside a running exclusive test.
-        while ($next -lt $plan.Count) {
-            $item = $plan[$next]
-            $exe = Join-Path $BinDir "$($item.Name).exe"
-            $doneSkip = $null
-            if (-not $NoBuild -and $failedTargets.ContainsKey($item.Name)) {
-                $doneSkip = 'SKIP (build failed)'
-            } elseif (-not (Test-Path -LiteralPath $exe)) {
-                $doneSkip = 'SKIP (build failed or missing)'
-            } elseif ($failedBuildTargets.ContainsKey($item.Name)) {
-                $doneSkip = 'SKIP (current build failed; stale exe ignored)'
-            } elseif (-not $NoBuild -and (Get-Item -LiteralPath $exe).LastWriteTime -lt $item.Src.LastWriteTime) {
-                # Source newer than exe means a recent build attempt failed.
-                $doneSkip = 'SKIP (build failed, exe is stale)'
+        # Start what the slots allow.  Exclusive tests come first, one at a
+        # time on an idle machine; nothing else starts until they are done.
+        # Then the wide tests in plan order (widest first), while the pool and
+        # single tests fill whatever slots the next wide test cannot use.
+        while ($nextIn[0] -lt $queues[0].Count -and $running.Count -eq 0) {
+            if (-not (Start-NextRiseTest 0)) { break }
+        }
+        if ($nextIn[0] -ge $queues[0].Count) {
+            while ($nextIn[1] -lt $queues[1].Count) {
+                if (-not (Start-NextRiseTest 1)) { break }
             }
-            if ($doneSkip) {
-                $doneCount++
-                Write-Host ('[ {0,3}/{1,3} ] {2,-46} {3}' -f $doneCount, $total, $item.Name, $doneSkip)
-                $skipped++
-                $next++
-                continue
+            while ($nextIn[2] -lt $queues[2].Count -and $slotsUsed -lt $Jobs) {
+                if (-not (Start-NextRiseTest 2)) { break }
             }
-            if ($running.Count -gt 0) {
-                $exclusiveRunning = @($running | Where-Object { $_.Item.Class -ceq 'exclusive' }).Count -gt 0
-                if ($exclusiveRunning -or $item.Class -ceq 'exclusive' -or $running.Count -ge $Jobs) { break }
-            }
-            $found++
-            [void]$running.Add((Start-RiseTest $item))
-            $next++
         }
 
-        if ($running.Count -eq 0 -and $next -ge $plan.Count) { break }
+        if ($running.Count -eq 0 -and $nextIn[0] -ge $queues[0].Count -and $nextIn[1] -ge $queues[1].Count -and $nextIn[2] -ge $queues[2].Count) { break }
         Start-Sleep -Milliseconds 200
     }
 } finally {
@@ -839,6 +894,22 @@ try {
     }
 }
 $runWall = [int]((Get-Date) - $runStart).TotalSeconds
+
+# Remember each test's time for the next run's order: this run's times replace
+# the old ones, tests this run did not reach keep theirs.  Only a run that got
+# this far writes it (an interrupted run's times are partial).
+if ($timings.Count -gt 0) {
+    foreach ($t in $timings) { $lastSeconds[$t.Name] = [int]$t.Seconds }
+    $historyLines = foreach ($k in ($lastSeconds.Keys | Sort-Object)) { "$k`t$($lastSeconds[$k])" }
+    $historyTmp = "$timingsHistory.tmp.$PID"
+    try {
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $timingsHistory)
+        Set-Content -LiteralPath $historyTmp -Value $historyLines -Encoding ascii
+        Move-Item -Force -LiteralPath $historyTmp -Destination $timingsHistory
+    } catch {
+        Remove-Item -Force -LiteralPath $historyTmp -ErrorAction SilentlyContinue
+    }
+}
 
 # The r136-r175 historical evidence replays that ran here were retired on
 # 2026-11-14 (run_all_tests.sh already dropped them): each bound milestone
@@ -866,15 +937,15 @@ if ($found -gt 1) {
     }
 }
 
-# A pool test that keeps several cores busy competes with its neighbours and
-# breaks the one-multi-core-render-at-a-time rule, so flag it for an
-# `exclusive` entry.  Only meaningful when tests ran side by side.
+# A test that keeps more cores busy than the slots it holds competes with its
+# neighbours, so flag it for a wider `wide:N` (or `exclusive`) entry.  Only
+# meaningful when tests ran side by side.
 if ($Jobs -gt 1) {
-    $busy = @($cpuRows | Where-Object { $_.Class -cne 'exclusive' -and $_.Seconds -ge 20 -and $_.Cores -ge 1.6 })
+    $busy = @($cpuRows | Where-Object { $_.Class -cne 'exclusive' -and $_.Seconds -ge 20 -and $_.Cores -ge ((Get-RiseTestSlots $_.Class) + 0.6) })
     if ($busy.Count -gt 0) {
         Write-Host ''
-        Write-Host 'Pool / single tests that kept several cores busy (mark them exclusive in tests\test_schedule.tsv):'
-        foreach ($b in $busy) { Write-Host ('  {0,-46} {1,-6} {2,5:N1} cores over {3}s' -f $b.Name, $b.Class, $b.Cores, $b.Seconds) }
+        Write-Host 'Tests that kept more cores busy than their run slots (give them wide:N in tests\test_schedule.tsv):'
+        foreach ($b in $busy) { Write-Host ('  {0,-46} {1,-7} {2,5:N1} cores over {3}s' -f $b.Name, $b.Class, $b.Cores, $b.Seconds) }
     }
 }
 
