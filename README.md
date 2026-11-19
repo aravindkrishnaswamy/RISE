@@ -73,6 +73,7 @@ make -C build/make/rise -j8 tests
 ./run_all_tests.sh                                  # default: all tiers (fast + extended)
 ./run_all_tests.sh --tier fast                      # fast tier only
 ./run_all_tests.sh --filter "*GGX*" --timeout 180   # targeted subset
+./run_all_tests.sh --jobs 1                         # one test at a time (default: one per core)
 make -C build/make/rise build-test/SourceHygieneTest && ./bin/tests/SourceHygieneTest
 tools/red_prove.sh [--args "<test-args>"] <TestBinaryName> <marker> <src-file>...  # stash-based red-proof
 
@@ -150,6 +151,8 @@ project links against the prebuilt `RISE.lib` from the VS2022 Library project,
 so build the Windows library/CLI once first.
 
 Note on incremental builds: the Unix GNU `Makefile` tracks header dependencies
-automatically via `-MMD -MP` `.d` sidecars and rebuilds `librise.a` before test
-targets. On Windows, rebuild the VS2022 `Library` project (`RISE.lib`) before
+automatically via `-MMD -MP` `.d` sidecars and rebuilds the test library
+(`librise_test.a`, a non-LTO copy, on macOS, where the LTO-sensitive tests
+still link `librise.a`; `librise.a` elsewhere) before
+test targets. On Windows, rebuild the VS2022 `Library` project (`RISE.lib`) before
 re-linking CMake test targets after `src/Library/` header or source edits.

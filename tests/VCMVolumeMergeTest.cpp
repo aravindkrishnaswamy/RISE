@@ -32,6 +32,7 @@
 //       variance is heavy-tailed (the sphere's light reaches it only by
 //       surface merging at the auto radius; per-pair sd up to 0.23 at
 //       n = 8).  Measured at n = 48: 1.004 +/- 0.017 (pre-fix 0.80).
+//       Runs only under --only (e.g. --only C:); the default run skips it.
 //
 //  Usage: VCMVolumeMergeTest [--trials n] [--only <label substring>]
 //
@@ -140,8 +141,13 @@ int main( int argc, char** argv )
 	VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( 0.0 );
 
 	// C: the ledger row; pre-fix 0.80 (printed: heavy-tailed, see header).
-	RatioRow( "C: ledger fog box with sphere, VCM / PT (printed)",
-		FogBoxScene( true, 1024, true ), FogBoxScene( false, 64, true ), 1.0, 0.0, trials, seed, only );
+	// It gates only "finite and non-black", which
+	// SMSMediumTransmittanceTest row A already gates on this same scene, so
+	// it runs only when --only selects it (e.g. --only C:).
+	if( !only.empty() ) {
+		RatioRow( "C: ledger fog box with sphere, VCM / PT (printed)",
+			FogBoxScene( true, 1024, true ), FogBoxScene( false, 64, true ), 1.0, 0.0, trials, seed, only );
+	}
 
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;

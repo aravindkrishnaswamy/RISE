@@ -6319,11 +6319,13 @@ namespace RISE
 						// reference; otherwise adopt the reference's dims.
 						if( haveW && haveH ) {
 							if( rp.width != refW || rp.height != refH ) {
-								char db[320];
-								std::snprintf( db, sizeof( db ),
-									"render checkpoint: compareToImage requested %ux%u but reference '%s' is %ux%u -- dims must match",
-									rp.width, rp.height, refPath.c_str(), refW, refH );
-								return { false, std::string( db ) };
+								// Built as a string, not into a fixed buffer: a long
+								// reference path used to truncate the message
+								// before its "dims must match" tail.
+								return { false, "render checkpoint: compareToImage requested " +
+									std::to_string( rp.width ) + "x" + std::to_string( rp.height ) +
+									" but reference '" + refPath + "' is " + std::to_string( refW ) + "x" +
+									std::to_string( refH ) + " -- dims must match" };
 							}
 						} else {
 							rp.width  = refW;
@@ -6505,11 +6507,9 @@ namespace RISE
 						                      candRgb, candW, candH, decErr ) ) {
 							failures.push_back( "compareToImage: candidate render PNG could not be decoded (" + decErr + ")" );
 						} else if( candW != refW || candH != refH ) {
-							char db[320];
-							std::snprintf( db, sizeof( db ),
-								"compareToImage dimension mismatch: render is %ux%u but reference '%s' is %ux%u",
-								candW, candH, refPath.c_str(), refW, refH );
-							failures.push_back( std::string( db ) );
+							failures.push_back( "compareToImage dimension mismatch: render is " +
+								std::to_string( candW ) + "x" + std::to_string( candH ) + " but reference '" + refPath +
+								"' is " + std::to_string( refW ) + "x" + std::to_string( refH ) );
 						} else {
 							const std::size_t n = static_cast<std::size_t>( candW ) * candH * 3;
 							double sumSq = 0.0;
@@ -6518,15 +6518,15 @@ namespace RISE
 								sumSq += diff * diff;
 							}
 							const double rmse = ( n > 0 ) ? std::sqrt( sumSq / static_cast<double>( n ) ) : 0.0;
-							char nb[256];
-							std::snprintf( nb, sizeof( nb ), "compareToImage RMSE=%.6f (max %.6f, ref '%s')",
-								rmse, rmseMax, refPath.c_str() );
-							rmseNote = nb;
+							// The numbers go through a fixed buffer, the path does
+							// not: a long reference path must not be truncated.
+							char nb[96];
+							std::snprintf( nb, sizeof( nb ), "%.6f (max %.6f", rmse, rmseMax );
+							rmseNote = std::string( "compareToImage RMSE=" ) + nb + ", ref '" + refPath + "')";
 							if( rmse > rmseMax ) {
-								char fb[256];
-								std::snprintf( fb, sizeof( fb ), "compareToImage RMSE %.6f > max %.6f vs reference '%s'",
-									rmse, rmseMax, refPath.c_str() );
-								failures.push_back( std::string( fb ) );
+								char fb[96];
+								std::snprintf( fb, sizeof( fb ), "%.6f > max %.6f", rmse, rmseMax );
+								failures.push_back( std::string( "compareToImage RMSE " ) + fb + " vs reference '" + refPath + "'" );
 							}
 						}
 					}

@@ -1119,9 +1119,10 @@ static void TestFreshProcessDeterminism( const char* self )
 //! trapezoid clipped-plane luminary scene.  At 96x96 (same [-2,2]^2
 //! orthographic viewport_scale 4x4 with box filter, so the exact film-mean
 //! integral is identical to 24x24 while 9 tiles run concurrently across
-//! workers and each pass averages 16x as many pixels), 32 salted 256-spp
-//! repeats reach ~2-4e-6 relative SE -- 95 % power below DL-629's 2-4e-5
-//! relative residual -- in seconds.
+//! workers and each pass averages 16x as many pixels), the extended tier's
+//! 64 salted 1024-spp repeats reach 2.6-3.9e-6 relative SE (measured
+//! 2026-11-17; 95 % power 1.2-1.8e-5, below DL-629's 2-4e-5 relative
+//! residual).  The fast tier's 16 x 256 is a smoke check of the same path.
 static void TestHighPowerTrapezoidQuadrature( int spp, int repeats )
 {
 	std::cout << "Q: high-power multi-threaded trapezoid quadrature (96x96, spp=" << spp << ", repeats=" << repeats << ")\n";
@@ -1537,6 +1538,10 @@ int main( int argc, char** argv )
 	if( hasExplicitRepeats ) { g_repeats = std::atoi( argv[argIdx++] ); g_trapRepeats = g_repeats; }
 	const char* extEnv = std::getenv( "RISE_TEST_EXTENDED" );
 	const bool extended = ( only == "Q" ) || ( extEnv != nullptr && std::strcmp( extEnv, "1" ) == 0 );
+	// Extended Q needs its 64 x 1024 budget: measured 2026-11-17 it gives a
+	// relative SE of 2.6-3.9e-6 (95 % power 1.2-1.8e-5) across PT / BDPT /
+	// VCM, just below DL-629's 2-4e-5 residual; fewer samples would let that
+	// residual through.
 	const int qSpp = ( only == "Q" && hasExplicitSpp ) ? g_spp : ( extended ? 1024 : 256 );
 	const int qRepeats = ( only == "Q" && hasExplicitRepeats ) ? g_repeats : ( extended ? 64 : 16 );
 	std::cout << "LuminarySamplerAreaTest (DL-459 / DL-460)\n";

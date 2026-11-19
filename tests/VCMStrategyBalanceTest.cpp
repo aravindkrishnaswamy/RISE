@@ -2221,6 +2221,11 @@ static void MeasureRoughSSSU(unsigned samples, bool gate, double radius, bool st
  const bool savedComplete=g_dl367CompleteRenderSeed;g_dl367CompleteRenderSeed=true;
  auto replace=[](std::string s,const std::string& a,const std::string& b){auto p=s.find(a);if(p!=std::string::npos)s.replace(p,a.size(),b);return s;};
  std::vector<double> pt,on,off;
+ // The default gate reads PT and VM-on only; VM-off is gated in the strict
+ // modes and printed by the measurement modes, so the gate-only run skips
+ // its eight renders (its salts are drawn after PT's and VM-on's, so theirs
+ // are unchanged).  VM-off stays gated by every DL-317/333/380 row.
+ const bool wantOff=strict||!gate;
  for(unsigned i=0;i<8;++i) {
   g_seedBase=367001+101*i; g_renderIndex=0;
   auto render=[&](const char* raster,bool merging){
@@ -2238,13 +2243,18 @@ static void MeasureRoughSSSU(unsigned samples, bool gate, double radius, bool st
   };
   pt.push_back(render(kRasterizerPTRoughSSSU,true));
   on.push_back(render(kRasterizerVCMRoughSSSU,true));
-  off.push_back(render(kRasterizerVCMRoughSSSU,false));
+  if(wantOff) off.push_back(render(kRasterizerVCMRoughSSSU,false));
  }
  g_seedBase=savedSeed;g_renderIndex=savedIndex;g_dl367CompleteRenderSeed=savedComplete;
  auto stat=[](const std::vector<double>& v){double m=0,ss=0;for(double x:v)m+=x;m/=v.size();for(double x:v)ss+=(x-m)*(x-m);return std::make_pair(m,std::sqrt(ss/(v.size()-1)/v.size()));};
- auto p=stat(pt),a=stat(on),b=stat(off);
- std::printf("DL367 radius=%g PT-sd=%.9g on-sd=%.9g off-sd=%.9g\n",radius,p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.));
- std::printf("DL367 spp=%u n=8 PT %.9g SE %.9g VM-on %.9g SE %.9g VM-off %.9g SE %.9g on/PT %.8g off/PT %.8g on3sigma %.9g off3sigma %.9g\n",samples,p.first,p.second,a.first,a.second,b.first,b.second,a.first/p.first,b.first/p.first,3*std::hypot(a.second,p.second),3*std::hypot(b.second,p.second));
+ auto p=stat(pt),a=stat(on),b=wantOff?stat(off):std::make_pair(-1.,0.);
+ if(wantOff) {
+  std::printf("DL367 radius=%g PT-sd=%.9g on-sd=%.9g off-sd=%.9g\n",radius,p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.));
+  std::printf("DL367 spp=%u n=8 PT %.9g SE %.9g VM-on %.9g SE %.9g VM-off %.9g SE %.9g on/PT %.8g off/PT %.8g on3sigma %.9g off3sigma %.9g\n",samples,p.first,p.second,a.first,a.second,b.first,b.second,a.first/p.first,b.first/p.first,3*std::hypot(a.second,p.second),3*std::hypot(b.second,p.second));
+ } else {
+  std::printf("DL367 radius=%g PT-sd=%.9g on-sd=%.9g (VM-off not rendered by the default gate)\n",radius,p.second*std::sqrt(8.),a.second*std::sqrt(8.));
+  std::printf("DL367 spp=%u n=8 PT %.9g SE %.9g VM-on %.9g SE %.9g on/PT %.8g on3sigma %.9g\n",samples,p.first,p.second,a.first,a.second,a.first/p.first,3*std::hypot(a.second,p.second));
+ }
  if(strict) {
   if(unmatched) {
    // Owner ruling 2026-10-10: accept this finite-budget batching residual
@@ -2259,7 +2269,8 @@ static void MeasureRoughSSSU(unsigned samples, bool gate, double radius, bool st
  }
  if(gate) {
   const double ratio=a.first/p.first, uncertainty=3*std::hypot(a.second,p.second)/p.first;
-  std::printf("DL367 default n=8 PT sd=%.9g on sd=%.9g off sd=%.9g ratio3SE=%.9g physical band=0.008\n",p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.),uncertainty);
+  if(wantOff) std::printf("DL367 default n=8 PT sd=%.9g on sd=%.9g off sd=%.9g ratio3SE=%.9g physical band=0.008\n",p.second*std::sqrt(8.),a.second*std::sqrt(8.),b.second*std::sqrt(8.),uncertainty);
+  else std::printf("DL367 default n=8 PT sd=%.9g on sd=%.9g ratio3SE=%.9g physical band=0.008\n",p.second*std::sqrt(8.),a.second*std::sqrt(8.),uncertainty);
   Check(std::isfinite(ratio)&&std::fabs(ratio-1)<=.008,"topology U salted mean retains +/-0.8% parity limit");
   Check(uncertainty<=.008,"topology U salted mean resolves the 0.8% precision budget");
  }

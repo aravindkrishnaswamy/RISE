@@ -87,11 +87,11 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 - Linux/macOS build: `make -C build/make/rise -j8 all`
 - Linux/macOS single test build: `make -C build/make/rise build-test/<TestName>`
 - Linux/macOS all tests build: `make -C build/make/rise -j8 tests`
-- Linux/macOS tests run: `./run_all_tests.sh` (`--tier all|fast|extended` [default `all`], `--filter "<glob>"`, `--timeout <sec>`)
+- Linux/macOS tests run: `./run_all_tests.sh` (`--tier all|fast|extended` [default `all`], `--filter "<glob>"`, `--timeout <sec>`, `--jobs <n>` [default: one test per core; tests marked `exclusive` in `tests/test_schedule.tsv` run alone])
 - Stash-based red-proof check: `tools/red_prove.sh [--args "<test-args>"] <TestName> <marker> <src-file>...`
 - Windows tests configure: `cmake -S build/cmake/rise-tests -B build/cmake/rise-tests/_out -A x64`
 - Windows tests build: `cmake --build build/cmake/rise-tests/_out --config Release --target rise_all_tests --parallel`
-- Windows tests run: `.\run_all_tests.ps1` (`-Tier all|fast|extended` [default `all`], `-Filter "<glob>"`, `-TimeoutSeconds <sec>`)
+- Windows tests run: `.\run_all_tests.ps1` (`-Tier all|fast|extended` [default `all`], `-Filter "<glob>"`, `-TimeoutSeconds <sec>`, `-Jobs <n>`)
 - Windows tests run (Debug): `.\run_all_tests.ps1 -Config Debug`
 - Batch scene render: `./run_scenes.sh`
 - Agent / MCP / eval CLI entry points: `./bin/rise --agent-stdio [--mcp]`, `./bin/rise --agent-http[=PORT]`, `./bin/rise --agent-eval <runconfig.json>`

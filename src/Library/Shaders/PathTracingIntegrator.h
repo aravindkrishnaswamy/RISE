@@ -179,9 +179,10 @@ namespace RISE
 
 			//! P1-a leak-fix test hook (review-p2c): a process-wide
 			//! construction/destruction counter.  Always compiled in --
-			//! test binaries link the SAME .o as `bin/rise` (see the
-			//! Filelist-driven build; there is no separate "test build" of
-			//! the library to gate a counter behind), so "guarded so
+			//! test binaries link the same library sources as `bin/rise`
+			//! (on macOS a non-LTO copy, bin/librise_test.a, but no
+			//! separate "test build" with its own defines to gate a counter
+			//! behind), so "guarded so
 			//! production is unaffected" means zero BEHAVIORAL footprint
 			//! rather than conditional compilation: two relaxed atomic
 			//! increments per instance, nothing in production code ever

@@ -710,7 +710,7 @@ static FurnaceStats TiltedFurnace( const ISPF* composite, const ISPF* top, const
 
 static void SectionT( Fixtures& f )
 {
-	std::cout << "\n[T] Tilted shading normal: composite{dielectric / white} vs an independent layer walk (DL-24 review round 2 P1-A), mean +- sem, composite n = 64 x 20000, walk n = 16 x 20000\n";
+	std::cout << "\n[T] Tilted shading normal: composite{dielectric / white} vs an independent layer walk (DL-24 review round 2 P1-A), mean +- sem, composite n = 64 (scattering 5) or 16 x 20000, walk n = 16 x 20000\n";
 	UniformScalarPainter* s5 = new UniformScalarPainter( 5.0 );  s5->addref();
 	UniformScalarPainter* s1e6 = new UniformScalarPainter( 1000000.0 );  s1e6->addref();
 	DielectricMaterial* dScat5 = new DielectricMaterial( *f.s1, *f.s15, *s5, false );  dScat5->addref();
@@ -723,11 +723,18 @@ static void SectionT( Fixtures& f )
 	// side too, so the row checks the claim under the same tilts.
 	const IMaterial* tops[] = { f.dScat0, dScat5, dDelta, f.transLossless };
 	const char* names[] = { "dielectric scattering 0", "dielectric scattering 5", "dielectric scattering 1e6 (warp off, still declared)", "lossless translucent (declared)" };
+	// Composite batches: 64 for the scattering-5 top, whose pre-fix error was
+	// small (z -7.2 / -8.6 at 64 batches), 16 for the others: the
+	// scattering-0 top's weakest pre-fix row read 0.9539 vs 0.9781 (z -24.9,
+	// docs/DL24_COMPOSITE_ENERGY.md), which at 16 batches is still 3.4x the
+	// 0.001 + 5 sigma band, and the 1e6 / translucent tops are consistency
+	// pins the fix did not move.
 	for( int k = 0; k < 4; ++k ) {
 		CompositeMaterial* m = MakeComposite( *tops[k], *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 );
+		const int compositeBatches = ( k == 1 ) ? 64 : 16;
 		for( const double tilt : { 0.0, 5.0, 20.0, 35.0 } ) {
 			for( const double th : { 0.0, 45.0 } ) {
-				const FurnaceStats a = TiltedFurnace( m->GetSPF(), 0, 0, th, tilt, 64, 20000, 911u + (unsigned)th + 13u * (unsigned)tilt );
+				const FurnaceStats a = TiltedFurnace( m->GetSPF(), 0, 0, th, tilt, compositeBatches, 20000, 911u + (unsigned)th + 13u * (unsigned)tilt );
 				const FurnaceStats r = TiltedFurnace( 0, tops[k]->GetSPF(), f.lamb->GetSPF(), th, tilt, 16, 20000, 555u + (unsigned)th + 17u * (unsigned)tilt );
 				const double sig = std::sqrt( a.sem * a.sem + r.sem * r.sem );
 				std::cout << std::fixed << std::setprecision( 4 ) << "    " << names[k] << ", tilt " << tilt << ", theta " << th
@@ -1619,8 +1626,12 @@ static void SectionM()
 						// (single-render ratio sd up to ~1.1 % for glass/glass
 						// under VCM over 10 repeats, ~1.5 % per half for the
 						// translucent / nested boxes): mean of 3 salted
-						// replicates for every light-inside cell.
-						const int nRep = ( g == 1 ) ? 3 : 1;
+						// replicates for every light-inside cell, except
+						// glass/glass under PT and BDPT, whose single render
+						// sd (~0.5 %) leaves the 3 % band 6 sd wide while the
+						// smallest red cell (mixed, 0.100 vs 0.106: -5.7 %,
+						// docs/DL24_COMPOSITE_ENERGY.md) stays 5 sd outside.
+						const int nRep = ( g == 1 ) ? ( ( c.kind == 0 && r != 2 ) ? 1 : 3 ) : 1;
 						double mL = 0, mR = 0;
 						bool ok = true;
 						for( int k = 0; k < nRep; ++k ) {

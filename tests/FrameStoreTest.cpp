@@ -1760,6 +1760,7 @@ namespace
 		std::mutex* startMutex = nullptr;
 		std::condition_variable* startCondition = nullptr;
 		unsigned int* entered = nullptr;
+		unsigned int* attempted = nullptr;
 
 		void OnTileComplete( const Rect&, uint64_t ) override
 		{
@@ -1773,6 +1774,16 @@ namespace
 			}
 			try { victimStore->RemoveObserver(victim); }
 			catch( const std::runtime_error& ) { rejections.fetch_add(1u); }
+			// Stay in the callback until both removals were attempted:
+			// a callback that returned first would let the other removal
+			// find no callback in flight and succeed, which is correct.
+			{
+				std::unique_lock<std::mutex> lock(*startMutex);
+				++*attempted;
+				startCondition->notify_all();
+				startCondition->wait_for(lock,std::chrono::milliseconds(2000),
+					[this]() { return *attempted == 2u; });
+			}
 		}
 	};
 
@@ -1789,9 +1800,11 @@ namespace
 		std::mutex callbackMutex;
 		std::condition_variable callbackCondition;
 		unsigned int entered = 0u;
+		unsigned int attempted = 0u;
 		firstObserver.startMutex = secondObserver.startMutex = &callbackMutex;
 		firstObserver.startCondition = secondObserver.startCondition = &callbackCondition;
 		firstObserver.entered = secondObserver.entered = &entered;
+		firstObserver.attempted = secondObserver.attempted = &attempted;
 		firstStore->AddObserver(&firstObserver);
 		secondStore->AddObserver(&secondObserver);
 

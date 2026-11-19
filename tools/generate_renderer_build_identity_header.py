@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import pathlib
 import subprocess
 
@@ -68,7 +69,15 @@ def main() -> int:
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     if not args.output.exists() or args.output.read_text(encoding="utf-8") != content:
-        args.output.write_text(content, encoding="utf-8")
+        # Write a temporary file and rename it over the header, so a build
+        # running beside this one never reads a half-written header.
+        temporary = args.output.with_name(f"{args.output.name}.tmp.{os.getpid()}")
+        try:
+            temporary.write_text(content, encoding="utf-8")
+            os.replace(temporary, args.output)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
     return 0
 
 
