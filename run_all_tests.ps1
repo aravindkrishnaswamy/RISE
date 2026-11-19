@@ -880,7 +880,7 @@ try {
             if (-not (Start-NextRiseTest 0)) { break }
         }
         if ($nextIn[0] -ge $queues[0].Count) {
-            while ($nextIn[1] -lt $queues[1].Count) {
+            while ($nextIn[1] -lt $queues[1].Count -and $slotsUsed -lt $Jobs) {
                 if (-not (Start-NextRiseTest 1)) { break }
             }
             while ($nextIn[2] -lt $queues[2].Count -and $slotsUsed -lt $Jobs) {
@@ -901,11 +901,13 @@ $runWall = [int]((Get-Date) - $runStart).TotalSeconds
 
 # Remember each test's time for the next run's order: this run's times replace
 # the old ones, tests this run did not reach keep theirs, and tests whose
-# source is gone are dropped.  Only passing tests of a full-tier run on several
-# slots count: a failure can stop early, -Tier fast runs cheaper modes and
-# -Jobs 1 has no neighbours.  An interrupted run writes nothing.  LF line
-# endings, so run_all_tests.sh in the same checkout reads it as well.
-if ($timings.Count -gt 0 -and $Tier -eq 'all' -and $Jobs -gt 1) {
+# source is gone are dropped.  Only passing tests of an unfiltered full-tier
+# run (RISE_TEST_EXTENDED=1) on several slots count: a failure can stop early,
+# the fast tier runs cheaper modes, and with -Jobs 1 or a filter a test has few
+# or no neighbours.  An interrupted run writes nothing.  LF line endings, so
+# run_all_tests.sh in the same checkout reads it as well.
+if ($timings.Count -gt 0 -and $Tier -eq 'all' -and $env:RISE_TEST_EXTENDED -eq '1' -and
+    -not $Filter -and $Jobs -gt 1) {
     $failedNames = @{}
     foreach ($f in $runFailures) { $failedNames[$f.Name] = $true }
     foreach ($t in $timings) {

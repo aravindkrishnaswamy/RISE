@@ -147,10 +147,7 @@ CPPFLAGS += -I$(CURDIR)
 # about the current source state.
 # GNU make 3.81 (macOS /usr/bin/make) instead puts --long options first and
 # the single-letter flags after them as -x words; 4.x's later -x words can be
-# -Oline or -I<dir>, so only 3.81 reads them.  (A 3.81 sub-make also inherits
-# command-line variables in MAKEFLAGS, where a value such as -fexceptions
-# would read as -n; this Makefile never runs a sub-make, and a header that
-# was not generated is made by its rule below when it is missing.)
+# -Oline or -I<dir>, so only 3.81 reads them.
 ifeq ($(MAKE_VERSION),3.81)
 MAKE_FLAG_WORD = $(firstword -$(MAKEFLAGS)) $(filter-out --%,$(filter -%,$(MAKEFLAGS)))
 else
@@ -339,8 +336,10 @@ TEST_MODE_STAMP = $(PATHDEST).test-link-mode
 ifeq ($(MAKE_SKIP_GENERATED),)
 $(shell mkdir -p $(PATHDEST) && { [ "`cat $(TEST_MODE_STAMP) 2>/dev/null`" = "$(TEST_LINK_MODE) $(LTO_TESTS)" ] || echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $(TEST_MODE_STAMP); })
 endif
-# A dry run or clean in a fresh tree has no record yet; nothing to build.
-$(TEST_MODE_STAMP) : ;
+# Only when the record is missing: a dry run in a fresh tree, or after the
+# clean of a `make clean tests` (clean deletes it with the objects it names).
+$(TEST_MODE_STAMP) :
+	@mkdir -p $(PATHDEST) && echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $@
 
 # Depend on $(ARCHIVE_BUILD_DEFS) in addition to $(OBJLIB) so removing a
 # translation unit from Filelist (or changing platform gates in Config.*)
@@ -629,7 +628,7 @@ clean:
 	@rm -rf $(PATHDEST)rise $(PATHDEST)risempi $(PATHDEST)librise.a $(PATHDEST)meshconverter $(PATHDEST)imageconverter $(PATHDEST)biospecbsdfmaker $(PATHDEST)drise_server $(PATHDEST)drise_client $(PATHDEST)drise_submitter $(OBJS) $(OBJMPI) $(OBJLIB)
 	@rm -rf $(OBJDRISE) $(PATHSRCSDRISE)drise_server.o $(PATHSRCSDRISE)drise_client.o $(PATHSRCSDRISE)drise_submitter.o
 	@rm -rf $(PATHSRCS)commandconsole.o $(PATHSRCS)meshconverter.o $(PATHSRCS)imageconverter.o $(PATHSRCS)biospecbsdfmaker.o
-	@rm -rf $(OBJTESTS) $(PATHTESTDEST) $(PATHDEST)testobj $(PATHDEST)librise_test.a
+	@rm -rf $(OBJTESTS) $(PATHTESTDEST) $(PATHDEST)testobj $(PATHDEST)librise_test.a $(TEST_MODE_STAMP)
 	@rm -rf $(OBJTOOLS) $(PATHTOOLDEST)
 	@find $(CLEAN_OBJECT_DIRS) -type f \( -name '*.o' -o -name '*.d' \) -exec rm -f {} \;
 	@rm -rf $(PATHSRCS)ii_files

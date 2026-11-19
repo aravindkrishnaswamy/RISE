@@ -72,8 +72,12 @@ def main() -> int:
         # Write a temporary file and rename it over the header, so a build
         # running beside this one never reads a half-written header.
         temporary = args.output.with_name(f"{args.output.name}.tmp.{os.getpid()}")
-        temporary.write_text(content, encoding="utf-8")
-        os.replace(temporary, args.output)
+        try:
+            temporary.write_text(content, encoding="utf-8")
+            os.replace(temporary, args.output)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
     return 0
 
 

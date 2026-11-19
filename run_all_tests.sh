@@ -920,17 +920,20 @@ run_wall=$(( $(date +%s) - run_start ))
 
 # Remember each test's time for the next run's order: this run's times
 # replace the old ones, tests this run did not reach keep theirs, and tests
-# whose source is gone are dropped.  Only passing tests of a full-tier run on
-# several slots count: a failure can stop early, --tier fast runs cheaper
-# modes and --jobs 1 has no neighbours.  An interrupted run writes nothing.
-if [ -s "$TIMINGS_TSV" ] && [ "$TIER" = "all" ] && [ "$RUN_JOBS" -gt 1 ]; then
+# whose source is gone are dropped.  Only passing tests of an unfiltered
+# full-tier run (RISE_TEST_EXTENDED=1) on several slots count: a failure can
+# stop early, the fast tier runs cheaper modes, and with --jobs 1 or a filter
+# a test has few or no neighbours.  An interrupted run writes nothing.
+if [ -s "$TIMINGS_TSV" ] && [ "$TIER" = "all" ] && [ "${RISE_TEST_EXTENDED:-}" = "1" ] \
+   && [ -z "$FILTER" ] && [ "$RUN_JOBS" -gt 1 ]; then
 	all_tests="$LOG_DIR/.all_tests"
 	: > "$all_tests"
 	for test_src in "$SRC_DIR"/*.cpp; do
 		[ -f "$test_src" ] || continue
-		basename "$test_src" .cpp >> "$all_tests"
+		test_base=${test_src##*/}
+		printf '%s\n' "${test_base%.cpp}" >> "$all_tests"
 	done
-	mkdir -p "$(dirname "$TIMINGS_HISTORY")"
+	mkdir -p "$(dirname "$TIMINGS_HISTORY")" || true
 	if awk -F"$TAB" -v OFS="$TAB" -v hist="$TIMINGS_HISTORY" -v fails="$RUN_FAIL_TSV" -v known="$all_tests" '
 		BEGIN {
 			while ((getline line < known) > 0) exists[line] = 1
