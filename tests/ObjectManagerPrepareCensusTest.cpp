@@ -25,7 +25,6 @@
 #include <cstdlib>
 #include <fstream>
 #include <string>
-#include <unistd.h>
 
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IObjectPriv.h"
@@ -95,7 +94,7 @@ static std::string Scene( const char* objMaterial )
 
 static IJobPriv* Load( const std::string& text )
 {
-	const std::string path = RISE::TestSupport::ScratchBaseDir() + "/om_census_" + std::to_string( (int)getpid() ) + ".RISEscene";
+	const std::string path = RISE::TestSupport::ScratchBaseDir() + "/om_census_" + std::to_string( RISE::TestSupport::CurrentProcessId() ) + ".RISEscene";
 	{
 		std::ofstream f( path );
 		f << text;
