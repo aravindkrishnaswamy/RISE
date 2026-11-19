@@ -491,6 +491,31 @@ To judge it (as §4): peak temperature 1500 K or more with a persistent volume a
   own emission 0.389 → with the column 0.354 → with the gas factor bounded 0.313.
 - Single realisations, 0.6 s windows, one resolution at tier 6.
 
+## 7. Tier-8 cap 0.30, no self-absorption (2026-11-19)
+
+`t8_y300_rad030`: run A with the cap at 0.30 (`run_tier8_a.sh t8_y300_rad030 0.30`). 1,520 steps, all accepted.
+Mean of 23.97–24.90 s (16 frames), same frames as the control and run A.
+
+| | Control (`sooty_y300`) | Cap 0.30 | Cap 0.45 (run A) |
+|---|---:|---:|---:|
+| Heat release, kW | 26.4 | 26.3 | 26.6 |
+| Peak temperature, K | 1720–1810 | 1514–1608 | 1340–1410 |
+| Centreline temperature at 0.14 m, K | 1572 | 1315 | 1021 |
+| Gas above 1300 K, litres | about 4.4 | 2.5 | about 0.1 |
+| Upward soot flux at 1 m, mg/s | 91 | 116 | 198 |
+| Escaping share (flux over 197 mg/s formed) | 46% | about 59% | about 100% |
+| Centreline soot volume fraction in the flame, ppm | 0.42 | 0.66–0.67 | 1.9–2.0 |
+
+- **A stable intermediate state exists.** The flame stays hot, soot keeps oxidising, and the soot inventory levels
+  off (76, 130, 183, 226, 223 mg at 0.5 s intervals). The poor-burn feedback is present at a believable strength:
+  about 200 K cooler and 13 points more soot escaping than the control.
+- The realised radiative fraction was not recorded; whether it sits at the 0.30 cap is not known. If it does, the
+  cap is acting as the model, which is what §6's opt-in is meant to replace.
+- Formed soot is taken as 197 mg/s (the control's value); heat release is equal in all three runs.
+- Look: flame shorter and redder than the control, column darker (`rad030_seq`, sheet
+  `movies/r273_soot_radiation_compare4.png`: yield 0.03, control, cap 0.30, cap 0.45).
+- Data: `docs/data/fire_r273/t8_y300_rad030_{budget,centreline}_23.96_24.90s.txt`.
+
 ## Files
 
 - Solver: `src/Library/Utilities/FireProductionSourceKernel.h`; §6 also passes the grid dimensions from
