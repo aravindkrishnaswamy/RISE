@@ -49,6 +49,11 @@ namespace RISE
 			StandardShader( const std::vector<IShaderOp*>& shaderops_ );
 			StandardShader( const StandardShader& other );
 
+			const std::vector<IShaderOp*>& ShaderOpsForSSSClassification() const
+			{
+				return shaderops;
+			}
+
 			//! Tells the shader to apply shade to the given intersection point
 			void Shade(
 				const RuntimeContext& rc,					///< [in] The runtime context

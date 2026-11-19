@@ -1,0 +1,79 @@
+{
+  "schema": "rise.fire.r246.preview-receipt-admission-gate.v1",
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "results": [
+    {
+      "name": "actual_admission",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "df5a1c89cdf5203c9181816b8fc2f39785258311fcaccbf6c4c0e26e4ab122f3"
+    },
+    {
+      "name": "byte_and_lifecycle_reds",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "47cff2e97882cea2612c8898131596f5a812649b2471e8a8c3356d12e8ef3fcc"
+    },
+    {
+      "name": "aliased_snapshot",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "ebbff14853b7928e8a0d36da9368fb11e26a83b440fbc25869bf9e6d9ff71cab"
+    },
+    {
+      "name": "relocated_snapshot",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "ebbff14853b7928e8a0d36da9368fb11e26a83b440fbc25869bf9e6d9ff71cab"
+    }
+  ],
+  "snapshot_path": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_source_snapshot.v8",
+  "receipt_sha256": "9e9b47bcc8a168139ad686b34386235e43554cda0b20a8656078bab33f9da2eb",
+  "seal_sha256": "e28d9681dc4413e193b4461a677d90d23251372415080547113c76a786e37b0e",
+  "snapshot_issuer": "86a912441c035d861676f7e7245428a5e2d0fd4095d14e1c72e424cd602c01c8",
+  "snapshot_executable": "c26f0efdb1bc7c89b8d46bffdc2b83c364e53d2e5cc1b57bf998dd0cd3a082d9",
+  "executable_sha256": "ba842c93b7b03684944c795d604516aa588e3705219adcf5475fadda725ab487",
+  "completed_utc": "2026-10-04T07:44:02.377472+00:00",
+  "original_snapshot_hashes": {
+    "frame_times.csv": "3bb265a8539d5de45356dba419024c077834e3bb4c3770d75c63478006a5a5c8",
+    "frame_times.csv.payload-v2.json": "27eb02213111494204cfe79b8f8cf9f87fec0a325cc6a5ede0a27cafcf0d2cb3",
+    "sequence_manifest.rise-fire.cbor": "f036ff7f96a3f5827104cdd2f06e8aa068c3e8f097acd7ff3c069bab82fb3cc1",
+    "sequence_manifest.rise-fire.cbor.payload-v2.json": "7337482671ad2d62e3ef35cf78469f450fc57d80e2c7bd39ad3d5d779bc65644",
+    "snapshot_receipt.json": "9e9b47bcc8a168139ad686b34386235e43554cda0b20a8656078bab33f9da2eb",
+    "snapshot_receipt.json.payload-v2.json": "e28d9681dc4413e193b4461a677d90d23251372415080547113c76a786e37b0e",
+    "source_scene.RISEscene": "93e970210ea2da14a3beb0c22124e8f43cef2d45aedf2d22ce9a518d7ac7849c",
+    "source_scene.RISEscene.payload-v2.json": "60c029ccb0a9a8bf226c2a20ccac9f48f9312ad007880537c1b7e3ab7dc60cdd"
+  },
+  "status": "accepted_receipt_admission_prerequisite",
+  "implementation_sha256": "87dcb59bd2ae1a2fc93d5ed6f781db7dd8411bbfc05dba418a36cf2a38a78fdc",
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_receipt_admission_runtime.v2",
+  "embedded_revision": "6a95d85d6",
+  "embedded_dirty_state": "dirty",
+  "build_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_receipt_admission.v2.build.log",
+  "build_log_sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+  "controls_script": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_receipt_admission_runtime.v2/controls.py",
+  "controls_script_sha256": "61ccd094efaa4178fbe517b21e05c4da37758a109e380ba211684818d1dfcd02",
+  "external_report": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_receipt_admission_validation.v2/controls.json",
+  "external_report_sha256": "b633bd9c99018b61cff21777a05510f9825485f6ca2eeb45395ca4e05b000e5f",
+  "merkle_verifier_sha256": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf",
+  "portable_fixture": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_receipt_admission_validation.v2/portable_receipt.cpp",
+  "portable_fixture_sha256": "d8357768e632582831e4b9fc263453059d5d667352fd116cbd91e0fa4e400a75",
+  "portable_compile_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_receipt_admission_validation.v2/portable_compile.log",
+  "portable_compile_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "portable_scope": "Exact new receipt helpers appended to prior extracted portable helper fixture; Apple macro undefined after system includes. Not a complete Linux/Windows cross-build.",
+  "limitations": [
+    "Exact independently reviewed snapshot issuer/path admission only; no authentication promotion of original unsealed observations.",
+    "Retained checkpoint is decoded; no native VDB preflight/fields or recovered rendering.",
+    "Actual scene/GIF/output receipt publication and recovered CLI composition remain pending.",
+    "Full recovery, signed audit and physical acceptance remain false."
+  ],
+  "round1_findings": [
+    {
+      "severity": "P2",
+      "finding": "Generic capture admitted receipt payload symlinks and checked pending markers only at the alias spelling.",
+      "repair": "New receipt capture requires regular nonsymlink payload before/after actual capture. Added initial and between-read alias REDs; initial alias old captured/pinned pair GREEN discriminates."
+    }
+  ],
+  "reviewed_head": "853727f886ed67d075fd33f3dea1154395a11a37"
+}

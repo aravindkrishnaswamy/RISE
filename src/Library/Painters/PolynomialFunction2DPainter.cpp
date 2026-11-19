@@ -7,6 +7,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "PolynomialFunction2DPainter.h"
 #include <algorithm>
 
@@ -196,8 +197,10 @@ IKeyframeParameter* PolynomialFunction2DPainter::KeyframeFromParameters( const S
 
 void PolynomialFunction2DPainter::SetIntermediateValue( const IKeyframeParameter& )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 }
 
 void PolynomialFunction2DPainter::RegenerateData()
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 }

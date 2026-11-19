@@ -59,6 +59,8 @@ fixture preserves the documented approximation rather than correcting it.
   distinguishable from this scene's own large MLT run-to-run variance
   once the bootstrap population is varied independently.
 - `Materials/`: isolated material demonstrations and regression scenes;
+  `rough_dielectric` compares smooth, isotropic rough and anisotropic rough
+  glass against a checker backdrop, with a Lambertian lighting control.
   `Materials/Enamel/` contains the silver, swatch, dome, SDF, and dimple
   controls used to build the enamel-watch hero.
 

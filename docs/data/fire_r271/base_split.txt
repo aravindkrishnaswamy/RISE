@@ -1,0 +1,24 @@
+inert_compact
+   k 0 th steady-nonaxi  43.720  unsteady   6.254  ratio  0.14   k 0 w  steady-nonaxi   0.019  unsteady   0.005  ratio  0.28
+   k 1 th steady-nonaxi  64.819  unsteady   9.178  ratio  0.14   k 1 w  steady-nonaxi   0.066  unsteady   0.012  ratio  0.18
+   k 3 th steady-nonaxi  70.406  unsteady  14.714  ratio  0.21   k 3 w  steady-nonaxi   0.141  unsteady   0.025  ratio  0.18
+   k 7 th steady-nonaxi  68.124  unsteady  21.690  ratio  0.32   k 7 w  steady-nonaxi   0.212  unsteady   0.066  ratio  0.31
+   k12 th steady-nonaxi  76.092  unsteady  29.457  ratio  0.39   k12 w  steady-nonaxi   0.313  unsteady   0.139  ratio  0.44
+inert_compact_seed02
+   k 0 th steady-nonaxi  48.717  unsteady  18.711  ratio  0.38   k 0 w  steady-nonaxi   0.022  unsteady   0.009  ratio  0.41
+   k 1 th steady-nonaxi  69.576  unsteady  16.821  ratio  0.24   k 1 w  steady-nonaxi   0.073  unsteady   0.019  ratio  0.26
+   k 3 th steady-nonaxi  72.554  unsteady  22.298  ratio  0.31   k 3 w  steady-nonaxi   0.147  unsteady   0.039  ratio  0.26
+   k 7 th steady-nonaxi  67.185  unsteady  31.723  ratio  0.47   k 7 w  steady-nonaxi   0.210  unsteady   0.094  ratio  0.45
+   k12 th steady-nonaxi  73.153  unsteady  41.277  ratio  0.56   k12 w  steady-nonaxi   0.298  unsteady   0.202  ratio  0.68
+inert_legacy
+   k 0 th steady-nonaxi  36.827  unsteady 103.799  ratio  2.82   k 0 w  steady-nonaxi   0.022  unsteady   0.125  ratio  5.66
+   k 1 th steady-nonaxi  43.938  unsteady 104.902  ratio  2.39   k 1 w  steady-nonaxi   0.030  unsteady   0.190  ratio  6.32
+   k 3 th steady-nonaxi  51.094  unsteady 120.703  ratio  2.36   k 3 w  steady-nonaxi   0.070  unsteady   0.251  ratio  3.61
+   k 7 th steady-nonaxi  52.332  unsteady 124.416  ratio  2.38   k 7 w  steady-nonaxi   0.147  unsteady   0.389  ratio  2.65
+   k12 th steady-nonaxi  44.679  unsteady 123.857  ratio  2.77   k12 w  steady-nonaxi   0.185  unsteady   0.543  ratio  2.94
+FDS
+   k 0 th steady-nonaxi  49.897  unsteady  34.826  ratio  0.70   k 0 w  steady-nonaxi   0.018  unsteady   0.038  ratio  2.12
+   k 1 th steady-nonaxi  63.683  unsteady  49.524  ratio  0.78   k 1 w  steady-nonaxi   0.063  unsteady   0.093  ratio  1.49
+   k 3 th steady-nonaxi  68.959  unsteady  77.613  ratio  1.13   k 3 w  steady-nonaxi   0.131  unsteady   0.191  ratio  1.46
+   k 7 th steady-nonaxi  59.807  unsteady  87.482  ratio  1.46   k 7 w  steady-nonaxi   0.183  unsteady   0.347  ratio  1.90
+   k12 th steady-nonaxi  50.320  unsteady  96.504  ratio  1.92   k12 w  steady-nonaxi   0.202  unsteady   0.522  ratio  2.58

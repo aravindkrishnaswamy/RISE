@@ -10,6 +10,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "SDFGeometry.h"
 
 #include <cmath>
@@ -3186,10 +3187,12 @@ IKeyframeParameter* SDFGeometry::KeyframeFromParameters( const String& name, con
 
 void SDFGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	const unsigned int id = val.getID();
 
 	if( id == SDF_HF_SCALE_ID ) {
 		m_hfScale = *(Scalar*)val.getValue();
+		BumpShapeRevision();
 		return;	// m_hfLip + bounds are re-derived in RegenerateData (once per frame)
 	}
 
@@ -3201,8 +3204,8 @@ void SDFGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 	Part& pt = m_parts[idx];
 	switch( field )
 	{
-	case eKFPos:   pt.pos   = *(Point3*) val.getValue();                                  break;
-	case eKFRot:   pt.euler = *(Vector3*)val.getValue(); RecomputePartDerived( pt );      break;
+	case eKFPos:   pt.pos   = *(Point3*) val.getValue(); BumpShapeRevision();             break;
+	case eKFRot:   pt.euler = *(Vector3*)val.getValue(); RecomputePartDerived( pt ); BumpShapeRevision(); break;
 	// A keyframed scale reaches the field WITHOUT passing through
 	// `ParsePartLines`, so it carries its own copy of that function's clamp --
 	// an interpolated scale sweeping through 0 is exactly how a degenerate part
@@ -3230,15 +3233,17 @@ void SDFGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 		}
 		pt.scale = sc;
 		RecomputePartDerived( pt );
+		BumpShapeRevision();
 	} break;
-	case eKFSize:  { const Vector3 sz = *(Vector3*)val.getValue(); pt.a = sz.x; pt.b = sz.y; pt.c = sz.z; } break;
-	case eKFK:     pt.k     = *(Scalar*) val.getValue();                                  break;
-	case eKFRound: pt.round = *(Scalar*) val.getValue();                                  break;
+	case eKFSize:  { const Vector3 sz = *(Vector3*)val.getValue(); pt.a = sz.x; pt.b = sz.y; pt.c = sz.z; BumpShapeRevision(); } break;
+	case eKFK:     pt.k     = *(Scalar*) val.getValue(); BumpShapeRevision();             break;
+	case eKFRound: pt.round = *(Scalar*) val.getValue(); BumpShapeRevision();             break;
 	}
 }
 
 void SDFGeometry::RegenerateData()
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	// Re-derive everything downstream of the (now animated) field: the
 	// heightfield Lipschitz bound, the order-folded AABB + surface epsilon,
 	// and the lazily-built area-light / SSS sampling cache.  Runs ONCE per

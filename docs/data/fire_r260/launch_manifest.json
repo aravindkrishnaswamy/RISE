@@ -1,0 +1,19 @@
+{
+  "FDS": {
+    "state": "running",
+    "command": [
+      "/usr/bin/caffeinate",
+      "-i",
+      "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/fds_source/Build/ompi_gnu_osx/fds_ompi_gnu_osx",
+      "r261_fds.fds"
+    ],
+    "OMP_NUM_THREADS": 8,
+    "updated_utc": "2026-10-27T22:21:31.877910+00:00"
+  },
+  "component_controller_pid": 10968,
+  "review": "momentum/isolation and campaign/control reviews clean after reducer exit-status fix",
+  "restoration_definition": "owner confirmed: R0/R1 EOS-tail correction off, physical projections retained",
+  "simulation_order": "full-outputFDS,MCtwo-stepreference,halfdt,clarifiedrestorationifready,centeredmomentum; one at a time",
+  "production_change": false,
+  "run_controller_sha256": "98efaad2e738b9dc4ed718ee707d61048e64e0058540ef8092248ead9d772a36"
+}

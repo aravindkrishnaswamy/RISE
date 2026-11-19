@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "PinholeCamera.h"
 #include <string_view>
 #include "CameraTransforms.h"
@@ -164,6 +165,7 @@ PinholeCamera::~PinholeCamera( )
 
 void PinholeCamera::RegenerateData()
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	// Geometric state first (the existing CameraCommon contract:
 	// Recompute() rebuilds the basis matrix from location / lookAt /
 	// up / orientation).
@@ -242,6 +244,7 @@ IKeyframeParameter* PinholeCamera::KeyframeFromParameters( const String& name, c
 
 void PinholeCamera::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	CameraCommon::SetIntermediateValue( val );
 
 	switch( val.getID() )
@@ -253,4 +256,3 @@ void PinholeCamera::SetIntermediateValue( const IKeyframeParameter& val )
 		break;
 	}
 }
-

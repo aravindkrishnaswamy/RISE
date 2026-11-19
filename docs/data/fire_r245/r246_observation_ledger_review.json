@@ -1,0 +1,51 @@
+{
+  "schema": "rise.fire.r246.observation-ledger-review.v1",
+  "reviewed_implementation": "e4d2ca356",
+  "recovery_accepted": false,
+  "rounds": [
+    {
+      "round": 1,
+      "findings": [
+        "P2 modern certificate numeric types",
+        "P2 post-capture controls nondiscriminating"
+      ],
+      "fix": "ea851443d"
+    },
+    {
+      "round": 2,
+      "findings": [
+        "P2 late issuer snapshot and omitted verifier dependency"
+      ],
+      "fix": "5a1070cd2"
+    },
+    {
+      "round": 3,
+      "findings": [
+        "P2 loaded code/source capture divergence"
+      ],
+      "fix": "681494337"
+    },
+    {
+      "round": 4,
+      "findings": [
+        "P2 omitted positional/keyword defaults"
+      ],
+      "fix": "e4d2ca356"
+    },
+    {
+      "round": 5,
+      "contract_agent": "r246_ledger_contract_r5",
+      "lifecycle_agent": "r246_ledger_lifecycle_r5",
+      "arithmetic_contract": "zero P1/P2",
+      "lifecycle_provenance": "zero P1/P2"
+    }
+  ],
+  "accepted_scope": "All15315 modern-sealed ledger clocks and declared input/native roots bound to retained checkpointdt and pinned original velocity/host observation bytes. Other observation measurements remain originally unsealed.",
+  "gate": "docs/data/fire_r245/r246_observation_ledger_gate.json",
+  "remaining": [
+    "All235 capsule payload seals/root/binding verification",
+    "Separate full recovery artifacts and receipt/derived operands",
+    "Strict reviewed full r246 budget audit admission",
+    "Repaired consumers/preview/spectrum and physical interpretation"
+  ]
+}

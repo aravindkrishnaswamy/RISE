@@ -1,0 +1,73 @@
+r271 section 41 evidence (2026-11-14)
+## inert tier 6 res_t6_lc_zone12_d: RISE_FIRE_LIMITED_MOMENTUM_CARRIER=1 RISE_FIRE_VREMAN_ZONE=below:12:0.2857 RISE_FIRE_ALLOW_NEGATIVE_ZERO=1, inert_build_diag, 129 frames
+{"state":"finished_stopped_for_review","exit":98,"finished":"2026-11-14T11:38:36Z","out":"/Volumes/SSD/RISE/fire_production_calibration/r271_inert/res_t6_lc_zone12_d"}
+## WINDOW=5-10 res_compare.py, RISE against FDS tier6
+#### res_t6_lc_zone12_d
+RISE/FDS ratios per tier (theta_c, w_c, mass flux, rms w/w_c) by height index
+  D*/6
+    z=0.31   1.07   1.02   0.92   0.92
+    z=0.51   1.06   1.02   0.87   0.77
+    z=0.75   1.12   1.00   0.86   0.73
+    z=1.00   1.17   1.01   0.84   0.83
+    z=1.53   1.13   0.94   0.85   1.04
+    z=2.02   1.05   0.92   0.87   1.08
+    z=2.51   1.04   0.92   0.88   1.01
+    z=3.00   0.98   0.89   0.88   1.02
+
+Entrainment rate dm/dz (kg/s/m) between heights: FDS, RISE, ratio
+  D*/6
+    0.31-0.51   0.200   0.152   0.76
+    0.51-0.75   0.213   0.177   0.83
+    0.75-1.00   0.235   0.189   0.80
+    1.00-1.53   0.248   0.215   0.87
+    1.53-2.02   0.282   0.258   0.92
+    2.02-2.51   0.331   0.308   0.93
+    2.51-3.00   0.404   0.357   0.88
+
+FDS against itself across tiers (mass flux, theta_c, rms w/w_c at each height index)
+#### res_t6_lc_zone25
+RISE/FDS ratios per tier (theta_c, w_c, mass flux, rms w/w_c) by height index
+  D*/6
+    z=0.31   1.02   1.00   0.98   1.09
+    z=0.51   0.99   0.98   0.98   0.91
+    z=0.75   0.98   0.93   1.01   0.91
+    z=1.00   0.95   0.90   1.00   1.03
+    z=1.53   0.98   0.88   0.97   0.91
+    z=2.02   1.05   0.95   0.96   0.94
+    z=2.51   1.12   1.02   0.95   0.90
+    z=3.00   1.03   0.96   0.96   1.01
+
+Entrainment rate dm/dz (kg/s/m) between heights: FDS, RISE, ratio
+  D*/6
+    0.31-0.51   0.200   0.195   0.98
+    0.51-0.75   0.213   0.227   1.07
+    0.75-1.00   0.235   0.232   0.99
+    1.00-1.53   0.248   0.229   0.92
+    1.53-2.02   0.282   0.260   0.92
+    2.02-2.51   0.331   0.310   0.93
+    2.51-3.00   0.404   0.394   0.98
+
+FDS against itself across tiers (mass flux, theta_c, rms w/w_c at each height index)
+#### res_t6_lc
+RISE/FDS ratios per tier (theta_c, w_c, mass flux, rms w/w_c) by height index
+  D*/6
+    z=0.31   1.22   1.07   0.78   0.30
+    z=0.51   1.37   1.14   0.73   0.28
+    z=0.75   1.53   1.20   0.71   0.42
+    z=1.00   1.64   1.24   0.71   0.71
+    z=1.53   1.65   1.23   0.70   0.99
+    z=2.02   1.61   1.22   0.69   1.12
+    z=2.51   1.65   1.23   0.68   1.09
+    z=3.00   1.64   1.23   0.67   0.98
+
+Entrainment rate dm/dz (kg/s/m) between heights: FDS, RISE, ratio
+  D*/6
+    0.31-0.51   0.200   0.126   0.63
+    0.51-0.75   0.213   0.146   0.68
+    0.75-1.00   0.235   0.161   0.68
+    1.00-1.53   0.248   0.170   0.69
+    1.53-2.02   0.282   0.193   0.68
+    2.02-2.51   0.331   0.210   0.63
+    2.51-3.00   0.404   0.254   0.63
+
+FDS against itself across tiers (mass flux, theta_c, rms w/w_c at each height index)

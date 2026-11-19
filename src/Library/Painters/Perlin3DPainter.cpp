@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "Perlin3DPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Utilities/ProceduralNoiseCore.h"
@@ -124,6 +125,7 @@ IKeyframeParameter* Perlin3DPainter::KeyframeFromParameters( const String& name,
 
 void Perlin3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SCALE_ID:
@@ -144,4 +146,3 @@ void Perlin3DPainter::RegenerateData( )
 	// EvaluateField recomputes the octave sum from dPersistence/nOctaves
 	// directly (via ProceduralNoiseCore); nothing to precompute/cache.
 }
-

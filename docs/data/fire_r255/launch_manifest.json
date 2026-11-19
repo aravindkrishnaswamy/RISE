@@ -1,0 +1,67 @@
+{
+  "status": "in_progress_no_results_claimed",
+  "fds_installation_approved_by_owner": true,
+  "production_solver_source_changed": false,
+  "campaign_controller": "tools/fire/r255_run_sequence.py",
+  "launch_source_head": "4ef447173f32f74dbfe5fecf5a481aa170fba3d5",
+  "files": [
+    {
+      "path": "/Volumes/SSD/Working/RISE/bin/tests/FireSequenceTest",
+      "bytes": 24270512,
+      "sha256": "d1cebdd779a5d18a9e5b92ec162ddfcfc51aaae1a8963104bcdc633fb7bab033"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r255_limiter_driver",
+      "bytes": 4163536,
+      "sha256": "2af81f82fb9182a93b15c52b0192bf284cf40d6319eaa0ef90ed8e5dec13abe6"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r255_case_metadata",
+      "bytes": 543216,
+      "sha256": "fa81aed4ab310d6a9ba542cc30543b65462b5d11774b58b540f814059752cc2c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r253_plume_probe",
+      "bytes": 727920,
+      "sha256": "fc95b45823f2f687a13a8a023afcee6a948146628a2b38ecae3a453e93fa0a46"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/fds_source/Build/ompi_gnu_osx/fds_ompi_gnu_osx",
+      "bytes": 8080096,
+      "sha256": "73a5848afcfae83c18eea6ee3f965818457e32469b03ddc328d07d2986690d3a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/fds_run/r255_fds.fds",
+      "bytes": 43315,
+      "sha256": "59a42d0e0168852cc88a732de12603f1ab54266dfe759fdde8d9b39911c0f484"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/FireSequenceObserverHarness.cpp",
+      "bytes": 1620038,
+      "sha256": "2ecad27473611d4f474c950b97f1dd70e3e87aba65022d99afdcf90968eb1d95"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/case_metadata.txt",
+      "bytes": 2311,
+      "sha256": "83ddc1440f39239a45f1a3f3ce4a446082f5ca604ed5f31337d78c8d180a4c9b"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/verification_references.txt",
+      "bytes": 230,
+      "sha256": "b023c7ac241a08359076e7b288d4425fc113c390a634e86b224bb026095d4cd8"
+    }
+  ],
+  "fds_source_tag": "FDS-6.11.1",
+  "fds_source_commit": "ff928dbf68a2623ced3a007be75391c6dc6c9f90",
+  "fds_source_diff": "",
+  "checkpoint_selection": [
+    "15.018720638239756 /Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoint_history/step_0000009224.checkpoint",
+    "15.104210254969075 /Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoint_history/step_0000009276.checkpoint",
+    "15.184819180634804 /Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoint_history/step_0000009325.checkpoint",
+    "15.262135574361309 /Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/checkpoint_history/step_0000009372.checkpoint"
+  ],
+  "harness_difference": "one launcher admission64\u21924096 steps; all numerical source identical",
+  "reviewed_head": "4ef447173",
+  "review_findings": "fresh repair round zero remaining P1/P2",
+  "runtime_status": "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/campaign_status.json"
+}

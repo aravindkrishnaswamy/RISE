@@ -270,8 +270,7 @@ static void TestDisplacementBake()
 namespace {
 	std::string WriteTempScene( const std::string& tag, const std::string& body )
 	{
-		const char* tmp = getenv( "TMPDIR" );
-		std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+		std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 		const std::string path = dir + "rise_field_finiteness_" + tag + ".RISEscene";
 		std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );

@@ -373,12 +373,18 @@ Vector3 PathGuidingField::Sample(
 	pglPoint2f( sample, static_cast<float>( xi.x ), static_cast<float>( xi.y ) );
 
 	pgl_vec3f dir;
-	float pdfF = pglSurfaceSamplingDistributionSamplePDF( handle.dist, sample, dir );
-
-	pdf = static_cast<Scalar>( pdfF );
-	return Vector3( static_cast<Scalar>( dir.x ),
-					static_cast<Scalar>( dir.y ),
-					static_cast<Scalar>( dir.z ) );
+	pglSurfaceSamplingDistributionSamplePDF( handle.dist, sample, dir );
+	const Vector3 normalized = Vector3Ops::Normalize(Vector3(
+		static_cast<Scalar>( dir.x ),
+		static_cast<Scalar>( dir.y ),
+		static_cast<Scalar>( dir.z ) ));
+	pglVec3f( dir,
+		static_cast<float>( normalized.x ),
+		static_cast<float>( normalized.y ),
+		static_cast<float>( normalized.z ) );
+	pdf = static_cast<Scalar>(
+		pglSurfaceSamplingDistributionPDF( handle.dist, dir ) );
+	return normalized;
 }
 
 Scalar PathGuidingField::Pdf(
@@ -659,12 +665,18 @@ Vector3 PathGuidingField::SampleVolume(
 	pglPoint2f( sample, static_cast<float>( xi.x ), static_cast<float>( xi.y ) );
 
 	pgl_vec3f dir;
-	float pdfF = pglVolumeSamplingDistributionSamplePDF( handle.dist, sample, dir );
-
-	pdf = static_cast<Scalar>( pdfF );
-	return Vector3( static_cast<Scalar>( dir.x ),
-					static_cast<Scalar>( dir.y ),
-					static_cast<Scalar>( dir.z ) );
+	pglVolumeSamplingDistributionSamplePDF( handle.dist, sample, dir );
+	const Vector3 normalized = Vector3Ops::Normalize(Vector3(
+		static_cast<Scalar>( dir.x ),
+		static_cast<Scalar>( dir.y ),
+		static_cast<Scalar>( dir.z ) ));
+	pglVec3f( dir,
+		static_cast<float>( normalized.x ),
+		static_cast<float>( normalized.y ),
+		static_cast<float>( normalized.z ) );
+	pdf = static_cast<Scalar>(
+		pglVolumeSamplingDistributionPDF( handle.dist, dir ) );
+	return normalized;
 }
 
 Scalar PathGuidingField::PdfVolume(

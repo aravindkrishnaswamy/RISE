@@ -1,0 +1,26 @@
+.F.....
+======================================================================
+FAIL: test_qualification_witness_refusal_is_load_bearing_red (__main__.TargetBasisDifferential)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r214-target-basis/tools/test_fire_r214_target_basis.py", line 240, in test_qualification_witness_refusal_is_load_bearing_red
+    bypassed = self.run_candidate(corrupted.replace(witness, "false"),
+  File "/Users/aravind/Working/RISE/worktrees/r214-target-basis/tools/test_fire_r214_target_basis.py", line 175, in run_candidate
+    self.assertEqual(build.returncode, 0, build.stdout+build.stderr)
+AssertionError: 1 != 0 : /var/folders/5v/syjxsf117mx_p89tyw_9267h0000gn/T/rise-r214-target-basis-id9c4k04/basis.cpp:1769:26: error: unused variable 'directCP' [-Werror,-Wunused-variable]
+ 1769 | obligations,directValid),directCP=target_cp_dd(eosThermo,species,T,obligations,directValid);
+      |                          ^~~~~~~~
+1 error generated.
+
+
+----------------------------------------------------------------------
+Ran 7 tests in 5.851s
+
+FAILED (failures=1)
+TARGET_BASIS_RED changed_segment_obligation refused=1
+TARGET_BASIS_RED changed_segment_interval refused=1
+TARGET_BASIS_CPU helper_pairs=1792 target_cells=512 accepted=492 refused=20 exact_zero=123 nonzero=369 positive_tail=246 negative_tail=123 bit_mismatches=0 class_mismatches=0 scope=synthetic_cpu_only diagnostic=0
+TARGET_BASIS_CPU helper_pairs=1792 target_cells=512 accepted=492 refused=20 exact_zero=123 nonzero=369 positive_tail=246 negative_tail=123 bit_mismatches=0 class_mismatches=0 scope=synthetic_cpu_only diagnostic=1
+TARGET_BASIS_RED wrong_inverse_square refused=1
+TARGET_BASIS_RED separate_source_corruption refused=1
+TARGET_BASIS_RED wrong_shared_power refused=1

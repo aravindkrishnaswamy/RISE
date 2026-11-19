@@ -1,0 +1,388 @@
+# Fire & smoke — current status (start here)
+
+Last updated 2026-11-18, after the r272 soot window finished and its movie look was fixed and accepted; the r271 entrainment candidate is accepted and the test gates are cleaned up (Claude now runs the campaign directly). This page
+is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
+pages are a historical log, not instructions.
+
+[r267 r264 full window](FIRE_SMOKE_R264_FULL_WINDOW_R267.md):
+- **r264 ran cleanly.** Centered momentum, from zero to 25.09 s: no retries, 99.55% of the fuel burned, 5.45 s/step.
+- **The improvement is only partial.** Temperature fluctuation and meander rose. Spreading (0.074 against 0.10 at 3 m), core mass flux (−23% at 3 m) and θ_c (60 K against McCaffrey's 38–40 at 3 m) are still off.
+- **The McCaffrey 15% condition fails:** +56% temperature at 2.95 m. Tier 10 stays blocked.
+- **The near field got worse.** Flame height is 0.92 m against 0.78 (r251), FDS 0.81 and Heskestad 0.65; θ_c at 1 m is 356 K against FDS's 249.
+- **r266 §3 overstated the A/B result.** Its 48-frame window was a favourable sample.
+- **Leading lead:** RISE lacks FDS's induced ambient inflow outside the plume.
+- **Next:** see r269 below.
+
+[r269 ambient inflow](FIRE_SMOKE_AMBIENT_INFLOW_R269.md):
+- **The missing near-field inflow is FDS-specific.** FDS's `ADIABATIC=T` floor absorbs flame radiation and returns about 0.5 kW to the gas (Q_COND). That warms the near-floor air out to r ≈ 1 m (3–15 K) and drives a 0.02–0.06 kg/s annular updraft at r = 0.2–0.5 m.
+- **RISE's floor never heats,** because radiation is an optically thin loss, and its floor-level air outside the burner stays exactly ambient.
+- **Air reaching the flame itself (r = 0.2 m) differs by only 9–14%.**
+- **The far-plume (>1.5 m) entrainment deficit is separate.**
+- **Owner decision (2026-10-30):** make RISE's floor absorb radiation, rather than strip it from FDS. The FDS `EMISSIVITY=0` rerun is now optional.
+
+**Merged with master 2026-11-18.** `origin/master` (b26657d55, 3,679 commits since 2026-08-06) is merged into this branch and the result pushed to master. 112 files conflicted. Fast tier: 534 tests, the only failures are ones plain master has too (8 failing, 1 segfault, 10 over the 5-minute cap; `ViewportPaneSchedulerTest` and `PainterPreviewTest` are load-dependent flakes on master as well). Things to know: non-fire scenes are held bit-identical to master (fire fields sit after master's in `RayIntersectionGeometric`; the blackbody painter uses master's constants; master's spectral-packet endpoint convention is in force); the fire render freeze still applies to every Job render, so master code that changes the scene mid-render must take the render's internal-mutation scope; the exact boundary walk skips master's box self-hit filter after its first query, and other primitives were not checked; provenance sidecars written before the merge fail the new validation (five render options added).
+
+[r272 soot](FIRE_SMOKE_SOOT_R272.md) (2026-11-15): methane soot formation is on as an uncommitted opt-in (`RISE_FIRE_METHANE_SOOT_YIELD`). The one-parameter fit to the NIST centreline profile gives a gross yield of 0.03, with a poor fit that is a model limit: the simulated profile is flat where the measurement peaks at 0.14 m, and about 45% of the soot escapes unburned where NIST measures none. The full 25 s tier-8 window with the accepted candidate and this yield finished 2026-11-16 in `r272_soot/tier8_y030` (28.3 h, no retries, 32.2 kW, radiative fraction 0.201) and confirms the fit numbers. The first preview movie had a blue column and an overexposed core. The blue was the exporter's placeholder flame-chemistry channels, which glow with temperature as well as reaction; a derived frame set (`r272_soot/render_seq`) ties them to reaction only, and a new scene (`tools/fire/r272/r272_soot_look.RISEscene`) adds a floor, a wall, a light and a closer camera. The owner accepted the test frames on 2026-11-16; the 235-frame 256×384 movie is rendering into `r272_soot/movie_look`. The visible flame is still only about 0.5 m tall and the smoke is too thin to see. A sooty-fuel check (2026-11-17, yield 0.3, 2.5 s restart) gives ten times the smoke and a dark column in a bright scene, with the escaping share unchanged at 46%: sootiness follows the yield, and the flame-cooling feedback of a poor burn is not reproduced.
+
+[r271 flame core](FIRE_SMOKE_FLAME_CORE_R271.md): the core is hot because RISE entrains 23–47% less air from 0.29 m up, carrying the same heat; combustion heights and radiative fraction match FDS. Puffing frequency is right (2.6–2.9 Hz; the capstone's 3.62 Hz is a single-cell artefact), but its strength is 57–72% of FDS's. Same Vreman model and constants, but RISE's cell-centred stencils do not damp 2Δ–4Δ velocity, and RISE carries 1.4–3× FDS's grid-scale w share. (c): the side/top open boundaries are equivalent to FDS and pass what the plume demands; not the cause. Compact-stencil A/B (opt-in `RISE_FIRE_COMPACT_VISCOUS_STENCIL=1`, `5cdace134`; 4 s from r270 at 14.98 s, restart byte-exact): grid-scale w share falls 2–4× into FDS's range, but the near field gets worse. The plume is narrower and hotter with less entrainment below 1 m, and the 90%/99% heat-release heights go from 0.43/0.86 m to 0.83/1.25 m. Puffing is weaker. Only the 3 m mass flux improves (1.02 against 0.86; FDS 1.18). Not adopted. Scalar mixing (read-only): heat and species take ν_t from their own wide-stencil Vreman, not the momentum ν_t as in FDS. In r270 it matches FDS only because of the grid noise. In the compact A/B it fell to 40–55% of FDS's in the near field. Second A/B with scalars on the compact ν_t (patch uncommitted, pending owner review): every near-field measure moves the right way but only by about the window-to-window spread (90% height 0.83 → 0.80 m, θ_c at 1 m 509 → 479 K). The modelled flux is too small to matter; the lost near-field mixing is resolved transport. Patch committed opt-in (`7aa9953bf`). Near-field read-only check: FDS moves core heat out by resolved eddies (10–13 kW/m at r = 0.10 m); r270 carries 65–95% of that and the compact arms 25–40%. Fluctuations are weak at every scale from the burner up (burner-edge rms w at 0.05 m: r270 0.23, compact 0.13, FDS 0.45 m/s), so the plume leaves the burner too steady. Forcing vs damping (2026-11-02): at the burner r270's temperature and heat-release fluctuations match FDS but the velocity responds with ~60% of FDS's rms w; above the base the eddies grow at FDS's rate. A Taylor–Green test through the real production capstone shows almost no numerical damping (8-cell eddy: molecular + 0.02 1/s; with C_v 0.07 exactly the Vreman rate). So the deficit is forcing: how heat release becomes velocity at the burner. Expansion check (read-only): heat release becomes expansion correctly (gain and timing match FDS's DIVERGENCE), but RISE's heat release over the base fluctuates 18–33% less than FDS's: less coherent, so it drives less large-scale flow. First candidate: RISE's mixing time differs from FDS's (τ_u 44% longer, reduced-gravity τ_g, SGS in τ_d). Sized on 8 r270 states: the mean rate is within 3–9% of FDS's formula at the base, but RISE's base burning is 92–98% set by the reduced-gravity buoyancy time (independent of turbulence), while FDS's formula puts 76–97% under the turbulence time, so FDS's heat release follows the eddies. Opt-in `RISE_FIRE_FDS_MIXING_TIME=1` prepared and verified (switch-off value-identical to r270; reviewed, no P1); committed after owner review (`fa316ab86`, 2026-11-02); 4 s A/B done (§15): base heat-release coherence and burner-edge velocity unchanged (inside r270's window spread), core 30–50 K hotter; not adopted. Burner-face check (§16): the boundary matches FDS. FDS's velocity slices are face values, not cell averages; like for like, RISE's burner-edge w′ is about 75% of FDS's, not 60%, with none missing at the face. Robust finding: the core over the burner holds about a third of FDS's unburnt oxygen and is 230–290 K hotter, because RISE burns the rim oxygen. The extinction rule, CFT value, mixing time and wall drag are ruled out. Step back (§17): on the same state the rim chemistry matches FDS. The missing air is mostly above the flame: RISE's entrainment rate is 63–79% of FDS's from 0.3 to 3 m, where FDS matches Heskestad's far-plume correlation. Leading hypothesis: RISE's velocity energy sits at grid scale instead of in large eddies (centred energy-conserving momentum, with a stress stencil and SGS that cannot damp 2Δ). §18: two problems. Above 1 m the compact stencil makes the far plume FDS-like (entrainment rate 0.92–0.98 of FDS's); below 1 m the near-source plume is too quiet once the grid noise is removed. Non-reacting plume pair (§20): with the compact stencil RISE's plume stays nearly laminar for the first metre (centre rms w/w_c 0.01–0.09 against FDS's 0.08–0.31) and entrains about half of FDS's air at every height. The default stencil's grid noise masks this near the source, but its far field under-entrains as in the fire. Underlying cause, generic to the hydrodynamics: resolved instabilities do not grow as in FDS. §21: not over-damped (RISE's near-source ν_t is at most FDS's) and not smeared (shear layers as thin or thinner). §22, seeded compact arm (±20% heat-source seed, 14 s): every measure moves toward FDS but only a third of the 3 m mass-flux gap closes (0.61 against 0.45; FDS 0.92), and the plume stays nearly laminar at 0.29 m (rms w/w_c 0.022; FDS 0.079). Puffing is at the right frequency (2–4 Hz, FDS peak 3.0 Hz), at about a quarter of the amplitude. The deficit forms at the floor: in the first cell RISE's burner-edge w′ is about a fifth of FDS's, and above it RISE amplifies at least as fast. Leading hypothesis: the base does not feel the plume's unsteadiness (pressure feedback or near-floor inflow). §23 (read-only): FDS's base is not driven by the puffing cycle or pressure (coherences at the noise floor; floor pressure rms 0.01 Pa) and the room is quiet in both codes. FDS's seed is small-scale (3–8 cell) buoyant convection inside the heated gas over the burner (layer-0 interior u′ 0.054 m/s, θ′ 34 K), which RISE carries at the same spectral shape but 4–6× weaker. §24 (synthetic tests through the production capstone): buoyancy response matches the ideal MAC grid at 3–8Δ within 1%, and temperature advection is no more dissipative than CHARM at 4–8Δ (2.5–3× less at 6–8Δ). Neither operator is the cause. §25: same base pattern, but RISE's base relaxes to steady after start-up while FDS's stays unsteady. A 2×2 state transplant shows RISE's dynamics damp FDS's base unsteadiness (e-fold about 0.8 s) and FDS's regenerate it from RISE's state. Every isolated operator matches FDS at 3–8 cells (Taylor–Green, momentum advection, Rayleigh–Taylor within 4%). FDS ablations (dt, free-slip floor, baroclinic, constant γ, MINMOD/Godunov) leave FDS's base unsteady; FDS without SGS explodes, and RISE without momentum SGS grows. §26 (scalar-SGS opt-in `RISE_FIRE_SCALAR_VREMAN_CV`, uncommitted): RISE fully SGS-off from FDS's state grows 2–6× slower than FDS SGS-off. Same-state tendencies at a locked dt agree within 1–5% (buoyancy, pressure, source, expansion, variable-density momentum advection, SGS share above k3). FDS is not marginal: its base stays unsteady with 40% less floor heating or with Vreman-level floor ν_t (FDS uses WALE in wall cells; RISE has no near-wall model, which explains RISE's hotter floor cell but not the quiet base). Only C_v 0.12 calms it 2–2.5×, and RISE at 0.07 is quieter still. So the extra damping builds over many coupled steps, not in any single operator. Best lead: step-to-step history (RISE's two-step start-up kick). Opt-in `RISE_FIRE_INERT_PLUME=1` uncommitted pending owner review. RISE rebuilt against homebrew OpenVDB 14.0 (one version-guarded API fix in `FireSequence.cpp`). §27: the step has no history; the start-up kick is FDS's state relaxing onto RISE's discrete solution. The near-wall WALE opt-in (FDS's model, matched offline) leaves the inert plume unchanged, and FDS without the baroclinic term stays unsteady. The C_v bracket from FDS's state: 0.02 sustains 71–89% of FDS's near-base unsteadiness, while 0.035 and up decay. Inert 14 s A/B at C_v 0.02: entrainment rises to 71–88% of FDS's (from 45–55%), centre T at 1 m is 466 K (FDS 339, compact 714) and the 3 m mass flux is 0.70 kg/s (FDS 0.92, compact 0.45). But it overshoots in the first 0.3 m and the grid-scale w share is 2× FDS's above 1.5 m, so it is a calibration and the cause of RISE's extra damping remains open. §28: reacting C_v 0.02 is not good enough. The compact arm leaves the base as steady as r270 and lengthens the flame (90% height 0.58 m against 0.43). The default arm matches the near-field T through grid noise. Grid-scale-only damping cannot keep FDS's 2–4Δ base eddies and remove the noise together. A 0.62× time step changes nothing. The C_v sensitivity is all in momentum and is spread over the base and plume (each zone recovers about half). Per-step SGS force already matches FDS, so RISE's near-plume mode is marginal: the deficit is the net growth of a coupled mode over many steps, with no single switch responsible. §29 (twin growth-rate comparison from the same state): RISE amplifies a small divergence-free perturbation 40–60% more slowly than FDS after 0.15 s, in the resolved numerics (worse with SGS off), in the 350–900 K mixing layer, not through the divergence. A cold uniform-density shear layer matches FDS to 1–4%, so the deficit needs density variation. Identified contributor: momentum is carried by the centred flux while density moves with the FCT-limited flux. Opt-in `RISE_FIRE_LIMITED_MOMENTUM_CARRIER=1` (uncommitted, default bitwise identical) closes about half the SGS-off growth gap and 25–50% with production SGS. In a 2.5 s production transplant it gives 2–3× the default near-base unsteadiness (56–69% of FDS at k7–k16, floor layer still quiet) with an FDS-like grid-scale share aloft. Limited carrier plus C_v 0.035 reaches C_v 0.02's base level from k7 up (86–89% of FDS), but the floor layer stays short and lower C_v brings back 1.7–1.8× FDS's grid-scale share aloft. Floor-focused twin (§29.8–9): the floor deficit is grid-scale velocity and temperature over the heated floor. FDS's floor response is limiter-sensitive, and RISE's MC sits at FDS's first-order (GODUNOV) level. RISE's FCT never limits. A superbee scalar limiter (diagnostic opt-in) lifts every band above the floor to 74–94% of FDS but not the floor layers. Near-wall WALE and the wall ghost slope do not help, so the floor-layer mechanism remains open. Limited carrier plus superbee (2.5 s transplant) adds only 6–9% at k7–k16 and nothing at k0–k3, with grid share still FDS-like: the quiet floor layers are the bottleneck. §30 (bounded closing step): a budget of the floor twin's temperature perturbation shows no extra dissipation term in RISE (its residual is smaller than FDS's); the short-window RISE/FDS floor ratios are confounded, because FDS re-initialised from its own state overheats the floor layer by 170 K for about 1 s. Within-code comparisons stay valid and the long-window deficit is real (k0 rms w 0.006 against 0.062). Floor question closed as cumulative scheme behaviour; plan agreed with the owner: judge limited carrier plus heat-source seed against McCaffrey/Heskestad targets after the inert A/B, with a resolution check in reserve. §31 (inert 14 s A/B, limited carrier alone at C_v 0.07): 3 m mass flux 0.725 kg/s (FDS 0.922, compact 0.454, C_v 0.02 0.704), entrainment 74–87% of FDS's rate from 0.5 m, grid-scale share within 5% of FDS's; the first metre is still too steady (rms w/w_c a third of FDS's at 0.29–0.50 m; excess T at 1 m 534 K against 339). Limited carrier plus seed adds little (3 m mass flux 0.764 against 0.725; first metre unchanged), so the package is the carrier alone. §32 (reacting 4 s A/B, limited carrier on the compact stencil at C_v 0.07): 90% heat-release height 0.61 m (compact 0.83, FDS 0.43), excess T at 1 m 341 K (compact 509, McCaffrey 247, FDS 228), from 1.5 m within 15–27% of McCaffrey with a third of r270's grid-scale share; equal to C_v 0.02 compact without the noise. The first metre still under-entrains (0.5–0.75 m 57% above McCaffrey). Owner decision 2026-11-11: the limited carrier with the compact stencil is the default candidate (carrier committed opt-in, production default unchanged), and a resolution check of both codes is approved. §33: the inert plume with the candidate settings at RISE's native tiers 6, 8 and 10 (dx 0.041, 0.031, 0.024 m), with FDS on the same grids. Tiers 6 and 8 are in: the gap does not close with resolution (RISE carries about 70% of FDS's mass flux and 0.3 of its base fluctuation at both). At tier 6 the carrier with momentum C_v 0.02 matches FDS's inert means (mass flux within 10%) at 2–3.5× FDS's grid-scale share. §34: in the reacting flame that combination gives FDS's flame height (0.43 / 0.73 m) and a first metre 14–21% above McCaffrey at 0.75–1 m, but the far plume turns noisy and 43–59% too hot. §35: a zoned arm (carrier, C_v 0.02 below 1 m, 0.07 above) keeps FDS's flame height, is 18–22% above McCaffrey at 0.75–1 m and 20–37% above it higher up, and is clean above 1.5 m: the best package so far, though a zoned constant is calibration. Tier-6 C_v 0.04 is halfway on every measure. The zoned inert plume at tier 6 matches FDS within 5% in mass flux and centre excess T. Tier 10 confirms the unzoned gap is the same at all three tiers (64–71% of FDS's mass flux), and shows FDS's inert plume is not grid-converged either (its transition moves up at D*/10). Owner decision 2026-11-12: the zoned constant joins the candidate (compact stencil + limited carrier + C_v 0.02 below 1 m; zone switch committed opt-in, production default unchanged). §36: the zoned reacting arm over 10 s confirms §35 (flame 0.43 / 0.73 m; 15–22% above McCaffrey at 0.75–1 m, 23–33% above it from 1.5 to 3 m), so the gap is not the short window. Inside the zone the plume proper is within 7–14% of FDS's mass flux; the rest of the earlier 80% figure there is slow ambient updraught outside the plume. Above the 1 m zone boundary the plume gains only 75% of FDS's mass flux to 3 m: the zone's fluctuation is nearly FDS's in amplitude but carries half the heat (1.5–2.5× FDS's grid-scale share), and it dips to 0.73–0.79 of FDS's just above the boundary. The unzoned carrier arm mixes like FDS from 0.75 m up and is too quiet only at 0.3–0.5 m. §37: with the zone top at 0.5 m the plume carries 81–87% of FDS's mass flux at every height, the dip above the boundary is gone and the grid-scale share is near FDS's from 0.75 m; the flame is one cell taller (0.46 / 0.80 m) and 0.75–1 m is 26–27% above McCaffrey, 2–3 m 17–23%. Zone top 0.77 m is in between. The remaining deficit is set below 0.3 m. Owner decision 2026-11-13: the candidate's zone top moves to 0.5 m (run-time setting, production default unchanged); 10 s confirmation to follow. §38: C_v 0.01 below 0.5 m brings the base to 98% of FDS's plume mass flux at 0.3–0.5 m, but the sharper ν_t step costs it above the zone (74% at 2 m); a zone ending at 0.3 m is too shallow (flame 0.49 / 0.89 m). §39: ramping the constant from 0.5 m to 1.0 m instead of stepping it makes the upper plume worse (73–78% of FDS's plume mass flux from 2 m), so the cost is the depth of reduced C_v, not the step: more reduced-C_v height improves the first metre and degrades 1.5–3 m. The adopted 0.02 step at 0.5 m is the most balanced arm (81–87% at every height); no arm matches FDS at both ends. §40: the candidate over 10 s confirms §37 (flame 0.46 / 0.80 m; 82–91% of FDS's plume mass flux at every height; centre 28–31% above McCaffrey at 0.75–1.5 m, 17–18% at 2–3 m). The inert tier-6 check of the 0.5 m zone stopped at 4.15 s on a negative zero in one cell's sensible energy, which the canonical-state check rejects; not an instability. §41: with the negative zero accepted (uncommitted diagnostic switch) the inert arm completes; the 0.5 m zone gives 84–92% of inert FDS's mass flux (no zone 67–78%, 1 m zone 95–101%). Inert prefers the 1 m zone, reacting the 0.5 m zone; both leave about 15% with the 0.5 m zone. Candidate unchanged. Owner decision 2026-11-14: about 85% of FDS's entrainment is good enough; entrainment tuning is closed with the candidate as adopted. §42: the negative zero is the GPU flushing a subnormal energy to a signed zero at the scalar commit (`fct_commit_scalar`); a one-line normalisation there removes the stop (full 10 s inert run byte-identical); owner approved, committed `c77b5d7b9`, and the accept switch is removed. The test suite is red on this branch with or without it (two-GiB working-set cap, source-text bindings, one Newton non-convergence); the same cases fail at the last pre-r271 commit, so they predate the campaign.
+
+[r270 floor radiation](FIRE_SMOKE_FLOOR_RADIATION_R270.md) is implemented and verified up to a short tier-6 run:
+- **The model:** an opt-in gray, radiatively adiabatic floor (`RISE_FIRE_FLOOR_EMISSIVITY=1`; ε = 1 is what FDS's ADIABATIC=T forces).
+  - Thin irradiance from the existing emission field.
+  - FDS 6.11's own wall heat transfer coefficient.
+  - A per-step frozen energy dose into the first gas layer.
+- **Floor off is bit-identical to r264.** Case ID `67cc1791` unchanged; 25 production steps match byte for byte.
+- **Tier-6 run to 2.5 s with the floor on:**
+  - The floor returns about 0.5 kW to the gas, matching FDS's +0.51 kW.
+  - Floor-level air outside the burner warms 2–6 K and is still rising (r264: 0 K).
+- **Build fix:** `FireCase.o` is now built outside LTO, because fast-math under LTO let unrelated edits move case IDs.
+- **Tier-8 full window with the floor on (2026-10-31):**
+  - The floor-level layer now matches FDS (within 0.6 K), and near-floor inflow is mostly recovered.
+  - The annular updraft is half recovered.
+  - The flame did not shorten: it is slightly longer and hotter.
+  - McCaffrey still fails on every temperature station, and 17 velocity stations now fail too.
+  - The far plume is unchanged.
+  - The floor is therefore not the cause of the long, hot core.
+  - **Owner decision (2026-10-31): keep the floor on** (`RISE_FIRE_FLOOR_EMISSIVITY=1`) for all further FDS comparisons.
+  - A capstone finalisation bug (manifest case without the floor) is fixed, and the run's manifest is rebuilt.
+
+[r268 step profile](FIRE_SMOKE_STEP_PROFILE_R268.md):
+- **The GPU is busy only 37% of each step.** About 48% is a single GPU-idle block, while the main thread hashes, seals and re-checks source packets and EOS admissibility on the CPU. The rest is command-buffer sync stalls.
+- **r264 also spent 1.76 s/step between steps,** on budgets, checkpoint history and digests.
+- **Host-side fixes** (items 1–3) could take about 5.45 s down to about 2.5 s/step. They await owner review.
+
+[r266 plume turbulence](FIRE_SMOKE_PLUME_TURBULENCE_R266.md): the 0.29 m "deficit" is ambient updraft outside the plume, and the plume core matches FDS within 5–11% below 1.5 m. The gap is missing large-scale turbulence and entrainment above the flame.
+
+## Where things are
+
+| What | Location |
+|---|---|
+| Code | branch `fire-smoke-design` in `/Volumes/SSD/Working/RISE` |
+| Design | [FIRE_SMOKE_DESIGN.md](FIRE_SMOKE_DESIGN.md), [FIRE_SMOKE_PRODUCTION_SOLVER.md](FIRE_SMOKE_PRODUCTION_SOLVER.md), [FIRE_SMOKE_DESIGN_HISTORY.md](FIRE_SMOKE_DESIGN_HISTORY.md) |
+| Current run results | `/Volumes/SSD/RISE/fire_production_calibration/` (campaign outputs, listed below) |
+| Golden oracle checkpoint | `rendered/fire_methane_capstone/tier10.run.checkpoint` in the main checkout, SHA-256 `1b944176…cb4947` |
+| Oracle reference runs (tier-8 matched reference, tier-10, equal-time compositions, r108 spatial) | `/Volumes/Big Store/Archive/RISE/oracle_references/` |
+| Restart snapshots of r237 (tier 10) and r241 (tier 8) | `/Volumes/Big Store/Archive/RISE/fire_production_calibration/`; delete once r250 and a new tier-10 run supersede them |
+| Removed branches and uncommitted work | local tags `archive/2026-10-16/*` (never pushed) |
+
+## What works
+
+- The Metal production solver runs a full 25 s McCaffrey methane window
+  (0.30 m burner, 33 kW) from zero with no retries, using the ported §3.7
+  compatible-momentum operator.
+- Launch a window with
+  `bin/tests/FireSequenceTest --fire-production-temporal-capstone <tier> 0.0625 <output-dir>`.
+  It writes checkpoints, 235 frames over the statistics window, a sequence
+  manifest and `production_capstone_summary.txt`.
+- Measured cost on this Mac Studio:
+
+| Tier | Steps | Wall time | Per step |
+|---|---:|---:|---:|
+| 8 (r241 baseline) | 15,309 | 21.8 h | 5.1 s |
+| 8 (r251 parcel edge + balanced events) | 15,348 | 30.14 h | 7.07 s |
+| 10 | 16,298 | 38.8 h | 8.6 s |
+
+- Render a sequence through the spectral path with
+  `tools/fire/r242_render_movie.py` and the scene template
+  `tools/fire/r242_high_quality.RISEscene`. The tier-6 puffing spectra were
+  produced with `tools/fire/r244_spectrum_report.py`.
+
+## Measured results
+
+The statistics window is 14.625 s. Supplied heat is 33 kW.
+
+| Quantity | Tier 10 (r237) | Tier 8 (r241) | Target |
+|---|---:|---:|---:|
+| Centerline puffing frequency | 3.07 Hz | 3.41 Hz | 2.74 Hz, within 20% |
+| Mean realized heat release | 19.0 kW (58%) | 21.3 kW (64%) | 33 kW |
+| Integrated radiative fraction | 0.199 | 0.199 | 0.20 |
+| Heat release vs fuel consumed × LHV | exact | exact | exact |
+| McCaffrey max temperature rise error | −45% | not extracted | within 10% |
+| McCaffrey max velocity error | −28% | not extracted | within 10% |
+
+Tier 10 ran before the r239 burner-boundary fix; r241 tier 8 ran after it.
+These are historical baselines; the corrected r251 result is below.
+
+## r249–r251: combustion and Picard stop resolved
+
+The r237/r241 baselines below burned only 58–64%. r249 localized the lost
+fuel to cold, dilute top methane export and selected the stoichiometric-parcel
+CFT plus one-cell warm-edge waiver. The owner accepted r250's partial-window
+combustion result. r251 reproduced its stage-2 Picard stop: a microscopic output
+alignment step and its growth-limited successor produced residual stagnation
+near unchanged tolerance. Two balanced event steps remove that trigger.
+
+[r251 full from-zero tier-8 run](FIRE_SMOKE_PICARD_EVENT_R251.md) completed
+**25.091 s, 15,348 accepted steps**, all **14.625 statistics seconds**, exit 0.
+All three combustion checks are met:
+
+- Fuel consumed **99.5063%**, 9.599681 g / 9.647308 g supplied; balance residual
+  **−1.48×10⁻⁷ g**. Inventory gain 0.000997 g; all export 0.046630 g.
+- Top methane export **0.046600 g (0.4830%)**, at the owner-accepted near-zero scale.
+- Essentially all heat below 1.5 m. FDS Validation Guide mean flame height
+  **0.683 m**, vs Heskestad **0.646 m** (+5.84%). Nominal-input profile H99 is
+  **0.779 m** and is reported separately.
+
+Realized HRR **32.837 kW (99.51% of 33 kW)**, radiative fraction **0.19889**.
+The averaged subwindow puffing peak is **3.003 Hz** (+9.64% vs 2.739 Hz), but
+the full-window peak is **4.504 Hz** and individual windows differ. Do not
+claim a single stationary mode. Diagnosis/fix/review took about half an hour;
+the full simulation took 30.14 h. The owner accepted r251 combustion, realized
+HRR, flame height and averaged puffing.
+
+[r252 centerline extraction](FIRE_SMOKE_CENTERLINE_R252.md), using exactly the
+r237 station-selection rule and 33 kW reference, gives maximum temperature-rise
+error **+87.29%** and vertical-velocity error **+25.01%**, against r237’s
+−45.05% / −28.14%. Both exceed the owner’s 15% condition. **Do not launch
+tier 10.** Complete station profiles and extraction hashes are committed with
+the report; no new simulation was run for this comparison.
+
+[r253 retained-state diagnosis](FIRE_SMOKE_PLUME_DIAGNOSIS_R253.md) finds
+**insufficient entrainment** with essentially the correct convective heat:
+at 3.013 m, 0.7424 kg/s net plume mass against 1.3564 kg/s from Heskestad at
+26.4 kW convective power; even all upward flow in the entire plane is only
+0.7994 kg/s. The requested convective cp flux is 26.347 kW. Side bands remain
+exactly 300 K through 3.044 m; tiny positive outlet-zone temperatures cool
+through the window rather than build up. Width and reconstructed Vreman
+viscosity profiles are in the report. **No wider-domain test or other new run;
+no solver change. Stopped for review.** Seven r251 scratch folders (including
+Xcode and Picard probes) and 32 scratch files were deleted; the accepted run,
+retained states, production log, committed evidence and movie are preserved.
+
+
+[r254 turbulence audit](FIRE_SMOKE_TURBULENCE_DIAGNOSIS_R254.md) measures upper
+centerline RMS/mean ratios **0.200 for vertical velocity and 0.266 for temperature
+rise** at 3.013 m, against Shabbir & George's 0.33/0.40. Half-width ratios are
+0.424/0.491. Vreman Cv=0.07, filter width and formula match FDS; independent
+recomputation agrees with the production evaluator to about 6.6×10⁻⁸ relative
+L1 difference. Historical face limiter alphas/stage flux pairs were not retained,
+so their activity and the complete momentum update's damping cannot be measured
+from these states. The active compatible flux has centered velocity and no
+independent upwind-velocity blend. **No limiter-damping cause or solver fix is
+established; solver unchanged, no new run. Stopped for review.**
+
+[r255 FDS comparison](FIRE_SMOKE_FDS_COMPARISON_R255.md) completed and is accepted.
+At the same grid FDS entrains **1.3113 kg/s at 3.013 m (96.7% of Heskestad)**,
+against r251's 0.7424 kg/s. FDS maximum McCaffrey errors are −14.10% temperature
+rise and −15.08% velocity; realized HRR is 32.993 kW. **Tier 6 is cancelled.**
+The old batch is disabled. Its restart comparison failed after 52 steps with
+15,043 differing values; that is a separate low-priority issue, explicitly
+not being investigated now.
+
+[r256 observer continuation](FIRE_SMOKE_LIMITER_ACTIVITY_R256.md) completed
+15.0187–19.0187 s, 2,432 accepted steps, without identity tests. At 1/2/3 m,
+scalar/shared momentum-carrier alpha activity is **zero**, mean alpha **one**.
+Mass flux is **0.24316/0.47883/0.71846 kg/s**, within **0.20%** of r251's same
+window: the entrainment deficit is statistically reproduced. Only five slabs
+below 0.20 m show tiny activity. **No limiter-removal A/B**: the additional FCT
+correction is inactive in the deficient upper plume. MC reconstruction before
+alpha acceptance, momentum formulation/pressure coupling, discrete SGS stresses,
+and source/divergence coupling remain candidate differences from FDS.
+Production solver unchanged. Tier 6 cancelled; no tier 10. **Stopped for review.**
+
+[r257 retained comparison](FIRE_SMOKE_RETAINED_COMPARISON_R257.md) finds much
+less absolute 1–3 Hz centerline power at 1 m (RISE/FDS 0.259 temperature,
+0.298 velocity), but no consistent high-frequency roll-off. FDS radial T/w
+histories were not retained, so edge overlays/half-widths are unavailable.
+RISE's interior compatible advection has the semidiscrete kinetic-energy
+identity; the whole reacting/projected Heun update is not exactly KE-conserving.
+FDS explicit LES defaults to **CHARM**, while the matched VLES run used
+**Superbee**. The spectral deficit selects the authorized four-second
+reconstruction A/B: completed r256 is A; B uses an external CHARM-only build
+from the same checkpoint. First B completed but is invalid: it changed the inactive fct reconstruction,
+not the active resident pf path. Its exact match with A cannot exclude
+reconstruction. See r258. Production sources and binary untouched. No tier 6 or tier 10. Stop for review after A/B.
+
+[r258 LES/base comparison](FIRE_SMOKE_LES_BASE_COMPARISON_R258.md) completed
+both runs on Oct 25; final bookkeeping was repaired read-only Oct 27 after a
+system-Python NumPy import failed after the physical results were saved.
+The corrected CHARM B passed the first-two-step full-field sanity check and
+increased 1/2/3 m mass flux **1.65/4.66/5.48%**, but remains **38.8% below
+new FDS at 3 m** over the common 15.0187–19.0006 s interval.
+Full-window LES/Vreman/CHARM FDS entrains **1.2679 kg/s at 3 m (93.47% of
+Heskestad)**. At 1 m r251 has **31.6%** of new FDS's 1–3 Hz velocity power,
+and **49.3%** of its thermal power. Near-base actual divergence magnitudes
+are broadly comparable; RISE's burner-face w is **0.02013 vs 0.01032 m/s**, a
+**1.95×** difference. Mean rim-width differences are below one grid cell.
+Next question is inlet density/source/divergence/momentum coupling, with no
+causal formula established. All simulations stopped. Production solver unchanged;
+tier 6 cancelled, no tier 10. **Stopped for owner review.**
+
+[r259 inlet/forcing analysis](FIRE_SMOKE_INLET_FORCING_R259.md) confirms both
+inlet measurements are bottom MAC faces. RISE uses
+u=j/[0.5 rho_inj+0.5 rho_first_cell]; FDS uses a diffusive wall-mixture density.
+The pure-CH4 expectation is **0.015674 m/s**, versus RISE **0.020131 (+28.4%)**
+and FDS **0.010322 m/s**. The 1.95 ratio is a density-definition difference,
+not area/location or a doubled mass flux. Whether to change the boundary model
+requires review. Whole-domain HRR normalized RMS is **5.27/6.21%**, and 1–3 Hz
+power **1.35/2.17 kW²**, RISE/FDS. Physical FDS 0–0.7m and plane HRR histories
+were not retained; its fire display is node-averaged, clipped at1200kW/m³ and
+quantized. **Regional forcing and mixing-time/eligibility attribution remain
+unresolved.** RISE regional/plane histories and base-cell rates are saved.
+No new run or solver change. **Stopped for review.**
+
+**Owner disposition:** r260 accepted. Halfdt gives0.243/0.490/0.736kg/s;
+centered momentum0.245/0.549/0.913kg/s at1/2/3m, recovering37.5% of
+the3m gap. EOS-tail-off changes the computation but fails stage0 Picard
+at15.1388s, so has no four-second result. Production unchanged.
+[r261 full-output FDS](FIRE_SMOKE_FDS_FULL_OUTPUT_R261.md) completed25.091s,
+exit0; all physical outputs retained.
+
+[r262 combined transport and onset](FIRE_SMOKE_COMBINED_FLAME_R262.md) is complete.
+Combined CHARM+centered gives0.2459/0.5329/0.8683kg/s at1/2/3m,
+recovering28.8% of the3m gap; centered alone remains best at37.5%.
+Centered completed from-zero tier8 through3.5s (maximum14.443m/s) and
+tier10 through3s (maximum14.713m/s), avoiding the historical focusing
+runaway in these onset windows. No full-window tier10 acceptance run.
+Near-flame RISE/FDS heat placement is close, but RISE is hotter/narrower.
+The pre-onset audit found matching geometry/openings but different wall
+shear: RISE reflected no-slip-style ghosts versus FDS's default LES wall function.
+
+[r263 no-slip FDS repeat](FIRE_SMOKE_NO_SLIP_FDS_R263.md) completed25.091s,
+exit0, with all physical outputs retained. NO_SLIP on the floor and69burner
+surfaces changes upward mass flux by+1.35/−1.55% at0.29/0.5m, so it does
+not explain most of the in-flame base deficit. At1m it reduces flux7.38%,
+closing48.5% of the default-FDS-to-RISE gap; at2/3m reductions are8.80/9.12%.
+A floor/burner wall-function proposal is recorded for review as a secondary
+contributor, not a demonstrated base-deficit fix. No implementation or new
+run after these diagnostics. **All queues finished; stopped for review.**
+
+[r264 centered momentum production adoption](FIRE_SMOKE_CENTERED_MOMENTUM_R264.md)
+is authorized and implemented, with MC scalar transport retained and no wall
+function change. It ports the tested centered interior gas carrier and accepted
+boundary carriers into the active resident Metal owner. Production two-step
+field witnesses reproduce the accepted r260 counts/maxima, and code/build/
+launch review is complete. A full tier8 from-zero window started at19:30 PDT on2026-10-28;
+combustion, no-slip-FDS entrainment, McCaffrey and peak velocity remain pending.
+No full tier10 run is authorized.
+
+[r265 read-only flame structure](FIRE_SMOKE_REACTION_STRUCTURE_R265.md) finds
+RISE reaction-zone R90 is not narrower at0.291/0.505m:0.09057/0.10386m
+versus no-slip FDS0.08295/0.09745m. The interpolated differences are under
+0.25cells and cell-center R90 quantiles match. Source-only reconstruction at204 retained beginnings finds6.163/13.022%
+of heat in edge-waived cells at0.291/0.505m, with93.837/86.978% already
+above600K. The203 actual next-source budgets match within8.88e-8 relative;
+these are sparse validated source reconstructions, not all-step historical
+classifications. No new physical run or eligibility change belongs to this
+analysis. There is no measured narrower R90 zone to attribute to the parcel-edge
+rule. Stop for owner review with the r264 full-window and r265 measurements.
+
+## Open problems, in priority order
+
+1. **Upper-plume centerline profiles fail the tier-10 gate.** r251 is too
+   hot and too fast above the flame relative to McCaffrey at 33 kW. See
+   [the profiles](FIRE_SMOKE_CENTERLINE_R252.md). The
+   [r253 measurements](FIRE_SMOKE_PLUME_DIAGNOSIS_R253.md) identify an
+   increasing entrainment deficit with height, rather than bulk ambient warming
+   or excess transported heat. Which turbulence/transport/domain term causes
+   that deficiency is not yet isolated. r254 finds reduced resolved fluctuations
+   but no Vreman constant/formula mismatch. r256 statistically reproduces
+   the deficit with zero additional FCT alpha activity in the upper plume;
+   MC reconstruction and other discrete operator differences remain candidates.
+   Tier 10 remains unlaunched under the owner’s conditional instruction.
+2. **The fire renders blue.** The methane record's gross soot yield is 0,
+   and `FireSimulationRecords.cpp` enforces that. With no soot there is no
+   incandescence, only blue chemiluminescence. The zero is methane's
+   escaping smoke yield; real methane flames at this scale form roughly
+   0.1–1 ppm soot in the flame and burn it out. The fix is a soot
+   formation–oxidation closure calibrated to published in-flame data.
+   [r252 evidence](FIRE_SMOKE_METHANE_SOOT_DATA_R252.md) records a near-scale
+   37 cm/34.5 kW measured axial soot mass-fraction profile (peak 0.0008 kg/kg
+   at 0.14 m) and a smaller-flame direct LII volume-fraction profile (local
+   ensemble mean peak about 0.5 ppm). Mass and volume fractions are kept
+   distinct. The [formation–oxidation draft](FIRE_SMOKE_SOOT_FORMATION_OXIDATION_R252.md)
+   retains existing oxidation and proposes fitting gross formation to in-flame
+   data; the
+   coefficient remains unfitted pending owner review and calibration.
+   **No soot implementation or simulation has been made.** The
+   [r251 preview](FIRE_SMOKE_PREVIEW_R252.md) uses the r242 spectral scene at
+   the owner-selected 128×192, denoising enabled; all 235 frames and the
+   16 fps MOV completed and passed full decode verification.
+   Radiation is budget-partitioned at χᵣ = 0.20, so this changes the
+   spectrum and spatial radiation allocation within that budget. The proposed
+   chemistry must reserve carbon chemical energy at formation and release it
+   on oxidation; unchanged χᵣ does not imply unchanged solver dynamics.
+3. **Puffing has substantial window dependence.** r251's three-window mean
+   peaks at 3.003 Hz, within 20% of the 2.739 Hz burner law, while individual
+   overlapping windows peak at 2.866/4.504/3.003 Hz and the full periodogram
+   peaks at 4.504 Hz. Review the native spectrum before assigning one mode.
+   Do not reopen the tier-6 domain study: its burner resolution is inadequate.
+4. **Cost.** Tier 10 takes about 39 hours. Faster steps would make the
+   iteration loop practical, but cost work comes after the outstanding physics items.
+
+5. **Restart non-identity (low priority, deferred by owner).** r255's observer
+   continuation matched the timesteps but differed in 15,043 Q/T/M/U values at
+   step 9,276 after 52 steps. See [the issue record](FIRE_SMOKE_FDS_COMPARISON_R255.md).
+   Do not investigate now; no identity requirement applies to r256.
+
+## Retired test gates (2026-11-14)
+
+The 27 failures that predated the 2026-10-16 cleanup were resolved on 2026-11-14
+by owner decision. `run_all_tests.sh` runs to the end again.
+
+| Item | Action |
+|---|---|
+| `FireSimulationSolverTest` V6 (Newton non-convergence) | **Fixed.** The reference solver's BiCGStab (`tools/fire_simulator_core.h`, capped at 28 iterations) stagnated one decade above tolerance at one step of the dt = 1 ms history. It now restarts from the true residual, up to four cycles. This is the fp64 reference solver used by tests and `tools/fire_simulator`, not the Metal production solver. |
+| Python preflight `test_fire_simulation_record_generator.py` (3 cases) | **Re-baselined.** The functions it inspects moved to `FireProductionSourceKernel.h`; it now reads both files and accepts delegation to the thermochemistry record method. |
+| `FireProductionSolverTest` two-GiB cap fixture | **Re-baselined** to 64×84×136 / 137 (2,140,039,112 / 2,155,307,576 bytes) under the current working-set formula. The cap itself is unchanged. |
+| `FireProductionSolverTest` two exact rounding pins (r96 composed force) | **Re-baselined** from equalities to upper bounds; the GPU now matches the CPU exactly on those cases. |
+| `FireProductionSolverTest` tier-10 full-step trial, its 200 ms gate, five source-text bindings | **Retired.** The test's tier-10 fixture is refused by the cap; production tier 10 itself runs (r271 §33). Which fixture setting differs is not traced. |
+| `FireProductionCalibrationTest` 26 of 278 checks; `FireSequenceTest` r136 gate | **Retired.** Each binds SHA-256 digests or exact text of sources, documents or the test runner. |
+| r136–r175 evidence replays in `run_all_tests.sh` (21 sub-runs, about 70 minutes) | **Removed** from the Unix runner. All stopped on the same cap refusal or on stale bindings. |
+
+After the cleanup the stock suite gave 246 of 247 passed; the remaining failure is `AutoRasterizerTest` (renderer integrator selection, unrelated to fire), which is intermittent: it passed in two earlier full runs and fails 2 of 5 standalone runs (`ggx_showcase` probe resolves to BDPT instead of PT). Not addressed here.
+
+A retired check is renamed `RetiredCheck(...)`: its expression is still compiled
+and evaluated but no longer gates the suite. Delete the dead expressions when
+convenient; do not revive them.
+
+## Operating rules
+
+These rules come from the r248 stall, where two weeks went into proving
+memory bounds by disassembling the compiled binary and no physics ran.
+
+- **Every task names a tangible output**: a run, a spectrum, a movie, a
+  measured number. Infrastructure is built only when a run cannot complete
+  without it, and then in its smallest form.
+- **Before every A/B window, verify the variant changes the computation.**
+  Trace the active routine and compare accepted physical fields against A in
+  the first one or two steps. Record differing-value counts and magnitudes.
+  If unchanged, stop before the full window and resolve the experiment setup.
+  This is a short sanity check, not a new certification framework or a demand
+  that a continuation reproduce historical fields bit-for-bit.
+- **Memory protection is the existing 32 GiB RSS ceiling with graceful
+  checkpoint-and-exit.** Do not add launch-admission gates, a-priori memory
+  proofs, allocation accounting or binary disassembly.
+- **Do not chain physics milestones behind unrelated verdicts.** Soot work
+  was blocked behind an unresolvable puffing verdict for weeks.
+- **No unattended recurring automation** for this campaign. Work in bounded
+  sessions with an owner review per deliverable.
+- **One review round per real deliverable**, not per gate or per prerequisite.
+- **Reuse output directories for retries.** Do not create a new `.vN`
+  directory for each attempt; the r248 run produced 102 versions of one
+  build directory.
+- **Evidence policy is unchanged.** Code, docs, small JSON/CSV and SHA
+  manifests go in git. Checkpoints, frames, binaries, archives and large logs
+  stay outside it. `scripts/git-pre-push-size-guard.sh` enforces this.
+- If a kernel's arithmetic changes, rerun from zero; do not build migration
+  machinery.
+
+## Results kept in `/Volumes/SSD/RISE/fire_production_calibration/`
+
+| Entries | Content |
+|---|---|
+| `r237_tier10_full_window.v1`, `r237_tier10_preview.v1`/`v2`, `r237_tier10_spectrum.v1`/`v2`, `r237_inventory_*`, `r237_final_physics.v1`, `r237_retained_statistics.v2` | tier-10 full window and its analysis |
+| `r241_tier8_full_window.v1`, `r241_tier8_preview.v1`, `r241_tier8_spectrum.v1` | tier-8 full window after the burner fix |
+| `r242_tier8_hq.v1` | spectral HQ render and movie of r241 |
+| `r255_comparison` | completed FDS comparison; stopped identity-check prefix; tier 6 cancelled |
+| `r256_limiter_diagnostic` | ~4 s observer continuation without identity tests; alpha and entrainment logging |
+| `r254_turbulence_diagnosis` | offline retained-frame/checkpoint moments, independent Vreman comparison and primary source PDFs; no simulation |
+| `r253_plume_diagnosis` | read-only r251 thermodynamic/velocity integrals, source/input manifest, cleanup inventory; no simulation |
+| `r252_r251_centerline`, `r252_r251_preview`, `r252_soot_sources` | r251 native centerline extraction (tier-10 condition fails), r242-scene preview render, primary soot papers and extraction images |
+| `r251_tier8_full_window` | completed from-zero tier-8 run; 99.506% burned, 0.483% top export, 32.837 kW, FDS height0.683m; full spectrum/data retained |
+| `r250_tier8_parcel_edge` | incomplete tier-8 parcel-edge run; solver stopped at 21.466 s, accepted-prefix fuel/export/heat-height measurements retained |
+| `r249_tier8_fuel_balance` | read-only r241 retained fuel inventory, sampled boundary localization, and native chemistry-state checks |
+| `r243_nonphysical_diagnostic.v3` | temperature-mapped structure clips, labelled non-physical |
+| `r244_tier6_*`, `r245_*`, `r246_tier6_top_double.v1`, `r246_recovered_top_*`, `r247_transport.v3`, `r247_source_spatial.v2` | tier-6 domain, budget and top-boundary studies: summaries, spectra and previews only; raw frames and snapshots deleted 2026-10-17 |
+
+Each run directory has a matching `.log` where one was written.

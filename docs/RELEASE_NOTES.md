@@ -23,13 +23,14 @@
   started through the Job render entry points, including one that fails or
   is cancelled.
 
-The first three fixes are in commit `2566595ae`, reviewed for one round only;
-the follow-up fixes for the P2s that round recorded are in `53805a047` (two
-review rounds). The fixes for a later review's findings (callback buffers
-after failed renders, MLT sampler counters past 2^32, region endpoints at
-`UINT_MAX`) are not yet committed or reviewed. The
+The first three fixes landed in commit `2566595ae`, followed by `53805a047`
+for the P2s from that review round, and `9dba00e2a` for a subsequent
+independent review's findings (callback buffers after failed renders, MLT
+sampler counters past 2^32, region endpoints at `UINT_MAX` plus registry/leak
+follow-ups); the branch was merged to `master` in `556bf4a3b`. The
 modernization plan ("Resolution of the snapshot, MLT budget and submission
-blockers") records the evidence. The branch is still not signed off.
+blockers") records the evidence; native Windows and Android build/runtime
+verification remain gated on those hosts.
 
 Regenerate photon maps, irradiance caches, serialized meshes, and other
 binary assets written through RISE’s scalar serializers by the historical

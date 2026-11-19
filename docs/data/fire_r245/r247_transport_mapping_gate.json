@@ -1,0 +1,76 @@
+{
+  "schema": "rise.fire.r247.transport-mapping-gate.v1",
+  "status": "candidate_private_readonly_mapping_only",
+  "exit_code": 0,
+  "controls": {
+    "status": "synthetic_reader_prerequisite_only",
+    "red": 35,
+    "allocation_estimate": {
+      "current_rss_before_fields_bytes": 67108864,
+      "packet_sizes": {
+        "beginning": 214776640,
+        "native": 320010712,
+        "flux": 544520776
+      },
+      "direct_buffer_components_bytes": {
+        "all_three_captured_packets": 1079308128,
+        "bounded_packet_copy_scratch": 65536,
+        "private_mapping_and_io_overhead": 65536,
+        "two_inventory_conversions": 27688960,
+        "plane_arithmetic_and_sign_buffers": 1064960,
+        "sequential_finite_boolean_scratch": 5235776,
+        "merkle_nodes_and_lists": 18152832,
+        "merkle_chunk_concat": 8192,
+        "bounded_metadata_columns_and_python_objects": 67108864,
+        "bounded_central_faces_and_rows": 8388608,
+        "final_output_capture": 67108864,
+        "encoded_row_and_json_buffers": 2097152
+      },
+      "enumerated_peak_estimate_bytes": 1343402272,
+      "estimate_is_not_measured_peak": true,
+      "reader_ceiling_bytes": 2147483648,
+      "stage_a_reader_ceiling_bytes": 1073741824,
+      "stage_a_ceiling_unchanged": true,
+      "public_per_packet_cap_bytes": 2147483648,
+      "source_host_ceiling_bytes": 34359738368,
+      "source_next_step_reserve_bytes": 23930269536,
+      "source_reserve_is_not_reader_allocation": true
+    },
+    "implementation_sha256": {
+      "primitives": "4fb8e13f371a7828a034f94892cb84c0de00c852ce6851a6b522d69b59a62215",
+      "admission": "cb25a9a96afb2939846ad4e2b55204c45062c3e5c897eb142df7a8e7fe250545",
+      "scalar": "4e814f7cb55739cd39d645e2136072c0e2e2bc6b56599e2f19536de3072ed754",
+      "momentum": "dcb3b42b3317b9b3c61d87e8107c32135759298f068b071d12273076e79f87a3",
+      "verifier": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf",
+      "consumer": "d03b3decb969e5d44e297d4d3878f8fb33945f8d44ce0e78422002c1906ecd06"
+    },
+    "native_empirical_fields_read": 0,
+    "full_derivation_accepted": false
+  },
+  "artifacts": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_transport_reader.py",
+      "sha256": "d03b3decb969e5d44e297d4d3878f8fb33945f8d44ce0e78422002c1906ecd06"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_mapping_validation.v1/transport_reader.frozen.py",
+      "sha256": "d03b3decb969e5d44e297d4d3878f8fb33945f8d44ce0e78422002c1906ecd06"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_mapping_validation.v1/stdout.log",
+      "sha256": "960bba346dbf2185adff3aae7adee25730d92e5606d2282d7811d68f6462ce4c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_mapping_validation.v1/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_mapping_validation.v1/controls.json",
+      "sha256": "fbbf90ec85b91b273f9ce12a6e166623625681433b1a1b8fb61c7d668bde50a0"
+    }
+  ],
+  "native_empirical_fields_read": 0,
+  "full_derivation_accepted": false,
+  "launch_authorized": false,
+  "original_failed_outputs_unchanged": true
+}

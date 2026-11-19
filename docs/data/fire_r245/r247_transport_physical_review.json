@@ -1,0 +1,307 @@
+{
+  "schema": "rise.fire.r247.transport-physical-review.v1",
+  "status": "descriptive_selected_sensitivity_only",
+  "reviewer": "r247_transport_physical_review",
+  "p1": 0,
+  "p2": 0,
+  "source_rows_sha256": "1e2bfda1d8dcdf4d8bd8beaee10594c4dffd707d01d208cd8c457a63ceb32c6c",
+  "aggregates": {
+    "wide": {
+      "selected_covered_dt_s": 0.3695923899067566,
+      "scalar_selected_sums_divided_by_covered_dt": {
+        "sensible_enthalpy": {
+          "xmin": {
+            "incoming": 5.838733944530026e-12,
+            "outgoing": 3.575683450983053e-05,
+            "net_outward": 3.575682867109659e-05
+          },
+          "xmax": {
+            "incoming": 3.8417228331624785e-12,
+            "outgoing": 6.987573820441298e-06,
+            "net_outward": 6.987569978718465e-06
+          },
+          "ymin": {
+            "incoming": 1.8313600966768514e-11,
+            "outgoing": 1.0258400436593064e-06,
+            "net_outward": 1.0258217300583399e-06
+          },
+          "ymax": {
+            "incoming": 3.8203494618512994e-12,
+            "outgoing": 1.6533029691880562e-05,
+            "net_outward": 1.65330258715311e-05
+          },
+          "bottom": {
+            "incoming": 1.2286734098090132e-12,
+            "outgoing": 0.0,
+            "net_outward": -1.2286734098090132e-12
+          },
+          "upper": {
+            "incoming": 0.005557952584983025,
+            "outgoing": 14722.746587500866,
+            "net_outward": 14722.74102954828
+          }
+        },
+        "total_species": {
+          "xmin": {
+            "incoming": 0.13935129743750263,
+            "outgoing": 0.000105558807980413,
+            "net_outward": -0.1392457386295222
+          },
+          "xmax": {
+            "incoming": 0.14158302974060172,
+            "outgoing": 0.0002499951383177099,
+            "net_outward": -0.14133303460228402
+          },
+          "ymin": {
+            "incoming": 0.13883016440287416,
+            "outgoing": 5.5274026565981185e-05,
+            "net_outward": -0.1387748903763082
+          },
+          "ymax": {
+            "incoming": 0.14089336761777826,
+            "outgoing": 0.00012620874726912903,
+            "net_outward": -0.14076715887050914
+          },
+          "bottom": {
+            "incoming": 0.0006596390140743147,
+            "outgoing": 0.0,
+            "net_outward": -0.0006596390140743147
+          },
+          "upper": {
+            "incoming": 0.20701229231120682,
+            "outgoing": 0.7675537181045144,
+            "net_outward": 0.5605414257933077
+          }
+        }
+      },
+      "common_central_z_face_rate_means": {
+        "advection": {
+          "dt_weighted": {
+            "mean": -2.8664721142058753,
+            "mean_absolute": 18.16819675629926
+          },
+          "equal_event": {
+            "mean": -2.8671866638733197,
+            "mean_absolute": 18.19790718119424
+          }
+        },
+        "buoyancy": {
+          "dt_weighted": {
+            "mean": 3.2522621648379966,
+            "mean_absolute": 3.2522621648379966
+          },
+          "equal_event": {
+            "mean": 3.254744037922001,
+            "mean_absolute": 3.254744037922001
+          }
+        },
+        "stress": {
+          "dt_weighted": {
+            "mean": -0.26593338001214334,
+            "mean_absolute": 0.540065227455874
+          },
+          "equal_event": {
+            "mean": -0.2664086163995878,
+            "mean_absolute": 0.5407361567157931
+          }
+        },
+        "phase_source": {
+          "dt_weighted": {
+            "mean": 1.883930543768231e-09,
+            "mean_absolute": 3.7316892557023095e-08
+          },
+          "equal_event": {
+            "mean": 1.625017326339753e-09,
+            "mean_absolute": 3.928909562068884e-08
+          }
+        },
+        "combined_projection": {
+          "dt_weighted": {
+            "mean": 0.003002916638843195,
+            "mean_absolute": 3.7382373047904762
+          },
+          "equal_event": {
+            "mean": 0.2475343985648478,
+            "mean_absolute": 3.9668813242935164
+          }
+        },
+        "total": {
+          "dt_weighted": {
+            "mean": 0.12285958506298884,
+            "mean_absolute": 17.178732060168848
+          },
+          "equal_event": {
+            "mean": 0.36868312316148,
+            "mean_absolute": 17.382639538370057
+          }
+        },
+        "closure_residual": {
+          "dt_weighted": {
+            "mean": -4.079762193440842e-09,
+            "mean_absolute": 2.804592214864588e-05
+          },
+          "equal_event": {
+            "mean": -3.467747890304748e-08,
+            "mean_absolute": 2.9060305679045823e-05
+          }
+        }
+      }
+    },
+    "taller": {
+      "selected_covered_dt_s": 0.3695923899067566,
+      "scalar_selected_sums_divided_by_covered_dt": {
+        "sensible_enthalpy": {
+          "xmin": {
+            "incoming": 5.666637082706477e-12,
+            "outgoing": 1.077768097580783e-05,
+            "net_outward": 1.0777675309170748e-05
+          },
+          "xmax": {
+            "incoming": 5.7104069819892694e-12,
+            "outgoing": 3.194154661355146e-05,
+            "net_outward": 3.194154090314448e-05
+          },
+          "ymin": {
+            "incoming": 5.7326365295773405e-12,
+            "outgoing": 6.8020991105494745e-06,
+            "net_outward": 6.8020933779129445e-06
+          },
+          "ymax": {
+            "incoming": 5.693230612218512e-12,
+            "outgoing": 1.1837624904807872e-06,
+            "net_outward": 1.183756797250175e-06
+          },
+          "bottom": {
+            "incoming": 1.2286734098090132e-12,
+            "outgoing": 0.0,
+            "net_outward": -1.2286734098090132e-12
+          },
+          "upper": {
+            "incoming": 16.94768371888526,
+            "outgoing": 14919.149665564752,
+            "net_outward": 14902.201981845865
+          }
+        },
+        "total_species": {
+          "xmin": {
+            "incoming": 0.20898401295104793,
+            "outgoing": 8.682455425773725e-05,
+            "net_outward": -0.2088971883967902
+          },
+          "xmax": {
+            "incoming": 0.21031909170288676,
+            "outgoing": 3.97138411274722e-05,
+            "net_outward": -0.2102793778617593
+          },
+          "ymin": {
+            "incoming": 0.21141804215582072,
+            "outgoing": 9.745733221108225e-05,
+            "net_outward": -0.21132058482360966
+          },
+          "ymax": {
+            "incoming": 0.20996476841082432,
+            "outgoing": 5.5723860338631806e-05,
+            "net_outward": -0.20990904455048567
+          },
+          "bottom": {
+            "incoming": 0.0006596390140743147,
+            "outgoing": 0.0,
+            "net_outward": -0.0006596390140743147
+          },
+          "upper": {
+            "incoming": 0.07063866872855655,
+            "outgoing": 0.9118092343736595,
+            "net_outward": 0.8411705656451028
+          }
+        }
+      },
+      "common_central_z_face_rate_means": {
+        "advection": {
+          "dt_weighted": {
+            "mean": -2.8937519916448182,
+            "mean_absolute": 18.247262215337116
+          },
+          "equal_event": {
+            "mean": -2.8966320801727887,
+            "mean_absolute": 18.253549042832287
+          }
+        },
+        "buoyancy": {
+          "dt_weighted": {
+            "mean": 3.260062806776463,
+            "mean_absolute": 3.260062806776463
+          },
+          "equal_event": {
+            "mean": 3.261479789502028,
+            "mean_absolute": 3.261479789502028
+          }
+        },
+        "stress": {
+          "dt_weighted": {
+            "mean": -0.2703114563065498,
+            "mean_absolute": 0.5459200880538241
+          },
+          "equal_event": {
+            "mean": -0.27085505265057624,
+            "mean_absolute": 0.5469293434261886
+          }
+        },
+        "phase_source": {
+          "dt_weighted": {
+            "mean": 2.0843904965558712e-09,
+            "mean_absolute": 4.113328041774525e-08
+          },
+          "equal_event": {
+            "mean": 2.5448092927267963e-09,
+            "mean_absolute": 4.304607833436658e-08
+          }
+        },
+        "combined_projection": {
+          "dt_weighted": {
+            "mean": 0.004285222454944636,
+            "mean_absolute": 3.76397984404607
+          },
+          "equal_event": {
+            "mean": 0.23315644910505212,
+            "mean_absolute": 3.979301929440797
+          }
+        },
+        "total": {
+          "dt_weighted": {
+            "mean": 0.10028478492476751,
+            "mean_absolute": 17.220121119429955
+          },
+          "equal_event": {
+            "mean": 0.3271493611666183,
+            "mean_absolute": 17.393989347851015
+          }
+        },
+        "closure_residual": {
+          "dt_weighted": {
+            "mean": 2.0156033733164518e-07,
+            "mean_absolute": 2.798124060388007e-05
+          },
+          "equal_event": {
+            "mean": 2.528380935774821e-07,
+            "mean_absolute": 2.8970240782596402e-05
+          }
+        }
+      }
+    }
+  },
+  "limits": [
+    "235 selected accepted intervals per variant, not full15315 cumulative budgets",
+    "widez80 pressure-open boundary versus tallerz80 interior",
+    "central face means are not whole-region momentum integrals",
+    "signed projection cancellation does not imply small local corrections",
+    "equal-event and dt-weighted means are distinct sampling measures",
+    "combined projection has no retained pressure/EOS-restoration split",
+    "donor history unavailable",
+    "frozen chemical source and optical histories retain distinct stages/support"
+  ],
+  "supported_solver_or_boundary_remedy": false,
+  "puffing_cause_localized": false,
+  "physical_acceptance": false,
+  "canonical_taller_qualification": false,
+  "next_design": "All-accepted-step original80 scalar and spatialreaction/oxygen/fuel histories, whole-region+central momentum reductions with pressure and EOS-restoration corrections separately measured; limiter donor state where necessary; reviewed matched-case and repeated-seed controls before causal attribution or new fullsimulation"
+}

@@ -98,6 +98,7 @@
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Interfaces/IRasterImage.h"
+#include "TestTempDir.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
@@ -190,8 +191,8 @@ static std::vector<double> TileMeansOf( const CapturingRasterizerOutput& cap, in
 
 static std::string WriteTemp( const std::string& text, const char* tag )
 {
-	char path[512];
-	std::snprintf( path, sizeof(path), "%s/graded_index_interior_%s_%d.RISEscene", std::getenv("TMPDIR") ? std::getenv("TMPDIR") : ".", tag, (int)::getpid() );
+	char path[1024];
+	std::snprintf( path, sizeof(path), "%s/graded_index_interior_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, (int)::getpid() );
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) return std::string();
 	ofs << text;

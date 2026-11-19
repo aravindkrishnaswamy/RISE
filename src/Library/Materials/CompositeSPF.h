@@ -113,6 +113,7 @@ namespace RISE
 
 			const ISPF&	top;				// top
 			const ISPF& bottom;				// bottom
+			const bool heroOnlyHWSS; // Cached over immutable layer SPF identities.
 			const IBSDF* pTopBSDF;			// top layer's BSDF, or 0 (prices the DIRECT class and term (b))
 			const IBSDF* pBottomBSDF;		// bottom layer's BSDF, or 0 (prices term (a))
 			//! DL-296: the bottom layer's BSDF prices its own transmission
@@ -195,6 +196,8 @@ namespace RISE
 					const Vector3& normal,								///< [in] The slab normal (the top interface's onb.w())
 					const Scalar thickness								///< [in] Perpendicular gap thickness; a negative or NaN value yields 0
 					);
+
+			bool RequiresHeroOnlyHWSS() const { return heroOnlyHWSS; }
 
 			CompositeSPF(
 				const ISPF& top_,

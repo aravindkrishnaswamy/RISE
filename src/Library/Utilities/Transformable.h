@@ -17,6 +17,7 @@
 
 #include "../Interfaces/ITransformable.h"
 
+#include <atomic>
 #include <deque>
 
 namespace RISE
@@ -126,6 +127,24 @@ namespace RISE
 			void ReplaceFinalStack_( const Matrix4& matrix );
 
 		public:
+			class PreparedExternalMutationScope
+			{
+				bool valid_;
+			public:
+				PreparedExternalMutationScope();
+				~PreparedExternalMutationScope();
+				bool IsValid() const { return valid_; }
+			};
+			// Prepared renders freeze direct manager/item transform mutation too,
+			// not only Job wrappers. Animator evaluation receives a narrowly scoped
+			// internal capability around its own derived updates.
+			static void BeginPreparedMutationFreeze();
+			static void EndPreparedMutationFreeze();
+			static void BeginPreparedInternalMutation();
+			static void EndPreparedInternalMutation();
+			static bool ExternalMutationIsFrozen();
+			static bool BeginPreparedExternalMutation();
+			static void EndPreparedExternalMutation();
 			// These two methods allow direct access to the transformation stack
 			virtual void PushTopTransStack( const Matrix4& mat ) override;
 			virtual void PushBottomTransStack( const Matrix4& mat ) override;
@@ -228,6 +247,77 @@ namespace RISE
 			virtual IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
 			virtual void SetIntermediateValue( const IKeyframeParameter& val ) override;
 			virtual void RegenerateData( ) override;
+
+			//! Monotonic transform-pose epochs (DL-626 / DL-631):
+			//! - `GlobalTransformPoseEpoch`: bumped when `FinalizeTransformations`
+			//!   updates any non-time-indexed transform (`TimeIndexed::tlsSlots == nullptr`).
+			//! - `ThreadTransformPoseEpoch`: per-thread counter bumped on every
+			//!   `FinalizeTransformations` call on this thread AND when
+			//!   `TimeIndexedThread` installs/restores per-thread time-view slots,
+			//!   avoiding cross-thread atomic contention during multi-threaded
+			//!   motion-blur posing while keeping per-thread caches exact.
+			static inline std::atomic<unsigned long long>& GlobalPoseEpochCounter()
+			{
+				static std::atomic<unsigned long long> epoch( 1 );
+				return epoch;
+			}
+			static inline unsigned long long GlobalTransformPoseEpoch()
+			{
+				return GlobalPoseEpochCounter().load( std::memory_order_acquire );
+			}
+			static inline void BumpGlobalTransformPoseEpoch()
+			{
+				GlobalPoseEpochCounter().fetch_add( 1, std::memory_order_acq_rel );
+			}
+			static inline unsigned long long& ThreadPoseEpochRef()
+			{
+				static thread_local unsigned long long epoch = 1;
+				return epoch;
+			}
+			static inline unsigned long long ThreadTransformPoseEpoch()
+			{
+				return ThreadPoseEpochRef();
+			}
+			static inline void BumpThreadTransformPoseEpoch()
+			{
+				++ThreadPoseEpochRef();
+			}
+			//! Per-thread epoch bumped ONLY when a `CSGObject`, a consumed CSG
+			//! operand (`Object::IsConsumed()`), an unslotted `Object` finalize
+			//! (`TimeIndexed::tlsSlots == nullptr`), or a `TimeIndexedThread`
+			//! scope transition runs -- NOT when animated lights or standalone
+			//! non-CSG `Object` clones are posed per pixel sample.
+			static inline unsigned long long& ThreadCsgPoseEpochRef()
+			{
+				static thread_local unsigned long long epoch = 1;
+				return epoch;
+			}
+			static inline unsigned long long ThreadCsgPoseEpoch()
+			{
+				return ThreadCsgPoseEpochRef();
+			}
+			static inline void BumpThreadCsgPoseEpoch()
+			{
+				++ThreadCsgPoseEpochRef();
+			}
+			//! Per-thread epoch bumped ONLY when a trackable/refractive/CSG
+			//! `Object` is finalized, an unslotted `Object` finalize runs, or a
+			//! `TimeIndexedThread` scope transition runs -- keeping
+			//! `IORStackSeeding::EnsureCatalogPoseState` O(1) hot when animated
+			//! lights, cameras, or opaque non-CSG objects move per pixel sample.
+			static inline unsigned long long& ThreadTrackablePoseEpochRef()
+			{
+				static thread_local unsigned long long epoch = 1;
+				return epoch;
+			}
+			static inline unsigned long long ThreadTrackablePoseEpoch()
+			{
+				return ThreadTrackablePoseEpochRef();
+			}
+			static inline void BumpThreadTrackablePoseEpoch()
+			{
+				++ThreadTrackablePoseEpochRef();
+			}
 		};
 	}
 }

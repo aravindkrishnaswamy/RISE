@@ -68,6 +68,7 @@
 	#include <unistd.h>
 	#define RISE_TEST_GETPID getpid
 #endif
+#include "TestTempDir.h"
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -121,9 +122,7 @@ public:
 
 static std::string WriteScene( const std::string& text, const std::string& tag )
 {
-	const char* tmp = std::getenv( "TMPDIR" );
-	std::string path = ( tmp && *tmp ) ? tmp : ".";
-	if( path.back() != '/' ) path += '/';
+	std::string path = RISE::TestSupport::ScratchBaseDir() + "/";
 	char name[128];
 	std::snprintf( name, sizeof( name ), "dl311_%s_%d.RISEscene", tag.c_str(), int( RISE_TEST_GETPID() ) );
 	path += name;

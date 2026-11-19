@@ -1,0 +1,53 @@
+schema rise.fire.r215.target-review.v1
+numerical_source_commit 8a608832d6cc3058f9121d58912850422e13ea51
+executable_sha256 02b705b284888c92a512e060b8fb04b74c09dd353284ae8abf5326a12fd22d9d
+numerical_change compensated_temperature_basis_reuse_only
+owner_gate executed_pass
+publication_reds executed_pass
+full_sequence executed_pass
+clean_make executed_pass
+clean_xcode_deployment executed_pass
+clean_xcode_opto executed_pass
+compiler_warning_suppressions none
+ignored_xcode_notices documented_missing_local_oidn_install_path_and_appintents_metadata
+cpu_arithmetic_tests 7_pass
+evidence_red_tests 7_pass
+hot_steps_persistent_numerical_bytes_equal 8
+independent_uncontended_hot_processes 3
+timing_samples 24
+fixed_k_selected false
+migration_authority false
+fidelity_verdict false
+tier10_cost_claim false
+
+Independent reviewers r215_target_review and r215_native_review both returned
+zero P1/P2 findings on the final numerical/test/evidence state. Review closure:
+1. Missing diagnostic-word-comparator RED: kernel-local cp.bound corruption
+   must set bit 32768; hi-only comparator loses refusal; production-mode cp.hi
+   mutation is caught independently by the per-field comparator.
+2. Wrong baseline proof could be admitted: all eight old builds/checkpoint
+   SHAs/canonical comparison roots are now bound to SHA-pinned r213 evidence,
+   and candidate producer identity is bound separately; wrong-reference REDs.
+3. Repeated logs under distinct paths: require distinct payload hashes AND
+   measured CPU/GPU execution-clock tuples; each escape has a named RED.
+4. Corrupted checkpoint plus rewritten self-reported SHA: independently pin
+   the actual executed native comparison and producer execution receipt;
+   paired-payload/proof tampering and receipt-rewrite REDs reject it.
+
+The full-sequence, Deployment and Opto completion records were checked after
+the static/evidence final reviews. Reviewers did not claim those then-pending
+builds had completed. Their actual zero exits and terminal pass records are
+retained in the associated logs; no result was inferred from static review.
+
+The profile runner's historical diagnostic returns 93 for a successful hot
+eight-step run because its original return-zero case reproduced EOS refusal.
+Admission requires the explicit solver_accepted=1 terminal record, unchanged
+input checkpoint, eight exact-time/root-matched rows, complete exclusive
+accounting, and a sealed executed-binary receipt. Exit 93 alone never passes.
+
+Raw checkpoint evidence is archived in hot_snapshots_archive.v1.tar.gz.part-*
+(ordered concatenation reconstructs the archive); the executed binary is in
+frozen_worker.v1.tar.gz. Existing r213 baseline archives remain unchanged.
+SHA/v2 roots bind retained evidence. Contended qualification/snapshot timings
+are excluded; the three measured processes ran sequentially while other
+solver/build workers were paused. No resumed onset or completed window is claimed.

@@ -1,23 +1,33 @@
-// DisplayTransformWriterTest.cpp - Unit test for the writer wrapper
-// added in Landing 1.  Verifies that exposure + tone curve are
-// applied between source IRasterImage iteration and the inner writer
-// receiving the pixel.
+// DisplayTransformWriterTest.cpp - Unit test for the writer wrapper.
+// Verifies that the complete output ViewTransform is applied between
+// source IRasterImage iteration and the inner writer receiving the pixel.
 //
 // Uses a recording mock writer that captures every WriteColor call.
-// We then check the captured colours against expected (curve(input *
-// 2^EV)) values.
+// We then check the captured Rec.709-linear colours against the complete
+// exposure, white-balance, target-primaries, and curve pipeline.
 
-#include <cassert>
 #include <cmath>
 #include <iostream>
 #include <vector>
 
 #include "../src/Library/Rendering/DisplayTransformWriter.h"
 #include "../src/Library/Rendering/DisplayTransform.h"
+#include "../src/Library/Utilities/Color/ColorUtils.h"
 #include "../src/Library/Utilities/Reference.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+static int gFailCount = 0;
+
+static bool Check( const bool condition, const char* label )
+{
+    if( !condition ) {
+        ++gFailCount;
+        std::cerr << "FAIL: " << label << std::endl;
+    }
+    return condition;
+}
 
 static bool IsClose( double a, double b, double eps = 1e-6 )
 {
@@ -72,14 +82,13 @@ static void TestBeginEndPassThrough()
     dt->BeginWrite( 17, 23 );
     dt->EndWrite();
 
-    assert( mock->beginCalls == 1 );
-    assert( mock->beginWidth == 17 );
-    assert( mock->beginHeight == 23 );
-    assert( mock->endCalls == 1 );
+    Check( mock->beginCalls == 1, "BeginWrite forwards exactly once" );
+    Check( mock->beginWidth == 17, "BeginWrite forwards width" );
+    Check( mock->beginHeight == 23, "BeginWrite forwards height" );
+    Check( mock->endCalls == 1, "EndWrite forwards exactly once" );
 
     safe_release( dt );    // releases mock to refcount 1
     safe_release( mock );  // refcount 0 -> dtor
-    std::cout << "  Passed!" << std::endl;
 }
 
 // ---- exposure = 0, transform = None: identity ----
@@ -94,18 +103,18 @@ static void TestIdentity()
     RISEPel input( 0.25, 0.5, 1.5 );
     dt->WriteColor( RISEColor( input, /*alpha*/ 0.7 ), 4, 5 );
 
-    assert( mock->writes.size() == 1 );
-    const auto& w = mock->writes[0];
-    assert( w.x == 4 && w.y == 5 );
-    assert( IsClose( w.c.base.r, 0.25 ) );
-    assert( IsClose( w.c.base.g, 0.5 ) );
-    assert( IsClose( w.c.base.b, 1.5 ) );
-    // Alpha must pass through unchanged (it's coverage, not radiance).
-    assert( IsClose( w.c.a, 0.7 ) );
+    if( Check( mock->writes.size() == 1, "identity emits one pixel" ) ) {
+        const auto& w = mock->writes[0];
+        Check( w.x == 4 && w.y == 5, "identity preserves coordinates" );
+        Check( IsClose( w.c.base.r, 0.25 ), "identity preserves red" );
+        Check( IsClose( w.c.base.g, 0.5 ), "identity preserves green" );
+        Check( IsClose( w.c.base.b, 1.5 ), "identity preserves blue" );
+        // Alpha must pass through unchanged (it's coverage, not radiance).
+        Check( IsClose( w.c.a, 0.7 ), "identity preserves alpha" );
+    }
 
     safe_release( dt );
     safe_release( mock );
-    std::cout << "  Passed!" << std::endl;
 }
 
 // ---- exposure scales linearly before tone curve ----
@@ -119,9 +128,11 @@ static void TestExposureScaling()
         *mock, /*EV*/ 1.0, eDisplayTransform_None );
 
     dt->WriteColor( RISEColor( RISEPel( 0.1, 0.2, 0.3 ), 1.0 ), 0, 0 );
-    assert( IsClose( mock->writes[0].c.base.r, 0.2 ) );
-    assert( IsClose( mock->writes[0].c.base.g, 0.4 ) );
-    assert( IsClose( mock->writes[0].c.base.b, 0.6 ) );
+    if( Check( mock->writes.size() == 1, "positive exposure emits one pixel" ) ) {
+        Check( IsClose( mock->writes[0].c.base.r, 0.2 ), "EV +1 scales red" );
+        Check( IsClose( mock->writes[0].c.base.g, 0.4 ), "EV +1 scales green" );
+        Check( IsClose( mock->writes[0].c.base.b, 0.6 ), "EV +1 scales blue" );
+    }
 
     safe_release( dt );
     safe_release( mock );
@@ -130,13 +141,14 @@ static void TestExposureScaling()
     mock = new RecordingWriter;
     dt = new DisplayTransformWriter( *mock, -2.0, eDisplayTransform_None );
     dt->WriteColor( RISEColor( RISEPel( 1.0, 4.0, 8.0 ), 1.0 ), 0, 0 );
-    assert( IsClose( mock->writes[0].c.base.r, 0.25 ) );
-    assert( IsClose( mock->writes[0].c.base.g, 1.0 ) );
-    assert( IsClose( mock->writes[0].c.base.b, 2.0 ) );
+    if( Check( mock->writes.size() == 1, "negative exposure emits one pixel" ) ) {
+        Check( IsClose( mock->writes[0].c.base.r, 0.25 ), "EV -2 scales red" );
+        Check( IsClose( mock->writes[0].c.base.g, 1.0 ), "EV -2 scales green" );
+        Check( IsClose( mock->writes[0].c.base.b, 2.0 ), "EV -2 scales blue" );
+    }
 
     safe_release( dt );
     safe_release( mock );
-    std::cout << "  Passed!" << std::endl;
 }
 
 // ---- exposure THEN curve: ordering check ----
@@ -152,13 +164,17 @@ static void TestExposureThenCurve()
         *mock, 1.0, eDisplayTransform_Reinhard );
 
     dt->WriteColor( RISEColor( RISEPel( 0.5, 1.0, 0.0 ), 1.0 ), 0, 0 );
-    assert( IsClose( mock->writes[0].c.base.r, 0.5 ) );        // Reinhard(1.0)
-    assert( IsClose( mock->writes[0].c.base.g, 2.0/3.0 ) );    // Reinhard(2.0)
-    assert( IsClose( mock->writes[0].c.base.b, 0.0 ) );        // Reinhard(0)
+    if( Check( mock->writes.size() == 1, "exposure-plus-curve emits one pixel" ) ) {
+        Check( IsClose( mock->writes[0].c.base.r, 0.5 ),
+            "Reinhard receives exposed red" );
+        Check( IsClose( mock->writes[0].c.base.g, 2.0/3.0 ),
+            "Reinhard receives exposed green" );
+        Check( IsClose( mock->writes[0].c.base.b, 0.0 ),
+            "Reinhard preserves black" );
+    }
 
     safe_release( dt );
     safe_release( mock );
-    std::cout << "  Passed!" << std::endl;
 }
 
 // ---- ACES curve through wrapper matches direct call ----
@@ -176,14 +192,19 @@ static void TestACESThroughWrapper()
         dt->WriteColor( RISEColor( RISEPel( x, x, x ), 1.0 ),
                         (unsigned)i, 0 );
         const double expected = DisplayTransforms::ACES( x );
-        assert( IsClose( mock->writes[i].c.base.r, expected ) );
-        assert( IsClose( mock->writes[i].c.base.g, expected ) );
-        assert( IsClose( mock->writes[i].c.base.b, expected ) );
+        if( Check( mock->writes.size() == i+1u,
+            "ACES emits one pixel per input" ) ) {
+            Check( IsClose( mock->writes[i].c.base.r, expected ),
+                "ACES wrapper matches direct red" );
+            Check( IsClose( mock->writes[i].c.base.g, expected ),
+                "ACES wrapper matches direct green" );
+            Check( IsClose( mock->writes[i].c.base.b, expected ),
+                "ACES wrapper matches direct blue" );
+        }
     }
 
     safe_release( dt );
     safe_release( mock );
-    std::cout << "  Passed!" << std::endl;
 }
 
 // ---- Reference counting holds inner writer alive ----
@@ -193,19 +214,113 @@ static void TestRefcountHoldsInner()
     std::cout << "TestRefcountHoldsInner..." << std::endl;
     RecordingWriter* mock = new RecordingWriter;
     // Initial refcount 1 (from new).
-    assert( mock->refcount() == 1 );
+    Check( mock->refcount() == 1, "mock starts with one reference" );
 
     DisplayTransformWriter* dt = new DisplayTransformWriter(
         *mock, 0.0, eDisplayTransform_None );
     // Wrapper ctor must have addref'd mock.
-    assert( mock->refcount() == 2 );
+    Check( mock->refcount() == 2, "wrapper retains inner writer" );
 
     // Releasing the wrapper must drop mock back to 1.
     safe_release( dt );
-    assert( mock->refcount() == 1 );
+    Check( mock->refcount() == 1, "wrapper releases inner writer" );
 
     safe_release( mock );
-    std::cout << "  Passed!" << std::endl;
+}
+
+static void TestCompleteViewTransformMatchesSharedPipeline()
+{
+    std::cout << "TestCompleteViewTransformMatchesSharedPipeline..." << std::endl;
+    const float strengths[] = { 0.0f, 0.25f, 1.0f };
+    for( const float strength : strengths ) {
+        FrameStoreOutput::ViewTransform transform;
+        transform.exposureEV = 0.5f;
+        transform.whiteBalance._00 = 1.10;
+        transform.whiteBalance._01 = 0.05;
+        transform.whiteBalance._02 = 0.00;
+        transform.whiteBalance._10 = 0.00;
+        transform.whiteBalance._11 = 0.90;
+        transform.whiteBalance._12 = 0.05;
+        transform.whiteBalance._20 = 0.02;
+        transform.whiteBalance._21 = 0.00;
+        transform.whiteBalance._22 = 1.08;
+        transform.toneCurve = eDisplayTransform_Reinhard;
+        transform.toneCurveStrength = strength;
+
+        RecordingWriter* mock = new RecordingWriter;
+        DisplayTransformWriter* writer = new DisplayTransformWriter(
+            *mock,transform,eColorSpace_sRGB );
+        const RISEPel input(0.20,0.45,0.70);
+        writer->WriteColor(RISEColor(input,0.6),0,0);
+
+        const double exposure = std::pow(2.0,0.5);
+        const double exposedR = input.r*exposure;
+        const double exposedG = input.g*exposure;
+        const double exposedB = input.b*exposure;
+        const double balancedR = 1.10*exposedR + 0.05*exposedG;
+        const double balancedG = 0.90*exposedG + 0.05*exposedB;
+        const double balancedB = 0.02*exposedR + 1.08*exposedB;
+        const double expectedR = (1.0-strength)*balancedR +
+            strength*(balancedR/(1.0+balancedR));
+        const double expectedG = (1.0-strength)*balancedG +
+            strength*(balancedG/(1.0+balancedG));
+        const double expectedB = (1.0-strength)*balancedB +
+            strength*(balancedB/(1.0+balancedB));
+        if( Check(mock->writes.size() == 1u,
+            "complete transform emits one pixel") ) {
+            Check(IsClose(mock->writes[0].c.base.r,expectedR),
+                "complete transform matches shared red");
+            Check(IsClose(mock->writes[0].c.base.g,expectedG),
+                "complete transform matches shared green");
+            Check(IsClose(mock->writes[0].c.base.b,expectedB),
+                "complete transform matches shared blue");
+            Check(IsClose(mock->writes[0].c.a,0.6),
+                "complete transform preserves alpha");
+        }
+
+        safe_release(writer);
+        safe_release(mock);
+    }
+}
+
+static void TestROMMTargetPrimariesBranch()
+{
+    std::cout << "TestROMMTargetPrimariesBranch..." << std::endl;
+    FrameStoreOutput::ViewTransform transform;
+    transform.toneCurve = eDisplayTransform_Reinhard;
+    transform.toneCurveStrength = 1.0f;
+
+    RecordingWriter* mock = new RecordingWriter;
+    DisplayTransformWriter* writer = new DisplayTransformWriter(
+        *mock,transform,eColorSpace_ROMMRGB_Linear );
+    const RISEPel input(0.20,0.45,0.70);
+    writer->WriteColor(RISEColor(input,0.8),0,0);
+
+    Rec709RGBPel rec709;
+    rec709.r = input.r;
+    rec709.g = input.g;
+    rec709.b = input.b;
+    const ROMMRGBPel romm = ColorUtils::Rec709RGBtoROMMRGB(rec709);
+    ROMMRGBPel curved;
+    curved.r = romm.r/(1.0+romm.r);
+    curved.g = romm.g/(1.0+romm.g);
+    curved.b = romm.b/(1.0+romm.b);
+    const Rec709RGBPel expected = ColorUtils::ROMMRGBtoRec709RGB(curved);
+
+    if( Check(mock->writes.size() == 1u,
+        "ROMM transform emits one pixel") ) {
+        Check(IsClose(mock->writes[0].c.base.r,expected.r),
+            "ROMM target branch matches red");
+        Check(IsClose(mock->writes[0].c.base.g,expected.g),
+            "ROMM target branch matches green");
+        Check(IsClose(mock->writes[0].c.base.b,expected.b),
+            "ROMM target branch matches blue");
+        Check(IsClose(mock->writes[0].c.a,0.8),
+            "ROMM target branch preserves alpha");
+    }
+
+    safe_release(writer);
+    safe_release(mock);
 }
 
 int main()
@@ -216,6 +331,12 @@ int main()
     TestExposureThenCurve();
     TestACESThroughWrapper();
     TestRefcountHoldsInner();
-    std::cout << "All DisplayTransformWriter tests passed!" << std::endl;
-    return 0;
+    TestCompleteViewTransformMatchesSharedPipeline();
+    TestROMMTargetPrimariesBranch();
+    if( gFailCount == 0 ) {
+        std::cout << "All DisplayTransformWriter tests passed!" << std::endl;
+    } else {
+        std::cerr << gFailCount << " DisplayTransformWriter checks failed" << std::endl;
+    }
+    return gFailCount == 0 ? 0 : 1;
 }

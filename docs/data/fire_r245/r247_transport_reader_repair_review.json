@@ -1,0 +1,33 @@
+{
+  "schema": "rise.fire.r247.transport-reader-repair-review.v1",
+  "status": "accepted_for_one_separate_repaired_derivation",
+  "candidate": "f0d20c88e",
+  "round": 2,
+  "p1": 0,
+  "p2": 0,
+  "gate_sha256": "ebd7736eec36d0a3fa76fd645797d303dabecd4582c68ac8ec2f328c9fd12c75",
+  "reviews": [
+    {
+      "agent": "r247_transport_repair_contract_r2",
+      "axis": "arithmetic/contract/test-integrity",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "SourceWrite literal0u;5repair+7failurehashes;32RED; oldsecond-eventlocal0RED/newGREEN/local1RED; globalpins/operand/clockchecks unchanged"
+    },
+    {
+      "agent": "r247_transport_repair_provenance_r2",
+      "axis": "lifecycle/provenance/memoryscope",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "5repair+7failurehashes;32RED; originalexit1/unsealedpendingpreserved; code/helper/verifier/issuer preserved;2GiBcap/inventory unchanged"
+    }
+  ],
+  "launch_authorized": true,
+  "authorized_scope": "One separate full235wide+235taller selected transport/momentum derivation after hostwide exclusivity check",
+  "original_stage_b_exit_code": 1,
+  "original_taller_exit_code": 98,
+  "actual_native_fields_reread": 0,
+  "full_derivation_accepted": false,
+  "physical_acceptance": false,
+  "canonical_taller_qualification": false
+}

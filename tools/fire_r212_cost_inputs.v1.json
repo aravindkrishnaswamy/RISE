@@ -1,0 +1,16 @@
+{
+  "schema": "rise.fire.r212.executed-cost-inputs.v1",
+  "inputs_sha256": {
+    "r211_resident_migration/continuation.v2.log": "9476d4d3053e59ddd5c325b51acc9df17787b6e446f5dcf7350fbbff6d3e2782",
+    "r206_eos/endpoints_qualified_profile_1.v1/budgets/maximum_velocity_trajectory.csv": "e047a7527c79092d67152690c40701d361fb3f8349c1dc51917ee45267193c03",
+    "r206_eos/endpoints_qualified_profile_2.v1/budgets/maximum_velocity_trajectory.csv": "fd98d1dc1267a483fba1765f21e169e0669cd1b240f67fa7beaf3fe502c93ca2",
+    "r206_eos/endpoints_qualified_profile_3.v1/budgets/maximum_velocity_trajectory.csv": "37056ebc8cccdc2f031a31fcb37787d41ac69f60e718babacd5ce370cd559d17",
+    "r211_resident_migration/continuation.v2/budgets/maximum_velocity_trajectory.csv": "cb10278dc49f33c9a9718496804bf81fe5493faf4af0eb27cd1a3b7db3d1a057",
+    "r212_transport_adoption/hot_profile_1.v1.log": "ef812dc0813cfcb45888fd073851afe73dca7ab670d5c28da8eff96013b089be",
+    "r212_transport_adoption/hot_profile_1.v1/budgets/maximum_velocity_trajectory.csv": "8163e1f901167b5c114d61ac4795f203dd4503152b7bc1c764387374a53de0d8",
+    "r212_transport_adoption/hot_profile_2.v1.log": "b2e24dc2988be87713626b044a56dab43501f33d6c9daa8cff2b6bceb195b622",
+    "r212_transport_adoption/hot_profile_2.v1/budgets/maximum_velocity_trajectory.csv": "66561af269983428b52bfcc889e805a7399c16775eee3808bd33c8f479dd9743",
+    "r212_transport_adoption/hot_profile_3.v1.log": "2c9ff676e3eb8afac4b3838c5595a1ce65db714ec972ef9299d3ef2ac3b0e4be",
+    "r212_transport_adoption/hot_profile_3.v1/budgets/maximum_velocity_trajectory.csv": "afb40d3b085daa4df0e2bc89973d335ccb90e1c946e7188345ba4833cbeea459"
+  }
+}

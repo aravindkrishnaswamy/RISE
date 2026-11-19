@@ -845,6 +845,33 @@ namespace RISE
 		bool						bHasWireEdgeInfo;
 		bool						bWantsWireEdgeInfo;
 
+		//! (Fire r40.)  Declared LAST, after every master field, on purpose:
+		//! inserting them mid-struct shifted the offsets of ptIntersection,
+		//! the normals etc., which changed how the vectorizer pairs their
+		//! components under -ffast-math and moved non-fire renders by ulps
+		//! (LegacyTierRenderIdentityTest et al. pin bit-exact pixels).
+		//! Exact world-ray distances to the geometric boundary before
+		//! Object's shading-point surface-error offset is applied.  Medium
+		//! topology walkers must use these: `range`/`range2` deliberately sit
+		//! just before/after a surface and therefore cannot delimit arbitrarily
+		//! thin volume segments without skipping or double-counting them.
+		Scalar						surfaceRange;
+		Scalar						surfaceRange2;
+		//! Per-cast input.  When non-negative, object-manager traversal
+		//! rejects candidates whose exact `surfaceRange` is not greater
+		//! than this value.  Boundary walks set zero to discard only the
+		//! just-processed zero-distance root without stepping over space.
+		Scalar						minimumSurfaceRange;
+		//! Per-cast input, meaningful only with `minimumSurfaceRange >= 0`.
+		//! True when the query origin is an EXACT geometric boundary point
+		//! produced by the boundary walk itself (not a caller's backed-off
+		//! shading point).  Geometry-level self-hit heuristics that treat a
+		//! face within a plane-distance band of the origin as "the origin's
+		//! own face" (BoxGeometry's DropSelfHitRoot) must not fire then: the
+		//! zero-distance root is rejected by `minimumSurfaceRange`, and a
+		//! genuinely distinct face inside that band must be kept.
+		bool						bExactBoundaryOrigin;
+
 		//! Copies the per-cast INPUT fields -- values stamped by the
 		//! integrator/caster BEFORE intersection and consumed AFTER --
 		//! onto a freshly-constructed scratch record.  Traversal and
@@ -859,6 +886,8 @@ namespace RISE
 		{
 			glossyFilterWidth = src.glossyFilterWidth;
 			bWantsWireEdgeInfo = src.bWantsWireEdgeInfo;
+			minimumSurfaceRange = src.minimumSurfaceRange;
+			bExactBoundaryOrigin = src.bExactBoundaryOrigin;
 		}
 
 		RayIntersectionGeometric( const Ray& ray_, const RasterizerState& rast_ ) :
@@ -886,7 +915,11 @@ namespace RISE
 		  shadingBitangentSign( 1.0 ),
 		  bHasShadingTangent( false ),
 		  bHasWireEdgeInfo( false ),
-		  bWantsWireEdgeInfo( false )
+		  bWantsWireEdgeInfo( false ),
+		  surfaceRange( RISE_INFINITY ),
+		  surfaceRange2( RISE_INFINITY ),
+		  minimumSurfaceRange( -1.0 ),
+		  bExactBoundaryOrigin( false )
 		{}
 
 		~RayIntersectionGeometric( )
@@ -939,7 +972,11 @@ namespace RISE
 		  bHasShadingTangent( r.bHasShadingTangent ),
 		  ptWireNearestEdge( r.ptWireNearestEdge ),
 		  bHasWireEdgeInfo( r.bHasWireEdgeInfo ),
-		  bWantsWireEdgeInfo( r.bWantsWireEdgeInfo )
+		  bWantsWireEdgeInfo( r.bWantsWireEdgeInfo ),
+		  surfaceRange( r.surfaceRange ),
+		  surfaceRange2( r.surfaceRange2 ),
+		  minimumSurfaceRange( r.minimumSurfaceRange ),
+		  bExactBoundaryOrigin( r.bExactBoundaryOrigin )
 		{
 			if( pCustom ) {
 				pCustom->addref();
@@ -953,6 +990,10 @@ namespace RISE
 			bHit = r.bHit;
 			range = r.range;
 			range2 = r.range2;
+			surfaceRange = r.surfaceRange;
+			surfaceRange2 = r.surfaceRange2;
+			minimumSurfaceRange = r.minimumSurfaceRange;
+			bExactBoundaryOrigin = r.bExactBoundaryOrigin;
 			vNormal = r.vNormal;
 			vNormal2 = r.vNormal2;
 			vGeomNormal = r.vGeomNormal;

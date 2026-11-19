@@ -1,0 +1,76 @@
+SHARED_OWNER_INPUT_SOURCE path=tests/FireProductionSharedOwnerInputTest.cc sha256=91642ecc11cd3bb7dab5c54e276c2d77ae06ccc9df7e90c3948018b00c6bdbba
+SHARED_OWNER_INPUT_SOURCE path=tests/FireProductionSharedOwnerInput.h sha256=4da4612b508bd887f3fdc216f935ff4ad16ae417e5b5b5e14c5613962ff0c2bc
+SHARED_OWNER_INPUT_SOURCE path=tools/test_fire_r214_shared_owner_input.py sha256=787b42c19a92328be6848aa5a631ab0fbafe98f030407d36edfbbfdf29516500
+SHARED_OWNER_INPUT_SOURCE path=tests/fire_production_fp64/SourceManifest.h sha256=d0a21b6c995e16f8b91239037a7cfee2b6b1ab64432c184876f7025c239216d8
+SHARED_OWNER_INPUT_EXECUTABLE name=green sha256=56381620edf4bd5a5f159c5faba4050a140468b821b8bc58febc1f7b7c03e349
+SHARED_OWNER_SURFACE_RED field=0 refused=1
+SHARED_OWNER_SURFACE_RED field=1 refused=1
+SHARED_OWNER_SURFACE_RED field=2 refused=1
+SHARED_OWNER_SURFACE_RED field=3 refused=1
+SHARED_OWNER_SURFACE_RED field=4 refused=1
+SHARED_OWNER_SURFACE_RED field=5 refused=1
+SHARED_OWNER_SURFACE_RED field=6 refused=1
+SHARED_OWNER_SURFACE_RED field=7 refused=1
+SHARED_OWNER_SURFACE_RED field=8 refused=1
+SHARED_OWNER_CAPTURE canonical_source=1 cpu_r190_begin=1 cells=64 nonzero_source=64 payload_bytes=19894 source_control_reds=3 lineage_reds=4 immutable_reds=2 tier8_mirror_bytes=2296136184 passed=1
+SHARED_OWNER_INPUT_MUTANT name=green expected_exit=0 passed=1
+SHARED_OWNER_INPUT_EXECUTABLE name=omit_eligibility sha256=232785cd65af5f0b38b2945db952f7127cd748400bc42ba2dcaeb7731c23e4c2
+SHARED_OWNER_SURFACE_RED field=0 refused=1
+SHARED_OWNER_SURFACE_RED field=1 refused=1
+SHARED_OWNER_SURFACE_RED field=2 refused=1
+SHARED_OWNER_SURFACE_RED field=3 refused=1
+SHARED_OWNER_SURFACE_RED field=4 refused=1
+SHARED_OWNER_SURFACE_RED field=5 refused=1
+SHARED_OWNER_SURFACE_RED field=6 refused=1
+SHARED_OWNER_SURFACE_RED field=7 refused=1
+SHARED_OWNER_SURFACE_RED field=8 refused=1
+SHARED_OWNER_CAPTURE canonical_source=1 cpu_r190_begin=1 cells=64 nonzero_source=64 payload_bytes=17582 source_control_reds=3 lineage_reds=4 immutable_reds=2 tier8_mirror_bytes=0 passed=0
+SHARED_OWNER_INPUT_MUTANT name=omit_eligibility expected_exit=1 passed=1
+SHARED_OWNER_INPUT_EXECUTABLE name=omit_contact_control sha256=e78d6f18ff71d0b4f49a31a417c61c11c18653e11b06d63eee9f31e40d937b5d
+SHARED_OWNER_SURFACE_RED field=0 refused=1
+SHARED_OWNER_SURFACE_RED field=1 refused=1
+SHARED_OWNER_SURFACE_RED field=2 refused=1
+SHARED_OWNER_SURFACE_RED field=3 refused=1
+SHARED_OWNER_SURFACE_RED field=4 refused=1
+SHARED_OWNER_SURFACE_RED field=5 refused=1
+SHARED_OWNER_SURFACE_RED field=6 refused=1
+SHARED_OWNER_SURFACE_RED field=7 refused=1
+SHARED_OWNER_SURFACE_RED field=8 refused=1
+SHARED_OWNER_CAPTURE canonical_source=1 cpu_r190_begin=1 cells=64 nonzero_source=64 payload_bytes=19822 source_control_reds=3 lineage_reds=4 immutable_reds=2 tier8_mirror_bytes=0 passed=0
+SHARED_OWNER_INPUT_MUTANT name=omit_contact_control expected_exit=1 passed=1
+SHARED_OWNER_INPUT_EXECUTABLE name=omit_mixing_control sha256=0e9ba5b3542eec1125672ced54f18fe57371426c75f78ddd43c36428dfe36db7
+SHARED_OWNER_SURFACE_RED field=0 refused=1
+SHARED_OWNER_SURFACE_RED field=1 refused=1
+SHARED_OWNER_SURFACE_RED field=2 refused=1
+SHARED_OWNER_SURFACE_RED field=3 refused=1
+SHARED_OWNER_SURFACE_RED field=4 refused=1
+SHARED_OWNER_SURFACE_RED field=5 refused=1
+SHARED_OWNER_SURFACE_RED field=6 refused=1
+SHARED_OWNER_SURFACE_RED field=7 refused=1
+SHARED_OWNER_SURFACE_RED field=8 refused=1
+SHARED_OWNER_CAPTURE canonical_source=1 cpu_r190_begin=1 cells=64 nonzero_source=64 payload_bytes=19374 source_control_reds=3 lineage_reds=4 immutable_reds=2 tier8_mirror_bytes=0 passed=0
+SHARED_OWNER_INPUT_MUTANT name=omit_mixing_control expected_exit=1 passed=1
+SHARED_OWNER_INPUT_EXECUTABLE name=wrong_gravity sha256=4ae690c7586e78e53b4421df9b1a1a143abb5b93d8efde61b9e5f977c4322777
+SHARED_OWNER_SURFACE_RED field=0 refused=1
+SHARED_OWNER_SURFACE_RED field=1 refused=1
+SHARED_OWNER_SURFACE_RED field=2 refused=1
+SHARED_OWNER_SURFACE_RED field=3 refused=1
+SHARED_OWNER_SURFACE_RED field=4 refused=1
+SHARED_OWNER_SURFACE_RED field=5 refused=1
+SHARED_OWNER_SURFACE_RED field=6 refused=1
+SHARED_OWNER_SURFACE_RED field=7 refused=1
+SHARED_OWNER_SURFACE_RED field=8 refused=1
+SHARED_OWNER_CAPTURE canonical_source=1 cpu_r190_begin=1 cells=64 nonzero_source=64 payload_bytes=19894 source_control_reds=3 lineage_reds=4 immutable_reds=2 tier8_mirror_bytes=0 passed=0
+SHARED_OWNER_INPUT_MUTANT name=wrong_gravity expected_exit=1 passed=1
+SHARED_OWNER_INPUT_EXECUTABLE name=omit_resident_surface_check sha256=d7d0821e9ce4fb64577dd4e7fcfa3f83f08af6226b8ebfdfa3e29d68307e44d2
+SHARED_OWNER_SURFACE_RED field=0 refused=0
+SHARED_OWNER_SURFACE_RED field=1 refused=0
+SHARED_OWNER_SURFACE_RED field=2 refused=0
+SHARED_OWNER_SURFACE_RED field=3 refused=0
+SHARED_OWNER_SURFACE_RED field=4 refused=0
+SHARED_OWNER_SURFACE_RED field=5 refused=0
+SHARED_OWNER_SURFACE_RED field=6 refused=0
+SHARED_OWNER_SURFACE_RED field=7 refused=0
+SHARED_OWNER_SURFACE_RED field=8 refused=0
+SHARED_OWNER_CAPTURE canonical_source=1 cpu_r190_begin=1 cells=64 nonzero_source=64 payload_bytes=19894 source_control_reds=3 lineage_reds=4 immutable_reds=2 tier8_mirror_bytes=0 passed=0
+SHARED_OWNER_INPUT_MUTANT name=omit_resident_surface_check expected_exit=1 passed=1

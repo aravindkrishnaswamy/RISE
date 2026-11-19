@@ -136,7 +136,7 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 	) const
 {
 	const ICamera* pCamera = pScene.GetCamera();
-	if( !pCamera ) {
+	if( !pCamera || nSpectralSamples == 0 ) {
 		return XYZPel( 0, 0, 0 );
 	}
 
@@ -149,13 +149,13 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 
 	if( bUseHWSS )
 	{
-		unsigned int totalActive = 0;
 
 		for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 		{
 			const Scalar u = rc.random.CanonicalRandom();
 			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end, num_wavelengths );
 
+			XYZPel bundleSum(0,0,0);
 			Scalar result[SampledWavelengths::N] = {0};
 			pIntegrator->IntegrateRayHWSS(
 				rc, rast, cameraRay, swl, pScene, *pCaster, sampler, pRadianceMap, result, pAOV );
@@ -164,22 +164,15 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 				if( !swl.terminated[i] ) {
 					XYZPel thisNM( 0, 0, 0 );
 					if( ColorUtils::XYZFromNM( thisNM, swl.lambda[i] ) ) {
-						spectralSum = spectralSum + thisNM * result[i];
-						totalActive++;
+						bundleSum = bundleSum + thisNM * result[i];
 					}
 				}
 			}
+			spectralSum = spectralSum + swl.BundleAverage(bundleSum);
 		}
 
-		if( totalActive > 0 ) {
-			// MC normalization: (1/N) for sample-mean × (b-a)/k_y to
-			// scale into a properly-normalized integral so a perfect-
-			// white reflector under flat illuminant gives Y = 1.
-			// Inherited mYNormalization = (b-a)/k_y; uniform scale =>
-			// chromaticity preserved.
-			return spectralSum * ( mYNormalization / Scalar(totalActive) );
-		}
-		return spectralSum;
+		// Average independently sampled bundles, not their pooled active lanes.
+		return spectralSum * (mYNormalization / Scalar(nSpectralSamples));
 	}
 
 	// Standard (non-HWSS) path: independent random wavelengths
@@ -338,7 +331,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 				}
 				weights += weight;
 
-				if( temporal_samples ) {
+				if( temporal_samples && !pScene.FireTemporalHold() ) {
 					AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 				}
 

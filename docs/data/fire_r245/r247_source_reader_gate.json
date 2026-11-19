@@ -1,0 +1,67 @@
+{
+  "schema": "rise.fire.r247.source-reader-gate.v1",
+  "status": "candidate_synthetic_reader_only",
+  "exit_code": 0,
+  "controls": {
+    "status": "synthetic_reader_only",
+    "red": 18,
+    "implementation_sha256": {
+      "reader": "4fb8e13f371a7828a034f94892cb84c0de00c852ce6851a6b522d69b59a62215",
+      "admission": "cb25a9a96afb2939846ad4e2b55204c45062c3e5c897eb142df7a8e7fe250545",
+      "moments": "37b3d1488ac6e114c228a47cdcb5e2be31b658dd36169b3d6639439b61d8a28c",
+      "verifier": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf"
+    },
+    "allocation_estimate": {
+      "baseline_peak_rss_bytes": 67108864,
+      "direct_buffer_components_bytes": {
+        "captured_packet": 214776640,
+        "moment_arrays": 55377920,
+        "finite_and_sign_boolean_scratch": 8652800,
+        "merkle_nodes_and_lists": 7161344,
+        "merkle_chunk_concat": 8192,
+        "axis_reductions_and_row_buffer": 73728,
+        "metadata_rechecks": 262144
+      },
+      "enumerated_peak_estimate_bytes": 353421632,
+      "reader_ceiling_bytes": 1073741824,
+      "public_fixture_cap_bytes": 2147483648,
+      "estimate_is_not_measured_peak": true,
+      "source_host_ceiling_bytes": 34359738368,
+      "source_next_step_reserve_bytes": 23930269536,
+      "source_reserve_is_not_reader_allocation": true
+    },
+    "native_source_packets_read": 0
+  },
+  "native_source_packets_read": 0,
+  "full_derivation_accepted": false,
+  "reader_full_launch_accepted": false,
+  "metadata_acceptance": "54aa17f0c",
+  "moment_acceptance": "00116d720",
+  "artifacts": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_source_reader.py",
+      "sha256": "4fb8e13f371a7828a034f94892cb84c0de00c852ce6851a6b522d69b59a62215"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_reader_validation.v3/source_reader.frozen.py",
+      "sha256": "4fb8e13f371a7828a034f94892cb84c0de00c852ce6851a6b522d69b59a62215"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_reader_validation.v3/stdout.log",
+      "sha256": "57cd6ab7d3b036070dc3f26c4029c606d41705e65b58ff97b092cfc1ed407d9f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_reader_validation.v3/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_reader_validation.v3/controls.json",
+      "sha256": "e016b13c8f1b5c00f9d12cf2a5cf8f025b22bdbd70c610838a69337d3e510c13"
+    }
+  ],
+  "repairs": [
+    "Actual consumed modern certificate digest bound to initial accepted seal pin for metadata/frame/ledger readers; valid between-read A/B certificate discriminator",
+    "Actual five-source finite-check boolean buffer enumerated as5*cells; estimate remains explicitly unmeasured",
+    "Generated row-stream identity excludes access time while retaining stable storage fields/byte count/generated SHA; forced-old-atime validread oldRED/newGREEN discriminator"
+  ]
+}

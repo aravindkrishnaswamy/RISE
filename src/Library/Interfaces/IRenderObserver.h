@@ -14,7 +14,10 @@
 //  from FrameStore::EndTile / MarkFrameComplete (Phase 2).  They
 //  carry NO pixel data — observers consume the FrameStore directly.
 //  Notifications run synchronously on the producing thread. Observers
-//  should return promptly and marshal UI or lengthy work to their own queue.
+//  should return promptly and marshal UI or lengthy work to their own queue;
+//  the exception is a frame observer performing the intentional
+//  end-of-frame file transaction (a slow callback back-pressures the
+//  publishing worker).
 //  FrameStore::Render takes shared tile locks for a consistent read; the
 //  producer releases all tiles owned by its bracket before notification.
 //  Raw beauty-view access still needs external synchronization. Platform

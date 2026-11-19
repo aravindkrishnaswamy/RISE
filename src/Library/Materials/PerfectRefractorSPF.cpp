@@ -58,7 +58,8 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	 const IORStack& ior_stack,							///< [in] Index of refraction stack
 	 const int oneofthree,
 	 const Scalar newIOR,
-	 const Scalar cosine
+	 const Scalar cosine,
+	 const Scalar nm
 	 ) const
 {
 	ScatteredRay specular;
@@ -83,7 +84,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	IORStackSeeding::OpenSheetCrossing openSheet = { false, Scalar( 1 ), Scalar( 1 ) };
 	if( ri.bProvablyNoInterior ) {
 		pOpenSheetStack.reset( new IORStack( ior_stack ) );
-		openSheet = IORStackSeeding::ResolveOpenSheetCrossing( ri, newIOR, *pOpenSheetStack );
+		openSheet = IORStackSeeding::ResolveOpenSheetCrossing( ri, newIOR, *pOpenSheetStack, 0, nm );
 	}
 	const bool bEntering = pOpenSheetStack ? openSheet.bEntering : !ior_stack.containsCurrent();
 
@@ -154,10 +155,10 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 		specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, newIOR );
 
 		// Coming out, IOR becomes air
-		Ni = newIOR;
+		Ni = pOpenSheetStack ? openSheet.etaFrom : newIOR;
 		Nt = specular.ior_stack ? specular.ior_stack->top() : 1.0;
-		if( Optics::CalculateRefractedRay( -ri.onb.w(), newIOR, specular.ior_stack?specular.ior_stack->top():1.0, vRefracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, -ri.onb.w(), newIOR, specular.ior_stack?specular.ior_stack->top():1.0 );
+		if( Optics::CalculateRefractedRay( -ri.onb.w(), Ni, Nt, vRefracted ) ) {
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, -ri.onb.w(), Ni, Nt );
 		} else {
 			// TIR, so reflect
 			// We're still in the material
@@ -269,10 +270,10 @@ void PerfectRefractorSPF::Scatter(
 	// Dispersion is now an explicit static-property report from the
 	// IScalarPainter — no FP-fuzzy compare needed.
 	if( !pNt->HasPerChannelVariation() ) {
-		DoSingleRGBComponent( ri, scattered, ior_stack, false, ior.v[0], cosine );
+		DoSingleRGBComponent( ri, scattered, ior_stack, false, ior.v[0], cosine, Scalar( 0 ) );
 	} else {
 		for( int i=0; i<3; i++ ) {
-			DoSingleRGBComponent( ri, scattered, ior_stack, i+1, ior.v[i], cosine );
+			DoSingleRGBComponent( ri, scattered, ior_stack, i+1, ior.v[i], cosine, ScalarPainterRGB::kChannelNM[i] );
 		}
 	}
 }
@@ -381,10 +382,10 @@ void PerfectRefractorSPF::ScatterNM(
 
 		// Coming out, IOR becomes whatever was there before
 		const Scalar exitIOR = specular.ior_stack ? specular.ior_stack->top() : 1.0;
-		Ni = newIOR;
+		Ni = pOpenSheetStack ? openSheet.etaFrom : newIOR;
 		Nt = exitIOR;
-		if( Optics::CalculateRefractedRay( -ri.onb.w(), newIOR, exitIOR, vRefracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, -ri.onb.w(), newIOR, exitIOR );
+		if( Optics::CalculateRefractedRay( -ri.onb.w(), Ni, exitIOR, vRefracted ) ) {
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, -ri.onb.w(), Ni, exitIOR );
 		} else {
 			// TIR, so reflect
 			// We're still in the material

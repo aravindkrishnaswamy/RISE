@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "DonnerJensenSkinSSSShaderOp.h"
+#include "SSSContainment.h"
 #include "../../Materials/BioSpecSkinData.h"
 #include "../../Interfaces/IGeometry.h"		// CanBeAreaLight(): SSS needs real surface sampling
 #include "../../Materials/MultipoleDiffusion.h"
@@ -773,6 +774,7 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	const ScatteredRayContainer* pScat
 	) const
 {
+	SSSContainmentScope containment;
 	c = RISEPel( 0.0 );
     SMSReferenceRadianceScope returnRadiance(rc);
     const auto cacheKey=std::make_pair(ri.pObject,rc.smsForceLegacy);
@@ -794,6 +796,7 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	// and get the full multi-layer skin BSSRDF.
 	if( rc.bFastPreview )
 	{
+		RecordSSSContainedChildLaunch();
 		shader.Shade( rc, ri, caster, rs, c, ior_stack );
 		return;
 	}
@@ -936,6 +939,7 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 				newri.geometric.bHasTangent = false;
 				newri.geometric.ray.Advance( 1e-8 );
 
+				RecordSSSContainedChildLaunch();
 				{
                     SMSReferenceRadianceScope sampleRadiance(buildRc);
                     shader.Shade( buildRc, newri, caster, rs, sp.irrad, ior_stack );

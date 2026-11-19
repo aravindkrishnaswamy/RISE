@@ -152,7 +152,8 @@ namespace RISE
 				IRasterImage& target,
 				bool showMap = false,
 				unsigned int targetSamples = 0,
-				const Rect* region = 0
+				const Rect* region = 0,
+				int fieldParity = -1
 				) const
 			{
 				const bool emitMap = showMap && targetSamples > 0;
@@ -168,6 +169,9 @@ namespace RISE
 					endY = r_min( region->bottom, height - 1 );
 				}
 				for( unsigned int y = startY; y <= endY; y++ ) {
+					if( fieldParity >= 0 && ( y & 1u ) != static_cast<unsigned int>( fieldParity ) ) {
+						continue;
+					}
 					for( unsigned int x = startX; x <= endX; x++ ) {
 						const ProgressivePixel& px = pixels[static_cast<std::size_t>( y ) * width + x];
 						if( emitMap ) {

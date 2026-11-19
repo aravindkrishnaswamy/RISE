@@ -1,0 +1,7 @@
+RESIDENT_RESUME_EXECUTION build_id=487bc844b74bd29e4ef97686bfd113381e7bfebd51747f32ad7ca1b00853bd06 executable_sha256=9cfc79f6118516cfe94040e01236398aefd240e9d460bca1032045186acdbeac
+OWNER_CERTIFICATE_DIAGNOSTIC checkpoint_sha256=7eefb57bfd01f27817d0e245da8293c5ec85c770f0bf157556f20f906865e966 build=81cf8340374423e2c5ae209062c35ed2e7d8a915535051324060c48a1d7cb5a9 accepted_steps=1165 beginning_s=1.7873949808417819 migration_authority=false
+OWNER_EOS_SNAPSHOT_SCOPE_RED foreign_directory_refused=1 production_refused=1 certificate_refused=1 passed=1
+OWNER_REFUSAL_CLAUSES_V1 stage=0 iteration=0 physical=0 candidate=0 eos=128 target=10368 final=33564800 publication=false
+capstone solver diagnostic steps=1165 time=1.7873949808417819: solver_failure:projected-Heun resident stage device validation failed: stage=0 bitmap=33564800
+capstone accepted EOS drift history tail=0.00828700982,0.00732173303,0.00685926566,0.00675679602,0.0069485739,0.00696195481,0.00639595675,0.00626946079
+OWNER_CERTIFICATE_DIAGNOSTIC_END solver_accepted=0 checkpoint_unchanged=1 migration_authority=false error=solver_failure:projected-Heun resident stage device validation failed: stage=0 bitmap=33564800

@@ -1,0 +1,41 @@
+{
+  "status": "full_budget_run_active_not_completed",
+  "launch": {
+    "started_utc": "2026-09-30T03:24:04.851526+00:00",
+    "command": [
+      "/usr/bin/caffeinate",
+      "-i",
+      "/Volumes/SSD/RISE/fire_production_calibration/r245_runtime.v1/FireSequenceTest",
+      "--fire-r245-lateral-budget",
+      "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1"
+    ],
+    "cwd": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic",
+    "binary_sha256": "6f8ad4340d68b4bd657ba3603b970dfff2a14c3e901461305d340dc9447e9e0b",
+    "reviewed_source_commit": "38be9615744940627c54d23b9a7258266054504d",
+    "from_zero": true,
+    "case_record_id": "a9369e770465bd76e2cc8d5fc3b79e7c2aac038ecb14a0e4424a97ba2f98d586",
+    "rss_ceiling_bytes": 34359738368,
+    "graceful_exit_code": 97,
+    "statistics_policy": "unchanged complete tier-6 discard plus 14.625 s statistics; original 235 frames",
+    "review_sha256": "380ee51e1c50226e2a51c46580087bd9bb27ec5d3174a268fed503322e9bdebe",
+    "runtime_manifest_sha256": "7f27bc7f14ac5887c2867406ba87fc0c49dcf8585f8264435c136744a883ff54"
+  },
+  "artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_budget_launch.v1/launch.json",
+      "sha256": "e59804580a181b9814e853ba89ecc41d132236b2f06f5c3088a8061beac4e429"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_budget_launch.v1/pid.json",
+      "sha256": "9bb488bd058aa324b15ab4208c5622a54ed7d5dbe216dbadd18002f2afaf7102"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_runtime.v1/manifest.json",
+      "sha256": "7f27bc7f14ac5887c2867406ba87fc0c49dcf8585f8264435c136744a883ff54"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_budget_launcher.v1.py",
+      "sha256": "27599203533828415563bdaf756f478489fb95e5171e98563d679ecd92072906"
+    }
+  ]
+}

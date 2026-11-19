@@ -36,11 +36,226 @@
 
 #include "Math3D/Math3D.h"
 #include "Ray.h"
+#include <cmath>
+#include <limits>
 
 namespace RISE
 {
 	namespace EquiangularSampling
 	{
+		namespace Detail
+		{
+			inline Scalar Norm( const Vector3& v )
+			{
+				return std::hypot( std::hypot(v.x,v.y), v.z );
+			}
+
+			inline Scalar ScaledProduct( const Scalar a, const Scalar b )
+			{
+				if( a == 0.0 || b == 0.0 ) return 0.0;
+				int exponentA = 0;
+				int exponentB = 0;
+				const Scalar mantissaA = std::frexp(a,&exponentA);
+				const Scalar mantissaB = std::frexp(b,&exponentB);
+				return std::scalbn(mantissaA*mantissaB,exponentA+exponentB);
+			}
+
+			inline Scalar MaterializeScaledFraction(
+				const Scalar mantissa, const int exponent, const Scalar fraction )
+			{
+				if( fraction == 0.0 ) return 0.0;
+				int fractionExponent = 0;
+				const Scalar fractionMantissa =
+					std::frexp(fraction,&fractionExponent);
+				return std::scalbn(
+					mantissa*fractionMantissa,exponent+fractionExponent);
+			}
+
+			struct Geometry
+			{
+				Scalar delta;
+				Scalar distance;
+				Scalar scaledDistance;
+				Scalar scaledOffsetNear;
+				Scalar scaledOffsetFar;
+				int coordinateExponent;
+				Scalar thetaSpanMantissa;
+				int thetaSpanExponent;
+				Scalar length;
+				bool uniform;
+				bool valid;
+
+				Geometry() : delta(0), distance(0), scaledDistance(0),
+					scaledOffsetNear(0), scaledOffsetFar(0), coordinateExponent(0),
+					thetaSpanMantissa(0), thetaSpanExponent(0), length(0),
+					uniform(false), valid(false) {}
+			};
+
+			inline Geometry BuildGeometry(
+				const Ray& ray,
+				const Point3& pivot,
+				const Scalar tNear,
+				const Scalar tFar,
+				const bool segmentBounded )
+			{
+				Geometry g;
+				if( !segmentBounded || !std::isfinite(tNear) ||
+					!std::isfinite(tFar) || tFar <= tNear ) return g;
+				g.length = tFar-tNear;
+				if( !std::isfinite(g.length) || g.length <= 0.0 ) return g;
+				const Vector3 toPivot = Vector3Ops::mkVector3( pivot, ray.origin );
+				const Scalar pivotDistance = Norm(toPivot);
+				if( !std::isfinite(pivotDistance) ) return g;
+				if( pivotDistance > 0.0 ) {
+					const int pivotExponent = std::ilogb(pivotDistance);
+					const Vector3 scaledPivot(
+						std::scalbn(toPivot.x,-pivotExponent),
+						std::scalbn(toPivot.y,-pivotExponent),
+						std::scalbn(toPivot.z,-pivotExponent) );
+					g.delta = std::scalbn(
+						Vector3Ops::Dot(scaledPivot,ray.Dir()),pivotExponent);
+				}
+				const Vector3 perpendicular = toPivot - ray.Dir()*g.delta;
+				// Scaled hypot avoids overflow/underflow in the historical
+				// dot(v,v)-delta^2 formulation while remaining nonnegative.
+				g.distance = Norm(perpendicular);
+				if( !std::isfinite(g.delta) || !std::isfinite(g.distance) ) return g;
+				const Scalar scale = fmax(g.length,pivotDistance);
+				const Scalar collinearThreshold = Scalar(32.0) *
+					sqrt(std::numeric_limits<Scalar>::epsilon()) * scale;
+				g.uniform = g.distance <= collinearThreshold;
+				if( !g.uniform ) {
+					const Scalar coordinateScale = fmax(g.distance,
+						fmax(fabs(g.delta),fmax(fabs(tNear),fabs(tFar))));
+					g.coordinateExponent = std::ilogb(coordinateScale);
+					g.scaledDistance = std::scalbn(
+						g.distance,-g.coordinateExponent);
+					const Scalar scaledDelta = std::scalbn(
+						g.delta,-g.coordinateExponent);
+					g.scaledOffsetNear =
+						std::scalbn(tNear,-g.coordinateExponent)-scaledDelta;
+					g.scaledOffsetFar =
+						std::scalbn(tFar,-g.coordinateExponent)-scaledDelta;
+					const Scalar scaledDenominator =
+						g.scaledDistance*g.scaledDistance+
+						g.scaledOffsetNear*g.scaledOffsetFar;
+					Scalar thetaSpan = 0.0;
+					if( scaledDenominator == 0.0 ) {
+						thetaSpan = PI_OV_TWO;
+					} else {
+						int distanceExponent = 0;
+						int lengthExponent = 0;
+						int denominatorExponent = 0;
+						const Scalar distanceMantissa =
+							std::frexp(g.distance,&distanceExponent);
+						const Scalar lengthMantissa =
+							std::frexp(g.length,&lengthExponent);
+						const Scalar denominatorMantissa =
+							std::frexp(fabs(scaledDenominator),&denominatorExponent);
+						Scalar ratioMantissa =
+							(distanceMantissa*lengthMantissa)/denominatorMantissa;
+						int ratioAdjustment = 0;
+						ratioMantissa = std::frexp(ratioMantissa,&ratioAdjustment);
+						const int ratioExponent = distanceExponent+lengthExponent-
+							2*g.coordinateExponent-denominatorExponent+ratioAdjustment;
+						const int minimumNormalExponent =
+							std::numeric_limits<Scalar>::min_exponent;
+						if( ratioExponent < minimumNormalExponent ) {
+							if( scaledDenominator > 0.0 ) {
+								// atan(r)=r to binary64 precision this far below the
+								// representable range.  Preserve r as mantissa/exponent.
+								g.thetaSpanMantissa = ratioMantissa;
+								g.thetaSpanExponent = ratioExponent;
+							} else {
+								thetaSpan = PI;
+							}
+						} else if( ratioExponent >
+							std::numeric_limits<Scalar>::max_exponent ) {
+							thetaSpan = PI_OV_TWO;
+						} else {
+							const Scalar ratio = std::scalbn(ratioMantissa,ratioExponent);
+							thetaSpan = scaledDenominator > 0.0 ?
+								atan(ratio) : PI-atan(ratio);
+						}
+					}
+					if( thetaSpan > 0.0 ) {
+						g.thetaSpanMantissa = std::frexp(
+							thetaSpan,&g.thetaSpanExponent);
+					}
+					if( !std::isfinite(g.thetaSpanMantissa) ||
+						g.thetaSpanMantissa <= 0.0 ) return Geometry();
+				}
+				g.valid = std::isfinite(g.delta) && std::isfinite(g.distance) &&
+					std::isfinite(g.length) && g.length > 0.0;
+				return g;
+			}
+
+			inline Scalar AngularPdf( const Geometry& g, const Scalar t )
+			{
+				const Scalar scaledDt =
+					std::scalbn(t,-g.coordinateExponent)-
+					std::scalbn(g.delta,-g.coordinateExponent);
+				const Scalar normalizedSquared =
+					g.scaledDistance*g.scaledDistance+scaledDt*scaledDt;
+				if( normalizedSquared <= 0.0 ) return 0.0;
+				// D/[thetaSpan*(D^2+dt^2)], factored so neither square nor
+				// the denominator can overflow or underflow at finite scene scales.
+				const Scalar pdf = std::scalbn(
+					(g.scaledDistance/normalizedSquared)/g.thetaSpanMantissa,
+					-g.coordinateExponent-g.thetaSpanExponent );
+				return std::isfinite(pdf) && pdf >= 0.0 ? pdf : 0.0;
+			}
+
+			inline Scalar InvertAngularCdf(
+				const Geometry& g, const Scalar tNear, const Scalar tFar,
+				const Scalar xi )
+			{
+				if( xi <= 0.0 ) return tNear;
+				if( xi >= 1.0 ) return tFar;
+				if( xi <= 0.5 ) {
+					const Scalar u = g.scaledOffsetNear/g.scaledDistance;
+					const Scalar fractionalSpan = MaterializeScaledFraction(
+						g.thetaSpanMantissa,g.thetaSpanExponent,xi);
+					if( g.thetaSpanExponent <
+						std::numeric_limits<Scalar>::min_exponent ||
+						fractionalSpan < std::numeric_limits<Scalar>::min() ) {
+						int distanceExponent = 0;
+						const Scalar distanceMantissa =
+							std::frexp(g.distance,&distanceExponent);
+						const Scalar offset = std::scalbn(
+							distanceMantissa*g.thetaSpanMantissa*xi*(1.0+u*u),
+							distanceExponent+g.thetaSpanExponent );
+						return fmax(tNear,fmin(tNear+offset,tFar));
+					}
+					const Scalar tangent = tan(fractionalSpan);
+					const Scalar denominator = 1.0-u*tangent;
+					const Scalar offset = ScaledProduct(
+						g.distance,(tangent/denominator)*(1.0+u*u) );
+					return fmax(tNear,fmin(tNear+offset,tFar));
+				}
+				const Scalar u = g.scaledOffsetFar/g.scaledDistance;
+				const Scalar farFraction = 1.0-xi;
+				const Scalar fractionalSpan = MaterializeScaledFraction(
+					g.thetaSpanMantissa,g.thetaSpanExponent,farFraction);
+				if( g.thetaSpanExponent <
+					std::numeric_limits<Scalar>::min_exponent ||
+					fractionalSpan < std::numeric_limits<Scalar>::min() ) {
+					int distanceExponent = 0;
+					const Scalar distanceMantissa =
+						std::frexp(g.distance,&distanceExponent);
+					const Scalar offset = -std::scalbn(
+						distanceMantissa*g.thetaSpanMantissa*farFraction*(1.0+u*u),
+						distanceExponent+g.thetaSpanExponent );
+					return fmax(tNear,fmin(tFar+offset,tFar));
+				}
+				const Scalar tangent = tan(fractionalSpan);
+				const Scalar denominator = 1.0+u*tangent;
+				const Scalar offset = -ScaledProduct(
+					g.distance,(tangent/denominator)*(1.0+u*u) );
+				return fmax(tNear,fmin(tFar+offset,tFar));
+			}
+		}
+
 		/// Result of equiangular distance sampling
 		struct Sample
 		{
@@ -57,44 +272,23 @@ namespace RISE
 			const Point3& lightPos,
 			Scalar tNear,
 			Scalar tFar,
+			const bool segmentBounded,
 			Scalar xi
 			)
 		{
-			Sample result;
-
-			// Project light position onto the ray
-			const Vector3 rayToLight = Vector3Ops::mkVector3( lightPos, ray.origin );
-			const Scalar delta = Vector3Ops::Dot( rayToLight, ray.Dir() );
-
-			// Perpendicular distance from light to ray
-			const Scalar D_sq = Vector3Ops::Dot( rayToLight, rayToLight ) - delta * delta;
-			const Scalar D = sqrt( fmax( D_sq, 1e-20 ) );
-
-			// Angle bounds
-			const Scalar thetaA = atan2( tNear - delta, D );
-			const Scalar thetaB = atan2( tFar - delta, D );
-
-			// Degenerate case: light is on the ray (D ~ 0)
-			// Fall back to uniform sampling
-			if( fabs( thetaB - thetaA ) < 1e-10 || D < 1e-10 )
-			{
-				result.t = tNear + xi * (tFar - tNear);
-				result.pdf = 1.0 / fmax( tFar - tNear, 1e-20 );
+			Sample result = { tNear, 0.0 };
+			const Detail::Geometry g = Detail::BuildGeometry(
+				ray,lightPos,tNear,tFar,segmentBounded );
+			if( !g.valid || !std::isfinite(xi) || xi < 0.0 || xi > 1.0 ) return result;
+			if( g.uniform ) {
+				result.t = tNear+xi*g.length;
+				result.pdf = 1.0/g.length;
 				return result;
 			}
-
-			// CDF inversion: t = delta + D * tan( lerp(thetaA, thetaB, xi) )
-			const Scalar theta = thetaA + xi * (thetaB - thetaA);
-			result.t = delta + D * tan( theta );
-
-			// Clamp to valid range (numerical safety)
-			result.t = fmax( tNear, fmin( result.t, tFar ) );
-
-			// PDF: D / ((thetaB - thetaA) * (D^2 + (t - delta)^2))
-			const Scalar dt = result.t - delta;
-			result.pdf = D / ((thetaB - thetaA) * (D_sq + dt * dt));
-			if( result.pdf < 1e-30 ) result.pdf = 1e-30;
-
+			result.t = Detail::InvertAngularCdf(g,tNear,tFar,xi);
+			result.pdf = Detail::AngularPdf(g,result.t);
+			if( !std::isfinite(result.t) || !std::isfinite(result.pdf) ||
+				result.pdf < 0.0 ) return Sample{tNear,0.0};
 			return result;
 		}
 
@@ -104,25 +298,15 @@ namespace RISE
 			const Point3& lightPos,
 			Scalar tNear,
 			Scalar tFar,
+			const bool segmentBounded,
 			Scalar t
 			)
 		{
-			const Vector3 rayToLight = Vector3Ops::mkVector3( lightPos, ray.origin );
-			const Scalar delta = Vector3Ops::Dot( rayToLight, ray.Dir() );
-			const Scalar D_sq = Vector3Ops::Dot( rayToLight, rayToLight ) - delta * delta;
-			const Scalar D = sqrt( fmax( D_sq, 1e-20 ) );
-
-			if( D < 1e-10 )
-				return 1.0 / fmax( tFar - tNear, 1e-20 );
-
-			const Scalar thetaA = atan2( tNear - delta, D );
-			const Scalar thetaB = atan2( tFar - delta, D );
-
-			if( fabs( thetaB - thetaA ) < 1e-10 )
-				return 1.0 / fmax( tFar - tNear, 1e-20 );
-
-			const Scalar dt = t - delta;
-			return D / ((thetaB - thetaA) * (D_sq + dt * dt));
+			const Detail::Geometry g = Detail::BuildGeometry(
+				ray,lightPos,tNear,tFar,segmentBounded );
+			if( !g.valid || !std::isfinite(t) || t < tNear || t > tFar ) return 0.0;
+			if( g.uniform ) return 1.0/g.length;
+			return Detail::AngularPdf(g,t);
 		}
 	}
 }

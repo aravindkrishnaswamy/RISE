@@ -139,9 +139,9 @@ RISEPel GGXInterfaceFresnel::Mean() const
 		// Integrate the same projected directional function. Projecting an
 		// already averaged preview would define a different diffuse model.
 		RISEPel mean(Scalar(0));
-		for( int i=0; i<MicrofacetEnergyLUT::GL_N; ++i ) {
-			const Scalar mu = MicrofacetEnergyLUT::GL_nodes[i];
-			mean = mean + Directional(mu) * (Scalar(2)*mu*MicrofacetEnergyLUT::GL_weights[i]);
+		for( unsigned int i=0; i<GaussLegendre21::NodeCount; ++i ) {
+			const Scalar mu = GaussLegendre21::Nodes[i];
+			mean = mean + Directional(mu) * (Scalar(2)*mu*GaussLegendre21::Weights[i]);
 		}
 		return mean;
 	}

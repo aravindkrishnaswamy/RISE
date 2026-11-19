@@ -1,4 +1,5 @@
 # Film and channel storage share header-only Utilities/CheckedSize.h.
+# Header-only endian helpers live in Utilities/LittleEndian.h.
 # Ward SPFs share header-only Materials/WardSelectionQuadrature.h.
 # Schlick BRDF/SPF share header-only Materials/SchlickMasking.h (DL-225).
 # Donner-Jensen SSS profile/shader-op share header-only Utilities/ExteriorIndexCache.h (DL-291).
@@ -83,6 +84,19 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/CompletePathGuide.cpp				\
 	$(PATHLIBRARY)Utilities/PathGuidingField.cpp				\
 	$(PATHLIBRARY)Utilities/Optics.cpp							\
+	$(PATHLIBRARY)Utilities/RISECBOR64.cpp				\
+	$(PATHLIBRARY)Utilities/FireOptics.cpp				\
+	$(PATHLIBRARY)Utilities/FireSimulationRecords.cpp		\
+	$(PATHLIBRARY)Utilities/FireProductionTables.cpp		\
+	$(PATHLIBRARY)Utilities/FireProductionAdvection.cpp	\
+	$(PATHLIBRARY)Utilities/FireProductionProjection.cpp	\
+	$(PATHLIBRARY)Utilities/FireProductionTransport.cpp	\
+	$(PATHLIBRARY)Utilities/FireProductionSource.cpp	\
+	$(PATHLIBRARY)Utilities/FireProductionForce.cpp	\
+	$(PATHLIBRARY)Utilities/FireCase.cpp			\
+	$(PATHLIBRARY)Utilities/FireSequence.cpp			\
+	$(PATHLIBRARY)Utilities/PlanckRadiance.cpp				\
+	$(PATHLIBRARY)Utilities/GaussLegendreQuadrature.cpp		\
 	$(PATHLIBRARY)Utilities/OrthonormalBasis3D.cpp				\
 	$(PATHLIBRARY)Utilities/Primes.cpp				\
 	$(PATHLIBRARY)Utilities/ProbabilityDensityFunction.cpp		\
@@ -113,8 +127,16 @@ SRCLIBUTILITIES =\
 # is assembled below.
 ifdef IS_MACOS_BUILD
 SRCLIBUTILITIES += $(PATHLIBRARY)Agent/TlsTransportMac.mm
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionComputeMac.mm
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionAdvectionMac.mm
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionProjectionMac.mm
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionForceMac.mm
 else
 SRCLIBUTILITIES += $(PATHLIBRARY)Agent/TlsTransportUnsupported.cpp
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionComputeUnsupported.cpp
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionAdvectionUnsupported.cpp
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionProjectionUnsupported.cpp
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionForceUnsupported.cpp
 endif
 
 # Noise
@@ -192,6 +214,8 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/DataDrivenBSDF.cpp								\
 	$(PATHLIBRARY)Materials/DataDrivenSPF.cpp									\
 	$(PATHLIBRARY)Materials/DielectricSPF.cpp								\
+	$(PATHLIBRARY)Materials/RoughDielectricMaterial.cpp								\
+	$(PATHLIBRARY)Utilities/RoughDielectricEnergy.cpp								\
 	$(PATHLIBRARY)Materials/GGXBRDF.cpp										\
 	$(PATHLIBRARY)Materials/GGXSPF.cpp										\
 	$(PATHLIBRARY)Materials/HairBSDF.cpp										\
@@ -205,10 +229,12 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/GenericHumanTissueSPF.cpp						\
 	$(PATHLIBRARY)Materials/HenyeyGreensteinPhaseFunction.cpp				\
 	$(PATHLIBRARY)Materials/HeterogeneousMedium.cpp						\
+	$(PATHLIBRARY)Materials/ContinuationClosure.cpp						\
 	$(PATHLIBRARY)Materials/HomogeneousMedium.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongBRDF.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongSPF.cpp							\
 	$(PATHLIBRARY)Materials/LambertianBRDF.cpp								\
+	$(PATHLIBRARY)Materials/NullBoundaryMaterial.cpp						\
 	$(PATHLIBRARY)Materials/LambertianSPF.cpp								\
 	$(PATHLIBRARY)Materials/LambertianEmitter.cpp							\
 	$(PATHLIBRARY)Materials/OrenNayarBRDF.cpp								\
@@ -369,6 +395,7 @@ SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/SSS/PointSetOctree.cpp							\
 	$(PATHLIBRARY)Shaders/SSS/SubSurfaceScatteringShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/SSS/DonnerJensenSkinSSSShaderOp.cpp			\
+	$(PATHLIBRARY)Shaders/SSS/SSSContainment.cpp				\
 	$(PATHLIBRARY)Shaders/AmbientOcclusionShaderOp.cpp						\
 	$(PATHLIBRARY)Shaders/AreaLightShaderOp.cpp								\
 	$(PATHLIBRARY)Shaders/CausticPelPhotonMapShaderOp.cpp					\
@@ -530,4 +557,3 @@ SRCLIB =\
 	$(SRCLIBMISC)					\
 	$(SRCLIBSCENEMANAGEMENT)		\
 	$(SRCLIBEXTLIB)
-

@@ -1,0 +1,45 @@
+--- production/FireProductionAdvectionMac.mm
++++ diagnostic_CHARM/FireProductionAdvectionMac.mm
+@@ -1830,12 +1830,16 @@
+  float interior=q[component*p.cells+fct_cell(p,x,y,z)];
+  return kind==1u&&inflow[fct_side_index(p,side,x,y,z)]!=0u?ambient[component]:interior;
+ }
+-inline float fct_mc(float backward,float forward){if(backward*forward<=0.0f)return 0.0f;
+- float centered=0.5f*(backward+forward),sign=centered<0.0f?-1.0f:1.0f;
+- return sign*min(abs(centered),2.0f*min(abs(backward),abs(forward)));}
++inline float fct_charm(float backward,float forward,bool fromLeft){
++ if(!((backward>0.0f&&forward>0.0f)||(backward<0.0f&&forward<0.0f)))return 0.0f;
++ float up=fromLeft?backward:forward,local=fromLeft?forward:backward;
++ // t=s/(1+s), s=local/up. B(s)*up = up*t*(1+2*t).
++ // Same-sign sum avoids cancellation and an unbounded slope ratio.
++ float t=local/(up+local);return up*t*(1.0f+2.0f*t);
++}
+ inline float fct_mass_slope(device const float* q,device const float* ambient,
+  device const uchar* inflow,device const float* basis,device const float* coordinateProjector,
+- constant FCTParams& p,uint component,uint cellX,uint cellY,uint cellZ,uint axis){
++ constant FCTParams& p,uint component,uint cellX,uint cellY,uint cellZ,uint axis,bool fromLeft){
+  float coordinateSlope[8];for(uint b=0u;b<8u;++b)coordinateSlope[b]=0.0f;
+  for(uint b=0u;b<p.nullity;++b){float backward=0.0f,forward=0.0f;
+   for(uint row=0u;row<8u;++row){float center=q[row*p.cells+fct_cell(p,cellX,cellY,cellZ)];
+@@ -1844,7 +1848,7 @@
+    float coefficient=basis[row*p.nullity+b];volatile float backwardDifference=center-previous;
+    volatile float forwardDifference=next-center;volatile float backwardProduct=
+    coefficient*backwardDifference;volatile float forwardProduct=coefficient*forwardDifference;
+-   backward+=backwardProduct;forward+=forwardProduct;}coordinateSlope[b]=fct_mc(backward,forward);}
++   backward+=backwardProduct;forward+=forwardProduct;}coordinateSlope[b]=fct_charm(backward,forward,fromLeft);}
+  float result=0.0f;for(uint b=0u;b<p.nullity;++b){float projected=0.0f;
+   for(uint column=0u;column<p.nullity;++column){volatile float projectedProduct=
+    coordinateProjector[b*p.nullity+column]*coordinateSlope[column];projected+=projectedProduct;}
+@@ -1874,9 +1878,9 @@
+  fct_set_coordinate(axis,rightCoordinate,rx,ry,rz);bool fromLeft=u>=0.0f;
+  uint dx=fromLeft?lx:rx,dy=fromLeft?ly:ry,dz=fromLeft?lz:rz;
+  float donor=q[component*p.cells+fct_cell(p,dx,dy,dz)],slope=component<8u?
+-  fct_mass_slope(q,ambient,inflow,basis,coordinateProjector,p,component,dx,dy,dz,axis):
+-  fct_mc(donor-fct_stage_value(q,ambient,inflow,p,component,dx,dy,dz,axis,-1),
+-   fct_stage_value(q,ambient,inflow,p,component,dx,dy,dz,axis,1)-donor);
++  fct_mass_slope(q,ambient,inflow,basis,coordinateProjector,p,component,dx,dy,dz,axis,fromLeft):
++  fct_charm(donor-fct_stage_value(q,ambient,inflow,p,component,dx,dy,dz,axis,-1),
++   fct_stage_value(q,ambient,inflow,p,component,dx,dy,dz,axis,1)-donor,fromLeft);
+  float high=donor+(fromLeft?0.5f:-0.5f)*slope;low[gid]=u*donor;delta[gid]=u*(high-donor);
+ }
+ kernel void fct_average_flux_pair(device const float* firstLow [[buffer(0)]],

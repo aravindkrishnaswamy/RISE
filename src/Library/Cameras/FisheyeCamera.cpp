@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "FisheyeCamera.h"
 #include <string_view>
 #include "CameraTransforms.h"
@@ -236,6 +237,7 @@ IKeyframeParameter* FisheyeCamera::KeyframeFromParameters( const String& name, c
 
 void FisheyeCamera::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	CameraCommon::SetIntermediateValue( val );
 
 	switch( val.getID() )
@@ -255,5 +257,3 @@ void FisheyeCamera::SetIntermediateValue( const IKeyframeParameter& val )
 		break;
 	}
 }
-
-

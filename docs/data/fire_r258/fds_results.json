@@ -1,0 +1,51 @@
+{
+  "statistics_start_s": 10.466040127212182,
+  "statistics_end_s": 25.09104012721218,
+  "entrainment": [
+    {
+      "z": 32,
+      "height_m": 0.994276272190858,
+      "r251_kg_s": 0.24148412963394678,
+      "earlier_FDS_VLES_Superbee_kg_s": 0.30056327754318773,
+      "new_FDS_LES_CHARM_kg_s": 0.30349981257677217,
+      "Heskestad_26p4kW_kg_s": 0.2483292160456868
+    },
+    {
+      "z": 65,
+      "height_m": 2.0038491024154212,
+      "r251_kg_s": 0.48618267153618944,
+      "earlier_FDS_VLES_Superbee_kg_s": 0.7215251610974115,
+      "new_FDS_LES_CHARM_kg_s": 0.7185672959725129,
+      "Heskestad_26p4kW_kg_s": 0.7059553164496003
+    },
+    {
+      "z": 98,
+      "height_m": 3.013421932639985,
+      "r251_kg_s": 0.7423568321264503,
+      "earlier_FDS_VLES_Superbee_kg_s": 1.3112741512768493,
+      "new_FDS_LES_CHARM_kg_s": 1.2678965909452025,
+      "Heskestad_26p4kW_kg_s": 1.3564384572531747
+    }
+  ],
+  "spectral_power_1m": [
+    {
+      "quantity": "theta",
+      "height_m": 0.994276272190858,
+      "band_Hz": "1 <= f < 3",
+      "r251_power": 996.9254104479643,
+      "earlier_FDS_VLES_Superbee_power": 3845.338023496106,
+      "new_FDS_LES_CHARM_power": 2022.8948965870832,
+      "units": "K^2"
+    },
+    {
+      "quantity": "w",
+      "height_m": 0.994276272190858,
+      "band_Hz": "1 <= f < 3",
+      "r251_power": 0.14751849389156305,
+      "earlier_FDS_VLES_Superbee_power": 0.4949767766647239,
+      "new_FDS_LES_CHARM_power": 0.4671949936367298,
+      "units": "m^2/s^2"
+    }
+  ],
+  "conditional_near_base_analysis": "Completed: divergence comparable; RISE mean burner-face inflow velocity1.95x FDS; rim width differences subcell. Cause of boundary/source difference not established; stop for review."
+}

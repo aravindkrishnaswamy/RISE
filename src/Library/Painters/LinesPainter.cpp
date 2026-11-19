@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "LinesPainter.h"
 #include "../Animation/KeyframableHelper.h"
 
@@ -95,6 +96,7 @@ IKeyframeParameter* LinesPainter::KeyframeFromParameters( const String& name, co
 
 void LinesPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SIZE_ID:
@@ -107,6 +109,7 @@ void LinesPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void LinesPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 }
 
 

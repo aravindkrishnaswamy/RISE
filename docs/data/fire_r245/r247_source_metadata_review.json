@@ -1,0 +1,36 @@
+{
+  "schema": "rise.fire.r247.source-metadata-review.v1",
+  "status": "accepted_zero_p1_p2_metadata_only",
+  "reviewed_head": "6bcb3b170",
+  "round": 2,
+  "gate_sha256": "52c0e32c15cb1c331620b0388f612656fc0c9c480cc0af12e8551ceb9a803cff",
+  "prior_round": {
+    "reviewed_head": "5564dde68",
+    "p1": 0,
+    "p2": 1,
+    "finding": "Matching malformed beginning binding/certificate SHA was admitted for newly captured wide declarations"
+  },
+  "repair": "Every frame SHA256 field requires lowercase64hex; malformed/truncated/uppercase declaration REDs discriminate old acceptance",
+  "reviewers": [
+    {
+      "agent": "r247_source_metadata_contract_r2",
+      "axis": "independent event/declaration/typed hash contract and test integrity",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "agent": "r247_source_metadata_provenance_r2",
+      "axis": "captured implementation/verifier/input lifecycle, distinct source seal issuers and coverage",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "native_field_packets_read": 0,
+  "beginning_payload_seals_verified": false,
+  "field_allocation_or_full_derivation_accepted": false,
+  "original_taller_exit_code": 98,
+  "report_path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_metadata_validation.v3/metadata/source_metadata.json",
+  "report_sha256": "e0114ff6c0371d321294ef8775f698baca67c9033874dc276b04d765ec842624",
+  "report_seal_sha256": "99bd8dc82544d31b7c68c8e677dbcb497071b4ca0046fe5c119231e1e307e6ce",
+  "accepted_utc": "2026-10-04T17:22:16.979263+00:00"
+}

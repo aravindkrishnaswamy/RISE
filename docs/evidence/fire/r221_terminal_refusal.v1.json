@@ -1,0 +1,184 @@
+{
+  "accepted_history_rows": 1955,
+  "accepted_steps_after_retained_checkpoint": [
+    1953,
+    1954,
+    1955
+  ],
+  "bitmap": 33564800,
+  "checkpoint_sha256": "e43cd54d2641190d7075738b2b74171da1ed718a1a892dd8c23530d1f702854c",
+  "checkpoint_step": 1952,
+  "checkpoint_v2_root": "84537cd0a1cdc03c47f796e67ee298ab2e4a1e89430b8f1cd2f933b5a997f914",
+  "checkpoint_verified": true,
+  "compressed_peak_bytes": 0,
+  "contiguous_exact_time_join_verified": true,
+  "crossing_bundle": "none; no threshold crossing",
+  "evidence_seal_scope": "checkpoint native v2 seal verified; stopped raw trajectories/log SHA-bound by this reporting manifest, not relabelled as producer terminal success seal",
+  "exit_code": 93,
+  "failed_candidate_beginning_s": "3.0370220628101379",
+  "files": [
+    {
+      "bytes": 440919,
+      "path": "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r217_clause_diagnostic/tier10_from_zero.v1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "7c9414de24da4a82dbcc9381364b4b2d2fae2a54a5cc6c7b5005b026ab03fb30"
+    },
+    {
+      "bytes": 308523,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1.log",
+      "sha256": "16e87c48307e33eb3dbcb308db97276dee4fa92f9919008da6097d61f124978b"
+    },
+    {
+      "bytes": 870,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/continuation_identity.v2",
+      "sha256": "cbac12c881de8058e3ce7f57b9670335ac67e0e1bc6c09d392fe0ddad059971f"
+    },
+    {
+      "bytes": 755,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/host_memory_admission.v1",
+      "sha256": "995daeb4af91b319e08ed3eeb5b57702e156684e4c86621b232dd6ac8a21de66"
+    },
+    {
+      "bytes": 616,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/native_overlap_verified.v2",
+      "sha256": "22e1d271e4513f292d2f78fcb32f3a6696f1e15bbb515c8e9d6bcc8ddc97f519"
+    },
+    {
+      "bytes": 126473968,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/checkpoints/step_0000001952.checkpoint",
+      "sha256": "e43cd54d2641190d7075738b2b74171da1ed718a1a892dd8c23530d1f702854c"
+    },
+    {
+      "bytes": 416,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/checkpoints/step_0000001952.checkpoint.payload-v2.json",
+      "sha256": "9d94e718e3b7a18663dbfc148460ece831727274e6527bcfc41658a3b5cdc5f4"
+    },
+    {
+      "bytes": 83429,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/host_memory_trajectory.csv",
+      "sha256": "cb3498757b1c5c2e31d97f75ada38be59d1bf81478e60dae718117499d8aaabf"
+    },
+    {
+      "bytes": 595760,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "6a44c8d1493e141895214343d4aa14a83a419649be7a72e9bb307220db1aea15"
+    },
+    {
+      "bytes": 1610,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/reference_composition_candidate_fixed_column.raw.csv",
+      "sha256": "6ba50f5c2b26cda703ca2b7047462699ae3bbfd97d56f94985387ecbadaa69fb"
+    },
+    {
+      "bytes": 32596,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/reference_composition_candidate_fixed_column.raw.csv.column.csv",
+      "sha256": "ac4dd1e4650a18575882dfe7e80a087f0205a51f0c9df83eb0cb904f620501a5"
+    },
+    {
+      "bytes": 7091415,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/reference_composition_candidate_fixed_column.raw.csv.convergence.v1",
+      "sha256": "6285f0002c75d24a45b41216395211426231810175e7b7ebd5fe9407f4b93b34"
+    },
+    {
+      "bytes": 4083167,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/reference_composition_candidate_fixed_column.raw.csv.convergence.v1.csv",
+      "sha256": "4c6022f3c642bd756a8fb2861179daadee74a9c14a1a64a6c809f13828b134d1"
+    },
+    {
+      "bytes": 82006848,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/reference_composition_candidate_fixed_column.raw.csv.convergence.v1.tail_targets.bin",
+      "sha256": "3658659b20a73f50720dc9484b3e5f318fd65739ff5c7b8ed31c35a6c7b039e3"
+    },
+    {
+      "bytes": 401,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/reference_composition_candidate_fixed_column.raw.csv.event.v1",
+      "sha256": "4de355b328dcbf12540c5209ce7e026881a94449fcefef069b86b2d062108ef6"
+    },
+    {
+      "bytes": 4501,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/reference_composition_candidate_fixed_column.raw.csv.source_context.csv",
+      "sha256": "e5e8b6fea88367cf72ec38d098957b8f207f68650373fe69b4f6ceb42600c446"
+    },
+    {
+      "bytes": 858,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/reference_composition_candidate_fixed_column.raw.csv.source_ledger.v1",
+      "sha256": "97e8fef2ddc0d633ed7ad9df0d3c909746fdd84af2ee7d6d0d6a31955c1e9865"
+    },
+    {
+      "bytes": 371705974,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/reference_composition_candidate_fixed_column.raw.csv.source_observation_inputs.bin",
+      "sha256": "a15318bf44d63543c86a86e215d05d01425146aff44ec389a55983a869b309a4"
+    },
+    {
+      "bytes": 124962868,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/reference_composition_candidate_fixed_column.raw.csv.source_packets.bin",
+      "sha256": "5f827dc7145f8d586198f84302ab6d6c6250c2ff1b0253d4d87a6e3d71af82db"
+    },
+    {
+      "bytes": 194508,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/reference_composition_candidate_fixed_column.raw.csv.staggered_column.csv",
+      "sha256": "6dd7389895697a05cb4ba1be2e585a43681e5a390f6dbf057c946a3c5bddf1f1"
+    },
+    {
+      "bytes": 318,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/retry_attempt_trajectory.csv",
+      "sha256": "c525f3cc996be1341e30b68e31b30170cfda688888847d013e2744d3aa7bc1e0"
+    }
+  ],
+  "final_checkpoint_present": false,
+  "first_writer": "not localized; same bitmap as r217 is not proof of same cause",
+  "fixed_column_diagnostic": "present; not the refusal state",
+  "footprint_last_bytes": 1963100536,
+  "footprint_peak_bytes": 1963919760,
+  "golden_sha256": "1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947",
+  "host_ceiling_bytes": 34359738368,
+  "host_memory_scope": "post-resume accepted boundaries including admission; not within-step peak or historical pre-resume RSS",
+  "last_accepted": {
+    "accepted_step": "1955",
+    "manifold_max": "0.011453032493591309",
+    "maximum_velocity_m_per_s": "6.240412712097168",
+    "tail_cells": "0",
+    "tail_drained_m3": "0",
+    "time_s": "3.0370220628101379"
+  },
+  "native_overlap_N": 9,
+  "next_step_reserve_bytes": 13449641984,
+  "observation": "solver validation refusal, not horizon survival or velocity crossing",
+  "old_failure_2_131s_bracket": [
+    {
+      "accepted_step": "1392",
+      "manifold_max": "0.0099233388900756836",
+      "maximum_velocity_m_per_s": "7.4819960594177246",
+      "tail_cells": "0",
+      "tail_drained_m3": "0",
+      "time_s": "2.1298214631387964"
+    },
+    {
+      "accepted_step": "1393",
+      "manifold_max": "0.0091059207916259766",
+      "maximum_velocity_m_per_s": "7.6821174621582031",
+      "tail_cells": "0",
+      "tail_drained_m3": "0",
+      "time_s": "2.131457022158429"
+    }
+  ],
+  "producer_terminal_summary_present": false,
+  "resumed_rows": 1129,
+  "rss_first_bytes": 1918877696,
+  "rss_last_bytes": 1810759680,
+  "rss_peak_bytes": 1918877696,
+  "schema": "rise.fire.r221.terminal-refusal.v1",
+  "set_bits": [
+    7,
+    11,
+    13,
+    25
+  ],
+  "stage": 1,
+  "whole_history_peak": {
+    "accepted_step": "946",
+    "manifold_max": "0.0084390640258789062",
+    "maximum_velocity_m_per_s": "10.805164337158203",
+    "tail_cells": "0",
+    "tail_drained_m3": "0",
+    "time_s": "1.5189756799954921"
+  }
+}

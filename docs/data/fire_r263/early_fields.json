@@ -1,0 +1,41 @@
+{
+  "scope": "first two retained B output states against temporally interpolated retained A; not first two internal timesteps or a bitwise matched-time reference",
+  "rows": [
+    {
+      "slice": 108,
+      "time_s": 0.08137478679418564,
+      "baseline_lower_time_s": 0.0,
+      "baseline_upper_time_s": 0.08137478679418564,
+      "baseline_interpolation_fraction": 1.0,
+      "different_values": 67,
+      "max_abs_difference": 6.4849853515625e-05
+    },
+    {
+      "slice": 108,
+      "time_s": 0.13562463223934174,
+      "baseline_lower_time_s": 0.08137478679418564,
+      "baseline_upper_time_s": 0.13562463223934174,
+      "baseline_interpolation_fraction": 1.0,
+      "different_values": 130,
+      "max_abs_difference": 0.0025806427001953125
+    },
+    {
+      "slice": 111,
+      "time_s": 0.08137478679418564,
+      "baseline_lower_time_s": 0.0,
+      "baseline_upper_time_s": 0.08137478679418564,
+      "baseline_interpolation_fraction": 1.0,
+      "different_values": 4899,
+      "max_abs_difference": 8.804723620414734e-06
+    },
+    {
+      "slice": 111,
+      "time_s": 0.13562463223934174,
+      "baseline_lower_time_s": 0.08137478679418564,
+      "baseline_upper_time_s": 0.13562463223934174,
+      "baseline_interpolation_fraction": 1.0,
+      "different_values": 4899,
+      "max_abs_difference": 2.8640031814575195e-05
+    }
+  ]
+}

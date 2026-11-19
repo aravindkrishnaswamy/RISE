@@ -1,0 +1,47 @@
+{
+  "schema": "rise.fire.r247.region-transfer-math-gate.v1",
+  "status": "candidate_synthetic_scalar_arithmetic_only",
+  "exit_code": 0,
+  "controls": {
+    "empirical": false,
+    "full_history_budget": false,
+    "green": 9,
+    "native_payloads_read": 0,
+    "red": 17,
+    "status": "synthetic_scalar_arithmetic_prerequisite_only"
+  },
+  "design_acceptance": "5f88dc2b2",
+  "field_consumer_implemented": false,
+  "full_derivation_accepted": false,
+  "memory_admission_accepted": false,
+  "artifacts": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_region_transfers.py",
+      "sha256": "4e814f7cb55739cd39d645e2136072c0e2e2bc6b56599e2f19536de3072ed754"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_region_transfer_validation.v2/region_transfers.frozen.py",
+      "sha256": "4e814f7cb55739cd39d645e2136072c0e2e2bc6b56599e2f19536de3072ed754"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_region_transfer_validation.v2/stdout.log",
+      "sha256": "d53a4bfaf6b1ae335c59e044f4358b60a038340e4887a13b764bd0a3439561bc"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_region_transfer_validation.v2/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_region_transfer_validation.v2/controls.json",
+      "sha256": "6b189f18437a9973f7d6a6b726f57d516eca71350daf96f624cdcc26f3f0d9e4"
+    }
+  ],
+  "self_audit": [
+    "Packed x/y/z face offsets and common-layer lateral truncation",
+    "Counterflow species sign splitting after per-face total",
+    "Q0/R1/frozen-source stages and kg/J measures",
+    "Actual residual retained rather than zeroed",
+    "Pure caller-owned arrays do not establish native input or RSS admission"
+  ],
+  "repair": "Exact positive finite promoted binary32 dx/dt before measures; arbitrary binary64 underflow/overflow and nonrepresentable decimals refused. Original frozen v1 preserved."
+}

@@ -1,0 +1,49 @@
+{
+  "mode": "read_only_no_simulation_no_solver_change",
+  "window_start_s": 10.466040127212182,
+  "window_end_s": 25.09104012721218,
+  "native_build_logs": "r259_inlet_forcing/build.log and build_frames.log, both empty",
+  "checks": [
+    "native per-frame totals reproduce earlier r251 extraction within rounding",
+    "204 inlet weights per face sum to1",
+    "all69 authored burner faces reproduced",
+    "two independent measurement/formula reviews: no P1/P2"
+  ],
+  "files": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/frame_times.csv",
+      "bytes": 20605,
+      "sha256": "282d5ec44def44db3dd3ec7ead511d276a34969f8541f4a4ca289a98655cea1a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r254_turbulence_diagnosis/weighted_inputs.txt",
+      "bytes": 29074,
+      "sha256": "e16da1e473f5e73af6a1d652ccdc56eaa29411ecfee949f248f697c785fa249d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r259_inlet_forcing/r251_planes.csv",
+      "bytes": 1733330,
+      "sha256": "2a8ec815a8ca532a74655e09c4785e934bb5dfaad78ed3063576d43246abb950"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r259_inlet_forcing/r251_inlet_history.csv",
+      "bytes": 2969159,
+      "sha256": "329eccc3a2ee59008e8d6ff373d6c0cb87c6af2057c0e2c6d6451efd0096c563"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r258_fds_les/fds_run/r258_fds_hrr.csv",
+      "bytes": 180249,
+      "sha256": "96fe444c75252d7702591f5b9c7dd36107b5d1c95acac7516da155343be88bea"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r258_fds_les/fds_run/r258_fds_1_2.s3d",
+      "bytes": 9264512,
+      "sha256": "66a3b87d660af70d08ad230b58c675271d0aa09ffb83a62eafd38d58c6a294a5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r255_comparison/case_metadata.txt",
+      "bytes": 2311,
+      "sha256": "83ddc1440f39239a45f1a3f3ce4a446082f5ca604ed5f31337d78c8d180a4c9b"
+    }
+  ]
+}

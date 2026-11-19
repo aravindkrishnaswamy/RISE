@@ -127,8 +127,9 @@ public:
     // (providerRequiresApiKey(m_appliedProvider) && key empty) rather than
     // inventing a second source of truth -- a keyless provider (Local/
     // Ollama) is always configured; every other provider needs a
-    // resolvable key (Keychain-equivalent: in-memory/env-var on this
-    // platform).  Reads the APPLIED provider/key (not necessarily what
+    // resolvable key (draft input, Windows Credential Manager, or
+    // environment fallback).  Reads the APPLIED provider/key (not
+    // necessarily what
     // the combo is mid-editing to -- see applyProviderChangeWithConfirmation),
     // matching what an actual send would do right now.
     bool agentConfigured() const;

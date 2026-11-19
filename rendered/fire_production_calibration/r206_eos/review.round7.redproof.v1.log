@@ -1,0 +1,210 @@
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='EOS_ITERATIONS_V1', separator="' '")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='EOS_ITERATIONS_V1', separator="'\\t'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='EOS_ITERATIONS_V1', separator="'\\t'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='EOS_ITERATIONS_V1', separator="'\\xa0'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='EOS_ITERATIONS_V1', separator="'\\xa0'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='EOS_ITERATIONS_V1', separator="'  '")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='EOS_WARM_PROBES_V1', separator="' '")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='EOS_WARM_PROBES_V1', separator="'\\t'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='EOS_WARM_PROBES_V1', separator="'\\t'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='EOS_WARM_PROBES_V1', separator="'\\xa0'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='EOS_WARM_PROBES_V1', separator="'\\xa0'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='EOS_WARM_PROBES_V1', separator="'  '")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.131s
+
+FAILED (failures=12)
+R206_RECORD_DISPATCH_RED consumer=histogram historical_false_green_caught=1 setup_errors=0
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='PRODUCER_KERNEL_V1', separator="' '")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='PRODUCER_KERNEL_V1', separator="'\\t'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='PRODUCER_KERNEL_V1', separator="'\\t'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='PRODUCER_KERNEL_V1', separator="'\\xa0'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='PRODUCER_KERNEL_V1', separator="'\\xa0'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='PRODUCER_KERNEL_V1', separator="'  '")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.132s
+
+FAILED (failures=6)
+R206_RECORD_DISPATCH_RED consumer=summarize historical_false_green_caught=1 setup_errors=0
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='PRODUCER_COMMAND_V1', separator="' '")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='PRODUCER_COMMAND_V1', separator="'\\t'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='PRODUCER_COMMAND_V1', separator="'\\t'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='PRODUCER_COMMAND_V1', separator="'\\xa0'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='PRODUCER_COMMAND_V1', separator="'\\xa0'")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_whitespace_prefixed_duplicate_records_are_not_ignored (test_fire_r206_eos.EOSGateREDs) (tag='PRODUCER_COMMAND_V1', separator="'  '")
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 78, in test_whitespace_prefixed_duplicate_records_are_not_ignored
+    bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.115s
+
+FAILED (failures=6)
+R206_RECORD_DISPATCH_RED consumer=bind_counters historical_false_green_caught=1 setup_errors=0

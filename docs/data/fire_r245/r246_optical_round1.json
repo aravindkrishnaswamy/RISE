@@ -1,0 +1,20 @@
+{
+  "status": "refused_exact_repeat",
+  "launch_permitted": false,
+  "scope": "synthetic optical rendering, no simulation",
+  "completion": {
+    "exit_code": 97,
+    "finished_at": "2026-10-01T11:00:26.073057+00:00",
+    "scope": "four sequential synthetic optical renders; no simulation"
+  },
+  "completion_sha256": "aa025731f8e7414345b6487ddabe24a5b29a9b580fefddfd5722d74c5b5f8fb6",
+  "render_log_sha256": "d73dd02d4781d2a128a0a6df20d5b6e870af17635ee8c625b32d0f012b0e9be9",
+  "receipt_sha256": "2f4d8cadac347f6d76d350b4f0b1ee01683902c4ba4eac9fb60bfc0be2017a21",
+  "build_log_sha256": {
+    "r246_optical_build.v1.log": "6544b55a17dee8b6a3615fe7070a4fae078fd0d1df5d6a6962acc2c3f6def15e",
+    "r246_optical_build.v2.log": "813b14826f9df1b837f808dedca23a731cd90bab7d1e20675ceb47b629e7ecc5",
+    "r246_optical_build.v3.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "r246_optical_build.v4.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21"
+  },
+  "interpretation": "Same-process base and repeat pixels differ; optical control is refused, not physical evidence. Fresh-process harness retains exact repeat requirement and original camera/render recipe. All payloads retained externally."
+}

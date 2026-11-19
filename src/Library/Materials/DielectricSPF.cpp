@@ -276,19 +276,19 @@ Scalar DielectricSPF::GenerateScatteredRay(
 			exitStack.pop();
 		}
 		Scalar exitIOR = exitStack.top();
-		Ni = rIndex;
+		Ni = pOpenSheetStack ? openSheet.etaFrom : rIndex;
 		Nt = exitIOR;
 
-		if( Optics::CalculateRefractedRay( -ri.onb.w(), rIndex, exitIOR, refracted ) ) {
+		if( Optics::CalculateRefractedRay( -ri.onb.w(), Ni, exitIOR, refracted ) ) {
 			if( bAllocateStacks ) {
 				dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, rIndex );
 			}
 			if( arStack.nLayers > 0 ) {
 				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
 				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
-				ref = ARStackReflectance( arStack, /*fromInside*/ true, cosI, lam, rIndex, exitIOR );
+				ref = ARStackReflectance( arStack, /*fromInside*/ true, cosI, lam, Ni, exitIOR );
 			} else {
-				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), rIndex, exitIOR );
+				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), Ni, exitIOR );
 			}
 		} else {
 			// Total internal reflection

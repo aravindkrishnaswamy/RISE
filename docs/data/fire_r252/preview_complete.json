@@ -1,0 +1,26 @@
+{
+  "movie": "/Volumes/SSD/RISE/fire_production_calibration/r252_r251_preview/r251_preview_128x192.mov",
+  "sha256": "ed7afdc49ae1540549e0191df4a38937b1849288d80c777e2e89cdaa90da26fe",
+  "bytes": 1072650,
+  "frames": 235,
+  "width": 128,
+  "height": 192,
+  "fps": 16,
+  "duration_s": 14.6875,
+  "render_rasterization_s": 7816.957,
+  "unique_denoised_PNG_payload_hashes": 235,
+  "frame_product_and_sidecar_manifest_sha256": "14eacdc963afbb25da732854d1f9ff04ee6b672ec4fc96649b9dcb6e6505b68e",
+  "scene_as_rendered": "/Volumes/SSD/RISE/fire_production_calibration/r252_r251_preview/scene_as_rendered.RISEscene",
+  "scene_as_rendered_sha256": "bb9cb93537d74f8fcdecdeb94e3f5017c86bf13a8be470fb6ab564bdc25d0b86",
+  "current_recipe_scene_sha256": "38b908abcbafdae472456209049f272fb45b834a7f0b0c750f0c34c9cdc683f7",
+  "scene_comment_corrected_after_render": true,
+  "encoder_sha256": "7180cdca93975124671e35ce56372ab190d3950387e66bbda80b8b97d126c32b",
+  "verifier_sha256": "a92e32b8b45b9dff407f96875629569e4a72e5f8f7ed18d056adfb7797b167e8",
+  "decode_check": "measured count=235 status=2 rate=16.0 duration=235000/16000\nPASS decoded_frames=235 exact_PTS_n_over_16=1 nominal_fps=16 duration_s=14.6875",
+  "encode_check": "encoded 235 frames at 16 fps; duration 14.6875 s including final-frame hold",
+  "notes": [
+    "All 235 frames rendered with r242 settings and owner-selected 128x192 CLI override.",
+    "Initial legacy AVFoundation encode completed but emitted deprecation warnings. Updated existing helpers to receiver/provider APIs and re-encoded these same denoised PNGs, without render or solver rerun.",
+    "The scene header comment was corrected from r241 to r251 after rendering; the archived byte-exact source matches launch receipt. No scene parameter changed."
+  ]
+}

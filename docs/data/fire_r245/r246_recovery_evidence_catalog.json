@@ -1,0 +1,266 @@
+{
+  "schema": "rise.fire.r246.recovery-evidence-catalog.v1",
+  "records": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_event_history_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "5b4760d977fd3d54b8e6e8358ecb237aa2d748d9d702a09231df8aa55a964151"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_event_history_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "ce44b76e531aca301a478887472ce5229bb9d41f0fdb711b0100be9ec93646c4"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_consumer_read_sequence_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "114282596e1bcfb6c271970f4176a8acc2fea036ef39bff7369fd36197be9815"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_consumer_input_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "92b273840254413cecd021079065fa51e2348861baf741b39173e3b4d92286fe"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_consumer_input_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "884e5cec7e1c46d48f5c66a323e428a32b203b450e13b449bf796f440c7adba0"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_recovery_operand_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "6b5c2b427a20b95cae4325a6fd04c527a84273c2e7545286dc72e62e42caafd6"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_recovery_operand_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "b6a80873f56ed7e6e31d2dcbaeb74034fc235ad2dba197ac2076b9b72e0602d6"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_observation_ledger_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "342d6aa31434a87579218cc73fa0bf7f0157fe47d119d5504a84fba61e917347"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_observation_ledger_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "a8fd4c2e043fa6bfbeefb0fb5141df3c3f2e8ee25c0dcc0a6366cdef089b6cc1"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_capsule_binding_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "6f0b04388ce6979688a2be189f47c6c4c4682fa481eb974112deae9320383499"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_capsule_binding_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "f61f883b195bfaef92d0b1e8494544225334999d906cb692551812b2163ae2d7"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_prepared_recovery_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "43150b2b1a59512820076cef0192613a9139a7777914548715c6fb7825b9ba6c"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_prepared_recovery_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "92cfc05a2845dbac8bbd3f8f0d3df3053b8b9a26920a80078ce26c18a6763088"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_recovery_admission_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "0bc1d6dd8f7cd210bcb0df48d10a26e515953a1e5803925dca717b88c0faa33b"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_recovery_admission_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "ef85f9b17c56effae74152e7bcf36eafa7e859bb60397f9d5b773749f803d8cc"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_spectrum_input_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "742e933a89793c5748cbe3be485a4cfd8ec8e4fb64311aef5b9e056e3553f234"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_spectrum_input_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "135a995b57eebfa93094abf86fb903e247efa1b1171cd06e768d99a90debb467"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_preview_snapshot_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "6af6b656b7828746c35eea1b44d44a133a9753bc40b74e80f5dd883a0c5a8d63"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_preview_snapshot_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "9c83cdc196da11dfe82d2817a9f5d6f07a396c73f71e21bbc7ccec720b719d84"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_preview_receipt_admission_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "b63b2e91df36b76ee68916f90816394e42c2c9c0a0c26139f2dabd71fa50d766"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_preview_receipt_admission_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "d4b6f2187a81d841dacf040fc292aa50bd1c6b8704724ce45857d90c9556fdc1"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_captured_display_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "5a30005f846df685a74860143ab227691f3faaa63ee063064f51b342ba8040ef"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_captured_display_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "1f580f1f1f150f0fa506f8838c04d7734b5f2ba21d275b1999042ae8d708dc79"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_actual_profile_binding_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "0056eaed659f524c269a4b0fdf0da9741257a85c2044b2bf2f88c902183c7134"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_actual_profile_binding_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "2b2edc2de37ba077e2f2545ae3e0e2a1a837c3ce6e5e2f0e3b7ee42122c072fb"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_authored_gif_bytes_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "7f238820e946dedea81b8932de164da4fb96c4732b525900ffcaea59a397e348"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_authored_gif_bytes_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "a49ba5b299d7d38624bd49a47924526d3731193129a153067bf711959da2c003"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_gif_publication_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "68082df6d9bc84246a66f1f1f79638f1c6001dac97de3db8bca412735f187c35"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_gif_publication_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "fdafc3ad15173f1b803f444d196f229ba6ad2fbe7f7cef2d1b9c022375387061"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_captured_scene_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "39d43072d2f0790eb7842cef202f40ce4d17889d63cb1a7b6258809038be4b82"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_captured_scene_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "1731ab66eae2320fa2047dcf005fde1c8a215185fb992a299d3bc64091f48f2f"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_movie_admission_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "f4343b773727fe25721eb7e917df2a8a2017472b85a91ddc08d2257773f348e6"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_movie_admission_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "b314937e5f66165e33eb2e2f4d13bfc6e6b6b81b81880d9b3d952654e5ebfb47"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_recovered_cli_gate.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "39228327d646b371b03094956f77d698601943c3da610e0d6712021eadc381c2"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_recovered_cli_review.json",
+      "role": "accepted_prerequisite_evidence",
+      "sha256": "c2d37cc8a63f6a315cee621436933e85545975c80c0ef1f34f49cff2fb65f7e7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_prepared_recovery.v1/recovery_receipt.json",
+      "role": "modern_sealed_recovery_evidence",
+      "sha256": "9e76d5221025d615f0475fd67f1cbd818791c66dd6e815aea7a2156c55ca55f2",
+      "seal_sha256": "1274e152945236ec3b00d620c656a94a6807bcb51cd901562658194034ea9d13"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_prepared_recovery.v1/retained_summary.json",
+      "role": "modern_sealed_recovery_evidence",
+      "sha256": "770fb2d6b65df76ff55ae67d6dbe6ce1bb9b375912fd5620b55f266e69d7c931",
+      "seal_sha256": "9f065df8d9f608ef7d432c2ae9fda0d20f19a12538f791775e52d2343d935f07"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_prepared_recovery.v1/native_profile.csv",
+      "role": "modern_sealed_recovery_evidence",
+      "sha256": "1752c536ebf0b14c1cf8fc4c69b2c98897f92eb8e3c8a31b7505de936d6d181a",
+      "seal_sha256": "226c77f6553577683618d31bbbf3909c65ca87786f35a2e35bc33c8db8acddce"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_prepared_recovery.v1/common_height_profile.csv",
+      "role": "modern_sealed_recovery_evidence",
+      "sha256": "0ca30b2d42922d8637b2fee97b9884bca3bbf0a4f5d8aedaa71f7794ec05decc",
+      "seal_sha256": "81491b030150c1fc23bed632f1cccd4569171c7f47084d9219487f42c48f1d47"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_source_snapshot.v8/snapshot_receipt.json",
+      "role": "modern_sealed_recovery_evidence",
+      "sha256": "9e9b47bcc8a168139ad686b34386235e43554cda0b20a8656078bab33f9da2eb",
+      "seal_sha256": "e28d9681dc4413e193b4461a677d90d23251372415080547113c76a786e37b0e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_source_snapshot.v8/sequence_manifest.rise-fire.cbor",
+      "role": "modern_sealed_recovery_evidence",
+      "sha256": "f036ff7f96a3f5827104cdd2f06e8aa068c3e8f097acd7ff3c069bab82fb3cc1",
+      "seal_sha256": "7337482671ad2d62e3ef35cf78469f450fc57d80e2c7bd39ad3d5d779bc65644"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_source_snapshot.v8/frame_times.csv",
+      "role": "modern_sealed_recovery_evidence",
+      "sha256": "3bb265a8539d5de45356dba419024c077834e3bb4c3770d75c63478006a5a5c8",
+      "seal_sha256": "27eb02213111494204cfe79b8f8cf9f87fec0a325cc6a5ede0a27cafcf0d2cb3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_source_snapshot.v8/source_scene.RISEscene",
+      "role": "modern_sealed_recovery_evidence",
+      "sha256": "93e970210ea2da14a3beb0c22124e8f43cef2d45aedf2d22ce9a518d7ac7849c",
+      "seal_sha256": "60c029ccb0a9a8bf226c2a20ccac9f48f9312ad007880537c1b7e3ab7dc60cdd"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operand_validation.v3/actual_operands/checkpoint_operands.json",
+      "role": "modern_sealed_recovery_evidence",
+      "sha256": "81df738946e1f8537a7845554fd1b81158dd0b6303fd3617ead2e1a64a4fce33",
+      "seal_sha256": "1e3406372d5d5adcf0f06b0fe530b56eb825fd4c779c6d6ba95bd650ce77a852"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_observation_ledger_validation.v7/ledger_binding.json",
+      "role": "modern_sealed_recovery_evidence",
+      "sha256": "3a27bc90f840e12b98303104654d87acba4a59ce7448b65140d6c46bea0fc19c",
+      "seal_sha256": "e7b7629b7cca79d5df8795bd6861a5f7c57a0af62b40684f82e3df5cef2d184d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_capsule_binding_validation.v1/capsule_binding.json",
+      "role": "modern_sealed_recovery_evidence",
+      "sha256": "4774e99c6b273b3530adf262d4072a848288324686e74f29c25103f9ce7055c2",
+      "seal_sha256": "19fc71ac38037d0c29b121afd491a99e1bad73d4ab6e2f75f6b206f8f5826d39"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_launch.v1/completion.json",
+      "role": "original_failed_completion",
+      "sha256": "8d664320d24952999b5d4d97028a05a8b0994392b16074ee027c53ce14e2e017"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_cli_runtime.v1/FireSequenceTest",
+      "role": "reviewed_consumer_binary",
+      "sha256": "ed7cf2c3dce91d1d801800341381c4dd60b7ffafb10ca431c4c879322e8308b1"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_cli_runtime.v1/RendererBuildIdentity.generated.h",
+      "role": "reviewed_consumer_identity",
+      "sha256": "052d2afedb127964c8379a41e1da80095f591c8dd6e7fc20977dc90f3599e45e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_cli_validation.v1/actual.log",
+      "role": "accepted_consumer_inspect",
+      "sha256": "9923f474ff46950b1c6d02032d2e048c3fe358d500302ea28031b627ce8e686e"
+    }
+  ]
+}

@@ -42,7 +42,8 @@ namespace RISE
 				const IORStack& ior_stack,							///< [in] Index of refraction stack
 				const int oneofthree,
 				const Scalar newIOR,
-				const Scalar cosine
+				const Scalar cosine,
+				const Scalar nm = 0
 				) const;
 
 		public:

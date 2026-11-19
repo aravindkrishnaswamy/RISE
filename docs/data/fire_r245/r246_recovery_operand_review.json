@@ -1,0 +1,34 @@
+{
+  "schema": "rise.fire.r246.recovery-operand-review.v1",
+  "reviewed_implementation": "c1299470f",
+  "recovery_accepted": false,
+  "rounds": [
+    {
+      "round": 1,
+      "contract": "zero P1/P2",
+      "lifecycle": "P2 capture before lifecycle admission",
+      "fix": "900f2d1d7 shared pre/post capture checks plus staged controls"
+    },
+    {
+      "round": 2,
+      "contract": "zero P1/P2",
+      "lifecycle": "P2 CSV identity checked against separate capture",
+      "fix": "c1299470f candidate-bound consumed/reported CSV and staged semantic-equivalent mutation"
+    },
+    {
+      "round": 3,
+      "contract_agent": "r246_operands_contract_r3",
+      "lifecycle_agent": "r246_operands_lifecycle_r3",
+      "contract": "zero P1/P2",
+      "lifecycle": "zero P1/P2"
+    }
+  ],
+  "accepted_scope": "Strict source-bound retained-checkpoint operand export only; original producer exit98 and files unchanged.",
+  "gate": "docs/data/fire_r245/r246_recovery_operand_gate.json",
+  "remaining": [
+    "Cross-check retained observations with all15315 sealed ledgers and235 capsule roots",
+    "Separate strict recovery receipt/artifacts and derived summaries from retained operands only",
+    "Strict full r246 budget audit admission with fresh controls/reviews",
+    "Repaired preview/spectrum consumers and physical interpretation"
+  ]
+}

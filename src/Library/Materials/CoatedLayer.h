@@ -77,6 +77,7 @@
 
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/GaussLegendreQuadrature.h"
 #include <array>
 #include <cmath>
 #include <limits>
@@ -227,34 +228,26 @@ namespace RISE
 				static const Scalar kEtaMax   = Scalar( 3.0 );
 				static const int    kEtaCount = 201;			// 0.01 steps
 
-				//! 21-point Gauss-Legendre nodes/weights on [0,1].
-				//! Same set MicrofacetEnergyLUT uses for its conductor
-				//! Fresnel average; duplicated here (rather than
-				//! included) so this header stays free of the 32x32
-				//! GGX energy tables it would otherwise drag in.
+				//! 21-point Gauss-Legendre nodes/weights on [0,1]: copies of the
+				//! shared GaussLegendre21 rule (the single definition of the
+				//! table), held as std::array for the call sites below.
 				inline const std::array<Scalar, 21>& GLNodes()
 				{
-					static const std::array<Scalar, 21> n = { {
-						0.0031239146898053, 0.0163865807168468, 0.0399503329247996, 0.0733183177083414,
-						0.1157800182621611, 0.1664305979012938, 0.2241905820563901, 0.2878289398962806,
-						0.3559893415987995, 0.4272190729195525, 0.5000000000000000, 0.5727809270804476,
-						0.6440106584012005, 0.7121710601037194, 0.7758094179436099, 0.8335694020987061,
-						0.8842199817378389, 0.9266816822916586, 0.9600496670752003, 0.9836134192831532,
-						0.9968760853101948
-					} };
+					static const std::array<Scalar, 21> n = []() {
+						std::array<Scalar, 21> a;
+						for( unsigned int i = 0; i < GaussLegendre21::NodeCount; ++i ) a[i] = GaussLegendre21::Nodes[i];
+						return a;
+					}();
 					return n;
 				}
 
 				inline const std::array<Scalar, 21>& GLWeights()
 				{
-					static const std::array<Scalar, 21> w = { {
-						0.0080086141288871, 0.0184768948854263, 0.0285672127134286, 0.0380500568141897,
-						0.0467222117280170, 0.0543986495835742, 0.0609157080268643, 0.0661344693166687,
-						0.0699436973955366, 0.0722622394525271, 0.0730405654382176, 0.0722622394525271,
-						0.0699436973955366, 0.0661344693166687, 0.0609157080268643, 0.0543986495835742,
-						0.0467222117280170, 0.0380500568141897, 0.0285672127134286, 0.0184768948854263,
-						0.0080086141288871
-					} };
+					static const std::array<Scalar, 21> w = []() {
+						std::array<Scalar, 21> a;
+						for( unsigned int i = 0; i < GaussLegendre21::NodeCount; ++i ) a[i] = GaussLegendre21::Weights[i];
+						return a;
+					}();
 					return w;
 				}
 

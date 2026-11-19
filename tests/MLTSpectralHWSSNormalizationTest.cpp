@@ -14,13 +14,10 @@
 //    review asked to have "gated" by an automated test rather than only
 //    an ad-hoc scene.
 //
-//    Fixed by `activeWavelengthCount` (the hero, plus every companion
+//    Originally fixed by `activeWavelengthCount` (the hero, plus every companion
 //    NOT excluded by a mid-loop termination) replacing the constant
 //    `nSpectralSamples * SampledWavelengths::N` in the final
-//    normalization.  See MLTSpectralRasterizer.cpp's own comments at
-//    that counter's declaration and the final `totalWavelengths`
-//    computation for the full derivation, and
-//    docs/DL126_BDPT_NULL_BSDF_CONTINUATION.md sec 7.6 (P1-1) for the
+//    normalization. See docs/DL126_BDPT_NULL_BSDF_CONTINUATION.md sec 7.6 (P1-1) for the
 //    measured before/after numbers this test's rows reproduce.
 //
 //    APPROACH: mirror BDPTStrategyBalanceTest.cpp's own
@@ -48,6 +45,10 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+//    Current normalization first averages lanes WITHIN each HWSS bundle,
+//    then averages bundles; pooling active counts biases mixed termination.
+//    The historical DL-126 rows below remain regression controls for a
+//    uniformly terminated bundle population.
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>

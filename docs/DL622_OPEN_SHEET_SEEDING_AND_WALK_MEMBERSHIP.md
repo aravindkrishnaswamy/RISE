@@ -1,7 +1,7 @@
 # DL-622: Walk-Carried Medium Membership and Open-Sheet Seeding Architecture
 
 **Status:** Implemented; revised by the 2026-10-16 review round (section 5 -- read it first: it supersedes parts of sections 2 and 3)  
-**Ledger item:** `DL-622` (`docs/DEBT_LEDGER.md` line 384)  
+**Ledger item:** `DL-622` (`docs/DEBT_LEDGER.md` line 350)  
 **Primary files:**
 - `src/Library/Utilities/IORStack.h`
 - `src/Library/Utilities/IORStackSeeding.h`
@@ -281,8 +281,10 @@ keeps every DL-622 gap fix that has a red-proof and changes the following.
   parallel vector deep-copied every context on every copy of a stack whose
   walk had crossed a sheet).  Only a push WITH a context, an erase at or
   below a context-carrying index (`find_and_destroy` re-indexes the pairs
-  above it) or `SetContextAt` builds a new list.  `std::stack` is now a
-  PROTECTED base of `MyIORStack`, so no caller can push or erase around
+  above it) or `SetContextAt` builds a new list.  `std::stack` was made a
+  PROTECTED base of `MyIORStack` in this round (later superseded in `DL-631`,
+  §5.8, by a private inline `IORDATA m_inline[4]` small-buffer + optional
+  `std::vector<IORDATA>* m_heap`), so no caller can push or erase around
   `pushEntry` / `find_and_destroy` and desynchronise the indices.  A42 pins
   copy independence and re-indexing (green before and after; red under a
   mutation that writes through the shared list).
@@ -480,13 +482,16 @@ walk-history exception.
   at most `1 + kMaxAuxNormals = 33` normal rays plus 1 uncharged `vertProbe`
   column scan (`columnWalkUsed`) and shares a single `kGroupDetourRayBudget`
   across all subsequent `vertProbe` column steps and waypoint walks (`A62`, `A64a`).
-- Stack depth (review round 3, P3-2): `SeedFromPointImpl`'s ~12.8 KB frame
-  (six 64-entry probe tables) exists only while a seed runs and is a LEAF:
+- Stack depth (review round 3, P3-2; narrowed further in `DL-631`, §5.8, to a
+  0-ray return when `!cat.hasTrackableMedia` and a single 32-entry stack table
+  when `!cat.hasSheets`): `SeedFromPointImpl`'s ~6 KB general-path inline frame
+  (six 32-entry probe tables, spilling to heap only when `cat.walkSteps > 32`)
+  exists only while a seed runs on a scene with open sheets and is a LEAF:
   every caller (camera and light roots, photon emission, HWSS lane
   delegation, `SMSCaptureUncached`'s membership probe) gets control back
   before tracing further, so the frame can sit on top of a deep recursion
   (an SMS capture at a vertex reached through PT's SSS re-entry into
-  `CastRay`) but never underneath one, and it is ~10 % of the 128 KB
+  `CastRay`) but never underneath one, and it is < 5 % of the 128 KB
   DL-315 keeps free at every `CastRay` entry.  The function that does run
   inside a walk, `ConfirmOpenSheetsAt` (via `ResolveUnpushedExit` in a
   transmissive SPF), uses no probe tables (its storage is heap vectors).
@@ -632,56 +637,73 @@ no `~ScatteredRay` frame; the container destructor 128 samples plus
 `DeleteStack` 10, against master's 191).  `hwss_prism_dispersion_pt`,
 interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
 
-### 5.8 Tier 0 closure of `DL-626` and `DL-631` (2026-11-12)
+### 5.8 Tier 0 closure of `DL-626` and `DL-631` (2026-11-14)
 
 **`DL-626` (open-sheet seeding & walk membership residuals):**
 
 1. **AABB-preserving shape mutations (`A51`, `A61b`):** Added monotonic
-   `IGeometry::ShapeRevision()` (`Geometry::BumpShapeRevision()` across all
-   shape-mutable geometries — including `ClippedPlane`, `BezierPatch`,
-   `BilinearPatch`, `TriangleMesh*`, `Sphere`, `CircularDisk`, `HairGeometry`,
-   and `DisplacedGeometry`) and `IObject::ShapeRevision()` (`Object`,
-   `CSGObject`).  `PosedOpenSheet` and multi-sheet `OpenSheetNormalGroup`
-   validation (`ConfirmOpenSheetsAt`) compare `ShapeRevision()` alongside
-   transform and world AABB so corner/vertex/radius edits that leave both the
+   `IGeometry::ShapeRevision()` (`Geometry::BumpShapeRevision()` +
+   `GlobalGeometryShapeEpoch()` across all 14 shape-mutable geometry families /
+   15 concrete `Geometry` classes —
+   `ClippedPlane`, `InfinitePlane`, `Box`, `Sphere`, `Ellipsoid`, `Cylinder`,
+   `Torus`, `CircularDisk`, `SDF`, `BezierPatch`, `BilinearPatch`,
+   `TriangleMesh*`, `HairGeometry`, and `DisplacedGeometry`) plus
+   `Transformable::GlobalTransformPoseEpoch()` / `ThreadTransformPoseEpoch()`
+   and epoch-memoized $O(|V|)$ / $O(1)$ `CSGObject::ShapeRevision()`
+   (`CsgMeshOperandTest` `M1`–`M3`).  `PosedOpenSheet`,
+   `EnsureCatalogPoseState`, and multi-sheet `OpenSheetNormalGroup` validation
+   (`ConfirmOpenSheetsAt`) compare `ShapeRevision()` alongside transform and
+   world AABB so corner/vertex/radius/keyframe edits that leave both the
    transform and world AABB unchanged still re-describe the sheet without
    flushing `OpenSheetCatalogEpoch`.
-2. **Declaration-order / TLAS-order invariance, coplanar ties & detour ray budgets (`A52a`, `A52b`, `A56`, `A60a`, `A60b`, `A61a`–`A61c`, `A62`, `A63a`, `A63b`, `A64a`, `A64b`):**
+2. **Declaration-order / TLAS-order invariance, coplanar ties & detour ray budgets (`A52a`, `A52b`, `A56`, `A60a`, `A60b`, `A61a`–`A61c`, `A62`, `A63a`, `A63b`, `A64a`, `A64b`, `A66a`, `A68a`–`A68b`):**
    `SheetGeomKeyLess` orders `OpenSheetsOf`, `OpenSheetCatalog::closedTrackable`,
    `OpenSheetNormalGroup` members, `SeedFromPointImpl`'s equal-`firstExitStep`
    `ordered` ties, `HasFreeSpaceDetourToSheets` column reach (`Snapshot::columnDist`,
    `SameBox`, and `opaqueObjs` parity tracking), and same-material sibling
-   deduplication by pure geometric keys (world AABB, normal, and
-   `GetFinalTransformMatrix()` tie-breaking when two tilted panes share identical
-   AABB and normal; exact shared-geometry identity uses
-   `!SheetGeomKeyLess(a,b) && !SheetGeomKeyLess(b,a)` rather than hash equality),
-   while `ConfirmOpenSheetsAt` caches per-confirmation group pose validity once in
-   $O(N)$, breaks equal-distance confirmation ties via its inline `hitHeight` /
+   deduplication by NaN-safe strict-weak-ordering geometric keys (`ScalarTotalLess`
+   over world AABB, normal, and `GetFinalTransformMatrix()`, falling back to
+   `std::less<const IObject*>{}` total pointer ordering only for identical coincident clones),
+   while `ConfirmOpenSheetsAt` reads epoch-cached `cat.confirmGroupPoseValid` in
+   $O(1)$ on static passes (recomputing in $O(N)$ only on epoch invalidation or non-catalog sheet vectors), breaks equal-distance confirmation ties via its inline `hitHeight` /
    `entryCtx` / `SheetGeomKeyLess` comparator (`A56`), passes exact scalar ray-hit
    distances (`aloneDist` / `activeDists` / `sheetColDists`) from
    `CheckSheetAloneAlongRay` into `ConfirmSharedNormalRay`, `HasFreeSpaceDetourToSheets`,
    `OpenSheetNormalRayReaches`, and `HasFreeSpaceDetourToSheet` (`A61c`, `A64b` —
    0 coplanar object ray casts on 40 parallel $45^\circ$-tilted panes), confirms
-   coplanar siblings, flush closed-dielectric / open-sheet ties (`TallyProbe`
-   `closedTrackable` window + `RecordCoplanarOrderedExitsAt`, `A63a`), and zero-gap
-   opposing/blocking open sheets (`ProbeCoplanarBlockingOpenSheetAt` using sorted
-   `OpenSheetNormalGroup::PlaneBand` interval binary search + cached `ce.box`,
-   `A63b`) across direct and detour walks (`A61a`–`A61b`), and enforces a shared
-   per-step `GroupDetourRayBudget()` counter plus `columnWalkUsed` (charging every
-   `vertProbe` column walk after the first normal) across `sheet.normal` +
-   `auxNormals` in `OpenSheetHoldsPoint` (`A62`, `A64a`).
-3. **Multi-fold curved/pleated sheet crossings (`A53`, `A57a`–`A57c`):** When a ray
+   coplanar siblings, flush closed-dielectric / open-sheet ties (`EnsureCatalogPoseState`
+   $O(1)$ epoch validation + `CatalogBoxBvh` 3D AABB BVH2 `closedTrackableBvh`
+   $O(\log M + K_{\text{box}})$ in `TallyProbe` + `RecordCoplanarOrderedExitsAt`, `A63a`, `A66a`),
+   and zero-gap opposing/blocking open sheets (`ProbeCoplanarBlockingOpenSheetAt`
+   querying `CatalogBoxBvh` `sheetBoxBvh` $O(\log N + K_{\text{box}})$ across all
+   planar, tilted, and non-planar sheets, `A63b`, `A66a`) across direct and detour
+   walks (`A61a`–`A61b`), indexes `cat.sheetByObj` for $O(\log N)$ `FindOpenSheet`,
+   and enforces a shared per-step `GroupDetourRayBudget()` counter plus
+   `columnWalkUsed` (charging every `vertProbe` column walk after the first normal)
+   across `sheet.normal` + `auxNormals` in `OpenSheetHoldsPoint` (`A62`, `A64a`).
+3. **Multi-fold curved/pleated & nested sheet crossings (`A53`, `A57a`–`A57c`, `A65`, `A66b`, `A66c`, `A67a`–`A67c`):** When a ray
    crosses an inner fold's back face on a non-planar certified open sheet while
    an overhanging outer fold of that same sheet still encloses
-   `PointPastBackFaceCrossing(ri, d)`, `ResolveOpenSheetCrossing` runs
-   `CrossingMedia::ConfirmAt(..., pExclude = 0)` and retains/pushes `pSelf`
-   (`FindRetainedSelf` requiring matching `GetMaterial()` before substituting a
-   deduplicated sibling sheet `A57c`) so pushed and unpushed walks agree with
-   `SeedFromPoint`.
+   `PointPastBackFaceCrossing(ri, d)`, `ResolveOpenSheetCrossing` pops unenclosed
+   top entries above `pSelf` (filtering `!cs.keep` / `!csSub.keep` sibling entries
+   in `CrossingMedia::Keeps` and stand-in nesting `A66b`, resolving per-operand-material
+   `csg_object` open sheets via `IObject::EnumerateEffectiveMaterials` `A67a`, and
+   peeling any stale unconfirmed open sheets exposed underneath when `pSelf` was on
+   top `A66c`), runs `CrossingMedia::ConfirmAt(..., pExclude = 0)`,
+   repositions/inserts `pSelf` in outer-to-inner order against both closed
+   (`cs->crossed`) and open (`cs->passed` / stand-in) stack entries
+   (`FindRetainedSelf` requiring matching effective material and a confirmed stack
+   sibling before substituting a deduplicated sibling sheet `A57c`/`A66c`, and `A65`
+   verifying outer-to-inner repositioning below an intermediate open sheet on
+   both pushed and unpushed walks), and prices back-face crossings reciprocally
+   (`c.etaFrom = sheetIOR`, `c.etaTo = dest.top()`, with `DielectricSPF` and
+   `PerfectRefractorSPF` reading `openSheet.etaFrom` across Pel/NM/HWSS `A67b`–`A67c`)
+   so pushed and unpushed walks agree with `SeedFromPoint`.
 4. **Luminaire seed self-exit vs enclosing room ceiling (`A55`):**
-   `DetourOriginForSeedExit` steps backward along `-normal` past `pSeedObject`'s
-   entry face to advance detour Segment 1 just past `pSeedObject`'s own exit
-   face when that exit precedes any external obstacle, while
+   `DetourOriginForSeedExit` steps `detourOrigin` slightly into the `-normal`
+   free-space side of `pSeedObject`'s entry face (up to `2 * selfSkin`, or halfway
+   to any nearer non-self obstacle) so detour Segment 1 starts in free space
+   without tunneling past an enclosing room ceiling, while
    `OpenSheetNormalRayReaches` exempts only near-origin self-hits on
    `pSeedObject` (preventing a ceiling-slab luminaire sealing a dry room from
    tunneling into an overlying pond while preserving open-pavilion detours).
@@ -692,36 +714,48 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    normal prisms of a planar sheet, point-based `SeedFromPoint` ==
    `ResolveUnpushedExit` parity (§5.2, `B5`: PT/BDPT `0.9969 +/- 0.0103` vs
    walk-history `0.7905`) remains the deliberate reciprocal convention.
-   `OpenSheetHalfSpaceSeedingTest`: **239 passed, 0 failed** (`224/0` Part A +
-   `15/0` Part B; `red_prove.sh` RED -> GREEN on `DL-626-SUMMARY`).
+   `OpenSheetHalfSpaceSeedingTest`: **279 passed, 0 failed** (`264/0` Part A +
+   `15/0` Part B, including luminaire material forwarding & polished/SMS guards `A69`–`A70`; `red_prove.sh`
+   RED -> GREEN on `DL-626-SUMMARY`).
 
 **`DL-631` (hot-path overhead on scenes without open sheets):**
 
 - Replaced `MyIORStack`'s heap-backed `std::vector<IORDATA>` base in
   `src/Library/Utilities/IORStack.h` with inline 4-entry `IORDATA m_inline[4]`
-  SBO (spilling to heap only above depth 4, plus self-assignment safety on
-  `IORStack::operator=`; copy-on-write `MyIORStack::ContextList` stays
-  out-of-line and is allocated only for open-sheet pushes), added 8-entry inline
-  SBO (`inlineRecs[8]`) in `LaneSeed` (`SeedLanesFromPoint`), and used
+  SBO (spilling to heap only above depth 4, plus `noexcept` move
+  construction/assignment and self-assignment safety on `IORStack::operator=`;
+  copy-on-write `MyIORStack::ContextList` stays out-of-line and is allocated
+  only for open-sheet pushes, `IORStackTest` **33/0**), added 8-entry inline SBO
+  (`inlineRecs[8]`) in `LaneSeed` (`SeedLanesFromPoint`), and used
   `static const IORStack kQueryStack(1.0)` in `ClassifyMembershipHit` /
   `MaterialMayRefract` (`sample` `malloc` frames **584 -> 205 (-65 %)**, `free`
   **198 -> 71 (-64 %)**).
 - Added `!cat.hasTrackableMedia` 0-ray immediate return on all-opaque scenes
-  (`A59`) and a `!cat.hasSheets` fast path in `SeedFromPointImpl` (honoring
-  `cat.walkSteps` `A58`) using a single 32-entry stack buffer (`ProbeEntry[32]`)
+  including per-operand-material `csg_object`s via `IObject::EnumerateEffectiveMaterials`
+  (`A59`, `A59b`), a `!cat.hasSheets` fast path in `SeedFromPointImpl` using a single
+  32-entry stack buffer (`ProbeEntry[32]`, `kMaxProbeEntries = kMaxProbeSteps = 32`,
+  while the general path honors `cat.walkSteps` for $>32$-step sheet scenes `A58`)
   with immediate return when the forward `TallyProbe` finds `!anyCandidate`,
-  plus `TallyProbe` reuse of `info.ior` for `laneIor[0]` when `pLanes->nm[0] == nm`.
+  `TallyProbe` reuse of `info.ior` for `laneIor[0]` when `pLanes->nm[0] == nm`,
+  and $O(1)$ epoch-validated `EnsureCatalogPoseState` + `CatalogBoxBvh`
+  (`closedTrackableBvh` / `sheetBoxBvh`, zero per-ray heap allocations for
+  $K_{\text{box}} \le 32$ overlapping AABBs and zero virtual AABB calls `A66a`).
 - Seeded all 4 HWSS lanes once in `PathTracingIntegrator::IntegrateRayHWSS`
-  (`SeedLanesFromPoint`, setting `iorStack = laneStacks[0]`), forwarded
-  `preseededOriginLanes_` into `IntegrateFromHitHWSS` Fallbacks 1 & 2
-  (`HWSSLaneSeeds` frames **74 -> 0**),
-  preserving dispersive specular-continuation lane stacks across bounces, and
-  restored lazy `ior_stack` bounce copy when `!pScat->ior_stack` plus lazy
-  `#ifdef RISE_ENABLE_OPENPGL` `guidedIorStack` construction in PT.
-- Interleaved `ABBA` x 3 ($n = 6$ per binary, `render_thread_reserve_count 0`,
-  `--no-denoise`): `hwss_prism_dispersion_pt` wall **13.895 +/- 0.151 s ->
-  13.446 +/- 0.159 s (-3.23 %, paired $t = -7.9$)**;
-  `cornellbox_bdpt_materials_pt` user CPU **277.65 +/- 7.19 s ->
-  276.99 +/- 7.62 s (-0.24 %)**.
+  (`SeedLanesFromPoint`, binding `IORStack& iorStack = laneStacks[0]` with zero
+  extra stack copy) and forwarded `preseededOriginLanes_` into
+  `IntegrateFromHitHWSS` `startDepth == 0` Fallbacks 1 & 2 (`sample`
+  `HWSSLaneSeeds` frames **74 -> 0**), plus `#ifdef RISE_ENABLE_OPENPGL` gating
+  on `guidedIorStack` in `src/Library/Shaders/PathTracingIntegrator.cpp`.
+- Interleaved `ABBAABBA` ($n = 4$ per binary, `RISE_OPTIONS_FILE`
+  `render_thread_reserve_count 0`, `6946c4c82` vs `a1d619190` including
+  `556bf4a3b`):
+  - `scenes/Tests/Spectral/hwss_prism_dispersion_pt.RISEscene` ($256 \times 256$,
+    256 spp, `hwss true`, `num_wavelengths 8`): wall **15.707 +/- 0.961 s ->
+    15.480 +/- 0.758 s (-1.45 %)**, user CPU **218.43 +/- 5.88 s ->
+    218.59 +/- 6.59 s (+0.07 %)**;
+  - `scenes/Tests/BDPT/cornellbox_bdpt_materials_pt.RISEscene` ($512 \times 512$,
+    128 spp): user CPU **278.47 +/- 4.73 s -> 276.81 +/- 2.65 s (-0.60 %)**,
+    wall **20.878 +/- 1.128 s -> 21.665 +/- 0.973 s (+3.77 %, within $1\sigma$
+    thermal envelope)**.
 
 

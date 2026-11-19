@@ -1,0 +1,24 @@
+{
+  "source_head": "96a0d53d",
+  "round": 1,
+  "arithmetic_optical": {
+    "reviewer": "r246_optical_contract_r1",
+    "P1": 0,
+    "P2": 0
+  },
+  "provenance_test_integrity": {
+    "reviewer": "r246_optical_provenance_r1",
+    "P1": 0,
+    "P2": 2
+  },
+  "findings": [
+    "Optimized Python strips assert acceptance checks",
+    "Cached lower-field label must be independently recomputed from persisted VDB"
+  ],
+  "fixes": [
+    "Refuse optimized interpreter before audit acceptance; optimized RED",
+    "Standalone read-only OpenVDB verifier emits exact lower value/mask bytes; recomputed digest bound to receipt; resealed lower-field mutation RED"
+  ],
+  "status": "fixed_pending_fresh_review",
+  "launch_permitted": false
+}

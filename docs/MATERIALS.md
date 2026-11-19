@@ -691,3 +691,14 @@ file for parameter-by-parameter behaviour.
 - BDPT vertex protocol (medium vs surface vertices, area-measure PDF
   Jacobians) for materials with `IsVolumetric() = true`:
   [BDPTVertex.h](../src/Library/Shaders/BDPTVertex.h).
+
+## Rough dielectric GGX
+
+`rough_dielectric_material` combines anisotropic GGX reflection/refraction with
+reciprocal two-sided Kulla–Conty energy compensation. It uses scalar IOR and
+positive `alphax`/`alphay` widths in (0,1], with native NM evaluation and the
+current conservative hero-only HWSS fallback. Bulk absorption uses a separate
+medium. The LUT makes furnace restoration approximate; derivation, sampling and
+calibration limits are in [ROUGH_DIELECTRIC_ENERGY.md](ROUGH_DIELECTRIC_ENERGY.md).
+See `scenes/Tests/Materials/rough_dielectric.RISEscene` for a comparison with
+smooth glass. Importer mappings remain pending.

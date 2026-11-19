@@ -565,9 +565,9 @@ public:
 			}
 		}
 		if( cntAll > 0 ) {
-			const double nanVal = std::numeric_limits<double>::quiet_NaN();
-			const double mAll = allFinite ? ( sumAll / double( cntAll ) ) : nanVal;
-			const double mInt = allFinite ? ( ( cntInt > 0 ) ? ( sumInt / double( cntInt ) ) : mAll ) : nanVal;
+			const double invalidVal = -1.0;
+			const double mAll = allFinite ? ( sumAll / double( cntAll ) ) : invalidVal;
+			const double mInt = allFinite ? ( ( cntInt > 0 ) ? ( sumInt / double( cntInt ) ) : mAll ) : invalidVal;
 			std::lock_guard<std::mutex> lk( intermediateMutex );
 			intermediateCaptures.push_back( IntermCapture{
 				rcRegion == nullptr,
@@ -1339,9 +1339,9 @@ static void TestProgressiveColorAndOrthoCamera()
 			const bool fullTile = ( cap.fullFrame || isPostBlock );
 			const double sampleMean = fullTile ? cap.meanAll : cap.meanInterior;
 			const double refMean = regionRefMean( cap, !fullTile );
-			const double ratio = ( std::isfinite( sampleMean ) && std::isfinite( refMean ) && refMean > 0.0 )
+			const double ratio = ( std::isfinite( sampleMean ) && std::isfinite( refMean ) && sampleMean >= 0.0 && refMean > 0.0 )
 				? ( sampleMean / refMean )
-				: std::numeric_limits<double>::quiet_NaN();
+				: -1.0;
 			if( !std::isfinite( ratio ) || ratio < 0.90 || ratio > 1.10 ) {
 				allLateTilesFullBrightness = false;
 			} else {

@@ -517,6 +517,8 @@ namespace RISE
 			/// Checks whether any delta vertex in the given subpath has
 			/// wavelength-dependent IOR (dispersion).  If so, returns
 			/// true — the caller should terminate companion wavelengths.
+			/// Also returns true at any rough dielectric interface: the current
+			/// HWSS replay shares a hero IOR stack and radiance eta scale.
 			///
 			/// Walks the stored vertices, reconstructs a minimal
 			/// RayIntersectionGeometric from vertex geometry, and

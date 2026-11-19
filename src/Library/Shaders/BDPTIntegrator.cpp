@@ -55,9 +55,11 @@
 //
 //////////////////////////////////////////////////////////////////////
 
-#include <atomic>
 #include "pch.h"
+#include <atomic>
+#include <optional>
 #include "BDPTIntegrator.h"
+#include "../Materials/RoughDielectricMaterial.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IBSDF.h"
@@ -3188,8 +3190,8 @@ namespace {
 			}
 
 			const IORStack* traceIorStack = pScat->ior_stack ? pScat->ior_stack : &iorStack;
-			IORStack guidedIorStack( iorStack );
 	#ifdef RISE_ENABLE_OPENPGL
+			std::optional<IORStack> guidedIorStack;
 			// --- Path guiding (eye subpath) ---
 			// DL-67: see `BDPTGuidedContinuation` for the ONE partition
 			// every branch below prices on.  The gate is `guidedVertex`
@@ -3256,8 +3258,9 @@ namespace {
 				break;
 			}
 			if( usedGuidedDirection ) {
+				guidedIorStack.emplace( iorStack );
 				traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
-					*pScat, iorStack, ri, guidedDir, guidedIorStack );
+					*pScat, iorStack, ri, guidedDir, *guidedIorStack );
 			}
 			// The density the continuation's weight corresponds to,
 			// INCLUDING lobe selection: `f cos / equivScatterPdf` for a
@@ -8174,8 +8177,8 @@ unsigned int GenerateLightSubpathImpl(
 		}
 
 		const IORStack* traceIorStack = pScat->ior_stack ? pScat->ior_stack : &iorStack;
-		IORStack guidedIorStack( iorStack );
 #ifdef RISE_ENABLE_OPENPGL
+		std::optional<IORStack> guidedIorStack;
 		// --- Path guiding (light subpath) ---
 		// Query the shared guiding field at each light subpath surface vertex
 		// and blend with BSDF sampling using RIS or one-sample MIS.  The
@@ -8241,8 +8244,9 @@ unsigned int GenerateLightSubpathImpl(
 			break;
 		}
 		if( usedGuidedDirection ) {
+			guidedIorStack.emplace( iorStack );
 			traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
-				*pScat, iorStack, ri, guidedDir, guidedIorStack );
+				*pScat, iorStack, ri, guidedDir, *guidedIorStack );
 		}
 		// See the eye twin: the density the continuation's weight
 		// corresponds to, including lobe selection.
@@ -9193,8 +9197,9 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 }
 
 //////////////////////////////////////////////////////////////////////
-// HasDispersiveDeltaVertex — checks stored subpath for dispersive
-// delta interactions.
+// Legacy name: also rejects companion replay across rough dielectric
+// interfaces, whose enclosing-medium state and eta scale are hero-only.
+// This shared gate serves BDPT, VCM and MLT, including their splat normalization.
 //
 // At a delta (specular) vertex, the scattering direction is determined
 // by Snell's law / Fresnel reflection.  If the IOR varies between
@@ -9215,6 +9220,9 @@ bool BDPTIntegrator::HasDispersiveDeltaVertex(
 	for( unsigned int i = 0; i < verts.size(); i++ )
 	{
 		const BDPTVertex& v = verts[i];
+		if(v.type == BDPTVertex::SURFACE && RoughDielectricRequiresHeroOnlyHWSS(v.pMaterial)) {
+			return true;
+		}
 		if( !v.isDelta || v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
 			continue;
 		}
