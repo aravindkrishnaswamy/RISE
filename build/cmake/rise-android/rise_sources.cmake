@@ -1,4 +1,5 @@
 # Film and channel storage share header-only Utilities/CheckedSize.h.
+# Header-only endian helpers live in Utilities/LittleEndian.h.
 # Ward SPFs share header-only Materials/WardSelectionQuadrature.h.
 # Schlick BRDF/SPF share header-only Materials/SchlickMasking.h (DL-225).
 # Donner-Jensen SSS profile/shader-op share header-only Utilities/ExteriorIndexCache.h (DL-291).
@@ -23,6 +24,8 @@ set(RISE_LIB "${CMAKE_CURRENT_LIST_DIR}/../../../src/Library")
 set(RISE_LIB_SOURCES
     # SRCLIBINTERFACES
     "${RISE_LIB}/Materials/IMaterial.cpp"
+    "${RISE_LIB}/Materials/NullBoundaryMaterial.cpp"
+    "${RISE_LIB}/Materials/ContinuationClosure.cpp"
 
     # SRCLIBUTILITIES
     "${RISE_LIB}/Utilities/Color/Color.cpp"
@@ -54,6 +57,23 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/CompletePathGuide.cpp"
     "${RISE_LIB}/Utilities/PathGuidingField.cpp"
     "${RISE_LIB}/Utilities/Optics.cpp"
+    "${RISE_LIB}/Utilities/RISECBOR64.cpp"
+    "${RISE_LIB}/Utilities/FireOptics.cpp"
+    "${RISE_LIB}/Utilities/FireSimulationRecords.cpp"
+    "${RISE_LIB}/Utilities/FireProductionTables.cpp"
+    "${RISE_LIB}/Utilities/FireProductionComputeUnsupported.cpp"
+    "${RISE_LIB}/Utilities/FireProductionAdvection.cpp"
+    "${RISE_LIB}/Utilities/FireProductionProjection.cpp"
+    "${RISE_LIB}/Utilities/FireProductionTransport.cpp"
+    "${RISE_LIB}/Utilities/FireProductionSource.cpp"
+    "${RISE_LIB}/Utilities/FireProductionForce.cpp"
+    "${RISE_LIB}/Utilities/FireProductionForceUnsupported.cpp"
+    "${RISE_LIB}/Utilities/FireProductionProjectionUnsupported.cpp"
+    "${RISE_LIB}/Utilities/FireProductionAdvectionUnsupported.cpp"
+    "${RISE_LIB}/Utilities/FireCase.cpp"
+    "${RISE_LIB}/Utilities/FireSequence.cpp"
+    "${RISE_LIB}/Utilities/PlanckRadiance.cpp"
+    "${RISE_LIB}/Utilities/GaussLegendreQuadrature.cpp"
     "${RISE_LIB}/Utilities/OrthonormalBasis3D.cpp"
     "${RISE_LIB}/Utilities/Primes.cpp"
     "${RISE_LIB}/Utilities/ProbabilityDensityFunction.cpp"
@@ -143,6 +163,8 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/DataDrivenBSDF.cpp"
     "${RISE_LIB}/Materials/DataDrivenSPF.cpp"
     "${RISE_LIB}/Materials/DielectricSPF.cpp"
+    "${RISE_LIB}/Materials/RoughDielectricMaterial.cpp"
+    "${RISE_LIB}/Utilities/RoughDielectricEnergy.cpp"
     "${RISE_LIB}/Materials/GGXBRDF.cpp"
     "${RISE_LIB}/Materials/GGXSPF.cpp"
     "${RISE_LIB}/Materials/HairBSDF.cpp"
@@ -326,6 +348,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Shaders/SSS/PointSetOctree.cpp"
     "${RISE_LIB}/Shaders/SSS/SubSurfaceScatteringShaderOp.cpp"
     "${RISE_LIB}/Shaders/SSS/DonnerJensenSkinSSSShaderOp.cpp"
+    "${RISE_LIB}/Shaders/SSS/SSSContainment.cpp"
     "${RISE_LIB}/Shaders/AmbientOcclusionShaderOp.cpp"
     "${RISE_LIB}/Shaders/AreaLightShaderOp.cpp"
     "${RISE_LIB}/Shaders/CausticPelPhotonMapShaderOp.cpp"

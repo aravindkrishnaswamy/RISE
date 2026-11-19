@@ -1,0 +1,20 @@
+{
+  "reviewed_source_commit": "bc0f5e3ed89550403851a04efec5384ea6385474",
+  "status": "accepted_zero_P1_P2",
+  "reviewers": [
+    {
+      "name": "r246_full_launch_contract",
+      "P1": 0,
+      "P2": 0,
+      "scope": "Numerical/full contract, exact geometry/source/pilot/window, memory guards, observations and legacy checkpoint."
+    },
+    {
+      "name": "r246_full_launch_lifecycle",
+      "P1": 0,
+      "P2": 0,
+      "scope": "Lifecycle/provenance, composed guards/publications and independent retained artifact hashes."
+    }
+  ],
+  "binary_sha256": "56189ad7e4853e3195de6ea24086e76273f1209209ef2fd2a30632ccf8535430",
+  "acceptance_scope": "Engineering readiness for full from-zero sensitivity after exact freezing and host exclusivity; no physical qualification. Full-mode audit must explicitly admit and review r246 before completed budget interpretation."
+}

@@ -1,0 +1,20 @@
+{
+  "reviewed_commit": "38be9615744940627c54d23b9a7258266054504d",
+  "reviewers": [
+    {
+      "agent": "r245_audit_final_r3",
+      "axis": "independent arithmetic and provenance audit",
+      "P1": 0,
+      "P2": 0,
+      "reproduced": "3 GREENs and 13 semantic REDs; cold capsule passes"
+    },
+    {
+      "agent": "r245_capture_final_r3",
+      "axis": "capture, acceptance lifecycle and memory policy",
+      "P1": 0,
+      "P2": 0
+    }
+  ],
+  "scope": "Prelaunch implementation and fixture evidence; full empirical budget audit outstanding.",
+  "prior_round2": "Both requested reviewers failed with usage-limit errors; no round2 verdict claimed."
+}

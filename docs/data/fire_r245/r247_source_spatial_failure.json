@@ -1,0 +1,45 @@
+{
+  "schema": "rise.fire.r247.source-spatial-failure.v1",
+  "original_launch": "70a85fc16",
+  "exit_code": 1,
+  "completion": {
+    "exit_code": 1,
+    "started_utc": "2026-10-04T17:53:21.736445+00:00",
+    "completed_utc": "2026-10-04T17:54:33.013829+00:00",
+    "command": [
+      "/Users/aravind/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+      "/Volumes/SSD/RISE/fire_production_calibration/r247_source_reader_runtime.v1/r247_source_reader.py",
+      "--run",
+      "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial.v1"
+    ]
+  },
+  "candidate_rows_written": 470,
+  "rows_per_variant": 235,
+  "measured_row_peak_rss_bytes": 457048064,
+  "stream_seal_published": false,
+  "pending_retained": true,
+  "full_derivation_accepted": false,
+  "original_taller_exit_code": 98,
+  "diagnosis": "Full os.stat_result equality includes access time; same-SSD read-only fixture changes atime only and discriminates guaranteed refusal. Actual before-stat/generated digest not persisted: sufficient reproduced failure mechanism, not proof of sole actual defect.",
+  "independent_diagnosis_agent": "r247_reader_finalization_diagnosis",
+  "preserved_artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial_launch.v1/completion.json",
+      "sha256": "2be7ec06d97908e7a7885e7814834d70b411ce2a06bd3434245e111f62b2bc3d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial_launch.v1/reader.log",
+      "sha256": "2a19106b2d7cab41d215147269bfe1b58d30e82b4d7e40b10e94aeefc038f0dc"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial.v1/source_spatial_rows.jsonl",
+      "sha256": "4f9535920cf831f44114d64255761d8c497b883ad4d0b2b3013bbefd7fc12139"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial.v1/source_spatial_rows.jsonl.preparation.pending.payload-v2.json",
+      "sha256": "d421e7c700daad63ff6e89de034b4b47b672bad4ef1fb6a0a9da8175dc2bf840"
+    }
+  ],
+  "repair_candidate_only": true,
+  "new_full_derivation_launch_accepted": false
+}

@@ -355,10 +355,12 @@ namespace RISE
 
 		struct MediumTileScopeState
 		{
+			static const std::size_t kInlineNested = 4u;
 			unsigned int depth = 0u;
 			unsigned int seed = 0u;
 			MediumRngSlot topSlot;
-			std::vector<MediumRngSlot> nestedSlots;
+			MediumRngSlot inlineNested[kInlineNested];
+			std::vector<MediumRngSlot> overflowNested;
 		};
 
 		thread_local MediumTileScopeState tl_mediumScope;
@@ -369,10 +371,14 @@ namespace RISE
 				return st.topSlot;
 			}
 			const std::size_t idx = static_cast<std::size_t>( st.depth - 2u );
-			if( st.nestedSlots.size() <= idx ) {
-				st.nestedSlots.resize( idx + 1u );
+			if( idx < MediumTileScopeState::kInlineNested ) {
+				return st.inlineNested[idx];
 			}
-			return st.nestedSlots[idx];
+			const std::size_t ovIdx = idx - MediumTileScopeState::kInlineNested;
+			if( st.overflowNested.size() <= ovIdx ) {
+				st.overflowNested.resize( ovIdx + 1u );
+			}
+			return st.overflowNested[ovIdx];
 		}
 	}
 

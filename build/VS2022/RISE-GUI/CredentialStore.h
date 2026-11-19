@@ -10,7 +10,7 @@
 //    SECRET HYGIENE:
 //      * Never stores keys in QSettings / registry / plaintext files.
 //      * Never logs secrets.
-//      * Scrubs temporary UTF-8 byte buffers via SecureZeroMemory
+//      * Scrubs temporary UTF-16LE byte buffers via SecureZeroMemory
 //        immediately after CredWriteW / CredReadW.
 //
 //////////////////////////////////////////////////////////////////////

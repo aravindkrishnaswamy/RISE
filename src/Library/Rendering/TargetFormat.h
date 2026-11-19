@@ -64,7 +64,7 @@ namespace RISE
 			// Rec.709→ROMM Bradford+matrix conversion is applied).
 			RGBA32F_Linear              = 8, ///< EXR linear (sRGB primaries)
 			RGB32F_Linear               = 9, ///< .hdr file (Radiance), 3-channel (sRGB primaries)
-			RGBA32F_ROMM_Linear         = 10,///< Bit-identical archival in ROMM primaries
+			RGBA32F_ROMM_Linear         = 10,///< ROMM D50 after Rec.709→ROMM conversion
 			RGB32F_ROMM_Linear          = 11,///< Same, no alpha
 
 			// L5c — 16-bit FIXED HDR10 PQ (BT.2020 primaries, ST.2084
@@ -76,7 +76,7 @@ namespace RISE
 			// need uint16 samples.
 			//
 			// Pipeline through `FrameStore::EncodePixel`:
-			//     ROMM linear → exposure → ROMM→BT.2020 matrix
+			//     Rec.709 linear → exposure → Rec.709→BT.2020 matrix
 			//       → (NO tone curve; isLDRFixed=false)
 			//       → ApplyPQTransfer (encoded → [0, 1])
 			//       → quantise to uint16 ([0, 65535])

@@ -46,10 +46,10 @@
 //  cloning too.
 //
 //  SCOPE / FIDELITY (honest):
-//  Faithful ctor-reconstruction is implemented for the 15 standard
+//  Faithful ctor-reconstruction is implemented for the 16 standard
 //  reflectance/BRDF materials whose entire construction state is readable
 //  from public accessors (Lambertian, PerfectReflector, PerfectRefractor,
-//  Polished, Dielectric, IsotropicPhong, OrenNayar, Schlick, Sheen,
+//  Polished, Dielectric, RoughDielectric, IsotropicPhong, OrenNayar, Schlick, Sheen,
 //  AshikminShirley, CookTorrance, GGX [non-emissive], WardIsotropic,
 //  WardAnisotropic, Translucent).  These are the common editable materials
 //  (incl. the test-pinned Lambertian) and carry NO residual.

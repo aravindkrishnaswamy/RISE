@@ -1,0 +1,29 @@
+F
+======================================================================
+FAIL: test_legacy_cost_cli_requires_unambiguous_successful_completion (test_fire_r206_eos.EOSGateREDs)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 45, in test_legacy_cost_cli_requires_unambiguous_successful_completion
+    cost_prefix.main()
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.014s
+
+FAILED (failures=1)
+R206_SIBLING_RED consumer=check_fire_owner_cost_prefix.py old_consumer_refused_by_test=1
+E
+======================================================================
+ERROR: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 58, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log, trace, csv)
+  File "<string>", line 30, in qualify_artifact
+ValueError: complete qualification fixture did not pass
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (errors=1)
+R206_SIBLING_RED consumer=check_fire_owner_instrumentation.py old_consumer_refused_by_test=1

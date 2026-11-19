@@ -1,0 +1,30 @@
+{
+  "schema": "rise.fire.r246.recovered-cli-review.v1",
+  "status": "accepted_zero_p1_p2",
+  "reviewed_head": "61c6e22c8",
+  "round": 1,
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "gate_sha256": "39228327d646b371b03094956f77d698601943c3da610e0d6712021eadc381c2",
+  "reviewers": [
+    {
+      "agent": "r246_recovered_cli_contract_r1",
+      "axis": "contract/test integrity",
+      "p1": 0,
+      "p2": 0,
+      "findings": "Exact native/source/prepared/snapshot/history composition, captured contexts, unavailable claims and no legacy caller changes; all evidence hashes verified."
+    },
+    {
+      "agent": "r246_recovered_cli_lifecycle_r1",
+      "axis": "lifecycle/provenance",
+      "p1": 0,
+      "p2": 0,
+      "findings": "Owned buffers outlive synchronous consumers, immutable loader/snapshot admission retained, fresh outputs refuse aliases, identities/originalexit98 preserved; all evidence hashes verified."
+    }
+  ],
+  "limitations": [
+    "Actual inspect only; preview/spectrum launch branches and result receipt publication source-reviewed only pending full signed budget audit.",
+    "Separate full recovery acceptance receipt still required."
+  ],
+  "accepted_utc": "2026-10-04T11:17:52.982597+00:00"
+}

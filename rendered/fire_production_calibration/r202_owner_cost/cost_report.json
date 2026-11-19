@@ -1,0 +1,191 @@
+{
+  "attribution": {
+    "iteration_group_differences": "observational, not a matched-state causal speedup",
+    "kernel_and_host_subcategories": "not separately measured in this sealed trajectory",
+    "other_device": "transport, flux, FCT, EOS, targets, authority checks, momentum, terminal",
+    "projection_device": "measured resident projection command intervals",
+    "wall_minus_device": "aggregate encoding/allocation/staging/waits gap; not pure CPU compute"
+  },
+  "end_time_s": 0.07243570266291499,
+  "fixed_k_selected": false,
+  "full_window_verdict": "unavailable",
+  "input_sha256": "0f86f47d9b0b9426c89e81fdaf97c5872ab07f51e729ee37e1f899aca496fa5e",
+  "iteration_groups": [
+    {
+      "R0_R1_R2": [
+        2,
+        2,
+        2
+      ],
+      "command_counts": [
+        68
+      ],
+      "metrics": {
+        "device_ms": {
+          "max": 69400.476540206,
+          "mean": 69400.476540206,
+          "min": 69400.476540206,
+          "p95": 69400.476540206
+        },
+        "owner_nonprojection_device_ms": {
+          "max": 67147.95249840245,
+          "mean": 67147.95249840245,
+          "min": 67147.95249840245,
+          "p95": 67147.95249840245
+        },
+        "owner_projection_device_ms": {
+          "max": 2252.5240418035537,
+          "mean": 2252.5240418035537,
+          "min": 2252.5240418035537,
+          "p95": 2252.5240418035537
+        },
+        "wall_minus_device_ms": {
+          "max": 1282.7195427940023,
+          "mean": 1282.7195427940023,
+          "min": 1282.7195427940023,
+          "p95": 1282.7195427940023
+        },
+        "wall_ms": {
+          "max": 70683.196083,
+          "mean": 70683.196083,
+          "min": 70683.196083,
+          "p95": 70683.196083
+        }
+      },
+      "projection_counts": [
+        12
+      ],
+      "samples": 1
+    },
+    {
+      "R0_R1_R2": [
+        2,
+        2,
+        3
+      ],
+      "command_counts": [
+        74
+      ],
+      "metrics": {
+        "device_ms": {
+          "max": 75013.77950026654,
+          "mean": 74804.16053795654,
+          "min": 74487.96070716344,
+          "p95": 74947.97579268925
+        },
+        "owner_nonprojection_device_ms": {
+          "max": 72557.51391686499,
+          "mean": 72356.34463191299,
+          "min": 72058.32774820738,
+          "p95": 72486.73608410172
+        },
+        "owner_projection_device_ms": {
+          "max": 2461.2397085875273,
+          "mean": 2447.8159060435637,
+          "min": 2421.151916962117,
+          "p95": 2458.5720002651215
+        },
+        "wall_minus_device_ms": {
+          "max": 1394.1846261852334,
+          "mean": 1344.0159143863089,
+          "min": 1332.0897098827118,
+          "p95": 1383.651625836559
+        },
+        "wall_ms": {
+          "max": 76353.303125,
+          "mean": 76148.17645234286,
+          "min": 75871.612333,
+          "p95": 76286.6135
+        }
+      },
+      "projection_counts": [
+        13
+      ],
+      "samples": 35
+    },
+    {
+      "R0_R1_R2": [
+        3,
+        3,
+        3
+      ],
+      "command_counts": [
+        86
+      ],
+      "metrics": {
+        "device_ms": {
+          "max": 86695.10166696273,
+          "mean": 86626.38371888897,
+          "min": 86535.44154181145,
+          "p95": 86695.10166696273
+        },
+        "owner_nonprojection_device_ms": {
+          "max": 83874.57870924845,
+          "mean": 83800.35273448448,
+          "min": 83713.91745866276,
+          "p95": 83874.57870924845
+        },
+        "owner_projection_device_ms": {
+          "max": 2833.6022081784904,
+          "mean": 2826.030984404497,
+          "min": 2819.6414585690945,
+          "p95": 2833.6022081784904
+        },
+        "wall_minus_device_ms": {
+          "max": 1531.6445836798812,
+          "mean": 1524.861791361027,
+          "min": 1518.7503330972977,
+          "p95": 1531.6445836798812
+        },
+        "wall_ms": {
+          "max": 88220.18,
+          "mean": 88151.24551025,
+          "min": 88057.886708,
+          "p95": 88220.18
+        }
+      },
+      "projection_counts": [
+        15
+      ],
+      "samples": 8
+    }
+  ],
+  "maximum_velocity_m_per_s": 0.1975611448287964,
+  "metrics": {
+    "device_ms": {
+      "max": 86695.10166696273,
+      "mean": 76830.84466181356,
+      "min": 69400.476540206,
+      "p95": 86643.98712432012
+    },
+    "owner_nonprojection_device_ms": {
+      "max": 83874.57870924845,
+      "mean": 74318.7008293462,
+      "min": 67147.95249840245,
+      "p95": 83824.34566575103
+    },
+    "owner_projection_device_ms": {
+      "max": 2833.6022081784904,
+      "mean": 2512.1438324673695,
+      "min": 2252.5240418035537,
+      "p95": 2827.908916864544
+    },
+    "wall_minus_device_ms": {
+      "max": 1531.6445836798812,
+      "mean": 1375.503883572796,
+      "min": 1282.7195427940023,
+      "p95": 1525.394082054947
+    },
+    "wall_ms": {
+      "max": 88220.18,
+      "mean": 78206.34854538635,
+      "min": 70683.196083,
+      "p95": 88175.631708
+    }
+  },
+  "p95_definition": "sorted[ceil(0.95*N)-1]; no interpolation",
+  "samples": 44,
+  "schema": "rise.fire.owner.cost.v1",
+  "scope": "accepted_prefix_only; excludes failed attempt and outer source/checkpoint work",
+  "units": "milliseconds"
+}

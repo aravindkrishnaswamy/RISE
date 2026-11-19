@@ -150,8 +150,7 @@ static std::string SceneText()
 //! TMPDIR-honouring temp path (the suites' usual helper, e.g. AgentAddFuzzTest).
 static std::string TempPath( const std::string& name )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 	return dir + name;
 }

@@ -1,0 +1,87 @@
+{
+  "schema": "rise.fire.r208.independent-review.v1",
+  "reviewed_source_commit": "84128a500fe1e7ae7b96d68deee61a689fb110d4",
+  "rounds": [
+    {
+      "round": 1,
+      "reviewed_commit": "b3978578",
+      "reviewers": [
+        "r208_review_source",
+        "r208_review_evidence"
+      ],
+      "P1": 0,
+      "P2": 1,
+      "confirmed_finding": "pilot zero-input false-green",
+      "fixed_by": "2790a8dd"
+    },
+    {
+      "round": 2,
+      "reviewed_commit": "a0c85dd8",
+      "reviewers": [
+        "r208_final_source",
+        "r208_final_evidence"
+      ],
+      "P1": 0,
+      "P2": 1,
+      "confirmed_finding": "soot zero-input false-green",
+      "fixed_by": "786d44d1"
+    },
+    {
+      "round": 3,
+      "reviewed_commit": "786d44d1",
+      "reviewers": [
+        "r208_round3_contract",
+        "r208_round3_evidence"
+      ],
+      "P1": 0,
+      "P2": 2,
+      "confirmed_findings": [
+        "soot fixture omitted source-carbon byte comparison",
+        "narrowing carried double concealed sub-float perturbation"
+      ],
+      "fixed_by": [
+        "97ecda96",
+        "84128a50"
+      ]
+    },
+    {
+      "round": 4,
+      "reviewed_commit": "84128a500fe1e7ae7b96d68deee61a689fb110d4",
+      "reviewers": [
+        {
+          "id": "r208_round4_flow",
+          "scope": "canonical source/control/retry flow, seal/carry/refusal and downstream accounting",
+          "P1": 0,
+          "P2": 0
+        },
+        {
+          "id": "r208_round4_proof",
+          "scope": "non-vacuous exact-widening/source/ledger REDs; independently recomputed receipt/executable/log hashes; restart/claim honesty",
+          "P1": 0,
+          "P2": 0
+        }
+      ],
+      "P1": 0,
+      "P2": 0
+    }
+  ],
+  "all_findings_closed": true,
+  "review_execution": "reviewers read source and evidence; did not run GPU/builds; evidence reviewer independently ran structural Python tests",
+  "parent_executed_gates": "executed_qualification.v1.json",
+  "source_commit_after_review": "no code changes",
+  "preflight_limitations": {
+    "pilot_owner_v1": "unattested preflight overlapped link completion; not used for qualification",
+    "ledger_owner_v1": "intentional failed qualification precondition exposed zero-soot coverage; not a solver refusal or passed gate"
+  },
+  "performance_track": {
+    "worktree": "/Users/aravind/Working/RISE/worktrees/r207-target-assembly",
+    "included_in_replay": false,
+    "prepared_thermo_sample_scope": "163 temperatures x7species four-word/refusal preflight only; not clean-commit acceptance or a speedup",
+    "offline_aggregator": "8 synthetic CPU RED tests passed; unreviewed/uncommitted; no measured speedup",
+    "remaining_prerequisites": [
+      "same repaired-source baseline and post variant",
+      "production-Metal eight-step resume-equivalence harness",
+      "uncontended >=3 paired timing runs after verdict permits cost work"
+    ]
+  }
+}

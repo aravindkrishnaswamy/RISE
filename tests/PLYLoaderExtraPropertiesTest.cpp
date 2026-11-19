@@ -15,6 +15,9 @@
 //   - Old PLY using 'vertex_index' (singular) face list name
 
 #include <atomic>
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <chrono>
 #include <cmath>

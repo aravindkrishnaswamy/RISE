@@ -16,8 +16,8 @@
 //
 //////////////////////////////////////////////////////////////////////
 
-#include <type_traits>   // static_assert guarding the RISEPel == Rec709RGBPel decode assumption
 #include "pch.h"
+#include <type_traits>   // static_assert guarding the RISEPel == Rec709RGBPel decode assumption
 #include "AgentEvalRunner.h"
 
 #include "AgentSession.h"

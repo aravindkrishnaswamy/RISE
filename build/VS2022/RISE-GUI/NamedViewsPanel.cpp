@@ -60,7 +60,7 @@ private:
 QColor withAlpha(const QColor& c, double alphaFraction)
 {
     QColor result = c;
-    result.setAlphaF(alphaFraction);
+    result.setAlphaF(static_cast<float>(alphaFraction));
     return result;
 }
 
@@ -235,9 +235,9 @@ void NamedViewsPanel::setBridge(ViewportBridge* bridge)
     m_bridge = bridge;
     m_names.clear();
     m_rowsBuilt = false;
+    if (m_countLabel) m_countLabel->clear();
     if (!m_bridge) {
         if (m_captureEdit) m_captureEdit->clear();
-        if (m_countLabel) m_countLabel->clear();
         rebuildRows();
         setVisible(false);
         return;
@@ -262,9 +262,15 @@ void NamedViewsPanel::onCaptureClicked()
 {
     if (!m_bridge || !m_sceneEditable) return;
     const QString proposed = m_captureEdit ? m_captureEdit->text().trimmed() : QString();
-    const QString name = proposed.isEmpty()
-        ? tr("View %1").arg(m_names.size() + 1)
-        : proposed;
+    QString name = proposed;
+    if (name.isEmpty()) {
+        int nextIdx = static_cast<int>(m_names.size()) + 1;
+        name = tr("View %1").arg(nextIdx);
+        while (m_names.contains(name)) {
+            ++nextIdx;
+            name = tr("View %1").arg(nextIdx);
+        }
+    }
     if (m_bridge->captureNamedView(name)) {
         if (m_captureEdit) m_captureEdit->clear();
         reload();

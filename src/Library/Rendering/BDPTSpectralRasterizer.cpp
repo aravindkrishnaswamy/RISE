@@ -256,10 +256,10 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 		// BSDF ratios (companion/hero).  Connection evaluation in
 		// EvaluateAllStrategiesNM re-evaluates BSDF and emitter
 		// radiance at the companion wavelength automatically.
-		unsigned int totalActive = 0;
 
 		for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 		{
+			XYZPel bundleSum(0,0,0);
 			const Scalar u = rc.random.CanonicalRandom();
 			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end, num_wavelengths );
 
@@ -380,8 +380,8 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			// before its energy is pooled at a pixel.  Scaling a bundle's
 			// deposits by N/activeLanes IS "divide that bundle's splat energy
 			// by the lanes it actually ran instead of by N" -- the same
-			// renormalization `totalActive` performs for the non-splat path
-			// below, applied per bundle rather than pooled per pixel sample
+			// per-bundle renormalization used for the non-splat path
+			// below, applied at each splat deposit
 			// (pooling would need the deposits deferred until the whole
 			// spectral loop finished; per-bundle is the sample mean of
 			// per-bundle estimates, which is if anything the cleaner
@@ -435,8 +435,7 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 
 				XYZPel heroXYZ( 0, 0, 0 );
 				if( ColorUtils::XYZFromNM( heroXYZ, heroNM ) ) {
-					spectralSum = spectralSum + heroXYZ * heroValue;
-					totalActive++;
+					bundleSum = bundleSum + heroXYZ * heroValue;
 				}
 			}
 
@@ -510,21 +509,15 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 
 				XYZPel compXYZ( 0, 0, 0 );
 				if( ColorUtils::XYZFromNM( compXYZ, companionNM ) ) {
-					spectralSum = spectralSum + compXYZ * compValue;
-					totalActive++;
+					bundleSum = bundleSum + compXYZ * compValue;
 				}
 			}
 
+			spectralSum = spectralSum + swl.BundleAverage(bundleSum);
 		}
 
-		if( totalActive > 0 ) {
-			// MC normalization: (1/N) for sample-mean × (b-a)/k_y to
-			// scale into a properly-normalized integral (white = 1).
-			// Inherited mYNormalization = (b-a)/k_y; uniform scale =>
-			// chromaticity preserved.
-			return spectralSum * ( mYNormalization / Scalar(totalActive) );
-		}
-		return spectralSum;
+		// Each bundle contributes its own lane mean, even when it is black.
+		return nSpectralSamples ? spectralSum * (mYNormalization / Scalar(nSpectralSamples)) : spectralSum;
 	}
 
 	// Standard (non-HWSS) path: independent random wavelengths
@@ -707,7 +700,7 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			}
 			weights += weight;
 
-			if( temporal_samples ) {
+			if( temporal_samples && !pScene.FireTemporalHold() ) {
 				AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 			}
 

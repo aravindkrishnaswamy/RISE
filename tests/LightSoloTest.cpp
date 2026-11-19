@@ -93,8 +93,7 @@ static const char* const kSceneTwoColoredLights =
 
 static std::string WriteTemp( const char* name, const std::string& text )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh

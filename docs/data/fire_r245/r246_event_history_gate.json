@@ -1,0 +1,31 @@
+{
+  "schema": "rise.fire.r246.accepted-event-history-prerequisite.v1",
+  "status": "tested_pending_fresh_review",
+  "recovery_accepted": false,
+  "controls_report": "/Volumes/SSD/RISE/fire_production_calibration/r246_event_history_validation.v2/controls/report.json",
+  "controls_report_sha256": "3a1a47da467186f55ed924cb71b4167d5e2070a28c1d893da6c1b6c452279af5",
+  "frozen_prerequisite_binary": "/Volumes/SSD/RISE/fire_production_calibration/r246_event_history_runtime.v2/FireSequenceTest",
+  "binary_sha256": "a0aeeb654c81653d3be301bc190c6a5778c3f7bdfe0cee0b939e0fd02511ace1",
+  "binary_identity_note": "Built at c8ecbcbd9 with dirty required-seal fix. Separate from original producer and v1 prerequisite; not relabeled clean.",
+  "sha256": {
+    "tests/FireSequenceTest.cpp": "b9c9f15b43dc14c2c0384fcd1d97f0332e3a525257a27786dabe24d9ad802501",
+    "tools/fire/r246_event_history_controls.py": "bff650ddf7b126f28852ac56f7c765c91631b49d249d709a53272006b1b56b5c",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_event_history_validation.v2/build.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_event_history_runtime.v2/RendererBuildIdentity.generated.h": "ec1bdcb5c51d18c22a73dd327d3d5507ba744a07fe5ef608f4f7adc3c5d65305",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_event_history_validation.v1/event_history_sanitizer.cpp": "fe76613a3e50eacbca05d7aff5207c6f34936e956426f7d5b68b657e2e95c752",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_event_history_validation.v1/sanitizer.log": "2be86effcf3f97f722526eeb254aa39083cd59c5026637ac403e92f541a1509b",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_event_history_validation.v1/legacy_contract.log": "54843d7e13eff463493a8a5ca085364bd5f950dbce4e9b18ffcbe21679b51bfb"
+  },
+  "actual_history": {
+    "steps": 15315,
+    "frames": 235,
+    "first_actual_s": 10.531864278949797,
+    "terminal_actual_s": 25.156864278920693
+  },
+  "scope": "Exact prescribed event to accepted endpoint binding only; original failed output and consumer gates unchanged.",
+  "draft_controls_v1_note": "Initial metadata controls used CRLF CSV headers and therefore refused too early. Preserved controls directory is not acceptance evidence. Final controls_v2 uses LF and asserts intended event-history diagnostic.",
+  "legacy_contract_exit_code": 0,
+  "prior_round1_gate_receipt_note": "v1/source c8ecbcbd9 reviewed: arithmetic zeroP1P2; lifecycle found missing mandatory checkpoint seal. Prior external controls/logs/runtime retained.",
+  "legacy_contract_note": "Legacy foundation gate ran before required-seal CLI-only fix; shared original domain/physical functions unchanged.",
+  "mandatory_checkpoint_seal": "Require regular nonaliased v2 sidecar before loading; legacy helper absence allowance is not used as strict admission."
+}

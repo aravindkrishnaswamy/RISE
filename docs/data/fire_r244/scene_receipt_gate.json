@@ -1,0 +1,341 @@
+{
+  "status": "self_gate_passed_fresh_review_pending",
+  "executable_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+  "source_sha256": {
+    "tests/FireSequenceTest.cpp": "fd9b6403106efc23860c99bc348266948f2a556e757c459e1822fd2c1a0bb8ad",
+    "tools/fire/r244_spectrum_input_gate.py": "dfba30f57bd0987c7011102626832114e7beac3cc354400b6928a6ff08ade986"
+  },
+  "build_log": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/scene_receipt_build.log",
+  "build_log_sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+  "steps": [
+    {
+      "name": "r244_gate_scene",
+      "receipt": {
+        "command": [
+          "./bin/tests/FireSequenceTest",
+          "--fire-r244-domain-study-gate"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:55:59.151705+00:00"
+      },
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/r244_gate_scene.log",
+      "log_sha256": "67b2b84e77a763cd581c688cc12e3239e3c53e5bf398b4b370163da8ca072554"
+    },
+    {
+      "name": "spectrum_inputs_scene",
+      "receipt": {
+        "command": [
+          "python3",
+          "tools/fire/r244_spectrum_input_gate.py",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:56:40.012071+00:00"
+      },
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/spectrum_inputs_scene.log",
+      "log_sha256": "78c19593cfaa87371748542e62c82b0d5cfa243211d9a1863025f6f0c7d3fe8e"
+    },
+    {
+      "name": "publication_gate_scene",
+      "receipt": {
+        "command": [
+          "./bin/tests/FireSequenceTest",
+          "--fire-r224-window-publication-gate"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:56:41.395916+00:00"
+      },
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/publication_gate_scene.log",
+      "log_sha256": "dcb7df822691a59f6eefcd8379a3843cea0d95c7d028a13e4b4b2691c6cecafc"
+    },
+    {
+      "name": "burner_owner_scene",
+      "receipt": {
+        "command": [
+          "./bin/tests/FireSequenceTest",
+          "--fire-production-burner-owner-gate"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:57:01.473945+00:00"
+      },
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/burner_owner_scene.log",
+      "log_sha256": "18688bbcd8be32d40035a4b12c6360ca15bf9709267d3f71fcfe50046214127e"
+    },
+    {
+      "name": "physical_flux_scene",
+      "receipt": {
+        "command": [
+          "./bin/tests/FireSequenceTest",
+          "--fire-r241-physical-flux-gate"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:57:01.583815+00:00"
+      },
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/physical_flux_scene.log",
+      "log_sha256": "660750f5528a9b36f5415f789c9c6bb62a878264578731917fe3e0e602607c61"
+    },
+    {
+      "name": "kernel_sweep_scene",
+      "receipt": {
+        "command": [
+          "./bin/tests/FireSequenceTest",
+          "--fire-production-metal-fp64-kernel-sweep"
+        ],
+        "exit_code": 0,
+        "finished_utc": "2026-09-28T17:57:45.468588+00:00"
+      },
+      "log_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_engineering_gate.v1/kernel_sweep_scene.log",
+      "log_sha256": "c65d1b08509fafef3cf460f6039d1cd1b06511a80b8306630a9892a277ba6e97"
+    }
+  ],
+  "input_gate": {
+    "status": "passed",
+    "executable_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+    "script_sha256": "dfba30f57bd0987c7011102626832114e7beac3cc354400b6928a6ff08ade986",
+    "tests": [
+      {
+        "name": "full_window_green",
+        "command": [
+          "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline_preview.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/full_window_green_output"
+        ],
+        "exit_code": 0,
+        "expected_exit_code": 0,
+        "consumer_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+        "log_sha256": "89a7599b8a45405f1d7ab50e2f9073ca24bf8ecd2f8aab0f230e7489a889c64b"
+      },
+      {
+        "name": "copied_csv_green",
+        "command": [
+          "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/copied",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline_preview.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/copied_csv_green_output"
+        ],
+        "exit_code": 0,
+        "expected_exit_code": 0,
+        "consumer_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+        "log_sha256": "ec5620a1ba02c24d82142a5b174f0b3998aaa32e3b229765800a1b09ab2f1c3b"
+      },
+      {
+        "name": "truncated_csv_red",
+        "command": [
+          "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/truncated",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline_preview.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/truncated_csv_red_output"
+        ],
+        "exit_code": 93,
+        "expected_exit_code": 93,
+        "consumer_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "shifted_endpoint_red",
+        "command": [
+          "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/shifted",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline_preview.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/shifted_endpoint_red_output"
+        ],
+        "exit_code": 93,
+        "expected_exit_code": 93,
+        "consumer_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "wrong_vdb_digest_red",
+        "command": [
+          "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/wrong_digest",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline_preview.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/wrong_vdb_digest_red_output"
+        ],
+        "exit_code": 94,
+        "expected_exit_code": 94,
+        "consumer_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+        "log_sha256": "e656620ebc270a8ff22d81629476789d9eca6df1d90c338baa9b44b4e862ced5"
+      },
+      {
+        "name": "retained_prefix_checkpoint_red",
+        "command": [
+          "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/checkpoint_history/step_0000015059.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline_preview.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/retained_prefix_checkpoint_red_output"
+        ],
+        "exit_code": 93,
+        "expected_exit_code": 93,
+        "consumer_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "foreign_sequence_preview_red",
+        "command": [
+          "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r241_tier8_preview.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/foreign_sequence_preview_red_output"
+        ],
+        "exit_code": 94,
+        "expected_exit_code": 94,
+        "consumer_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+        "log_sha256": "9330a998b427a4a55e0fd7598799c43294c050f83570fdeb639271783a32db96"
+      },
+      {
+        "name": "swapped_frame_red",
+        "command": [
+          "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/swapped_frame",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/swapped_frame_red_output"
+        ],
+        "exit_code": 94,
+        "expected_exit_code": 94,
+        "consumer_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+        "log_sha256": "9330a998b427a4a55e0fd7598799c43294c050f83570fdeb639271783a32db96"
+      },
+      {
+        "name": "synthetic_profile_noop_green",
+        "command": [
+          "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_profile_noop",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_profile_noop_green_output"
+        ],
+        "exit_code": 0,
+        "expected_exit_code": 0,
+        "consumer_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+        "log_sha256": "61be41cbf64344fb93287c07322e88316c60f8287147ef7f9dab62466b4d00cf"
+      },
+      {
+        "name": "synthetic_exposure_old_consumer_accepts",
+        "command": [
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_runtime.v1/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_exposure_profile",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_exposure_old_consumer_accepts_output"
+        ],
+        "exit_code": 0,
+        "expected_exit_code": 0,
+        "consumer_sha256": "7cd720f7e2f83b238406fc68f8225cd71132d4f40d909fa1fc3e4739d50b9172",
+        "log_sha256": "7c40e41a43636e4a537309a775705ef7a62e92f7d06441f436c578291b1a62ef"
+      },
+      {
+        "name": "synthetic_exposure_profile_red",
+        "command": [
+          "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_exposure_profile",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_exposure_profile_red_output"
+        ],
+        "exit_code": 94,
+        "expected_exit_code": 94,
+        "consumer_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+        "log_sha256": "9330a998b427a4a55e0fd7598799c43294c050f83570fdeb639271783a32db96"
+      },
+      {
+        "name": "synthetic_camera_old_consumer_accepts",
+        "command": [
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_runtime.v1/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_camera_profile",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_camera_old_consumer_accepts_output"
+        ],
+        "exit_code": 0,
+        "expected_exit_code": 0,
+        "consumer_sha256": "7cd720f7e2f83b238406fc68f8225cd71132d4f40d909fa1fc3e4739d50b9172",
+        "log_sha256": "1170b772d33c4d5aeefb544e0b8319b359ad7930c3004b07fad73d0243157850"
+      },
+      {
+        "name": "synthetic_camera_profile_red",
+        "command": [
+          "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_camera_profile",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_camera_profile_red_output"
+        ],
+        "exit_code": 94,
+        "expected_exit_code": 94,
+        "consumer_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+        "log_sha256": "9330a998b427a4a55e0fd7598799c43294c050f83570fdeb639271783a32db96"
+      },
+      {
+        "name": "synthetic_sampling_old_consumer_accepts",
+        "command": [
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_runtime.v1/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_sampling_profile",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_sampling_old_consumer_accepts_output"
+        ],
+        "exit_code": 0,
+        "expected_exit_code": 0,
+        "consumer_sha256": "7cd720f7e2f83b238406fc68f8225cd71132d4f40d909fa1fc3e4739d50b9172",
+        "log_sha256": "17e7f83011bb6858a3195e5872ff391b024ac5d540e0c4f884378b517542cfe0"
+      },
+      {
+        "name": "synthetic_sampling_profile_red",
+        "command": [
+          "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+          "--fire-production-puffing-spectrum",
+          "6",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_sampling_profile",
+          "/Volumes/SSD/RISE/fire_production_calibration/r244_spectrum_input_gate.v4/synthetic_sampling_profile_red_output"
+        ],
+        "exit_code": 94,
+        "expected_exit_code": 94,
+        "consumer_sha256": "afce9d45a9d07d6269757f04903e63b9988c25cceb0b91b78b10e2d17af62d45",
+        "log_sha256": "9330a998b427a4a55e0fd7598799c43294c050f83570fdeb639271783a32db96"
+      }
+    ],
+    "synthetic_profile_scope": "Display-sidecar metadata mutations only; original primary and PNG bytes retained. No changed-camera rendering or native display re-encoding was performed."
+  },
+  "scene_gate_scope": "Synthetic receipt byte fixtures for both canonical and wide geometries; no occluder rendering claimed. Original full235frame native artifacts accepted unchanged.",
+  "unchanged_library_validation": "engineering_gate.json: shared library and GPU source unchanged from clean make/Deployment/Opto gate"
+}

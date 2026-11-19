@@ -16,6 +16,7 @@
 
 #include "IReference.h"
 #include "ITransformable.h"
+#include "IEnumCallback.h"
 #include "../Utilities/BoundingBox.h"
 #include <cmath>			// std::fabs (SelfHitRootFloor's default body)
 
@@ -322,10 +323,28 @@ namespace RISE
 		//! process-wide catalog epoch.  Declared last + defaulted: no vtable
 		//! claim.
 		virtual unsigned long long ShapeRevision() const { return 0; }
+
+		//! Visits every effective leaf `IMaterial` that a surface hit on this
+		//! object can produce, passing each non-null material to @a cb until
+		//! @a cb returns false (early stop) or all leaves are visited.  Default
+		//! visits `GetMaterial()` if non-null; `CSGObject` overrides to traverse
+		//! its operands in O(|V|) when no container-level material override is set.
+		virtual bool EnumerateEffectiveMaterials( IEnumCallback<IMaterial>& cb ) const;
 	};
 }
 
 #include "../Intersection/RayIntersection.h"
 #include "IMaterial.h"
+
+namespace RISE
+{
+	inline bool IObject::EnumerateEffectiveMaterials( IEnumCallback<IMaterial>& cb ) const
+	{
+		if( const IMaterial* m = GetMaterial() ) {
+			return cb( *m );
+		}
+		return true;
+	}
+}
 
 #endif

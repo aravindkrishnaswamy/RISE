@@ -46,13 +46,13 @@ namespace RISE
 	//! DL-472 (1): the TRANSPORT MODE of an `IBSDF::value` query.  A BSDF
 	//! that refracts INSIDE itself (a `composite_material` whose top
 	//! refracts over a bottom that transmits through its own BSDF -- the
-	//! only one today) is not symmetric in its arguments: its radiance
+	//! original case) is not symmetric in its arguments: its radiance
 	//! value carries the basic-radiance factor (n_out / n_in)^2 of the
 	//! index step (RISE prices that factor on RADIANCE walks only,
 	//! REFRACTIVE_RADIANCE_SCALING.md), and a light-subpath (IMPORTANCE)
 	//! connection must not see it.  PathVertexEval::EvalBSDFAtVertex{,NM}
-	//! sets this for a light-subpath vertex; every other BSDF ignores it
-	//! (their values are reciprocal).  Thread-local, scoped, nestable.
+	//! sets this for a light-subpath vertex; RoughDielectricSurface also honors it for its refractive BTDF.
+	//! Reciprocal reflection-only BSDFs ignore it.  Thread-local, scoped, nestable.
 	inline bool& BSDFImportanceModeFlag()
 	{
 		thread_local bool flag = false;

@@ -1,0 +1,154 @@
+{
+  "corrected_B_mass_timeseries_differs_from_A": true,
+  "early_check_passed": true,
+  "early_fields": [
+    {
+      "accepted_step": "1",
+      "time_s": "15.020366904209368",
+      "field": "Q",
+      "values": "4541994",
+      "different_numeric_values": "3561631",
+      "max_abs_difference": "2397.671875",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "1",
+      "time_s": "15.020366904209368",
+      "field": "T",
+      "values": "504666",
+      "different_numeric_values": "59598",
+      "max_abs_difference": "22.6573486328125",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "1",
+      "time_s": "15.020366904209368",
+      "field": "M0",
+      "values": "511980",
+      "different_numeric_values": "494112",
+      "max_abs_difference": "0.0036810636520385742",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "1",
+      "time_s": "15.020366904209368",
+      "field": "U0",
+      "values": "511980",
+      "different_numeric_values": "491832",
+      "max_abs_difference": "0.0063629150390625",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "1",
+      "time_s": "15.020366904209368",
+      "field": "M1",
+      "values": "511980",
+      "different_numeric_values": "495726",
+      "max_abs_difference": "0.0053441524505615234",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "1",
+      "time_s": "15.020366904209368",
+      "field": "U1",
+      "values": "511980",
+      "different_numeric_values": "493483",
+      "max_abs_difference": "0.0055756568908691406",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "1",
+      "time_s": "15.020366904209368",
+      "field": "M2",
+      "values": "509427",
+      "different_numeric_values": "489636",
+      "max_abs_difference": "0.015056848526000977",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "1",
+      "time_s": "15.020366904209368",
+      "field": "U2",
+      "values": "509427",
+      "different_numeric_values": "487376",
+      "max_abs_difference": "0.0077676773071289062",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "2",
+      "time_s": "15.02201317017898",
+      "field": "Q",
+      "values": "4541994",
+      "different_numeric_values": "3923787",
+      "max_abs_difference": "3972.859375",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "2",
+      "time_s": "15.02201317017898",
+      "field": "T",
+      "values": "504666",
+      "different_numeric_values": "61429",
+      "max_abs_difference": "35.6156005859375",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "2",
+      "time_s": "15.02201317017898",
+      "field": "M0",
+      "values": "511980",
+      "different_numeric_values": "511865",
+      "max_abs_difference": "0.013589352369308472",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "2",
+      "time_s": "15.02201317017898",
+      "field": "U0",
+      "values": "511980",
+      "different_numeric_values": "511835",
+      "max_abs_difference": "0.039952397346496582",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "2",
+      "time_s": "15.02201317017898",
+      "field": "M1",
+      "values": "511980",
+      "different_numeric_values": "511727",
+      "max_abs_difference": "0.013472065329551697",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "2",
+      "time_s": "15.02201317017898",
+      "field": "U1",
+      "values": "511980",
+      "different_numeric_values": "511688",
+      "max_abs_difference": "0.039881765842437744",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "2",
+      "time_s": "15.02201317017898",
+      "field": "M2",
+      "values": "509427",
+      "different_numeric_values": "504624",
+      "max_abs_difference": "0.028162360191345215",
+      "mode": "compared"
+    },
+    {
+      "accepted_step": "2",
+      "time_s": "15.02201317017898",
+      "field": "U2",
+      "values": "509427",
+      "different_numeric_values": "504676",
+      "max_abs_difference": "0.028953075408935547",
+      "mode": "compared"
+    }
+  ],
+  "B_path": "active resident pf_charm",
+  "simulations_succeeded": true,
+  "status_error": "Final completion script used system Python without NumPy after both simulations and reductions succeeded; final bookkeeping completed read-only on 2026-10-27",
+  "interpretation": "stop for review; no production change"
+}

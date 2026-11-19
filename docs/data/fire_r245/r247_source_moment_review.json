@@ -1,0 +1,36 @@
+{
+  "schema": "rise.fire.r247.source-moment-review.v1",
+  "status": "accepted_zero_p1_p2_synthetic_arithmetic_only",
+  "reviewed_head": "7e6878e7f",
+  "round": 2,
+  "gate_sha256": "6c1fb4c936c86ba12d39aa69384adaf44f4c7a5cf19951b103149cb8889a1231",
+  "prior_round": {
+    "reviewed_head": "d30a5b763",
+    "p1": 0,
+    "p2": 2,
+    "findings": [
+      "Subnormal coordinate products underflowed before normalization",
+      "Common fraction depended on representable volume-scaled power"
+    ]
+  },
+  "repair": "Power-of-two rescaling before products; dimensionless weight fraction; explicit rounded power underflow flags; preserved external v1",
+  "reviewers": [
+    {
+      "agent": "r247_source_moment_math_r2",
+      "axis": "independent moments, long-double reference, subnormal/translation/scaling arithmetic",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "agent": "r247_source_moment_contract_r2",
+      "axis": "contract/test integrity/exact artifacts/unavailable scope",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "native_capsules_read": 0,
+  "field_consumer_implemented": false,
+  "full_derivation_accepted": false,
+  "physical_acceptance": false,
+  "accepted_utc": "2026-10-04T17:05:51.880130+00:00"
+}

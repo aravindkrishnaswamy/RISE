@@ -1,0 +1,1196 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  ContinuationAvailabilityTest.cpp - Phase-B gate-3 immutable
+//  continuation-closure and r42 two-availability regressions.
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+
+#include "../src/Library/Interfaces/IContinuationClosure.h"
+#include "../src/Library/Materials/IsotropicPhongMaterial.h"
+#include "../src/Library/Materials/LambertianLuminaireMaterial.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Materials/OrenNayarMaterial.h"
+#include "../src/Library/Materials/PhongLuminaireMaterial.h"
+#include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Shaders/PathTracingIntegrator.h"
+#include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Utilities/IORStack.h"
+#include "../src/Library/Utilities/PathTransportUtilities.h"
+#include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Utilities/StabilityConfig.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+namespace
+{
+	int passed = 0;
+	int failed = 0;
+
+	void Check( const bool condition, const char* label )
+	{
+		if( condition ) ++passed;
+		else {
+			++failed;
+			std::cout << "FAIL: " << label << std::endl;
+		}
+	}
+
+	void CheckNear(
+		const Scalar actual, const Scalar expected,
+		const Scalar tolerance, const char* label )
+	{
+		const bool ok = std::fabs(actual-expected) <= tolerance;
+		Check(ok,label);
+		if( !ok ) {
+			std::cout << "  got " << actual << ", expected " << expected << std::endl;
+		}
+	}
+
+	RayIntersectionGeometric MakeIntersection(
+		const Vector3& shadingNormal = Vector3(0,0,1),
+		const Vector3& rayDirection = Vector3(0,0,-1) )
+	{
+		const RasterizerState rast = {0,0};
+		RayIntersectionGeometric ri(
+			Ray(Point3(0,0,1),rayDirection),rast);
+		ri.bHit = true;
+		ri.ptIntersection = Point3(0,0,0);
+		ri.vNormal = shadingNormal;
+		ri.vGeomNormal = Vector3(0,0,1);
+		ri.onb.CreateFromW(shadingNormal);
+		return ri;
+	}
+
+	ContinuationPathState NoRouletteState()
+	{
+		ContinuationPathState state;
+		state.pathDepth = 0;
+		state.rrMinDepth = 3;
+		state.rrThreshold = 0.05;
+		state.importance = 1.0;
+		return state;
+	}
+
+	Scalar BitsToScalar( const std::uint64_t bits )
+	{
+		volatile std::uint64_t runtimeBits = bits;
+		const std::uint64_t copy = runtimeBits;
+		Scalar value;
+		std::memcpy(&value,&copy,sizeof(value));
+		return value;
+	}
+
+	void CheckPelNear(
+		const RISEPel& actual, const RISEPel& expected,
+		const Scalar tolerance, const char* label )
+	{
+		CheckNear(actual[0],expected[0],tolerance,label);
+		CheckNear(actual[1],expected[1],tolerance,label);
+		CheckNear(actual[2],expected[2],tolerance,label);
+	}
+
+	class TestScalarPainter final :
+		public virtual IScalarPainter,
+		public virtual Reference
+	{
+		const ScalarTriple values;
+		const bool variationHint;
+	protected:
+		~TestScalarPainter() override {}
+	public:
+		TestScalarPainter( const ScalarTriple& values_, const bool variationHint_ ) :
+		  values(values_), variationHint(variationHint_) {}
+		ScalarTriple GetValuesAt(
+			const RayIntersectionGeometric& ) const override { return values; }
+		Scalar GetValueAtNM(
+			const RayIntersectionGeometric&, Scalar ) const override
+		{
+			return values.v[0];
+		}
+		bool HasPerChannelVariation() const override { return variationHint; }
+	};
+
+	class FixedSampler final : public ISampler
+	{
+	public:
+		Scalar Get1D() override { return 0.0; }
+		Point2 Get2D() override { return Point2(0.0,0.0); }
+	};
+
+	class ClosureCapableUnsupportedMaterial final :
+		public virtual IMaterial,
+		public virtual Reference
+	{
+	public:
+		explicit ClosureCapableUnsupportedMaterial( IMaterial& base ) : base_(base)
+		{
+			base_.addref();
+		}
+		IBSDF* GetBSDF() const override { return base_.GetBSDF(); }
+		ISPF* GetSPF() const override { return base_.GetSPF(); }
+		IEmitter* GetEmitter() const override { return 0; }
+		const IContinuationClosurePel* MakeContinuationClosurePel(
+			const RayIntersectionGeometric& ri, const IORStack& ior,
+			const ContinuationPathState& state ) const override
+		{
+			return base_.MakeContinuationClosurePel(ri,ior,state);
+		}
+		const IContinuationClosureNM* MakeContinuationClosureNM(
+			const RayIntersectionGeometric& ri, const IORStack& ior,
+			const Scalar nm, const ContinuationPathState& state ) const override
+		{
+			return base_.MakeContinuationClosureNM(ri,ior,nm,state);
+		}
+	protected:
+		~ClosureCapableUnsupportedMaterial() override { base_.release(); }
+	private:
+		IMaterial& base_;
+	};
+
+	class DerivedLambertianLuminaireMaterial final :
+		public LambertianLuminaireMaterial
+	{
+	public:
+		DerivedLambertianLuminaireMaterial(
+			const IPainter& emission, const IMaterial& base ) :
+			LambertianLuminaireMaterial(emission,1.0,base) {}
+	protected:
+		~DerivedLambertianLuminaireMaterial() override = default;
+	};
+
+	class DerivedPhongLuminaireMaterial final :
+		public PhongLuminaireMaterial
+	{
+	public:
+		DerivedPhongLuminaireMaterial(
+			const IPainter& emission, const IScalarPainter& exponent,
+			const IMaterial& base ) :
+			PhongLuminaireMaterial(emission,1.0,exponent,base) {}
+	protected:
+		~DerivedPhongLuminaireMaterial() override = default;
+	};
+
+	const ScatteredRay* FindDiffuseRay( const ScatteredRayContainer& rays )
+	{
+		for( unsigned int i=0; i<rays.Count(); ++i ) {
+			if( rays[i].type==ScatteredRay::eRayDiffuse ) return &rays[i];
+		}
+		return 0;
+	}
+
+	void CheckClosureIdentity(
+		const IContinuationClosurePel& expected,
+		const IContinuationClosurePel& actual,
+		const char* label )
+	{
+		const unsigned int mask = expected.GetLobeMask();
+		Check(actual.GetLobeMask()==mask,label);
+		const Vector3 directions[] = {
+			Vector3(0,0,1),
+			Vector3Ops::Normalize(Vector3(0.4,0.2,0.89)),
+			Vector3Ops::Normalize(Vector3(-0.3,0.6,0.74))
+		};
+		for( const Vector3& direction : directions ) {
+			CheckPelNear(actual.EvaluateSubset(mask,direction),
+				expected.EvaluateSubset(mask,direction),0.0,label);
+			CheckNear(actual.PdfMarginal(mask,direction),
+				expected.PdfMarginal(mask,direction),0.0,label);
+			CheckNear(actual.PdfReachMarginal(mask,direction),
+				expected.PdfReachMarginal(mask,direction),0.0,label);
+		}
+		const Scalar lobeSamples[] = { 0.1, 0.6, 0.95 };
+		for( unsigned int i=0; i<3; ++i ) {
+			const Point2 directionSample(0.17+0.23*i,0.81-0.19*i);
+			ContinuationSamplePel expectedSample, actualSample;
+			const bool expectedOk = expected.SampleSubset(
+				mask,lobeSamples[i],directionSample,0.2,false,expectedSample);
+			const bool actualOk = actual.SampleSubset(
+				mask,lobeSamples[i],directionSample,0.2,false,actualSample);
+			Check(actualOk==expectedOk,label);
+			if( expectedOk && actualOk ) {
+				CheckNear(Vector3Ops::Magnitude(
+					actualSample.ray.Dir()-expectedSample.ray.Dir()),0.0,0.0,label);
+				CheckPelNear(actualSample.response,expectedSample.response,0.0,label);
+				CheckPelNear(actualSample.throughput,expectedSample.throughput,0.0,label);
+				CheckNear(actualSample.pdf,expectedSample.pdf,0.0,label);
+				CheckNear(actualSample.reachPdf,expectedSample.reachPdf,0.0,label);
+				Check(actualSample.lobe==expectedSample.lobe &&
+					actualSample.horizonPassed==expectedSample.horizonPassed &&
+					actualSample.rouletteSurvived==expectedSample.rouletteSurvived,label);
+			}
+		}
+	}
+
+	void CheckClosureIdentity(
+		const IContinuationClosureNM& expected,
+		const IContinuationClosureNM& actual,
+		const char* label )
+	{
+		const unsigned int mask = expected.GetLobeMask();
+		Check(actual.GetLobeMask()==mask,label);
+		const Vector3 directions[] = {
+			Vector3(0,0,1),
+			Vector3Ops::Normalize(Vector3(0.4,0.2,0.89)),
+			Vector3Ops::Normalize(Vector3(-0.3,0.6,0.74))
+		};
+		for( const Vector3& direction : directions ) {
+			CheckNear(actual.EvaluateSubset(mask,direction),
+				expected.EvaluateSubset(mask,direction),0.0,label);
+			CheckNear(actual.PdfMarginal(mask,direction),
+				expected.PdfMarginal(mask,direction),0.0,label);
+			CheckNear(actual.PdfReachMarginal(mask,direction),
+				expected.PdfReachMarginal(mask,direction),0.0,label);
+		}
+		const Scalar lobeSamples[] = { 0.1, 0.6, 0.95 };
+		for( unsigned int i=0; i<3; ++i ) {
+			const Point2 directionSample(0.17+0.23*i,0.81-0.19*i);
+			ContinuationSampleNM expectedSample, actualSample;
+			const bool expectedOk = expected.SampleSubset(
+				mask,lobeSamples[i],directionSample,0.2,false,expectedSample);
+			const bool actualOk = actual.SampleSubset(
+				mask,lobeSamples[i],directionSample,0.2,false,actualSample);
+			Check(actualOk==expectedOk,label);
+			if( expectedOk && actualOk ) {
+				CheckNear(Vector3Ops::Magnitude(
+					actualSample.ray.Dir()-expectedSample.ray.Dir()),0.0,0.0,label);
+				CheckNear(actualSample.response,expectedSample.response,0.0,label);
+				CheckNear(actualSample.throughput,expectedSample.throughput,0.0,label);
+				CheckNear(actualSample.pdf,expectedSample.pdf,0.0,label);
+				CheckNear(actualSample.reachPdf,expectedSample.reachPdf,0.0,label);
+				Check(actualSample.lobe==expectedSample.lobe &&
+					actualSample.horizonPassed==expectedSample.horizonPassed &&
+					actualSample.rouletteSurvived==expectedSample.rouletteSurvived,label);
+			}
+		}
+	}
+
+	void TestLuminaireAndClayClosureIdentity()
+	{
+		UniformColorPainter* rd = new UniformColorPainter(RISEPel(0.25));
+		UniformColorPainter* rs = new UniformColorPainter(RISEPel(0.75));
+		UniformColorPainter* emission = new UniformColorPainter(RISEPel(2.0));
+		UniformScalarPainter* exponent = new UniformScalarPainter(9.0);
+		IsotropicPhongMaterial* base = new IsotropicPhongMaterial(*rd,*rs,*exponent);
+		LambertianLuminaireMaterial* lambertWrapper =
+			new LambertianLuminaireMaterial(*emission,1.0,*base);
+		PhongLuminaireMaterial* phongWrapper =
+			new PhongLuminaireMaterial(*emission,1.0,*exponent,*base);
+
+		Check(lambertWrapper->GetBSDF()==base->GetBSDF() &&
+			lambertWrapper->GetSPF()==base->GetSPF(),
+			"Lambertian luminaire delegates the exact base response and sampler");
+		Check(phongWrapper->GetBSDF()==base->GetBSDF() &&
+			phongWrapper->GetSPF()==base->GetSPF(),
+			"Phong luminaire delegates the exact base response and sampler");
+		Check(IsExactSupportedContinuationMaterial(lambertWrapper) &&
+			IsExactSupportedContinuationMaterial(phongWrapper),
+			"both exact luminaire wrappers recursively inherit supported closure status");
+		DerivedLambertianLuminaireMaterial* derivedLambert =
+			new DerivedLambertianLuminaireMaterial(*emission,*base);
+		DerivedPhongLuminaireMaterial* derivedPhong =
+			new DerivedPhongLuminaireMaterial(*emission,*exponent,*base);
+		ClosureCapableUnsupportedMaterial* unsupportedBase =
+			new ClosureCapableUnsupportedMaterial(*base);
+		LambertianLuminaireMaterial* unsupportedLambertWrapper =
+			new LambertianLuminaireMaterial(*emission,1.0,*unsupportedBase);
+		PhongLuminaireMaterial* unsupportedPhongWrapper =
+			new PhongLuminaireMaterial(
+				*emission,1.0,*exponent,*unsupportedBase);
+		Check(!IsExactSupportedContinuationMaterial(derivedLambert) &&
+			!IsExactSupportedContinuationMaterial(derivedPhong),
+			"derived luminaire wrappers cannot inherit exact allowlist status");
+		Check(!IsExactSupportedContinuationMaterial(unsupportedLambertWrapper) &&
+			!IsExactSupportedContinuationMaterial(unsupportedPhongWrapper),
+			"exact luminaire wrappers remain unsupported over an unsupported base");
+		const RayIntersectionGeometric redRi = MakeIntersection();
+		const IORStack redIor(1.0);
+		const ContinuationPathState redState = NoRouletteState();
+		const IContinuationClosurePel* inheritedPel =
+			derivedLambert->MakeContinuationClosurePel(redRi,redIor,redState);
+		const IContinuationClosureNM* inheritedNM =
+			unsupportedPhongWrapper->MakeContinuationClosureNM(
+				redRi,redIor,550.0,redState);
+		Check(inheritedPel && inheritedNM,
+			"RED wrappers are closure-capable but rejected by the central exact allowlist");
+		safe_release(inheritedPel); safe_release(inheritedNM);
+		safe_release(unsupportedLambertWrapper);
+		safe_release(unsupportedPhongWrapper);
+		safe_release(unsupportedBase);
+		safe_release(derivedLambert); safe_release(derivedPhong);
+
+		const RayIntersectionGeometric ri = MakeIntersection();
+		const IORStack ior(1.0);
+		const ContinuationPathState state = NoRouletteState();
+		const Scalar nm = 550.0;
+		const IContinuationClosurePel* basePel =
+			base->MakeContinuationClosurePel(ri,ior,state);
+		const IContinuationClosureNM* baseNM =
+			base->MakeContinuationClosureNM(ri,ior,nm,state);
+		const IContinuationClosurePel* lambertPel =
+			lambertWrapper->MakeContinuationClosurePel(ri,ior,state);
+		const IContinuationClosureNM* lambertNM =
+			lambertWrapper->MakeContinuationClosureNM(ri,ior,nm,state);
+		const IContinuationClosurePel* phongPel =
+			phongWrapper->MakeContinuationClosurePel(ri,ior,state);
+		const IContinuationClosureNM* phongNM =
+			phongWrapper->MakeContinuationClosureNM(ri,ior,nm,state);
+		Check(basePel && baseNM && lambertPel && lambertNM && phongPel && phongNM,
+			"base and both luminaire delegate closures construct in Pel and NM");
+		if( basePel && lambertPel ) CheckClosureIdentity(
+			*basePel,*lambertPel,"Lambertian luminaire Pel response/sample/Pdf identity");
+		if( baseNM && lambertNM ) CheckClosureIdentity(
+			*baseNM,*lambertNM,"Lambertian luminaire NM response/sample/Pdf identity");
+		if( basePel && phongPel ) CheckClosureIdentity(
+			*basePel,*phongPel,"Phong luminaire Pel response/sample/Pdf identity");
+		if( baseNM && phongNM ) CheckClosureIdentity(
+			*baseNM,*phongNM,"Phong luminaire NM response/sample/Pdf identity");
+		safe_release(basePel); safe_release(baseNM);
+		safe_release(lambertPel); safe_release(lambertNM);
+		safe_release(phongPel); safe_release(phongNM);
+
+		const IMaterial* clay = PathTracingIntegrator::CreateClayOverrideMaterial();
+		Check(clay && typeid(*clay)==typeid(LambertianMaterial) &&
+			IsExactSupportedContinuationMaterial(clay),
+			"clay factory returns the exact allowlisted Lambertian material");
+		if( clay ) {
+			const IContinuationClosurePel* clayPel =
+				clay->MakeContinuationClosurePel(ri,ior,state);
+			const IContinuationClosureNM* clayNM =
+				clay->MakeContinuationClosureNM(ri,ior,nm,state);
+			Check(clayPel && clayNM,
+				"clay factory constructs coherent Pel and NM closures");
+			const Vector3 direction = Vector3Ops::Normalize(Vector3(0.3,0.4,0.866));
+			if( clayPel ) {
+				CheckPelNear(clayPel->EvaluateSubset(clayPel->GetLobeMask(),direction),
+					clay->GetBSDF()->value(direction,ri),0.0,
+					"clay Pel closure response is the factory BRDF response");
+				CheckNear(clayPel->PdfMarginal(clayPel->GetLobeMask(),direction),
+					clay->Pdf(direction,ri,ior),0.0,
+					"clay Pel closure Pdf is the factory sampler Pdf");
+				ContinuationSamplePel closureSample;
+				FixedSampler sampler;
+				ScatteredRayContainer rays;
+				const bool sampled = clayPel->SampleSubset(
+					clayPel->GetLobeMask(),0.0,Point2(0.0,0.0),0.0,false,
+					closureSample);
+				clay->GetSPF()->Scatter(ri,sampler,rays,ior);
+				const ScatteredRay* spfSample = FindDiffuseRay(rays);
+				const bool sameDirection = sampled && spfSample &&
+					Vector3Ops::Magnitude(
+						closureSample.ray.Dir()-spfSample->ray.Dir())==0.0;
+				Check(sameDirection,
+					"clay Pel closure sample direction is the factory SPF direction");
+				if( sampled && spfSample ) {
+					CheckPelNear(closureSample.throughput,spfSample->kray,0.0,
+						"clay Pel closure sample throughput is the factory SPF weight");
+					CheckNear(closureSample.pdf,spfSample->pdf,0.0,
+						"clay Pel closure sampled Pdf is the factory SPF sampled Pdf");
+				}
+			}
+			if( clayNM ) {
+				CheckNear(clayNM->EvaluateSubset(clayNM->GetLobeMask(),direction),
+					clay->GetBSDF()->valueNM(direction,ri,nm),0.0,
+					"clay NM closure response is the factory BRDF response");
+				CheckNear(clayNM->PdfMarginal(clayNM->GetLobeMask(),direction),
+					clay->PdfNM(direction,ri,nm,ior),0.0,
+					"clay NM closure Pdf is the factory sampler Pdf");
+				ContinuationSampleNM closureSample;
+				FixedSampler sampler;
+				ScatteredRayContainer rays;
+				const bool sampled = clayNM->SampleSubset(
+					clayNM->GetLobeMask(),0.0,Point2(0.0,0.0),0.0,false,
+					closureSample);
+				clay->GetSPF()->ScatterNM(ri,sampler,nm,rays,ior);
+				const ScatteredRay* spfSample = FindDiffuseRay(rays);
+				const bool sameDirection = sampled && spfSample &&
+					Vector3Ops::Magnitude(
+						closureSample.ray.Dir()-spfSample->ray.Dir())==0.0;
+				Check(sameDirection,
+					"clay NM closure sample direction is the factory SPF direction");
+				if( sampled && spfSample ) {
+					CheckNear(closureSample.throughput,spfSample->krayNM,0.0,
+						"clay NM closure sample throughput is the factory SPF weight");
+					CheckNear(closureSample.pdf,spfSample->pdf,0.0,
+						"clay NM closure sampled Pdf is the factory SPF sampled Pdf");
+				}
+			}
+			safe_release(clayPel); safe_release(clayNM);
+			safe_release(clay);
+		}
+
+		safe_release(lambertWrapper); safe_release(phongWrapper);
+		safe_release(base);
+		safe_release(rd); safe_release(rs);
+		safe_release(emission); safe_release(exponent);
+	}
+
+	void TestR42AvailabilityReductionAndCaps()
+	{
+		const unsigned int all = eContinuationLobeDiffuse |
+			eContinuationLobeGlossy;
+		StabilityConfig config;
+		ContinuationAvailability availability = ResolveContinuationAvailability(
+			all,true,0,0,config);
+		Check( availability.vertexMask==all && availability.marchMask==all,
+			"non-terminal A_vertex and A_march reduce to the identical full mask" );
+
+		availability = ResolveContinuationAvailability(all,false,0,0,config);
+		Check( availability.vertexMask==eContinuationLobeNone &&
+			availability.marchMask==all,
+			"total-depth terminal suppresses A_vertex but preserves A_march" );
+
+		config.maxDiffuseBounce = 0;
+		availability = ResolveContinuationAvailability(all,true,0,0,config);
+		Check( availability.vertexMask==eContinuationLobeGlossy &&
+			availability.marchMask==eContinuationLobeGlossy,
+			"diffuse per-type cap removes diffuse from both availability sets" );
+
+		availability = ResolveContinuationAvailability(all,false,0,0,config);
+		Check( availability.vertexMask==eContinuationLobeNone &&
+			availability.marchMask==eContinuationLobeGlossy,
+			"mixed total-depth and diffuse cap leaves only glossy source march" );
+
+		config.maxGlossyBounce = 0;
+		availability = ResolveContinuationAvailability(all,false,0,0,config);
+		Check( availability.vertexMask==eContinuationLobeNone &&
+			availability.marchMask==eContinuationLobeNone,
+			"per-type caps can make A_march empty" );
+
+		StabilityConfig mediumConfig;
+		MediumContinuationAvailability mediumAvailability =
+			ResolveMediumContinuationAvailability(true,0,mediumConfig);
+		Check( mediumAvailability.vertexAllowed && mediumAvailability.marchAllowed,
+			"non-terminal medium availability views are identical" );
+		mediumAvailability = ResolveMediumContinuationAvailability(false,0,mediumConfig);
+		Check( !mediumAvailability.vertexAllowed && mediumAvailability.marchAllowed,
+			"total-depth terminal preserves the medium source-only march" );
+		mediumConfig.maxVolumeBounce = 0;
+		mediumAvailability = ResolveMediumContinuationAvailability(false,0,mediumConfig);
+		Check( !mediumAvailability.vertexAllowed && !mediumAvailability.marchAllowed,
+			"volume per-type cap removes the medium lobe from both views" );
+	}
+
+	void TestExtractedRouletteProbabilityMatchesDecision()
+	{
+		using PathTransportUtilities::EvaluateRussianRoulette;
+		using PathTransportUtilities::RussianRouletteSurvivalProbability;
+		CheckNear( RussianRouletteSurvivalProbability(
+			2,3,0.05,0.02,0.1),1.0,0.0,
+			"roulette probability is one before the minimum depth" );
+		const Scalar intermediate = RussianRouletteSurvivalProbability(
+			3,3,0.05,0.02,0.1);
+		CheckNear( intermediate,0.2,1e-15,
+			"roulette probability exposes the exact intermediate survival mass" );
+		CheckNear( RussianRouletteSurvivalProbability(
+			3,3,0.05,0.2,0.1),1.0,0.0,
+			"roulette probability is capped at one" );
+
+		const PathTransportUtilities::RussianRouletteResult survives =
+			EvaluateRussianRoulette(3,3,0.05,0.02,0.1,0.19);
+		Check( !survives.terminate && survives.survivalProb==intermediate &&
+			std::fabs(1.0/survives.survivalProb-5.0)<=1e-15,
+			"roulette decision uses the extracted probability for survival compensation" );
+		const PathTransportUtilities::RussianRouletteResult terminates =
+			EvaluateRussianRoulette(3,3,0.05,0.02,0.1,intermediate);
+		Check( terminates.terminate && terminates.survivalProb==1.0,
+			"roulette decision retains its boundary termination convention" );
+	}
+
+	template<class Closure>
+	void TestPhongClosureCommon(
+		const Closure& closure, const Scalar diffuseMass,
+		const Scalar glossyMass, const char* prefix )
+	{
+		const unsigned int all = eContinuationLobeDiffuse |
+			eContinuationLobeGlossy;
+		Check( closure.GetLobeMask()==all, prefix );
+		CheckNear(closure.GetSelectionMass(eContinuationLobeDiffuse),
+			diffuseMass,1e-15,"Phong diffuse selection mass is captured");
+		CheckNear(closure.GetSelectionMass(eContinuationLobeGlossy),
+			glossyMass,1e-15,"Phong glossy selection mass is captured");
+		const Vector3 direction(0,0,1);
+		const Scalar totalMass = diffuseMass+glossyMass;
+		const Scalar expectedPdf = diffuseMass/totalMass*INV_PI +
+			glossyMass/totalMass*(10.0*INV_PI*0.5);
+		CheckNear(closure.PdfMarginal(all,direction),expectedPdf,1e-14,
+			"Phong marginal is the normalized full-lobe mixture");
+		CheckNear(closure.PdfMarginal(eContinuationLobeDiffuse,direction),
+			INV_PI,1e-15,"diffuse-only marginal renormalizes to cosine pdf");
+		CheckNear(closure.PdfMarginal(eContinuationLobeGlossy,direction),
+			10.0*INV_PI*0.5,1e-14,"glossy-only marginal renormalizes to Phong pdf");
+	}
+
+	void TestIsotropicPhongMixedSplitPelAndNM()
+	{
+		const RayIntersectionGeometric ri = MakeIntersection();
+		const ContinuationPathState state = NoRouletteState();
+		const IContinuationClosurePel* pel =
+			CreateIsotropicPhongContinuationClosurePel(
+				ri,RISEPel(0.2,0.4,0.1),RISEPel(0.6,0.1,0.2),9.0,state);
+		const IContinuationClosureNM* nm =
+			CreateIsotropicPhongContinuationClosureNM(ri,0.25,0.75,9.0,state);
+		Check(pel!=0,"valid Pel IsotropicPhong closure is constructed");
+		Check(nm!=0,"valid NM IsotropicPhong closure is constructed");
+		if( pel ) TestPhongClosureCommon(*pel,0.4,0.6,
+			"Pel Phong closure enumerates diffuse and glossy lobes");
+		if( nm ) TestPhongClosureCommon(*nm,0.25,0.75,
+			"NM Phong closure enumerates diffuse and glossy lobes");
+
+		const Vector3 direction(0,0,1);
+		if( pel ) {
+			const RISEPel diffuse = pel->EvaluateSubset(
+				eContinuationLobeDiffuse,direction);
+			const RISEPel glossy = pel->EvaluateSubset(
+				eContinuationLobeGlossy,direction);
+			const RISEPel all = pel->EvaluateSubset(
+				eContinuationLobeDiffuse|eContinuationLobeGlossy,direction);
+			CheckPelNear(all,diffuse+glossy,1e-15,
+				"Pel mixed-lobe f_A plus f_D split is exactly additive");
+
+			StabilityConfig cap;
+			cap.maxDiffuseBounce = 0;
+			const ContinuationAvailability availability =
+				ResolveContinuationAvailability(pel->GetLobeMask(),true,0,0,cap);
+			CheckPelNear(pel->EvaluateSubset(availability.marchMask,direction),
+				glossy,1e-15,"Pel allowed f_A contains only glossy response");
+			CheckPelNear(pel->EvaluateSubset(
+				pel->GetLobeMask()&~availability.marchMask,direction),
+				diffuse,1e-15,"Pel capped diffuse response is NEE-only f_D");
+
+			unsigned int diffuseSamples = 0;
+			unsigned int glossySamples = 0;
+			for( unsigned int i=0; i<1000; ++i ) {
+				ContinuationSamplePel sample;
+				const bool selected = pel->SampleSubset(
+					pel->GetLobeMask(),(Scalar(i)+0.5)/1000.0,
+					Point2(0.37,0.61),0.0,false,sample);
+				Check(selected,"Pel mixed closure selects one lobe");
+				if( selected && sample.horizonPassed ) {
+					CheckNear(sample.pdf,pel->PdfMarginal(
+						pel->GetLobeMask(),sample.ray.Dir()),1e-15,
+						"Pel sampled PDF is the full allowed-lobe marginal");
+					CheckNear(sample.reachPdf,sample.pdf,1e-15,
+						"Pel no-RR sampled reach density equals marginal PDF");
+				}
+				if( sample.lobe==eContinuationLobeDiffuse ) ++diffuseSamples;
+				if( sample.lobe==eContinuationLobeGlossy ) ++glossySamples;
+			}
+			Check(diffuseSamples==400 && glossySamples==600,
+				"Pel lobe frequencies equal direction-independent 40/60 masses");
+		}
+		if( nm ) {
+			const Scalar diffuse = nm->EvaluateSubset(
+				eContinuationLobeDiffuse,direction);
+			const Scalar glossy = nm->EvaluateSubset(
+				eContinuationLobeGlossy,direction);
+			const Scalar all = nm->EvaluateSubset(
+				eContinuationLobeDiffuse|eContinuationLobeGlossy,direction);
+			CheckNear(all,diffuse+glossy,1e-15,
+				"mixed-lobe f_A plus f_D split is exactly additive");
+
+			StabilityConfig cap;
+			cap.maxDiffuseBounce = 0;
+			const ContinuationAvailability availability =
+				ResolveContinuationAvailability(nm->GetLobeMask(),true,0,0,cap);
+			CheckNear(nm->EvaluateSubset(availability.marchMask,direction),
+				glossy,1e-15,"allowed f_A contains only glossy response");
+			CheckNear(nm->EvaluateSubset(
+				nm->GetLobeMask()&~availability.marchMask,direction),
+				diffuse,1e-15,"capped diffuse response is confined to NEE-only f_D");
+
+			unsigned int diffuseSamples = 0;
+			unsigned int glossySamples = 0;
+			for( unsigned int i=0; i<1000; ++i ) {
+				ContinuationSampleNM sample;
+				const bool selected = nm->SampleSubset(
+					nm->GetLobeMask(),(Scalar(i)+0.5)/1000.0,
+					Point2(0.37,0.61),0.0,false,sample);
+				Check(selected,"mixed closure selects one lobe");
+				if( selected && sample.horizonPassed ) {
+					CheckNear(sample.pdf,nm->PdfMarginal(
+						nm->GetLobeMask(),sample.ray.Dir()),1e-15,
+						"NM sampled PDF is the full allowed-lobe marginal");
+					CheckNear(sample.reachPdf,sample.pdf,1e-15,
+						"NM no-RR sampled reach density equals marginal PDF");
+				}
+				if( sample.lobe==eContinuationLobeDiffuse ) ++diffuseSamples;
+				if( sample.lobe==eContinuationLobeGlossy ) ++glossySamples;
+			}
+			Check(diffuseSamples==250 && glossySamples==750,
+				"NM lobe frequencies equal direction-independent 25/75 masses");
+		}
+		safe_release(pel);
+		safe_release(nm);
+	}
+
+	template<class Closure>
+	Scalar IntegrateGatedPdf(
+		const Closure& closure, const unsigned int mask )
+	{
+		const unsigned int zSteps = 160;
+		const unsigned int phiSteps = 320;
+		Scalar sum = 0.0;
+		for( unsigned int iz=0; iz<zSteps; ++iz ) {
+			const Scalar z = -1.0+(Scalar(iz)+0.5)*(2.0/Scalar(zSteps));
+			const Scalar radius = std::sqrt(r_max(Scalar(0),1.0-z*z));
+			for( unsigned int ip=0; ip<phiSteps; ++ip ) {
+				const Scalar phi = TWO_PI*(Scalar(ip)+0.5)/Scalar(phiSteps);
+				const Vector3 direction(radius*std::cos(phi),radius*std::sin(phi),z);
+				sum += closure.PdfMarginal(mask,direction);
+			}
+		}
+		return sum*(4.0*PI/Scalar(zSteps*phiSteps));
+	}
+
+	template<class Closure, class Sample>
+	Scalar MeasureHorizonNull(
+		const Closure& closure, const unsigned int mask )
+	{
+		const unsigned int sampleCount = 50000;
+		unsigned int nullCount = 0;
+		for( unsigned int i=0; i<sampleCount; ++i ) {
+			Sample sample;
+			const Scalar u = (Scalar(i)+0.5)/Scalar(sampleCount);
+			const Scalar v = std::fmod((Scalar(i)+0.5)*0.6180339887498948,1.0);
+			const bool selected = closure.SampleSubset(
+				mask,0.5,Point2(u,v),0.0,false,sample);
+			Check(selected,"horizon fixture always selects its supported lobe");
+			if( !sample.horizonPassed ) ++nullCount;
+		}
+		return Scalar(nullCount)/Scalar(sampleCount);
+	}
+
+	template<class Closure, class Sample>
+	void GateHorizonNormalization(
+		const Closure& closure, const char* label )
+	{
+		const unsigned int mask = closure.GetLobeMask();
+		const Scalar continuous = IntegrateGatedPdf(closure,mask);
+		const Scalar nullMass = MeasureHorizonNull<Closure,Sample>(closure,mask);
+		CheckNear(continuous+nullMass,1.0,0.012,label);
+	}
+
+	void TestHorizonNormalizationPelAndNM()
+	{
+		const Vector3 tilted = Vector3Ops::Normalize(Vector3(0.8,0,0.6));
+		const RayIntersectionGeometric ri = MakeIntersection(tilted);
+		const ContinuationPathState state = NoRouletteState();
+		const IContinuationClosurePel* lambertPel =
+			CreateLambertianContinuationClosurePel(ri,RISEPel(0.5),state);
+		const IContinuationClosureNM* lambertNM =
+			CreateLambertianContinuationClosureNM(ri,0.5,state);
+		const IContinuationClosurePel* orenPel =
+			CreateOrenNayarContinuationClosurePel(
+				ri,RISEPel(0.5),RISEPel(0.35),state);
+		const IContinuationClosureNM* orenNM =
+			CreateOrenNayarContinuationClosureNM(ri,0.5,0.35,state);
+		const IContinuationClosurePel* phongPel =
+			CreateIsotropicPhongContinuationClosurePel(
+				ri,RISEPel(0.0),RISEPel(0.7),40.0,state);
+		const IContinuationClosureNM* phongNM =
+			CreateIsotropicPhongContinuationClosureNM(ri,0,0.7,40.0,state);
+		Check(lambertPel && lambertNM && orenPel && orenNM && phongPel && phongNM,
+			"all Pel/NM grazing horizon fixtures construct");
+		if( lambertPel ) GateHorizonNormalization<
+			IContinuationClosurePel,ContinuationSamplePel>(*lambertPel,
+			"Pel Lambertian gated density plus sampled null mass normalizes");
+		if( lambertNM ) GateHorizonNormalization<
+			IContinuationClosureNM,ContinuationSampleNM>(*lambertNM,
+			"NM Lambertian gated density plus sampled null mass normalizes");
+		if( orenPel ) GateHorizonNormalization<
+			IContinuationClosurePel,ContinuationSamplePel>(*orenPel,
+			"Pel Oren-Nayar gated density plus sampled null mass normalizes");
+		if( orenNM ) GateHorizonNormalization<
+			IContinuationClosureNM,ContinuationSampleNM>(*orenNM,
+			"NM Oren-Nayar gated density plus sampled null mass normalizes");
+		if( phongPel ) GateHorizonNormalization<
+			IContinuationClosurePel,ContinuationSamplePel>(*phongPel,
+			"Pel Phong gated density plus sampled null mass normalizes");
+		if( phongNM ) GateHorizonNormalization<
+			IContinuationClosureNM,ContinuationSampleNM>(*phongNM,
+			"NM Phong gated density plus sampled null mass normalizes");
+		safe_release(lambertPel); safe_release(lambertNM);
+		safe_release(orenPel); safe_release(orenNM);
+		safe_release(phongPel); safe_release(phongNM);
+	}
+
+	void TestHorizonNullAndRouletteMass()
+	{
+		const Vector3 tilted = Vector3Ops::Normalize(Vector3(0.8,0,0.6));
+		const RayIntersectionGeometric tiltedRi = MakeIntersection(tilted);
+		const ContinuationPathState noRR = NoRouletteState();
+		const IContinuationClosureNM* tiltedClosure =
+			CreateLambertianContinuationClosureNM(tiltedRi,0.5,noRR);
+		const Vector3 belowGeometric = Vector3Ops::Normalize(Vector3(1,0,-0.1));
+		Check( tiltedClosure &&
+			tiltedClosure->BasePdf(eContinuationLobeDiffuse,belowGeometric)>0.0,
+			"tilted Lambertian base law has support before geometric gate" );
+		Check( tiltedClosure &&
+			!tiltedClosure->PassesHorizon(eContinuationLobeDiffuse,belowGeometric) &&
+			tiltedClosure->PdfMarginal(eContinuationLobeDiffuse,belowGeometric)==0.0 &&
+			tiltedClosure->EvaluateSubset(eContinuationLobeDiffuse,belowGeometric)==0.0,
+			"geometric horizon produces an explicit zero-density null outcome" );
+		safe_release(tiltedClosure);
+
+		ContinuationPathState rr;
+		rr.pathDepth = 3;
+		rr.rrMinDepth = 3;
+		rr.rrThreshold = 2.0;
+		rr.importance = 1.0;
+		const RayIntersectionGeometric ri = MakeIntersection();
+		const IContinuationClosureNM* closure =
+			CreateLambertianContinuationClosureNM(ri,0.5,rr);
+		const IContinuationClosurePel* pelClosure =
+			CreateLambertianContinuationClosurePel(ri,RISEPel(0.5),rr);
+		if( closure ) {
+			const Scalar pdf = INV_PI;
+			CheckNear(closure->PdfMarchMarginal(
+				eContinuationLobeDiffuse,Vector3(0,0,1)),pdf,1e-15,
+				"ordinary terminal march density omits RR but keeps deterministic support");
+			CheckNear(closure->PdfReachMarginal(
+				eContinuationLobeDiffuse,Vector3(0,0,1)),pdf*0.25,1e-15,
+				"reach density includes the exact RR survival mass");
+			ContinuationSampleNM survive;
+			closure->SampleSubset(eContinuationLobeDiffuse,0.4,
+				Point2(0,0),0.2,true,survive);
+			Check(survive.horizonPassed && survive.rouletteSurvived,
+				"RR sample below survival atom continues");
+			CheckNear(survive.survivalProbability,0.25,1e-15,
+				"sample records RR survival probability");
+			CheckNear(survive.throughput,2.0,1e-15,
+				"surviving continuation applies one reciprocal-RR compensation");
+
+			ContinuationSampleNM terminate;
+			closure->SampleSubset(eContinuationLobeDiffuse,0.4,
+				Point2(0,0),0.3,true,terminate);
+			Check(terminate.horizonPassed && !terminate.rouletteSurvived,
+				"RR sample above survival atom terminates");
+
+			ContinuationSampleNM terminalMarch;
+			closure->SampleSubset(eContinuationLobeDiffuse,0.4,
+				Point2(0,0),0.99,false,terminalMarch);
+			Check(terminalMarch.rouletteSurvived &&
+				terminalMarch.survivalProbability==1.0 &&
+				terminalMarch.reachPdf==terminalMarch.pdf,
+				"total-depth A_march sample omits roulette survival exactly");
+			CheckNear(terminalMarch.throughput,0.5,1e-15,
+				"source-only terminal segment keeps unamplified throughput");
+		}
+		if( pelClosure ) {
+			const unsigned int diffuse = eContinuationLobeDiffuse;
+			const Vector3 direction(0,0,1);
+			CheckNear(pelClosure->PdfMarchMarginal(diffuse,direction),
+				INV_PI,1e-15,
+				"Pel ordinary terminal march density omits RR but keeps deterministic support");
+			CheckNear(pelClosure->PdfReachMarginal(diffuse,direction),
+				INV_PI*0.25,1e-15,
+				"Pel reach density includes the exact RR survival mass");
+			ContinuationSamplePel survive;
+			pelClosure->SampleSubset(diffuse,0.4,Point2(0,0),0.2,true,survive);
+			Check(survive.horizonPassed && survive.rouletteSurvived,
+				"Pel RR sample below survival atom continues");
+			CheckNear(survive.pdf,pelClosure->PdfMarginal(
+				diffuse,survive.ray.Dir()),1e-15,
+				"Pel RR sample records the full marginal PDF");
+			CheckNear(survive.reachPdf,survive.pdf*0.25,1e-15,
+				"Pel sampled reach PDF contains exactly one survival factor");
+			CheckPelNear(survive.throughput,RISEPel(2.0),1e-15,
+				"Pel surviving continuation applies reciprocal-RR compensation");
+			ContinuationSamplePel terminate;
+			pelClosure->SampleSubset(diffuse,0.4,Point2(0,0),0.3,true,terminate);
+			Check(terminate.horizonPassed && !terminate.rouletteSurvived,
+				"Pel RR sample above survival atom terminates");
+			ContinuationSamplePel terminalMarch;
+			pelClosure->SampleSubset(diffuse,0.4,Point2(0,0),0.99,false,
+				terminalMarch);
+			Check(terminalMarch.rouletteSurvived &&
+				terminalMarch.survivalProbability==1.0 &&
+				terminalMarch.reachPdf==terminalMarch.pdf,
+				"Pel total-depth A_march sample omits roulette survival exactly");
+			CheckPelNear(terminalMarch.throughput,RISEPel(0.5),1e-15,
+				"Pel source-only terminal segment keeps unamplified throughput");
+		}
+		safe_release(closure);
+		safe_release(pelClosure);
+	}
+
+	void TestSingleDiffuseMassAndBRDFGrazingPredicates()
+	{
+		const ContinuationPathState state = NoRouletteState();
+		const RayIntersectionGeometric ri = MakeIntersection();
+		const IContinuationClosurePel* lambertPel =
+			CreateLambertianContinuationClosurePel(ri,RISEPel(0.2,0.7,0.4),state);
+		const IContinuationClosureNM* lambertNM =
+			CreateLambertianContinuationClosureNM(ri,0.2,state);
+		const IContinuationClosurePel* orenPel =
+			CreateOrenNayarContinuationClosurePel(
+				ri,RISEPel(0.3),RISEPel(0.25),state);
+		const IContinuationClosureNM* orenNM =
+			CreateOrenNayarContinuationClosureNM(ri,0.3,0.25,state);
+		Check(lambertPel && lambertPel->GetSelectionMass(
+			eContinuationLobeDiffuse)==1.0,
+			"Pel Lambertian single diffuse class has pinned mass one");
+		Check(lambertNM && lambertNM->GetSelectionMass(
+			eContinuationLobeDiffuse)==1.0,
+			"NM Lambertian single diffuse class has pinned mass one");
+		Check(orenPel && orenPel->GetSelectionMass(
+			eContinuationLobeDiffuse)==1.0,
+			"Pel Oren-Nayar single diffuse class has pinned mass one");
+		Check(orenNM && orenNM->GetSelectionMass(
+			eContinuationLobeDiffuse)==1.0,
+			"NM Oren-Nayar single diffuse class has pinned mass one");
+
+		const Vector3 grazing = Vector3Ops::Normalize(
+			Vector3(1,0,NEARZERO*0.5));
+		Check(lambertPel && lambertPel->BasePdf(
+			eContinuationLobeDiffuse,grazing)>0.0 &&
+			ColorMath::MaxValue(lambertPel->EvaluateSubset(
+				eContinuationLobeDiffuse,grazing))==0.0,
+			"Pel Lambertian keeps sampler support but matches BRDF response at grazing");
+		Check(lambertNM && lambertNM->BasePdf(
+			eContinuationLobeDiffuse,grazing)>0.0 &&
+			lambertNM->EvaluateSubset(eContinuationLobeDiffuse,grazing)==0.0,
+			"NM Lambertian keeps sampler support but matches BRDF response at grazing");
+		const IContinuationClosurePel* phongPel =
+			CreateIsotropicPhongContinuationClosurePel(
+				ri,RISEPel(0.3),RISEPel(0.7),9.0,state);
+		const IContinuationClosureNM* phongNM =
+			CreateIsotropicPhongContinuationClosureNM(ri,0.3,0.7,9.0,state);
+		Check(phongPel && ColorMath::MaxValue(phongPel->EvaluateSubset(
+			eContinuationLobeDiffuse|eContinuationLobeGlossy,grazing))==0.0,
+			"Pel Phong response matches the BRDF outgoing grazing predicate");
+		Check(phongNM && phongNM->EvaluateSubset(
+			eContinuationLobeDiffuse|eContinuationLobeGlossy,grazing)==0.0,
+			"NM Phong response matches the BRDF outgoing grazing predicate");
+
+		const RayIntersectionGeometric viewGrazing = MakeIntersection(
+			Vector3(0,0,1),Vector3Ops::Normalize(Vector3(1,0,-NEARZERO*0.5)));
+		const IContinuationClosureNM* viewLambert =
+			CreateLambertianContinuationClosureNM(viewGrazing,0.5,state);
+		const IContinuationClosureNM* viewPhong =
+			CreateIsotropicPhongContinuationClosureNM(viewGrazing,0.3,0.7,9.0,state);
+		Check(viewLambert && viewLambert->EvaluateSubset(
+			eContinuationLobeDiffuse,Vector3(0,0,1))==0.0,
+			"Lambertian closure matches the BRDF invalid grazing-view branch");
+		Check(viewPhong && viewPhong->EvaluateSubset(
+			eContinuationLobeDiffuse|eContinuationLobeGlossy,Vector3(0,0,1))==0.0,
+			"Phong closure matches the BRDF invalid grazing-view branch");
+
+		safe_release(lambertPel); safe_release(lambertNM);
+		safe_release(orenPel); safe_release(orenNM);
+		safe_release(phongPel); safe_release(phongNM);
+		safe_release(viewLambert); safe_release(viewPhong);
+	}
+
+	void TestMaterialResponseAndMixedSamplingIdentity()
+	{
+		UniformColorPainter* rd = new UniformColorPainter(RISEPel(0.25));
+		UniformColorPainter* rs = new UniformColorPainter(RISEPel(0.75));
+		UniformScalarPainter* exponent = new UniformScalarPainter(9.0);
+		UniformScalarPainter* roughness = new UniformScalarPainter(0.35);
+		rd->addref(); rs->addref(); exponent->addref(); roughness->addref();
+		IsotropicPhongMaterial* phong = new IsotropicPhongMaterial(*rd,*rs,*exponent);
+		OrenNayarMaterial* oren = new OrenNayarMaterial(*rd,*roughness);
+		phong->addref(); oren->addref();
+		const IORStack ior(1.0);
+		const ContinuationPathState state = NoRouletteState();
+		const Scalar nmValue = 550.0;
+		const Vector3 directions[] = {
+			Vector3(0,0,1),
+			Vector3Ops::Normalize(Vector3(0.6,0.2,0.77)),
+			Vector3Ops::Normalize(Vector3(-0.4,0.5,0.76))
+		};
+		for( unsigned int face=0; face<2; ++face ) {
+			const Vector3 rayDirection = face==0 ? Vector3(0,0,-1) : Vector3(0,0,1);
+			const RayIntersectionGeometric ri = MakeIntersection(
+				Vector3(0,0,1),rayDirection);
+			const IContinuationClosurePel* phongPel =
+				phong->MakeContinuationClosurePel(ri,ior,state);
+			const IContinuationClosureNM* phongNM =
+				phong->MakeContinuationClosureNM(ri,ior,nmValue,state);
+			const IContinuationClosurePel* orenPel =
+				oren->MakeContinuationClosurePel(ri,ior,state);
+			const IContinuationClosureNM* orenNM =
+				oren->MakeContinuationClosureNM(ri,ior,nmValue,state);
+			Check(phongPel && phongNM && orenPel && orenNM,
+				"material-owned Pel/NM response fixtures construct");
+			for( const Vector3& frontDirection : directions ) {
+				const Vector3 direction = face==0 ? frontDirection : -frontDirection;
+				if( phongPel ) CheckPelNear(phongPel->EvaluateSubset(
+					phongPel->GetLobeMask(),direction),
+					phong->GetBSDF()->value(direction,ri),1e-14,
+					"Pel Phong closure response equals renderer BRDF");
+				if( phongNM ) CheckNear(phongNM->EvaluateSubset(
+					phongNM->GetLobeMask(),direction),
+					phong->GetBSDF()->valueNM(direction,ri,nmValue),1e-14,
+					"NM Phong closure response equals renderer BRDF");
+				if( orenPel ) CheckPelNear(orenPel->EvaluateSubset(
+					orenPel->GetLobeMask(),direction),
+					oren->GetBSDF()->value(direction,ri),1e-14,
+					"Pel Oren-Nayar closure response equals renderer BRDF");
+				if( orenNM ) CheckNear(orenNM->EvaluateSubset(
+					orenNM->GetLobeMask(),direction),
+					oren->GetBSDF()->valueNM(direction,ri,nmValue),1e-14,
+					"NM Oren-Nayar closure response equals renderer BRDF");
+			}
+			safe_release(phongPel); safe_release(phongNM);
+			safe_release(orenPel); safe_release(orenNM);
+		}
+
+		const RayIntersectionGeometric front = MakeIntersection();
+		const IContinuationClosurePel* pel =
+			phong->MakeContinuationClosurePel(front,ior,state);
+		const IContinuationClosureNM* nm =
+			phong->MakeContinuationClosureNM(front,ior,nmValue,state);
+		Scalar pelDiffuseZ = 0.0, pelGlossyZ = 0.0;
+		Scalar nmDiffuseZ = 0.0, nmGlossyZ = 0.0;
+		unsigned int pelDiffuseCount = 0, pelGlossyCount = 0;
+		unsigned int nmDiffuseCount = 0, nmGlossyCount = 0;
+		const unsigned int sampleCount = 20000;
+		for( unsigned int i=0; i<sampleCount; ++i ) {
+			const Scalar uLobe = std::fmod((Scalar(i)+0.5)*0.7548776662466927,1.0);
+			const Point2 uDirection(
+				(Scalar(i)+0.5)/Scalar(sampleCount),
+				std::fmod((Scalar(i)+0.5)*0.5698402909980532,1.0));
+			if( pel ) {
+				ContinuationSamplePel sample;
+				pel->SampleSubset(pel->GetLobeMask(),uLobe,uDirection,0,false,sample);
+				if( sample.lobe==eContinuationLobeDiffuse ) {
+					pelDiffuseZ += sample.ray.Dir().z; ++pelDiffuseCount;
+				} else { pelGlossyZ += sample.ray.Dir().z; ++pelGlossyCount; }
+			}
+			if( nm ) {
+				ContinuationSampleNM sample;
+				nm->SampleSubset(nm->GetLobeMask(),uLobe,uDirection,0,false,sample);
+				if( sample.lobe==eContinuationLobeDiffuse ) {
+					nmDiffuseZ += sample.ray.Dir().z; ++nmDiffuseCount;
+				} else { nmGlossyZ += sample.ray.Dir().z; ++nmGlossyCount; }
+			}
+		}
+		const Scalar diffuseMean = 2.0/3.0;
+		const Scalar glossyMean = 10.0/11.0;
+		CheckNear(pelDiffuseZ/Scalar(pelDiffuseCount),diffuseMean,0.006,
+			"Pel mixed sample's diffuse label follows its cosine base law");
+		CheckNear(pelGlossyZ/Scalar(pelGlossyCount),glossyMean,0.006,
+			"Pel mixed sample's glossy label follows its Phong base law");
+		CheckNear(nmDiffuseZ/Scalar(nmDiffuseCount),diffuseMean,0.006,
+			"NM mixed sample's diffuse label follows its cosine base law");
+		CheckNear(nmGlossyZ/Scalar(nmGlossyCount),glossyMean,0.006,
+			"NM mixed sample's glossy label follows its Phong base law");
+		safe_release(pel); safe_release(nm);
+		safe_release(phong); safe_release(oren);
+		safe_release(rd); safe_release(rs);
+		safe_release(exponent); safe_release(roughness);
+	}
+
+	void TestPhongTiltedNormalSamplingIdentity()
+	{
+		UniformColorPainter* rd = new UniformColorPainter(RISEPel(1.0));
+		UniformColorPainter* rs = new UniformColorPainter(RISEPel(0.0));
+		UniformScalarPainter* exponent = new UniformScalarPainter(9.0);
+		rd->addref(); rs->addref(); exponent->addref();
+		IsotropicPhongMaterial* material =
+			new IsotropicPhongMaterial(*rd,*rs,*exponent);
+		material->addref();
+
+		const Vector3 shadingNormal =
+			Vector3Ops::Normalize(Vector3(0.8,0.0,0.6));
+		const Vector3 rayDirection =
+			Vector3Ops::Normalize(Vector3(1.0,0.0,-0.1));
+		const RayIntersectionGeometric ri =
+			MakeIntersection(shadingNormal,rayDirection);
+		Check(Vector3Ops::Dot(rayDirection,ri.vGeomNormal)<0.0 &&
+			Vector3Ops::Dot(rayDirection,ri.onb.w())>0.0,
+			"tilted-normal fixture makes geometric and shading side predicates disagree");
+
+		const IORStack ior(1.0);
+		const ContinuationPathState state = NoRouletteState();
+		const IContinuationClosurePel* pel =
+			material->MakeContinuationClosurePel(ri,ior,state);
+		const IContinuationClosureNM* nm =
+			material->MakeContinuationClosureNM(ri,ior,550.0,state);
+		ContinuationSamplePel pelSample;
+		ContinuationSampleNM nmSample;
+		const bool pelSelected = pel && pel->SampleSubset(
+			eContinuationLobeDiffuse,0.0,Point2(0.0,0.0),0.0,false,pelSample);
+		const bool nmSelected = nm && nm->SampleSubset(
+			eContinuationLobeDiffuse,0.0,Point2(0.0,0.0),0.0,false,nmSample);
+
+		FixedSampler pelSampler;
+		FixedSampler nmSampler;
+		ScatteredRayContainer pelRays;
+		ScatteredRayContainer nmRays;
+		material->GetSPF()->Scatter(ri,pelSampler,pelRays,ior);
+		material->GetSPF()->ScatterNM(ri,nmSampler,550.0,nmRays,ior);
+		const ScatteredRay* pelDiffuse = FindDiffuseRay(pelRays);
+		const ScatteredRay* nmDiffuse = FindDiffuseRay(nmRays);
+
+		Check(pelSelected && pelSample.horizonPassed && pelDiffuse,
+			"Pel tilted-normal closure and SPF both produce the diffuse continuation");
+		Check(nmSelected && nmSample.horizonPassed && nmDiffuse,
+			"NM tilted-normal closure and SPF both produce the diffuse continuation");
+		if( pelSelected && pelDiffuse ) {
+			CheckNear(Vector3Ops::Magnitude(pelSample.ray.Dir()-pelDiffuse->ray.Dir()),
+				0.0,1e-15,
+				"Pel tilted-normal closure samples the exact SPF diffuse direction");
+			CheckNear(pelSample.pdf,pel->PdfMarginal(
+				eContinuationLobeDiffuse,pelSample.ray.Dir()),1e-15,
+				"Pel tilted-normal sampled direction matches its recorded marginal");
+		}
+		if( nmSelected && nmDiffuse ) {
+			CheckNear(Vector3Ops::Magnitude(nmSample.ray.Dir()-nmDiffuse->ray.Dir()),
+				0.0,1e-15,
+				"NM tilted-normal closure samples the exact SPF diffuse direction");
+			CheckNear(nmSample.pdf,nm->PdfMarginal(
+				eContinuationLobeDiffuse,nmSample.ray.Dir()),1e-15,
+				"NM tilted-normal sampled direction matches its recorded marginal");
+		}
+
+		safe_release(pel); safe_release(nm);
+		safe_release(material);
+		safe_release(rd); safe_release(rs); safe_release(exponent);
+	}
+
+	void TestDeterministicZeroContinuationGate()
+	{
+		const RayIntersectionGeometric ri = MakeIntersection();
+		const ContinuationPathState state = NoRouletteState();
+		const IContinuationClosurePel* zeroPel =
+			CreateLambertianContinuationClosurePel(ri,RISEPel(0.0),state);
+		const IContinuationClosureNM* zeroNM =
+			CreateLambertianContinuationClosureNM(ri,0.0,state);
+		const Vector3 direction(0,0,1);
+		Check(zeroPel && zeroPel->PdfReachMarginal(
+			eContinuationLobeDiffuse,direction)==0.0,
+			"Pel exact-zero response removes march reach density before RR");
+		Check(zeroPel && zeroPel->PdfMarchMarginal(
+			eContinuationLobeDiffuse,direction)==0.0,
+			"Pel exact-zero response removes terminal roulette-free march density");
+		Check(zeroNM && zeroNM->PdfReachMarginal(
+			eContinuationLobeDiffuse,direction)==0.0,
+			"NM exact-zero response removes march reach density before RR");
+		Check(zeroNM && zeroNM->PdfMarchMarginal(
+			eContinuationLobeDiffuse,direction)==0.0,
+			"NM exact-zero response removes terminal roulette-free march density");
+		safe_release(zeroPel); safe_release(zeroNM);
+
+		const Scalar tiny = NEARZERO*0.5;
+		const IContinuationClosurePel* pel =
+			CreateLambertianContinuationClosurePel(ri,RISEPel(tiny),state);
+		const IContinuationClosureNM* nm =
+			CreateLambertianContinuationClosureNM(ri,tiny,state);
+		Check(pel && pel->PdfReachMarginal(
+			eContinuationLobeDiffuse,direction)>0.0,
+			"Pel positive response below NEARZERO retains march reach support");
+		Check(pel && pel->PdfMarchMarginal(
+			eContinuationLobeDiffuse,direction)>0.0,
+			"Pel positive response below NEARZERO retains terminal march support");
+		Check(nm && nm->PdfReachMarginal(
+			eContinuationLobeDiffuse,direction)>0.0,
+			"NM positive response below NEARZERO retains march reach support");
+		Check(nm && nm->PdfMarchMarginal(
+			eContinuationLobeDiffuse,direction)>0.0,
+			"NM positive response below NEARZERO retains terminal march support");
+		if( pel ) {
+			ContinuationSamplePel regular, terminal;
+			pel->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,true,regular);
+			pel->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,false,terminal);
+			Check(regular.rouletteSurvived && terminal.rouletteSurvived &&
+				regular.reachPdf>0.0 && terminal.reachPdf>0.0,
+				"Pel positive sub-NEARZERO response samples regular and terminal segments");
+		}
+		if( nm ) {
+			ContinuationSampleNM regular, terminal;
+			nm->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,true,regular);
+			nm->SampleSubset(eContinuationLobeDiffuse,0.5,Point2(0,0),0,false,terminal);
+			Check(regular.rouletteSurvived && terminal.rouletteSurvived &&
+				regular.reachPdf>0.0 && terminal.reachPdf>0.0,
+				"NM positive sub-NEARZERO response samples regular and terminal segments");
+		}
+		safe_release(pel); safe_release(nm);
+	}
+
+	void TestInvalidParametersFailClosed()
+	{
+		const RayIntersectionGeometric ri = MakeIntersection();
+		const ContinuationPathState state = NoRouletteState();
+		const Scalar nan = BitsToScalar(0x7FF8000000000000ULL);
+		const Scalar inf = BitsToScalar(0x7FF0000000000000ULL);
+		Check(CreateLambertianContinuationClosureNM(ri,-0.1,state)==0,
+			"negative NM reflectance is rejected");
+		Check(CreateLambertianContinuationClosureNM(ri,nan,state)==0,
+			"NaN NM reflectance is rejected");
+		Check(CreateIsotropicPhongContinuationClosureNM(ri,0.2,0.3,inf,state)==0,
+			"infinite Phong exponent is rejected");
+		Check(CreateOrenNayarContinuationClosurePel(
+			ri,RISEPel(0.5),RISEPel(0.2,-0.1,0.2),state)==0,
+			"negative Pel Oren-Nayar roughness is rejected");
+
+		UniformColorPainter* rd = new UniformColorPainter(RISEPel(0.2));
+		UniformColorPainter* rs = new UniformColorPainter(RISEPel(0.3));
+		rd->addref(); rs->addref();
+		const Scalar invalidValues[] = { -1.0, nan, inf };
+		const char* labels[] = {
+			"negative hidden Pel exponent channel is rejected",
+			"NaN hidden Pel exponent channel is rejected",
+			"infinite hidden Pel exponent channel is rejected"
+		};
+		for( unsigned int i=0; i<3; ++i ) {
+			TestScalarPainter* exponent = new TestScalarPainter(
+				ScalarTriple(9.0,invalidValues[i],9.0),false);
+			exponent->addref();
+			IsotropicPhongMaterial* material =
+				new IsotropicPhongMaterial(*rd,*rs,*exponent);
+			material->addref();
+			const IORStack ior(1.0);
+			const IContinuationClosurePel* pel =
+				material->MakeContinuationClosurePel(ri,ior,state);
+			Check(pel==0,labels[i]);
+			safe_release(pel);
+			safe_release(material);
+			safe_release(exponent);
+		}
+		{
+			TestScalarPainter* exponent = new TestScalarPainter(
+				ScalarTriple(9.0),true);
+			exponent->addref();
+			IsotropicPhongMaterial* material =
+				new IsotropicPhongMaterial(*rd,*rs,*exponent);
+			material->addref();
+			const IORStack ior(1.0);
+			const IContinuationClosurePel* pel =
+				material->MakeContinuationClosurePel(ri,ior,state);
+			Check(pel==0,
+				"Pel Phong rejects a statically per-channel exponent painter even at a uniform point");
+			safe_release(pel);
+			safe_release(material);
+			safe_release(exponent);
+		}
+		safe_release(rd); safe_release(rs);
+	}
+}
+
+int main()
+{
+	std::cout << "Continuation Closure Phase-B Gate 3" << std::endl;
+	TestR42AvailabilityReductionAndCaps();
+	TestExtractedRouletteProbabilityMatchesDecision();
+	TestIsotropicPhongMixedSplitPelAndNM();
+	TestHorizonNormalizationPelAndNM();
+	TestHorizonNullAndRouletteMass();
+	TestSingleDiffuseMassAndBRDFGrazingPredicates();
+	TestMaterialResponseAndMixedSamplingIdentity();
+	TestLuminaireAndClayClosureIdentity();
+	TestPhongTiltedNormalSamplingIdentity();
+	TestDeterministicZeroContinuationGate();
+	TestInvalidParametersFailClosed();
+	std::cout << "Passed: " << passed << " Failed: " << failed << std::endl;
+	return failed==0 ? 0 : 1;
+}

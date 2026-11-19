@@ -13,13 +13,13 @@
 //    2. Encode via the new path:
 //         IFrameEncoder::Encode(store, memBufA, opts)
 //    3. Encode via the legacy path:
-//         RasterImage_Template + same writer + same DisplayTransformWriter
-//         (mirrors FileRasterizerOutput::WriteImageToFile)
+//         RasterImage_Template + same writer + complete DisplayTransformWriter
+//         (mirrors the production IFrameEncoder transform path)
 //         → memBufB
 //    4. Compare memBufA == memBufB byte-for-byte.
 //
-//  Plus: registry sanity checks (all 7 encoders register, lookup by
-//  name and extension works, case-insensitive).
+//  Plus: registry sanity checks (all built-in encoders register, lookup
+//  by name and extension works, case-insensitive).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -35,7 +35,9 @@
 #endif
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -70,6 +72,94 @@ namespace
 			std::cerr << "FAIL: " << label << "\n";
 		}
 	}
+
+	enum class WriterThrowPoint
+	{
+		Begin,
+		Color,
+		End
+	};
+
+	class ThrowingWriter :
+		public virtual IRasterImageWriter,
+		public virtual Reference
+	{
+	public:
+		ThrowingWriter( IWriteBuffer& output, WriterThrowPoint point,
+			bool& destroyed ) : output_(output), point_(point), destroyed_(destroyed)
+		{
+			output_.addref();
+		}
+
+		void BeginWrite( unsigned int, unsigned int ) override
+		{
+			if( point_ == WriterThrowPoint::Begin ) throw std::runtime_error("begin");
+		}
+
+		void WriteColor( const RISEColor&, unsigned int, unsigned int ) override
+		{
+			if( point_ == WriterThrowPoint::Color ) throw std::runtime_error("color");
+		}
+
+		void EndWrite() override
+		{
+			if( point_ == WriterThrowPoint::End ) throw std::runtime_error("end");
+		}
+
+	protected:
+		~ThrowingWriter() override
+		{
+			output_.release();
+			destroyed_ = true;
+		}
+
+	private:
+		IWriteBuffer& output_;
+		WriterThrowPoint point_;
+		bool& destroyed_;
+	};
+
+	class ThrowingFrameEncoder : public FrameEncoderBase
+	{
+	public:
+		ThrowingFrameEncoder( WriterThrowPoint point, bool& destroyed ) :
+			point_(point), destroyed_(destroyed) {}
+		std::string FormatName() const override { return "THROWING"; }
+		std::vector<std::string> Extensions() const override { return { "throw" }; }
+		bool SupportsHDR() const override { return false; }
+		bool SupportsAOVs() const override { return false; }
+
+	protected:
+		~ThrowingFrameEncoder() override {}
+		IRasterImageWriter* CreateWriter(
+			IWriteBuffer& output, const EncodeOpts& ) const override
+		{
+			return new ThrowingWriter(output,point_,destroyed_);
+		}
+
+	private:
+		WriterThrowPoint point_;
+		bool& destroyed_;
+	};
+
+	class PartialFailingMemoryBuffer : public MemoryBuffer
+	{
+	public:
+		bool setBytes( const void* source, unsigned int amount ) override
+		{
+			if( failed_ ) return false;
+			failed_ = true;
+			const unsigned int partial = std::min(amount,8u);
+			if( partial ) MemoryBuffer::setBytes(source,partial);
+			return false;
+		}
+
+	protected:
+		~PartialFailingMemoryBuffer() override {}
+
+	private:
+		bool failed_ = false;
+	};
 
 #ifndef NO_PNG_SUPPORT
 	struct RawPNGPixelRow
@@ -533,12 +623,19 @@ namespace
 		IRasterImageWriter* effective = w;
 		DisplayTransformWriter* dtw = nullptr;
 		if ( !isHDR ) {
-			const Scalar totalEV = static_cast<Scalar>( opts.viewTransform.exposureEV );
+			const Matrix3& balance = opts.viewTransform.whiteBalance;
+			const bool identityBalance =
+				balance._00 == 1.0 && balance._01 == 0.0 && balance._02 == 0.0 &&
+				balance._10 == 0.0 && balance._11 == 1.0 && balance._12 == 0.0 &&
+				balance._20 == 0.0 && balance._21 == 0.0 && balance._22 == 1.0;
 			const bool useDt =
-				   ( opts.viewTransform.toneCurve != eDisplayTransform_None )
-				|| ( totalEV != Scalar( 0 ) );
+				   opts.viewTransform.exposureEV != 0.0f
+				|| !identityBalance
+				|| ( opts.viewTransform.toneCurve != eDisplayTransform_None &&
+					opts.viewTransform.toneCurveStrength > 0.0f );
 			if ( useDt ) {
-				dtw = new DisplayTransformWriter( *w, totalEV, opts.viewTransform.toneCurve );
+				dtw = new DisplayTransformWriter(
+					*w,opts.viewTransform,opts.colorSpace );
 				effective = dtw;
 			}
 		}
@@ -615,15 +712,20 @@ namespace
 		auto& reg = FrameEncoderRegistry::Get();
 		auto all = reg.All();
 
-		// L5c added the 8th encoder (HDR10_PNG).  Test asserts the
-		// updated count; the legacy 7 are still present in the same
-		// registration order followed by the new HDR10_PNG.
-		Check( all.size() == 8, "registry has 8 built-in encoders (7 legacy + L5c HDR10_PNG)" );
+		std::vector<const char*> expectedFormats = { "HDR", "RGBEA", "TGA", "PPM" };
+#ifndef NO_PNG_SUPPORT
+		expectedFormats.push_back("PNG");
+		expectedFormats.push_back("HDR10_PNG");
+#endif
+#ifndef NO_EXR_SUPPORT
+		expectedFormats.push_back("EXR");
+#endif
+#ifndef NO_TIFF_SUPPORT
+		expectedFormats.push_back("TIFF");
+#endif
+		Check( all.size() == expectedFormats.size(),
+			"registry size matches the codecs compiled into this build" );
 
-		const char* expectedFormats[] = {
-			"PNG", "EXR", "TIFF", "HDR", "RGBEA", "TGA", "PPM",
-			"HDR10_PNG"
-		};
 		for ( const char* fmt : expectedFormats ) {
 			IFrameEncoder* enc = reg.ByFormatName( fmt );
 			std::ostringstream os;
@@ -632,25 +734,53 @@ namespace
 		}
 
 		// Case-insensitive lookup.
-		Check( reg.ByFormatName( "png" )  != nullptr, "ByFormatName(\"png\") (lowercase)" );
-		Check( reg.ByFormatName( "Png" )  != nullptr, "ByFormatName(\"Png\") (mixed case)" );
 		Check( reg.ByFormatName( "MISS" ) == nullptr, "ByFormatName(\"MISS\") returns null" );
 
 		// Extension lookup, with and without leading dot.
+#ifndef NO_PNG_SUPPORT
+		Check( reg.ByFormatName( "png" )  != nullptr, "ByFormatName(\"png\") (lowercase)" );
+		Check( reg.ByFormatName( "Png" )  != nullptr, "ByFormatName(\"Png\") (mixed case)" );
 		Check( reg.ByExtension( "png"  ) != nullptr, "ByExtension(\"png\")" );
 		Check( reg.ByExtension( ".png" ) != nullptr, "ByExtension(\".png\")" );
+		IFrameEncoder* acquiredPng = reg.AcquireByExtension(".png");
+		Check( acquiredPng && acquiredPng->FormatName() == "PNG",
+			"AcquireByExtension returns a retained encoder" );
+		safe_release(acquiredPng);
+#else
+		Check( reg.ByFormatName("PNG") == nullptr &&
+			reg.ByFormatName("HDR10_PNG") == nullptr,
+			"PNG encoders are absent when PNG support is disabled" );
+#endif
+#ifndef NO_TIFF_SUPPORT
 		Check( reg.ByExtension( "tif"  ) != nullptr, "ByExtension(\"tif\") (TIFF alias)" );
 		Check( reg.ByExtension( "tiff" ) != nullptr, "ByExtension(\"tiff\")" );
+#else
+		Check( reg.ByFormatName("TIFF") == nullptr,
+			"TIFF encoder is absent when TIFF support is disabled" );
+#endif
 		Check( reg.ByExtension( "miss" ) == nullptr, "ByExtension(\"miss\") returns null" );
+		std::vector<IFrameEncoder*> acquiredAll = reg.AcquireAll();
+		Check( acquiredAll.size() == all.size(),
+			"AcquireAll returns a retained registry snapshot" );
+		for( IFrameEncoder* encoder : acquiredAll ) encoder->release();
 
 		// HDR-format flags match the legacy IsHDRFormat gate.
+		#ifndef NO_EXR_SUPPORT
 		Check( reg.ByFormatName( "EXR"   )->SupportsHDR() == true,  "EXR.SupportsHDR" );
+		#else
+		Check( reg.ByFormatName("EXR") == nullptr,
+			"EXR encoder is absent when EXR support is disabled" );
+		#endif
 		Check( reg.ByFormatName( "HDR"   )->SupportsHDR() == true,  "HDR.SupportsHDR" );
 		Check( reg.ByFormatName( "RGBEA" )->SupportsHDR() == true,  "RGBEA.SupportsHDR" );
+		#ifndef NO_PNG_SUPPORT
 		Check( reg.ByFormatName( "PNG"   )->SupportsHDR() == false, "PNG !SupportsHDR" );
+		#endif
 		Check( reg.ByFormatName( "TGA"   )->SupportsHDR() == false, "TGA !SupportsHDR" );
 		Check( reg.ByFormatName( "PPM"   )->SupportsHDR() == false, "PPM !SupportsHDR" );
+		#ifndef NO_TIFF_SUPPORT
 		Check( reg.ByFormatName( "TIFF"  )->SupportsHDR() == false, "TIFF !SupportsHDR" );
+		#endif
 	}
 
 	// ─── Section 2: byte-identical regression per format ──────────
@@ -663,12 +793,22 @@ namespace
 		defaultOpts.bpp           = 8;
 
 		// PNG default + with display transform.
+#ifndef NO_PNG_SUPPORT
 		DiffOneFormat( "PNG", defaultOpts );
 		EncodeOpts pngWithTone;
 		pngWithTone.viewTransform = ViewTransform::ForLDRDisplay( 0.5f, eDisplayTransform_ACES );
 		pngWithTone.colorSpace    = eColorSpace_sRGB;
 		pngWithTone.bpp           = 8;
 		DiffOneFormat( "PNG", pngWithTone );
+		EncodeOpts pngCompleteTransform;
+		pngCompleteTransform.colorSpace = eColorSpace_sRGB;
+		pngCompleteTransform.bpp = 8;
+		pngCompleteTransform.viewTransform.toneCurve = eDisplayTransform_Reinhard;
+		pngCompleteTransform.viewTransform.toneCurveStrength = 0.25f;
+		pngCompleteTransform.viewTransform.whiteBalance._00 = 1.10;
+		pngCompleteTransform.viewTransform.whiteBalance._11 = 0.90;
+		pngCompleteTransform.viewTransform.whiteBalance._22 = 1.05;
+		DiffOneFormat( "PNG", pngCompleteTransform );
 
 		// PNG 16-bpp.
 		EncodeOpts png16;
@@ -676,8 +816,10 @@ namespace
 		png16.colorSpace    = eColorSpace_sRGB;
 		png16.bpp           = 16;
 		DiffOneFormat( "PNG", png16 );
+#endif
 
 		// EXR — HDR archival (no display transform applied).
+#ifndef NO_EXR_SUPPORT
 		EncodeOpts exr;
 		exr.viewTransform = ViewTransform::Identity();
 		exr.colorSpace    = eColorSpace_Rec709RGB_Linear;
@@ -688,6 +830,7 @@ namespace
 		// EXR ZIP compression variant.
 		exr.exrCompression = eExrCompression_Zip;
 		DiffOneFormat( "EXR", exr );
+#endif
 
 		// HDR / Radiance.
 		EncodeOpts hdr;
@@ -701,10 +844,7 @@ namespace
 		DiffOneFormat( "RGBEA", rgbea );
 
 #ifndef NO_TIFF_SUPPORT
-		// TIFF default.  Skipped under NO_TIFF_SUPPORT — the encoder
-		// is still registered (registry-sanity tests above cover that)
-		// but produces empty output, which trips the "non-empty output"
-		// Check at the end of DiffOneFormat.
+		// TIFF is registered and exercised only when TIFF support is compiled in.
 		EncodeOpts tiff;
 		tiff.viewTransform = ViewTransform::Identity();
 		tiff.colorSpace    = eColorSpace_sRGB;
@@ -819,6 +959,7 @@ namespace
 		const char* formats[] = { "EXR", "PNG", "HDR" };
 		for ( const char* fmt : formats ) {
 			IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( fmt );
+			if( !enc ) continue;
 
 			EncodeOpts opts;
 			opts.viewTransform = ViewTransform::Identity();
@@ -870,6 +1011,11 @@ namespace
 		FillFrameStoreFromLegacy( store, *legacyImg );
 
 		IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( "PNG" );
+		if( !enc ) {
+			safe_release(legacyImg);
+			store->release();
+			return;
+		}
 
 		// New path: caller sets static EV via opts; encoder pulls
 		// camera EV from store.Meta() and sums.
@@ -937,6 +1083,7 @@ namespace
 		const char* formats[] = { "PNG", "EXR" };
 		for ( const char* fmt : formats ) {
 			IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( fmt );
+			if( !enc ) continue;
 
 			EncodeOpts opts;
 			opts.viewTransform = ViewTransform::Identity();
@@ -1018,6 +1165,11 @@ namespace
 			}
 
 			IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( "PNG" );
+			if( !enc ) {
+				safe_release(legacyImg);
+				store->release();
+				continue;
+			}
 			EncodeOpts opts;
 			opts.viewTransform = ViewTransform::Identity();
 			opts.colorSpace    = eColorSpace_sRGB;
@@ -1053,6 +1205,10 @@ namespace
 		FillFrameStoreFromLegacyForFakeStore( store );
 
 		IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( "EXR" );
+		if( !enc ) {
+			store->release();
+			return;
+		}
 
 		EncodeOpts identityOpts;
 		identityOpts.viewTransform  = ViewTransform::Identity();
@@ -1125,11 +1281,20 @@ void TestHDR10PNGEncoder_L5c()
 	auto* store = new FrameStore( spec );
 	auto* beauty = store->GetChannel<FrameStoreOutput::ChannelId::Beauty>();
 	auto* alpha  = store->GetChannel<FrameStoreOutput::ChannelId::Alpha>();
+	Check( alpha != nullptr, "L5c: HDR10 fixture exposes alpha edge-case storage" );
 	for ( unsigned int y = 0; y < kImgH; ++y ) {
 		for ( unsigned int x = 0; x < kImgW; ++x ) {
 			RISEColor c = PatternPixel( x, y );
 			if ( beauty ) beauty->At( x, y ) = c.base;
-			if ( alpha )  alpha->At( x, y )  = c.a;
+			if ( alpha ) {
+				if ( x == 0u && y == 0u ) {
+					alpha->At( x, y ) = std::numeric_limits<Chel>::quiet_NaN();
+				} else if ( x == 1u && y == 0u ) {
+					alpha->At( x, y ) = std::numeric_limits<Chel>::infinity();
+				} else {
+					alpha->At( x, y ) = c.a;
+				}
+			}
 		}
 	}
 
@@ -1200,6 +1365,14 @@ void TestHDR10PNGEncoder_L5c()
 	Check( cICPPayloadOK,
 		"L5c: HDR10_PNG cICP payload = {9 (BT.2020), 16 (PQ), 0 (RGB), 1 (full range)}" );
 
+	PartialFailingMemoryBuffer* failingBuffer = new PartialFailingMemoryBuffer();
+	bool codecFailurePropagated = false;
+	try { hdr10->Encode(*store,*failingBuffer,opts); }
+	catch( const std::runtime_error& ) { codecFailurePropagated = true; }
+	Check(codecFailurePropagated && failingBuffer->getCurPos() > 0u,
+		"L5c: HDR10_PNG propagates a partial output-buffer failure" );
+	safe_release(failingBuffer);
+
 	// 4b. ByExtension("png") must still return the SDR PNG encoder
 	// (HDR10_PNG is a same-extension encoder; users select via
 	// FormatName).  Regression check on the registry's
@@ -1226,6 +1399,80 @@ void TestHDR10PNGEncoder_L5c()
 	safe_release( buf );
 	store->release();
 }
+
+void TestWriterFailureReleasesAllReferences()
+{
+	FrameStoreOutput::FrameStoreSpec spec;
+	spec.width = 1u;
+	spec.height = 1u;
+	spec.tileEdge = 1u;
+	FrameStore* store = new FrameStore(spec);
+	const WriterThrowPoint points[] = {
+		WriterThrowPoint::Begin,WriterThrowPoint::Color,WriterThrowPoint::End
+	};
+	for( const WriterThrowPoint point : points ) {
+		for( unsigned int transformed = 0u; transformed < 2u; ++transformed ) {
+			MemoryBuffer* output = new MemoryBuffer();
+			const unsigned int outputRefs = output->refcount();
+			bool writerDestroyed = false;
+			ThrowingFrameEncoder* encoder =
+				new ThrowingFrameEncoder(point,writerDestroyed);
+			EncodeOpts opts;
+			if( transformed ) opts.viewTransform.exposureEV = 1.0f;
+			bool threw = false;
+			try { encoder->Encode(*store,*output,opts); }
+			catch( const std::runtime_error& ) { threw = true; }
+			Check(threw && writerDestroyed && output->refcount() == outputRefs,
+				std::string("writer failure releases wrapper, writer, and output at ")+
+				(point == WriterThrowPoint::Begin ? "BeginWrite" :
+				 point == WriterThrowPoint::Color ? "WriteColor" : "EndWrite")+
+				(transformed ? " with display transform" : " without display transform"));
+			encoder->release();
+			output->release();
+		}
+	}
+	store->release();
+}
+
+#ifndef NO_PNG_SUPPORT
+void TestPNGTransferMetadataByDepth()
+{
+	for(const unsigned char depth : {8,16}) {
+		for(const COLOR_SPACE space : {eColorSpace_Rec709RGB_Linear,
+			eColorSpace_ROMMRGB_Linear,eColorSpace_sRGB,eColorSpace_ProPhotoRGB}) {
+			MemoryBuffer* buffer=new MemoryBuffer();
+			IRasterImageWriter* writer=nullptr;
+			RISE_API_CreatePNGWriter(&writer,*buffer,depth,space);
+			Check(writer!=nullptr,"PNG metadata fixture writer exists");
+			if(writer) {
+				writer->BeginWrite(1,1);
+				writer->WriteColor(RISEColor(RISEPel(0.25,0.5,0.75),1.0),0,0);
+				writer->EndWrite();writer->release();
+			}
+			const auto* bytes=reinterpret_cast<const unsigned char*>(buffer->Pointer());
+			const std::size_t size=buffer->Size();
+			auto word=[&](std::size_t i){return (std::uint32_t(bytes[i])<<24)|
+				(std::uint32_t(bytes[i+1])<<16)|(std::uint32_t(bytes[i+2])<<8)|bytes[i+3];};
+			std::uint32_t gamma=0;unsigned int found=0,srgbFound=0;
+			for(std::size_t pos=8;pos+12<=size;) {
+				const std::uint32_t length=word(pos);
+				if(length>size-pos-12)break;
+				if(length==4&&std::memcmp(bytes+pos+4,"gAMA",4)==0){gamma=word(pos+8);++found;}
+				if(length==1&&std::memcmp(bytes+pos+4,"sRGB",4)==0)++srgbFound;
+				pos+=length+12;
+			}
+			const std::uint32_t expected=space==eColorSpace_sRGB?45455u:
+				space==eColorSpace_ProPhotoRGB?55556u:100000u;
+			Check(found==1&&gamma==expected,"PNG transfer metadata matches encoded color space at depth "+
+				std::to_string(depth)+" space "+std::to_string(space));
+			Check(srgbFound==(space==eColorSpace_sRGB?1u:0u),
+				"PNG exact sRGB transfer tag is present only for sRGB");
+			buffer->release();
+		}
+	}
+}
+#endif
+
 
 static void TestEncoderFailureOwnership()
 {
@@ -1314,7 +1561,11 @@ static int RunTests()
 	TestROMMColorSpace();
 	TestEdgeDimensions();
 	TestHDRExposureOnlyIgnored();
+#ifndef NO_PNG_SUPPORT
+	TestPNGTransferMetadataByDepth();
 	TestHDR10PNGEncoder_L5c();
+#endif
+	TestWriterFailureReleasesAllReferences();
 
 	std::cout << "------------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";

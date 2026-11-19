@@ -1,0 +1,17 @@
+{
+  "status": "launched_not_completed",
+  "artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline_launch.v1/launch.json",
+      "sha256": "3feb0c6cb8019732fed2c1a37a7881fb20d358cf1da0e82a9998f61ef974f29b"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/window_launch.v1",
+      "sha256": "99f5e4462ebfc1bdf21ad29b3daaf675c36a2de0ac8572cbb6a858401489040f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/host_memory_admission.v1",
+      "sha256": "13c8f806074c5b6fdca5fef150882c9372036798ab5f77ad396b637e001e0bf7"
+    }
+  ]
+}

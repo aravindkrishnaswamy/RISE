@@ -1,0 +1,9 @@
+schema rise.fire.production.onset_campaign.summary.v1
+resolution_tier 6
+simulated_time_s 2.2000000000116415
+accepted_steps 1339
+wall_s 523.97518437500003
+trajectory_sha256 4d14af40f5484597f5d8e1436d2aba5ac6c1ad8dbab673fc6feee05d59cb5bc9
+threshold_15_captured 0
+threshold_30_captured 0
+threshold_60_captured 0

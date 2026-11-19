@@ -1,0 +1,19 @@
+.F...
+======================================================================
+FAIL: test_horizon_crossing_mutant_red (__main__.OnsetEvidenceMutants)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r214_onset_evidence.py", line 55, in test_horizon_crossing_mutant_red
+    self.assertEqual(self.run_header(text.replace(old, "return reachedHorizon||(crossed&&!crossed);"), main), 1)
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r214_onset_evidence.py", line 20, in run_header
+    self.assertEqual(result.returncode, 0, result.stderr)
+AssertionError: 1 != 0 : /var/folders/5v/syjxsf117mx_p89tyw_9267h0000gn/T/rise-r214-evidence-pnm1gnbp/evidence.cpp:26:33: error: '&&' of a value and its negation always evaluates to false [-Werror,-Wtautological-negation-compare]
+   26 |         return reachedHorizon||(crossed&&!crossed);
+      |                                 ~~~~~~~^~~~~~~~~~
+1 error generated.
+
+
+----------------------------------------------------------------------
+Ran 5 tests in 3.008s
+
+FAILED (failures=1)

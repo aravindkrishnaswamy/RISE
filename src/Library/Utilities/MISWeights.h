@@ -35,11 +35,307 @@
 #define MIS_WEIGHTS_
 
 #include "Math3D/Math3D.h"
+#include "FiniteMath.h"
 
 namespace RISE
 {
+	namespace Implementation
+	{
+		struct VolumeEmissionPivotState;
+	}
+
+	/// Phase-B thermal-volume MIS state for the segment launched by a vertex.
+	/// This deliberately does not live in public IRayCaster::RAY_STATE: adding
+	/// fields there would consume its historical tail padding, whose bytes are
+	/// uninitialized in callers compiled against the old inline constructor.
+	struct VolumeEmissionSegmentState
+	{
+		bool competitionAvailable;
+		bool continuationSingular;
+		const Implementation::VolumeEmissionPivotState* pivots;
+		Scalar directionPdf;
+		Scalar logBoundarySurvival;
+		Scalar distanceOffset;
+
+		VolumeEmissionSegmentState(
+			const bool competitionAvailable_ = false,
+			const bool continuationSingular_ = false,
+			const Implementation::VolumeEmissionPivotState* pivots_ = 0,
+			const Scalar directionPdf_ = 0.0,
+			const Scalar logBoundarySurvival_ = 0.0,
+			const Scalar distanceOffset_ = 0.0 ) :
+			competitionAvailable( competitionAvailable_ ),
+			continuationSingular( continuationSingular_ ),
+			pivots( pivots_ ),
+			directionPdf( directionPdf_ ),
+			logBoundarySurvival( logBoundarySurvival_ ),
+			distanceOffset( distanceOffset_ )
+		{}
+	};
+
+	/// Preserve the originating strategy while crossing one exact null
+	/// boundary.  No-event probabilities accumulate in log space so a long
+	/// enclosure chain cannot silently lose its proposal density to an
+	/// intermediate product underflow.
+	inline VolumeEmissionSegmentState AdvanceVolumeEmissionSegmentState(
+		const VolumeEmissionSegmentState& state,
+		const Scalar noEventProbability,
+		const Scalar segmentDistance
+		)
+	{
+		Scalar nextLogSurvival = -RISE_INFINITY;
+		Scalar nextDistanceOffset = RISE_INFINITY;
+		if( RISE::IsFiniteDouble(state.logBoundarySurvival) &&
+			RISE::IsFiniteDouble(noEventProbability) &&
+			RISE::IsFiniteDouble(state.distanceOffset) &&
+			RISE::IsFiniteDouble(segmentDistance) &&
+			noEventProbability > 0.0 && noEventProbability <= 1.0 &&
+			state.distanceOffset >= 0.0 && segmentDistance >= 0.0 ) {
+			nextLogSurvival = state.logBoundarySurvival + log(noEventProbability);
+			nextDistanceOffset = state.distanceOffset + segmentDistance;
+		}
+		return VolumeEmissionSegmentState(
+			state.competitionAvailable, state.continuationSingular,
+			state.pivots, state.directionPdf, nextLogSurvival,
+			nextDistanceOffset );
+	}
+
+	inline const VolumeEmissionSegmentState*& ActiveVolumeEmissionSegmentState()
+	{
+		static thread_local const VolumeEmissionSegmentState* pState = 0;
+		return pState;
+	}
+
+	/// Synchronous, request-local propagation across recursive CastRay calls.
+	/// The scope points at immutable stack storage and restores nesting exactly;
+	/// a public/root call outside a scope receives the weight-one default.
+	class VolumeEmissionSegmentStateScope
+	{
+	public:
+		explicit VolumeEmissionSegmentStateScope(
+			const VolumeEmissionSegmentState& state ) :
+			state_( state ),
+			pPrevious_( ActiveVolumeEmissionSegmentState() )
+		{
+			ActiveVolumeEmissionSegmentState() = &state_;
+		}
+
+		~VolumeEmissionSegmentStateScope()
+		{
+			ActiveVolumeEmissionSegmentState() = pPrevious_;
+		}
+
+		VolumeEmissionSegmentStateScope(
+			const VolumeEmissionSegmentStateScope& ) = delete;
+		VolumeEmissionSegmentStateScope& operator=(
+			const VolumeEmissionSegmentStateScope& ) = delete;
+
+	private:
+		const VolumeEmissionSegmentState state_;
+		const VolumeEmissionSegmentState* const pPrevious_;
+	};
+
+	inline VolumeEmissionSegmentState CurrentVolumeEmissionSegmentState()
+	{
+		const VolumeEmissionSegmentState* const pState =
+			ActiveVolumeEmissionSegmentState();
+		return pState ? *pState : VolumeEmissionSegmentState();
+	}
+
 	namespace MISWeights
 	{
+		struct LogDensity
+		{
+			bool hasSupport;
+			Scalar value;
+
+			LogDensity( const bool hasSupport_ = false, const Scalar value_ = 0.0 ) :
+				hasSupport( hasSupport_ ), value( value_ )
+			{}
+		};
+
+		inline LogDensity MakeLogDensity( const Scalar density )
+		{
+			return RISE::IsFiniteDouble(density) && density > 0.0 ?
+				LogDensity(true,log(density)) : LogDensity();
+		}
+
+		inline LogDensity MakeLogDensityFromLogValue( const Scalar logDensity )
+		{
+			return RISE::IsFiniteDouble(logDensity) && logDensity > -RISE_INFINITY ?
+				LogDensity(true,logDensity) : LogDensity();
+		}
+
+		inline LogDensity EqualMixtureLogDensity(
+			const LogDensity& first,
+			const LogDensity& second
+			)
+		{
+			if( !first.hasSupport ) {
+				return second.hasSupport ? LogDensity(true,second.value-log(2.0)) :
+					LogDensity();
+			}
+			if( !second.hasSupport ) return LogDensity(true,first.value-log(2.0));
+			const Scalar maximum = fmax(first.value,second.value);
+			const Scalar value = maximum + log(
+				exp(first.value-maximum)+exp(second.value-maximum) ) - log(2.0);
+			return MakeLogDensityFromLogValue(value);
+		}
+
+		/// Power-2 family weight with stable ratio scaling.  This is the
+		/// NEE-side weight for thermal-volume emission when both pV and pMarch
+		/// describe the same endpoint in scene-volume measure.
+		inline Scalar VolumeEmissionNEEFamilyWeight(
+			const Scalar pV,
+			const Scalar pMarch
+			)
+		{
+			if( !RISE::IsFiniteDouble(pV) || pV <= 0.0 ) return 0.0;
+			if( !RISE::IsFiniteDouble(pMarch) || pMarch <= 0.0 ) return 1.0;
+			if( pV >= pMarch ) {
+				const Scalar ratio = pMarch/pV;
+				return 1.0/(1.0+ratio*ratio);
+			}
+			const Scalar ratio = pV/pMarch;
+			return ratio*ratio/(1.0+ratio*ratio);
+		}
+
+		/// March-side thermal-emission weight.  The two explicit state bits are
+		/// the complete selection rule: camera/unsupported paths and sampled
+		/// delta lobes remain weight 1; only an attempted competing NEE strategy
+		/// against a non-singular continuation takes the complementary power-2
+		/// family weight.
+		inline Scalar VolumeEmissionMarchFamilyWeight(
+			const Scalar pMarch,
+			const Scalar pV,
+			const bool competitionAvailable,
+			const bool continuationSingular
+			)
+		{
+			if( !competitionAvailable || continuationSingular ) return 1.0;
+			return VolumeEmissionNEEFamilyWeight(pMarch,pV);
+		}
+
+		/// Power-heuristic weight for densities that share an arbitrarily small
+		/// common scale. Form the ratio before exponentiation so a deep
+		/// null-boundary chain cannot erase both techniques.
+		inline Scalar VolumeEmissionFamilyWeightFromLogDensities(
+			const LogDensity& sampled,
+			const LogDensity& other
+			)
+		{
+			if( !sampled.hasSupport ||
+				!RISE::IsFiniteDouble(sampled.value) ) return 0.0;
+			if( !other.hasSupport || !RISE::IsFiniteDouble(other.value) ) return 1.0;
+			if( sampled.value >= other.value ) {
+				const Scalar ratio = exp(other.value-sampled.value);
+				return 1.0/(1.0+ratio*ratio);
+			}
+			const Scalar ratio = exp(sampled.value-other.value);
+			return ratio*ratio/(1.0+ratio*ratio);
+		}
+
+		inline Scalar VolumeEmissionMarchFamilyWeightFromLogDensities(
+			const LogDensity& logPMarch,
+			const LogDensity& logPV,
+			const bool competitionAvailable,
+			const bool continuationSingular
+			)
+		{
+			if( !competitionAvailable || continuationSingular ) return 1.0;
+			return VolumeEmissionFamilyWeightFromLogDensities(logPMarch,logPV);
+		}
+
+		/// Convert a direction×distance march proposal to scene-volume measure.
+		/// Boundary survival is proposal probability, distinct from physical
+		/// transmittance.  Invalid or empty support fails closed to zero.
+		inline Scalar VolumeEmissionMarchDensity(
+			const Scalar directionPdf,
+			const Scalar distancePdf,
+			const Scalar distance,
+			const Scalar boundarySurvival
+			)
+		{
+			if( !RISE::IsFiniteDouble(directionPdf) ||
+				!RISE::IsFiniteDouble(distancePdf) ||
+				!RISE::IsFiniteDouble(distance) ||
+				!RISE::IsFiniteDouble(boundarySurvival) ||
+				directionPdf <= 0.0 || distancePdf <= 0.0 || distance <= 0.0 ||
+				boundarySurvival <= 0.0 ) return 0.0;
+			// Compose in exponent space so scene-unit changes cannot overflow or
+			// underflow an intermediate product when the final density is still
+			// representable.
+			const Scalar logDensity = log(directionPdf) + log(distancePdf) +
+				log(boundarySurvival) - 2.0*log(distance);
+			const Scalar result = exp(logDensity);
+			return RISE::IsFiniteDouble(result) && result > 0.0 ? result : 0.0;
+		}
+
+		/// Log-survival sibling used by a marched chain of exact null
+		/// boundaries. Invalid/empty support fails closed to zero.
+		inline Scalar VolumeEmissionMarchDensityFromLogSurvival(
+			const Scalar directionPdf,
+			const Scalar distancePdf,
+			const Scalar distance,
+			const Scalar logBoundarySurvival
+			)
+		{
+			if( !RISE::IsFiniteDouble(directionPdf) ||
+				!RISE::IsFiniteDouble(distancePdf) ||
+				!RISE::IsFiniteDouble(distance) ||
+				!RISE::IsFiniteDouble(logBoundarySurvival) ||
+				directionPdf <= 0.0 || distancePdf <= 0.0 || distance <= 0.0 ||
+				logBoundarySurvival > 0.0 ) return 0.0;
+			const Scalar logDensity = log(directionPdf) + log(distancePdf) +
+				logBoundarySurvival - 2.0*log(distance);
+			const Scalar result = exp(logDensity);
+			return RISE::IsFiniteDouble(result) && result > 0.0 ? result : 0.0;
+		}
+
+		/// Evaluate the arriving march density at a collision on the current
+		/// segment.  The radius is measured from the originating vertex, not
+		/// from the most recent null boundary.
+		inline Scalar VolumeEmissionMarchDensityAtCollision(
+			const VolumeEmissionSegmentState& state,
+			const Scalar distancePdf,
+			const Scalar segmentDistance
+			)
+		{
+			if( !RISE::IsFiniteDouble(state.distanceOffset) ||
+				!RISE::IsFiniteDouble(segmentDistance) ||
+				state.distanceOffset < 0.0 || segmentDistance <= 0.0 ) return 0.0;
+			return VolumeEmissionMarchDensityFromLogSurvival(
+				state.directionPdf, distancePdf,
+				state.distanceOffset+segmentDistance,
+				state.logBoundarySurvival );
+		}
+
+		/// Return the complete march proposal in log scene-volume measure.
+		/// Keeping this logarithmic through MIS avoids exponentiating a common
+		/// tiny scale shared with the labeled volume-emission density.
+		inline LogDensity VolumeEmissionMarchLogDensityAtCollision(
+			const VolumeEmissionSegmentState& state,
+			const Scalar logDistancePdf,
+			const Scalar segmentDistance
+			)
+		{
+			if( !RISE::IsFiniteDouble(state.directionPdf) ||
+				!RISE::IsFiniteDouble(logDistancePdf) ||
+				!RISE::IsFiniteDouble(state.logBoundarySurvival) ||
+				!RISE::IsFiniteDouble(state.distanceOffset) ||
+				!RISE::IsFiniteDouble(segmentDistance) ||
+				state.directionPdf <= 0.0 || logDistancePdf <= -RISE_INFINITY ||
+				state.logBoundarySurvival > 0.0 ||
+				state.logBoundarySurvival <= -RISE_INFINITY ||
+				state.distanceOffset < 0.0 || state.distanceOffset >= RISE_INFINITY ||
+				segmentDistance <= 0.0 ) return LogDensity();
+			const Scalar distance = state.distanceOffset+segmentDistance;
+			if( !RISE::IsFiniteDouble(distance) || distance <= 0.0 ) return LogDensity();
+			const Scalar result = log(state.directionPdf) + logDistancePdf +
+				state.logBoundarySurvival - 2.0*log(distance);
+			return RISE::IsFiniteDouble(result) ? LogDensity(true,result) : LogDensity();
+		}
+
 		/// Balance heuristic weight: w = pa / (pa + pb)
 		///
 		/// \param pa  PDF of the technique being weighted

@@ -1,0 +1,5 @@
+command ./bin/tests/FireProductionSolverTest --fire-production-metal-capability
+executable_sha256 44dd9499fe993e19e46d9d0ef55daedf3f0ede533be67db82a15e967b077b320
+execution_context unrestricted
+exit 0
+fire_production_metal_capability discovery=available available=1 default_present=1 enumerated_count=1 identity_kernel=1 device="Apple M4 Max" registry_id=4294969469 error=""

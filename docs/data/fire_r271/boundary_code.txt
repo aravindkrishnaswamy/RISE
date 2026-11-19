@@ -1,0 +1,18 @@
+r271 (c) open side/top boundary: RISE production path vs FDS 6.11 OPEN (read-only code comparison, 2026-10-31)
+RISE refs: src/Library/Utilities (branch fire-smoke-design); FDS refs: r255_comparison/fds_source/Source.
+Case: RISE x/y min/max + z max PressureOpen, z min wall + burner (tests/FireSequenceTest.cpp:1876-1878; budgets show zero nonburner bottom flux). FDS: VENT MB=XMIN/XMAX/YMIN/YMAX/ZMAX SURF_ID='OPEN', floor NO_SLIP.
+
+item | RISE | FDS
+pressure unknown | full perturbation p~ (non-incremental: provisional momentum excludes grad p, "nonpressure" RHS), var-coeff div(1/rho_f grad p) | H = p~/rho + K, const-coeff Poisson (+baroclinic in F)
+inflow face (u_n into domain) | Dirichlet p~_b = -1/2 rho_inf |u|^2 (normal face u^2 + boundary-cell tangential u^2). Projection.cpp:779-790; ProjectionMac.mm:282-286 | Dirichlet H_b = H0 = 1/2|U0|^2 = 0 -> p~_b = -rho K. pres.f90:172, 187-190
+outflow face | Dirichlet p~_b = 0 | Dirichlet H_b = KRES(adjacent cell) -> p~_b ~ 0. pres.f90:187-188 (KRES velo.f90:292)
+inflow/outflow switch | sign of provisional outward u_n, active-set re-solve with cycle rule; final Heun projection uses p~_b = -(rho_inf/4)(I0|u0|^2+I1|u1|^2). Projection.cpp:779; Force.cpp:2007-2049 | sign of current UU at the face, no iteration. pres.f90:187
+ghost/stencil | second-order face Dirichlet: diagonal 2*beta, rhs += 2*beta*p_b, grad = 2(p_c - p_b)/dx. Projection.cpp:315-319,355-366,818-829,906-912; ProjectionMac.mm:303-319,392-412 | H_ghost = 2*BXS - H(1). pres.f90:454
+face density at open face | mean(interior, rho_inf). Projection.cpp:237; ProjectionMac.mm:213 | n/a (H form; rho in F)
+hydrostatic | ambient removed analytically, buoyancy (rho_f - rho_inf) g. Force.cpp:1250-1256 | RHO_0 background removed in F. velo.f90:718
+boundary-normal face momentum before projection | not advected (normal-component remap lines exclude boundary faces, Transport.cpp:638; Metal gather AdvectionMac.mm:1486-1489), no viscous term (Force.cpp:1260); only buoyancy/phase source -> u_b* ~ u_b^n | full F (vorticity advection + stress + baroclinic) at I=0..IBAR. velo.f90:1613
+tangential velocity ghost (advection) | inflow: ambient momentum = 0 (Dirichlet zero tangential); outflow: zero gradient. Transport.cpp:783-791; Advection.cpp:157-168 | zero gradient (free slip) both directions, no wind. velo.f90:2119-2150, 160-162
+tangential velocity ghost (viscous) | zero gradient (only periodic/wall branches alter the ghost). Force.cpp:1170-1191 | zero gradient, MU ghost = interior. velo.f90:2119-2150, 366
+scalars | inflow ambient Dirichlet state, outflow zero gradient + zero inward diffusion (design §3.6) | inflow ambient, outflow zero gradient
+solver | fixed 17 V-cycles when open faces present (resident physical), validated against 0.5% band. Projection.cpp:855-857 | FFT direct + optional iteration
+Same equations at the face (total head 0 on inflow, static 0 on outflow). Differences are second order for inflow: tangential inflow ghost, boundary-face provisional momentum, and |u|^2 evaluation point.

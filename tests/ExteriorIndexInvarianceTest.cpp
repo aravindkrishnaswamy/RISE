@@ -98,6 +98,7 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IMaterial.h"
+#include "TestTempDir.h"
 #include "../src/Library/Interfaces/IBSDF.h"
 #include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
@@ -252,8 +253,8 @@ namespace
 
 	std::string WriteScene( const std::string& text, const std::string& tag )
 	{
-		char path[512];
-		std::snprintf( path, sizeof( path ), "%s/dl290_invariance_%s_%d.RISEscene", std::getenv("TMPDIR") ? std::getenv("TMPDIR") : ".", tag.c_str(), static_cast<int>( ::getpid() ) );
+		char path[1024];
+		std::snprintf( path, sizeof( path ), "%s/dl290_invariance_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag.c_str(), static_cast<int>( ::getpid() ) );
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return std::string();
 		ofs << text;
@@ -767,8 +768,8 @@ namespace
 			// every triangle's winding normal points into the solid -- already
 			// on the receiver stack because the camera path entered it; a lone
 			// 2.2 sheet inside it.
-			char meshPath[512];
-			std::snprintf( meshPath, sizeof( meshPath ), "%s/dl290_invariance_inward_%d.rawmesh2", std::getenv("TMPDIR") ? std::getenv("TMPDIR") : ".", static_cast<int>( ::getpid() ) );
+			char meshPath[1024];
+			std::snprintf( meshPath, sizeof( meshPath ), "%s/dl290_invariance_inward_%d.rawmesh2", RISE::TestSupport::ScratchBaseDir().c_str(), static_cast<int>( ::getpid() ) );
 			{
 				const double h = 2.0, cy = 0.5;
 				std::vector<Point3> P;
@@ -1796,7 +1797,7 @@ int main( int argc, char** argv )
 {
 	// Must precede scene loading / the first cached GlobalOptions read.
 	if(!std::getenv("RISE_OPTIONS_FILE")) {
-		std::snprintf(workerOptionsPath,sizeof(workerOptionsPath),"%s/exterior_options_%d.txt",std::getenv("TMPDIR") ? std::getenv("TMPDIR") : ".",int(::getpid()));
+		std::snprintf(workerOptionsPath,sizeof(workerOptionsPath),"%s/exterior_options_%d.txt",RISE::TestSupport::ScratchBaseDir().c_str(),int(::getpid()));
 		std::ofstream options(workerOptionsPath); options << "force_number_of_threads 1\n"; options.close();
 		std::atexit([](){std::remove(workerOptionsPath);});
 #ifdef _WIN32

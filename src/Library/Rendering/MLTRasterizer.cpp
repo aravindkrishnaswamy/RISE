@@ -83,6 +83,8 @@
 #include "MLTRasterizer.h"
 #include "../RasterImages/RasterImage.h"
 #include "../Utilities/Profiling.h"
+#include <algorithm>
+#include <cmath>
 #include "../Utilities/RTime.h"
 #include "../Utilities/ThreadPool.h"
 #include "ThreadLocalSplatBuffer.h"
@@ -110,6 +112,7 @@
 #endif
 #include <memory>
 #include "../Cameras/CameraUtilities.h"
+#include "../Utilities/Transformable.h"
 
 // Optional calling-thread lifetime witness for bounded regression tests.
 // Observations occur only after frame ownership is installed, once per
@@ -366,10 +369,13 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	// still get different local RNG states — without that, any
 	// non-lens random the camera happened to consume would reuse
 	// the same stream across sub-pixel mutations.
+	const Scalar kMaxUnitBelow1 = std::nextafter( Scalar( 1.0 ), Scalar( 0.0 ) );
+	const Scalar clampedFx = std::min( std::max( filmSample.x, Scalar( 0.0 ) ), kMaxUnitBelow1 );
+	const Scalar clampedFy = std::min( std::max( filmSample.y, Scalar( 0.0 ) ), kMaxUnitBelow1 );
 	const unsigned int fxBits = static_cast<unsigned int>(
-		filmSample.x * static_cast<Scalar>( 4294967296.0 ) );
+		clampedFx * static_cast<Scalar>( 4294967296.0 ) );
 	const unsigned int fyBits = static_cast<unsigned int>(
-		filmSample.y * static_cast<Scalar>( 4294967296.0 ) );
+		clampedFy * static_cast<Scalar>( 4294967296.0 ) );
 	const unsigned int sampleSeed = fxBits * 2654435761u + fyBits;
 	RandomNumberGenerator localRNG( sampleSeed );
 	ScopedMediumTileSeed mediumSeed( sampleSeed );
@@ -765,11 +771,13 @@ void* MLTRasterizer::RoundThread_ThreadProc( void* lpParameter )
 //////////////////////////////////////////////////////////////////////
 
 unsigned int MLTRasterizer::PredictTimeToRasterizeScene(
-	const IScene& /*pScene*/,
+	const IScene& pScene,
 	const ISampling2D& /*pSampling*/,
 	unsigned int* pActualTime
 	) const
 {
+	RequireFireRenderPreflight(
+		pScene,FireRenderPreflightAuthorization::Prediction);
 	if( pActualTime ) {
 		*pActualTime = 0;
 	}
@@ -1283,10 +1291,9 @@ bool MLTRasterizer::RenderFrameOfMLT(
 			// progressive, not final — mirrors the post-block
 			// behaviour in `PixelBasedRasterizerHelper`.
 			CopyToFrameStore_( *pImage );
-			RasterizerOutputListType::const_iterator r, s;
-			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-				(*r)->OutputIntermediateImage( *pImage, 0 );
-			}
+			ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+				output->OutputIntermediateImage( *pImage, 0 );
+			});
 		}
 
 		// Report progress using mutations-done (same reason as
@@ -1344,6 +1351,8 @@ void MLTRasterizer::RasterizeScene(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
@@ -1457,6 +1466,8 @@ void MLTRasterizer::RasterizeSceneAnimation(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
@@ -1493,15 +1504,26 @@ void MLTRasterizer::RasterizeSceneAnimation(
 		const Scalar curtime = time_start + Scalar( frameIdx ) * step_size;
 
 		// Update animator + scene transforms for this frame.
-		pScene.GetAnimator()->EvaluateAtTime( curtime );
-		if( bHasKeyframedObjects ) {
-			pScene.GetObjects()->InvalidateSpatialStructure();
-		}
-		pScene.GetObjects()->PrepareForRendering();
-		// DL-463 (b): rebuild the light-selection tables for this frame's
-		// light poses / powers (in place: the integrator's pointer stays).
-		if( bHasKeyframedObjects ) {
-			pCaster->RefreshLightSamplers();
+		{
+			// A Job render request holds the prepared mutation freeze
+			// (Job::BeginPreparedRequest); this frame-time evaluation is the
+			// render's own internal mutation, as in
+			// PixelBasedRasterizerHelper::PrepareSceneForFrame.  Without the
+			// capability keyframed lights / objects silently keep frame 0's pose.
+			struct PreparedInternalTransformScope {
+				PreparedInternalTransformScope() { Transformable::BeginPreparedInternalMutation(); }
+				~PreparedInternalTransformScope() { Transformable::EndPreparedInternalMutation(); }
+			} preparedTransformScope;
+			pScene.GetAnimator()->EvaluateAtTime( curtime );
+			if( bHasKeyframedObjects ) {
+				pScene.GetObjects()->InvalidateSpatialStructure();
+			}
+			pScene.GetObjects()->PrepareForRendering();
+			// DL-463 (b): rebuild the light-selection tables for this frame's
+			// light poses / powers (in place: the integrator's pointer stays).
+			if( bHasKeyframedObjects ) {
+				pCaster->RefreshLightSamplers();
+			}
 		}
 		pScene.SetSceneTime( curtime );
 
@@ -1674,37 +1696,32 @@ bool MLTRasterizer::CopyToFrameStore_( const IRasterImage& src ) const
 void MLTRasterizer::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	const bool copied = CopyToFrameStore_( img );
-	RasterizerOutputListType::const_iterator r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputImage( img, rcRegion, frame );
-	}
-	// L6d-2b — gate Mark* on copy success.  Firing on a stale
-	// (dim-mismatched) canonical would mislead direct observers.
-	if( copied ) {
-		mFrameStore->MarkFrameComplete( frame );
-	}
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputImage( img, rcRegion, frame );
+		}
+		if( copied ) mFrameStore->MarkFrameComplete( frame );
+	});
 }
 
 void MLTRasterizer::FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	const bool copied = CopyToFrameStore_( img );
-	RasterizerOutputListType::const_iterator r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputPreDenoisedImage( img, rcRegion, frame );
-	}
-	if( copied ) {
-		mFrameStore->MarkPreDenoiseComplete( frame );
-	}
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputPreDenoisedImage( img, rcRegion, frame );
+		}
+		if( copied ) mFrameStore->MarkPreDenoiseComplete( frame );
+	});
 }
 
 void MLTRasterizer::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	const bool copied = CopyToFrameStore_( img );
-	RasterizerOutputListType::const_iterator r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputDenoisedImage( img, rcRegion, frame );
-	}
-	if( copied ) {
-		mFrameStore->MarkDenoiseComplete( frame );
-	}
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputDenoisedImage( img, rcRegion, frame );
+		}
+		if( copied ) mFrameStore->MarkDenoiseComplete( frame );
+	});
 }

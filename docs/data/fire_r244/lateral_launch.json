@@ -1,0 +1,31 @@
+{
+  "status": "launched_healthy_not_completed",
+  "observed_utc": "2026-09-28T18:01:31.492786+00:00",
+  "process_id": 87494,
+  "exec_session": 93583,
+  "source_commit": "32999e80e2ad3c9dfdf18eecb54a305afd06f541",
+  "artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_launch.v1/launch.json",
+      "sha256": "c3d8daf1b82cebffc6654dd1f544e527ac4ca19e9626562d41af7d890f472dd4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_double.v1/window_launch.v1",
+      "sha256": "d2e436edc7c2ffdb2716a2bb5f275422efe60d4e41f820ef28bab84a4c5d5b36"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_double.v1/host_memory_admission.v1",
+      "sha256": "f114b9a0ad70cfe60c109a0719aec929728e302e42551e0b9d21a8d6ef87f51c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_runtime.v3/runtime.json",
+      "sha256": "a10300ee83e68da035efa6a68213087ecc30ccfb414d4c2e7bc53a2cfe3c076f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_lateral_launcher.v1.py",
+      "sha256": "e09bedb69239a2d505c4cf26661cca05c5508daaae0123fcab62f571bc822730"
+    }
+  ],
+  "initial_host_guard": "step1 stop=0; 32GiB ceiling,12246908928-byte dynamic reserve",
+  "launch_admission_note": "Initial broad make check found only PID50217 make tail (19-day notification log follower,0%CPU); exact PID+command exempted after inspecting child uv run imessage-pushover tail. No build/link/run overlapped."
+}

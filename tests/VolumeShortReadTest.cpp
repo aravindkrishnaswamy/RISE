@@ -553,7 +553,20 @@ static void TestMediaSearchRoots()
 	const auto root = fs::path( RISE::TestSupport::ScratchTestRoot( "media_lookup_" ) );
 	const auto first = root / "first";
 	const auto second = root / "second";
-	const std::string name = u8"rise_media_é.bin";
+	std::string name = "rise_media_\xC3\xA9.bin";
+#ifdef _WIN32
+	try {
+		const std::wstring wname = L"rise_media_\u00E9.bin";
+		const std::string narrow = fs::path( wname ).string();
+		if( !narrow.empty() && narrow.find( '?' ) == std::string::npos && fs::path( narrow ).wstring() == wname ) {
+			name = narrow;
+		} else {
+			name = "rise_media_nonascii_fallback.bin";
+		}
+	} catch( ... ) {
+		name = "rise_media_nonascii_fallback.bin";
+	}
+#endif
 	const std::string firstRoot = first.string();
 	const std::string secondRoot = second.string();
 	fs::create_directories( first );

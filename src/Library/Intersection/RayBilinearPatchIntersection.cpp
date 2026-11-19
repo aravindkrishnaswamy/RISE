@@ -317,11 +317,11 @@ namespace RISE
 					hit.bHit = true;
 
 					const Scalar u = getu(sol[1],A2,A1,B2,B1,C2,C1,D2,D1);
-					if( u < 1+NEARZERO && u > NEARZERO ) {
+					if( u < 1+NEARZERO && u > -NEARZERO ) {
 						const Point3 pos2 = GeometricUtilities::EvaluateBilinearPatchAt( patch, u, sol[1] );
 						const Scalar t2 = computet(ray,pos2);
 						// t2 is bad, off the ray, or t1 is nearer -- keep t1.
-						if(t2 < tMin || hit.dRange < t2 ||
+						if(t2 <= tMin || hit.dRange < t2 ||
 							!RootLiesOnRay( ray, pos2, t2, coordScale, qL1 )) {
 							return;
 						}
@@ -346,5 +346,125 @@ namespace RISE
 			}
 			break;
 		};
+	}
+
+	void RayBilinearPatchIntersection(
+		const Ray& ray,
+		BILINEAR_HIT& hit,
+		const BilinearPatch& patch,
+		const bool bHitFrontFaces,
+		const bool bHitBackFaces
+		)
+	{
+		hit.bHit = false;
+		hit.u = hit.v = hit.dRange = -2;
+		hit.dRange2 = RISE_INFINITY;
+		if( !bHitFrontFaces && !bHitBackFaces ) {
+			return;
+		}
+
+		// Reuse the exact elimination and root-acceptance rules above, additionally
+		// gating each root on non-degenerate surface normal and requested sidedness
+		// so a two-root warped patch whose nearer root is culled (e.g. front-face
+		// culled during an SSS / detector back-face-only probe, or hitting a
+		// collapsed pole edge) still returns its valid farther root.
+		Scalar coordScale = fabs(ray.origin.x) + fabs(ray.origin.y) + fabs(ray.origin.z);
+		for( int ci = 0; ci < 4; ci++ ) {
+			coordScale = r_max( coordScale,
+				fabs(patch.pts[ci].x) + fabs(patch.pts[ci].y) + fabs(patch.pts[ci].z) );
+		}
+		const Scalar tMin = NEARZERO * ( Scalar(1) + coordScale );
+		const Scalar qL1 = fabs(ray.Dir().x) + fabs(ray.Dir().y) + fabs(ray.Dir().z);
+
+		const Scalar a[3] = {
+			patch.pts[3].x - patch.pts[2].x - patch.pts[1].x + patch.pts[0].x,
+			patch.pts[3].y - patch.pts[2].y - patch.pts[1].y + patch.pts[0].y,
+			patch.pts[3].z - patch.pts[2].z - patch.pts[1].z + patch.pts[0].z
+		};
+		const Scalar b[3] = {
+			patch.pts[2].x - patch.pts[0].x,
+			patch.pts[2].y - patch.pts[0].y,
+			patch.pts[2].z - patch.pts[0].z
+		};
+		const Scalar c[3] = {
+			patch.pts[1].x - patch.pts[0].x,
+			patch.pts[1].y - patch.pts[0].y,
+			patch.pts[1].z - patch.pts[0].z
+		};
+		const Scalar q[3] = { ray.Dir().x, ray.Dir().y, ray.Dir().z };
+		const Scalar d[3] = {
+			patch.pts[0].x - ray.origin.x,
+			patch.pts[0].y - ray.origin.y,
+			patch.pts[0].z - ray.origin.z
+		};
+
+		int w = 2;
+		if( fabs(q[0]) >= fabs(q[1]) && fabs(q[0]) >= fabs(q[2]) ) {
+			w = 0;
+		} else if( fabs(q[1]) >= fabs(q[2]) ) {
+			w = 1;
+		}
+		const int i = (w + 1) % 3;
+		const int j = (w + 2) % 3;
+
+		const Scalar A1 = a[i]*q[w] - a[w]*q[i];
+		const Scalar A2 = a[j]*q[w] - a[w]*q[j];
+		const Scalar B1 = b[i]*q[w] - b[w]*q[i];
+		const Scalar B2 = b[j]*q[w] - b[w]*q[j];
+		const Scalar C1 = c[i]*q[w] - c[w]*q[i];
+		const Scalar C2 = c[j]*q[w] - c[w]*q[j];
+		const Scalar D1 = d[i]*q[w] - d[w]*q[i];
+		const Scalar D2 = d[j]*q[w] - d[w]*q[j];
+
+		Scalar coeff[3] = {0};
+		coeff[0] = A2*C1 - A1*C2;
+		coeff[1] = A2*D1 - A1*D2 + B2*C1 - B1*C2;
+		coeff[2] = B2*D1 - B1*D2;
+
+		Scalar sol[2] = {0};
+		const int numSol = Polynomial::SolveQuadricWithinRange( coeff, sol, -NEARZERO, 1.0+NEARZERO );
+
+		auto acceptSidedRoot = [&]( const Scalar vCand, Scalar& outU, Scalar& outT ) -> bool {
+			const Scalar uCand = getu( vCand, A2, A1, B2, B1, C2, C1, D2, D1 );
+			if( !( uCand < 1 + NEARZERO && uCand > -NEARZERO ) ) {
+				return false;
+			}
+			const Point3 pos = GeometricUtilities::EvaluateBilinearPatchAt( patch, uCand, vCand );
+			const Scalar tCand = computet( ray, pos );
+			if( !( tCand > tMin ) || !RootLiesOnRay( ray, pos, tCand, coordScale, qL1 ) ) {
+				return false;
+			}
+			const Vector3 rawN = GeometricUtilities::BilinearPatchNormalAt( patch, uCand, vCand );
+			if( Vector3Ops::SquaredModulus( rawN ) < 1e-40 ) {
+				return false;
+			}
+			const bool bRawFront = ( Vector3Ops::Dot( rawN, ray.Dir() ) < 0.0 );
+			if( ( bRawFront && !bHitFrontFaces ) || ( !bRawFront && !bHitBackFaces ) ) {
+				return false;
+			}
+			outU = uCand;
+			outT = tCand;
+			return true;
+		};
+
+		Scalar bestT = RISE_INFINITY;
+		Scalar secondT = RISE_INFINITY;
+		for( int r = 0; r < numSol; ++r ) {
+			Scalar uCand = 0, tCand = 0;
+			if( acceptSidedRoot( sol[r], uCand, tCand ) ) {
+				if( tCand < bestT ) {
+					secondT = bestT;
+					bestT = tCand;
+					hit.u = uCand;
+					hit.v = sol[r];
+					hit.dRange = tCand;
+					hit.dRange2 = secondT;
+					hit.bHit = true;
+				} else if( tCand < secondT ) {
+					secondT = tCand;
+					hit.dRange2 = secondT;
+				}
+			}
+		}
 	}
 }

@@ -96,8 +96,7 @@ static const char* const kScene =
 
 static std::string TempPath( const char* leaf )
 {
-	const char* t = std::getenv( "TMPDIR" );
-	std::string dir = ( t && *t ) ? std::string( t ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+	std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 	if( dir.empty() || dir[ dir.size() - 1 ] != '/' ) dir += '/';
 	return dir + leaf;
 }

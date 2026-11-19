@@ -1,0 +1,16 @@
+{
+  "physical_slice_label": "HRRPUV",
+  "units": "kW/m3",
+  "limits": [
+    0,
+    69,
+    0,
+    69,
+    1,
+    1
+  ],
+  "sampled_through_s": 1.188235878944397,
+  "maximum_sampled_kW_m3": 8061.5087890625,
+  "exceeds_Smoke3D_cap": true,
+  "half_dt_growth_check": "analytic bound identity passed10000 cases"
+}

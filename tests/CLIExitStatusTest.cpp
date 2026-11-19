@@ -51,10 +51,11 @@ int main() {
 #endif
     check(fs::is_regular_file(bin),"actual CLI exists");
     if(fail) return 1;
-    auto run=[&](const fs::path& arg,const std::string& input) {
+    auto run=[&](const fs::path& arg,const std::string& input,const std::string& extraArgs="") {
         const auto in=dir/("in"+std::to_string(serial)),out=dir/("out"+std::to_string(serial++));
         Write(in,input);
-        const std::string cmd=Quote(bin.string())+(arg.empty()?"":" "+Quote(arg.string()))+
+        const std::string cmd=Quote(bin.string())+(extraArgs.empty()?"":" "+extraArgs)+
+            (arg.empty()?"":" "+Quote(arg.string()))+
             " < "+Quote(in.string())+" > "+Quote(out.string())+" 2>&1";
 #ifdef _WIN32
         const std::string sysCmd="\""+cmd+"\"";
@@ -89,6 +90,9 @@ int main() {
     success(run({},"load \""+spacedScene.generic_string()+"\"\nquit\n"),"interactive quoted load with spaces succeeds");
     failure(run({},"load \""+spacedBroken.generic_string()+"\"\nquit\n"),"interactive load failure remains failure");
     failure(run(scene,std::string(9000,'x')+"\nquit\n"),"overlong command input returns failure");
+    failure(run(scene,"quit\n","--camera nonexistent_cam"),"unknown --camera returns non-zero exit status");
+    failure(run({},"quit\n","--camera"),"missing --camera value returns non-zero exit status");
+    failure(run(scene,"quit\n","--denoise --no-denoise"),"mutually exclusive --denoise and --no-denoise returns non-zero exit status");
     fs::remove_all(dir);
     std::cout<<pass<<" passed, "<<fail<<" failed\n";
     return fail?1:0;

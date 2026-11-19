@@ -18,6 +18,7 @@
 #include "../Materials/PerfectRefractorMaterial.h"
 #include "../Materials/PolishedMaterial.h"
 #include "../Materials/DielectricMaterial.h"
+#include "../Materials/RoughDielectricMaterial.h"
 #include "../Materials/IsotropicPhongMaterial.h"
 #include "../Materials/OrenNayarMaterial.h"
 #include "../Materials/SchlickMaterial.h"
@@ -93,6 +94,9 @@ const IMaterial* RISE::Implementation::CloneMaterialForSnapshot( const IMaterial
 		return NewClone( mat, new PolishedMaterial(
 			m->GetDiffuseReflectance(), m->GetTransmittance(),
 			m->GetIOR(), m->GetScattering(), m->GetHG() ) );
+	}
+	if( const RoughDielectricMaterial* m = dynamic_cast<const RoughDielectricMaterial*>(mat) ) {
+		return NewClone(mat,new RoughDielectricMaterial(m->GetIOR(),m->GetAlphaX(),m->GetAlphaY()));
 	}
 	if( const DielectricMaterial* m = dynamic_cast<const DielectricMaterial*>( mat ) ) {
 		return NewClone( mat, new DielectricMaterial(

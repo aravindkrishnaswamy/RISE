@@ -64,6 +64,11 @@ namespace RISE
 				const IShader* pISOShader
 				);
 
+			const IShader* ISOShaderForSSSClassification() const
+			{
+				return pISOShader;
+			}
+
 			DirectVolumeRenderingShader(
 				const char* szVolumeFilePattern,
 				const unsigned int width,
@@ -110,4 +115,3 @@ namespace RISE
 }
 
 #endif
-

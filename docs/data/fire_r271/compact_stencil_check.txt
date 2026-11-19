@@ -1,0 +1,12 @@
+# legacy (switch off)
+shear u_x(y), wave 8dx             measured     50.000   compact symbol     58.579   legacy symbol     50.000   continuum     61.685
+shear u_x(y), checkerboard 2dx     measured     -0.000   compact symbol    400.000   legacy symbol      0.000   continuum    986.960
+normal u_z(z), wave 8dx            measured     66.667   compact symbol     78.105   legacy symbol     66.667   continuum     82.247
+normal u_z(z), checkerboard 2dx    measured     -0.000   compact symbol    533.333   legacy symbol      0.000   continuum   1315.947
+bounded uniform u_x: floor-layer rate/nu -100.000..-100.000, other layers max |.| 50, v/w max |.| 0
+# compact (RISE_FIRE_COMPACT_VISCOUS_STENCIL=1)
+shear u_x(y), wave 8dx             measured     58.579   compact symbol     58.579   legacy symbol     50.000   continuum     61.685
+shear u_x(y), checkerboard 2dx     measured    400.000   compact symbol    400.000   legacy symbol      0.000   continuum    986.960
+normal u_z(z), wave 8dx            measured     78.105   compact symbol     78.105   legacy symbol     66.667   continuum     82.247
+normal u_z(z), checkerboard 2dx    measured    533.333   compact symbol    533.333   legacy symbol      0.000   continuum   1315.947
+bounded uniform u_x: floor-layer rate/nu -200.000..-200.000, other layers max |.| 0, v/w max |.| 0

@@ -1,0 +1,13 @@
+# r271 section 26: FDS from RISE's 9.757 s state, unsteadiness about each arm's own mean, 1.0-2.5 s (xp_ownmean.py)
+# arms: cv12 = C_VREMAN 0.12; k0x83/k0x60 = layer-0 HRRPUV x0.83/x0.60; nw069/nw138 = NEAR_WALL_EDDY_VISCOSITY on floor/burner SURFs
+window 1.0-2.5 s: w rms [theta rms] about own mean, r<0.10 m; then core-mean T (K)
+                                              k0            k3            k7           k16           k32           k49           k65
+RISE own                            0.005[   6]  0.022[  14]  0.060[  23]  0.213[  41]  0.717[  80]  1.139[ 105]  1.136[  81]  T: 1089 910 794
+FDS from RISE state                 0.043[  28]  0.119[  58]  0.267[  75]  0.598[  99]  1.079[  93]  1.193[  62]  0.994[  41]  T: 1047 892 783
+FDS, C_v 0.12                       0.016[  16]  0.050[  30]  0.133[  40]  0.349[  57]  0.873[  83]  1.088[  70]  1.100[  53]  T: 1041 896 791
+FDS, layer-0 source x0.83           0.036[  20]  0.096[  45]  0.240[  61]  0.550[  94]  1.085[  95]  1.192[  63]  1.049[  40]  T: 920 839 749
+FDS, layer-0 source x0.60           0.033[  14]  0.082[  32]  0.231[  54]  0.496[  80]  1.020[  87]  1.084[  59]  1.043[  39]  T: 751 770 704
+FDS near-wall nu 6.9e-4             0.037[  25]  0.115[  58]  0.256[  73]  0.621[  97]  1.143[ 101]  1.233[  63]  1.084[  42]  T: 1088 906 784
+FDS near-wall nu 1.38e-3            0.032[  23]  0.135[  69]  0.263[  80]  0.522[  86]  1.138[ 100]  1.104[  58]  1.053[  41]  T: 1150 919 788
+
+# floor-cell budget at rest, steps 4-8 (burner cells): dT/dt RISE 6223 FDS 7457 K/s; divergence RISE 8.46 FDS 8.92 1/s; k1 4592/4594, k2 2852/2799

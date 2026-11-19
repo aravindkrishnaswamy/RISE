@@ -1,0 +1,50 @@
+{
+  "schema": "rise.fire.r247.central-momentum-math-review.v1",
+  "status": "accepted_synthetic_central_momentum_arithmetic_only",
+  "candidate": "de57ff923",
+  "round": 2,
+  "p1": 0,
+  "p2": 0,
+  "gate_sha256": "d330cb7e6eb8709c75c576095b5d97de92754aae60ebbd85f5d3d5d8f12ebb40",
+  "reviews": [
+    {
+      "agent": "r247_momentum_math_r2",
+      "axis": "arithmetic/contract",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "Asymmetric6x8x83 rectangular-coordinate oracle all3axes/60signedabsolute summaries and counts exactlymatched;6GREEN17RED; all5artifacthashes"
+    },
+    {
+      "agent": "r247_momentum_provenance_r2",
+      "axis": "test-integrity/provenance/costhonesty",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "All5artifacthashes;6GREEN17RED; preservedv1 nearmaxfiniteRED/v2GREEN, genuineoverflow/signedzeroRED; noinputmutation/nativepayloads"
+    }
+  ],
+  "prior_round": {
+    "candidate": "7ee13b38b",
+    "p1": 0,
+    "p2": 1,
+    "repair": "Real sum aboveFLTMAX can roundtofinite binary32max. Classify actual binary32operation with raisingFPerrors and exact ratebits; noepsilon; v1preserved."
+  },
+  "accepted_scope": [
+    "Pure caller-owned binary32 unique centralface arithmetic",
+    "M0/R1provisional/R2projected momentum and actualHeun namedterms",
+    "Common80 lateral exclusion/zface80 inclusion/deduplicated sharedfaces",
+    "Signed/absolute face means and verticalface profiles with actualunits"
+  ],
+  "unaccepted_scope": [
+    "Sourceproducer/native/flux/beginning payload admission",
+    "SeparateStageB beforefield allocation inventory and measuredRSS",
+    "Full235wide+taller derived transport/momentum",
+    "Full15315 cumulativecommon80 budget",
+    "Independentpressure/restoration split",
+    "Physicalcause/remedy/newinstrumented simulation"
+  ],
+  "field_payloads_read": 0,
+  "full_derivation_accepted": false,
+  "physical_acceptance": false,
+  "original_taller_exit_code": 98,
+  "source_files_unchanged": true
+}

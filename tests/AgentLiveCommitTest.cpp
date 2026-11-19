@@ -6607,8 +6607,7 @@ static void TestUnnamedSingletonPatchAddressing()
 	// elsewhere in tests/ were pid-suffixed to close).
 	std::string scenePath;
 	{
-		const char* base = std::getenv( "TMPDIR" );
-		std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
+		std::string dir = RISE::TestSupport::ScratchBaseDir();
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 		scenePath = dir + std::to_string( (long)getpid() ) + "_rise_unnamed_singleton.RISEscene";
 		std::ofstream o( scenePath.c_str(), std::ios::binary );

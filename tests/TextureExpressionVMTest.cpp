@@ -1022,8 +1022,7 @@ namespace S2 {
 
 	std::string WriteTempScene( const std::string& tag, const std::string& body )
 	{
-		const char* tmp = getenv( "TMPDIR" );
-		std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+		std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 		std::string path = dir + "rise_texexprvm_s2_" + tag + ".RISEscene";
 		std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );
@@ -1058,8 +1057,7 @@ namespace S2 {
 	//! test binaries (each test executable is standalone; see tests/README.md).
 	bool ParseBodyCapturing( const std::string& tag, const std::string& body, std::string& capturedOutput )
 	{
-		const char* tmpEnv = getenv( "TMPDIR" );
-		std::string dir = tmpEnv ? std::string( tmpEnv ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+		std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 		char pidbuf[32];
 		std::snprintf( pidbuf, sizeof(pidbuf), "%d", static_cast<int>( RISE_TEST_GETPID() ) );
@@ -1471,8 +1469,7 @@ namespace S3 {
 	// at the png_painter step, never reaching the channel-A check.
 	std::string WriteTempPNG( const char* tag, double r, double g, double b )
 	{
-		const char* t = getenv( "TMPDIR" );
-		std::string dir = ( t && t[0] ) ? std::string( t ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+		std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 		if( dir[dir.size()-1] != '/' ) dir += '/';
 		const std::string path = dir + "rise_texexprvm_s3_" + tag + ".png";
 
@@ -4883,8 +4880,7 @@ namespace {
 	//! a red-proof rather than a tolerance argument.
 	std::string WriteCheckerPNG()
 	{
-		const char* t = getenv( "TMPDIR" );
-		std::string dir = ( t && t[0] ) ? std::string( t ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+		std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 		if( dir[dir.size()-1] != '/' ) dir += '/';
 		const std::string path = dir + "rise_texexprvm_dl25_checker.png";
 

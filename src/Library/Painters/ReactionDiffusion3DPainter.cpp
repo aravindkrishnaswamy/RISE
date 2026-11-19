@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "ReactionDiffusion3DPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Animation/KeyframableHelper.h"
@@ -106,6 +107,7 @@ IKeyframeParameter* ReactionDiffusion3DPainter::KeyframeFromParameters( const St
 
 void ReactionDiffusion3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SCALE_ID:
@@ -123,6 +125,7 @@ void ReactionDiffusion3DPainter::SetIntermediateValue( const IKeyframeParameter&
 
 void ReactionDiffusion3DPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	safe_release( pFunc );
 
 	pFunc = new ReactionDiffusion3D( nGridSize, dDa, dDb, dFeed, dKill, nIterations );

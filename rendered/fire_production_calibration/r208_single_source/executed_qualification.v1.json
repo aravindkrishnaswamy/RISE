@@ -1,0 +1,152 @@
+{
+  "schema": "rise.fire.r208.executed-qualification.v1",
+  "source_commit": "84128a500fe1e7ae7b96d68deee61a689fb110d4",
+  "executable": "bin/tests/FireSequenceTest_r208_sealed_v2",
+  "executable_sha256": "70eca63d46873ab13cee9d97f189d9fbc013e0b1d1831b0b100a3985294b7db9",
+  "status": "qualification_passed_replay_launch_recorded_separately",
+  "executions": {
+    "clean_build": 0,
+    "publication_gate": 0,
+    "independent_r190_owner_gate": 0,
+    "full_FireSequenceTest_suite": 0,
+    "crossing_convergence_fixture": 0,
+    "source_routing_RED_tests": 0,
+    "fp64_mirror_check": 0,
+    "roundoff_trace_check": 0,
+    "convergence_artifact_check": 0
+  },
+  "source_RED_observations": {
+    "canonical_single_constructor": true,
+    "reconstruction_callback_not_invocable": true,
+    "unsealed_atomic_refusal": true,
+    "postcarry_mutants": [
+      "changed_dose",
+      "short_payload",
+      "long_payload",
+      "negative_zero"
+    ],
+    "pilot_nonzero_distinct_cells": 24,
+    "carbon_source_nonzero_cells": 16,
+    "source_injection_count": 8,
+    "double_ulp_mutations_rejected_with_same_float_roundtrip": 8,
+    "diagnostic_nonzero_cells": [
+      40,
+      16,
+      0,
+      40,
+      16,
+      24,
+      24,
+      64
+    ],
+    "diagnostic_structural_zero": "gross carbon formation; PhysicalV1 zero soot yield",
+    "diagnostic_pairwise_swap_RED_count": 28
+  },
+  "owner_gate_criterion": "conjunction of per-cell per-field same-unit local enclosures and certified branch obligations against reviewed r190 owner; no pooled acceptance ratio",
+  "crossing_fixture_scope": "synthetic only, no focusing or k claim",
+  "historical_r207_checker": "unchanged SHA anchor; not reissued for this execution",
+  "migration_authority": false,
+  "retained_diagnostic_common_prefix": "steps389,390 all non-timing trajectory fields and payload roots identical; only two old accepted continuation steps",
+  "golden_checkpoint_sha256": "1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947",
+  "production_numerical_kernel_changes": false,
+  "target_prototype_included": false,
+  "performance_claim": "none from qualification; full replay records actual device/wall trajectories",
+  "artifacts": [
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/qualification.v4.json",
+      "sha256": "e394f2655e73941c63f5746f0a045b87f0680e6001070a432affaf212da2f156"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/qualification.v4.json.build.log",
+      "sha256": "eafb26201b512cd10443bc87e55e179cf43c4f225e2be25667304ec6fda9f4d1"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/qualification.v4.json.owner.log",
+      "sha256": "1c7f2bdcdc7c439bba940a619f0089b3413e944ca7cbf7ba20579657a2438739"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/qualification.v4.json.publication.log",
+      "sha256": "9d08dde2fbffbcdf1c68f2578c8b3a6e02702a2b75f49cc4cd7175b4347104a7"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/full_suite.v4.log",
+      "sha256": "defb81901e79831e2865d2b0c73666be9b659aaceb4f9e1870c69d7d230a1f9b"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3",
+      "sha256": "e4248fcbbdd31ec3ec0a9f1bc991dc0a3a9bfa3313f3d966042e52ecd9bc66cf"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.csv",
+      "sha256": "d2a8ee8d96cabf1ddcb1f6e0d884ad810779b62e384d0d2d759cef5989ecd7c2"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.log",
+      "sha256": "d69453b45ba4a7924f1633923ee79bed5de56e0150c82212856c73740767330a"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.synthetic-crossing.convergence.v1",
+      "sha256": "fcb6860f67ce89244e20e2c004e368e141cff38505ef12c7db31ae61b5da76c8"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.synthetic-crossing.convergence.v1.csv",
+      "sha256": "afd9eed5e57e82bda9bb41743c861fafbe8a4c23b4dd3e0c31c1927897155400"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.synthetic-crossing.convergence.v1.tail_targets.bin",
+      "sha256": "6cf1b57d59e7111bc218dfb01dda93ac0f776715599a1c69f89035bd20c16a10"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.synthetic-crossing.event.v1",
+      "sha256": "95c07478af5db0153663aeec0a1a7676805e043e8e0942a399abaed04c968066"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.synthetic-crossing.export_stale_dt.event.v1",
+      "sha256": "95c07478af5db0153663aeec0a1a7676805e043e8e0942a399abaed04c968066"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.synthetic-crossing.export_stale_dt.source_ledger.v1",
+      "sha256": "95c07478af5db0153663aeec0a1a7676805e043e8e0942a399abaed04c968066"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.synthetic-crossing.export_stale_dt.source_observation_inputs.bin",
+      "sha256": "95c07478af5db0153663aeec0a1a7676805e043e8e0942a399abaed04c968066"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.synthetic-crossing.export_terminal_bit_mutation.event.v1",
+      "sha256": "95c07478af5db0153663aeec0a1a7676805e043e8e0942a399abaed04c968066"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.synthetic-crossing.export_terminal_bit_mutation.source_ledger.v1",
+      "sha256": "95c07478af5db0153663aeec0a1a7676805e043e8e0942a399abaed04c968066"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.synthetic-crossing.export_terminal_bit_mutation.source_observation_inputs.bin",
+      "sha256": "95c07478af5db0153663aeec0a1a7676805e043e8e0942a399abaed04c968066"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.synthetic-crossing.source_ledger.v1",
+      "sha256": "95c07478af5db0153663aeec0a1a7676805e043e8e0942a399abaed04c968066"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/crossing_fixture.v3.synthetic-crossing.source_observation_inputs.bin",
+      "sha256": "95c07478af5db0153663aeec0a1a7676805e043e8e0942a399abaed04c968066"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/convergence_check.v3.log",
+      "sha256": "6b8fcf48236c9d2d1a9c67dd0a9ae49f368e1fffa8f75585afbc72d9d7483aa9"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/source_routing.v4.log",
+      "sha256": "199ba496f288116d36c62f29346d4fbf0bd75745a1c893abfcbdaa4c6d5b1033"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/common_prefix_check.v1.log",
+      "sha256": "882ab69c57a0e8ea99fbf8d6801a61efa310fa7f8ef69edf87c232e1aaaa39ea"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/replay_plan.v2.json",
+      "sha256": "b75a5a52c3601f9f52252557a170405c94777cca7616d8c4dc2f4016a7b69517"
+    }
+  ]
+}

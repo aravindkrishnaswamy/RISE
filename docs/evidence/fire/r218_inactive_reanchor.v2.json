@@ -1,0 +1,678 @@
+{
+  "schema": "rise.fire.inactive-branch-reanchor-result.v2",
+  "status": "applied-and-verified",
+  "main_before": "7cf60fc1ce98e70f18cc0212b13456988702c1d3",
+  "mode": "mapped-fork-source-identical-not-main-tip-merge",
+  "backup_pattern": "refs/backup/<full-branch-name>-pre-strip",
+  "backups_created": 22,
+  "previously_deleted_merged_refs": 11,
+  "rewritten_inactive_refs": 11,
+  "source_identical_suffix_commits": 42,
+  "branch_map": [
+    {
+      "branch": "codex/r207-target-assembly",
+      "old": "d70170d40b9de6cded97b8e6c584d7fec53cd754",
+      "new": "4c9882c142345922173d36842893a9fa3b53274d"
+    },
+    {
+      "branch": "codex/r213-eos-baseline",
+      "old": "9a96d516ddd9e034a64be17818f1669d56f1d434",
+      "new": "d9631b6ff6977754995eb97cecf75a3c77ae00b3"
+    },
+    {
+      "branch": "codex/r214-filtered-onset",
+      "old": "134acf77be42bf6d0b8d75ffa14c7a38bccc99ab",
+      "new": "3254f773475340081572589d7225a7b1ba1e318b"
+    },
+    {
+      "branch": "codex/r214-momentum-trace",
+      "old": "630276e029e0645995fc17d702511591090209b7",
+      "new": "e61418ecd06c5abc157632ed8c7855f600bda0b2"
+    },
+    {
+      "branch": "codex/r214-shared-owner-adapter",
+      "old": "fd8d67465023a03df9cb19c1043097dfd16f972e",
+      "new": "8fd51ac7160ebb27527305a5e17ecdf37882b138"
+    },
+    {
+      "branch": "codex/r214-target-basis",
+      "old": "c11ba38c0073bfe74fc7b5c26ad192a32b04efd0",
+      "new": "0e36ca9a66b6773bb722bb698c72f7f8b9f015f3"
+    },
+    {
+      "branch": "codex/r215-native-composition",
+      "old": "f78e552d12fd5f928e4bb9f82662c52c6f5cc0be",
+      "new": "6cf12860c3fd5d24b592f0a3e66117617eac0c75"
+    },
+    {
+      "branch": "codex/r215-spatial-terms",
+      "old": "897a78733cab921ce8b2eb08fee37a7776e534a7",
+      "new": "3d436cb55ce177cca582a526ab083eecb3884793"
+    },
+    {
+      "branch": "codex/r216-onset-join",
+      "old": "544c49f0721c0b4e8913a57a02964a200c973bc0",
+      "new": "b9bd73aa3a3a76c26d1946631160f24fa2e5ebb8"
+    },
+    {
+      "branch": "codex/r216-resume-issuer",
+      "old": "5c0642fd8f0a50b28ded90c5cada08e4d37255f4",
+      "new": "4f754034b9a6c273517b07359e370be7f6e578ab"
+    },
+    {
+      "branch": "codex/r216-tier10-continuation",
+      "old": "8e5a80cb1c28f9154f2587abb9e2df106ba613fd",
+      "new": "6eebd3ecfdedfcb4f4273ca71cf9900345c4043c"
+    }
+  ],
+  "commit_map": [
+    {
+      "old": "760d5f6eff29bfd059d83b10812cfb983c231852",
+      "old_parents": [
+        "2b66b5eccecd785d5a3cea3b053a5f52eb6fc570"
+      ],
+      "new_parents": [
+        "14f1951bbc864a3a032ca14ad43d87b876cb2403"
+      ],
+      "subject": "r209: gate offline target timing comparisons by case and sealed prefixes",
+      "untracked_artifact_paths": 42,
+      "new": "56fcf8214d9f4f928fbda9655ea4a0cec2fa9f35",
+      "tree": "aaed89a64d20ef96bb30b40e78126def26a1cecf"
+    },
+    {
+      "old": "898188c6ed6aac3f72f5ee00e60bcf38ed90b4d2",
+      "old_parents": [
+        "760d5f6eff29bfd059d83b10812cfb983c231852"
+      ],
+      "new_parents": [
+        "56fcf8214d9f4f928fbda9655ea4a0cec2fa9f35"
+      ],
+      "subject": "r209: close reviewed wall-time containment escape with resealed RED",
+      "untracked_artifact_paths": 42,
+      "new": "b837f294b3c1122ce88c9761e6edd47c22e4d63e",
+      "tree": "0b012213417f715f90db95a5cdc8e39af5ba6d23"
+    },
+    {
+      "old": "73a81f470af4c4a5699a317dccb5e7f51400d818",
+      "old_parents": [
+        "898188c6ed6aac3f72f5ee00e60bcf38ed90b4d2"
+      ],
+      "new_parents": [
+        "b837f294b3c1122ce88c9761e6edd47c22e4d63e"
+      ],
+      "subject": "r209: bind step cost to the sealed complete-prefix wall interval",
+      "untracked_artifact_paths": 42,
+      "new": "483ddde73eca039bcd69df8ef4fafd40c69d9a50",
+      "tree": "fd57ce268f7b404936f1ae50e6ed1e4c34cea1eb"
+    },
+    {
+      "old": "02c40edcc26718becc15f7241999a14f82182eda",
+      "old_parents": [
+        "73a81f470af4c4a5699a317dccb5e7f51400d818"
+      ],
+      "new_parents": [
+        "483ddde73eca039bcd69df8ef4fafd40c69d9a50"
+      ],
+      "subject": "r209: bind correlated producer clocks through enclosing wall scopes",
+      "untracked_artifact_paths": 42,
+      "new": "23a7ad531d2dc52efba7e910a187badd4532ecaa",
+      "tree": "2cccbe680b229760d4d3046ff419ea623f6bf3ec"
+    },
+    {
+      "old": "3eb3430f8d30f7f8cdaff1e35e33d49bbe687968",
+      "old_parents": [
+        "02c40edcc26718becc15f7241999a14f82182eda"
+      ],
+      "new_parents": [
+        "23a7ad531d2dc52efba7e910a187badd4532ecaa"
+      ],
+      "subject": "r209: reject device-duration inflation against correlated CPU clocks",
+      "untracked_artifact_paths": 42,
+      "new": "bc4aa32cb9047311772410c0c05f0f435ef41d40",
+      "tree": "3d22382673634e377a5616e6f5fabd5e59a0c853"
+    },
+    {
+      "old": "397e9f3ca0031b56d0a07b1fa56713240fe402ca",
+      "old_parents": [
+        "3eb3430f8d30f7f8cdaff1e35e33d49bbe687968"
+      ],
+      "new_parents": [
+        "bc4aa32cb9047311772410c0c05f0f435ef41d40"
+      ],
+      "subject": "r209: close non-producer timing containment across all profile scopes",
+      "untracked_artifact_paths": 42,
+      "new": "4aae3854ad339993fbdcaaeef79a2d79606dcce9",
+      "tree": "2eb74b4a72c49cf8acefb3dce491dde6db7aca49"
+    },
+    {
+      "old": "e668f3dc92db5f38473d2c9b0c50f3edde78ec68",
+      "old_parents": [
+        "397e9f3ca0031b56d0a07b1fa56713240fe402ca"
+      ],
+      "new_parents": [
+        "4aae3854ad339993fbdcaaeef79a2d79606dcce9"
+      ],
+      "subject": "r209: replace inherited encoder slack with explicit clock uncertainty",
+      "untracked_artifact_paths": 42,
+      "new": "538f636ab73103a865a20748345f5e0687002703",
+      "tree": "d60c11a28e70e3d6acec0fdb85ef67c04093b39b"
+    },
+    {
+      "old": "d70170d40b9de6cded97b8e6c584d7fec53cd754",
+      "old_parents": [
+        "e668f3dc92db5f38473d2c9b0c50f3edde78ec68"
+      ],
+      "new_parents": [
+        "538f636ab73103a865a20748345f5e0687002703"
+      ],
+      "subject": "r209: seal final independent CPU tooling review receipt",
+      "untracked_artifact_paths": 42,
+      "new": "4c9882c142345922173d36842893a9fa3b53274d",
+      "tree": "ece83c65987238cb370757dd850ebc968197ad95"
+    },
+    {
+      "old": "9a96d516ddd9e034a64be17818f1669d56f1d434",
+      "old_parents": [
+        "9f1b80fb64a196b81b1f067833f77f4d7325e4b7"
+      ],
+      "new_parents": [
+        "77b7ad35ab85628053b50979f46bd7b3f8da4ff8"
+      ],
+      "subject": "Add diagnostic-only per-step snapshot retention to immutable r212 EOS baseline",
+      "untracked_artifact_paths": 147,
+      "new": "d9631b6ff6977754995eb97cecf75a3c77ae00b3",
+      "tree": "030f3e63f7416d6e777c19795883ac562423b0e7"
+    },
+    {
+      "old": "630276e029e0645995fc17d702511591090209b7",
+      "old_parents": [
+        "d835215de853bf908236433736658e1d397fbbc3"
+      ],
+      "new_parents": [
+        "e74a3ee297c043573462fb568afd10c2811b53b9"
+      ],
+      "subject": "r214 candidate: capture changing producer momentum in observer v2",
+      "untracked_artifact_paths": 229,
+      "new": "e61418ecd06c5abc157632ed8c7855f600bda0b2",
+      "tree": "89e7c893d2953de05ebe5a7a798ecf2f760e30f6"
+    },
+    {
+      "old": "50f1b49100e4a519ac8b6dc91b259046d64ce667",
+      "old_parents": [
+        "d835215de853bf908236433736658e1d397fbbc3"
+      ],
+      "new_parents": [
+        "e74a3ee297c043573462fb568afd10c2811b53b9"
+      ],
+      "subject": "r214: capture shared canonical owner inputs and derive fp64 qualification capacity",
+      "untracked_artifact_paths": 229,
+      "new": "a6b1d8a02be1116de1b8d1cb818262f63a2216a6",
+      "tree": "0564ce0fa3f6e7fde347fe3f7e566fcdc45c96cf"
+    },
+    {
+      "old": "4f0285fe5de3caef49cbaa83aed1eb03e1d3458a",
+      "old_parents": [
+        "50f1b49100e4a519ac8b6dc91b259046d64ce667"
+      ],
+      "new_parents": [
+        "a6b1d8a02be1116de1b8d1cb818262f63a2216a6"
+      ],
+      "subject": "r214: refuse malformed resident input surfaces before shared capture",
+      "untracked_artifact_paths": 229,
+      "new": "11f4c815e88c05950acb1cbe94930df30bf43894",
+      "tree": "279658dca1db38f18d6a6400759ffb065d5ab944"
+    },
+    {
+      "old": "fd8d67465023a03df9cb19c1043097dfd16f972e",
+      "old_parents": [
+        "4f0285fe5de3caef49cbaa83aed1eb03e1d3458a"
+      ],
+      "new_parents": [
+        "11f4c815e88c05950acb1cbe94930df30bf43894"
+      ],
+      "subject": "r214: close force-input sibling preflight gaps with named REDs",
+      "untracked_artifact_paths": 229,
+      "new": "8fd51ac7160ebb27527305a5e17ecdf37882b138",
+      "tree": "e71968217e13afd7c08a31c57fa1741047c9c42f"
+    },
+    {
+      "old": "3aad1e93c55d1c58289db552fcb28a7fd0b6cafe",
+      "old_parents": [
+        "6f444137733ac01c3236d83a665aeef961550fe6"
+      ],
+      "new_parents": [
+        "316e9265a2839fe7b01ee8fc9d4ade525921d0cc"
+      ],
+      "subject": "r214 candidate: reuse target temperature basis with pinned CPU differential REDs",
+      "untracked_artifact_paths": 228,
+      "new": "a3dec05a41af7857e9b3f58fcfa6d43e121f5fcc",
+      "tree": "fcc2dc5bc2145c6f1a01a9f6d2b578a5cee1787b"
+    },
+    {
+      "old": "cd12e5593ca9008e756158cb8c53be864a7917fc",
+      "old_parents": [
+        "3aad1e93c55d1c58289db552fcb28a7fd0b6cafe",
+        "d831ce31e0af70745e359f2e0e1a6bfbf4a88240"
+      ],
+      "new_parents": [
+        "a3dec05a41af7857e9b3f58fcfa6d43e121f5fcc",
+        "5ee8bafc017d44aadd06b5715898fbe79fb27b05"
+      ],
+      "subject": "Merge commit 'd831ce31' into codex/r214-target-basis",
+      "untracked_artifact_paths": 230,
+      "new": "c7b63f3b07dd998afa7cca7face6374880779819",
+      "tree": "4fae3d3b7152ac9392a2a90198dbfc2f1237494b"
+    },
+    {
+      "old": "8a608832d6cc3058f9121d58912850422e13ea51",
+      "old_parents": [
+        "cd12e5593ca9008e756158cb8c53be864a7917fc"
+      ],
+      "new_parents": [
+        "c7b63f3b07dd998afa7cca7face6374880779819"
+      ],
+      "subject": "r215: require target qualification witness to catch word corruption",
+      "untracked_artifact_paths": 230,
+      "new": "9e15d823c355928bb3795a118850f42d155ca247",
+      "tree": "c47eb1f7f86dfad4cee2826488d3d7e57cf6cc60"
+    },
+    {
+      "old": "27e585b003f6f2d19820a4460b98bcab8221e9d7",
+      "old_parents": [
+        "8a608832d6cc3058f9121d58912850422e13ea51"
+      ],
+      "new_parents": [
+        "9e15d823c355928bb3795a118850f42d155ca247"
+      ],
+      "subject": "r215: seal bit-identical target-basis cost improvement and evidence REDs",
+      "untracked_artifact_paths": 241,
+      "new": "bf75381c8982d18ea6c69e3bff997f5f06e2e32f",
+      "tree": "dd17e30a75bc06bb908dbe4537c174f355da5544"
+    },
+    {
+      "old": "c11ba38c0073bfe74fc7b5c26ad192a32b04efd0",
+      "old_parents": [
+        "27e585b003f6f2d19820a4460b98bcab8221e9d7"
+      ],
+      "new_parents": [
+        "bf75381c8982d18ea6c69e3bff997f5f06e2e32f"
+      ],
+      "subject": "r215: document archive restoration and original onset kernel requirement",
+      "untracked_artifact_paths": 241,
+      "new": "0e36ca9a66b6773bb722bb698c72f7f8b9f015f3",
+      "tree": "15e4f804add63dd9b6e9f26f3fd2ae602a150aad"
+    },
+    {
+      "old": "897a78733cab921ce8b2eb08fee37a7776e534a7",
+      "old_parents": [
+        "d831ce31e0af70745e359f2e0e1a6bfbf4a88240"
+      ],
+      "new_parents": [
+        "5ee8bafc017d44aadd06b5715898fbe79fb27b05"
+      ],
+      "subject": "r215: measure independent ported and oracle spatial terms for review",
+      "untracked_artifact_paths": 266,
+      "new": "3d436cb55ce177cca582a526ab083eecb3884793",
+      "tree": "560d45192a8bae08f8f90a2399c705d704c30acb"
+    },
+    {
+      "old": "b290bde7673c5236382217b7866fac5abd09b9fc",
+      "old_parents": [
+        "d831ce31e0af70745e359f2e0e1a6bfbf4a88240"
+      ],
+      "new_parents": [
+        "5ee8bafc017d44aadd06b5715898fbe79fb27b05"
+      ],
+      "subject": "r215: wire native shared-state oracle and reviewed-owner qualification endpoints",
+      "untracked_artifact_paths": 230,
+      "new": "83cea878f1e17d4bcbd5d456759e9e93b4e14d71",
+      "tree": "6f0c7c239f38d15b185b7c3c46d8926064031fac"
+    },
+    {
+      "old": "eaf1f82a59d85d2b68ad8147d38b8b46282ce13a",
+      "old_parents": [
+        "b290bde7673c5236382217b7866fac5abd09b9fc"
+      ],
+      "new_parents": [
+        "83cea878f1e17d4bcbd5d456759e9e93b4e14d71"
+      ],
+      "subject": "r215: preserve pilot history and seal derived-temperature-aware shared diagnostics",
+      "untracked_artifact_paths": 230,
+      "new": "6f5ab3d0ef5b0d28ce5f9604c56ab036f495e34e",
+      "tree": "09185c5fc338a5a3aa49467e4642ac8bf2b8b828"
+    },
+    {
+      "old": "ea78553d9bb9567fbf34f49d4f8a45ad2c3c4046",
+      "old_parents": [
+        "eaf1f82a59d85d2b68ad8147d38b8b46282ce13a"
+      ],
+      "new_parents": [
+        "6f5ab3d0ef5b0d28ce5f9604c56ab036f495e34e"
+      ],
+      "subject": "r215: bind original external parent and explicit precision-projection child",
+      "untracked_artifact_paths": 230,
+      "new": "c1264a70cd8331ee027a4301e52a9df18f1faf34",
+      "tree": "398e2dc4339fed7948f5fa080b33e8fe0f9e8125"
+    },
+    {
+      "old": "0509de9fbb499b8f57e21d1f92bd4884ce6559b0",
+      "old_parents": [
+        "ea78553d9bb9567fbf34f49d4f8a45ad2c3c4046"
+      ],
+      "new_parents": [
+        "c1264a70cd8331ee027a4301e52a9df18f1faf34"
+      ],
+      "subject": "r215: preserve ordinary source request lifetime outside qualification",
+      "untracked_artifact_paths": 230,
+      "new": "611d7d6b699b4fd936a8a40ce42dca81b07ef7c5",
+      "tree": "48596830498b27ab8c7d8f56e44ceec81418e1cf"
+    },
+    {
+      "old": "3747a0e9415c5d77a31303eaba5174a08d408f68",
+      "old_parents": [
+        "0509de9fbb499b8f57e21d1f92bd4884ce6559b0"
+      ],
+      "new_parents": [
+        "611d7d6b699b4fd936a8a40ce42dca81b07ef7c5"
+      ],
+      "subject": "r215: verify metric external parent against the pinned checkpoint itself",
+      "untracked_artifact_paths": 230,
+      "new": "be8008fc978a29edf331eefd090874188953ced2",
+      "tree": "e55721cec259a9f4ed44ccde6523996d470467df"
+    },
+    {
+      "old": "8c57e00fdb1cf28f0cce4cb07884c02cf5875068",
+      "old_parents": [
+        "3747a0e9415c5d77a31303eaba5174a08d408f68"
+      ],
+      "new_parents": [
+        "be8008fc978a29edf331eefd090874188953ced2"
+      ],
+      "subject": "r215: record exact native oracle composition and unchanged owner authority refusal",
+      "untracked_artifact_paths": 230,
+      "new": "b87315da3378ce6b34af6c824ce8d5499cf5f366",
+      "tree": "334d4facb0865f46dbb336cc31d1d8be9fbecdaf"
+    },
+    {
+      "old": "29dd69cb3458e57262aa08a815eccb32b828354d",
+      "old_parents": [
+        "8c57e00fdb1cf28f0cce4cb07884c02cf5875068"
+      ],
+      "new_parents": [
+        "b87315da3378ce6b34af6c824ce8d5499cf5f366"
+      ],
+      "subject": "r215: preserve native composition payloads and qualified executable evidence",
+      "untracked_artifact_paths": 232,
+      "new": "4e2ccf6b7fc79a3e6b423c62319512be98da76d4",
+      "tree": "a701b7157eb5649daa33ce30f16a2ade6a15ed9d"
+    },
+    {
+      "old": "f78e552d12fd5f928e4bb9f82662c52c6f5cc0be",
+      "old_parents": [
+        "29dd69cb3458e57262aa08a815eccb32b828354d"
+      ],
+      "new_parents": [
+        "4e2ccf6b7fc79a3e6b423c62319512be98da76d4"
+      ],
+      "subject": "r215: seal native oracle dyadic diagnostics and fresh review",
+      "untracked_artifact_paths": 234,
+      "new": "6cf12860c3fd5d24b592f0a3e66117617eac0c75",
+      "tree": "e51f5f2d0938dbb6c452d566a4eb77a92457af3f"
+    },
+    {
+      "old": "134acf77be42bf6d0b8d75ffa14c7a38bccc99ab",
+      "old_parents": [
+        "d831ce31e0af70745e359f2e0e1a6bfbf4a88240"
+      ],
+      "new_parents": [
+        "5ee8bafc017d44aadd06b5715898fbe79fb27b05"
+      ],
+      "subject": "r215: preserve interrupted tier-ten onset without claiming a verdict",
+      "untracked_artifact_paths": 232,
+      "new": "3254f773475340081572589d7225a7b1ba1e318b",
+      "tree": "645345a0ea926ad3288928667666a1d9de591eee"
+    },
+    {
+      "old": "5c0642fd8f0a50b28ded90c5cada08e4d37255f4",
+      "old_parents": [
+        "134acf77be42bf6d0b8d75ffa14c7a38bccc99ab"
+      ],
+      "new_parents": [
+        "3254f773475340081572589d7225a7b1ba1e318b"
+      ],
+      "subject": "r216: bind historical r214 transcript to native r78-v2 migration proof",
+      "untracked_artifact_paths": 232,
+      "new": "4f754034b9a6c273517b07359e370be7f6e578ab",
+      "tree": "ca1a588e876416cf7a6c0d780392ad3408f1264b"
+    },
+    {
+      "old": "51ba8ac5a7625067b7ba9b3f3419e4112bcccd3e",
+      "old_parents": [
+        "134acf77be42bf6d0b8d75ffa14c7a38bccc99ab"
+      ],
+      "new_parents": [
+        "3254f773475340081572589d7225a7b1ba1e318b"
+      ],
+      "subject": "r216: authenticate immutable onset prefix and certified continuation join",
+      "untracked_artifact_paths": 232,
+      "new": "36c38c646a31d00debc2465cecf56ebde795483f",
+      "tree": "acc3bd0d2f4561a37da47ddc230d86faa2d2373e"
+    },
+    {
+      "old": "37a8ce05d4a87cec9eb6ec4ea9ea14c93c828fea",
+      "old_parents": [
+        "51ba8ac5a7625067b7ba9b3f3419e4112bcccd3e"
+      ],
+      "new_parents": [
+        "36c38c646a31d00debc2465cecf56ebde795483f"
+      ],
+      "subject": "r216 review: require native certificate and checkpoint validators before verdict",
+      "untracked_artifact_paths": 232,
+      "new": "dfd02564120407e805f38b0de747f313faaf2a82",
+      "tree": "383f443dd0284eef7b1b52555006cb26821240c2"
+    },
+    {
+      "old": "544c49f0721c0b4e8913a57a02964a200c973bc0",
+      "old_parents": [
+        "37a8ce05d4a87cec9eb6ec4ea9ea14c93c828fea"
+      ],
+      "new_parents": [
+        "dfd02564120407e805f38b0de747f313faaf2a82"
+      ],
+      "subject": "r216 review: independently pin validator and keep unverified prefixes diagnostic",
+      "untracked_artifact_paths": 232,
+      "new": "b9bd73aa3a3a76c26d1946631160f24fa2e5ebb8",
+      "tree": "b298a4d09badfc4259746dadaf649d780c265ff6"
+    },
+    {
+      "old": "3485c4d047ff81782df63da6e8541c3fe166538c",
+      "old_parents": [
+        "134acf77be42bf6d0b8d75ffa14c7a38bccc99ab"
+      ],
+      "new_parents": [
+        "3254f773475340081572589d7225a7b1ba1e318b"
+      ],
+      "subject": "r216: bind historical r214 transcript to native r78-v2 migration proof",
+      "untracked_artifact_paths": 232,
+      "new": "c75a6a23f0d521c2a56b4fa12a8ae95a1d6a9ed3",
+      "tree": "ca1a588e876416cf7a6c0d780392ad3408f1264b"
+    },
+    {
+      "old": "f43e56e09ed7df6cf522f4a229b63bb3bd8b3dc6",
+      "old_parents": [
+        "3485c4d047ff81782df63da6e8541c3fe166538c"
+      ],
+      "new_parents": [
+        "c75a6a23f0d521c2a56b4fa12a8ae95a1d6a9ed3"
+      ],
+      "subject": "r216: add original-kernel tier-ten retained probe and certified continuation scope",
+      "untracked_artifact_paths": 232,
+      "new": "396b62e6e0442e35660e7b3378ffad072ee00194",
+      "tree": "810440d67426f468f1586ad7be9351d08bef4b22"
+    },
+    {
+      "old": "a24022ebe826269ab962e23f09ea59d91e3e47dd",
+      "old_parents": [
+        "f43e56e09ed7df6cf522f4a229b63bb3bd8b3dc6"
+      ],
+      "new_parents": [
+        "396b62e6e0442e35660e7b3378ffad072ee00194"
+      ],
+      "subject": "r216: authenticate immutable onset prefix and certified continuation join",
+      "untracked_artifact_paths": 232,
+      "new": "34024a9d26be19a57fb84b4ad0355f87cb99f153",
+      "tree": "a8d5347ce72285a5d231b666cbe035acec1e223a"
+    },
+    {
+      "old": "6b636f85373c76cfb437b2c1685d351eb0d391fc",
+      "old_parents": [
+        "a24022ebe826269ab962e23f09ea59d91e3e47dd"
+      ],
+      "new_parents": [
+        "34024a9d26be19a57fb84b4ad0355f87cb99f153"
+      ],
+      "subject": "r216: bind terminal timeline export to the accepted checkpoint history",
+      "untracked_artifact_paths": 232,
+      "new": "8088128c990a0bae2f9a88cd37ebbd3f155f9c4c",
+      "tree": "53da0d62cbcdfca5a5d7c2b2bf3db02d96c76d2b"
+    },
+    {
+      "old": "8f9395679351e0ea69cb48bd310bbd965d7e2333",
+      "old_parents": [
+        "6b636f85373c76cfb437b2c1685d351eb0d391fc"
+      ],
+      "new_parents": [
+        "8088128c990a0bae2f9a88cd37ebbd3f155f9c4c"
+      ],
+      "subject": "r216: revalidate terminal checkpoint contents in the authenticated executable",
+      "untracked_artifact_paths": 232,
+      "new": "57a990cfa989f4ab261e16766852acefebf3224c",
+      "tree": "c59695f6881af3c10e8a295fbf8ce4da64d4bdf1"
+    },
+    {
+      "old": "58e338c9901b7892014d92137354e14bcfcfff2e",
+      "old_parents": [
+        "8f9395679351e0ea69cb48bd310bbd965d7e2333"
+      ],
+      "new_parents": [
+        "57a990cfa989f4ab261e16766852acefebf3224c"
+      ],
+      "subject": "r216 review: require native certificate and checkpoint validators before verdict",
+      "untracked_artifact_paths": 232,
+      "new": "f5730f9cb780a4e9421fbe10ea283b67bc44fd22",
+      "tree": "b1c260880248f531352a444647317ed360afd3e7"
+    },
+    {
+      "old": "a390c6e9432473bba6d2d5aaf0779d65ea52f308",
+      "old_parents": [
+        "58e338c9901b7892014d92137354e14bcfcfff2e"
+      ],
+      "new_parents": [
+        "f5730f9cb780a4e9421fbe10ea283b67bc44fd22"
+      ],
+      "subject": "r216 review: independently pin validator and keep unverified prefixes diagnostic",
+      "untracked_artifact_paths": 232,
+      "new": "c964f39943b8cad46741c3664aaf9c1c1537d7f6",
+      "tree": "7205e9c15590081c1d0755cf888964c0a7b8976f"
+    },
+    {
+      "old": "07d9637f8d8b2fa45fe8b2efeef1efd5b3d85184",
+      "old_parents": [
+        "a390c6e9432473bba6d2d5aaf0779d65ea52f308"
+      ],
+      "new_parents": [
+        "c964f39943b8cad46741c3664aaf9c1c1537d7f6"
+      ],
+      "subject": "r216: pin the independently qualified verifier against marker-emitter substitution",
+      "untracked_artifact_paths": 232,
+      "new": "ae465ad056e4b9e8eb6d9d12d4e634ef5587c57a",
+      "tree": "46f5c87af0cfa9c2dece5b95ca4882a3ffc801c6"
+    },
+    {
+      "old": "eaf8b2fb760dc509627eed389ca3480d1e85ead4",
+      "old_parents": [
+        "07d9637f8d8b2fa45fe8b2efeef1efd5b3d85184"
+      ],
+      "new_parents": [
+        "ae465ad056e4b9e8eb6d9d12d4e634ef5587c57a"
+      ],
+      "subject": "r216: seal exact eight-step migration, adversarial REDs and zero-finding review",
+      "untracked_artifact_paths": 234,
+      "new": "4a60f5ec411b44e211f79e4934c89817366ead47",
+      "tree": "61f22d974ab9ad417c07592f24efc86435e91ead"
+    },
+    {
+      "old": "8e5a80cb1c28f9154f2587abb9e2df106ba613fd",
+      "old_parents": [
+        "eaf8b2fb760dc509627eed389ca3480d1e85ead4"
+      ],
+      "new_parents": [
+        "4a60f5ec411b44e211f79e4934c89817366ead47"
+      ],
+      "subject": "r216: retain certified tier-ten launch and first durable continuation checkpoint",
+      "untracked_artifact_paths": 235,
+      "new": "6eebd3ecfdedfcb4f4273ca71cf9900345c4043c",
+      "tree": "092487533caaed48b205ebafa156377955276915"
+    }
+  ],
+  "working_tree_indexes_checked": 9,
+  "checks": {
+    "each_tip_exact_old_tree_minus_forbidden_paths": true,
+    "all_retained_leaf_modes_and_object_ids_equal": true,
+    "all_live_index_edits_remove_only_forbidden_paths": true,
+    "all_11_rebased_branches_pre_push_guard_pass": true,
+    "main_and_r207_dirty_source_diffs_unchanged": true,
+    "deleted_local_payload_files": 0
+  },
+  "excluded_active": {
+    "branch": "codex/r217-clause-diagnostic",
+    "tip_unchanged": "d676ba06c9c8c3551fe8b5d237881aced7991fb1",
+    "index_sha256_unchanged": "f88889d06fac2c71496d84bb51b38e07aa80802cf9b0de8019ab2daea613998e",
+    "executable_sha256_unchanged": "91978041bb53124e45324838a082d6fb64bb0f2a6da28c68ddc7e8c186faaefa",
+    "rebase_condition": "Only after sealed onset completes and evidence is sealed"
+  },
+  "local_receipts": [
+    {
+      "path": "rendered/fire_production_calibration/r218_history/inactive_candidates.v2.json",
+      "sha256": "ea9e7c3adb3171e175e381af6ca13f2899c9c9c33641fc8ac75b798854677e5e"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r218_history/rise_r218_reanchor.v2.py",
+      "sha256": "146d1c12018140375c5c95f85051a14a70622ef4f7852ae455a206aceeee4954"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r218_history/reanchor_safety.v2.py",
+      "sha256": "1407d64444a21b402ef8b4023366c1f8a5f3127adc2d3c80b0b367b5cee5aea1"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r218_history/reanchor_safety.v2.json",
+      "sha256": "b48a6a728e03687a910c7f95cc8e965f8d218cccca99af8c99f8f91203cca9f8"
+    },
+    {
+      "path": "rendered/r218-ref-index-journal-16brjl5l/journal.json",
+      "sha256": "7c490554ab6964872e9d3afcf6ce4084b7d3ded166e3587a1cedc8a6d72622a9"
+    }
+  ],
+  "review": {
+    "axes": [
+      "history/tree/artifact fidelity",
+      "write safety and failure recovery",
+      "fresh final durability review"
+    ],
+    "fixed_findings": [
+      "active-ref verify transaction lock removed",
+      "BaseException and uncertain child-outcome recovery",
+      "index/directory durability before terminal journal states"
+    ],
+    "final_p1": 0,
+    "final_p2": 0,
+    "synthetic_tests": [
+      "success",
+      "interrupt after ref commit",
+      "interrupt after first index installation",
+      "index durability failure"
+    ],
+    "all_synthetic_tests_pass": true
+  },
+  "no_push_performed": true
+}

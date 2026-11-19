@@ -11,6 +11,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "Gabor3DPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Animation/KeyframableHelper.h"
@@ -101,6 +102,7 @@ IKeyframeParameter* Gabor3DPainter::KeyframeFromParameters( const String& name, 
 
 void Gabor3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SCALE_ID:
@@ -118,6 +120,7 @@ void Gabor3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void Gabor3DPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	safe_release( pFunc );
 
 	pFunc = new GaborNoise3D( dFrequency, dBandwidth, vOrientation, dImpulseDensity, 42 );

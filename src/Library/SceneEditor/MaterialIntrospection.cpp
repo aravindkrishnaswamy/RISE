@@ -20,12 +20,14 @@
 #include "../Interfaces/IJob.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Materials/Material.h"   // NullMaterial — Job's default-registered "none" material
+#include "../Materials/NullBoundaryMaterial.h"
 #include "../Materials/LambertianMaterial.h"
 #include "../Materials/PolishedMaterial.h"
 #include "../Materials/CoatedMaterial.h"
 #include "../Materials/FabricMaterial.h"
 #include "../Materials/WeaveMaterial.h"
 #include "../Materials/DielectricMaterial.h"
+#include "../Materials/RoughDielectricMaterial.h"
 #include "../Materials/PerfectReflectorMaterial.h"
 #include "../Materials/PerfectRefractorMaterial.h"
 #include "../Materials/IsotropicPhongMaterial.h"
@@ -179,12 +181,14 @@ String MaterialIntrospection::GetTypeName( const IMaterial& material )
 	// objects fall back to when their `material` chunk arg was
 	// omitted.  Surface it explicitly so the user sees a meaningful
 	// type instead of "(unknown type)".
+	if( IsExactNullBoundaryMaterial( &material ) )                                      return String( "Null Medium Boundary" );
 	if( dynamic_cast<const NullMaterial*>( &material ) )                                return String( "None (default)" );
 	if( dynamic_cast<const LambertianMaterial*>( &material ) )                          return String( "Lambertian" );
 	if( dynamic_cast<const PolishedMaterial*>( &material ) )                            return String( "Polished" );
 	if( dynamic_cast<const CoatedMaterial*>( &material ) )                              return String( "Coated" );
 	if( dynamic_cast<const FabricMaterial*>( &material ) )                              return String( "Fabric" );
 	if( dynamic_cast<const WeaveMaterial*>( &material ) )                               return String( "Weave" );
+	if(dynamic_cast<const RoughDielectricMaterial*>(&material)) return String("Rough Dielectric");
 	if( dynamic_cast<const DielectricMaterial*>( &material ) )                          return String( "Dielectric" );
 	if( dynamic_cast<const PerfectReflectorMaterial*>( &material ) )                    return String( "Perfect Reflector" );
 	if( dynamic_cast<const PerfectRefractorMaterial*>( &material ) )                    return String( "Perfect Refractor" );
@@ -462,6 +466,11 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			scalarPainters, composed,
 			"`transmission thin` only: the weft's diffuse-transmission share, in [0,1].  See warp_transmit." ) );
 	}
+	else if(const auto* rough = dynamic_cast<const RoughDielectricMaterial*>(&material)) {
+        rows.push_back(BuildScalarPainterSlot("ior",rough->GetIOR(),scalarPainters,composed,"Single physical IOR; spectral curves retain NM dispersion."));
+        rows.push_back(BuildScalarPainterSlot("alphax",rough->GetAlphaX(),scalarPainters,composed,"GGX alpha width in (0,1]."));
+        rows.push_back(BuildScalarPainterSlot("alphay",rough->GetAlphaY(),scalarPainters,composed,"GGX alpha width in (0,1]."));
+    }
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
 		rows.push_back( BuildScalarPainterSlot( "tau", die->GetTransmittance(),
 			scalarPainters, composed,
@@ -853,6 +862,10 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 		if( slot == "warp_transmit" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpTransmit(); return out; }
 		if( slot == "weft_transmit" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftTransmit(); return out; }
 	}
+	else if(const auto* rough = dynamic_cast<const RoughDielectricMaterial*>(&material)) {
+        const IScalarPainter* p = slot=="ior" ? &rough->GetIOR() : slot=="alphax" ? &rough->GetAlphaX() : slot=="alphay" ? &rough->GetAlphaY() : nullptr;
+        if(p) { out.kind=MaterialSlotRef::ScalarPainter; out.scalarPainter=p; return out; }
+    }
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
 		if( slot == "tau" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &die->GetTransmittance(); return out;
@@ -1105,6 +1118,22 @@ bool MaterialIntrospection::SetSlot(
 		if( slot == "weft_transmit" ) { wv->SetWeftTransmit( *scalarPainter ); return true; }
 		return false;		// `weave` is an enum, not a rebindable painter slot
 	}
+	if(auto* rough = dynamic_cast<RoughDielectricMaterial*>(&material)) {
+        if(!scalarPainter) return false;
+        IScalarPainter* view=scalarPainter->HasPerChannelVariation() ? scalarPainter->MakeSingleScalarSlotView() : nullptr;
+        if(scalarPainter->HasPerChannelVariation() && !view) return false;
+        const IScalarPainter& source=view ? *view : *scalarPainter;
+        bool ok=false;
+        if(slot=="ior") {
+            if(!source.ReadsWorldPosition() && !source.IsWorldPositionField()) {
+                rough->SetIOR(source); ok=true;
+            }
+        }
+        if(slot=="alphax") { rough->SetAlphaX(source); ok=true; }
+        if(slot=="alphay") { rough->SetAlphaY(source); ok=true; }
+        safe_release(view);
+        return ok;
+    }
 	if( DielectricMaterial* die = dynamic_cast<DielectricMaterial*>( &material ) ) {
 		if( slot == "tau" ) {
 			if( !scalarPainter ) return false;

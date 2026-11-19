@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "../Utilities/IndependentSampler.h"
 #include "SpotLight.h"
 #include "../Animation/KeyframableHelper.h"
@@ -258,6 +259,7 @@ IKeyframeParameter* SpotLight::KeyframeFromParameters( const String& name, const
 
 void SpotLight::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case TARGET_ID:

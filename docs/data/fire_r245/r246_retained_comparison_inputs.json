@@ -1,0 +1,66 @@
+{
+  "schema": "rise.fire.r246.retained-comparison-inputs.v1",
+  "inputs": {
+    "baseline_stations": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_station_localization.v1/baseline_station_history.npz",
+      "sha256": "7d9bf0b3e6ddcd4028178e6005809535e25af5fcb6e0339f909b6729e779b7aa"
+    },
+    "wide_stations": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_station_localization.v1/lateral_station_history.npz",
+      "sha256": "a2d518412f7f0a54edcd89b96696d6ebcc5539bb6f17a169afecb792fb30b819"
+    },
+    "taller_stations": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operand_validation.v3/actual_operands/station_probes.csv",
+      "sha256": "ed5712f8479b6415b62d492c4be85f484834655b491db124c95787a38837b980"
+    },
+    "taller_stations_seal": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operand_validation.v3/actual_operands/station_probes.csv.payload-v2.json",
+      "sha256": "75906bfd3036d29314c9aa1a907b3a01dbf2e4591534667d54dd7a2e9277d1eb"
+    },
+    "wide_audit": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_full_verification.v2/full_budget_audit.json",
+      "sha256": "085f5674499c6677e6f356c5a1e18b1d8128e3e5062d1f987106c66ea9ad9c38"
+    },
+    "taller_audit": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_full_signed_budget_audit.v1/signed_budget_audit.json",
+      "sha256": "8105dc52c044e6e39e8937fc36baa2be60f8e2e2a3d9f75a9384fc19646b3e72"
+    },
+    "wide_ledger": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/step_015315.csv",
+      "sha256": "b68507e5b1f8afcf322f84f8e130bcb73ee4fdcbf57c0c2139b2079a96c364d7"
+    },
+    "wide_ledger_seal": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/step_015315.csv.payload-v2.json",
+      "sha256": "4ff06841329648edea84bfbcd2806e73de34834793d0f5e3469c57684473d0f1"
+    },
+    "taller_ledger": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/budgets/step_015315.csv",
+      "sha256": "61fe950e4ff924ddc217ea024d09808fb5bdd1a1ef9dd635cfdf113f540568ef"
+    },
+    "taller_ledger_seal": {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/budgets/step_015315.csv.payload-v2.json",
+      "sha256": "50a21babd3890366071caaa579c7684a96a293647a5296a2430e7e888d0daa2c"
+    },
+    "station_acceptance": {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/station_review.json",
+      "sha256": "6191d000ec4c20bee94fa5306c0077575ea27103dc28fb03b57fd34d2e4678ba"
+    },
+    "taller_operand_acceptance": {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_recovery_operand_review.json",
+      "sha256": "b6a80873f56ed7e6e31d2dcbaeb74034fc235ad2dba197ac2076b9b72e0602d6"
+    },
+    "wide_budget_acceptance": {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/budget_review_round2.json",
+      "sha256": "dc108308f62bcd42277679532ccb67b31a9fa02c0b10cd59ad06d718c21df4db"
+    },
+    "taller_budget_acceptance": {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_full_signed_budget_audit_review.json",
+      "sha256": "cda8b05c967227921a85f70426ff61554a52527ed99cf474d46d65f97499dd75"
+    }
+  },
+  "modern_pairs": {
+    "taller_stations": "805372d567af6fafd03ba0ec96c8fbd30d64fdc21c64117dc2ea5580be9b52a2",
+    "wide_ledger": "a9369e770465bd76e2cc8d5fc3b79e7c2aac038ecb14a0e4424a97ba2f98d586",
+    "taller_ledger": "805372d567af6fafd03ba0ec96c8fbd30d64fdc21c64117dc2ea5580be9b52a2"
+  }
+}

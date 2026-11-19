@@ -3,9 +3,9 @@
 //  MediumTracking.h - Utility for determining the current
 //    participating medium at a point along a ray
 //
-//  Uses the IOR stack to determine which object the ray is inside,
-//  then queries that object's interior medium.  Falls back to the
-//  scene's global medium if no object medium is found.
+//  Uses IORStack's enclosure state to determine which object the ray is
+//  inside, then queries that object's interior medium.  Optical IOR state
+//  is deliberately separate and is not consulted here.
 //
 //  This mirrors Blender/Cycles' volume stack lookup pattern:
 //  the innermost enclosing object's volume shader takes priority,
@@ -36,7 +36,7 @@ namespace RISE
 		/// Determine the current medium for a ray given the IOR stack and scene.
 		///
 		/// Resolution order (matching Cycles volume stack):
-		///   1. Check the innermost enclosing object (IOR stack top)
+		///   1. Check the innermost object on the enclosure stack
 		///      for an interior medium
 		///   2. Fall back to the scene's global medium
 		///   3. Return NULL (vacuum) if neither exists
@@ -59,7 +59,7 @@ namespace RISE
 
 		/// Extended variant that also returns the enclosing object
 		/// (if the medium comes from an object interior).
-		/// pEnclosingObject is set to the IOR stack top object when
+		/// pEnclosingObject is set to the enclosure-stack top object when
 		/// the medium is per-object, or NULL for the global medium.
 		inline const IMedium* GetCurrentMediumWithObject(
 			const IORStack& ior_stack,

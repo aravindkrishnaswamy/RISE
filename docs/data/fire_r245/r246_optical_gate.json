@@ -1,0 +1,36 @@
+{
+  "scope": "synthetic upper-only optical confound; not simulation or physical qualification",
+  "status": "accepted_after_two_fresh_zero_P1_P2_reviews",
+  "render_pipeline_completed": {
+    "exit_code": 0,
+    "finished_at": "2026-10-01T11:28:04.250555+00:00",
+    "scope": "four fresh-process sequential synthetic optical controls; no simulation"
+  },
+  "frozen_binary_sha256": "d938b2fd7c9ef6e5eac3325d425816c740727a393699e0a9882d0e926b366556",
+  "repeat_linear_rgb_l1": 0.0,
+  "upper_emission_linear_rgb_l1": 17.40667987224735,
+  "upper_extinction_linear_rgb_l1": 17.664666727666646,
+  "lower_channel_values_and_active_masks_identical": true,
+  "synthetic_common_stations_identical": true,
+  "actual_primary_and_display_profiles_checked": true,
+  "actual_taller_owner_allocation_exercised": false,
+  "launch_permitted": false,
+  "sha256": {
+    "r246_optical_control.v2/optical_report.json": "0651868aaa85d00ebd692af939610c6d2ea5550b1c1607ade5ced66a5b97d99f",
+    "r246_optical_control.v2/completion.json": "a607c7bcdd31d288dc54d9b9b58c97a12c158b3e8f2ea8a502a10f6927a74707",
+    "r246_optical_independent_audit.v2.json": "b877aeabdd593fe767e39605863a417c182574f0d38567f3925306759f10478f",
+    "r246_optical_audit_controls.v1/results.json": "c10990ac2a76a606bdc10a31da6199c411ffde9b934219d67b7d82aeccc8da84",
+    "r246_optical_audit_controls.v1.py": "38ad07c967892f473825a337ed5b8cac5185a37625b024313a5154fada7c52ea",
+    "r246_optical_native_gate.v1.log": "7fec4c99b3d7ce97f91520367e6ef23ee466b0ef8cc2ce990e71285e68b1b5c0",
+    "r246_optical_legacy_gate.v1.log": "67b2b84e77a763cd581c688cc12e3239e3c53e5bf398b4b370163da8ca072554",
+    "r246_optical_build.v4.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "r246_optical_independent_audit.v3.json": "42e8ad2d71cb4ac0232105e9f6044953a1c67f0428f4da5465203dc400e7b472",
+    "r246_optical_audit_controls.v2/results.json": "209587e8f259a1e50142d7ccc4f578ca44ba6e0ae7d9475442b8665b081a0f2f",
+    "r246_optical_audit_controls.v2.py": "2c04873c5fdfe6d35ef35beabcc4ccb806e296f6df17834b379b530dcf620207",
+    "r246_optical_vdb_verify.v1": "1d1f77da294c4fa5933454c88e36f235daf38f56407256a6c1a044b940a327ea",
+    "r246_optical_vdb_verify_build.v1.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "persisted_lower_values_and_masks_independently_recomputed": true,
+  "optimized_python_refused": true,
+  "resealed_lower_vdb_mutation_refused": true
+}

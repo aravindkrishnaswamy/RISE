@@ -1,0 +1,57 @@
+{
+  "accepted_steps": 8,
+  "calls": 156,
+  "inputs_sha256": {
+    "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/maximum_velocity_trajectory.csv": "cb10278dc49f33c9a9718496804bf81fe5493faf4af0eb27cd1a3b7db3d1a057",
+    "rendered/fire_production_calibration/r212_transport_adoption/hot_iteration_distribution.v1.log": "cbbefb9daf59b1be9bc057e8e4c673206bc90d87d4a162252221c6f1e89f1cb5",
+    "rendered/fire_production_calibration/r212_transport_adoption/hot_iteration_distribution.v1/budgets/maximum_velocity_trajectory.csv": "79eceaebb59d689f06ba8e81ec19fb8e10dc4a34972ba2c2705669642083a5da"
+  },
+  "payload_roots_equal_at_all_eight_equal_times": true,
+  "schema": "rise.fire.r212.hot-eos-observation.v1",
+  "scope": "Diagnostic extra dispatch; concurrent oracle means no timing claim. Not migration authority, fixed-k acceptance, or warm-start qualification.",
+  "stages": {
+    "0": {
+      "bisections": 46323851,
+      "calls": 54,
+      "cell_evaluations": 27251964,
+      "histogram": {
+        "0": 25372340,
+        "24": 666749,
+        "25": 1212875
+      },
+      "interior_fraction": 0.06897205647270044,
+      "lower_endpoint": 25372340,
+      "previous_temperature_bit_equal": 25372401,
+      "previous_temperature_bit_equal_fraction": 0.9310301818980826
+    },
+    "1": {
+      "bisections": 37784233,
+      "calls": 44,
+      "cell_evaluations": 22205304,
+      "histogram": {
+        "0": 20672108,
+        "24": 545667,
+        "25": 987529
+      },
+      "interior_fraction": 0.06904638639489014,
+      "lower_endpoint": 20672108,
+      "previous_temperature_bit_equal": 20674975,
+      "previous_temperature_bit_equal_fraction": 0.9310827269016447
+    },
+    "2": {
+      "bisections": 49795929,
+      "calls": 58,
+      "cell_evaluations": 29270628,
+      "histogram": {
+        "0": 27250046,
+        "24": 718621,
+        "25": 1301961
+      },
+      "interior_fraction": 0.06903104367969148,
+      "lower_endpoint": 27250046,
+      "previous_temperature_bit_equal": 29270628,
+      "previous_temperature_bit_equal_fraction": 1.0
+    }
+  },
+  "temperature_bit_mismatches": 0
+}

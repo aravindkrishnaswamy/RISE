@@ -1,0 +1,72 @@
+schema rise.fire.r214.continuation-handoff.v1
+scope ongoing_onset_and_qualified_cpu_prerequisites_not_a_physics_verdict
+
+Do not restart or replace the sealed tier-10 onset worker.
+worker_source_commit 3dc96320527f211aff22e6fbea971c10ff2e0145
+worker_executable bin/tests/FireSequenceTest_r214_3dc96320
+worker_sha256 45370ad3bcc7035fb228a1f839efe5059cbcc791a64486bd2a1f0b1c3025dc2c
+exec_session 23225
+pid_at_launch 1049
+run_directory rendered/fire_production_calibration/r214_filtered_onset/tier10_from_zero.v1
+log rendered/fire_production_calibration/r214_filtered_onset/tier10_from_zero.v1.log
+worker_worktree /Users/aravind/Working/RISE/worktrees/r203-producers
+engineering_horizon 3.5_seconds_or_first_15_m_per_s_crossing
+Native terminal publication and full accepted trajectory decide the outcome.
+No prefix is survival evidence. No window, spectrum or movie is claimed here.
+
+CPU shared-input prerequisite integrated:
+reviewed_branch codex/r214-shared-owner-adapter
+reviewed_final_commit fd8d6746
+integrated_commits 637a744a 638d616e 4b8c1ec1
+integration_check selected_source_paths_byte_identical_to_reviewed_final_commit
+main_branch fire-smoke-design
+cpu_gate_log rendered/fire_production_calibration/r214_shared_owner_input/cpu_asan_ubsan.v3.log
+cpu_gate_sha256 7018e49baf17a13441d17efd010b3e37e97df09a0be76d9a40ec9c6f2905a152
+CPU gate: clean uniform ASan/UBSan dependencies, warnings treated as errors,
+real canonical source construction on a 64-cell synthetic fixture, actual
+reviewed fp64 Begin, nine malformed-surface REDs, fourteen force/control REDs,
+and five compiled mutants. Generator --check passes.
+Review: three fresh two-axis rounds, zero P1; two P2 input-preflight families
+fixed (resident-only surfaces, then force/control siblings). Final current-
+commit round returned zero P1/P2. This sign-off is limited to the CPU capture
+prerequisite and the qualification resource derivation, not a full flow gate.
+
+The generated fp64 capacity preserves the binary32 owner's scalar-slot count:
+(2 GiB / sizeof(float)) * sizeof(double) = 4 GiB.
+The original production sources, budget and numerical expressions are unchanged.
+Tier 8 footprint 2296136184 bytes fits. Tier 10 footprint 4436107040 bytes still
+exceeds 4294967296 bytes and must refuse; this is not unrestricted admission.
+
+Formal filtered verdict remains NOT QUALIFIED:
+Wire native checkpoint/build/exact-schedule-bound capture using the actual
+canonical staged input and pre-injection eligibility, not reconstruction from
+incomplete historical source observations. Then wire the fp64 transport
+provider and complete R0/R1/R2. Oracle composition must start from the same
+represented shared state. Independently measure ported-owner spatial terms,
+both temporal refinements, and B32 before publishing the nineteen contract
+rows. Do not substitute old-remap bounds or separate-trajectory distances.
+The r213 -184.08273315429688 versus -23.3961840953128 face-rate comparison
+remains diagnostic-only under r112/r172, not a pointwise fidelity gate.
+
+Unpromoted cost/instrument candidates:
+target_basis_branch codex/r214-target-basis
+target_basis_commit 3aad1e93c55d1c58289db552fcb28a7fd0b6cafe
+target_basis_worktree /Users/aravind/Working/RISE/worktrees/r214-target-basis
+Target basis: CPU bit tests and both offline Metal compile modes passed;
+no live Metal gate, hot-byte equivalence, fresh production review or speedup.
+momentum_trace_branch codex/r214-momentum-trace
+momentum_trace_commit 630276e0
+momentum_trace_worktree /Users/aravind/Working/RISE/worktrees/r214-momentum-trace
+Observer v2: captures changing R0/R1 next momentum and the R1-alpha R0 rate,
+explicit absence at bootstrap/R2; +8*allFaces observer bytes only. Seven CPU
+sanitizer tests, sixteen historical v1 tests and safe-FP syntax checks passed.
+No live Metal new-field enclosure gate, full linked suite, fresh adoption
+review, resume-equivalence, timing or k selection. When combining branches,
+regenerate both mirrors; do not overwrite the separate fp64 capacity correction.
+
+GPU qualification and three uncontended hot profiles wait for the unchanged
+onset run. The short host sample is diagnostic, not a replacement for r213's
+6.918187667 device / 8.938276375 wall s/step p95 hot baseline. Repeated frozen-
+source Matches hashing is identified work; its exclusive wall cost is unmeasured.
+The mean wall-minus-device residual remains unattributed, not all assigned to hashing.
+No automatic follow-up automation or duplicate run was created by this increment.

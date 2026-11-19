@@ -78,7 +78,10 @@ namespace RISE
 				return bShootPhotons;
 			}
 
-			inline void SetCanGeneratePhotons( bool b ) override { bShootPhotons = b; }
+			inline void SetCanGeneratePhotons( bool b ) override {
+				Transformable::PreparedExternalMutationScope mutation;
+				if( mutation.IsValid() ) bShootPhotons = b;
+			}
 
 			inline bool IsPositionalLight() const override { return true; }
 

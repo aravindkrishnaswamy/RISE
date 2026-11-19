@@ -1,0 +1,35 @@
+{
+  "status": "PASS",
+  "controls": [
+    {
+      "name": "unchanged",
+      "expected": "GREEN",
+      "exit_code": 0,
+      "refusal": null
+    },
+    {
+      "name": "resealed_final_source",
+      "expected": "RED",
+      "exit_code": 1,
+      "refusal": "final ledger differs from audited bytes"
+    },
+    {
+      "name": "resealed_columns",
+      "expected": "RED",
+      "exit_code": 1,
+      "refusal": "columns differ from audited bytes"
+    },
+    {
+      "name": "foreign_audit",
+      "expected": "RED",
+      "exit_code": 1,
+      "refusal": "foreign run"
+    },
+    {
+      "name": "stale_audit_without_input_pins",
+      "expected": "RED",
+      "exit_code": 1,
+      "refusal": "final ledger differs from audited bytes"
+    }
+  ]
+}

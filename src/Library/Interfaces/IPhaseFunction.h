@@ -39,6 +39,7 @@
 
 #include "IReference.h"
 #include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/Color/Color.h"
 
 namespace RISE
 {
@@ -84,6 +85,26 @@ namespace RISE
 		/// Used by volume guiding to apply the HG product to the learned
 		/// distribution.  Returns 0 (isotropic) by default.
 		virtual Scalar GetMeanCosine() const { return 0; }
+
+		// Phase-A Pel-preview extension.  Appended at the vtable tail so
+		// existing scalar phase functions retain their historical slots.
+		// Ordinary phases are achromatic and use Pdf() as their proposal.
+		virtual RISEPel EvaluatePel(
+			const Vector3& wi,
+			const Vector3& wo
+			) const
+		{
+			const Scalar value = Evaluate( wi, wo );
+			return RISEPel( value, value, value );
+		}
+
+		virtual Scalar PdfProposal(
+			const Vector3& wi,
+			const Vector3& wo
+			) const
+		{
+			return Pdf( wi, wo );
+		}
 	};
 }
 

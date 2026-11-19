@@ -28,6 +28,9 @@ namespace RISE
 	class ISubSurfaceDiffusionProfile;
 	class RayIntersectionGeometric;
 	class IORStack;
+	class IContinuationClosurePel;
+	class IContinuationClosureNM;
+	struct ContinuationPathState;
 	class IScalarPainter;
 
 	//! Selects which Fresnel model GGX-family materials evaluate internally.
@@ -323,6 +326,22 @@ namespace RISE
 		//! scene is still mutable, so no thread-safety concern.
 		/// \return TRUE if the material is a luminaire and applied the scale, FALSE otherwise
 		virtual bool SetEmissionScale( const Scalar scale ) { return false; }
+
+		/// Immutable pre-NEE continuation capability. Unsupported by default;
+		/// Phase-B callers additionally enforce the exact core-type allowlist.
+		virtual const IContinuationClosurePel* MakeContinuationClosurePel(
+			const RayIntersectionGeometric& ri,
+			const IORStack& ior_stack,
+			const ContinuationPathState& path_state
+			) const { return 0; }
+
+		/// Wavelength-bound spectral sibling of MakeContinuationClosurePel.
+		virtual const IContinuationClosureNM* MakeContinuationClosureNM(
+			const RayIntersectionGeometric& ri,
+			const IORStack& ior_stack,
+			Scalar nm,
+			const ContinuationPathState& path_state
+			) const { return 0; }
 
         //! DL-214: surface coverage, independent of scattering and wavelength.
         //! Construction-time mutation only. Opaque is the default on every material.

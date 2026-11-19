@@ -1,0 +1,17 @@
+{
+  "reviewed_commit": "75e23630",
+  "reviewers": [
+    {
+      "agent": "r245_top_math_review",
+      "P1": 0,
+      "P2": 0,
+      "reproduced": "235x5 coverage, every ring mean/std/weighted summary; independent capsule extraction at0,117,234 agrees within5.69e-14; hashes match."
+    },
+    {
+      "agent": "r245_top_interpretation_review",
+      "P1": 0,
+      "P2": 0
+    }
+  ],
+  "scope": "Sampled actual limited-Heun top rates and separately labeled native endpoint values; no causal or integrated-interior claim."
+}

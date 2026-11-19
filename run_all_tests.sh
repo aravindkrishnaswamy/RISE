@@ -7,6 +7,23 @@ BIN_DIR="$REPO_ROOT/bin/tests"
 SRC_DIR="$REPO_ROOT/tests"
 BUILD_DIR="$REPO_ROOT/build/make/rise"
 LIB_DIR="$REPO_ROOT/src/Library"
+FIRE_OPTICS_GENERATOR="$REPO_ROOT/tools/generate_fire_optics_records.py"
+FIRE_OPTICS_DATA="$REPO_ROOT/docs/data"
+FIRE_OPTICS_EMBEDDED="$LIB_DIR/Utilities/FireOpticsRecordData.inc"
+FIRE_SIM_GENERATOR="$REPO_ROOT/tools/generate_fire_simulation_records.py"
+FIRE_SIM_DATA="$REPO_ROOT/docs/data/source_pulls/fire_sim_open_sources_v1.json"
+FIRE_SIM_METHANE_CONSTANTS="$REPO_ROOT/docs/data/fire_fuel_methane_v1.draft.json"
+FIRE_SIM_EMBEDDED="$LIB_DIR/Utilities/FireSimulationRecordData.inc"
+FIRE_SIM_GENERATOR_TEST="$REPO_ROOT/tests/test_fire_simulation_record_generator.py"
+FIRE_GAS_OPACITY_GENERATOR="$REPO_ROOT/tools/generate_fire_gas_opacity_record.py"
+FIRE_GAS_OPACITY_MANIFEST="$REPO_ROOT/tests/fixtures/fire_gas_opacity/synthetic_manifest.json"
+FIRE_GAS_OPACITY_TABLE="$REPO_ROOT/docs/data/fire_gas_opacity_synthetic_v1.json"
+FIRE_GAS_OPACITY_TEST="$REPO_ROOT/tests/test_fire_gas_opacity_tools.py"
+FIRE_GAS_PLANCK_GENERATOR="$REPO_ROOT/tools/generate_fire_gas_opacity_planck_record.py"
+FIRE_GAS_PLANCK_MANIFEST="$REPO_ROOT/docs/data/gas_opacity/hitemp_sources_v1.json"
+FIRE_GAS_PLANCK_EMBEDDED="$LIB_DIR/Utilities/FireGasOpacityRecordData.inc"
+FIRE_GAS_PLANCK_RECORD="$REPO_ROOT/docs/data/gas_opacity/fire_gas_opacity_hitemp_planck_mean_v1.cbor"
+FIRE_GAS_PLANCK_TEST="$REPO_ROOT/tests/test_fire_gas_opacity_planck_record.py"
 # Logs go outside the repo so they survive cloud-sync providers (iCloud,
 # Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
 # locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
@@ -183,10 +200,97 @@ matches_selection() {
 	return 1
 }
 
+validate_log_dir() {
+	log_base="$(basename -- "$LOG_DIR")"
+	case "$log_base" in
+		''|'/'|'.'|'..')
+			echo "Refusing unsafe test log directory: $LOG_DIR" >&2
+			exit 1
+			;;
+	esac
+	case "$log_base" in
+		rise-tests-logs|rise-tests-logs-*) ;;
+		*)
+			echo "Refusing non-dedicated test log directory: $LOG_DIR" >&2
+			exit 1
+			;;
+	esac
+	log_parent="$(dirname -- "$LOG_DIR")"
+	mkdir -p "$log_parent"
+	canonical_parent="$(CDPATH= cd -- "$log_parent" && pwd -P)"
+	canonical_log="$canonical_parent/$log_base"
+	user_profile="$(CDPATH= cd -- && pwd -P)"
+	case "$canonical_log" in
+		'/'|"$user_profile"|"$REPO_ROOT")
+			echo "Refusing unsafe test log directory: $canonical_log" >&2
+			exit 1
+			;;
+	esac
+	case "$REPO_ROOT/" in
+		"$canonical_log/"*)
+			echo "Refusing test log directory that contains the repository: $canonical_log" >&2
+			exit 1
+			;;
+	esac
+	case "$canonical_log/" in
+		"$REPO_ROOT/"*)
+			echo "Refusing test log directory inside the repository: $canonical_log" >&2
+			exit 1
+			;;
+	esac
+	marker="$canonical_log/.rise-test-log-directory"
+	if [ -d "$canonical_log" ] && [ ! -f "$marker" ] \
+	   && [ -n "$(find "$canonical_log" -mindepth 1 -print -quit 2>/dev/null)" ]
+	then
+		echo "Refusing unowned nonempty test log directory: $canonical_log" >&2
+		exit 1
+	fi
+	LOG_DIR="$canonical_log"
+}
+
+validate_log_dir
+if [ "${RISE_TEST_VALIDATE_LOG_DIR_ONLY:-0}" = "1" ]; then
+	echo "Safe test log directory: $LOG_DIR"
+	exit 0
+fi
+
 if [ ! -d "$BUILD_DIR" ]; then
 	echo "Missing build directory: $BUILD_DIR"
 	exit 1
 fi
+
+python_bin="$(command -v python3 || command -v python || true)"
+if [ -z "$python_bin" ]; then
+	echo "Missing Python interpreter required for the fire-optics record parity gate"
+	exit 1
+fi
+printf 'Checking embedded fire-optics records ... '
+"$python_bin" "$FIRE_OPTICS_GENERATOR" --check \
+	"$FIRE_OPTICS_DATA" "$FIRE_OPTICS_EMBEDDED"
+echo "pass"
+printf 'Checking embedded fire-simulation records ... '
+"$python_bin" "$FIRE_SIM_GENERATOR" --check \
+	--methane-constants "$FIRE_SIM_METHANE_CONSTANTS" \
+	"$FIRE_SIM_DATA" "$FIRE_SIM_EMBEDDED"
+echo "pass"
+printf 'Testing physical methane record arithmetic ... '
+"$python_bin" "$FIRE_SIM_GENERATOR_TEST"
+echo "pass"
+printf 'Checking production HITEMP Planck-mean record ... '
+"$python_bin" "$FIRE_GAS_PLANCK_GENERATOR" --check \
+	"$FIRE_GAS_PLANCK_MANIFEST" "$FIRE_GAS_PLANCK_EMBEDDED" \
+	--record "$FIRE_GAS_PLANCK_RECORD"
+echo "pass"
+printf 'Testing production HITEMP Planck-mean tools ... '
+"$python_bin" "$FIRE_GAS_PLANCK_TEST"
+echo "pass"
+printf 'Checking quarantined synthetic HITEMP LBL record ... '
+"$python_bin" "$FIRE_GAS_OPACITY_GENERATOR" --check \
+	"$FIRE_GAS_OPACITY_MANIFEST" "$FIRE_GAS_OPACITY_TABLE"
+echo "pass"
+printf 'Testing quarantined HITEMP LBL tools ... '
+"$python_bin" "$FIRE_GAS_OPACITY_TEST"
+echo "pass"
 
 # Remove orphan .o files only (no matching .cpp). Active .o files are kept
 # so the per-test build target can skip up-to-date binaries.
@@ -236,6 +340,7 @@ release_lock() {
 trap release_lock EXIT
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"
+: > "$LOG_DIR/.rise-test-log-directory"
 BUILD_FAIL_TSV="$LOG_DIR/.build_failures.tsv"
 RUN_FAIL_TSV="$LOG_DIR/.run_failures.tsv"
 TIMINGS_TSV="$LOG_DIR/.timings.tsv"
@@ -693,6 +798,17 @@ EOF
 		plan_line=$(sed -n "${next}p" "$PLAN")
 		pl_class=$(printf '%s\n' "$plan_line" | cut -f1)
 		pl_name=$(printf '%s\n' "$plan_line" | cut -f3)
+		# A test whose build failed this run is skipped even when an older
+		# executable is still on disk: that binary is stale.
+		if [ -s "$BUILD_FAIL_TSV" ] && awk -F '\t' -v test="$pl_name" \
+			'$1 == test { found=1 } END { exit(found ? 0 : 1) }' "$BUILD_FAIL_TSV"
+		then
+			done_count=$((done_count + 1))
+			printf '[ %3d/%3d ] %-46s SKIP (current build failed; stale executable ignored)\n' "$done_count" "$total" "$pl_name"
+			skipped=$((skipped + 1))
+			next=$((next + 1))
+			continue
+		fi
 		if [ ! -x "$BIN_DIR/$pl_name" ]; then
 			done_count=$((done_count + 1))
 			printf '[ %3d/%3d ] %-46s SKIP (build failed)\n' "$done_count" "$total" "$pl_name"
@@ -721,9 +837,14 @@ EOF
 done
 run_wall=$(( $(date +%s) - run_start ))
 
+# The r136-r175 historical evidence replays that ran here were retired on
+# 2026-11-14: each bound milestone evidence to source and grid sizes that later
+# commits intentionally changed (see docs/FIRE_SMOKE_STATUS.md, "Retired test gates").
+
 print_summary
 
-if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] || [ "$bulk_rc" -ne 0 ]; then
+if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] || [ "$bulk_rc" -ne 0 ] \
+   || [ "$skipped" -ne 0 ] || [ "$found" -ne "$total" ]; then
 	exit 1
 fi
 echo "All $found tests passed"

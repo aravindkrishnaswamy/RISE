@@ -2623,8 +2623,7 @@ static void TestDataDrivenSPFDL325()
 	std::cout << "Testing topology AD: datadriven_material (constant 0.4/pi table) vs lambertian_material 0.4 (DL-325)" << std::endl;
 	char bdf[256];
 	{
-		const char* td = std::getenv( "TMPDIR" );
-		std::string dir = ( ( td && *td ) ? td : RISE::TestSupport::ScratchBaseDir().c_str() );
+		std::string dir = RISE::TestSupport::ScratchBaseDir();
 		if( dir.back() != '/' ) dir += '/';
 		std::snprintf( bdf, sizeof( bdf ), "%sdl325_const04_%d.bdf", dir.c_str(), static_cast<int>( ::getpid() ) );
 	}

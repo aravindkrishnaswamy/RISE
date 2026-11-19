@@ -220,6 +220,8 @@ namespace RISE
 
 			void SetIntermediateValue( const IKeyframeParameter& val ) override
 			{
+				Transformable::PreparedExternalMutationScope preparedMutation;
+				if( !preparedMutation.IsValid() ) return;
 				switch( val.getID() )
 				{
 				case kColorID:

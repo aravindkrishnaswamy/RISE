@@ -1,0 +1,2442 @@
+{
+  "artifacts": [
+    {
+      "bytes": 56168,
+      "file": "nonphysical_diagnostic_frames.sha256.json",
+      "sha256": "f1237d7eade2b28f8875cee3b407187d5cb6f318ad2ec82b6bed7ef0c16c3a07"
+    },
+    {
+      "bytes": 3143618,
+      "file": "nonphysical_diagnostic_full_statistics_16fps.mov",
+      "sha256": "53318a8d7f70780fa887c9986a8389c0349922f659aefc6568054d60664fb4c5"
+    },
+    {
+      "bytes": 150393,
+      "file": "nonphysical_diagnostic_full_statistics_16fps.mov.nonphysical_diagnostic_decoded.png",
+      "sha256": "5c1ad4212ae80d0edce74d3beb1b9b59eaa1847dad191d7a7158f31676bb5279"
+    },
+    {
+      "bytes": 275,
+      "file": "nonphysical_diagnostic_full_statistics_16fps.mov.nonphysical_diagnostic_decoded.png.provenance.json",
+      "sha256": "016a99487c2c2cd6e0d3950c3287cb0d34211f8dd3e5289c212a387c0929920f"
+    },
+    {
+      "bytes": 60620,
+      "file": "nonphysical_diagnostic_full_statistics_16fps.mov.provenance.json",
+      "sha256": "3c97b469cd6ee95c511c23d4e439e5317bbb95aaec8b2d783e1fe6a1e6834d11"
+    },
+    {
+      "bytes": 53,
+      "file": "nonphysical_diagnostic_full_statistics_16fps.mov.r243_encode_nonphysical_diagnostic.log",
+      "sha256": "31a270956ac4c6ccaa84a270f0174730b92eb0529aa4d1c78108607df1a5c918"
+    },
+    {
+      "bytes": 145,
+      "file": "nonphysical_diagnostic_full_statistics_16fps.mov.r243_verify_nonphysical_diagnostic.log",
+      "sha256": "42e818973218d2ff4d547a7e30d5ae29aaca16f59d632118489b691b5d0b8cfc"
+    },
+    {
+      "bytes": 1443,
+      "file": "nonphysical_diagnostic_launch.json",
+      "sha256": "066ab79ef929be09abb5aa3fa641528031acbd15a9c404a078d8643f72cda081"
+    },
+    {
+      "bytes": 120196,
+      "file": "nonphysical_diagnostic_representative_stills.png",
+      "sha256": "22c16fb17424a939c91c8b1e7852882889a7c4e0c852f482dbfba8c98dbc2243"
+    },
+    {
+      "bytes": 1301,
+      "file": "nonphysical_diagnostic_representative_stills.png.provenance.json",
+      "sha256": "a22eb45ec8d0ee96284378ddb87b979068d8e7436a4acbca174be0e4df6c0683"
+    },
+    {
+      "bytes": 730073,
+      "file": "nonphysical_diagnostic_structure_clip_16fps.mov",
+      "sha256": "6b0e0961081cf548b051d420c2d19b9a4eb00bda39db976a666d2313a8ea404c"
+    },
+    {
+      "bytes": 181922,
+      "file": "nonphysical_diagnostic_structure_clip_16fps.mov.nonphysical_diagnostic_decoded.png",
+      "sha256": "c79220fe17c142d9bc4fcc9f7f52689b7dd5ddbaad9ecced08ca3f6e21ca2519"
+    },
+    {
+      "bytes": 274,
+      "file": "nonphysical_diagnostic_structure_clip_16fps.mov.nonphysical_diagnostic_decoded.png.provenance.json",
+      "sha256": "b255713a186c4ab0843d45c79ea2af522e02b45cfd6d34bdefad75034e861498"
+    },
+    {
+      "bytes": 18036,
+      "file": "nonphysical_diagnostic_structure_clip_16fps.mov.provenance.json",
+      "sha256": "85933a6033e6e995503d637bda60b30ccd372ea145dd5233717ca03867c02ec7"
+    },
+    {
+      "bytes": 52,
+      "file": "nonphysical_diagnostic_structure_clip_16fps.mov.r243_encode_nonphysical_diagnostic.log",
+      "sha256": "ae656d09322ba241e8ba93d63ee1c2bea32e168f5e1b7ebccf83445864e6aa07"
+    },
+    {
+      "bytes": 142,
+      "file": "nonphysical_diagnostic_structure_clip_16fps.mov.r243_verify_nonphysical_diagnostic.log",
+      "sha256": "4538fc650d31cd6d4df0877391b48ef0f64473320d09b5200ed32114d7678f7c"
+    },
+    {
+      "bytes": 20915,
+      "file": "nonphysical_diagnostic_structure_metrics.csv",
+      "sha256": "080a5279a24c968e8b02f4155e235c2707b3d59457e9e2201f79f3792021b541"
+    },
+    {
+      "bytes": 43251,
+      "file": "nonphysical_diagnostic_temperature_0000.png",
+      "sha256": "25a10b13274b6a915229c92087c5de08c7f7fbd892638cdfd7d40bdad0e64445"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0000.png.provenance.json",
+      "sha256": "5390a1ae0631468b7afd10ad41c06992d0affe7e10cc7b1401e194edb38c8e95"
+    },
+    {
+      "bytes": 44300,
+      "file": "nonphysical_diagnostic_temperature_0001.png",
+      "sha256": "9fa70c0515154b6396cfbfe80832c410a771c08df89631ca82b9fcc6aee27756"
+    },
+    {
+      "bytes": 2107,
+      "file": "nonphysical_diagnostic_temperature_0001.png.provenance.json",
+      "sha256": "93e1e3439b348d4a8fbd373d52cf20e358df1c9f5ad9054e11c066fd44cba66d"
+    },
+    {
+      "bytes": 44246,
+      "file": "nonphysical_diagnostic_temperature_0002.png",
+      "sha256": "7d300519a181d9f579e896c93f54f33db6fa93cdf5d23be2c6793c5316cabc0f"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0002.png.provenance.json",
+      "sha256": "a7e3215ffc8d541ce78ed198149c493db22ea32df7db35f5b2862ce8b917e0a5"
+    },
+    {
+      "bytes": 44326,
+      "file": "nonphysical_diagnostic_temperature_0003.png",
+      "sha256": "1dce95dc703a00eb7e080bc1c9a79f487a9bf3cb322ac350d9f9357edd59838f"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0003.png.provenance.json",
+      "sha256": "20ba17c3ebfb43b7da08610fdc5d8235387408fe03f2d9f6e1e62db785eee08d"
+    },
+    {
+      "bytes": 43973,
+      "file": "nonphysical_diagnostic_temperature_0004.png",
+      "sha256": "050de8c48bcfe15ef8c6b0e8bc24699b79f408ae1a5c3fb6c710de298c092f93"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0004.png.provenance.json",
+      "sha256": "ddfa4ade2094383e500c4143187495a263fe03e197b89ad60fbd9e3e45d12e8c"
+    },
+    {
+      "bytes": 44644,
+      "file": "nonphysical_diagnostic_temperature_0005.png",
+      "sha256": "ab923506ff7fee9cad79ca4500064c952107edea8979086ef295f16b70d40514"
+    },
+    {
+      "bytes": 2107,
+      "file": "nonphysical_diagnostic_temperature_0005.png.provenance.json",
+      "sha256": "2f2179082ccf9da7022a93d64686bb5c7537d529c657ea7467b7984b8b76a645"
+    },
+    {
+      "bytes": 44147,
+      "file": "nonphysical_diagnostic_temperature_0006.png",
+      "sha256": "200b9886a0a43655e6307921143f2b54c38ab90aa252c41fe87c1be3ff5e7066"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0006.png.provenance.json",
+      "sha256": "2e6617c395ef0bd1de5a0737e23f041fb230488c1a96c2dc5d1bd09c6075a871"
+    },
+    {
+      "bytes": 44693,
+      "file": "nonphysical_diagnostic_temperature_0007.png",
+      "sha256": "58bc22022b70a2e9057e2585c29936ac84ce717331666be5f1357e6b013e7050"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0007.png.provenance.json",
+      "sha256": "10e7876349a6a03adf748e64c16f5a9f64e424214a3642bb7518158a3215b03e"
+    },
+    {
+      "bytes": 44311,
+      "file": "nonphysical_diagnostic_temperature_0008.png",
+      "sha256": "0f9eb47382ca9dc10933eab54d51e8b47bf56f574213f8c993a607ecaf58d3e7"
+    },
+    {
+      "bytes": 2107,
+      "file": "nonphysical_diagnostic_temperature_0008.png.provenance.json",
+      "sha256": "814fbb1d06088907f215d89289ef523b20e98740c01c762517322f80b4b94f0a"
+    },
+    {
+      "bytes": 44677,
+      "file": "nonphysical_diagnostic_temperature_0009.png",
+      "sha256": "48869815c48b3f703d75873c0fc025e8e5898b85dc3f7230065d7565f3373261"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0009.png.provenance.json",
+      "sha256": "ba1f3bdc349d0a82b4a333bde73f5678854530922c7482394f4461d466c4c06c"
+    },
+    {
+      "bytes": 43929,
+      "file": "nonphysical_diagnostic_temperature_0010.png",
+      "sha256": "4b855da9786a5c4cb925d79e8dfbd944aedf4bbef9cffa141c7b2e24ef74317b"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0010.png.provenance.json",
+      "sha256": "584ce1aa2bbd8b4e44eef00318d8cf212a3a14a4a4aa9d0e6f77f604b8e50f9f"
+    },
+    {
+      "bytes": 44136,
+      "file": "nonphysical_diagnostic_temperature_0011.png",
+      "sha256": "304bebf0b5ef562bdaab83590392039ea7547c9828b78182f51729024c89f99c"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0011.png.provenance.json",
+      "sha256": "ca86f76d0bb17f5b65aa60397d14aa08776b7bacd7069d9b1dfc54dd6cfc6146"
+    },
+    {
+      "bytes": 43991,
+      "file": "nonphysical_diagnostic_temperature_0012.png",
+      "sha256": "8e2d1cde8d0daa3ff0367ab49ede47878c3e344323c4f091859d41ca671e13c6"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0012.png.provenance.json",
+      "sha256": "4acb8024c55f5d92884fea354c98e93847c3ba2cf464e75b30e88a76ab9d655b"
+    },
+    {
+      "bytes": 44951,
+      "file": "nonphysical_diagnostic_temperature_0013.png",
+      "sha256": "8db6597be91e4ac336b05cd9a28b6b3ba344837a898989b0f125755cb7e60979"
+    },
+    {
+      "bytes": 2108,
+      "file": "nonphysical_diagnostic_temperature_0013.png.provenance.json",
+      "sha256": "7d19ebe5d03552da48a185b2b26ac16e7885030ed40061ff2e7a47fba3b84098"
+    },
+    {
+      "bytes": 44214,
+      "file": "nonphysical_diagnostic_temperature_0014.png",
+      "sha256": "a19f36d92b2fba5c6c31e1254b4800f3f8cbc62b00364c00e1eaf26f4b197652"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0014.png.provenance.json",
+      "sha256": "e452ced2addd231319a95d2872b0115cd907e2411501b30749bb1d1c6a57faca"
+    },
+    {
+      "bytes": 44513,
+      "file": "nonphysical_diagnostic_temperature_0015.png",
+      "sha256": "4b9a5eb0879434ca47d5e75bcbd708a404330ef4439d2703f47a273a83453d17"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0015.png.provenance.json",
+      "sha256": "62ca516fe66a4283d8d1b882fa7d238c3aa950c6b7bec4b9a5efd78ae3628b14"
+    },
+    {
+      "bytes": 43986,
+      "file": "nonphysical_diagnostic_temperature_0016.png",
+      "sha256": "52f31d2827dcecc53579e33a06f79c90f0223c69fec344fa7627c0ac03d15716"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0016.png.provenance.json",
+      "sha256": "e3fc7d3dc2df3b1fa4b8764bc6b435cc7c4c39ca14739896869a93a5d79a3904"
+    },
+    {
+      "bytes": 44957,
+      "file": "nonphysical_diagnostic_temperature_0017.png",
+      "sha256": "ab21710d9915e2a1201ff8e4d26e7e46d9a65655698e1be5ad7a2b091c4d56aa"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0017.png.provenance.json",
+      "sha256": "d4e4e608bb5520c91d15b94a229dd3ba82e10e9b729cfe702822aa57ca420902"
+    },
+    {
+      "bytes": 44582,
+      "file": "nonphysical_diagnostic_temperature_0018.png",
+      "sha256": "18ae248b523208ed7aa7842eb747a4aa8405ea46b9e7fc526b37e94e881c0f93"
+    },
+    {
+      "bytes": 2108,
+      "file": "nonphysical_diagnostic_temperature_0018.png.provenance.json",
+      "sha256": "20464868d324ce5d260f68fc4c0a7f5c0906de64d3737a94955e7a3b32a089d4"
+    },
+    {
+      "bytes": 44425,
+      "file": "nonphysical_diagnostic_temperature_0019.png",
+      "sha256": "92436c99aba70ea97387247e63831a8cffc0503fe5273cc1f8a55df8c62b70f0"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0019.png.provenance.json",
+      "sha256": "f409cf63c3dc8ae0e0857f1bc0f191db00af0471826f4689821cf832761af2cc"
+    },
+    {
+      "bytes": 43975,
+      "file": "nonphysical_diagnostic_temperature_0020.png",
+      "sha256": "beb2c1564c68ba812e53f82bc6a79cbcce523bd2906b577a914dd4b6051ffb55"
+    },
+    {
+      "bytes": 2106,
+      "file": "nonphysical_diagnostic_temperature_0020.png.provenance.json",
+      "sha256": "dadea1815c450271d0cab04435865a0470f80273358334d2020790aae87a10d3"
+    },
+    {
+      "bytes": 44434,
+      "file": "nonphysical_diagnostic_temperature_0021.png",
+      "sha256": "7f626c4608949a33ad13d3cd62b366bbe883e809b9ad6c014336c2835327ac98"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0021.png.provenance.json",
+      "sha256": "796315b8af085166a64eaacedf75d169432147af02aa56e545c5fab847ac526a"
+    },
+    {
+      "bytes": 44127,
+      "file": "nonphysical_diagnostic_temperature_0022.png",
+      "sha256": "9d48dcd6e23db0ae5ad051e1d22a1395544b73a959f7f477d31c0fd3ad2962c6"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0022.png.provenance.json",
+      "sha256": "cb41fb7083386d131208cba3790f31bd510e4f388f43213cf235bc7df1e58b16"
+    },
+    {
+      "bytes": 44646,
+      "file": "nonphysical_diagnostic_temperature_0023.png",
+      "sha256": "0010730fcbef8f4c066596af895e8bb8d799f3e773b5857786ff1cb6fa526b60"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0023.png.provenance.json",
+      "sha256": "9b37b428fe58677ad951f65433212443af0dd904445372631042d75451d3d0f0"
+    },
+    {
+      "bytes": 44273,
+      "file": "nonphysical_diagnostic_temperature_0024.png",
+      "sha256": "0ea935ac2a6984eef3a8a3823f4953a105d131c3a0b071c864d761092058e5bc"
+    },
+    {
+      "bytes": 2108,
+      "file": "nonphysical_diagnostic_temperature_0024.png.provenance.json",
+      "sha256": "dd8811c83cafc645140d757b60970c6deb0c9a60e2cd5eaae441a17648866f8b"
+    },
+    {
+      "bytes": 44664,
+      "file": "nonphysical_diagnostic_temperature_0025.png",
+      "sha256": "203bfc4c693e3a3d4d2b128f5d084dd89ca6c0877ef95d1af0c14e8a7f75ac66"
+    },
+    {
+      "bytes": 2108,
+      "file": "nonphysical_diagnostic_temperature_0025.png.provenance.json",
+      "sha256": "2b5ca7b6fbb882e830ec2153ae72d8bbd14182a7e94aabedfa402b503925f1a6"
+    },
+    {
+      "bytes": 44307,
+      "file": "nonphysical_diagnostic_temperature_0026.png",
+      "sha256": "30ef45dbc6499933a02cda085946353f78ee3a3414e08966322a7ecab58ad68e"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0026.png.provenance.json",
+      "sha256": "f24986395f895e8988ed2a70dc907dc96283e0ead762f6a0c84ff2d0628146d0"
+    },
+    {
+      "bytes": 44377,
+      "file": "nonphysical_diagnostic_temperature_0027.png",
+      "sha256": "96ab05f8afc1517c2e8552c8cac5af9d7575c8217f24c4742c1953a4d4dc4a9a"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0027.png.provenance.json",
+      "sha256": "093eb0c7a13e604ac8720217288e544b7213b0a9fd0979dbb22c73b834b4ff2c"
+    },
+    {
+      "bytes": 43981,
+      "file": "nonphysical_diagnostic_temperature_0028.png",
+      "sha256": "54604f73844bb6ffe6b07b4046c5b90e980cbc18fee3c5c8324a00e44cd23449"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0028.png.provenance.json",
+      "sha256": "88b644805c39e4db4c7699d072d27a53676e09f751d2ba33130f0715e14d8360"
+    },
+    {
+      "bytes": 44684,
+      "file": "nonphysical_diagnostic_temperature_0029.png",
+      "sha256": "f803daf3b52c3984d0f2db65522c99e0237a60e0e541fa69cf813cd1c895f558"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0029.png.provenance.json",
+      "sha256": "3a0b0710e9c542d78c99d7e706fee86eae039e7a0033de3eee81aaac4c0ec2e2"
+    },
+    {
+      "bytes": 44008,
+      "file": "nonphysical_diagnostic_temperature_0030.png",
+      "sha256": "c26668a579281914a5ddbb558ac3ea90ff20d1b4df5e72569a693fc721045721"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0030.png.provenance.json",
+      "sha256": "f13b174d2a506be140adb6a7d0b7b23e3c254fdef6c615db53ee4daa9f41448d"
+    },
+    {
+      "bytes": 44256,
+      "file": "nonphysical_diagnostic_temperature_0031.png",
+      "sha256": "266164942e72bfe6535c1d31a9fc3b2d685c0fd388b92f04116e3775b4e45d01"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0031.png.provenance.json",
+      "sha256": "51b243a70fb1ffba039963d4e16d0ed41f2431a711b3fa0b8c34f1f39b25cbf4"
+    },
+    {
+      "bytes": 44103,
+      "file": "nonphysical_diagnostic_temperature_0032.png",
+      "sha256": "021663dee409103424dff5c4d0471209994c04cb5544f5f3bb58930c0b071e89"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0032.png.provenance.json",
+      "sha256": "d9dd4b0ced9f6d662016c446f63417bc11386421d94696f66f8ca00191755c86"
+    },
+    {
+      "bytes": 44861,
+      "file": "nonphysical_diagnostic_temperature_0033.png",
+      "sha256": "1c4b651c11e34de0d9400c5ad88dcc87d4587b08107a4fdb2c79437a3573fca9"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0033.png.provenance.json",
+      "sha256": "d587fda5de3ee91fd593809311f62205d9465811064202d594b0ea4323beccf5"
+    },
+    {
+      "bytes": 44930,
+      "file": "nonphysical_diagnostic_temperature_0034.png",
+      "sha256": "3c3ae3bfa896750ca4f8fe93c32b3e7f455c0bb276221dd65de7128e61d8447e"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0034.png.provenance.json",
+      "sha256": "6badcd58589cc64ec8f6a1d38476947bfb2c2832996e899edfba447925f9b5a0"
+    },
+    {
+      "bytes": 44540,
+      "file": "nonphysical_diagnostic_temperature_0035.png",
+      "sha256": "f9701a3d265c12c42fd9a2777c73816966bc814786963f0a6fb38adcaa99c736"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0035.png.provenance.json",
+      "sha256": "4a04e511c8ef6aae200826906646106b7d3ab126d25123fe7cf3360e8aae70ab"
+    },
+    {
+      "bytes": 44143,
+      "file": "nonphysical_diagnostic_temperature_0036.png",
+      "sha256": "6d01ae126f8c2e77e7122d86a2a34f5711a386e76770056cc33115f903189d1b"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0036.png.provenance.json",
+      "sha256": "60c7311d23ea020c77af762f9fec341553c7fd723df4be6c712db0307c90a602"
+    },
+    {
+      "bytes": 44742,
+      "file": "nonphysical_diagnostic_temperature_0037.png",
+      "sha256": "3f50d620ba6b16a834adef7b08be896e7ba49f7a8d562631cfdbc907f7da7ed7"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0037.png.provenance.json",
+      "sha256": "8bbb4c6d5f5a0e4d4943c47db4d8311581162bca29c6d309a7cfd5807d738f2c"
+    },
+    {
+      "bytes": 44305,
+      "file": "nonphysical_diagnostic_temperature_0038.png",
+      "sha256": "b5585e666243129252927b9a3a0779a4f1399e191ca8a07eb9927b56c31be3e4"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0038.png.provenance.json",
+      "sha256": "93ce543cc541afa54b5c48dde8b31bb4a80b638911fafe4399bf9c1e93fb64eb"
+    },
+    {
+      "bytes": 44569,
+      "file": "nonphysical_diagnostic_temperature_0039.png",
+      "sha256": "fbfc4775a6589e7c4eaafcf38e11c0bcab19e55d21487a2609468eaa98c3b61e"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0039.png.provenance.json",
+      "sha256": "42dfaba915184d7413a4e21da19a96a1e9e54a1993e6f24210ef9cf3fffa2988"
+    },
+    {
+      "bytes": 44257,
+      "file": "nonphysical_diagnostic_temperature_0040.png",
+      "sha256": "64de64d456fc6c98fb3bc9464d6dc7452325cbce6e3accb001ae5424c8fabf80"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0040.png.provenance.json",
+      "sha256": "c5a61d3f53a39bd2c3eb42387626ce899bd783013ea3a11b69991ed185795459"
+    },
+    {
+      "bytes": 44837,
+      "file": "nonphysical_diagnostic_temperature_0041.png",
+      "sha256": "4f1fb9a5b2f31a3f62736958d12310c98ca93faec65af560ae2c3b658969f64d"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0041.png.provenance.json",
+      "sha256": "012129b32d1f9524fffeefeb2bf4514702f2054eb33287b75f507ed9cf632df1"
+    },
+    {
+      "bytes": 44508,
+      "file": "nonphysical_diagnostic_temperature_0042.png",
+      "sha256": "23fd30efdde4fa0dd81abd0bce55e0bde827f874af49491d559ba2be3edcdd9c"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0042.png.provenance.json",
+      "sha256": "01ff4bd593c481b2e3b0bf65c4b798ebb1503c85cc626590db2cd24e3076fc98"
+    },
+    {
+      "bytes": 44308,
+      "file": "nonphysical_diagnostic_temperature_0043.png",
+      "sha256": "b1e8dd643daed06b9630bccd74ad396126dc4f5ce124341e6ecb1d13418ddc9a"
+    },
+    {
+      "bytes": 2108,
+      "file": "nonphysical_diagnostic_temperature_0043.png.provenance.json",
+      "sha256": "0ee8e66c63282166f31240a1a1b23cca9d3b88987a1c15a26dc9d6c87688f257"
+    },
+    {
+      "bytes": 44447,
+      "file": "nonphysical_diagnostic_temperature_0044.png",
+      "sha256": "1d304295d8afa2ca002b27924dbce6d16fac15f92abcdfe0b5ee5684c9731162"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0044.png.provenance.json",
+      "sha256": "1cffaf93c7c675419069ee4ddbf3b6ea06a09e9ee374aaa3eae96b78e8f884f2"
+    },
+    {
+      "bytes": 45133,
+      "file": "nonphysical_diagnostic_temperature_0045.png",
+      "sha256": "75e430698a564dbf67b9608e5f9a7cbbc96c8ff6e7863984ec6729bb2fa57141"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0045.png.provenance.json",
+      "sha256": "4c642bfe9d036d2c94a85d5955e992a06db26e11b4f0fcb7ec1a9b6caa254677"
+    },
+    {
+      "bytes": 44198,
+      "file": "nonphysical_diagnostic_temperature_0046.png",
+      "sha256": "c7787395dcb0a231454c06013aabd18216ad7e132b758b693c6406004e4f4c50"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0046.png.provenance.json",
+      "sha256": "1cc8aeb659e2153c58f94de2f06cdd0ddca503b3e4f3cd16299828ed3617f008"
+    },
+    {
+      "bytes": 44385,
+      "file": "nonphysical_diagnostic_temperature_0047.png",
+      "sha256": "af4644bc9f9d9ddc045cd5a28f5236a2766408fa8103e5920f9078a8b0d3a47c"
+    },
+    {
+      "bytes": 2107,
+      "file": "nonphysical_diagnostic_temperature_0047.png.provenance.json",
+      "sha256": "152308a2392ff8d013ff963eb2cb383c77aaafd6b891ff2a49a9bf78c9ce8d8e"
+    },
+    {
+      "bytes": 44429,
+      "file": "nonphysical_diagnostic_temperature_0048.png",
+      "sha256": "358b8599eb77e682558c1d1efe34512ecb5cf714eb668d7038e17137b35d7018"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0048.png.provenance.json",
+      "sha256": "30f446491278c587bee26955df5145db491255c0452c16999394372e82127f1a"
+    },
+    {
+      "bytes": 45208,
+      "file": "nonphysical_diagnostic_temperature_0049.png",
+      "sha256": "8be6f4cefda965cb09e0441ea52cd0ce67ef8404d03ebcc5edfb49308eef322f"
+    },
+    {
+      "bytes": 2105,
+      "file": "nonphysical_diagnostic_temperature_0049.png.provenance.json",
+      "sha256": "cc4f05af16df3fd013efb5ef108861bbe57e6d4748038f6e6da4eb3175b002e1"
+    },
+    {
+      "bytes": 44758,
+      "file": "nonphysical_diagnostic_temperature_0050.png",
+      "sha256": "2b83a42c82d6001b972791df9b0ff698d713c309e89f9592933fe6000922c9e6"
+    },
+    {
+      "bytes": 2107,
+      "file": "nonphysical_diagnostic_temperature_0050.png.provenance.json",
+      "sha256": "b05c5f930fb65bab9e6bd5db3fe81c4bca224cf53db6c3360a15fb133a028dc3"
+    },
+    {
+      "bytes": 44393,
+      "file": "nonphysical_diagnostic_temperature_0051.png",
+      "sha256": "ca298458777ab73bd04c409905645ceb947631aa99da428a2e092ea9387757c4"
+    },
+    {
+      "bytes": 2108,
+      "file": "nonphysical_diagnostic_temperature_0051.png.provenance.json",
+      "sha256": "e6dbd6c940eba748fe619d8b9d9e973b39f5a19a8b2efa3c9f8b65655612a99f"
+    },
+    {
+      "bytes": 44836,
+      "file": "nonphysical_diagnostic_temperature_0052.png",
+      "sha256": "c80f284ce600af591629bf60d5e53eb55668e42d4e971eecc5f3757bd5113329"
+    },
+    {
+      "bytes": 2108,
+      "file": "nonphysical_diagnostic_temperature_0052.png.provenance.json",
+      "sha256": "4efd396cedce181b192ae6a9eed2288755fff674c2d229ffa4a27fb02434a798"
+    },
+    {
+      "bytes": 44922,
+      "file": "nonphysical_diagnostic_temperature_0053.png",
+      "sha256": "eb5d285f2414404d954127edba9a29b42a98347d8b91e165916677c4cb03eb8b"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0053.png.provenance.json",
+      "sha256": "33a6969a524547cbf70d9d34aebaead25ce77bb38b05911cca39425b3164f7cc"
+    },
+    {
+      "bytes": 44584,
+      "file": "nonphysical_diagnostic_temperature_0054.png",
+      "sha256": "5dc5d87a476f960cd52e657b34edd0c14a6ea319a3de9a127c8935700eaf8e5b"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0054.png.provenance.json",
+      "sha256": "f414943abcaebedae0c1f2c764e6603617e7c08aeb8e6ed116902b1abf06c08a"
+    },
+    {
+      "bytes": 44480,
+      "file": "nonphysical_diagnostic_temperature_0055.png",
+      "sha256": "5c8c5168967f1a95e8628d57b93ed14d696fe46abbb8986a5977ae22d672cf91"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0055.png.provenance.json",
+      "sha256": "e385822a409ecd4cc1721fc6831a8e6d620ac1895696d73e84b73df2b8519890"
+    },
+    {
+      "bytes": 44174,
+      "file": "nonphysical_diagnostic_temperature_0056.png",
+      "sha256": "659f5529ec6cbeb542fd4a9859fd03699e0a7346347c84d78ac55674f879f850"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0056.png.provenance.json",
+      "sha256": "b7c8225e63a4b4566facc2f85764b6b0a03af751d350f842e7b61f222f1fe5c6"
+    },
+    {
+      "bytes": 44450,
+      "file": "nonphysical_diagnostic_temperature_0057.png",
+      "sha256": "44800de01bca39631ca484da729da7e2c9849f67ed7ea5a3f7733535f60fe5f7"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0057.png.provenance.json",
+      "sha256": "62f4ee88772b823b625217378daa30439f4ac6fa650c2ee1d69d151411e3af64"
+    },
+    {
+      "bytes": 44468,
+      "file": "nonphysical_diagnostic_temperature_0058.png",
+      "sha256": "51496fb115472a21371ff0abb88219c66699b3e60b0d90c109d17daa52a14cca"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0058.png.provenance.json",
+      "sha256": "913cf31256571573a33a01713c493a930e026360c299036568678eccfc85e4e1"
+    },
+    {
+      "bytes": 44571,
+      "file": "nonphysical_diagnostic_temperature_0059.png",
+      "sha256": "11ffde3ddd957d66a47207f55468f5c03b1ee7be1255c2e86a71ee9af20f6d4e"
+    },
+    {
+      "bytes": 2107,
+      "file": "nonphysical_diagnostic_temperature_0059.png.provenance.json",
+      "sha256": "9f3b65c6f2ff88e0467497eed954c0879521b62720957e07b8b8c5c8c69a4382"
+    },
+    {
+      "bytes": 44008,
+      "file": "nonphysical_diagnostic_temperature_0060.png",
+      "sha256": "4cf05fe5fccb18d723c27ecda72556e4ec744a863c695a6d54054e898d8ff87c"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0060.png.provenance.json",
+      "sha256": "8d7aeccfec44ece5a48fcb7b8a0cdc0eecf1d39da431406a7864808f5acda14c"
+    },
+    {
+      "bytes": 44792,
+      "file": "nonphysical_diagnostic_temperature_0061.png",
+      "sha256": "af9a0c682eb30b03951f6babf43adff12bd33b138ec02749c0f2d613f6498f59"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0061.png.provenance.json",
+      "sha256": "ec0adeb3de9a5058cf8efbdc9057824a2ee01a6c46a036024bbaa169514e5872"
+    },
+    {
+      "bytes": 44239,
+      "file": "nonphysical_diagnostic_temperature_0062.png",
+      "sha256": "8b917d834ef21af526ef9bd97faa2080ad1abc6e3404ade8d2437c7a26bf3cfc"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0062.png.provenance.json",
+      "sha256": "87ed73da791758ae1714b02d995494307d9dbcc126d3903e0aefd4e300b9ad19"
+    },
+    {
+      "bytes": 44266,
+      "file": "nonphysical_diagnostic_temperature_0063.png",
+      "sha256": "51a9bb8ceb469dfad3c7830051bb8714c40faa0cb09415090def197d6e08865f"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0063.png.provenance.json",
+      "sha256": "71720dd4fb1036beb25963d4b99134fd1dc99247b7cdc351d321f7befa90d07f"
+    },
+    {
+      "bytes": 43853,
+      "file": "nonphysical_diagnostic_temperature_0064.png",
+      "sha256": "11ab2d8ec35ab9487a6b6433c75e55cf16d8f05e4f3c237bd35d15263c63daa6"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0064.png.provenance.json",
+      "sha256": "21b2d0e8b108819c6241048e5556b4031ea4de463a0fc64292008051081ddbb3"
+    },
+    {
+      "bytes": 44597,
+      "file": "nonphysical_diagnostic_temperature_0065.png",
+      "sha256": "ba74ef10f7da71c3d62a12bf4c98c98e2b20151f9d9bfaa2f3116e3c8fcb7c9a"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0065.png.provenance.json",
+      "sha256": "cae20f145c685475bd7c0e9071e12bc9fefcbe8532c4e274ac7f825cf76c620a"
+    },
+    {
+      "bytes": 44141,
+      "file": "nonphysical_diagnostic_temperature_0066.png",
+      "sha256": "600009634ef8d862143862c6a03e22d91380b81497ea21412be94e5044f1edca"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0066.png.provenance.json",
+      "sha256": "834f778ba3fd7fdcd71bff761bf595efa1f60fa9961194d2b394df2723dc05c7"
+    },
+    {
+      "bytes": 44189,
+      "file": "nonphysical_diagnostic_temperature_0067.png",
+      "sha256": "8fd146218d64ea6cefcd0c28d6fd37c4e261de0c8ad1b68297f01cdf322a0e70"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0067.png.provenance.json",
+      "sha256": "7e2e22f8603ede9b2a3a673e9093f6412b4eceeee6c71b3f1246191bf8d39ca0"
+    },
+    {
+      "bytes": 44248,
+      "file": "nonphysical_diagnostic_temperature_0068.png",
+      "sha256": "3d4c9d05c23ebeb75cc358fc97f5e68b09863bd153fe9a47e7935295903c957f"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0068.png.provenance.json",
+      "sha256": "a34bf18e24318e0da28f3392f61e115c2d250cdfdf4a746143c9782b473869f3"
+    },
+    {
+      "bytes": 44836,
+      "file": "nonphysical_diagnostic_temperature_0069.png",
+      "sha256": "e03ff45f2500ae6caa97e78b1712ee7fcbf8682c2fe16f54fc7bff1c4b99e5d2"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0069.png.provenance.json",
+      "sha256": "0cbf11f7fd671a279833009d81a9fac144b41cec67fc527bd0140d39e0e4c8cb"
+    },
+    {
+      "bytes": 44288,
+      "file": "nonphysical_diagnostic_temperature_0070.png",
+      "sha256": "92c380f246b5b6b10e04893070667b95ef0784c5ee5e15d576b841f7dfe6d66b"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0070.png.provenance.json",
+      "sha256": "4b9262b73fcef403b13b889f4c171f1f33c24fb9e86819c39994db42ff31265c"
+    },
+    {
+      "bytes": 44734,
+      "file": "nonphysical_diagnostic_temperature_0071.png",
+      "sha256": "01c9ad644b5933231136619a6754299d5c63bd876f57824e30ba12b6ad4920d6"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0071.png.provenance.json",
+      "sha256": "c60554b465c236429c476d78b1887c191071f3c5f32ac41684057ce0ba22e8bc"
+    },
+    {
+      "bytes": 44390,
+      "file": "nonphysical_diagnostic_temperature_0072.png",
+      "sha256": "ef14507634526c933418cd1864917d144e45e27395f16d0c2392bcfdb83afb01"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0072.png.provenance.json",
+      "sha256": "79786cd222a64e4541a8b7d0b5e8fddaa9a4d7d4ae476c7e9372a1620dba10a6"
+    },
+    {
+      "bytes": 45041,
+      "file": "nonphysical_diagnostic_temperature_0073.png",
+      "sha256": "574e069e7a619a63a749761c1de2c3ba4110e7f49b09cc91c968abda1bc3189a"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0073.png.provenance.json",
+      "sha256": "58b2c4205fa4cf737730214a421880a46ac9f8344723ffef79361c6839eaf396"
+    },
+    {
+      "bytes": 44442,
+      "file": "nonphysical_diagnostic_temperature_0074.png",
+      "sha256": "62006be3ff9a97ea904957291951911593df8966937661471da86ad5b73c2e95"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0074.png.provenance.json",
+      "sha256": "1051f2373a47714aabb7bd87349a237da577e6f1418e9bdd4c03a88072c68001"
+    },
+    {
+      "bytes": 44263,
+      "file": "nonphysical_diagnostic_temperature_0075.png",
+      "sha256": "3c86e7fd960e04962f961df674b074a2b095d92f558131bb9cc3132e22b621ce"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0075.png.provenance.json",
+      "sha256": "a973ecd7cda06ed4459beef369fc71771292aac37eb4e61a636e3380408616d1"
+    },
+    {
+      "bytes": 44058,
+      "file": "nonphysical_diagnostic_temperature_0076.png",
+      "sha256": "0178b773890658d2eac47f790e4b6f6bf8964a06fb15e457545eaac893934010"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0076.png.provenance.json",
+      "sha256": "9a7235f86996ced1810c8ef00aef4302cab2ada1245f49fc3c571d9aacbad20a"
+    },
+    {
+      "bytes": 44344,
+      "file": "nonphysical_diagnostic_temperature_0077.png",
+      "sha256": "c6bcc8db2352d255d167521c0e7e5be22b6573d8e89ee6cab27ec2b254f82209"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0077.png.provenance.json",
+      "sha256": "64a160c358da89a2b1a2942ea51aef920796d92bef6b8944ce25eb5a69acb485"
+    },
+    {
+      "bytes": 44470,
+      "file": "nonphysical_diagnostic_temperature_0078.png",
+      "sha256": "776f1489bafdf8fd880142587e18266e7bea030dc1846f928eeea7db956c2b1f"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0078.png.provenance.json",
+      "sha256": "ecb6815e1dcf803fe8873e8f35e9929db81fed40675cce108846c3ddd76d9ee0"
+    },
+    {
+      "bytes": 44527,
+      "file": "nonphysical_diagnostic_temperature_0079.png",
+      "sha256": "7d17052f168ceea41e61ad3bfe4310939746326990f2746e354db95056430312"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0079.png.provenance.json",
+      "sha256": "613c2293b02d32fde9917f3c96c7d815bc9fc59365bb3f4ddea0edc817217596"
+    },
+    {
+      "bytes": 44260,
+      "file": "nonphysical_diagnostic_temperature_0080.png",
+      "sha256": "2cca2345ce214eb3928a8bc5f025d5ae1058a8b52263e5a982fcaadf1054b0f1"
+    },
+    {
+      "bytes": 2107,
+      "file": "nonphysical_diagnostic_temperature_0080.png.provenance.json",
+      "sha256": "063d1b073ba890263eb0b263baea608127680a19861159eda0be50ccbee24bb1"
+    },
+    {
+      "bytes": 44548,
+      "file": "nonphysical_diagnostic_temperature_0081.png",
+      "sha256": "8aabc1d1d1f22191a5d6f71e96cc241723944e4a7f9b0eea121f9626cd418707"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0081.png.provenance.json",
+      "sha256": "0437b131d52d0d61b72c0cd113e758becd8e9db80d2de9b9f9b0278e295853a0"
+    },
+    {
+      "bytes": 44955,
+      "file": "nonphysical_diagnostic_temperature_0082.png",
+      "sha256": "8ae40d9277cbdcb9cfa8692029448068e1059492c8ebc51c37b6d1a5dcaeb2ed"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0082.png.provenance.json",
+      "sha256": "f4b0e2c5f1667e7fa4798733429c5678e9d2cd4faae53a1c8dc2f63b43071041"
+    },
+    {
+      "bytes": 44769,
+      "file": "nonphysical_diagnostic_temperature_0083.png",
+      "sha256": "6e91aa5ddfb6c36b377fca9889890178f960359a3310bbd575a402d521b16a58"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0083.png.provenance.json",
+      "sha256": "8ca0f934fb64ec6ddd413139c5f0169c766cdc4ad82dc8dc7c1c16ae0b2b6132"
+    },
+    {
+      "bytes": 44729,
+      "file": "nonphysical_diagnostic_temperature_0084.png",
+      "sha256": "a6144016bb0f115093e2a66d41e15dd65c1753cbfc5bee3175c0638cfa7dac36"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0084.png.provenance.json",
+      "sha256": "cdb9ec0fb6dcc14f5e9cda82cfd0f416f7809f33215a2e037dcd2a6d562fb1c0"
+    },
+    {
+      "bytes": 44689,
+      "file": "nonphysical_diagnostic_temperature_0085.png",
+      "sha256": "daf28731ba8c58b6defdb275173c03bb330c85ea18fd74b085da68f8653d8802"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0085.png.provenance.json",
+      "sha256": "b8c89916a5a6336e2b107e63a6fae4a668eb71095f41cf44228d11ee27d3ee22"
+    },
+    {
+      "bytes": 44363,
+      "file": "nonphysical_diagnostic_temperature_0086.png",
+      "sha256": "25c51424ee7265f4caebb2db2c899d6ee2628020e2c829dbc8cd5016fc16b50a"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0086.png.provenance.json",
+      "sha256": "2b27a8179c2055d0ae1fd7e9fc1d2bb4497b965aa077e6dd9fd70e87716b8363"
+    },
+    {
+      "bytes": 44815,
+      "file": "nonphysical_diagnostic_temperature_0087.png",
+      "sha256": "39ed8c3e1fdf473b5ae321eb6414e5b5c389d3a2ef098499b9fea95589b42a36"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0087.png.provenance.json",
+      "sha256": "16b49c0985c1b3db0b8c33b6fdb4c92ba940e8dc22b81cbe0bd5cd37bb7653a0"
+    },
+    {
+      "bytes": 44522,
+      "file": "nonphysical_diagnostic_temperature_0088.png",
+      "sha256": "6bb0d6dbd2e56439ac87bf418ebedfea4e31c76448e578e73ddffc2e55a79cb8"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0088.png.provenance.json",
+      "sha256": "13b1bbb3f766e7aca85f10ce92e7eeef38bf00d68a149415c9c030bbafb9f5fe"
+    },
+    {
+      "bytes": 44903,
+      "file": "nonphysical_diagnostic_temperature_0089.png",
+      "sha256": "0c358561dd0c9cb8e87da452339da728ae2bb2344519c6c824d0a2049c0c5446"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0089.png.provenance.json",
+      "sha256": "9df123f6d69c4b10f38bd95b59652c627b1f38cac901c23d3662ebfe3d500997"
+    },
+    {
+      "bytes": 44121,
+      "file": "nonphysical_diagnostic_temperature_0090.png",
+      "sha256": "1a39b0ede923ca99c40bc0058e42bb99d9995d7ba335a424c3839f60954bbc66"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0090.png.provenance.json",
+      "sha256": "bb9e89e4e740256fde1f499d956c4d0f20ffb26e5e0685644e0b48e0bca74206"
+    },
+    {
+      "bytes": 44685,
+      "file": "nonphysical_diagnostic_temperature_0091.png",
+      "sha256": "28989d40b9a57accc00c04fde717314022381fb13d6b2a874f0b1552abe67c9e"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0091.png.provenance.json",
+      "sha256": "8fc045af40a7892ffe99106bf28701dd032ab8f81c399b3292f94cb3d66fa243"
+    },
+    {
+      "bytes": 44326,
+      "file": "nonphysical_diagnostic_temperature_0092.png",
+      "sha256": "4ca71c01f5cde2b5b5bd5464bd2c7b8257b5e0a7b65cd0a41c728eb993c2d04c"
+    },
+    {
+      "bytes": 2106,
+      "file": "nonphysical_diagnostic_temperature_0092.png.provenance.json",
+      "sha256": "b3b6f4b2266d1e5e6fbc6e4412dba4d2570dfdc3a3838a9c8863dc490f3bce00"
+    },
+    {
+      "bytes": 45420,
+      "file": "nonphysical_diagnostic_temperature_0093.png",
+      "sha256": "5039aa5e6db4dcfcf8b88cfc0c6e5bd52d92bce043bce84735eff51dc13f80d6"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0093.png.provenance.json",
+      "sha256": "e4100724e8dc648a3671207097843f7e008532527b4363715a11c1745acfebb9"
+    },
+    {
+      "bytes": 44621,
+      "file": "nonphysical_diagnostic_temperature_0094.png",
+      "sha256": "6d952748a9df63cd44383f87f37ad4079545c4523ff7c07f583c3076d148fb79"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0094.png.provenance.json",
+      "sha256": "796129fa02671f831e1b6084226f87b33d1ba60548712f9f26383604f6b5a08c"
+    },
+    {
+      "bytes": 44763,
+      "file": "nonphysical_diagnostic_temperature_0095.png",
+      "sha256": "05725a454d01497dccc38a8b4bf9ed70becfb60006cce427a36be3ecf92e23b2"
+    },
+    {
+      "bytes": 2108,
+      "file": "nonphysical_diagnostic_temperature_0095.png.provenance.json",
+      "sha256": "2164e915d4bd1b1542a56abb805ec1baba2ae774ef796792990d00aacac2f6fa"
+    },
+    {
+      "bytes": 44187,
+      "file": "nonphysical_diagnostic_temperature_0096.png",
+      "sha256": "afcab258da7f9fc16887695ba447c9610814f8fabcd82735e47e82b6cbbc67fb"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0096.png.provenance.json",
+      "sha256": "bcd5d92f4aa3fc23ef829c51e209153c93f70a77f40bf82bf1684764b09222fc"
+    },
+    {
+      "bytes": 44810,
+      "file": "nonphysical_diagnostic_temperature_0097.png",
+      "sha256": "5da5d6951260bdfca3241d2b782b6dd5037a3ccfd8fe2e35ac9e9c6bf086c57f"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0097.png.provenance.json",
+      "sha256": "66305533f5234d7f5fa5d371887548a817671aad49514ff1fbdd008d927c89ce"
+    },
+    {
+      "bytes": 44304,
+      "file": "nonphysical_diagnostic_temperature_0098.png",
+      "sha256": "8f96b8918b939c25b23abb4b6fbd89c7989b7080486ee1ffa7bfdc80bd552bc6"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0098.png.provenance.json",
+      "sha256": "de10e6e4f794cc7db7320e4d23afdaa81789c4111b1f7a29090613412e191645"
+    },
+    {
+      "bytes": 44369,
+      "file": "nonphysical_diagnostic_temperature_0099.png",
+      "sha256": "904dab256bc7fcf79792a35fde8a1c0dc5a93c3d1ef9e5fa570c71b46afa92e1"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0099.png.provenance.json",
+      "sha256": "e40f7a1324a62c386ca3eb0810e1623a3b7ede53722fbb188389e667feaf7e02"
+    },
+    {
+      "bytes": 43618,
+      "file": "nonphysical_diagnostic_temperature_0100.png",
+      "sha256": "a3cde6c664f79faa86001662b9ffcb9899595f2b7e15a6dd9fd3650e504aeffd"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0100.png.provenance.json",
+      "sha256": "f3343b3fc66873961244b1b8d1d1d1304349b94942f0ca1177b9bbb1d35b1985"
+    },
+    {
+      "bytes": 44221,
+      "file": "nonphysical_diagnostic_temperature_0101.png",
+      "sha256": "b423c74cf8aaa29a416f237b24e3db9f18b9c8059854b0f550b93bb5eba23741"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0101.png.provenance.json",
+      "sha256": "02145b6ffb11dc0c979fc52686e30e8605ceda27b16e53380a9a19e1e523b846"
+    },
+    {
+      "bytes": 44034,
+      "file": "nonphysical_diagnostic_temperature_0102.png",
+      "sha256": "f83980ef7db8f8ece9d03850276475c6cea53b31d5ad23134c1c01ced8ad7f09"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0102.png.provenance.json",
+      "sha256": "1bec5b1cf3589b67623afd23d5925cdbcca69cdb2a952660627f74ffae628c7e"
+    },
+    {
+      "bytes": 44455,
+      "file": "nonphysical_diagnostic_temperature_0103.png",
+      "sha256": "c9d0f51022748ea00890ac3962c43dd35787c22631b5894647b02a5471c47fcf"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0103.png.provenance.json",
+      "sha256": "3764ba5cc0c85c2085f3baa5453369c0e2e6cd16b8ded9103bd56fe106f85921"
+    },
+    {
+      "bytes": 44206,
+      "file": "nonphysical_diagnostic_temperature_0104.png",
+      "sha256": "e3d2d630452fc2516d09f1b3b58efb36e18fbb5e29ced226a9e7259e7dcdfa07"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0104.png.provenance.json",
+      "sha256": "73edda416e067de173f700f376eb474c0be304260c20a3757c8edc36a4ac961d"
+    },
+    {
+      "bytes": 44861,
+      "file": "nonphysical_diagnostic_temperature_0105.png",
+      "sha256": "443eff4266218fb7f3ff604dacaecd23bd7b983ff8dfe42ce5debbb1b7e6db0e"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0105.png.provenance.json",
+      "sha256": "8a861632f1b84e8d2e37939564ea37bef8cdd555e6a58b3e3f7c496ef285ef6a"
+    },
+    {
+      "bytes": 44079,
+      "file": "nonphysical_diagnostic_temperature_0106.png",
+      "sha256": "2f619f6a8f41735aff0d9c550132f5ccde1951b3713eabdb669f2bc5c882b1fb"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0106.png.provenance.json",
+      "sha256": "4a60656a0a9dcdfdbea9d1a4aba5077ea66f5608c3e383c9ea89d72e013cc96b"
+    },
+    {
+      "bytes": 44145,
+      "file": "nonphysical_diagnostic_temperature_0107.png",
+      "sha256": "52efa378740fcd69d89c8aace0153305f50b1ae59652ede96c31e36b89ef6d71"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0107.png.provenance.json",
+      "sha256": "bcf074633be397376f005f889b1d3634dcb83763410abb6e198294cd2f214ea6"
+    },
+    {
+      "bytes": 44267,
+      "file": "nonphysical_diagnostic_temperature_0108.png",
+      "sha256": "7dd6ec0fe8e82a98c96dc75d18b2abcb2a1c2427cae43235c59bfac5c1e7d396"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0108.png.provenance.json",
+      "sha256": "0ee564e9d28a491b8760c9c1fce83c6d065d65182dd161fd365c28dd9f3ccddc"
+    },
+    {
+      "bytes": 44705,
+      "file": "nonphysical_diagnostic_temperature_0109.png",
+      "sha256": "a029fa82f8c1020f02d6102141e46b4fa41982eecb7bf50282a8b5c8bda41541"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0109.png.provenance.json",
+      "sha256": "1e4a5575e1174bde6aaf7830291745e64e65a05fc511091ce3071fee3b339421"
+    },
+    {
+      "bytes": 43854,
+      "file": "nonphysical_diagnostic_temperature_0110.png",
+      "sha256": "b8434846ca31de687b3e7cf2af31cb3705eb9faeb4a1499566526fd96ecd746f"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0110.png.provenance.json",
+      "sha256": "380af3fa240b53728b5e4fe103fb042eed2533596434638886326f53ea68bc45"
+    },
+    {
+      "bytes": 44094,
+      "file": "nonphysical_diagnostic_temperature_0111.png",
+      "sha256": "c0f8e1255fd280ef7fa3989c83599fdfd3f5f0a5d6a5d4430ec7192dc6b8119c"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0111.png.provenance.json",
+      "sha256": "8f071645dacbdaebf7257d1eb15f0d05e0ff0718bf7142e4d5dffd1877703d97"
+    },
+    {
+      "bytes": 44107,
+      "file": "nonphysical_diagnostic_temperature_0112.png",
+      "sha256": "16d2c9a9baddd8e22ccc6336315cdd72944415002ef2d6975da7bc600104ce50"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0112.png.provenance.json",
+      "sha256": "123188ee2bfe1e0861744bc4f2390c1562ad3bd0d8ad67a698af1b6c89a110d2"
+    },
+    {
+      "bytes": 45109,
+      "file": "nonphysical_diagnostic_temperature_0113.png",
+      "sha256": "9b5da2e9d387740a2a301bb4f18a404fe34e7da608e0cb5dee79cdb5cff46b5e"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0113.png.provenance.json",
+      "sha256": "a1cfaaf852c3ab075ac8ea4c1acb8af6012039d7abedfa414c7e11dc59dfd230"
+    },
+    {
+      "bytes": 44474,
+      "file": "nonphysical_diagnostic_temperature_0114.png",
+      "sha256": "6e5c4f82693829351b3b4573c8c016543f50325be153bc5f9674c9a4d9c7c755"
+    },
+    {
+      "bytes": 2107,
+      "file": "nonphysical_diagnostic_temperature_0114.png.provenance.json",
+      "sha256": "2eec8f7bc34872b285743592466c063bd94d4f5a36ba8f179429783d5c6e48d3"
+    },
+    {
+      "bytes": 44294,
+      "file": "nonphysical_diagnostic_temperature_0115.png",
+      "sha256": "c1235ee6fa8bc49cbaf1b45f07723887d72c5b7bec8b28f653e0576986ebce4c"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0115.png.provenance.json",
+      "sha256": "bde8b06a7667cff3de65c6c1b182411ff47bc829413b5741b4c272be12029197"
+    },
+    {
+      "bytes": 43625,
+      "file": "nonphysical_diagnostic_temperature_0116.png",
+      "sha256": "cd62e5b2089ac77ce19e248b6d920e0546a27e137c6a227798d068a8b4644ffb"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0116.png.provenance.json",
+      "sha256": "abf8e2b3e00183febee5d6effbfa3815da4b291f53441b5223330fed7f381491"
+    },
+    {
+      "bytes": 44129,
+      "file": "nonphysical_diagnostic_temperature_0117.png",
+      "sha256": "588e4b388c53ebbcbe8801aa5b1e66bf82ca196c7a332ee3c818f51b39a9f568"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0117.png.provenance.json",
+      "sha256": "42860e1e68f05a7d32a4a41c4c9ca1e22e6879bcda736a0d1ac4440412c6e016"
+    },
+    {
+      "bytes": 43993,
+      "file": "nonphysical_diagnostic_temperature_0118.png",
+      "sha256": "08311bbfa085ef65ed4ca81ca73f1cf7760a49cdff10026b58347aecf304fcc9"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0118.png.provenance.json",
+      "sha256": "a5120964a3ca83ee3cd78de8fa25ec1d52bcef237d7fa289a9c10a32bceb8e83"
+    },
+    {
+      "bytes": 44557,
+      "file": "nonphysical_diagnostic_temperature_0119.png",
+      "sha256": "683776e195c2cfa0dfa1e97484a076da7994c14dea419aa5f2da53d7907e0084"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0119.png.provenance.json",
+      "sha256": "87d899d1a0cbbb5f402034ce3549a1199c0193e0d25d18fda438c50af65874ad"
+    },
+    {
+      "bytes": 44303,
+      "file": "nonphysical_diagnostic_temperature_0120.png",
+      "sha256": "2d63199f219a0c1b11ae9582369d0e6359a50c446de26ca46655898d715ab321"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0120.png.provenance.json",
+      "sha256": "3d362435f853143c851c2d3452070d8109e8e5650fdadeb8a5db0e4a53d35c1c"
+    },
+    {
+      "bytes": 44552,
+      "file": "nonphysical_diagnostic_temperature_0121.png",
+      "sha256": "92baa0f1a9a5a27e010f6f7e1718a2f03c53857f8dfba4f921c15e8612ff56f2"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0121.png.provenance.json",
+      "sha256": "c92ca0bd2127fea43a45a8b741101bf586a92d21416a765053f24e23ca2a23c4"
+    },
+    {
+      "bytes": 44658,
+      "file": "nonphysical_diagnostic_temperature_0122.png",
+      "sha256": "0d65590b3d3375d14dee1b374bc2620714bc2bb1fe022ca2eb25165d9b6c81b9"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0122.png.provenance.json",
+      "sha256": "e907309065bab3d31ced22487f6ce93a3e8b9dfde141c7a8051fca35d3951d4c"
+    },
+    {
+      "bytes": 44826,
+      "file": "nonphysical_diagnostic_temperature_0123.png",
+      "sha256": "900e8027e62d65e896291fa93f647b301789064bd6c4c4bf079d8557924ed0db"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0123.png.provenance.json",
+      "sha256": "3c26a4ea210d096d2a6dfcc72f847c6c702acb68aebb3c529f75c9c957b8720f"
+    },
+    {
+      "bytes": 44181,
+      "file": "nonphysical_diagnostic_temperature_0124.png",
+      "sha256": "ebd7221bf5c9e4dec769f78748f02af1bf28633860885e53dd08cce6a2fd97f8"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0124.png.provenance.json",
+      "sha256": "742152d2315e15ec1cd005d23d0d9eeb59295e4cede53aaf5c12807e488a7472"
+    },
+    {
+      "bytes": 44636,
+      "file": "nonphysical_diagnostic_temperature_0125.png",
+      "sha256": "f2af68068782513b9449c00eb20603f314c0e2d65e2d0c11a7b5d848f8c63e83"
+    },
+    {
+      "bytes": 2105,
+      "file": "nonphysical_diagnostic_temperature_0125.png.provenance.json",
+      "sha256": "3bba11ed720d1da54206eaa0fe3ea31d7a74c331f05bdee192d80c988d3721ea"
+    },
+    {
+      "bytes": 44363,
+      "file": "nonphysical_diagnostic_temperature_0126.png",
+      "sha256": "ae299ed20bb46f3ed2d6d5b8fec2552ee347f4a19a0c1909a86da30fcd65c885"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0126.png.provenance.json",
+      "sha256": "9d76d3eca9ef61be6fb64a65444c6c297dc25cd3866b6520af361bc372e7cb0c"
+    },
+    {
+      "bytes": 44646,
+      "file": "nonphysical_diagnostic_temperature_0127.png",
+      "sha256": "83be377c90002234f0f9473bb5d234da6203ea2549a04f5bb10c641a892a5735"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0127.png.provenance.json",
+      "sha256": "0cd4c3a6fa27bdf684dce7b06a2ff79e4f4a7a604e09711fdeefecf3c089517f"
+    },
+    {
+      "bytes": 44025,
+      "file": "nonphysical_diagnostic_temperature_0128.png",
+      "sha256": "a307624d3bcd9e2126e9878e1ce9e3edcef0073918fdfb599d389c47b98a5920"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0128.png.provenance.json",
+      "sha256": "e2007300e15f9c0c503ae815f0cd770f02d68d4dbb2071e2d822fc587d111b5f"
+    },
+    {
+      "bytes": 44790,
+      "file": "nonphysical_diagnostic_temperature_0129.png",
+      "sha256": "ec43eeb04a7e385f129260808629dca7da355a259e5358ad6e6b151358dcc0ad"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0129.png.provenance.json",
+      "sha256": "daf5fc3d2b9d3eb34a14e9ff274bf6cdd41d2c239f5a19c52b221723886304a9"
+    },
+    {
+      "bytes": 44753,
+      "file": "nonphysical_diagnostic_temperature_0130.png",
+      "sha256": "d2e4abd3ab310191fdb8c51acdc563a715fc7ad0c77740c0f2b1f381a6ddfa66"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0130.png.provenance.json",
+      "sha256": "83cdd19e56dbde91aa7514065a4504395011a66e443cc5be7538727bf96fa241"
+    },
+    {
+      "bytes": 44523,
+      "file": "nonphysical_diagnostic_temperature_0131.png",
+      "sha256": "11c759f024e840afff42247cf9d62d4617c5fe8cc86f49c9bea2526f77e0c5ed"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0131.png.provenance.json",
+      "sha256": "241d1ca9829415152b7d440d1055ee928ba938171c26ec61b9609fdf75e0ff65"
+    },
+    {
+      "bytes": 44806,
+      "file": "nonphysical_diagnostic_temperature_0132.png",
+      "sha256": "6f3bcd2a80c96bf458d5f1e57e0b8002f09b5df8a9e5b64b961181a16a4b9e5a"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0132.png.provenance.json",
+      "sha256": "ec1de07d4ae24a2107242dcde7752b5204bcc7362bdad9309406e5c4a396a5df"
+    },
+    {
+      "bytes": 44834,
+      "file": "nonphysical_diagnostic_temperature_0133.png",
+      "sha256": "7bb9b1c4cf0e160d681ce14f59b8217f253ba3bf35aebe4922487b07abb9be30"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0133.png.provenance.json",
+      "sha256": "b82658b38fcd8c8b39d4b4a5fd1504f560e00c44010c0aecce2488ffbe45a51a"
+    },
+    {
+      "bytes": 44350,
+      "file": "nonphysical_diagnostic_temperature_0134.png",
+      "sha256": "822ca2a5cb55410b7f3b5daae1bce6e9df3bfdbd36c17a967477ef236601de9c"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0134.png.provenance.json",
+      "sha256": "0f37730ffe0463076398f65821916e03d9fc6da69cd494ea624660fceaa9edff"
+    },
+    {
+      "bytes": 44689,
+      "file": "nonphysical_diagnostic_temperature_0135.png",
+      "sha256": "98c0a5087f8ee305d34b9011d788a6c648fecabb0c5a4f8cc7cdbe2af5ac2d86"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0135.png.provenance.json",
+      "sha256": "87a729c88076b29cc937611475e0967048a5720d209e92a1975d64abdfaa0f76"
+    },
+    {
+      "bytes": 44455,
+      "file": "nonphysical_diagnostic_temperature_0136.png",
+      "sha256": "afbae107c63fc3e0dd333b8ba9dbd774e80d7086f38f10c6826b2830112df9e3"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0136.png.provenance.json",
+      "sha256": "8e3dc35a5afc5cc616501550a07fad29220b3213d8d95e66df22148d3e05651e"
+    },
+    {
+      "bytes": 45172,
+      "file": "nonphysical_diagnostic_temperature_0137.png",
+      "sha256": "f7869251916392d937298ed0451085aa97146f0c5746f3aa9cada672566d2a08"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0137.png.provenance.json",
+      "sha256": "3ad672f8cde03e63ce62212ec82d74c1ebbdda2863d9654cb3fcbc34fbb74f33"
+    },
+    {
+      "bytes": 44751,
+      "file": "nonphysical_diagnostic_temperature_0138.png",
+      "sha256": "365eba99b554f589359594284c714ac43897ae691291e505b52e5ad90e5feff5"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0138.png.provenance.json",
+      "sha256": "be44091da967bb709c46e2ddab792cf242fc3655e4f71d78bde7e6d659adfa10"
+    },
+    {
+      "bytes": 44793,
+      "file": "nonphysical_diagnostic_temperature_0139.png",
+      "sha256": "83e2a837778ed530fadd17f64484f58ac6902df0fd8d0aeae2b8a376651a2b1a"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0139.png.provenance.json",
+      "sha256": "7271c5ef5350e1895ff2e3105ef9420f5c90aea68ae1648726a719c98e92e93b"
+    },
+    {
+      "bytes": 44356,
+      "file": "nonphysical_diagnostic_temperature_0140.png",
+      "sha256": "42aac9de4672b174a98cd55eb89228f77186178c80cf06c2e3d48b6a9f30ca7a"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0140.png.provenance.json",
+      "sha256": "68ca9f90fa02fb02741100e1d19c5d0e6c5df969601b529be3bb57856a650d76"
+    },
+    {
+      "bytes": 45259,
+      "file": "nonphysical_diagnostic_temperature_0141.png",
+      "sha256": "6912798a8556d9643887885c13e0a9302661d41ef1375c1a7aa3fc39b3f62342"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0141.png.provenance.json",
+      "sha256": "bbec2d42ace0f8fe3e5815f9c1f96f561734665c9e65de7fc7f4f3487b81f1c0"
+    },
+    {
+      "bytes": 45009,
+      "file": "nonphysical_diagnostic_temperature_0142.png",
+      "sha256": "b2477826567a8082234d3ec12e418335b2e4e098bf44bc998dcf620788dc25e1"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0142.png.provenance.json",
+      "sha256": "99b5fcd6e43ed3b6ffb109ad5cfd314fbb41a2289aadce7273f498f70ca5afc8"
+    },
+    {
+      "bytes": 45009,
+      "file": "nonphysical_diagnostic_temperature_0143.png",
+      "sha256": "08c1296046ad3150e80741d2bbad78e83a6d46a8a1acc34e283b9207660c7545"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0143.png.provenance.json",
+      "sha256": "22d100dd96fd223117d69a2554b92af5ac15abfc2c6b9a72f0c5e547225cf6ba"
+    },
+    {
+      "bytes": 44526,
+      "file": "nonphysical_diagnostic_temperature_0144.png",
+      "sha256": "add3935a202f390bc241cbb1d474b584027ec38d76fe150b075fc6c9a27cac6d"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0144.png.provenance.json",
+      "sha256": "1dbff1cc80106d90a585e76569864b6392776f1691badaaf044e62d4eb752e23"
+    },
+    {
+      "bytes": 45011,
+      "file": "nonphysical_diagnostic_temperature_0145.png",
+      "sha256": "84cc26e30b3b936e11e66402a6d03154a5d60fcb661d650b427538ba734147fb"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0145.png.provenance.json",
+      "sha256": "3672014253880ea3000d22d27965b16c75c1d258b24557d4344bb89656202820"
+    },
+    {
+      "bytes": 44367,
+      "file": "nonphysical_diagnostic_temperature_0146.png",
+      "sha256": "6a339de19269fd80626253d8d98fe9f7f8ef174f09439a8d1a9e9a91a9630c45"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0146.png.provenance.json",
+      "sha256": "c57c79f0c2e4973704f4a361e40f8226ae0874d4d6f7cefd169a4ce1db8e290f"
+    },
+    {
+      "bytes": 44875,
+      "file": "nonphysical_diagnostic_temperature_0147.png",
+      "sha256": "d66555adf661ac139dc32e15832975b4fb4e597108f674325cd924cd7e72abe0"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0147.png.provenance.json",
+      "sha256": "e4c15ee3eb93fc1d37b51b3f40c67e9e56e6e04b54657e8319dc7bb70f84deb8"
+    },
+    {
+      "bytes": 44495,
+      "file": "nonphysical_diagnostic_temperature_0148.png",
+      "sha256": "f510d4dea96ee57aa8ca1411a16622c06841e66bd1dfffb4cca29d401725e879"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0148.png.provenance.json",
+      "sha256": "58a46c95a2a63396442fca942ae1d761347d6480b6c5580c6ca0dca7cd3d875d"
+    },
+    {
+      "bytes": 44822,
+      "file": "nonphysical_diagnostic_temperature_0149.png",
+      "sha256": "35f18cc2821d0d6f120e3347becf03d887f2246bf519b13ef897cdfbedbe510a"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0149.png.provenance.json",
+      "sha256": "3d59ae1882c9337538192eebfe1607b545a8f30225c75ff00858ec3427d1df45"
+    },
+    {
+      "bytes": 44815,
+      "file": "nonphysical_diagnostic_temperature_0150.png",
+      "sha256": "992e1a1ffc30edf5583cbb90a1676e5c7b81c6d2f6bc2c9ac63fa701bc989f91"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0150.png.provenance.json",
+      "sha256": "8ab73d7d774255a1d337ab7ca00a0bf850054a03e6e396043fda6bd318f41fe1"
+    },
+    {
+      "bytes": 45011,
+      "file": "nonphysical_diagnostic_temperature_0151.png",
+      "sha256": "01b36e8a2cf5665386d2f55e4835848b9312736d4052cfdbcbfe914d72175f9a"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0151.png.provenance.json",
+      "sha256": "b1996eb27b85704d9f0b2337f1bc69c4e2adce4978abb4392ce7949cd807c2b0"
+    },
+    {
+      "bytes": 45092,
+      "file": "nonphysical_diagnostic_temperature_0152.png",
+      "sha256": "26fc5575bd74cd5f5b68f44168e820fef7e7d139bef41093a6909b850ed81708"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0152.png.provenance.json",
+      "sha256": "beed8b206f52726c558dbcd7780879026aac89b56ed48600de6bd3a83e189114"
+    },
+    {
+      "bytes": 45350,
+      "file": "nonphysical_diagnostic_temperature_0153.png",
+      "sha256": "5531a6a8e6236493029fb42e76127029f4eea74a1c04b81f6e73d737e082e3f9"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0153.png.provenance.json",
+      "sha256": "62fe61bb47ba649facd37191e634691b193ff29dbcf7ffc4e4b5ca651c8947cc"
+    },
+    {
+      "bytes": 44917,
+      "file": "nonphysical_diagnostic_temperature_0154.png",
+      "sha256": "bfcef60e3ca2e626f2082748992411cd823ab2d9160b5fbb6859f0871662f24c"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0154.png.provenance.json",
+      "sha256": "a1957337f4ab428c577ffe7e4fb9b0f6b43abf053a3829e5b933fbdfb80ff587"
+    },
+    {
+      "bytes": 44757,
+      "file": "nonphysical_diagnostic_temperature_0155.png",
+      "sha256": "c81ec9ac4fee027f23f8a5c830c1c73c584b1b56247d22e075e204dc383a7b58"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0155.png.provenance.json",
+      "sha256": "ac89f00b9b45168983cbca5c3b9ce9d4909fc658b4ff70c2feabf38b3a6f9e65"
+    },
+    {
+      "bytes": 44599,
+      "file": "nonphysical_diagnostic_temperature_0156.png",
+      "sha256": "1e2c5e4a6290f9761e62b7d744914369ac82ec44ffba0b8e8a5a55c57ea85302"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0156.png.provenance.json",
+      "sha256": "d82cd442948f27a71f59001b961f6816324e5bfed67020ced7dd8c4cec256d9b"
+    },
+    {
+      "bytes": 45269,
+      "file": "nonphysical_diagnostic_temperature_0157.png",
+      "sha256": "804a27686fa1017e6fdbbc8b30c0b4bc4c7189d07821b966c482c81440e02ae8"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0157.png.provenance.json",
+      "sha256": "85ab5c63b7a3f7295cbfca0208960660fcd4046c08f4fdbaad6ccdc06346b317"
+    },
+    {
+      "bytes": 45333,
+      "file": "nonphysical_diagnostic_temperature_0158.png",
+      "sha256": "267eb28e23e31c549c2c0ac4f1d8c9f2669922e756a36803432f6bee16b9ca3f"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0158.png.provenance.json",
+      "sha256": "45cfb0a7deee1f8edb996015303c596cef8948cb6de10d19939dfe8c0f64500b"
+    },
+    {
+      "bytes": 45178,
+      "file": "nonphysical_diagnostic_temperature_0159.png",
+      "sha256": "d4719ce0e12b44a7b085e00d598ca40a4aa770ac8ebd199fc85d728a3bafeb93"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0159.png.provenance.json",
+      "sha256": "ae53ab08f69efcee189020fb94a49864a38c3acfb40ac63ddd8b2993d148e5bb"
+    },
+    {
+      "bytes": 44286,
+      "file": "nonphysical_diagnostic_temperature_0160.png",
+      "sha256": "1f546db98b518bcf061c1e7a2084bca0f5d0efba7d4fe4b6477162b4d4910730"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0160.png.provenance.json",
+      "sha256": "25132a0695080c22a002173dd3bd03b37e5d4af984f524d9969451fb1f9c4f16"
+    },
+    {
+      "bytes": 44965,
+      "file": "nonphysical_diagnostic_temperature_0161.png",
+      "sha256": "31c162562e2c19d67856bdca9d0aa7ceff2cb41709a4e2ca2f1c80eb36b85464"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0161.png.provenance.json",
+      "sha256": "b324cf1f0ada6bf93689a7e4eb5ab15da63dc2e7c5177ae2c58d7a3982ab90fb"
+    },
+    {
+      "bytes": 44912,
+      "file": "nonphysical_diagnostic_temperature_0162.png",
+      "sha256": "4b3ebaa284936723f6c7431cf435c598be747333ac7fd6f3fe049dd240e4a97b"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0162.png.provenance.json",
+      "sha256": "e32e54295783e6b4031ad0382cef6e79f1e9a721c3171afbe24a5a17424fa1ba"
+    },
+    {
+      "bytes": 44831,
+      "file": "nonphysical_diagnostic_temperature_0163.png",
+      "sha256": "849d6aef4231c600084d37b4526f7139b5201c6588197396f7f81680bf3289df"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0163.png.provenance.json",
+      "sha256": "150861666212a73544cbe255599082a4054f0f3fa5de14e99e13b30c7fc8ecdd"
+    },
+    {
+      "bytes": 44414,
+      "file": "nonphysical_diagnostic_temperature_0164.png",
+      "sha256": "0c3e2f3d8b3846cd4992336200bc37286046a9ca9a9f239f2a4149264be63833"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0164.png.provenance.json",
+      "sha256": "70aef889c1f435efe6c9c4db8dfd882e42e12519015cd350ff815d778bd3e8d9"
+    },
+    {
+      "bytes": 45102,
+      "file": "nonphysical_diagnostic_temperature_0165.png",
+      "sha256": "7a26191deca17235d04c8c91ceaf8b408355c68da2006196cd3d0fcce27c7c2d"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0165.png.provenance.json",
+      "sha256": "a431a6a9beae8a5ef634942cbd7bf37b46fa4666a0cb6dcd47b8b7c68c613928"
+    },
+    {
+      "bytes": 44656,
+      "file": "nonphysical_diagnostic_temperature_0166.png",
+      "sha256": "2a32e140b19a1c1047788c4930c349cff46e234d808b611ace62930e70f55a59"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0166.png.provenance.json",
+      "sha256": "7a52e864da1ae79bd51a7e809f38f461cf485615b3e2d96f3d49fd8f1edc47a3"
+    },
+    {
+      "bytes": 45135,
+      "file": "nonphysical_diagnostic_temperature_0167.png",
+      "sha256": "bbf4f8873b66ca836153084c5af43129c7e603d42e1e744794e27f70315de9a3"
+    },
+    {
+      "bytes": 2108,
+      "file": "nonphysical_diagnostic_temperature_0167.png.provenance.json",
+      "sha256": "b1f56bb282858d082ec5200d8103d4263d82058c560071f6d45874e9275f1eb0"
+    },
+    {
+      "bytes": 44744,
+      "file": "nonphysical_diagnostic_temperature_0168.png",
+      "sha256": "12d3a212e458f5df57340173822969af2024b03ccaedef674038903ce0a8f53e"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0168.png.provenance.json",
+      "sha256": "17b3641f7be13384fa8f0b1041fb7f2f087a313e4d30250fdb12a65f0c5c904c"
+    },
+    {
+      "bytes": 45085,
+      "file": "nonphysical_diagnostic_temperature_0169.png",
+      "sha256": "36585b1a25ee957edb0bc0d4984be2eecbb4c826a45e47a7a26608fe06e587f0"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0169.png.provenance.json",
+      "sha256": "9d1e7bd2c1d76d760641c0b960c7158749cd8ee9b530b07343c187e7cd3a4e26"
+    },
+    {
+      "bytes": 44728,
+      "file": "nonphysical_diagnostic_temperature_0170.png",
+      "sha256": "c98303b85d59334122d689616564e39fc2a25b99d088cd34868ec8a541ada66e"
+    },
+    {
+      "bytes": 2105,
+      "file": "nonphysical_diagnostic_temperature_0170.png.provenance.json",
+      "sha256": "1593d481ac2e3bc346db8711daef15a4fb7a041f30f5b1ba0a5f0ad73b49eb6a"
+    },
+    {
+      "bytes": 44940,
+      "file": "nonphysical_diagnostic_temperature_0171.png",
+      "sha256": "3523004691b23a37fb7fe075c111fd4beb413a629d9e0a52189e3972b4e07506"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0171.png.provenance.json",
+      "sha256": "6860515fff01b12c682242747d32ecc12ab5210dc532ebd60db8cc46cc19420a"
+    },
+    {
+      "bytes": 44147,
+      "file": "nonphysical_diagnostic_temperature_0172.png",
+      "sha256": "32c5e2eaa474f4736b09d7f50f0d85a643ab4613ee8f0bba6638e1b55d23574f"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0172.png.provenance.json",
+      "sha256": "ca7ea2b4f40b33ab6559952f733c88630f6bbc16fb59f20903278461ef8b790c"
+    },
+    {
+      "bytes": 44783,
+      "file": "nonphysical_diagnostic_temperature_0173.png",
+      "sha256": "c56c525b4043824973b07093f0f968e458b656378b1abb5171d1dce76fd3e738"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0173.png.provenance.json",
+      "sha256": "6f904639f0dc3e1366be28d3ac2b725e69edb0b2ca44eda576423affae968d29"
+    },
+    {
+      "bytes": 43924,
+      "file": "nonphysical_diagnostic_temperature_0174.png",
+      "sha256": "b86da16af362ff0049e86debf67aa463adc37fd7db3f91d3c70b56ce8c96d728"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0174.png.provenance.json",
+      "sha256": "9264a093fa0eb86b103b9940c3976fe65f5daf43d4f199e8495de91c3659a0f5"
+    },
+    {
+      "bytes": 44320,
+      "file": "nonphysical_diagnostic_temperature_0175.png",
+      "sha256": "9caa40021b98313157925231aaa703ad7c4bbdeae8a1162d78a4eb7d6971f1b6"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0175.png.provenance.json",
+      "sha256": "7062c70affd7fb56755fdc213dee4b28b117dd406b6eedbb7ea34d786be960a5"
+    },
+    {
+      "bytes": 43802,
+      "file": "nonphysical_diagnostic_temperature_0176.png",
+      "sha256": "14095e26c53f5bd1f5bbf595b21e5f927dd318d4b1e9e02e2c8a0f4e46f68155"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0176.png.provenance.json",
+      "sha256": "27f0e3f9a751b7a2e3c3f4715424e7d2eecbf6bc08fc52c73ac0376e3a51da80"
+    },
+    {
+      "bytes": 44314,
+      "file": "nonphysical_diagnostic_temperature_0177.png",
+      "sha256": "912e300025b9bb0d831e61ef30a24dffee315b57c4dd5bc90563ccdce09bba07"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0177.png.provenance.json",
+      "sha256": "f92fffd2af8be7546778464ddbad97c07b15628d688f805c3c7837fde027233d"
+    },
+    {
+      "bytes": 44800,
+      "file": "nonphysical_diagnostic_temperature_0178.png",
+      "sha256": "54e61bbfeebcda082525f1defb85be8439f62bf8b473e1829d463203dccb5d26"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0178.png.provenance.json",
+      "sha256": "51df43f3eedc497ab5458a4fb42abafe8de07aae7f9bdc9c5fb4f261d07426f8"
+    },
+    {
+      "bytes": 44861,
+      "file": "nonphysical_diagnostic_temperature_0179.png",
+      "sha256": "d133c1a97467882f19ced4c792b2fc5060d1592cc960f8b0c2d1b768cb6dd254"
+    },
+    {
+      "bytes": 2108,
+      "file": "nonphysical_diagnostic_temperature_0179.png.provenance.json",
+      "sha256": "77406c7beec62766ba12b1589a09c4d262a17f3ae4d6b12fcef689ff6ee886d4"
+    },
+    {
+      "bytes": 44436,
+      "file": "nonphysical_diagnostic_temperature_0180.png",
+      "sha256": "8673672f7fbc2ce210a8baa7e97ac4f902d47855b196452ebfd1642717e4e064"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0180.png.provenance.json",
+      "sha256": "0f271d13a8e8cfb49811da6295ac80f2cab2e852b8c68c5c0d8cae3dcce6f39b"
+    },
+    {
+      "bytes": 44707,
+      "file": "nonphysical_diagnostic_temperature_0181.png",
+      "sha256": "84cced5212dbb38b2d24aa7f61d27b86395ffcc5eb464aa645633c42cbf88519"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0181.png.provenance.json",
+      "sha256": "8d99c8c614c65cd3d3fa9b3e944c1914d7e22c7148a21a74c1001df22aa261f0"
+    },
+    {
+      "bytes": 44306,
+      "file": "nonphysical_diagnostic_temperature_0182.png",
+      "sha256": "c51a48794f45dfbb831a5b4a00015ed0c12a2bfbe73fd0ed6ab6ef5b5c8e7548"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0182.png.provenance.json",
+      "sha256": "b22a8964ff5234466128bba2ecaed4a9417ea34ee53833fde323f06844b666b4"
+    },
+    {
+      "bytes": 45008,
+      "file": "nonphysical_diagnostic_temperature_0183.png",
+      "sha256": "7a918d72cd48d70267246ff93f3620848c7b1bb5301cf69552d984617d11008f"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0183.png.provenance.json",
+      "sha256": "5bc948efdb781bd8dd3971e9c92077f0de227f7f533d741279893490ec0c3ac3"
+    },
+    {
+      "bytes": 44455,
+      "file": "nonphysical_diagnostic_temperature_0184.png",
+      "sha256": "606ebb06affaf1c8412789678d9481636caa808d56b0c23c987e27904cf86e5e"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0184.png.provenance.json",
+      "sha256": "8b8fdb14741431a5f46b2de3265ac2cbbbf7d1a6b05153113ab883538f2e2827"
+    },
+    {
+      "bytes": 44493,
+      "file": "nonphysical_diagnostic_temperature_0185.png",
+      "sha256": "d9932158fe76d0a5a352f2d8fc5354a4fafbd16fa1d084f819681da9dd7ec005"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0185.png.provenance.json",
+      "sha256": "6b513db6b9e8e06b284e43836378c5aff8cd8524e5b8f3629e135db3e73d5ae5"
+    },
+    {
+      "bytes": 44708,
+      "file": "nonphysical_diagnostic_temperature_0186.png",
+      "sha256": "04b37d4f7a15f2df1ca72621f40db7e466152838a741fd9d788df4174857a0e1"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0186.png.provenance.json",
+      "sha256": "b20b0ff7a2b94133457ed9391cdb9f2ccefb5e609047e52c6ec7695ec850d323"
+    },
+    {
+      "bytes": 45073,
+      "file": "nonphysical_diagnostic_temperature_0187.png",
+      "sha256": "0e8d2566d28fb247259150bb3328276d810f43ea29bea8d0017a432b8151c379"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0187.png.provenance.json",
+      "sha256": "f0fd8f40d16685007f89f820a925721bca730345735f05beb5474aa0bd6d63cc"
+    },
+    {
+      "bytes": 44324,
+      "file": "nonphysical_diagnostic_temperature_0188.png",
+      "sha256": "f2f85132697c4b1294c19ca3cbdf50f534ad8fde31514775a28396db02a1316c"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0188.png.provenance.json",
+      "sha256": "3c213bced664c3115fd9c0c975bb4ee28144bd50938ad117cda277c3b7604c24"
+    },
+    {
+      "bytes": 44697,
+      "file": "nonphysical_diagnostic_temperature_0189.png",
+      "sha256": "a8b6d12219170bc813501d8ebeed8c989244a737e6b0cc4d931a6b7c6b7238d3"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0189.png.provenance.json",
+      "sha256": "5d77114c0ef3a7a2230881b80cd5a3f46dbd63bb13ac9db8998d2516c7bcb9ab"
+    },
+    {
+      "bytes": 44354,
+      "file": "nonphysical_diagnostic_temperature_0190.png",
+      "sha256": "d471a96e5d43a7330a7724a16ef79546125b6c04a3f145f2213ecd836fe4c2c6"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0190.png.provenance.json",
+      "sha256": "71d54971d03cdf3f1c642de4559d8a48ea3253a0e25caba4e621f3431c4981f0"
+    },
+    {
+      "bytes": 44634,
+      "file": "nonphysical_diagnostic_temperature_0191.png",
+      "sha256": "8d4e63004ce19bc3b4f1900ec30bc10b1c8a88490d32b5c0ffed657dee0812c7"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0191.png.provenance.json",
+      "sha256": "927f5e3e342426cec34bbb6c9657c7d942d7455a00861c7181078f63ab81d21d"
+    },
+    {
+      "bytes": 44121,
+      "file": "nonphysical_diagnostic_temperature_0192.png",
+      "sha256": "48a256309da77c337751e2bfb15bcd34beb3304a97fe9406f62db93759d2c0dc"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0192.png.provenance.json",
+      "sha256": "d14f79fa13708f275f9cf554e6021919ef49714ccd50d4e06be00c8a28419299"
+    },
+    {
+      "bytes": 44813,
+      "file": "nonphysical_diagnostic_temperature_0193.png",
+      "sha256": "4382c10658fd023338ba80145385e06605680a2198c12f46c55e0badd8493121"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0193.png.provenance.json",
+      "sha256": "4781437765ba384ade8600d385307f1da44278bd8ab9514fee8a9e58990e83cf"
+    },
+    {
+      "bytes": 44212,
+      "file": "nonphysical_diagnostic_temperature_0194.png",
+      "sha256": "582fb617af5d2c74c710428114afeb68aef0bacfc29d32693ca6a01fe8931307"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0194.png.provenance.json",
+      "sha256": "fe04b69b656a6938cac90ede895efd3287b8f4263de83f83ab41917a09e757b5"
+    },
+    {
+      "bytes": 44607,
+      "file": "nonphysical_diagnostic_temperature_0195.png",
+      "sha256": "49497139c8ba1252bdbf17a23d32be8aa45be95011266512317d303fdd692116"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0195.png.provenance.json",
+      "sha256": "6c9d3b7c79125ffe2a7c085de395cd62e3528a8431a681f582fa142cb8bbf813"
+    },
+    {
+      "bytes": 44291,
+      "file": "nonphysical_diagnostic_temperature_0196.png",
+      "sha256": "fbd39e4f93ef05d95cc917b7c94b03faef810361a815d874cc141cc2d01a6a52"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0196.png.provenance.json",
+      "sha256": "16aa4902377380085c1d5e84ec28168a2a19513fa18a1f04dc5445e78b9b06a1"
+    },
+    {
+      "bytes": 44909,
+      "file": "nonphysical_diagnostic_temperature_0197.png",
+      "sha256": "093fd0c00f7d4292d67cc31733965ca6923c59659237cc7f67d5d72162be96b7"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0197.png.provenance.json",
+      "sha256": "e045f80036eafae4df1fafa7b1741521025b3dce1fa7d13e34cec85a6f7bd0eb"
+    },
+    {
+      "bytes": 44424,
+      "file": "nonphysical_diagnostic_temperature_0198.png",
+      "sha256": "175980e757cd310911bbff4e6c1e23b6bffd78bbce40d2f5e40717f14e997fc7"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0198.png.provenance.json",
+      "sha256": "158b475dda104a501d3429d7d708be64b6931c76351f4413669ea2404ec5aa03"
+    },
+    {
+      "bytes": 44684,
+      "file": "nonphysical_diagnostic_temperature_0199.png",
+      "sha256": "0600297ec0dab7b4b6f0a5d1e6d6ae5ebb5f2dab1a061c39d37bd3b851bec6b1"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0199.png.provenance.json",
+      "sha256": "9db15dde9ad05a827f23dc8f1ac5d4fb95afddf965cab883fe447433c166aa42"
+    },
+    {
+      "bytes": 44252,
+      "file": "nonphysical_diagnostic_temperature_0200.png",
+      "sha256": "cda2c42691d52c24dfd6a91d087b32f5089eaec40b3583f957eb621efd9cd602"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0200.png.provenance.json",
+      "sha256": "6ef35c68879b3453e65f8d30c80572ec35e61700877059f727201ace35355065"
+    },
+    {
+      "bytes": 44787,
+      "file": "nonphysical_diagnostic_temperature_0201.png",
+      "sha256": "437f251064bb0f98fed64a79e674f1ac58b40dd0ff20e09d45d942eb1a2354eb"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0201.png.provenance.json",
+      "sha256": "ce20c4d20c4543fe92e2b9d51505c792944b6e7f1a2fd159d74df99f60aeacb8"
+    },
+    {
+      "bytes": 44527,
+      "file": "nonphysical_diagnostic_temperature_0202.png",
+      "sha256": "38477e615b7b6d2750978a2ed3ff98f34616796d0be29b1f019fa441f08a9f10"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0202.png.provenance.json",
+      "sha256": "2b0cb13559c541f0a8ab77ac81f84a2f3b053af6781bee5a3366abafaeed9e3a"
+    },
+    {
+      "bytes": 44382,
+      "file": "nonphysical_diagnostic_temperature_0203.png",
+      "sha256": "3ba0c78f8eab2a6ebe497b97a6e50f1b745ee573761e3cf6de468c4d8058434a"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0203.png.provenance.json",
+      "sha256": "b6576e8aa8e25133027642cd96587d03d3b02f6bc41cc8a3548a5d5ba1a3bac5"
+    },
+    {
+      "bytes": 44224,
+      "file": "nonphysical_diagnostic_temperature_0204.png",
+      "sha256": "218c590ba74e8cead2fa76508bc9b2207da333fbc6782cb343ec52e33e4f88fb"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0204.png.provenance.json",
+      "sha256": "943229fa10603408c8ccc4822b97d5200f8ea0fcd4230bd704f10e5cae6ba99a"
+    },
+    {
+      "bytes": 45058,
+      "file": "nonphysical_diagnostic_temperature_0205.png",
+      "sha256": "982e2286b7c0e5404e61ea8042a41c1210ec0fcecf9f6f1adb6a8126f672d0f8"
+    },
+    {
+      "bytes": 2106,
+      "file": "nonphysical_diagnostic_temperature_0205.png.provenance.json",
+      "sha256": "003ce121022c3ef7e697c33fc0acf141ca613c501e1dda9b7c7ad6c348f68330"
+    },
+    {
+      "bytes": 44287,
+      "file": "nonphysical_diagnostic_temperature_0206.png",
+      "sha256": "0fe3cb0cab556d61f6f2c0be2492ffc688b2f3ea3a6763994f3708da45443ac8"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0206.png.provenance.json",
+      "sha256": "16f3f9f68ba9f228e1f4c44d855d6d08ef80ccec45a826b3208d445a49c3cc89"
+    },
+    {
+      "bytes": 44435,
+      "file": "nonphysical_diagnostic_temperature_0207.png",
+      "sha256": "676420e2d391ce49869b789879d6ec9e5d7eb9e57a0bae3491d195775b8f4a0d"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0207.png.provenance.json",
+      "sha256": "2b3661ca39def6ff7c55be794b0afd87865c872a974859bc98cc40c0aef67be4"
+    },
+    {
+      "bytes": 44470,
+      "file": "nonphysical_diagnostic_temperature_0208.png",
+      "sha256": "a7ffd54dceec8aa3a8ed2532c2b01e2f32c85d07b359fb4bbeeaae9a98e38eb0"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0208.png.provenance.json",
+      "sha256": "8a9cc7225a82fdfee479a53fef95b47d6789b367bbecff2c60f67ac6fda6ae59"
+    },
+    {
+      "bytes": 44982,
+      "file": "nonphysical_diagnostic_temperature_0209.png",
+      "sha256": "2fba80c34b38b91283362313ca8a2eb092ca0a4e644298a1ebc19fa6ce75eba2"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0209.png.provenance.json",
+      "sha256": "1aec13915600cfc465242850e7458a0c69d9bc1b3490934b433f45a750825d88"
+    },
+    {
+      "bytes": 44769,
+      "file": "nonphysical_diagnostic_temperature_0210.png",
+      "sha256": "4a983f2d506ac24003e06a07ae04eb8894be07124b8984682e9dc79fc198ea35"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0210.png.provenance.json",
+      "sha256": "87f75bb6f0064a3f3dd67cae634e809b3411ffab42c315644843e78504919309"
+    },
+    {
+      "bytes": 44344,
+      "file": "nonphysical_diagnostic_temperature_0211.png",
+      "sha256": "3a6e27c3e4a48839473cf1225e5a1b49db53ade4657b0c78296e5b0bdce763e1"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0211.png.provenance.json",
+      "sha256": "1f13ef9c042d251ca85b1d920a4b9c26aa4a576b0dba2b94541dd044a50f479f"
+    },
+    {
+      "bytes": 44279,
+      "file": "nonphysical_diagnostic_temperature_0212.png",
+      "sha256": "3c7015a96a9b5e67a5c5faa6aba79d861d6c9fb7183dd9520c534a7f3b9cb7a0"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0212.png.provenance.json",
+      "sha256": "f6ea71dd1f2709b2265697ca172eccc19fb184a48d54a308a115b9d24646c273"
+    },
+    {
+      "bytes": 44891,
+      "file": "nonphysical_diagnostic_temperature_0213.png",
+      "sha256": "faca68cdd0e833feace1240f702bd39cdb7cbff28a68907e1f03831a9ddd1f9d"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0213.png.provenance.json",
+      "sha256": "ae58ac1f03a6b3efe6a58621aaef3fe2833027441395cfa1b4e4ca8012ae0b60"
+    },
+    {
+      "bytes": 44547,
+      "file": "nonphysical_diagnostic_temperature_0214.png",
+      "sha256": "cd089ac5f987e76ad7440c271829a8856d6cb1fa8d8906109c2ce45def1cf078"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0214.png.provenance.json",
+      "sha256": "4591cfa443f58f1bac5b29bce0af6a319c15a38eea4b7ac6469785ff1a99d4ab"
+    },
+    {
+      "bytes": 44831,
+      "file": "nonphysical_diagnostic_temperature_0215.png",
+      "sha256": "01677cba7d25c57672e4c81a90932b80b2d59102416f31fa47a3d807f880d11c"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0215.png.provenance.json",
+      "sha256": "82f82b2903492bf9a0fdf1e5af5a9a385bc2beb033b92177192631a39f7f29b3"
+    },
+    {
+      "bytes": 44485,
+      "file": "nonphysical_diagnostic_temperature_0216.png",
+      "sha256": "b4daf4543415d04f1392392f75a70db073ab99e97c1870fef26f5be28a64eadf"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0216.png.provenance.json",
+      "sha256": "ed6678e3581a2971871c9631304ec299c1043914b73e3bb9449b237080e8a623"
+    },
+    {
+      "bytes": 44585,
+      "file": "nonphysical_diagnostic_temperature_0217.png",
+      "sha256": "e41e953c68cf554222b886a984f05ca2663fd777136c5fd54013a83b9ac81b17"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0217.png.provenance.json",
+      "sha256": "77810876f29f34f524c222fd588ec01037cf495d2a8d95aa1205d2f409f42c0d"
+    },
+    {
+      "bytes": 44257,
+      "file": "nonphysical_diagnostic_temperature_0218.png",
+      "sha256": "8cce0aeaa41e0db3241ddb8ff6a50918be79edffccb2e81cdb1d43ffbd9fa8d4"
+    },
+    {
+      "bytes": 2106,
+      "file": "nonphysical_diagnostic_temperature_0218.png.provenance.json",
+      "sha256": "1054f364b7f7fb29a4a8578ed1d2d59a5396d1de50e9c94b15474d708eb266d0"
+    },
+    {
+      "bytes": 44624,
+      "file": "nonphysical_diagnostic_temperature_0219.png",
+      "sha256": "de7e89019f9eadd067c67c3fde3e813afae8af222f07880f02bb36fd934e48b7"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0219.png.provenance.json",
+      "sha256": "119d0bcc9a39bb6b49109092e9f4ae282d1307916c8dea0e68335354c315e68e"
+    },
+    {
+      "bytes": 43904,
+      "file": "nonphysical_diagnostic_temperature_0220.png",
+      "sha256": "252bad5b1cf3e352dd5ecb45419da108d206e1ba0a60903a9382c2c9c3e2670c"
+    },
+    {
+      "bytes": 2108,
+      "file": "nonphysical_diagnostic_temperature_0220.png.provenance.json",
+      "sha256": "0faa8fa21f04058d1b090f1d34175c25c0ed4544f228dab123719fd9dfed52f4"
+    },
+    {
+      "bytes": 44598,
+      "file": "nonphysical_diagnostic_temperature_0221.png",
+      "sha256": "0d87afa044ca749c039a94ebf8e5483f705bb6138a2c7c77f82ef7837efc4a71"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0221.png.provenance.json",
+      "sha256": "0f855b6904dfe815748d524ad97bdd4bd60deaeca11908e9fc3d28fd122c6897"
+    },
+    {
+      "bytes": 44099,
+      "file": "nonphysical_diagnostic_temperature_0222.png",
+      "sha256": "70eb4abf300cd6088722c4063523786bf7774bae7e71975d099de3ec7ed5583f"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0222.png.provenance.json",
+      "sha256": "161f5e11c045387661d84947324e59639c9fd2c44f46bb33d37f97a5632eeae6"
+    },
+    {
+      "bytes": 44478,
+      "file": "nonphysical_diagnostic_temperature_0223.png",
+      "sha256": "7b737d763bcb19c959d2b0d9b9c1e27e67c6fd3fc29ecd35ad3ebbec1e516ed1"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0223.png.provenance.json",
+      "sha256": "12f77e9a87d9cf5d245f8c00e4e0a63a98a34d9a3530857bd2ea23143800ca07"
+    },
+    {
+      "bytes": 43884,
+      "file": "nonphysical_diagnostic_temperature_0224.png",
+      "sha256": "be11c8c2b558ca7a03853ca5586fa365812f73a631f19b2cbce63caa0636d218"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0224.png.provenance.json",
+      "sha256": "8de30b19c55030042f3f40c04ef42cb483f06291658d9fabab7874dd23a5c714"
+    },
+    {
+      "bytes": 44456,
+      "file": "nonphysical_diagnostic_temperature_0225.png",
+      "sha256": "0044d2b4267875364c3e68276becc6892d7abbb8c279bf6228a8b27bf5ea85e4"
+    },
+    {
+      "bytes": 2111,
+      "file": "nonphysical_diagnostic_temperature_0225.png.provenance.json",
+      "sha256": "cc1df43b2219e9259c2c82cc534b6f81cd4663aa9c875da96a6ff219305ffa95"
+    },
+    {
+      "bytes": 44493,
+      "file": "nonphysical_diagnostic_temperature_0226.png",
+      "sha256": "142cb87b8fcd481a48c50e38c207e006a737a97eaa0a3c6e907c7b2827e0a48d"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0226.png.provenance.json",
+      "sha256": "56d4b92a6bfe39e3513de38bb7697d356ce7b5aad12d062b848b30b4e774ca16"
+    },
+    {
+      "bytes": 44542,
+      "file": "nonphysical_diagnostic_temperature_0227.png",
+      "sha256": "acad578c9f62abb44361e1b24d2390837cef0d1a7f7b9d0a793d0449efd0b372"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0227.png.provenance.json",
+      "sha256": "51f8a4ec26caba81d2563759275c13b1f6609d7a8b794f0b88d0b0b5502ee25d"
+    },
+    {
+      "bytes": 44240,
+      "file": "nonphysical_diagnostic_temperature_0228.png",
+      "sha256": "7dfda23f02a04adc75206887bc90c5101221a0c63c330fa3836d0c813ea88123"
+    },
+    {
+      "bytes": 2110,
+      "file": "nonphysical_diagnostic_temperature_0228.png.provenance.json",
+      "sha256": "13f5fc4d52cf8bf28fa0c7a5bb5e283e0320c449ae7f6b26733cf049fc1e329e"
+    },
+    {
+      "bytes": 44667,
+      "file": "nonphysical_diagnostic_temperature_0229.png",
+      "sha256": "c4f0db670a38fb72dbf359f5563e8b0a95a9fdb241a064db4589e006ff52ea7f"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0229.png.provenance.json",
+      "sha256": "849b30b5772c6eddc958fbe1c2aaee93930c3ac201684ff5e9d187703c0d5b2e"
+    },
+    {
+      "bytes": 44335,
+      "file": "nonphysical_diagnostic_temperature_0230.png",
+      "sha256": "576d9ad68b7a855694b28f9a0b60c9de593b1d9497b4607cde554a98d6e2476d"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0230.png.provenance.json",
+      "sha256": "4b97324ff5d971463bcbff8e7f4f09ead5ebe938922bccd9ce63f7c317f12e53"
+    },
+    {
+      "bytes": 44626,
+      "file": "nonphysical_diagnostic_temperature_0231.png",
+      "sha256": "9a17f4f46d602cb9745bc00637ab5ad3eec3308cb7e7020436bffd810ca59746"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0231.png.provenance.json",
+      "sha256": "f4515fd107be6b1e33c2ce5aae1eeca59fa551c2c0006dd62c9497cae0063765"
+    },
+    {
+      "bytes": 44486,
+      "file": "nonphysical_diagnostic_temperature_0232.png",
+      "sha256": "c7c5fd9d0c13627ff17e19a1752ab7f576d92dd97ac60f3fec24f7470062fc5a"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0232.png.provenance.json",
+      "sha256": "02c2abc74d45d2379b732262f447c8b0d624e9816b14232ad21150db8a732c8c"
+    },
+    {
+      "bytes": 44662,
+      "file": "nonphysical_diagnostic_temperature_0233.png",
+      "sha256": "8ff96b43b1a8f5458d9f956bc808fc520366b466c6f580f3534d43ebf2aa3435"
+    },
+    {
+      "bytes": 2109,
+      "file": "nonphysical_diagnostic_temperature_0233.png.provenance.json",
+      "sha256": "fa072d9519399e2a4cf867c47651de0a8832a7cb34568a616661d3b0ad4412db"
+    },
+    {
+      "bytes": 44274,
+      "file": "nonphysical_diagnostic_temperature_0234.png",
+      "sha256": "2b2abee40ce4249fc0790ee1f72b161c08973c8b0c3f8a20c23652a353683b1a"
+    },
+    {
+      "bytes": 2112,
+      "file": "nonphysical_diagnostic_temperature_0234.png.provenance.json",
+      "sha256": "ea576eaba684405dfd62d0bf9a3463f7e437cbf9f94e4c9a6e42e7c3942dbdee"
+    }
+  ],
+  "label": "NON-PHYSICAL DIAGNOSTIC",
+  "physical_preview_eligible": false,
+  "external_root": "/Volumes/SSD/RISE/fire_production_calibration/r243_nonphysical_diagnostic.v3"
+}

@@ -23,6 +23,8 @@
 
 namespace RISE
 {
+	class IFrameEncoder;
+
 	namespace Implementation
 	{
 		static const char extensions[7][6] = { "tga", "ppm", "png", "hdr", "tiff", "rgbea", "exr" };
@@ -32,7 +34,8 @@ namespace RISE
 		class FrameSink;
 		class FileEncoderObserver;
 
-		class FileRasterizerOutput : public virtual IRasterizerOutput, public virtual Reference
+		class FileRasterizerOutput : public virtual IRasterizerOutput,
+			public virtual IFireRasterizerOutputRoute, public virtual Reference
 		{
 		public:
 			enum FRO_TYPE
@@ -53,6 +56,20 @@ namespace RISE
 			static bool IsHDRFormat( const FRO_TYPE t )
 			{
 				return t == HDR || t == RGBEA || t == EXR;
+			}
+
+			static const char* FormatNameForType( const FRO_TYPE t )
+			{
+				switch( t ) {
+				case TGA: return "TGA";
+				case PPM: return "PPM";
+				case PNG: return "PNG";
+				case HDR: return "HDR";
+				case TIFF: return "TIFF";
+				case RGBEA: return "RGBEA";
+				case EXR: return "EXR";
+				}
+				return "PPM";
 			}
 
 		protected:
@@ -112,6 +129,7 @@ namespace RISE
 			FrameStore*           framestore_       = nullptr;
 			FrameSink*            framesink_        = nullptr;
 			FileEncoderObserver*  encoderObserver_  = nullptr;
+			IFrameEncoder*        encoder_          = nullptr;
 
 			//! L8 — true when `framestore_` is the canonical
 			//! FrameStore pushed via `OnRasterizerFrameStoreChanged`
@@ -162,6 +180,21 @@ namespace RISE
 				const EXR_COMPRESSION exr_compression_,
 				const bool exr_with_alpha_
 				);
+
+			bool HasEncoder() const { return encoder_ != nullptr; }
+			FireArtifactRouteKind FireArtifactRoute() const override
+			{
+				if( !encoder_ ) return FireArtifactRouteKind::UnavailableArtifact;
+				const bool primary = type == EXR && bpp >= 32u &&
+					(color_space == eColorSpace_Rec709RGB_Linear ||
+					 color_space == eColorSpace_ROMMRGB_Linear) &&
+					(exr_compression == eExrCompression_None ||
+					 exr_compression == eExrCompression_Zip ||
+					 exr_compression == eExrCompression_Piz) &&
+					exposureEV == Scalar(0) && display_transform == eDisplayTransform_None;
+				return primary ? FireArtifactRouteKind::PrimaryArtifact :
+					FireArtifactRouteKind::DerivativeArtifact;
+			}
 
 			void	OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion ) override;
 			void	OutputImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame ) override;

@@ -31,6 +31,30 @@ include Filelist
 # .o so the .mm's object lands in the library + gets a tracked .d.
 OBJLIB = $(patsubst %.mm,%.o,$(SRCLIB:.cpp=.o))
 
+# r108 calibration derivation must execute in a process that cannot dispatch
+# Metal.  The dedicated link keeps the ordinary CPU library objects, replaces
+# all four production Metal legs with their honest unsupported stubs, and
+# removes the Metal framework itself.  The post-link symbol/framework audit is
+# part of the target, not an optional source-hygiene test.
+ifdef IS_MACOS_BUILD
+FIREPRODUCTIONNOMETALSTUBS = \
+	$(PATHLIBRARY)Utilities/FireProductionComputeUnsupported.o \
+	$(PATHLIBRARY)Utilities/FireProductionAdvectionUnsupported.o \
+	$(PATHLIBRARY)Utilities/FireProductionProjectionUnsupported.o \
+	$(PATHLIBRARY)Utilities/FireProductionForceUnsupported.o
+OBJLIB_NOMETAL = $(filter-out \
+	$(PATHLIBRARY)Utilities/FireProductionComputeMac.o \
+	$(PATHLIBRARY)Utilities/FireProductionAdvectionMac.o \
+	$(PATHLIBRARY)Utilities/FireProductionProjectionMac.o \
+	$(PATHLIBRARY)Utilities/FireProductionForceMac.o,$(OBJLIB)) \
+	$(FIREPRODUCTIONNOMETALSTUBS)
+LDLIBS_NOMETAL = $(subst -framework Metal,,$(LDLIBS))
+else
+FIREPRODUCTIONNOMETALSTUBS =
+OBJLIB_NOMETAL = $(OBJLIB)
+LDLIBS_NOMETAL = $(LDLIBS)
+endif
+
 # Make the object list for DRISE
 OBJDRISE = $(SRCDRISE:.cpp=.o)
 
@@ -39,6 +63,24 @@ PATHTESTS = ../../../tests/
 PATHTESTDEST = $(PATHDEST)tests/
 SRCTESTS = $(wildcard $(PATHTESTS)*.cpp)
 OBJTESTS = $(SRCTESTS:.cpp=.o)
+FIREPRODUCTIONFP64SOURCES = $(wildcard $(PATHTESTS)fire_production_fp64/*.cpp)
+FIREPRODUCTIONFP64OBJECTS = $(FIREPRODUCTIONFP64SOURCES:.cpp=.o)
+FIREPRODUCTIONTRACESOURCES = $(wildcard $(PATHTESTS)fire_production_trace/*.cpp)
+FIREPRODUCTIONTRACEOBJECTS = $(FIREPRODUCTIONTRACESOURCES:.cpp=.o)
+ifdef IS_MACOS_BUILD
+FIREPREVIEWLIBS = -framework ImageIO -framework CoreGraphics
+else
+FIREPREVIEWLIBS =
+endif
+FIREPRODUCTIONFP64ORIGINALS = \
+	$(PATHLIBRARY)Utilities/FireProductionAdvection.h \
+	$(PATHLIBRARY)Utilities/FireProductionAdvection.cpp \
+	$(PATHLIBRARY)Utilities/FireProductionProjection.h \
+	$(PATHLIBRARY)Utilities/FireProductionProjection.cpp \
+	$(PATHLIBRARY)Utilities/FireProductionTransport.h \
+	$(PATHLIBRARY)Utilities/FireProductionTransport.cpp \
+	$(PATHLIBRARY)Utilities/FireProductionForce.h \
+	$(PATHLIBRARY)Utilities/FireProductionForce.cpp
 
 # Tool source and output lists. Tools are standalone CLI utilities
 # (image diff, firefly inspection, etc.) that link against librise.a
@@ -46,7 +88,9 @@ OBJTESTS = $(SRCTESTS:.cpp=.o)
 # should not be invoked by run_all_tests.sh.
 PATHTOOLS = ../../../tools/
 PATHTOOLDEST = $(PATHDEST)tools/
-SRCTOOLS = $(wildcard $(PATHTOOLS)*.cpp)
+# fire_gas_opacity_native.cpp is a quarantined shared-library backend with a
+# C ABI, not a standalone executable (and intentionally has no main()).
+SRCTOOLS = $(filter-out $(PATHTOOLS)fire_gas_opacity_native.cpp,$(wildcard $(PATHTOOLS)*.cpp))
 OBJTOOLS = $(SRCTOOLS:.cpp=.o)
 
 # Source trees owned by this makefile. Sweep these for stale object files during clean.
@@ -73,7 +117,9 @@ OBJSTANDALONE = \
 # back in via the `-include $(ALL_DEPS)` near the bottom of this file. Result:
 # editing a header invalidates exactly the .o files that included it -- no
 # more `make clean` after touching IJob.h or any other interface header.
-ALL_OBJS = $(OBJLIB) $(OBJDRISE) $(OBJTESTS) $(OBJTOOLS) $(OBJSTANDALONE) $(OBJTESTLIB)
+ALL_OBJS = $(OBJLIB) $(FIREPRODUCTIONNOMETALSTUBS) $(FIREPRODUCTIONFP64OBJECTS) \
+	$(FIREPRODUCTIONTRACEOBJECTS) $(OBJDRISE) $(OBJTESTS) $(OBJTOOLS) $(OBJSTANDALONE) \
+	$(OBJTESTLIB)
 ALL_DEPS = $(ALL_OBJS:.o=.d)
 
 # -MMD: emit a Make-format header-dependency snippet alongside each .o,
@@ -86,11 +132,29 @@ ALL_DEPS = $(ALL_OBJS:.o=.d)
 # or pre-3.0 g++ where -MP doesn't exist).
 CXXFLAGS_DEPS ?= -MMD -MP
 
+RENDERER_BUILD_HEADER = RendererBuildIdentity.generated.h
+RENDERER_FP_CONTRACTION = $(if $(findstring -ffast-math,$(CXXFLAGS)),fast,compiler_default)
+RENDERER_OPTIMIZATION = $(if $(findstring -O3,$(CXXFLAGS)),O3,$(if $(findstring -O2,$(CXXFLAGS)),O2,$(if $(findstring -O1,$(CXXFLAGS)),O1,$(if $(findstring -Os,$(CXXFLAGS)),Os,$(if $(findstring -Oz,$(CXXFLAGS)),Oz,compiler_default)))))
+RENDERER_LTO = $(if $(findstring -flto=thin,$(CXXFLAGS)),thin,$(if $(findstring -flto,$(CXXFLAGS)),full,off))
+CPPFLAGS += -I$(CURDIR)
+
+$(RENDERER_BUILD_HEADER) : FORCE_RENDERER_BUILD_IDENTITY
+	@python3 ../../../tools/generate_renderer_build_identity_header.py \
+		--repo-root ../../.. --output $@ \
+		--fp-contraction $(RENDERER_FP_CONTRACTION) \
+		--optimization-mode $(RENDERER_OPTIMIZATION) \
+		--lto-mode $(RENDERER_LTO)
+
+$(PATHLIBRARY)Job.o : $(RENDERER_BUILD_HEADER)
+
+FORCE_RENDERER_BUILD_IDENTITY :
+.PHONY: FORCE_RENDERER_BUILD_IDENTITY
+
 # Rules section
 # Normally you would define target upstairs and build it here, but 
 # in our case we're going to explicitly build the test programs
 
-all : librise rise meshconverter imageconverter biospecbsdfmaker
+all : librise rise meshconverter imageconverter biospecbsdfmaker fire-simulator
 
 drise : drise_server drise_client drise_submitter
 
@@ -113,13 +177,17 @@ librise : $(LIBRISE_A)
 # both libraries, 523 non-LTO + 8 LTO test links): a clean `make -j10 tests`
 # takes 235 s, and rebuilding the tests after touching one library source
 # 63-65 s, most of it the eight LTO links below (the non-LTO relinks alone
-# took 18 s before those eight were added).
+# took 18 s before those eight were added).  After the fire-solver merge
+# (eight LTO tests at the time, plus three fire binaries that link the LTO objects
+# directly) a clean `make -j10 tests` took 242 s here, where FireSequenceTest
+# and its oracle do not build (they need OpenVDB).
 # Costs: same -O3 / -ffast-math flags but no cross-TU inlining (what the Linux
 # build has always done), measured ~0-9 % slower test runs (+3 % on a
 # six-test sample); and a library edit compiles twice, once per library
 # (about 50 s more for a full library rebuild).  The shipped
-# binaries (`make all`, Xcode) are unaffected.  (The eight TESTS_LINK_LTO
-# tests below also need the LTO library, so `make tests` builds both.)
+# binaries (`make all`, Xcode) are unaffected.  (The TESTS_LINK_LTO tests
+# below, and the three fire binaries with their own link rules, also need the
+# LTO library, so `make tests` builds both.)
 #
 # TESTS_LINK_LTO keeps the old LTO build for the tests whose results depend
 # on LTO code generation (measured: a full suite run on the non-LTO library
@@ -132,14 +200,19 @@ librise : $(LIBRISE_A)
 # The last two are numeric-robustness differences, not only low bits; the
 # Linux build (never LTO) may show them too.  That run could not test the
 # twelve tests already failing on master; one of them may need adding once
-# fixed.
+# fixed.  Added with the fire solver merge (each failed on the non-LTO library
+# and passed on the LTO one, run alone): FireSimulationSolverTest (an r80
+# recorded cycling-state replay), FireProductionSolverTest (a pinned r83
+# table-package digest) and FireProductionProjectionTest (a Metal / fp64 CPU
+# mirror wall-time ratio, which the CPU side's code generation moves).
 # `make TEST_LTO=1 tests` links every test against the LTO library instead,
 # for checking something that depends on LTO code generation (run the suite
 # that way with `TEST_LTO=1 ./run_all_tests.sh`).  The mode is recorded in
 # $(TEST_MODE_STAMP), so switching it rebuilds the tests; dry runs and
 # `clean` leave the record alone.
 TESTS_LINK_LTO = LegacyTierRenderIdentityTest DeprecatedMaterialRenderIdentityTest ImageDriftHistoryTest \
-	SSSCriticalPartitionTest SSSNearUnityFresnelTest HairBSDFTest ProximitySignalTest LuminarySamplerAreaTest
+	SSSCriticalPartitionTest SSSNearUnityFresnelTest HairBSDFTest ProximitySignalTest LuminarySamplerAreaTest \
+	FireSimulationSolverTest FireProductionSolverTest FireProductionProjectionTest
 
 ifneq ($(filter -flto%,$(CPPFLAGS) $(CXXFLAGS)),)
 ifeq ($(filter-out 0,$(strip $(TEST_LTO))),)
@@ -149,7 +222,9 @@ endif
 
 ifdef TESTLIB_SPLIT
 TESTOBJ_DIR = $(PATHDEST)testobj/
-TEST_CPPFLAGS = $(filter-out -flto -flto=%,$(CPPFLAGS))
+TEST_IDENTITY_DIR = $(TESTOBJ_DIR)identity/
+TEST_RENDERER_BUILD_HEADER = $(TEST_IDENTITY_DIR)$(RENDERER_BUILD_HEADER)
+TEST_CPPFLAGS = -I$(TEST_IDENTITY_DIR) $(filter-out -flto -flto=%,$(CPPFLAGS))
 TEST_CXXFLAGS = $(filter-out -flto -flto=%,$(CXXFLAGS))
 OBJTESTLIB = $(patsubst ../../../%,$(TESTOBJ_DIR)%,$(OBJLIB))
 LIBRISE_TEST_A = $(PATHDEST)librise_test.a
@@ -176,6 +251,38 @@ $(TESTOBJ_DIR)%.o : ../../../%.mm
 	@mkdir -p $(dir $@)
 	@echo "Compiling for tests (ObjC++): $<"
 	@$(CXX) $(TEST_CPPFLAGS) $(TEST_CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
+
+# Library files with their own compile flags (see the per-file rules near the
+# end of this file) keep them in the test copy: the fire production
+# operators compile without fast-math or FP contraction (FireCase's rule only
+# drops LTO, which the test copy does anyway).
+TEST_SAFE_FP32_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
+	FireProductionAdvection.o FireProductionProjection.o \
+	FireProductionTransport.o FireProductionSource.o FireProductionForce.o)
+TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
+	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
+	FireProductionForceMac.o)
+
+$(filter $(OBJTESTLIB),$(TEST_SAFE_FP32_OBJS)) : $(TESTOBJ_DIR)%.o : ../../../%.cpp
+	@mkdir -p $(dir $@)
+	@echo "Compiling for tests (safe fp32): $<"
+	@$(CXX) $(TEST_CPPFLAGS) $(filter-out -ffast-math,$(TEST_CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(filter $(OBJTESTLIB),$(TEST_SAFE_FP32_MM_OBJS)) : $(TESTOBJ_DIR)%.o : ../../../%.mm
+	@mkdir -p $(dir $@)
+	@echo "Compiling for tests (safe fp32 ObjC++): $<"
+	@$(CXX) $(TEST_CPPFLAGS) $(filter-out -ffast-math,$(TEST_CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
+
+# The test copy's Job.o records its own build identity: the same source state
+# with LTO off (TEST_CPPFLAGS puts this directory ahead of -I$(CURDIR)).
+$(TEST_RENDERER_BUILD_HEADER) : FORCE_RENDERER_BUILD_IDENTITY
+	@python3 ../../../tools/generate_renderer_build_identity_header.py \
+		--repo-root ../../.. --output $@ \
+		--fp-contraction $(RENDERER_FP_CONTRACTION) \
+		--optimization-mode $(RENDERER_OPTIMIZATION) \
+		--lto-mode off
+
+$(TESTOBJ_DIR)src/Library/Job.o : $(TEST_RENDERER_BUILD_HEADER)
 else
 TEST_CPPFLAGS = $(CPPFLAGS)
 TEST_CXXFLAGS = $(CXXFLAGS)
@@ -227,6 +334,12 @@ $(LIBRISE_A) : $(OBJLIB) $(ARCHIVE_BUILD_DEFS)
 rise : $(OBJLIB) $(PATHSRCS)commandconsole.o
 	@echo Linking $(PATHDEST)rise
 	@$(CXX)	$(CPPFLAGS) -o $(PATHDEST)rise $(PATHSRCS)commandconsole.o $(OBJLIB) $(LDLIBS)
+
+fire-simulator : $(OBJLIB) $(PATHTOOLS)fire_simulator.o
+	@mkdir -p $(PATHTOOLDEST)
+	@echo Linking $(PATHTOOLDEST)fire_simulator
+	@$(CXX) $(CPPFLAGS) -o $(PATHTOOLDEST)fire_simulator \
+		$(PATHTOOLS)fire_simulator.o $(OBJLIB) $(LDLIBS)
 
 risempi : $(OBJLIB) $(PATHSRCS)risempi.o
 	@echo Linking $(PATHDEST)risempi
@@ -285,7 +398,8 @@ drise_submitter : $(OBJLIB) $(OBJDRISE) $(PATHSRCSDRISE)drise_submitter.o
 # diagnostics; use `make -k -jN tests` to keep building past failures (CI
 # still gets a non-zero exit either way).  run_all_tests.sh isolates and
 # logs individual build failures itself.
-TESTBINS = $(addprefix $(PATHTESTDEST),$(notdir $(SRCTESTS:.cpp=)))
+TESTBINS = $(addprefix $(PATHTESTDEST),$(notdir $(SRCTESTS:.cpp=))) \
+	$(PATHTESTDEST)FireProductionCalibrationOracle
 
 tests : $(TESTBINS)
 	@echo "============================================================"
@@ -304,11 +418,55 @@ build-test/% : $(PATHTESTDEST)%
 # Compile and link split into two rules so a library-only change relinks
 # WITHOUT recompiling every test translation unit (the .d dependency files
 # emitted by $(CXXFLAGS_DEPS) keep the .o rebuilds header-accurate).
+$(PATHTESTS)fire_production_fp64/%.o : $(PATHTESTS)fire_production_fp64/%.cpp
+	@echo Compiling strict fp64 calibration mirror: $<
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHTESTS)fire_production_trace/%.o : $(PATHTESTS)fire_production_trace/%.cpp
+	@echo Compiling strict roundoff trace: $<
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHTESTS)FireProductionCalibrationTest.o : $(PATHTESTS)FireProductionCalibrationTest.cpp
+	@echo Compiling strict calibration gate: $<
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHTESTS)FireSequenceTest.o : $(PATHTESTS)FireSequenceTest.cpp
+	@echo Compiling strict calibration owner: $<
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
 $(PATHTESTS)ImageReaderOverflowTest.o: CPPFLAGS += -DRISE_TEST_SOURCE_ROOT='"$(abspath ../../..)"'
 
 $(PATHTESTS)%.o : $(PATHTESTS)%.cpp $(TEST_MODE_STAMP)
 	@echo Compiling: $<
 	@$(CXX) $(call TEST_CPPFLAGS_FOR,$*) $(call TEST_CXXFLAGS_FOR,$*) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+.PHONY: check-fire-production-fp64 check-fire-production-trace
+check-fire-production-fp64 : ../../../tools/generate_fire_production_fp64_mirror.py $(FIREPRODUCTIONFP64ORIGINALS) $(FIREPRODUCTIONFP64SOURCES)
+	@python3 ../../../tools/generate_fire_production_fp64_mirror.py --check
+
+check-fire-production-trace : ../../../tools/generate_fire_production_roundoff_trace.py $(FIREPRODUCTIONFP64ORIGINALS) $(FIREPRODUCTIONTRACESOURCES)
+	@python3 ../../../tools/generate_fire_production_roundoff_trace.py --check
+
+$(PATHTESTDEST)FireProductionCalibrationTest : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB)
+	@mkdir -p $(PATHTESTDEST)
+	@echo Linking $@
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) $(LDLIBS)
+
+$(PATHTESTDEST)FireSequenceTest : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB)
+	@mkdir -p $(PATHTESTDEST)
+	@echo Linking $@
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) $(LDLIBS) $(FIREPREVIEWLIBS)
+
+$(PATHTESTDEST)FireProductionCalibrationOracle : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB_NOMETAL)
+	@mkdir -p $(PATHTESTDEST)
+	@echo Linking no-Metal calibration owner: $@
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB_NOMETAL) $(LDLIBS_NOMETAL) $(FIREPREVIEWLIBS)
+ifdef IS_MACOS_BUILD
+	@if otool -L $@ | grep -q 'Metal.framework'; then \
+		echo 'calibration owner unexpectedly links Metal.framework'; rm -f $@; exit 1; fi
+	@if nm $@ | grep -q 'ProjectFireProductionMetalImpl'; then \
+		echo 'calibration owner unexpectedly contains a production Metal implementation'; rm -f $@; exit 1; fi
+endif
 
 $(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_TEST_A) $(TEST_MODE_STAMP)
 	@mkdir -p $(PATHTESTDEST)
@@ -371,6 +529,48 @@ test : tests
 .SUFFIXES:
 .SUFFIXES: .cpp .o
 
+# r270 the case record derives identity-bearing floats (grid, source
+# pattern, flame height).  Keep its historical fast-math codegen but out of
+# link-time optimization, so edits to the executables that link it cannot
+# re-optimize the derivation and silently move canonical case IDs.
+$(PATHLIBRARY)Utilities/FireCase.o : $(PATHLIBRARY)Utilities/FireCase.cpp
+	@echo "Compiling (no LTO): $<"
+	@$(CXX) $(filter-out -flto,$(CPPFLAGS)) $(filter-out -flto,$(CXXFLAGS)) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+# r84 production remap arithmetic is a recorded binary32 operator.  It must
+# not inherit the renderer's reassociation/contract flags.
+$(PATHLIBRARY)Utilities/FireProductionAdvection.o : $(PATHLIBRARY)Utilities/FireProductionAdvection.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Utilities/FireProductionProjection.o : $(PATHLIBRARY)Utilities/FireProductionProjection.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Utilities/FireProductionTransport.o : $(PATHLIBRARY)Utilities/FireProductionTransport.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Utilities/FireProductionSource.o : $(PATHLIBRARY)Utilities/FireProductionSource.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Utilities/FireProductionForce.o : $(PATHLIBRARY)Utilities/FireProductionForce.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Utilities/FireProductionAdvectionMac.o : $(PATHLIBRARY)Utilities/FireProductionAdvectionMac.mm
+	@echo "Compiling (safe fp32 ObjC++): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
+
+$(PATHLIBRARY)Utilities/FireProductionProjectionMac.o : $(PATHLIBRARY)Utilities/FireProductionProjectionMac.mm
+	@echo "Compiling (safe fp32 ObjC++): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
+
+$(PATHLIBRARY)Utilities/FireProductionForceMac.o : $(PATHLIBRARY)Utilities/FireProductionForceMac.mm
+	@echo "Compiling (safe fp32 ObjC++): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
+
 .cpp.o:
 	@echo Compiling: $<
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
@@ -412,6 +612,7 @@ clean:
 	@rm -rf $(OBJTOOLS) $(PATHTOOLDEST)
 	@find $(CLEAN_OBJECT_DIRS) -type f \( -name '*.o' -o -name '*.d' \) -exec rm -f {} \;
 	@rm -rf $(PATHSRCS)ii_files
+	@rm -f $(RENDERER_BUILD_HEADER)
 	@rm -rf $(PATHLIBRARY)Animation/ii_files
 	@rm -rf $(PATHLIBRARY)Cameras/ii_files
 	@rm -rf $(PATHLIBRARY)Functions/ii_files

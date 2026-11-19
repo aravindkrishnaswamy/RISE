@@ -105,10 +105,13 @@ namespace RISE
 			void		GetPel( const Scalar x, const Scalar y, C& p ) const
 			{
 				// Non-finite UV guard: NaN survives the wrap and both
-				// clamps below into (unsigned)NaN (UB); +inf under
-				// Repeat becomes NaN too.  Bit tests because plain FP
-				// comparisons are foldable under -ffast-math (rationale
-				// at BilinRasterImageAccessor::GetPel / FiniteMath.h).
+				// clamps below into (unsigned)NaN (UB); ±inf under
+				// Repeat/MirroredRepeat becomes NaN too, and under
+				// ClampToEdge it previously saturated to an edge texel —
+				// returning the zero pel there is a deliberate change.
+				// Bit tests because plain FP comparisons are foldable
+				// under -ffast-math (rationale at
+				// BilinRasterImageAccessor::GetPel / FiniteMath.h).
 				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) ) {
 					p = C();
 					return;

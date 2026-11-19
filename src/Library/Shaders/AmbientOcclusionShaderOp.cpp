@@ -1,4 +1,3 @@
-#include "../Utilities/IndependentSampler.h"
 //////////////////////////////////////////////////////////////////////
 //
 //  AmbientOcclusionShaderOp.cpp - Implementation of the AmbientOcclusionShaderOp class
@@ -14,6 +13,7 @@
 
 #include "pch.h"
 #include "AmbientOcclusionShaderOp.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Utilities/GeometricUtilities.h"
 
 using namespace RISE;

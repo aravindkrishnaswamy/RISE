@@ -94,8 +94,7 @@ int main()
 
 	std::string scenePath;
 	{
-		const char* base = std::getenv( "TMPDIR" );
-		std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
+		std::string dir = RISE::TestSupport::ScratchBaseDir();
 		if( !dir.empty() && dir.back() != '/' ) dir += '/';
 		scenePath = dir + "rise_agent_mcp_stdio_smoke.RISEscene";
 		std::ofstream f( scenePath.c_str(), std::ios::binary );

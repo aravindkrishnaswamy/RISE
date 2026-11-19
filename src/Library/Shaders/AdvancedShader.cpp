@@ -32,6 +32,7 @@
 #include "ShadowPhotonMapShaderOp.h"
 #include "SSS/SubSurfaceScatteringShaderOp.h"
 #include "SSS/DonnerJensenSkinSSSShaderOp.h"
+#include "SSS/SSSContainment.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -158,7 +159,12 @@ void AdvancedShader::Shade(
 			RISEPel cthis = c;
             const bool accumulatedReference=rc.smsReferenceRadiance;
             if(accumulatedReference && SMSIndependentShaderResult(*op.pShaderOp)) rc.smsReferenceRadiance=false;
-			op.pShaderOp->PerformOperation( rc, ri, caster, rs2, cthis, ior_stack, pSPF?&scattered:0 );
+			if( ShaderOpRequiresSSSContainment( *op.pShaderOp ) ) {
+				SSSContainmentScope containment;
+				op.pShaderOp->PerformOperation( rc, ri, caster, rs2, cthis, ior_stack, pSPF?&scattered:0 );
+			} else {
+				op.pShaderOp->PerformOperation( rc, ri, caster, rs2, cthis, ior_stack, pSPF?&scattered:0 );
+			}
             if(!SMSReplacesShaderResult(op.operation)) rc.smsReferenceRadiance=accumulatedReference || rc.smsReferenceRadiance;
 			switch( op.operation ) {
 				default:
@@ -229,7 +235,13 @@ Scalar AdvancedShader::ShadeNM(
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth ) {
             const bool accumulatedReference=rc.smsReferenceRadiance;
             if(accumulatedReference && SMSIndependentShaderResult(*op.pShaderOp)) rc.smsReferenceRadiance=false;
-			const Scalar cthis = op.pShaderOp->PerformOperationNM( rc, ri, caster, rs2, c, nm, ior_stack, pSPF?&scattered:0 );
+			Scalar cthis = 0;
+			if( ShaderOpRequiresSSSContainment( *op.pShaderOp ) ) {
+				SSSContainmentScope containment;
+				cthis = op.pShaderOp->PerformOperationNM( rc, ri, caster, rs2, c, nm, ior_stack, pSPF?&scattered:0 );
+			} else {
+				cthis = op.pShaderOp->PerformOperationNM( rc, ri, caster, rs2, c, nm, ior_stack, pSPF?&scattered:0 );
+			}
             if(!SMSReplacesShaderResult(op.operation)) rc.smsReferenceRadiance=accumulatedReference || rc.smsReferenceRadiance;
 
 			switch( op.operation ) {
@@ -308,8 +320,14 @@ void AdvancedShader::ShadeHWSS(
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth )
 		{
 			Scalar opResult[SampledWavelengths::N];
-			op.pShaderOp->PerformOperationHWSS( rc, ri, caster, rs2, caccum, swl,
-				ior_stack, pSPF?&scattered:0, opResult );
+			if( ShaderOpRequiresSSSContainment( *op.pShaderOp ) ) {
+				SSSContainmentScope containment;
+				op.pShaderOp->PerformOperationHWSS( rc, ri, caster, rs2, caccum, swl,
+					ior_stack, pSPF?&scattered:0, opResult );
+			} else {
+				op.pShaderOp->PerformOperationHWSS( rc, ri, caster, rs2, caccum, swl,
+					ior_stack, pSPF?&scattered:0, opResult );
+			}
 
 			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 			{
@@ -366,5 +384,4 @@ void AdvancedShader::ResetRuntimeData() const
 		i->pShaderOp->ResetRuntimeData();
 	}
 }
-
 

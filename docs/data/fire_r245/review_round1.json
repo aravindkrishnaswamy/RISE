@@ -1,0 +1,20 @@
+{
+  "reviewed_commit": "9df0a5f1",
+  "reviewers": [
+    {
+      "agent": "r245_budget_math_review_r1",
+      "axis": "numerical/design fidelity",
+      "P1": 0,
+      "P2": 0
+    },
+    {
+      "agent": "r245_budget_lifecycle_review_r1",
+      "axis": "lifecycle/memory and independent audit",
+      "P1": 0,
+      "P2": 1,
+      "finding": "Python audit omitted statistics inventory/closure/interstep and source-component ledgers; resealed corruption passed.",
+      "additional_concern": "Bind launch producer/executable and accepted dt history."
+    }
+  ],
+  "resolution": "Correction pending fresh final-state review; no empirical run launched."
+}

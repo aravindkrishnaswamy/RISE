@@ -173,8 +173,7 @@ static const char* const kSharedDirectScene =
 // gets the identical treatment instead of hardcoding a fixed name.
 static std::string WriteTempPath( const char* name )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	return dir + std::to_string( (long)getpid() ) + "_" + name;
 }

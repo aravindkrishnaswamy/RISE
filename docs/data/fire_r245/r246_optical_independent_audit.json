@@ -1,0 +1,37 @@
+{
+  "scope": "independent actual EXR decode and proof-root audit; synthetic optical control only",
+  "passed": true,
+  "vdb_verifier_sha256": "1d1f77da294c4fa5933454c88e36f235daf38f56407256a6c1a044b940a327ea",
+  "persisted_lower_values_and_masks_recomputed": true,
+  "report_sha256": "0651868aaa85d00ebd692af939610c6d2ea5550b1c1607ade5ced66a5b97d99f",
+  "OpenEXR_version": "3.5.1",
+  "repeat_linear_rgb_l1": 0.0,
+  "upper_emission_linear_rgb_l1": 17.40667987224735,
+  "upper_extinction_linear_rgb_l1": 17.664666727666646,
+  "upper_emission_changed_pixels": 548,
+  "upper_extinction_changed_pixels": 602,
+  "primary_csv_proofs": [
+    {
+      "variant": 0,
+      "exr_sha256": "1b04d04f015e2e3a7045426b2f4a4a9cc1ad371a7e6d3d55661a4b8a567cd2ba",
+      "csv_exactly_matches_actual_exr": true
+    },
+    {
+      "variant": 1,
+      "exr_sha256": "1b04d04f015e2e3a7045426b2f4a4a9cc1ad371a7e6d3d55661a4b8a567cd2ba",
+      "csv_exactly_matches_actual_exr": true
+    },
+    {
+      "variant": 2,
+      "exr_sha256": "f356e27f2e1ff526338180c321fa89dd662a601c4e1ce79c2cc932e36c0ca01b",
+      "csv_exactly_matches_actual_exr": true
+    },
+    {
+      "variant": 3,
+      "exr_sha256": "71bf49a140874c2f5055da934c45479fc1cc474a391866250b5c25dc6fe37712",
+      "csv_exactly_matches_actual_exr": true
+    }
+  ],
+  "actual_taller_allocation_exercised": false,
+  "physical_qualification_established": false
+}

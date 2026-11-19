@@ -1,0 +1,97 @@
+{
+ "carrier_note": "Draft JSON carrier. Final adoption per FIRE_SMOKE_DESIGN.md SS8 requires re-encoding as RISE-CBOR64-v1; adopted record ID is SHA-256 of those exact CBOR bytes.",
+ "closure_paths": [
+  "owner library pulls (Samaniego 1995; Markstein 1985 series; Koseki & Yumoto 1988; SFPE Ch.36; Thomsen 2017) - may supply same-regime evidence",
+  "RESOLVED: computed bounds qualify in principle (see owner_ruling_2026_08_05); the construction must meet the revised derived-record uncertainty requirements",
+  "lab measurement required only where model discrepancy cannot be bounded from same-regime data"
+ ],
+ "compiled": "2026-07-31",
+ "computed_ratio_matrix_percent": {
+  "1e-4/route1": 7.0,
+  "1e-4/route2_1800K": 2.5,
+  "1e-5_unsourced/route1": 0.7,
+  "1e-5_unsourced/route2_1800K": 0.25,
+  "CTR_bound/route1": 175,
+  "CTR_bound/route2_1800K": 62
+ },
+ "criterion": "SS7.0: 95%-confidence upper bound on chemiluminescent power below BOTH (i) 1% of the fuel/case's measured 380-780nm radiant power AND (ii) the absolute radiance gate's uncertainty at every gated wavelength",
+ "denominator_inputs": {
+  "HRR_W": {
+   "source": "Hamins, Bundy & Dillon 2005, J.Fire Prot.Eng. 15:265-285 p.277 (open, read)",
+   "uncertainty": 9,
+   "value": 77
+  },
+  "audit_p3": "P3 AUDIT RESULT (owner, 2026-08-06): Markstein series is total-radiation only; Klassen-Gore has 632.8nm absorption but emission spectra start at 850nm (toluene) / 1200nm (heptane). The 380-780nm denominator gap is upgraded from 'unpulled' to 'MEASUREMENT ABSENT IN THE AUDITED CLASSIC SERIES': a qualifying tier-1 denominator requires a new measurement or acceptance of a derived value.",
+  "chi_r": {
+   "source": "ibid. p.280",
+   "uncertainty": 0.01,
+   "value": 0.17
+  },
+  "geometry_specific_validation_point": {
+   "candle_HRR_W": 84.04,
+   "chi_r": 0.066,
+   "note": "geometry-specific: chi_r 6.6% here vs Hamins 17% for the 21mm taper - radiative fraction is configuration-dependent; record both, per-case per SS7.0",
+   "peak_soot_ppm": 8,
+   "source": "open predecessor, Combustion Institute MCS-7 proceedings (Fuentes group); no temperature data"
+  },
+  "no_direct_measurement": "no published 380-780nm band radiometry of a candle found",
+  "route1_luminous": {
+   "D_vis_W": [
+    0.1,
+    0.12
+   ],
+   "basis": "1 cd convention (12.6 lm) / computed soot-spectrum visible luminous efficacy 103-131 lm/W_vis at 1900-2200K"
+  },
+  "route2_radiative": {
+   "D_vis_W": [
+    0.13,
+    0.6
+   ],
+   "basis": "chi_r*HRR x soot-weighted visible fraction at Teff 1600-2000K"
+  },
+  "soot_T_K": {
+   "range": [
+    2000,
+    2200
+   ],
+   "source": "Thomsen et al. 2017 ETFS 82:116, DOI 10.1016/j.expthermflusci.2016.10.033 (corrected from .11.006). PREVIEW-ONLY: accessible record confirms 2000-2200K but exposes neither the field table nor uncertainty."
+  }
+ },
+ "derived_bound_result": {
+  "central_percent": 1.02,
+  "upper95_percent": 17.1,
+  "verdict": "owner-directed derived record built per SS1.5a budget: criterion NOT met; negligibility not establishable and plausibly not true at 1% for wax. Predictive wax likely needs a real chem record."
+ },
+ "design_revision_evaluated_against": 45,
+ "draft_record_id_sha256_of_payload": "54e1329d3c7b61c18dedd04eaee6dd21c342edb03caf11261a5eca5480b0792b",
+ "leg_ii_blocker": "Leg (ii) is un-evaluable until SS12 item 4 (absolute radiance-gate dataset) closes: no gated wavelengths or gate uncertainty exist yet. Structural dependency, independent of leg (i).",
+ "notes": [
+  "blue base visibly distinct in dim light - consistent with percent-level, not proof of sub-percent",
+  "the two denominator routes disagree ~5x because a flame is not isothermal and chi_r includes IR gas bands"
+ ],
+ "numerator_inputs": {
+  "classic_1e-4": {
+   "audit": "P2 AUDIT RESULT (owner, 2026-08-06): Samaniego 1995 is explicitly a NUMERICAL INVESTIGATION - not a measured absolute CO2* W/HRR record; Stanford brief and DLR spectroscopy also fail the absolute-power-ratio requirement. RECLASSIFIED as model evidence. The only no-lab route is Slack-Grillo/Liu as a derived record with the full SS7.0 derived-record uncertainty budget.",
+   "source": "Samaniego, Egolfopoulos & Bowman 1995, Combust. Sci. Technol. 109:183-203 (owner library pull)",
+   "status": "RECLASSIFIED_AS_MODEL_EVIDENCE (was PAYWALLED-UNVERIFIED)",
+   "value": "~1e-4 of HRR"
+  },
+  "diffusion_flame_specific": {
+   "note": "No published measurement of total visible chem power for diffusion flames. Computable route: Slack & Grillo 1985 CO2* kinetics (via Nori & Seitzman AIAA 2008-953 Eq.3) + Liu, Tan, Wan, Zhang & Yao 2020, ACS Omega 5:15922 calibrated CH*/OH* fields (attribution corrected 2026-08-06)",
+   "value": null
+  },
+  "open_upper_bound": {
+   "basis": "reaction-zone radiative loss, LEAN PREMIXED",
+   "source": "Samaniego, CTR Annual Research Briefs 1994, Table 2 p.31 (open, read)",
+   "value": "0.4-2.5e-3 of HRR"
+  }
+ },
+ "owner_ruling_2026_08_05": "OWNER RULING 2026-08-05 - policy closed, record stays preview: computed bounds QUALIFY IN PRINCIPLE under revised SS7.0 language ('a pinned evidence record reports a one-sided 95%-confidence upper bound, obtained either directly or through a validated measurement model over traceable measured inputs; a derived record must include measurement, covariance, digitization, geometry, spectral-truncation, domain-transfer, and model-form uncertainties' - design-loop edit pending), but the present Slack-Grillo + Liu + Hamins construction FAILS it: kinetics model is not a same-case measurement; methane-field transfer to this fuel is an unbounded domain-transfer discrepancy; numerator channel completeness undemonstrated; chi_r x soot-T is not a measured visible denominator (~5x reconstruction spread); leg (ii) untestable until Q4 freezes. Lab work not required by definition; required for any fuel whose model discrepancy cannot be bounded from same-regime data.",
+ "record_kind": "chem_negligibility_bound",
+ "record_name": "chem-negligibility-wax_candle-v1",
+ "record_status": "DERIVED_BOUND_CONSTRUCTED_2026-08-06__CRITERION_NOT_MET (see fire_chem_derived_bound_wax_candle.draft.json)",
+ "schema_version": "draft-1",
+ "status": "NOT_CLOSEABLE_FROM_OPEN_LITERATURE",
+ "verdict": "INDETERMINATE at the 1% threshold: defensible open-literature bound fails by ~2 orders; plausible unverified estimates straddle 1%. Not a 95%-confidence record in either direction.",
+ "version": "v1-draft"
+}

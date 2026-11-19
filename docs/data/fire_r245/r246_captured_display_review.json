@@ -1,0 +1,33 @@
+{
+  "schema": "rise.fire.r246.captured-display-review.v1",
+  "accepted": true,
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "round": 1,
+  "reviewed_head": "9f85793f6",
+  "completed_utc": "2026-10-04T08:15:36.215392+00:00",
+  "reviewers": [
+    {
+      "agent": "r246_captured_display_contract_r1",
+      "axis": "arithmetic_contract",
+      "p1": 0,
+      "p2": 0,
+      "verdict": "Verified exact hashes, warning-free build and preserved original checkpoint/manifest/CSV/exit98 hashes. Same consumed display bytes verify/measure/report and four-member inventory binds receipt. Synthetic native ImageIO controls discriminate whiteA4 versus reopenedB0, with unchanged threshold/windows/spectra."
+    },
+    {
+      "agent": "r246_captured_display_lifecycle_r1",
+      "axis": "lifecycle_provenance",
+      "p1": 0,
+      "p2": 0,
+      "verdict": "CFData copies captured hash-admitted bytes and balanced source/image/data lifetimes. Verified native synthetic outputs independently; consumed four-member pairing closes path drift. Historical unpinned calls preserve semantics. Actual publication/recovered CLI/full recovery remain pending."
+    }
+  ],
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_captured_display_runtime.v1",
+  "executable_sha256": "a074906ebedb22466daffbe015ba2a51f087772ac9f8c28b8891a84e98b31b61",
+  "limitations": [
+    "Synthetic 2x2 ImageIO PNG/GIF decodes and receipt-only byte inventory controls, not fire rendering/EXR attestation or recovered/native physical evidence.",
+    "No native preflight, simulation, field reading or recovered preview/spectrum launch.",
+    "Historical first-light GIF call remains optional-unpinned; captured single-read decoder shared without rewriting prior artifacts.",
+    "Actual scene/GIF/output publication composition/full recovery/strict signed budget admission remain pending."
+  ]
+}

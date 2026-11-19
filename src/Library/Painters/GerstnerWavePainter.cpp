@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "GerstnerWavePainter.h"
 #include "../Animation/KeyframableHelper.h"
 #include <cmath>
@@ -177,6 +178,7 @@ IKeyframeParameter* GerstnerWavePainter::KeyframeFromParameters( const String& n
 
 void GerstnerWavePainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case TIME_ID:
@@ -192,5 +194,6 @@ void GerstnerWavePainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void GerstnerWavePainter::RegenerateData()
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	// No-op: time is read live in Evaluate; wave spectrum is static.
 }

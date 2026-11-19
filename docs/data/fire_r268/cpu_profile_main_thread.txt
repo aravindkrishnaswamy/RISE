@@ -1,0 +1,80 @@
+samples 12170 total ms 12170.0
+     6531 ms thread Main Thread (0x74b7736) (FireSequenceTest, pid: 58031)
+      416 ms thread FireSequenceTest (0x74b8304) (FireSequenceTest, pid: 58031)
+      302 ms thread FireSequenceTest (0x74b7795) (FireSequenceTest, pid: 58031)
+      240 ms thread FireSequenceTest (0x74b7749) (FireSequenceTest, pid: 58031)
+      218 ms thread FireSequenceTest (0x74b774d) (FireSequenceTest, pid: 58031)
+      217 ms thread FireSequenceTest (0x74b774b) (FireSequenceTest, pid: 58031)
+--- self
+    1085 ms RISE::(anonymous namespace)::HashFluxValues
+     976 ms RISE::(anonymous namespace)::HashSourceDoubleValues
+     737 ms RISE::FireSimulationMethaneRecord::SensibleEnthalpiesBySpeciesOrderJPerKG
+     591 ms RISE::FireProductionAcceptedManifoldPayloadDigest
+     348 ms RISE::FireSim::FireProductionCanonicalSourceAuthority::HashFloatValues
+     326 ms RISE::FireSimulationMethaneRecord::AcceptedConservativeStateAdmissibleByComponentOrder
+     274 ms RISE::FireProductionAcceptedStatePayloadDigestFast
+     163 ms RISE::FireSimulationMethaneRecord::InvertAcceptedConservativeStateByComponentOrder
+     145 ms _platform_memmove
+     142 ms _platform_memcmp
+     111 ms RISE::(anonymous namespace)::BuildDualAxisRequest
+     100 ms RISE::ValidateFireProductionProjectionRequest
+      99 ms RISE::FireSimulationMethaneRecord::FindSpecies
+      99 ms log
+      91 ms bool FireProductionAcceptedStageBudget::Reduce<RISE::FireProductionProjectedHeunMetalOwnerRequest, R
+      85 ms std::__1::vector<RISE::FireSim::ConservativeVector, std::__1::allocator<RISE::FireSim::ConservativeV
+      84 ms RISE::FireSim::BuildOpenFluxPair3D
+      81 ms RISE::FireProductionFrozenSourcePacketSeal::Matches
+      78 ms iokit_user_client_trap
+      66 ms RISE::FireSim::MixtureCertifiedCpLowerJPerM3K
+      42 ms (anonymous namespace)::RunMethaneFrameProbe
+      41 ms RISE::FireSim::BuildIgnitionEligibility
+      38 ms std::__1::vector<std::__1::array<double, 8ul>, std::__1::allocator<std::__1::array<double, 8ul>>>::a
+      37 ms RISE::ValidateFireProductionRemapRequest
+      36 ms RISE::FireSim::FireProductionCanonicalSourceAuthority::Build
+      29 ms std::__1::vector<RISE::FireSim::MethaneCellState, std::__1::allocator<RISE::FireSim::MethaneCellStat
+      29 ms RISE::FireSim::AcceptedConservativeVolumeRatio
+      27 ms RISE::FireSim::BuildOpenStageTransportEvaluations3D
+      26 ms RISE::FireSim::ValidateCellState
+      25 ms DYLD-STUB$$memcmp
+--- inclusive
+    6512 ms main
+    6512 ms start
+    6512 ms (anonymous namespace)::RunProductionTemporalCapstoneChild
+    6511 ms (anonymous namespace)::RunMethaneFrameProbe
+    2836 ms RISE::FireSim::FireProductionCanonicalSourceAuthority::Build
+    1600 ms RISE::(anonymous namespace)::SourcePacketContentIdentity
+    1564 ms RISE::FireProductionFrozenSourcePacketSeal::Matches
+    1523 ms RISE::AttemptFireProductionProjectedHeunResidentStepMetal
+    1321 ms RISE::(anonymous namespace)::ResidentProjectedHeunMetalOwner::Run
+    1085 ms RISE::(anonymous namespace)::HashFluxValues
+     976 ms RISE::(anonymous namespace)::HashSourceDoubleValues
+     821 ms RISE::FireSimulationMethaneRecord::SensibleEnthalpiesBySpeciesOrderJPerKG
+     674 ms RISE::FireSimulationMethaneRecord::InvertAcceptedConservativeStateByComponentOrder
+     660 ms RISE::(anonymous namespace)::ResidentProjectedHeunMetalOwner::Prepare
+     617 ms RISE::FireProductionFrozenSourcePacketSealMatchesBeginningState
+     591 ms RISE::FireProductionAcceptedManifoldPayloadDigest
+     455 ms RISE::FireSim::FrozenSourcePacketExpansionAdmissible
+     451 ms RISE::FireSim::DivergenceFromDiscreteIncrement
+     438 ms RISE::FireSim::AcceptedConservativeVolumeRatio
+     423 ms (anonymous namespace)::CarryCanonicalSourceForPersistence
+     414 ms RISE::FireSim::AcceptedMethaneCellStateAdmissible
+     397 ms RISE::FireSim::InvertMethaneTemperatureWithinAcceptedEnvelope
+     385 ms RISE::FireProductionFrozenSourcePacketSeal::FinalizeIdentities
+     348 ms RISE::FireSim::FireProductionCanonicalSourceAuthority::HashFloatValues
+     326 ms RISE::FireSimulationMethaneRecord::AcceptedConservativeStateAdmissibleByComponentOrder
+     282 ms RISE::FireSimulationMethaneRecord::FindSpecies
+     274 ms RISE::FireProductionAcceptedStatePayloadDigestFast
+     268 ms RISE::(anonymous namespace)::SourceGlobalRadiationIdentity
+     245 ms RISE::(anonymous namespace)::ResidentProjectedHeunMetalOwner::SolveStage
+     244 ms RISE::FireSim::MonitoredProductionTangentDivergenceTarget3D
+     243 ms RISE::FireSim::BuildIgnitionEligibility
+     226 ms RISE::FireSim::EquationOfStateResidual
+     221 ms RISE::FireSim::BuildOpenFluxPair3D
+     205 ms RISE::FireSim::MixtureCertifiedCpLowerJPerM3K
+     203 ms RISE::FireSimulationMethaneRecord::AcceptedConservativePressureRatioAtTemperatureByComponentOrder
+     193 ms RISE::(anonymous namespace)::CanonicalSourceBeginningStateIdentity
+     187 ms RISE::PublishFireProductionAcceptedManifoldObservation
+     180 ms (anonymous namespace)::FireProductionDyadicCalibration::BuildProductionRequest
+     175 ms RISE::(anonymous namespace)::ResidentProjectedHeunMetalOwner::Project
+     162 ms RISE::ProjectFireProductionMetalImpl
+     154 ms RISE::ValidateFireProductionDualMomentumRequest

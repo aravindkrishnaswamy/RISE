@@ -1,0 +1,104 @@
+{
+  "schema": "rise.fire.r247.transport-reader-gate.v1",
+  "status": "candidate_synthetic_composition_and_allocation_only",
+  "exit_code": 0,
+  "controls": {
+    "status": "synthetic_reader_prerequisite_only",
+    "red": 31,
+    "allocation_estimate": {
+      "current_rss_before_fields_bytes": 67108864,
+      "packet_sizes": {
+        "beginning": 214776640,
+        "native": 320010712,
+        "flux": 544520776
+      },
+      "direct_buffer_components_bytes": {
+        "all_three_captured_packets": 1079308128,
+        "capture_resize_reserve": 544520776,
+        "two_inventory_conversions": 27688960,
+        "plane_arithmetic_and_sign_buffers": 1064960,
+        "sequential_finite_boolean_scratch": 5235776,
+        "merkle_nodes_and_lists": 18152832,
+        "merkle_chunk_concat": 8192,
+        "bounded_metadata_columns_and_python_objects": 67108864,
+        "bounded_central_faces_and_rows": 8388608,
+        "final_output_capture": 67108864,
+        "encoded_row_and_json_buffers": 2097152
+      },
+      "enumerated_peak_estimate_bytes": 1887791976,
+      "estimate_is_not_measured_peak": true,
+      "reader_ceiling_bytes": 2147483648,
+      "stage_a_reader_ceiling_bytes": 1073741824,
+      "stage_a_ceiling_unchanged": true,
+      "public_per_packet_cap_bytes": 2147483648,
+      "source_host_ceiling_bytes": 34359738368,
+      "source_next_step_reserve_bytes": 23930269536,
+      "source_reserve_is_not_reader_allocation": true
+    },
+    "implementation_sha256": {
+      "primitives": "4fb8e13f371a7828a034f94892cb84c0de00c852ce6851a6b522d69b59a62215",
+      "admission": "cb25a9a96afb2939846ad4e2b55204c45062c3e5c897eb142df7a8e7fe250545",
+      "scalar": "4e814f7cb55739cd39d645e2136072c0e2e2bc6b56599e2f19536de3072ed754",
+      "momentum": "dcb3b42b3317b9b3c61d87e8107c32135759298f068b071d12273076e79f87a3",
+      "verifier": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf",
+      "consumer": "771b47b821a3f513c8fe7f5e81d031c805e0ff2240caede296f5e63146432ae5"
+    },
+    "native_empirical_fields_read": 0,
+    "full_derivation_accepted": false
+  },
+  "artifacts": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_transport_reader.py",
+      "sha256": "771b47b821a3f513c8fe7f5e81d031c805e0ff2240caede296f5e63146432ae5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_validation.v1/transport_reader.frozen.py",
+      "sha256": "771b47b821a3f513c8fe7f5e81d031c805e0ff2240caede296f5e63146432ae5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_validation.v1/stdout.log",
+      "sha256": "bcd2d3beee4075303420a25ca5ba3a1480a8c78af3a7364d3d7bc881e5a23a83"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_validation.v1/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_validation.v1/controls.json",
+      "sha256": "f2409cd2655429e6c5578e3ff53d9cab710c5b4a6aa856fe0b166c9c4bcc4eda"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_validation.v1/primitives.frozen.py",
+      "sha256": "4fb8e13f371a7828a034f94892cb84c0de00c852ce6851a6b522d69b59a62215"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_validation.v1/admission.frozen.py",
+      "sha256": "cb25a9a96afb2939846ad4e2b55204c45062c3e5c897eb142df7a8e7fe250545"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_validation.v1/scalar.frozen.py",
+      "sha256": "4e814f7cb55739cd39d645e2136072c0e2e2bc6b56599e2f19536de3072ed754"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_validation.v1/momentum.frozen.py",
+      "sha256": "dcb3b42b3317b9b3c61d87e8107c32135759298f068b071d12273076e79f87a3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_reader_validation.v1/verifier.frozen.py",
+      "sha256": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf"
+    }
+  ],
+  "actual_native_field_packets_read": 0,
+  "full_derivation_accepted": false,
+  "launch_authorized": false,
+  "physical_acceptance": false,
+  "runtime_scope": "Frozen control consumer captures exact pinned dependency code from reported repository paths; archive copies preserve the same bytes.",
+  "self_audit": [
+    "All three exact file sizes/certificates before first field allocation/read",
+    "Accepted metadata/frame/selectedledger pins and same-buffer modern source roots/candidate",
+    "Actual shared central column clocks/operands/eddy/Heun closure",
+    "Wide selected whole-native scalar ledger200checks unchanged reduction bounds",
+    "CurrentRSS beforefields versus measured processpeak/separate2GiB StageB cap/StageA unchanged",
+    "Loadedcode/default/constants/capturedhelpers and generatedbytes/outputidentity/issuer"
+  ]
+}

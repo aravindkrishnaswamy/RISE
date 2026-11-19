@@ -43,6 +43,8 @@
 #include "../Materials/WeaveMaterial.h"
 #include "../Materials/OrenNayarMaterial.h"
 #include "../Materials/CookTorranceMaterial.h"
+#include <unordered_map>
+#include <unordered_set>
 #include "../Materials/IsotropicPhongMaterial.h"
 #include "../Materials/AshikminShirleyAnisotropicPhongMaterial.h"
 #include "../Materials/SchlickMaterial.h"
@@ -137,19 +139,25 @@ bool AuditedMaterialGraph(const IMaterial& material)
 // ineligible. A remote supported caster cannot repair that missing coverage.
 // This is distinct from composite mode selection: rejection keeps PT and
 // disables SMS at the anchor; composites retain the entire legacy mode.
-bool ObjectHasClearTransmission(const IObject& object)
+bool ObjectHasClearTransmissionMemo(const IObject& object, std::unordered_map<const CSGObject*, bool>& memo)
 {
     const IMaterial* material = object.GetMaterial();
     if(material && !AuditedMaterialGraph(*material)) return true;
     const ISPF* spf = material ? material->GetSPF() : nullptr;
     if(dynamic_cast<const DielectricSPF*>(spf) || dynamic_cast<const PerfectRefractorSPF*>(spf)
         || (material && (material->CouldLightPassThrough() || material->HasDeltaPassThrough()))) return true;
-    if(const auto* csg = dynamic_cast<const CSGObject*>(&object))
-        return (csg->GetOperandA() && ObjectHasClearTransmission(*csg->GetOperandA()))
-            || (csg->GetOperandB() && ObjectHasClearTransmission(*csg->GetOperandB()));
+    if(const auto* csg = dynamic_cast<const CSGObject*>(&object)) {
+        const auto it = memo.find(csg);
+        if(it != memo.end()) return it->second;
+        memo.emplace(csg, false);
+        const bool res = (csg->GetOperandA() && ObjectHasClearTransmissionMemo(*csg->GetOperandA(), memo))
+            || (csg->GetOperandB() && ObjectHasClearTransmissionMemo(*csg->GetOperandB(), memo));
+        memo[csg] = res;
+        return res;
+    }
     return false;
 }
-bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
+bool ObjectHasRejectedTransmissiveCaster(const IObject& object, std::unordered_map<const CSGObject*, bool>& clearTransMemo)
 {
     const IMaterial* material = object.GetMaterial();
     if(material && !AuditedMaterialGraph(*material)) return true;
@@ -170,7 +178,7 @@ bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
     // itself has no material. Its complete surface has no uniform-sampling
     // API, so even individually supported operands cannot give the required
     // positive proposal mass for that effective caster.
-    if(dynamic_cast<const CSGObject*>(&object) && ObjectHasClearTransmission(object)) return true;
+    if(dynamic_cast<const CSGObject*>(&object) && ObjectHasClearTransmissionMemo(object, clearTransMemo)) return true;
     return false;
 }
 // Native mesh intersections may orient their geometric normal to authored
@@ -214,31 +222,30 @@ bool IsClearTransmissiveMaterial(const IMaterial* material, bool& outBroadProof)
         || dynamic_cast<const PerfectRefractorMaterial*>(proofMaterial);
     return true;
 }
-void CollectCSGClearMaterials(const CSGObject& csg, const IMaterial* inheritedMat, bool& anyClear, bool& allBroadProof)
+void CollectCSGClearMaterials(const CSGObject& csg, bool& anyClear, bool& allBroadProof)
 {
-    // The OUTERMOST material override wins: CSGObject::IntersectRay stamps
-    // its own pMaterial after the child composite has stamped its own, so
-    // an enclosing composite's material is what renders.
-    const IMaterial* effMat=inheritedMat ? inheritedMat : csg.GetMaterial();
-    for(const IObject* operand : {csg.GetOperandA(),csg.GetOperandB()}) {
-        if(!operand) continue;
-        if(const auto* childCsg=dynamic_cast<const CSGObject*>(operand)) {
-            CollectCSGClearMaterials(*childCsg,effMat,anyClear,allBroadProof);
-        } else {
-            const IMaterial* opMat=effMat ? effMat : operand->GetMaterial();
-            bool broad=false;
-            if(IsClearTransmissiveMaterial(opMat,broad)) {
-                anyClear=true;
-                if(!broad) allBroadProof=false;
+    struct ClearMatScan : public IEnumCallback<IMaterial>
+    {
+        bool& anyClearRef;
+        bool& allBroadRef;
+        ClearMatScan(bool& a_, bool& b_) : anyClearRef(a_), allBroadRef(b_) {}
+        bool operator()(const IMaterial& mat) override
+        {
+            bool broad = false;
+            if(IsClearTransmissiveMaterial(&mat, broad)) {
+                anyClearRef = true;
+                if(!broad) allBroadRef = false;
             }
+            return true;
         }
-    }
+    } scan(anyClear, allBroadProof);
+    csg.EnumerateEffectiveMaterials(scan);
 }
 int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
 {
     if(const auto* csg=dynamic_cast<const CSGObject*>(&object)) {
         bool anyClear=false, allBroadProof=true;
-        CollectCSGClearMaterials(*csg,nullptr,anyClear,allBroadProof);
+        CollectCSGClearMaterials(*csg,anyClear,allBroadProof);
         if(!anyClear) return 0;
         if(csg->IsCertifiedWatertight()) return 0;
         if(allBroadProof && csg->IsProvablyOpenSheet(true))
@@ -266,12 +273,13 @@ int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
     if(const auto* plane=dynamic_cast<const ClippedPlaneGeometry*>(geometry)) return plane->IsPlanarConvexQuad() ? 0 : 3;
     return 0;
 }
-bool ObjectWrapsComposite(const IObject& object)
+bool ObjectWrapsCompositeImpl(const IObject& object, std::unordered_set<const CSGObject*>& visited)
 {
     if(WrapsComposite(object.GetMaterial())) return true;
     if(const auto* csg = dynamic_cast<const CSGObject*>(&object)) {
-        return (csg->GetOperandA() && ObjectWrapsComposite(*csg->GetOperandA()))
-            || (csg->GetOperandB() && ObjectWrapsComposite(*csg->GetOperandB()));
+        if(!visited.insert(csg).second) return false;
+        return (csg->GetOperandA() && ObjectWrapsCompositeImpl(*csg->GetOperandA(), visited))
+            || (csg->GetOperandB() && ObjectWrapsCompositeImpl(*csg->GetOperandB(), visited));
     }
     return false;
 }
@@ -732,8 +740,21 @@ void ObjectManager::RayElementIntersection( RayIntersection& ri, const MYOBJ ele
 	// the fresh-record dance -- see PropagateCastInputs' doc.
 	myRI.geometric.PropagateCastInputs( ri.geometric );
 	elem->IntersectRay( myRI, ri.geometric.range, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
-	if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
+	const bool exactBoundaryMode = ri.geometric.minimumSurfaceRange >= 0;
+	const bool pastMinimumSurface = !exactBoundaryMode ||
+		myRI.geometric.surfaceRange > ri.geometric.minimumSurfaceRange;
+	const Scalar candidateRange = exactBoundaryMode &&
+		myRI.geometric.surfaceRange < RISE_INFINITY
+		? myRI.geometric.surfaceRange : myRI.geometric.range;
+	if( myRI.geometric.bHit && pastMinimumSurface &&
+		candidateRange < ri.geometric.range ) {
 		ri = myRI;
+		// BVH traversal reads the shared range as its running tMax.  Boundary
+		// walks must prune and order with the same exact distance they use to
+		// advance, not the legacy shading-point offset.
+		if( exactBoundaryMode ) {
+			ri.geometric.range = candidateRange;
+		}
 		RISE_PROFILE_INC(nObjectIntersectionHits);
 	}
 }
@@ -749,8 +770,17 @@ void ObjectManager::RayElementIntersection( RayIntersectionGeometric& ri, const 
 	myRI.geometric.range = ri.range;
 	myRI.geometric.PropagateCastInputs( ri );
 	elem->IntersectRay( myRI, ri.range, bHitFrontFaces, bHitBackFaces, false );
-	if( myRI.geometric.bHit && myRI.geometric.range < ri.range ) {
+	const bool exactBoundaryMode = ri.minimumSurfaceRange >= 0;
+	const bool pastMinimumSurface = !exactBoundaryMode ||
+		myRI.geometric.surfaceRange > ri.minimumSurfaceRange;
+	const Scalar candidateRange = exactBoundaryMode &&
+		myRI.geometric.surfaceRange < RISE_INFINITY
+		? myRI.geometric.surfaceRange : myRI.geometric.range;
+	if( myRI.geometric.bHit && pastMinimumSurface && candidateRange < ri.range ) {
 		ri = myRI.geometric;
+		if( exactBoundaryMode ) {
+			ri.range = candidateRange;
+		}
 	}
 }
 
@@ -1633,8 +1663,18 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 				this_ri.geometric.PropagateCastInputs( ri.geometric );
 				i->second.first->IntersectRay( this_ri, ri.geometric.range, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 
-				if( this_ri.geometric.bHit && this_ri.geometric.range < ri.geometric.range ) {
+				const bool exactBoundaryMode = ri.geometric.minimumSurfaceRange >= 0;
+				const bool pastMinimumSurface = !exactBoundaryMode ||
+					this_ri.geometric.surfaceRange > ri.geometric.minimumSurfaceRange;
+				const Scalar candidateRange = exactBoundaryMode &&
+					this_ri.geometric.surfaceRange < RISE_INFINITY
+					? this_ri.geometric.surfaceRange : this_ri.geometric.range;
+				if( this_ri.geometric.bHit && pastMinimumSurface &&
+					candidateRange < ri.geometric.range ) {
 					ri = this_ri;
+					if( exactBoundaryMode ) {
+						ri.geometric.range = candidateRange;
+					}
 				}
 			}
 		}
@@ -2641,11 +2681,14 @@ void ObjectManager::PrepareForRendering() const
     // or IOR history can certify their absence under DL-407.
     smsHasComposite = false;
     smsFirstCompositeObject.clear();
-    for(const auto& item : items) {
-        if(ObjectWrapsComposite(*item.second.first)) {
-            smsHasComposite = true;
-            smsFirstCompositeObject = item.first.c_str();
-            break;
+    {
+        std::unordered_set<const CSGObject*> compositeVisited;
+        for(const auto& item : items) {
+            if(ObjectWrapsCompositeImpl(*item.second.first, compositeVisited)) {
+                smsHasComposite = true;
+                smsFirstCompositeObject = item.first.c_str();
+                break;
+            }
         }
     }
     smsHasObjectMedium = false;
@@ -2662,11 +2705,12 @@ void ObjectManager::PrepareForRendering() const
     smsRejectedTransmissiveCaster = false;
     smsUncertainNormalOrientation = false;
     if(!smsHasComposite) {
+        std::unordered_map<const CSGObject*, bool> clearTransMemo;
         for(const auto& item : items) {
             const IObject* object = item.second.first;
             if(object->IsWorldVisible() && ObjectHasUncertainSMSNormalOrientation(*object))
                 smsUncertainNormalOrientation = true;
-            if(object->IsWorldVisible() && ObjectHasRejectedTransmissiveCaster(*object))
+            if(object->IsWorldVisible() && ObjectHasRejectedTransmissiveCaster(*object, clearTransMemo))
                 smsRejectedTransmissiveCaster = true;
             if(object->IsWorldVisible() && object->GetGeometry()
                 && object->GetGeometry()->CanBeAreaLight() && object->GetMaterial()

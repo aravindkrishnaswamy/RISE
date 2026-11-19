@@ -41,8 +41,7 @@ namespace
 bool MediaPathLocator::FileExists( const String& file )
 {
 	std::error_code error;
-	// Match the native narrow encoding consumed by fopen and ifstream.
-	return std::filesystem::exists( std::filesystem::path(file.c_str()), error );
+	return std::filesystem::exists( LongAwareFsPath( file.c_str() ), error );
 }
 
 bool MediaPathLocator::AddPath( const char* path )

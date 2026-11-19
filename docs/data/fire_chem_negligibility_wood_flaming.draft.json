@@ -1,0 +1,69 @@
+{
+ "carrier_note": "Draft JSON carrier. Final adoption per FIRE_SMOKE_DESIGN.md SS8 requires re-encoding as RISE-CBOR64-v1; adopted record ID is SHA-256 of those exact CBOR bytes.",
+ "closure_paths": [
+  "owner library pulls (Samaniego 1995; Markstein 1985 series; Koseki & Yumoto 1988; SFPE Ch.36; Thomsen 2017) - may supply same-regime evidence",
+  "RESOLVED: computed bounds qualify in principle (see owner_ruling_2026_08_05); the construction must meet the revised derived-record uncertainty requirements",
+  "lab measurement required only where model discrepancy cannot be bounded from same-regime data"
+ ],
+ "compiled": "2026-07-31",
+ "computed_ratio_matrix_percent": {
+  "note": "matrix not computed - chi_r digits and radiating temperature unverified for wood"
+ },
+ "criterion": "SS7.0: 95%-confidence upper bound on chemiluminescent power below BOTH (i) 1% of the fuel/case's measured 380-780nm radiant power AND (ii) the absolute radiance gate's uncertainty at every gated wavelength",
+ "denominator_inputs": {
+  "audit_p3": "P3 AUDIT RESULT (owner, 2026-08-06): Markstein series is total-radiation only; Klassen-Gore has 632.8nm absorption but emission spectra start at 850nm (toluene) / 1200nm (heptane). The 380-780nm denominator gap is upgraded from 'unpulled' to 'MEASUREMENT ABSENT IN THE AUDITED CLASSIC SERIES': a qualifying tier-1 denominator requires a new measurement or acceptance of a derived value.",
+  "chi_r": {
+   "source": "Khan & Tewarson, SFPE Handbook 5th ed. Ch.36 (PAYWALLED/print - confirm against printed table)",
+   "status": "SNIPPET-VERIFIED ONLY (FPA small-sample domain still unpulled - SFPE Ch.36); large-tree domain now measured, see chi_r_large_tree_record",
+   "value": 0.3
+  },
+  "chi_r_large_tree_record": {
+   "avg_measurement_uncertainty": 0.17,
+   "coverage_factor": 2,
+   "domain": "3m-6m dry Douglas-fir trees - SEPARATE large-tree/vegetation record; does not replace small-sample FPA wood values; convection only by residual closure",
+   "per_tree_range": [
+    0.22,
+    0.31
+   ],
+   "source": "NIST TN 2327r1 via owner audit; per-test soot/CO/CO2 yields at docs/data/source_pulls/p6_nist_tn2327r1_douglas_fir.csv",
+   "status": "P6 CLOSED for the large-tree domain (owner audit 2026-08-06); chi_r no longer snippet-level for this domain",
+   "value_mean": 0.3,
+   "value_mean_u": 0.03
+  },
+  "no_visible_band_data": "no published visible-band radiometry of wood flames found"
+ },
+ "derived_bound_result": {
+  "status": "same structure as heptane (TN 2327r1 chi_r is not a visible-band lower bound); oxygenated volatiles add transfer uncertainty in an unbounded direction. Negligibility route effectively closed for wood; predictive wood needs a chem record or new radiometry."
+ },
+ "design_revision_evaluated_against": 45,
+ "draft_record_id_sha256_of_payload": "44b9893807c9f1467c5145c6556ee08c8d093857d311efbec6f39e0623ce58ef",
+ "leg_ii_blocker": "Leg (ii) is un-evaluable until SS12 item 4 (absolute radiance-gate dataset) closes: no gated wavelengths or gate uncertainty exist yet. Structural dependency, independent of leg (i).",
+ "notes": [
+  "same structure as heptane; per-case record required (SS7.0 is per fuel/case)"
+ ],
+ "numerator_inputs": {
+  "classic_1e-4": {
+   "audit": "P2 AUDIT RESULT (owner, 2026-08-06): Samaniego 1995 is explicitly a NUMERICAL INVESTIGATION - not a measured absolute CO2* W/HRR record; Stanford brief and DLR spectroscopy also fail the absolute-power-ratio requirement. RECLASSIFIED as model evidence. The only no-lab route is Slack-Grillo/Liu as a derived record with the full SS7.0 derived-record uncertainty budget.",
+   "source": "Samaniego, Egolfopoulos & Bowman 1995, Combust. Sci. Technol. 109:183-203 (owner library pull)",
+   "status": "RECLASSIFIED_AS_MODEL_EVIDENCE",
+   "value": "~1e-4 of HRR"
+  },
+  "diffusion_flame_specific": {
+   "note": "No published measurement of total visible chem power for diffusion flames. Computable route: Slack & Grillo 1985 CO2* kinetics (via Nori & Seitzman AIAA 2008-953 Eq.3) + Liu, Tan, Wan, Zhang & Yao 2020, ACS Omega 5:15922 calibrated CH*/OH* fields (attribution corrected 2026-08-06)",
+   "value": null
+  },
+  "open_upper_bound": {
+   "basis": "reaction-zone radiative loss, LEAN PREMIXED",
+   "source": "Samaniego, CTR Annual Research Briefs 1994, Table 2 p.31 (open, read)",
+   "value": "0.4-2.5e-3 of HRR"
+  }
+ },
+ "owner_ruling_2026_08_05": "OWNER RULING 2026-08-05 - policy closed, record stays preview: computed bounds QUALIFY IN PRINCIPLE under revised SS7.0 language ('a pinned evidence record reports a one-sided 95%-confidence upper bound, obtained either directly or through a validated measurement model over traceable measured inputs; a derived record must include measurement, covariance, digitization, geometry, spectral-truncation, domain-transfer, and model-form uncertainties' - design-loop edit pending), but the present Slack-Grillo + Liu + Hamins construction FAILS it: kinetics model is not a same-case measurement; methane-field transfer to this fuel is an unbounded domain-transfer discrepancy; numerator channel completeness undemonstrated; chi_r x soot-T is not a measured visible denominator (~5x reconstruction spread); leg (ii) untestable until Q4 freezes. Lab work not required by definition; required for any fuel whose model discrepancy cannot be bounded from same-regime data.",
+ "record_kind": "chem_negligibility_bound",
+ "record_name": "chem-negligibility-wood_flaming-v1",
+ "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",
+ "schema_version": "draft-1",
+ "status": "NOT_CLOSEABLE_FROM_OPEN_LITERATURE",
+ "verdict": "INDETERMINATE at the 1% threshold: defensible open-literature bound fails by ~2 orders; plausible unverified estimates straddle 1%. Not a 95%-confidence record in either direction.",
+ "version": "v1-draft"
+}

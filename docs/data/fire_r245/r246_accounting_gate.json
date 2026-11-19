@@ -1,0 +1,119 @@
+{
+  "exit_code": 0,
+  "completed_utc": "2026-10-01T07:45:57.204522+00:00",
+  "stages": [
+    {
+      "stage": "legacy_domain",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:41:45.109415+00:00",
+      "log_sha256": "67b2b84e77a763cd581c688cc12e3239e3c53e5bf398b4b370163da8ca072554"
+    },
+    {
+      "stage": "physical",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:41:45.248650+00:00",
+      "log_sha256": "660750f5528a9b36f5415f789c9c6bb62a878264578731917fe3e0e602607c61"
+    },
+    {
+      "stage": "eos",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:41:45.624490+00:00",
+      "log_sha256": "355fdb6505f55521249cafd3e62e176a180ad3e60497fadc20353554dc367b7f"
+    },
+    {
+      "stage": "target",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:41:49.338276+00:00",
+      "log_sha256": "8efb3a29082e95f5341c2bc85a8475633212a5b787913bb13a87a61b8d3f80ae"
+    },
+    {
+      "stage": "owner",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:42:09.562935+00:00",
+      "log_sha256": "bdd22023c472817317c9a46873a298b8e9c1b18971638a4bcfb13097bfe7dbfb"
+    },
+    {
+      "stage": "make_clean",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:42:10.287638+00:00",
+      "log_sha256": "09155cd7b2f99672f8f213b798682fc13fdd3602f019b4c35e86d49af827ebe1"
+    },
+    {
+      "stage": "make_all",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:42:58.379190+00:00",
+      "log_sha256": "e0612ce2979f69ff5be3dafba6e56470383d512c1d52f951f0be0c585ad6da29"
+    },
+    {
+      "stage": "sequence_build",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:43:49.901978+00:00",
+      "log_sha256": "2816c30bf666f29da66e106d51b5724b88b5c10aaa8a7488cd24eed6f8cf9844"
+    },
+    {
+      "stage": "launcher_gate",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:43:51.030150+00:00",
+      "log_sha256": "edc3736714479bd150461f67389081849f7a4c975430482d1fbcc813a3a6feca"
+    },
+    {
+      "stage": "case_build",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:43:56.296411+00:00",
+      "log_sha256": "ac2e91a34dad71ac3b8e70982d018840f2bf82f8d134545925d3183625b540f0"
+    },
+    {
+      "stage": "case_test",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:43:56.605212+00:00",
+      "log_sha256": "62d4c78e2d8616ff5a735ad7ddee1404f3041f027a4e0e6972eb3d22dc886cdc"
+    },
+    {
+      "stage": "deployment_clean",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:43:57.701446+00:00",
+      "log_sha256": "29189e3a55e44f759eb7f2a9ec69170d9a636e5a26bfaa1632a268174e012a49"
+    },
+    {
+      "stage": "deployment_build",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:44:40.747892+00:00",
+      "log_sha256": "3d06271379829df31ab9487826de6fab8d6196415afb81982edc07e770109d51"
+    },
+    {
+      "stage": "opto_clean",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:44:41.543499+00:00",
+      "log_sha256": "f174408c747302b3cbe962207db9576b7a80f9f1306b67095eebe024f9f566b0"
+    },
+    {
+      "stage": "opto_build",
+      "exit_code": 0,
+      "completed_utc": "2026-10-01T07:45:57.203075+00:00",
+      "log_sha256": "47c750a9eff025ceaeaf83cd7f2491854557280bf76848e75d3a6c6ddbc276c4"
+    }
+  ],
+  "scope": "resource accounting and launcher foundation validation; not simulation or physical qualification",
+  "status": "build_and_control_gates_passed_pending_fresh_implementation_reviews",
+  "external_directory": "/Volumes/SSD/RISE/fire_production_calibration/r246_accounting_validation.v1",
+  "source_sha256": {
+    "src/Library/Utilities/FireProductionAdvectionMac.mm": "6742b0af8f245078eeda7a192ae7fc79831749ac7d0a3cd3bccb1d4ea46d33ca",
+    "tests/FireSequenceTest.cpp": "535dbae6d99d34a1d375798cbb0aa43798ba382eee275dad8ac8db12d912109a"
+  },
+  "independent_arithmetic": {
+    "p1": 0,
+    "p2": 0,
+    "oracle_json": "/Volumes/SSD/RISE/fire_production_calibration/r246_independent_count_oracle.json",
+    "oracle_sha256": "4215491d60f5a9b01f1af1172320e7889c5df36260ebd86ea626c3ed516c4a64",
+    "scope": "arithmetic/refactor; does not prove actual taller device allocation"
+  },
+  "warnings": {
+    "owned": 0,
+    "discounted": [
+      "missing checkout OIDN library search path",
+      "AppIntents metadata extraction notice"
+    ]
+  },
+  "mirror_and_trace_check": "both exit 0",
+  "launch_permitted": false
+}
