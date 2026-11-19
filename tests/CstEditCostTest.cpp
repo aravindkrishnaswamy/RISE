@@ -45,9 +45,10 @@
 //                     O(N log N): the spatial-edit premium
 //      [prep:nonspat] PrepareForRendering AFTER a non-spatial edit -> SKIPS the O(N log N)
 //                     BVH rebuild (the BVH is still valid); only O(N) per-object work
-//                     remains (realize sweep, census refresh, world-area prune, the
-//                     SMS / DL-382 loops) -- the SAVING the stable-object apply delivers
-//                     (so prep:nonsp scales ~O(N), far below the spatial rebuild, NOT O(1))
+//                     remains (chiefly the realize sweep, census refresh, world-area
+//                     prune and the SMS / DL-382 loops) -- the SAVING the stable-object
+//                     apply delivers (so prep:nonsp scales ~O(N), materially below the
+//                     spatial rebuild, NOT O(1))
 //
 //  HONEST SCOPE (R13): the bounds carry log factors -- the incremental apply is
 //  O(closure . log N) (per-member identity lookup + std::map manager remove/insert + an

@@ -26,9 +26,12 @@
 //  The design choice below (no expression in this file's scenes reads
 //  `fw`/`fwo`) is STILL the right one for a DIFFERENT reason: this suite
 //  exercises multi-bounce / indirect geometry signals, where the relevant
-//  vertices sit at depth >= 1 -- and depth >= 1 carries no footprint under
-//  ANY integrator, PT included, because no ray in this renderer carries
-//  differentials after its first scattering bounce.  Mixing an `fw`/`fwo`-
+//  vertices sit at depth >= 1 -- and an EYE-side vertex at depth >= 1
+//  carries no footprint under ANY integrator, PT included, because no ray
+//  in this renderer carries differentials after its first scattering
+//  bounce.  (Since DL-636 a t == 1 connection stamps the pixel's footprint
+//  onto the light endpoint it shades, at any light-subpath depth; that does
+//  not reach the eye-side depth >= 1 vertices this suite compares.)  Mixing an `fw`/`fwo`-
 //  driven expression into a multi-bounce scene would therefore still be
 //  comparing apples to oranges (a real PT-vs-PT depth-dependent effect, not
 //  a signals bug) -- so the exclusion stays, just not for the reason
