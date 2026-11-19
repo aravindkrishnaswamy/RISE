@@ -1,0 +1,325 @@
+{
+  "schema": "rise.fire.host-memory-repair.v1",
+  "status": "repair-gates-pass-fresh-review-pending-migration-blocked",
+  "files": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/frozen_prefix.v2.rss.csv",
+      "bytes": 123,
+      "sha256": "ec3b9dcde7fe779a1480d8078705e3c81ef3440487c7e4ecb0899e9d588c3c65"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/pool_prefix.v1.rss.csv",
+      "bytes": 130,
+      "sha256": "843dd0f18500f12153b3c174eb88cd973a0f3d0087e0099a794bf93e23a0c80f"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/pool_24.v1/budgets/host_memory_trajectory.csv",
+      "bytes": 1924,
+      "sha256": "6c1db23896586be4703d1904e21946c80ddcd6654a926b9b3e482454ce94fd6d"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/pool_24.v1/budgets/maximum_velocity_trajectory.csv",
+      "bytes": 13175,
+      "sha256": "bd300ec46ca07834f57ec89446e9f0af4ce3961640c1ba1522044a0904743d97"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/missing_pools_old.v1.log",
+      "bytes": 1165792,
+      "sha256": "011d3e83076ade816c99a9aa12967a2565b73d201add2fcbf43d918828dfd335"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/missing_pools_new.v1.log",
+      "bytes": 42856,
+      "sha256": "c9a168d4cdffbeaaced460adcb427c3dfab9edf59379eb4c133a0ca021ce56a0"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/retention_red.v1.log",
+      "bytes": 1168,
+      "sha256": "85e7f2f90489d534ac77a4eebc105689d155bea041964fe13825705983376857"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/retention_red.v1/final.checkpoint",
+      "bytes": 65415914,
+      "sha256": "5601253a5519650293fcf02bb26ef47c7374c4994254ba83c2d713371cfaa856"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/retention_red.v1/final.checkpoint.payload-v2.json",
+      "bytes": 415,
+      "sha256": "e309c1c869a2143a0379fdae1518253d5440288fe49170cb23093523ed4ae39d"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/policy_red.v1.log",
+      "bytes": 132,
+      "sha256": "ed6e15c070b89efb90813551845c9dcf09ddf90109ada18b88369d32a7a584b1"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/cpu_suite.v1.log",
+      "bytes": 33058,
+      "sha256": "54fa08dc2bff2c1167af73ba6f02a88835a638fe20f16958aa31bdb48fd4d314"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/owner_gate.v1.log",
+      "bytes": 888480,
+      "sha256": "0b9da784ea44fe62f44f0594b697d99847e6407a805a4e189905a0289a088374"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/final_build.v1.log",
+      "bytes": 156,
+      "sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/checkpoint835_probe.v1/budgets/host_memory_trajectory.csv",
+      "bytes": 783,
+      "sha256": "500dc5229ddb513619f06fb53b2b84b61044d9a900b61e1a006c1f0dd959a82d"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/checkpoint835_probe.v1/budgets/maximum_velocity_trajectory.csv",
+      "bytes": 4798,
+      "sha256": "fca4173622d8218232f3ede11a0bea2b59d24062a16af382255791b23da90ffc"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/checkpoint835_probe.v1.log",
+      "bytes": 2025,
+      "sha256": "0f35fdaafbfe5d808e82d3704f039f25fa23618b8beba3cc29b7beb2ce99d854"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/resume_stop_red.v1.log",
+      "bytes": 1241,
+      "sha256": "c18a03300d7ac791e242f29e4c8d905438174b9f531d8d065478d05dc8960b41"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/resume_stop_red.v1/host_memory_stop.checkpoint",
+      "bytes": 126445680,
+      "sha256": "d56a4638ae774a3c4e83f046a274852db5f4dcdc10a2f3295055371604a0cfea"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/resume_stop_red.v1/host_memory_stop.checkpoint.payload-v2.json",
+      "bytes": 416,
+      "sha256": "2fdbc0f1faf34a241d65f6b786b1e121374b559682e051b6686de43c7894fb6f"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/retention_red.v2.log",
+      "bytes": 1594,
+      "sha256": "78c507913de0f35546a381d081050f493a0192fbafaf300a1ed15ecfb4f1c4ce"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/retention_red.v2/final.checkpoint",
+      "bytes": 65415914,
+      "sha256": "acf98d9cae6b08a39ac1e0bad3e0bf9b798aad992395e324923716d455de49aa"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/retention_red.v2/final.checkpoint.payload-v2.json",
+      "bytes": 415,
+      "sha256": "30d77a8e1cbf695538583a38720679d2dee9edd09c72c93b9c8d4437b8c39f1e"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/cpu_suite.v2.log",
+      "bytes": 33058,
+      "sha256": "0c663d306041b6637b7ffb7dd434c59f94cfe3d04eb47ae4b1f7e3dbb2578eda"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/owner_gate.v2.log",
+      "bytes": 888480,
+      "sha256": "9370e109f2f8dcf4a2ea3db52909042a2847b1d5225bfc79c202dc0d69a3d224"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/policy_red.v2.log",
+      "bytes": 132,
+      "sha256": "ed6e15c070b89efb90813551845c9dcf09ddf90109ada18b88369d32a7a584b1"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/policy_sanitizer.v1.log",
+      "bytes": 63,
+      "sha256": "f84806bd28ef3e82f9bba4b77fa7fde99d845f5a51219bf631333b9d6b62b5eb"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/xcode_deployment.v1.log",
+      "bytes": 1736762,
+      "sha256": "83ecdc615f8a1ed868e835fbd20788bda5f1ebb7a70064062b3fb20549d0e80c"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/xcode_opto.v1.log",
+      "bytes": 1702318,
+      "sha256": "0a87799cbf1f5e21cf0dae48a839f2a460f454ae740e3e47934dcd27eb3d384d"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/review_fix_build.v1.log",
+      "bytes": 156,
+      "sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/routing_mutant_red.v1.log",
+      "bytes": 1241,
+      "sha256": "0bb060e82e1ae6ba2815041afab765113c555d2512ec9f1aec6ffa39fccb2bc7"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/routing_mutant_build.v1.log",
+      "bytes": 156,
+      "sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/review_final_build.v1.log",
+      "bytes": 156,
+      "sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/resume_stop_red.v2.log",
+      "bytes": 1241,
+      "sha256": "ed69ced568cd1d84117438e8675844349d4dff889b51f0b8006d68c6fdc19c16"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/resume_stop_red.v2/host_memory_admission.v1",
+      "bytes": 753,
+      "sha256": "091bc613b255d4e79bc6afa4f9d34697c39dde3d85dfe568ea5b88f5bd86b7b6"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/resume_stop_red.v2/host_memory_admission.v1.payload-v2.json",
+      "bytes": 410,
+      "sha256": "0c07f4d3f6e4fee01bc0ee7a7810924ccd3a68bd5efd61a0a00f666c05b218cc"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/resume_stop_red.v2/host_memory_stop.checkpoint",
+      "bytes": 126445680,
+      "sha256": "280afcc187bb17968c2f9073691576956920e5f132f8c2c4cdeff2b459b44a7e"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/resume_stop_red.v2/host_memory_stop.checkpoint.payload-v2.json",
+      "bytes": 416,
+      "sha256": "a5afa60806cb04b98c8498bfbe223a0c5fcd091c618d62009a7b2c1089e6aa9f"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/cpu_suite.v3.log",
+      "bytes": 33058,
+      "sha256": "61dbf32bfcd4ddbb5b2777885aa11bb9605a7bdac0bf0b64df379a0b9ef2872f"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/owner_gate.v3.log",
+      "bytes": 888480,
+      "sha256": "e3a5315e99e8bc15b375fdc790d58928d11ca50887fdb1b3c96baa3b4a4288c4"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/docs/evidence/fire/r220_prefix_comparison.v1.json",
+      "bytes": 2650,
+      "sha256": "0c36f2ce6e99d7c115e03e2aa5a30bbbd463b352c2e655db29c6da0371855c40"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/exception_fix_build.v1.log",
+      "bytes": 247,
+      "sha256": "7c6c7cd2b28439e733e2f16b7b5a32ec6aa3fbc364d2d03cf87d2507fd3075d9"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/exception_family_build.v1.log",
+      "bytes": 175,
+      "sha256": "7c304e110f0b5be9758d73cd726696cfa61a609d43a5c8b7eb977a8c16fa3f51"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/owner_pool_sanitizer.v1.mm",
+      "bytes": 1600,
+      "sha256": "3321d3ea85683ff790f3da2f8a0e179ed690175615b0dea7711f60e74b966d79"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/owner_pool_sanitizer.v1.log",
+      "bytes": 98,
+      "sha256": "4cceb2305febaa924adfaaec33d1c2c40c3c4642786d850fa39aa69dca1cfdc0"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/exception_red.v1.log",
+      "bytes": 98,
+      "sha256": "4cceb2305febaa924adfaaec33d1c2c40c3c4642786d850fa39aa69dca1cfdc0"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/cpu_suite.v4.log",
+      "bytes": 33058,
+      "sha256": "aef50293e435850685681ae3c9674fe4fec29e2f5b19e3dee8cab621ac558d6d"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/owner_gate.v4.log",
+      "bytes": 888480,
+      "sha256": "2c64b6eeb8a43593e484b1924c98b43d4adfd3b63851fdaa9d59eca8a743530f"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/exception_fixed_prefix.v1.log",
+      "bytes": 2402,
+      "sha256": "3b33c1ab01c3e5a304aadd757063e9268453fda0c41a40c81f73b66d0308c2d0"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/exception_fixed_prefix.v1/diagnostic_prefix_protocol.v1",
+      "bytes": 644,
+      "sha256": "6746941f84a32c110ad48faf52ded84d9ae40496ae960a46ced7260c73b7b48d"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/exception_fixed_prefix.v1/budgets/maximum_velocity_trajectory.csv",
+      "bytes": 2163,
+      "sha256": "65d246fe2e7f1fddf8cb5cfa5e635001ad5215c9535e2f7bc68214451353fe9e"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/exception_fixed_prefix.v1/host_memory_admission.v1",
+      "bytes": 735,
+      "sha256": "9df7ef1619d93764e8971d6e24a116ee609f901ce8ef486a9d2326e05310d637"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/exception_fixed_prefix.v1/host_memory_admission.v1.payload-v2.json",
+      "bytes": 410,
+      "sha256": "a56a9fe7f00f627156066736aff7f09f961c76434d25ab4b282762e9ae506eaa"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/xcode_deployment.v2.log",
+      "bytes": 1722025,
+      "sha256": "394d768729ca7833993e00d0f9c47fc27b519e44c38b6ae768c7aa97839da14f"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/xcode_opto.v2.log",
+      "bytes": 1687951,
+      "sha256": "3e936185334690453bceb7e69b5a396590034438737ff7f213d0909d590aa997"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r220_host_memory/executables/FireSequenceTest_52120712",
+      "bytes": 23292784,
+      "sha256": "5212071242aa6c1aff0625c12f0045441696137ad105114bddb949c2a5b60c0d"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/docs/evidence/fire/r220_exception_prefix_comparison.v1.json",
+      "bytes": 2672,
+      "sha256": "50cf1c9ca5aae885dca06ad9a4e7fbf34d1dbdf9dc716f67b2dc0ac4ab053a97"
+    }
+  ],
+  "original_checkpoint_sha256": "4b5bfcbd02ec7c5f472352f739b1b39ee7157b871896efb8b2dc35e708bd8d64",
+  "original_sidecar_sha256": "ae357ece3af8427bc7163e54d2170bb709cb34fa9df640f108026ce16a3a4b7c",
+  "golden_checkpoint_sha256": "1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947",
+  "gate_source_files": [
+    {
+      "path": "tests/FireSequenceTest.cpp",
+      "sha256": "6452d9fc29f1d4e9ac321c67a25862b682ff6034a01c92962d7123fd463b1c63"
+    },
+    {
+      "path": "tests/FireRunHostMemory.h",
+      "sha256": "ec4c536ef927856ac308dd17cb7ebee561299de2fc6871516464fc2630ada288"
+    },
+    {
+      "path": "src/Library/Utilities/FireProductionAdvectionMac.mm",
+      "sha256": "f8a23e1a45685ee017840150ca9cf96161769d8fc15474715acc63c8175c069f"
+    }
+  ],
+  "gate_source_note": "Final v4 gates executed these source bytes before the exception-fix commit; actual producer is frozen as executables/FireSequenceTest_52120712. No subsequently committed executable metadata is claimed as the executed producer.",
+  "pre_exception_gate_source_files": [
+    {
+      "path": "tests/FireSequenceTest.cpp",
+      "sha256": "a7d9bcd9e13f3958aec614fd8bd0e644a260e44d2f50fcb244920333383e5261"
+    },
+    {
+      "path": "tests/FireRunHostMemory.h",
+      "sha256": "ec4c536ef927856ac308dd17cb7ebee561299de2fc6871516464fc2630ada288"
+    },
+    {
+      "path": "src/Library/Utilities/FireProductionAdvectionMac.mm",
+      "sha256": "166b2271805564c2475539816589f9b9a7cd24c700454911a2348321b9c243ed"
+    }
+  ],
+  "pre_exception_gate_source_commit": "dd6850f688b7d8eee90004bc20b2c548a56ce91f",
+  "pool_sanitizer_scope": "Exact shared lifetime-boundary and fault-RED source extracted into the bound standalone Objective-C++ fixture, built with ARC and ASan/UBSan; not Metal-kernel sanitizer coverage.",
+  "raw_shader_blocks_unchanged_from_base": {
+    "base": "d9fccd1cec6b8ee67c4d3f4a398bb1689a8f33d7",
+    "blocks": 10,
+    "method": "Exact ordered comparison of raw-string delimiter/content pairs in FireProductionAdvectionMac.mm; no shader body changed."
+  }
+}

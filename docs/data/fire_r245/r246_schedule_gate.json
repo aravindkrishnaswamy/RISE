@@ -1,0 +1,21 @@
+{
+  "scope": "full-window launcher schedule and identity wiring; no r246 CLI exposed",
+  "status": "passed_pending_fresh_review",
+  "launch_permitted": false,
+  "taller_owner_allocation_exercised": false,
+  "optical_render_control_completed": false,
+  "checkpoint_wire_changed": false,
+  "controls": [
+    "matched-clock full-window plan equals original start/duration/target/cadence",
+    "physical-clock substitution and foreign-cadence REDs",
+    "receipt exact hexadecimal schedule reference with separate physical residence",
+    "full-window scope forced one-byte-short device RED before initial fields without accepted steps",
+    "shortened target RED before fields",
+    "frozen r244 identity/window/manifest controls unchanged"
+  ],
+  "log_sha256": {
+    "r246_schedule_build.v1.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "r246_schedule_gate.v1.log": "7fec4c99b3d7ce97f91520367e6ef23ee466b0ef8cc2ce990e71285e68b1b5c0",
+    "r246_schedule_legacy_gate.v1.log": "67b2b84e77a763cd581c688cc12e3239e3c53e5bf398b4b370163da8ca072554"
+  }
+}

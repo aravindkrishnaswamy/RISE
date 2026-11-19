@@ -145,6 +145,7 @@
 #include "../src/Library/Utilities/BDPTUtilities.h"
 #include "../src/Library/Utilities/PathTransportUtilities.h"
 #include "../src/Library/Utilities/StabilityConfig.h"
+#include "../src/Library/Rendering/Rasterizer.h"
 #include "TestTempDir.h"
 
 using namespace RISE;
@@ -202,15 +203,12 @@ struct Stats
 	double se() const { return n > 0 ? sd / std::sqrt( double( n ) ) : 0; }
 };
 
-//! `singleThread` renders on ONE worker.  A bitwise pixel-identity check
-//! needs it: with several workers, splat flushes and VCM light-pass tiles
-//! complete in scheduling order, so a pixel summed from three or more
-//! contributions can differ in its last bit between two renders of the SAME
-//! scene.  Multi-threaded renders ARE reproducible where each pixel is
-//! written by one tile (LuminarySamplerAreaTest modes D/F, DL-625), but a
-//! pixel that sums splats from several tiles is schedule-dependent in its
-//! last bit, so these rows render on one worker.
-static Stats RenderStatsSalted( const std::string& sceneText, int n, unsigned int seedBase, bool singleThread = false )
+//! `singleThread`: pixel-hash identity checks need it.  Multi-threaded
+//! BDPT/VCM renders are not bit-reproducible run to run (splat commit
+//! order and the per-worker fallback RNG; docs/AUTO_RASTERIZER_DESIGN.md),
+//! so two otherwise identical MT renders can differ in the last bits.
+static Stats RenderStatsSalted( const std::string& sceneText, int n, unsigned int seedBase,
+	bool singleThread = false )
 {
 	Stats st = { 0, 0, n, false };
 	char path[1024];
@@ -232,13 +230,9 @@ static Stats RenderStatsSalted( const std::string& sceneText, int n, unsigned in
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 	if( singleThread ) {
-		if( Rasterizer* pRas = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() ) ) {
-			pRas->ForTest_SetThreadCountOverride( 1 );
-		} else {
-			safe_release( pCap );
-			safe_release( pJob );
-			return st;
-		}
+		Rasterizer* pRas = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() );
+		if( !pRas ) { safe_release( pCap ); safe_release( pJob ); return st; }
+		pRas->ForTest_SetThreadCountOverride( 1 );
 	}
 
 	std::vector<double> v;
@@ -1136,7 +1130,7 @@ static void RowK()
         Check(ref.ok && ref.mean>1e-3 && capped.ok && Agree(ref,capped,3.0,0),std::string(kind)+": DL502 hair cap one == uncapped");
         for(int f:{4}) {
             const unsigned salt=50600+100*f;
-            // Single worker: a bitwise comparison (see RenderStatsSalted).
+            // Single-threaded: bit identity needs a reproducible render.
             const Stats free=RenderStatsSalted(EnclosedPointScene(EnclosedChunk(kind,""),f),n,salt,true);
             const Stats again=RenderStatsSalted(EnclosedPointScene(EnclosedChunk(kind,""),f),n,salt,true);
             const Stats nonbinding=RenderStatsSalted(EnclosedPointScene(EnclosedChunk(kind,"\tmax_glossy_bounce 100\n"),f),n,salt,true);

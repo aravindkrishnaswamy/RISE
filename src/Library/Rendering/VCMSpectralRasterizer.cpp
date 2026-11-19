@@ -279,7 +279,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 			}
 			weightsAccrued += weight;
 
-			if( temporal_samples ) {
+			if( temporal_samples && !pScene.FireTemporalHold() ) {
 				AnimateSceneToSampleTime( pScene,
 					temporal_start + ( rc.random.CanonicalRandom() * temporal_exposure ) );
 			}
@@ -289,7 +289,6 @@ void VCMSpectralRasterizer::IntegratePixel(
 			// or a single independent-wavelength evaluation.
 			XYZPel spectralSum( 0, 0, 0 );
 			XYZPel spectralMerge( 0, 0, 0 );
-			unsigned int totalActive = 0;
 
 			for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 			{
@@ -513,9 +512,8 @@ void VCMSpectralRasterizer::IntegratePixel(
 
 				XYZPel heroXYZ( 0, 0, 0 );
 				if( ColorUtils::XYZFromNM( heroXYZ, heroNM ) ) {
-					spectralSum = spectralSum + heroXYZ * heroValue;
-					spectralMerge = spectralMerge + heroXYZ * heroMerge;
-					totalActive++;
+					spectralSum = spectralSum + (bUseHWSS ? swl.BundleAverage(heroXYZ * heroValue) : heroXYZ * heroValue);
+					spectralMerge = spectralMerge + (bUseHWSS ? swl.BundleAverage(heroXYZ * heroMerge) : heroXYZ * heroMerge);
 				}
 
 				if( !bUseHWSS ) {
@@ -610,22 +608,16 @@ void VCMSpectralRasterizer::IntegratePixel(
 
 					XYZPel compXYZ( 0, 0, 0 );
 					if( ColorUtils::XYZFromNM( compXYZ, companionNM ) ) {
-						spectralSum = spectralSum + compXYZ * compValue;
-						spectralMerge = spectralMerge + compXYZ * compMerge;
-						totalActive++;
+						spectralSum = spectralSum + swl.BundleAverage(compXYZ * compValue);
+						spectralMerge = spectralMerge + swl.BundleAverage(compXYZ * compMerge);
 					}
 				}
 			}
 
-			if( totalActive > 0 ) {
-				// MC normalization: (1/N) for sample-mean × (b-a)/k_y to
-				// scale into a properly-normalized integral (white = 1).
-				// Inherited mYNormalization = (b-a)/k_y; uniform scale =>
-				// chromaticity preserved.
-				const Scalar normScale = mYNormalization / Scalar( totalActive );
-				spectralSum = spectralSum * normScale;
-				spectralMerge = spectralMerge * normScale;
-			}
+			// Every sampled bundle (including misses/black paths) has equal weight.
+			const Scalar normScale = nSpectralSamples ? mYNormalization / Scalar(nSpectralSamples) : Scalar(0);
+			spectralSum = spectralSum * normScale;
+			spectralMerge = spectralMerge * normScale;
 
 			AccumulateSampleFlux( spectralSum.Y, spectralMerge.Y );
 

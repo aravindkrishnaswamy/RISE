@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "EllipsoidGeometry.h"
 #include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
@@ -554,11 +555,13 @@ IKeyframeParameter* EllipsoidGeometry::KeyframeFromParameters( const String& nam
 
 void EllipsoidGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case RADII_ID:
 		{
 			m_vRadius = *(Vector3*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	}
@@ -566,6 +569,7 @@ void EllipsoidGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void EllipsoidGeometry::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	Q = Matrix4Ops::Identity();
 	Q._00 = 1.0/(m_vRadius.x*m_vRadius.x);
 	Q._11 = 1.0/(m_vRadius.y*m_vRadius.y);

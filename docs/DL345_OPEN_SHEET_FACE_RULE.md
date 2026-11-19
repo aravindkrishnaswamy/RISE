@@ -43,15 +43,7 @@ FRONT side (the side its TRUE geometric normal points to) is the surrounding
 medium and whose BACK side is the sheet's material.  Every crossing
 refracts by its face: front -> back ENTERS (from the walk's medium to the
 sheet's index), back -> front EXITS (from the sheet's index to the medium
-beyond).  One exception (2026-11-17, `IORStackSeeding::ResolveOpenSheetCrossing`):
-when the walk is inside a closed object that sits ABOVE an entry for this
-sheet's medium on the stack -- the sheet itself, pushed before the crossing,
-or a same-material open sheet retained or inserted beneath the top -- the
-closed object is nested in the sheet's medium, so the walk stays in that
-object's medium and the crossing refracts from the previous top.  A closed
-object that merely ENCLOSES the sheet (a world box) does not trigger it:
-there the exit refracts from the sheet's index, as the rule says
-(`OpenSheetHalfSpaceSeedingTest` A57*, and the A65 world-box row).  This is the only rule under which a walk and its reverse refract
+beyond).  This is the only rule under which a walk and its reverse refract
 the same way at every sheet, so PT, BDPT/VCM eye and light subpaths,
 photons and SMS sample one path space.  Option (b) of the row ("author a
 slab as a closed solid" plus a parser warning) was not needed: (a) makes

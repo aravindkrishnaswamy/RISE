@@ -21,8 +21,10 @@
 //   switches   legacy determinism, the three switches at a delta light;
 //              dropping SMS's deposit leaves PT's kept paths untouched
 //              (HWSS lanes: SMSExtendedHWSSTest)
-//   fixtures   DL-372/DL-379 ball lens images vs PT and VCM, DL-336
-//              immersed ball, DL-376/DL-421 seeding-mode independence
+//   fixtures   DL-372 ball lens image vs PT, DL-379 vs VCM, DL-336
+//              immersed ball, DL-376/DL-421 seeding-mode independence;
+//              `--ball-measure` adds the ungated legacy / kept images,
+//              the other reference and the timing ratio
 //
 // Pre-Phase-3 sources lack RISE_SMS_EXTENDED_PARTITION: the partition-API
 // checks then compile out and the production render comparisons alone run
@@ -1027,10 +1029,18 @@ namespace
     }
 }
 
+// --ball-measure: also render the images the ball-lens gates do not read
+// (legacy SMS, the `kept` image behind the owned share, the reference the
+// row does not gate against) and print the measurement.  The default run
+// renders only the extended image and the gated reference.
+static bool g_ballMeasure=false;
+
 static void BallLensFixture(bool dielectric)
 {
     const std::string label=dielectric?"DL-379 ball lens dielectric scattering 1e5":"DL-372 ball lens perfect refractor";
     const unsigned spp=g_quick?16:64, n=dielectric?16:8;
+    // DL-372 gates extended vs PT; DL-379 pins extended vs VCM.
+    const bool wantPT=g_ballMeasure||!dielectric, wantVCM=g_ballMeasure||dielectric;
     std::vector<double> ext,legacy,kept,pt,vcm,extSeconds,legacySeconds;
     SMSReferenceCounters counters;
     for(unsigned i=0;i<n;++i) {
@@ -1038,32 +1048,44 @@ static void BallLensFixture(bool dielectric)
         auto t0=std::chrono::steady_clock::now();
         ext.push_back(ExtendedImage(BallLensScene(dielectric),spp,salt,true,false,&counters));
         auto t1=std::chrono::steady_clock::now();
-        legacy.push_back(ExtendedImage(BallLensScene(dielectric),spp,salt,false,false,nullptr));
-        auto t2=std::chrono::steady_clock::now();
         extSeconds.push_back(std::chrono::duration<double>(t1-t0).count());
-        legacySeconds.push_back(std::chrono::duration<double>(t2-t1).count());
+        if(g_ballMeasure) {
+            legacy.push_back(ExtendedImage(BallLensScene(dielectric),spp,salt,false,false,nullptr));
+            legacySeconds.push_back(std::chrono::duration<double>(std::chrono::steady_clock::now()-t1).count());
 #ifdef RISE_SMS_EXTENDED_PARTITION
-        kept.push_back(ExtendedImage(BallLensScene(dielectric),spp,salt,true,true,nullptr));
+            kept.push_back(ExtendedImage(BallLensScene(dielectric),spp,salt,true,true,nullptr));
 #endif
-        g_seedBase=seed;g_renderIndex=0;
-        const auto a=Render(BallLensScene(dielectric)+RasterizerPT(spp),"ball_pt");
-        g_seedBase=seed+500;g_renderIndex=0;
-        const auto b=Render(BallLensScene(dielectric)+RasterizerVCM(spp),"ball_vcm");
-        Check(a.ok&&b.ok,label+": reference renders complete");
-        pt.push_back(a.mean);vcm.push_back(b.mean);
+        }
+        if(wantPT) {
+            g_seedBase=seed;g_renderIndex=0;
+            const auto a=Render(BallLensScene(dielectric)+RasterizerPT(spp),"ball_pt");
+            Check(a.ok,label+": PT reference render completes");
+            pt.push_back(a.mean);
+        }
+        if(wantVCM) {
+            g_seedBase=seed+500;g_renderIndex=0;
+            const auto b=Render(BallLensScene(dielectric)+RasterizerVCM(spp),"ball_vcm");
+            Check(b.ok,label+": VCM reference render completes");
+            vcm.push_back(b.mean);
+        }
     }
-    const Moments e(ext),l(legacy),p(pt),v(vcm);
-    std::cout<<std::setprecision(8)<<label<<" extended="<<e.mean<<"+-"<<e.se<<" legacySMS="<<l.mean<<"+-"<<l.se
-        <<" PT(SMS off)="<<p.mean<<"+-"<<p.se<<" VCM="<<v.mean<<"+-"<<v.se
-        <<" ext/PT="<<e.mean/p.mean<<" ext/VCM="<<e.mean/v.mean<<" PT/VCM="<<p.mean/v.mean<<" n="<<n<<" spp="<<spp;
+    // An unrendered reference's Moments is never read (wantPT / wantVCM).
+    const Moments e(ext),es(extSeconds),p(pt),v(vcm);
+    std::cout<<std::setprecision(8)<<label<<" extended="<<e.mean<<"+-"<<e.se;
+    if(wantPT) std::cout<<" PT(SMS off)="<<p.mean<<"+-"<<p.se<<" ext/PT="<<e.mean/p.mean;
+    if(wantVCM) std::cout<<" VCM="<<v.mean<<"+-"<<v.se<<" ext/VCM="<<e.mean/v.mean;
+    std::cout<<" n="<<n<<" spp="<<spp<<"\n";
+    std::cout<<label<<" wall seconds per image (1 worker): extended="<<es.mean<<"+-"<<es.se<<"\n";
+    if(g_ballMeasure) {
+        const Moments l(legacy),ls(legacySeconds);
+        std::cout<<label<<" measurement: legacySMS="<<l.mean<<"+-"<<l.se<<" PT/VCM="<<p.mean/v.mean
+            <<" legacy seconds="<<ls.mean<<"+-"<<ls.se<<" ext/legacy time ratio="<<es.mean/ls.mean;
 #ifdef RISE_SMS_EXTENDED_PARTITION
-    const Moments k(kept),own(Diff(ext,kept));
-    std::cout<<" kept="<<k.mean<<"+-"<<k.se<<" smsOwnedShare="<<own.mean/e.mean;
+        const Moments k(kept),own(Diff(ext,kept));
+        std::cout<<" kept="<<k.mean<<"+-"<<k.se<<" smsOwnedShare="<<own.mean/e.mean;
 #endif
-    std::cout<<"\n";
-    const Moments es(extSeconds),ls(legacySeconds);
-    std::cout<<label<<" wall seconds per image (1 worker): extended="<<es.mean<<"+-"<<es.se
-        <<" legacySMS="<<ls.mean<<"+-"<<ls.se<<" ratio="<<es.mean/ls.mean<<"\n";
+        std::cout<<"\n";
+    }
     PrintCounters(label,counters);
     if(dielectric) {
         // DL-379 stays open: the delta-limit partition's bias is reported,
@@ -1121,6 +1143,7 @@ int main(int argc,char** argv)
         const std::string arg=argv[i];
         if(arg=="--section"&&i+1<argc) section=argv[++i];
         else if(arg=="--quick") g_quick=true;
+        else if(arg=="--ball-measure") g_ballMeasure=true;
         else if(arg=="--cost-scene"&&i+1<argc) costScene=argv[++i];
         else if(arg=="--cost-salt"&&i+1<argc) costSalt=std::strtoul(argv[++i],nullptr,10);
         else if(arg=="--allocation-limit"&&i+1<argc) allocationLimit=std::strtod(argv[++i],nullptr);
@@ -1148,7 +1171,7 @@ int main(int argc,char** argv)
         const double wall=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
         g_countNew.store(false);const auto allocations=g_newCalls.load();
         const auto solves=counters.canonicalSolves.load();
-        const double perSolve=solves?double(allocations)/solves:std::numeric_limits<double>::infinity();
+        const double perSolve=solves?double(allocations)/solves:1e300;
         Check(value>=0&&std::isfinite(value)&&solves>0,"DL-500 instrumented extended image completes");
         if(std::isfinite(allocationLimit))
             Check(g_newAvailable&&perSolve<=allocationLimit,"DL-500 ordinary-new allocation budget per canonical solve");

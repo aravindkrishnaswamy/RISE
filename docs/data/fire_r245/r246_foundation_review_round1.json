@@ -1,0 +1,17 @@
+{
+  "reviewed_commit": "a5ea64f3",
+  "scope": "case/clock foundation only",
+  "reviewers": [
+    {
+      "agent": "r246_foundation_clock_review",
+      "P1": 0,
+      "P2": 0
+    },
+    {
+      "agent": "r246_foundation_record_review",
+      "P1": 0,
+      "P2": 0
+    }
+  ],
+  "post_review_change": "mechanical trace source hash regeneration and gate evidence; fresh final review required"
+}

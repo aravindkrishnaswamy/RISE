@@ -1,0 +1,10 @@
+{
+  "check": "MC two-step witness, then compare first two B accepted Q/T/M/U fields numerically; abort before third step if identical",
+  "sha256": {
+    "/Volumes/SSD/Working/RISE/tools/fire/r258_ab_driver.cpp": "0cdf32dd52f89a3bee754295e98112a43f618ecba0fd977c27be7f2940d02d5e",
+    "/Volumes/SSD/RISE/fire_production_calibration/r257_charm_ab/sanity_mc_driver": "8e98d72eb862f92ae12ae38da350326a0d43bced1f9124f9078ca54c08d9c1ee",
+    "/Volumes/SSD/RISE/fire_production_calibration/r257_charm_ab/charm_driver": "59386925086772bf517e159050fbbd26fd5d291cf450aa747033466b2ce5b59d",
+    "/Volumes/SSD/RISE/fire_production_calibration/r257_charm_ab/EarlyObserverHarness.cpp": "53478a4b30b2f8cc4e08fae937e7936ef8eb40d1716f85e54e2cdc40a79cc8ab"
+  },
+  "controller_sha256": "bff09d1a81422835252dce5e31ef5dd9161fa136d45f2f82f5151e5ee4485b90"
+}

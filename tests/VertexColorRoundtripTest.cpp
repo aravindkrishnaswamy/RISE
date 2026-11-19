@@ -43,8 +43,9 @@ namespace
 		IndexedTriangle tri;
 		tri.iVertices[0] = 0; tri.iVertices[1] = 1; tri.iVertices[2] = 2;
 		tri.iCoords[0]   = 0; tri.iCoords[1]   = 1; tri.iCoords[2]   = 2;
-		// ComputeVertexNormals below produces one normal per position, so
-		// the normal indices follow the vertex indices.
+		// Normals are auto-computed one per vertex (ComputeVertexNormals),
+		// so the normal indices equal the vertex indices.  IndexedTriangle
+		// does not initialise them, and DoneIndexedTriangles reads them.
 		tri.iNormals[0]  = 0; tri.iNormals[1]  = 1; tri.iNormals[2]  = 2;
 		mesh.AddIndexedTriangle( tri );
 		mesh.ComputeVertexNormals();

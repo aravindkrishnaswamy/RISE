@@ -88,7 +88,7 @@ namespace RISE
 
 		static inline unsigned long long SeedFallbackState( const unsigned int seed )
 		{
-			return ( static_cast<unsigned long long>( seed ) << 1 ) | 0x9E3779B97F4A7C15ULL;
+			return ( static_cast<unsigned long long>( seed ) & 0xFFFFFFFFULL ) ^ 0x9E3779B97F4A7C15ULL;
 		}
 	#endif
 

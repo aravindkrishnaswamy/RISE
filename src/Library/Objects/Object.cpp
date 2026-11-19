@@ -20,7 +20,9 @@
 #include "../Geometry/TriangleMeshGeometryIndexed.h"
 #include "../Geometry/BoxGeometry.h"
 #include "../Materials/DielectricMaterial.h"
+#include "../Materials/RoughDielectricMaterial.h"
 #include "../Materials/PerfectRefractorMaterial.h"
+#include "../Materials/PolishedSPF.h"
 #include "../Materials/LambertianLuminaireMaterial.h"
 #include "../Materials/PhongLuminaireMaterial.h"
 #include "../Geometry/DisplacedGeometry.h"
@@ -413,6 +415,9 @@ Object::Object( const IGeometry* pGeometry_ ) :
 	}
 	if( pGeometry ) {
 		pGeometry->addref();
+		if( !dynamic_cast<const Geometry*>( pGeometry ) ) {
+			Geometry::NoteCustomCsgOperandSeen();
+		}
 	} else {
 		GlobalLog()->PrintSourceError( "Object:: Geometry ptr was passed in but is invalid", __FILE__, __LINE__ );
 	}
@@ -420,6 +425,7 @@ Object::Object( const IGeometry* pGeometry_ ) :
 
 Object::~Object( )
 {
+	Geometry::BumpGlobalGeometryShapeEpoch();
 	safe_release( pGeometry );
 	safe_release( pMaterial );
 	safe_release( pModifier );
@@ -584,6 +590,8 @@ void Object::CopySnapshotStateInto( Object& dst, const bool bCloneMaterial ) con
 	dst.m_sigmaMin             = m_sigmaMin;
 	dst.m_sigmaSource          = m_sigmaSource;
 	dst.m_sigmaExact           = m_sigmaExact;
+	dst.m_patchCertState.store( m_patchCertState.load( std::memory_order_acquire ), std::memory_order_release );
+	dst.m_mayAffectIorCatalog  = m_mayAffectIorCatalog;
 
 	// --- Transform BUILDING BLOCKS (Transformable protected state) ---
 	// Copying these is what makes the clone independent: a later
@@ -650,12 +658,54 @@ Object* Object::ClonePoseHolder() const
 	return pClone;
 }
 
+void Object::RefreshIorCatalogFlag()
+{
+	if( pInteriorMedium ) {
+		m_mayAffectIorCatalog = true;
+		return;
+	}
+	if( !pMaterial ) {
+		m_mayAffectIorCatalog = false;
+		return;
+	}
+	if( pMaterial->CouldLightPassThrough() ||
+		pMaterial->IsVolumetric() ||
+		pMaterial->GetGradedIORField() != 0 ) {
+		m_mayAffectIorCatalog = true;
+		return;
+	}
+	if( dynamic_cast<const PolishedSPF*>( pMaterial->GetSPF() ) != 0 ) {
+		m_mayAffectIorCatalog = false;
+		return;
+	}
+	static const RasterizerState kNullRast = { 0, 0 };
+	RayIntersectionGeometric rig( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), kNullRast );
+	rig.bHit = true;
+	rig.vNormal = Vector3( 0, 0, 1 );
+	rig.vGeomNormal = Vector3( 0, 0, 1 );
+	static const IORStack kQueryStack( Scalar( 1.0 ) );
+	const SpecularInfo info = pMaterial->GetSpecularInfo( rig, kQueryStack );
+	if( info.valid && ( info.canRefract || info.hasInterior ) ) {
+		m_mayAffectIorCatalog = true;
+		return;
+	}
+	const SpecularInfo infoNM = pMaterial->GetSpecularInfoNM( rig, kQueryStack, Scalar( 550 ) );
+	m_mayAffectIorCatalog = infoNM.valid && ( infoNM.canRefract || infoNM.hasInterior );
+}
+
 bool Object::AssignMaterial( const IMaterial& pMat )
 {
+	const bool hadMaterial = ( pMaterial != 0 );
+	const bool prevMayAffect = m_mayAffectIorCatalog;
 	safe_release( pMaterial );
 
 	pMaterial = &pMat;
 	pMaterial->addref();
+	m_patchCertState.store( -1, std::memory_order_release );
+	RefreshIorCatalogFlag();
+	if( hadMaterial || prevMayAffect != m_mayAffectIorCatalog || IsConsumed() || m_isCsgObject ) {
+		BumpMaterialBindingEpoch();
+	}
 
 	return false;
 }
@@ -672,6 +722,14 @@ bool Object::AssignGeometry( const IGeometry& pGeom )
 
 	pGeometry = &pGeom;
 	pGeometry->addref();
+	if( !dynamic_cast<const Geometry*>( &pGeom ) ) {
+		Geometry::NoteCustomCsgOperandSeen();
+	}
+	m_patchCertState.store( -1, std::memory_order_release );
+	Geometry::BumpGlobalGeometryShapeEpoch();
+	if( m_mayAffectIorCatalog || IsConsumed() || m_isCsgObject ) {
+		BumpMaterialBindingEpoch();
+	}
 	ResetWorldAreaSampling();
 	// A swapped geometry can never match the old entries: retire them now
 	// (an editor operation, outside any render).
@@ -729,18 +787,29 @@ void Object::SetShadowParams( const bool bCasts, const bool bReceives )
 
 bool Object::AssignInteriorMedium( const IMedium& medium )
 {
+	const bool hadMedium = ( pInteriorMedium != 0 );
+	const bool prevMayAffect = m_mayAffectIorCatalog;
 	safe_release( pInteriorMedium );
 
 	pInteriorMedium = &medium;
 	pInteriorMedium->addref();
+	RefreshIorCatalogFlag();
+	if( hadMedium || prevMayAffect != m_mayAffectIorCatalog || IsConsumed() || m_isCsgObject ) {
+		BumpMaterialBindingEpoch();
+	}
 
 	return true;
 }
 
 void Object::ClearInteriorMedium()
 {
+	const bool hadMedium = ( pInteriorMedium != 0 );
 	safe_release( pInteriorMedium );
 	pInteriorMedium = 0;
+	RefreshIorCatalogFlag();
+	if( hadMedium || IsConsumed() || m_isCsgObject ) {
+		BumpMaterialBindingEpoch();
+	}
 }
 
 void Object::ClearShader()
@@ -751,8 +820,14 @@ void Object::ClearShader()
 
 void Object::ClearMaterial()
 {
+	const bool hadMaterial = ( pMaterial != 0 );
 	safe_release( pMaterial );
 	pMaterial = 0;
+	m_patchCertState.store( -1, std::memory_order_release );
+	RefreshIorCatalogFlag();
+	if( hadMaterial || IsConsumed() || m_isCsgObject ) {
+		BumpMaterialBindingEpoch();
+	}
 }
 
 void Object::ClearModifier()
@@ -774,6 +849,12 @@ void Object::ClearGeometry()
 	// see getBoundingBox()'s comment for the (now reachable) call-graph note.
 	safe_release( pGeometry );
 	pGeometry = 0;
+	m_patchCertState.store( -1, std::memory_order_release );
+	Geometry::BumpGlobalGeometryShapeEpoch();
+	BumpMaterialBindingEpoch();
+	ResetWorldAreaSampling();
+	PruneWorldAreaSampling();
+	m_warnedAreaFallback.store( false );
 }
 
 const IMaterial* Object::GetMaterial() const
@@ -1077,7 +1158,44 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 	}
 
 	pGeometry->IntersectRay( ri.geometric, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
-    if(ri.geometric.bHit && ri.geometric.bProvablyNoInterior) {
+    if( ri.geometric.bHit && !ri.geometric.bProvablyNoInterior ) {
+        // Lazy patch-set open-sheet proof for clear refractive materials:
+        // BezierPatchGeometry / BilinearPatchGeometry compute their topology &
+        // embedding certificate lazily so opaque patch objects never pay for it.
+        // Force it on the first hit of a clear-refractive object and cache the
+        // epoch+flag pair atomically so every ray sees a consistent answer even
+        // when `ObjectManager::PrepareForRendering()` was not called first.
+        const long long certEp = static_cast<long long>( GeometricUtilities::PatchCertificateEpoch() & 0x7fffffffu );
+        const long long cached = m_patchCertState.load( std::memory_order_acquire );
+        if( cached >= 0 && ( cached >> 32 ) == certEp ) {
+            if( ( cached & 1LL ) != 0 ) {
+                ri.geometric.bProvablyNoInterior = true;
+            }
+        } else {
+            bool openClearPatch = false;
+            const IMaterial* proofMaterial = pMaterial;
+            while( proofMaterial ) {
+                if( const auto* lum = dynamic_cast<const LambertianLuminaireMaterial*>( proofMaterial ) ) {
+                    proofMaterial = &lum->GetBaseMaterial();
+                } else if( const auto* lum = dynamic_cast<const PhongLuminaireMaterial*>( proofMaterial ) ) {
+                    proofMaterial = &lum->GetBaseMaterial();
+                } else break;
+            }
+            if( dynamic_cast<const DielectricMaterial*>( proofMaterial ) ||
+                dynamic_cast<const RoughDielectricMaterial*>( proofMaterial ) ||
+                dynamic_cast<const PerfectRefractorMaterial*>( proofMaterial ) ) {
+                if( const auto* bez = dynamic_cast<const BezierPatchGeometry*>( pGeometry ) ) {
+                    openClearPatch = bez->IsProvablyOpenSheet();
+                } else if( const auto* bil = dynamic_cast<const BilinearPatchGeometry*>( pGeometry ) ) {
+                    openClearPatch = bil->IsProvablyOpenSheet();
+                }
+            }
+            if( openClearPatch ) {
+                ri.geometric.bProvablyNoInterior = true;
+            }
+            m_patchCertState.store( ( certEp << 32 ) | ( openClearPatch ? 1LL : 0LL ), std::memory_order_release );
+        }
+    } else if(ri.geometric.bHit && ri.geometric.bProvablyNoInterior) {
         // Scope by scattering material identity. Luminaires preserve their
         // base's scattering law, but a composite may forward a sole layer's
         // SPF: it must retain its frozen legacy record even under luminaires.
@@ -1090,6 +1208,7 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
             } else break;
         }
         if(!dynamic_cast<const DielectricMaterial*>(proofMaterial) &&
+            !dynamic_cast<const RoughDielectricMaterial*>(proofMaterial) &&
             !dynamic_cast<const PerfectRefractorMaterial*>(proofMaterial)) {
             if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(pGeometry))
                 ri.geometric.bProvablyNoInterior=mesh->IsZeroVolumeSheet();
@@ -1141,6 +1260,23 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		if( ri.geometric.ray.hasDifferentials ) {
 			ComputeFootprintVectors( ri.geometric, ri.geometric.ray );
 			SolveFootprintUV( ri.geometric );
+		}
+
+		// Preserve the exact geometric-boundary distances before the legacy
+		// shading-point offset below moves `range` just outside the surface.
+		// Transport topology must split at the true boundary; using the offset
+		// range forces every boundary walker to leap over a finite interval.
+		const Point3 ptObjectSurface = ri.geometric.ray.PointAtLength( ri.geometric.range );
+		const Point3 ptWorldSurface = Point3Ops::Transform( m_mxFinalTrans, ptObjectSurface );
+		ri.geometric.surfaceRange = Vector3Ops::Magnitude(
+			Vector3Ops::mkVector3( ptWorldSurface, orig.origin ) );
+		if( bComputeExitInfo && ri.geometric.range2 > 0 &&
+			ri.geometric.range2 < RISE_INFINITY )
+		{
+			const Point3 ptObjectSurface2 = ri.geometric.ray.PointAtLength( ri.geometric.range2 );
+			const Point3 ptWorldSurface2 = Point3Ops::Transform( m_mxFinalTrans, ptObjectSurface2 );
+			ri.geometric.surfaceRange2 = Vector3Ops::Magnitude(
+				Vector3Ops::mkVector3( ptWorldSurface2, orig.origin ) );
 		}
 
 		// This an overriding UV generator only, it is for geometries that don't know how to compute
@@ -1589,6 +1725,36 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		ri.geometric.ptObjIntersec = ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR );
 		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans, ri.geometric.ptObjIntersec );
 		ri.geometric.range = Vector3Ops::Magnitude( Vector3Ops::mkVector3( ri.geometric.ptIntersection, orig.origin ) );
+
+		// Exact-boundary consumers can reject the zero-distance root without
+		// stepping the ray origin.  For a closed primitive queried exactly on
+		// its entry surface, promote the already-computed exit boundary when
+		// the entry is at/below the caller's minimum.  This preserves an
+		// arbitrarily thin interior instead of discarding the whole object.
+		if( bComputeExitInfo && ri.geometric.minimumSurfaceRange >= 0 &&
+			ri.geometric.surfaceRange <= ri.geometric.minimumSurfaceRange &&
+			ri.geometric.surfaceRange2 > ri.geometric.minimumSurfaceRange &&
+			ri.geometric.surfaceRange2 < RISE_INFINITY )
+		{
+			ri.geometric.range = ri.geometric.range2;
+			ri.geometric.surfaceRange = ri.geometric.surfaceRange2;
+			ri.geometric.vNormal = ri.geometric.vNormal2;
+			ri.geometric.vGeomNormal = ri.geometric.vGeomNormal2;
+			ri.geometric.ptIntersection = ri.geometric.ptExit;
+			ri.geometric.ptObjIntersec = ri.geometric.ptObjExit;
+			// Preserve the geometry contract that a single forward boundary
+			// with range2==0 means the query origin is already inside the solid.
+			// Nested CSG interval algebra relies on that distinction when this
+			// promoted exit is one of its operands.
+			ri.geometric.range2 = 0;
+			ri.geometric.surfaceRange2 = RISE_INFINITY;
+			// Keep master's world-measure boundary parameters on the same
+			// (promoted) boundary.
+			if( ri.hasBoundaryRange2 ) {
+				ri.boundaryRange = ri.boundaryRange2;
+			}
+			ri.hasBoundaryRange2 = false;
+		}
 
 		ri.pObject = this;
 	}
@@ -2065,6 +2231,12 @@ void Object::ResetRuntimeData() const
 void Object::FinalizeTransformations( const Matrix4& parentWorld )
 {
 	Transformable::FinalizeTransformations( parentWorld );
+	if( !TimeIndexed::tlsSlots || IsConsumed() || m_isCsgObject ) {
+		BumpThreadCsgPoseEpoch();
+		BumpThreadTrackablePoseEpoch();
+	} else if( m_mayAffectIorCatalog ) {
+		BumpThreadTrackablePoseEpoch();
+	}
 
 	// Everything below is derived from m_mxFinalTrans, which is now the
 	// COMPOSED world matrix `parentWorld * local`.  That is what makes the

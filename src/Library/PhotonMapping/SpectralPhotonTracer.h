@@ -16,6 +16,7 @@
 #define SPECTRAL_PHOTON_TRACER_
 
 #include "../Utilities/IndependentSampler.h"
+#include "../Utilities/Transformable.h"
 #include "../Lights/LightSampler.h"
 #include "../Interfaces/IPhotonTracer.h"
 #include "../Utilities/Reference.h"
@@ -247,12 +248,17 @@ namespace RISE
                 }
                 uint64_t numshot = 0;
                 const Scalar exposure = pScene->GetCamera() ? pScene->GetCamera()->GetExposureTime() : 0;
-                const bool temporal = bAtTime && exposure > 0 && nNumTemporalSamples > 1 && numPhotons > 0;
+                const bool temporal = bAtTime && exposure > 0 && nNumTemporalSamples > 1 && numPhotons > 0 &&
+                    !pScene->FireTemporalHold();
                 const unsigned strata = temporal ? std::min(nNumTemporalSamples,numPhotons) : 1;
                 for (unsigned stratum=0; stratum<strata; ++stratum) {
                     const unsigned count = numPhotons/strata + (stratum < numPhotons%strata ? 1 : 0);
                     if (temporal) {
                         const Scalar dt = exposure/strata;
+                        // Render-internal pose (the Job request holds the prepared mutation
+                        // freeze; without this the keyframe setters refuse the stratum time).
+                        struct InternalMutation { InternalMutation() { Transformable::BeginPreparedInternalMutation(); }
+                        	~InternalMutation() { Transformable::EndPreparedInternalMutation(); } } internalMutation;
                         pScene->GetAnimator()->EvaluateAtTime(time-exposure*.5+(stratum+random.CanonicalRandom())*dt);
                         pScene->GetObjects()->RecomposeAnimatedHierarchy(); // DL-457: carry parented objects along
                     }
@@ -290,4 +296,3 @@ namespace RISE
 }
 
 #endif
-

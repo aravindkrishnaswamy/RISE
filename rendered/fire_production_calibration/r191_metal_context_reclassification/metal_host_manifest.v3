@@ -1,0 +1,74 @@
+schema rise.fire.production.metal_host_manifest.v3
+revision r191
+authored_utc 2026-09-01
+supersedes_manifest_revision r190
+supersedes_manifest_sha256 c9c48a6eb64d195235f59bb73783296f54f61507f2fb6271280da07d07433f5c
+required_host Apple_M4_with_working_Metal_device
+current_host_has_required_device 1
+metal_device_name Apple_M4_Max
+metal_device_registry_id 4294969469
+execution_context unrestricted
+run_stages_executed_on_current_host 0
+golden_checkpoint_mutation_allowed 0
+render_concurrency 1
+track_a_precedes_track_b_metal 1
+r190_manifest_preserved_immutable 1
+
+global_preflight
+  command ./bin/tests/FireProductionSolverTest --fire-production-metal-capability
+  acceptance discovery available; default device present; identity kernel passed; device Apple M4 Max; registry 4294969469
+  refusal discovery blocked-by-execution-context, no-device, backend-not-built, or identity-kernel failure
+  build the exact reviewed commit and record full git commit, executable SHA-256,
+  Metal device, OS build, compiler build, and every input/checkpoint SHA-256
+  refuse stale executable, stale input, host substitution, or concurrent render
+global_preflight_end
+
+stage 1 track_a_tier8_full_window_spectrum_animation_delivery
+  command ./bin/tests/FireSequenceTest --fire-production-temporal-capstone 8 0.0625 rendered/fire_production_calibration/r190_tier8_temporal
+  command ./bin/tests/FireSequenceTest --fire-production-temporal-preview rendered/fire_production_calibration/r190_tier8_temporal rendered/fire_production_calibration/r190_tier8_temporal/preview
+  command python3 tools/encode_pq_prores.py rendered/fire_production_calibration/r190_tier8_temporal/preview/temporal_primary_*.exr | ffmpeg -y -f rawvideo -pix_fmt yuv444p10le -s 64x64 -r 16 -i - -vf "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv" -c:v prores_ks -profile:v 4444 -movflags +write_colr rendered/fire_production_calibration/r190_tier8_temporal/tier8_preview_hdr10_prores4444.mov
+  command ffprobe -v trace rendered/fire_production_calibration/r190_tier8_temporal/tier8_preview_hdr10_prores4444.mov 2>&1 | grep "nclc: pri 9 trc 16 matrix 9"
+  command /usr/bin/shasum -a 256 rendered/fire_production_calibration/r190_tier8_temporal/tier8_preview_hdr10_prores4444.mov rendered/fire_production_calibration/r190_tier8_temporal/preview/temporal_primary_*.exr.provenance.cbor > rendered/fire_production_calibration/r190_tier8_temporal/tier8_preview_hdr10_prores4444.mov.evidence.sha256
+  command ./bin/tests/FireSequenceTest --fire-production-puffing-spectrum 8 rendered/fire_production_calibration/r190_tier8_temporal/production_final.checkpoint rendered/fire_production_calibration/r190_tier8_temporal rendered/fire_production_calibration/r190_tier8_temporal/preview rendered/fire_production_calibration/r190_tier8_temporal/spectrum
+  acceptance complete 5*t_ft discard plus statistics; monitored diagnostics and pinned-cadence frames retained; full centerline/lit-area spectra published
+  animation sequential HDR10 ProRes 4444 at 16 fps plus preview GIF; first/middle/last frame digests must differ; movie must have the Rec.2020/PQ colr atom and its evidence sidecar must bind the movie plus every preview_primary provenance sidecar
+  label tier-8_preview_rows_not_claimed_r57_tier10_pin
+  delivery send movie and preview_primary sidecars to owner immediately
+stage_end
+
+stage 2 track_b_live_metal_consumers_and_kernel_sweep
+  prerequisite ./bin/tests/FireProductionCalibrationTest
+  command ./bin/tests/FireProductionProjectionTest
+  acceptance full Metal projection consumer executes authenticated sealed-class, sealed-head, endpoint-class, validation, allocation-failure, and tier-10-shape paths
+  command ./bin/tests/FireProductionSolverTest
+  acceptance full resident Metal step and compatible dual-momentum consumer execute; commuting, residency, retry, and old-operator REDs remain green
+  command ./bin/tests/FireSequenceTest --fire-production-metal-fp64-kernel-sweep
+  acceptance every donor, MC-MUSCL, averaged-pair, and fresh shared-alpha Metal publication matches fp32 CPU bytes and its directly evaluated fp64 mirror; compatible momentum matches fp32 CPU bytes including signed zero on periodic and mixed-boundary fixtures and remains inside both the original relative gamma128 check and the input-conditioned absolute gamma128 bound
+  cpu_owner_scope complete R0/R1/R2 owner and generated fp64 mirror are host-independent CPU authorities; no nonexistent Metal owner is claimed
+  refusal any validation failure, stale identity, non-bit-exact Metal/fp32 compatible-momentum field, fp64-envelope breach, extra command commit, or host fallback
+stage_end
+
+stage 3 track_b_tier10_onset
+  prerequisite stage 2 live projection and compatible-momentum consumers green
+  command ./bin/tests/FireSequenceTest --fire-production-onset 10 rendered/fire_production_calibration/r190_tier10_onset
+  acceptance matched-state aligned advection is in the oracle approximately-63-per-second class at 2.10798 s; maximum velocity is plume-scale through 2.2 s
+  evidence retain 15,30,60 m/s budgets, periodic checkpoints, max-velocity trajectory, Vreman values, projection validation, and monitored-manifold trajectories
+  controls tier 6 then tier 8 onset diagnostics run sequentially and remain materially unchanged
+stage_end
+
+stage 4 regression_rederivation
+  acceptance r170 shadow and sealed readmission slices re-derive within contract; commuting identity and old-operator REDs remain green
+stage_end
+
+stage 5 tier10_full_window_spectrum_rows_animation_report
+  command ./bin/tests/FireSequenceTest --fire-production-temporal-capstone 10 0.0625 rendered/fire_production_calibration/r190_tier10_temporal
+  command ./bin/tests/FireSequenceTest --fire-production-temporal-preview rendered/fire_production_calibration/r190_tier10_temporal rendered/fire_production_calibration/r190_tier10_temporal/preview
+  command python3 tools/encode_pq_prores.py rendered/fire_production_calibration/r190_tier10_temporal/preview/temporal_primary_*.exr | ffmpeg -y -f rawvideo -pix_fmt yuv444p10le -s 64x64 -r 16 -i - -vf "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv" -c:v prores_ks -profile:v 4444 -movflags +write_colr rendered/fire_production_calibration/r190_tier10_temporal/tier10_preview_hdr10_prores4444.mov
+  command ffprobe -v trace rendered/fire_production_calibration/r190_tier10_temporal/tier10_preview_hdr10_prores4444.mov 2>&1 | grep "nclc: pri 9 trc 16 matrix 9"
+  command /usr/bin/shasum -a 256 rendered/fire_production_calibration/r190_tier10_temporal/tier10_preview_hdr10_prores4444.mov rendered/fire_production_calibration/r190_tier10_temporal/preview/temporal_primary_*.exr.provenance.cbor > rendered/fire_production_calibration/r190_tier10_temporal/tier10_preview_hdr10_prores4444.mov.evidence.sha256
+  command ./bin/tests/FireSequenceTest --fire-production-puffing-spectrum 10 rendered/fire_production_calibration/r190_tier10_temporal/production_final.checkpoint rendered/fire_production_calibration/r190_tier10_temporal rendered/fire_production_calibration/r190_tier10_temporal/preview rendered/fire_production_calibration/r190_tier10_temporal/spectrum
+  verdict publish spectrum first; slow-mode dominance without 2.7 Hz stops for the pre-registered r54 domain audit
+  claims only after passing spectrum: empirical rows, tier-10 HDR animation delivery, report, fresh zero-P1 review, owner digest
+stage_end
+
+ordering_note Stage 1 is binding before every formal Track B Metal stage. Pre-manifest development qualification is not a manifest stage and confers no Stage-2 claim; the exact sweep reruns after Stage 1. All simulation and rendering processes run sequentially.

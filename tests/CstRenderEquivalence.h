@@ -143,12 +143,16 @@ inline void DumpMedium( std::ostream& o, const IMedium* m )
 		          bbMin.y + ( bbMax.y - bbMin.y ) * 0.5279,
 		          bbMin.z + ( bbMax.z - bbMin.z ) * 0.4391 )
 		: Point3( 0, 0, 0 );
-	const MediumCoefficients c = m->GetCoefficients( sp ); const IPhaseFunction* pf = m->GetPhaseFunction();
+	const MediumCoefficients c = m->GetCoefficients( sp );
+	const IPhaseFunction* pf = m->GetPhaseFunction();
+	const bool ownsPhaseClosure = !pf && m->IsFireMedium();
+	if( ownsPhaseClosure ) pf = m->MakePhaseClosure( sp, 550.0 );
 	char b[480];
 	std::snprintf( b, sizeof(b), " sigma_t=[%.9g %.9g %.9g] sigma_s=[%.9g %.9g %.9g] emission=[%.9g %.9g %.9g] g=%.9g homog=%d",
 		(double)c.sigma_t.r,(double)c.sigma_t.g,(double)c.sigma_t.b, (double)c.sigma_s.r,(double)c.sigma_s.g,(double)c.sigma_s.b,
 		(double)c.emission.r,(double)c.emission.g,(double)c.emission.b, (double)( pf ? pf->GetMeanCosine() : 0 ), m->IsHomogeneous()?1:0 );
 	o << b;
+	if( ownsPhaseClosure && pf ) pf->release();
 	if( bounded ) {
 		char bb[224]; std::snprintf( bb, sizeof(bb), " bbox=[%.9g %.9g %.9g .. %.9g %.9g %.9g]",
 			(double)bbMin.x,(double)bbMin.y,(double)bbMin.z, (double)bbMax.x,(double)bbMax.y,(double)bbMax.z ); o << bb;

@@ -1,0 +1,22 @@
+{
+  "schema": "rise.fire.r224.window-stop-evidence.v1",
+  "status": "incomplete_solver_refusal",
+  "executable_sha256": "d847978f8ec0eac9a08d05485aa9d0c26c0b1b83aea85ee53acc298da65b01a2",
+  "exit_code": 94,
+  "accepted_steps": 2473,
+  "accepted_time_s": 4.0389278308721259,
+  "target_time_s": 25.091040127156969,
+  "maximum_velocity_m_per_s_at_last_accept": 5.1520013809204102,
+  "rss_bytes_at_last_accept": 2102771712,
+  "footprint_bytes_at_last_accept": 1837205760,
+  "compressed_bytes_at_last_accept": 0,
+  "refusal": {"stage": 1, "bitmap": 33564800, "bits": [7,11,13,25], "first_writer_diagnosis": "pending; bitmap family alone does not establish root cause"},
+  "payload_directory": "rendered/fire_production_calibration/r224_full_window/tier8_window.v1",
+  "log_sha256": "279dd281973ab50c624e693c521948fb1449aa9391a8e3eff538c3922eb65675",
+  "stop_receipt_sha256": "02b4c76221287ccc5ac770255ad683387e588622217a994f7597e679479f2ac3",
+  "velocity_trajectory_sha256": "8a9f6fc5dd3ba7eae09344e1ed994996ed24db79419706744c227ff76e44a4d2",
+  "memory_trajectory_sha256": "e97e1f1f8aabe52025c99f12c6396aef8402ee8bc53660d4caf69ab5709ca34f",
+  "retry_trajectory_sha256": "04442adfaf750cc6f4f40ac1e68ae08be6f15f325c2c6e26d7b76b3203da075f",
+  "retained_checkpoint": {"step":2454,"path":"checkpoint_history/step_0000002454.checkpoint","sha256":"98a8c138cdc644bfcbab12c223b2dcf9780b30c9c0218d7c53ff57ee1bb314de","also_current_checkpoint":true},
+  "claims": "No completed window, statistics spectrum or movie. No restart or migration authorized by this artifact. Historical and golden payloads unchanged."
+}

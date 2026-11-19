@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "../Utilities/IndependentSampler.h"
 #include "PointLight.h"
 #include "../Animation/KeyframableHelper.h"
@@ -254,6 +255,7 @@ IKeyframeParameter* PointLight::KeyframeFromParameters( const String& name, cons
 
 void PointLight::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case COLOR_ID:

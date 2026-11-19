@@ -15,6 +15,7 @@
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
             android:exported="true"
+            android:launchMode="singleTask"
             android:resizeableActivity="true"
             android:theme="@style/Theme.Rise">
             <intent-filter>

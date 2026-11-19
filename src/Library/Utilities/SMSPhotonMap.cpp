@@ -352,7 +352,11 @@ namespace
 			bool bEntering = !bSameObjectAlreadyPreScatter;
 			Scalar etaI = bEntering ? ior_stack.top() : specInfo.ior;
 			Scalar etaT = specInfo.ior;
-			if( ri.geometric.bProvablyNoInterior ) {
+			if( IORStackSeeding::IsPolishedCoatMaterial( ri.pMaterial ) ) {
+				bEntering = true;
+				etaI = ior_stack.top();
+				etaT = specInfo.ior;
+			} else if( ri.geometric.bProvablyNoInterior ) {
 				const IORStackSeeding::OpenSheetCrossing crossing =
 					IORStackSeeding::ResolveOpenSheetCrossing( ri.geometric, specInfo.ior, destination );
 				bEntering = crossing.bEntering;

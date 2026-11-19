@@ -16,6 +16,8 @@
 //      Microfacet-Based BRDFs", JCGT 3(2), 2014
 //    - Dupuy & Benyoub, "Sampling Visible GGX Normals with
 //      Spherical Caps", HPG 2023
+//    - Heitz, "Sampling the GGX Distribution of Visible Normals",
+//      JCGT 7(4), 2018 (the rough-dielectric projected-disk sampler)
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 28, 2026
@@ -28,6 +30,7 @@
 #ifndef MICROFACET_UTILS_
 #define MICROFACET_UTILS_
 
+#include <cmath>
 #include "Math3D/Math3D.h"
 #include "OrthonormalBasis3D.h"
 #include "math_utils.h"
@@ -364,6 +367,405 @@ namespace RISE
 			const Scalar Dv = G1wi * wiH * D / cosWi;
 
 			return Dv / (4.0 * woH);
+		}
+
+		/// Tier 1.1 transport kernel, in a local frame whose +z faces the
+		/// incident medium. Both directions must be unit length and point
+		/// away from the interface; wi.z > 0. eta = n_transmitted/n_incident.
+		/// Alpha values are GGX widths in (0,1], not perceptual roughness. Both zero
+		/// means smooth; a single zero width (a singular 1D distribution) is
+		/// unsupported. This is SINGLE scattering: rejected micronormals are
+		/// null events, not resampled. RoughDielectricEnergy adds compensation;
+		/// RoughDielectricMaterial handles material/IOR stack integration.
+		/// Shared scalar math is suitable for Pel/NM/HWSS.
+		namespace RoughDielectric
+		{
+			struct Evaluation
+			{
+				Scalar f = 0;       ///< BSDF in sr^-1, including radiance scaling if requested.
+				Scalar pdf = 0;     ///< Aggregate reflection/transmission solid-angle PDF.
+				Scalar weight = 0;  ///< Independently scaled f*abs(wo.z)/pdf where density is positive.
+				Scalar fMantissa = 0, pdfMantissa = 0; ///< Retained for mixture arithmetic before Scalar conversion.
+				int fExponent = 0, pdfExponent = 0;
+				bool positiveDensity = false; ///< Retains positivity if conversion to Scalar underflows.
+			};
+
+			struct Sample
+			{
+				Vector3 wo = Vector3( 0, 0, 0 );
+				Scalar f = 0;
+				Scalar pdf = 0;     ///< Probability mass for a delta event, density otherwise.
+				Scalar weight = 0;  ///< f * abs(wo.z) / pdf, without a second Fresnel coin.
+				Scalar fMantissa = 0, pdfMantissa = 0;
+				int fExponent = 0, pdfExponent = 0;
+				// Values/densities or true eta^-2 weights can exceed Scalar's
+				// range. Representable throughput is evaluated independently;
+				// positiveDensity keeps underflowing densities from becoming nulls.
+				bool transmission = false;
+				bool delta = false;
+				bool valid = false;
+			};
+
+			inline bool ValidParameters( Scalar ax, Scalar ay, Scalar eta )
+			{
+				return std::isfinite( ax ) && std::isfinite( ay ) && std::isfinite( eta ) &&
+					eta > 0 && ( ( ax > 0 && ax <= 1 && ay > 0 && ay <= 1 ) || ( ax == 0 && ay == 0 ) );
+			}
+
+			// Keep positive products as mantissa/exponent pairs until their
+			// final conversion. Individual NDF factors can overflow even when
+			// the final BSDF/PDF is representable. No wider arithmetic or clamps.
+			struct PositiveProduct
+			{
+				Scalar mantissa = 1;
+				int exponent = 0;
+				void Multiply( Scalar value )
+				{
+					int e = 0, adjust = 0;
+					mantissa *= std::frexp( value, &e );
+					mantissa = std::frexp( mantissa, &adjust );
+					exponent += e + adjust;
+				}
+				void Divide( Scalar value )
+				{
+					int e = 0, adjust = 0;
+					mantissa /= std::frexp( value, &e );
+					mantissa = std::frexp( mantissa, &adjust );
+					exponent += adjust - e;
+				}
+				void Divide( const PositiveProduct& value )
+				{
+					const Scalar m = value.mantissa; const int e = value.exponent;
+					Divide(m); exponent -= e;
+				}
+				Scalar Value() const { return std::scalbn( mantissa, exponent ); }
+			};
+
+			inline Vector3 NormalizeScaled( const Vector3& v, const Vector3& scales )
+			{
+				const Scalar values[3] = { v.x, v.y, v.z };
+				const Scalar factors[3] = { scales.x, scales.y, scales.z };
+				Scalar parts[3] = { 0, 0, 0 };
+				int powers[3] = { 0, 0, 0 }, maxPower = 0;
+				bool any = false;
+				for( int i = 0; i < 3; ++i ) {
+					if( values[i] == 0 ) continue;
+					int ev = 0, ef = 0;
+					parts[i] = std::frexp( values[i], &ev ) * std::frexp( factors[i], &ef );
+					powers[i] = ev + ef;
+					maxPower = any ? r_max( maxPower, powers[i] ) : powers[i];
+					any = true;
+				}
+				if( !any ) return Vector3( 0, 0, 0 );
+				Scalar scaled[3];
+				for( int i = 0; i < 3; ++i ) scaled[i] = std::scalbn( parts[i], powers[i] - maxPower );
+				const Scalar length = std::sqrt( scaled[0]*scaled[0] + scaled[1]*scaled[1] + scaled[2]*scaled[2] );
+				// Divide before the final scaling: an intermediate component
+				// below denorm_min can become representable after normalization.
+				return Vector3( std::scalbn(parts[0]/length,powers[0]-maxPower),
+					std::scalbn(parts[1]/length,powers[1]-maxPower), std::scalbn(parts[2]/length,powers[2]-maxPower) );
+			}
+
+			inline PositiveProduct ProjectedSum( const Vector3& w, Scalar ax, Scalar ay )
+			{
+				// |w.z| + length(ax*w.x,ay*w.y,w.z), in a common binary
+				// scale. Do not round a dimensionless fraction before a later
+				// cancellation with subnormal |w.z|.
+				const Scalar values[3] = { w.x, w.y, w.z }, factors[3] = { ax, ay, 1 };
+				Scalar parts[3] = { 0, 0, 0 };
+				int powers[3] = { 0, 0, 0 }, maxPower = 0;
+				bool any = false;
+				for( int i = 0; i < 3; ++i ) {
+					if( values[i] == 0 ) continue;
+					int ev = 0, ef = 0;
+					parts[i] = std::frexp(values[i],&ev)*std::frexp(factors[i],&ef);
+					powers[i] = ev+ef;
+					maxPower = any ? r_max(maxPower,powers[i]) : powers[i]; any = true;
+				}
+				for( int i = 0; i < 3; ++i ) parts[i] = std::scalbn(parts[i],powers[i]-maxPower);
+				PositiveProduct result;
+				result.mantissa = std::hypot(parts[0],std::hypot(parts[1],parts[2]))+std::abs(parts[2]);
+				result.exponent = maxPower;
+				return result;
+			}
+
+			struct Masking
+			{
+				PositiveProduct sumI, sumO, mask, outFraction;
+				Masking( const Vector3& wi, const Vector3& wo, Scalar ax, Scalar ay )
+					: sumI(ProjectedSum(wi,ax,ay)), sumO(ProjectedSum(wo,ax,ay))
+				{
+					PositiveProduct inFraction;
+					inFraction.Multiply(wi.z); inFraction.Divide(sumI);
+					outFraction.Multiply(std::abs(wo.z)); outFraction.Divide(sumO);
+					const int e = r_max(inFraction.exponent,outFraction.exponent);
+					const Scalar a = std::scalbn(inFraction.mantissa,inFraction.exponent-e);
+					const Scalar b = std::scalbn(outFraction.mantissa,outFraction.exponent-e);
+					mask.mantissa = a+b-(2*a*b)*std::scalbn(Scalar(1),e);
+					mask.exponent = e;
+				}
+			};
+
+			inline PositiveProduct DistributionProduct( const Vector3& m, Scalar ax, Scalar ay )
+			{
+				PositiveProduct result;
+				if( m.z <= 0 ) { result.mantissa = 0; return result; }
+				const Scalar values[3] = { std::abs(m.x), std::abs(m.y), m.z };
+				const Scalar widths[3] = { ax, ay, 1 };
+				Scalar parts[3] = { 0, 0, 0 };
+				int powers[3] = { 0, 0, 0 }, maxPower = 0;
+				for( int i = 0; i < 3; ++i ) {
+					if( values[i] == 0 ) continue;
+					int ev = 0, ew = 0;
+					parts[i] = std::frexp( values[i], &ev ) / std::frexp( widths[i], &ew );
+					powers[i] = ev - ew;
+					maxPower = r_max( maxPower, powers[i] );
+				}
+				for( int i = 0; i < 3; ++i ) parts[i] = std::scalbn( parts[i], powers[i] - maxPower );
+				const Scalar norm = std::sqrt( parts[0]*parts[0] + parts[1]*parts[1] + parts[2]*parts[2] );
+				result.Multiply( INV_PI ); result.Divide( ax ); result.Divide( ay );
+				for( int i = 0; i < 4; ++i ) result.Divide( norm );
+				result.exponent -= 4 * maxPower;
+				return result;
+			}
+
+			inline Scalar Distribution( const Vector3& m, Scalar ax, Scalar ay )
+			{
+				return DistributionProduct( m, ax, ay ).Value();
+			}
+
+			inline Scalar DifferenceOfProducts( Scalar a, Scalar b, Scalar c, Scalar d )
+			{
+				const Scalar cd = c*d;
+				return std::fma(a,b,-cd) + std::fma(-c,d,cd);
+			}
+
+			inline Vector3 Cross( const Vector3& a, const Vector3& b )
+			{
+				return Vector3( DifferenceOfProducts(a.y,b.z,a.z,b.y),
+					DifferenceOfProducts(a.z,b.x,a.x,b.z), DifferenceOfProducts(a.x,b.y,a.y,b.x) );
+			}
+
+			inline void PolarizedFresnel( Scalar a, Scalar b, Scalar& reflection, Scalar& transmission )
+			{
+				if( a == 0 || b == 0 ) { reflection = 1; transmission = 0; return; }
+				int ea = 0, eb = 0;
+				std::frexp(a,&ea); std::frexp(b,&eb);
+				const int shift = 1-r_max(ea,eb);
+				const Scalar sa = std::scalbn(a,shift), sb = std::scalbn(b,shift);
+				const Scalar ratio = (sa-sb)/(sa+sb);
+				reflection = ratio*ratio;
+				// Keep tiny amplitudes out of squared denominators even when
+				// fast-math reassociates ratios and products.
+				PositiveProduct tail;
+				tail.Multiply(4); tail.Multiply(a); tail.Multiply(b);
+				tail.Divide(a+b); tail.Divide(a+b);
+				transmission = tail.Value();
+			}
+
+			inline Scalar Fresnel( Scalar cosI, Scalar sinI, Scalar eta, Scalar& cosT, Scalar& transmission )
+			{
+				// Retain the smaller angular component: sine near normal,
+				// cosine near grazing. Neither is recovered from a rounded 1.
+				if( cosI >= sinI ) {
+					if( sinI >= eta ) { cosT = 0; transmission = 0; return 1; }
+					cosT = std::sqrt(((eta-sinI)/eta)*(1+sinI/eta));
+				} else if( eta >= 1 ) {
+					cosT = std::hypot(cosI/eta,std::sqrt(((eta-1)/eta)*(1+1/eta)));
+				} else {
+					const Scalar p = eta*eta;
+					// Grazing cosI^2 < 1/2: p < 1/2 guarantees TIR.
+					// Otherwise p-1 is exact (Sterbenz). FMA retains the
+					// cosine-square residual and prevents fast-math from
+					// reassociating the small contrast into (p+q)-1.
+					const Scalar delta = std::fma(cosI,cosI,p-1)+std::fma(eta,eta,-p);
+					if( p < Scalar(0.5) || delta <= 0 ) { cosT = 0; transmission = 0; return 1; }
+					cosT = std::sqrt(delta)/eta;
+				}
+				// Scale each ratio by the larger index, avoiding eta*cos
+				// overflow without changing the Fresnel equations.
+				const Scalar a = eta >= 1 ? cosI/eta : cosI;
+				const Scalar b = eta >= 1 ? cosT : eta*cosT;
+				const Scalar c = eta >= 1 ? cosI : eta*cosI;
+				const Scalar d = eta >= 1 ? cosT/eta : cosT;
+				Scalar rs = 0, rp = 0, ts = 0, tp = 0;
+				PolarizedFresnel(a,b,rs,ts); PolarizedFresnel(c,d,rp,tp);
+				Scalar reflection = (rs+rp)*Scalar(0.5);
+				// Compute small transmission directly; 1-R loses it when R
+				// rounds to 1. Form only the larger coefficient by complement.
+				transmission = (ts+tp)*Scalar(0.5);
+				if( reflection <= transmission ) transmission = 1-reflection;
+				else reflection = 1-transmission;
+				return reflection;
+			}
+
+			// The sampler retains its micronormal: an outgoing direction
+			// rounded to double can lose that information when eta is one
+			// ULP from 1. Reconstructing it would create artificial nulls.
+			inline Evaluation EvaluateWithNormal( const Vector3& wi, const Vector3& wo, const Vector3& m,
+				Scalar ax, Scalar ay, Scalar eta, bool radiance )
+			{
+				Evaluation result;
+				const bool reflection = wo.z > 0;
+				const Scalar ci = Vector3Ops::Dot( wi, m ), co = Vector3Ops::Dot( wo, m );
+				if( ci <= 0 || ( reflection ? co <= 0 : co >= 0 ) ) return result;
+				Scalar cosT = 0, transmission = 0;
+				const Vector3 plane = Cross(wi,m);
+				const Scalar sinI = std::hypot(plane.x,std::hypot(plane.y,plane.z));
+				const Scalar F = Fresnel( ci, sinI, eta, cosT, transmission );
+				if( !reflection && transmission == 0 ) return result;
+				PositiveProduct f = DistributionProduct( m, ax, ay ), pdf = f;
+				const Masking masking(wi,wo,ax,ay);
+				// common = (zi+li)*(zo+lo)*(ai+ao-2*ai*ao). Keep
+				// these factors separate so grazing products cannot underflow.
+				if( reflection ) {
+					f.Multiply(F); f.Divide(2); f.Divide(masking.sumI); f.Divide(masking.sumO); f.Divide(masking.mask);
+					pdf.Multiply(F); pdf.Divide(2); pdf.Divide(masking.sumI);
+				} else {
+					// Factor the absolute inverse of co+ci/eta using Snell's
+					// identity, scaling by the larger index before multiplication.
+					Scalar inverseDenom;
+					if( eta >= 1 ) {
+						const Scalar invEta = 1/eta;
+						inverseDenom = (std::abs(co)+ci*invEta)/(std::abs((1-eta)/eta)*(1+invEta));
+					} else {
+						inverseDenom = (eta*((eta*std::abs(co)+ci)/(1+eta)))/(1-eta);
+					}
+					f.Multiply(2); f.Multiply(transmission); f.Multiply(ci); f.Multiply(std::abs(co));
+					f.Multiply(inverseDenom); f.Multiply(inverseDenom); f.Divide(masking.sumI);
+					pdf = f;
+					f.Divide(masking.sumO); f.Divide(masking.mask);
+					if( radiance ) { f.Divide(eta); f.Divide(eta); }
+				}
+				result.f = f.Value(); result.pdf = pdf.Value();
+				result.fMantissa=f.mantissa; result.fExponent=f.exponent;
+				result.pdfMantissa=pdf.mantissa; result.pdfExponent=pdf.exponent;
+				result.positiveDensity = pdf.mantissa > 0;
+				if( result.positiveDensity ) {
+					PositiveProduct weight = masking.outFraction;
+					weight.Divide(masking.mask);
+					if( !reflection && radiance ) { weight.Divide(eta); weight.Divide(eta); }
+					result.weight = weight.Value();
+				}
+				return result;
+			}
+
+			/// Direction-only evaluation. For an actual draw, use Sample's
+			/// f/pdf: when refraction's half-vector is unresolved (for example,
+			/// at machine-adjacent indices), the rounded direction cannot
+			/// uniquely recover the sampled micronormal or its density.
+			inline Evaluation Evaluate( const Vector3& wi, const Vector3& wo,
+				Scalar ax, Scalar ay, Scalar eta, bool radiance )
+			{
+				if( !ValidParameters( ax, ay, eta ) || wi.z <= 0 || wo.z == 0 || ax == 0 || eta == 1 ) return {};
+				Vector3 m = wo.z > 0 ? wi + wo : Vector3(
+					std::fma( eta, wo.x, wi.x ), std::fma( eta, wo.y, wi.y ), std::fma( eta, wo.z, wi.z ) );
+				if( m.x == 0 && m.y == 0 && m.z == 0 ) return {};
+				m = NormalizeScaled( m, Vector3(1,1,1) );
+				if( m.z < 0 ) m = -m;
+				return EvaluateWithNormal( wi, wo, m, ax, ay, eta, radiance );
+			}
+
+			// Shared with the offline energy bake; no Fresnel coin is involved.
+			inline Vector3 SampleVisibleNormal(const Vector3& wi, Scalar ax, Scalar ay, Scalar uNormal1, Scalar uNormal2)
+			{
+				// Heitz 2018 projected-disk VNDF. Unlike adding a cap point
+				// to its nearly antipodal view vector, this constructs a unit
+				// hemisphere normal before the anisotropic stretch.
+				const Vector3 vh = NormalizeScaled( wi, Vector3(ax,ay,1) );
+				const Scalar vt = std::hypot(vh.x,vh.y);
+				const Vector3 t1 = vt > 0 ? Vector3(-vh.y/vt,vh.x/vt,0) : Vector3(1,0,0);
+				const Vector3 t2 = Cross(vh,t1);
+				const Scalar r = std::sqrt(uNormal2);
+				const Scalar phi = TWO_PI * uNormal1;
+				const Scalar diskX = r*std::cos(phi), diskY = r*std::sin(phi);
+				const Scalar remaining = 1-uNormal2;
+				const Scalar q = std::sqrt(remaining+uNormal2*std::sin(phi)*std::sin(phi));
+				const Scalar plus = diskY < 0 ? remaining/(q-diskY) : q+diskY;
+				const Scalar minus = diskY > 0 ? remaining/(q+diskY) : q-diskY;
+				const Scalar s = (1+vh.z)*Scalar(0.5);
+				const Scalar oneMinusVz = (vt/(1+vh.z))*vt;
+				const Scalar a = s*minus, b = oneMinusVz*q+s*plus;
+				const Scalar alignedZ = std::sqrt(a*b);
+				const Scalar directA = (oneMinusVz*Scalar(0.5))*q, directB = s*diskY;
+				const Scalar horizonA = s*plus, horizonB = vh.z*q;
+				// Use the equivalent sum with the smaller rounding bound.
+				// The horizon form preserves boundary cancellation; the
+				// direct form preserves tiny disk components near normal.
+				const Scalar warpedY = diskY >= 0 || directA-directB <= horizonA+horizonB ?
+					directA+directB : horizonA-horizonB;
+				Vector3 nh = t1*diskX+t2*warpedY+vh*alignedZ;
+				// Positive-factor form of warpedY*vt + alignedZ*vh.z.
+				// It preserves a tiny height at the grazing disk boundary.
+				nh.z = s*plus*((vt*alignedZ+oneMinusVz*q+vh.z*a)/(alignedZ+vt*q));
+				return NormalizeScaled(nh,Vector3(ax,ay,1));
+			}
+
+			inline Sample Draw( const Vector3& wi, Scalar ax, Scalar ay, Scalar eta,
+				Scalar uNormal1, Scalar uNormal2, Scalar uLobe, bool radiance )
+			{
+				Sample result;
+				if( !ValidParameters( ax, ay, eta ) || wi.z <= 0 ||
+					!( uNormal1 >= 0 && uNormal1 < 1 ) || !( uNormal2 >= 0 && uNormal2 < 1 ) ||
+					!( uLobe >= 0 && uLobe < 1 ) ) return result;
+				result.delta = ax == 0 || eta == 1;
+				Vector3 m( 0, 0, 1 );
+				if( !result.delta ) {
+					m = SampleVisibleNormal(wi,ax,ay,uNormal1,uNormal2);
+				}
+				const Scalar ci = Vector3Ops::Dot( wi, m );
+				const Vector3 plane = Cross(wi,m);
+				const Scalar sinI = std::hypot(plane.x,std::hypot(plane.y,plane.z));
+				Scalar cosT = 0, transmission = 1;
+				const Scalar F = eta == 1 ? Scalar(0) : Fresnel( ci, sinI, eta, cosT, transmission );
+				// Put the smaller interval first so a tiny transmission tail
+				// survives even when the reflection coefficient rounds to 1.
+				result.transmission = transmission < F ? uLobe < transmission : uLobe >= F;
+				if( eta == 1 ) {
+					result.wo = -wi;
+				} else if( result.transmission ) {
+					// Preserve 1-eta BEFORE rounding its reciprocal. Express
+					// refraction as a correction to -wi, so even normal-incidence
+					// adjacent-index transmission stays exactly straight through.
+					if( eta >= Scalar(0.5) && eta <= Scalar(2) ) {
+						// Sterbenz's interval: subtraction from 1 is exact.
+						const Scalar invEta = 1/eta;
+						const Scalar contrast = ( 1 - eta ) / eta;
+						const Scalar normalRatio = ( invEta + 1 ) / ( ci * invEta + cosT );
+						result.wo = -wi + ( m * normalRatio - wi ) * contrast;
+					} else {
+						// Far from unity, use Snell's tangent/normal decomposition
+						// to avoid cancelling the entire incident vector.
+						const Vector3 tangent = NormalizeScaled(Cross(m,plane),Vector3(1,1,1));
+						result.wo = tangent * (-sinI/eta) - m * cosT;
+					}
+				} else {
+					result.wo = m * ( 2 * ci ) - wi;
+				}
+				if( result.transmission ? result.wo.z >= 0 : result.wo.z <= 0 ) return result;
+				if( result.delta ) {
+					result.pdf = result.transmission ? transmission : F;
+					result.pdfMantissa = std::frexp(result.pdf,&result.pdfExponent);
+					PositiveProduct weight;
+					if( result.transmission && radiance ) { weight.Divide(eta); weight.Divide(eta); }
+					result.weight = weight.Value();
+					PositiveProduct value;
+					value.Multiply(result.pdf); value.Divide(std::abs(result.wo.z));
+					if( result.transmission && radiance ) { value.Divide(eta); value.Divide(eta); }
+					result.f = value.Value();
+					result.fMantissa = value.mantissa; result.fExponent = value.exponent;
+					result.valid = result.pdf > 0;
+				} else {
+					const Evaluation evaluated = EvaluateWithNormal( wi, result.wo, m, ax, ay, eta, radiance );
+					result.f = evaluated.f;
+					result.pdf = evaluated.pdf;
+					result.fMantissa=evaluated.fMantissa; result.fExponent=evaluated.fExponent;
+					result.pdfMantissa=evaluated.pdfMantissa; result.pdfExponent=evaluated.pdfExponent;
+					result.valid = evaluated.positiveDensity;
+					result.weight = evaluated.weight;
+				}
+				return result;
+			}
 		}
 	}
 }

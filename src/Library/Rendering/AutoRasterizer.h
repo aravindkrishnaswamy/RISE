@@ -12,7 +12,10 @@
 //    docs/AUTO_RASTERIZER_DESIGN.md §§2,5 for policy and scope.
 //
 //    Resolution uses the assembled scene at render time, including the
-//    optional pre-render probes. std::call_once guards delegate creation;
+//    optional pre-render probes. An exclusive, fail-closed resolution
+//    coordinator guards delegate creation: a top-level resolution rejects
+//    while any other Auto is active; only same-thread nested resolution is
+//    admitted, so callback-created worker handoffs cannot hide wait cycles.
 //    BuildDelegate also creates temporary probe candidates. The wrapper
 //    stores the settings needed for all three concrete delegates.
 //
@@ -48,6 +51,7 @@
 #include "../Utilities/StabilityConfig.h"
 #include "../Utilities/ProgressiveConfig.h"
 #include "../Utilities/SpectralConfig.h"        // SpectralConfig (auto_spectral domain)
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -90,6 +94,10 @@ namespace RISE
 
 		protected:
 			~AutoRasterizer() override;
+			bool AuthorizeFireDelegatePreflight(
+				const IScene& scene,
+				FireRenderPreflightAuthorization authorization ) const override;
+			void ClearFireDelegatePreflight() const override;
 
 		public:
 			//
@@ -119,6 +127,16 @@ namespace RISE
 				const unsigned int* specificFrame,
 				IRasterizeSequence* pRasterSequence
 				) const override;
+			unsigned int PredictTimeToRasterizeScenePrepared(
+				const IScene&, const ISampling2D&, unsigned int*, Scalar,
+				IRenderPreparationController& ) const override;
+			void RasterizeScenePrepared(
+				const IScene&, Scalar, IRenderPreparationController&,
+				const Rect*, IRasterizeSequence* ) const override;
+			void RasterizeSceneAnimationPrepared(
+				const IScene&, Scalar, Scalar, unsigned int, bool, bool,
+				IRenderPreparationController&, const Rect*, const unsigned int*,
+				IRasterizeSequence* ) const override;
 
 			//
 			// State-mutators the base `Rasterizer` DOES provide, re-declared
@@ -144,7 +162,7 @@ namespace RISE
 			//! the first render-time entry runs selection; the concrete
 			//! pick (PT/BDPT/VCM) thereafter.  For diagnostics / a future
 			//! UI "Auto -> VCM" surfacing.
-			AutoIntegratorChoice ResolvedIntegrator() const { return mResolved; }
+			AutoIntegratorChoice ResolvedIntegrator() const;
 
 			//! IRasterizer auto-dispatcher introspection (the cross-UI query
 			//! surface): IsAutoDispatcher()==true; the resolved concrete integrator
@@ -152,29 +170,32 @@ namespace RISE
 			//! one-line reason, both valid after the first render-time resolution.
 			bool IsAutoDispatcher() const override { return true; }
 			const char* ResolvedIntegratorName() const override;
-			const char* ResolveReason() const override { return mResolveReason.c_str(); }
+			const char* ResolveReason() const override;
 
 			//! Region honesty follows the RESOLVED integrator (today's
 			//! candidate set PT/BDPT/VCM all honor regions, so this is
 			//! future-proofing: if a non-region-honoring integrator ever
 			//! joins the candidate set, the query stays truthful).
-			bool HonorsRegion() const override { return mDelegate ? mDelegate->HonorsRegion() : true; }
+			bool HonorsRegion() const override;
+			bool LastRenderCompleted() const override;
+			bool ResolveForFirePreflight( const IScene& scene ) const override;
 
 			//! Total wall-clock seconds the Tier-2 probe spent rendering
 			//! candidate integrators (0 if the probe didn't run).  Exposed
 			//! so the §6.2 resolution/cost sweep can read the REAL in-process
 			//! probe cost directly instead of log-scraping.  Valid after the
 			//! first render-time entry.
-			double LastProbeSeconds() const { return mLastProbeSeconds; }
+			double LastProbeSeconds() const;
 			//! Number of candidate renders the probe issued (0 if it didn't run).
-			unsigned int LastProbeRenders() const { return mLastProbeRenders; }
+			unsigned int LastProbeRenders() const;
 
 			//! G1 fix-round (2026-08-10): run the ONE-TIME integrator
 			//! resolution NOW, against `scene` exactly as it currently
 			//! stands, instead of lazily at the first render-time entry.
 			//!
-			//! WHY THIS EXISTS -- resolution is `std::call_once`, so it runs
-			//! exactly once for the lifetime of this dispatcher, and BOTH
+			//! WHY THIS EXISTS -- resolution completes exactly once for the
+			//! lifetime of this dispatcher (the fail-closed resolution
+			//! coordinator; `mResolutionComplete`), and BOTH
 			//! Tier-1 static signals read the scene through
 			//! `IObjectManager::EnumerateObjects`, which FILTERS on
 			//! `IObject::IsWorldVisible()`.  The agent's
@@ -185,7 +206,7 @@ namespace RISE
 			//! keep it -- with a confident but WRONG `ResolveReason()` -- for
 			//! every later full-scene render, including the user's own
 			//! production renders.  Restoring visibility cannot undo it:
-			//! nothing invalidates `mResolveOnce`.
+			//! nothing clears `mResolutionComplete`.
 			//!
 			//! The isolate path therefore calls this BEFORE it hides
 			//! anything, which is the same "pre-build the visibility-
@@ -203,6 +224,13 @@ namespace RISE
 			//! Test-only visibility for the delegated FrameStore identity.  Agent
 			//! isolation must restore both wrapper and delegate immediately.
 			FrameStore* ForTest_GetDelegateFrameStore() const;
+			void ForTest_SetDelegateFrameStore( FrameStore* frameStore );
+			void ForTest_FreeDelegateRasterizerOutputs();
+			bool ForTest_WrapperContainsOutput( IRasterizerOutput* output ) const;
+			bool ForTest_DelegateContainsOutput( IRasterizerOutput* output ) const;
+			void ForTest_ThrowInsideProbe( const IScene& scene ) const;
+			unsigned int ForTest_LiveProbeCaptureCount() const;
+			void ForTest_ReturnNullDelegateOnce() const;
 
 			//! Render-time probe tunables.  Read from `GlobalOptions` at
 			//! selection time (so the Phase-4 resolution/cost sweep can
@@ -288,11 +316,12 @@ namespace RISE
 			//! the gated/short-circuited render-time probe over the
 			//! assembled `scene` (RunProbe) and take its verdict.  Tier 1
 			//! (Phase 2, the fallback when the probe is inactive): a cheap,
-			//! conservative static analysis — route VCM where refractive
-			//! caustics are plausible (a transmissive/dielectric surface AND
-			//! a positional point/spot source), default everything else to
-			//! PT.  Sets `mResolveReason` to the one-line explanation logged
-			//! at resolution.
+			//! conservative static analysis — force PT when a heterogeneous
+			//! or emissive medium is present (fire/smoke G10); otherwise route
+			//! VCM where refractive caustics are plausible (a transmissive /
+			//! dielectric surface AND a positional point/spot source), and
+			//! default everything else to PT.  Sets `mResolveReason` to the
+			//! one-line explanation logged at resolution.
 			AutoIntegratorChoice SelectIntegrator( const IScene* scene ) const;
 
 			//! Read the probe tunables from GlobalOptions (Phase-3 defaults).
@@ -352,6 +381,10 @@ namespace RISE
 			//! late `SetFrameStore` (deferred Job push, camera resize)
 			//! reaches the object that actually writes pixels.
 			void SyncDelegateFrameStore() const;
+			IRasterizer* RetainDelegate() const;
+			void SetResolveReason( const std::string& reason ) const;
+			bool ReconcileDelegateOutputTopology( IRasterizer* delegate );
+			bool ReplayWrapperOutputTopologyToDelegate( IRasterizer* delegate ) const;
 
 			// Integrator-agnostic build inputs (addref'd; released in dtor).
 			IRayCaster*					mCaster;
@@ -393,8 +426,15 @@ namespace RISE
 			// happen (the base class already uses `mutable` for state
 			// reached from those const methods).
 			mutable IRasterizer*			mDelegate;
+			mutable unsigned long long	mReplayRevision;
+			mutable std::recursive_mutex	mDelegateMutationMutex;
+			std::atomic<bool>			mFrameStoreReplayInProgress { false };
 			mutable AutoIntegratorChoice	mResolved;
-			mutable std::once_flag			mResolveOnce;
+			mutable bool					mResolutionInProgress;
+			mutable bool					mResolutionComplete;
+			mutable std::mutex				mResolutionStateMutex;
+			mutable std::atomic<bool>		mFailProbeForTest { false };
+			mutable std::atomic<bool>		mReturnNullDelegateForTest { false };
 
 			// Cost instrumentation for the §6.2 sweep (set by RunProbe; 0
 			// when the probe is inactive).

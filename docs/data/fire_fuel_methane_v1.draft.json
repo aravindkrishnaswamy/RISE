@@ -1,0 +1,120 @@
+{
+ "compiled": "2026-08-12",
+ "design_revision_evaluated_against": 52,
+ "draft_record_id_sha256_of_payload": "6a3f45a06572135c082a5704bf4d86386d12b4aa2f9bfafe07f5135a5251272a",
+ "fuel": "methane (CH4)",
+ "purpose": "Per-fuel operational constants required by SS3.9's fuel record and consumed by SS3.3's ignition/extinction gates, SS3.4's soot ledger, and SS3.5's radiative budget. Companion to the methane gas_thermochemistry record; see FIRE_SMOKE_DESIGN.md SS12 item 6 (r51 bring-up rule).",
+ "record_kind": "fuel_operational_constants",
+ "record_name": "fire-fuel-methane-v1",
+ "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",
+ "related_findings_not_in_this_record": {
+  "T_CFT_methane": "FDS Source/data.f90 LOOKUP_CRITICAL_FLAME_TEMPERATURE gives methane 1507 C = 1780 K, against the generic ~1700 K pinned in the SS12 item-7 transport record. If the transport record is ever made per-fuel, methane's own value is 1780 K.",
+  "lower_oxygen_limit_methane": "FDS data.f90 LOOKUP_LOWER_OXYGEN_LIMIT methane = 0.139 volume fraction"
+ },
+ "schema_version": "draft-1",
+ "values": {
+  "T_AIT": {
+   "applicability": "spontaneous-ignition route of SS3.3's two-route gate, 1 atm, air",
+   "provenance": {
+    "access": "open (OSTI full text)",
+    "alternative": "Robinson & Smith, J. Hazardous Materials 8(3):199-203 (1984), 873 K - PAYWALLED, abstract open via OSTI",
+    "citation": "Zabetakis, 'Flammability Characteristics of Combustible Gases and Vapors', US Bureau of Mines Bulletin 627 (1965)",
+    "locator": "Table 4 p.25 (999 F = 810.4 K, methane in air); Table A-1 gives 540 C = 813.2 K",
+    "modelling_practice": "FDS User's Guide example uses 540 C; FDS UMD Line Burner methane input uses 600 C citing SFPE Table 2-8.2",
+    "secondary_source": false
+   },
+   "uncertainty": {
+    "kind": "range",
+    "magnitude": [
+     810.0,
+     873.0
+    ],
+    "note": "Two defensible camps. Handbook consensus 810-813 K; Robinson & Smith 1984 argue the accepted value was theoretically rather than experimentally derived and that no firm experimental value lies below 873 K (600 C). Apparatus-dependent engineering quantity, not a thermodynamic constant: Bulletin 627 predates ASTM E659 and used Setchkin 1-L and 200-cc Pyrex flasks, with the bulletin itself warning that flask shape and size matter."
+   },
+   "unit": "K",
+   "value": 810.4
+  },
+  "T_ox": {
+   "applicability": "soot oxidation activation threshold, SS3.4; fuel-independent to first order",
+   "provenance": {
+    "access": "both PAYWALLED - values via abstracts/secondary",
+    "citation": "Kent & Wagner, Combust. Sci. Technol. 41(5-6):245-269 (1984): flames emit smoke when soot temperature in the oxidation zone falls below about 1300 K, set by radiative loss from the soot; Glassman, 22nd Symp. (Int.) Combust. (1988): particle burnout ceases at about 1300 K",
+    "locator": "as cited",
+    "secondary_source": true
+   },
+   "uncertainty": {
+    "kind": "assumption_bound",
+    "magnitude": [
+     1273.0,
+     1400.0
+    ],
+    "note": "Fuel-independent model closure with a solid empirical basis, not a per-fuel measurement. Basis is empirical burnout quench (kinetics plus radiative cooling), NOT Nagle-Strickland-Constable kinetics alone: NSC was fitted over 1273-2273 K so 1300 K sits at the bottom edge of its calibration, its rate peaks near 1900-2000 K and then declines, and it assumes O2 is the oxidant, underestimating burnout in fuel-rich regions where OH dominates."
+   },
+   "unit": "K",
+   "value": 1300.0
+  },
+  "T_pilot": {
+   "applicability": "piloted route of SS3.3's ignition gate; numerical closure, applies to the resolved-T field near the pilot mask",
+   "provenance": {
+    "access": "in-repo design document",
+    "citation": "FIRE_SMOKE_DESIGN.md SS3.3 (T_pilot ~ 600 K)",
+    "locator": "design text; gate constant",
+    "secondary_source": false,
+    "structural_requirement": "must lie strictly below T_AIT for the two-route gate to be meaningful; 600 K < 810 K holds"
+   },
+   "uncertainty": {
+    "kind": "design_pinned_exact",
+    "magnitude": 0,
+    "note": "MODEL GATE CONSTANT, not a measured per-fuel property - see r52. There is no measured piloted-ignition temperature for a GASEOUS fuel: piloted ignition of a gas is governed by flammability limits and pilot energy, not a bulk temperature threshold. The ~600 K figure that circulates in fire texts is the piloted-ignition SURFACE temperature of SOLIDS (wood, paper), a different quantity that must not be read as a methane property. Corroboration that this class of parameter is numerical: FDS's analogue AUTO_IGNITION_TEMPERATURE defaults to a value that disables the gate, and its User's Guide states the value 'may need to be lowered for cases where the grid size is greater than 10 cm' - a parameter retuned with grid resolution is a closure, not a property."
+   },
+   "unit": "K",
+   "value": 600.0
+  },
+  "chi_r": {
+   "applicability": "SS3.5's global radiative budget target beta = chi_r*Qdot_tot/Sum(e*V), and the SS3.8 integrated-radiative-fraction gate",
+   "provenance": {
+    "access": "SFPE PAYWALLED; FDS quote open",
+    "citation": "Beyler, 'Fire Hazard Calculations for Large Open Hydrocarbon Fires', SFPE Handbook 5th ed. Table 66.14 (2016)",
+    "locator": "quoted verbatim in FDS Source/data.f90 LOOKUP_CHI_R: CASE('METHANE') ; CHI_R = 0.20_EB",
+    "measured_spread_source": "Hostikka, McGrattan & Hamins, IAFSS FSS-7:383-394 (2002), via the 30 open FDS Hamins_Gas_Burners input files",
+    "secondary_source": true
+   },
+   "uncertainty": {
+    "kind": "range",
+    "magnitude": [
+     0.07,
+     0.28
+    ],
+    "note": "CONFIGURATION- AND SCALE-DEPENDENT, not a fuel constant - see r52. FDS states it directly: 'There is no single value of radiative fraction for a given fuel.' The 0.20 default applies to large open hydrocarbon fires. Measured spread: 0.07-0.28 (mean ~0.155) across NIST 0.10/0.38/1.0 m methane burners at 2-200 kW; 0.181 for buoyant turbulent methane (Markstein); 0.14 for 35 m Montoir LNG (large-fire re-absorption). A case record MAY override this for its configuration."
+   },
+   "unit": "dimensionless",
+   "value": 0.2
+  },
+  "rho_soot": {
+   "policy": "REFERENCED, NOT DUPLICATED. The optics record's density is identity-bearing (hashed with the kappa table so a density change changes the record ID); a second independently-editable copy of a quantity that scales radiance is exactly the drift the pin exists to prevent. The fuel record cites the optics record ID rather than restating the number as its own datum.",
+   "provenance_via_optics_record": "Bond & Bergstrom 2006 SS9.2 p.58 (measured range 1.7-1.9 g/cm3)",
+   "reference": "fire-optics-mac-equivalent-e-v1 (docs/data/fire_optics_mac_equivalent_e.draft.json), pinned_density_g_cm3 = 1.8",
+   "unit": "kg/m^3",
+   "value_for_convenience": 1800.0
+  },
+  "y_s": {
+   "applicability": "well-ventilated combustion; SS3.4 soot ledger",
+   "provenance": {
+    "access": "open (IAFSS)",
+    "citation": "Koylu, Sivathanu & Faeth, 'Carbon Monoxide and Soot Emissions from Buoyant Turbulent Diffusion Flames', IAFSS Fire Safety Science FSS-3:625-636 (1991), Table 3",
+    "locator": "Table 3 (methane eta_s = 0.00; acetylene 0.19, ethylene 0.018, propane 0.012 for scale)",
+    "sanity_check": "peak soot volume fraction 0.47 ppm in an atmospheric CH4/air laminar coflow diffusion flame (Smooke et al., Combust. Flame 117:117-139 (1999), PAYWALLED; quoted with conditions in Zhang, Univ. Toronto PhD thesis 2009 SS4.3.1, open) - sub-ppm confirms 'very low sooting'",
+    "secondary_source": false
+   },
+   "uncertainty": {
+    "kind": "measured_1sigma",
+    "magnitude": 0.0,
+    "note": "Methane is effectively non-sooting. Koylu/Sivathanu/Faeth report the soot generation factor eta_s = 0.00 for methane and state the flames 'emitted no soot for present test conditions' (50 and 234 mm burners, 2.3-23.8 kW, long-residence-time overfire sampling). UNIT CAVEAT: their eta_s is per unit fuel CARBON burned, so y_s = 0.749*eta_s for CH4 - zero either way. FDS ships NO per-fuel soot yield (REAC default 0 kg/kg); its methane validation inputs use SOOT_YIELD=0.01 as a MODELLING CONVENTION with no cited measurement - do not record 0.01 as measured."
+   },
+   "unit": "kg soot / kg fuel",
+   "value": 0.0
+  }
+ },
+ "version": "1.0.0-draft",
+ "visual_consequence_flagged": "With y_s = 0 measured, a predictive methane flame produces essentially no soot and therefore almost no thermal continuum in the visible - physically correct (methane burns blue) but it means methane is an excellent SOLVER bring-up fuel and a poor VISUAL one until the SS4.4 chem channels are enabled, which is deferred per SS12 item 1."
+}

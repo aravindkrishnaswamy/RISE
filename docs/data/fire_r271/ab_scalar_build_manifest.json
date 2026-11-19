@@ -1,0 +1,13 @@
+{
+  "production_changed": false,
+  "git_head": "0e176c28ba1f73c32696dcd6f5af6f1055bf42c6",
+  "harness_changes": [
+    "retained-production probe cap 64 -> 8192 steps",
+    "stop at first accepted step reaching start + RISE_R271_WINDOW_S"
+  ],
+  "sha256": {
+    "/Volumes/SSD/Working/RISE/tools/fire/r271/ab_driver.cpp": "05fad56423a7093eb1079815cacf33e1a237b3f909245a35028c2fed51f81931",
+    "/Volumes/SSD/RISE/fire_production_calibration/r271_compact_stencil/ab_build_v2/Harness.cpp": "4e4557a3ef1c8fd7e7c6797eb7c16fc2c3168b91d89153f161bd5b60c4e2a371",
+    "/Volumes/SSD/RISE/fire_production_calibration/r271_compact_stencil/ab_build_v2/ab_driver": "d1b686e7249048d3a90eeeff5f1910512b8dc49c13d28fe641bf0b8f23dab525"
+  }
+}

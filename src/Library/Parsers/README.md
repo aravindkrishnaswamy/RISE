@@ -212,7 +212,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Geometry | 27 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `skin_geometry`, `path_instances_geometry`, `hair_geometry` |
 | Hair guides | 1 | `hair_guides` |
 | Modifiers | 4 | `relief_modifier`, `modifier_stack`, `normal_map_modifier`, `glint_modifier` (`bumpmap_modifier` was REMOVED 2026-09-06 -- a scene still carrying one is refused with a diagnostic naming `relief_modifier` and `tools/migrate_scenes_relief.py`; see `docs/RELIEF_MODIFIER_DESIGN.md` §7) |
-| Media | 4 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `global_medium` |
+| Media | 5 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `multichannel_heterogeneous_medium`, `global_medium` |
 | Objects | 3 | `standard_object`, `csg_object`, `override_object` |
 | Shader ops | 13 | `pathtracing_shaderop`, `mis_pathtracing_shaderop` (legacy alias), `finalgather_shaderop`, `directlighting_shaderop`, `arealight_shaderop`, `alpha_test_shaderop` |
 | Shaders | 4 | `standard_shader`, `advanced_shader`, `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` |
@@ -288,7 +288,10 @@ scene_options
 
 Common values: `1.0` (metres, the default), `0.001` (mm), `0.01` (cm), `0.0254` (inches), `0.3048` (feet). The presets surface in the editor combo-box.
 
-Currently `scene_unit` only governs the camera mm-input → scene-unit conversion, but it's the natural global where future physical-quantity work (volumetric atmosphere, sky models, sensor noise) will read its scale.
+`scene_unit` governs the camera mm-input → scene-unit conversion and the
+SI-coefficient conversion performed when a `multichannel_heterogeneous_medium`
+is constructed.  Declare it before cameras and multichannel media so both
+lock the same scale.
 
 ### Sensor format presets (mm — unit-stable regardless of scene_unit)
 
@@ -509,3 +512,44 @@ See `docs/IMPROVEMENTS.md` item 8 for algorithmic details.
 - Scene taxonomy: [../../../scenes/README.md](../../../scenes/README.md)
 - Showcase scenes: [../../../scenes/FeatureBased/README.md](../../../scenes/FeatureBased/README.md)
 - Regression scenes: [../../../scenes/Tests/README.md](../../../scenes/Tests/README.md)
+
+### Rough dielectric interface (Tier 1.1)
+
+`rough_dielectric_material` is an additive native-v7 material chunk:
+
+```text
+rough_dielectric_material
+{
+name frosted_glass
+ior 1.5
+alphax 0.2
+alphay 0.4
+}
+```
+
+All three slots accept single-scalar literals or scalar painters. Spectral
+curves resolve to single-scalar slot views: RGB uses the representative green
+sample, while NM/HWSS preserve the full curve. Authored RGB triples are refused.
+`alphax`/`alphay` are GGX widths, not perceptual roughness; both must be in
+(0,1]. The defaults are IOR 1.5 and widths 0.2. Invalid per-hit widths/indices
+produce null scattering. Use `dielectric_material` for a smooth interface.
+The model includes GGX reflection/refraction with reciprocal two-sided
+Kulla–Conty multiscatter compensation, anisotropy,
+aggregate solid-angle PDFs, nested-media IOR tracking, and hero-density spectral
+companion evaluation. Current PT/BDPT/VCM/MLT HWSS transport conservatively
+terminates companions at every rough interface, even without dispersion: these
+walkers share one hero medium stack and radiance eta factor. This reduces four
+active wavelengths to one until wavelength-specific medium tracking is added.
+Nested composites propagate this requirement. Mixed terminated/unterminated
+bundles receive equal weight: each bundle is normalized by its own active lanes
+before bundles are averaged (also for VCM merging and MLT splats/target).
+The local spectral evaluator remains available with caller-supplied wavelength
+stacks and hero density. Index-matched interfaces report their exact transparent
+delta behavior to shadow queries. SMS caustic construction for the new material
+is not supported in this increment. The aggregate sampler retains VNDF null events while restoring their missing
+energy through the compensation lobes. Geometric-horizon clipping remains
+additional loss. LUT interpolation makes energy restoration approximate; see
+[ROUGH_DIELECTRIC_ENERGY.md](../../../docs/ROUGH_DIELECTRIC_ENERGY.md).
+Bulk absorption requires a separately assigned medium. World-position IOR
+fields are unsupported and refused. Importers still use their existing glass
+mappings. See `scenes/Tests/Materials/rough_dielectric.RISEscene`.

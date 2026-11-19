@@ -91,14 +91,25 @@
 //  the skew of a heavy-tailed mean.  Measured per-render sd at 64 spp with
 //  the new emitter: PT 1.2%, PT spectral 1.3%, BDPT 0.24%, VCM 0.48%,
 //  BDPT spectral 0.94%, VCM spectral 1.6%.  Every render is seeded
-//  (`std::srand`); references are means of 32 renders (sd of the mean
-//  ~0.2%), candidates of 4 (pel) or 8 (spectral, whose per-render tails
-//  are heavier: VCM spectral read 0.976-0.983 at n = 4).  The +/-4% band is >= 6x the
-//  references' sd and >= 4 sd of the noisiest ratio (VCM spectral, ~0.85%).
+//  (`std::srand`); the pel reference is the mean of 16 renders (sd of the
+//  mean ~0.3%; 32 until the 2026-11-17 cost trim), the spectral one of 32
+//  (~0.2%), candidates of 4 (pel) or 8 (spectral, whose per-render tails
+//  are heavier: VCM spectral read 0.976-0.983 at n = 4).  The +/-4% band
+//  is >= 13x the references' sd and >= 4 sd of the noisiest ratio (VCM
+//  spectral, ~0.85%; it reads ~0.98, close to 0.96, which is why its
+//  spectral reference keeps all 32 renders).
+//  The mvb 1000 truncation control averages 8 renders (ratio sd ~0.5%).
 //  The BDPT `max_light_depth 1` row restores the diagnostic the first
 //  closure deleted: it and full BDPT are both unbiased, so they agree with
 //  each other and with PT.  The enclosed rows' PT references are likewise
-//  rendered once, 16 renders at 256 spp (sd of the mean ~0.3%).
+//  rendered once at 256 spp: 16 renders for pel (sd of the mean ~0.3%),
+//  8 for spectral (16 until the 2026-11-17 cost trim).  DL-200's pre-fix
+//  BDPT/PT read 0.903-0.915 (RGB), ~3.2 sd below the 0.95 floor, which is
+//  why the pel reference keeps 16; spectral read ~0.79, far outside.  The
+//  tightest post-fix row on the spectral reference, VCM spectral enclosed
+//  (0.94 against its 0.90 floor, DL-218), keeps a 4 % margin against the
+//  8-render reference's sd (a few tenths of a percent if its per-render
+//  sd is near the 1.3 % measured at 64 spp on the global scene).
 //
 //  WHAT THE PREDICTED MECHANISM TURNED OUT TO BE WORTH: ZERO.  DL-200
 //  predicted a partition-of-unity violation from the ASYMMETRY.  The
@@ -350,7 +361,7 @@ static const char* kPTSpectral256Enc =
 	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 
 // Global-medium (DL-247) rasterizers, all 64 spp: references are means of
-// 32 renders, candidates of 4.  `max_volume_bounce 1000` is the
+// 16 (pel) or 32 (spectral) renders, candidates of 4 (pel) or 8 (spectral).  `max_volume_bounce 1000` is the
 // truncation control.
 static const char* kPT64 =
 	"pathtracing_pel_rasterizer\n{\n\tsamples 64\n\trr_min_depth 8\n"
@@ -405,12 +416,13 @@ int main()
 
 	// The enclosed rows keep the original dense medium: the DL-200 /
 	// DL-218 configuration is a light INSIDE a strongly scattering shell.
-	// Each reference is rendered ONCE (16 renders at 256 spp) and shared.
+	// Each reference is rendered ONCE (16 pel / 8 spectral renders at
+	// 256 spp) and shared.
 	const std::string enclosed = SceneBody( true, 0.02, 3.0, 0.12, 40.0 );
 
 	std::cout << "Enclosed shell, references:" << std::endl;
 	const double encRef   = RenderMeanRepeated( Scene( kPT256Enc, enclosed ), "PT pel reference     ", 16 );
-	const double encSpRef = RenderMeanRepeated( Scene( kPTSpectral256Enc, enclosed ), "PT spectral reference", 16 );
+	const double encSpRef = RenderMeanRepeated( Scene( kPTSpectral256Enc, enclosed ), "PT spectral reference", 8 );
 
 	// MONEY ROWS (DL-200).  Camera OUTSIDE: the eye walk must cross the delta
 	// shell to reach the medium, so pre-fix every eye-rooted medium
@@ -441,14 +453,14 @@ int main()
 	const double kLo = 0.96, kHi = 1.04;
 
 	std::cout << "DL-247 global medium, references:" << std::endl;
-	const double ptRef   = RenderMeanRepeated( Scene( kPT64, global ), "PT pel reference     ", 32 );
+	const double ptRef   = RenderMeanRepeated( Scene( kPT64, global ), "PT pel reference     ", 16 );
 	const double ptSpRef = RenderMeanRepeated( Scene( kPTSpectral64, global ), "PT spectral reference", 32 );
 
 	// Truncation control: the thin medium's PT answer must not depend on
 	// the cap, or the rows below would again compare truncations.
 	std::cout << "Testing PT max_volume_bounce 1000 vs 64 (truncation control)" << std::endl;
 	CheckRatio( "PT mvb 1000 vs mvb 64, thin global medium", ptRef,
-		RenderMeanRepeated( Scene( kPT64Mvb1000, global ), "PT mvb 1000          ", 32 ), kLo, kHi );
+		RenderMeanRepeated( Scene( kPT64Mvb1000, global ), "PT mvb 1000          ", 8 ), kLo, kHi );
 
 	std::cout << "Testing BDPT vs PT, GLOBAL medium" << std::endl;
 	CheckRatio( "BDPT vs PT, GLOBAL medium", ptRef,

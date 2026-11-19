@@ -1,0 +1,259 @@
+{
+  "schema": "rise.fire.producer_kernel_profile.v1",
+  "input_sha256": "a25f7511130fc269ed9faeb9e85c611670a262237169dbb5d416b76b961c5cc1",
+  "units": "milliseconds",
+  "kernel_scope": "inclusive_encoder_intervals",
+  "warning": "Kernel intervals can overlap. Only their union is additive.",
+  "uncaptured_scope": "force-RHS encoders in another translation unit, blits, and gaps",
+  "producer_commands": 42,
+  "command_elapsed_total_ms": 29310.890999622643,
+  "encoder_union_total_ms": 29245.482641999995,
+  "uncaptured_total_ms": 65.4083576226476,
+  "kernels": {
+    "evaluate_resident_eos_candidate": {
+      "calls": 42,
+      "mean_ms": 565.663865142857,
+      "stdev_ms": 13.404556219974243,
+      "p95_ms": 588.826959,
+      "inclusive_total_ms": 23757.882335999995
+    },
+    "evaluate_resident_target_terms": {
+      "calls": 42,
+      "mean_ms": 115.00333928571428,
+      "stdev_ms": 1.1149156879256374,
+      "p95_ms": 117.133583,
+      "inclusive_total_ms": 4830.140249999999
+    },
+    "evaluate_resident_advective_pair": {
+      "calls": 42,
+      "mean_ms": 7.508139952380952,
+      "stdev_ms": 1.262025750720989,
+      "p95_ms": 7.473707999999999,
+      "inclusive_total_ms": 315.341878
+    },
+    "fct_build_ratios": {
+      "calls": 28,
+      "mean_ms": 3.7545118214285713,
+      "stdev_ms": 0.1323336911562623,
+      "p95_ms": 4.0285,
+      "inclusive_total_ms": 105.126331
+    },
+    "evaluate_resident_physical_flux": {
+      "calls": 42,
+      "mean_ms": 1.2458531666666666,
+      "stdev_ms": 0.3568428668023269,
+      "p95_ms": 1.4134579999999999,
+      "inclusive_total_ms": 52.32583299999999
+    },
+    "validate_resident_physical_flux": {
+      "calls": 42,
+      "mean_ms": 0.9041904761904761,
+      "stdev_ms": 0.07589373569613012,
+      "p95_ms": 1.0254999999999999,
+      "inclusive_total_ms": 37.976
+    },
+    "compose_resident_flux_pair": {
+      "calls": 42,
+      "mean_ms": 0.9004652619047618,
+      "stdev_ms": 0.05122293049542839,
+      "p95_ms": 1.039208,
+      "inclusive_total_ms": 37.819541
+    },
+    "fct_compatible_stage_rate": {
+      "calls": 56,
+      "mean_ms": 0.5271503571428571,
+      "stdev_ms": 0.019876542898994896,
+      "p95_ms": 0.562417,
+      "inclusive_total_ms": 29.52042
+    },
+    "evaluate_resident_transport": {
+      "calls": 42,
+      "mean_ms": 0.5034474285714285,
+      "stdev_ms": 0.09255186947477216,
+      "p95_ms": 0.651625,
+      "inclusive_total_ms": 21.144792000000002
+    },
+    "finalize_resident_advective_high": {
+      "calls": 42,
+      "mean_ms": 0.46159726190476186,
+      "stdev_ms": 0.07477380174968011,
+      "p95_ms": 0.612833,
+      "inclusive_total_ms": 19.387085
+    },
+    "owner_pack_faces": {
+      "calls": 126,
+      "mean_ms": 0.11931390476190476,
+      "stdev_ms": 0.12585218319660116,
+      "p95_ms": 0.441667,
+      "inclusive_total_ms": 15.033552000000006
+    },
+    "owner_average_flux": {
+      "calls": 14,
+      "mean_ms": 0.8301993571428571,
+      "stdev_ms": 0.06163012857187396,
+      "p95_ms": 1.038875,
+      "inclusive_total_ms": 11.622791
+    },
+    "fct_build_face_alpha": {
+      "calls": 28,
+      "mean_ms": 0.27890175,
+      "stdev_ms": 0.03783490220596831,
+      "p95_ms": 0.411292,
+      "inclusive_total_ms": 7.809248999999998
+    },
+    "fct_commit_scalar": {
+      "calls": 28,
+      "mean_ms": 0.20309225,
+      "stdev_ms": 0.02826066287082007,
+      "p95_ms": 0.245333,
+      "inclusive_total_ms": 5.686583
+    },
+    "owner_gas_source": {
+      "calls": 42,
+      "mean_ms": 0.08584230952380952,
+      "stdev_ms": 0.0848295504326716,
+      "p95_ms": 0.204833,
+      "inclusive_total_ms": 3.605376999999999
+    },
+    "owner_heun_momentum": {
+      "calls": 28,
+      "mean_ms": 0.10209078571428572,
+      "stdev_ms": 0.03736182557039178,
+      "p95_ms": 0.233125,
+      "inclusive_total_ms": 2.8585419999999995
+    },
+    "owner_compose_target": {
+      "calls": 42,
+      "mean_ms": 0.05648319047619048,
+      "stdev_ms": 0.024269732834649685,
+      "p95_ms": 0.079625,
+      "inclusive_total_ms": 2.3722939999999997
+    },
+    "fct_extract_gas_density": {
+      "calls": 42,
+      "mean_ms": 0.04524095238095238,
+      "stdev_ms": 0.014386789545006601,
+      "p95_ms": 0.067041,
+      "inclusive_total_ms": 1.9001199999999998
+    },
+    "produce_resident_frozen_source": {
+      "calls": 42,
+      "mean_ms": 0.03163688095238095,
+      "stdev_ms": 0.0006016107323567925,
+      "p95_ms": 0.032458,
+      "inclusive_total_ms": 1.328749
+    },
+    "owner_predict_momentum": {
+      "calls": 14,
+      "mean_ms": 0.04949685714285714,
+      "stdev_ms": 0.00039061802257504683,
+      "p95_ms": 0.050124999999999996,
+      "inclusive_total_ms": 0.692956
+    },
+    "consume_resident_target": {
+      "calls": 84,
+      "mean_ms": 0.003672642857142857,
+      "stdev_ms": 0.00047208220243086826,
+      "p95_ms": 0.004333,
+      "inclusive_total_ms": 0.308502
+    },
+    "issue_resident_projection_consumer": {
+      "calls": 84,
+      "mean_ms": 0.0034245714285714283,
+      "stdev_ms": 0.0005289052636994823,
+      "p95_ms": 0.004125,
+      "inclusive_total_ms": 0.287664
+    },
+    "finalize_resident_target": {
+      "calls": 84,
+      "mean_ms": 0.002806535714285714,
+      "stdev_ms": 0.000415032483746205,
+      "p95_ms": 0.0033339999999999997,
+      "inclusive_total_ms": 0.235749
+    },
+    "finalize_resident_eos_candidate": {
+      "calls": 84,
+      "mean_ms": 0.0025490714285714283,
+      "stdev_ms": 0.0002118140117163649,
+      "p95_ms": 0.0028339999999999997,
+      "inclusive_total_ms": 0.21412199999999995
+    },
+    "identify_resident_transport": {
+      "calls": 42,
+      "mean_ms": 0.004208333333333333,
+      "stdev_ms": 0.004811027037387292,
+      "p95_ms": 0.011875,
+      "inclusive_total_ms": 0.17674999999999996
+    },
+    "owner_bind_candidate": {
+      "calls": 42,
+      "mean_ms": 0.004115095238095238,
+      "stdev_ms": 0.0009827137093838252,
+      "p95_ms": 0.006084,
+      "inclusive_total_ms": 0.172834
+    },
+    "owner_bind_transport": {
+      "calls": 42,
+      "mean_ms": 0.003855190476190476,
+      "stdev_ms": 0.0009499671685750512,
+      "p95_ms": 0.005666,
+      "inclusive_total_ms": 0.16191799999999998
+    },
+    "identify_resident_physical_flux": {
+      "calls": 42,
+      "mean_ms": 0.0038312619047619046,
+      "stdev_ms": 0.001153204782853541,
+      "p95_ms": 0.0059169999999999995,
+      "inclusive_total_ms": 0.160913
+    },
+    "identify_resident_owner_endpoint_class": {
+      "calls": 42,
+      "mean_ms": 0.0035368333333333332,
+      "stdev_ms": 0.0004960640653288333,
+      "p95_ms": 0.003792,
+      "inclusive_total_ms": 0.148547
+    },
+    "owner_identify_target": {
+      "calls": 42,
+      "mean_ms": 0.003078285714285714,
+      "stdev_ms": 0.0001189958568072108,
+      "p95_ms": 0.00325,
+      "inclusive_total_ms": 0.12928800000000007
+    },
+    "identify_resident_target": {
+      "calls": 42,
+      "mean_ms": 0.002983190476190476,
+      "stdev_ms": 0.00015401254907616602,
+      "p95_ms": 0.0031669999999999997,
+      "inclusive_total_ms": 0.12529400000000004
+    },
+    "owner_issue_stage_seal": {
+      "calls": 42,
+      "mean_ms": 0.002886904761904762,
+      "stdev_ms": 0.00014876398225308301,
+      "p95_ms": 0.0031249999999999997,
+      "inclusive_total_ms": 0.12125000000000007
+    },
+    "identify_resident_eos": {
+      "calls": 42,
+      "mean_ms": 0.0027054047619047617,
+      "stdev_ms": 9.357664382448289e-05,
+      "p95_ms": 0.002875,
+      "inclusive_total_ms": 0.11362700000000006
+    },
+    "identify_resident_frozen_source": {
+      "calls": 42,
+      "mean_ms": 0.002690595238095238,
+      "stdev_ms": 0.00011420607380452392,
+      "p95_ms": 0.0028339999999999997,
+      "inclusive_total_ms": 0.11300500000000006
+    },
+    "owner_bind_averaged_flux": {
+      "calls": 14,
+      "mean_ms": 0.0036429285714285713,
+      "stdev_ms": 0.00015381930672343807,
+      "p95_ms": 0.0039169999999999995,
+      "inclusive_total_ms": 0.05100099999999999
+    }
+  }
+}

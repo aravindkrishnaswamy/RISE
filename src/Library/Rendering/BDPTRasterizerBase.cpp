@@ -45,6 +45,7 @@
 #include "FrameStore.h"  // L6e-1.1 — FrameStoreBulkBracket RAII guard
 #include "FilteredFilm.h"
 #include "../RISE_API.h"
+#include <cstring>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -358,6 +359,15 @@ void BDPTRasterizerBase::RasterizeScene(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	// Completion tracking (IFireRasterizerState::LastRenderCompleted), as in
+	// PixelBasedRasterizerHelper::RasterizeScene: this override bypasses that
+	// entry, so without its own tracking a cancelled earlier render (e.g. an
+	// animation frame) left the flag false and Job refused every later still
+	// or region render on this rasterizer.
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	bool renderCompleted = true;
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot the active camera once at entry; structural camera
 	// changes (Add/Remove/SetActive) are required to serialize
 	// against rendering — see IScenePriv.h.
@@ -951,10 +961,9 @@ void BDPTRasterizerBase::RasterizeScene(
 			pImage->Clear( RISEColor( GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, 1.0 ), pRect );
 		}
 
-		RasterizerOutputListType::const_iterator r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputIntermediateImage( *pImage, pRect );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( *pImage, pRect );
+		});
 	}
 
 	// Compute tile size from image × threads so small-scene/high-core
@@ -1088,6 +1097,7 @@ void BDPTRasterizerBase::RasterizeScene(
 			safe_release( pPassSampling );
 
 			if( !passCompleted ) {
+				renderCompleted = false;
 				GlobalLog()->PrintEx( eLog_Event,
 					"BDPT Progressive:: Cancelled after pass %u/%u",
 					passIdx+1, numPasses );
@@ -1115,10 +1125,9 @@ void BDPTRasterizerBase::RasterizeScene(
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage, ActiveSplatRegion() );
-				RasterizerOutputListType::const_iterator r, s;
-				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-					(*r)->OutputIntermediateImage( outputImage, pRect );
-				}
+				ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+					output->OutputIntermediateImage( outputImage, pRect );
+				});
 				previewScheduler.MarkPreviewRan();
 
 				// Convergence check runs with preview — keeps the two
@@ -1181,6 +1190,9 @@ void BDPTRasterizerBase::RasterizeScene(
 			pool.ParallelFor( static_cast<unsigned int>( threads ), [&dispatcher]( unsigned int /*workerIdx*/ ) {
 				dispatcher.DoWork();
 			} );
+			if( dispatcher.WasCancelled() || ( pProgressFunc && pProgressFunc->IsCancelled() ) ) {
+				renderCompleted = false;
+			}
 		}
 		else
 		{
@@ -1199,20 +1211,26 @@ void BDPTRasterizerBase::RasterizeScene(
 			pRasterSequence->Begin( startx, endx, starty, endy );
 
 			const unsigned int numseq = pRasterSequence->NumRegions();
+			const bool hasMedium = SceneHasParticipatingMedium( pScene );
+			unsigned long long bdptProgressBits = 0;
+			std::memcpy( &bdptProgressBits, &mProgressBase, sizeof( bdptProgressBits ) );
+			const unsigned int baseBdptMediumSeed = hasMedium ? DeriveSeed( LockedLibcRand(), bdptProgressBits ) : 0u;
 
 			for( unsigned int i=0; i<numseq; i++ ) {
 				const Rect rect = pRasterSequence->GetNextRegion();
 
-				if( pProgressFunc && i>0 ) {
-					if( !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) ) ) {
+				if( pProgressFunc ) {
+					if( pProgressFunc->IsCancelled() ||
+						( i > 0 && !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) ) ) ) {
+						renderCompleted = false;
 						break;
 					}
 				}
 
-				const unsigned int spBdptMediumSeed =
-					( static_cast<unsigned int>( mProgressBase ) * 2654435761u ) ^
-					( i * 3266489917u ) ^ 0x6D2B79F5u;
-				ScopedMediumTileSeed mediumSeed( spBdptMediumSeed );
+				const unsigned long long tileKey =
+					( static_cast<unsigned long long>( rect.top ) << 32 ) |
+					static_cast<unsigned long long>( rect.left );
+				ScopedMediumTileSeed mediumSeed( hasMedium ? DeriveSeed( baseBdptMediumSeed, tileKey ) : 0u, hasMedium );
 				SPRasterizeSingleBlock( rc, *pImage, pScene, rect, height );
 			}
 
@@ -1233,9 +1251,18 @@ void BDPTRasterizerBase::RasterizeScene(
 		// runtime).
 #ifdef RISE_ENABLE_OPENPGL
 		if( pCombineAccum ) {
-			const Scalar finalWeight = skipFinalPass ?
-				static_cast<Scalar>( 0 ) :
-				static_cast<Scalar>( pSampling ? pSampling->GetNumSamples() : 0 );
+			Scalar finalWeight = static_cast<Scalar>( 0 );
+			if( !skipFinalPass ) {
+				const uint64_t completedTotal = mTotalAdaptiveSamples.load( std::memory_order_relaxed );
+				if( progressiveConfig.enabled ) {
+					const uint64_t regionPx = RegionalPixelCount( width, height, pRect );
+					finalWeight = ( completedTotal > 0 && regionPx > 0 )
+						? static_cast<Scalar>( static_cast<double>( completedTotal ) / static_cast<double>( regionPx ) )
+						: static_cast<Scalar>( 0 );
+				} else {
+					finalWeight = static_cast<Scalar>( pSampling ? pSampling->GetNumSamples() : 0 );
+				}
+			}
 			FinalizeVarianceAwareCombine(
 				*pImage,
 				*pCombineAccum,
@@ -1398,6 +1425,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	delete pAOVBuffers;
 	pAOVBuffers = 0;
 	aovUnwindGuard.Dismiss();
+	mLastRenderCompleted.store(renderCompleted,std::memory_order_release);
 #ifdef RISE_ENABLE_OPENPGL
 	pIntegrator->SetGuidingField( 0, 0, 0, 0, 0, eGuidingOneSampleMIS, 2 );
 	pIntegrator->SetCompletePathGuide( 0, false, 0 );

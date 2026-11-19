@@ -251,12 +251,15 @@ clones.
 - ~~**Windows `NamedViewsPanel` Qt widget gap**~~ (**CLOSED:** shipped in
   `build/VS2022/RISE-GUI/NamedViewsPanel.{h,cpp}`, wired in `MainWindow.{h,cpp}`
   between `EnvironmentPanel` and `ViewportProperties`, matching macOS
-  `NamedViewsPanel.swift`).
+  `NamedViewsPanel.swift`; code-complete and review-verified on macOS, gated on
+  a Windows MSVC/Qt6 compile/runtime pass per the Windows shell bullet above).
 - ~~**Windows `ChatPanel` API-key persistence gap**~~ (**CLOSED:** shipped in
   `build/VS2022/RISE-GUI/CredentialStore.{h,cpp}` via `<wincred.h>`
   `CredWriteW`/`CredReadW`/`CredDeleteW` under `"RISE Agent Chat/<provider>"`
-  with write-only `m_apiKeyEdit` in `ChatPanel.{h,cpp}`; shared C++
-  `ICredentialStore` abstraction remains an optional future consolidation).
+  with write-only `m_apiKeyEdit` in `ChatPanel.{h,cpp}`; code-complete and
+  review-verified on macOS, gated on a Windows MSVC/Qt6 compile/runtime pass;
+  shared C++ `ICredentialStore` abstraction remains an optional future
+  consolidation).
 - **Standalone geometry creation templates** (`TemplatesFor(Geometry)`
   empty) — ENTITY_CREATION.md §4.2's import/primitive-set design.
 - **Shader / Modifier UI categories** — no `IJob` enumeration surface yet;

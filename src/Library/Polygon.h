@@ -67,16 +67,12 @@ namespace RISE
 		unsigned int	iCoords[N];
 
 	public:
-		// Zero-initialised: a caller that sets only some index arrays (e.g.
-		// vertices and coords, leaving normals) gets index 0, never an
-		// indeterminate value.
-		IndexedPolygon_Template( )
+		// Indices start at zero: a caller that leaves a set unassigned (e.g. no
+		// normals) must not hand garbage to the mesh, which turns indices into
+		// pointers (TriangleMeshGeometryIndexed::MakePointerTriangle validates
+		// them in every build).
+		IndexedPolygon_Template( ) : iVertices(), iNormals(), iCoords()
 		{
-			for( int i=0; i<N; i++ ) {
-				iVertices[i] = 0;
-				iNormals[i] = 0;
-				iCoords[i] = 0;
-			}
 		};
 
 		virtual ~IndexedPolygon_Template( )

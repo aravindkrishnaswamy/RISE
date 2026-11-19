@@ -15,6 +15,10 @@
 #define RASTERIZE_DISPATCHERS_
 
 #include "ThreadLocalSplatBuffer.h"
+#include "../Interfaces/IEnumCallback.h"
+#include "../Interfaces/IObject.h"
+#include "../Interfaces/IObjectManager.h"
+#include "../Interfaces/IScene.h"
 
 #include <atomic>
 #include <cstdint>
@@ -25,6 +29,36 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		//! Returns true iff @a scene carries a global participating medium or
+		//! at least one object with an interior participating medium.  Used by
+		//! single-threaded dispatchers so scenes without media never draw from
+		//! `LockedLibcRand()` or disturb legacy `std::rand()` streams.
+		inline bool SceneHasParticipatingMedium( const IScene& scene )
+		{
+			if( scene.GetGlobalMedium() ) {
+				return true;
+			}
+			const IObjectManager* objs = scene.GetObjects();
+			if( !objs ) {
+				return false;
+			}
+			struct MediumScan : public IEnumCallback<IObject>
+			{
+				bool found;
+				MediumScan() : found( false ) {}
+				bool operator()( const IObject& obj ) override
+				{
+					if( obj.GetInteriorMedium() ) {
+						found = true;
+						return false;
+					}
+					return true;
+				}
+			};
+			MediumScan scan;
+			objs->EnumerateObjects( scan );
+			return scan.found;
+		}
 		class RasterizeBlockDispatcher
 		{
 		protected:
@@ -98,6 +132,10 @@ namespace RISE
 			bool GetNextBlock( Rect& rc )
 			{
 				if( cancelled.load( std::memory_order_relaxed ) ) {
+					return false;
+				}
+				if( pProgressFunc && pProgressFunc->IsCancelled() ) {
+					cancelled.store( true, std::memory_order_relaxed );
 					return false;
 				}
 

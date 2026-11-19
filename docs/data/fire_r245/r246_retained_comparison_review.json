@@ -1,0 +1,31 @@
+{
+  "schema": "rise.fire.r246.retained-comparison-review.v1",
+  "status": "accepted_zero_p1_p2",
+  "reviewed_head": "b04af314f",
+  "round": 2,
+  "comparison_sha256": "dd2e4327ca129f6659e762b08239120e08ec39b5b1d69f8f3144b458a472929d",
+  "gate_sha256": "9747c7643802a4db5570aaf051570f6eee69d06ee042232d4c873d5645012902",
+  "accepted_scope": "Full retained central-column native/common reaction/stations and wide/taller native signed per-side budget comparisons; descriptive physical sensitivity only",
+  "reviewers": [
+    {
+      "agent": "r246_retained_compare_contract_r2",
+      "axis": "arithmetic/contract/test integrity",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "agent": "r246_retained_compare_lifecycle_r2",
+      "axis": "lifecycle/provenance/loaded implementations",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "fixed_findings": [
+    "R1 P2 nonzero constant spectral roundoff",
+    "R1 P2 late mutable source/verifier identity"
+  ],
+  "original_exit_code": 98,
+  "canonical_taller_qualification": false,
+  "causal_localization": false,
+  "accepted_utc": "2026-10-04T16:26:09.493500+00:00"
+}

@@ -468,8 +468,12 @@ namespace RISE
 				// BOTH pre-clamps below (`u < 0` and `u > dim-1` are
 				// false for NaN), reaching the int conversion (UB) and
 				// the unchecked raster GetPEL — the UV sibling of the
-				// GetPELwithLOD NaN-lod hazard.  ±inf is included: +inf
-				// under Repeat becomes inf - floor(inf) = NaN anyway.
+				// GetPELwithLOD NaN-lod hazard.  ±inf is included: under
+				// Repeat/MirroredRepeat it becomes inf - inf = NaN
+				// anyway; under ClampToEdge ±inf previously saturated to
+				// an edge texel (well-defined) — dropping to the zero pel
+				// there is a deliberate change, one uniform outcome for
+				// garbage UV over mode-dependent salvage.
 				// Bit tests, not FP comparisons — those are foldable
 				// under the -ffast-math configs (see FiniteMath.h).
 				// Non-finite UVs (e.g. from a NaN ri.ptCoord) return the

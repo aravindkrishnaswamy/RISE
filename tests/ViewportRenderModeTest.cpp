@@ -136,8 +136,7 @@ namespace
 
 	std::string TempPath( const char* name )
 	{
-		const char* base = std::getenv( "TMPDIR" );
-		std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
+		std::string dir = RISE::TestSupport::ScratchBaseDir();
 		if( !dir.empty() && dir.back() != '/' ) dir += '/';
 		return dir + name;
 	}
@@ -1317,8 +1316,9 @@ namespace
 	// class by inspecting the RASTERIZER (its own refcount is fine --
 	// only the INTEGRATOR it owns leaked).  LOG_TRACK_MEMORY (Log.cpp)
 	// would catch it but is a library-wide compile-time flag -- test
-	// binaries link the SAME .o files as `bin/rise` (no separate "test
-	// build"), so flipping it isn't practical for an automated
+	// binaries link the same library sources as `bin/rise` (on macOS a
+	// non-LTO copy, but with the same defines), so flipping it isn't
+	// practical for an automated
 	// regression test.  Instead this uses the ConstructionCount()/
 	// DestructionCount() test hook added to PathTracingIntegrator
 	// alongside the fix: two relaxed atomic increments per instance,

@@ -1,0 +1,3 @@
+OWNER_EOS_DIAGNOSTIC checkpoint_sha256=45d3df29c4a53f340cf4e0041424865528d421a7d9cad5338504d81493d56b29 build=56b47707010fcf4c1fb86fdf5f1189d2e7004a6f3698aba79ad1dbb7914f036a accepted_steps=388 beginning_s=0.61985965049825609 migration_authority=false
+capstone solver diagnostic steps=390 time=0.6231521824374795: solver_failure:projected-Heun canonical source differs from persisted source fields: index=4039499 canonical=-0.048315051943063736 persisted=-0.048315037041902542
+capstone accepted EOS drift history tail=0.00349695926,0.00329018524,0.00328263549,0.00314624486,0.00324671302,0.00324693336,0.00320288827,0.00308107839

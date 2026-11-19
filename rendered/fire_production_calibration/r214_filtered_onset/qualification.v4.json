@@ -1,0 +1,46 @@
+{
+  "build_configuration": {
+    "canonical": "build/make/rise/Config.OSX",
+    "selected": "build/make/rise/Config.specific",
+    "sha256": "0799bea21532d2b83fb4a176a3fdfbbda93f324ea70dfee3f2482597aede2645"
+  },
+  "producer_executable_sha256": "4a0706e5bea12cd4134632489402eb6baf16a3139a100fd3866daf1bc1ab2512",
+  "runs": {
+    "build": {
+      "command": [
+        "make",
+        "-B",
+        "-C",
+        "build/make/rise",
+        "-f",
+        "Makefile",
+        "ALL_DEPS=",
+        "-j8",
+        "build-test/FireSequenceTest"
+      ],
+      "exit_code": 0,
+      "log": "rendered/fire_production_calibration/r214_filtered_onset/qualification.v4.json.build.log",
+      "log_sha256": "eb1b997c68c3ab4c71cf70a9090e67dbc5165d8155fab3f7cb0b47896d17e562"
+    },
+    "owner": {
+      "command": [
+        "/Users/aravind/Working/RISE/worktrees/r203-producers/bin/tests/FireSequenceTest",
+        "--fire-production-resident-target-metal"
+      ],
+      "exit_code": 0,
+      "log": "rendered/fire_production_calibration/r214_filtered_onset/qualification.v4.json.owner.log",
+      "log_sha256": "2022456879a6ca02f96e91b7ad3f3831e0de106690b6776614cb16f17ef1e8de"
+    },
+    "publication": {
+      "command": [
+        "/Users/aravind/Working/RISE/worktrees/r203-producers/bin/tests/FireSequenceTest",
+        "--fire-production-payload-publication"
+      ],
+      "exit_code": 0,
+      "log": "rendered/fire_production_calibration/r214_filtered_onset/qualification.v4.json.publication.log",
+      "log_sha256": "15b22ca2eebb76aef294986d9a3369b64e088a993732d95c24160dc275cd2377"
+    }
+  },
+  "schema": "rise.fire.executed-build-and-owner-gate.v1",
+  "source_commit": "7668b3de93578daf6164e0d98da2f21fe76d655c"
+}

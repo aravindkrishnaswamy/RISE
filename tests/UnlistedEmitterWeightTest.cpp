@@ -30,7 +30,8 @@
 //        (they mark their rays, RAY_STATE::emitterHitFollowsLightTable);
 //        the legacy chain is frozen and its own rays keep their weight
 //        (RayCaster's volume continuation is shared and does not), so
-//        its rows here are printed and NOT gated.
+//        its rows here are printed and NOT gated, and run only with
+//        `--legacy`.
 //
 //    SECTIONS
 //      0. The premise: light sampling alone lights the wall from the
@@ -554,9 +555,12 @@ static std::string SubsurfaceScene( const char* shaderOp, const char* rasterizer
 
 struct Row { const char* name; const char* rast; int dimLights; bool rgb; bool blackBase; bool gated; };
 
-int main()
+int main( int argc, char** argv )
 {
 	std::cout << "UnlistedEmitterWeightTest\n";
+	// The legacy-chain rows only print (the chain is frozen); --legacy adds
+	// them back.  The suite skips their ten renders.
+	const bool printLegacy = ( argc > 1 && std::string( argv[1] ) == "--legacy" );
 	const double truthDropped = ClosedForm( true );
 	const double truthKept    = ClosedForm( false );
 	std::printf( "  closed form (RGB wall mean): dropped-from-table pattern %.6f, kept pattern %.6f\n",
@@ -588,6 +592,7 @@ int main()
 		{ "legacy chain RGB",           kLegacy,       0, true,  false, false },
 	};
 	for( const Row& r : rows ) {
+		if( !r.gated && !printLegacy ) continue;
 		const Stat u = SaltedMean( Build( Emitter( true,  r.blackBase ), r.rast, r.dimLights ), "u", 4 );
 		const Stat k = SaltedMean( Build( Emitter( false, r.blackBase ), r.rast, r.dimLights ), "k", 2 );
 		// Each render against its own closed form, then the two against each
@@ -615,6 +620,7 @@ int main()
 		{ "legacy chain RGB",  kLegacy, 0, true, false, false },
 	};
 	for( const Row& r : rows2 ) {
+		if( !r.gated && !printLegacy ) continue;
 		std::string s( "RISE ASCII SCENE 7\n" );
 		s += kGeometry;
 		s += kTwoEmitters;

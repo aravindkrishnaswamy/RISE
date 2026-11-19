@@ -142,9 +142,13 @@ namespace RISE
 		}
 
 		//! The graded ior field of a stack's innermost medium, or null.
+		//! The graded index is an OPTICAL property paired with the stack's
+		//! top() IOR, so every lookup here keys on the optical top object
+		//! (opticalTopObject); the enclosure top (topObject) can be an
+		//! enclosure-only null boundary that carries no index.
 		inline const IScalarPainter* TopField( const IORStack& stack )
 		{
-			return FieldOf( stack.topObject() );
+			return FieldOf( stack.opticalTopObject() );
 		}
 
 		//! The field's value at world point `p`.  The record carries only
@@ -265,7 +269,7 @@ namespace RISE
 		//! keeps the lane's own value).
 		inline void AdoptTrackedTop( IORStack& rebuilt, const IORStack& walk )
 		{
-			if( TopField( rebuilt ) && rebuilt.topObject() == walk.topObject() &&
+			if( TopField( rebuilt ) && rebuilt.opticalTopObject() == walk.opticalTopObject() &&
 				IsUsableIOR( walk.top() ) ) {
 				rebuilt.SetTopIOR( walk.top() );
 			}
@@ -278,7 +282,7 @@ namespace RISE
 		inline void RecordVertex( const IORStack& stack, const IObject*& pMedium, Scalar& n )
 		{
 			if( TopField( stack ) ) {
-				pMedium = stack.topObject();
+				pMedium = stack.opticalTopObject();
 				n = stack.top();
 			} else {
 				pMedium = 0;
@@ -316,8 +320,8 @@ namespace RISE
 			if( !pField ) {
 				return Scalar( 1 );
 			}
-			return ConnectionScale( pStack->topObject(), pStack->top(),
-				pStack->topObject(), EvalAt( *pField, lightPoint ) );
+			return ConnectionScale( pStack->opticalTopObject(), pStack->top(),
+				pStack->opticalTopObject(), EvalAt( *pField, lightPoint ) );
 		}
 
 		//! Same, from a recorded (medium, n) eye vertex to a light point.

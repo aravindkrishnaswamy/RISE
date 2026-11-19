@@ -75,7 +75,10 @@ namespace RISE
 				return bShootPhotons;
 			}
 
-			inline void SetCanGeneratePhotons( bool b ) override { bShootPhotons = b; }
+			inline void SetCanGeneratePhotons( bool b ) override {
+				Transformable::PreparedExternalMutationScope mutation;
+				if( mutation.IsValid() ) bShootPhotons = b;
+			}
 
 			inline bool IsPositionalLight() const override { return true; }
 
@@ -247,6 +250,8 @@ namespace RISE
 			void SetIntermediateValue( const IKeyframeParameter& val ) override;
 			void RegenerateData() override
 			{
+				Transformable::PreparedExternalMutationScope preparedMutation;
+				if( !preparedMutation.IsValid() ) return;
 				Transformable::RegenerateData();
 				vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
 			}

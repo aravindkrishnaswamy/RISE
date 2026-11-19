@@ -7,6 +7,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "ControlledSmoothness2DPainter.h"
 #include <cmath>
 
@@ -133,8 +134,10 @@ IKeyframeParameter* ControlledSmoothness2DPainter::KeyframeFromParameters( const
 
 void ControlledSmoothness2DPainter::SetIntermediateValue( const IKeyframeParameter& )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 }
 
 void ControlledSmoothness2DPainter::RegenerateData()
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 }

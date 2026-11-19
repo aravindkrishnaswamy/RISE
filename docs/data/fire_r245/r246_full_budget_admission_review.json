@@ -1,0 +1,37 @@
+{
+  "schema": "rise.fire.r246.full-budget-admission-review.v1",
+  "status": "accepted_zero_p1_p2",
+  "reviewed_head": "7fe05accc",
+  "rounds": [
+    {
+      "round": 1,
+      "reviewed_head": "7f1f5278a",
+      "p1": 0,
+      "p2": 1,
+      "shared_finding": "Loose modern-v2 dict equality accepted float integer fields; repaired captured FORMAT/verify and discriminating typed REDs"
+    },
+    {
+      "round": 2,
+      "reviewed_head": "7fe05accc",
+      "reviewers": [
+        {
+          "agent": "r246_budget_admission_contract_r2",
+          "axis": "arithmetic/contract",
+          "p1": 0,
+          "p2": 0
+        },
+        {
+          "agent": "r246_budget_admission_lifecycle_r2",
+          "axis": "lifecycle/provenance",
+          "p1": 0,
+          "p2": 0
+        }
+      ]
+    }
+  ],
+  "gate_sha256": "55a2fe2e1adbc33f597efdc187dd366d6766a9afb10468bdb4932aedeba7bd98",
+  "accepted_scope": "Strict full recovered r246 budget admission and captured-byte arithmetic integration; full audit not yet executed",
+  "original_exit_code": 98,
+  "full_signed_audit_executed": false,
+  "accepted_utc": "2026-10-04T12:25:31.194292+00:00"
+}

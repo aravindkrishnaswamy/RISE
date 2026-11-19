@@ -817,13 +817,34 @@ static void TestConcurrencyRefusal()
 		Check( completed, "render completed within the timeout" );
 		Check( !controller.ForTest_RenderOwnsScene(), "render-owns-scene flag CLEARED after the render finished" );
 
+		// The preview entry points are one-shot try_lock calls whose documented
+		// contract is "refuse rather than block; the caller retries later" (see
+		// SceneEditController::GetPainterPreview).  The scene-owner FLAG is already
+		// asserted clear above, but the controller's own render thread can still
+		// hold mMutex for an instant after the render (the post-render bookkeeping
+		// / queued kick), which makes a single call refuse under load.  What this
+		// check protects is "a refusal is not permanent -- the preview works again
+		// once the render has finished", so retry for a bounded window (5 s); a
+		// preview that never comes back still fails.
+		auto retryUntilOk = []( const std::function<bool()>& call ) {
+			const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds( 5000 );
+			bool ok = call();
+			while( !ok && std::chrono::steady_clock::now() < until ) {
+				std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+				ok = call();
+			}
+			return ok;
+		};
+
 		std::vector<unsigned char> rgba3;
-		const bool afterOk = controller.GetPainterPreview( String( "probe" ), -1, 8, 8, rgba3 );
+		const bool afterOk = retryUntilOk( [&]{
+			return controller.GetPainterPreview( String( "probe" ), -1, 8, 8, rgba3 ); } );
 		Check( afterOk && rgba3.size() == 8u * 8u * 4u,
 		       "GetPainterPreview() SUCCEEDS again once the render has finished" );
 
 		std::vector<unsigned char> rgbaMatAfter;
-		const bool matAfterOk = controller.GetMaterialPreview( String( "mat_diffuse" ), 8, 8, rgbaMatAfter );
+		const bool matAfterOk = retryUntilOk( [&]{
+			return controller.GetMaterialPreview( String( "mat_diffuse" ), 8, 8, rgbaMatAfter ); } );
 		Check( matAfterOk && rgbaMatAfter.size() == 8u * 8u * 4u,
 		       "GetMaterialPreview() SUCCEEDS again once the render has finished" );
 

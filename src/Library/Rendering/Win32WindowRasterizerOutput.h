@@ -28,7 +28,8 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		class Win32WindowRasterizerOutput : public virtual IRasterizerOutput, public virtual Reference
+		class Win32WindowRasterizerOutput : public virtual IRasterizerOutput,
+			public virtual IFireRasterizerOutputRoute, public virtual Reference
 		{
 		protected:
 			virtual ~Win32WindowRasterizerOutput( );
@@ -47,6 +48,8 @@ namespace RISE
 			HANDLE				hThread;			// Handle to the message pump thread
 
 		public:
+			FireArtifactRouteKind FireArtifactRoute() const override
+				{ return FireArtifactRouteKind::DisplayOnly; }
 
 			HBITMAP				hBitmap;
 			HANDLE				hStop;				// Stop event for the message pump thread
@@ -61,8 +64,8 @@ namespace RISE
 
 			// IRasterizerOutput requirements
 
-			void	OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion );
-			void	OutputImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame );
+			void	OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion ) override;
+			void	OutputImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame ) override;
 
 
 			//

@@ -686,8 +686,9 @@ bool AsciiCommandParser::ParseRasterizeAnimation( const std::string* tokens, uns
 
 	bool bRet = true;
 
-	StdOutProgress	progress( "Rasterizing Scene: " );	
-	pJob.SetProgress( &progress );
+	// Prepared time-varying media reject external progress callbacks. Keep the
+	// animation's frame/output logging without installing a stack callback.
+	pJob.SetProgress( 0 );
 	
 	const auto tStart = std::chrono::steady_clock::now();
 	if( num_tokens >= 3 ) {

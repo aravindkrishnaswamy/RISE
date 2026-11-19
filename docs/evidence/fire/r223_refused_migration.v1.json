@@ -1,0 +1,121 @@
+{
+  "schema": "rise.fire.r223.refused-migration.v1",
+  "probe_source_commit": "0761fca3",
+  "probe_exit_code": 0,
+  "migration_verdict": "REFUSED: all full payload roots differ; no certificate issued",
+  "cause": "input descriptor contains kernel-set SHA; publication contains stage/owner identities and input digest",
+  "physical_scope": "recorded physical summary columns match; not a proof of all field bytes",
+  "comparisons": [
+    {
+      "step": 1946,
+      "time_s": "3.0222056690836325",
+      "exact_time_and_dt": true,
+      "input_root_equal": false,
+      "publication_root_equal": false,
+      "old_input_root": "1d777ba8542e6ded0090d09b7c58ee8b3d0c69c0a413a56cb727f5a198796762",
+      "new_input_root": "b63906760910791c7ddf1134aa4b4d22ea5a6ef56f890ddedd06b935fb294691",
+      "old_output_root": "4abed14af16ad09a8761587f45edd389015ac1cb8f139a57e3078d58b9e314cf",
+      "new_output_root": "833451bacf1c6f155bcd0b0974b8c22ea9845998e3878ee6e18188f70757fb67"
+    },
+    {
+      "step": 1947,
+      "time_s": "3.0238519350532442",
+      "exact_time_and_dt": true,
+      "input_root_equal": false,
+      "publication_root_equal": false,
+      "old_input_root": "53c5902d27b0a2463a6c1d3be572fe39627b6effc743012c6b32b42a4d66e302",
+      "new_input_root": "da03faf1f7b918d383c2f344b972ca5fe16de261b8d043d79af8ff3d77902747",
+      "old_output_root": "5e34b95a8e553c4d5ec7244aa329d843501539d549eed6cee66e554951f455ff",
+      "new_output_root": "8221b806ee2f7c446b6e23dcf6c89c969bc7e7d7661f592a9f460cfd5858ccc2"
+    },
+    {
+      "step": 1948,
+      "time_s": "3.0254982010228559",
+      "exact_time_and_dt": true,
+      "input_root_equal": false,
+      "publication_root_equal": false,
+      "old_input_root": "6bc0ec0bc5d1b01924ec90c1d4010020906c6d560609c75a0741b4d3c4d25fbb",
+      "new_input_root": "026a383e5f4a25cf3892f10dc6528a8a4bc91a2ce9310c67e815fb9cdebaee79",
+      "old_output_root": "1cd2d4ea02283e90c9a2489b1e13833b15068db4eea9bb3375ad3fec9b22fbc5",
+      "new_output_root": "a7fd4a21be1aa459b86e2064c4e72fb8a6955503cb455577f87d38424f5bc2f4"
+    },
+    {
+      "step": 1949,
+      "time_s": "3.0271444669924676",
+      "exact_time_and_dt": true,
+      "input_root_equal": false,
+      "publication_root_equal": false,
+      "old_input_root": "a4ff376687350bcfaf83d5c0f97a7ed3495e0568e3dad2edac0ce21e25b95bae",
+      "new_input_root": "313ee56b36bfd9be8b2367e43ba13536713e6f303cf20185b974d148fc580a52",
+      "old_output_root": "73374485ef65bc58b7714ddaaa000c717c95473ab4e0a428dd5262c31642f71c",
+      "new_output_root": "8c5bce4e903f52ab00aeec305c320f7d875d3451b2de20c5e4d1b8aff4de6113"
+    },
+    {
+      "step": 1950,
+      "time_s": "3.0287907329620793",
+      "exact_time_and_dt": true,
+      "input_root_equal": false,
+      "publication_root_equal": false,
+      "old_input_root": "7ae728477bec9ffbbc46ac9bbfbad5b0b8f457a5bbd5f55844b694cd10f78e64",
+      "new_input_root": "31c021a61297b847a3c8b3234a1d41be40be0207915606a6e79dc5592d9337e5",
+      "old_output_root": "bee8113e698ed6a0963fd3c43a632cd80c2fae9264fb5778317cb0451e71963c",
+      "new_output_root": "f2c94ae37c851e9a77b9479a31b8dbd6781e6b90ca6754454318f7f50c83bafa"
+    },
+    {
+      "step": 1951,
+      "time_s": "3.0304369989316911",
+      "exact_time_and_dt": true,
+      "input_root_equal": false,
+      "publication_root_equal": false,
+      "old_input_root": "9cc705edfd3caf94efe19425d98cb20fce1d75fb9f0d91a8b268c71de41a4ac8",
+      "new_input_root": "52f16855184e70bbb5d8512c44366bb2215aac70cd93cd66244bd23b44b35426",
+      "old_output_root": "6dd2be2733a35bc69e86eb2e1773cbc28defa001e74d44bf501d436fa70e4648",
+      "new_output_root": "5bac03daa3c1ab126176026a8ad4cccca36e68628c883efcb7d3ccf07c9c43ae"
+    },
+    {
+      "step": 1952,
+      "time_s": "3.0320832649013028",
+      "exact_time_and_dt": true,
+      "input_root_equal": false,
+      "publication_root_equal": false,
+      "old_input_root": "263ab08063331f067e8bf7100642370cc341c9e71a0f0a46a21a49db41d78716",
+      "new_input_root": "da93864c140bcdc630209e2abec718f83984abebd68f3bfa19a2a3f5cb303d07",
+      "old_output_root": "72518b90721c7d08641ac9d2ccb914921d213059ec53ea3720aca32d8211a0db",
+      "new_output_root": "d8eb8a1ef91267458da2635131c09a070590564294f12eb8faf64940016b40ca"
+    },
+    {
+      "step": 1953,
+      "time_s": "3.0337295308709145",
+      "exact_time_and_dt": true,
+      "input_root_equal": false,
+      "publication_root_equal": false,
+      "old_input_root": "047b44d76181077f2dd4852e8fe5fc252b7e7ae3de6e38cbc8a74b3e3b643cd9",
+      "new_input_root": "03367d259aa78967154869a15f3068ac0423572e2ded1ec4a42d32316b6c8196",
+      "old_output_root": "71bb4843cac2ab7031697c4d295279122c75653ee80f1aeff3561d5cd5e06cc0",
+      "new_output_root": "cc12816cf53803fb7429e65d428459c6114267394c5f53393ad231bec5a92d40"
+    }
+  ],
+  "disposition": "withdraw transition launcher/verifier; retain strict r78 verifier; prioritize from-zero tier-8 window",
+  "files": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/tier10_continuation.v1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "6a44c8d1493e141895214343d4aa14a83a419649be7a72e9bb307220db1aea15",
+      "bytes": 595760
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r223_kernel_transition/overlap.v1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "16d68ecd2cc7088ee4a81fadbfb18a84a94130d86413a2e80d07919edb6ae2f2",
+      "bytes": 4815
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r223_kernel_transition/overlap.v1.log",
+      "sha256": "536c61f0107b2735019366545425f6151a980cf790782f6f2a3d25930a1e18ce",
+      "bytes": 2433
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r223_kernel_transition/executables/FireSequenceTest_overlap",
+      "sha256": "7e9530447e94714a0879e208c893657ff0480ecd0701cb60041ee835baa217aa",
+      "bytes": 23343840
+    }
+  ]
+}

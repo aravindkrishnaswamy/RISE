@@ -448,7 +448,7 @@ int main()
 		std::set<std::string> skippedKeywordParam;
 		for( size_t r = 0; r < kNumRows; ++r ) {
 			const Row& row = kRows[r];
-			const std::string kw( row.keyword ), pn( row.param ), pipe( row.pipe );
+			const std::string kw = row.keyword, pn = row.param, pipe = row.pipe;
 
 			// Self-consistency: the descriptor's audited pipe matches this row's.
 			const ChunkDescriptor* d = DescriptorForKeyword( String( kw.c_str() ) );

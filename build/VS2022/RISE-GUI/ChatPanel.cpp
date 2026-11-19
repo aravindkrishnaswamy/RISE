@@ -79,7 +79,9 @@ namespace
     void scrubSecretString(QString& s)
     {
         if (!s.isEmpty()) {
-            s.fill(QChar(0));
+            if (s.isDetached()) {
+                s.fill(QChar(0));
+            }
             s.clear();
         }
     }
@@ -529,7 +531,7 @@ const char* const kAutonomyLevelSettingsKey = "agentAutonomyLevel";
 QColor withAlpha(const QColor& c, double alphaFraction)
 {
     QColor result = c;
-    result.setAlphaF(alphaFraction);
+    result.setAlphaF(static_cast<float>(alphaFraction));
     return result;
 }
 
@@ -1018,7 +1020,7 @@ ChatPanel::ChatPanel(QWidget* parent)
     connect(m_modelEdit, &QLineEdit::editingFinished,
             this, &ChatPanel::modelEditingFinished);
     // Start screen readiness (spec §6): agentConfigured() reads the
-    // applied provider, hasStoredApiKey(...) (CredentialStore), and any pending
+    // applied provider, hasStoredCredential(...) (CredentialStore), and any pending
     // text in the write-only key field.  textChanged covers typing into the draft field;
     // applyProviderToLoop() (below) emits explicitly for the applied-provider
     // transition itself (switching providers clears the write-only field,
@@ -1784,7 +1786,7 @@ void ChatPanel::updateKeyControls()
     if (!m_keySourceLabel) return;
 
     const QColor labelColor = (needsKey && m_keySaveNoticeIsWarning && !m_keySaveNotice.isEmpty())
-        ? Theme::warning
+        ? Theme::warn
         : Theme::textDim;
     m_keySourceLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(labelColor)));
 

@@ -1,0 +1,42 @@
+{
+  "schema": "rise.fire.r246.movie-admission-gate.v1",
+  "status": "accepted_zero_p1_p2",
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "implementation_sha256": "4d48b6f0db180484737e5c439df6893ed623c6794d3fa506cb66bec6b74eff00",
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_movie_admission_runtime.v2",
+  "executable_sha256": "9da6762b07126fbe4110d09e7223a370f21010fa0f72b24ab4b36936360a0eb8",
+  "build_identity_sha256": "50174a0bc1d310beb36bffd4fbd9d156586adb199867617e6b7ec9139314e1d0",
+  "embedded_revision": "5e9977d18522900df6ad2a2a3c9428631a7be228",
+  "embedded_dirty_state": "dirty",
+  "external_output": "/Volumes/SSD/RISE/fire_production_calibration/r246_movie_admission_validation.v2",
+  "controls": {
+    "exact_green": true,
+    "gif_red": true,
+    "receipt_red": true,
+    "links_red": true,
+    "rate_red": true,
+    "metadata_red": true,
+    "capture_green": true,
+    "hardlink_receipt_red": true
+  },
+  "limitations": [
+    "Synthetic terminal primary metadata projection derived from accepted GIF fixture; not EXR attestation or native fire evidence.",
+    "Actual recovered spectrum branch requires all frame EXR/derivative verification before building consumed ordered links and terminal primary; no recovered command exposed or render launched.",
+    "Full recovered CLI composition and full recovery acceptance remain pending."
+  ],
+  "completed_utc": "2026-10-04T10:48:03.243860+00:00",
+  "build_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_movie_admission.v2.build.log",
+  "build_log_sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+  "build_exit_code": 0,
+  "gate_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_movie_admission.v2.gate.log",
+  "gate_log_sha256": "96d816f550c0d9d96ab634d51eeca7bb90c71640574fcac7df68959133f8c3ec",
+  "gate_exit_code": 0,
+  "independent_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_movie_admission.v2.independent.log",
+  "independent_log_sha256": "f1d2dfd58717b3176e1051a81a2bb9395223bac4eaff124c09a65d2a78415298",
+  "independent_exit_code": 0,
+  "independent_script_sha256": "b78c0986ab4702db1bf1c47d0ffbc26242b88e8e554681ceaaa897468dc39f15",
+  "independent_report_sha256": "2959f87ada61efc34413671d18e08c30869974064edb658cadf620925b51cbaf",
+  "cbor_helper_source_sha256": "dfba30f57bd0987c7011102626832114e7beac3cc354400b6928a6ff08ade986",
+  "cbor_helper_source_path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r244_spectrum_input_gate.py"
+}

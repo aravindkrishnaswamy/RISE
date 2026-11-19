@@ -1,0 +1,134 @@
+{
+  "schema": "rise.fire.literal-count-clean-qualification.v1",
+  "status": "scoped-gates-pass-not-main-promotion",
+  "source_parent": "d9fccd1cec6b8ee67c4d3f4a398bb1689a8f33d7",
+  "qualified_source_commit": "938ef6d77604df085902a18aa19830d7e53dfe58",
+  "source_commit_note": "Committed after execution; all seven file SHA identities are the exact tested bytes. Not a claim that executable build metadata was regenerated after the commit.",
+  "qualified_source_branch": "codex/r218-literal-qualification",
+  "pre_push_guard": "PASS; no push performed",
+  "make_flags": {
+    "CXX": "c++ -arch arm64",
+    "CXXFLAGS": "-O3 -flto -ffast-math -fno-finite-math-only -funroll-loops -std=gnu++17 -Wall -pedantic -Wno-c++11-long-long",
+    "strict_mirror_and_Metal_adapter_rule": "filter-out -ffast-math; append -fno-fast-math -ffp-contract=off (existing Makefile rules, not new flag changes)",
+    "Config_OSX_sha256": "0799bea21532d2b83fb4a176a3fdfbbda93f324ea70dfee3f2482597aede2645",
+    "Makefile_sha256": "b36ad42da2bf5ef25a454ad2d84dd5c034bfb581459379cd0293c9debfd4ce65",
+    "Filelist_sha256": "8517dff07dee064c6e682c1f53b7bf8ae9eae70ef2d31d87309cefd3e80617a4",
+    "Xcode_flags": "Full per-source commands retained in SHA-bound Deployment/Opto logs; no configuration flags modified"
+  },
+  "build_commands": [
+    "Config.specific -> Config.OSX; fresh artifact-free checkout, mkdir -p bin rendered",
+    "make -C build/make/rise -j2 all",
+    "make -C build/make/rise -j2 build-test/FireSequenceTest",
+    "xcodebuild -project build/XCode/rise/rise.xcodeproj -scheme RISE-GUI -configuration Deployment -derivedDataPath rendered/fire_production_calibration/r218_clean_qualification/xcode_deployment -jobs 2 clean build",
+    "xcodebuild -project build/XCode/rise/rise.xcodeproj -scheme RISE-GUI-Opto -configuration Opto -derivedDataPath rendered/fire_production_calibration/r218_clean_qualification/xcode_opto -jobs 2 clean build"
+  ],
+  "source_parent_relation": "artifact-free source-identical candidate of active r217 tip; active branch not rewritten",
+  "qualification_checkout": "/Users/aravind/Working/RISE/worktrees/r218-literal-qualification",
+  "source_files": [
+    {
+      "path": "src/Library/Utilities/FireProductionAdvectionMac.mm",
+      "sha256": "0e51aac4ef2cba2656f451b98b3384621f5f0ef943185dfd0a22ca5509ad92dc"
+    },
+    {
+      "path": "src/Library/Utilities/FireProductionTransport.h",
+      "sha256": "9e11df8f6b09db1501567003b17559973c31204093168922b2ad89aa06b98389"
+    },
+    {
+      "path": "tests/FireSequenceTest.cpp",
+      "sha256": "e60650fa639e3c44243a21e827d6763713f998681f290b248b0fc7811cf9138e"
+    },
+    {
+      "path": "tests/fire_production_fp64/FireProductionTransport.h",
+      "sha256": "34a7321f89f553596d15af92f683cbcaf0096c5e634e190d647a22988a69a75e"
+    },
+    {
+      "path": "tests/fire_production_fp64/SourceManifest.h",
+      "sha256": "fb57b80cfe1c9a49667eb8430fd16a50907e2b6efe4a2315b3f7896eb456843a"
+    },
+    {
+      "path": "tests/fire_production_trace/FireProductionTransport.h",
+      "sha256": "93d979b9cd5086aa47577a779f44a08baae5b760d78b88d1105be5fb31e34684"
+    },
+    {
+      "path": "tests/fire_production_trace/SourceManifest.h",
+      "sha256": "af1dc1e339fd4fd69499eeb5d6746ba35a7bed726955e258eaaf3ad174dd2b6e"
+    }
+  ],
+  "reviewed_original_patch_sha256": "9c3c3fa2da6efc707bf579df4fcbf1c010a4dc7e649a6f94a1f072d993aff023",
+  "gates": {
+    "fresh_make_all": "PASS zero warnings",
+    "fresh_make_FireSequenceTest": "PASS zero warnings",
+    "xcode_Deployment_clean_build": "PASS",
+    "xcode_Opto_clean_build": "PASS",
+    "xcode_warning_disposition": "Only repository-documented missing local OIDN path and AppIntents metadata warnings",
+    "cpu_suite_v1": "NOT RUN: executable not yet present during link; exit127 retained, not a numerical result",
+    "cpu_suite_v2": "FAIL missing r112 tier6 local f64 fixture; exactly one FAIL, expected r136 refusal unavailable",
+    "cpu_suite_v3": "PASS after SHA-verified fixture copy; no test or tolerance change",
+    "target_count_Metal": "PASS 14 counts x6 scenarios x3 shaders, 252 scalar rows",
+    "r190_owner_and_resident_target_Metal": "PASS exit0",
+    "fresh_review": "Two fresh post-commit reviewers (numeric/code and test/evidence/provenance) report zero P1/P2 on 938ef6d77604; scoped count qualification only"
+  },
+  "fixture": {
+    "path": "rendered/fire_production_calibration/r112_dyadic_smooth_open/oracle_tier6_sdiv_x8.f64",
+    "sha256": "f2651a87157f3b5067f06965e977245f2b6f0e65c2c8922043f33aadc4b4f940",
+    "origin": "preserved local artifact copied read-only from r203-producers; bytes remain ignored, manifest stays unchanged"
+  },
+  "logs": [
+    {
+      "path": "rendered/fire_production_calibration/r218_clean_qualification/make_clean.v1.log",
+      "sha256": "70148d0af416964289e65b42040191e95072c37edd2bf76894bb958067d3e90c",
+      "bytes": 23405
+    },
+    {
+      "path": "rendered/fire_production_calibration/r218_clean_qualification/fire_sequence_build.v1.log",
+      "sha256": "2816c30bf666f29da66e106d51b5724b88b5c10aaa8a7488cd24eed6f8cf9844",
+      "bytes": 966
+    },
+    {
+      "path": "rendered/fire_production_calibration/r218_clean_qualification/xcode_deployment.v1.log",
+      "sha256": "7eb3f4ab45735528447c7f4092dbda5a813e01cf59e670b5788b36d8ce1d2514",
+      "bytes": 1814550
+    },
+    {
+      "path": "rendered/fire_production_calibration/r218_clean_qualification/xcode_opto.v1.log",
+      "sha256": "946d84fc2aa951672df0b59e221376e976d037b6ff88b9f48a02da8cd778d4f7",
+      "bytes": 1780084
+    },
+    {
+      "path": "rendered/fire_production_calibration/r218_clean_qualification/cpu_suite.v1.log",
+      "sha256": "0e00f4351653a8e90b6b0727efd3f2d13f527821b6a58dd847df324b8bec7743",
+      "bytes": 63
+    },
+    {
+      "path": "rendered/fire_production_calibration/r218_clean_qualification/cpu_suite.v2.log",
+      "sha256": "24e9548f4937abead70e6f2d91c252aaca2d7cf09d313cb702f7518541f15e9b",
+      "bytes": 6091
+    },
+    {
+      "path": "rendered/fire_production_calibration/r218_clean_qualification/cpu_suite.v3.log",
+      "sha256": "2bfd1517d95627ee3e041d16aae1603ffb39c4f8502227a6fde1d04afab2bce2",
+      "bytes": 33058
+    },
+    {
+      "path": "rendered/fire_production_calibration/r218_clean_qualification/target_count.v1.log",
+      "sha256": "c813ded3f30e1834bfd3d4bf46a1ea01c3740e9c6dc181832a6e748360dc5d35",
+      "bytes": 153280
+    },
+    {
+      "path": "rendered/fire_production_calibration/r218_clean_qualification/owner_gate.v1.log",
+      "sha256": "9f6b69fd0131f87312060762a22b989304ed5de0de13c03a127c9a4fa300c937",
+      "bytes": 888472
+    }
+  ],
+  "main_integration_not_qualified": {
+    "path": "src/Library/Utilities/FireProductionAdvectionMac.mm",
+    "function": "target_enthalpy_basis_dd",
+    "line_at_784cb922": 3195,
+    "finding": "Optimized r215 cost helper retains eos_mul(basis.t5,eos_dd(0.2f)); zero-radius rounded 1/5 sibling absent from r217 candidate lineage",
+    "required_repair": "certified eos_div(basis.t5,eos_dd(5.0f)) alongside direct/shared fifth repairs, mutation RED and optimized/direct parity plus enclosure requalification",
+    "no_tolerance_widening": true
+  },
+  "performance_claim": false,
+  "active_run_modified": false,
+  "main_source_modified": false
+}

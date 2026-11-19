@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "DomainWarp3DPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Animation/KeyframableHelper.h"
@@ -103,6 +104,7 @@ IKeyframeParameter* DomainWarp3DPainter::KeyframeFromParameters( const String& n
 
 void DomainWarp3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SCALE_ID:
@@ -120,6 +122,7 @@ void DomainWarp3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void DomainWarp3DPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	safe_release( pFunc );
 
 	pFunc = new DomainWarpNoise3D( *pInterp, dPersistence, nOctaves < 32 ? nOctaves : 32, dWarpAmplitude, nWarpLevels );

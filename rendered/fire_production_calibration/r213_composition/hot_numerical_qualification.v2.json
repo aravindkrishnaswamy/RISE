@@ -1,0 +1,167 @@
+{
+  "accepted_steps": 8,
+  "baseline_changed_paths": [
+    "tests/FireSequenceTest.cpp"
+  ],
+  "baseline_parent_commit": "9f1b80fb64a196b81b1f067833f77f4d7325e4b7",
+  "beginning_s": 2.1080244191689417,
+  "canonical_persistent_payload_identical": true,
+  "cells_per_component": 504666,
+  "end_s": 2.1211945469258353,
+  "excluded_field": "producerBuildId",
+  "face_counts_per_axis": [
+    511980,
+    511980,
+    509427
+  ],
+  "face_fields_per_step": 6,
+  "historical_full_root_reproduction": {
+    "baseline": true,
+    "candidate": true
+  },
+  "inputs_sha256": {
+    "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/maximum_velocity_trajectory.csv": "cb10278dc49f33c9a9718496804bf81fe5493faf4af0eb27cd1a3b7db3d1a057",
+    "rendered/fire_production_calibration/r213_composition/baseline_hot_snapshots.v1.log": "29563a32594be06fb0533711215acda6e569f59628c368497f404306c7107413",
+    "rendered/fire_production_calibration/r213_composition/baseline_hot_snapshots.v1/budgets/maximum_velocity_trajectory.csv": "451286563f2d1f31f1341cd689564ae171d70d12d6b23d5ff79a34c18106f7fc",
+    "rendered/fire_production_calibration/r213_composition/baseline_hot_snapshots.v1/checkpoints/step_01.checkpoint": "8ddaf6d550d1dae1e18846ca2376536a58e7b1be74f6e577923b57fd0d601a19",
+    "rendered/fire_production_calibration/r213_composition/baseline_hot_snapshots.v1/checkpoints/step_02.checkpoint": "29f96579ff8beeafa4cf34c9e39993b347efa30a1af29a878ec810404977b58c",
+    "rendered/fire_production_calibration/r213_composition/baseline_hot_snapshots.v1/checkpoints/step_03.checkpoint": "1201419af2a0bb80302f915631b02cdd86468d6cda6b430286831f9f861a0eda",
+    "rendered/fire_production_calibration/r213_composition/baseline_hot_snapshots.v1/checkpoints/step_04.checkpoint": "896f83cd303d362a1dc148cfe117fc4e8cc18b7e1021adb735986722ad8b7686",
+    "rendered/fire_production_calibration/r213_composition/baseline_hot_snapshots.v1/checkpoints/step_05.checkpoint": "f66072e1beb93266cbd95adc8f4df4639391564da34f196c9624cf845e922464",
+    "rendered/fire_production_calibration/r213_composition/baseline_hot_snapshots.v1/checkpoints/step_06.checkpoint": "a7a6006ee4ed511d21586d6597f620081b2062b1889e42f29244b73100b55569",
+    "rendered/fire_production_calibration/r213_composition/baseline_hot_snapshots.v1/checkpoints/step_07.checkpoint": "0fdf61c736e61a84de6417fac888308855bee622fccb029198714b0a00b18ae4",
+    "rendered/fire_production_calibration/r213_composition/baseline_hot_snapshots.v1/checkpoints/step_08.checkpoint": "63045c231c020209bf22b2062f1cdcfeb66246ed308ed7be6f93a7116948b016",
+    "rendered/fire_production_calibration/r213_composition/baseline_snapshot_qualification.v1.json": "4cc28462f9bc6428bc64b11624422e42501c6a4433a1e8c8d948aa27c323e5cd",
+    "rendered/fire_production_calibration/r213_composition/candidate_hot_snapshots.v1.log": "ad1d758f071400daf9967176e730b8a60c8df37e6962f583e8006c332687bad7",
+    "rendered/fire_production_calibration/r213_composition/candidate_hot_snapshots.v1/budgets/maximum_velocity_trajectory.csv": "3c683fdbb73ad80bf4272e3ca09ac254cc094589247fe110cc183be7617af5a1",
+    "rendered/fire_production_calibration/r213_composition/candidate_hot_snapshots.v1/checkpoints/step_01.checkpoint": "bf2348186aac54a78686d32e536aae1d6da780873f9bfffdbd0665c9cf7214df",
+    "rendered/fire_production_calibration/r213_composition/candidate_hot_snapshots.v1/checkpoints/step_02.checkpoint": "c0d539cf0c393b5077e164a7d34bef4ac0ae00a1b1ea38d188fe0cf0879e59fe",
+    "rendered/fire_production_calibration/r213_composition/candidate_hot_snapshots.v1/checkpoints/step_03.checkpoint": "bec352f131c5330084eb3be2267ea626bd08539964ab26d870c2c89b53f5bfcf",
+    "rendered/fire_production_calibration/r213_composition/candidate_hot_snapshots.v1/checkpoints/step_04.checkpoint": "98f7d6caa16bebeb73f3102f8f6be4750800a1edb999f1cab0d0c8ba2f896d34",
+    "rendered/fire_production_calibration/r213_composition/candidate_hot_snapshots.v1/checkpoints/step_05.checkpoint": "4209f3ea6f4cc1605f8d506da1ab53f71dcdfda9c005c92592208991706b1839",
+    "rendered/fire_production_calibration/r213_composition/candidate_hot_snapshots.v1/checkpoints/step_06.checkpoint": "045b8f83c2ce5f66c0b97f862555f244d9457bd99d1c4a61a611dd8a2291e2b2",
+    "rendered/fire_production_calibration/r213_composition/candidate_hot_snapshots.v1/checkpoints/step_07.checkpoint": "e6cce945f11764eae9ba682077dc3911f52aa04c8415e2ed5811109b380dc6d0",
+    "rendered/fire_production_calibration/r213_composition/candidate_hot_snapshots.v1/checkpoints/step_08.checkpoint": "17eca456c85f82feb1fee111c9f241d7207f9fa0006092b9edbbc919c0d8787d",
+    "rendered/fire_production_calibration/r213_composition/hot_profile_1.v1/budgets/maximum_velocity_trajectory.csv": "ccb7b42ded700273c49218c11c7c917de22f805f019afe674fdc2d0508154e3e",
+    "rendered/fire_production_calibration/r213_composition/numeric_snapshot_comparison.v1": "7a9709517395144d8c6fb5ff94f6cc3cbf27a9cf6882f5e7611509584dc3698a",
+    "rendered/fire_production_calibration/r213_composition/qualification.v3.json": "4fed2be311e0cc42cfa839702dfbad89fba61a74e52064ee02e402e306362234",
+    "rendered/fire_production_calibration/r213_composition/qualification.v4.json": "0f4aae46c703a96c4ee88ccf14a055bcbbb728f3cac672ef985014dc96e48d9c"
+  },
+  "migration_authority": false,
+  "per_step": {
+    "1": {
+      "bytes": "65447938",
+      "exact_bytes_equal": "1",
+      "new_build": "c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d",
+      "new_checkpoint_sha256": "bf2348186aac54a78686d32e536aae1d6da780873f9bfffdbd0665c9cf7214df",
+      "new_comparison_sha256": "2c606307d0dfa42266cb0a1e15cec5c8ff62eb47c40f1cba751cd48436276bad",
+      "old_build": "7228e69aa7917908f8390b70dc1afcf4b2d503be6c34232aa68eb9cb17d2d247",
+      "old_checkpoint_sha256": "8ddaf6d550d1dae1e18846ca2376536a58e7b1be74f6e577923b57fd0d601a19",
+      "old_comparison_sha256": "2c606307d0dfa42266cb0a1e15cec5c8ff62eb47c40f1cba751cd48436276bad",
+      "step": "1",
+      "time_s": "2.1096706851385534"
+    },
+    "2": {
+      "bytes": "65447970",
+      "exact_bytes_equal": "1",
+      "new_build": "c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d",
+      "new_checkpoint_sha256": "c0d539cf0c393b5077e164a7d34bef4ac0ae00a1b1ea38d188fe0cf0879e59fe",
+      "new_comparison_sha256": "bb7c2c4a64d610ca5fa155bf70ca60783d9f15919e6729c77fff40767d177aae",
+      "old_build": "7228e69aa7917908f8390b70dc1afcf4b2d503be6c34232aa68eb9cb17d2d247",
+      "old_checkpoint_sha256": "29f96579ff8beeafa4cf34c9e39993b347efa30a1af29a878ec810404977b58c",
+      "old_comparison_sha256": "bb7c2c4a64d610ca5fa155bf70ca60783d9f15919e6729c77fff40767d177aae",
+      "step": "2",
+      "time_s": "2.1113169511081651"
+    },
+    "3": {
+      "bytes": "65448002",
+      "exact_bytes_equal": "1",
+      "new_build": "c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d",
+      "new_checkpoint_sha256": "bec352f131c5330084eb3be2267ea626bd08539964ab26d870c2c89b53f5bfcf",
+      "new_comparison_sha256": "f8a7c85059b74e17ab717a239ca7b4e57c29765d7a7bf5e6602844fc9096d709",
+      "old_build": "7228e69aa7917908f8390b70dc1afcf4b2d503be6c34232aa68eb9cb17d2d247",
+      "old_checkpoint_sha256": "1201419af2a0bb80302f915631b02cdd86468d6cda6b430286831f9f861a0eda",
+      "old_comparison_sha256": "f8a7c85059b74e17ab717a239ca7b4e57c29765d7a7bf5e6602844fc9096d709",
+      "step": "3",
+      "time_s": "2.1129632170777768"
+    },
+    "4": {
+      "bytes": "65448034",
+      "exact_bytes_equal": "1",
+      "new_build": "c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d",
+      "new_checkpoint_sha256": "98f7d6caa16bebeb73f3102f8f6be4750800a1edb999f1cab0d0c8ba2f896d34",
+      "new_comparison_sha256": "fdb65b517c0e9fdb8d262c0bf6030baa16636a381675810b38c2cc981d0d240e",
+      "old_build": "7228e69aa7917908f8390b70dc1afcf4b2d503be6c34232aa68eb9cb17d2d247",
+      "old_checkpoint_sha256": "896f83cd303d362a1dc148cfe117fc4e8cc18b7e1021adb735986722ad8b7686",
+      "old_comparison_sha256": "fdb65b517c0e9fdb8d262c0bf6030baa16636a381675810b38c2cc981d0d240e",
+      "step": "4",
+      "time_s": "2.1146094830473885"
+    },
+    "5": {
+      "bytes": "65448066",
+      "exact_bytes_equal": "1",
+      "new_build": "c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d",
+      "new_checkpoint_sha256": "4209f3ea6f4cc1605f8d506da1ab53f71dcdfda9c005c92592208991706b1839",
+      "new_comparison_sha256": "d8114aa1c466c1f2e6f7258dec1650e04b03d553712a61d408a09971c927b175",
+      "old_build": "7228e69aa7917908f8390b70dc1afcf4b2d503be6c34232aa68eb9cb17d2d247",
+      "old_checkpoint_sha256": "f66072e1beb93266cbd95adc8f4df4639391564da34f196c9624cf845e922464",
+      "old_comparison_sha256": "d8114aa1c466c1f2e6f7258dec1650e04b03d553712a61d408a09971c927b175",
+      "step": "5",
+      "time_s": "2.1162557490170002"
+    },
+    "6": {
+      "bytes": "65448098",
+      "exact_bytes_equal": "1",
+      "new_build": "c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d",
+      "new_checkpoint_sha256": "045b8f83c2ce5f66c0b97f862555f244d9457bd99d1c4a61a611dd8a2291e2b2",
+      "new_comparison_sha256": "22f0a528c372491a5dacc5b7968bcc27134f15f4ceb1c10244906f154fe19240",
+      "old_build": "7228e69aa7917908f8390b70dc1afcf4b2d503be6c34232aa68eb9cb17d2d247",
+      "old_checkpoint_sha256": "a7a6006ee4ed511d21586d6597f620081b2062b1889e42f29244b73100b55569",
+      "old_comparison_sha256": "22f0a528c372491a5dacc5b7968bcc27134f15f4ceb1c10244906f154fe19240",
+      "step": "6",
+      "time_s": "2.1179020149866119"
+    },
+    "7": {
+      "bytes": "65448130",
+      "exact_bytes_equal": "1",
+      "new_build": "c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d",
+      "new_checkpoint_sha256": "e6cce945f11764eae9ba682077dc3911f52aa04c8415e2ed5811109b380dc6d0",
+      "new_comparison_sha256": "711e45a35667a9accb83c1fbd877f727f38233f583eabbc856ff77d888726e5a",
+      "old_build": "7228e69aa7917908f8390b70dc1afcf4b2d503be6c34232aa68eb9cb17d2d247",
+      "old_checkpoint_sha256": "0fdf61c736e61a84de6417fac888308855bee622fccb029198714b0a00b18ae4",
+      "old_comparison_sha256": "711e45a35667a9accb83c1fbd877f727f38233f583eabbc856ff77d888726e5a",
+      "step": "7",
+      "time_s": "2.1195482809562236"
+    },
+    "8": {
+      "bytes": "65448162",
+      "exact_bytes_equal": "1",
+      "new_build": "c08bad4389e33c59bc1d111cce4d5188d6a241f90f92b61c88e6b51e2844db1d",
+      "new_checkpoint_sha256": "17eca456c85f82feb1fee111c9f241d7207f9fa0006092b9edbbc919c0d8787d",
+      "new_comparison_sha256": "6b3cd921a2d2d7d10f9f3eb8878b0171f995178e5b967b8cbac9b726f20198a3",
+      "old_build": "7228e69aa7917908f8390b70dc1afcf4b2d503be6c34232aa68eb9cb17d2d247",
+      "old_checkpoint_sha256": "63045c231c020209bf22b2062f1cdcfeb66246ed308ed7be6f93a7116948b016",
+      "old_comparison_sha256": "6b3cd921a2d2d7d10f9f3eb8878b0171f995178e5b967b8cbac9b726f20198a3",
+      "step": "8",
+      "time_s": "2.1211945469258353"
+    }
+  },
+  "reporter_build_id": "c9a2608719e9d962dd8234fe416391bd2c24331fb78bae60489f08ad7d7c82e4",
+  "reporter_executable_sha256": "13f799d3c2fc8b8c6d406c6171f724bd8c321bd51862995e7544d0a1b4e288fb",
+  "reporter_source_commit": "02456eeb198133e2d8567db4ca443adeb653c575",
+  "scalar_components_per_step": 10,
+  "schema": "rise.fire.r213.hot-numerical-qualification.v2",
+  "scope": "Diagnostic-qualified old/new numerical-byte comparison using native checkpoint loader and serializer. The full persistent canonical payload, including source/statistical ledgers and history, is equal after excluding only producerBuildId. No r78 migration, fixed-k, or long-window authority; no timing claim from these snapshot runs.",
+  "snapshot_producer_source_identity": {
+    "baseline": {
+      "metal_path": "src/Library/Utilities/FireProductionAdvectionMac.mm",
+      "metal_source_sha256": "c19d92c93fbfb488fcd2eb6c4be36f57368cf09a0efdd6705a4e52075ad4adb5",
+      "source_commit": "9a96d516ddd9e034a64be17818f1669d56f1d434"
+    },
+    "candidate": {
+      "metal_path": "src/Library/Utilities/FireProductionAdvectionMac.mm",
+      "metal_source_sha256": "5b09beacf034257b5bc846023da7f0d42ccf690dd49d61229f6de9859007e9d7",
+      "source_commit": "d1406f4f2bfa25bc32f0009867033bbb93b920f1"
+    }
+  }
+}

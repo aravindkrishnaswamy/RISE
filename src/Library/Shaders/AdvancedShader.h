@@ -52,6 +52,11 @@ namespace RISE
 			AdvancedShader( const ShadeOpListType& shaderops_ );
 			AdvancedShader( const AdvancedShader& other );
 
+			const ShadeOpListType& ShaderOpsForSSSClassification() const
+			{
+				return shaderops;
+			}
+
 			//! Tells the shader to apply shade to the given intersection point
 			void Shade(
 				const RuntimeContext& rc,					///< [in] The runtime context

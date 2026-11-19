@@ -1,0 +1,28 @@
+{
+  "schema": "rise.fire.r246.recovered-full-preview-review.v1",
+  "status": "accepted_zero_p1_p2",
+  "reviewed_head": "d8a50c025",
+  "round": 1,
+  "accepted_scope": "Complete235 recovered preview pairs/profiles/scene/movie/captured receipts and data provenance only",
+  "completion_receipt_sha256": "9a95f0ade3f017e477e91b5f3ac95744d78798b966a905cc0f9a96eaccb52da4",
+  "reviewers": [
+    {
+      "agent": "r246_preview_completion_profiles",
+      "axis": "all pairs/profiles/source/scene",
+      "p1": 0,
+      "p2": 0,
+      "evidence_sha256": "9851a4df6c03f84955d1effcb444608e28f149bb241f7b8eb4b6991828d4d226"
+    },
+    {
+      "agent": "r246_preview_completion_movie",
+      "axis": "movie/encoding/orderedlinks/resultseal/lifecycle",
+      "p1": 0,
+      "p2": 0,
+      "evidence_sha256": "ec4306b88df8b9047c79b43016e269754d96b163c1c18480c7299a047d75b4c7"
+    }
+  ],
+  "original_exit_code": 98,
+  "physical_acceptance": false,
+  "canonical_taller_qualification": false,
+  "accepted_utc": "2026-10-04T15:51:33.401514+00:00"
+}

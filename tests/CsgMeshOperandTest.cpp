@@ -45,8 +45,11 @@
 
 #include "../src/Library/Polygon.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
+#include "../src/Library/Utilities/IORStackSeeding.h"
 #include "../src/Library/Objects/CSGObject.h"
 #include "../src/Library/Objects/Object.h"
+#include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/ClippedPlaneGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
@@ -1506,6 +1509,584 @@ static void TestSubtractionMultiLobeResidualsDL627()
 	}
 }
 
+//! Depth-30 shared-operand CSG DAG (`2^30` paths over 31 nodes): verifies
+//! `CSGObject::ShapeRevision()` runs in O(|V|) / O(1) via epoch + per-call
+//! memoization and invalidates on both leaf transform edits and leaf
+//! `SetIntermediateValue` geometry edits (`BoxGeometry::SetIntermediateValue`).
+static void TestSharedCsgDagShapeRevisionComplexity()
+{
+	std::cout << "[M] Shared-operand depth-30 CSG DAG ShapeRevision complexity & invalidation" << std::endl;
+	BoxGeometry* gBox = new BoxGeometry( 2.0, 2.0, 2.0 );
+	Object* leaf = new Object( gBox );
+	gBox->release();
+	leaf->SetPosition( Point3( 0.0, 0.0, 0.0 ) );
+	leaf->FinalizeTransformations();
+
+	IObjectPriv* cur = leaf;
+	cur->addref();
+	for( int d = 0; d < 30; ++d ) {
+		CSGObject* node = new CSGObject( ( d & 1 ) ? CSG_INTERSECTION : CSG_UNION );
+		cur->addref();
+		cur->addref();
+		const bool ok = node->AssignObjects( cur, cur );
+		cur->release();
+		cur->release();
+		node->FinalizeTransformations();
+		cur->release();
+		cur = node;
+		if( !ok ) {
+			Check( false, "M0: depth-30 shared-operand CSG DAG construction" );
+			break;
+		}
+	}
+
+	const auto t0 = std::chrono::steady_clock::now();
+	const uint64_t rev0 = cur->ShapeRevision();
+	bool same1000 = ( rev0 != 0 );
+	for( int q = 0; q < 1000; ++q ) {
+		if( cur->ShapeRevision() != rev0 ) {
+			same1000 = false;
+			break;
+		}
+	}
+	const double elapsedMs = std::chrono::duration<double, std::milli>(
+		std::chrono::steady_clock::now() - t0 ).count();
+	Check( same1000 && elapsedMs < 200.0,
+		"M1: 1,001 ShapeRevision() queries on depth-30 shared-operand CSG DAG complete deterministically in < 200 ms (got " +
+		std::to_string( elapsedMs ) + " ms)" );
+
+	// Mutating the shared leaf's transform must invalidate and change root->ShapeRevision().
+	leaf->SetPosition( Point3( 0.25, -0.5, 0.75 ) );
+	leaf->FinalizeTransformations();
+	const uint64_t revAfterPose = cur->ShapeRevision();
+	Check( revAfterPose != rev0 && cur->ShapeRevision() == revAfterPose,
+		"M2: leaf transform mutation updates depth-30 CSG root ShapeRevision()" );
+
+	// Mutating the shared leaf's BoxGeometry via SetIntermediateValue must also bump ShapeRevision().
+	IKeyframeParameter* kpW = gBox->KeyframeFromParameters( "width", "3.5" );
+	Check( kpW != nullptr, "M3a: BoxGeometry width keyframe parameter created" );
+	if( kpW ) {
+		gBox->SetIntermediateValue( *kpW );
+		kpW->release();
+		gBox->RegenerateData();
+		const uint64_t revAfterGeom = cur->ShapeRevision();
+		Check( revAfterGeom != revAfterPose && revAfterGeom != rev0 && cur->ShapeRevision() == revAfterGeom,
+			"M3b: BoxGeometry::SetIntermediateValue bumps ShapeRevision() through depth-30 CSG root" );
+	}
+
+	safe_release( cur );
+	safe_release( leaf );
+}
+
+//! Round 7: verifies `CSGObject::CertificateBits()` invalidates on all three
+//! monotonic epochs (`PatchCertificateEpoch`, `GlobalGeometryShapeEpoch`,
+//! `GlobalTransformPoseEpoch`) across child `CSGObject::SetOperation`, leaf
+//! `Object::AssignGeometry` / `ClearGeometry`, and `ClippedPlaneGeometry::SetIntermediateValue`.
+static void TestCsgCertificateBitsEpochInvalidation()
+{
+	std::cout << "[N] CSGObject::CertificateBits() invalidation on SetOperation / AssignGeometry / ClearGeometry / SetIntermediateValue" << std::endl;
+
+	Point3 quadPts[4] = {
+		Point3( -1.0, -1.0, 0.0 ),
+		Point3(  1.0, -1.0, 0.0 ),
+		Point3(  1.0,  1.0, 0.0 ),
+		Point3( -1.0,  1.0, 0.0 )
+	};
+	ClippedPlaneGeometry* gQuad = new ClippedPlaneGeometry( quadPts, true );
+	BoxGeometry* gBoxA = new BoxGeometry( 4.0, 4.0, 4.0 );
+	BoxGeometry* gBoxB = new BoxGeometry( 3.0, 3.0, 3.0 );
+
+	// N1: Child CSGObject::SetOperation invalidates outer parent CSGObject::m_certBits.
+	{
+		Object* oSheet = new Object( gQuad );
+		Object* oBoxA = new Object( gBoxA );
+		Object* oBoxB = new Object( gBoxB );
+		oSheet->FinalizeTransformations();
+		oBoxA->FinalizeTransformations();
+		oBoxB->FinalizeTransformations();
+
+		CSGObject* inner = new CSGObject( CSG_INTERSECTION );
+		inner->AssignObjects( oSheet, oBoxA );
+		inner->FinalizeTransformations();
+
+		CSGObject* outer = new CSGObject( CSG_INTERSECTION );
+		outer->AssignObjects( inner, oBoxB );
+		outer->FinalizeTransformations();
+
+		Check( outer->IsProvablyOpenSheet( true ),
+			"N1a: outer CSG_INTERSECTION( CSG_INTERSECTION(sheet, boxA), boxB ) certifies open sheet" );
+
+		inner->SetOperation( CSG_UNION );
+		Check( !outer->IsProvablyOpenSheet( true ),
+			"N1b: child inner->SetOperation(CSG_UNION) invalidates outer CSGObject::CertificateBits() -> false" );
+
+		inner->SetOperation( CSG_INTERSECTION );
+		Check( outer->IsProvablyOpenSheet( true ),
+			"N1c: child inner->SetOperation(CSG_INTERSECTION) restores outer IsProvablyOpenSheet() -> true" );
+
+		safe_release( outer );
+		safe_release( inner );
+		safe_release( oBoxB );
+		safe_release( oBoxA );
+		safe_release( oSheet );
+	}
+
+	// N2: Leaf Object::AssignGeometry and Object::ClearGeometry invalidate parent CSGObject::m_certBits.
+	{
+		Object* leafA = new Object( gBoxA );
+		Object* leafB = new Object( gBoxB );
+		leafA->FinalizeTransformations();
+		leafB->FinalizeTransformations();
+
+		CSGObject* uni = new CSGObject( CSG_UNION );
+		uni->AssignObjects( leafA, leafB );
+		uni->FinalizeTransformations();
+
+		Check( uni->IsCertifiedWatertight(),
+			"N2a: CSG_UNION( boxA, boxB ) initially certifies watertight" );
+
+		leafA->AssignGeometry( *gQuad );
+		Check( !uni->IsCertifiedWatertight(),
+			"N2b: leafA->AssignGeometry( planarSheet ) invalidates parent CSG IsCertifiedWatertight() -> false" );
+
+		leafA->AssignGeometry( *gBoxA );
+		Check( uni->IsCertifiedWatertight(),
+			"N2c: leafA->AssignGeometry( boxA ) restores parent CSG IsCertifiedWatertight() -> true" );
+
+		leafA->ClearGeometry();
+		Check( !uni->IsCertifiedWatertight(),
+			"N2d: leafA->ClearGeometry() invalidates parent CSG IsCertifiedWatertight() -> false" );
+
+		safe_release( uni );
+		safe_release( leafB );
+		safe_release( leafA );
+	}
+
+	// N3: ClippedPlaneGeometry::SetIntermediateValue warping a planar convex quad into a
+	// non-planar saddle invalidates parent CSGObject::m_certBits (`IsPlanarConvexQuad` -> false).
+	{
+		Object* oPlane = new Object( gQuad );
+		Object* oBox = new Object( gBoxA );
+		oPlane->FinalizeTransformations();
+		oBox->FinalizeTransformations();
+
+		CSGObject* trim = new CSGObject( CSG_INTERSECTION );
+		trim->AssignObjects( oPlane, oBox );
+		trim->FinalizeTransformations();
+
+		Check( trim->IsProvablyOpenSheet( true ),
+			"N3a: CSG_INTERSECTION( planar ClippedPlaneGeometry, box ) initially certifies open sheet" );
+
+		IKeyframeParameter* kpC = gQuad->KeyframeFromParameters( "ptc", "1.0 1.0 0.75" );
+		Check( kpC != nullptr, "N3b: ClippedPlaneGeometry ptc keyframe parameter created" );
+		if( kpC ) {
+			gQuad->SetIntermediateValue( *kpC );
+			kpC->release();
+			gQuad->RegenerateData();
+			Check( !gQuad->IsPlanarConvexQuad() && !trim->IsProvablyOpenSheet( true ),
+				"N3c: warping ClippedPlaneGeometry out of plane via SetIntermediateValue invalidates parent CSG open-sheet certificate" );
+		}
+
+		safe_release( trim );
+		safe_release( oBox );
+		safe_release( oPlane );
+	}
+
+	// N4: Round 8: With `TimeIndexed::tlsSlots != nullptr` (active across the entire pass on any
+	// motion-blurred frame where a camera or light moves), a depth-30 shared-operand CSG DAG
+	// (`2^30` paths, 31 unique nodes) must stay O(|V|) cold / O(1) hot on `CertificateBits()`,
+	// `Realize()`, `ShapeRevision()`, and `EnumerateEffectiveMaterials()`.
+	{
+		IPainter* pGrey = nullptr;
+		RISE_API_CreateUniformColorPainter( &pGrey, RISEPel( 0.5, 0.5, 0.5 ) );
+		IMaterial* pMatte = nullptr;
+		RISE_API_CreateLambertianMaterial( &pMatte, *pGrey );
+
+		Object* leafDag = new Object( gBoxA );
+		leafDag->AssignMaterial( *pMatte );
+		leafDag->FinalizeTransformations();
+		IObjectPriv* cur = leafDag;
+		cur->addref();
+		for( int d = 0; d < 30; ++d ) {
+			CSGObject* node = new CSGObject( CSG_UNION );
+			node->AssignObjects( cur, cur );
+			node->FinalizeTransformations();
+			cur->release();
+			cur = node;
+		}
+		CSGObject* rootDag = dynamic_cast<CSGObject*>( cur );
+
+		struct CountMats : public IEnumCallback<IMaterial>
+		{
+			int count = 0;
+			bool operator()( const IMaterial& ) override { ++count; return true; }
+		};
+
+		const TimeIndexed::ThreadSlots activeFrameSlots = { nullptr, 0, nullptr };
+		const TimeIndexed::ThreadSlots* prevSlots = TimeIndexed::tlsSlots;
+		TimeIndexed::tlsSlots = &activeFrameSlots;
+
+		const auto t0 = std::chrono::steady_clock::now();
+		CountMats cm;
+		const bool enumOk = rootDag && rootDag->EnumerateEffectiveMaterials( cm );
+		rootDag->Realize();
+		rootDag->ResetRuntimeData();
+		const BoundingBox bbDag = rootDag->getBoundingBox();
+		Object* snapDag = rootDag->CloneSnapshot();
+		const BoundingBox bbSnap = snapDag ? snapDag->getBoundingBox() : BoundingBox( Point3( 0, 0, 0 ), Point3( 0, 0, 0 ) );
+		safe_release( snapDag );
+
+		// Also register the 31-node depth-30 shared DAG in an `ObjectManager` + `Scene`
+		// and run `PrepareForRendering()` + `IORStackSeeding::SeedFromPoint()`!
+		ObjectManager* pMgr = new ObjectManager( true, false, 100, 24 );
+		char nameBuf[32];
+		pMgr->AddItem( leafDag, "dag_leaf" );
+		// Walk down `pObjectA` spine to register every unique CSG node just as `Job` does:
+		{
+			const CSGObject* walk = rootDag;
+			int idx = 0;
+			while( walk ) {
+				std::snprintf( nameBuf, sizeof(nameBuf), "dag_node_%d", idx++ );
+				pMgr->AddItem( const_cast<CSGObject*>( walk ), nameBuf );
+				walk = dynamic_cast<const CSGObject*>( walk->GetOperandA() );
+			}
+		}
+		pMgr->PrepareForRendering();
+		IScenePriv* pScene = nullptr;
+		RISE_API_CreateScene( &pScene );
+		pMgr->addref();
+		pScene->SetObjectManager( pMgr );
+		IORStack seededDag( 1.0 );
+		IORStackSeeding::SeedFromPoint( seededDag, Point3( 0, 0, -5 ), *pScene );
+
+		const uint64_t revSlot = rootDag ? rootDag->ShapeRevision() : 0;
+		bool certOk = ( rootDag && revSlot != 0 && rootDag->IsCertifiedWatertight() && !rootDag->IsProvablyOpenSheet( true ) );
+		for( int q = 0; q < 200; ++q ) {
+			if( !rootDag->IsCertifiedWatertight() || rootDag->IsProvablyOpenSheet( true ) ||
+				rootDag->ShapeRevision() != revSlot ||
+				std::fabs( rootDag->getBoundingBox().ur.x - bbDag.ur.x ) > 1e-12 ) {
+				certOk = false;
+				break;
+			}
+		}
+		const double ms = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - t0 ).count();
+
+		TimeIndexed::tlsSlots = prevSlots;
+
+		Check( enumOk && cm.count == 1 && certOk &&
+			std::fabs( bbDag.ur.x - 2.0 ) < 1e-9 &&
+			std::fabs( bbSnap.ur.x - 2.0 ) < 1e-9 &&
+			seededDag.Depth() == 1 && ms < 200.0,
+			"N4: depth-30 shared-operand CSG DAG in ObjectManager/Scene under TimeIndexed::tlsSlots != nullptr completes PrepareForRendering + SeedFromPoint + CloneSnapshot + ResetRuntimeData + getBoundingBox + CertificateBits/ShapeRevision in < 200 ms (got " +
+			std::to_string( ms ) + " ms, matCount=" + std::to_string( cm.count ) + ")" );
+
+		safe_release( pScene );
+		safe_release( pMgr );
+		safe_release( cur );
+		safe_release( leafDag );
+		safe_release( pMatte );
+		safe_release( pGrey );
+	}
+
+	// N5: Round 9: `CSGObject::EnumerateEffectiveMaterials` skips non-surface-contributing
+	// solid trim operands on `kTrimSheetA` / `kTrimSheetB` composites and is safe under
+	// re-entrant nested calls inside a callback.
+	{
+		IPainter* pWhite = nullptr;
+		RISE_API_CreateUniformColorPainter( &pWhite, RISEPel( 1.0, 1.0, 1.0 ) );
+		IScalarPainter* pIor15 = nullptr;
+		RISE_API_CreateUniformScalarPainter( &pIor15, 1.5 );
+		IScalarPainter* pIor18 = nullptr;
+		RISE_API_CreateUniformScalarPainter( &pIor18, 1.8 );
+		IMaterial* pGlass15 = nullptr;
+		RISE_API_CreatePerfectRefractorMaterial( &pGlass15, *pWhite, *pIor15 );
+		IMaterial* pGlass18 = nullptr;
+		RISE_API_CreatePerfectRefractorMaterial( &pGlass18, *pWhite, *pIor18 );
+		IMaterial* pMatte2 = nullptr;
+		RISE_API_CreateLambertianMaterial( &pMatte2, *pWhite );
+
+		Point3 flatPts[4] = {
+			Point3( -2.0, -2.0, 0.0 ),
+			Point3(  2.0, -2.0, 0.0 ),
+			Point3(  2.0,  2.0, 0.0 ),
+			Point3( -2.0,  2.0, 0.0 )
+		};
+		ClippedPlaneGeometry* gFlat = new ClippedPlaneGeometry( flatPts, true );
+
+		Object* oSheetGlass = new Object( gFlat );
+		oSheetGlass->AssignMaterial( *pGlass15 );
+		oSheetGlass->FinalizeTransformations();
+
+		Object* oSheetMatte = new Object( gFlat );
+		oSheetMatte->AssignMaterial( *pMatte2 );
+		oSheetMatte->FinalizeTransformations();
+
+		Object* oSolidGlass = new Object( gBoxA );
+		oSolidGlass->AssignMaterial( *pGlass18 );
+		oSolidGlass->FinalizeTransformations();
+
+		// kTrimSheetA: CSG_SUBTRACTION(sheet_glass15, solid_glass18) -> only pGlass15!
+		CSGObject* trimGlassA = new CSGObject( CSG_SUBTRACTION );
+		trimGlassA->AssignObjects( oSheetGlass, oSolidGlass );
+		trimGlassA->FinalizeTransformations();
+
+		// kTrimSheetB: CSG_INTERSECTION(solid_glass18, sheet_matte) -> only pMatte2!
+		CSGObject* trimMatteB = new CSGObject( CSG_INTERSECTION );
+		trimMatteB->AssignObjects( oSolidGlass, oSheetMatte );
+		trimMatteB->FinalizeTransformations();
+
+		struct ReentrantCheck : public IEnumCallback<IMaterial>
+		{
+			const CSGObject* innerTarget = nullptr;
+			std::vector<const IMaterial*> outerSeen;
+			int innerCount = 0;
+			const IMaterial* innerFirst = nullptr;
+			bool operator()( const IMaterial& m ) override
+			{
+				outerSeen.push_back( &m );
+				if( innerTarget ) {
+					struct InnerCb : public IEnumCallback<IMaterial>
+					{
+						int& cnt;
+						const IMaterial*& first;
+						InnerCb( int& c_, const IMaterial*& f_ ) : cnt( c_ ), first( f_ ) {}
+						bool operator()( const IMaterial& im ) override
+						{
+							if( cnt == 0 ) first = &im;
+							++cnt;
+							return true;
+						}
+					} icb( innerCount, innerFirst );
+					innerTarget->EnumerateEffectiveMaterials( icb );
+				}
+				return true;
+			}
+		} rc;
+		rc.innerTarget = trimMatteB;
+		trimGlassA->EnumerateEffectiveMaterials( rc );
+
+		Check( rc.outerSeen.size() == 1 && rc.outerSeen[0] == pGlass15 &&
+			rc.innerCount == 1 && rc.innerFirst == pMatte2 &&
+			IORStackSeeding::SingleRefractiveObjectMaterial( trimGlassA ) == pGlass15 &&
+			!IORStackSeeding::ObjectMayBeTrackable( *trimMatteB ) &&
+			!IORStackSeeding::ObjectMayRefract( *trimMatteB ),
+			"N5: CSGObject::EnumerateEffectiveMaterials skips solid trim masks on kTrimSheetA/kTrimSheetB and supports re-entrant nested calls" );
+
+		safe_release( trimMatteB );
+		safe_release( trimGlassA );
+		safe_release( oSolidGlass );
+		safe_release( oSheetMatte );
+		safe_release( oSheetGlass );
+		safe_release( gFlat );
+		safe_release( pMatte2 );
+		safe_release( pGlass18 );
+		safe_release( pGlass15 );
+		safe_release( pIor18 );
+		safe_release( pIor15 );
+		safe_release( pWhite );
+	}
+
+	// N6: Round 10: General diamond CSG DAG (`pObjectA != pObjectB` at every node:
+	// `D_{k+1} = Union(Union(D_k, sideA), Union(D_k, sideB))`, depth 26 => >6.7e7 paths!)
+	// with refractive `pGlass15`, registered in `ObjectManager` / `Scene`:
+	//   1. `PrepareForRendering()` runs in O(|V|).
+	//   2. Under active `TimeIndexed::tlsSlots != nullptr` AND per-sample posing of a
+	//      standalone moving opaque `Object` (`FinalizeTransformations()` + `BumpThreadTransformPoseEpoch()`),
+	//      `SeedFromPoint` + `getBoundingBox` + `CertificateBits` + `ShapeRevision` stay O(1) hot!
+	//   3. Real `IntersectRay` (both with and without ray differentials), `IntersectRay_IntersectionOnly`,
+	//      `OperandContainsPoint`, `SelfHitRootFloor`, `SignedDistanceLower`, and `DistanceToSurface`
+	//      all evaluate in O(|V|) (< 250 ms total instead of hanging on 6.7e7 paths).
+	{
+		IPainter* pWhite6 = nullptr;
+		RISE_API_CreateUniformColorPainter( &pWhite6, RISEPel( 1.0, 1.0, 1.0 ) );
+		IScalarPainter* pIor15_6 = nullptr;
+		RISE_API_CreateUniformScalarPainter( &pIor15_6, 1.5 );
+		IMaterial* pGlass6 = nullptr;
+		RISE_API_CreatePerfectRefractorMaterial( &pGlass6, *pWhite6, *pIor15_6 );
+		IMaterial* pOpaque6 = nullptr;
+		RISE_API_CreateLambertianMaterial( &pOpaque6, *pWhite6 );
+
+		SphereGeometry* gSphCenter = new SphereGeometry( 1.0 );
+		SphereGeometry* gSphSideA  = new SphereGeometry( 0.25 );
+		SphereGeometry* gSphSideB  = new SphereGeometry( 0.25 );
+
+		Object* oCenter = new Object( gSphCenter );
+		oCenter->AssignMaterial( *pGlass6 );
+		oCenter->FinalizeTransformations();
+
+		Object* oSideA = new Object( gSphSideA );
+		oSideA->AssignMaterial( *pGlass6 );
+		oSideA->SetPosition( Point3( 3.0, 0.0, 0.0 ) );
+		oSideA->FinalizeTransformations();
+
+		Object* oSideB = new Object( gSphSideB );
+		oSideB->AssignMaterial( *pGlass6 );
+		oSideB->SetPosition( Point3( -3.0, 0.0, 0.0 ) );
+		oSideB->FinalizeTransformations();
+
+		Object* oMovingOpaque = new Object( gBoxA );
+		oMovingOpaque->AssignMaterial( *pOpaque6 );
+		oMovingOpaque->SetPosition( Point3( 0.0, 10.0, 0.0 ) );
+		oMovingOpaque->FinalizeTransformations();
+
+		ObjectManager* pMgr6 = new ObjectManager( true, false, 100, 24 );
+		pMgr6->AddItem( oCenter, "dag6_center" );
+		pMgr6->AddItem( oSideA, "dag6_sideA" );
+		pMgr6->AddItem( oSideB, "dag6_sideB" );
+		pMgr6->AddItem( oMovingOpaque, "dag6_moving_opaque" );
+
+		std::vector<CSGObject*> dagNodes;
+		IObjectPriv* curD = oCenter;
+		for( int k = 0; k < 26; ++k ) {
+			CSGObject* left = new CSGObject( CSG_UNION );
+			left->AssignObjects( curD, oSideA );
+			left->FinalizeTransformations();
+			pMgr6->AddItem( left, ( "dag6_L_" + std::to_string( k ) ).c_str() );
+			dagNodes.push_back( left );
+
+			CSGObject* right = new CSGObject( CSG_UNION );
+			right->AssignObjects( curD, oSideB );
+			right->FinalizeTransformations();
+			pMgr6->AddItem( right, ( "dag6_R_" + std::to_string( k ) ).c_str() );
+			dagNodes.push_back( right );
+
+			CSGObject* join = new CSGObject( CSG_UNION );
+			join->AssignObjects( left, right );
+			join->FinalizeTransformations();
+			pMgr6->AddItem( join, ( "dag6_J_" + std::to_string( k ) ).c_str() );
+			dagNodes.push_back( join );
+
+			curD = join;
+		}
+		CSGObject* rootDiamond = dagNodes.back();
+
+		IScenePriv* pScene6 = nullptr;
+		RISE_API_CreateScene( &pScene6 );
+		pMgr6->addref();
+		pScene6->SetObjectManager( pMgr6 );
+
+		const auto t0 = std::chrono::steady_clock::now();
+		pMgr6->PrepareForRendering();
+
+		const void* dummyPtr = nullptr;
+		const TimeIndexed::ThreadSlots fakeSlots = { &dummyPtr, 0u, nullptr };
+		struct TlsGuard6
+		{
+			const TimeIndexed::ThreadSlots* prev;
+			explicit TlsGuard6( const TimeIndexed::ThreadSlots* s ) : prev( TimeIndexed::tlsSlots )
+			{
+				TimeIndexed::tlsSlots = s;
+				Transformable::BumpThreadTransformPoseEpoch();
+				Transformable::BumpThreadCsgPoseEpoch();
+				Transformable::BumpThreadTrackablePoseEpoch();
+			}
+			~TlsGuard6()
+			{
+				TimeIndexed::tlsSlots = prev;
+				Transformable::BumpThreadTransformPoseEpoch();
+				Transformable::BumpThreadCsgPoseEpoch();
+				Transformable::BumpThreadTrackablePoseEpoch();
+			}
+		} tlsGuard6( &fakeSlots );
+
+		// Simulate 64 motion-blurred pixel samples posing a moving light + moving opaque Object:
+		IORStack seedInside( 1.0 );
+		for( int s = 0; s < 64; ++s ) {
+			Transformable::BumpThreadTransformPoseEpoch(); // simulated animated light FinalizeTransformations
+			oMovingOpaque->SetPosition( Point3( Scalar( s ) * 0.01, 10.0, 0.0 ) );
+			oMovingOpaque->FinalizeTransformations();      // simulated animated opaque clone FinalizeTransformations
+			seedInside = IORStack( 1.0 );
+			IORStackSeeding::SeedFromPoint( seedInside, Point3( 0.0, 0.0, 0.0 ), *pScene6, 0 );
+			(void)rootDiamond->getBoundingBox();
+			(void)rootDiamond->ShapeRevision();
+		}
+
+		// Real ray + containment + floor + signed/unsigned proximity queries on the depth-26 diamond DAG:
+		Ray camRay( Point3( 0.0, 0.0, -5.0 ), Vector3( 0.0, 0.0, 1.0 ) );
+		RayIntersection riNoDiff( camRay, nullRasterizerState );
+		rootDiamond->IntersectRay( riNoDiff, RISE_INFINITY, true, true, true );
+
+		Ray diffRay = camRay;
+		diffRay.hasDifferentials = true;
+		diffRay.diffs.rxOrigin = Vector3( 0.01, 0.0, 0.0 );
+		diffRay.diffs.ryOrigin = Vector3( 0.0, 0.01, 0.0 );
+		diffRay.diffs.rxDir = Vector3( 0.0, 0.0, 0.0 );
+		diffRay.diffs.ryDir = Vector3( 0.0, 0.0, 0.0 );
+		RayIntersection riWithDiff( diffRay, nullRasterizerState );
+		rootDiamond->IntersectRay( riWithDiff, RISE_INFINITY, true, true, true );
+
+		const bool occHit = rootDiamond->IntersectRay_IntersectionOnly( camRay, 10.0, true, true );
+		const bool occMiss = rootDiamond->IntersectRay_IntersectionOnly(
+			Ray( Point3( 0.0, 5.0, -5.0 ), Vector3( 0.0, 0.0, 1.0 ) ), 10.0, true, true );
+		const int inCenter = CSGObject::OperandContainsPoint( rootDiamond, Point3( 0.0, 0.0, 0.0 ), Vector3( 0.0, 0.0, 1.0 ), 2.0 );
+		const int outFar   = CSGObject::OperandContainsPoint( rootDiamond, Point3( 0.0, 5.0, 0.0 ), Vector3( 0.0, 0.0, 1.0 ), 2.0 );
+		const Scalar floorVal = rootDiamond->SelfHitRootFloor( Point3( 0.0, 0.0, -1.0 ), Vector3( 0.0, 0.0, 1.0 ), Vector3( 0.0, 0.0, -1.0 ) );
+		Scalar sDist = 0.0, uDist = 0.0;
+		bool sExact = false;
+		const bool sOk = rootDiamond->SignedDistanceLower( Point3( 0.0, 3.0, 0.0 ), 10.0, sDist, sExact );
+		const bool uOk = rootDiamond->DistanceToSurface( Point3( 0.0, 3.0, 0.0 ), 10.0, uDist );
+
+		// Also verify non-shared internal CSG node (`nConsumedBy == 1` -> `!IsSharedConsumerTarget()`)
+		// vs shared diamond node (`nConsumedBy == 2` -> `IsSharedConsumerTarget()`), and `X \ X == empty`:
+		CSGObject* nonSharedInner = new CSGObject( CSG_UNION );
+		nonSharedInner->AssignObjects( oCenter, oSideA );
+		nonSharedInner->FinalizeTransformations();
+		CSGObject* nonSharedOuter = new CSGObject( CSG_UNION );
+		nonSharedOuter->AssignObjects( nonSharedInner, oSideB );
+		nonSharedOuter->FinalizeTransformations();
+		const bool nonSharedGateOk = nonSharedInner->IsConsumed() && !nonSharedInner->IsSharedConsumerTarget() &&
+			!dagNodes[0]->IsSharedConsumerTarget() && dagNodes[2]->IsSharedConsumerTarget();
+
+		CSGObject* selfSub = new CSGObject( CSG_SUBTRACTION );
+		selfSub->AssignObjects( rootDiamond, rootDiamond );
+		selfSub->FinalizeTransformations();
+		RayIntersection riSelfSub( camRay, nullRasterizerState );
+		selfSub->IntersectRay( riSelfSub, RISE_INFINITY, true, true, true );
+		const bool selfSubOcc = selfSub->IntersectRay_IntersectionOnly( camRay, 10.0, true, true );
+		const int selfSubContains = CSGObject::OperandContainsPoint( selfSub, Point3( 0.0, 0.0, 0.0 ), Vector3( 0.0, 0.0, 1.0 ), 2.0 );
+
+		const double ms6 = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - t0 ).count();
+
+		Check( nonSharedGateOk &&
+			seedInside.Depth() == 2 && std::fabs( seedInside.top() - 1.5 ) < 1e-6 &&
+			riNoDiff.geometric.bHit && std::fabs( riNoDiff.geometric.range - 4.0 ) < 1e-5 &&
+			riWithDiff.geometric.bHit && std::fabs( riWithDiff.geometric.range - 4.0 ) < 1e-5 &&
+			occHit && !occMiss &&
+			inCenter > 0 && outFar < 0 &&
+			std::isfinite( floorVal ) && floorVal > 0.0 &&
+			sOk && std::fabs( sDist - 2.0 ) < 1e-4 &&
+			uOk && std::fabs( uDist - 2.0 ) < 1e-4 &&
+			!riSelfSub.geometric.bHit && !selfSubOcc && selfSubContains < 0 &&
+			ms6 < 350.0,
+			"N6: depth-26 refractive diamond CSG DAG (IsSharedConsumerTarget + CsgFlatGenMap) + 64 TimeIndexed pose samples + ray/shadow/contains/floor/SDF queries complete in < 350 ms (got " +
+			std::to_string( ms6 ) + " ms, range=" + std::to_string( riNoDiff.geometric.range ) + ")" );
+
+		safe_release( nonSharedOuter );
+		safe_release( nonSharedInner );
+		safe_release( selfSub );
+		for( CSGObject* n : dagNodes ) safe_release( n );
+		safe_release( pScene6 );
+		safe_release( pMgr6 );
+		safe_release( oMovingOpaque );
+		safe_release( oSideB );
+		safe_release( oSideA );
+		safe_release( oCenter );
+		safe_release( gSphSideB );
+		safe_release( gSphSideA );
+		safe_release( gSphCenter );
+		safe_release( pOpaque6 );
+		safe_release( pGlass6 );
+		safe_release( pIor15_6 );
+		safe_release( pWhite6 );
+	}
+
+	safe_release( gBoxB );
+	safe_release( gBoxA );
+	safe_release( gQuad );
+}
+
 int main()
 {
 	std::cout << "=== CsgMeshOperandTest (DL-621 review findings 10-13 + DL-627) ===" << std::endl;
@@ -1521,6 +2102,8 @@ int main()
 	TestSubtractionInsideBoth();
 	TestTiesAndSmallBudgets();
 	TestSubtractionMultiLobeResidualsDL627();
+	TestSharedCsgDagShapeRevisionComplexity();
+	TestCsgCertificateBitsEpochInvalidation();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }

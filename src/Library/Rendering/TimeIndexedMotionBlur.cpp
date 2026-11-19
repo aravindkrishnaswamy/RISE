@@ -367,6 +367,9 @@ TimeIndexedThread::TimeIndexedThread( const TimeIndexedFrame* frame_ ) :
 	TimeIndexed::tlsSlots = &table;
 	previousCurrent = tlsCurrentThread;
 	tlsCurrentThread = this;
+	Transformable::BumpThreadTransformPoseEpoch();
+	Transformable::BumpThreadCsgPoseEpoch();
+	Transformable::BumpThreadTrackablePoseEpoch();
 }
 
 TimeIndexedThread::~TimeIndexedThread()
@@ -376,6 +379,9 @@ TimeIndexedThread::~TimeIndexedThread()
 	}
 	TimeIndexed::tlsSlots = previousTable;
 	tlsCurrentThread = previousCurrent;
+	Transformable::BumpThreadTransformPoseEpoch();
+	Transformable::BumpThreadCsgPoseEpoch();
+	Transformable::BumpThreadTrackablePoseEpoch();
 	// Per-clone diagnostics back into the shared objects.
 	for( std::size_t i = 0; i < objects.size(); i++ ) {
 		if( objects[i] ) {

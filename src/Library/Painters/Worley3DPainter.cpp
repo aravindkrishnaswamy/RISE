@@ -14,6 +14,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "Worley3DPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Utilities/ProceduralNoiseCore.h"
@@ -145,6 +146,7 @@ IKeyframeParameter* Worley3DPainter::KeyframeFromParameters( const String& name,
 
 void Worley3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SCALE_ID:

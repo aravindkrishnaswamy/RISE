@@ -1,0 +1,10 @@
+signal        run       mean(kW)  rms all %  rms 2-3.5 Hz %  rms 0.2-2 Hz %  rms 3.5-8 Hz %
+total         FDS r263    32.99      7.3       6.3            2.2             2.0
+total         r264        32.84      5.2       4.1            2.0             2.6
+total         r270        32.84      4.7       3.6            1.6             2.7
+column        FDS r263     9.85     17.0      13.4            7.6             5.1
+column        r264         8.43     13.7       9.7            5.8             7.2
+column        r270         8.58     12.8       8.0            6.2             7.7
+column_base   FDS r263     6.20     11.0       7.3            5.4             4.8
+column_base   r264         5.32     10.1       6.0            3.9             7.1
+column_base   r270         5.22     10.0       6.0            4.5             6.6

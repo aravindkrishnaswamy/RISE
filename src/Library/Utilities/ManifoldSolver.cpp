@@ -38,6 +38,8 @@
 #include "../Materials/PerfectRefractorMaterial.h"
 #include "../Materials/PerfectReflectorMaterial.h"
 #include "../Materials/PolishedMaterial.h"
+#include "../Materials/LambertianLuminaireMaterial.h"
+#include "../Materials/PhongLuminaireMaterial.h"
 #include "../Materials/CompositeMaterial.h"
 #include "../Objects/CSGObject.h"
 #include "../Objects/Object.h"
@@ -127,6 +129,24 @@ namespace {
         Entry& e=table[cursor++%kSMSTypeCacheSize];
         e.type=type;e.same=same;
         return same;
+    }
+
+    const RISE::IMaterial* SMSUnwrapLuminaireMaterial(const RISE::IMaterial* mat) {
+        using namespace RISE::Implementation;
+        while(mat) {
+            if(const auto* l=SMSDynamicCast<LambertianLuminaireMaterial>(mat)) mat=&l->GetBaseMaterial();
+            else if(const auto* l=SMSDynamicCast<PhongLuminaireMaterial>(mat)) mat=&l->GetBaseMaterial();
+            else break;
+        }
+        return mat;
+    }
+
+    const RISE::Implementation::PolishedMaterial* SMSAsPolishedCoat(const RISE::IMaterial* mat) {
+        return mat ? SMSDynamicCast<RISE::Implementation::PolishedMaterial>(SMSUnwrapLuminaireMaterial(mat)) : nullptr;
+    }
+
+    bool SMSIsPolishedCoat(const RISE::IMaterial* mat) {
+        return SMSAsPolishedCoat(mat) != nullptr;
     }
 
     void SMSResetResult(RISE::Implementation::ManifoldResult& result) {
@@ -245,7 +265,7 @@ namespace {
         }
         if(const auto* m = SMSDynamicCast<DielectricMaterial>(&material))
             return m->GetTransmittance().IsPositionIndependent() && m->GetScattering().IsPositionIndependent();
-        if(const auto* m = SMSDynamicCast<PolishedMaterial>(&material))
+        if(const auto* m = SMSAsPolishedCoat(&material))
             return m->GetTransmittance().IsPositionIndependent() && m->GetScattering().IsPositionIndependent();
         return false;
     }
@@ -336,7 +356,7 @@ namespace {
     // in the context and normalize only the native consumed event field.
     RISE::Vector3 SMSNativeEventNormal(const RISE::IMaterial& material,
         const RISE::RayIntersectionGeometric& hit) {
-        return SMSDynamicCast<RISE::Implementation::PolishedMaterial>(&material)
+        return SMSIsPolishedCoat(&material)
             ? RISE::Vector3Ops::Normalize(hit.vNormal) : hit.onb.w();
     }
     bool SMSNeedsNativeFrame(const RISE::Implementation::ManifoldVertex& v) {
@@ -369,7 +389,7 @@ namespace {
         }
         const auto law=SMSNativeDirections(Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,previous)),
             v.normal,v.geomNormal,v.etaI,v.etaT,v.canRefract && v.pMaterial
-                && !SMSSameType<Implementation::PolishedMaterial>(*v.pMaterial),false,v.pMaterial,v.isExiting,wavelength);
+                && !SMSIsPolishedCoat(v.pMaterial),false,v.pMaterial,v.isExiting,wavelength);
         if(!v.isReflection && !law.hasTransmission) v.valid=false;
         if(branch) *branch=(v.isReflection?unsigned(law.reflectionFallback)
             :(unsigned(law.transmissionFallback)<<1)|(unsigned(law.hasTransmission)<<2)
@@ -543,7 +563,7 @@ namespace {
             }
             auto modified=raw.geometric;
             if(raw.pModifier) raw.pModifier->Modify(modified);
-            if(SMSDynamicCast<Implementation::PolishedMaterial>(center.pMaterial)) {
+            if(SMSIsPolishedCoat(center.pMaterial)) {
                 dn=SMSNormalizedDifferential(modified.vNormal,normal);
             } else {
                 dn=std::fabs(Vector3Ops::Magnitude(modified.onb.w())-1)>Scalar(1e-6)
@@ -914,7 +934,7 @@ bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
     if(!Query(material, hit, next, domain, query)
         || (reflection ? !query.reflection : !query.transmission)) return false;
     if(!std::isfinite(next.top()) || next.top() <= 0) return false;
-    if(SMSDynamicCast<PolishedMaterial>(&material)) {
+    if(SMSIsPolishedCoat(&material)) {
         // The coat is a reflection on the incident ambient side, not a
         // transmissive open-sheet crossing. Native polished never pops
         // membership or reverses ambient/coat indices on a back face.
@@ -1117,7 +1137,7 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
                 const auto eventBranch=[&](const RayIntersectionGeometric& context) {
                     const auto law=SMSNativeDirections(context.ray.Dir(),SMSNativeEventNormal(*vertex.pMaterial,context),
                         context.UnflippedGeomNormal(),vertex.etaI,vertex.etaT,vertex.canRefract
-                            &&!SMSSameType<PolishedMaterial>(*vertex.pMaterial),false,vertex.pMaterial,
+                            &&!SMSIsPolishedCoat(vertex.pMaterial),false,vertex.pMaterial,
                         vertex.isExiting,SMSDomainWavelength(domain));
                     return (vertex.isReflection?unsigned(law.reflectionFallback)
                         :(unsigned(law.transmissionFallback)<<1)|(unsigned(law.hasTransmission)<<2))
@@ -5533,7 +5553,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		}
 
 		SpecularInfo specInfo = pMat->GetSpecularInfo( ri.geometric, seedIor );
-        const bool polishedCoat=SMSDynamicCast<PolishedMaterial>(pMat)!=nullptr;
+        const bool polishedCoat=SMSIsPolishedCoat(pMat);
 
 		if( !specInfo.isSpecular )
 		{
@@ -6433,7 +6453,7 @@ namespace {
     // than interpreting a back-facing sheet as a glass-to-air crossing.
     bool LegacyPolishedKray(const ManifoldVertex& vertex,const Vector3& wi,
         Scalar etaI,Scalar etaT,Scalar nm,Scalar kray[3]) {
-        if(!vertex.pMaterial || !SMSDynamicCast<PolishedMaterial>(vertex.pMaterial)) return false;
+        if(!vertex.pMaterial || !SMSIsPolishedCoat(vertex.pMaterial)) return false;
         kray[0]=kray[1]=kray[2]=0;
         if(!vertex.isReflection) return true;
         const auto* brdf=SMSDynamicCast<PolishedBRDF>(vertex.pMaterial->GetBSDF());

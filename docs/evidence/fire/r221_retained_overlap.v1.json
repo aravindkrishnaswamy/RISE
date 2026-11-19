@@ -1,0 +1,246 @@
+{
+  "accepted_steps": [
+    827,
+    828,
+    829,
+    830,
+    831,
+    832,
+    833,
+    834,
+    835
+  ],
+  "accepted_time_s_bits": [
+    4608738977373487104,
+    4608745357664845824,
+    4608751495777615872,
+    4608757685662777344,
+    4608764218415513600,
+    4608770687715246080,
+    4608776789985067008,
+    4608782869855731712,
+    4608789238866509824
+  ],
+  "all_equal_time_dt_input_publication_and_kernel_roots_matched": true,
+  "certificate_sha256": "f2a076a0271f6b8b084ce32bef9d0f0f2049984fbf9d6050bfce2285d998b617",
+  "checkpoint_sha256": "f18cac44b71b1fdac106d30d86bcc1efb955ed39ed4edc0a66be912a4130c337",
+  "checkpoint_step": 826,
+  "checkpoint_time_s": 1.3440701774088666,
+  "compile_warnings": 0,
+  "dt_s_bits": [
+    4564815175617609728,
+    4564176241250271232,
+    4563928250375471104,
+    4563981265304289280,
+    4564332361700868096,
+    4564267385825001472,
+    4563891547195572224,
+    4563868610459598848,
+    4564164689935728640
+  ],
+  "files": [
+    {
+      "bytes": 156,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/final_build.v1.log",
+      "sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21"
+    },
+    {
+      "bytes": 33058,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/final_cpu_gate.v1.log",
+      "sha256": "98f3c76ce97dcc2cd79f9d24495b8b26e22265c3053171dac07ef75b1119873c"
+    },
+    {
+      "bytes": 888480,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/final_owner_gate.v1.log",
+      "sha256": "6cd7fb297bdfe70a9a9821f82e83e6df8d282d2aab396c0176dd0e56fc84a26c"
+    },
+    {
+      "bytes": 1798,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/final_parser_reds.v1.log",
+      "sha256": "4fb6ddcbbea238d98a3e5ed1c122bf3a3de413c206188a73fd55a884da2a3008"
+    },
+    {
+      "bytes": 155,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/final_native_overlap_red.v1.log",
+      "sha256": "03d7dd58bdc945dfd8efae5a1719629dcd02f40183034fb04b88ff7c96a0bba9"
+    },
+    {
+      "bytes": 1394,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/alias_before_fix.red.log",
+      "sha256": "39a9ca6a2b8da323e5be24506ab7fa203da21b46d60bcc28237df1d27846d16c"
+    },
+    {
+      "bytes": 705,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/migration.v1.log",
+      "sha256": "7589370541ddff5e43c6388c7d8011f40ac6126e5f5738be4311b9c4c12698d7"
+    },
+    {
+      "bytes": 506,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/migration.v4.log",
+      "sha256": "0e5b745d24c596fa76e748b9413cde3aff5a680d953e8e205762b9840db7e5fc"
+    },
+    {
+      "bytes": 23326928,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/executables/FireSequenceTest_94958e6f",
+      "sha256": "f2726009d598b5375b60b5a8f811c0940ec5b70d9aa1cc407ee6660d00744d61"
+    },
+    {
+      "bytes": 27882,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/migration.v4/bridge.v2.json",
+      "sha256": "71abb926563d97e2deefc0eecf5fd12c5ef750c1afcecd1a8eaf8d8f61168f9a"
+    },
+    {
+      "bytes": 6392,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/migration.v4/resume_equivalence.v2.cbor",
+      "sha256": "f2a076a0271f6b8b084ce32bef9d0f0f2049984fbf9d6050bfce2285d998b617"
+    },
+    {
+      "bytes": 2195,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/migration.v4/new.log",
+      "sha256": "0280056e83e0d570e8bb3b0cfafc6f732b68cdafcc9622f0c997de2f0131e360"
+    },
+    {
+      "bytes": 5327,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/migration.v4/new/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "55516b53c4ce4a3102ebcf29912f9f1cd8126b99d24b35b8416311eeec507ca6"
+    },
+    {
+      "bytes": 855,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/migration.v4/new/budgets/host_memory_trajectory.csv",
+      "sha256": "fee32acd0282ebff55c9047830b5dada22cd144b48909cfb78b4f45c3909feea"
+    },
+    {
+      "bytes": 755,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/rendered/fire_production_calibration/r221_retained_overlap/migration.v4/new/host_memory_admission.v1",
+      "sha256": "995daeb4af91b319e08ed3eeb5b57702e156684e4c86621b232dd6ac8a21de66"
+    },
+    {
+      "bytes": 1180382,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/tests/FireSequenceTest.cpp",
+      "sha256": "9aa57e7bbd4ab6f86e656f2af7dbf57cfdea9a47be9833989e511cecd88f95d2"
+    },
+    {
+      "bytes": 15354,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/tests/fire_resident_resume_v2.h",
+      "sha256": "51c1cc53833f06701d4dc6481eab410c11157d26d29fdc34a1c402d18cae265b"
+    },
+    {
+      "bytes": 14353,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/tools/fire_r221_resume_v2.py",
+      "sha256": "179e5fa5f0022dd084fabe3d04db03212204c9cbfec98555f0e08d833a5a9495"
+    },
+    {
+      "bytes": 5477,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/tools/test_fire_r221_resume_v2.py",
+      "sha256": "95a1f0a163bdbe477e099db09f9c02e31eb2a1fc2d96d61a7ab537b76a4772ad"
+    },
+    {
+      "bytes": 491,
+      "path": "/Users/aravind/Working/RISE/worktrees/r220-host-memory/tools/fire_r221_qualified_build.py",
+      "sha256": "bbe6449f9eb09012224e5cb033aa75c275e3e3450b52883245e7dd567d7b7a0c"
+    }
+  ],
+  "full_cpu_gate_exit": 0,
+  "historical_refusal": "initial issuer path-dependent build ID mismatch caught before solver; original log retained",
+  "host_ceiling_bytes": 34359738368,
+  "host_serialization": "no full builds, Opto/LTO links, exhaustive qualifications, or oracle regeneration alongside sealed run",
+  "input_payload_roots": [
+    "8188b422d0ee2db7fca26e06b1209ce8a9e7a9a9fa5d406e96202297f3af7114",
+    "85d6ce207dc7a1e954a5c311b28d75a4e48b3e3e191e3d44dc18c13fea0000c1",
+    "89c94f5d4e7c4dbd4529291424c95d078fdc644c5b7f51d88cecd841303ec2d9",
+    "2b2b680677e8a21f7d0e8aefa7b9aa3d30b9a78a1f4681450914c5ac7d2bac69",
+    "d9feef66a65eb045e1ca99d4263c401f9578dc349e2d11a3b408b771b6bda2e5",
+    "950f52dd7d706ab6b43aabd4e1199ca18467863db06c8b5132b1bd7dd72d6fb0",
+    "540d0653c31b105fce8eb383e2e7f374489a94165f0021173c5654ada9507263",
+    "6688a5ee32f84ed6670f88b5558bce58960496d83cd8cbed560031d173addbb4",
+    "8b3f6697331105536059fe6498ba8984b02c6cc779af4814e45d69020b5c542d"
+  ],
+  "kernel_set_sha256": "e938373ec6cd9e0217c04242ad96cd4d46055236e422bd7ad0ea34e164d0a8b2",
+  "memory_accepted_steps": [
+    {
+      "compressed_bytes": 0,
+      "footprint_bytes": 2213611992,
+      "rss_bytes": 2031681536,
+      "step": 827,
+      "time_s": 1.345625433488749
+    },
+    {
+      "compressed_bytes": 0,
+      "footprint_bytes": 2107591080,
+      "rss_bytes": 1925218304,
+      "step": 828,
+      "time_s": 1.3470421427628025
+    },
+    {
+      "compressed_bytes": 0,
+      "footprint_bytes": 2108197288,
+      "rss_bytes": 1925955584,
+      "step": 829,
+      "time_s": 1.3484050775878131
+    },
+    {
+      "compressed_bytes": 0,
+      "footprint_bytes": 2108377632,
+      "rss_bytes": 1926152192,
+      "step": 830,
+      "time_s": 1.3497795081930235
+    },
+    {
+      "compressed_bytes": 0,
+      "footprint_bytes": 2109966808,
+      "rss_bytes": 1927856128,
+      "step": 831,
+      "time_s": 1.3512300706934184
+    },
+    {
+      "compressed_bytes": 0,
+      "footprint_bytes": 2109983144,
+      "rss_bytes": 1927938048,
+      "step": 832,
+      "time_s": 1.3526665437966585
+    },
+    {
+      "compressed_bytes": 0,
+      "footprint_bytes": 2109983120,
+      "rss_bytes": 1927987200,
+      "step": 833,
+      "time_s": 1.3540215198881924
+    },
+    {
+      "compressed_bytes": 0,
+      "footprint_bytes": 2110015864,
+      "rss_bytes": 1928052736,
+      "step": 834,
+      "time_s": 1.355371522367932
+    },
+    {
+      "compressed_bytes": 0,
+      "footprint_bytes": 2109229432,
+      "rss_bytes": 1928052736,
+      "step": 835,
+      "time_s": 1.356785726849921
+    }
+  ],
+  "metal_r190_owner_gate_exit": 0,
+  "native_certificate_red_count": 44,
+  "native_launch_proof": "mandatory fresh native nine-step execution before onward production; not yet launched",
+  "native_overlap_field_red_count": 45,
+  "native_source_commit": "94958e6f",
+  "next_step_reserve_bytes": 13449641984,
+  "old_live_alias_red": "failed on pre-fix binary; passes for both aliases on final binary",
+  "onset_verdict": "not_run",
+  "producer_build_id": "bcd03e089a49d1117b693fcc165869e7cfbac32baf66d80a461a5b491028d4c6",
+  "producer_executable_sha256": "f2726009d598b5375b60b5a8f811c0940ec5b70d9aa1cc407ee6660d00744d61",
+  "publication_payload_roots": [
+    "65d8792ea6b7d835b1e5c0db9359e097da20843ba5ef3ab3ccc89e5f642a3a13",
+    "eb4c4e786175f06cfeed939823cc448268eb3c6fc59fbb9df6735f92f2d8c1ec",
+    "89805bffdcd9b7c3097344bdb42c21c14435496bc3c13e16186b5f50182ae4fb",
+    "8f640f12390d02196980b1210879337c920c37f6394eb77f582da10213d2c02c",
+    "38a4e6ee32409c1ad107c6593cfab0a47a8c076a9259eafb0d5239405348dfa3",
+    "81573f7e0a3d033b124ac1f2ca1950b79681096502f268d078f6482221e99a92",
+    "3b99f606c5c392faf04cb413fa60a17a2fab59994f0e66c8b7ecc01a60a3ba67",
+    "7f64809439d8ce36ac27ce3c0542d40bcc46b6ecc9cd17219b44634df9235fd4",
+    "3249b65f3bcf9e3fb51b918ea476e28fc675ea4660982974eb39f3dfc99bcdb1"
+  ],
+  "schema": "rise.fire.r221.retained-overlap-evidence.v1"
+}

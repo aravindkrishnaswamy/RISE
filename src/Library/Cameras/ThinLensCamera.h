@@ -212,11 +212,13 @@ namespace RISE
 			inline Scalar GetTiltY()                   const { return tiltY; }
 			inline Scalar GetShiftX()                  const { return shiftX; }           // mm
 			inline Scalar GetShiftY()                  const { return shiftY; }           // mm
-			inline void SetSensorSize( Scalar v )              { sensorSize = v; }
-			inline void SetFocalLengthStored( Scalar v )       { focalLength = v; }
-			inline void SetFstop( Scalar v )                   { fstop = v; }
-			inline void SetFocusDistanceStored( Scalar v )     { focusDistance = v; }
+			inline void SetSensorSize( Scalar v )              { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) sensorSize = v; }
+			inline void SetFocalLengthStored( Scalar v )       { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) focalLength = v; }
+			inline void SetFstop( Scalar v )                   { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) fstop = v; }
+			inline void SetFocusDistanceStored( Scalar v )     { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) focusDistance = v; }
 			inline void SetSceneUnitMeters( Scalar v ) {
+				Transformable::PreparedExternalMutationScope m;
+				if( !m.IsValid() ) return;
 				// Guard against zero / negative — `Recompute()` divides
 				// by sceneUnitMeters, so 0 produces inf/NaN and
 				// negatives flip the sign of every mm-to-scene
@@ -236,12 +238,12 @@ namespace RISE
 				const Scalar kMaxTiltRad = Scalar( 1.396 );	// 80 degrees, matches the parser
 				return v > kMaxTiltRad ? kMaxTiltRad : ( v < -kMaxTiltRad ? -kMaxTiltRad : v );
 			}
-			inline void SetTiltX( Scalar v )                   { tiltX = ClampTilt( v ); }
-			inline void SetTiltY( Scalar v )                   { tiltY = ClampTilt( v ); }
-			inline void SetShiftX( Scalar v )                  { shiftX = v; }
-			inline void SetShiftY( Scalar v )                  { shiftY = v; }
-			inline void SetApertureBlades( unsigned int v )    { apertureBlades = v; }
-			inline void SetApertureRotation( Scalar v )        { apertureRotation = v; }
+			inline void SetTiltX( Scalar v )                   { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) tiltX = ClampTilt( v ); }
+			inline void SetTiltY( Scalar v )                   { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) tiltY = ClampTilt( v ); }
+			inline void SetShiftX( Scalar v )                  { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) shiftX = v; }
+			inline void SetShiftY( Scalar v )                  { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) shiftY = v; }
+			inline void SetApertureBlades( unsigned int v )    { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) apertureBlades = v; }
+			inline void SetApertureRotation( Scalar v )        { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) apertureRotation = v; }
 			//! The parser rejects `anamorphic_squeeze <= 0` (see the
 			//! thinlens_camera descriptor and GetApertureWorldArea()'s
 			//! own comment): `squeeze == 0` collapses the aperture to a
@@ -268,6 +270,8 @@ namespace RISE
 			//! paths mid-animation.
 			inline void SetAnamorphicSqueeze( Scalar v )
 			{
+				Transformable::PreparedExternalMutationScope m;
+				if( !m.IsValid() ) return;
 				if( v > 0 ) {
 					anamorphicSqueeze = v;
 				} else {
@@ -391,7 +395,7 @@ namespace RISE
 			//! see ICamera.h for the formula and stacking semantics.
 			Scalar GetExposureCompensationEV() const override { return evCompensation_; }
 			inline Scalar GetIsoStored() const { return iso_; }
-			inline void   SetIsoStored( Scalar v ) { iso_ = v; }
+			inline void   SetIsoStored( Scalar v ) { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) iso_ = v; }
 
 			//! Landing 5: also rebuild the photographic exposure cache
 			//! after geometric state.  fstop and exposureTime feed

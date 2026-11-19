@@ -17,6 +17,7 @@
 #include "PixelBasedRasterizerHelper.h"
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <vector>
 #include "../Utilities/RTime.h"
 #include "../Utilities/Profiling.h"
@@ -27,6 +28,7 @@
 #include "AdaptiveTileSizer.h"
 #include "PreviewScheduler.h"
 #include <chrono>
+#include <exception>
 
 #include "ScanlineRasterizeSequence.h"
 #include "BlockRasterizeSequence.h"
@@ -36,6 +38,12 @@
 #include "../RISE_API.h"
 #include "../Interfaces/IScenePriv.h"
 #include "../Utilities/RenderParallelScope.h"
+#include "../Utilities/RISECBOR64.h"
+#include "../Utilities/Transformable.h"
+#include "../Cameras/PinholeCamera.h"
+#include "../Cameras/ThinLensCamera.h"
+#include "../Cameras/FisheyeCamera.h"
+#include "../Cameras/OrthographicCamera.h"
 
 #include "FrameStore.h"  // L6c — needed unconditionally by AcquireRenderImage
 #include "AOVBuffers.h"
@@ -45,6 +53,236 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace
+{
+	thread_local unsigned int gPreparedRenderDepth = 0u;
+
+	class PreparedInvocationScope
+	{
+	public:
+		PreparedInvocationScope() { ++gPreparedRenderDepth; }
+		~PreparedInvocationScope() { --gPreparedRenderDepth; }
+	};
+
+	class PreparedInternalTransformScope
+	{
+	public:
+		PreparedInternalTransformScope() { Transformable::BeginPreparedInternalMutation(); }
+		~PreparedInternalTransformScope() { Transformable::EndPreparedInternalMutation(); }
+	};
+
+	void EvaluatePreparedAnimator( const IScene& scene, const Scalar time )
+	{
+		if( !scene.GetAnimator() ) return;
+		PreparedInternalTransformScope scope;
+		scene.GetAnimator()->EvaluateAtTime(time);
+	}
+
+	// The prepared (fire) path's nominal scene time.  SetSceneTimeForPreview
+	// re-evaluates the animator at the time the render already posed the
+	// scene to; that is the render's own nominal evaluation, so it takes the
+	// internal capability rather than being refused by the freeze.
+	void SetPreparedNominalSceneTime( const IScene& scene, const Scalar time )
+	{
+		PreparedInternalTransformScope scope;
+		scene.SetSceneTimeForPreview(time);
+	}
+
+	bool PrepareAndFreeze(
+		const IScene& scene, IRayCaster& caster, const Scalar nominal,
+		const Rect* crop, const unsigned int field,
+		IRenderPreparationController& controller )
+	{
+		EvaluatePreparedAnimator(scene,nominal);
+		if( scene.GetObjects() ) scene.GetObjects()->InvalidateSpatialStructure();
+		caster.InvalidateLightSamplers();
+		SetPreparedNominalSceneTime(scene,nominal);
+		std::string error;
+		if( !controller.PrepareMediaForRender(
+			ComputePathTimeSupport(scene,nominal,crop,field),error) ||
+			!controller.AcquireRenderFreeze(error) ) {
+			GlobalLog()->PrintEx(eLog_Error,"prepared render rejected: %s",error.c_str());
+			return false;
+		}
+		return true;
+	}
+
+	bool ReleasePreparedFreeze( IRenderPreparationController& controller )
+	{
+		std::string error;
+		if( controller.ReleaseRenderFreeze(error) ) return true;
+		GlobalLog()->PrintEx(eLog_Error,"prepared render freeze failed: %s",error.c_str());
+		return false;
+	}
+
+	void SetRecordMember(
+		RISECBOR64::Value::Members& members,
+		const std::string& key,
+		const RISECBOR64::Value& value )
+	{
+		for( auto& member : members ) {
+			if( member.first == key ) {
+				member.second = value;
+				return;
+			}
+		}
+		members.push_back(std::make_pair(key,value));
+	}
+
+}
+
+RenderTimeSupport RISE::ComputePathTimeSupport(
+	const IScene& scene, const Scalar nominal, const Rect* crop,
+	const unsigned int fieldParity )
+{
+	RenderTimeSupport result{nominal,nominal,nominal};
+	const ICamera* camera = scene.GetCamera();
+	const IFilm* film = scene.GetFilm();
+	if( !camera || !film || film->GetWidth() == 0u || film->GetHeight() == 0u ) return result;
+	const unsigned int width = film->GetWidth(), height = film->GetHeight();
+	const unsigned int x0 = crop ? std::min(crop->left,width-1u) : 0u;
+	const unsigned int x1 = crop ? std::min(crop->right,width-1u) : width-1u;
+	unsigned int y0 = crop ? std::min(crop->top,height-1u) : 0u;
+	unsigned int y1 = crop ? std::min(crop->bottom,height-1u) : height-1u;
+	if( fieldParity < 2u ) {
+		if( (y0&1u) != fieldParity ) ++y0;
+		if( (y1&1u) != fieldParity && y1 ) --y1;
+		if( y0 > y1 ) return result;
+	}
+	const double exposure = std::max(0.0,double(camera->GetExposureTime()));
+	const double scan = double(camera->GetScanningRate());
+	const double pixel = double(camera->GetPixelRate());
+	double base = nominal-exposure*0.5;
+	if( pixel != 0.0 ) base = nominal-double(height/2u)*scan-double(width/2u)*pixel;
+	else if( scan != 0.0 ) base = nominal-double(height/2u)*scan;
+	const double candidates[] = {
+		base+scan*y0+pixel*x0,base+scan*y0+pixel*x1,
+		base+scan*y1+pixel*x0,base+scan*y1+pixel*x1};
+	const auto bounds = std::minmax_element(std::begin(candidates),std::end(candidates));
+	result.open = *bounds.first;
+	result.close = *bounds.second+exposure;
+	if( result.open > result.close ) std::swap(result.open,result.close);
+	return result;
+}
+
+bool PixelBasedRasterizerHelper::AppendEvaluatedCameraState(
+		FrameStore* store,
+		const ICamera& camera,
+		const unsigned int frame,
+		const Scalar time,
+		const char* field )
+	{
+		if( !store ) return true;
+		const FrameStoreOutput::Metadata metadata = store->Meta();
+		if( metadata.renderFidelityStatus.empty() ) return true;
+		RISECBOR64::Value record;
+		std::string error;
+		if( !RISECBOR64::DecodeCanonical(
+			metadata.resolvedRenderConfigCoreV1,record,&error) ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"PixelBasedRasterizerHelper:: cannot decode resolved camera state: %s",
+				error.c_str());
+			return false;
+		}
+		const RISECBOR64::Value* cameraRecord = record.Find("camera");
+		const RISECBOR64::Value* priorStates = record.Find("evaluated_camera_states");
+		if( !cameraRecord || cameraRecord->GetType() != RISECBOR64::Value::Map ||
+			!priorStates || priorStates->GetType() != RISECBOR64::Value::Array ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"PixelBasedRasterizerHelper:: resolved config has no camera-state surface");
+			return false;
+		}
+
+		using RISECBOR64::Value;
+		Value::Members currentCamera = cameraRecord->GetMap();
+		const Point3 location = camera.GetLocation();
+		SetRecordMember(currentCamera,"location",Value::ArrayValue({
+			Value::Float(location.x),Value::Float(location.y),Value::Float(location.z) }));
+		const Matrix4 matrix = camera.GetMatrix();
+		const Scalar matrixValues[16] = {
+			matrix._00,matrix._01,matrix._02,matrix._03,
+			matrix._10,matrix._11,matrix._12,matrix._13,
+			matrix._20,matrix._21,matrix._22,matrix._23,
+			matrix._30,matrix._31,matrix._32,matrix._33 };
+		Value::Values encodedMatrix;
+		for( const Scalar value : matrixValues ) encodedMatrix.push_back(Value::Float(value));
+		SetRecordMember(currentCamera,"matrix",Value::ArrayValue(encodedMatrix));
+		SetRecordMember(currentCamera,"exposure_compensation_ev",
+			Value::Float(camera.GetExposureCompensationEV()));
+		SetRecordMember(currentCamera,"exposure_time",
+			Value::Float(camera.GetExposureTime()));
+		SetRecordMember(currentCamera,"pixel_rate",
+			Value::Float(camera.GetPixelRate()));
+		SetRecordMember(currentCamera,"scanning_rate",
+			Value::Float(camera.GetScanningRate()));
+		if( typeid(camera) == typeid(PinholeCamera) ) {
+			const PinholeCamera* pinhole = dynamic_cast<const PinholeCamera*>(&camera);
+			SetRecordMember(currentCamera,"kind",Value::String("pinhole"));
+			SetRecordMember(currentCamera,"projection",Value::MapValue({
+				{ "fov_radians", Value::Float(pinhole->GetFovStored()) },
+				{ "fstop", Value::Float(pinhole->GetFstop()) },
+				{ "iso", Value::Float(pinhole->GetIsoStored()) }
+			}));
+		} else if( typeid(camera) == typeid(ThinLensCamera) ) {
+			const ThinLensCamera* thin = dynamic_cast<const ThinLensCamera*>(&camera);
+			SetRecordMember(currentCamera,"kind",Value::String("thin_lens"));
+			SetRecordMember(currentCamera,"projection",Value::MapValue({
+				{ "anamorphic_squeeze", Value::Float(thin->GetAnamorphicSqueeze()) },
+				{ "aperture_blades", Value::Unsigned(thin->GetApertureBlades()) },
+				{ "aperture_rotation", Value::Float(thin->GetApertureRotation()) },
+				{ "focal_length_mm", Value::Float(thin->GetFocalLengthStored()) },
+				{ "focus_distance_scene_units", Value::Float(thin->GetFocusDistanceStored()) },
+				{ "fstop", Value::Float(thin->GetFstop()) },
+				{ "iso", Value::Float(thin->GetIsoStored()) },
+				{ "scene_unit_meters", Value::Float(thin->GetSceneUnitMeters()) },
+				{ "sensor_size_mm", Value::Float(thin->GetSensorSize()) },
+				{ "shift_x_mm", Value::Float(thin->GetShiftX()) },
+				{ "shift_y_mm", Value::Float(thin->GetShiftY()) },
+				{ "tilt_x_radians", Value::Float(thin->GetTiltX()) },
+				{ "tilt_y_radians", Value::Float(thin->GetTiltY()) }
+			}));
+		} else if( typeid(camera) == typeid(FisheyeCamera) ) {
+			const FisheyeCamera* fisheye = dynamic_cast<const FisheyeCamera*>(&camera);
+			SetRecordMember(currentCamera,"kind",Value::String("fisheye"));
+			SetRecordMember(currentCamera,"projection",Value::MapValue({
+				{ "scale", Value::Float(fisheye->GetScaleStored()) }
+			}));
+		} else if( typeid(camera) == typeid(OrthographicCamera) ) {
+			const OrthographicCamera* orthographic =
+				dynamic_cast<const OrthographicCamera*>(&camera);
+			SetRecordMember(currentCamera,"kind",Value::String("orthographic"));
+			const Vector2 scale = orthographic->GetViewportScaleStored();
+			SetRecordMember(currentCamera,"projection",Value::MapValue({
+				{ "viewport_scale", Value::ArrayValue({
+					Value::Float(scale.x),Value::Float(scale.y) }) }
+			}));
+		} else {
+			GlobalLog()->PrintEx(eLog_Error,
+				"PixelBasedRasterizerHelper:: animated camera is not canonically introspectable");
+			return false;
+		}
+		const Value currentCameraValue = Value::MapValue(currentCamera);
+		Value::Values states = priorStates->GetArray();
+		states.push_back(Value::MapValue({
+			{ "camera", currentCameraValue },
+			{ "field", Value::String(field ? field : "both") },
+			{ "frame_index", Value::Unsigned(frame) },
+			{ "time", Value::Float(time) }
+		}));
+		Value::Members root = record.GetMap();
+		SetRecordMember(root,"camera",currentCameraValue);
+		SetRecordMember(root,"evaluated_camera_states",Value::ArrayValue(states));
+		RISECBOR64::Bytes updated;
+		if( !RISECBOR64::Encode(Value::MapValue(root),updated,&error) ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"PixelBasedRasterizerHelper:: cannot encode resolved camera state: %s",
+				error.c_str());
+			return false;
+		}
+		store->UpdateAnimatedFireMetadata(updated);
+		return true;
+	}
 
 namespace RISE
 {
@@ -87,7 +325,8 @@ PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
   mProgressWeight( 0 ),
   mProgressTotal( 0 ),
   mContinuingInterlacedFrame( false ),
-  pAOVBuffers( 0 )
+  pAOVBuffers( 0 ),
+  mLastRenderCompleted( true )
 {
 	if( pCaster ) {
 		pCaster->addref();
@@ -287,6 +526,12 @@ void PixelBasedRasterizerHelper::ConfigureOutputRegion(
 
 unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const IScene& pScene, const ISampling2D& pSampling, unsigned int* pActualTime ) const
 {
+	if( pScene.HasTimeVaryingMedia() && gPreparedRenderDepth == 0u ) {
+		GlobalLog()->PrintEasyError("time_varying_media_requires_prepared_prediction");
+		return 0xFFFFFFFFu;
+	}
+	RequireFireRenderPreflight(
+		pScene,FireRenderPreflightAuthorization::Prediction);
 	// Snapshot the active camera once at function entry — keeps
 	// all inner uses consistent and matches the per-pass contract
 	// (structural camera changes must serialize against rendering;
@@ -356,6 +601,21 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 	// Reserve UINT_MAX for prediction failure.
 	constexpr auto largestEstimate = std::numeric_limits<unsigned int>::max() - 1;
 	return static_cast<unsigned int>(std::min( estimate, Scalar(largestEstimate) ));
+}
+
+unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScenePrepared(
+	const IScene& scene, const ISampling2D& sampling, unsigned int* actual,
+	const Scalar nominal, IRenderPreparationController& controller ) const
+{
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	if( !PrepareAndFreeze(scene,*pCaster,nominal,nullptr,FIELD_BOTH,controller) )
+		return 0xFFFFFFFFu;
+	PreparedInvocationScope prepared;
+	unsigned int result = 0xFFFFFFFFu;
+	try { result = PredictTimeToRasterizeScene(scene,sampling,actual); }
+	catch( ... ) { ReleasePreparedFreeze(controller); throw; }
+	if( !ReleasePreparedFreeze(controller) ) return 0xFFFFFFFFu;
+	return result;
 }
 
 void PixelBasedRasterizerHelper::DrawToggles( IRasterImage& image, const Rect& rc_region, const RISEColor& toggle_color, const double toggle_size ) const
@@ -624,10 +884,9 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		//     multi-second render.
 		DimTileBorder( image, rect, 5, 0.4 );
 
-		RasterizerOutputListType::const_iterator	r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputIntermediateImage( image, &rect );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( image, &rect );
+		});
 	}
 
 	// L6e-3 follow-up — toggle visibility restoration.  Pre-L6e-2
@@ -779,10 +1038,9 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		IRasterImage& outputImage = GetIntermediateOutputImage( image, &rect );
 
 		// Also iterate through outputs and get them to intermediate rasterize
-		RasterizerOutputListType::const_iterator	r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputIntermediateImage( outputImage, &rect );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( outputImage, &rect );
+		});
 	}
 }
 
@@ -846,10 +1104,9 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	if( drewToggles ) {
 		DimTileBorder( image, rect, 5, 0.4 );
 
-		RasterizerOutputListType::const_iterator	r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputIntermediateImage( image, &rect );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( image, &rect );
+		});
 	}
 
 	// L6e-3 follow-up — split bracket so direct-FrameStore observers
@@ -924,10 +1181,9 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	if( !skipBlockOutput ) {
 		// After every sequence block, iterate through outputs and get
 		// them to intermediate-rasterize.  Skipped for VCM etc.
-		RasterizerOutputListType::const_iterator	r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputIntermediateImage( image, &rect );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( image, &rect );
+		});
 	}
 }
 
@@ -1007,6 +1263,12 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 		seq.Begin( startx, endx, starty, endy );
 
 		const unsigned int numseq = seq.NumRegions();
+		const bool hasMedium = SceneHasParticipatingMedium( scene );
+		unsigned long long progressBits = 0;
+		std::memcpy( &progressBits, &mProgressBase, sizeof( progressBits ) );
+		const unsigned int baseMediumSeed = hasMedium ? DeriveSeed(
+			LockedLibcRand(),
+			progressBits ^ ( static_cast<unsigned long long>( pass ) * 0x9E3779B97F4A7C15ULL ) ) : 0u;
 		bool completed = true;
 
 		for( unsigned int i=0; i<numseq; i++ ) {
@@ -1027,11 +1289,10 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 				}
 			}
 
-			const unsigned int spMediumSeed =
-				( static_cast<unsigned int>( mProgressBase ) * 2654435761u ) ^
-				( static_cast<unsigned int>( pass ) * 2246822519u ) ^
-				( i * 3266489917u ) ^ 0x6D2B79F5u;
-			ScopedMediumTileSeed mediumSeed( spMediumSeed );
+			const unsigned long long tileKey =
+				( static_cast<unsigned long long>( rect.top ) << 32 ) |
+				static_cast<unsigned long long>( rect.left );
+			ScopedMediumTileSeed mediumSeed( hasMedium ? DeriveSeed( baseMediumSeed, tileKey ) : 0u, hasMedium );
 			SPRasterizeSingleBlock( rc, image, scene, rect, height );
 			if( pProgressFunc && pProgressFunc->IsCancelled() ) {
 				completed = false;
@@ -1057,6 +1318,13 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	if( pScene.HasTimeVaryingMedia() && gPreparedRenderDepth == 0u ) {
+		GlobalLog()->PrintEasyError("time_varying_media_requires_prepared_render");
+		return;
+	}
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — see PredictTimeToRasterizeScene.  Tier 2 §5.5:
 	// a free-fly ViewportPose supplies a viewport-private override camera the
 	// interactive still-frame renders THROUGH; the real scene still flows to the
@@ -1097,9 +1365,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// originally wired was a missed call site.
 	{
 		const Scalar camEV = pCam->GetExposureCompensationEV();
-		for( RasterizerOutputListType::const_iterator r = outs.begin(), s = outs.end(); r != s; ++r ) {
-			(*r)->SetCameraExposureCompensationEV( camEV );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->SetCameraExposureCompensationEV( camEV );
+		});
 	}
 
 	// Profiling: reset all counters/phases at render entry so successive
@@ -1141,6 +1409,17 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 
 	PrepareImageForNewRender( *pImage, pRect );
+
+	// GetIntermediateOutputImage composes only the delivered region into the
+	// scratch, so seed the rest from the prepared image: outside a regional
+	// crop a preview must show the preserved film, not the scratch's
+	// transparent black.  Single-threaded here, before any worker starts.
+	if( pFilteredScratch ) {
+		Rect wholeImage( 0, 0, 0, 0 );
+		if( ClampRegionToImage( 0, width, height, wholeImage ) ) {
+			CopyRegion( *pImage, *pFilteredScratch, wholeImage );
+		}
+	}
 
 	pCaster->AttachScene( &pScene );
 
@@ -1192,6 +1471,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		blocks = CreateDefaultRasterSequence( tileEdge );
 		pRasterSequence = blocks;
 	}
+	bool mainPassCompleted = true;
 
 	// We should do the irradiance pass to populate the cache
 	const IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
@@ -1241,6 +1521,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		pFilteredScratch = pSavedFilteredScratch;
 		if( cacheCompleted ) {
 			pIrradianceCache->FinishedPrecomputation();
+		} else {
+			mainPassCompleted = false;
 		}
 		safe_release( pIrradScratch );
 		safe_release( irrad_seq );
@@ -1249,7 +1531,10 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		// The regional path used a scratch image and intentionally publishes
 		// nothing until its requested beauty pixels have been rendered.
 		if( !pRect ) {
-			FlushToOutputs( *pImage, 0, 0 );
+			IRasterImage& outputImage = GetIntermediateOutputImage( *pImage, 0 );
+			ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+				output->OutputIntermediateImage( outputImage, 0 );
+			});
 		}
 
 		if( pProgressFunc ) {
@@ -1257,9 +1542,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		}
 	}
 
-	PrepareAOVBuffers_( width, height );
-
-	bool mainPassCompleted = true;
+	if( mainPassCompleted ) {
+		PrepareAOVBuffers_( width, height );
 
 	if( progressiveConfig.enabled && pSampling )
 	{
@@ -1375,10 +1659,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage, PreviewCompositionRegion() );
-				RasterizerOutputListType::const_iterator r, s;
-				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-					(*r)->OutputIntermediateImage( outputImage, pRect );
-				}
+				ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+					output->OutputIntermediateImage( outputImage, pRect );
+				});
 				previewScheduler.MarkPreviewRan();
 
 				// Convergence check runs alongside preview — user gets
@@ -1413,6 +1696,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	else
 	{
 		mainPassCompleted = RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
+	}
 	}
 
 	// Resolve filtered film: overwrites per-pixel inline estimates with
@@ -1455,11 +1739,14 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		blocks = 0;
 	}
 
-	// `mainPassCompleted` is intentionally NOT passed: cancelled
-	// renders still get OIDN'd on whatever was accumulated up to the
-	// cancel point.  See ShouldDenoise() and docs/OIDN.md decision
-	// log (2026-04-29).
-	(void)mainPassCompleted;
+	const bool fireProvenanceActive = mFrameStore &&
+		!mFrameStore->Meta().renderFidelityStatus.empty();
+	if( !mainPassCompleted && fireProvenanceActive ) {
+		IRasterImage& outputImage = GetIntermediateOutputImage( *pImage, PreviewCompositionRegion() );
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->OutputIntermediateImage( outputImage, pRect );
+		});
+	} else {
 #ifdef RISE_ENABLE_OIDN
 	// Skip OIDN entirely when show_adaptive_map is on — the
 	// authoritative output is the heatmap from the progressive
@@ -1539,6 +1826,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 #else
 	FlushToOutputs( *pImage, pRect, 0 );
 #endif
+	}
 
 	// Post-render hook (e.g. path guiding cleanup)
 	PostRenderCleanup();
@@ -1559,7 +1847,22 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 #ifdef RISE_ENABLE_OIDN
 	}
 #endif
+	mLastRenderCompleted.store(mainPassCompleted,std::memory_order_release);
 	aovUnwindGuard.Dismiss();
+}
+
+void PixelBasedRasterizerHelper::RasterizeScenePrepared(
+	const IScene& scene, const Scalar nominal,
+	IRenderPreparationController& controller, const Rect* rect,
+	IRasterizeSequence* sequence ) const
+{
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	if( !PrepareAndFreeze(scene,*pCaster,nominal,rect,FIELD_BOTH,controller) ) return;
+	PreparedInvocationScope prepared;
+	try { RasterizeScene(scene,rect,sequence); }
+	catch( ... ) { ReleasePreparedFreeze(controller); throw; }
+	if( !ReleasePreparedFreeze(controller) )
+		mLastRenderCompleted.store(false,std::memory_order_release);
 }
 
 bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
@@ -1658,6 +1961,12 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 		seq.Begin( startx, endx, starty, endy );
 		const unsigned int numseq = seq.NumRegions();
+		const bool hasMedium = SceneHasParticipatingMedium( pScene );
+		unsigned long long animProgressBits = 0;
+		std::memcpy( &animProgressBits, &mProgressBase, sizeof( animProgressBits ) );
+		const unsigned int baseAnimMediumSeed = hasMedium ? DeriveSeed(
+			LockedLibcRand(),
+			animProgressBits ^ ( static_cast<unsigned long long>( pass ) * 0x9E3779B97F4A7C15ULL ) ^ 0x517CC1B727220A95ULL ) : 0u;
 		bool completed = true;
 
 		for( unsigned int i=0; i<numseq; i++ ) {
@@ -1684,11 +1993,10 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 				}
 			}
 
-			const unsigned int spAnimMediumSeed =
-				( static_cast<unsigned int>( mProgressBase ) * 2654435761u ) ^
-				( static_cast<unsigned int>( pass ) * 2246822519u ) ^
-				( i * 3266489917u ) ^ 0x9E3779B9u;
-			ScopedMediumTileSeed mediumSeed( spAnimMediumSeed );
+			const unsigned long long tileKey =
+				( static_cast<unsigned long long>( rect.top ) << 32 ) |
+				static_cast<unsigned long long>( rect.left );
+			ScopedMediumTileSeed mediumSeed( hasMedium ? DeriveSeed( baseAnimMediumSeed, tileKey ) : 0u, hasMedium );
 			SPRasterizeSingleBlockOfAnimation( rc, image, pScene, rect, height, framedata );
 			if( pProgressFunc && pProgressFunc->IsCancelled() ) {
 				completed = false;
@@ -1747,6 +2055,10 @@ void PixelBasedRasterizerHelper::PrepareSceneForFrame(
 	IAnimator* pAnimator = pScene.GetAnimator();
 	const IObjectManager* pObjects = pScene.GetObjects();
 
+	// Fire prepared renders freeze external transform mutation; the
+	// frame-time evaluation and shutter sweep below are internal to the
+	// render (same scope EvaluatePreparedAnimator uses).
+	PreparedInternalTransformScope preparedTransformScope;
 	pAnimator->EvaluateAtTime( time );
 	pObjects->ClearMotionBounds();
 
@@ -1773,7 +2085,10 @@ void PixelBasedRasterizerHelper::PrepareSceneForFrame(
 	// between them (see IObjectManager.h's scope note).
 	const ICamera* pCam = pScene.GetCamera();
 	Scalar t0 = time, t1 = time;
-	if( bSweepShutter && pCam && FrameShutterInterval( *pCam, time, width, height, t0, t1 ) ) {
+	// A fire temporal hold keeps all animation at the nominal time (no
+	// per-sample animator mutation), so there is no shutter to sweep.
+	if( bSweepShutter && !pScene.FireTemporalHold() && pCam &&
+		FrameShutterInterval( *pCam, time, width, height, t0, t1 ) ) {
 		// The photon tracers sample [time - E/2, time + E/2] whatever the
 		// scanning / pixel rate (PhotonTracer.h).
 		const Scalar exposure = pCam->GetExposureTime();
@@ -1818,7 +2133,7 @@ void PixelBasedRasterizerHelper::PrepareSceneForFrame(
 	}
 }
 
-void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
+bool PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	const IScene& pScene,
 	const Rect* pRect,
 	const FIELD field,
@@ -1859,7 +2174,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	const ICamera* pCam = pScene.GetCamera();
 	if( !pCam ) {
 		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::RenderFrameOfAnimation:: Scene contains no camera!", __FILE__, __LINE__ );
-		return;
+		return false;
 	}
 
 	// Exposure time can change from frame to frame
@@ -1874,9 +2189,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	// scenes render bit-identically.
 	{
 		const Scalar camEV = pCam->GetExposureCompensationEV();
-		for( RasterizerOutputListType::const_iterator r = outs.begin(), s = outs.end(); r != s; ++r ) {
-			(*r)->SetCameraExposureCompensationEV( camEV );
-		}
+		ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+			output->SetCameraExposureCompensationEV( camEV );
+		});
 	}
 
 	// NOTE: deliberately NO per-frame progress reset here.  The
@@ -1933,8 +2248,11 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		// DL-463: tell the hook a per-pass shutter time is possible for
 		// this frame, so a store pass 0 would rebuild anyway is not traced
 		// at the frame time first.
+		// A fire temporal hold disables the per-pass shutter time (see the
+		// progressive loop below), so the hook must build its frame-time state.
 		ContinuationFlag perPassCandidate( mPerPassShutterTimeCandidate,
-			framedata.exposure > 0 && framedata.pixelRate == 0 && framedata.scanningRate == 0 );
+			framedata.exposure > 0 && framedata.pixelRate == 0 && framedata.scanningRate == 0 &&
+			!pScene.FireTemporalHold() );
 		PreRenderSetup( pScene, pRect );
 	}
 
@@ -2016,7 +2334,13 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		if( pProgressFunc ) {
 			pProgressFunc->SetTitle( "Rasterizing Animation: " );
 		}
+		if( !cacheCompleted ) {
+			PostRenderCleanup();
+			if( pFilteredFilm ) pFilteredFilm->Clear();
+			return false;
+		}
 	}
+	bool frameCompleted = true;
 
 	// Main render — progressive loop (VCM SPPM-style) or single pass.
 	// Mirrors RasterizeScene's progressive path: split total SPP into
@@ -2083,10 +2407,14 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		// per-sample re-pose).  Per-pixel scanning / pixel rates give every
 		// pixel its own shutter, which one scene time cannot serve: those
 		// keep the per-sample path (DL-463 residual).
+		// A fire temporal hold keeps every animated element at the nominal
+		// time (no shared-animator mutation per sample or per pass), so the
+		// per-pass shutter time is disabled under it.
+		const bool fireTemporalHold = pScene.FireTemporalHold();
 		const bool perPassTime = framedata.exposure > 0 &&
 			framedata.pixelRate == 0 && framedata.scanningRate == 0 &&
-			WantsPerPassShutterTime();
-		if( framedata.exposure > 0 && !perPassTime && WantsPerPassShutterTime() ) {
+			!fireTemporalHold && WantsPerPassShutterTime();
+		if( framedata.exposure > 0 && !perPassTime && !fireTemporalHold && WantsPerPassShutterTime() ) {
 			GlobalLog()->PrintEasyWarning( "RenderFrameOfAnimation:: motion blur with a scanning / pixel rate keeps "
 				"per-sample times; the merging light store is traced at the frame time (DL-465)" );
 		}
@@ -2146,11 +2474,20 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			RasterizerScopeExit pPassSeqOwner( [&]() {
 				safe_release( pPassSeq );
 			} );
-			RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, *pPassSeq, passFrameData );
+			const int resolveFieldParity = ( field == FIELD_BOTH ) ? -1 : static_cast<int>( field );
+			const bool passCompleted = RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, *pPassSeq, passFrameData );
 			safe_release( pPassSeq );
 
 			samplingOverride.Restore();
 			safe_release( pPassSampling );
+
+			if( !passCompleted ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"RenderFrameOfAnimation:: cancelled during pass %u/%u",
+					passIdx+1, numPasses );
+				frameCompleted = false;
+				break;
+			}
 
 			accumulatedFrameProgress += static_cast<double>( animNumTiles ) * static_cast<double>( passSPP );
 
@@ -2168,10 +2505,11 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 					num   = static_cast<double>(passIdx+1);
 					denom = static_cast<double>(numPasses);
 				}
-				if( !pProgressFunc->Progress( num, denom ) ) {
+				if( pProgressFunc->IsCancelled() || !pProgressFunc->Progress( num, denom ) ) {
 					GlobalLog()->PrintEx( eLog_Event,
 						"RenderFrameOfAnimation:: cancelled after pass %u/%u",
 						passIdx+1, numPasses );
+					frameCompleted = false;
 					break;
 				}
 			}
@@ -2185,24 +2523,25 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 				{
 					// L6e-1.1 — bracket via RAII.
 					FrameStoreBulkBracket bracket( mFrameStore, image );
-					progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
+					progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect, resolveFieldParity );
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( image, PreviewCompositionRegion() );
-				RasterizerOutputListType::const_iterator r, s;
-				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-					(*r)->OutputIntermediateImage( outputImage, pRect );
-				}
+				ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+					output->OutputIntermediateImage( outputImage, pRect );
+				});
 				previewScheduler.MarkPreviewRan();
 			}
 		}
 
 		// Ensure `image` carries the final progressive state even when
-		// the loop exited early (cancellation) without a final preview.
-		{
+		// the loop exited early (cancellation) without a final preview,
+		// skipping Resolve when cancelled before any pixel completed.
+		if( progFilm.CountDone( 1, pRect ) > 0 ) {
+			const int resolveFieldParity = ( field == FIELD_BOTH ) ? -1 : static_cast<int>( field );
 			// L6e-1.1 — bracket via RAII.
 			FrameStoreBulkBracket bracket( mFrameStore, image );
-			progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
+			progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect, resolveFieldParity );
 		}
 
 		// Normalize per-pixel AOV by progressive-film alpha sum so the
@@ -2238,7 +2577,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		// Single-pass: PT/BDPT/MLT without explicit progressive config.
 		// mProgressBase/Weight/Total were set by the caller (they may be
 		// zero for legacy per-frame progress).
-		RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, seq, framedata );
+		frameCompleted = RenderFrameOfAnimationPass(
+			RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, seq,
+			framedata );
 	}
 
 	// Post-render hook (symmetric with RasterizeScene).
@@ -2269,6 +2610,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		}
 		pFilteredFilm->Clear();
 	}
+	return frameCompleted;
 }
 
 void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
@@ -2283,6 +2625,19 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	if( pScene.HasTimeVaryingMedia() && gPreparedRenderDepth == 0u ) {
+		GlobalLog()->PrintEasyError("time_varying_media_requires_prepared_animation");
+		return;
+	}
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
+	if( num_frames == 0u ) {
+		GlobalLog()->PrintSourceError(
+			"PixelBasedRasterizerHelper::RasterizeSceneAnimation:: zero-frame animations are invalid",
+			__FILE__,__LINE__);
+		return;
+	}
 	// EXPRESSION MEMO (Utilities/ExpressionMemo.h).  THE BELT-AND-BRACES
 	// BUMP: a render pass is starting, so whatever moved since the last
 	// one -- an editor edit, an agent tool call, a geometry swap -- is
@@ -2369,6 +2724,12 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		pFilteredFilm = new FilteredFilm( width, height );
 		if( UsesFilteredPreviewScratch() ) {
 			pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+			// Same seeding as RasterizeScene: previews compose only the
+			// delivered region, so the rest mirrors the image.
+			Rect wholeImage( 0, 0, 0, 0 );
+			if( ClampRegionToImage( 0, width, height, wholeImage ) ) {
+				CopyRegion( *pImage, *pFilteredScratch, wholeImage );
+			}
 		}
 	}
 
@@ -2442,6 +2803,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	bool cancelled = false;
 	for( unsigned int i=0; i<total_frames && !cancelled; i++ )
 	{
+		const unsigned int currentFrameIndex = specificFrame ? *specificFrame : i;
 #ifdef RISE_ENABLE_OIDN
 		const unsigned int fallbackSPP = GetDenoiseAOVSamplesPerPixel();
 #else
@@ -2458,16 +2820,27 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			// Rebuild spatial structure after transforms update but before
 			// SetSceneTime, which regenerates photon maps via ray tracing.
 			PrepareSceneForFrame( pScene, curtime_upper, bHasKeyframedObjects, width, height );
-			pScene.SetSceneTime( curtime_upper );
+			if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime_upper);
+			else pScene.SetSceneTime(curtime_upper);
+			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
+				curtime_upper,invert_fields ? "lower" : "upper") ) {
+				cancelled = true;
+				break;
+			}
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2 +1, num_frames*2 );
 			mProgressBase = accumulatedProgress;
-			RenderFrameOfAnimation( pScene, pRect, do_fields?(invert_fields?FIELD_LOWER:FIELD_UPPER):FIELD_BOTH, *pImage, curtime_upper, *pRasterSequence, true );
+			const bool upperCompleted = RenderFrameOfAnimation(
+				pScene, pRect,
+				do_fields?(invert_fields?FIELD_LOWER:FIELD_UPPER):FIELD_BOTH,
+				*pImage, curtime_upper, *pRasterSequence, true );
 			accumulatedProgress += unitsPerCall;
 
 			// If the user cancelled during the upper field, don't
 			// render the lower field — the partial image here never
 			// gets flushed.
-			if( pProgressFunc && !pProgressFunc->Progress( accumulatedProgress, totalProgressUnits ) ) {
+			if( !upperCompleted || ( pProgressFunc &&
+				( !pProgressFunc->Progress( accumulatedProgress, totalProgressUnits ) ||
+				  pProgressFunc->IsCancelled() ) ) ) {
 				GlobalLog()->PrintEx( eLog_Event, "Animation cancelled during frame %u of %u; skipping remaining frames", (specificFrame?*specificFrame:i)+1, num_frames );
 				cancelled = true;
 				break;
@@ -2484,7 +2857,8 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 					// fallback. The fallback deliberately does not replay the beauty
 					// pass's temporal sample distribution (AGENT_PERCEPTION.md).
 					PrepareSceneForFrame( pScene, curtime_upper, bHasKeyframedObjects, width, height, false );
-					pScene.SetSceneTime( curtime_upper );
+					if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime_upper);
+					else pScene.SetSceneTime(curtime_upper);
 					const FIELD upperField = invert_fields ? FIELD_LOWER : FIELD_UPPER;
 					CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
 						interlacedFallbackPlan, static_cast<unsigned int>( upperField ), 2,
@@ -2494,16 +2868,30 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 
 			// Lower field
 			PrepareSceneForFrame( pScene, curtime_lower, bHasKeyframedObjects, width, height );
-			pScene.SetSceneTime( curtime_lower );
+			if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime_lower);
+			else pScene.SetSceneTime(curtime_lower);
+			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
+				curtime_lower,invert_fields ? "upper" : "lower") ) {
+				cancelled = true;
+				break;
+			}
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2+1 +1, num_frames*2 );
 			mProgressBase = accumulatedProgress;
-			RenderFrameOfAnimation( pScene, pRect, do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH, *pImage, curtime_lower, *pRasterSequence, false );
+			const bool lowerCompleted = RenderFrameOfAnimation(
+				pScene, pRect,
+				do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH,
+				*pImage, curtime_lower, *pRasterSequence, false );
 			accumulatedProgress += unitsPerCall;
+			if( !lowerCompleted ) {
+				cancelled = true;
+				break;
+			}
 			if( pAOVBuffers && interlacedFallbackPlan.Any() ) {
 				// RenderFrameOfAnimation may leave the animator at its final
 				// exposure sample. Re-establish the nominal lower-field state.
 				PrepareSceneForFrame( pScene, curtime_lower, bHasKeyframedObjects, width, height, false );
-				pScene.SetSceneTime( curtime_lower );
+				if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime_lower);
+				else pScene.SetSceneTime(curtime_lower);
 				const FIELD lowerField = invert_fields ? FIELD_UPPER : FIELD_LOWER;
 				CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
 					interlacedFallbackPlan, static_cast<unsigned int>( lowerField ), 2,
@@ -2516,12 +2904,23 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			// Rebuild spatial structure after transforms update but before
 			// SetSceneTime, which regenerates photon maps via ray tracing.
 			PrepareSceneForFrame( pScene, curtime, bHasKeyframedObjects, width, height );
-			pScene.SetSceneTime( curtime );
+			if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime);
+			else pScene.SetSceneTime(curtime);
+			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
+				curtime,"both") ) {
+				cancelled = true;
+				break;
+			}
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing frame %u of %u", (specificFrame?*specificFrame:i) +1, num_frames );
 
 			mProgressBase = accumulatedProgress;
-			RenderFrameOfAnimation( pScene, pRect, FIELD_BOTH, *pImage, curtime, *pRasterSequence, true );
+			const bool frameCompleted = RenderFrameOfAnimation(
+				pScene, pRect, FIELD_BOTH, *pImage, curtime, *pRasterSequence, true );
 			accumulatedProgress += unitsPerCall;
+			if( !frameCompleted ) {
+				cancelled = true;
+				break;
+			}
 		}
 
 		// If the user cancelled during this frame, skip the flush so
@@ -2534,7 +2933,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		// than no frame at all.  The caller (e.g. RISEBridge) finalizes
 		// the MOV writer after we return so the prior completed frames
 		// play back correctly.
-		if( pProgressFunc && !pProgressFunc->Progress( accumulatedProgress, totalProgressUnits ) ) {
+		if( pProgressFunc &&
+			( !pProgressFunc->Progress( accumulatedProgress, totalProgressUnits ) ||
+			  pProgressFunc->IsCancelled() ) ) {
 			GlobalLog()->PrintEx( eLog_Event, "Animation cancelled during frame %u of %u; skipping remaining frames", (specificFrame?*specificFrame:i)+1, num_frames );
 			cancelled = true;
 			break;
@@ -2553,7 +2954,8 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				// animator at an arbitrary sample time. The bounded fallback is a
 				// deterministic nominal-frame approximation, not temporal replay.
 				PrepareSceneForFrame( pScene, fallbackNominalTime, bHasKeyframedObjects, width, height, false );
-				pScene.SetSceneTime( fallbackNominalTime );
+				if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,fallbackNominalTime);
+				else pScene.SetSceneTime(fallbackNominalTime);
 				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
 					mDenoisingPrefilter, pRect );
 			}
@@ -2588,23 +2990,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 #else
 		FlushToOutputs( *pImage, pRect, frameIdx );
 #endif
-		{
-			// L6e-1.1 — bracket the inter-frame Clear via RAII.
-			//
-			// L6f known-limitation — `FlushToOutputs` (above) fired
-			// `MarkFrameComplete(frameIdx)` synchronously on
-			// `mFrameStore`.  Synchronous observers
-			// (FileEncoderObserver) finished writing before this
-			// Clear executes.  ASYNC observers (e.g. UI repaint
-			// patterns that signal a UI thread and return) may
-			// wake AFTER the Clear and read black for a beat.
-			// Pre-L6f (legacy VFS-internal FrameStore mode) had the
-			// same race window: VFS-internal store also got cleared
-			// between frames.  No regression vs pre-L6f, just
-			// surfaced by the rasterizer-driven Mark* rendering
-			// the per-frame timing more obvious.  L6e-3 (interactive
-			// VFS migration) will need to address this for
-			// animation-in-GUI workflows.
+		if( i+1u < total_frames ) {
+			// Clear only between frames. The terminal frame is the canonical
+			// FrameStore snapshot used by the GUI and later Save As operations.
 			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
 			pImage->Clear( RISEColor(0,0,0,0), pRect );
 		}
@@ -2636,7 +3024,31 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 #ifdef RISE_ENABLE_OIDN
 	}
 #endif
+	mLastRenderCompleted.store(!cancelled,std::memory_order_release);
 	aovUnwindGuard.Dismiss();
+}
+
+void PixelBasedRasterizerHelper::RasterizeSceneAnimationPrepared(
+	const IScene& scene, const Scalar timeStart, const Scalar timeEnd,
+	const unsigned int frameCount, const bool fields, const bool invertFields,
+	IRenderPreparationController& controller, const Rect* rect,
+	const unsigned int* specificFrame, IRasterizeSequence* sequence ) const
+{
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	if( !specificFrame || frameCount == 0u || *specificFrame >= frameCount ) {
+		GlobalLog()->PrintEasyError(
+			"prepared time-varying animation requires one selected frame");
+		return;
+	}
+	const Scalar nominal = frameCount > 1u ? timeStart+(timeEnd-timeStart)*
+		(Scalar(*specificFrame)/Scalar(frameCount-1u)) : timeStart;
+	if( !PrepareAndFreeze(scene,*pCaster,nominal,rect,FIELD_BOTH,controller) ) return;
+	PreparedInvocationScope prepared;
+	try { RasterizeSceneAnimation(scene,timeStart,timeEnd,frameCount,fields,
+		invertFields,rect,specificFrame,sequence); }
+	catch( ... ) { ReleasePreparedFreeze(controller); throw; }
+	if( !ReleasePreparedFreeze(controller) )
+		mLastRenderCompleted.store(false,std::memory_order_release);
 }
 
 // Default IRasterImage acquisition: persistent buffer reused across
@@ -2788,9 +3200,9 @@ void PixelBasedRasterizerHelper::PrepareImageForNewRender( IRasterImage& img, co
 			1.0 ), pRect );
 	}
 
-	for( RasterizerOutputListType::const_iterator r = outs.begin(), s = outs.end(); r != s; ++r ) {
-		(*r)->OutputIntermediateImage( img, pRect );
-	}
+	ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+		output->OutputIntermediateImage( img, pRect );
+	});
 }
 
 // Default tile-dispatch order: Morton (Z-curve), starting upper-left.
@@ -2839,39 +3251,38 @@ IRasterizeSequence* PixelBasedRasterizerHelper::CreateDefaultRasterSequence( uns
 
 void PixelBasedRasterizerHelper::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
-	// Write to output objects (legacy IRasterizerOutput chain).
-	RasterizerOutputListType::const_iterator	r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputImage( img, rcRegion, frame );
-	}
-	// L6f — fire `OnFrameComplete` on canonical-FrameStore observers.
-	if( mFrameStore ) {
-		mFrameStore->MarkFrameComplete( frame );
-	}
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputImage( img, rcRegion, frame );
+			ValidateFireOutputLeaseState();
+		}
+		ValidateFireOutputLeaseState();
+		if( mFrameStore ) mFrameStore->MarkFrameComplete( frame );
+	});
 }
 
 void PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
-	RasterizerOutputListType::const_iterator	r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputPreDenoisedImage( img, rcRegion, frame );
-	}
-	// L6f — fire `OnPreDenoiseComplete` on canonical-FrameStore observers.
-	if( mFrameStore ) {
-		mFrameStore->MarkPreDenoiseComplete( frame );
-	}
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputPreDenoisedImage( img, rcRegion, frame );
+			ValidateFireOutputLeaseState();
+		}
+		ValidateFireOutputLeaseState();
+		if( mFrameStore ) mFrameStore->MarkPreDenoiseComplete( frame );
+	});
 }
 
 void PixelBasedRasterizerHelper::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
-	RasterizerOutputListType::const_iterator	r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputDenoisedImage( img, rcRegion, frame );
-	}
-	// L6f — fire `OnDenoiseComplete` on canonical-FrameStore observers.
-	if( mFrameStore ) {
-		mFrameStore->MarkDenoiseComplete( frame );
-	}
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputDenoisedImage( img, rcRegion, frame );
+			ValidateFireOutputLeaseState();
+		}
+		ValidateFireOutputLeaseState();
+		if( mFrameStore ) mFrameStore->MarkDenoiseComplete( frame );
+	});
 }
 
 // Our own functions

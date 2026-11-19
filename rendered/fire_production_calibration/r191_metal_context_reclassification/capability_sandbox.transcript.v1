@@ -1,0 +1,5 @@
+command ./bin/tests/FireProductionSolverTest --fire-production-metal-capability
+executable_sha256 44dd9499fe993e19e46d9d0ef55daedf3f0ede533be67db82a15e967b077b320
+execution_context workspace_sandbox
+exit 86
+fire_production_metal_capability discovery=blocked-by-execution-context available=0 default_present=0 enumerated_count=0 identity_kernel=0 device="" registry_id=0 error="production fire compute capability blocked by execution context: Metal discovery returned no devices on Apple silicon"

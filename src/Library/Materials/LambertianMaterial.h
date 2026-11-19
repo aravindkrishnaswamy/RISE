@@ -20,6 +20,7 @@
 #include "../Interfaces/ILog.h"
 #include "LambertianBRDF.h"
 #include "LambertianSPF.h"
+#include "../Interfaces/IContinuationClosure.h"
 
 namespace RISE
 {
@@ -48,17 +49,35 @@ namespace RISE
 			}
 
 			/// \return The BRDF for this material.  NULL If there is no BRDF
-			inline IBSDF* GetBSDF() const {			return pBRDF; };
+			inline IBSDF* GetBSDF() const override {			return pBRDF; };
 
 			/// \return The SPF for this material.  NULL If there is no SPF
-			inline ISPF* GetSPF() const {			return pSPF; };
+			inline ISPF* GetSPF() const override {			return pSPF; };
 
 			//! DL-471: every lobe is the diffuse one (IMaterial::ConnectionScatterTypes).
-			inline unsigned int ConnectionScatterTypes() const { return 1u << ScatteredRay::eRayDiffuse; }
+			inline unsigned int ConnectionScatterTypes() const override { return 1u << ScatteredRay::eRayDiffuse; }
 
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
-			inline IEmitter* GetEmitter() const {	return 0; };
+			inline IEmitter* GetEmitter() const override {	return 0; };
+
+			const IContinuationClosurePel* MakeContinuationClosurePel(
+				const RayIntersectionGeometric& ri,
+				const IORStack&,
+				const ContinuationPathState& pathState ) const override
+			{
+				return CreateLambertianContinuationClosurePel(
+					ri,ReflectanceColor(pBRDF->GetReflectance(),ri),pathState);
+			}
+
+			const IContinuationClosureNM* MakeContinuationClosureNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack&, const Scalar nm,
+				const ContinuationPathState& pathState ) const override
+			{
+				return CreateLambertianContinuationClosureNM(
+					ri,ReflectanceColorNM(pBRDF->GetReflectance(),ri,nm),pathState);
+			}
 
 			//! Read-back accessor for the interactive editor's
 			//! `MaterialIntrospection`.  Returns the painter the BRDF

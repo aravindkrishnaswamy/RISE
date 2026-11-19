@@ -1,0 +1,20 @@
+{
+  "status": "simulation_verified_preview_pipeline_started",
+  "observed_utc": "2026-09-29T19:30:13.799533+00:00",
+  "initial_preview_pid": 25336,
+  "exec_session": 45272,
+  "artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_launch.v1/completion.json",
+      "sha256": "4d9ca482c65635356928e12b28ef895b669e952ec59b4dc35ca689da661aec76"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_lateral_spectrum_launcher.v1.py",
+      "sha256": "3ae6253f1a409e567b72b29e397f0758758464501bbd12e3d06b8594709c19a9"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_spectrum_launch.v1/launch.json",
+      "sha256": "807cd312857aa70ea39e5547af6675ce3c18b9d347207ef51af6bc37924fbba7"
+    }
+  ]
+}

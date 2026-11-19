@@ -1,0 +1,45 @@
+{
+  "status": "preliminary_station_localization_not_causal_budget_verdict",
+  "inputs": {
+    "baseline": {
+      "checkpoint_sha256": "5500362fa825928bdc6b8cefd7464e5bd3b70bd729ee8672144b2ff9893e6a13",
+      "checkpoint_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline.v1/production_final.checkpoint",
+      "version": 13,
+      "probe_block_offset": 33274097,
+      "probe_block_end": 62193065,
+      "probe_samples": 8916,
+      "heights": 80,
+      "first_time_s": 10.531864278949797,
+      "last_time_s": 25.156864278920693,
+      "centerline_reaction_reconstruction_max_abs_W": 1.1368683772161603e-12,
+      "centerline_reaction_reconstruction_max_abs_over_peak": 5.114153651266366e-16,
+      "retained_history_sha256": "7d9bf0b3e6ddcd4028178e6005809535e25af5fcb6e0339f909b6729e779b7aa"
+    },
+    "lateral": {
+      "checkpoint_sha256": "f419de029f152bb6eecef6b2f045ea7ce7e3375d22f60507a89eeb03cfddedf4",
+      "checkpoint_path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_double.v1/production_final.checkpoint",
+      "version": 13,
+      "probe_block_offset": 132827889,
+      "probe_block_end": 161746857,
+      "probe_samples": 8916,
+      "heights": 80,
+      "first_time_s": 10.531864278949797,
+      "last_time_s": 25.156864278920693,
+      "centerline_reaction_reconstruction_max_abs_W": 1.3642420526593924e-12,
+      "centerline_reaction_reconstruction_max_abs_over_peak": 5.413222023597435e-16,
+      "retained_history_sha256": "a2d518412f7f0a54edcd89b96696d6ebcc5539bb6f17a169afecb792fb30b819"
+    }
+  },
+  "extraction": "Pinned checkpoint SHA-256 + unique complete native probe-time vector anchor; next vectors read in WriteSolverFrameValues order. Full native loader not reimplemented; no checkpoint mutation or resume.",
+  "processing": "8192 uniform interpolated samples over entire observation span, affine detrend, symmetric Hann; no shortening; descriptive bands bins1\u20132 and expected nearest\u00b11. Null dominant/fractions indicate zero positive power.",
+  "limitations": [
+    "Central2x2 columns are not plume-following; lateral displacement can reduce measured reaction/temperature.",
+    "Interpolated sampling is not an antialiasing certificate. No period uncertainty or physical gate is inferred.",
+    "Time-resolved signed pressure, advection, stress, buoyancy and per-boundary mass/enthalpy fluxes are absent from these retained histories.",
+    "Final checkpoint and VDB fields cannot reconstruct historical accepted R0/R1/R2 face budgets without retained operands or a new instrumented full run."
+  ],
+  "summary_sha256": "4dcdcfcffa16c308e90fac443973462d564cce7606e12669a0b3111a1167abb6",
+  "figure_path": "/Volumes/SSD/RISE/fire_production_calibration/r245_station_localization.v1/station_spectra.png",
+  "figure_sha256": "ac5fea4965e9b02981b4b7d473d2535545ff526a6b14342df1d54e29c9aa9044",
+  "script_sha256": "be5bc9e88183a741b47bdc19d0c018afca22eac07a9f6c146e6d0c9eaf97376e"
+}

@@ -1,0 +1,142 @@
+{
+  "date": "2026-10-19",
+  "status": "research_and_design_only_no_solver_change_no_simulation",
+  "primary_sources": [
+    {
+      "id": "xin_gore_2005",
+      "citation": "Y. Xin and J. P. Gore, Two-dimensional soot distributions in buoyant turbulent fires, Proc. Combust. Inst.30 (2005)719\u2013726",
+      "doi": "10.1016/j.proci.2004.08.126",
+      "url": "https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=100919",
+      "local_path": "/Volumes/SSD/RISE/fire_production_calibration/r252_soot_sources/xin_gore_2005.pdf",
+      "sha256": "bc02f6df76a10a8ff96de1c8f5dae1d295cf611a069f57625a853bb7cbd9c78f",
+      "quantity": "LII calibrated soot volume fraction; ensemble mean Figure4 p723, instantaneous Figure2 p723",
+      "diameter_m": 0.071,
+      "fuel_flow_kg_per_s": 8.43e-05,
+      "fuel": "commercial methane grade1.3 >93%",
+      "HRR_kW_derived_using_50_MJ_per_kg": 4.215,
+      "measurement_resolution_m": [
+        0.0002,
+        0.0002,
+        0.001
+      ],
+      "samples_per_station": 3500,
+      "author_overall_uncertainty_relative": 0.3,
+      "raw_numeric_profile_available": false,
+      "extraction": {
+        "method": "pdfimages -f5 -l5 -png; image001 Fig4, RGB nearest-color inversion of each local linear color bar0\u2013.5ppm, exact station horizontal row; centerline median5pixels to reduce image compression noise; round .01ppm",
+        "extracted_image_sha256": "7004a2cfff906eb87f3a44c072a2ebd6fd3276385be93cc9073c1fca0903ef58",
+        "image_size_pixels": [
+          473,
+          372
+        ],
+        "colorbar_x": 440,
+        "plot_x_inclusive": [
+          32,
+          402
+        ],
+        "H_over_D_and_bar_y_inclusive": [
+          [
+            0.5,
+            294,
+            346
+          ],
+          [
+            1,
+            222,
+            274
+          ],
+          [
+            2,
+            150,
+            202
+          ],
+          [
+            3,
+            77,
+            129
+          ],
+          [
+            4,
+            5,
+            57
+          ]
+        ],
+        "algorithm": "bar=rgb[lo:hi+1,440]; data=rgb[round((lo+hi)/2),32:403]; j=argmin(sum((data-bar)^2,RGB)); fv_ppm=.5*(1-j/(hi-lo)); center=median(fv_ppm[183:188]); radial_max=max(fv_ppm)",
+        "reading_allowance_ppm": 0.02,
+        "reading_allowance_is_not_author_uncertainty": true
+      }
+    },
+    {
+      "id": "nist_tn2082e2",
+      "citation": "Falkenstein-Smith et al., The Structure of Medium-Scale Pool Fires, NIST TN2082e2 (2022)",
+      "doi": "10.6028/NIST.TN.2082e2",
+      "url": "https://nvlpubs.nist.gov/nistpubs/TechnicalNotes/NIST.TN.2082e2.pdf",
+      "local_path": "/Volumes/SSD/RISE/fire_production_calibration/r252_soot_sources/NIST.TN.2082e2.pdf",
+      "sha256": "e96e46437f499719172a8cb327f4006f3747b74e2b5e7ef74c5e7f79b7f82348",
+      "diameter_m": 0.37,
+      "ideal_HRR_kW": 34.5,
+      "published_HRR_uncertainty_kW": 0.5,
+      "quantity": "gravimetric local soot mass fraction; NOT direct volume fraction",
+      "locations": "Table1 p25, \u00a72.7 pp21\u201322, AppendixG pp59\u201360, FigH6 p66",
+      "repository_commit": "213206ec45b91b2bd7d5f344ebd519662404892b",
+      "species_path": "Liquid_Pool_Fires/NIST_Pool_Fires/Experimental_Data/Methane_37_cm_species_r=0_Falkenstein-Smith_2021a.csv",
+      "temperature_path": "Liquid_Pool_Fires/NIST_Pool_Fires/Experimental_Data/Methane_37_cm_TC_r=0_cm_Sung_2024.csv",
+      "proxy_caveat": "2024 TG is separate release. 101325Pa, normalized measured mean composition, rounded conventional molar masses, ideal gas, soot material density1800kg/m3 engineering assumptions; product of means is NOT mean(rho Ys), no covariance; not calibration f_v data.",
+      "raw_data_semantics": "MaCFP Experimental_Data CSV, not Computational_Results; Y_Soot/U_Y_Soot copied unchanged; zeros rounded at 4decimal places."
+    }
+  ],
+  "outputs": [
+    {
+      "path": "soot_nist37_axial.csv",
+      "sha256": "6730ff0b7316e8e5902a32bb5d58f6a0a3e8fec313b7467df18e80f568d137e8"
+    },
+    {
+      "path": "soot_nist37_species_source.csv",
+      "sha256": "a0d28c7ca5d133e4f601b1489d8ecbc4b2aa38a646d1a40ac0710c681090cc5e"
+    },
+    {
+      "path": "soot_nist37_temperature_source.csv",
+      "sha256": "fdc9b60f068fe2bf2c8449764bf86f12aa865e05b5025e32bf8ae1f7d3c9fdd9"
+    },
+    {
+      "path": "soot_xin2005_axial_figure4.csv",
+      "sha256": "09768b963d2c17abe4fc4e7c53e47851265b57f082f742bf1f4bb282d967aae6"
+    }
+  ],
+  "followup_search": {
+    "scope": "bounded primary-source search for direct methane in-flame volume fraction profiles at0.15\u20130.37m burner/10\u201340kW",
+    "result": "no closer direct f_v match located; not a claim of universal absence",
+    "sources": [
+      {
+        "id": "nist_tn2162r1",
+        "url": "https://doi.org/10.6028/NIST.TN.2162r1",
+        "local_path": "/Volumes/SSD/RISE/fire_production_calibration/r252_soot_sources/NIST.TN.2162r1.pdf",
+        "sha256": "c0ba84b39fa6e790f1242bdf594492010c9463b8f5cb61a3616036d6958d11ba",
+        "location": "\u00a73.3 and Table4 printedp22/PDFpage38",
+        "quantity": "escaping soot yield below detection for34.5kW methane,8repeats",
+        "literal_footnote": "below detection limits (< 1E-4).",
+        "footnote_units_caveat": "yield heading10^-3g/g, footnote no units; no numeric kg/kg bound adopted"
+      },
+      {
+        "id": "nist_fcd_methane_gas_burner22",
+        "url": "https://www.nist.gov/el/fcd/structure-medium-scale-pool-fires/methanegasburner22",
+        "local_path": "/Volumes/SSD/RISE/fire_production_calibration/r252_soot_sources/nist_methane_gas_burner22.html",
+        "sha256": "8093b24b1253aac9adeb6f2c27e556e8ac53d89ba864b812f76cef8196a3e5b1",
+        "quantity": "escaping soot yield below detection; .00044kg/kg is uncertaintycolumn, NOT detectionthreshold"
+      },
+      {
+        "id": "purdue_gore_primary_publication_index",
+        "url": "https://engineering.purdue.edu/GRG/publications",
+        "local_path": "/Volumes/SSD/RISE/fire_production_calibration/r252_soot_sources/purdue_gore_publications.html",
+        "sha256": "e6129a0fde854582569c2ff86d772abc5c54a92268c7b526e66f3dac7845033f",
+        "finding": "Xinrefs3\u20135 concern toluene pool fires, not methane data"
+      }
+    ],
+    "access_limits": [
+      "Sivathanu-Faeth1990 publisher abstract inspected; fullpaper not acquired; fuels exclude methane",
+      "NIST historical axisymmetric flame-data Wayback link inaccessible in session",
+      "Shaddix-Smyth1996 publisher abstract inspected; no new near-scale pool numbers extracted"
+    ]
+  },
+  "numeric_output_line_endings": "LF; source CSV numeric fields are unchanged."
+}

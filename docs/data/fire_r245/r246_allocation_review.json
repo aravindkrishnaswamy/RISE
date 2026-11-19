@@ -1,0 +1,31 @@
+{
+  "source_head": "8b4e8022",
+  "status": "accepted_synthetic_executed_path_allocation_gate",
+  "rounds": 1,
+  "reviewers": [
+    {
+      "name": "r246_allocation_impl_contract",
+      "P1": 0,
+      "P2": 0,
+      "scope": "numerical / design / test fidelity"
+    },
+    {
+      "name": "r246_allocation_impl_lifecycle",
+      "P1": 0,
+      "P2": 0,
+      "scope": "lifecycle / resource / provenance"
+    }
+  ],
+  "retained_hashes_checked": 18,
+  "sequential_stage_count": 6,
+  "actual_device_peak_bytes": 10366386176,
+  "off_certificate_bytes": 19171016704,
+  "on_certificate_bytes": 19720208384,
+  "bit_exact_observation_equivalence": true,
+  "actual_taller_owner_executed": true,
+  "qualification_trace_exercised": false,
+  "accepted_campaign_steps": 0,
+  "worst_case_memory_established": false,
+  "physical_qualification_established": false,
+  "launch_permitted": false
+}

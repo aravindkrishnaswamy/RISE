@@ -18,6 +18,7 @@
 #include "../Utilities/IndependentSampler.h"
 #include "DirectLightingShaderOp.h"
 #include "DistributionTracingShaderOp.h"
+#include "SSS/SSSContainment.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -109,7 +110,12 @@ void StandardShader::Shade(
 	std::vector<IShaderOp*>::const_iterator i, e;
 	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
 		RISEPel cthis = c;
-		(*i)->PerformOperation( rc, ri, caster, rs2, cthis, ior_stack, pSPF?&scattered:0 );
+		if( ShaderOpRequiresSSSContainment( **i ) ) {
+			SSSContainmentScope containment;
+			(*i)->PerformOperation( rc, ri, caster, rs2, cthis, ior_stack, pSPF?&scattered:0 );
+		} else {
+			(*i)->PerformOperation( rc, ri, caster, rs2, cthis, ior_stack, pSPF?&scattered:0 );
+		}
 		c = c + cthis;
 	}
 }
@@ -150,7 +156,12 @@ Scalar StandardShader::ShadeNM(
 	// Iterate through the shader ops and accumulate the results
 	std::vector<IShaderOp*>::const_iterator i, e;
 	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
-		c += (*i)->PerformOperationNM( rc, ri, caster, rs2, c, nm, ior_stack, pSPF?&scattered:0 );
+		if( ShaderOpRequiresSSSContainment( **i ) ) {
+			SSSContainmentScope containment;
+			c += (*i)->PerformOperationNM( rc, ri, caster, rs2, c, nm, ior_stack, pSPF?&scattered:0 );
+		} else {
+			c += (*i)->PerformOperationNM( rc, ri, caster, rs2, c, nm, ior_stack, pSPF?&scattered:0 );
+		}
 	}
 
 	return c;
@@ -203,8 +214,14 @@ void StandardShader::ShadeHWSS(
 	for( it=shaderops.begin(), e=shaderops.end(); it!=e; it++ )
 	{
 		Scalar opResult[SampledWavelengths::N];
-		(*it)->PerformOperationHWSS( rc, ri, caster, rs2, caccum, swl,
-			ior_stack, pSPF?&scattered:0, opResult );
+		if( ShaderOpRequiresSSSContainment( **it ) ) {
+			SSSContainmentScope containment;
+			(*it)->PerformOperationHWSS( rc, ri, caster, rs2, caccum, swl,
+				ior_stack, pSPF?&scattered:0, opResult );
+		} else {
+			(*it)->PerformOperationHWSS( rc, ri, caster, rs2, caccum, swl,
+				ior_stack, pSPF?&scattered:0, opResult );
+		}
 		for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 			caccum[i] += opResult[i];
 	}
@@ -233,5 +250,4 @@ void StandardShader::ResetRuntimeData() const
 		(*i)->ResetRuntimeData();
 	}
 }
-
 

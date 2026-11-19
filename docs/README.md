@@ -36,6 +36,7 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
   integrator selection guide
 - [MATERIALS.md](MATERIALS.md): material, BSDF/SPF, BSSRDF, and phase-function
   taxonomy
+- [ROUGH_DIELECTRIC_ENERGY.md](ROUGH_DIELECTRIC_ENERGY.md): reciprocal two-sided rough-glass energy compensation, bake, sampling and validation.
 - [ALPHA_COVERAGE.md](ALPHA_COVERAGE.md): scalar material intersection coverage
   (`alpha_coverage`, `alpha_mode`, `alpha_cutoff`), CSG inheritance, SSS/SMS
   endpoint rules
@@ -149,6 +150,10 @@ historical 2026-06-19 snapshot, not present-day ground truth.
 
 ## Active or Deferred Roadmaps
 
+- [FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md): current fire/smoke state,
+  open problems and operating rules; start here
+- [FIRE_SMOKE_PRODUCTION_SOLVER.md](FIRE_SMOKE_PRODUCTION_SOLVER.md): r82
+  Metal-GPU production fire solver contract and oracle-validation roadmap
 - [ROADMAP.md](ROADMAP.md): consolidated, prioritized next-steps implementation
   roadmap across all subsystems
 - [IMPROVEMENTS.md](IMPROVEMENTS.md): rendering gap criteria and historical
@@ -190,6 +195,10 @@ do not execute old phase lists blindly.
 - physically based pipeline:
   [PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md) and
   the three `PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_*.md` records
+- C++ utility modernization:
+  [CPP_UTILITY_MODERNIZATION_PLAN.md](CPP_UTILITY_MODERNIZATION_PLAN.md)
+  (spectral lookup, buffers/codecs, endianness, owned manager keys, steady-clock
+  timers, scoped locks, MLT 64-bit schedules, and callback output scoping)
 - auto-routing: [UNIFIED_INTEGRATOR_ANALYSIS.md](UNIFIED_INTEGRATOR_ANALYSIS.md),
   [UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md),
   [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md), and

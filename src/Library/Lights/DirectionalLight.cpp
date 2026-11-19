@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "../Utilities/IndependentSampler.h"
 #include "DirectionalLight.h"
 #include "../Animation/KeyframableHelper.h"
@@ -235,6 +236,7 @@ IKeyframeParameter* DirectionalLight::KeyframeFromParameters( const String& name
 
 void DirectionalLight::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case DIRECTION_ID:

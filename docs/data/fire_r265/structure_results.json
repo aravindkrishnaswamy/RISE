@@ -1,0 +1,100 @@
+{
+  "statistics_start_s": 10.466040127212182,
+  "statistics_end_s": 25.09104012721218,
+  "r251_HRR_T_w_samples": 235,
+  "r251_divergence_sampling": "204 nonzero retained-checkpoint quadrature weights from r254/r258 (214path input list); not the235frame time grid",
+  "FDS_sampling": "physical slices, native timestamps, trapezoidal time integral; actual MAC divergence reconstructed from native staggered U/V/W, separately from thermodynamic target",
+  "reaction_zone_definition": "R90 radial extent containing90%of time-mean plane HRR using actual Cartesian-cell area per annulus; interpolate crossing annulus in radius squared; D90=2R90; cell-center quantile also reported",
+  "widths": [
+    {
+      "code": "r251",
+      "z": 9,
+      "height_m": 0.29063460264040464,
+      "plane_heat_W_per_m": 32130.25083948999,
+      "R90_m": 0.09056649341787243,
+      "D90_m": 0.18113298683574486,
+      "R90_annulus_lower_m": 0.07648279016852753,
+      "R90_annulus_upper_m": 0.10707590623593854,
+      "crossing_annulus_heat_fraction": 0.4189505877123418,
+      "R90_cellcenter_quantile_m": 0.0865303993155738
+    },
+    {
+      "code": "FDS_no_slip",
+      "z": 9,
+      "height_m": 0.29063460264040464,
+      "plane_heat_W_per_m": 33266.411118093034,
+      "R90_m": 0.08294912893484814,
+      "D90_m": 0.16589825786969628,
+      "R90_annulus_lower_m": 0.07648279016852753,
+      "R90_annulus_upper_m": 0.10707590623593854,
+      "crossing_annulus_heat_fraction": 0.18358409285160376,
+      "R90_cellcenter_quantile_m": 0.0865303993155738
+    },
+    {
+      "code": "r251",
+      "z": 16,
+      "height_m": 0.5047864151122817,
+      "plane_heat_W_per_m": 8634.72434374014,
+      "R90_m": 0.10385947742637547,
+      "D90_m": 0.20771895485275094,
+      "R90_annulus_lower_m": 0.07648279016852753,
+      "R90_annulus_upper_m": 0.10707590623593854,
+      "crossing_annulus_heat_fraction": 0.8791839308483826,
+      "R90_cellcenter_quantile_m": 0.09674392749491216
+    },
+    {
+      "code": "FDS_no_slip",
+      "z": 16,
+      "height_m": 0.5047864151122817,
+      "plane_heat_W_per_m": 13204.710559406747,
+      "R90_m": 0.09745475527359172,
+      "D90_m": 0.19490951054718345,
+      "R90_annulus_lower_m": 0.07648279016852753,
+      "R90_annulus_upper_m": 0.10707590623593854,
+      "crossing_annulus_heat_fraction": 0.6495817044098801,
+      "R90_cellcenter_quantile_m": 0.09674392749491216
+    }
+  ],
+  "source_sizes": {
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_215.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_216.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_217.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_218.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_219.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_207.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_221.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_299.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_300.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_301.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_302.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_303.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_291.sf": 7907006,
+    "/Volumes/SSD/RISE/fire_production_calibration/r263_fds_no_slip/fds_run/r263_fds_1_305.sf": 7907006
+  },
+  "source_sha256": {
+    "/Volumes/SSD/Working/RISE/tools/fire/r265_reaction_planes.cpp": "d666e64833acf369d1f0518b2a204417b26f3d729fd5e95b670cc7a28fb35a25",
+    "/Volumes/SSD/Working/RISE/tools/fire/r265_compare_structure.py": "4bc10d38f879f28507cd97ff7893cec54a1a553ae8354b964031ec8de7737762",
+    "/Volumes/SSD/RISE/fire_production_calibration/r265_structure/r251_HRR_planes.csv": "74fa5064968120765e52543d06450ea9b992741c370b62a963af0f83674d1f07",
+    "/Volumes/SSD/RISE/fire_production_calibration/r251_tier8_full_window/frame_times.csv": "282d5ec44def44db3dd3ec7ead511d276a34969f8541f4a4ca289a98655cea1a",
+    "/Volumes/SSD/RISE/fire_production_calibration/r258_fds_les/r251_near_base.csv": "e8fcbbef99c328eef4f3c56ef8c03ceca2cdf5dbedafb8f41767750e72f15f5c",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r254/frames_radial_profiles.csv": "08e71c5391d1a4f26598826b7fbbd77def05e008a4e781d678cc89baad3d11d9",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r263/r263_fds.fds": "4e233fb853ed33fab02824690e21977f4459cd0e0d00baa12bd449d1fe2b759c"
+  },
+  "read_only": true,
+  "width_comparison": [
+    {
+      "z": 9,
+      "height_m": 0.29063460264040464,
+      "R90_relative_RISE_vs_FDS": 0.09183175978866887,
+      "R90_difference_m": 0.007617364483024289,
+      "difference_in_dx": 0.24898949378806834
+    },
+    {
+      "z": 16,
+      "height_m": 0.5047864151122817,
+      "R90_relative_RISE_vs_FDS": 0.06571995522233176,
+      "R90_difference_m": 0.006404722152783746,
+      "difference_in_dx": 0.20935174235508186
+    }
+  ]
+}

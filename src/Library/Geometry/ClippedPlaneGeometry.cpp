@@ -38,6 +38,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "ClippedPlaneGeometry.h"
 #include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
@@ -768,6 +769,7 @@ IKeyframeParameter* ClippedPlaneGeometry::KeyframeFromParameters( const String& 
 
 void ClippedPlaneGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case PTA_ID:
@@ -776,6 +778,7 @@ void ClippedPlaneGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 	case PTD_ID:
 		{
 			vP[val.getID()-PTA_ID] = *(Point3*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	}
@@ -783,6 +786,7 @@ void ClippedPlaneGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void ClippedPlaneGeometry::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	// vEdgesA / vEdgesB / vNormalA / vNormalB / vNormal are kept for
 	// the legacy rectangle GetArea (DL-460) and any external readers
 	// of the legacy "average plane normal" — IntersectRay,

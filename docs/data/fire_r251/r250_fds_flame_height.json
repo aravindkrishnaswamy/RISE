@@ -1,0 +1,35 @@
+{
+  "frames": 177,
+  "start_s": 10.466040127212182,
+  "end_s": 21.466040127157157,
+  "duration_s": 10.999999999944976,
+  "method": "Trapezoidal time average of instantaneous realized-HRR percentile heights from retained 16 Hz VDB reaction grids; same 99% instantaneous-total definition as tagged FDS validation case.",
+  "sources": [
+    "https://raw.githubusercontent.com/firemodels/fds/FDS-6.11.1/Manuals/FDS_Validation_Guide/Plume_Chapter.tex#L910-L930",
+    "https://raw.githubusercontent.com/firemodels/fds/FDS-6.11.1/Validation/Heskestad_Flame_Height/FDS_Input_Files/Qs%3Dp1_RI%3D10.fds",
+    "https://raw.githubusercontent.com/firemodels/fds/FDS-6.11.1/Source/ctrl.f90#L407-L429"
+  ],
+  "total_hrr_W_mean": 32944.0900672074,
+  "total_hrr_W_min": 29852.85580135294,
+  "total_hrr_W_max": 36437.997135263366,
+  "h95_realized_m_mean": 0.46697421386615773,
+  "h95_realized_m_min": 0.356058507851585,
+  "h95_realized_m_max": 0.5824397281593267,
+  "h97_realized_m_mean": 0.5377950864320579,
+  "h97_realized_m_min": 0.4393580483988084,
+  "h97_realized_m_max": 0.672809708957913,
+  "h99_realized_m_mean": 0.690166451620136,
+  "h99_realized_m_min": 0.5717695244478783,
+  "h99_realized_m_max": 0.8093113995297271,
+  "matched_frame_mean_profile_h99_nominal_m": 0.7199072869593667,
+  "matched_frame_mean_profile_h99_realized_m": 0.6949337610568289,
+  "previous_accepted_mean_profile_h99_nominal_m": 0.7827096127069291,
+  "previous_accepted_profile_end_s": 21.441342722001536,
+  "heskestad_m": 0.6456416432144874,
+  "fds_height_relative_error": 0.06896210749971265,
+  "artifacts": {
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/r250_instantaneous_flame_height.csv": "1ab5a9b8c760c8e8f9e6dcd5a2ee74b5e4ecdffeeafbc0612781110f6be681dd",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r251/r250_sampled_mean_heat_profile.csv": "ab981575400f15bc04343b4186a522d34e2bc5bcbacdc7463a09731fadbe605a",
+    "/Volumes/SSD/Working/RISE/tools/fire/r251_flame_height.cpp": "f40f8159066a64db2ff63efa97a1d814e5dc870810c975eda879369fc61df003"
+  }
+}

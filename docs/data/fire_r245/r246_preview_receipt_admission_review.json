@@ -1,0 +1,35 @@
+{
+  "schema": "rise.fire.r246.preview-receipt-admission-review.v1",
+  "accepted": true,
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "reviewed_head": "853727f886ed67d075fd33f3dea1154395a11a37",
+  "round": 2,
+  "completed_utc": "2026-10-04T07:46:30.860485+00:00",
+  "reviewers": [
+    {
+      "agent": "r246_preview_receipt_contract_r2",
+      "axis": "arithmetic_contract",
+      "p1": 0,
+      "p2": 0,
+      "verdict": "Exact receipt/modernseal pins match v8 accepted issuer/source/metadata/scene path. Verified actual source/history composition, alias discrimination, binary/implementation/evidence hashes, eight unchanged snapshot hashes and exact portable bodies."
+    },
+    {
+      "agent": "r246_preview_receipt_lifecycle_r2",
+      "axis": "lifecycle_provenance",
+      "p1": 0,
+      "p2": 0,
+      "verdict": "Initial and post-capture receipt aliases refuse. Canonical root binds reviewed path; consumed receipt digest is captured bytes. All evidence hashes/seal checked; original/snapshot/new reader issuers distinct and scope remains prepared only."
+    }
+  ],
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_receipt_admission_runtime.v2",
+  "executable_sha256": "ba842c93b7b03684944c795d604516aa588e3705219adcf5475fadda725ab487",
+  "receipt_sha256": "9e9b47bcc8a168139ad686b34386235e43554cda0b20a8656078bab33f9da2eb",
+  "seal_sha256": "e28d9681dc4413e193b4461a677d90d23251372415080547113c76a786e37b0e",
+  "limitations": [
+    "Exact independently reviewed snapshot issuer/path admission only; no authentication promotion of original unsealed observations.",
+    "Retained checkpoint is decoded; no native VDB preflight/fields or recovered rendering.",
+    "Actual scene/GIF/output receipt publication and recovered CLI composition remain pending.",
+    "Full recovery, signed audit and physical acceptance remain false."
+  ]
+}

@@ -1,0 +1,3 @@
+Compiling (safe fp32 ObjC++): ../../../src/Library/Utilities/FireProductionAdvectionMac.mm
+Compiling: ../../../src/Library/Job.cpp
+Linking ../../../bin/tests/FireSequenceTest

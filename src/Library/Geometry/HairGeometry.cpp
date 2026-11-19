@@ -458,7 +458,6 @@ void HairGeometry::BuildFromStrands( const std::vector<StrandDesc>& strands ) co
 	bbox = BoundingBox( Point3( 0, 0, 0 ), Point3( 0, 0, 0 ) );
 	nSegments = 0;
 	nRejectedStrands = 0;
-	BumpShapeRevision();
 
 	strandCPBegin.push_back( 0 );
 
@@ -623,6 +622,7 @@ void HairGeometry::BuildFromStrands( const std::vector<StrandDesc>& strands ) co
 				(unsigned)strands.size(), nRejectedStrands );
 		}
 	}
+	BumpShapeRevision();
 }
 
 HairGeometry::~HairGeometry()

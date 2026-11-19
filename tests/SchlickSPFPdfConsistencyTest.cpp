@@ -412,9 +412,22 @@ static void RunConfig( const Config& c, double nm )
     spf->release(); rough->release(); iso->release(); diff->release(); spec->release();
 }
 
-int main()
+int main( int argc, char** argv )
 {
     std::cout << "===== SchlickSPF Pdf Consistency Test (DL-67 Slice 0) =====" << std::endl;
+
+    // Dual-mode (run_all_tests.sh has_extended_mode): the rows on the fine
+    // 2000x4000 hemisphere grid (kQTFine) cost ~25-60 s each, most of this
+    // test's run time.  They run under RISE_TEST_EXTENDED=1 (--tier all /
+    // extended) or --extended; the fast tier runs the coarse-grid rows.
+    bool extended = false;
+    if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
+        if( ext[0] != '\0' && std::string( ext ) != "0" ) extended = true;
+    }
+    for( int i = 1; i < argc; ++i ) {
+        if( std::string( argv[i] ) == "--extended" ) extended = true;
+    }
+    int skippedFine = 0;
 
     g_stubObject = new StubObject();
     g_stubObject->addref();
@@ -525,6 +538,7 @@ int main()
 
     std::cout << "\n-- Gate 1 (two-sided normalisation) + Gate 2 (TVD vs the real sampler) --" << std::endl;
     for( const Config& c : cfgs ) {
+        if( !extended && c.qtOverride == kQTFine ) { ++skippedFine; continue; }
         RunConfig( c, -1.0 );
     }
 
@@ -533,10 +547,14 @@ int main()
         if( c.runNM ) {
             // ScatterNM has no per-channel branch, so a per-channel
             // roughness painter is not a distinct spectral case.
+            if( !extended && c.qtOverride == kQTFine ) { ++skippedFine; continue; }
             RunConfig( c, 550.0 );
         }
     }
 
+    if( skippedFine > 0 ) {
+        std::cout << "\nSkipped " << skippedFine << " fine-grid run(s); set RISE_TEST_EXTENDED=1 or pass --extended to run them." << std::endl;
+    }
     std::cout << "\nChecks: " << g_checks << " Failures: " << g_failures << std::endl;
     if( g_failures == 0 ) {
         std::cout << "All SchlickSPF Pdf consistency checks passed!" << std::endl;

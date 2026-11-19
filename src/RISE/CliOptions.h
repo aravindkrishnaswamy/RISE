@@ -180,7 +180,7 @@ namespace RISE
 			if( std::strcmp( a, "--camera" ) == 0 ) {
 				if( ai + 1 >= argc || !argv[ai + 1] || argv[ai + 1][0] == '\0' || argv[ai + 1][0] == '-' ) {
 					err << "ERROR: --camera requires a non-empty camera name; got "
-					    << ( ai + 1 >= argc ? "end-of-args" : argv[ai + 1] ) << ".\n";
+					    << ( ( ai + 1 >= argc || !argv[ai + 1] ) ? "end-of-args" : argv[ai + 1] ) << ".\n";
 					return FlagMatch::MatchedError;
 				}
 				dst.hasCamera = true;

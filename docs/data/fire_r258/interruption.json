@@ -1,0 +1,11 @@
+{
+  "observed_utc": "2026-10-25T14:58:16.332904+00:00",
+  "last_logged_time_s": 12.58312,
+  "last_logged_step": 4400,
+  "processes": "FDS and both controllers absent",
+  "cause": "unknown; no logged FDS error or completion",
+  "recovery": "same unchanged input from zero; detached one-shot wrapper with SIGHUP ignored",
+  "recovery_started_utc": "2026-10-25T14:59:37.161368+00:00",
+  "verified_FDS_pid": 19464,
+  "verified_advancing_time_s": 0.13562
+}

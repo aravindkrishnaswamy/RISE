@@ -58,7 +58,8 @@
 //  (the camera ray's differentials, DL-14) and, since 2026-11-17, the
 //  copy of a surface light endpoint a light-traced (t == 1) connection
 //  shades, stamped with the footprint of the pixel it lands in
-//  (PathVertexEval::WithPixelFootprint; docs/DL14_..., section 10).
+//  (PathVertexEval::WithPixelFootprint; docs/DL14_..., section 10; this
+//  closes DL-636, which had pinned BDPT at max_light_depth 0 instead).
 //
 //    (1) PT vs BDPT, CONVERGED: whole-image mean within 0.1% and
 //        whole-image HF energy within 25%.

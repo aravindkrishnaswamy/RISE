@@ -210,7 +210,7 @@ namespace RISE
 		//
 
 		// Assignment
-		inline		SpectralPacket	operator=( const SpectralPacket& s )
+		inline		SpectralPacket&	operator=( const SpectralPacket& s )
 		{
 			if( this == &s ) {
 				return *this;

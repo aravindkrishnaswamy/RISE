@@ -35,7 +35,7 @@ TriangleMeshLoaderRAW::~TriangleMeshLoaderRAW( )
 
 bool TriangleMeshLoaderRAW::LoadTriangleMesh( ITriangleMeshGeometry* pGeom )
 {
-	std::ifstream inputFile( filename );
+	std::ifstream inputFile( LongAwareFsPath( filename.c_str() ) );
 
 	if( !inputFile || !pGeom ) {
 		GlobalLog()->Print( eLog_Error, "TriangleMeshLoaderRAW:: Failed to open file or bad geometry object" );

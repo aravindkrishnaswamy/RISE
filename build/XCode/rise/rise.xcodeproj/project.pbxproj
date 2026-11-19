@@ -382,6 +382,7 @@
 		F24B727D2F52A632008304C4 /* IRasterImageReader.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0889069C428F0069C9E5 /* IRasterImageReader.h */; };
 		F24B727E2F52A632008304C4 /* IRasterImageWriter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F088A069C428F0069C9E5 /* IRasterImageWriter.h */; };
 		F24B727F2F52A632008304C4 /* IRasterizer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F088B069C428F0069C9E5 /* IRasterizer.h */; };
+		A4F500010000000000000001 /* IRenderPreparationController.h in Sources */ = {isa = PBXBuildFile; fileRef = A4F500030000000000000003 /* IRenderPreparationController.h */; };
 		F24B72802F52A632008304C4 /* IRasterizerOutput.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F088C069C428F0069C9E5 /* IRasterizerOutput.h */; };
 		F24B72812F52A632008304C4 /* IRasterizeSequence.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F088D069C428F0069C9E5 /* IRasterizeSequence.h */; };
 		F24B72822F52A632008304C4 /* IRayCaster.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F088E069C428F0069C9E5 /* IRayCaster.h */; };
@@ -468,7 +469,12 @@
 		F24B72D32F52A632008304C4 /* CookTorranceSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E0069C42900069C9E5 /* CookTorranceSPF.h */; };
 		F24B72D42F52A632008304C4 /* DielectricMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E1069C42900069C9E5 /* DielectricMaterial.h */; };
 		F24B72D52F52A632008304C4 /* DielectricSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */; };
+		01EAA6405C33D1616E15A2D7 /* RoughDielectricMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */; };
+		CA368FA60E2912DABDACC33F /* RoughDielectricEnergy.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 85E2B2B3FC0BC493239F7BDA /* RoughDielectricEnergy.cpp */; };
 		F24B72D62F52A632008304C4 /* DielectricSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E3069C42900069C9E5 /* DielectricSPF.h */; };
+		E6DB0045BB8847325691D3A1 /* RoughDielectricMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = AB8D647B084BB4805FD4BC4C /* RoughDielectricMaterial.h */; };
+		48119A3F84F99CFC1674FDDA /* RoughDielectricEnergyData.h in Sources */ = {isa = PBXBuildFile; fileRef = 07D4A225B58E52552ACE6C1A /* RoughDielectricEnergyData.h */; };
+		DBA8C7752EBCD75BA9BA9C52 /* RoughDielectricEnergy.h in Sources */ = {isa = PBXBuildFile; fileRef = 3F46635D71433C953882E327 /* RoughDielectricEnergy.h */; };
 		F24B72D72F52A632008304C4 /* GenericHumanTissueMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E4069C42900069C9E5 /* GenericHumanTissueMaterial.h */; };
 		F24B72D82F52A632008304C4 /* GenericHumanTissueSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E5069C42900069C9E5 /* GenericHumanTissueSPF.cpp */; };
 		F24B72D92F52A632008304C4 /* GenericHumanTissueSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E6069C42900069C9E5 /* GenericHumanTissueSPF.h */; };
@@ -811,6 +817,38 @@
 		F24B74372F52A632008304C4 /* MersenneTwister.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2C069C42900069C9E5 /* MersenneTwister.h */; };
 		F24B74392F52A632008304C4 /* Optics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2E069C42900069C9E5 /* Optics.cpp */; };
 		F24B743A2F52A632008304C4 /* Optics.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2F069C42900069C9E5 /* Optics.h */; };
+		FA51000131AA000100000001 /* PlanckRadiance.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000005 /* PlanckRadiance.cpp */; };
+		FA51000131AA000100000002 /* PlanckRadiance.h in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000006 /* PlanckRadiance.h */; };
+		FD86000131CC000100000001 /* RISECBOR64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC000100000009 /* RISECBOR64.cpp */; };
+		FD86000131CC000100000002 /* RISECBOR64.h in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000A /* RISECBOR64.h */; };
+		FD86000131CC000100000003 /* FireOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000B /* FireOptics.cpp */; };
+		FD86000131CC000100000004 /* FireOptics.h in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000C /* FireOptics.h */; };
+		FC11000131DD000100000001 /* FireSimulationRecords.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC11000131DD000100000009 /* FireSimulationRecords.cpp */; };
+		FC11000131DD000100000002 /* FireSimulationRecords.h in Sources */ = {isa = PBXBuildFile; fileRef = FC11000131DD00010000000A /* FireSimulationRecords.h */; };
+		FA83000131FF000100000001 /* FireProductionTables.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF000100000009 /* FireProductionTables.cpp */; };
+		FA83000131FF000100000002 /* FireProductionTables.h in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000A /* FireProductionTables.h */; };
+		FA83000131FF000100000003 /* FireProductionCompute.h in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000B /* FireProductionCompute.h */; };
+		FA83000131FF000100000004 /* FireProductionComputeMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000C /* FireProductionComputeMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc"; }; };
+		FA84000131FF000100000001 /* FireProductionAdvection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000007 /* FireProductionAdvection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FA84000131FF000100000002 /* FireProductionAdvection.h in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000008 /* FireProductionAdvection.h */; };
+		FA84000131FF000100000003 /* FireProductionAdvectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc -fno-fast-math -ffp-contract=off"; }; };
+		FB86000131FF000100000001 /* FireProductionProjection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000007 /* FireProductionProjection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FB86000131FF000100000002 /* FireProductionProjection.h in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000008 /* FireProductionProjection.h */; };
+		FB86000131FF00010000000A /* FireProductionProjectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000009 /* FireProductionProjectionMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc -fno-fast-math -ffp-contract=off"; }; };
+		FC92000131FF000100000001 /* FireProductionTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC92000131FF000100000007 /* FireProductionTransport.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FC92000131FF000100000002 /* FireProductionTransport.h in Sources */ = {isa = PBXBuildFile; fileRef = FC92000131FF000100000008 /* FireProductionTransport.h */; };
+		FE86000131FF000100000001 /* FireProductionSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FE86000131FF000100000007 /* FireProductionSource.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FE86000131FF000100000002 /* FireProductionSourceKernel.h in Sources */ = {isa = PBXBuildFile; fileRef = FE86000131FF000100000008 /* FireProductionSourceKernel.h */; };
+		FD93000131FF000100000001 /* FireProductionForce.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD93000131FF000100000007 /* FireProductionForce.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FD93000131FF000100000002 /* FireProductionForce.h in Sources */ = {isa = PBXBuildFile; fileRef = FD93000131FF000100000008 /* FireProductionForce.h */; };
+		FD93000131FF000100000005 /* FireProductionForceMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FD93000131FF000100000009 /* FireProductionForceMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc -fno-fast-math -ffp-contract=off"; }; };
+		FA83000131FF000100000011 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000D /* Metal.framework */; };
+		FA83000131FF000100000012 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000D /* Metal.framework */; };
+		F512000131EE000100000001 /* FireSequence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE000100000009 /* FireSequence.cpp */; };
+		F513000131EE000100000001 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; };
+		F512000131EE000100000002 /* FireSequence.h in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE00010000000A /* FireSequence.h */; };
+		FB37000131BB000100000001 /* GaussLegendreQuadrature.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */; };
+		FB37000131BB000100000002 /* GaussLegendreQuadrature.h in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000006 /* GaussLegendreQuadrature.h */; };
 		F24B743B2F52A632008304C4 /* OrthonormalBasis3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */; };
 		F24B743C2F52A632008304C4 /* OrthonormalBasis3D.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A31069C42900069C9E5 /* OrthonormalBasis3D.h */; };
 		F24B743D2F52A632008304C4 /* PEL.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A32069C42900069C9E5 /* PEL.h */; };
@@ -1121,6 +1159,7 @@
 		F27F0AF5069C42910069C9E5 /* IRasterImageReader.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0889069C428F0069C9E5 /* IRasterImageReader.h */; };
 		F27F0AF6069C42910069C9E5 /* IRasterImageWriter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F088A069C428F0069C9E5 /* IRasterImageWriter.h */; };
 		F27F0AF7069C42910069C9E5 /* IRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F088B069C428F0069C9E5 /* IRasterizer.h */; };
+		A4F500020000000000000002 /* IRenderPreparationController.h in Headers */ = {isa = PBXBuildFile; fileRef = A4F500030000000000000003 /* IRenderPreparationController.h */; };
 		F27F0AF8069C42910069C9E5 /* IRasterizerOutput.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F088C069C428F0069C9E5 /* IRasterizerOutput.h */; };
 		F27F0AF9069C42910069C9E5 /* IRasterizeSequence.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F088D069C428F0069C9E5 /* IRasterizeSequence.h */; };
 		F27F0AFA069C42910069C9E5 /* IRayCaster.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F088E069C428F0069C9E5 /* IRayCaster.h */; };
@@ -1200,7 +1239,12 @@
 		F27F0B48069C42910069C9E5 /* CookTorranceSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E0069C42900069C9E5 /* CookTorranceSPF.h */; };
 		F27F0B49069C42910069C9E5 /* DielectricMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E1069C42900069C9E5 /* DielectricMaterial.h */; };
 		F27F0B4A069C42910069C9E5 /* DielectricSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */; };
+		1D81A1F561D9D814B3B6DF5D /* RoughDielectricMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */; };
+		399FB9A52FC966378D28F8FF /* RoughDielectricEnergy.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 85E2B2B3FC0BC493239F7BDA /* RoughDielectricEnergy.cpp */; };
 		F27F0B4B069C42910069C9E5 /* DielectricSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E3069C42900069C9E5 /* DielectricSPF.h */; };
+		1746417C8BD779406CF744AA /* RoughDielectricMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = AB8D647B084BB4805FD4BC4C /* RoughDielectricMaterial.h */; };
+		09277BB764AD06ACA6FEA3DE /* RoughDielectricEnergyData.h in Headers */ = {isa = PBXBuildFile; fileRef = 07D4A225B58E52552ACE6C1A /* RoughDielectricEnergyData.h */; };
+		32CCF27D084D623F36FA1E70 /* RoughDielectricEnergy.h in Headers */ = {isa = PBXBuildFile; fileRef = 3F46635D71433C953882E327 /* RoughDielectricEnergy.h */; };
 		F27F0B4C069C42910069C9E5 /* GenericHumanTissueMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E4069C42900069C9E5 /* GenericHumanTissueMaterial.h */; };
 		F27F0B4D069C42910069C9E5 /* GenericHumanTissueSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E5069C42900069C9E5 /* GenericHumanTissueSPF.cpp */; };
 		F27F0B4E069C42910069C9E5 /* GenericHumanTissueSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E6069C42900069C9E5 /* GenericHumanTissueSPF.h */; };
@@ -1488,6 +1532,37 @@
 		F27F0C85069C42910069C9E5 /* MersenneTwister.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A2C069C42900069C9E5 /* MersenneTwister.h */; };
 		F27F0C87069C42910069C9E5 /* Optics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2E069C42900069C9E5 /* Optics.cpp */; };
 		F27F0C88069C42910069C9E5 /* Optics.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A2F069C42900069C9E5 /* Optics.h */; };
+		FA51000131AA000100000003 /* PlanckRadiance.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000005 /* PlanckRadiance.cpp */; };
+		FA51000131AA000100000004 /* PlanckRadiance.h in Headers */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000006 /* PlanckRadiance.h */; };
+		FD86000131CC000100000005 /* RISECBOR64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC000100000009 /* RISECBOR64.cpp */; };
+		FD86000131CC000100000006 /* RISECBOR64.h in Headers */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000A /* RISECBOR64.h */; };
+		FD86000131CC000100000007 /* FireOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000B /* FireOptics.cpp */; };
+		FD86000131CC000100000008 /* FireOptics.h in Headers */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000C /* FireOptics.h */; };
+		FC11000131DD000100000003 /* FireSimulationRecords.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC11000131DD000100000009 /* FireSimulationRecords.cpp */; };
+		FC11000131DD000100000004 /* FireSimulationRecords.h in Headers */ = {isa = PBXBuildFile; fileRef = FC11000131DD00010000000A /* FireSimulationRecords.h */; };
+		FA83000131FF000100000005 /* FireProductionTables.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF000100000009 /* FireProductionTables.cpp */; };
+		FA83000131FF000100000006 /* FireProductionTables.h in Headers */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000A /* FireProductionTables.h */; };
+		FA83000131FF000100000007 /* FireProductionCompute.h in Headers */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000B /* FireProductionCompute.h */; };
+		FA83000131FF000100000008 /* FireProductionComputeMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000C /* FireProductionComputeMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc"; }; };
+		FA84000131FF000100000004 /* FireProductionAdvection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000007 /* FireProductionAdvection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FA84000131FF000100000005 /* FireProductionAdvection.h in Headers */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000008 /* FireProductionAdvection.h */; };
+		FA84000131FF000100000006 /* FireProductionAdvectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc -fno-fast-math -ffp-contract=off"; }; };
+		FB86000131FF000100000003 /* FireProductionProjection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000007 /* FireProductionProjection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FB86000131FF000100000004 /* FireProductionProjection.h in Headers */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000008 /* FireProductionProjection.h */; };
+		FB86000131FF00010000000B /* FireProductionProjectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000009 /* FireProductionProjectionMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc -fno-fast-math -ffp-contract=off"; }; };
+		FC92000131FF000100000003 /* FireProductionTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC92000131FF000100000007 /* FireProductionTransport.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FC92000131FF000100000004 /* FireProductionTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = FC92000131FF000100000008 /* FireProductionTransport.h */; };
+		FE86000131FF000100000003 /* FireProductionSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FE86000131FF000100000007 /* FireProductionSource.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FE86000131FF000100000004 /* FireProductionSourceKernel.h in Headers */ = {isa = PBXBuildFile; fileRef = FE86000131FF000100000008 /* FireProductionSourceKernel.h */; };
+		FD93000131FF000100000003 /* FireProductionForce.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD93000131FF000100000007 /* FireProductionForce.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FD93000131FF000100000004 /* FireProductionForce.h in Headers */ = {isa = PBXBuildFile; fileRef = FD93000131FF000100000008 /* FireProductionForce.h */; };
+		FD93000131FF000100000006 /* FireProductionForceMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FD93000131FF000100000009 /* FireProductionForceMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc -fno-fast-math -ffp-contract=off"; }; };
+		F512000131EE000100000003 /* FireSequence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE000100000009 /* FireSequence.cpp */; };
+		F513000131EE000100000003 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; };
+		F513000131EE000100000004 /* FireCase.h in Headers */ = {isa = PBXBuildFile; fileRef = F513000131EE00010000000A /* FireCase.h */; };
+		F512000131EE000100000004 /* FireSequence.h in Headers */ = {isa = PBXBuildFile; fileRef = F512000131EE00010000000A /* FireSequence.h */; };
+		FB37000131BB000100000003 /* GaussLegendreQuadrature.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */; };
+		FB37000131BB000100000004 /* GaussLegendreQuadrature.h in Headers */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000006 /* GaussLegendreQuadrature.h */; };
 		F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */; };
 		F27F0C8A069C42910069C9E5 /* OrthonormalBasis3D.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A31069C42900069C9E5 /* OrthonormalBasis3D.h */; };
 		F27F0C8B069C42910069C9E5 /* PEL.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A32069C42900069C9E5 /* PEL.h */; };
@@ -1637,6 +1712,9 @@
 		F2C5D5F22F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
 		F2C5D5F32F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */; };
 		F2C5D5F42F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
+		F2E45A012FA0000100F1A45E /* SSSContainment.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E45A042FA0000100F1A45E /* SSSContainment.cpp */; };
+		F2E45A022FA0000100F1A45E /* SSSContainment.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E45A052FA0000100F1A45E /* SSSContainment.h */; };
+		F2E45A032FA0000100F1A45E /* SSSContainment.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E45A042FA0000100F1A45E /* SSSContainment.cpp */; };
 		F2C5D5FC2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
 		F2C5D5FD2F74237500546C97 /* ManifoldSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */; };
 		F2C5D5FE2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
@@ -1645,6 +1723,14 @@
 		F2C7C8DB2F75DF1C0030CB78 /* SMSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */; };
 		F2C7C8DD2F760A6D0030CB78 /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
 		F2C7C8DE2F760A6D0030CB78 /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
+		A9B1C0037E29000100000001 /* NullBoundaryMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = A9B1C0017E29000100000001 /* NullBoundaryMaterial.h */; };
+		A9B1C0047E29000100000001 /* NullBoundaryMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = A9B1C0017E29000100000001 /* NullBoundaryMaterial.h */; };
+		A9B1C0057E29000100000001 /* NullBoundaryMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */; };
+		A9B1C0067E29000100000001 /* NullBoundaryMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */; };
+		B8C1D0037E29000100000001 /* IContinuationClosure.h in Headers */ = {isa = PBXBuildFile; fileRef = B8C1D0017E29000100000001 /* IContinuationClosure.h */; };
+		B8C1D0047E29000100000001 /* IContinuationClosure.h in Sources */ = {isa = PBXBuildFile; fileRef = B8C1D0017E29000100000001 /* IContinuationClosure.h */; };
+		B8C1D0057E29000100000001 /* ContinuationClosure.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B8C1D0027E29000100000001 /* ContinuationClosure.cpp */; };
+		B8C1D0067E29000100000001 /* ContinuationClosure.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B8C1D0027E29000100000001 /* ContinuationClosure.cpp */; };
 		F2C7C9A22F9000020030CB78 /* SobolDirectionNumbers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C9A12F9000010030CB78 /* SobolDirectionNumbers.cpp */; };
 		F2C7C9A32F9000030030CB78 /* SobolDirectionNumbers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C9A12F9000010030CB78 /* SobolDirectionNumbers.cpp */; };
 		F2C7C8E62F777BD60030CB78 /* SobolSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */; };
@@ -2024,6 +2110,52 @@
 		FF11FFFF000000000000F1A7 /* Film.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A6 /* Film.cpp */; };
 		FF11FFFF000000000000F1A8 /* Film.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A6 /* Film.cpp */; };
 		FF6F2FF372416EB54D24CE1F /* MappingPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */; };
+		F96F28D398EE7B188AF466F6 /* Profiling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F95D435F04092BE4C62DA966 /* Profiling.cpp */; };
+		F9283202CD42F3BC145CF3BB /* Profiling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F95D435F04092BE4C62DA966 /* Profiling.cpp */; };
+		F9052A5E809A12D8F62F4B47 /* IAtmosphere.h in Headers */ = {isa = PBXBuildFile; fileRef = F9B205C70912272622C92403 /* IAtmosphere.h */; };
+		F9915099FB371956E6E685A3 /* IBSDF.h in Headers */ = {isa = PBXBuildFile; fileRef = F937672FA6AC8D3D32572A93 /* IBSDF.h */; };
+		F9FD5F919CA42D1AC14A1F3A /* IMedium.h in Headers */ = {isa = PBXBuildFile; fileRef = F9FFE84AA108DD2E4A4494FC /* IMedium.h */; };
+		F95DBB94C5C1C03201D18C0A /* IPhaseFunction.h in Headers */ = {isa = PBXBuildFile; fileRef = F999DC413A60C6176BB7DC0C /* IPhaseFunction.h */; };
+		F9DECB87E7B99713A46706F2 /* IShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F9C54109010D37E1F6B83816 /* IShaderOp.h */; };
+		F9336723ADEB2CCDAD77D1DD /* IShaderOpManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F9EF7BC79CDD0155F3EEF307 /* IShaderOpManager.h */; };
+		F995B615700F5800E2A033D6 /* ISubSurfaceDiffusionProfile.h in Headers */ = {isa = PBXBuildFile; fileRef = F9CD1BEDD6AF9E0BA713BB3E /* ISubSurfaceDiffusionProfile.h */; };
+		F971607129391EB99198E4F9 /* ISubSurfaceExtinctionFunction.h in Headers */ = {isa = PBXBuildFile; fileRef = F9A82477462FA0EEC09698C2 /* ISubSurfaceExtinctionFunction.h */; };
+		F9A207DD6B7DFE47C77B4224 /* SpecularInfo.h in Headers */ = {isa = PBXBuildFile; fileRef = F9C48BB75D7DB730DEAD5DE6 /* SpecularInfo.h */; };
+		F9BE08F2B189651F4C55E180 /* ShaderOpManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F984D29C30ED351260DF6D30 /* ShaderOpManager.h */; };
+		F945B11B3CAECB85586FE5C9 /* IsotropicPhaseFunction.h in Headers */ = {isa = PBXBuildFile; fileRef = F9454E8686EE51CEB37D4BB8 /* IsotropicPhaseFunction.h */; };
+		F927660579C279B858C44513 /* RandomWalkSSSMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F9DE2B064425A8B8055D1D44 /* RandomWalkSSSMaterial.h */; };
+		F988C73032357E29BB75174B /* MortonRasterizeSequence.h in Headers */ = {isa = PBXBuildFile; fileRef = F9A958414000DD657941C24F /* MortonRasterizeSequence.h */; };
+		F93552B21F7B90E01693F705 /* PixelBasedSpectralIntegratingRasterizerRGB.h in Headers */ = {isa = PBXBuildFile; fileRef = F9AB67DC2A639AF51ED33480 /* PixelBasedSpectralIntegratingRasterizerRGB.h */; };
+		F9457461BD154305E1C5514D /* ProgressiveFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = F9927EF5EF33877954838D30 /* ProgressiveFilm.h */; };
+		F9D470F25FBF17B2ADC6B0A6 /* RasterizeDispatchers.h in Headers */ = {isa = PBXBuildFile; fileRef = F95D66D53F68428932226808 /* RasterizeDispatchers.h */; };
+		F9833616198B4D658EFF7F02 /* SobolSequence.h in Headers */ = {isa = PBXBuildFile; fileRef = F93DA5FD7CBD402530F5B92A /* SobolSequence.h */; };
+		F95B7FF7BC8956F3452413D9 /* BSSRDFEntryAdapters.h in Headers */ = {isa = PBXBuildFile; fileRef = F9875915DD81C04E5E83784C /* BSSRDFEntryAdapters.h */; };
+		F9E8054FC0765B3DB5709933 /* FinalGatherInterpolation.h in Headers */ = {isa = PBXBuildFile; fileRef = F933C697D1EBD7F3FE8D4231 /* FinalGatherInterpolation.h */; };
+		F92BB984C38C06229CE9F1A6 /* AP1RGB.h in Headers */ = {isa = PBXBuildFile; fileRef = F93A24E60148A5E251C160EC /* AP1RGB.h */; };
+		F91F725CCE9C470A1B820B1C /* ColorConversion.h in Headers */ = {isa = PBXBuildFile; fileRef = F9630E68AF59BFFB187828D4 /* ColorConversion.h */; };
+		F9523CA9D61384C14AB46211 /* ColorMath.h in Headers */ = {isa = PBXBuildFile; fileRef = F923DDB3817507F01AFD4B83 /* ColorMath.h */; };
+		F942BC84F5365F2F3B3A0F3A /* ColorOperators.h in Headers */ = {isa = PBXBuildFile; fileRef = F918C1FF197EA5D0925B4D9D /* ColorOperators.h */; };
+		F96FA577DBB477BA0C1792FB /* ProPhotoRGB.h in Headers */ = {isa = PBXBuildFile; fileRef = F90247F7EBDDFA8110E138DF /* ProPhotoRGB.h */; };
+		F9B82BF098D44343F4543135 /* ROMMRGB.h in Headers */ = {isa = PBXBuildFile; fileRef = F9F1465BE062B9FE7155ABF2 /* ROMMRGB.h */; };
+		F9B8E8CCDFEA25C205DAFC51 /* Rec709RGB.h in Headers */ = {isa = PBXBuildFile; fileRef = F96C9AA8F169AAE1DD7E6755 /* Rec709RGB.h */; };
+		F93608793E5AD0A9DCF0FD6E /* SampledWavelengths.h in Headers */ = {isa = PBXBuildFile; fileRef = F90AF42F05CF4AD03A15649C /* SampledWavelengths.h */; };
+		F9560182A894C0909A9019B0 /* ScaleColorOperator.h in Headers */ = {isa = PBXBuildFile; fileRef = F94783CB3BE75E897CBF8B00 /* ScaleColorOperator.h */; };
+		F924AC0088F758848B6219B1 /* ShiftColorOperator.h in Headers */ = {isa = PBXBuildFile; fileRef = F97614727286C99AC8D588B1 /* ShiftColorOperator.h */; };
+		F93B1DD3F69E6DFFEABD26D9 /* EquiangularSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F9BCF226CF0307AF10EFA8A7 /* EquiangularSampler.h */; };
+		F91690AC420123FFE0748956 /* ISampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F9EF621714FABAA411A1DE98 /* ISampler.h */; };
+		F9EDB236DE18EBA71286DF72 /* IndependentSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F92B7E69FE06E5B936C23F0D /* IndependentSampler.h */; };
+		F9F8A4B69E50505272A49E3C /* MISWeights.h in Headers */ = {isa = PBXBuildFile; fileRef = F9702C9AF2EC9D45DA98AD8E /* MISWeights.h */; };
+		F9DD77BCDD0057A42D6FBABC /* MortonCode.h in Headers */ = {isa = PBXBuildFile; fileRef = F9C518E9999C21BEB2A3DE14 /* MortonCode.h */; };
+		F94C6BB543672DF452251996 /* Primes.h in Headers */ = {isa = PBXBuildFile; fileRef = F9304798AAB9117C62F25462 /* Primes.h */; };
+		F99145F78473458E05202865 /* Profiling.h in Headers */ = {isa = PBXBuildFile; fileRef = F94C19AA91622B54A204637C /* Profiling.h */; };
+		F91A54B9DFF268D35987CC5D /* RasterSanityScan.h in Headers */ = {isa = PBXBuildFile; fileRef = F93AD3951A1C23D67FDB7820 /* RasterSanityScan.h */; };
+		F9A244FD91D33A0A1123AFCC /* RuntimeContext.h in Headers */ = {isa = PBXBuildFile; fileRef = F9943ADFF7375A293B00D9EE /* RuntimeContext.h */; };
+		F9F0D4094D50F543E82221CC /* SSSCoefficients.h in Headers */ = {isa = PBXBuildFile; fileRef = F909DC15110BD872B6395BF1 /* SSSCoefficients.h */; };
+		F949EC3BF6394CBFC0B60196 /* SobolSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F974DFD920D5303C22E39A22 /* SobolSampler.h */; };
+		F906F4C16B6C467C0977EAB7 /* StabilityConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F9C05CA0835843CAFA9784EC /* StabilityConfig.h */; };
+		F92134AB162D0550F2183283 /* ZSobolSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F9DEBE7B82A18DD3C46224C5 /* ZSobolSampler.h */; };
+		F990E718DD40B6888AC735AD /* VolumeAccessor_Painter.h in Headers */ = {isa = PBXBuildFile; fileRef = F940B2B2310EB5AAF01277C5 /* VolumeAccessor_Painter.h */; };
+		F9698A868636198289A3C0C3 /* VolumeAccessor_TriCubic.h in Headers */ = {isa = PBXBuildFile; fileRef = F9EAA67E50B22F06285E9D35 /* VolumeAccessor_TriCubic.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2420,6 +2552,7 @@
 		F27F0889069C428F0069C9E5 /* IRasterImageReader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IRasterImageReader.h; sourceTree = "<group>"; };
 		F27F088A069C428F0069C9E5 /* IRasterImageWriter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IRasterImageWriter.h; sourceTree = "<group>"; };
 		F27F088B069C428F0069C9E5 /* IRasterizer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IRasterizer.h; sourceTree = "<group>"; };
+		A4F500030000000000000003 /* IRenderPreparationController.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IRenderPreparationController.h; sourceTree = "<group>"; };
 		F27F088C069C428F0069C9E5 /* IRasterizerOutput.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IRasterizerOutput.h; sourceTree = "<group>"; };
 		F27F088D069C428F0069C9E5 /* IRasterizeSequence.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IRasterizeSequence.h; sourceTree = "<group>"; };
 		F27F088E069C428F0069C9E5 /* IRayCaster.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IRayCaster.h; sourceTree = "<group>"; };
@@ -2499,7 +2632,12 @@
 		F27F08E0069C42900069C9E5 /* CookTorranceSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CookTorranceSPF.h; sourceTree = "<group>"; };
 		F27F08E1069C42900069C9E5 /* DielectricMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DielectricMaterial.h; sourceTree = "<group>"; };
 		F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DielectricSPF.cpp; sourceTree = "<group>"; };
+		4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RoughDielectricMaterial.cpp; sourceTree = "<group>"; };
+		85E2B2B3FC0BC493239F7BDA /* RoughDielectricEnergy.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RoughDielectricEnergy.cpp; sourceTree = "<group>"; };
 		F27F08E3069C42900069C9E5 /* DielectricSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DielectricSPF.h; sourceTree = "<group>"; };
+		AB8D647B084BB4805FD4BC4C /* RoughDielectricMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RoughDielectricMaterial.h; sourceTree = "<group>"; };
+		07D4A225B58E52552ACE6C1A /* RoughDielectricEnergyData.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RoughDielectricEnergyData.h; sourceTree = "<group>"; };
+		3F46635D71433C953882E327 /* RoughDielectricEnergy.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RoughDielectricEnergy.h; sourceTree = "<group>"; };
 		F27F08E4069C42900069C9E5 /* GenericHumanTissueMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GenericHumanTissueMaterial.h; sourceTree = "<group>"; };
 		F27F08E5069C42900069C9E5 /* GenericHumanTissueSPF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GenericHumanTissueSPF.cpp; sourceTree = "<group>"; };
 		F27F08E6069C42900069C9E5 /* GenericHumanTissueSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GenericHumanTissueSPF.h; sourceTree = "<group>"; };
@@ -2787,6 +2925,38 @@
 		F27F0A2C069C42900069C9E5 /* MersenneTwister.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MersenneTwister.h; sourceTree = "<group>"; };
 		F27F0A2E069C42900069C9E5 /* Optics.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Optics.cpp; sourceTree = "<group>"; };
 		F27F0A2F069C42900069C9E5 /* Optics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Optics.h; sourceTree = "<group>"; };
+		FA51000131AA000100000005 /* PlanckRadiance.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PlanckRadiance.cpp; sourceTree = "<group>"; };
+		FA51000131AA000100000006 /* PlanckRadiance.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PlanckRadiance.h; sourceTree = "<group>"; };
+		FD86000131CC000100000009 /* RISECBOR64.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RISECBOR64.cpp; sourceTree = "<group>"; };
+		FD86000131CC00010000000A /* RISECBOR64.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RISECBOR64.h; sourceTree = "<group>"; };
+		FD86000131CC00010000000B /* FireOptics.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireOptics.cpp; sourceTree = "<group>"; };
+		FD86000131CC00010000000C /* FireOptics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireOptics.h; sourceTree = "<group>"; };
+		FC11000131DD000100000009 /* FireSimulationRecords.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireSimulationRecords.cpp; sourceTree = "<group>"; };
+		FC11000131DD00010000000A /* FireSimulationRecords.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireSimulationRecords.h; sourceTree = "<group>"; };
+		FA83000131FF000100000009 /* FireProductionTables.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireProductionTables.cpp; sourceTree = "<group>"; };
+		FA83000131FF00010000000A /* FireProductionTables.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionTables.h; sourceTree = "<group>"; };
+		FA83000131FF00010000000B /* FireProductionCompute.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionCompute.h; sourceTree = "<group>"; };
+		FA83000131FF00010000000C /* FireProductionComputeMac.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = FireProductionComputeMac.mm; sourceTree = "<group>"; };
+		FA83000131FF00010000000D /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		FA84000131FF000100000007 /* FireProductionAdvection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireProductionAdvection.cpp; sourceTree = "<group>"; };
+		FA84000131FF000100000008 /* FireProductionAdvection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionAdvection.h; sourceTree = "<group>"; };
+		FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = FireProductionAdvectionMac.mm; sourceTree = "<group>"; };
+		FB86000131FF000100000007 /* FireProductionProjection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireProductionProjection.cpp; sourceTree = "<group>"; };
+		FB86000131FF000100000008 /* FireProductionProjection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionProjection.h; sourceTree = "<group>"; };
+		FB86000131FF000100000009 /* FireProductionProjectionMac.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = FireProductionProjectionMac.mm; sourceTree = "<group>"; };
+		FC92000131FF000100000007 /* FireProductionTransport.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireProductionTransport.cpp; sourceTree = "<group>"; };
+		FC92000131FF000100000008 /* FireProductionTransport.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionTransport.h; sourceTree = "<group>"; };
+		FE86000131FF000100000007 /* FireProductionSource.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireProductionSource.cpp; sourceTree = "<group>"; };
+		FE86000131FF000100000008 /* FireProductionSourceKernel.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionSourceKernel.h; sourceTree = "<group>"; };
+		FD93000131FF000100000007 /* FireProductionForce.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireProductionForce.cpp; sourceTree = "<group>"; };
+		FD93000131FF000100000008 /* FireProductionForce.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionForce.h; sourceTree = "<group>"; };
+		FD93000131FF000100000009 /* FireProductionForceMac.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = FireProductionForceMac.mm; sourceTree = "<group>"; };
+		F512000131EE000100000009 /* FireSequence.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireSequence.cpp; sourceTree = "<group>"; };
+		F513000131EE000100000009 /* FireCase.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireCase.cpp; sourceTree = "<group>"; };
+		F513000131EE00010000000A /* FireCase.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireCase.h; sourceTree = "<group>"; };
+		F512000131EE00010000000A /* FireSequence.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireSequence.h; sourceTree = "<group>"; };
+		FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GaussLegendreQuadrature.cpp; sourceTree = "<group>"; };
+		FB37000131BB000100000006 /* GaussLegendreQuadrature.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GaussLegendreQuadrature.h; sourceTree = "<group>"; };
 		F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = OrthonormalBasis3D.cpp; sourceTree = "<group>"; };
 		F27F0A31069C42900069C9E5 /* OrthonormalBasis3D.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = OrthonormalBasis3D.h; sourceTree = "<group>"; };
 		F27F0A32069C42900069C9E5 /* PEL.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PEL.h; sourceTree = "<group>"; };
@@ -2899,11 +3069,17 @@
 		F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinDiffusionProfile.cpp; sourceTree = "<group>"; };
 		F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DonnerJensenSkinSSSShaderOp.h; sourceTree = "<group>"; };
 		F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
+		F2E45A042FA0000100F1A45E /* SSSContainment.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SSSContainment.cpp; sourceTree = "<group>"; };
+		F2E45A052FA0000100F1A45E /* SSSContainment.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SSSContainment.h; sourceTree = "<group>"; };
 		F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ManifoldSolver.h; sourceTree = "<group>"; };
 		F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ManifoldSolver.cpp; sourceTree = "<group>"; };
 		F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSShaderOp.h; sourceTree = "<group>"; };
 		F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = IMaterial.cpp; sourceTree = "<group>"; };
+		A9B1C0017E29000100000001 /* NullBoundaryMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NullBoundaryMaterial.h; sourceTree = "<group>"; };
+		A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = NullBoundaryMaterial.cpp; sourceTree = "<group>"; };
+		B8C1D0017E29000100000001 /* IContinuationClosure.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IContinuationClosure.h; sourceTree = "<group>"; };
+		B8C1D0027E29000100000001 /* ContinuationClosure.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ContinuationClosure.cpp; sourceTree = "<group>"; };
 		F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SobolSampling2D.h; sourceTree = "<group>"; };
 		F2C7C9A12F9000010030CB78 /* SobolDirectionNumbers.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SobolDirectionNumbers.cpp; sourceTree = "<group>"; };
 		F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SobolSampling2D.cpp; sourceTree = "<group>"; };
@@ -3124,10 +3300,65 @@
 		FF11FFFF000000000000F1A1 /* IFilm.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IFilm.h; sourceTree = "<group>"; };
 		FF11FFFF000000000000F1A4 /* Film.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Film.h; sourceTree = "<group>"; };
 		FF11FFFF000000000000F1A6 /* Film.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Film.cpp; sourceTree = "<group>"; };
+		F95D435F04092BE4C62DA966 /* Profiling.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = Profiling.cpp; sourceTree = "<group>"; };
+		F9B205C70912272622C92403 /* IAtmosphere.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IAtmosphere.h; sourceTree = "<group>"; };
+		F937672FA6AC8D3D32572A93 /* IBSDF.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IBSDF.h; sourceTree = "<group>"; };
+		F9FFE84AA108DD2E4A4494FC /* IMedium.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IMedium.h; sourceTree = "<group>"; };
+		F999DC413A60C6176BB7DC0C /* IPhaseFunction.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IPhaseFunction.h; sourceTree = "<group>"; };
+		F9C54109010D37E1F6B83816 /* IShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IShaderOp.h; sourceTree = "<group>"; };
+		F9EF7BC79CDD0155F3EEF307 /* IShaderOpManager.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IShaderOpManager.h; sourceTree = "<group>"; };
+		F9CD1BEDD6AF9E0BA713BB3E /* ISubSurfaceDiffusionProfile.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ISubSurfaceDiffusionProfile.h; sourceTree = "<group>"; };
+		F9A82477462FA0EEC09698C2 /* ISubSurfaceExtinctionFunction.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ISubSurfaceExtinctionFunction.h; sourceTree = "<group>"; };
+		F9C48BB75D7DB730DEAD5DE6 /* SpecularInfo.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SpecularInfo.h; sourceTree = "<group>"; };
+		F984D29C30ED351260DF6D30 /* ShaderOpManager.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ShaderOpManager.h; sourceTree = "<group>"; };
+		F9454E8686EE51CEB37D4BB8 /* IsotropicPhaseFunction.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IsotropicPhaseFunction.h; sourceTree = "<group>"; };
+		F9DE2B064425A8B8055D1D44 /* RandomWalkSSSMaterial.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RandomWalkSSSMaterial.h; sourceTree = "<group>"; };
+		F9A958414000DD657941C24F /* MortonRasterizeSequence.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MortonRasterizeSequence.h; sourceTree = "<group>"; };
+		F9AB67DC2A639AF51ED33480 /* PixelBasedSpectralIntegratingRasterizerRGB.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = PixelBasedSpectralIntegratingRasterizerRGB.h; sourceTree = "<group>"; };
+		F9927EF5EF33877954838D30 /* ProgressiveFilm.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ProgressiveFilm.h; sourceTree = "<group>"; };
+		F95D66D53F68428932226808 /* RasterizeDispatchers.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RasterizeDispatchers.h; sourceTree = "<group>"; };
+		F93DA5FD7CBD402530F5B92A /* SobolSequence.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SobolSequence.h; sourceTree = "<group>"; };
+		F9875915DD81C04E5E83784C /* BSSRDFEntryAdapters.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = BSSRDFEntryAdapters.h; sourceTree = "<group>"; };
+		F933C697D1EBD7F3FE8D4231 /* FinalGatherInterpolation.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = FinalGatherInterpolation.h; sourceTree = "<group>"; };
+		F93A24E60148A5E251C160EC /* AP1RGB.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = AP1RGB.h; sourceTree = "<group>"; };
+		F9630E68AF59BFFB187828D4 /* ColorConversion.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ColorConversion.h; sourceTree = "<group>"; };
+		F923DDB3817507F01AFD4B83 /* ColorMath.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ColorMath.h; sourceTree = "<group>"; };
+		F918C1FF197EA5D0925B4D9D /* ColorOperators.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ColorOperators.h; sourceTree = "<group>"; };
+		F90247F7EBDDFA8110E138DF /* ProPhotoRGB.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ProPhotoRGB.h; sourceTree = "<group>"; };
+		F9F1465BE062B9FE7155ABF2 /* ROMMRGB.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ROMMRGB.h; sourceTree = "<group>"; };
+		F96C9AA8F169AAE1DD7E6755 /* Rec709RGB.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = Rec709RGB.h; sourceTree = "<group>"; };
+		F90AF42F05CF4AD03A15649C /* SampledWavelengths.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SampledWavelengths.h; sourceTree = "<group>"; };
+		F94783CB3BE75E897CBF8B00 /* ScaleColorOperator.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ScaleColorOperator.h; sourceTree = "<group>"; };
+		F97614727286C99AC8D588B1 /* ShiftColorOperator.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ShiftColorOperator.h; sourceTree = "<group>"; };
+		F9BCF226CF0307AF10EFA8A7 /* EquiangularSampler.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = EquiangularSampler.h; sourceTree = "<group>"; };
+		F9EF621714FABAA411A1DE98 /* ISampler.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ISampler.h; sourceTree = "<group>"; };
+		F92B7E69FE06E5B936C23F0D /* IndependentSampler.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IndependentSampler.h; sourceTree = "<group>"; };
+		F9702C9AF2EC9D45DA98AD8E /* MISWeights.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MISWeights.h; sourceTree = "<group>"; };
+		F9C518E9999C21BEB2A3DE14 /* MortonCode.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MortonCode.h; sourceTree = "<group>"; };
+		F9304798AAB9117C62F25462 /* Primes.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = Primes.h; sourceTree = "<group>"; };
+		F94C19AA91622B54A204637C /* Profiling.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = Profiling.h; sourceTree = "<group>"; };
+		F93AD3951A1C23D67FDB7820 /* RasterSanityScan.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RasterSanityScan.h; sourceTree = "<group>"; };
+		F9943ADFF7375A293B00D9EE /* RuntimeContext.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RuntimeContext.h; sourceTree = "<group>"; };
+		F909DC15110BD872B6395BF1 /* SSSCoefficients.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SSSCoefficients.h; sourceTree = "<group>"; };
+		F974DFD920D5303C22E39A22 /* SobolSampler.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SobolSampler.h; sourceTree = "<group>"; };
+		F9C05CA0835843CAFA9784EC /* StabilityConfig.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = StabilityConfig.h; sourceTree = "<group>"; };
+		F9DEBE7B82A18DD3C46224C5 /* ZSobolSampler.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ZSobolSampler.h; sourceTree = "<group>"; };
+		F940B2B2310EB5AAF01277C5 /* VolumeAccessor_Painter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = VolumeAccessor_Painter.h; sourceTree = "<group>"; };
+		F9EAA67E50B22F06285E9D35 /* VolumeAccessor_TriCubic.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = VolumeAccessor_TriCubic.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		F24900010000000000000001 /* Generated make dependency exclusion */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Bridge/MovieRasterizerOutput.d,
+			);
+			target = F24B71C52F52A211008304C4 /* RISE-GUI */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		F24B71C72F52A211008304C4 /* RISE-GUI */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = "RISE-GUI"; sourceTree = "<group>"; };
+		F24B71C72F52A211008304C4 /* RISE-GUI */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (F24900010000000000000001 /* Generated make dependency exclusion */,); explicitFileTypes = {}; explicitFolders = (); path = "RISE-GUI"; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -3135,6 +3366,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FA83000131FF000100000011 /* Metal.framework in Frameworks */,
 				A6E7B0F1000000000000C0DE /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -3143,6 +3375,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FA83000131FF000100000012 /* Metal.framework in Frameworks */,
 				F24C3E082F54FB65005DA46B /* CoreVideo.framework in Frameworks */,
 				F24C3E062F54FB5E005DA46B /* CoreMedia.framework in Frameworks */,
 				F24C3E042F54FB57005DA46B /* AVFoundation.framework in Frameworks */,
@@ -3156,6 +3389,7 @@
 		0249A662FF388D9811CA2CEA /* External Frameworks and Libraries */ = {
 			isa = PBXGroup;
 			children = (
+				FA83000131FF00010000000D /* Metal.framework */,
 			);
 			name = "External Frameworks and Libraries";
 			sourceTree = "<group>";
@@ -3207,6 +3441,8 @@
 			children = (
 				F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */,
 				F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */,
+				F2E45A042FA0000100F1A45E /* SSSContainment.cpp */,
+				F2E45A052FA0000100F1A45E /* SSSContainment.h */,
 				6DBFAA4B09C4D2A20048A09D /* DiffusionApproximationExtinction.h */,
 				6DBFAA4C09C4D2A20048A09D /* PointSetOctree.cpp */,
 				6DBFAA4D09C4D2A20048A09D /* PointSetOctree.h */,
@@ -3512,6 +3748,7 @@
 				F27F0872069C428F0069C9E5 /* ILuminaryManager.h */,
 				F27F0873069C428F0069C9E5 /* IManager.h */,
 				F27F0874069C428F0069C9E5 /* IMaterial.h */,
+				B8C1D0017E29000100000001 /* IContinuationClosure.h */,
 				F27F0875069C428F0069C9E5 /* IMaterialManager.h */,
 				F27F0876069C428F0069C9E5 /* IMemoryBuffer.h */,
 				F27F0877069C428F0069C9E5 /* IModifierManager.h */,
@@ -3539,6 +3776,7 @@
 				F27F0889069C428F0069C9E5 /* IRasterImageReader.h */,
 				F27F088A069C428F0069C9E5 /* IRasterImageWriter.h */,
 				F27F088B069C428F0069C9E5 /* IRasterizer.h */,
+				A4F500030000000000000003 /* IRenderPreparationController.h */,
 				F27F088C069C428F0069C9E5 /* IRasterizerOutput.h */,
 				FA00000000000000000001F8 /* IRenderObserver.h */,
 				FA00000000000000000002F5 /* IFrameEncoder.h */,
@@ -3566,6 +3804,15 @@
 				F27F08A2069C428F0069C9E5 /* IVolumeAccessor.h */,
 				F27F08A3069C428F0069C9E5 /* IVolumeOperation.h */,
 				F27F08A4069C428F0069C9E5 /* IWriteBuffer.h */,
+				F9B205C70912272622C92403 /* IAtmosphere.h */,
+				F937672FA6AC8D3D32572A93 /* IBSDF.h */,
+				F9FFE84AA108DD2E4A4494FC /* IMedium.h */,
+				F999DC413A60C6176BB7DC0C /* IPhaseFunction.h */,
+				F9C54109010D37E1F6B83816 /* IShaderOp.h */,
+				F9EF7BC79CDD0155F3EEF307 /* IShaderOpManager.h */,
+				F9CD1BEDD6AF9E0BA713BB3E /* ISubSurfaceDiffusionProfile.h */,
+				F9A82477462FA0EEC09698C2 /* ISubSurfaceExtinctionFunction.h */,
+				F9C48BB75D7DB730DEAD5DE6 /* SpecularInfo.h */,
 			);
 			path = Interfaces;
 			sourceTree = "<group>";
@@ -3627,6 +3874,7 @@
 				F27F08CC069C42900069C9E5 /* PainterManager.h */,
 				FA1ABFR10000000000000008 /* ScalarPainterManager.h */,
 				F27F08CD069C42900069C9E5 /* ShaderManager.h */,
+				F984D29C30ED351260DF6D30 /* ShaderOpManager.h */,
 			);
 			path = Managers;
 			sourceTree = "<group>";
@@ -3682,6 +3930,9 @@
 				F24C54432F7CAB4F009AF16D /* HomogeneousMedium.h */,
 				F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */,
 				F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */,
+				A9B1C0017E29000100000001 /* NullBoundaryMaterial.h */,
+				A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */,
+				B8C1D0027E29000100000001 /* ContinuationClosure.cpp */,
 				F2C5D5E92F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h */,
 				F2C5D5EA2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h */,
 				F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */,
@@ -3723,7 +3974,9 @@
 				F27F08E0069C42900069C9E5 /* CookTorranceSPF.h */,
 				F27F08E1069C42900069C9E5 /* DielectricMaterial.h */,
 				F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */,
+				4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */,
 				F27F08E3069C42900069C9E5 /* DielectricSPF.h */,
+				AB8D647B084BB4805FD4BC4C /* RoughDielectricMaterial.h */,
 				F27F08E4069C42900069C9E5 /* GenericHumanTissueMaterial.h */,
 				F27F08E5069C42900069C9E5 /* GenericHumanTissueSPF.cpp */,
 				F27F08E6069C42900069C9E5 /* GenericHumanTissueSPF.h */,
@@ -3781,6 +4034,8 @@
 				F27F091B069C42900069C9E5 /* WardIsotropicGaussianSPF.cpp */,
 				F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */,
 				A17802120000000000000003 /* WardSelectionQuadrature.h */,
+				F9454E8686EE51CEB37D4BB8 /* IsotropicPhaseFunction.h */,
+				F9DE2B064425A8B8055D1D44 /* RandomWalkSSSMaterial.h */,
 			);
 			path = Materials;
 			sourceTree = "<group>";
@@ -4130,6 +4385,10 @@
 				F27F09AC069C42900069C9E5 /* RayCaster.h */,
 				F27F09AD069C42900069C9E5 /* ScanlineRasterizeSequence.h */,
 				F27F09AF069C42900069C9E5 /* Win32WindowRasterizerOutput.h */,
+				F9A958414000DD657941C24F /* MortonRasterizeSequence.h */,
+				F9AB67DC2A639AF51ED33480 /* PixelBasedSpectralIntegratingRasterizerRGB.h */,
+				F9927EF5EF33877954838D30 /* ProgressiveFilm.h */,
+				F95D66D53F68428932226808 /* RasterizeDispatchers.h */,
 			);
 			path = Rendering;
 			sourceTree = "<group>";
@@ -4175,6 +4434,7 @@
 				F27F09D0069C42900069C9E5 /* UniformSampling2D.cpp */,
 				F27F09D1069C42900069C9E5 /* UniformSampling2D.h */,
 				F27F09D2069C42900069C9E5 /* WindowedSincPixelFilter.h */,
+				F93DA5FD7CBD402530F5B92A /* SobolSequence.h */,
 			);
 			path = Sampling;
 			sourceTree = "<group>";
@@ -4240,6 +4500,8 @@
 				F298C65207B14247007CDF08 /* StandardShader.h */,
 				F27F09D6069C42900069C9E5 /* DirectVolumeRenderingShader.cpp */,
 				F27F09D7069C42900069C9E5 /* DirectVolumeRenderingShader.h */,
+				F9875915DD81C04E5E83784C /* BSSRDFEntryAdapters.h */,
+				F933C697D1EBD7F3FE8D4231 /* FinalGatherInterpolation.h */,
 			);
 			path = Shaders;
 			sourceTree = "<group>";
@@ -4247,6 +4509,9 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				85E2B2B3FC0BC493239F7BDA /* RoughDielectricEnergy.cpp */,
+				07D4A225B58E52552ACE6C1A /* RoughDielectricEnergyData.h */,
+				3F46635D71433C953882E327 /* RoughDielectricEnergy.h */,
 				F2D1A03F069C42900069C9E5 /* HosekWilkieSkyModel.h */,
 				F2D1A041069C42900069C9E5 /* HosekWilkieSkyModel.cpp */,
 				F28639522F9244920009D9AE /* ThreadPool.h */,
@@ -4327,6 +4592,37 @@
 				F27F0A2C069C42900069C9E5 /* MersenneTwister.h */,
 				F27F0A2E069C42900069C9E5 /* Optics.cpp */,
 				F27F0A2F069C42900069C9E5 /* Optics.h */,
+				FA51000131AA000100000005 /* PlanckRadiance.cpp */,
+				FA51000131AA000100000006 /* PlanckRadiance.h */,
+				FD86000131CC000100000009 /* RISECBOR64.cpp */,
+				FD86000131CC00010000000A /* RISECBOR64.h */,
+				FD86000131CC00010000000B /* FireOptics.cpp */,
+				FD86000131CC00010000000C /* FireOptics.h */,
+				FC11000131DD000100000009 /* FireSimulationRecords.cpp */,
+				FC11000131DD00010000000A /* FireSimulationRecords.h */,
+				FA83000131FF000100000009 /* FireProductionTables.cpp */,
+				FA83000131FF00010000000A /* FireProductionTables.h */,
+				FA83000131FF00010000000B /* FireProductionCompute.h */,
+				FA83000131FF00010000000C /* FireProductionComputeMac.mm */,
+				FA84000131FF000100000007 /* FireProductionAdvection.cpp */,
+				FA84000131FF000100000008 /* FireProductionAdvection.h */,
+				FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */,
+				FB86000131FF000100000007 /* FireProductionProjection.cpp */,
+				FB86000131FF000100000008 /* FireProductionProjection.h */,
+				FB86000131FF000100000009 /* FireProductionProjectionMac.mm */,
+				FC92000131FF000100000007 /* FireProductionTransport.cpp */,
+				FC92000131FF000100000008 /* FireProductionTransport.h */,
+				FE86000131FF000100000007 /* FireProductionSource.cpp */,
+				FE86000131FF000100000008 /* FireProductionSourceKernel.h */,
+				FD93000131FF000100000007 /* FireProductionForce.cpp */,
+				FD93000131FF000100000008 /* FireProductionForce.h */,
+				FD93000131FF000100000009 /* FireProductionForceMac.mm */,
+				F512000131EE000100000009 /* FireSequence.cpp */,
+				F513000131EE000100000009 /* FireCase.cpp */,
+				F513000131EE00010000000A /* FireCase.h */,
+				F512000131EE00010000000A /* FireSequence.h */,
+				FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */,
+				FB37000131BB000100000006 /* GaussLegendreQuadrature.h */,
 				F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */,
 				F27F0A31069C42900069C9E5 /* OrthonormalBasis3D.h */,
 				F27F0A32069C42900069C9E5 /* PEL.h */,
@@ -4357,6 +4653,20 @@
 				F2EE005300000000000000A1 /* RadianceMapConfig.h */,
 				F2EE005400000000000000A1 /* SMSConfig.h */,
 				F2EE005500000000000000A1 /* SpectralConfig.h */,
+				F95D435F04092BE4C62DA966 /* Profiling.cpp */,
+				F9BCF226CF0307AF10EFA8A7 /* EquiangularSampler.h */,
+				F9EF621714FABAA411A1DE98 /* ISampler.h */,
+				F92B7E69FE06E5B936C23F0D /* IndependentSampler.h */,
+				F9702C9AF2EC9D45DA98AD8E /* MISWeights.h */,
+				F9C518E9999C21BEB2A3DE14 /* MortonCode.h */,
+				F9304798AAB9117C62F25462 /* Primes.h */,
+				F94C19AA91622B54A204637C /* Profiling.h */,
+				F93AD3951A1C23D67FDB7820 /* RasterSanityScan.h */,
+				F9943ADFF7375A293B00D9EE /* RuntimeContext.h */,
+				F909DC15110BD872B6395BF1 /* SSSCoefficients.h */,
+				F974DFD920D5303C22E39A22 /* SobolSampler.h */,
+				F9C05CA0835843CAFA9784EC /* StabilityConfig.h */,
+				F9DEBE7B82A18DD3C46224C5 /* ZSobolSampler.h */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -4385,6 +4695,16 @@
 				F27F09F4069C42900069C9E5 /* SpectralPacket_Template.h */,
 				F27F09F5069C42900069C9E5 /* sRGB.h */,
 				F2EE005600000000000000A1 /* SpectralValueTraits.h */,
+				F93A24E60148A5E251C160EC /* AP1RGB.h */,
+				F9630E68AF59BFFB187828D4 /* ColorConversion.h */,
+				F923DDB3817507F01AFD4B83 /* ColorMath.h */,
+				F918C1FF197EA5D0925B4D9D /* ColorOperators.h */,
+				F90247F7EBDDFA8110E138DF /* ProPhotoRGB.h */,
+				F9F1465BE062B9FE7155ABF2 /* ROMMRGB.h */,
+				F96C9AA8F169AAE1DD7E6755 /* Rec709RGB.h */,
+				F90AF42F05CF4AD03A15649C /* SampledWavelengths.h */,
+				F94783CB3BE75E897CBF8B00 /* ScaleColorOperator.h */,
+				F97614727286C99AC8D588B1 /* ShiftColorOperator.h */,
 			);
 			path = Color;
 			sourceTree = "<group>";
@@ -4467,6 +4787,8 @@
 				F27F0A57069C42900069C9E5 /* VolumeOp_LMIP.h */,
 				F27F0A58069C42900069C9E5 /* VolumeOp_MIP.h */,
 				F27F0A59069C42900069C9E5 /* ZuckerHummelOperator.h */,
+				F940B2B2310EB5AAF01277C5 /* VolumeAccessor_Painter.h */,
+				F9EAA67E50B22F06285E9D35 /* VolumeAccessor_TriCubic.h */,
 			);
 			path = Volume;
 			sourceTree = "<group>";
@@ -4805,6 +5127,7 @@
 				F2D9B0C92F89F7B40077A171 /* BDPTUtilities.h in Headers */,
 				F27F0AF6069C42910069C9E5 /* IRasterImageWriter.h in Headers */,
 				F27F0AF7069C42910069C9E5 /* IRasterizer.h in Headers */,
+				A4F500020000000000000002 /* IRenderPreparationController.h in Headers */,
 				F27F0AF8069C42910069C9E5 /* IRasterizerOutput.h in Headers */,
 				F27F0AF9069C42910069C9E5 /* IRasterizeSequence.h in Headers */,
 				F27F0AFA069C42910069C9E5 /* IRayCaster.h in Headers */,
@@ -4873,6 +5196,9 @@
 				F27F0B48069C42910069C9E5 /* CookTorranceSPF.h in Headers */,
 				F27F0B49069C42910069C9E5 /* DielectricMaterial.h in Headers */,
 				F27F0B4B069C42910069C9E5 /* DielectricSPF.h in Headers */,
+				1746417C8BD779406CF744AA /* RoughDielectricMaterial.h in Headers */,
+				09277BB764AD06ACA6FEA3DE /* RoughDielectricEnergyData.h in Headers */,
+				32CCF27D084D623F36FA1E70 /* RoughDielectricEnergy.h in Headers */,
 				F27F0B4C069C42910069C9E5 /* GenericHumanTissueMaterial.h in Headers */,
 				F27F0B4E069C42910069C9E5 /* GenericHumanTissueSPF.h in Headers */,
 				F27F0B50069C42910069C9E5 /* IsotropicPhongBRDF.h in Headers */,
@@ -5066,9 +5392,12 @@
 				F27F0BEB069C42910069C9E5 /* ReadOnlyRasterImage.h in Headers */,
 				F27F0BED069C42910069C9E5 /* RGBEAWriter.h in Headers */,
 				F2C5D5F32F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h in Headers */,
+				F2E45A022FA0000100F1A45E /* SSSContainment.h in Headers */,
 				F27F0BEF069C42910069C9E5 /* TGAReader.h in Headers */,
 				F27F0BF1069C42910069C9E5 /* TGAWriter.h in Headers */,
 				F2C5D5ED2F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h in Headers */,
+				A9B1C0037E29000100000001 /* NullBoundaryMaterial.h in Headers */,
+				B8C1D0037E29000100000001 /* IContinuationClosure.h in Headers */,
 				F2C5D5EE2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h in Headers */,
 				F27F0BF2069C42910069C9E5 /* TIFFCommon.h in Headers */,
 				F27F0BF4069C42910069C9E5 /* TIFFReader.h in Headers */,
@@ -5185,6 +5514,20 @@
 				F27F0C83069C42910069C9E5 /* MemoryBuffer.h in Headers */,
 				F27F0C85069C42910069C9E5 /* MersenneTwister.h in Headers */,
 				F27F0C88069C42910069C9E5 /* Optics.h in Headers */,
+				FA51000131AA000100000004 /* PlanckRadiance.h in Headers */,
+				FD86000131CC000100000006 /* RISECBOR64.h in Headers */,
+				FD86000131CC000100000008 /* FireOptics.h in Headers */,
+				FC11000131DD000100000004 /* FireSimulationRecords.h in Headers */,
+				FA83000131FF000100000006 /* FireProductionTables.h in Headers */,
+				FA83000131FF000100000007 /* FireProductionCompute.h in Headers */,
+				FA84000131FF000100000005 /* FireProductionAdvection.h in Headers */,
+				FB86000131FF000100000004 /* FireProductionProjection.h in Headers */,
+				FC92000131FF000100000004 /* FireProductionTransport.h in Headers */,
+				FE86000131FF000100000004 /* FireProductionSourceKernel.h in Headers */,
+				FD93000131FF000100000004 /* FireProductionForce.h in Headers */,
+				F512000131EE000100000004 /* FireSequence.h in Headers */,
+				F513000131EE000100000004 /* FireCase.h in Headers */,
+				FB37000131BB000100000004 /* GaussLegendreQuadrature.h in Headers */,
 				F27F0C8A069C42910069C9E5 /* OrthonormalBasis3D.h in Headers */,
 				F27F0C8B069C42910069C9E5 /* PEL.h in Headers */,
 				F27F0C8C069C42910069C9E5 /* PiecewiseLinearFunction.h in Headers */,
@@ -5280,6 +5623,50 @@
 				6DFD32F00A0FBB1D00E99FBE /* CPU.h in Headers */,
 				6DFD32F70A0FBBAA00E99FBE /* EXRReader.h in Headers */,
 				6DFD32F90A0FBBAA00E99FBE /* EXRWriter.h in Headers */,
+				F9052A5E809A12D8F62F4B47 /* IAtmosphere.h in Headers */,
+				F9915099FB371956E6E685A3 /* IBSDF.h in Headers */,
+				F9FD5F919CA42D1AC14A1F3A /* IMedium.h in Headers */,
+				F95DBB94C5C1C03201D18C0A /* IPhaseFunction.h in Headers */,
+				F9DECB87E7B99713A46706F2 /* IShaderOp.h in Headers */,
+				F9336723ADEB2CCDAD77D1DD /* IShaderOpManager.h in Headers */,
+				F995B615700F5800E2A033D6 /* ISubSurfaceDiffusionProfile.h in Headers */,
+				F971607129391EB99198E4F9 /* ISubSurfaceExtinctionFunction.h in Headers */,
+				F9A207DD6B7DFE47C77B4224 /* SpecularInfo.h in Headers */,
+				F9BE08F2B189651F4C55E180 /* ShaderOpManager.h in Headers */,
+				F945B11B3CAECB85586FE5C9 /* IsotropicPhaseFunction.h in Headers */,
+				F927660579C279B858C44513 /* RandomWalkSSSMaterial.h in Headers */,
+				F988C73032357E29BB75174B /* MortonRasterizeSequence.h in Headers */,
+				F93552B21F7B90E01693F705 /* PixelBasedSpectralIntegratingRasterizerRGB.h in Headers */,
+				F9457461BD154305E1C5514D /* ProgressiveFilm.h in Headers */,
+				F9D470F25FBF17B2ADC6B0A6 /* RasterizeDispatchers.h in Headers */,
+				F9833616198B4D658EFF7F02 /* SobolSequence.h in Headers */,
+				F95B7FF7BC8956F3452413D9 /* BSSRDFEntryAdapters.h in Headers */,
+				F9E8054FC0765B3DB5709933 /* FinalGatherInterpolation.h in Headers */,
+				F92BB984C38C06229CE9F1A6 /* AP1RGB.h in Headers */,
+				F91F725CCE9C470A1B820B1C /* ColorConversion.h in Headers */,
+				F9523CA9D61384C14AB46211 /* ColorMath.h in Headers */,
+				F942BC84F5365F2F3B3A0F3A /* ColorOperators.h in Headers */,
+				F96FA577DBB477BA0C1792FB /* ProPhotoRGB.h in Headers */,
+				F9B82BF098D44343F4543135 /* ROMMRGB.h in Headers */,
+				F9B8E8CCDFEA25C205DAFC51 /* Rec709RGB.h in Headers */,
+				F93608793E5AD0A9DCF0FD6E /* SampledWavelengths.h in Headers */,
+				F9560182A894C0909A9019B0 /* ScaleColorOperator.h in Headers */,
+				F924AC0088F758848B6219B1 /* ShiftColorOperator.h in Headers */,
+				F93B1DD3F69E6DFFEABD26D9 /* EquiangularSampler.h in Headers */,
+				F91690AC420123FFE0748956 /* ISampler.h in Headers */,
+				F9EDB236DE18EBA71286DF72 /* IndependentSampler.h in Headers */,
+				F9F8A4B69E50505272A49E3C /* MISWeights.h in Headers */,
+				F9DD77BCDD0057A42D6FBABC /* MortonCode.h in Headers */,
+				F94C6BB543672DF452251996 /* Primes.h in Headers */,
+				F99145F78473458E05202865 /* Profiling.h in Headers */,
+				F91A54B9DFF268D35987CC5D /* RasterSanityScan.h in Headers */,
+				F9A244FD91D33A0A1123AFCC /* RuntimeContext.h in Headers */,
+				F9F0D4094D50F543E82221CC /* SSSCoefficients.h in Headers */,
+				F949EC3BF6394CBFC0B60196 /* SobolSampler.h in Headers */,
+				F906F4C16B6C467C0977EAB7 /* StabilityConfig.h in Headers */,
+				F92134AB162D0550F2183283 /* ZSobolSampler.h in Headers */,
+				F990E718DD40B6888AC735AD /* VolumeAccessor_Painter.h in Headers */,
+				F9698A868636198289A3C0C3 /* VolumeAccessor_TriCubic.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -5290,6 +5677,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 6DBFAA1809C4D18F0048A09D /* Build configuration list for PBXNativeTarget "rise" */;
 			buildPhases = (
+				B1D000010000000000000001 /* Generate Renderer Build Identity */,
 				8DD76F630486A84900D96B5E /* Headers */,
 				8DD76F640486A84900D96B5E /* Sources */,
 				8DD76F660486A84900D96B5E /* Frameworks */,
@@ -5309,6 +5697,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = F24B71CE2F52A212008304C4 /* Build configuration list for PBXNativeTarget "RISE-GUI" */;
 			buildPhases = (
+				B1D000020000000000000002 /* Generate Renderer Build Identity */,
 				F24B71C22F52A211008304C4 /* Sources */,
 				F24B71C32F52A211008304C4 /* Frameworks */,
 				F24B71C42F52A211008304C4 /* Resources */,
@@ -5370,6 +5759,43 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		B1D000010000000000000001 /* Generate Renderer Build Identity */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../../tools/generate_renderer_build_identity_header.py",
+			);
+			name = "Generate Renderer Build Identity";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/RendererBuildIdentity.generated.h",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "python3 \"$SRCROOT/../../../tools/generate_renderer_build_identity_header.py\" --repo-root \"$SRCROOT/../../..\" --output \"$DERIVED_FILE_DIR/RendererBuildIdentity.generated.h\" --fp-contraction \"$RISE_FP_CONTRACTION_MODE\" --optimization-mode \"$RISE_OPTIMIZATION_MODE\" --lto-mode \"$RISE_LTO_MODE\"";
+		};
+		B1D000020000000000000002 /* Generate Renderer Build Identity */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../../tools/generate_renderer_build_identity_header.py",
+			);
+			name = "Generate Renderer Build Identity";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/RendererBuildIdentity.generated.h",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "python3 \"$SRCROOT/../../../tools/generate_renderer_build_identity_header.py\" --repo-root \"$SRCROOT/../../..\" --output \"$DERIVED_FILE_DIR/RendererBuildIdentity.generated.h\" --fp-contraction \"$RISE_FP_CONTRACTION_MODE\" --optimization-mode \"$RISE_OPTIMIZATION_MODE\" --lto-mode \"$RISE_LTO_MODE\"";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		8DD76F640486A84900D96B5E /* Sources */ = {
@@ -5494,6 +5920,8 @@
 				F27F0B47069C42910069C9E5 /* CookTorranceSPF.cpp in Sources */,
 				F2D9B07F2F896BFA0077A171 /* FilteredFilm.cpp in Sources */,
 				F27F0B4A069C42910069C9E5 /* DielectricSPF.cpp in Sources */,
+				1D81A1F561D9D814B3B6DF5D /* RoughDielectricMaterial.cpp in Sources */,
+				399FB9A52FC966378D28F8FF /* RoughDielectricEnergy.cpp in Sources */,
 				F27F0B4D069C42910069C9E5 /* GenericHumanTissueSPF.cpp in Sources */,
 				F27F0B4F069C42910069C9E5 /* IsotropicPhongBRDF.cpp in Sources */,
 				F27F0B52069C42910069C9E5 /* IsotropicPhongSPF.cpp in Sources */,
@@ -5645,6 +6073,8 @@
 				F27F0BF3069C42910069C9E5 /* TIFFReader.cpp in Sources */,
 				F27F0BF5069C42910069C9E5 /* TIFFWriter.cpp in Sources */,
 				F2C7C8DE2F760A6D0030CB78 /* IMaterial.cpp in Sources */,
+				A9B1C0057E29000100000001 /* NullBoundaryMaterial.cpp in Sources */,
+				B8C1D0057E29000100000001 /* ContinuationClosure.cpp in Sources */,
 				F27F0BF9069C42910069C9E5 /* FileRasterizerOutput.cpp in Sources */,
 				F24C54552F7CAB67009AF16D /* MediumTransport.cpp in Sources */,
 				F27F0BFC069C42910069C9E5 /* LuminaryManager.cpp in Sources */,
@@ -5704,6 +6134,23 @@
 				F27F0C82069C42910069C9E5 /* MemoryBuffer.cpp in Sources */,
 				F27F0C84069C42910069C9E5 /* MersenneTwister.cpp in Sources */,
 				F27F0C87069C42910069C9E5 /* Optics.cpp in Sources */,
+				FA51000131AA000100000003 /* PlanckRadiance.cpp in Sources */,
+				FD86000131CC000100000005 /* RISECBOR64.cpp in Sources */,
+				FD86000131CC000100000007 /* FireOptics.cpp in Sources */,
+				FC11000131DD000100000003 /* FireSimulationRecords.cpp in Sources */,
+				FA83000131FF000100000005 /* FireProductionTables.cpp in Sources */,
+				FA83000131FF000100000008 /* FireProductionComputeMac.mm in Sources */,
+				FA84000131FF000100000004 /* FireProductionAdvection.cpp in Sources */,
+				FB86000131FF000100000003 /* FireProductionProjection.cpp in Sources */,
+				FB86000131FF00010000000B /* FireProductionProjectionMac.mm in Sources */,
+				FC92000131FF000100000003 /* FireProductionTransport.cpp in Sources */,
+				FE86000131FF000100000003 /* FireProductionSource.cpp in Sources */,
+				FD93000131FF000100000003 /* FireProductionForce.cpp in Sources */,
+				FD93000131FF000100000006 /* FireProductionForceMac.mm in Sources */,
+				FA84000131FF000100000006 /* FireProductionAdvectionMac.mm in Sources */,
+				F512000131EE000100000003 /* FireSequence.cpp in Sources */,
+				F513000131EE000100000003 /* FireCase.cpp in Sources */,
+				FB37000131BB000100000003 /* GaussLegendreQuadrature.cpp in Sources */,
 				F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */,
 				F27F0C8E069C42910069C9E5 /* ProbabilityDensityFunction.cpp in Sources */,
 				F2ADD0000000000000000003 /* ProceduralNoiseCore.cpp in Sources */,
@@ -5738,6 +6185,7 @@
 				F325A0010000000000DD0011 /* DataDrivenSPF.cpp in Sources */,
 				F277345707ECCEDC00C0B600 /* TranslucentBSDF.cpp in Sources */,
 				F2C5D5F22F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */,
+				F2E45A012FA0000100F1A45E /* SSSContainment.cpp in Sources */,
 				F27734A007ECD64300C0B600 /* MediaPathLocator.cpp in Sources */,
 				6DBFAA5509C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp in Sources */,
 				6DBFAA5709C4D2A20048A09D /* AreaLightShaderOp.cpp in Sources */,
@@ -5767,6 +6215,7 @@
 				6DFD32F60A0FBBAA00E99FBE /* EXRReader.cpp in Sources */,
 				6DFD32F80A0FBBAA00E99FBE /* EXRWriter.cpp in Sources */,
 				F2C5D5812F6EA5B300546C97 /* PSSMLTSampler.cpp in Sources */,
+				F96F28D398EE7B188AF466F6 /* Profiling.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -5990,6 +6439,7 @@
 				F2D9B08D2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */,
 				F24B727E2F52A632008304C4 /* IRasterImageWriter.h in Sources */,
 				F24B727F2F52A632008304C4 /* IRasterizer.h in Sources */,
+				A4F500010000000000000001 /* IRenderPreparationController.h in Sources */,
 				F24B72802F52A632008304C4 /* IRasterizerOutput.h in Sources */,
 				F24B72812F52A632008304C4 /* IRasterizeSequence.h in Sources */,
 				F24B72822F52A632008304C4 /* IRayCaster.h in Sources */,
@@ -6046,6 +6496,7 @@
 				F24B72A92F52A632008304C4 /* DirectionalLight.h in Sources */,
 				F24B72AA2F52A632008304C4 /* PointLight.cpp in Sources */,
 				F2C5D5F42F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */,
+				F2E45A032FA0000100F1A45E /* SSSContainment.cpp in Sources */,
 				F24B72AB2F52A632008304C4 /* PointLight.h in Sources */,
 				F24B72AC2F52A632008304C4 /* SpotLight.cpp in Sources */,
 				F24B72AD2F52A632008304C4 /* SpotLight.h in Sources */,
@@ -6092,7 +6543,12 @@
 				F24B72D32F52A632008304C4 /* CookTorranceSPF.h in Sources */,
 				F24B72D42F52A632008304C4 /* DielectricMaterial.h in Sources */,
 				F24B72D52F52A632008304C4 /* DielectricSPF.cpp in Sources */,
+				01EAA6405C33D1616E15A2D7 /* RoughDielectricMaterial.cpp in Sources */,
+				CA368FA60E2912DABDACC33F /* RoughDielectricEnergy.cpp in Sources */,
 				F24B72D62F52A632008304C4 /* DielectricSPF.h in Sources */,
+				E6DB0045BB8847325691D3A1 /* RoughDielectricMaterial.h in Sources */,
+				48119A3F84F99CFC1674FDDA /* RoughDielectricEnergyData.h in Sources */,
+				DBA8C7752EBCD75BA9BA9C52 /* RoughDielectricEnergy.h in Sources */,
 				F24C54402F7C107E009AF16D /* BSSRDFSampling.cpp in Sources */,
 				F2C5D5EF2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp in Sources */,
 				F24B72D72F52A632008304C4 /* GenericHumanTissueMaterial.h in Sources */,
@@ -6589,6 +7045,10 @@
 				F24B741D2F52A632008304C4 /* HermiteInterpolator.h in Sources */,
 				F24B741E2F52A632008304C4 /* IORStack.h in Sources */,
 				F2C7C8DD2F760A6D0030CB78 /* IMaterial.cpp in Sources */,
+				A9B1C0047E29000100000001 /* NullBoundaryMaterial.h in Sources */,
+				A9B1C0067E29000100000001 /* NullBoundaryMaterial.cpp in Sources */,
+				B8C1D0047E29000100000001 /* IContinuationClosure.h in Sources */,
+				B8C1D0067E29000100000001 /* ContinuationClosure.cpp in Sources */,
 				F24B74202F52A632008304C4 /* Log.cpp in Sources */,
 				F2D9B13E2F8FA5C40077A171 /* VCMPelRasterizer.cpp in Sources */,
 				F2D9B13F2F8FA5C40077A171 /* VCMRasterizerBase.cpp in Sources */,
@@ -6651,6 +7111,36 @@
 				F24B74372F52A632008304C4 /* MersenneTwister.h in Sources */,
 				F24B74392F52A632008304C4 /* Optics.cpp in Sources */,
 				F24B743A2F52A632008304C4 /* Optics.h in Sources */,
+				FA51000131AA000100000001 /* PlanckRadiance.cpp in Sources */,
+				FA51000131AA000100000002 /* PlanckRadiance.h in Sources */,
+				FD86000131CC000100000001 /* RISECBOR64.cpp in Sources */,
+				FD86000131CC000100000002 /* RISECBOR64.h in Sources */,
+				FD86000131CC000100000003 /* FireOptics.cpp in Sources */,
+				FD86000131CC000100000004 /* FireOptics.h in Sources */,
+				FC11000131DD000100000001 /* FireSimulationRecords.cpp in Sources */,
+				FC11000131DD000100000002 /* FireSimulationRecords.h in Sources */,
+				FA83000131FF000100000001 /* FireProductionTables.cpp in Sources */,
+				FA83000131FF000100000002 /* FireProductionTables.h in Sources */,
+				FA83000131FF000100000003 /* FireProductionCompute.h in Sources */,
+				FA83000131FF000100000004 /* FireProductionComputeMac.mm in Sources */,
+				FA84000131FF000100000001 /* FireProductionAdvection.cpp in Sources */,
+				FA84000131FF000100000002 /* FireProductionAdvection.h in Sources */,
+				FA84000131FF000100000003 /* FireProductionAdvectionMac.mm in Sources */,
+				FB86000131FF000100000001 /* FireProductionProjection.cpp in Sources */,
+				FB86000131FF00010000000A /* FireProductionProjectionMac.mm in Sources */,
+				FB86000131FF000100000002 /* FireProductionProjection.h in Sources */,
+				FC92000131FF000100000001 /* FireProductionTransport.cpp in Sources */,
+				FC92000131FF000100000002 /* FireProductionTransport.h in Sources */,
+				FE86000131FF000100000001 /* FireProductionSource.cpp in Sources */,
+				FE86000131FF000100000002 /* FireProductionSourceKernel.h in Sources */,
+				FD93000131FF000100000001 /* FireProductionForce.cpp in Sources */,
+				FD93000131FF000100000002 /* FireProductionForce.h in Sources */,
+				FD93000131FF000100000005 /* FireProductionForceMac.mm in Sources */,
+				F512000131EE000100000001 /* FireSequence.cpp in Sources */,
+				F513000131EE000100000001 /* FireCase.cpp in Sources */,
+				F512000131EE000100000002 /* FireSequence.h in Sources */,
+				FB37000131BB000100000001 /* GaussLegendreQuadrature.cpp in Sources */,
+				FB37000131BB000100000002 /* GaussLegendreQuadrature.h in Sources */,
 				F24B743B2F52A632008304C4 /* OrthonormalBasis3D.cpp in Sources */,
 				F24B743C2F52A632008304C4 /* OrthonormalBasis3D.h in Sources */,
 				F24B743D2F52A632008304C4 /* PEL.h in Sources */,
@@ -6705,6 +7195,7 @@
 				F24B745F2F52A632008304C4 /* VolumeOp_LMIP.h in Sources */,
 				F24B74602F52A632008304C4 /* VolumeOp_MIP.h in Sources */,
 				F24B74612F52A632008304C4 /* ZuckerHummelOperator.h in Sources */,
+				F9283202CD42F3BC145CF3BB /* Profiling.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -6714,6 +7205,9 @@
 		6DBFAA1909C4D18F0048A09D /* Development */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = off;
+				RISE_OPTIMIZATION_MODE = disabled;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -6786,6 +7280,9 @@
 		6DBFAA1A09C4D18F0048A09D /* Deployment */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -6856,6 +7353,9 @@
 		6DBFAA1B09C4D18F0048A09D /* Default */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -6945,7 +7445,7 @@
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_MODEL_TUNING = G5;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = 3;
@@ -6957,6 +7457,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				USER_HEADER_SEARCH_PATHS = "$(DERIVED_FILE_DIR)";
 				LLVM_LTO = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -6986,7 +7487,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_MODEL_TUNING = G5;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = 3;
@@ -6998,6 +7499,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				USER_HEADER_SEARCH_PATHS = "$(DERIVED_FILE_DIR)";
 				LLVM_LTO = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -7027,7 +7529,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_MODEL_TUNING = G5;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = 3;
@@ -7039,6 +7541,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				USER_HEADER_SEARCH_PATHS = "$(DERIVED_FILE_DIR)";
 				LLVM_LTO = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 			};
@@ -7047,6 +7550,9 @@
 		6DBFAA2009C4D18F0048A09D /* Opto */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = fast;
+				RISE_LTO_MODE = full;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -7138,7 +7644,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_MODEL_TUNING = G5;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = 3;
@@ -7150,6 +7656,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				USER_HEADER_SEARCH_PATHS = "$(DERIVED_FILE_DIR)";
 				LLVM_LTO = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -7159,6 +7666,9 @@
 		F24B71CF2F52A212008304C4 /* Development */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = off;
+				RISE_OPTIMIZATION_MODE = disabled;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -7202,7 +7712,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
@@ -7280,6 +7790,9 @@
 		F24B71D02F52A212008304C4 /* Deployment */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -7323,7 +7836,7 @@
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -7400,6 +7913,9 @@
 		F24B71D12F52A212008304C4 /* Default */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -7443,7 +7959,7 @@
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -7520,6 +8036,9 @@
 		F24B71D52F52A212008304C4 /* Opto */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = fast;
+				RISE_LTO_MODE = full;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -7563,7 +8082,7 @@
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;

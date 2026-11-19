@@ -1,0 +1,33 @@
+{
+  "schema": "rise.fire.r246.recovered-full-spectrum-launch-receipt.v1",
+  "status": "launched_full_spectrum_not_yet_accepted",
+  "launch_directory": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum_launch.v1",
+  "launch_sha256": "de9cf1e9a01be840cc241bcd538a9b954597edfc7e07c862714c554c29ff33c0",
+  "launch": {
+    "schema": "rise.fire.r246.recovered-full-spectrum-launch.v1",
+    "command": [
+      "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_cli_runtime.v1/FireSequenceTest",
+      "--fire-r246-recovered-spectrum",
+      "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1",
+      "/Volumes/SSD/RISE/fire_production_calibration/r246_prepared_recovery.v1",
+      "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_source_snapshot.v8",
+      "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview.v1",
+      "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum.v1"
+    ],
+    "output": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum.v1",
+    "consumer_executable_sha256": "ed7cf2c3dce91d1d801800341381c4dd60b7ffafb10ca431c4c879322e8308b1",
+    "consumer_build_id": "a862d3b95764747c9b363dfda81f0d6be95d64e28c5f22c1e1e168e95a5fdf6b",
+    "embedded_revision": "478fde402e178255e358bd913cd0716b7c699c6c",
+    "embedded_dirty_state": "dirty",
+    "full_preview_acceptance": "d7f7754cc",
+    "full_signed_audit_acceptance": "f70613597",
+    "original_exit_code": 98,
+    "canonical_taller_qualification": false,
+    "launched_utc": "2026-10-04T15:52:03.508496+00:00",
+    "wrapper_sha256": "da3e4e44900f83f51090e6d9d3fc924bea5912dec7a400e2fe6cfa5b8e9ab1db"
+  },
+  "pid": {
+    "wrapper_pid": 50415,
+    "spectrum_pid": 50416
+  }
+}

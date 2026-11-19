@@ -1,0 +1,20 @@
+--- production
++++ external_EOS_tail_off
+@@ -8674,7 +8674,7 @@
+ 			bool BuildStage(const unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> temperature,
+ 				id<MTLBuffer> parentIdentity,const ResidentEOSCandidateMetalAuthority* parentCandidate,
+ 				const ResidentProjectionTargetMetalAuthority& projectionTarget,
+-				const bool applyTailCorrection,id<MTLBuffer> selectedAlpha,
++				const bool /*applyTailCorrection: disabled in this experiment*/,id<MTLBuffer> selectedAlpha,
+ 				Stage& output,const Stage* r0,std::string* error)
+ 			{
+ 				ProfileScope profile(*this,"BuildStageProducerGroup");
+@@ -8835,7 +8835,7 @@
+ 					*output.transport,*output.physical,candidatePhysical,
+ 					*output.candidate,*output.eos,*output.source,
+ 					targetMetadata_,*output.target,error))return false;
+-				if(!CorrectTargetAuthority(command,stage,projectionTarget,applyTailCorrection,
++				if(!CorrectTargetAuthority(command,stage,projectionTarget,false,
+ 					*output.transport,candidatePhysical,*output.candidate,*output.eos,*output.source,
+ 					*output.target,error))return false;
+ 				if(!captureClause(3u))return false;

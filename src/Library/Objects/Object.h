@@ -388,6 +388,17 @@ namespace RISE
 			//! the name-to-object map -- and a diagnostic that cannot name
 			//! the chunk is one an author cannot act on.
 			mutable std::atomic<bool>						m_distanceRefusalWarned;
+			//! Packed ((PatchCertificateEpoch mod 2^31) << 32) | (1 if clear-refractor
+			//! open patch sheet, else 0), or -1 before first evaluation / after
+			//! geometry or material mutation.  Ensures standalone open Bezier/bilinear
+			//! dielectric objects stamp `bProvablyNoInterior` on the very first ray
+			//! even without a prior `ObjectManager::PrepareForRendering()` pass, while
+			//! keeping opaque patch objects completely certification-free.
+			mutable std::atomic<long long>					m_patchCertState{ -1 };
+			bool											m_isCsgObject{ false };
+			bool											m_mayAffectIorCatalog{ false };
+
+			void RefreshIorCatalogFlag();
 
 			virtual ~Object( );
 
@@ -497,7 +508,15 @@ namespace RISE
 			//! exactly what it took, and takes nothing away from a second composite
 			//! that is still consuming the same operand.
 			virtual bool IsWorldVisible() const override { return bIsWorldVisible && nConsumedBy == 0; }
-			virtual void SetWorldVisible( bool b ) override { bIsWorldVisible = b; }
+			virtual void SetWorldVisible( bool b ) override
+			{
+				if( bIsWorldVisible != b ) {
+					bIsWorldVisible = b;
+					if( m_mayAffectIorCatalog || m_isCsgObject ) {
+						BumpMaterialBindingEpoch();
+					}
+				}
+			}
 
 			virtual void AddConsumer() override { ++nConsumedBy; }
 			//! The clamp keeps an unbalanced release from wrapping an `unsigned int`
@@ -511,6 +530,7 @@ namespace RISE
 			//! this header pulling it in.
 			virtual void RemoveConsumer() override;
 			virtual bool IsConsumed() const override { return nConsumedBy != 0; }
+			inline bool IsSharedConsumerTarget() const { return nConsumedBy > 1; }
 
 			virtual bool DoesCastShadows() const override { return bCastsShadows; }
 			virtual bool DoesReceiveShadows() const override { return bReceivesShadows; }
@@ -645,6 +665,20 @@ namespace RISE
 				{ const Object* c = TimeClone(); return c ? c->m_mxFinalTrans : m_mxFinalTrans; }
 			Matrix4 const GetFinalInverseTransformMatrix( ) const override
 				{ const Object* c = TimeClone(); return c ? c->m_mxInvFinalTrans : m_mxInvFinalTrans; }
+
+			static inline std::atomic<unsigned long long>& MaterialBindingEpochCounter()
+			{
+				static std::atomic<unsigned long long> epoch( 1 );
+				return epoch;
+			}
+			static inline unsigned long long MaterialBindingEpoch()
+			{
+				return MaterialBindingEpochCounter().load( std::memory_order_acquire );
+			}
+			static inline void BumpMaterialBindingEpoch()
+			{
+				MaterialBindingEpochCounter().fetch_add( 1, std::memory_order_acq_rel );
+			}
 		};
 	}
 }

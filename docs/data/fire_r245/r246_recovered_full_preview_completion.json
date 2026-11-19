@@ -1,0 +1,67 @@
+{
+  "schema": "rise.fire.r246.recovered-full-preview-completion.v1",
+  "status": "verified_complete_235_preview",
+  "completion": {
+    "exit_code": 0,
+    "completed_utc": "2026-10-04T15:20:57.866190+00:00",
+    "original_exit_code": 98
+  },
+  "frames": 235,
+  "pair_members": 940,
+  "artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview_launch.v1/completion.json",
+      "sha256": "5a73e00de69fc94e31f4b594a8ec0ddc707dd15ee653694144df725c01ee874e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview_launch.v1/preview.log",
+      "sha256": "4f56377db6b6455facbcb8633d59dde2dc98a58498562a14058c9328ba53a634"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview.v1/temporal_fire.RISEscene",
+      "sha256": "93e970210ea2da14a3beb0c22124e8f43cef2d45aedf2d22ce9a518d7ac7849c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview.v1/temporal_preview_receipt.v1",
+      "sha256": "bcc651830cb3ac3851c8185d5aa41072a66e5e53331da6d158ced9b4c1eca25e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview.v1/temporal_preview_movie_receipt.v1",
+      "sha256": "9844557e183a3d477337ebb47db7ead1448855b82505204c824298af6d65cfde"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview.v1/temporal_fire_preview.gif",
+      "sha256": "6b2aaaf6b6c1e5261d39e0ebe6f662d066ddd83df804d946b6e5fa7c5bb3d626"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview.v1/temporal_fire_preview.gif.provenance.cbor",
+      "sha256": "6d297a9044aebebeafc8decd3af600a5d281ce4764eb7fc7a9e7ad0697080ee8"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview.v1/recovered_consumer_receipt.v1",
+      "sha256": "5e30975feb2de5a05f2c36db02cbb7389afc583404672921d18cf432951859a0"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview.v1/recovered_consumer_receipt.v1.payload-v2.json",
+      "sha256": "5e7f7e900fab4454508077ea9682627d4452afefbffb6e978276106ab331486d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_completion_profiles.v1/verification.json",
+      "sha256": "9851a4df6c03f84955d1effcb444608e28f149bb241f7b8eb4b6991828d4d226"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_completion_movie.v1/result.json",
+      "sha256": "ec4306b88df8b9047c79b43016e269754d96b163c1c18480c7299a047d75b4c7"
+    }
+  ],
+  "consumer_build": "a862d3b95764747c9b363dfda81f0d6be95d64e28c5f22c1e1e168e95a5fdf6b",
+  "source_producer": "2e19f9326f6987bf577a7485b4aee92d3ebb6cb1212d4fe0b2df42f1db2b371b",
+  "original_exit_code": 98,
+  "canonical_taller_qualification": false,
+  "physical_acceptance": false,
+  "limits": [
+    "Independent EXR bytes and canonical sidecars checked; semantic EXR content digest relies on accepted native consumer.",
+    "Original unsealed non-clock observations remain unauthenticated; unavailable claims retained.",
+    "Preview aggregate alone does not localize original-region dynamics or prove puffing."
+  ]
+}

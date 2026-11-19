@@ -1,0 +1,49 @@
+{
+  "schema": "rise.fire.r247.transport-failure.v1",
+  "status": "preserved_failed_unsealed_output",
+  "exit_code": 1,
+  "launch_authority": "eb529eb7c",
+  "reader_initial_pid": 63081,
+  "wrapper_initial_pid": 63075,
+  "completed_utc": "2026-10-04T19:28:35.955075+00:00",
+  "candidate_rows": 1,
+  "failed_on_frame": 1,
+  "variant": "wide",
+  "exact_refusal": "exact column observation frame",
+  "identified_mechanism": "Reader wrongly equated column observation_index to global frame ordinal. Producer PrepareR245Budget passes literal0u to column Write at every frame; actualframe1 columns are observation_index0. Exact frame/event binding already lives in pinned frame/ledger/root records.",
+  "producer_source": "tests/FireSequenceTest.cpp:4860",
+  "guaranteed_failure_not_sole_defect_proof": true,
+  "artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_launch.v1/completion.json",
+      "sha256": "d8621583e2367b56cd5d15aa73a99055cc1f27b01332e89d0a37d1c391366686"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_launch.v1/pid.json",
+      "sha256": "6c787f3cf3417513e377cac25afdaedb3254e2f9c72a8c490f23ed3a185237d9"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_launch.v1/reader.log",
+      "sha256": "816e5fd5036cf41d479ab412b40cd53df2a2abcf174d5d6825ee92dda564cfc4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_launch.v1/command.json",
+      "sha256": "5694955b35c4e87400eccc58f6169809cba65e38eac9452743437148955559bf"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_launch.v1/wrapper.py",
+      "sha256": "8c5d2b32fb0af3feee2c8e50a77c3d194c7ecc3c86718b662a422e7d895bf4f8"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport.v1/transport_rows.jsonl",
+      "sha256": "346c24bd53f07b5e8c242afdbfe5f0368c68ab828462f00618968e2f704d255f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport.v1/transport_rows.jsonl.preparation.pending.payload-v2.json",
+      "sha256": "4dd9d63741c9501e3d2f9e31de73910d36c46b31bb798c38b360c97235529506"
+    }
+  ],
+  "original_taller_exit_code": 98,
+  "full_derivation_accepted": false,
+  "source_files_unchanged": true
+}
