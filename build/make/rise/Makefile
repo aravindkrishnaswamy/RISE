@@ -238,8 +238,8 @@ librise : $(LIBRISE_A)
 # `make TEST_LTO=1 tests` links every test against the LTO library instead,
 # for checking something that depends on LTO code generation (run the suite
 # that way with `TEST_LTO=1 ./run_all_tests.sh`).  The mode is recorded in
-# $(TEST_MODE_STAMP), so switching it rebuilds the tests; dry runs and
-# `clean` leave the record alone.
+# $(TEST_MODE_STAMP), so switching it rebuilds the tests; dry runs leave the
+# record alone, and `clean` deletes it (the stamp rule recreates it).
 TESTS_LINK_LTO = LegacyTierRenderIdentityTest DeprecatedMaterialRenderIdentityTest ImageDriftHistoryTest \
 	SSSCriticalPartitionTest SSSNearUnityFresnelTest HairBSDFTest ProximitySignalTest LuminarySamplerAreaTest \
 	FireSimulationSolverTest FireProductionSolverTest FireProductionProjectionTest
@@ -334,10 +334,14 @@ TEST_ARCHIVE_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(ARCHIVE_LINK_LIBRISE),$(AR
 # object and binary depends on it, so switching TEST_LTO rebuilds them.
 TEST_MODE_STAMP = $(PATHDEST).test-link-mode
 ifeq ($(MAKE_SKIP_GENERATED),)
-$(shell mkdir -p $(PATHDEST) && { [ "`cat $(TEST_MODE_STAMP) 2>/dev/null`" = "$(TEST_LINK_MODE) $(LTO_TESTS)" ] || echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $(TEST_MODE_STAMP); })
+# A mode change also deletes the test objects and binaries: make 3.81 compares
+# whole-second mtimes, so a binary linked in the same second as the new record
+# would otherwise count as up to date.
+$(shell mkdir -p $(PATHDEST) && { [ "`cat $(TEST_MODE_STAMP) 2>/dev/null`" = "$(TEST_LINK_MODE) $(LTO_TESTS)" ] || { rm -rf $(OBJTESTS) $(PATHTESTDEST); echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $(TEST_MODE_STAMP); }; })
 endif
-# Only when the record is missing: a dry run in a fresh tree, or after the
-# clean of a `make clean tests` (clean deletes it with the objects it names).
+# Only when the record is missing after `clean` (as in `make clean tests`);
+# `make -n` only prints this, and `make -t` writes an empty record, which the
+# next real make replaces (rebuilding the tests).
 $(TEST_MODE_STAMP) :
 	@mkdir -p $(PATHDEST) && echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $@
 

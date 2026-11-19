@@ -346,8 +346,9 @@ mkdir -p "$LOG_DIR"
 BUILD_FAIL_TSV="$LOG_DIR/.build_failures.tsv"
 RUN_FAIL_TSV="$LOG_DIR/.run_failures.tsv"
 TIMINGS_TSV="$LOG_DIR/.timings.tsv"
-# Each test's time in this checkout's last run (name<TAB>seconds), kept
-# outside the log dir, which every run deletes; it orders the next run.
+# Each test's time in the last run that recorded it (name<TAB>seconds; see
+# the end of this script for which runs do), kept outside the log dir, which
+# every run deletes; it orders the next run.
 TIMINGS_HISTORY="$REPO_ROOT/bin/.test_timings.tsv"
 # name, wall s, CPU s (user+sys), mean cores, schedule class -- written when
 # /usr/bin/time is available.  A test whose mean cores is well above its run
@@ -562,7 +563,8 @@ echo
 i=0
 for test_src in "$SRC_DIR"/*.cpp; do
 	[ -f "$test_src" ] || continue
-	name="$(basename "$test_src" .cpp)"
+	name=${test_src##*/}
+	name=${name%.cpp}
 	matches_selection "$name" || continue
 	i=$((i + 1))
 	test_path="$BIN_DIR/$name"
@@ -621,8 +623,8 @@ echo
 # their render threads forced to one (`single`: their renders would spread
 # over a few cores without gaining throughput), and a run time for the long
 # ones.  Exclusive tests run first, one at a time on an otherwise idle
-# machine; the rest then share the slots, longest first by this checkout's
-# last run ($TIMINGS_HISTORY, else the schedule's times).  Unlisted tests are
+# machine; the rest then share the slots, longest first by the recorded
+# times ($TIMINGS_HISTORY, else the schedule's times).  Unlisted tests are
 # `pool` (one slot).
 #
 # Every test gets its own TMPDIR ($LOG_DIR/.tmp/<name>), so two different
@@ -640,15 +642,16 @@ selected="$LOG_DIR/.selected"
 : > "$selected"
 for test_src in "$SRC_DIR"/*.cpp; do
 	[ -f "$test_src" ] || continue
-	name="$(basename "$test_src" .cpp)"
+	name=${test_src##*/}
+	name=${name%.cpp}
 	matches_selection "$name" || continue
 	printf '%s\n' "$name" >> "$selected"
 done
 
 # Plan lines: class<TAB>slots<TAB>seconds<TAB>name.  slots is how many of
 # the $RUN_JOBS run slots the test takes: exclusive all of them, wide:N N
-# (at most $RUN_JOBS), pool and single 1.  seconds is the test's time in this
-# checkout's last run ($TIMINGS_HISTORY), else its schedule entry, else 0.
+# (at most $RUN_JOBS), pool and single 1.  seconds is the test's recorded
+# time ($TIMINGS_HISTORY), else its schedule entry, else 0.
 # An unknown class is treated as exclusive (the safe choice) with a warning.
 # With --jobs 1 the plan keeps the old alphabetical order; otherwise it is
 # the exclusive tests longest first, then the wide tests widest first, then

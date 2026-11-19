@@ -627,7 +627,7 @@ if ($BuildOnly) {
 # one (`single`), and a run time for the long ones.  Exclusive tests run first,
 # one at a time on an otherwise idle machine.  The wide tests then start in
 # order, widest first, while the pool and single tests fill the slots the next
-# wide test cannot use, longest first by this checkout's last run
+# wide test cannot use, longest first by the recorded times
 # (bin\.test_timings.tsv, else the schedule's times).  Unlisted tests are
 # `pool` (one slot).  -Jobs 1 runs one test at a time in alphabetical order
 # (single tests still get one render thread).
@@ -663,8 +663,9 @@ if (Test-Path -LiteralPath $scheduleFile) {
     }
 }
 
-# Each test's time in this checkout's last run (name<TAB>seconds), kept
-# outside the log dir, which every run deletes; it orders the next run.
+# Each test's time in the last run that recorded it (name<TAB>seconds; see
+# the end of this script for which runs do), kept outside the log dir, which
+# every run deletes; it orders the next run.
 $timingsHistory = Join-Path $RepoRoot 'bin\.test_timings.tsv'
 $lastSeconds = @{}
 if (Test-Path -LiteralPath $timingsHistory) {
