@@ -21,7 +21,9 @@ Data: `/Volumes/SSD/RISE/fire_production_calibration/r273_poor_burn/`.
 - **Decision needed before a tier-8 run** (§4): the two opt-ins pull the sooty-fuel look in opposite directions.
   Soot radiation alone should keep the heavy smoke and add the cooling (expected, not yet run in the solver);
   adding the sheet gate fixes methane and thins the smoke of a sooty fuel.
-- Not run: a tier-8 arm, single-opt-in tier-6 arms, any window longer than 0.6 s. The tier-6 numbers are start-up
+- **Tier-8 run A (§5): soot radiation alone runs away.** The flame cools to a 1350 K peak, oxidation stops and
+  nearly all the soot escapes. Too strong; a lower-cap run is in progress.
+- Not run: single-opt-in tier-6 arms, any window longer than 0.6 s. The tier-6 numbers are start-up
   transients from a soot-free state and overstate the settled escaping share (old closure: 62% here, 46% settled at
   tier 8).
 
@@ -294,6 +296,40 @@ as r272 §6 so `sooty_y300` is the control):
   cells that decide oxidation).
 - **Confirms the pair (run B):** escaping share at 0.03 below 15% and at 0.3 at least twice that.
   **Refutes:** the two shares within a few points of each other, as at tier 6.
+
+## 5. Tier-8 run A: soot radiation alone (2026-11-18)
+
+`t8_y300_rad045` (`tools/fire/r273/run_tier8_a.sh`): resume of `tier8_y030` at step 13,769 for 2.5 s, yield 0.3,
+cap 0.45, sheet gate off. 1,520 steps, every one accepted, 4.3 h (the GPU was shared). Control: r272 `sooty_y300`,
+same start, same frames. Means of 23.97–24.90 s (16 frames) unless noted.
+
+| | `sooty_y300` (control) | Run A |
+|---|---:|---:|
+| Heat release, kW | 26.4 | 26.6 |
+| Peak temperature, K (settled frames) | 1720–1810 | 1340–1410 |
+| Centreline temperature at 0.14 m, K | 1572 | 1021 |
+| Gas above 1300 K, litres | about 4.4 | about 0.1 |
+| Soot share in cells above 1300 K, at the burner | 0.29 | 0.04 |
+| Upward soot flux at 1 m, mg/s | 91 | 198 |
+| Centreline soot volume fraction in the flame, ppm | 0.42 | 1.9–2.0 |
+
+- **The feedback runs away.** Within 0.25 s the peak temperature falls from 1700 K to about 1350 K and the volume
+  above 1300 K falls forty-fold. Soot oxidation then all but stops and nearly everything formed escapes: about
+  198 mg/s at 1 m against about 197 mg/s formed at the control's fuel rate (the control lets 46% escape).
+- **Fuel still burns.** Heat release is unchanged, so the cold flame is not an extinction; it is the reaction heat
+  being radiated from the soot-laden cells.
+- **Against the run's criteria:** temperature drop and escaping share both confirm that the cooling reaches the
+  cells that decide oxidation. The realised radiative fraction was not recorded by the driver; with five times the
+  frozen-field soot level it is very likely pinned at the cap, which was the refuting sign for the emission law.
+- **Why it is probably too strong.** The emission law is optically thin. At 2 ppm and 1000 K the absorption
+  coefficient is about 2.6 per metre, an optical depth near 0.8 across the 0.3 m flame, so self-absorption is no
+  longer negligible and the cap is the only thing limiting the loss. Escape near 100% and a 1350 K peak are more
+  extreme than a toluene-like fuel (net yield about 0.18 of a larger gross yield; from memory).
+- **Look.** Still at 24.84 s, the r272 sooty scene: a short dull-red flame under a column about twice as dark as
+  the control (`r273_poor_burn/rad045_seq`, comparison sheet `movies/r273_soot_radiation_compare.png`).
+- **Next, started:** `t8_y300_rad030`, the same run with the cap at 0.30, to see whether there is a stable
+  intermediate state or the flame falls to the cold branch at any cap above the gas value.
+- Data: `docs/data/fire_r273/t8_y300_rad045_{budget,centreline}_23.96_24.90s.txt`.
 
 ## Files
 
