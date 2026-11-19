@@ -336,8 +336,15 @@ static std::string BuildScene( const std::string& rasterizerChunk, const char* o
 
 static const char* kPtRasterizer =
 	"pathtracing_pel_rasterizer\n{\n\tsamples\t\t\t64\n\toidn_denoise\t\tFALSE\n\tpixel_filter\t\tbox\n}\n";
+// BDPT runs with max_light_depth 0 so the floor is shaded only at the
+// eye subpath's first vertex -- the camera-differential mechanism DL-14
+// guards.  Since DL-402 gave the light-tracing (t == 1) strategy its
+// whole-film MIS weight, light-traced hits on the floor contribute a real
+// share, and a light vertex carries no ray differentials, so it shades the
+// fbm unfaded (HF energy 0.0253 vs PT 0.00777 at max_light_depth 2).  That
+// separate gap is tracked as DL-633 in docs/DEBT_LEDGER.md.
 static const char* kBdptRasterizer =
-	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth\t\t2\n\tmax_light_depth\t\t2\n\tsamples\t\t\t64\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth\t\t2\n\tmax_light_depth\t\t0\n\tsamples\t\t\t64\n"
 	"\toidn_denoise\t\tFALSE\n\tpixel_filter\t\tbox\n}\n";
 static const char* kVcmRasterizer =
 	"vcm_pel_rasterizer\n{\n\tmax_eye_depth\t\t2\n\tmax_light_depth\t\t2\n\tsamples\t\t\t64\n"

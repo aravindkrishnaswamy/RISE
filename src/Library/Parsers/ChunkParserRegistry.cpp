@@ -4068,6 +4068,7 @@ namespace RISE
 						cd.description="Single-scattering anisotropic GGX glass interface; bulk absorption uses a separate medium.";
 						cd.parameters.emplace_back();
 						cd.parameters.back().name="name"; cd.parameters.back().kind=ValueKind::String;
+						cd.parameters.back().description="Unique material name";
 						cd.parameters.back().defaultValueHint="noname";
 						for(const char* key : {"ior","alphax","alphay"}) {
 							cd.parameters.emplace_back(); auto& p=cd.parameters.back();
@@ -9733,18 +9734,18 @@ namespace RISE
 						cd.category = ChunkCategory::Medium;
 						cd.description = "Manifest-backed physical fire sequence medium.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p=P(); p.name="name"; p.kind=ValueKind::String; p.required=true; }
-						{ auto& p=P(); p.name="fidelity_mode"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"preview","predictive"}; }
-						{ auto& p=P(); p.name="sequence_manifest"; p.kind=ValueKind::String; p.required=true; }
-						{ auto& p=P(); p.name="channel_carbon"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"carbon"}; }
-						{ auto& p=P(); p.name="channel_temperature"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"temperature"}; }
-						{ auto& p=P(); p.name="channel_condensed"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"condensed"}; }
-						{ auto& p=P(); p.name="channel_reaction"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"reaction"}; }
-						{ auto& p=P(); p.name="chem_model"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"none"}; }
-						{ auto& p=P(); p.name="channel_chem_ch"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"chem_CH"}; }
-						{ auto& p=P(); p.name="channel_chem_c2"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"chem_C2"}; }
-						{ auto& p=P(); p.name="channel_chem_co2"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"chem_CO2"}; }
-						{ auto& p=P(); p.name="channel_velocity"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"velocity"}; }
+						{ auto& p=P(); p.name="name"; p.kind=ValueKind::String; p.required=true; p.description="Unique medium name.  Creates a named medium manager entry that is inert until bound (as `global_medium`, or through a closed object's `interior_medium`)"; }
+						{ auto& p=P(); p.name="fidelity_mode"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"preview","predictive"}; p.description="Scene/job-wide fire-render fidelity request.  `preview` is the preview-only path; `predictive` requests predictive fidelity and is refused at preflight when the sequence does not qualify"; }
+						{ auto& p=P(); p.name="sequence_manifest"; p.kind=ValueKind::String; p.required=true; p.description="Path to the sequence manifest, the sole locator of the time sequence (ordered frame paths and digests) and carrier of the complete physical/record closure; sibling frames are never inferred from a filename pattern"; }
+						{ auto& p=P(); p.name="channel_carbon"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"carbon"}; p.description="Carbon channel binding; must be exactly `carbon` (the version-1 manifest schema name)"; }
+						{ auto& p=P(); p.name="channel_temperature"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"temperature"}; p.description="Temperature channel binding; must be exactly `temperature` (the version-1 manifest schema name)"; }
+						{ auto& p=P(); p.name="channel_condensed"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"condensed"}; p.description="Optional condensed-organic channel binding; when present must be exactly `condensed`"; }
+						{ auto& p=P(); p.name="channel_reaction"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"reaction"}; p.description="Optional diagnostic reaction channel (`reaction`); it never drives the chemistry channels"; }
+						{ auto& p=P(); p.name="chem_model"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"none"}; p.description="`none` explicitly disables the chem channels; mutually exclusive with the complete `channel_chem_ch`/`channel_chem_c2`/`channel_chem_co2` triplet (exactly one of the two forms is required)"; }
+						{ auto& p=P(); p.name="channel_chem_ch"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"chem_CH"}; p.description="CH chem channel binding; must be exactly `chem_CH`.  All three chem channels are given together, or `chem_model none` instead"; }
+						{ auto& p=P(); p.name="channel_chem_c2"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"chem_C2"}; p.description="C2 chem channel binding; must be exactly `chem_C2`.  All three chem channels are given together, or `chem_model none` instead"; }
+						{ auto& p=P(); p.name="channel_chem_co2"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"chem_CO2"}; p.description="CO2* chem channel binding; must be exactly `chem_CO2`.  All three chem channels are given together, or `chem_model none` instead"; }
+						{ auto& p=P(); p.name="channel_velocity"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"velocity"}; p.description="Optional velocity channel binding (`velocity`); enables motion blur"; }
 						return cd;
 					}();
 					return d;

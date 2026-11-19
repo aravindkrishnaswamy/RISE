@@ -1729,25 +1729,18 @@ static void TestOccurrenceDriftGuardWhitespace()
 			Check( edited.find( "stop 0.5 1.0 0.0 0.0" ) != std::string::npos,
 			       "the edit landed, single-spaced (as every write is)" );
 
-			// Undo's own revert-WRITE goes through the same WithParamValue
-			// single-space re-tokenisation as any other write, so it does NOT
-			// restore the original's column alignment -- only its TOKENS.  The
-			// byte-exact expectation is therefore `original` with just the
-			// stop[1] line's spacing collapsed, not `original` verbatim.
-			std::string expectedAfterUndo = original;
-			{
-				const std::string alignedLine  = "stop 0.5   0.44  0.54  0.64";
-				const std::string collapsedLine = "stop 0.5 0.44 0.54 0.64";
-				const std::size_t pos = expectedAfterUndo.find( alignedLine );
-				Check( pos != std::string::npos, "the aligned stop[1] line is findable in `original`" );
-				if( pos != std::string::npos )
-					expectedAfterUndo.replace( pos, alignedLine.size(), collapsedLine );
-			}
+			// Since e74ed91e3 (2026-10-17, "restore an edited chunk's exact bytes on
+			// Undo/Redo") an Undo whose owner chunk still holds exactly the post-edit
+			// text swaps the captured pre-edit chunk text back BYTE FOR BYTE
+			// (SceneEditor::RouteCstParamOwnerRestore_), so the column alignment IS
+			// restored.  (The re-tokenising value replay this test originally pinned
+			// remains the fallback when that swap does not apply.)
+			const std::string expectedAfterUndo = original;
 
 			c.Undo();
 			Check( DocText( *j ) == expectedAfterUndo,
-			       "Undo was NOT refused -- restores the prior TOKENS exactly (single-spaced, as any "
-			       "write re-emits them), everything else byte-identical to the original "
+			       "Undo was NOT refused -- restores the original document byte for byte, column "
+			       "alignment included (exact-bytes Undo, e74ed91e3) "
 			       "(pre-fix: an ends-only trim compared the single-spaced post-Undo line against "
 			       "the captured multi-spaced original and refused this Undo as drifted)" );
 
@@ -1784,13 +1777,11 @@ static void TestOccurrenceDriftGuardWhitespace()
 			Check( edited.find( "stop 0.5 0.20 0.54 0.64" ) != std::string::npos,
 			       "the write itself is single-spaced regardless of what was sent" );
 
-			// Undo's own revert-write re-tokenises + single-spaces the restored
-			// value too (see (a)'s note), so the line reads back single-spaced
-			// even though the ORIGINAL was column-aligned -- the TOKENS (the
-			// prior value) are what must match, not the original's bytes.
+			// The exact-bytes Undo (e74ed91e3) gives the line back with its original
+			// column alignment, so the prior value's tokens AND spacing must be back.
 			c.Undo();
-			Check( DocText( *j ).find( "stop 0.5 0.44 0.54 0.64" ) != std::string::npos,
-			       "Undo was NOT refused -- the prior value's tokens are back "
+			Check( DocText( *j ).find( "stop 0.5   0.44  0.54  0.64" ) != std::string::npos,
+			       "Undo was NOT refused -- the prior value is back, original spacing included "
 			       "(pre-fix: comparing the verbatim-spaced sent value against the "
 			       "single-spaced Document line refused this Undo outright)" );
 			j->release();

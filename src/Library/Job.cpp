@@ -1757,6 +1757,11 @@ Job::~Job( )
 	DestroyContainers();	// also drops the callback-output registry
 }
 
+namespace
+{
+	bool SceneHasActiveFireMedium( const IScene& scene );	// defined with the fire render helpers below
+}
+
 bool Job::BeginPreparedRequest()
 {
 	std::lock_guard<std::mutex> lock(m_preparedRequestMutex);
@@ -1765,7 +1770,19 @@ bool Job::BeginPreparedRequest()
 		GlobalLog()->PrintEasyError("prepared_request_already_active");
 		return false;
 	}
-	Transformable::BeginPreparedMutationFreeze();
+	// The scene-mutation freeze (keyframe / transform / camera / light /
+	// painter / geometry setters refuse external callers) exists for fire
+	// renders: the prepared frame, the provenance captured at preflight and
+	// the temporal hold must describe exactly what is rendered.  A render
+	// without fire media does not take it, so master's render-internal scene
+	// moves (frame time, shutter samples, photon time strata, hierarchy
+	// re-composition, the Auto probe's film resize) run as they do on master.
+	// The Job-level lock above (PreparedMutationLocked) still covers every
+	// render.  Fire media cannot be bound mid-request: binding goes through
+	// Job setters, which that lock refuses.
+	m_preparedRequestFrozeScene = pScene &&
+		(SceneHasActiveFireMedium(*pScene) || pScene->HasTimeVaryingMedia());
+	if( m_preparedRequestFrozeScene ) Transformable::BeginPreparedMutationFreeze();
 	++m_activePreparedRequests;
 	return true;
 }
@@ -1774,7 +1791,10 @@ void Job::EndPreparedRequest()
 {
 	std::lock_guard<std::mutex> lock(m_preparedRequestMutex);
 	if( m_activePreparedRequests ) --m_activePreparedRequests;
-	Transformable::EndPreparedMutationFreeze();
+	if( m_preparedRequestFrozeScene ) {
+		m_preparedRequestFrozeScene = false;
+		Transformable::EndPreparedMutationFreeze();
+	}
 	if( !m_activePreparedRequests ) m_preparedRequestCondition.notify_all();
 }
 

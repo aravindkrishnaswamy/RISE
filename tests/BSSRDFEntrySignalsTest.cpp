@@ -45,6 +45,7 @@
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Objects/Object.h"
+#include "../src/Library/Managers/ObjectManager.h"
 #include "../src/Library/Interfaces/ISurfaceSignalProvider.h"
 #include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
@@ -182,9 +183,12 @@ int main()
 	safe_release( sdfGeo );
 	pObject->FinalizeTransformations();
 
-	// Create a dummy scene object to serve as pScene pointer in the cross-object triple
-	int fakeSceneDummy = 0xbeef;
-	const IObjectManager* pFakeScene = reinterpret_cast<const IObjectManager*>( &fakeSceneDummy );
+	// An empty object manager serves as the pScene pointer in the cross-object
+	// triple.  It must be a real IObjectManager: since DL-370 SampleExit calls
+	// pScene->RandomWalkObjectContaining at every exit event (a cast int here
+	// crashed section 5).  Empty, it reports no random-walk neighbour.
+	ObjectManager* pFakeSceneManager = new ObjectManager( false, false, 4, 8 );
+	const IObjectManager* pFakeScene = pFakeSceneManager;
 
 	// Setup exit hit on the sphere surface at (0, 0, 2.0)
 	Ray exitRay( Point3( 0, 0, 5 ), Vector3( 0, 0, -1 ) );
@@ -436,6 +440,7 @@ int main()
 	safe_release( pAbs );
 	safe_release( pSigPainter );
 	safe_release( pObject );
+	safe_release( pFakeSceneManager );
 
 	std::cout << "\nResult: " << g_pass << " passed, " << g_fail << " failed.\n";
 	return g_fail ? 1 : 0;

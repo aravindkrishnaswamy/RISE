@@ -961,6 +961,14 @@ public:
 		return mDenoisedCount;
 	}
 
+	// Centre pixel of the most recent OutputPreDenoisedImage -- the raw
+	// estimator, before OIDN reconstructs anything into it.
+	RISEColor PreDenoisedCenterPixel() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mPreDenoisedCenterPixel;
+	}
+
 	void SetCameraExposureCompensationEV( Scalar ev ) override
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
@@ -969,10 +977,13 @@ public:
 	}
 
 	void OutputPreDenoisedImage(
-		const IRasterImage&, const Rect*, const unsigned int ) override
+		const IRasterImage& image, const Rect*, const unsigned int ) override
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
 		++mPreDenoisedCount;
+		const unsigned int w = image.GetWidth(), h = image.GetHeight();
+		mPreDenoisedCenterPixel = ( w && h )
+			? image.GetPEL( w / 2, h / 2 ) : RISEColor();
 	}
 
 	void OutputDenoisedImage(
@@ -1013,6 +1024,7 @@ private:
 	unsigned int       mHeight = 0;
 	RISEColor           mFirstPixel;
 	RISEColor           mCenterPixel;
+	RISEColor           mPreDenoisedCenterPixel;
 	Scalar              mExposureEV = 0;
 	unsigned int        mExposureCount = 0;
 	unsigned int        mPreDenoisedCount = 0;
@@ -6090,8 +6102,34 @@ static void RunSharedDirectIndirectTransportTest()
 		// OIDN can reconstruct a small non-zero value into an estimator pixel
 		// whose raw input is black, so compare the two separately-denoised
 		// outputs by discrimination margin rather than requiring exact zero.
+#ifdef RISE_ENABLE_OIDN
+		// The property is "the Indirect pane carries no direct light".  Its
+		// RAW estimator (before OIDN) is the faithful witness: this scene is
+		// one sphere under one point light, so with primary NEE excluded the
+		// Indirect pixel is EXACTLY zero, while the paired Direct companion
+		// is a single deterministic NEE sample (~0.03).  The 20x margin
+		// therefore holds with unbounded room, independent of the machine.
+		// (Comparing the two DENOISED outputs at 20x was a coin flip: OIDN
+		// smears the Direct image's few-pixel signal into the black Indirect
+		// one, and the ratio came out ~15-17.5, clearing 20 only by luck.)
+		auto peakOf = []( const RISEColor& c ) {
+			return std::max( c.base.r, std::max( c.base.g, c.base.b ) ); };
+		const Scalar directRaw   = peakOf( directSink->PreDenoisedCenterPixel() );
+		const Scalar indirectRaw = peakOf( indirectSink->PreDenoisedCenterPixel() );
+		Check( indirectSink->PreDenoisedCount() >= 1,
+		       "the Indirect pane delivered its raw estimator (so a zero below is a measurement, not an absence)" );
+		Check( directRaw > 0.01,
+		       "MONEY: paired Direct companion's raw (pre-denoise) estimator contains the primary NEE contribution" );
+		Check( indirectRaw * 20 < directRaw,
+		       "MONEY: canonical Indirect's raw (pre-denoise) estimator is at least 20x dimmer than the paired primary-NEE Direct result" );
+		// After denoising the margin is only what OIDN's reconstruction
+		// leaves; still require the Indirect output to be clearly dimmer.
+		Check( indirectPeak * 5 < directPeak,
+		       "MONEY: denoised Indirect remains at least 5x dimmer than the paired primary-NEE Direct result" );
+#else
 		Check( indirectPeak * 20 < directPeak,
 		       "MONEY: canonical Indirect remains at least 20x dimmer than the paired primary-NEE Direct result" );
+#endif
 	}
 	Check( f.ctrl->SettlesAt( 1, kSettleMs ),
 	       "MONEY: one quantum satisfies both dirty panes; no second Direct trace runs" );

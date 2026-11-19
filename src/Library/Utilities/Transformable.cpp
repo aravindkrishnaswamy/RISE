@@ -32,6 +32,9 @@ namespace {
 	thread_local unsigned int gPreparedInternalMutationDepth=0u;
 	thread_local unsigned int gPreparedExternalMutationDepth=0u;
 	std::shared_mutex gPreparedMutationMutex;
+	// Set by the first refused external mutation of a freeze; cleared when a
+	// freeze begins.  Refused setters return void, so the log is the signal.
+	std::atomic<bool> gPreparedMutationRefusalReported{false};
 
 Vector3 LeastAlignedCardinal_( const Vector3& unit )
 {
@@ -166,6 +169,7 @@ void Transformable::BeginPreparedMutationFreeze()
 {
 	gPreparedMutationMutex.lock();
 	gPreparedMutationFreezeCount.fetch_add(1u,std::memory_order_acq_rel);
+	gPreparedMutationRefusalReported.store(false,std::memory_order_release);
 }
 
 void Transformable::EndPreparedMutationFreeze()
@@ -191,7 +195,18 @@ bool Transformable::BeginPreparedExternalMutation()
 {
 	if( gPreparedInternalMutationDepth ) { ++gPreparedExternalMutationDepth; return true; }
 	if( gPreparedExternalMutationDepth ) { ++gPreparedExternalMutationDepth; return true; }
-	if( !gPreparedMutationMutex.try_lock_shared() ) return false;
+	if( !gPreparedMutationMutex.try_lock_shared() ) {
+		// A refused setter leaves the scene unchanged and returns nothing, so
+		// say so once per freeze instead of failing silently.  Code that moves
+		// the scene as part of the render itself must take
+		// BeginPreparedInternalMutation (see PrepareSceneForFrame).
+		if( !gPreparedMutationRefusalReported.exchange(true,std::memory_order_acq_rel) ) {
+			GlobalLog()->PrintEasyError("mutation_frozen: a scene setter was called while a fire "
+				"render holds the prepared mutation freeze; the change was NOT applied "
+				"(reported once per render)");
+		}
+		return false;
+	}
 	gPreparedExternalMutationDepth=1u;
 	return true;
 }
