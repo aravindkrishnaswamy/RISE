@@ -1,6 +1,7 @@
 // r273 low-tier A/B: tools/fire/r271/ab_driver.cpp with the resolution tier as an argument, so a retained tier-6
 // checkpoint can be resumed for a bounded window. Soot settings come from the environment
-// (RISE_FIRE_METHANE_SOOT_YIELD, RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP, RISE_FIRE_SOOT_SHEET_OXIDATION).
+// (RISE_FIRE_METHANE_SOOT_YIELD, RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP, RISE_FIRE_SOOT_SHEET_OXIDATION,
+// RISE_FIRE_SOOT_SELF_ABSORPTION).
 // argv: checkpoint, out dir, window s, tier 6|8. Built by build_tool.py with the r271 A/B harness patches.
 #define main FireSequenceSuiteMain
 #include R271_HARNESS_SOURCE
@@ -21,14 +22,14 @@ int main(int argc,char** argv){
  p.temporalSnapshotDirectory=out/"frames";p.temporalSnapshotCadenceS=.0625;
  p.maximumProductionSourceStepS=double(float(.0016462659696117043));
  const char* yield=std::getenv("RISE_FIRE_METHANE_SOOT_YIELD");const char* cap=std::getenv("RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP");
- const char* sheet=std::getenv("RISE_FIRE_SOOT_SHEET_OXIDATION");
+ const char* sheet=std::getenv("RISE_FIRE_SOOT_SHEET_OXIDATION");const char* self=std::getenv("RISE_FIRE_SOOT_SELF_ABSORPTION");
  std::cerr<<"R273_AB_BEGIN step="<<start.acceptedSteps<<" time="<<std::setprecision(17)<<start.simulationTimeS
-  <<" window_s="<<window<<" tier="<<tier<<" yield="<<(yield?yield:"unset")<<" cap="<<(cap?cap:"unset")<<" sheet="<<(sheet?sheet:"unset")<<'\n';
+  <<" window_s="<<window<<" tier="<<tier<<" yield="<<(yield?yield:"unset")<<" cap="<<(cap?cap:"unset")<<" sheet="<<(sheet?sheet:"unset")<<" self_absorption="<<(self?self:"unset")<<'\n';
  const auto wall=std::chrono::steady_clock::now();
  const auto r=RunMethaneFrameProbe(8u,1u,0.,tier==6.?25.156864278900095:25.091040127156969,16.,tier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,p);
  std::ofstream f(out/"result.txt");f<<std::setprecision(17)<<"succeeded "<<r.succeeded<<"\nerror "<<r.structuredError
   <<"\ncheckpoint "<<checkpoint.string()<<"\nstart_step "<<start.acceptedSteps<<"\nstart_time_s "<<start.simulationTimeS<<"\nend_time_s "<<r.simulatedTimeS
-  <<"\nwindow_s "<<window<<"\ntier "<<tier<<"\nyield "<<(yield?yield:"unset")<<"\ncap "<<(cap?cap:"unset")<<"\nsheet "<<(sheet?sheet:"unset")
+  <<"\nwindow_s "<<window<<"\ntier "<<tier<<"\nyield "<<(yield?yield:"unset")<<"\ncap "<<(cap?cap:"unset")<<"\nsheet "<<(sheet?sheet:"unset")<<"\nself_absorption "<<(self?self:"unset")
   <<"\ncase_record_id "<<r.caseRecordId<<"\nwall_s "<<std::chrono::duration<double>(std::chrono::steady_clock::now()-wall).count()<<'\n';
  return r.succeeded&&r.simulatedTimeS>=start.simulationTimeS+window?0:5;
 }

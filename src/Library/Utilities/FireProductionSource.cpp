@@ -333,7 +333,10 @@ namespace RISE
 					fireCase.derived.pilotAmbientTemperatureK,
 					fireCase.derived.referenceHeatReleaseRateW,
 					fireCase.derived.effectiveRadiativeFraction,request.predictiveRadiation,
-					fuel,fuel,opacity,packets,factor,error,request.workerCount,!inertPlume))return false;
+					fuel,fuel,opacity,packets,factor,error,request.workerCount,!inertPlume,
+					MethaneSootRadiativeFractionCapSetting(),MethaneSootSheetOxidationSetting(),0,
+					MethaneSootSelfAbsorptionSetting(),request.shape.nx,request.shape.ny,
+					request.shape.nz))return false;
 				// r270: the radiatively adiabatic floor returns its convective flux
 				// to the first gas layer as a frozen energy dose, q/dz, before the
 				// expansion target is derived from the packet.

@@ -1124,6 +1124,75 @@ namespace RISE
 				ambient2*ambient2*ambientTemperatureK);
 		}
 
+		// RISE_FIRE_SOOT_SELF_ABSORPTION=1 (needs the cap; docs/FIRE_SMOKE_POOR_BURN_R273.md §6):
+		// soot leaves the gas budget and radiates its own emission, attenuated by
+		// the soot column around the cell and never scaled up. The gas keeps the
+		// case radiative fraction with its escape factor bounded by 1; the cap only
+		// scales soot down. Returns 0 when unset or "0", 1 for "1", -1 when malformed.
+		inline int ParseMethaneSootSelfAbsorption(const char* text)
+		{
+			return ParseMethaneSootSheetOxidation(text);
+		}
+		inline int MethaneSootSelfAbsorptionSetting()
+		{
+			static const int setting=ParseMethaneSootSelfAbsorption(
+				std::getenv("RISE_FIRE_SOOT_SELF_ABSORPTION"));
+			return setting;
+		}
+		// Planck-mean soot absorption coefficient, 1/m, of the same law:
+		// coefficient*T^5 = 4*sigma*kappa*T^4.
+		inline double MethaneSootPlanckAbsorptionPerM(const MethaneCellState& state)
+		{
+			const double sigmaSB = 5.670374419e-8;
+			return MethaneSootExchangeCoefficientWPerM3K5(state)*state.temperatureK/(4.0*sigmaSB);
+		}
+		// Six-flux escape probability of each cell's soot emission: the mean over
+		// +-x, +-y, +-z of the transmission out of the cell (exact slab mean,
+		// (1-exp(-k dx))/(k dx)) times exp(-optical depth of the soot beyond it to the
+		// domain edge). Cells are (z*ny+y)*nx+x; open edges absorb nothing.
+		inline bool ComputeMethaneSootColumnEscape(const std::size_t nx,const std::size_t ny,
+			const std::size_t nz,const double cellWidthM,const std::vector<double>& absorptionPerM,
+			std::vector<double>& escape,std::string* error=0)
+		{
+			const std::size_t count=nx*ny*nz;
+			if(nx==0u||ny==0u||nz==0u||absorptionPerM.size()!=count||
+				!std::isfinite(cellWidthM)||!(cellWidthM>0.0))
+				return Fail(error,"fire solver soot column escape input is malformed");
+			for(const double value:absorptionPerM)if(!std::isfinite(value)||value<0.0)
+				return Fail(error,"fire solver soot column escape absorption is invalid");
+			std::vector<double> depth(count);
+			for(std::size_t cell=0;cell<count;++cell)depth[cell]=absorptionPerM[cell]*cellWidthM;
+			escape.assign(count,0.0);
+			const std::size_t stride[3]={1u,nx,nx*ny},length[3]={nx,ny,nz};
+			for(std::size_t axis=0;axis<3u;++axis){
+				const std::size_t lines=count/length[axis];
+				for(std::size_t line=0;line<lines;++line){
+					std::size_t start=0;
+					if(axis==0u)start=line*nx;
+					else if(axis==1u)start=(line/nx)*nx*ny+line%nx;
+					else start=line;
+					// Forward pass: depth beyond in the -axis direction; backward: +axis.
+					double beyond=0.0;
+					for(std::size_t i=0;i<length[axis];++i){
+						const std::size_t cell=start+i*stride[axis];
+						escape[cell]+=std::exp(-beyond);beyond+=depth[cell];
+					}
+					beyond=0.0;
+					for(std::size_t i=length[axis];i-->0u;){
+						const std::size_t cell=start+i*stride[axis];
+						escape[cell]+=std::exp(-beyond);beyond+=depth[cell];
+					}
+				}
+			}
+			for(std::size_t cell=0;cell<count;++cell){
+				const double own=depth[cell]>0.0?-std::expm1(-depth[cell])/depth[cell]:1.0;
+				escape[cell]=std::min(1.0,escape[cell]*own/6.0);
+				if(!std::isfinite(escape[cell])||escape[cell]<0.0||escape[cell]>1.0)
+					return Fail(error,"fire solver soot column escape is outside 0..1");
+			}
+			return true;
+		}
+
 		// Sub-grid flame-sheet estimate for the soot oxidation gate: the cell's
 		// stoichiometric parcel (as in the critical-flame-temperature trial) burned
 		// with the heat that stays in the gas, (1-loss) times the primary heat
@@ -2159,11 +2228,16 @@ namespace RISE
 			MethaneCellState& result,
 			double& acceptedCoolingWPerM3,
 			std::string* error = 0,
-			const bool sootEmission = false
+			const bool sootEmission = false,
+			const double sootEscapeFactor = -1.0
 			)
 		{
+			// r273 self-absorption: sootEscapeFactor >= 0 weights the soot term on its
+			// own (escapeFactor then weights the gas only); < 0 keeps one shared factor.
+			const bool separateSoot=sootEmission&&sootEscapeFactor>=0.0;
 			if( !ValidateCellState(preRadiation,error) || !std::isfinite(deltaTimeS) ||
 				deltaTimeS <= 0.0 || !std::isfinite(escapeFactor) || escapeFactor < 0.0 ||
+				!std::isfinite(sootEscapeFactor) ||
 				ambientTemperatureK < opacity.TemperatureMinK() ||
 				ambientTemperatureK > opacity.TemperatureMaxK() ) {
 				return Fail(error,"fire solver radiation map is outside its certified domain");
@@ -2172,7 +2246,8 @@ namespace RISE
 			if(!InvertMethaneTemperatureWithinAcceptedEnvelope(preRadiation,
 				opacity.TemperatureMinK(),opacity.TemperatureMaxK(),thermochemistry,
 				radiationTemperatureK,error))return false;
-			if( radiationTemperatureK == ambientTemperatureK || escapeFactor == 0.0 ) {
+			if( radiationTemperatureK == ambientTemperatureK || (separateSoot?
+				escapeFactor == 0.0 && sootEscapeFactor == 0.0 : escapeFactor == 0.0) ) {
 				result = preRadiation; acceptedCoolingWPerM3 = 0.0; return true;
 			}
 			const double lower = std::min(ambientTemperatureK,radiationTemperatureK);
@@ -2221,6 +2296,11 @@ namespace RISE
 				if(!EvaluateGasExchange(preRadiation,temperature,ambientTemperatureK,
 					thermochemistry,opacity,evaluation,error))return false;
 				value=evaluation.exchangeWPerM3;
+				if(separateSoot){
+					value=escapeFactor*value+sootEscapeFactor*MethaneSootExchangeWPerM3(
+						sootCoefficient,temperature,ambientTemperatureK);
+					return true;
+				}
 				if(sootCoefficient>0.0)value+=MethaneSootExchangeWPerM3(sootCoefficient,
 					temperature,ambientTemperatureK);
 				return true;
@@ -2228,13 +2308,18 @@ namespace RISE
 			auto derivative=[&](const double lo,const double hi,double& value){
 				if(!CertifiedGasExchangeDerivativeLower(preRadiation,lo,hi,
 					ambientTemperatureK,thermochemistry,opacity,value,error))return false;
+				if(separateSoot){
+					value=escapeFactor*value+sootEscapeFactor*5.0*sootCoefficient*lo*lo*lo*lo;
+					return true;
+				}
 				if(sootCoefficient>0.0)value+=5.0*sootCoefficient*lo*lo*lo*lo;
 				return true;
 			};
 			MethaneCellState candidate = preRadiation;
+			// Separate weights are folded into the exchange, so the solver's factor is 1.
 			if(!CertifiedScalarRadiationBackwardEuler(radiationTemperatureK,
 				ambientTemperatureK,preRadiation.sensibleEnergyJPerM3,cpLower,deltaTimeS,
-				escapeFactor,knots,energy,exchange,derivative,candidate.temperatureK,
+				separateSoot?1.0:escapeFactor,knots,energy,exchange,derivative,candidate.temperatureK,
 				acceptedCoolingWPerM3,error))return false;
 			if(!energy(candidate.temperatureK,candidate.sensibleEnergyJPerM3))return false;
 			result = candidate;
@@ -2343,7 +2428,8 @@ namespace RISE
 			MethaneSourcePacket& result,
 			std::string* error = 0,
 			const bool sootEmission = false,
-			const double sootSheetRadiativeLossFraction = -1.0
+			const double sootSheetRadiativeLossFraction = -1.0,
+			const double sootEscapeFactor = -1.0
 			)
 		{
 			if(fuel.RecordId()!=thermochemistry.RecordId())return Fail(error,
@@ -2356,7 +2442,7 @@ namespace RISE
 			double signedCoolingWPerM3 = 0.0;
 			if( !ApplyGasRadiationBackwardEuler(postReaction,ambientTemperatureK,
 				reactionStep.deltaTimeS,escapeFactor,thermochemistry,opacity,
-				finalScratch,signedCoolingWPerM3,error,sootEmission) ) return false;
+				finalScratch,signedCoolingWPerM3,error,sootEmission,sootEscapeFactor) ) return false;
 			result = reaction;
 			for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
 				result.constituentDelta[species] = finalScratch.constituent[species]-
@@ -2392,22 +2478,38 @@ namespace RISE
 			const bool gasRadiation = true,
 			const double sootRadiativeFractionCap = MethaneSootRadiativeFractionCapSetting(),
 			const int sootSheetOxidation = MethaneSootSheetOxidationSetting(),
-			double* appliedRadiativeFraction = 0
+			double* appliedRadiativeFraction = 0,
+			const int sootSelfAbsorption = MethaneSootSelfAbsorptionSetting(),
+			const std::size_t gridNx = 0u,
+			const std::size_t gridNy = 0u,
+			const std::size_t gridNz = 0u
 			)
 		{
 			const std::size_t count = beginning.size();
 			if( count == 0 || reactionStep.size() != count || cellVolumeM3.size() != count ) {
 				return Fail(error,"fire solver grid source-packet arrays are malformed");
 			}
-			// r273 poor-burn opt-ins; with both off every branch below is the pre-r273 one.
+			// r273 poor-burn opt-ins; with all off every branch below is the pre-r273 one.
 			if(std::isnan(sootRadiativeFractionCap))return Fail(error,
 				"RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP must be a number in (0,1]");
 			if(sootSheetOxidation!=0&&sootSheetOxidation!=1)return Fail(error,
 				"RISE_FIRE_SOOT_SHEET_OXIDATION must be 0 or 1");
+			if(sootSelfAbsorption!=0&&sootSelfAbsorption!=1)return Fail(error,
+				"RISE_FIRE_SOOT_SELF_ABSORPTION must be 0 or 1");
+			if(sootSelfAbsorption==1&&!(sootRadiativeFractionCap>0.0))return Fail(error,
+				"RISE_FIRE_SOOT_SELF_ABSORPTION requires RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP");
 			const bool sootRadiation=gasRadiation&&sootRadiativeFractionCap>0.0;
+			const bool sootSelfAbsorbed=sootRadiation&&sootSelfAbsorption==1;
+			if(sootSelfAbsorbed){
+				if(gridNx*gridNy*gridNz!=count)return Fail(error,
+					"RISE_FIRE_SOOT_SELF_ABSORPTION requires the grid dimensions");
+				for(const double volume:cellVolumeM3)if(volume!=cellVolumeM3[0])return Fail(error,
+					"RISE_FIRE_SOOT_SELF_ABSORPTION requires uniform cells");
+			}
 			const double sootRadiativeFractionLimit=std::max(radiativeFraction,
 				sootRadiativeFractionCap);
 			std::vector<double> sootExchange(sootRadiation?count:0u,0.0);
+			std::vector<double> sootAbsorption(sootSelfAbsorbed?count:0u,0.0);
 			if(fuel.RecordId()!=thermochemistry.RecordId())return Fail(error,
 				"fire solver grid source packet fuel and thermochemistry records differ");
 			std::vector<double> unscaledExchange(count,0.0);
@@ -2464,6 +2566,8 @@ namespace RISE
 					sootExchange[cell]=MethaneSootExchangeWPerM3(
 						MethaneSootExchangeCoefficientWPerM3K5(postReaction[cell]),
 						postReaction[cell].temperatureK,ambientTemperatureK);
+					if(sootSelfAbsorbed)sootAbsorption[cell]=
+						MethaneSootPlanckAbsorptionPerM(postReaction[cell]);
 				}
 				}
 				}
@@ -2486,7 +2590,7 @@ namespace RISE
 			// top with the same escape factor until the total reaches the limit.
 			double budgetRadiativeFraction=radiativeFraction;
 			bool sootEmissionApplied=false;
-			if( sootRadiation ) {
+			if( sootRadiation && !sootSelfAbsorbed ) {
 				double gasIntegralW=0.0,sootIntegralW=0.0;
 				for( std::size_t cell=0; cell<count; ++cell ) {
 					gasIntegralW+=unscaledExchange[cell]*cellVolumeM3[cell];
@@ -2502,11 +2606,38 @@ namespace RISE
 					sootEmissionApplied=true;
 				}
 			}
-			if(appliedRadiativeFraction)*appliedRadiativeFraction=budgetRadiativeFraction;
 			RadiationEscapeFactor candidateFactor;
 			if( !ComputeRadiationEscapeFactor(totalHeatReleaseW,nominalPeakHeatReleaseW,
 				budgetRadiativeFraction,unscaledExchange,cellVolumeM3,predictive,
 				candidateFactor,error) ) return false;
+			// r273 self-absorption: the gas keeps the case fraction (above) but, being
+			// an escape probability, its factor is bounded by 1 (a cooled flame cannot
+			// emit more than its optically thin emission); soot emits escape*thin on
+			// its own, and only the cap scales it down. With no heat release the soot
+			// scale follows the gas's quiescent factor gamma.
+			std::vector<double> sootFactor;
+			if( sootSelfAbsorbed ) {
+				candidateFactor.accepted=std::min(candidateFactor.accepted,1.0);
+				std::vector<double> escape;
+				if(!ComputeMethaneSootColumnEscape(gridNx,gridNy,gridNz,std::cbrt(cellVolumeM3[0]),
+					sootAbsorption,escape,error))return false;
+				double escapingSootW=0.0,gasW=0.0;
+				for( std::size_t cell=0; cell<count; ++cell ) {
+					escapingSootW+=escape[cell]*std::max(0.0,sootExchange[cell])*cellVolumeM3[cell];
+					gasW+=candidateFactor.accepted*unscaledExchange[cell]*cellVolumeM3[cell];
+				}
+				const double allowedW=sootRadiativeFractionLimit*totalHeatReleaseW-gasW;
+				if( !std::isfinite(escapingSootW) || !std::isfinite(allowedW) )
+					return Fail(error,"fire solver soot radiation budget accumulation overflowed");
+				double scale=escapingSootW>allowedW?std::max(0.0,allowedW)/escapingSootW:1.0;
+				scale=std::max(scale,candidateFactor.gamma);
+				sootFactor.resize(count);
+				for( std::size_t cell=0; cell<count; ++cell )sootFactor[cell]=scale*escape[cell];
+				budgetRadiativeFraction=totalHeatReleaseW>0.0?(gasW+
+					scale*escapingSootW)/totalHeatReleaseW:sootRadiativeFractionLimit;
+				sootEmissionApplied=true;
+			}
+			if(appliedRadiativeFraction)*appliedRadiativeFraction=budgetRadiativeFraction;
 			std::vector<MethaneSourcePacket> candidateResult(count);
 			std::fill(failureCell.begin(),failureCell.end(),noFailure);
 			std::fill(failureMessage.begin(),failureMessage.end(),std::string());
@@ -2516,11 +2647,12 @@ namespace RISE
 				MethaneCellState finalScratch;
 				double signedCoolingWPerM3 = 0.0;
 				std::string cellError;
-				if(unscaledExchange[cell]==0.0) {
+				if(unscaledExchange[cell]==0.0&&(!sootSelfAbsorbed||sootExchange[cell]==0.0)) {
 					finalScratch=postReaction[cell];signedCoolingWPerM3=0.0;
 				} else if( !ApplyGasRadiationBackwardEuler(postReaction[cell],ambientTemperatureK,
 					reactionStep[cell].deltaTimeS,candidateFactor.accepted,thermochemistry,opacity,
-					finalScratch,signedCoolingWPerM3,&cellError,sootEmissionApplied) ) {
+					finalScratch,signedCoolingWPerM3,&cellError,sootEmissionApplied,
+					sootSelfAbsorbed?sootFactor[cell]:-1.0) ) {
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
 				candidateResult[cell] = reaction[cell];

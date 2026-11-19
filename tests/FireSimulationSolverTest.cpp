@@ -5831,6 +5831,106 @@ int main()
 			!BuildFrozenMethaneSourcePackets(sootCells,sootSteps,sootVolumes,300.0,600.0,chi,
 				false,fuel,thermochemistry,opacity,rejected,rejectedFactor,0,1u,true,-1.0,-1),
 			"r273 grid pass applies both opt-ins inside the frozen-packet ledger and fails closed on malformed settings");
+			// r273 §6 self-absorption: soot radiates its own column-attenuated emission
+			// outside the gas budget; the gas keeps the case fraction; the cap only scales soot down.
+			Check(ParseMethaneSootSelfAbsorption(0)==0&&ParseMethaneSootSelfAbsorption("0")==0&&
+				ParseMethaneSootSelfAbsorption("1")==1&&ParseMethaneSootSelfAbsorption("")==-1&&
+				ParseMethaneSootSelfAbsorption("yes")==-1&&ParseMethaneSootSelfAbsorption("10")==-1&&
+				(std::getenv("RISE_FIRE_SOOT_SELF_ABSORPTION")||MethaneSootSelfAbsorptionSetting()==0),
+				"r273 self-absorption opt-in parses unset as off and rejects malformed values");
+			std::vector<double> columnEscape,clearEscape;const double slab=0.7;
+			const bool columnBuilt=ComputeMethaneSootColumnEscape(1u,1u,3u,0.5,{0.0,slab/0.5,0.0},columnEscape,&error)&&
+				ComputeMethaneSootColumnEscape(2u,3u,2u,0.1,std::vector<double>(12u,0.0),clearEscape,&error);
+			bool clearOne=columnBuilt;for(const double value:clearEscape)clearOne=clearOne&&value==1.0;
+			std::vector<double> ignoredEscape;
+			Check(columnBuilt&&clearOne&&Near(columnEscape[0],(5.0+std::exp(-slab))/6.0,1.0e-15)&&
+				Near(columnEscape[2],(5.0+std::exp(-slab))/6.0,1.0e-15)&&
+				Near(columnEscape[1],-std::expm1(-slab)/slab,1.0e-15)&&
+				!ComputeMethaneSootColumnEscape(1u,1u,2u,0.5,{0.0,0.0,0.0},ignoredEscape)&&
+				!ComputeMethaneSootColumnEscape(1u,1u,2u,0.5,{0.0,-1.0},ignoredEscape),
+				"r273 six-flux soot column escape is one in clear gas, the slab transmission behind a slab and the slab mean inside it");
+			// Separate soot weight in the backward-Euler map: gas weight 0 leaves the soot law alone.
+			MethaneCellState sootOnlyEnd;double sootOnlyCooling=0.0;
+			const double sootCoefficientHot=MethaneSootExchangeCoefficientWPerM3K5(sootyHot);
+			const bool sootOnlyBuilt=ApplyGasRadiationBackwardEuler(sootyHot,300.0,0.01,0.0,
+				thermochemistry,opacity,sootOnlyEnd,sootOnlyCooling,&error,true,0.5);
+			Check(sootOnlyBuilt&&sootOnlyEnd.temperatureK<sootyHot.temperatureK&&
+				sootOnlyCooling<=0.5*MethaneSootExchangeWPerM3(sootCoefficientHot,sootyHot.temperatureK,300.0)*(1.0+1.0e-12)&&
+				sootOnlyCooling>=0.5*MethaneSootExchangeWPerM3(sootCoefficientHot,sootOnlyEnd.temperatureK,300.0)*(1.0-1.0e-12)&&
+				sootOnlyEnd.constituent==sootyHot.constituent,
+				"r273 separate soot weight: with no gas weight the implicit sink is the weighted soot law, bracketed by its end values");
+			// Grid pass on two unit cells (a 2x1x1 grid, 1 m cells).
+			const std::vector<double> unitVolumes={1.0,1.0};
+			double gasOnly=0.0,sootThin=0.0,sootEscaping=0.0,unitHeat=0.0;bool unitOracle=true;
+			std::vector<double> unitKappa(2u,0.0),unitSoot(2u,0.0);
+			for(std::size_t cell=0;cell<sootCells.size();++cell){
+				MethaneSourcePacket reactionOnly;MethaneCellState post;GasExchangeEvaluation gas;
+				unitOracle=unitOracle&&BuildMethaneReactionPacket(sootCells[cell],fuel,sootSteps[cell],
+					reactionOnly,&error,&post)&&EvaluateGasExchange(post,post.temperatureK,300.0,
+					thermochemistry,opacity,gas,&error);
+				gasOnly+=gas.exchangeWPerM3;unitKappa[cell]=MethaneSootPlanckAbsorptionPerM(post);
+				unitSoot[cell]=MethaneSootExchangeWPerM3(MethaneSootExchangeCoefficientWPerM3K5(post),post.temperatureK,300.0);
+				sootThin+=std::max(0.0,unitSoot[cell]);
+				unitHeat+=reactionOnly.gasHeatReleaseWPerM3+reactionOnly.sootHeatReleaseWPerM3;
+			}
+			std::vector<double> unitEscape;
+			unitOracle=unitOracle&&ComputeMethaneSootColumnEscape(2u,1u,1u,1.0,unitKappa,unitEscape,&error);
+			for(std::size_t cell=0;unitOracle&&cell<2u;++cell)sootEscaping+=unitEscape[cell]*std::max(0.0,unitSoot[cell]);
+			std::vector<MethaneSourcePacket> unitOff,unitThin,unitSelf,unitSelfCapped,unitDefault;
+			RadiationEscapeFactor unitOffFactor,unitThinFactor,unitSelfFactor,unitCappedFactor,unitDefaultFactor;
+			double unitOffApplied=0.0,unitThinApplied=0.0,unitSelfApplied=0.0,unitCappedApplied=0.0;
+			// Gas part: the case fraction unless its escape factor would exceed 1.
+			const double unitGasFraction=unitHeat>0.0&&gasOnly>0.0?std::min(chi*unitHeat/gasOnly,1.0)*gasOnly/unitHeat:chi;
+			const double unitCap=unitHeat>0.0?unitGasFraction+0.5*sootEscaping/unitHeat:1.0;
+			const bool unitBuilt=unitOracle&&
+				BuildFrozenMethaneSourcePackets(sootCells,sootSteps,unitVolumes,300.0,600.0,chi,false,fuel,
+					thermochemistry,opacity,unitOff,unitOffFactor,&error,1u,true,-1.0,0,&unitOffApplied,0)&&
+				BuildFrozenMethaneSourcePackets(sootCells,sootSteps,unitVolumes,300.0,600.0,chi,false,fuel,
+					thermochemistry,opacity,unitThin,unitThinFactor,&error,1u,true,1.0,0,&unitThinApplied,0)&&
+				BuildFrozenMethaneSourcePackets(sootCells,sootSteps,unitVolumes,300.0,600.0,chi,false,fuel,
+					thermochemistry,opacity,unitDefault,unitDefaultFactor,&error,1u,true,1.0,0)&&
+				BuildFrozenMethaneSourcePackets(sootCells,sootSteps,unitVolumes,300.0,600.0,chi,false,fuel,
+					thermochemistry,opacity,unitSelf,unitSelfFactor,&error,1u,true,1.0,0,&unitSelfApplied,1,2u,1u,1u)&&
+				BuildFrozenMethaneSourcePackets(sootCells,sootSteps,unitVolumes,300.0,600.0,chi,false,fuel,
+					thermochemistry,opacity,unitSelfCapped,unitCappedFactor,&error,1u,true,unitCap,0,&unitCappedApplied,1,2u,1u,1u);
+			if(!unitBuilt)std::printf("r273 self-absorption diagnostic: %s\n",error.c_str());
+			double unitOffCooling=0.0,unitSelfCooling=0.0,unitCappedCooling=0.0;bool unitSameChemistry=unitBuilt;
+			for(std::size_t cell=0;unitBuilt&&cell<2u;++cell){
+				unitOffCooling+=unitOff[cell].radiativeCoolingWPerM3;unitSelfCooling+=unitSelf[cell].radiativeCoolingWPerM3;
+				unitCappedCooling+=unitSelfCapped[cell].radiativeCoolingWPerM3;
+				unitSameChemistry=unitSameChemistry&&unitSelf[cell].constituentDelta==unitOff[cell].constituentDelta&&
+					unitSelfCapped[cell].constituentDelta==unitOff[cell].constituentDelta&&
+					unitSelf[cell].reactedFuelKGPerM3==unitOff[cell].reactedFuelKGPerM3&&
+					unitSelf[cell].oxidizedCarbonKGPerM3==unitOff[cell].oxidizedCarbonKGPerM3;
+			}
+			const bool unitBudgetOK=unitBuilt&&sootEscaping>0.0&&sootEscaping<sootThin&&unitHeat>0.0&&
+				(!envOff||(samePackets(unitDefault,unitThin)&&unitDefaultFactor.accepted==unitThinFactor.accepted))&&
+				Near(unitSelfApplied,unitGasFraction+sootEscaping/unitHeat,4.0e-15)&&
+				unitSelfFactor.accepted==std::min(unitOffFactor.accepted,1.0)&&
+				Near(unitSelfFactor.beta,unitOffFactor.beta,1.0e-15)&&
+				Near(unitSelfFactor.beta,chi*unitHeat/gasOnly,1.0e-12)&&
+				Near(unitCappedApplied,unitCap,4.0e-15)&&unitCappedFactor.beta==unitSelfFactor.beta&&
+				Near(unitOffCooling,chi*unitHeat,0.02)&&Near(unitSelfCooling,unitSelfApplied*unitHeat,0.02)&&
+				unitSelfApplied<=1.0&&
+				Near(unitCappedCooling,unitCap*unitHeat,0.02)&&
+				unitSelfCooling>unitCappedCooling&&unitCappedCooling>unitOffCooling;
+			if(!unitBudgetOK)std::printf("r273 self-absorption: gas=%.9g thin=%.9g escaping=%.9g hrr=%.9g applied=%.9g capped=%.9g beta off/self %.9g %.9g cooling off/self/capped %.9g %.9g %.9g\n",
+				gasOnly,sootThin,sootEscaping,unitHeat,unitSelfApplied,unitCappedApplied,unitOffFactor.beta,
+				unitSelfFactor.beta,unitOffCooling,unitSelfCooling,unitCappedCooling);
+			Check(unitBudgetOK,
+				"r273 self-absorption: gas keeps the case fraction with its escape factor bounded by 1; soot adds its column-escaping emission; the cap scales only soot");
+			Check(unitSameChemistry&&ledgerResidual(unitSelf)<1.0e-12&&ledgerResidual(unitSelfCapped)<1.0e-12,
+				"r273 self-absorption changes only the radiative sink; mass, elements and energy close");
+			std::vector<MethaneSourcePacket> unitRejected;RadiationEscapeFactor unitRejectedFactor;
+			Check(!BuildFrozenMethaneSourcePackets(sootCells,sootSteps,unitVolumes,300.0,600.0,chi,false,fuel,
+					thermochemistry,opacity,unitRejected,unitRejectedFactor,0,1u,true,-1.0,0,0,1,2u,1u,1u)&&
+				!BuildFrozenMethaneSourcePackets(sootCells,sootSteps,unitVolumes,300.0,600.0,chi,false,fuel,
+					thermochemistry,opacity,unitRejected,unitRejectedFactor,0,1u,true,0.45,0,0,-1,2u,1u,1u)&&
+				!BuildFrozenMethaneSourcePackets(sootCells,sootSteps,unitVolumes,300.0,600.0,chi,false,fuel,
+					thermochemistry,opacity,unitRejected,unitRejectedFactor,0,1u,true,0.45,0,0,1)&&
+				!BuildFrozenMethaneSourcePackets(sootCells,sootSteps,sootVolumes,300.0,600.0,chi,false,fuel,
+					thermochemistry,opacity,unitRejected,unitRejectedFactor,0,1u,true,0.45,0,0,1,2u,1u,1u),
+				"r273 self-absorption fails closed without the cap, on a malformed setting, without grid dimensions or with non-uniform cells");
 	}
 	RadiationEscapeFactor previewUnderOpaque,overflowBetaEscape;
 	Check(ComputeRadiationEscapeFactor(2.0,100.0,1.0,{0.5},{1.0},false,
