@@ -4848,18 +4848,23 @@ namespace RISE
 							"(heat-tint / anodization color) on an air / oxide-film / metal stack — "
 							"`ior` + `extinction` carry the SUBSTRATE (metal) complex index and the "
 							"three `film_*` slots carry the oxide film (docs/THIN_FILM_INTERFERENCE.md).  "
-							"`thinfilm` REQUIRES `film_ior` and `film_thickness` (`film_extinction` optional).";
+							"`thinfilm` REQUIRES `film_ior` and `film_thickness` (`film_extinction` optional).  "
+							"`constant` reflects `rs` at every angle with no Fresnel term (Cycles' Glossy BSDF), "
+							"ignoring ior + extinction; the multiscatter compensation uses `rs` as the per-bounce "
+							"reflectance, so the model is energy-bounded for `rs` and `rd` at or below 1 per channel, and "
+							"`rd` is scaled by (1 - rs) on entry and on exit (Cycles' Glossy has no diffuse: "
+							"use `rd none` for it).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "rs";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance / F0"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "alphax";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X roughness (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "0.15"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.001, 1.0, 0.005 ); }
 						{ auto& p = P(); p.name = "alphay";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y roughness (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "0.15"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.001, 1.0, 0.005 ); }
-						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (ignored in schlick_f0 mode) (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "2.45"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 1.0, 3.0, 0.01 ); }
-						{ auto& p = P(); p.name = "extinction";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (ignored in schlick_f0 mode) (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "3.45"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.0, 10.0, 0.05 ); }
+						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (ignored in schlick_f0 and constant modes) (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "2.45"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 1.0, 3.0, 0.01 ); }
+						{ auto& p = P(); p.name = "extinction";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (ignored in schlick_f0 and constant modes) (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "3.45"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.0, 10.0, 0.05 ); }
 						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter (LambertianEmitter folded in when present)"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; p.SoftRange( 0.0, 20.0, 0.1 ); }
-						{ auto& p = P(); p.name = "fresnel_mode";   p.kind = ValueKind::Enum;      p.enumValues = {"conductor", "schlick_f0", "thinfilm"}; p.description = "Fresnel model: conductor | schlick_f0 | thinfilm"; p.defaultValueHint = "conductor"; }
+						{ auto& p = P(); p.name = "fresnel_mode";   p.kind = ValueKind::Enum;      p.enumValues = {"conductor", "schlick_f0", "thinfilm", "constant"}; p.description = "Fresnel model: conductor | schlick_f0 | thinfilm | constant"; p.defaultValueHint = "conductor"; }
 						{ auto& p = P(); p.name = "film_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide n (scalar_painter; eFresnelThinFilmConductor only)"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 1.0, 3.0, 0.01 ); }
 						{ auto& p = P(); p.name = "film_extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide k (scalar_painter; eFresnelThinFilmConductor only; default 0/none = transparent film)"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.0, 5.0, 0.01 ); }
 						{ auto& p = P(); p.name = "film_thickness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide thickness in nm (scalar_painter, may be spatially varying; eFresnelThinFilmConductor only)"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.0, 1000.0, 1.0 ); }
@@ -4998,19 +5003,28 @@ namespace RISE
 					std::string name        = bag.GetString( "name",        "noname" );
 					std::string reflectance = bag.GetString( "reflectance", "none" );
 					std::string roughness   = bag.GetString( "roughness",   "0.5" );
+					std::string model       = bag.GetString( "model",       "classic" );
 
-					return pJob.AddOrenNayarMaterial( name.c_str(), reflectance.c_str(), roughness.c_str() );
+					return pJob.AddOrenNayarMaterialModel( name.c_str(), reflectance.c_str(), roughness.c_str(), model.c_str() );
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "orennayar_material"; cd.category = ChunkCategory::Material;
-						cd.description = "Oren-Nayar rough-diffuse BRDF.";
+						cd.description = "Oren-Nayar rough-diffuse BRDF.  `model classic` (the default) is the "
+							"original Oren-Nayar model with its interreflection term, with `roughness` the facet "
+							"slope sigma in radians; it loses energy as roughness grows.  `model energy_preserving` is EON "
+							"(Portsmouth, Kutz and Hill 2025; the OpenPBR diffuse, and Cycles' Diffuse BSDF as in "
+							"Blender 5.3 -- 4.3 through at least the 5.2 alpha differ, with one more factor of the "
+							"colour in the multiple-scattering term): Fujii's improved Oren-Nayar plus a multiple-scattering term, so a "
+							"white surface keeps albedo 1 at every roughness.  There `roughness` is a unitless "
+							"[0, 1] value (clamped), not an angle.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Albedo"; p.semantics.pipe = ParameterPipe::Color; }
-						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness sigma (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "0.5"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.0, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness (scalar_painter, or inline `r g b` or scalar): the facet slope sigma in radians for model classic; a [0, 1] value for model energy_preserving"; p.defaultValueHint = "0.5"; p.semantics.pipe = ParameterPipe::Scalar; p.SoftRange( 0.0, 1.0, 0.01 ); }
+						{ auto& p = P(); p.name = "model";       p.kind = ValueKind::Enum;      p.enumValues = {"classic", "energy_preserving"}; p.description = "Oren-Nayar model: classic | energy_preserving (EON)"; p.defaultValueHint = "classic"; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();

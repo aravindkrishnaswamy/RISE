@@ -19396,7 +19396,7 @@ bool SceneEditController::ApplySpectralPreset( Category cat, const String& prese
 
 				bool fmPresent = false;
 				const std::string curFm = RISE::Cst::ParamValueAsParsed( ownerBefore, "fresnel_mode", &fmPresent );
-				if( fmPresent && curFm == "schlick_f0" )
+				if( fmPresent && ( curFm == "schlick_f0" || curFm == "constant" ) )
 				{
 					if( !applySlot( "fresnel_mode", "conductor" ) ) return false;
 				}

@@ -166,6 +166,8 @@ namespace
 		const bool isotropicPhong;
 		const bool unitDiffuseMass;
 		const Value roughness;
+		//! With orenNayar: the EON model instead of the classic one.
+		const bool energyPreserving;
 		const ContinuationPathState pathState;
 
 		ContinuationClosureBase(
@@ -175,11 +177,12 @@ namespace
 			const bool isotropicPhong_,
 			const bool unitDiffuseMass_,
 			const Value& roughness_,
-			const ContinuationPathState& pathState_ ) :
+			const ContinuationPathState& pathState_,
+			const bool energyPreserving_ ) :
 		  frame(ri,isotropicPhong_), diffuse(diffuse_), glossy(glossy_),
 		  exponent(exponent_), orenNayar(orenNayar_),
 		  isotropicPhong(isotropicPhong_), unitDiffuseMass(unitDiffuseMass_),
-		  roughness(roughness_),
+		  roughness(roughness_), energyPreserving(energyPreserving_),
 		  pathState(pathState_) {}
 
 		unsigned int LobeMask() const
@@ -239,7 +242,10 @@ namespace
 			}
 			if( cosine <= 0.0 ) return result;
 			if( mask&eContinuationLobeDiffuse ) {
-				if( orenNayar ) {
+				if( orenNayar && energyPreserving ) {
+					result = result + OrenNayarBRDF::EONValue<Value>(
+						direction,frame.ri,frame.responseNormal,diffuse,roughness);
+				} else if( orenNayar ) {
 					Value l1 = ZeroValue<Value>();
 					Value l2 = ZeroValue<Value>();
 					OrenNayarBRDF::ComputeFactor<Value>(
@@ -358,10 +364,11 @@ namespace
 			Scalar exponent, bool orenNayar, bool isotropicPhong,
 			bool unitDiffuseMass,
 			const RISEPel& roughness,
-			const ContinuationPathState& pathState ) :
+			const ContinuationPathState& pathState,
+			bool energyPreserving = false ) :
 		  ContinuationClosureBase<RISEPel>(
 			ri,diffuse,glossy,exponent,orenNayar,isotropicPhong,unitDiffuseMass,
-			roughness,pathState) {}
+			roughness,pathState,energyPreserving) {}
 		unsigned int GetLobeMask() const override { return LobeMask(); }
 		Scalar GetSelectionMass( unsigned int lobe ) const override { return LobeMass(lobe); }
 		Scalar BasePdf( unsigned int lobe, const Vector3& direction ) const override
@@ -422,10 +429,11 @@ namespace
 			Scalar diffuse, Scalar glossy, Scalar exponent,
 			bool orenNayar, bool isotropicPhong, bool unitDiffuseMass,
 			Scalar roughness,
-			const ContinuationPathState& pathState ) :
+			const ContinuationPathState& pathState,
+			bool energyPreserving = false ) :
 		  ContinuationClosureBase<Scalar>(
 			ri,diffuse,glossy,exponent,orenNayar,isotropicPhong,unitDiffuseMass,
-			roughness,pathState) {}
+			roughness,pathState,energyPreserving) {}
 		unsigned int GetLobeMask() const override { return LobeMask(); }
 		Scalar GetSelectionMass( unsigned int lobe ) const override { return LobeMass(lobe); }
 		Scalar BasePdf( unsigned int lobe, const Vector3& direction ) const override
@@ -561,19 +569,23 @@ const IContinuationClosureNM* RISE::Implementation::CreateLambertianContinuation
 
 const IContinuationClosurePel* RISE::Implementation::CreateOrenNayarContinuationClosurePel(
 	const RayIntersectionGeometric& ri, const RISEPel& reflectance,
-	const RISEPel& roughness, const ContinuationPathState& pathState )
+	const RISEPel& roughness, const ContinuationPathState& pathState,
+	const bool energyPreserving )
 {
 	if( !FiniteNonnegative(reflectance) || !FiniteNonnegative(roughness) ) return 0;
 	return new PelClosure(
-		ri,reflectance,RISEPel(0.0),0.0,true,false,true,roughness,pathState);
+		ri,reflectance,RISEPel(0.0),0.0,true,false,true,roughness,pathState,
+		energyPreserving);
 }
 
 const IContinuationClosureNM* RISE::Implementation::CreateOrenNayarContinuationClosureNM(
 	const RayIntersectionGeometric& ri, const Scalar reflectance,
-	const Scalar roughness, const ContinuationPathState& pathState )
+	const Scalar roughness, const ContinuationPathState& pathState,
+	const bool energyPreserving )
 {
 	if( !FiniteNonnegative(reflectance) || !FiniteNonnegative(roughness) ) return 0;
-	return new NMClosure(ri,reflectance,0.0,0.0,true,false,true,roughness,pathState);
+	return new NMClosure(ri,reflectance,0.0,0.0,true,false,true,roughness,pathState,
+		energyPreserving);
 }
 
 const IContinuationClosurePel* RISE::Implementation::CreateIsotropicPhongContinuationClosurePel(

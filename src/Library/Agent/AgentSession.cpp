@@ -3999,8 +3999,8 @@ namespace RISE
 			//!       `ggx_material` or `pbr_metallic_roughness_material`.  A
 			//!       CONSTANT-metallic material (a literal `metallic > 0.5` on
 			//!       pbr_metallic_roughness_material, or a `ggx_material` whose
-			//!       `fresnel_mode` is `conductor` (the descriptor default) or
-			//!       `thinfilm`) still POPULATES this list -- `isMetallic` is
+			//!       `fresnel_mode` is `conductor` (the descriptor default),
+			//!       `thinfilm` or `constant`) still POPULATES this list -- `isMetallic` is
 			//!       set -- but `SelectMaterialToWet_` (the bare-call picker)
 			//!       skips every metallic entry, so a metallic material is only
 			//!       ever reached by NAMING it, and reaching it that way skips
@@ -4177,7 +4177,8 @@ namespace RISE
 			//!     unspelled defaults to `"conductor"`
 			//!     (`GGXMaterialAsciiChunkParser::Finalize`'s own default) --
 			//!     absent OR `conductor` OR `thinfilm` (an oxide film over a
-			//!     conductor substrate) count as `Metallic`; `schlick_f0` (the
+			//!     conductor substrate) OR `constant` (a Fresnel-free tinted
+			//!     reflector, Cycles' Glossy) count as `Metallic`; `schlick_f0` (the
 			//!     glTF-style dielectric-F0 mapping) is `NotMetallic`.  Never
 			//!     `Unreadable`.
 			//!   - `lambertian_material` / `orennayar_material`: always

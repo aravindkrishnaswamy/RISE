@@ -6305,11 +6305,12 @@ static FresnelMode ResolveFresnelMode( const char* mode )
 	if( strcmp( mode, "conductor"  ) == 0 ) return eFresnelConductor;
 	if( strcmp( mode, "schlick_f0" ) == 0 ) return eFresnelSchlickF0;
 	if( strcmp( mode, "thinfilm"   ) == 0 ) return eFresnelThinFilmConductor;
+	if( strcmp( mode, "constant"   ) == 0 ) return eFresnelConstant;
 
 	static std::set<std::string> seen;
 	if( seen.insert( std::string(mode) ).second ) {
 		GlobalLog()->PrintEx( eLog_Warning,
-			"Unknown fresnel_mode `%s`; falling back to conductor.  Valid: conductor, schlick_f0, thinfilm", mode );
+			"Unknown fresnel_mode `%s`; falling back to conductor.  Valid: conductor, schlick_f0, thinfilm, constant", mode );
 	}
 	return eFresnelConductor;
 }
@@ -7007,6 +7008,48 @@ bool Job::AddOrenNayarMaterial(
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateOrenNayarMaterial( &pMaterial, *pRef, *pRoughness );
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+
+	safe_release( pMaterial );
+	safe_release( pRoughness );
+
+	return ok;
+}
+
+bool Job::AddOrenNayarMaterialModel(
+	const char* name,
+	const char* reflectance,
+	const char* roughness,
+	const char* model
+	)
+{
+	const std::string m = model ? model : "";
+	if( m.empty() || m == "classic" ) {
+		return AddOrenNayarMaterial( name, reflectance, roughness );
+	}
+	if( m != "energy_preserving" ) {
+		char msg[300];
+		std::snprintf( msg, sizeof( msg ),
+			"unknown model `%s`.  Valid: classic, energy_preserving", m.c_str() );
+		GlobalLog()->PrintEx( eLog_Error, "orennayar_material `%s`: %s", name ? name : "", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+
+	IPainter* pRef = pPntManager->GetItem(reflectance);
+	if( !pRef ) {
+		return false;
+	}
+
+	IScalarPainter* pRoughness = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "orennayar_material", name, "roughness", roughness );
+	if( !pRoughness ) {
+		return false;
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateOrenNayarMaterialModel( &pMaterial, *pRef, *pRoughness, true );
 
 	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 

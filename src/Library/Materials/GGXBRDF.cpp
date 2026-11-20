@@ -87,6 +87,7 @@ namespace
 RISEPel GGXInterfaceFresnel::Directional( const Scalar cosine ) const
 {
 	const RISEPel tint = ReflectanceColor( specular, ri );
+	if( mode == eFresnelConstant ) return tint;
 	if( mode == eFresnelSchlickF0 ) {
 		return Optics::CalculateFresnelReflectanceSchlick<RISEPel>( tint, cosine );
 	}
@@ -118,6 +119,7 @@ RISEPel GGXInterfaceFresnel::Directional( const Scalar cosine ) const
 Scalar GGXInterfaceFresnel::DirectionalNM( const Scalar cosine, const Scalar nm ) const
 {
 	const Scalar tint = ReflectanceColorNM( specular, ri, nm );
+	if( mode == eFresnelConstant ) return tint;
 	if( mode == eFresnelSchlickF0 ) {
 		return Optics::CalculateFresnelReflectanceSchlick<Scalar>( tint, cosine );
 	}
@@ -134,6 +136,7 @@ Scalar GGXInterfaceFresnel::DirectionalNM( const Scalar cosine, const Scalar nm 
 RISEPel GGXInterfaceFresnel::Mean() const
 {
 	const RISEPel tint = ReflectanceColor( specular, ri );
+	if( mode == eFresnelConstant ) return tint;
 	if( mode == eFresnelSchlickF0 ) return SchlickFresnelAvg<RISEPel>( tint );
 	if( mode == eFresnelThinFilmConductor ) {
 		// Integrate the same projected directional function. Projecting an
@@ -154,6 +157,7 @@ RISEPel GGXInterfaceFresnel::Mean() const
 Scalar GGXInterfaceFresnel::MeanNM( const Scalar nm ) const
 {
 	const Scalar tint = ReflectanceColorNM( specular, ri, nm );
+	if( mode == eFresnelConstant ) return tint;
 	if( mode == eFresnelSchlickF0 ) return SchlickFresnelAvg<Scalar>( tint );
 	if( mode == eFresnelThinFilmConductor ) {
 		return tint * ThinFilm::FresnelAvgConductor( nm, ri.ambientIOR, Scalar(0),
@@ -310,7 +314,12 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	if( specFactor > 0 )
 	{
 		// Fresnel evaluated at microfacet normal (half-vector), not macrosurface normal
-		if( fresnelMode == eFresnelSchlickF0 )
+		if( fresnelMode == eFresnelConstant )
+		{
+			// Constant reflectance (no Fresnel term): specColor at every angle.
+			specular = specColor * specFactor;
+		}
+		else if( fresnelMode == eFresnelSchlickF0 )
 		{
 			// Schlick: F = F0 + (1-F0)*(1-cosθ_h)^5, where specColor is F0.
 			// cosθ_h = max(0, dot(wo, h)).
@@ -397,7 +406,14 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( nv, wi_local.x, wi_local.y, alphaX, alphaY );
 		const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
-		if( fresnelMode == eFresnelSchlickF0 )
+		if( fresnelMode == eFresnelConstant )
+		{
+			// Constant reflectance: every microfacet bounce reflects specColor,
+			// so the per-bounce average is specColor itself (F_avg = specColor).
+			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor, Eavg );
+			specular = specular + F_ms * f_ms;
+		}
+		else if( fresnelMode == eFresnelSchlickF0 )
 		{
 			// Closed-form Schlick hemispherical average.  specColor is F0.
 			const RISEPel F_avg = SchlickFresnelAvg<RISEPel>( specColor );
@@ -524,7 +540,12 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 	if( specFactor > 0 )
 	{
 		// Fresnel evaluated at microfacet normal (half-vector)
-		if( fresnelMode == eFresnelSchlickF0 )
+		if( fresnelMode == eFresnelConstant )
+		{
+			// Constant reflectance (no Fresnel term): specColor at every angle.
+			specular = specColor * specFactor;
+		}
+		else if( fresnelMode == eFresnelSchlickF0 )
 		{
 			const Scalar cosWoH = r_max( Scalar(0), Vector3Ops::Dot( r, h ) );
 			const Scalar F = Optics::CalculateFresnelReflectanceSchlick<Scalar>( specColor, cosWoH );
@@ -580,7 +601,13 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEssG2AnisoDirectional( nv, wi_local.x, wi_local.y, alphaX, alphaY );
 		const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
-		if( fresnelMode == eFresnelSchlickF0 )
+		if( fresnelMode == eFresnelConstant )
+		{
+			// Constant reflectance: per-bounce average is specColor (see value()).
+			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor, Eavg );
+			specular = specular + F_ms * f_ms;
+		}
+		else if( fresnelMode == eFresnelSchlickF0 )
 		{
 			const Scalar F_avg = SchlickFresnelAvg<Scalar>( specColor );
 			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
@@ -723,7 +750,12 @@ bool GGXBRDF::SingleScatterRGB( const Vector3& vLightIn, const RayIntersectionGe
 	if( specFactor > 0 )
 	{
 		// Fresnel evaluated at microfacet normal (half-vector), not macrosurface normal
-		if( fresnelMode == eFresnelSchlickF0 )
+		if( fresnelMode == eFresnelConstant )
+		{
+			// Constant reflectance (no Fresnel term): specColor at every angle.
+			specular = specColor * specFactor;
+		}
+		else if( fresnelMode == eFresnelSchlickF0 )
 		{
 			// Schlick: F = F0 + (1-F0)*(1-cosθ_h)^5, where specColor is F0.
 			// cosθ_h = max(0, dot(wo, h)).
@@ -849,7 +881,12 @@ bool GGXBRDF::SingleScatterNM( const Vector3& vLightIn, const RayIntersectionGeo
 	if( specFactor > 0 )
 	{
 		// Fresnel evaluated at microfacet normal (half-vector)
-		if( fresnelMode == eFresnelSchlickF0 )
+		if( fresnelMode == eFresnelConstant )
+		{
+			// Constant reflectance (no Fresnel term): specColor at every angle.
+			specular = specColor * specFactor;
+		}
+		else if( fresnelMode == eFresnelSchlickF0 )
 		{
 			const Scalar cosWoH = r_max( Scalar(0), Vector3Ops::Dot( r, h ) );
 			const Scalar F = Optics::CalculateFresnelReflectanceSchlick<Scalar>( specColor, cosWoH );
@@ -958,6 +995,7 @@ RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 //      moment-matched fixed-node quadrature (tools/
 //      GGXSpecularBihemisphericalGen.cpp), EXACT for Schlick (whose
 //      F(u)=F0+(1-F0)*u^5 is degree 5, inside the baked degree-7 basis)
+//      and for constant (degree 0)
 //      and a degree-7-polynomial-fit-quality approximation for
 //      conductor/thin-film (measured in
 //      tests/GGXHemisphericalAlbedoTest.cpp).
@@ -969,7 +1007,8 @@ RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 //        R_ms = (F_ms/pi) * (1/(pi(1-Eavg))) * [pi(1-Eavg)]^2
 //             = F_ms * (1-Eavg)
 //      with F_ms and Eavg computed by literally reusing the same
-//      per-mode helper calls value()/valueNM use (SchlickFresnelAvg /
+//      per-mode helper calls value()/valueNM use (constant: rs itself;
+//      SchlickFresnelAvg /
 //      ThinFilm::FresnelAvgConductor{,RGBSpectral} /
 //      MicrofacetEnergyLUT::ComputeFresnelAvg, then ComputeFms), so
 //      this term cannot drift from value()'s own multiscatter tint --
@@ -2376,6 +2415,9 @@ static const Scalar kGGXSpecularQuadCorrectionAnisoLowLow[ 9 ][ 9 ][ kGGXSpecula
 		const IScalarPainter* filmIOR, const IScalarPainter* filmExt, const IScalarPainter* filmThick,
 		const Scalar Eavg )
 	{
+		if( mode == eFresnelConstant ) {
+			return MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor, Eavg );
+		}
 		if( mode == eFresnelSchlickF0 ) {
 			const RISEPel F_avg = SchlickFresnelAvg<RISEPel>( specColor );
 			return MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
@@ -2405,6 +2447,9 @@ static const Scalar kGGXSpecularQuadCorrectionAnisoLowLow[ 9 ][ 9 ][ kGGXSpecula
 		const IScalarPainter* filmIOR, const IScalarPainter* filmExt, const IScalarPainter* filmThick,
 		const Scalar nm, const Scalar Eavg )
 	{
+		if( mode == eFresnelConstant ) {
+			return MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor, Eavg );
+		}
 		if( mode == eFresnelSchlickF0 ) {
 			const Scalar F_avg = SchlickFresnelAvg<Scalar>( specColor );
 			return MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );

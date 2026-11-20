@@ -560,16 +560,22 @@ file for parameter-by-parameter behaviour.
 
 **Lambertian / matte:**
 - `lambertian_material` — diffuse only.
-- `orennayar_material` — rough-diffuse Oren-Nayar generalisation.
+- `orennayar_material` — rough-diffuse Oren-Nayar generalisation.  `model classic`
+  (default) is the original Oren-Nayar model with its interreflection term,
+  `roughness` the facet slope in radians; `model energy_preserving` is EON
+  (the OpenPBR diffuse, and Cycles' Diffuse BSDF as in Blender 5.3), with
+  `roughness` in [0, 1], keeping a white surface at albedo 1.
 
 **Microfacet:**
-- `ggx_material` — anisotropic GGX with three Fresnel modes
+- `ggx_material` — anisotropic GGX with four Fresnel modes
   ([`FresnelMode`](../src/Library/Interfaces/IMaterial.h)):
   `conductor` (`eFresnelConductor`, default; multiplies real `ior`/`extinction`
-  Fresnel by `rs` as a tint), `schlick` (`eFresnelSchlickF0`; treats `rs` as
-  F0, required by glTF metallicRoughness), and `thinfilm` (Airy thin-film
+  Fresnel by `rs` as a tint), `schlick_f0` (`eFresnelSchlickF0`; treats `rs` as
+  F0, required by glTF metallicRoughness), `thinfilm` (Airy thin-film
   interference parameterized by `film_ior`, `film_extinction`, and
-  `film_thickness` in nm; see [THIN_FILM_INTERFERENCE.md](THIN_FILM_INTERFERENCE.md)).
+  `film_thickness` in nm; see [THIN_FILM_INTERFERENCE.md](THIN_FILM_INTERFERENCE.md)),
+  and `constant` (`eFresnelConstant`; reflects `rs` at every angle with no
+  Fresnel term, ignores `ior`/`extinction`; Cycles' Glossy BSDF).
   Also accepts `tangent_rotation` (painter) or `tangent_rotation_scalar`
   (`IScalarPainter`) to rotate the anisotropic frame, plus optional emission.
 - `pbr_metallic_roughness_material` — glTF-spec composition. Not its own

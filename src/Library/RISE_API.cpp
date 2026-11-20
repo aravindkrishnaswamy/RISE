@@ -5186,6 +5186,22 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateOrenNayarMaterialModel(
+								IMaterial** ppi,
+								const IPainter& reflectance,
+								const IScalarPainter& roughness,
+								const bool energy_preserving
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new OrenNayarMaterial( reflectance, roughness, energy_preserving );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "oren nayar material" );
+		return true;
+	}
+
 	//! Creates a Schlick material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSchlickMaterial(

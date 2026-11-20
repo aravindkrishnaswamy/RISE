@@ -489,7 +489,8 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 		rows.push_back( BuildPainterSlot( "rs", ggx->GetSpecular(),
 			painters, composed,
 			"Painter for the specular tint OR Schlick F0 input depending on `fresnel_mode` "
-			"(conductor mode = tint multiplier; schlick_f0 mode = F0 directly per glTF spec)." ) );
+			"(conductor mode = tint multiplier; schlick_f0 mode = F0 directly per glTF spec; "
+			"constant mode = the reflectance at every angle)." ) );
 		rows.push_back( BuildScalarPainterSlot( "alphax",   ggx->GetAlphaX(),
 			scalarPainters, composed,
 			"Anisotropic roughness in the tangent direction — physical scalar." ) );
@@ -499,13 +500,14 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"Set equal to alphax for isotropic GGX." ) );
 		rows.push_back( BuildScalarPainterSlot( "ior",      ggx->GetIOR(),
 			scalarPainters, composed,
-			"Index of refraction (Fresnel conductor mode only; ignored in schlick_f0)." ) );
+			"Index of refraction (conductor mode; the substrate n in thinfilm; ignored in schlick_f0 and constant)." ) );
 		rows.push_back( BuildScalarPainterSlot( "extinction",      ggx->GetExtinction(),
 			scalarPainters, composed,
-			"Extinction coefficient (Fresnel conductor mode only)." ) );
-		// fresnel_mode is an enum, not a painter -- surface it READ-ONLY
-		// (no enum-editor row type in this panel yet) so the user can
-		// SEE which Fresnel model is active.  The three thin-film FILM
+			"Extinction coefficient (conductor mode; the substrate k in thinfilm; ignored in schlick_f0 and constant)." ) );
+		// fresnel_mode is an enum, not a painter -- surfaced here as a
+		// read-only row; CstIntrospection::AugmentWithCstRows upgrades it to
+		// an editable enum from the chunk's descriptor.  It shows which
+		// Fresnel model is active.  The three thin-film FILM
 		// rows below are only present in thinfilm mode, so their
 		// presence already implies the mode; this row makes it explicit
 		// and also distinguishes conductor vs schlick_f0.
@@ -514,14 +516,16 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			const char* fmName =
 				( fm == eFresnelSchlickF0 )         ? "schlick_f0" :
 				( fm == eFresnelThinFilmConductor ) ? "thinfilm"   :
+				( fm == eFresnelConstant )          ? "constant"   :
 				                                      "conductor";
 			rows.push_back( MakeReadOnlyRow(
 				"fresnel_mode", String( fmName ),
 				"Which Fresnel model the specular lobe evaluates: conductor "
 				"(ior/extinction complex index), schlick_f0 (rs is F0, glTF "
-				"metallic-roughness), or thinfilm (air/oxide-film/metal "
-				"interference; adds the film_* slots).  Read-only -- set at "
-				"construction via the chunk's `fresnel_mode` parameter." ) );
+				"metallic-roughness), thinfilm (air/oxide-film/metal "
+				"interference; adds the film_* slots), or constant (rs at "
+				"every angle, no Fresnel term).  Set by the chunk's "
+				"`fresnel_mode` parameter (editable through the scene document)." ) );
 			// Thin-film FILM slots -- the oxide layer of the
 			// air/oxide/metal stack.  Surface them ONLY in thinfilm
 			// mode; in every other mode the pointers are null and the
@@ -570,7 +574,16 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"Diffuse reflectance painter for the rough-surface Lambertian extension." ) );
 		rows.push_back( BuildScalarPainterSlot( "roughness", on->GetRoughness(),
 			scalarPainters, composed,
-			"Surface roughness σ (radians) — physical scalar.  σ=0 collapses to Lambertian." ) );
+			on->IsEnergyPreserving()
+				? "Surface roughness in [0, 1] (EON model) — physical scalar.  0 collapses to Lambertian."
+				: "Surface roughness σ (radians) — physical scalar.  σ=0 collapses to Lambertian." ) );
+		rows.push_back( MakeReadOnlyRow(
+			"model", String( on->IsEnergyPreserving() ? "energy_preserving" : "classic" ),
+			"Which Oren-Nayar model the material evaluates: classic (the original "
+			"Oren-Nayar model with its interreflection term, roughness in radians) "
+			"or energy_preserving (EON: keeps a white surface at albedo 1 at every "
+			"roughness, roughness in [0, 1]).  Set by the chunk's `model` "
+			"parameter." ) );
 	}
 	else if( const SchlickMaterial* sch = dynamic_cast<const SchlickMaterial*>( &material ) ) {
 		rows.push_back( BuildPainterSlot( "rd", sch->GetDiffuse(),

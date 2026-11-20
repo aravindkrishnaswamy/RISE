@@ -122,10 +122,12 @@ namespace
 
 OrenNayarBRDF::OrenNayarBRDF(
 	const IPainter& reflectance,
-	const IScalarPainter& roughness
+	const IScalarPainter& roughness,
+	const bool energy_preserving
 	) :
   pReflectance( &reflectance ),
-  pRoughness( &roughness )
+  pRoughness( &roughness ),
+  bEnergyPreserving( energy_preserving )
 {
 	pReflectance->addref();
 	pRoughness->addref();
@@ -208,8 +210,143 @@ void OrenNayarBRDF::ComputeFactor(
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// EON, the energy-preserving model (see OrenNayarBRDF.h for the
+// formulas and the reference).
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	// 1/2 - 2/(3 pi): A = 1/(1 + kEONA * sigma).
+	const Scalar kEONA = 0.5 - 2.0 / (3.0 * PI);
+	// 2/3 - 28/(15 pi): Eavg = A + kEONEavg * B.
+	const Scalar kEONEavg = 2.0 / 3.0 - 28.0 / (15.0 * PI);
+
+	inline Scalar EONSigma( const Scalar roughness )
+	{
+		return r_min( Scalar(1), r_max( Scalar(0), roughness ) );
+	}
+
+	//! Fujii's G(mu) = sin(t)(t - 2/3 - sin(t)cos(t))
+	//!               + (2/3)(sin(t)/cos(t))(1 - sin^3(t)),  t = acos(mu).
+	//! The second term is 0/0 at grazing; with 1 - sin(t) = mu^2/(1 + sin(t))
+	//! it is (2/3) sin(t) mu (1 + sin(t) + sin^2(t))/(1 + sin(t)), which has no
+	//! 0/0 anywhere on [0, 1] (Cycles switches to a Taylor expansion below
+	//! mu = 1e-6 instead).  G(1) = 0, G(0) = pi/2 - 2/3.
+	inline Scalar EONG( const Scalar muIn )
+	{
+		const Scalar mu = r_min( Scalar(1), r_max( Scalar(0), muIn ) );
+		const Scalar sinT = sqrt( r_max( Scalar(0), Scalar(1) - mu * mu ) );
+		const Scalar theta = acos( mu );
+		return sinT * ( theta - 2.0 / 3.0 - sinT * mu )
+			+ ( 2.0 / 3.0 ) * sinT * mu * ( 1.0 + sinT + sinT * sinT ) / ( 1.0 + sinT );
+	}
+
+	//! The cosines EONValue needs, behind the same gates as ComputeFactor.
+	inline bool EONCosines(
+		const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Vector3& n,
+		Scalar& muI, Scalar& muO, Scalar& s )
+	{
+		const Vector3 v = Vector3Ops::Normalize( vLightIn );		// toward the light
+		const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );	// toward the viewer
+		muO = Vector3Ops::Dot( n, r );
+		muI = Vector3Ops::Dot( n, v );
+		if( muO < NEARZERO || muI < NEARZERO ) {
+			return false;
+		}
+		// Geometric-horizon gate, as in ComputeFactor.
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : n;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+			return false;
+		}
+		s = Vector3Ops::Dot( v, r ) - muI * muO;
+		return true;
+	}
+
+	inline Scalar EONChannelOf( const Scalar rho, const Scalar roughness, const Scalar muI, const Scalar muO, const Scalar s )
+	{
+		return OrenNayarBRDF::EONChannel( rho, roughness, muI, muO, s );
+	}
+
+	inline RISEPel EONChannelOf( const RISEPel& rho, const RISEPel& roughness, const Scalar muI, const Scalar muO, const Scalar s )
+	{
+		return RISEPel(
+			OrenNayarBRDF::EONChannel( rho[0], roughness[0], muI, muO, s ),
+			OrenNayarBRDF::EONChannel( rho[1], roughness[1], muI, muO, s ),
+			OrenNayarBRDF::EONChannel( rho[2], roughness[2], muI, muO, s ) );
+	}
+}
+
+Scalar OrenNayarBRDF::EONSingleScatterAlbedo( const Scalar roughness, const Scalar mu )
+{
+	const Scalar sigma = EONSigma( roughness );
+	const Scalar A = 1.0 / ( 1.0 + kEONA * sigma );
+	const Scalar B = sigma * A;
+	return A + B * INV_PI * EONG( mu );
+}
+
+Scalar OrenNayarBRDF::EONChannel( const Scalar rho, const Scalar roughness, const Scalar muI, const Scalar muO, const Scalar s )
+{
+	const Scalar sigma = EONSigma( roughness );
+	const Scalar A = 1.0 / ( 1.0 + kEONA * sigma );
+	const Scalar B = sigma * A;
+
+	// Fujii's single-scatter term.
+	const Scalar sOverT = ( s > 0 ) ? s / r_max( muI, muO ) : s;
+	const Scalar single = rho * INV_PI * ( A + B * sOverT );
+
+	// Multiple scattering.  At sigma = 0 the model is Lambertian (A = 1,
+	// B = 0, Eavg = 1) and the term vanishes.
+	const Scalar oneMinusEavg = 1.0 - ( A + kEONEavg * B );
+	if( oneMinusEavg <= 0 ) {
+		return single;
+	}
+	// rho_ms = rho sat(rho) Eavg / (1 - sat(rho) (1 - Eavg)): rho^2 for
+	// rho in [0, 1], and Cycles' form above it (the closure weight is the
+	// unclamped colour, only the colour inside the term is saturated).
+	const Scalar rhoSat = r_min( Scalar(1), r_max( Scalar(0), rho ) );
+	const Scalar albedoMs = rho * rhoSat * ( 1.0 - oneMinusEavg ) / ( 1.0 - rhoSat * oneMinusEavg );
+	// E(mu) reaches exactly 1 at grazing; clamp the rounding below zero.
+	const Scalar lossI = r_max( Scalar(0), 1.0 - ( A + B * INV_PI * EONG( muI ) ) );
+	const Scalar lossO = r_max( Scalar(0), 1.0 - ( A + B * INV_PI * EONG( muO ) ) );
+	return single + albedoMs * INV_PI * lossI * lossO / oneMinusEavg;
+}
+
+Scalar OrenNayarBRDF::EONBihemisphericalAlbedo( const Scalar rho, const Scalar roughness )
+{
+	const Scalar sigma = EONSigma( roughness );
+	const Scalar A = 1.0 / ( 1.0 + kEONA * sigma );
+	const Scalar B = sigma * A;
+	const Scalar Eavg = A + kEONEavg * B;
+	const Scalar oneMinusEavg = 1.0 - Eavg;
+	if( oneMinusEavg <= 0 ) {
+		return rho;
+	}
+	const Scalar rhoSat = r_min( Scalar(1), r_max( Scalar(0), rho ) );
+	const Scalar albedoMs = rho * rhoSat * Eavg / ( 1.0 - rhoSat * oneMinusEavg );
+	return rho * Eavg + albedoMs * oneMinusEavg;
+}
+
+template< class T >
+T OrenNayarBRDF::EONValue( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Vector3& n, const T& rho, const T& roughness )
+{
+	Scalar muI = 0, muO = 0, s = 0;
+	if( !EONCosines( vLightIn, ri, n, muI, muO, s ) ) {
+		return rho * Scalar(0);
+	}
+	return EONChannelOf( rho, roughness, muI, muO, s );
+}
+
 RISEPel OrenNayarBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
+	if( bEnergyPreserving ) {
+		const ScalarTriple r = pRoughness->GetValuesAt(ri);
+		const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
+		return EONValue<RISEPel>( vLightIn, ri, n, ReflectanceColor( *pReflectance, ri ),
+			RISEPel( r.v[0], r.v[1], r.v[2] ) );
+	}
+
 	RISEPel L1, L2;
 	const ScalarTriple r = pRoughness->GetValuesAt(ri);
 	const RISEPel roughness( r.v[0], r.v[1], r.v[2] );
@@ -227,6 +364,12 @@ RISEPel OrenNayarBRDF::value( const Vector3& vLightIn, const RayIntersectionGeom
 
 Scalar OrenNayarBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
+	if( bEnergyPreserving ) {
+		const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
+		return EONValue<Scalar>( vLightIn, ri, n, ReflectanceColorNM( *pReflectance, ri, nm ),
+			pRoughness->GetValueAtNM( ri, nm ) );
+	}
+
 	Scalar L1=0, L2=0;
 
 	// Same ray-facing flip as value() above.
@@ -239,9 +382,12 @@ Scalar OrenNayarBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeo
 
 RISEPel OrenNayarBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
-	// Oren-Nayar is energy-conserving: total reflectance ≈ Rd
-	// regardless of roughness.  The L1 / L2 terms only redistribute
-	// directional scattering shape.
+	// The reflectance colour, as the albedo guide.  Away from roughness 0
+	// neither model's white-sky albedo is Rd in general: the classic model
+	// loses energy as roughness grows, and EON's equals Rd only where the
+	// colour is 0 or at least 1 (below 1 its multiple-scattering term is
+	// rho^2 Eavg/(1 - rho(1 - Eavg))).  hemisphericalAlbedo() is the true
+	// white-sky value.
 	return ReflectanceColor( *pReflectance, ri );
 }
 
@@ -263,6 +409,10 @@ RISEPel OrenNayarBRDF::albedo( const RayIntersectionGeometric& ri ) const
 // stated 0.8740 / 0.7444; the DIRECTION and rough SIZE of the bias
 // were right, the exact table was not, and this fix does not depend
 // on it -- see below).
+//
+// (This block is the classic model.  With bEnergyPreserving the closed
+// form EONBihemisphericalAlbedo, rho Eavg + rho_ms (1 - Eavg), is
+// returned instead.)
 //
 // THE FIX.  f(wi,wo) = (L1/pi)*rho + (L2/pi)*rho^2 (ComputeFactor
 // above), and L1/L2 depend only on (theta_i, theta_o, deltaPhi,
@@ -314,6 +464,13 @@ bool OrenNayarBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RIS
 	const ScalarTriple sigma = pRoughness->GetValuesAt( ri );
 	const RISEPel rho = ReflectanceColor( *pReflectance, ri );
 
+	if( bEnergyPreserving ) {
+		for( unsigned int c = 0; c < 3; c++ ) {
+			out[c] = EONBihemisphericalAlbedo( rho[c], sigma.v[c] );
+		}
+		return true;
+	}
+
 	for( unsigned int c = 0; c < 3; c++ ) {
 		const Scalar a1 = OrenNayarA1( sigma.v[c] );
 		const Scalar a2 = OrenNayarA2( sigma.v[c] );
@@ -326,16 +483,30 @@ bool OrenNayarBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, c
 {
 	const Scalar sigma = pRoughness->GetValueAtNM( ri, nm );
 	const Scalar rho = ReflectanceColorNM( *pReflectance, ri, nm );
+	if( bEnergyPreserving ) {
+		out = EONBihemisphericalAlbedo( rho, sigma );
+		return true;
+	}
 	const Scalar a1 = OrenNayarA1( sigma );
 	const Scalar a2 = OrenNayarA2( sigma );
 	out = rho * a1 + rho * rho * a2;
 	return true;
 }
 
-// Explicit instantiation so other TUs (OrenNayarSPF.cpp) can link to the
-// scalar overload without seeing the template body.  The RISEPel flavour
-// is instantiated implicitly through OrenNayarBRDF::value above.
+// Explicit instantiations so other TUs (OrenNayarSPF.cpp,
+// ContinuationClosure.cpp) can link to both the Scalar and RISEPel
+// flavours of ComputeFactor and EONValue without seeing their bodies.
 template void OrenNayarBRDF::ComputeFactor<Scalar>(
 	Scalar&, Scalar&,
 	const Vector3&, const RayIntersectionGeometric&,
 	const Vector3&, const Scalar& );
+template void OrenNayarBRDF::ComputeFactor<RISEPel>(
+	RISEPel&, RISEPel&,
+	const Vector3&, const RayIntersectionGeometric&,
+	const Vector3&, const RISEPel& );
+template Scalar OrenNayarBRDF::EONValue<Scalar>(
+	const Vector3&, const RayIntersectionGeometric&,
+	const Vector3&, const Scalar&, const Scalar& );
+template RISEPel OrenNayarBRDF::EONValue<RISEPel>(
+	const Vector3&, const RayIntersectionGeometric&,
+	const Vector3&, const RISEPel&, const RISEPel& );
