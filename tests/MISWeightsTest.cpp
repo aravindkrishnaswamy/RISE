@@ -351,10 +351,12 @@ static void TestVolumeEmissionFamilyPartition()
 	Check(std::isfinite(extremeMarch) && extremeMarch==0.0,
 		"march family weight stays finite for extreme density ratios");
 
-	// Pinned layout: master's current RAY_STATE (144 bytes on LP64; it grew from the
-	// fire branch's pre-merge 88 with bsdfMisPdf, chain flags and contact fields).
-	// The fire side adds no RAY_STATE members: volume MIS state must stay out of it.
-	const size_t legacyRayStateSize = 144;
+	// Pinned layout: master's current RAY_STATE (152 bytes on LP64).  It grew from
+	// the fire branch's pre-merge 88 with bsdfMisPdf, chain flags and contact fields
+	// (144), then by 8 with DL-633's pNEESelfObject (emitterHitFollowsLightTable
+	// fits in existing padding).  The fire side adds no RAY_STATE members: volume
+	// MIS state must stay out of it.
+	const size_t legacyRayStateSize = 152;
 	Check(sizeof(IRayCaster::RAY_STATE)==legacyRayStateSize,
 		"volume MIS state does not alter the public RAY_STATE ABI");
 	const VolumeEmissionSegmentState defaultState =
